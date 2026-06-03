@@ -71,3 +71,37 @@ Branch: `dx100-improvements`. Baseline commit: `e4fc4af`.
   (cycles, BW, row-buffer hit rate, MPKI) as the reference point.
 - `CMP` mode in the microbenchmark runs BASE+MAA and self-verifies correctness — doubles
   as a functional check.
+
+### Iteration 0c — `/tmp` wipe recovery (infra)
+- The host rebooted (Claude usage-limit reset gap); this **wiped `/tmp/DX100`** and killed
+  all background builds (the spurious "exit 144"s). Lost: Ramulator2 build, gem5 build,
+  microbenchmark binary, `run_test.sh`, and `/tmp`-only log/source edits.
+- **Lesson applied:** work + build now live in the persistent `/home/nier/DX100` (CIFS,
+  slower but durable), and source/scripts/log are **committed to git frequently** so only
+  regenerable build artifacts are ever at risk.
+- Recovered & committed: SCons fix (commit 3dcd51a), microbenchmark `using namespace std;`
+  fix + `run_test.sh` (commit 368817b). Re-launched Ramulator2 + gem5 builds in /home.
+  Microbenchmark binary `test_T16K.o` rebuilt.
+
+#### Build fix: microbenchmark `test.cpp` (GEM5 backend)
+- `benchmarks/API/test.cpp` failed under `-DGEM5` (g++-11): 63 errors from unqualified
+  `cout/endl/string/stoi/max/memory_order_relaxed`. The FUNC header brings in
+  `using namespace std;`; the GEM5 header does not. Fix: add the using-directive to
+  test.cpp. Harness-only; no model effect.
+- Compile recipe (assemble the checked-in m5op.S; no need to scons-build util/m5):
+  `g++ -std=c++17 -march=corei7 -msse4.1 -mno-avx util/m5/src/abi/x86/m5op.S test.cpp
+   -Iinclude/ -Iutil/m5/src/ -fopenmp -DGEM5 -DTILE_SIZE=16384 -O2 -o test_T16K.o`
+
+### Iteration 2 (planned) — Behavior-preserving sim-speed optimization: RequestTable
+- Target: `RequestTable` (used by `StreamAccessUnit`; `Tables.cc`). Hot path:
+  - `is_full()` does a full O(num_addresses=128) scan, called *every iteration* of the
+    stream fill loop (StreamAccess.cc:206,217,218,302).
+  - `add_entry()` / `get_entries()` linear-scan all addresses per word / per CL response.
+- Optimization (O(1)): add `num_valid_addresses` counter (is_full O(1)), an
+  `unordered_map<Addr,int>` addr->slot index (add_entry/get_entries O(1)), and a free-slot
+  list. Per-address entry slots fill monotonically (cleared only en-masse in get_entries),
+  so entry order is preserved.
+- **Expected result delta: ZERO** — stats.txt must be byte-identical (same addresses, same
+  entry order, same full/not-full decisions). The stats diff is the pass/fail test: this is
+  the textbook case of the user's "drastically different = red flag" rule. Benefit: faster
+  simulation (paper's full runs take 84 h), no model change.
