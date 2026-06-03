@@ -24,6 +24,12 @@
 #include "MAA_gem5_magic.hpp"
 #endif
 
+// Some helper/initializer functions and main() use unqualified names (cout, endl,
+// string, stoi, max, memory_order_relaxed). The FUNC header path pulls in
+// `using namespace std;`; the GEM5 path does not. Add it here so the microbenchmark
+// builds identically under all API backends (does not affect the DX100 model).
+using namespace std;
+
 /*******************************************************************************/
 /*******************************************************************************/
 /*                                    TESTS                                    */
