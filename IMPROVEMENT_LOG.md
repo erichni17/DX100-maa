@@ -167,3 +167,34 @@ sizing; or use a machine with more free RAM.
   entry order, same full/not-full decisions). The stats diff is the pass/fail test: this is
   the textbook case of the user's "drastically different = red flag" rule. Benefit: faster
   simulation (paper's full runs take 84 h), no model change.
+
+## Session summary (status & honest assessment)
+
+**What works now (committed):** the artifact **builds** and the DX100 timing model **runs
+correctly** (correct MAA address ranges, no panic, no deadlock) after 7 fixes:
+1. SCons 4.9+ `CheckLibWithHeader` keyword fix (build was fully broken).
+2. Ramulator2 built with g++-11 (README wanted g++-12).
+3. microbenchmark `using namespace std;` (GEM5 backend wouldn't compile).
+4. `Simulation.py` fast-forward `getCPUClass()` tuple-unpack bug.
+5. x86-64-v2 CPUID (so modern-glibc programs don't abort under gem5).
+6. MAA region NULL-pointer guard + `nullptr` init in `test.cpp`.
+7. `-DMAA_MEM_SIZE` override for the MAA MMIO base.
+Plus `run_test.sh`, the validated cached-checkpoint -> restore+`--maa` loop harness.
+
+**The blocker for the edit->test->compare loop:** instantiating the `--maa` config costs
+**~9.8 GB RSS before simulation starts** (it's the MAA SimObject build, not the CPU, the
+mem-size backstore, or the 1.8 MB checkpoint). On this **shared 17 GB host** that's
+OOM-killed intermittently — even when ~14 GB looked free it died at ~9.8 GB. So a *tight*
+loop on the full timing model is not reliable here. This is an environment limit, not a
+DX100 bug; the model itself is in a runnable state.
+
+**Recommended ways to actually run the loop:**
+- Run on a host with more (and non-shared) RAM — ~16-24 GB free should comfortably hold the
+  ~10 GB instantiation + the ROI simulation.
+- Or profile the ~9.8 GB MAA-construction allocation (likely a structure sized by the
+  Ramulator DRAM org / address space) and shrink it — that would make this config fit and
+  is itself a worthwhile simulator improvement.
+
+**Next model improvement queued (Iteration 2):** the behavior-preserving `RequestTable`
+O(1) optimization (see above). It is ready to implement; its correctness check is exact
+`stats.txt` equality, which needs a host that can run the sim.
