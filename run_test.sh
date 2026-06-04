@@ -21,6 +21,7 @@ MODE="${2:-MAA}"
 KERNEL="${3:-gather}"
 DISTARGS="${4:-allmiss 1 100 1 1}"
 N="${5:-20000}"
+EXTRA="${6:-}"   # optional extra gem5/MAA flags (e.g. design-space sweeps)
 BIN="$GH/benchmarks/API/test_T16K.o"
 RAMCFG="$GH/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
@@ -73,7 +74,7 @@ timeout 2400 "$GH/build/X86/gem5.opt" --outdir="$OUTDIR" \
   --l3cache --l3_size=8MB --l3_assoc=16 --l3_mshrs=256 --l3_write_buffers=128 --l3_ports 4 \
   --cacheline_size=64 \
   --mem-type Ramulator2 --ramulator-config "$RAMCFG" --mem-channels 2 --maa_ncbus_width 32 \
-  $MAAFLAGS \
+  $MAAFLAGS $EXTRA \
   --cmd "$BIN" --options "$N $MODE $KERNEL $DISTARGS" \
   --prog-interval=1000 \
   > "$OUTDIR/run.log" 2>&1

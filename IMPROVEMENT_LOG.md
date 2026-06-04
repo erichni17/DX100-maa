@@ -347,3 +347,37 @@ Runnable + verified-correct + deterministic MAA simulation on the 17 GB host, wi
 validated edit→test→compare loop and 2 baseline points. Landed improvements:
 - **MAX_CMD_REGIONS 256→32** — fixes the ~10 GB init OOM (was misdiagnosed as the MAA build).
 - **RequestTable O(n)→O(1)** — behavior-preserving host-side speedup on the per-word hot path.
+
+---
+
+## 2026-06-04 (cont.) — Architectural investigation: row-table sizing is NOT the lever (negative result)
+
+Targeted the row table (the MAA's "central performance mechanism"). Profiling the DRAM-bound
+`gather allmiss` indirect read showed `IND_CyclesRequest` = 84915 of 86236 INDRD cycles, and
+`NumRowsInserted/Unique` = 2510/198 = **12.7× row re-activation**. Root mechanism (confirmed
+in code): each row-table row holds only `num_row_table_entries_per_subslice_row = 8` distinct
+cache lines (`RowTableEntry::insert`, Tables.cc:222), but the pattern has ~101 unique lines
+per DRAM row → a row fills after 8, drains, and re-opens ~101/8 ≈ 12.6×.
+
+**Hypothesis:** raise entries-per-row → fewer drains/re-activations → fewer DRAM activations
+→ lower latency/cycles. **Swept it (sweep_rt.sh) over {8,16,32,64}:**
+
+| EPR | cycles_INDRD | re-activation | AvgMemLat | correct |
+|----:|-------------:|--------------:|----------:|:-------:|
+| 8   | 86236        | 12.68x        | 325.78    | yes |
+| 16  | 86270        | 6.35x         | 326.89    | yes |
+| 32  | 86411        | 3.19x         | 327.13    | yes |
+| 64  | 86411        | 1.81x         | 327.13    | yes |
+
+**Result: re-activation fell 7x but cycles & memory latency did NOT move** (cycles even 0.2%
+worse). **Conclusion:** Ramulator2's **FRFCFS** memory scheduler already reorders requests for
+row-buffer hits, so the MAA row-table's reordering is largely redundant here and reducing its
+re-activation yields no end-to-end gain; the indirect read is **memory-throughput-bound**
+(`port_mem_RD_BW` ≈ 22.85 GB/s on 2 channels), not row-locality-bound.
+
+**Action:** do NOT change the default (8 is fine; larger only adds modeled SRAM for no gain —
+and the model charges a fixed `rowtable_latency` regardless of size, so it wouldn't even show
+the area cost). Value of this iteration = a measured *negative* result that prevents a
+pointless "optimization", and a pointer for real perf work: the lever is memory-level
+parallelism / throughput, not row-table capacity. (Open question for future: quantify the MAA
+row table's benefit vs FRFCFS-only — it may be near-redundant in this config.)
