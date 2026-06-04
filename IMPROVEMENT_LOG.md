@@ -461,3 +461,31 @@ Three controlled results (capacity sweep, reorder on/off, active-BW calc) conver
 story. The MAA model is correct and bandwidth-efficient in this config; the row table's
 *reordering* is redundant with FRFCFS (its *coalescing* still matters). No further
 modeled-perf improvement is available without changing the memory system.
+
+---
+
+## 2026-06-04 (cont.) — Capstone: channel scaling proves bandwidth-bound (measured)
+
+Scaled memory channels (with the artifact's coupled ncbus_width & slices), allmiss gather:
+
+| channels | cycles_INDRD | speedup | port_mem_RD_BW | correct |
+|---------:|-------------:|--------:|---------------:|:-------:|
+| 2 (base) | 86236        | 1.00x   | 22.85          | yes |
+| 4        | 50295        | 1.71x   | 29.30          | yes |
+| 8        | 26861        | 3.21x   | 34.93          | yes |
+
+`cycles_INDRD` scales down near-linearly with channels (4x channels -> 3.2x faster, the gap
+from 4x being the fixed ~20k-cycle compute floor: SPD writes + RT access). Bandwidth rises
+monotonically. **This is the measured proof that the indirect gather is DRAM-bandwidth-bound.**
+
+### Architectural conclusion (4 converging experiments)
+1. Row-table **capacity** sweep (8->64): flat cycles.
+2. Row-table **reorder** on/off: ~1% (masked by FRFCFS).
+3. **Active-BW** calc: ~93% of 2ch peak.
+4. **Channel scaling**: 4x channels -> 3.2x faster.
+
+The MAA gather saturates DRAM bandwidth (its design goal); the row table's reordering is
+redundant with FRFCFS here and its capacity is irrelevant because there is no bandwidth
+headroom. **No safe accelerator-side code optimization improves this config** — the lever is
+memory bandwidth (channels). Actionable guidance for artifact users: spend tuning effort on
+the memory system, not the row table, for bandwidth-bound gather patterns.

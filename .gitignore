@@ -65,3 +65,7 @@ ro_*/
 ro_*.driver.log
 reorder_results.txt
 reorder_driver.log
+ch_*/
+ch_*.driver.log
+chan_results.txt
+chan_driver.log
