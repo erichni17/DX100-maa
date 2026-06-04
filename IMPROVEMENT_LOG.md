@@ -3,6 +3,10 @@
 Working log for improving the DX100 ("MAA" — Memory Access Accelerator) gem5 model.
 Branch: `dx100-improvements`. Baseline commit: `e4fc4af`.
 
+> **New here? Read [`HANDOFF.md`](./HANDOFF.md) first** — the concise entry point (what
+> changed, how to build/run on a constrained host, the key findings). This file is the
+> detailed chronological record behind it.
+
 ## Methodology / Loop
 1. Establish a baseline (build gem5, run a fast test, record metrics).
 2. Make one focused edit to the model.
