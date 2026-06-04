@@ -40,3 +40,10 @@ build_opt.log
 ramulator_*.log
 microbench_build.log
 run_*/
+ckpt_cache/
+run_baseline/
+run_test/
+build_cpuid.log
+build_opt2.log
+benchmarks/API/test_T16K.o
+*.o
