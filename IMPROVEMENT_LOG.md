@@ -435,3 +435,29 @@ Ramulator FRFCFS in this config and provides no end-to-end benefit** (its word�
 *coalescing* is still useful). The indirect read is memory-bound; the lever is bandwidth/MLP,
 not the row table. Next: check the Ramulator DRAM org to see if the MAA is at the BW ceiling
 or leaving bandwidth unclaimed.
+
+---
+
+## 2026-06-04 (cont.) — Bottleneck RESOLVED: the gather is DRAM-bandwidth-bound near peak
+
+The Ramulator config is DDR4_3200 (`channel:1` each) and gem5 instantiates **2** controllers
+(`system.mem_ctrls0/1`) → ~51.2 GB/s peak (2 × 25.6). The whole-run averages were misleading
+(diluted by idle time). The **active-phase** read bandwidth is what matters:
+
+- MAA reads ~20000 unique cache lines × 64 B = **1.28 MB** during `cycles_INDRD = 86236`
+  (= 26.95 µs at 3.2 GHz) → **47.5 GB/s**, i.e. **~93% of the 2-channel DDR4 peak**.
+- (Consistent with the diluted `port_mem_RD_BW`=22.85 over a ~2× wider stat window.)
+
+**Conclusion (ties all the negative results together):** the indirect gather is
+**memory-bandwidth-bound at ~93% of peak** during its active phase. That is exactly why
+neither row-table *reordering* (masked by FRFCFS) nor row-table *capacity* (8→64) changed
+performance — **there is no bandwidth headroom to reclaim.** This is a *positive* result about
+the artifact: the MAA already saturates DRAM on irregular gather, which is its design goal.
+Further gather speedup in this config requires **more memory bandwidth (channels)**, not a MAA
+algorithm change — so there is no safe accelerator-side code optimization to be had here.
+
+### Architectural investigation: closed
+Three controlled results (capacity sweep, reorder on/off, active-BW calc) converge on the same
+story. The MAA model is correct and bandwidth-efficient in this config; the row table's
+*reordering* is redundant with FRFCFS (its *coalescing* still matters). No further
+modeled-perf improvement is available without changing the memory system.
