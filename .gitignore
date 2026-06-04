@@ -57,3 +57,7 @@ sweep_rt_*/
 sweep_rt_*.driver.log
 sweep_rt_results.txt
 build_iter2.log
+cov_*/
+cov_*.driver.log
+coverage_results.txt
+coverage_driver.log

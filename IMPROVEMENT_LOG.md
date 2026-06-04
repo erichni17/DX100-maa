@@ -381,3 +381,38 @@ the area cost). Value of this iteration = a measured *negative* result that prev
 pointless "optimization", and a pointer for real perf work: the lever is memory-level
 parallelism / throughput, not row-table capacity. (Open question for future: quantify the MAA
 row table's benefit vs FRFCFS-only — it may be near-redundant in this config.)
+
+---
+
+## 2026-06-04 (cont.) — Coverage: validate across MAA instruction types
+
+Ran the other MAA op types on the current build (incl. the O(1) RequestTable) to surface
+latent bugs and broaden the regression suite:
+
+| kernel  | gem5 exit | maa.cycles | all correct? |
+|---------|-----------|------------|--------------|
+| scatter (INDIR_ST)  | 0 | 12806 | yes |
+| rmw (INDIR_RMW)     | 0 | 12806 | yes |
+
+Both pass. The codebase is now validated across **gather/scatter/rmw × allhit/allmiss**
+(4+ patterns). Baselines saved under `baselines/`.
+
+### Session-end status (this session's net result)
+Started: artifact OOM-killed at instantiation, would not run. Ended: **runnable,
+verified-correct, deterministic MAA simulation on the 17 GB host, with a validated
+edit→test→compare loop and a 4-pattern regression suite.** Landed:
+1. **MAX_CMD_REGIONS 256→32** — fixes the ~10 GB init OOM (correctly diagnosed via bisection
+   + gdb after the prior session's wrong guess).
+2. **X86O3CPU ROI** — fixes the region-pseudo-op segfault (TimingSimpleCPU was invalid for
+   this artifact); first end-to-end correct run.
+3. **RequestTable O(num_addresses)→O(1)** — behavior-preserving (IDENTICAL stats), validated
+   under allmiss stress + all op types.
+4. **Row-table sizing investigation** — rigorous negative result: re-activation falls 7x but
+   performance is flat; the workload is memory-throughput-bound and MAA row reordering is
+   masked by Ramulator FRFCFS. Default kept.
+
+**Honest read on further *modeled-performance* gains:** this microbench config is
+memory-bound, so accelerator-side perf wins are not available without changing the memory
+system or moving to a config/workload where the MAA's mechanisms aren't masked by FRFCFS.
+Remaining safe host-side optimizations (e.g. RowTableSlice O(1)) are low-value (sim speed
+only) and riskier (drain-order is observable). Good checkpoint.
