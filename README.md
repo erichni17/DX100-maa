@@ -2,6 +2,10 @@
 
 This repository provides the gem5 simulator, benchmarks, and automation scripts required for the artifact evaluation of the "DX100: A Programmable Data Access Accelerator for Indirection" paper published in ISCA 2025.
 
+> **Running outside the provided Docker image (modern toolchain / limited RAM)?** See
+> [`HANDOFF.md`](./HANDOFF.md) for the fixes that make this build and run without Docker,
+> a small reproducible test loop, and architectural findings (branch `dx100-improvements`).
+
 ## Directory Structure
 
 The repo structure is as follows:
