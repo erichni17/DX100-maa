@@ -64,7 +64,15 @@
 #include "mem/request.hh"
 #include "sim/byteswap.hh"
 
-#define MAX_CMD_REGIONS 256
+// Maximum number of MAA address regions tracked per command.
+// NOTE: this is also the multiplier for per-region cache/LSQ statistics, which
+// are allocated EAGERLY for every region for every cache. At 256 this makes
+// stats registration (BaseCache::CacheStats) allocate ~257x the vanilla
+// per-requestor stat tree per cache -> ~10GB / hang during init at 4 cores.
+// The bundled workloads use <=~15 regions (microbench peaks at id 11), so 32
+// keeps every used region byte-identical while cutting init memory ~8x. A
+// workload registering id >= this still panics loudly (MAA::addAddrRegion).
+#define MAX_CMD_REGIONS 32
 
 namespace gem5 {
 

@@ -181,12 +181,13 @@ correctly** (correct MAA address ranges, no panic, no deadlock) after 7 fixes:
 7. `-DMAA_MEM_SIZE` override for the MAA MMIO base.
 Plus `run_test.sh`, the validated cached-checkpoint -> restore+`--maa` loop harness.
 
-**The blocker for the edit->test->compare loop:** instantiating the `--maa` config costs
-**~9.8 GB RSS before simulation starts** (it's the MAA SimObject build, not the CPU, the
-mem-size backstore, or the 1.8 MB checkpoint). On this **shared 17 GB host** that's
-OOM-killed intermittently — even when ~14 GB looked free it died at ~9.8 GB. So a *tight*
-loop on the full timing model is not reliable here. This is an environment limit, not a
-DX100 bug; the model itself is in a runnable state.
+**The blocker for the edit->test->compare loop:** instantiating the config costs
+**~9.8 GB RSS before simulation starts**. *(SUPERSEDED: the cause guessed here — "the MAA
+SimObject build" — was DISPROVEN by the 2026-06-04 bisection. It is actually the per-region
+cache stats driven by `MAX_CMD_REGIONS=256`, and it happens even without `--maa`. It is a
+DX100-fork bug, not just an environment limit, and it is fixable — see below.)* It's not
+the CPU, the mem-size backstore, or the 1.8 MB checkpoint. On this **shared 17 GB host**
+that's OOM-killed intermittently — even when ~14 GB looked free it died at ~9.8 GB.
 
 **Recommended ways to actually run the loop:**
 - Run on a host with more (and non-shared) RAM — ~16-24 GB free should comfortably hold the
@@ -198,3 +199,56 @@ DX100 bug; the model itself is in a runnable state.
 **Next model improvement queued (Iteration 2):** the behavior-preserving `RequestTable`
 O(1) optimization (see above). It is ready to implement; its correctness check is exact
 `stats.txt` equality, which needs a host that can run the sim.
+
+---
+
+## 2026-06-04 — Root cause of the instantiation OOM FOUND (and the earlier diagnosis was wrong)
+
+The previous session's "honest assessment" blamed the ~10 GB instantiation cost on the
+**MAA SimObject build**. **That was wrong.** A systematic bisection disproved it.
+
+### Systematic bisection (pure platform instantiation, `--initialize-only`, no-restore BASE)
+Probed peak RSS (VmHWM) while toggling one axis at a time vs the real run config
+(`measure_nr.sh` + `bisect.sh`):
+
+| config | peak RSS | verdict |
+|---|---|---|
+| 1 core, full caches + Ramulator2 | 1767 MB | ok |
+| 2 cores, full caches + Ramulator2 | 4678 MB | ok |
+| 4 cores, Ramulator2, **no caches** | 77 MB | ok — MAA/mem/cores alone are cheap |
+| 4 cores, caches, **SimpleMemory (no Ramulator2)** | 10031 MB | HUNG — **Ramulator2 exonerated** |
+| 4 cores, caches **L1+L2 only (no L3)** | 1361 MB | (early exit) — far below 10 GB |
+| 4 cores, full caches (L1+L2+L3) | 10079 MB | HUNG — reproduces the OOM |
+
+Conclusions: not MAA (BASE mode blows up too), not Ramulator2, not the guest mem-size
+(1 GB), not core count alone. It is the **cache hierarchy**, scaling with cores, and it
+both balloons RAM *and hangs* (>180 s) — i.e. a loop/alloc during **init**, not simulation.
+
+### Caught in the act with gdb
+Three backtraces of the hung process (RSS climbing ~1 GB/s) were all in the same place:
+`BaseCache::CacheCmdStats::regStatsFromParent` (`src/mem/cache/base.cc:2206`) →
+`statistics::DataWrapVec::subname` → `std::vector<string>::resize`. So the cost is
+**statistics registration**, not SimObject construction.
+
+### Real root cause
+This fork added per-region cache stats. `BaseCache::CacheStats` (base.cc:2227-2276)
+eagerly allocates `cmdRegions` = **`MAX_CMD_REGIONS` × `NUM_MEM_CMDS`** `CacheCmdStats`
+objects *per cache*, and each `regStatsFromParent()` builds ~15 per-requestor stat vectors
+holding `max_requestors` subname strings. With `#define MAX_CMD_REGIONS 256`
+(`src/mem/packet.hh:67`) that is ~257× the vanilla per-cache stat tree, ×~16 caches at
+4 cores → ~10 GB and a multi-minute init hang. It triggers regardless of `--maa` because
+the cache stats are unconditional.
+
+### Fix (Iteration 2a — behavior-preserving)
+`src/mem/packet.hh`: `MAX_CMD_REGIONS` 256 → **32**. The bundled workloads register at most
+~15 regions (microbench peaks at region id 11; see `test.cpp` / `MAA_gem5.hpp`). Regions
+`0..N-1` are byte-identical in behavior and in stats; only the ceiling drops, so this does
+**not** change any simulated result for any region a workload actually uses. A workload
+that registers id ≥ 32 still fails loudly (`MAA::addAddrRegion` panic), never silently.
+Predicted init memory: ~257/33 ≈ 7.8× lower (~10 GB → ~1.3 GB). Verification: rebuild +
+re-measure peak RSS, then confirm the full `--maa` run fits and produces stats. (pending)
+
+### Tooling added this session
+- `bisect.sh` — the isolation matrix above.
+- `diag.sh` — launches the blowup config and grabs gdb backtraces once RSS climbs, to
+  pinpoint the allocating call site.
