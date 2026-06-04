@@ -297,3 +297,32 @@ dodge a from-tick-0 deadlock) was invalid for this artifact. `run_test.sh` step 
 diffs two `stats.txt` ignoring only wall-clock fields (`host*`). gem5 is deterministic, so an
 unchanged model must produce byte-identical stats; any diff after a model edit is the signal
 to inspect. Baseline saved under `baselines/` (gitignored; key metrics tabled above).
+
+---
+
+## 2026-06-04 (cont.) — Iteration 2b: RequestTable O(num_addresses) -> O(1) [behavior-preserving]
+
+First real edit→test→compare loop iteration on the validated harness.
+
+**Change** (`src/mem/MAA/Tables.{hh,cc}`): `RequestTable` previously did linear scans over
+`num_addresses` (default **128**) in the three methods called *per word* on the stream/
+indirect hot path:
+- `add_entry()` — scan to find the address slot + scan for a free entry slot
+- `get_entries()` — scan to find the matching address
+- `is_full()` — scan for any free slot
+
+Replaced with O(1): an `unordered_map<Addr,int>` (base_addr → slot), a per-slot contiguous
+`entry_count`, and a `free_slots` stack (seeded so slot 0 is handed out first, matching the
+old lowest-index allocation). Same entries stored/returned in the same order; same stats
+incremented under the same conditions. Covers every RequestTable instance (Stream unit's
+one + the Indirect unit's `RT[config][idx]` array).
+
+**Why it's safe:** the callers (`StreamAccess.cc`, `IndirectAccess.cc`) use these only as
+control-flow predicates; modeled cycles come from the access-unit state machines, not from
+the table's scan length. So results must be invariant.
+
+**Verification:** `gem5 exit=0`, "all tests correct!", and
+`compare_stats.sh baseline run_iter2` → **IDENTICAL** (byte-identical modulo wall-clock).
+Confirms the optimization changes only host cost, not the simulated result. (This microbench
+issues just 6 MAA instructions, so the wall-clock win here is in the noise; the benefit is
+128x→1 per-word table ops on large gathers.)

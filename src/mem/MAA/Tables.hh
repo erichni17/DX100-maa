@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 #include "base/types.hh"
@@ -34,9 +35,15 @@ protected:
     unsigned int num_addresses;
     unsigned int num_entries_per_address;
     RequestTableEntry **entries;
-    bool **entries_valid;
+    // O(1) bookkeeping (replaces the former O(num_addresses) linear scans):
+    //   addr_to_idx : base_addr -> slot index, for the currently-occupied slots
+    //   entry_count : per slot, number of valid entries (filled contiguously 0..count-1
+    //                 and drained all-at-once, exactly mirroring the old fill order)
+    //   free_slots  : stack of unoccupied slot indices (seeded so pops start at slot 0)
+    int *entry_count;
     Addr *addresses;
-    bool *addresses_valid;
+    std::unordered_map<Addr, int> addr_to_idx;
+    std::vector<int> free_slots;
     MAA *maa;
     int my_unit_id;
     bool is_stream;
