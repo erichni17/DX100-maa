@@ -326,3 +326,24 @@ the table's scan length. So results must be invariant.
 Confirms the optimization changes only host cost, not the simulated result. (This microbench
 issues just 6 MAA instructions, so the wall-clock win here is in the noise; the benefit is
 128x→1 per-word table ops on large gathers.)
+
+---
+
+## 2026-06-04 (cont.) — Iteration 2b validation under stress + 2nd baseline point
+
+Stress-tested the O(1) `RequestTable` on the DRAM-missing pattern (`gather allmiss 1 100 1 1`,
+n=20000) which actually fills the table: **S0_STR_NumWordsInserted = 20000 over 1250 unique
+cache-line addresses** (vs 128 slots → repeated fill/drain/refill, the exact path rewritten).
+Result: `gem5 exit=0`, **"all tests correct!"**. Combined with the byte-IDENTICAL allhit
+diff, the O(1) change is validated both for exactness (allhit) and correctness-under-load
+(allmiss).
+
+This also gives the regression suite a **2nd, more interesting baseline point** (allmiss
+exercises the row-table reordering: maa.cycles 6509→91914, IND_AvgUniqueRowsPerInst 7→99,
+IND_AvgUniqueCacheLinesPerRow 89.3→101). Saved under `baselines/`.
+
+### Status checkpoint
+Runnable + verified-correct + deterministic MAA simulation on the 17 GB host, with a
+validated edit→test→compare loop and 2 baseline points. Landed improvements:
+- **MAX_CMD_REGIONS 256→32** — fixes the ~10 GB init OOM (was misdiagnosed as the MAA build).
+- **RequestTable O(n)→O(1)** — behavior-preserving host-side speedup on the per-word hot path.
