@@ -493,3 +493,30 @@ redundant with FRFCFS here and its capacity is irrelevant because there is no ba
 headroom. **No safe accelerator-side code optimization improves this config** — the lever is
 memory bandwidth (channels). Actionable guidance for artifact users: spend tuning effort on
 the memory system, not the row table, for bandwidth-bound gather patterns.
+
+---
+
+## 2026-06-04 (cont.) — Where does the row table matter? Queue×reorder matrix (Track 2)
+
+Tested whether shrinking the Ramulator FRFCFS controller queue (its reorder window) unmasks
+the MAA row table. allmiss gather, queue ∈ {8,16,32} × reorder ∈ {ON,OFF}:
+
+| queue | cycles_INDRD ON | cycles_INDRD OFF | AvgMemLat |
+|------:|----------------:|-----------------:|----------:|
+| 32    | 86236           | 85385            | 325.8 |
+| 16    | 86086           | 85150            | 191.7 |
+| 8     | 86645           | 85556            | 124.9 |
+
+`cycles_INDRD` is **flat across the whole matrix** (OFF consistently ~1% *faster* — the
+reorder/drain stage is marginal overhead). Shrinking the controller's reorder window 4×
+(32→8) did **not** make the row table matter. `AvgMemLat` falls sharply (325→125) as the
+queue shrinks, but cycles don't move → **throughput-bound, not latency-bound** (lower latency
+can't help when bandwidth is the limit).
+
+**Refined conclusion (supersedes the "masked specifically by FRFCFS" wording):** the indirect
+gather is bandwidth-bound to the point that throughput is insensitive to row-buffer locality
+optimization from *either* side — MAA reordering (on/off ~1%) or controller scheduling
+(queue 8–32, flat). Only raw channel bandwidth changes it (channel sweep: 4× → 3.2×). The MAA
+row-table *reordering* would only pay off in a **latency-bound** regime (low memory-level
+parallelism, where row-hit latency is on the critical path) — not this throughput-oriented
+gather. Its word→cache-line *coalescing* remains valuable regardless. **Track 2 closed.**

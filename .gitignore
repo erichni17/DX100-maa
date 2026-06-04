@@ -69,3 +69,8 @@ ch_*/
 ch_*.driver.log
 chan_results.txt
 chan_driver.log
+q[0-9]*_*/
+q[0-9]*_*.driver.log
+queue_results.txt
+queue_driver.log
+ext/ramulator2/ramulator2/example_gem5_config_q*.yaml
