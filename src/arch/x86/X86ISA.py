@@ -72,8 +72,18 @@ class X86ISA(BaseISA):
     # A good resource for these values can be found here:
     #     https://sandpile.org/x86/cpuid.htm
     # 0000_0001h
+    # Vector order is [EAX, EBX, EDX, ECX] (see X86CPUID::doCpuid).
+    # ECX was 0x00000209 (SSE3, MONITOR, SSSE3). We additionally advertise the
+    # x86-64-v2 feature bits so that glibc built with an x86-64-v2 baseline
+    # (e.g. RHEL 9) does not abort at startup with
+    # "Fatal glibc error: CPU does not support x86-64-v2":
+    #   bit13 CMPXCHG16B (0x2000), bit19 SSE4.1 (0x80000),
+    #   bit20 SSE4.2 (0x100000), bit23 POPCNT (0x800000)
+    # 0x00000209 | 0x00982000 = 0x00982209. EDX already advertises SSE/SSE2/
+    # FXSR/CMOV, and extended leaf 8000_0001h ECX already advertises LAHF, so
+    # this completes the x86-64-v2 feature set.
     FamilyModelStepping = VectorParam.UInt32(
-        [0x00020F51, 0x00000805, 0xEFDBFBFF, 0x00000209],
+        [0x00020F51, 0x00000805, 0xEFDBFBFF, 0x00982209],
         "type/family/model/stepping and feature flags",
     )
     # 0000_0004h

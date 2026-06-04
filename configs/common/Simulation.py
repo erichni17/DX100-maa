@@ -83,7 +83,10 @@ def setCPUClass(options):
     elif options.fast_forward:
         CPUClass = TmpClass
         CPUISA = ObjectList.cpu_list.get_isa(options.cpu_type)
-        TmpClass = getCPUClass(
+        # getCPUClass returns a (class, mem_mode) tuple; unpack it (the
+        # fast-forward branch previously assigned the whole tuple to TmpClass,
+        # causing "'tuple' object has no attribute 'numThreads'").
+        TmpClass, _ = getCPUClass(
             CpuConfig.isa_string_map[CPUISA] + "AtomicSimpleCPU"
         )
         test_mem_mode = "atomic"

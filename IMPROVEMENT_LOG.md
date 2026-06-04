@@ -92,6 +92,68 @@ Branch: `dx100-improvements`. Baseline commit: `e4fc4af`.
   `g++ -std=c++17 -march=corei7 -msse4.1 -mno-avx util/m5/src/abi/x86/m5op.S test.cpp
    -Iinclude/ -Iutil/m5/src/ -fopenmp -DGEM5 -DTILE_SIZE=16384 -O2 -o test_T16K.o`
 
+### Iteration 1 — Establishing the baseline surfaced two more runnability bugs
+Bringing up the single-core no-checkpoint run path (`run_test.sh`) hit two fork bugs:
+
+1. **`Simulation.py` fast-forward CPU-class unpack bug.** The MAA config path at
+   `Simulation.py:751` unconditionally iterates `testsys.switch_cpus`, which only exists
+   when a fast-forward/checkpoint CPU switch is configured. Adding `--fast-forward=1` then
+   tripped `AttributeError: 'tuple' object has no attribute 'numThreads'`: in
+   `setCPUClass()` the fast-forward branch did `TmpClass = getCPUClass(...)` without
+   unpacking the `(class, mem_mode)` tuple (the non-fast-forward path unpacks correctly).
+   Fix: `TmpClass, _ = getCPUClass(...)`. The fast-forward path was simply untested in this
+   fork (everything uses checkpoints). With the fix, the CPU switches AtomicSimpleCPU →
+   X86O3CPU at the ROI, creating `switch_cpus`.
+
+2. **gem5 X86 CPUID lacks x86-64-v2 → modern glibc aborts.** After the switch, the
+   *simulated* program died with `Fatal glibc error: CPU does not support x86-64-v2`. RHEL 9
+   (this host) builds glibc with an x86-64-v2 baseline, so `ld.so` aborts at startup when
+   the simulated CPUID doesn't advertise SSE4.1/SSE4.2/POPCNT/CMPXCHG16B. The artifact's
+   Ubuntu Docker used a v1-baseline glibc and never hit this. Tried `-static` (static libs
+   not installed, no root). Fix: advertise x86-64-v2 in `X86ISA.py` CPUID function 1 ECX
+   (`0x00000209` → `0x00982209`). EDX (SSE/SSE2/FXSR/CMOV) and ext-leaf ECX (LAHF) already
+   qualify. gem5's decoder implements POPCNT/SSE4.x, so glibc's ifunc routines are safe.
+   This makes the artifact runnable on modern v2-baseline Linux hosts. Rebuilding gem5.
+- Both are genuine fixes that don't change the DX100 *model*; they unblock running it.
+
+### Iteration 1 (cont.) — Full timing bring-up: more fixes + an environment wall
+Getting the MAA timing run to actually execute surfaced several more issues (all fixed),
+plus a hard environment limit:
+
+3. **MAA region NULL-pointer panic.** `MAA::addAddrRegion` panics ("Region overlaps")
+   when a region starts at `0x0`, because cleared slots have `first==0` (in `[0,end)`).
+   The microbenchmark registered all six data-array regions unconditionally, but for the
+   plain `gather` kernel `boundaries`/`cond` (and `a1` in MAA-only mode) are NULL. Fix in
+   `test.cpp`: only register non-NULL arrays, and initialize the pointers to `nullptr`
+   (they were indeterminate → `if(ptr)` was UB under -O2).
+4. **OpenMP thread creation fails in SE mode.** `#pragma omp parallel` tries to spawn a
+   thread per core; SE mode has no spare contexts. The benchmark calls no `omp_*` runtime
+   functions, so compiling **without `-fopenmp`** (pragmas become no-ops → serial) avoids it.
+5. **4-core MAA geometry is hardcoded.** The benchmark hardwires `NUM_TILES=32`
+   (= 8 tiles/core × **4 cores**), so the MAA scratchpad region is 2 MB. Running `-n 1`
+   sizes it for 1 core (512 KB) → stores land in unmapped space → "Tried to write unmapped
+   address". Must run **`-n 4`** (the validated core count).
+6. **MAA region base == gem5 `--mem-size`.** `MAAConfig` places the MAA MMIO region at
+   `options.mem_size`; the benchmark hardcodes the same base as `MEM_SIZE` (16 GB for 4
+   cores). They must match. Added a `-DMAA_MEM_SIZE=` override to `MAA_gem5.hpp` so small
+   experiments can use a low base (e.g. 1 GB) instead of 16 GB.
+
+**Working run flow (validated, in `run_test.sh`):** atomic checkpoint at the ROI
+(`--max-checkpoints=1`, cached & reused) → restore on a timing CPU with `--maa`, `-n 4`,
+matched `--mem-size`/`MAA_MEM_SIZE`. With these, the MAA address ranges are correct, no
+panic, no deadlock — the model runs.
+
+**Environment wall (the current blocker for the loop):** instantiating this config costs
+**~9.7 GB RSS** *before* simulation even starts — and this is **independent of CPU type
+(X86O3CPU vs TimingSimpleCPU) and of `--mem-size` (16 GB → 1 GB)**, so it's gem5's
+MAA snoop-filter / routing structures, not the memory backstore or the OoO core. On this
+**shared 17 GB host** (`caen-vnc-mi10`), free memory fluctuates with other users (seen as
+low as ~5 GB), so runs are intermittently **OOM-killed (exit 137)** during instantiation.
+When ~14 GB is free the run proceeds. This makes a *tight* edit→test→compare loop on the
+full timing model unreliable here — not a DX100 bug, an environment constraint.
+Mitigations if continuing: run when the host is idle; or reduce the snoop-filter/routing
+sizing; or use a machine with more free RAM.
+
 ### Iteration 2 (planned) — Behavior-preserving sim-speed optimization: RequestTable
 - Target: `RequestTable` (used by `StreamAccessUnit`; `Tables.cc`). Hot path:
   - `is_full()` does a full O(num_addresses=128) scan, called *every iteration* of the

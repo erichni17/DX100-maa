@@ -10,7 +10,11 @@
 /*******************************************************************************/
 
 #define BASE_ADDR 0x000000000
-#if NUM_CORES == 4
+#if defined(MAA_MEM_SIZE)
+// Allow overriding the MAA region base address (== gem5 --mem-size) so small
+// experiments can use a lower base and avoid a 16GB+ host-memory footprint.
+#define MEM_SIZE MAA_MEM_SIZE
+#elif NUM_CORES == 4
 #define MEM_SIZE 0x400000000 // 16GB
 #elif NUM_CORES == 8
 #define MEM_SIZE 0x800000000 // 32GB

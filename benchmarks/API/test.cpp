@@ -1515,15 +1515,18 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int *nodes;
-    int32_t *a1;
-    int32_t *a2;
-    int32_t *c1;
-    int32_t *c2;
-    int32_t *b;
-    int *idx;
-    int *boundaries;
-    int32_t *cond;
+    // Initialize to nullptr: depending on mode/kernel some of these arrays are
+    // never allocated, and the GEM5 region-registration below guards on non-NULL.
+    // (Leaving them indeterminate is UB and makes the `if (ptr)` guards unreliable.)
+    int *nodes = nullptr;
+    int32_t *a1 = nullptr;
+    int32_t *a2 = nullptr;
+    int32_t *c1 = nullptr;
+    int32_t *c2 = nullptr;
+    int32_t *b = nullptr;
+    int *idx = nullptr;
+    int *boundaries = nullptr;
+    int32_t *cond = nullptr;
     bool is_range = kernel.find("range") != std::string::npos;
     bool is_cond = kernel.find("cond") != std::string::npos;
 
@@ -1585,12 +1588,17 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef GEM5
-    m5_add_mem_region((void *)a1, (void *)(&a1[num_required_elements]), 6);
-    m5_add_mem_region((void *)a2, (void *)(&a2[num_required_elements]), 7);
-    m5_add_mem_region((void *)b, (void *)(&b[num_required_elements]), 8);
-    m5_add_mem_region((void *)idx, (void *)(&idx[num_required_elements]), 9);
-    m5_add_mem_region((void *)boundaries, (void *)(&boundaries[num_required_elements + 1]), 10);
-    m5_add_mem_region((void *)cond, (void *)(&cond[num_required_elements]), 11);
+    // Only register regions for arrays that were actually allocated. Depending on
+    // mode (base/maa) and kernel (range/cond), some of a1/a2/boundaries/cond are
+    // NULL. Registering a NULL array maps a region starting at address 0x0, which
+    // trips MAA::addAddrRegion's overlap check (empty region slots have first==0),
+    // causing "Region[..] overlaps" panics for e.g. the plain gather kernel.
+    if (a1) m5_add_mem_region((void *)a1, (void *)(&a1[num_required_elements]), 6);
+    if (a2) m5_add_mem_region((void *)a2, (void *)(&a2[num_required_elements]), 7);
+    if (b)  m5_add_mem_region((void *)b, (void *)(&b[num_required_elements]), 8);
+    if (idx) m5_add_mem_region((void *)idx, (void *)(&idx[num_required_elements]), 9);
+    if (boundaries) m5_add_mem_region((void *)boundaries, (void *)(&boundaries[num_required_elements + 1]), 10);
+    if (cond) m5_add_mem_region((void *)cond, (void *)(&cond[num_required_elements]), 11);
 #endif
 
     if (kernel == "gather" || kernel == "all") {
