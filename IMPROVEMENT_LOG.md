@@ -416,3 +416,22 @@ memory-bound, so accelerator-side perf wins are not available without changing t
 system or moving to a config/workload where the MAA's mechanisms aren't masked by FRFCFS.
 Remaining safe host-side optimizations (e.g. RowTableSlice O(1)) are low-value (sim speed
 only) and riskier (drain-order is observable). Good checkpoint.
+
+---
+
+## 2026-06-04 (cont.) — Confirming experiment: reorder ON vs OFF (row table masked)
+
+Second, independent test of whether the MAA row-table reordering helps here: ran
+`gather allmiss` with reordering ON (default) vs OFF (`--maa_no_reorder`):
+
+| config       | cycles_INDRD | AvgMemLat | port_mem_RD_BW | correct |
+|--------------|-------------:|----------:|---------------:|:-------:|
+| reorder ON   | 86236        | 325.78    | 22.85          | yes |
+| reorder OFF  | 85385        | 325.83    | 23.02          | yes |
+
+Disabling reordering entirely moves indirect-read perf ~1% (marginally *better*). Combined
+with the capacity sweep, this firmly establishes: **the row-table *reordering* is masked by
+Ramulator FRFCFS in this config and provides no end-to-end benefit** (its word→cacheline
+*coalescing* is still useful). The indirect read is memory-bound; the lever is bandwidth/MLP,
+not the row table. Next: check the Ramulator DRAM org to see if the MAA is at the BW ceiling
+or leaving bandwidth unclaimed.

@@ -61,3 +61,7 @@ cov_*/
 cov_*.driver.log
 coverage_results.txt
 coverage_driver.log
+ro_*/
+ro_*.driver.log
+reorder_results.txt
+reorder_driver.log
