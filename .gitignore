@@ -47,3 +47,6 @@ build_cpuid.log
 build_opt2.log
 benchmarks/API/test_T16K.o
 *.o
+
+# measurement scratch output
+measure_out/
