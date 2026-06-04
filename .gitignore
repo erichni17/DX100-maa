@@ -53,3 +53,7 @@ measure_out/
 baselines/
 run_determ/
 *_driver.log
+sweep_rt_*/
+sweep_rt_*.driver.log
+sweep_rt_results.txt
+build_iter2.log
