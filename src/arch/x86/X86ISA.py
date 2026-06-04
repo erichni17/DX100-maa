@@ -82,6 +82,15 @@ class X86ISA(BaseISA):
     # 0x00000209 | 0x00982000 = 0x00982209. EDX already advertises SSE/SSE2/
     # FXSR/CMOV, and extended leaf 8000_0001h ECX already advertises LAHF, so
     # this completes the x86-64-v2 feature set.
+    #
+    # WARNING: advertising these bits is purely to satisfy glibc's x86-64-v2
+    # startup check. POPCNT is properly implemented, but several SSE4.x ops are
+    # WarnUnimpl stubs in this fork's decoder (PTEST, PCMPEQQ, MOVNTDQA,
+    # ROUND{PS,PD}, DPP{S,D}, CRC32, PCMPISTR{M,I}) and PCMPESTR{M,I} hit UD2.
+    # Those stubs emit one warn() and return NoFault WITHOUT writing their dests,
+    # so workloads reaching them via glibc ifunc dispatch (e.g. the SSE4.2 string
+    # routines like __strlen_sse4_2, which use PCMPISTRI) may silently miscompute.
+    # The included gather/scatter microbench does not exercise these paths.
     FamilyModelStepping = VectorParam.UInt32(
         [0x00020F51, 0x00000805, 0xEFDBFBFF, 0x00982209],
         "type/family/model/stepping and feature flags",

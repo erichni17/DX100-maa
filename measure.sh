@@ -9,7 +9,10 @@ OUT="$GH/measure_out/$TAG"
 GLIMIT=180      # seconds wall-clock cap (instantiation should be << this)
 rm -rf "$OUT"; mkdir -p "$OUT"
 pkill -9 -f "outdir=$GH/measure_out/" 2>/dev/null; sleep 0.3
-cp -r "$GH/ckpt_cache/MAA_gather_allhit_20000/cpt.3537616500" "$OUT/" 2>/dev/null
+cp -r "$GH/ckpt_cache/MAA_gather_allhit_20000"/cpt.* "$OUT/" || {
+  echo "checkpoint missing: $GH/ckpt_cache/MAA_gather_allhit_20000/cpt.* (regenerate with run_test.sh)" >&2
+  exit 1
+}
 export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2"
 # background gem5 DIRECTLY so $! is gem5's pid (not a wrapper)
 "$GH/build/X86/gem5.opt" --outdir="$OUT" \

@@ -7,9 +7,11 @@
 #      gem5 writes cpt.<tick> and exits. This skips all of glibc/OpenMP startup + array
 #      init for the timing run, and is independent of the MAA model -> cached & reused
 #      across edit iterations.
-#   2. RESTORE+RUN (X86O3CPU + MAA): restores at the ROI and simulates only the kernel
-#      with the DX100 model. This is the validated CPU/MAA combo (avoids the deadlock seen
-#      with TimingSimpleCPU-from-start) and is fast because startup is checkpointed away.
+#   2. RESTORE+RUN (TimingSimpleCPU + MAA, after the AtomicSimpleCPU checkpoint):
+#      restores at the ROI and simulates only the kernel with the DX100 model. Restoring
+#      onto a timing CPU is the validated path; the deadlock we hit was with
+#      TimingSimpleCPU running from tick 0 (before the atomic checkpoint), not this
+#      post-restore regime. Fast because startup is checkpointed away.
 #
 # Usage: run_test.sh <outdir> <mode MAA|BASE> <kernel> "<dist-args>" [n]
 set -u
@@ -31,7 +33,7 @@ CKPT="$GH/ckpt_cache/${MODE}_${KERNEL}_${DKEY}_${N}"
 if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "=== [1/2] creating checkpoint (AtomicSimpleCPU) -> $CKPT ==="
   rm -rf "$CKPT"; mkdir -p "$CKPT"
-  timeout 600 build/X86/gem5.opt --outdir="$CKPT" \
+  timeout 600 "$GH/build/X86/gem5.opt" --outdir="$CKPT" \
     "$GH/configs/deprecated/example/se.py" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size 1GB --max-checkpoints=1 \
     --cmd "$BIN" --options "$N $MODE $KERNEL $DISTARGS" \
@@ -54,7 +56,7 @@ if [ "$MODE" = "MAA" ]; then
     --maa_l2_uncacheable --maa_l3_uncacheable --maa_num_initial_row_table_slices 32"
 fi
 
-timeout 1200 build/X86/gem5.opt --outdir="$OUTDIR" \
+timeout 1200 "$GH/build/X86/gem5.opt" --outdir="$OUTDIR" \
   "$GH/configs/deprecated/example/se.py" \
   --cpu-type TimingSimpleCPU -r 1 -n 4 --mem-size 1GB \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \

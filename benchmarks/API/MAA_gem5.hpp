@@ -10,18 +10,24 @@
 /*******************************************************************************/
 
 #define BASE_ADDR 0x000000000
-#if defined(MAA_MEM_SIZE)
-// Allow overriding the MAA region base address (== gem5 --mem-size) so small
-// experiments can use a lower base and avoid a 16GB+ host-memory footprint.
-#define MEM_SIZE MAA_MEM_SIZE
-#elif NUM_CORES == 4
-#define MEM_SIZE 0x400000000 // 16GB
+// Validate NUM_CORES first (independent of any MEM_SIZE override) so an
+// unsupported core count still fails fast instead of compiling a mismatched
+// SPD/RF layout (SPD_DATA_SIZE/REG_SIZE below derive from NUM_CORES).
+#if NUM_CORES == 4
+#define DEFAULT_MEM_SIZE 0x400000000 // 16GB
 #elif NUM_CORES == 8
-#define MEM_SIZE 0x800000000 // 32GB
+#define DEFAULT_MEM_SIZE 0x800000000 // 32GB
 #elif NUM_CORES == 16
-#define MEM_SIZE 0x1000000000 // 64GB
+#define DEFAULT_MEM_SIZE 0x1000000000 // 64GB
 #else
 #error "NUM_CORES not supported"
+#endif
+#if defined(MAA_MEM_SIZE)
+// Allow overriding the MAA region size (== gem5 --mem-size) so small
+// experiments can use a lower value and avoid a 16GB+ host-memory footprint.
+#define MEM_SIZE MAA_MEM_SIZE
+#else
+#define MEM_SIZE DEFAULT_MEM_SIZE
 #endif
 #define SPD_DATA_SIZE (NUM_TILES * TILE_SIZE * sizeof(uint32_t)) // 128KB = 32 tiles x 1K elements x 4B each element (uint32_t, int32_t, float)
 #define SPD_SIZE_SIZE (NUM_TILES * sizeof(uint16_t))             // 64B = 32 tiles x 2B each tile (uint16_t)
