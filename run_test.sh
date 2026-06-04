@@ -56,14 +56,21 @@ if [ "$MODE" = "MAA" ]; then
     --maa_l2_uncacheable --maa_l3_uncacheable --maa_num_initial_row_table_slices 32"
 fi
 
-timeout 1200 "$GH/build/X86/gem5.opt" --outdir="$OUTDIR" \
+# NOTE: ROI CPU must be X86O3CPU. The m5 add/clear-mem-region pseudo-ops
+# (pseudo_inst.cc) static_cast the active CPU to o3::CPU unconditionally, so
+# TimingSimpleCPU segfaults the moment the benchmark touches a region op.
+# Cache sizes/prefetchers mirror the artifact's scripts/sim.py MAA-mode config
+# for 4 cores (L3 = 2MB*cores, assoc = 4*cores). --mem-size stays 1GB to match
+# the MAA_MEM_SIZE=0x40000000 binary + the AtomicSimpleCPU checkpoint.
+OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
+timeout 2400 "$GH/build/X86/gem5.opt" --outdir="$OUTDIR" \
   "$GH/configs/deprecated/example/se.py" \
-  --cpu-type TimingSimpleCPU -r 1 -n 4 --mem-size 1GB \
+  --cpu-type X86O3CPU -r 1 -n 4 --mem-size 1GB \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
-  --caches --l1d_size=32kB --l1d_assoc=8 --l1d_mshrs=16 --l1d_write_buffers=8 \
-  --l1i_size=32kB --l1i_assoc=8 --l1i_mshrs=16 --l1i_write_buffers=8 \
-  --l2cache --l2_size=256kB --l2_assoc=4 --l2_mshrs=32 --l2_write_buffers=16 \
-  --l3cache --l3_size=2MB --l3_assoc=4 --l3_mshrs=64 --l3_write_buffers=32 --l3_ports 1 \
+  --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
+  --l1i_size=32kB --l1i_assoc=8 --l1i-hwp-type=StridePrefetcher --l1i_mshrs=16 --l1i_write_buffers=8 \
+  --l2cache --l2_size=256kB --l2_assoc=4 --l2-hwp-type=StridePrefetcher --l2_mshrs=32 --l2_write_buffers=16 \
+  --l3cache --l3_size=8MB --l3_assoc=16 --l3_mshrs=256 --l3_write_buffers=128 --l3_ports 4 \
   --cacheline_size=64 \
   --mem-type Ramulator2 --ramulator-config "$RAMCFG" --mem-channels 2 --maa_ncbus_width 32 \
   $MAAFLAGS \

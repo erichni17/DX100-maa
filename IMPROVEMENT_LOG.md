@@ -252,3 +252,48 @@ re-measure peak RSS, then confirm the full `--maa` run fits and produces stats. 
 - `bisect.sh` — the isolation matrix above.
 - `diag.sh` — launches the blowup config and grabs gdb backtraces once RSS climbs, to
   pinpoint the allocating call site.
+
+---
+
+## 2026-06-04 (cont.) — MILESTONE: full MAA simulation runs end-to-end & verified correct
+
+After the `MAX_CMD_REGIONS` fix removed the instantiation OOM, the first `--maa` run still
+**segfaulted** right after `initializing done, testing...`. Backtrace:
+`pseudo_inst::clearmemregion` → `static_cast<o3::CPU*>(tc->getCpuPtr())->clearMemRegion()`
+→ `o3::LSQ::clearAddrRegion` (`src/sim/pseudo_inst.cc:558-570`). The region pseudo-ops
+**unconditionally cast the active CPU to `o3::CPU`** (only the MAA call beside them is
+`hasMAA()`-guarded). Under `TimingSimpleCPU` that pointer isn't an O3 CPU → garbage LSQ →
+segfault.
+
+**Root fix:** the artifact's ROI CPU is **`X86O3CPU`**, not TimingSimpleCPU — confirmed by
+the artifact's own driver `scripts/sim.py:89` (`cpu_type = "X86O3CPU"`) and by its reference
+stats keying off `switch_cpus0.*` (O3). The earlier session's switch to TimingSimpleCPU (to
+dodge a from-tick-0 deadlock) was invalid for this artifact. `run_test.sh` step 2 now uses
+`--cpu-type X86O3CPU` and mirrors `scripts/sim.py` MAA-mode caches for 4 cores
+(L3 = 2MB*cores = 8MB, assoc 4*cores = 16, l3_ports = cores, Stride prefetchers on L1d/L1i/L2).
+
+**Intentional host-driven deltas from the paper config (kept):**
+- `--mem-size 1GB` (paper: 16GB) — matches the `MAA_MEM_SIZE=0x40000000` binary's MAA region
+  base and the AtomicSimpleCPU checkpoint; avoids a 16GB backing-store on the shared host.
+- Binary built without `-fopenmp` → single-threaded driver: only `switch_cpus0` runs
+  (cpus 1-3 = 0 cycles). The MAA itself is fully exercised; per-core parallel scaling is not.
+
+**Result (run_baseline, MAA gather allhit n=20000):** `gem5 exit=0`,
+**"End of Test, all tests correct!"**, peak RSS ~5.0 GB (fits the 17 GB host). Final stat dump:
+
+| metric | value |
+|---|---|
+| simSeconds | 0.000029 |
+| simTicks | 28,525,255 |
+| system.maa.numInst | 6 |
+| system.maa.cycles (INDRD+STRRD) | 6509 (3989 + 2520) |
+| IND_AvgUniqueWordsPerCacheLine | 16 |
+| IND_AvgUniqueCacheLinesPerRow | 89.285714 |
+| IND_AvgUniqueRowsPerInst | 7 |
+| switch_cpus0.numCycles | 91135 |
+| switch_cpus0.ipc | 1.337510 |
+
+**Comparison methodology for the edit->test->compare loop:** `compare_stats.sh <ref> <new>`
+diffs two `stats.txt` ignoring only wall-clock fields (`host*`). gem5 is deterministic, so an
+unchanged model must produce byte-identical stats; any diff after a model edit is the signal
+to inspect. Baseline saved under `baselines/` (gitignored; key metrics tabled above).

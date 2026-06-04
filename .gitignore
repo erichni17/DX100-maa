@@ -50,3 +50,6 @@ benchmarks/API/test_T16K.o
 
 # measurement scratch output
 measure_out/
+baselines/
+run_determ/
+*_driver.log
