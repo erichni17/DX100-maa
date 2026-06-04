@@ -47,10 +47,13 @@ Key baseline (gather allhit): `maa.cycles=6509`, `switch_cpus0.ipc=1.34`, all-co
 
 ## Architectural findings (see log for the experiments)
 The MAA indirect **gather is DRAM-bandwidth-bound** — channel scaling gives 4× channels →
-3.2× faster (≈93% of 2-channel DDR4-3200 peak active-phase). Consequently the row table's
-**reordering is masked by Ramulator's FRFCFS** scheduler here (reorder on/off ≈ 1%; capacity
-8→64 flat) — there is no bandwidth headroom to reclaim, so **no safe accelerator-side code
-optimization helps this config**; the lever is memory bandwidth. The row table's
-word→cache-line **coalescing** is still useful. Sweep harnesses: `sweep_rt.sh` (row-table
-capacity), `reorder_test.sh` (reorder on/off), `chan_sweep.sh` (channels), `queue_sweep.sh`
-(controller queue × reorder).
+3.2× faster (≈93% of 2-channel DDR4-3200 peak active-phase). In this regime its throughput is
+**insensitive to row-buffer-locality optimization from either side**: MAA reordering on/off
+≈ 1%, row-table capacity 8→64 flat, and shrinking the memory controller's FRFCFS reorder
+window 32→8 leaves cycles flat while only `MemLat` drops (325→125) — i.e. throughput-bound,
+not latency-bound. So the row table's **reordering** is redundant here (it would only pay off
+in a **latency-bound** regime — low MLP, row-hit latency on the critical path); its
+word→cache-line **coalescing** is still useful. Net: **no safe accelerator-side code
+optimization helps this config — the lever is memory bandwidth (channels).** Sweep harnesses:
+`sweep_rt.sh` (capacity), `reorder_test.sh` (reorder), `chan_sweep.sh` (channels),
+`queue_sweep.sh` (controller queue × reorder).
