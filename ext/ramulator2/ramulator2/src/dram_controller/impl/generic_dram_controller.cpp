@@ -187,8 +187,22 @@ public:
                 buffer->remove(req_it);
             } else {
                 if (m_dram->m_command_meta(req_it->command).is_opening) {
-                    m_active_buffer.enqueue(*req_it);
-                    buffer->remove(req_it);
+                    // Only retire the request from the read/write buffer once it has
+                    // actually been accepted into the active buffer. The enqueue()
+                    // return value used to be ignored and the request removed
+                    // unconditionally, so when the active buffer was full the request
+                    // was silently dropped: it never received its column command or
+                    // completion callback, hanging the requestor forever. This is
+                    // reachable at very small queue_size, where active_buffer.max_size
+                    // == queue_size (e.g. queue_size <= 2 lets two concurrent row
+                    // activations overflow a depth-1/2 active buffer). If the enqueue
+                    // fails the request stays in the buffer with its row now opening,
+                    // and completes on a following cycle via its column command. At
+                    // realistic queue sizes the active buffer (>= #banks) never fills,
+                    // so this is a no-op and existing results are unchanged.
+                    if (m_active_buffer.enqueue(*req_it)) {
+                        buffer->remove(req_it);
+                    }
                 }
             }
         }

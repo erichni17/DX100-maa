@@ -579,3 +579,53 @@ is not merely dead weight (~1–12% overhead) but *fragile* (deadlocks at queue 
 MAA *reordering* win would require a low-MLP consumer the MAA does not produce by design.
 **Track 2+ closed: the row table reordering is redundant-and-fragile across the whole reachable
 microbench design space; the only perf lever remains memory bandwidth (channels).**
+
+---
+
+## 2026-06-04 (cont.) — ROOT-CAUSED & FIXED the shallow-queue deadlock (Ramulator2 bug)
+
+The "fragile / deadlocks at queue ≤ 2" robustness issue above turned out not to be in the MAA
+at all — it's a **silent request-drop bug in the vendored Ramulator2 generic DRAM controller**,
+which the reorder-ON path merely *exposes* (it bursts many concurrent multi-row activations;
+reorder-OFF issues more serially and dodges it).
+
+**Diagnosis (from an MAA trace of the n=200, queue=1, reorder-ON reproducer):** the indirect
+load finishes with `expected: 200, received: 199` and then the MAA goes idle forever — the CPU
+livelocks waiting for one response. Diffing addresses sent-to-memory vs responded showed
+exactly one lost packet (`0x5eb040`, channel 1): it was *accepted* by Ramulator
+(`sendTimingReq`→true, `memReadPacketSent`) but its completion callback never fired.
+
+**Root cause** — `ext/ramulator2/ramulator2/src/dram_controller/impl/generic_dram_controller.cpp`,
+`tick()`. When a request issues its *opening* (ACT) command it is moved to `m_active_buffer`:
+```cpp
+m_active_buffer.enqueue(*req_it);   // return value IGNORED
+buffer->remove(req_it);             // removed from read buffer unconditionally
+```
+`m_active_buffer.max_size == m_queue_size` (controller ctor). At `queue_size ≤ 2`, two
+concurrent activations to different rows overflow the depth-1/2 active buffer; `enqueue()`
+returns false, but the request is removed from the read buffer anyway → it never gets its
+column command or callback → **silently dropped**. At realistic `queue_size` (default 32 ≥ 16
+banks) the active buffer never fills, so the bug is latent.
+
+**Fix** — only retire the request from the read buffer once it is actually accepted:
+```cpp
+if (m_active_buffer.enqueue(*req_it)) {
+    buffer->remove(req_it);
+}
+```
+If the enqueue fails the request stays queued with its row now opening and completes on a
+following cycle via its column command (no re-ACT loop: an open row's next command is RD, not
+ACT). Requires rebuilding `libramulator.so` only (cmake/make in `ext/.../build`); gem5 picks it
+up at runtime via `LD_LIBRARY_PATH`.
+
+**Verification:**
+- Deadlock resolved across **queue ∈ {1,2} × n ∈ {200,1000,4000}**, reorder ON — all now print
+  "all tests correct!" (e.g. n=200/q1 `cycles_INDRD`=1029; q2=1044; n=1000/q1=4240; n=4000/q1=17846).
+- **No regression on realistic configs:** canonical gather-allhit (default queue=32) stats are
+  **byte-IDENTICAL** to the pre-fix baseline (`compare_stats.sh` ⇒ IDENTICAL); n=200/queue=32
+  reorder-ON `cycles_INDRD`=1045, unchanged. The fix is provably a no-op where the active buffer
+  never fills, i.e. everywhere except the pathological shallow-queue corner.
+
+This is a concrete, root-caused, verified bug fix landing in the artifact. (The earlier
+characterization stands — reordering is still redundant for performance; it's just no longer
+able to wedge the simulator at shallow queues.)

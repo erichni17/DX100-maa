@@ -21,6 +21,17 @@ reasoning behind every change is in [`IMPROVEMENT_LOG.md`](./IMPROVEMENT_LOG.md)
 - **`RequestTable` O(num_addresses)→O(1)** (`Tables.{hh,cc}`) — hash map + free-slot stack;
   behavior-preserving (byte-identical stats), validated across all op types.
 
+**Bug fix (Ramulator2 controller — silent request drop / livelock):**
+- `ext/ramulator2/ramulator2/src/dram_controller/impl/generic_dram_controller.cpp`: when a
+  request issued its opening (ACT) command, `m_active_buffer.enqueue()`'s return value was
+  ignored and the request removed from the read buffer unconditionally. With
+  `active_buffer.max_size == queue_size`, a shallow queue (≤ 2) overflows the active buffer and
+  the request is **silently dropped** — never completes, hanging the requestor (observed as the
+  MAA reorder-ON livelock at `queue_size ≤ 2`). Fix: only retire the request on a successful
+  `enqueue()`. **Byte-identical on realistic configs** (active buffer never fills at default
+  queue=32 ≥ #banks); resolves the hang across queue∈{1,2}×n∈{200,1k,4k}. Rebuild
+  `libramulator.so` only. See log for the trace-level diagnosis.
+
 ## Build (constrained host, no Docker)
 ```bash
 # 1. Ramulator2 (produces ext/ramulator2/ramulator2/libramulator.so) — g++-11 OK
@@ -52,9 +63,9 @@ to row-buffer-locality optimization from either side**, across the *entire reach
 space*: MAA reordering on/off ≈ 1%, row-table capacity 8→64 flat, controller FRFCFS queue
 32→**1** flat (only `MemLat` moves, 277→66), and shrinking the problem n=20000→200 keeps the
 MAA at **MLP ≈ 53–76** (a high-MLP engine by design — can't be starved into latency-bound).
-So the row table's **reordering** is redundant here — and *fragile*: with reorder ON it
-**deadlocks at controller queue ≤ 2** (CPU livelock; reorder OFF runs clean). Its
-word→cache-line **coalescing** is still useful. Net: **no safe accelerator-side code
+So the row table's **reordering** is redundant here. (Reorder ON used to **livelock at
+controller queue ≤ 2**, but that was a Ramulator2 active-buffer drop bug, now fixed — see the
+Bug fix above.) Its word→cache-line **coalescing** is still useful. Net: **no safe accelerator-side code
 optimization helps this config — the lever is memory bandwidth (channels).** A real
 *reordering* win would need a low-MLP consumer the MAA doesn't produce. Sweep harnesses:
 `sweep_rt.sh` (capacity), `reorder_test.sh` (reorder), `chan_sweep.sh` (channels),
