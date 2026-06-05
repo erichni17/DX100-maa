@@ -80,3 +80,7 @@ nsweep.out
 nsweep_results.txt
 latbound.out
 latbound_results.txt
+test_fix.out
+test_fix_results.txt
+fix_q[0-9]*/
+reg_*/
