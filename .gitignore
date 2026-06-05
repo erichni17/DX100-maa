@@ -84,3 +84,7 @@ test_fix.out
 test_fix_results.txt
 fix_q[0-9]*/
 reg_*/
+bfs_out_n*/
+bfs_run.out
+benchmarks/gapbs/bfs_func
+benchmarks/gapbs/serialized_graph_*.sg

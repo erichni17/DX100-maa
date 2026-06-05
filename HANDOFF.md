@@ -36,6 +36,11 @@ reasoning behind every change is in [`IMPROVEMENT_LOG.md`](./IMPROVEMENT_LOG.md)
   independent of `queue_size` — so the overflow is now structurally impossible and the guard is a
   backstop. No-op at default (16 < 32). Verify both with `bash test_fix.sh` (deadlock
   reproducers + byte-identical regression suite).
+- Real-kernel demo: `bash bfs_run.sh 16` runs **GAP BFS** (a real graph kernel) end-to-end
+  through gem5 on the fixed MAA at a host-fitting scale (2^16-node toy graph, 1 GB MAA region,
+  4 cores) — 1157 MAA instructions incl. 454 indirect-read gathers, clean exit. Correctness via
+  the functional build (`-DFUNC … -v` → `Verification: PASS`). Not artifact-scale (that needs a
+  ≥40 GB box + ~20 GB datasets + days); a plumbing proof that a real benchmark drives the fix.
 
 ## Build (constrained host, no Docker)
 ```bash

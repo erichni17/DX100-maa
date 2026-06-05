@@ -658,3 +658,36 @@ the tick() guard becomes a pure backstop.
 
 Net: the guard (cbb3d31) makes the drop impossible to act on; #2 makes the overflow impossible
 to reach. Default/realistic configs remain byte-identical throughout.
+
+---
+
+## 2026-06-04 (cont.) — Real GAP BFS through gem5 on the fixed MAA (scaled-down)
+
+To exercise the fixed MAA datapath with a *real* graph kernel (not just the API microbench), ran
+**GAP BFS** end-to-end through gem5 at a scale that fits the 17 GB host. The full artifact config
+needs ~35 GB/sim + ~20 GB datasets + 24–84 h, so this is a **plumbing/feasibility proof, not an
+artifact-scale result**. Harness: `bfs_run.sh`.
+
+Setup: built `bfs_maa` (`-DGEM5 -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384`) with the same
+`-DMAA_MEM_SIZE=0x40000000` (1 GB MAA region) trick used for the microbench; generated a toy
+graph with `converter -u 16` (2^16 = 65 536 nodes, ~1 M edges, 8.6 MB — vs the artifact's 2^22);
+checkpoint(AtomicSimpleCPU, 4 cores, 1 GB) → restore(X86O3CPU + `--maa`, 4 cores).
+
+Result:
+- **Runs end-to-end**: OpenMP (4 threads) spawns under gem5, BFS expands level by level
+  (frontier 25 → 804 → 20994 → …), clean `m5_exit` at tick 5.77 B. Peak gem5 RSS ≈ 4 GB (fits).
+- **MAA actively drives the kernel** (`stats.txt`): 1157 MAA instructions — **454 indirect reads
+  (gathers)**, 130 indirect writes, 146 range loops, 16 stream reads, 281 invalidations;
+  `cycles_INDRD` = 1 805 327. So the exact gather pipeline the fixes touch is exercised by a real
+  graph traversal, on the fixed `libramulator.so`.
+- **Correctness**: the gem5 port `m5_exit`s before the host-side verifier, so the timing run
+  doesn't self-check. Built the **functional** MAA BFS (`-DFUNC`, software-emulated MAA, native)
+  and ran it with `-v` on the same graph → **`Verification: PASS`** (BFS tree matches the serial
+  reference). Same kernel code, so the algorithm the gem5 run executes is validated.
+- One `pcmpeqq_Vdq_Wdq unimplemented` gem5 warning (an SSE4 op gem5 lacks), single occurrence in
+  setup; didn't affect completion, and the functional PASS confirms the result regardless.
+
+Takeaway: a real GAP graph kernel runs correctly on the MAA accelerator end-to-end through gem5
+on this constrained host — extending validation from the API microbench to an actual benchmark.
+The full multi-suite evaluation still needs a ≥40 GB box + datasets + days; this is the runnable
+slice here.
