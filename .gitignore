@@ -74,3 +74,9 @@ q[0-9]*_*.driver.log
 queue_results.txt
 queue_driver.log
 ext/ramulator2/ramulator2/example_gem5_config_q*.yaml
+n[0-9]*/
+n[0-9]*.driver.log
+nsweep.out
+nsweep_results.txt
+latbound.out
+latbound_results.txt

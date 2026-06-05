@@ -47,13 +47,15 @@ Key baseline (gather allhit): `maa.cycles=6509`, `switch_cpus0.ipc=1.34`, all-co
 
 ## Architectural findings (see log for the experiments)
 The MAA indirect **gather is DRAM-bandwidth-bound** — channel scaling gives 4× channels →
-3.2× faster (≈93% of 2-channel DDR4-3200 peak active-phase). In this regime its throughput is
-**insensitive to row-buffer-locality optimization from either side**: MAA reordering on/off
-≈ 1%, row-table capacity 8→64 flat, and shrinking the memory controller's FRFCFS reorder
-window 32→8 leaves cycles flat while only `MemLat` drops (325→125) — i.e. throughput-bound,
-not latency-bound. So the row table's **reordering** is redundant here (it would only pay off
-in a **latency-bound** regime — low MLP, row-hit latency on the critical path); its
+3.2× faster (≈93% of 2-channel DDR4-3200 peak active-phase). Its throughput is **insensitive
+to row-buffer-locality optimization from either side**, across the *entire reachable design
+space*: MAA reordering on/off ≈ 1%, row-table capacity 8→64 flat, controller FRFCFS queue
+32→**1** flat (only `MemLat` moves, 277→66), and shrinking the problem n=20000→200 keeps the
+MAA at **MLP ≈ 53–76** (a high-MLP engine by design — can't be starved into latency-bound).
+So the row table's **reordering** is redundant here — and *fragile*: with reorder ON it
+**deadlocks at controller queue ≤ 2** (CPU livelock; reorder OFF runs clean). Its
 word→cache-line **coalescing** is still useful. Net: **no safe accelerator-side code
-optimization helps this config — the lever is memory bandwidth (channels).** Sweep harnesses:
+optimization helps this config — the lever is memory bandwidth (channels).** A real
+*reordering* win would need a low-MLP consumer the MAA doesn't produce. Sweep harnesses:
 `sweep_rt.sh` (capacity), `reorder_test.sh` (reorder), `chan_sweep.sh` (channels),
-`queue_sweep.sh` (controller queue × reorder).
+`queue_sweep.sh` (queue×reorder), `nsweep.sh` (problem size), `latbound.sh` (queue 1/2/4).

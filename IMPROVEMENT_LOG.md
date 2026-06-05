@@ -520,3 +520,62 @@ optimization from *either* side — MAA reordering (on/off ~1%) or controller sc
 row-table *reordering* would only pay off in a **latency-bound** regime (low memory-level
 parallelism, where row-hit latency is on the critical path) — not this throughput-oriented
 gather. Its word→cache-line *coalescing* remains valuable regardless. **Track 2 closed.**
+
+---
+
+## 2026-06-04 (cont.) — Hunting the latency-bound regime: two independent attempts (Track 2+)
+
+Track 2 said the row-table *reordering* would only pay off in a **latency-bound** regime. So:
+can such a regime be reached with this microbench? Two ways to try, both fail to help the row
+table — which makes the "reordering is redundant" conclusion airtight (it holds across the
+*entire* reachable design space, not just the default config).
+
+### Attempt A — shrink the problem (n-sweep), default queue=32, allmiss gather
+| n     | cycles_INDRD ON | OFF   | MemLat | cyc/req (OFF) | implied MLP |
+|------:|----------------:|------:|-------:|--------------:|------------:|
+| 200   | 1045            | 937   | 277.0  | 4.7           | ≈53 |
+| 1000  | 4660            | 4343  | 306.4  | 4.3           | ≈65 |
+| 4000  | 17910           | 17627 | 334.4  | 4.4           | ≈74 |
+| 20000 | 86236           | 85385 | 325.8  | 4.3           | ≈76 |
+
+Shrinking n does **not** create a latency-bound regime: effective throughput is ~4–5 MAA
+cycles per request while each request's memory latency is ~280–330 cycles, so the MAA sustains
+**MLP ≈ 53–76 even at n=200**. It is a high-MLP engine *by design* — you can't starve it by
+making the problem small. reorder OFF ≤ ON at every n (reordering is pure overhead throughout).
+
+### Attempt B — choke the memory side (controller queue 1/2/4), n=200, allmiss gather
+The only remaining way to force latency-bound is to shrink the FRFCFS controller queue (its
+reorder window *and* its outstanding-request count). Small n keeps the serialized runs fast.
+
+| queue | reorder ON   | reorder OFF | OFF MemLat |
+|------:|-------------:|------------:|----------:|
+| 1     | **DEADLOCK** | 929         | 65.8 |
+| 2     | **DEADLOCK** | 930         | 74.1 |
+| 4     | 1046         | 943         | 90.2 |
+| 32    | 1045         | 937         | 277.0 |
+
+Two findings:
+1. **cycles_INDRD is FLAT from queue 32 down to queue 1** (OFF: 937→929). Fully serializing the
+   memory controller does *not* slow the n=200 gather — only `MemLat` changes (277→66, the
+   queue-wait component vanishing). So at small n the bottleneck is the **MAA front-end**
+   (SPD-write / RT-access / issue rate), not the memory queue. reorder ON is still ≥ OFF here
+   too — the row table never wins.
+2. **reorder ON deadlocks at queue ≤ 2.** `run.log` shows sim time advancing (518.5T→519.5T→…)
+   while `switch_cpus0` is frozen at `total committed: 9842, progress insts committed: 0` —
+   a CPU livelock waiting on a memory response that never returns. With reorder **OFF** the same
+   config exits cleanly (`m5_exit instruction encountered`). This is a latent robustness bug in
+   the row-table reordering / REQUEST-drain path when the controller can hold only 1–2 requests
+   (drain logic appears to assume a deeper queue). queue≤2 is unrealistic for real DDR
+   controllers, so it's low-priority, but it's real and reproducible.
+
+### Final answer to "where does the MAA row table matter?"
+The row-table **reordering** never reduces gather cycles anywhere in the reachable space —
+n ∈ [200, 20000] (high MLP, OFF≤ON) **and** controller queue ∈ [1, 32] (cycles flat, OFF≤ON).
+At small n the limiter is the MAA front-end; at large n it's DRAM bandwidth; in neither does
+row-buffer-locality reordering help, because FRFCFS already harvests row hits when
+bandwidth-bound and the front-end is the bottleneck otherwise. **The row table's value is its
+word→cache-line _coalescing_ (cuts request count), not its _reordering_** — and the reordering
+is not merely dead weight (~1–12% overhead) but *fragile* (deadlocks at queue ≤ 2). A genuine
+MAA *reordering* win would require a low-MLP consumer the MAA does not produce by design.
+**Track 2+ closed: the row table reordering is redundant-and-fragile across the whole reachable
+microbench design space; the only perf lever remains memory bandwidth (channels).**
