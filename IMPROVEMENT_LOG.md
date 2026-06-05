@@ -629,3 +629,32 @@ up at runtime via `LD_LIBRARY_PATH`.
 This is a concrete, root-caused, verified bug fix landing in the artifact. (The earlier
 characterization stands — reordering is still redundant for performance; it's just no longer
 able to wedge the simulator at shallow queues.)
+
+---
+
+## 2026-06-04 (cont.) — Deeper fix: size the active buffer to its true bound (#2 from review)
+
+The guard above stops the *drop*; this addresses the *root mis-sizing* the code review flagged.
+`init()` sets `m_active_buffer.max_size = m_queue_size`, but the active buffer tracks rows that
+are activating/open and there is at most **one open row per bank**, so its true bound is the
+**number of banks per channel** — independent of `queue_size`. Sizing it to `queue_size` is what
+let a shallow queue overflow it.
+
+**Change** (`generic_dram_controller.cpp`, `setup()`, where the DRAM org is available): compute
+banks/channel as the product of all organization levels strictly between `channel` and `row`
+(for DDR4 = rank×bankgroup×bank = 1×4×4 = **16**) and set
+`m_active_buffer.max_size = max(queue_size, banks_per_channel)`. With ≥ #banks slots the active
+buffer can hold every concurrently-open row, so the overflow is **structurally impossible** and
+the tick() guard becomes a pure backstop.
+
+**Verified:**
+- queue=1: prints `Active buffer enlarged to 16 (banks/channel)…` per channel, run completes —
+  i.e. the resize genuinely fires (`num_banks` computed correctly), not a silent no-op.
+- queue=32 (default): no resize (16 < 32), gather-allhit **byte-IDENTICAL** to baseline.
+- Full battery (`test_fix.sh`) green: queue∈{1,2}×n∈{200,1000} complete; all 4 baselines IDENTICAL.
+- Cycle counts at shallow queue are unchanged vs the guard-only build — expected, because
+  request-completion timing is set by DRAM timing, not by which buffer holds the request; #2
+  fixes the *bookkeeping* (proper open-row tracking) without perturbing results.
+
+Net: the guard (cbb3d31) makes the drop impossible to act on; #2 makes the overflow impossible
+to reach. Default/realistic configs remain byte-identical throughout.

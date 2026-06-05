@@ -31,6 +31,11 @@ reasoning behind every change is in [`IMPROVEMENT_LOG.md`](./IMPROVEMENT_LOG.md)
   `enqueue()`. **Byte-identical on realistic configs** (active buffer never fills at default
   queue=32 ≥ #banks); resolves the hang across queue∈{1,2}×n∈{200,1k,4k}. Rebuild
   `libramulator.so` only. See log for the trace-level diagnosis.
+- Follow-up (root mis-sizing): the active buffer is also re-sized in `setup()` to
+  `max(queue_size, banks_per_channel)` — its true bound is one open row per bank (16 here),
+  independent of `queue_size` — so the overflow is now structurally impossible and the guard is a
+  backstop. No-op at default (16 < 32). Verify both with `bash test_fix.sh` (deadlock
+  reproducers + byte-identical regression suite).
 
 ## Build (constrained host, no Docker)
 ```bash

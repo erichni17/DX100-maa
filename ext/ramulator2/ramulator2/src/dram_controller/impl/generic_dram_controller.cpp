@@ -62,6 +62,28 @@ public:
         m_dram = memory_system->get_ifce<IDRAM>(fmt::format("DRAM {}", m_system_id));
         m_channel_count = m_dram->m_organization.count[m_dram->m_levels("channel")];
         m_row_addr_idx = m_dram->m_levels("row");
+        // Size the active buffer to its true semantic bound: it tracks rows that
+        // are activating/open, and there is at most one open row per bank, so the
+        // maximum is the number of banks per channel (product of all organization
+        // levels strictly between channel and row), independent of queue_size.
+        // init() sized it to queue_size, which lets a shallow queue (< #banks)
+        // overflow it and a request be dropped (see the enqueue guard in tick()).
+        // Using max(queue_size, #banks) keeps realistic configs (queue >= #banks,
+        // e.g. default 32 >= 16) byte-identical while making the overflow
+        // structurally impossible at small queues.
+        {
+            int channel_level = m_dram->m_levels("channel");
+            int row_level = m_dram->m_levels("row");
+            int num_banks_per_channel = 1;
+            for (int lvl = channel_level + 1; lvl < row_level; lvl++) {
+                num_banks_per_channel *= m_dram->m_organization.count[lvl];
+            }
+            if (num_banks_per_channel > m_queue_size) {
+                m_active_buffer.max_size = num_banks_per_channel;
+                printf("Ramulator2::Active buffer enlarged to %d (banks/channel) because queue_size=%d is smaller\n",
+                       num_banks_per_channel, m_queue_size);
+            }
+        }
         m_priority_buffer.max_size = 512 * 3 + 32;
         m_logger = Logging::create_logger("GenericDRAMController[" + std::to_string(m_channel_id) + "]");
         for (int idx = 0; idx < MAX_CMD_REGIONS + 1; idx++) {
