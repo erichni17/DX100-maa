@@ -80,3 +80,42 @@ optimization helps this config — the lever is memory bandwidth (channels).** A
 *reordering* win would need a low-MLP consumer the MAA doesn't produce. Sweep harnesses:
 `sweep_rt.sh` (capacity), `reorder_test.sh` (reorder), `chan_sweep.sh` (channels),
 `queue_sweep.sh` (queue×reorder), `nsweep.sh` (problem size), `latbound.sh` (queue 1/2/4).
+
+## T-A — reorder-disable experiment scoping (INVESTIGATION ONLY — nothing applied/run)
+
+Scoping for the professor's question "why does DX100 reordering show ~no end-to-end gain when
+Ali got most of his benefit from it." Holding for Eric before the T-B A/B.
+
+1. **Full-disable switch already exists: `--maa_no_reorder`** (`Options.py:227`). This is a real
+   on/off switch, *distinct from shrinking the window* (`--maa_num_row_table_rows_per_slice`,
+   `--maa_num_initial_row_table_slices`, …). Wiring: `MAAConfig._get_maa_opts` → `MAA.py:23` →
+   `MAA.cc:59` `reorder_row_table = !no_reorder` → `IndirectAccessUnit::reorder_RT`. With
+   `reorder_RT==false`: reads are issued the moment a CL is first touched, **in index/program
+   order** (`IndirectAccess.cc:517-521`), and the **entire `Build` stage is skipped**
+   (`Fill→Request`, not `Fill→Build→Request`, `:660-664`) — `Build` is exactly the row-table
+   walk in DRAM-locality order. The row table is **still used for CL coalescing** (insert /
+   `first_CL_access`); only DRAM-row *reordering* is removed. Clean ablation.
+2. **No code change needed.** The A/B is already wired: `run_gem5_all.py:18-21` enumerates
+   `do_reorder True/False`, `:270-271` emits `--maa_no_reorder` (same in `scripts/sim.py:244`).
+3. **The microbenchmarks are Ali's, not ours.** Origin is `github.com/arkhadem/DX100`
+   (**arkhadem = Alireza Khadem = "Ali"**); every kernel file (`benchmarks/API/test.cpp`,
+   `MAA.hpp`, …) is from his initial artifact commit `a40792a` (2025-03-26). This branch touched
+   only 2 benchmark files, only for runnability (region override, safer registration) — **zero new
+   kernels.** `benchmarks/API/` holds his MAA **"micro kernels"** (`gather`, `scatter`, `rmw`,
+   `gather_scatter`, `gather_rmw`, and `*_cond` / `*_rangeloop` variants, scalar + `_maa` pair) —
+   this is what every sweep on disk ran (`gather, allmiss 1 100 1 1`). Other `benchmarks/` dirs are
+   standard third-party suites (gapbs, spatter, NAS, hashjoin, UME).
+4. **Bandwidth-bound = `gather` (allmiss, n=20000):** channel scaling ~linear
+   (`chan_results.txt` 2→4→8 ch: 86236→50295→26861 cycles_INDRD, RD_BW 22.8→34.9 GB/s), and
+   halving the controller queue halves MemLat but leaves cycles flat (`queue_results.txt`) →
+   throughput-bound. **Latency-bound: none of the API kernels naturally** — gather stays high-MLP
+   (~55-76) even at n=200; the latency regime had to be *forced* from the memory side
+   (`queue_size=1`, `latbound_results.txt`). The structurally latency-bound real workload is
+   **GAP BFS** (low-MLP frontier expansion), not yet quantified at scale.
+5. **🚩 Flag for T-B:** existing data already shows reorder ON vs OFF on the bandwidth-bound gather
+   = **86236 vs 85385** cycles_INDRD — OFF marginally *faster* (`reorder_results.txt`). That is the
+   *opposite* of the professor's hypothesis (reorder should help bandwidth-bound most). Leading
+   cause: `allmiss 1 100 1 1` is a low-spread index pattern with already-high row-buffer locality,
+   leaving nothing for reordering to recover. **When T-B runs, sweep two index distributions** (the
+   tame one AND a high-spread/sparse one) on both regimes — else we risk "proving" reorder is
+   useless when the test pattern was just too easy.
