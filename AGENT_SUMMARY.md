@@ -3,6 +3,12 @@
 This file preserves the review/investigation context from the Codex chat so a
 future agent can continue without relying on chat history.
 
+> **⚠️ HISTORICAL (pre-T-B). [`HANDOFF.md`](./HANDOFF.md) and [`CLAUDE.md`](./CLAUDE.md) supersede
+> this where they disagree.** In particular, the open question below "should row-table reordering be
+> kept, disabled, or documented as redundant" is **RESOLVED**: reordering is worth **up to 2.77×** on
+> scattered indices — it is *not* redundant. The "redundant" framing was an artifact of testing only
+> the 100%-row-buffer-hit pattern. See HANDOFF.md §"T-B — gather reorder × index-distribution sweep."
+
 ## Repository State Reviewed
 
 - Working branch: `dx100-improvements`.
