@@ -13,6 +13,48 @@ This repository provides the gem5 simulator, benchmarks, and automation scripts 
 > [`HANDOFF.md`](./HANDOFF.md) for the fixes that make this build and run without Docker,
 > a small reproducible test loop, and architectural findings (branch `dx100-improvements`).
 
+## Findings (branch `dx100-improvements`)
+
+Work done on top of the artifact. Full detail and the reasoning behind every change is in
+[`HANDOFF.md`](./HANDOFF.md) and [`IMPROVEMENT_LOG.md`](./IMPROVEMENT_LOG.md).
+
+### Headline: row-table reordering is the single most valuable accelerator-side lever — *on scattered indices*
+
+The original characterization concluded reordering was "≈1%, redundant." That held **only at the
+tame `allmiss 1 100 1 1` index pattern (100% row-buffer hit)**, where reordering has nothing to
+recover. Sweeping the row-buffer-hit% (`reorder_dist_sweep.sh`, gather, n=20000, 2-ch DDR4) shows
+its value scales directly with how scattered the indices are — all runs verified correct:
+
+| index pattern | reorder ON vs OFF (`cycles_INDRD`) | avg DRAM latency (ON / OFF) |
+|---|---|---|
+| `allmiss 1 100 1 1` — 100% row-buffer hit (tame) | ON **1% slower** (nothing to recover) | 326 / 326 |
+| `allmiss 0 50 0 0` — 50% row-buffer hit | ON **10% faster** | 460 / 516 |
+| `allmiss 0 0 0 0` — 0% row-buffer hit (fully scattered) | ON **2.77× faster** | 487 / **1327** |
+
+**Mechanism:** with reordering the MAA degrades gracefully as locality drops (stays
+bandwidth-bound); without it, scattered gathers fall off a cliff — latency explodes ~4× and
+bandwidth collapses (23 → 4.9 GB/s). Reordering is what keeps a scattered gather bandwidth-bound
+instead of latency-bound, which is why real sparse/graph workloads benefit from it.
+
+### BFS reorder A/B (scaled-down GAP BFS)
+
+A real graph kernel driven end-to-end through the fixed MAA (`bfs_reorder_ab.sh`,
+`bfs_reorder_ab_sc.sh`). At toy scale the MAA is high-MLP (~40), so reordering's **−17% DRAM-latency
+win is hidden end-to-end** — flagged for a full-scale rerun where deeper frontiers may lower MLP and
+unmask it. Also established that an instruction-identical reorder A/B is *impossible* for BFS:
+reordering changes MAA gather-completion order, which changes which frontier vertex wins each
+parent-claim (a different-but-valid BFS tree) — so use latency/MLP deltas as the invariant, not
+byte-identical stats.
+
+### Runnability + correctness (vs upstream)
+
+- Builds and runs on a **modern toolchain + ~17 GB host, no Docker** (SCons 4.9+ fix, x86-64-v2
+  CPUID, fast-forward + MAA-region guards, a stats-registration OOM fix at 4 cores).
+- **Ramulator2 controller bug fix:** the DRAM controller silently dropped requests at a shallow
+  queue (active-buffer overflow), hanging the requestor; root-caused to active-buffer mis-sizing.
+- **`RequestTable` O(num_addresses) → O(1)**, behavior-preserving (byte-identical stats).
+- A 2-step checkpoint→restore test loop (`run_test.sh`) with a `baselines/` regression suite.
+
 ## Directory Structure
 
 The repo structure is as follows:
