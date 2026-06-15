@@ -88,3 +88,13 @@ bfs_out_n*/
 bfs_run.out
 benchmarks/gapbs/bfs_func
 benchmarks/gapbs/serialized_graph_*.sg
+
+# T-B reorder A/B + index-distribution sweep outputs (keep the .sh harnesses, ignore outputs)
+bfs_ab_n*/
+bfs_absc_n*/
+bfs_ab_n*.out
+bfs_absc_n*.out
+rd_*/
+rd_*.driver.log
+reorder_dist_results.txt
+reorder_dist_sweep.out

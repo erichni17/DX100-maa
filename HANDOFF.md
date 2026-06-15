@@ -67,19 +67,27 @@ bash run_test.sh <outdir> MAA gather allhit 20000      # or:  gather "allmiss 1 
 Key baseline (gather allhit): `maa.cycles=6509`, `switch_cpus0.ipc=1.34`, all-correct.
 
 ## Architectural findings (see log for the experiments)
+
+> **⚠️ SUPERSEDED in part — see T-B gather sweep below.** The "reordering ≈ 1%, redundant,
+> no accelerator-side optimization helps" claim below was measured **only at the tame
+> `allmiss 1 100 1 1` index pattern = 100% row-buffer hit**, where reordering by definition has
+> nothing to recover. Sweeping row-buffer-hit% (`reorder_dist_sweep.sh`) shows reordering is
+> worth **up to 2.77× on scattered indices** — it is the single most valuable accelerator-side
+> lever, not redundant. Read the original text below as "true at ROH=100 only."
+
 The MAA indirect **gather is DRAM-bandwidth-bound** — channel scaling gives 4× channels →
-3.2× faster (≈93% of 2-channel DDR4-3200 peak active-phase). Its throughput is **insensitive
-to row-buffer-locality optimization from either side**, across the *entire reachable design
-space*: MAA reordering on/off ≈ 1%, row-table capacity 8→64 flat, controller FRFCFS queue
+3.2× faster (≈93% of 2-channel DDR4-3200 peak active-phase). At the **100%-row-buffer-hit index
+pattern only**, its throughput is insensitive to row-buffer-locality optimization from either
+side: MAA reordering on/off ≈ 1%, row-table capacity 8→64 flat, controller FRFCFS queue
 32→**1** flat (only `MemLat` moves, 277→66), and shrinking the problem n=20000→200 keeps the
 MAA at **MLP ≈ 53–76** (a high-MLP engine by design — can't be starved into latency-bound).
-So the row table's **reordering** is redundant here. (Reorder ON used to **livelock at
-controller queue ≤ 2**, but that was a Ramulator2 active-buffer drop bug, now fixed — see the
-Bug fix above.) Its word→cache-line **coalescing** is still useful. Net: **no safe accelerator-side code
-optimization helps this config — the lever is memory bandwidth (channels).** A real
-*reordering* win would need a low-MLP consumer the MAA doesn't produce. Sweep harnesses:
-`sweep_rt.sh` (capacity), `reorder_test.sh` (reorder), `chan_sweep.sh` (channels),
-`queue_sweep.sh` (queue×reorder), `nsweep.sh` (problem size), `latbound.sh` (queue 1/2/4).
+The row table's **reordering** is redundant *at that pattern* (but decisive on scattered ones —
+see T-B). (Reorder ON used to **livelock at controller queue ≤ 2**, but that was a Ramulator2
+active-buffer drop bug, now fixed — see the Bug fix above.) Its word→cache-line **coalescing**
+is always useful. Sweep harnesses: `sweep_rt.sh` (capacity), `reorder_test.sh` (reorder, tame
+pattern), `reorder_dist_sweep.sh` (**reorder × index-spread — the corrective experiment**),
+`chan_sweep.sh` (channels), `queue_sweep.sh` (queue×reorder), `nsweep.sh` (problem size),
+`latbound.sh` (queue 1/2/4).
 
 ## T-A — reorder-disable experiment scoping (INVESTIGATION ONLY — nothing applied/run)
 
@@ -119,3 +127,58 @@ Ali got most of his benefit from it." Holding for Eric before the T-B A/B.
    leaving nothing for reordering to recover. **When T-B runs, sweep two index distributions** (the
    tame one AND a high-spread/sparse one) on both regimes — else we risk "proving" reorder is
    useless when the test pattern was just too easy.
+
+## T-B — gather reorder × index-distribution sweep (EXECUTED — answers the core question)
+
+`reorder_dist_sweep.sh` (n=20000, 2-ch DDR4). The prior reorder A/B used `allmiss 1 100 1 1`
+= **100% row-buffer hit**, so reordering had nothing to recover and looked useless. Sweeping the
+row-buffer-hit% (`allmiss BAH ROH CHH BGH`: `0 ROH 0 0` scatters across banks/channels/bankgroups)
+shows reorder's value scales directly with how scattered the indices are. All runs verified
+correct (`all tests correct`).
+
+| index pattern | reorder | cycles_INDRD | MemLat | RD_BW | ON vs OFF |
+|---|---|---|---|---|---|
+| `1 100 1 1` (100% RB-hit, tame)  | ON / OFF | 86236 / 85385  | 326 / 326   | 22.9 / 23.0 | ON **1% slower** |
+| `0 50 0 0` (50% RB-hit)          | ON / OFF | 248209 / 273868 | 460 / 516  | 12.0 / 11.1 | ON **10% faster** |
+| `0 0 0 0` (0% RB-hit, scattered) | ON / OFF | 266140 / **737821** | 487 / **1327** | 11.4 / 4.9 | ON **2.77× faster** |
+
+**Conclusion — the professor's hypothesis is confirmed; our earlier "reorder is redundant" was a
+test-pattern artifact.** With reorder the MAA degrades *gracefully* as locality drops (86k→248k→266k,
+stays bandwidth-bound); without it, scattered gathers fall off a cliff (85k→274k→**738k**, latency
+explodes 4×, BW collapses to 4.9 GB/s). Reordering is precisely what keeps a scattered gather
+bandwidth-bound instead of latency-bound — which is why Ali's real (sparse, low-locality) workloads
+benefited from it. Reordering is the **single most valuable accelerator-side lever**, not redundant;
+the prior conclusion only held at the 100%-row-buffer-hit corner. This also strengthens the BFS /
+mbit10 case: real BFS frontiers gather scattered neighbor indices (low row-buffer locality), the
+regime where reorder gives multiples.
+
+## T-B — BFS reorder A/B (EXECUTED, scaled-down 2^16-node graph)
+
+Ran reorder ON vs OFF (`--maa_no_reorder`) on the real GAP BFS at host-fitting scale, both
+4-thread and a deterministic single-worker config. Harnesses: `bfs_reorder_ab.sh` (4-thread),
+`bfs_reorder_ab_sc.sh` (single-worker).
+
+1. **MLP gate (checked first): BFS at this scale is high-MLP (~40), NOT latency-bound** — same
+   regime as the bandwidth-bound gather. So toy-scale BFS is *not* the latency-bound witness; the
+   premise "reorder should pay off because latency is exposed" isn't established here.
+2. **Reorder's mechanism is real but hidden:** ON cuts MAA avg DRAM load latency **~17%**
+   (`AvgLoadsMemAccessingLatency` 379 vs 456) — the row-buffer-locality win — yet **end-to-end is a
+   dead tie** (`simTicks` Δ 0.01%; `cycles_INDRD` Δ ≤0.6%) because MLP ~40 fully hides it. Same
+   story as the gather. (`IND_CyclesBuild` rounds below the print threshold; the latency delta is
+   the proof reorder engaged.)
+3. **A byte/instruction-identical BFS A/B is impossible** — `numInst_INDRD` ON/OFF differs in BOTH
+   4-thread (454/451) and single-worker (454/457). It is **not** OMP noise (it persisted at one
+   worker): reordering changes MAA *gather completion order*, which changes which frontier vertex
+   wins the conditional parent-claim (`benchmarks/gapbs/src/bfs.cc:179`) → a different-but-valid BFS
+   tree (same reachable set; `NumUniqueRowsInserted` 85377 vs 85411, 0.04%) → ±few gathers. The
+   T-C "same instructions, only cycles differ" invariant holds for straight-line micro kernels, NOT
+   for racing-parent-claim graph kernels — use latency/MLP deltas as the BFS invariant.
+4. **Binary constraint:** `bfs_maa` bakes `-DNUM_CORES=4`; it won't run at `-n 1` (libgomp needs a
+   spare context) or `-n 2` (MAA scratchpad layout assumes 4 CPU ports → unmapped-write panic at
+   `0x40400088`). Deterministic single-worker recipe: **`-n 4` + `OMP_NUM_THREADS=1`** (verified
+   work totals match the 4-thread run within 0.04%, so the traversal is complete). A literal 1-core
+   build needs recompiling with `-DNUM_CORES=1`.
+5. **🚩 Flag for full-scale rerun on mbit10:** reorder's −17% latency is a *real* benefit, just
+   masked by high MLP at toy scale. Full-scale BFS (deeper frontiers, working sets past the 8 MB
+   L3) may drop MLP enough to unmask it. That is the rerun worth doing; do not chase an
+   instruction-identical A/B (it cannot exist for this kernel).
