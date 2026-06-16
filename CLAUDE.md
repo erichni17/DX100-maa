@@ -24,10 +24,24 @@ underneath). Work happens on branch **`dx100-improvements`**. Read this first, t
   instruction-identical BFS A/B is *impossible* (gather completion-order → parent-claim race), so use
   latency/MLP deltas as the invariant, not byte-identical stats.
 
-## Next step (parked)
-- **Full-scale BFS rerun on a ~64 GB box (`mbit10`, via Ritu):** deeper frontiers / working sets
-  past the 8 MB L3 may drop MLP and unmask reorder's latency win. This is the highest-value open
-  experiment. Cheaper local follow-ups and the parked task queue are in HANDOFF.md.
+## Next step (UNBLOCKED — big box acquired)
+- **Full-scale BFS rerun is now runnable on `mbit1.eecs.umich.edu`** (330 GB RAM / 28 cores —
+  see §Running on mbit1 below). Deeper frontiers / working sets past the 8 MB L3 may drop MLP and
+  unmask reorder's latency win. This is the highest-value open experiment. The `~64 GB box / mbit10`
+  blocker is resolved — mbit1 is ~5× that. Cheaper local follow-ups and the parked task queue are in
+  HANDOFF.md.
+
+## Running on mbit1 (the remote box, as of 2026-06-15)
+- **Repo lives at `/data1/nier/DX100`** (NOT `/home/nier` — home is small; `/data1` is scratch/**not
+  backed up**, so push anything worth keeping to git).
+- **Toolchain: the default `gcc` is 9.5 and REJECTS `-std=c++20`** (Ramulator2 won't build). Before
+  building, `export CC=gcc-12 CXX=g++-12` (g++-10/11/12 are all in `/usr/bin`; no sudo / no `module`).
+- **28 physical cores** → bump the gem5 build and parallel sims well past `-j4` (e.g. `-j16`), leaving
+  headroom; 2 NUMA nodes, so consider `numactl` pinning for latency-sensitive sims.
+- **Path fix:** the root `*.sh` scripts hard-code `GH=/home/nier/DX100`; set `GH=/data1/nier/DX100`.
+- **Etiquette (shared box, owner Sumanth Umesh via Reetuparna Das's group):** check `htop` for free
+  RAM/CPU first; CPU/RAM-heavy job **>2 h → post in the MBit Management group**, **>4 h → message
+  Sumanth directly**. The OpenEvolve loop (many parallel gem5 sims, long wall-clock) is the >4 h case.
 
 ## Conventions
 - **Verification for perf changes = pattern/action invariants, not byte-identical stats** (timing
@@ -36,4 +50,5 @@ underneath). Work happens on branch **`dx100-improvements`**. Read this first, t
   `src/mem/packet.hh` forces a ~30 min full rebuild. Details in HANDOFF.md §Build.
 - **Run loop:** `bash run_test.sh <outdir> MAA gather "<dist>" <n>` (2-step checkpoint→restore).
   Sweep harnesses are the root `*.sh` scripts; experiment outputs are gitignored.
-- Scripts currently hard-code `GH=/home/nier/DX100` — adjust if the repo moves.
+- Scripts currently hard-code `GH=/home/nier/DX100` — adjust if the repo moves (on mbit1:
+  `GH=/data1/nier/DX100`; see §Running on mbit1).
