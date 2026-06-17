@@ -1158,12 +1158,12 @@ void allmiss_BAmiss_RBhitmiss_CHmiss_BGmiss_initializer(std::string kernel, int3
                             // index_calculator(row,bank,bankgroup,cacheline,channel,word)
                             uint32_t index = index_calculator(RO, 0, new_BG, new_CL, CH, 0);
                             idx[i] = index;
-#ifndef GEM5
+                            // bounds guard active under GEM5 too (was #ifndef GEM5): fail fast at
+                            // init on an out-of-range index instead of panicking deep in the MAA model.
                             if (index >= num_required_elements) {
                                 std::cout << "i: " << i << ", TE: " << tile_element << ", CH: " << CH << ", BG: " << new_BG << ", RO: " << RO << ", CL: " << new_CL << ", index: " << index << " >= " << num_required_elements << std::endl;
                                 exit(-1);
                             }
-#endif
                         }
                     }
                 }
@@ -1193,12 +1193,12 @@ void allmiss_BAhit_RBhitmiss_CHmiss_BGmiss_initializer(std::string kernel, int32
                             // index_calculator(row,bank,bankgroup,cacheline,channel,word)
                             uint32_t index = index_calculator(RO, BA, new_BG, new_CL, CH, 0);
                             idx[i] = index;
-#ifndef GEM5
+                            // bounds guard active under GEM5 too (was #ifndef GEM5): fail fast at
+                            // init on an out-of-range index instead of panicking deep in the MAA model.
                             if (index >= num_required_elements) {
                                 std::cout << "i: " << i << ", TE: " << tile_element << ", CH: " << CH << ", BG: " << new_BG << ", RO: " << RO << ", CL: " << new_CL << ", index: " << index << " >= " << num_required_elements << std::endl;
                                 exit(-1);
                             }
-#endif
                         }
                     }
                 }
@@ -1230,12 +1230,12 @@ void allmiss_BAhit_RBhit_CHhit_BGmiss_initializer(std::string kernel, int32_t *&
                         // index_calculator(row,bank,bankgroup,cacheline,channel,word)
                         uint32_t index = index_calculator(RO, BA, new_BG, new_CL, CH, 0);
                         idx[i] = index;
-#ifndef GEM5
+                        // bounds guard active under GEM5 too (was #ifndef GEM5): fail fast at
+                        // init on an out-of-range index instead of panicking deep in the MAA model.
                         if (index >= num_required_elements) {
                             std::cout << "i: " << i << ", TE: " << tile_element << ", CH: " << CH << ", BG: " << new_BG << ", RO: " << RO << ", CL: " << new_CL << ", index: " << index << " >= " << num_required_elements << std::endl;
                             exit(-1);
                         }
-#endif
                     }
                 }
             }
@@ -1266,12 +1266,12 @@ void allmiss_BAhit_RBhit_CHhit_BGhit_initializer(std::string kernel, int32_t *&a
                         // index_calculator(row,bank,bankgroup,cacheline,channel,word)
                         uint32_t index = index_calculator(RO, BA, new_BG, new_CL, CH, 0);
                         idx[i] = index;
-#ifndef GEM5
+                        // bounds guard active under GEM5 too (was #ifndef GEM5): fail fast at
+                        // init on an out-of-range index instead of panicking deep in the MAA model.
                         if (index >= num_required_elements) {
                             std::cout << "i: " << i << ", TE: " << tile_element << ", CH: " << CH << ", BG: " << new_BG << ", RO: " << RO << ", CL: " << new_CL << ", index: " << index << " >= " << num_required_elements << std::endl;
                             exit(-1);
                         }
-#endif
                     }
                 }
             }
