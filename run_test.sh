@@ -22,21 +22,26 @@ KERNEL="${3:-gather}"
 DISTARGS="${4:-allmiss 1 100 1 1}"
 N="${5:-20000}"
 EXTRA="${6:-}"   # optional extra gem5/MAA flags (e.g. design-space sweeps)
-BIN="$GH/benchmarks/API/test_T16K.o"
+BIN="${BIN:-$GH/benchmarks/API/test_T16K.o}"
+MEM_SIZE="${MEM_SIZE:-1GB}"
+CKPT_TIMEOUT="${CKPT_TIMEOUT:-600}"
+ROI_TIMEOUT="${ROI_TIMEOUT:-2400}"
 RAMCFG="$GH/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
 
 # ---- checkpoint cache key (independent of MAA model edits) ----
 DKEY=$(echo "$DISTARGS" | tr ' ' '_')
-CKPT="$GH/ckpt_cache/${MODE}_${KERNEL}_${DKEY}_${N}"
+BKEY=$(basename "$BIN" | tr -c 'A-Za-z0-9_-' '_')
+MKEY=$(echo "$MEM_SIZE" | tr -c 'A-Za-z0-9_-' '_')
+CKPT="$GH/ckpt_cache/${MODE}_${KERNEL}_${DKEY}_${N}_${MKEY}_${BKEY}"
 
 # ---- step 1: create checkpoint if missing ----
 if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "=== [1/2] creating checkpoint (AtomicSimpleCPU) -> $CKPT ==="
   rm -rf "$CKPT"; mkdir -p "$CKPT"
-  timeout 600 "$GH/build/X86/gem5.opt" --outdir="$CKPT" \
+  timeout "$CKPT_TIMEOUT" "$GH/build/X86/gem5.opt" --outdir="$CKPT" \
     "$GH/configs/deprecated/example/se.py" \
-    --cpu-type AtomicSimpleCPU -n 4 --mem-size 1GB --max-checkpoints=1 \
+    --cpu-type AtomicSimpleCPU -n 4 --mem-size "$MEM_SIZE" --max-checkpoints=1 \
     --cmd "$BIN" --options "$N $MODE $KERNEL $DISTARGS" \
     > "$CKPT/ckpt.log" 2>&1
   if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
@@ -61,12 +66,13 @@ fi
 # (pseudo_inst.cc) static_cast the active CPU to o3::CPU unconditionally, so
 # TimingSimpleCPU segfaults the moment the benchmark touches a region op.
 # Cache sizes/prefetchers mirror the artifact's scripts/sim.py MAA-mode config
-# for 4 cores (L3 = 2MB*cores, assoc = 4*cores). --mem-size stays 1GB to match
-# the MAA_MEM_SIZE=0x40000000 binary + the AtomicSimpleCPU checkpoint.
+# for 4 cores (L3 = 2MB*cores, assoc = 4*cores). MEM_SIZE must match the
+# binary's MAA_MEM_SIZE define because alloc_MAA() places control registers at
+# BASE_ADDR + MEM_SIZE.
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
-timeout 2400 "$GH/build/X86/gem5.opt" --outdir="$OUTDIR" \
+timeout "$ROI_TIMEOUT" "$GH/build/X86/gem5.opt" --outdir="$OUTDIR" \
   "$GH/configs/deprecated/example/se.py" \
-  --cpu-type X86O3CPU -r 1 -n 4 --mem-size 1GB \
+  --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
   --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
   --l1i_size=32kB --l1i_assoc=8 --l1i-hwp-type=StridePrefetcher --l1i_mshrs=16 --l1i_write_buffers=8 \
