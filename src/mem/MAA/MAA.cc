@@ -64,6 +64,8 @@ MAA::MAA(const MAAParams &p)
       num_memory_channels(p.num_memory_channels),
       num_cores(p.num_cores),
       num_maas(p.num_maas),
+      num_indirect_units_per_maa(p.num_indirect_units_per_maa),
+      num_indirect_units_total(p.num_maas * p.num_indirect_units_per_maa),
       rowtable_latency(p.rowtable_latency),
       addrRegions(MAX_CMD_REGIONS, {0, 0}),
       maxRegionID(-1),
@@ -72,12 +74,13 @@ MAA::MAA(const MAAParams &p)
       issueInstructionEvent([this] { issueInstruction(); }, name()),
       dispatchInstructionEvent([this] { dispatchInstruction(); }, name()),
       dispatchRegisterEvent([this] { dispatchRegister(); }, name()),
-      stats(this, p.num_maas, this),
+      stats(this, p.num_maas * p.num_indirect_units_per_maa, this),
       sendCacheEvent([this] { sendOutstandingCachePacket(); }, name()),
       sendMemEvent([this] { sendOutstandingMemPacket(); }, name()) {
 
     m_core_addr_bits = calc_log2(num_cores);
     panic_if(num_cores % num_maas != 0, "Number of cores %d must be a multiple of the number of MAAs %s\n", num_cores, num_maas);
+    panic_if(num_indirect_units_per_maa == 0, "Number of indirect units per MAA must be positive\n");
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
     spd = new SPD(this, num_tiles, num_tile_elements, p.spd_read_latency, p.spd_write_latency, p.num_spd_read_ports_per_maa * num_maas, p.num_spd_write_ports_per_maa * num_maas);
@@ -91,9 +94,9 @@ MAA::MAA(const MAAParams &p)
         streamAccessUnits[i].allocate(i, num_request_table_addresses, num_request_table_entries_per_address, num_tile_elements, this);
         streamAccessIdle[i] = true;
     }
-    indirectAccessUnits = new IndirectAccessUnit[num_maas];
-    indirectAccessIdle = new bool[num_maas];
-    for (int i = 0; i < num_maas; i++) {
+    indirectAccessUnits = new IndirectAccessUnit[num_indirect_units_total];
+    indirectAccessIdle = new bool[num_indirect_units_total];
+    for (int i = 0; i < num_indirect_units_total; i++) {
         indirectAccessIdle[i] = true;
     }
     invalidator = new Invalidator();
@@ -170,10 +173,12 @@ MAA::MAA(const MAAParams &p)
 
     my_last_idle_tick = curTick();
     my_last_reset_tick = curTick();
-    my_num_outstanding_indirect_pkts = new uint32_t[num_maas];
+    my_num_outstanding_indirect_pkts = new uint32_t[num_indirect_units_total];
     my_num_outstanding_stream_pkts = new uint32_t[num_maas];
-    for (int i = 0; i < num_maas; i++) {
+    for (int i = 0; i < num_indirect_units_total; i++) {
         my_num_outstanding_indirect_pkts[i] = 0;
+    }
+    for (int i = 0; i < num_maas; i++) {
         my_num_outstanding_stream_pkts[i] = 0;
     }
 }
@@ -296,7 +301,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
     for (int i = 0; i < memSidePorts.size(); i++) {
         memSidePorts[i]->allocate(i);
     }
-    for (int i = 0; i < num_maas; i++) {
+    for (int i = 0; i < num_indirect_units_total; i++) {
         indirectAccessUnits[i].allocate(i, num_tile_elements, num_row_table_rows_per_slice,
                                         num_row_table_entries_per_subslice_row,
                                         num_row_table_config_cache_entries,
@@ -349,13 +354,15 @@ bool MAA::allFuncUnitsIdle() {
         if (streamAccessUnits[i].getState() != StreamAccessUnit::Status::Idle) {
             return false;
         }
-        if (indirectAccessUnits[i].getState() != IndirectAccessUnit::Status::Idle) {
-            return false;
-        }
         if (aluUnits[i].getState() != ALUUnit::Status::Idle) {
             return false;
         }
         if (rangeUnits[i].getState() != RangeFuserUnit::Status::Idle) {
+            return false;
+        }
+    }
+    for (int i = 0; i < num_indirect_units_total; i++) {
+        if (indirectAccessUnits[i].getState() != IndirectAccessUnit::Status::Idle) {
             return false;
         }
     }
@@ -397,6 +404,7 @@ void MAA::issueInstruction() {
                             if (inst->dst1SpdID != -1) {
                                 spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
                             }
+                            inst->func_unit_id = maa_id;
                             streamAccessUnits[maa_id].setInstruction(inst);
                             streamAccessUnits[maa_id].scheduleExecuteInstructionEvent(num_issued++);
                             streamAccessIdle[maa_id] = false;
@@ -407,18 +415,22 @@ void MAA::issueInstruction() {
                     break;
                 }
                 case 1: {
-                    if (indirectAccessIdle[maa_id]) {
-                        panic_if(indirectAccessUnits[maa_id].getState() != IndirectAccessUnit::Status::Idle, "IndirectAccessUnit[%d] is not idle!\n", maa_id);
-                        Instruction *inst = ifile->getReady(FuncUnitType::INDIRECT, maa_id);
-                        if (inst != nullptr) {
-                            if (inst->dst1SpdID != -1) {
-                                spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
+                    for (int lane = 0; lane < num_indirect_units_per_maa; lane++) {
+                        int indirect_id = maa_id * num_indirect_units_per_maa + lane;
+                        if (indirectAccessIdle[indirect_id]) {
+                            panic_if(indirectAccessUnits[indirect_id].getState() != IndirectAccessUnit::Status::Idle, "IndirectAccessUnit[%d] is not idle!\n", indirect_id);
+                            Instruction *inst = ifile->getReady(FuncUnitType::INDIRECT, maa_id);
+                            if (inst != nullptr) {
+                                if (inst->dst1SpdID != -1) {
+                                    spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
+                                }
+                                inst->func_unit_id = indirect_id;
+                                indirectAccessUnits[indirect_id].setInstruction(inst);
+                                indirectAccessUnits[indirect_id].scheduleExecuteInstructionEvent(num_issued++);
+                                indirectAccessIdle[indirect_id] = false;
+                                are_all_units_idle = false;
+                                issued = true;
                             }
-                            indirectAccessUnits[maa_id].setInstruction(inst);
-                            indirectAccessUnits[maa_id].scheduleExecuteInstructionEvent(num_issued++);
-                            indirectAccessIdle[maa_id] = false;
-                            are_all_units_idle = false;
-                            issued = true;
                         }
                     }
                     break;
@@ -431,6 +443,7 @@ void MAA::issueInstruction() {
                             if (inst->dst1SpdID != -1) {
                                 spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
                             }
+                            inst->func_unit_id = maa_id;
                             aluUnits[maa_id].setInstruction(inst);
                             aluUnits[maa_id].scheduleExecuteInstructionEvent(num_issued++);
                             aluUnitsIdle[maa_id] = false;
@@ -453,6 +466,7 @@ void MAA::issueInstruction() {
                             if (inst->dst2SpdID != -1) {
                                 spd->setTileService(inst->dst2SpdID, inst->getWordSize(inst->dst1SpdID));
                             }
+                            inst->func_unit_id = maa_id;
                             rangeUnits[maa_id].setInstruction(inst);
                             rangeUnits[maa_id].scheduleExecuteInstructionEvent(num_issued++);
                             rangeUnitsIdle[maa_id] = false;
@@ -623,19 +637,19 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
         invalidator->finishInstruction(instruction);
     switch (instruction->funcUniType) {
     case FuncUnitType::STREAM: {
-        streamAccessIdle[instruction->maa_id] = true;
+        streamAccessIdle[instruction->func_unit_id] = true;
         break;
     }
     case FuncUnitType::INDIRECT: {
-        indirectAccessIdle[instruction->maa_id] = true;
+        indirectAccessIdle[instruction->func_unit_id] = true;
         break;
     }
     case FuncUnitType::ALU: {
-        aluUnitsIdle[instruction->maa_id] = true;
+        aluUnitsIdle[instruction->func_unit_id] = true;
         break;
     }
     case FuncUnitType::RANGE: {
-        rangeUnitsIdle[instruction->maa_id] = true;
+        rangeUnitsIdle[instruction->func_unit_id] = true;
         break;
     }
     default: {
@@ -761,7 +775,7 @@ void MAA::MAAStats::preDumpStats() {
     if (maa->allFuncUnitsIdle())
         cycles_IDLE += maa->getTicksToCycles(maa->getCurTick() - maa->my_last_idle_tick);
 }
-MAA::MAAStats::MAAStats(statistics::Group *parent, int num_maas, MAA *_maa)
+MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *_maa)
     : statistics::Group(parent),
       maa(_maa),
       ADD_STAT(numInst_INDRD, statistics::units::Count::get(), "number of indirect read instructions"),
@@ -882,7 +896,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_maas, MAA *_maa)
     port_mem_RD_BW.flags(statistics::nonan | statistics::nozero);
     port_mem_BW.flags(statistics::nonan | statistics::nozero);
 
-    for (int indirect_id = 0; indirect_id < num_maas; indirect_id++) {
+    for (int indirect_id = 0; indirect_id < num_indirect_units; indirect_id++) {
         IND_NumInsts.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_NumInsts"), statistics::units::Count::get(), "number of instructions"));
         IND_NumWordsInserted.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_NumWordsInserted"), statistics::units::Count::get(), "number of words inserted to the row table"));
         IND_NumCacheLineInserted.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_NumCacheLineInserted"), statistics::units::Count::get(), "number of cachelines inserted to the row table"));
@@ -997,7 +1011,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_maas, MAA *_maa)
         (*IND_AvgStoresMemAccessingPerInst[indirect_id]).flags(statistics::nozero | statistics::nonan);
         (*IND_AvgEvictssPerInst[indirect_id]).flags(statistics::nozero | statistics::nonan);
     }
-    for (int stream_id = 0; stream_id < num_maas; stream_id++) {
+    for (int stream_id = 0; stream_id < maa->num_maas; stream_id++) {
         STR_NumInsts.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumInsts"), statistics::units::Count::get(), "number of instructions"));
         STR_NumWordsInserted.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumWordsInserted"), statistics::units::Count::get(), "number of words inserted to the request table"));
         STR_NumCacheLineInserted.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumCacheLineInserted"), statistics::units::Count::get(), "number of cachelines inserted to the request table"));
@@ -1051,7 +1065,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_maas, MAA *_maa)
         (*STR_AvgLoadsCacheAccessingPerInst[stream_id]).flags(statistics::nozero | statistics::nonan);
         (*STR_AvgEvictssPerInst[stream_id]).flags(statistics::nozero | statistics::nonan);
     }
-    for (int range_id = 0; range_id < num_maas; range_id++) {
+    for (int range_id = 0; range_id < maa->num_maas; range_id++) {
         RNG_NumInsts.push_back(new statistics::Scalar(this, MAKE_RANGE_STAT_NAME("RNG_NumInsts"), statistics::units::Count::get(), "number of instructions"));
         RNG_CyclesCompute.push_back(new statistics::Scalar(this, MAKE_RANGE_STAT_NAME("RNG_CyclesCompute"), statistics::units::Count::get(), "number of compute cycles in range loop"));
         RNG_CyclesSPDReadAccess.push_back(new statistics::Scalar(this, MAKE_RANGE_STAT_NAME("RNG_CyclesSPDReadAccess"), statistics::units::Count::get(), "number of cycles spent on SPD read access in range loop"));
@@ -1073,7 +1087,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_maas, MAA *_maa)
         (*RNG_AvgCyclesSPDReadAccessPerInst[range_id]).flags(statistics::nozero | statistics::nonan);
         (*RNG_AvgCyclesSPDWriteAccessPerInst[range_id]).flags(statistics::nozero | statistics::nonan);
     }
-    for (int alu_id = 0; alu_id < num_maas; alu_id++) {
+    for (int alu_id = 0; alu_id < maa->num_maas; alu_id++) {
         ALU_NumInsts.push_back(new statistics::Scalar(this, MAKE_ALU_STAT_NAME("ALU_NumInsts"), statistics::units::Count::get(), "number of instructions"));
         ALU_NumInstsCompare.push_back(new statistics::Scalar(this, MAKE_ALU_STAT_NAME("ALU_NumInstsCompare"), statistics::units::Count::get(), "number of compare instructions"));
         ALU_NumInstsCompute.push_back(new statistics::Scalar(this, MAKE_ALU_STAT_NAME("ALU_NumInstsCompute"), statistics::units::Count::get(), "number of compute instructions"));

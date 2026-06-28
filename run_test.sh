@@ -15,7 +15,7 @@
 #
 # Usage: run_test.sh <outdir> <mode MAA|BASE> <kernel> "<dist-args>" [n]
 set -u
-GH=/home/nier/DX100
+GH=/data1/nier/DX100
 OUTDIR="$GH/${1:-run_test}"
 MODE="${2:-MAA}"
 KERNEL="${3:-gather}"

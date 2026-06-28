@@ -239,6 +239,7 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_l2_uncacheable", action="store_true", help="Enable uncacheable L2 cache for MAA")
     parser.add_argument("--maa_l3_uncacheable", action="store_true", help="Enable uncacheable L3 cache for MAA")
     parser.add_argument("--maa_num_maas", type=int, default=1, help="Number of MAA instances")
+    parser.add_argument("--maa_num_indirect_units_per_maa", type=int, default=1, help="Number of indirect access units per MAA instance")
     parser.add_argument("--maa_ncbus_width", type=int, default=32, help="Width of the Non-Coherent Bus")
     parser.add_argument("--l1d_repl_policy",  default="LRURP",
                     choices=ObjectList.rp_list.get_names(),

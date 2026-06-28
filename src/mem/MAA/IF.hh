@@ -172,6 +172,7 @@ public:
     int WordSize();
     int core_id;
     int maa_id;
+    int func_unit_id;
 };
 
 class IF {

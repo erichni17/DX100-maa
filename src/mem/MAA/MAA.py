@@ -36,6 +36,7 @@ class MAA(ClockedObject):
     num_memory_channels = Param.Unsigned(2, "Number of memory channels")
     num_cores = Param.Unsigned(4, "Number of cores")
     num_maas = Param.Unsigned(1, "Number of MAA instances")
+    num_indirect_units_per_maa = Param.Unsigned(1, "Number of indirect access units per MAA instance")
 
 
     cpu_sides = VectorResponsePort("Vector port for connecting to the CPU and/or device")

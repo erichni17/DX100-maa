@@ -402,6 +402,8 @@ public:
     unsigned int num_channels;
     unsigned int num_maas;
     unsigned int num_cores_per_maas;
+    unsigned int num_indirect_units_per_maa;
+    unsigned int num_indirect_units_total;
     unsigned int m_core_addr_bits;
 
     Cycles rowtable_latency;
@@ -473,7 +475,7 @@ public:
 
 public:
     struct MAAStats : public statistics::Group {
-        MAAStats(statistics::Group *parent, int num_maas, MAA *_maa);
+        MAAStats(statistics::Group *parent, int num_indirect_units, MAA *_maa);
 
         MAA *maa;
         void preDumpStats() override;
@@ -660,7 +662,7 @@ protected:
         MemCmd cmd;
         bool cached;
         bool sent;
-        std::vector<uint8_t> maaIDs;
+        std::vector<int> maaIDs;
         std::vector<FuncUnitType> funcUnits;
         OutstandingPacket(PacketPtr _packet, Addr _paddr, Tick _tick, MemCmd _cmd)
             : packet(_packet), paddr(_paddr), tick(_tick), cmd(_cmd), cached(false), sent(false) {}
@@ -711,9 +713,9 @@ protected:
     void unblockCache(int core_id);
 
 public:
-    void sendPacket(FuncUnitType funcUnit, uint8_t maaID, PacketPtr pkt, Tick tick, bool force_cache = false);
-    bool allIndirectPacketsSent(uint8_t maaID);
-    bool allStreamPacketsSent(uint8_t maaID);
+    void sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick, bool force_cache = false);
+    bool allIndirectPacketsSent(int maaID);
+    bool allStreamPacketsSent(int maaID);
 };
 /**
  * Returns the address of the closest aligned fixed-size block to the given

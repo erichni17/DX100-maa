@@ -6,6 +6,8 @@
 #include "debug/Drain.hh"
 #include "sim/system.hh"
 
+#include <cstdlib>
+
 // spdlog collides with gem5...
 #pragma push_macro("warn")
 #undef warn
@@ -19,6 +21,18 @@
 namespace gem5 {
 
 namespace memory {
+
+static uint64_t
+auditSliceLowerBits(uint64_t &addr, int bits)
+{
+    if (bits <= 0) {
+        return 0;
+    }
+    uint64_t mask = bits >= 64 ? ~0ULL : ((1ULL << bits) - 1);
+    uint64_t lbits = addr & mask;
+    addr >>= bits;
+    return lbits;
+}
 
 Ramulator2::Ramulator2(const Params &p) : AbstractMemory(p),
                                           port(name() + ".port", *this),
@@ -60,6 +74,12 @@ void Ramulator2::init() {
     ramulator2_frontend->connect_memory_system(ramulator2_memorysystem);
     ramulator2_memorysystem->connect_frontend(ramulator2_frontend);
 
+    std::vector<int> audit_org;
+    int audit_colBitsIdx = -1;
+    ramulator2_memorysystem->getAddrMapData(audit_org, audit_addrBits,
+                                            audit_numLevels, audit_txOffset,
+                                            audit_colBitsIdx, audit_rowBitsIdx);
+
     // if (system()->cacheLineSize() != wrapper.burstSize())
     //     fatal("Ramulator2 burst size %d does not match cache line size %d\n",
     //           wrapper.burstSize(), system()->cacheLineSize());
@@ -74,10 +94,50 @@ void Ramulator2::startup() {
 
 void Ramulator2::resetStats() {
     printf("Resetting ramulator's stats\n");
+    ovl_cyclesAny = ovl_cyclesRead = ovl_cyclesWrite = ovl_cyclesBoth = 0;
+    ovl_cyclesWriteOnly = ovl_currentWriteOnlyRun = ovl_maxWriteOnlyRun = 0;
+    wr_total = wr_transitions = wr_sameRowTransitions = wr_rowRuns = 0;
+    wr_currentRowRun = wr_maxRowRun = 0;
+    wr_sameCL = wr_plusOneCL = wr_minusOneCL = 0;
+    wr_absLe4CL = wr_absLe16CL = wr_absLe64CL = wr_absGt64CL = 0;
+    wr_lastCL = wr_lastRowKey = 0;
+    wr_haveLast = false;
+    wr_uniqueCLs.clear();
+    wr_uniqueRows.clear();
     ramulator2_memorysystem->reset_stats();
 }
 void Ramulator2::preDumpStats() {
     printf("Dumping ramulator's stats\n");
+    // read/write overlap audit (ROI-only). both/any = fraction of busy DRAM cycles with reads AND
+    // writes concurrently outstanding; both/write = how often writes had a read to overlap with.
+    printf("OVERLAP_AUDIT any=%lu read=%lu write=%lu both=%lu  both/any=%.3f both/write=%.3f\n",
+           (unsigned long)ovl_cyclesAny, (unsigned long)ovl_cyclesRead,
+           (unsigned long)ovl_cyclesWrite, (unsigned long)ovl_cyclesBoth,
+           ovl_cyclesAny ? (double)ovl_cyclesBoth / ovl_cyclesAny : 0.0,
+           ovl_cyclesWrite ? (double)ovl_cyclesBoth / ovl_cyclesWrite : 0.0);
+    printf("WRITE_TAIL_AUDIT write_only=%lu write_only/write=%.3f max_write_only_run=%lu\n",
+           (unsigned long)ovl_cyclesWriteOnly,
+           ovl_cyclesWrite ? (double)ovl_cyclesWriteOnly / ovl_cyclesWrite : 0.0,
+           (unsigned long)ovl_maxWriteOnlyRun);
+    printf("WRITE_ADDR_AUDIT writes=%lu unique_cl=%lu unique_rows=%lu transitions=%lu "
+           "same_row=%lu same_row/trans=%.3f row_runs=%lu avg_row_run=%.2f max_row_run=%lu "
+           "delta0=%lu plus1=%lu minus1=%lu abs_le4=%lu abs_le16=%lu abs_le64=%lu abs_gt64=%lu\n",
+           (unsigned long)wr_total,
+           (unsigned long)wr_uniqueCLs.size(),
+           (unsigned long)wr_uniqueRows.size(),
+           (unsigned long)wr_transitions,
+           (unsigned long)wr_sameRowTransitions,
+           wr_transitions ? (double)wr_sameRowTransitions / wr_transitions : 0.0,
+           (unsigned long)wr_rowRuns,
+           wr_rowRuns ? (double)wr_total / wr_rowRuns : 0.0,
+           (unsigned long)wr_maxRowRun,
+           (unsigned long)wr_sameCL,
+           (unsigned long)wr_plusOneCL,
+           (unsigned long)wr_minusOneCL,
+           (unsigned long)wr_absLe4CL,
+           (unsigned long)wr_absLe16CL,
+           (unsigned long)wr_absLe64CL,
+           (unsigned long)wr_absGt64CL);
     ramulator2_memorysystem->dump_stats();
 }
 
@@ -118,6 +178,20 @@ void Ramulator2::tick() {
     // Only tick when it's timing mode
     if (system()->isTimingMode()) {
         ramulator2_memorysystem->tick();
+
+        // read/write overlap audit: sample DRAM-request occupancy this cycle
+        if (nbrOutstandingReads || nbrOutstandingWrites) ovl_cyclesAny++;
+        if (nbrOutstandingReads) ovl_cyclesRead++;
+        if (nbrOutstandingWrites) ovl_cyclesWrite++;
+        if (nbrOutstandingReads && nbrOutstandingWrites) ovl_cyclesBoth++;
+        if (nbrOutstandingWrites && !nbrOutstandingReads) {
+            ovl_cyclesWriteOnly++;
+            ovl_currentWriteOnlyRun++;
+            if (ovl_currentWriteOnlyRun > ovl_maxWriteOnlyRun)
+                ovl_maxWriteOnlyRun = ovl_currentWriteOnlyRun;
+        } else {
+            ovl_currentWriteOnlyRun = 0;
+        }
 
         // is the connected port waiting for a retry, if so check the
         // state and send a retry if conditions have changed
@@ -212,6 +286,7 @@ bool Ramulator2::recvTimingReq(PacketPtr pkt) {
                                                                          });
 
         if (enqueue_success) {
+            auditWriteAddr(pkt->getAddr());
             outstandingWrites[pkt->getAddr()].push_back(pkt);
 
             ++nbrOutstandingWrites;
@@ -228,6 +303,81 @@ bool Ramulator2::recvTimingReq(PacketPtr pkt) {
     }
 
     return enqueue_success;
+}
+
+uint64_t
+Ramulator2::auditRowKey(Addr addr) const
+{
+    if (audit_numLevels <= 0 || audit_rowBitsIdx < 0 ||
+        audit_addrBits.empty()) {
+        return addr >> 13;
+    }
+
+    uint64_t mapped = addr >> audit_txOffset;
+    uint64_t key = auditSliceLowerBits(mapped, audit_addrBits[0]);
+
+    // RoBaRaCoCh consumes column bits before rank/bank-group/bank/row.
+    (void)auditSliceLowerBits(mapped, audit_addrBits[audit_numLevels - 1]);
+    for (int level = 1; level <= audit_rowBitsIdx; level++) {
+        uint64_t field = auditSliceLowerBits(mapped, audit_addrBits[level]);
+        key <<= audit_addrBits[level];
+        key |= field;
+    }
+    return key;
+}
+
+void
+Ramulator2::auditWriteAddr(Addr addr)
+{
+    const uint64_t cl = addr >> 6;
+    const uint64_t rowKey = auditRowKey(addr);
+
+    wr_total++;
+    wr_uniqueCLs.insert(cl);
+    wr_uniqueRows.insert(rowKey);
+
+    if (!wr_haveLast) {
+        wr_haveLast = true;
+        wr_lastCL = cl;
+        wr_lastRowKey = rowKey;
+        wr_rowRuns = 1;
+        wr_currentRowRun = 1;
+        wr_maxRowRun = 1;
+        return;
+    }
+
+    wr_transitions++;
+
+    const long long delta = (long long)cl - (long long)wr_lastCL;
+    const unsigned long long absDelta = delta < 0 ? (unsigned long long)(-delta) :
+                                                    (unsigned long long)delta;
+    if (delta == 0)
+        wr_sameCL++;
+    if (delta == 1)
+        wr_plusOneCL++;
+    if (delta == -1)
+        wr_minusOneCL++;
+    if (absDelta <= 4)
+        wr_absLe4CL++;
+    else if (absDelta <= 16)
+        wr_absLe16CL++;
+    else if (absDelta <= 64)
+        wr_absLe64CL++;
+    else
+        wr_absGt64CL++;
+
+    if (rowKey == wr_lastRowKey) {
+        wr_sameRowTransitions++;
+        wr_currentRowRun++;
+    } else {
+        wr_rowRuns++;
+        wr_currentRowRun = 1;
+    }
+    if (wr_currentRowRun > wr_maxRowRun)
+        wr_maxRowRun = wr_currentRowRun;
+
+    wr_lastCL = cl;
+    wr_lastRowKey = rowKey;
 }
 
 void Ramulator2::recvRespRetry() {

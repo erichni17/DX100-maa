@@ -71,6 +71,9 @@ def _get_maa_opts(options):
     
     if hasattr(options, "maa_num_maas"):
         opts["num_maas"] = getattr(options, "maa_num_maas")
+
+    if hasattr(options, "maa_num_indirect_units_per_maa"):
+        opts["num_indirect_units_per_maa"] = getattr(options, "maa_num_indirect_units_per_maa")
     
     opts["num_memory_channels"] = options.mem_channels
     opts["num_cores"] = options.num_cpus
@@ -137,18 +140,21 @@ def config_maa(options, system):
     opts = _get_maa_opts(options)
     system.maa = SharedMAA(clk_domain=system.cpu_clk_domain, **opts)
     
-    # Increasing LLC side packets to accommodate the MAA routing table
-    # Accomodating for all stream and indirect units (2)
-    max_tol3_routing_table_size = (2 if "num_maas" not in opts else 2 * opts["num_maas"])
-    max_tol3_routing_table_size *= (1 if "num_tile_elements" not in opts else opts["num_tile_elements"])
+    # Increasing LLC side packets to accommodate the MAA routing table.
+    # Accommodate one stream unit plus the configured indirect units per MAA.
+    num_maas = opts.get("num_maas", 1)
+    num_indirect_units_per_maa = opts.get("num_indirect_units_per_maa", 1)
+    num_requesting_units = num_maas * (1 + num_indirect_units_per_maa)
+    max_tol3_routing_table_size = num_requesting_units
+    max_tol3_routing_table_size *= opts.get("num_tile_elements", 1)
     max_tol3_routing_table_size = max(512, max_tol3_routing_table_size)
     print(f"MAA max tol3bus routing table size: {max_tol3_routing_table_size}")
     system.maa.max_outstanding_cache_side_packets = max_tol3_routing_table_size
     system.tol3bus.max_routing_table_size = max_tol3_routing_table_size
 
-    # Accomodating for all invalidator and indirect units (2)
-    max_mem_routing_table_size = (2 if "num_maas" not in opts else 2 * opts["num_maas"])
-    max_mem_routing_table_size *= (1 if "num_tile_elements" not in opts else opts["num_tile_elements"])
+    # Accommodate one invalidator path plus the configured indirect units per MAA.
+    max_mem_routing_table_size = num_requesting_units
+    max_mem_routing_table_size *= opts.get("num_tile_elements", 1)
     max_mem_routing_table_size = max(512, max_mem_routing_table_size)
     print(f"MAA max membus routing table size: {max_mem_routing_table_size}")
     system.maa.max_outstanding_cpu_side_packets = max_mem_routing_table_size

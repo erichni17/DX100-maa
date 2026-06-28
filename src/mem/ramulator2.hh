@@ -4,6 +4,8 @@
 #include <functional>
 #include <deque>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "mem/abstract_mem.hh"
 #include "params/Ramulator2.hh"
@@ -65,6 +67,42 @@ private:
      */
     unsigned int nbrOutstandingReads;
     unsigned int nbrOutstandingWrites;
+
+    // --- read/write overlap audit (T-W): per-DRAM-cycle occupancy, ROI-only (zeroed at resetStats) ---
+    uint64_t ovl_cyclesAny = 0;    // cycles with >=1 request outstanding at DRAM
+    uint64_t ovl_cyclesRead = 0;   // cycles with >=1 read outstanding
+    uint64_t ovl_cyclesWrite = 0;  // cycles with >=1 write outstanding
+    uint64_t ovl_cyclesBoth = 0;   // cycles with BOTH a read AND a write outstanding (the overlap)
+    uint64_t ovl_cyclesWriteOnly = 0; // cycles with write outstanding and no read to hide it
+    uint64_t ovl_currentWriteOnlyRun = 0;
+    uint64_t ovl_maxWriteOnlyRun = 0;
+
+    // --- write-address audit (T-W #4): incoming DRAM write stream, ROI-only ---
+    std::vector<int> audit_addrBits;
+    int audit_numLevels = 0;
+    int audit_txOffset = 0;
+    int audit_rowBitsIdx = -1;
+    uint64_t wr_total = 0;
+    uint64_t wr_transitions = 0;
+    uint64_t wr_sameRowTransitions = 0;
+    uint64_t wr_rowRuns = 0;
+    uint64_t wr_currentRowRun = 0;
+    uint64_t wr_maxRowRun = 0;
+    uint64_t wr_sameCL = 0;
+    uint64_t wr_plusOneCL = 0;
+    uint64_t wr_minusOneCL = 0;
+    uint64_t wr_absLe4CL = 0;
+    uint64_t wr_absLe16CL = 0;
+    uint64_t wr_absLe64CL = 0;
+    uint64_t wr_absGt64CL = 0;
+    uint64_t wr_lastCL = 0;
+    uint64_t wr_lastRowKey = 0;
+    bool wr_haveLast = false;
+    std::unordered_set<uint64_t> wr_uniqueCLs;
+    std::unordered_set<uint64_t> wr_uniqueRows;
+
+    uint64_t auditRowKey(Addr addr) const;
+    void auditWriteAddr(Addr addr);
 
     /**
      * Queue to hold response packets until we can send them

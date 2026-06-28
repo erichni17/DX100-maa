@@ -34,7 +34,8 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              PC(0),
                              if_id(-1),
                              core_id(-1),
-                             maa_id(-1) {}
+                             maa_id(-1),
+                             func_unit_id(-1) {}
 std::string Instruction::print() const {
     char baseAddrStr[32];
     std::sprintf(baseAddrStr, "0x%lx", baseAddr);
@@ -43,9 +44,10 @@ std::string Instruction::print() const {
     char maxAddrStr[32];
     std::sprintf(maxAddrStr, "0x%lx", maxAddr);
     std::ostringstream str;
-    ccprintf(str, "INSTR[%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s]",
+    ccprintf(str, "INSTR[%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s]",
              "core_id(" + std::to_string(core_id) + ")",
              " maa_id(" + std::to_string(maa_id) + ")",
+             func_unit_id == -1 ? "" : " unit_id(" + std::to_string(func_unit_id) + ")",
              " opcode(" + opcode_names[(int)opcode] + ")",
              optype == OPType::MAX ? "" : " optype(" + optype_names[(int)optype] + ")",
              " datatype(" + datatype_names[(int)datatype] + ")",
