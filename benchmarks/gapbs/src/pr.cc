@@ -2,7 +2,10 @@
 // See LICENSE.txt for license details
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <omp.h>
 #include <vector>
 
@@ -51,6 +54,29 @@ using namespace std;
 
 typedef float ScoreT;
 const float kDamp = 0.85;
+
+static inline void PrintScoreFingerprint(const pvector<ScoreT> &scores) {
+#ifdef PR_FP_ENABLE
+    double sum = 0.0;
+    double absum = 0.0;
+    double minv = std::numeric_limits<double>::infinity();
+    double maxv = -std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < scores.size(); i++) {
+        double v = static_cast<double>(scores[i]);
+        sum += v;
+        absum += std::fabs(v);
+        minv = std::min(minv, v);
+        maxv = std::max(maxv, v);
+    }
+    std::cout << std::scientific << std::setprecision(17)
+              << "PR_FP"
+              << " sum=" << sum
+              << " absum=" << absum
+              << " min=" << minv
+              << " max=" << maxv
+              << std::defaultfloat << std::endl;
+#endif
+}
 
 pvector<ScoreT> PageRankPullGS(const Graph &g, int max_iters, double epsilon = 0, bool logging_enabled = false) {
     int num_nodes = g.num_nodes();
@@ -118,6 +144,7 @@ pvector<ScoreT> PageRankPullGS(const Graph &g, int max_iters, double epsilon = 0
     clear_mem_region();
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
+    PrintScoreFingerprint(scores);
     std::cout << "ROI End!!!" << std::endl;
     m5_exit(0);
 #endif
@@ -263,6 +290,7 @@ pvector<ScoreT> PageRankPullMAA(const Graph &g, int max_iters, double epsilon = 
 #ifdef GEM5
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
+    PrintScoreFingerprint(scores);
     std::cout << "ROI End!!!" << std::endl;
     m5_exit(0);
 #endif
