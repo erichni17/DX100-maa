@@ -31,7 +31,7 @@ protected:
     TileStatus *tiles_status;
     bool *tiles_dirty;
     uint8_t *tiles_ready;
-    uint16_t *tiles_size;
+    uint32_t *tiles_size;
     bool *element_finished;
     std::vector<uint8_t> *waiting_units_funcs;
     std::vector<int> *waiting_units_ids;
@@ -90,8 +90,8 @@ public:
     void setTileReady(int tile_id, int word_size);
     void setTileNotReady(int tile_id, int word_size);
     bool getTileReady(int tile_id);
-    uint16_t getSize(int tile_id);
-    void setSize(int tile_id, uint16_t size);
+    int getSize(int tile_id);
+    void setSize(int tile_id, int size);
 
 public:
     SPD(MAA *_maa,

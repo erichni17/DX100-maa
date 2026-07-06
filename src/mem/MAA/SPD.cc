@@ -185,15 +185,18 @@ void SPD::wakeup_waiting_units(int tile_id) {
     waiting_units_funcs[tile_id].clear();
     waiting_units_ids[tile_id].clear();
 }
-uint16_t SPD::getSize(int tile_id) {
+int SPD::getSize(int tile_id) {
     check_tile_id(tile_id, sizeof(uint32_t));
     panic_if(getTileStatus(tile_id) != SPD::TileStatus::Finished,
              "Trying to get size of an uninitialized tile[%d]!\n",
              tile_id);
-    return tiles_size[tile_id];
+    return static_cast<int>(tiles_size[tile_id]);
 }
-void SPD::setSize(int tile_id, uint16_t size) {
+void SPD::setSize(int tile_id, int size) {
     assert((0 <= tile_id) && (tile_id < num_tiles));
+    panic_if(size < 0 || size > static_cast<int>(num_tile_elements),
+             "Invalid SPD tile size %d (max=%u) for tile[%d]!\n",
+             size, num_tile_elements, tile_id);
     tiles_size[tile_id] = size;
 }
 SPD::SPD(MAA *_maa,
@@ -215,7 +218,7 @@ SPD::SPD(MAA *_maa,
     tiles_status = new SPD::TileStatus[num_tiles];
     tiles_dirty = new bool[num_tiles];
     tiles_ready = new uint8_t[num_tiles];
-    tiles_size = new uint16_t[num_tiles];
+    tiles_size = new uint32_t[num_tiles];
     for (int i = 0; i < num_tiles; i++) {
         tiles_status[i] = SPD::TileStatus::Finished;
         tiles_size[i] = 0;

@@ -16,6 +16,7 @@
 #include "debug/MAAController.hh"
 #include <cassert>
 #include <cstdint>
+#include <limits>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -281,7 +282,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             Addr offset = address_range.getOffset();
             assert(offset % sizeof(uint16_t) == 0);
             int element_id = offset / sizeof(uint16_t);
-            uint16_t data = spd->getSize(element_id);
+            int full_size = spd->getSize(element_id);
+            uint16_t data = (full_size > static_cast<int>(std::numeric_limits<uint16_t>::max()))
+                                ? std::numeric_limits<uint16_t>::max()
+                                : static_cast<uint16_t>(full_size);
             uint8_t *dataPtr = (uint8_t *)(&data);
             pkt->setData(dataPtr);
             assert(pkt->needsResponse());
