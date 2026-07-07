@@ -1,0 +1,23 @@
+campaign_id: "YYYY-MM-DD_topic_scope"
+question: ""
+hypothesis: ""
+
+repos:
+  dx100_sha: ""
+  research_sha: ""
+
+workloads:
+  - name: ""
+    scale: ""
+    input: ""
+
+build:
+  commands: []
+
+run:
+  commands: []
+
+outputs:
+  logs_dir: "logs"
+  tables_dir: "tables"
+  notes_file: "notes/summary.md"

@@ -98,3 +98,12 @@ rd_*/
 rd_*.driver.log
 reorder_dist_results.txt
 reorder_dist_sweep.out
+
+# DX100 experiment workspace reorg (2026-07)
+experiments/archive/pre_reorg_root_dump_2026-07/
+experiments/scripts/legacy_root_2026-07/
+
+# locally built GAPBS binaries/logs
+benchmarks/gapbs/bfs_maa_*
+benchmarks/gapbs/pr_maa_*
+benchmarks/gapbs/gen*.log
