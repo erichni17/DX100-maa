@@ -138,6 +138,16 @@ def get_maa_address(options):
 def config_maa(options, system):
     assert(options.l3cache)
     opts = _get_maa_opts(options)
+    # Backward-compat: a config script can be newer than the compiled gem5 binary
+    # (e.g. an A/B baseline built before a param like num_indirect_units_per_maa
+    # existed). Drop opts the compiled SharedMAA does not declare so old binaries
+    # still restore instead of AttributeError-ing at config time.
+    _valid = set(SharedMAA._params.keys())
+    _dropped = [k for k in list(opts.keys()) if k not in _valid]
+    for _k in _dropped:
+        del opts[_k]
+    if _dropped:
+        print(f"warn: MAAConfig dropping opts not in this binary's SharedMAA: {_dropped}")
     system.maa = SharedMAA(clk_domain=system.cpu_clk_domain, **opts)
     
     # Increasing LLC side packets to accommodate the MAA routing table.

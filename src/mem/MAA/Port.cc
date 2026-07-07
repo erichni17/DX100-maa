@@ -340,27 +340,56 @@ bool MAA::sendOutstandingMemPacket() {
         }
         if (mem_channels_blocked[ch])
             continue;
-        for (auto it = my_outstanding_indirect_mem_write_pkts[ch].begin(); it != my_outstanding_indirect_mem_write_pkts[ch].end();) {
-            if (it->tick > curTick()) {
-                DPRINTF(MAAPort, "%s: waiting for %d cycles to send %s to memory\n", __func__, getTicksToCycles(it->tick - curTick()), it->packet->print());
+        // Smart writeback queue: reads already drained above, so this loop only
+        // runs in slots where no ready read exists -> overlap is preserved. Among
+        // the *ready* writebacks (tick <= now), prefer one whose DRAM row is still
+        // open in its bank (the last write to that bank touched the same row) so
+        // it issues as a row-buffer hit. Fall back to the oldest ready write when
+        // no open-row match exists. This row-groups the write stream without
+        // serializing it behind the reads.
+        std::multiset<OutstandingPacket, CompareByTick> &wq = my_outstanding_indirect_mem_write_pkts[ch];
+        while (wq.empty() == false) {
+            auto oldest = wq.begin();
+            if (oldest->tick > curTick()) {
+                DPRINTF(MAAPort, "%s: waiting for %d cycles to send %s to memory\n", __func__, getTicksToCycles(oldest->tick - curTick()), oldest->packet->print());
                 packet_remaining = true;
                 break;
             }
-            DPRINTF(MAAPort, "%s: trying sending %s to memory\n", __func__, it->packet->print());
-            if (sendPacketMem(it->packet) == false) {
+            // Scan the ready prefix (ordered by tick) for an open-row hit.
+            auto chosen = oldest;
+            bool chosen_hit = false;
+            for (auto it = wq.begin(); it != wq.end() && it->tick <= curTick(); ++it) {
+                uint64_t bank_key;
+                Addr row;
+                writeRowKey(it->paddr, bank_key, row);
+                auto lr = my_writeback_last_row[ch].find(bank_key);
+                if (lr != my_writeback_last_row[ch].end() && lr->second == row) {
+                    chosen = it;
+                    chosen_hit = true;
+                    break;
+                }
+            }
+            DPRINTF(MAAPort, "%s: trying sending %s to memory (row-%s)\n", __func__, chosen->packet->print(), chosen_hit ? "hit" : "miss");
+            if (sendPacketMem(chosen->packet) == false) {
                 DPRINTF(MAAPort, "%s: send failed for channel %d\n", __func__, ch);
                 mem_channels_blocked[ch] = true;
                 break;
             } else {
-                Addr paddr = it->paddr;
-                panic_if(it->packet->needsResponse(), "%s write packet %s needs response!\n", __func__, it->packet->print());
+                Addr paddr = chosen->paddr;
+                panic_if(chosen->packet->needsResponse(), "%s write packet %s needs response!\n", __func__, chosen->packet->print());
                 OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
                 my_outstanding_pkt_map.erase(paddr);
                 panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
                 panic_if(tmp.funcUnits[0] != FuncUnitType::INDIRECT, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::INDIRECT]);
                 my_num_outstanding_indirect_pkts[tmp.maaIDs[0]]--;
-                indirectAccessUnits[tmp.maaIDs[0]].memWritePacketSent(it->paddr);
-                it = my_outstanding_indirect_mem_write_pkts[ch].erase(it);
+                indirectAccessUnits[tmp.maaIDs[0]].memWritePacketSent(paddr);
+                uint64_t bank_key;
+                Addr row;
+                writeRowKey(paddr, bank_key, row);
+                my_writeback_last_row[ch][bank_key] = row;
+                if (chosen_hit)
+                    stats.port_mem_WR_rowhit += 1;
+                wq.erase(chosen);
                 stats.port_mem_WR_packets += 1;
             }
         }

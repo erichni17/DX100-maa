@@ -317,6 +317,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
     my_outstanding_indirect_cache_write_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_cores];
     my_outstanding_indirect_mem_write_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_channels];
     my_outstanding_indirect_mem_read_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_channels];
+    my_writeback_last_row = new std::unordered_map<uint64_t, Addr>[num_channels];
     my_outstanding_stream_cache_read_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_cores];
     my_outstanding_stream_cache_write_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_cores];
     my_outstanding_stream_mem_write_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_cores];
@@ -341,6 +342,14 @@ std::vector<int> MAA::map_addr(Addr addr) {
 int MAA::channel_addr(Addr addr) {
     addr = addr >> m_tx_offset;
     return slice_lower_bits(addr, m_addr_bits[0]);
+}
+void MAA::writeRowKey(Addr paddr, uint64_t &bank_key, Addr &row) {
+    // RoBaRaCoCh decompose. Channel is already the per-channel queue index, so
+    // the bank is uniquely identified within a channel by (rank, bankgroup, bank).
+    // Row buffers are per-bank, so the open-row tracker must key on the bank.
+    std::vector<int> v = map_addr(paddr);
+    bank_key = (((uint64_t)v[ADDR_RANK_LEVEL] * 1024ULL + (uint64_t)v[ADDR_BANKGROUP_LEVEL]) * 1024ULL) + (uint64_t)v[ADDR_BANK_LEVEL];
+    row = (Addr)v[ADDR_ROW_LEVEL];
 }
 int MAA::core_addr(Addr addr) {
     addr = addr >> m_tx_offset;
@@ -818,6 +827,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(port_cache_RD_packets, statistics::units::Count::get(), "number of cache read packets"),
       ADD_STAT(port_mem_WR_packets, statistics::units::Count::get(), "number of memory write packets"),
       ADD_STAT(port_mem_RD_packets, statistics::units::Count::get(), "number of memory read packets"),
+      ADD_STAT(port_mem_WR_rowhit, statistics::units::Count::get(), "indirect writebacks issued to an already-open DRAM row (per-bank)"),
       ADD_STAT(port_cache_packets, statistics::units::Count::get(), "number of cache packets"),
       ADD_STAT(port_mem_packets, statistics::units::Count::get(), "number of memory packets"),
       ADD_STAT(port_cache_WR_BW, statistics::units::Count::get(), "cache write bandwidth (GB/s)"),
@@ -855,6 +865,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
     port_cache_RD_packets.flags(statistics::nozero);
     port_mem_WR_packets.flags(statistics::nozero);
     port_mem_RD_packets.flags(statistics::nozero);
+    port_mem_WR_rowhit.flags(statistics::nozero);
 
     cycles_BUSY = cycles_TOTAL - cycles_IDLE;
     avgCPI_INDRD = cycles_INDRD / numInst_INDRD;

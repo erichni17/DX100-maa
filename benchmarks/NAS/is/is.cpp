@@ -43,6 +43,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <omp.h>
 #include <cassert>
 
@@ -81,9 +82,18 @@
 /*  CLASS B  */
 /*************/
 #if NUM_CORES == 4
+#ifdef SMALL_CLASS
+/* Smoke-test size for gem5 detailed timing: 2^22 = 4M keys (16MB key_array,
+   clearly spills 8MB L3); MAX_KEY 2^19 = 512K (2MB histogram/thread).
+   Keeps the DUMP header + gem5 run small while still write-heavy. */
+#define TOTAL_KEYS_LOG_2  22
+#define MAX_KEY_LOG_2     19
+#define NUM_BUCKETS_LOG_2 10
+#else
 #define TOTAL_KEYS_LOG_2  25
 #define MAX_KEY_LOG_2     21
 #define NUM_BUCKETS_LOG_2 10
+#endif
 #elif NUM_CORES == 8
 #define TOTAL_KEYS_LOG_2  26
 #define MAX_KEY_LOG_2     22
@@ -150,6 +160,17 @@ INT_TYPE key_buff2[NUM_KEYS];
 // 32MB
 // [NUMTHREADS][MAX_KEY]
 INT_TYPE **key_buff1_aptr = NULL;
+
+#ifdef GEM5
+/* Static BSS storage for the per-thread histogram work buffers. Under gem5 SE
+   these MUST NOT be malloc'd: large (>mmap-threshold) heap allocations made
+   before m5_checkpoint() do not survive checkpoint/restore (their mmap vma is
+   not reinstated), so the post-restore clear loop stores into an unmapped page
+   and gem5 panics "Tried to write unmapped address". Static BSS arrays carry an
+   ELF load-time vma and are faulted-in correctly after restore (this is exactly
+   why thread 0's static key_buff1 already works). */
+INT_TYPE key_buff1_work[NUM_CORES][MAX_KEY];
+#endif
 
 #ifdef DO_VERIFY
 INT_TYPE partial_verify_vals[TEST_ARRAY_SIZE];
@@ -438,8 +459,20 @@ void alloc_key_buff(void) {
 
     key_buff1_aptr[0] = key_buff1;
     for (i = 1; i < num_threads; i++) {
+#ifdef GEM5
+        /* checkpoint-safe static storage (see key_buff1_work above) */
+        assert(i < NUM_CORES);
+        key_buff1_aptr[i] = key_buff1_work[i];
+#else
         key_buff1_aptr[i] = (INT_TYPE *)alloc_mem(sizeof(INT_TYPE) * MAX_KEY);
+#endif
     }
+
+    /* Pre-fault every per-thread histogram buffer so their pages are backed by
+       physical memory before the gem5 m5_checkpoint() is taken. Harmless in all
+       modes; does not change functional results. */
+    for (i = 0; i < num_threads; i++)
+        memset(key_buff1_aptr[i], 0, sizeof(INT_TYPE) * MAX_KEY);
 }
 
 /*****************************************************************/

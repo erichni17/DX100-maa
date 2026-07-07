@@ -7,6 +7,7 @@
 #include <memory>
 #include <queue>
 #include <string>
+#include <unordered_map>
 
 #include "base/trace.hh"
 #include "base/types.hh"
@@ -527,6 +528,10 @@ public:
         statistics::Scalar port_cache_RD_packets;
         statistics::Scalar port_mem_WR_packets;
         statistics::Scalar port_mem_RD_packets;
+        // Smart writeback queue (Phase 0 instrumentation): number of indirect
+        // writebacks issued to a DRAM row already left open by the previous
+        // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.
+        statistics::Scalar port_mem_WR_rowhit;
         statistics::Formula port_cache_packets;
         statistics::Formula port_mem_packets;
         statistics::Formula port_cache_WR_BW;
@@ -691,6 +696,12 @@ protected:
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_write_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_mem_write_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_mem_read_pkts;
+    // Smart writeback queue: last DRAM row issued to each bank, per channel.
+    // Used to pick a ready writeback that keeps an already-open row open
+    // (row-buffer hit) instead of draining in pure read-return order.
+    std::unordered_map<uint64_t, Addr> *my_writeback_last_row;
+    // Decompose a paddr into (bank_key, row) for the per-bank open-row tracker.
+    void writeRowKey(Addr paddr, uint64_t &bank_key, Addr &row);
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_cache_read_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_cache_write_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_mem_write_pkts;
