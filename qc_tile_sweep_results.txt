@@ -1,0 +1,6 @@
+micro	tile=16384	cycles_INDRD=257279	simTicks=89469485	AvgMemLat=473.325550	RTFull=1390	Rows=2512	correct=n
+micro	tile=32768	cycles_INDRD=365077	simTicks=122578938	AvgMemLat=646.588550	RTFull=1989	Rows=2528	correct=n
+micro	tile=65536	cycles_INDRD=500416	simTicks=165267130	AvgMemLat=849.110400	RTFull=2183	Rows=2528	correct=n
+pagerank	tile=16384	simTicks=202001596569	cycles_TOTAL=645372513	Rows=46107378	RTFull=1259605	roi_end=n
+pagerank	tile=32768	simTicks=200065018306	cycles_TOTAL=639185362	Rows=43270873	RTFull=1368771	roi_end=n
+pagerank	tile=65536	simTicks=199908974034	cycles_TOTAL=638686818	Rows=42580521	RTFull=1452219	roi_end=y
