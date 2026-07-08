@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# run_is_tile_sweep.sh -- launch NAS-IS tile sweep via run_is_smoke.sh.
+# Usage:
+#   run_is_tile_sweep.sh [gem5_binary] [small_class] [tile_list]
+#
+# Examples:
+#   run_is_tile_sweep.sh
+#   run_is_tile_sweep.sh gem5.opt.ovl_base 1 "4096 8192 16384 32768"
+#   run_is_tile_sweep.sh gem5.opt.ovl_base 0 "16384 32768 65536"
+set -euo pipefail
+
+GH=/data1/nier/DX100
+GBIN=${1:-gem5.opt.ovl_base}
+SMALL=${2:-1}
+TILES=${3:-"4096 8192 16384 32768"}
+RUNNER=$GH/benchmarks/NAS/is/run_is_smoke.sh
+
+echo "[sweep] gem5=$GBIN small=$SMALL tiles=[$TILES]"
+for t in $TILES; do
+  echo "[sweep] tile=$t start"
+  if "$RUNNER" "$GBIN" "$t" "$SMALL"; then
+    echo "[sweep] tile=$t done rc=0"
+  else
+    rc=$?
+    echo "[sweep] tile=$t done rc=$rc"
+  fi
+done
+
+echo "[sweep] complete"

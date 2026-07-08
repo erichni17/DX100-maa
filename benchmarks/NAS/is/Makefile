@@ -17,6 +17,10 @@ ifdef SMALL
 	CXX_FLAGS += -DSMALL_CLASS
 endif
 
+ifdef GEM5_BUILD
+	CXX_FLAGS += -DGEM5
+endif
+
 ifdef DUMP
 	CXX_FLAGS += -DDUMP_TO_FILE
 else
@@ -28,6 +32,7 @@ else
 	MAA_BINARIES += $(SUITE)_maa_8K
 	MAA_BINARIES += $(SUITE)_maa_16K
 	MAA_BINARIES += $(SUITE)_maa_32K
+	MAA_BINARIES += $(SUITE)_maa_64K
 	MAA_BINARIES += $(SUITE)_maa_4C
 	MAA_BINARIES += $(SUITE)_maa_8C
 endif
@@ -74,6 +79,9 @@ GEM5: m5op.o all
 
 %_maa_32K: $(SUITE).cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=32768 $(GEM5_LIB) m5op.o $< -o $@
+
+%_maa_64K: $(SUITE).cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=65536 $(GEM5_LIB) m5op.o $< -o $@
 
 %_maa_4C: $(SUITE).cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 $(GEM5_LIB) m5op.o $< -o $@
