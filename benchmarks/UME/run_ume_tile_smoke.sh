@@ -42,6 +42,19 @@ tile_suffix() {
   esac
 }
 
+mem_size_to_hex() {
+  case "$1" in
+    2GB) echo "0x80000000" ;;
+    4GB) echo "0x100000000" ;;
+    8GB) echo "0x200000000" ;;
+    16GB) echo "0x400000000" ;;
+    *)
+      echo "unsupported mem-size for MAA_MEM_SIZE define: $1" >&2
+      return 1
+      ;;
+  esac
+}
+
 case "$KERNEL" in
   gradzatp|gradzatz|gradzatp_invert|gradzatz_invert) ;;
   *)
@@ -54,17 +67,20 @@ SUF=$(tile_suffix "$TILE")
 BIN_BASENAME="${KERNEL}_maa_${SUF}"
 BIN="$UME/$BIN_BASENAME"
 OPTS="$N"
+MAA_MEM_HEX=$(mem_size_to_hex "$MEM_SIZE")
+MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
 
 if [[ ! -f "$RESULTS" ]]; then
   echo -e "timestamp\tgem5_bin\tkernel\ttile\tn\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutdir" > "$RESULTS"
 fi
 
-echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE n=$N"
-make -C "$UME" "$BIN_BASENAME" > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
+echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE n=$N mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
+rm -f "$BIN"
+make -C "$UME" MAA_MEM_SIZE="$MAA_MEM_HEX" "$BIN_BASENAME" > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
 
-CKPT="$GH/ckpt_cache/ume_${KERNEL}_n${N}_t${TILE}"
-OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_${TAG}"
+CKPT="$GH/ckpt_cache/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
+OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}"
 
 # --- step 1: checkpoint ---
 if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
