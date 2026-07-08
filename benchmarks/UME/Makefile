@@ -33,6 +33,7 @@ MAA_BINARIES += $(addsuffix _maa_4K, $(SUITE))
 MAA_BINARIES += $(addsuffix _maa_8K, $(SUITE))
 MAA_BINARIES += $(addsuffix _maa_16K, $(SUITE))
 MAA_BINARIES += $(addsuffix _maa_32K, $(SUITE))
+MAA_BINARIES += $(addsuffix _maa_64K, $(SUITE))
 MAA_BINARIES += $(addsuffix _maa_4C, $(SUITE))
 MAA_BINARIES += $(addsuffix _maa_8C, $(SUITE))
 MAA_BINARIES += $(addsuffix _maa_16C, $(SUITE))
@@ -74,6 +75,9 @@ GEM5: m5op.o all
 
 %_maa_32K: %.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=32768 $(GEM5_LIB) m5op.o $< -o $@
+
+%_maa_64K: %.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=65536 $(GEM5_LIB) m5op.o $< -o $@
 
 %_maa_4C: %.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 $(GEM5_LIB) m5op.o $< -o $@

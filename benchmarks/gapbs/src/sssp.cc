@@ -172,7 +172,15 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
                 } //
             } else {
                 const int cft = (int)curr_frontier_tail;
-#if TILE_SIZE == 32768
+#if TILE_SIZE == 65536
+                const int tile_size = cft > NUM_CORES * 65536   ? 65536
+                                      : cft > NUM_CORES * 32768 ? 32768
+                                      : cft > NUM_CORES * 16384 ? 16384
+                                      : cft > NUM_CORES * 8192  ? 8192
+                                      : cft > NUM_CORES * 4096  ? 4096
+                                      : cft > NUM_CORES * 2048  ? 2048
+                                                                : 1024;
+#elif TILE_SIZE == 32768
                 const int tile_size = cft > NUM_CORES * 32768   ? 32768
                                       : cft > NUM_CORES * 16384 ? 16384
                                       : cft > NUM_CORES * 8192  ? 8192

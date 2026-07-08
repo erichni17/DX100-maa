@@ -100,7 +100,16 @@ void TDStepMAA(const Graph &g, pvector<SGOffset> &VertexOffsets, pvector<NodeID>
         int len = (int)queue.shared_out_end;
         while (idx < len) {
             int current_len_size = len - idx;
-#if TILE_SIZE == 32768
+#if TILE_SIZE == 65536
+            const int tile_size = current_len_size > NUM_CORES * 65536   ? 65536
+                                  : current_len_size > NUM_CORES * 32768 ? 32768
+                                  : current_len_size > NUM_CORES * 16384 ? 16384
+                                  : current_len_size > NUM_CORES * 8192  ? 8192
+                                  : current_len_size > NUM_CORES * 4096  ? 4096
+                                  : current_len_size > NUM_CORES * 2048  ? 2048
+                                  : current_len_size > NUM_CORES * 1024  ? 1024
+                                                                         : -1;
+#elif TILE_SIZE == 32768
             const int tile_size = current_len_size > NUM_CORES * 32768   ? 32768
                                   : current_len_size > NUM_CORES * 16384 ? 16384
                                   : current_len_size > NUM_CORES * 8192  ? 8192

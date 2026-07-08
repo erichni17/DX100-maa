@@ -96,10 +96,10 @@ set -e
 echo "[restore] done (exit=$RC)"
 
 STATS=$O/stats.txt
-SIMTICKS=$(awk '$1=="simTicks"{print $2}' "$STATS" 2>/dev/null | tail -1)
-MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2}' "$STATS" 2>/dev/null | tail -1)
-OVERLAP=$(grep 'OVERLAP_AUDIT' "$O/run.log" 2>/dev/null | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p')
-WRTAIL=$(grep 'WRITE_TAIL_AUDIT' "$O/run.log" 2>/dev/null | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p')
+SIMTICKS=$(awk '$1=="simTicks"{print $2}' "$STATS" 2>/dev/null | tail -1 || true)
+MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2}' "$STATS" 2>/dev/null | tail -1 || true)
+OVERLAP=$(grep 'OVERLAP_AUDIT' "$O/run.log" 2>/dev/null | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p' || true)
+WRTAIL=$(grep 'WRITE_TAIL_AUDIT' "$O/run.log" 2>/dev/null | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p' || true)
 TS=$(date +%Y-%m-%dT%H:%M:%S)
 
 echo -e "${TS}\t${GBIN}\t${TILE}\t${SMALL}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${O}" >> "$RESULTS"

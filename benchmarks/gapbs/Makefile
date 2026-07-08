@@ -21,6 +21,10 @@ ifneq ($(SERIAL), 1)
 	CXX_FLAGS += $(PAR_FLAG)
 endif
 
+ifdef GEM5_BUILD
+	CXX_FLAGS += -DGEM5
+endif
+
 KERNELS = bc bfs cc cc_sv pr pr_spmv sssp tc
 SUITE = $(KERNELS) converter
 
@@ -74,6 +78,9 @@ GEM5: m5op.o all
 
 %_maa_32K: src/%.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=32768 $(GEM5_LIB) m5op.o $< -o $@
+
+%_maa_64K: src/%.cc src/*.h m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=65536 $(GEM5_LIB) m5op.o $< -o $@
 
 %_maa_4C: src/%.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 $(GEM5_LIB) m5op.o $< -o $@
