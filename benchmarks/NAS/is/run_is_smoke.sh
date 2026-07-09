@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run_is_smoke.sh -- checkpoint->restore smoke for NAS IS MAA with parameterized tile size.
-# Usage: run_is_smoke.sh [gem5_binary] [tile_elements] [small_class]
+# Usage: run_is_smoke.sh [gem5_binary] [tile_elements] [small_class] [restore_timeout] [ckpt_timeout] [prog_interval]
 #   gem5_binary   : default gem5.opt.ovl_base
 #   tile_elements : default 16384 (supported: 1024,2048,4096,8192,16384,32768,65536)
 #   small_class   : 1(default) builds with SMALL=1 for quicker timing smoke, 0 for default class
@@ -13,6 +13,10 @@ GH=/data1/nier/DX100
 GBIN=${1:-gem5.opt.ovl_base}
 TILE=${2:-16384}
 SMALL=${3:-1}
+RESTORE_TIMEOUT=${4:-${RESTORE_TIMEOUT:-1800}}
+CKPT_TIMEOUT=${5:-${CKPT_TIMEOUT:-900}}
+PROG_INTERVAL=${6:-${PROG_INTERVAL:-1000}}
+OMP_THREADS=${OMP_THREADS:-4}
 G=$GH/build/X86/$GBIN
 RAMCFG=$GH/ext/ramulator2/ramulator2/example_gem5_config.yaml
 SE=$GH/configs/deprecated/example/se.py
@@ -59,6 +63,7 @@ if [[ ! -f "$RESULTS" ]]; then
 fi
 
 echo "[build] target=$TBIN_BASENAME tile=$TILE small=$SMALL"
+echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s prog_interval=$PROG_INTERVAL"
 make -C "$IS_DIR" GEM5_BUILD=1 "${MAKE_SMALL[@]}" "$TBIN_BASENAME" > "$CAMPAIGN_ROOT/build_t${TILE}${SMALL_TAG}.log" 2>&1
 
 # --- step 1: checkpoint (AtomicSimpleCPU) if not present ---
@@ -66,7 +71,7 @@ if ! ls "$C"/cpt.* >/dev/null 2>&1; then
   rm -rf "$C"
   mkdir -p "$C"
   echo "[ckpt] creating checkpoint in $C ..."
-  timeout 900 "$G" --outdir="$C" "$SE" \
+  timeout "$CKPT_TIMEOUT" "$G" --outdir="$C" "$SE" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size 16GB --max-checkpoints=1 \
     --cmd "$TBIN" --options "MAA" > "$C/ckpt.log" 2>&1
   echo "[ckpt] done (exit=$?)"
@@ -80,7 +85,7 @@ mkdir -p "$O"
 cp -r "$C"/cpt.* "$O"/
 echo "[restore] running $GBIN, tile=$TILE, small=$SMALL ..."
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 1800 "$G" --outdir="$O" "$SE" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$G" --outdir="$O" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size 16GB \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
   --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
@@ -90,7 +95,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 1800 "$G" --outdir="$O" "$SE" \
   --mem-type Ramulator2 --ramulator-config "$RAMCFG" --mem-channels 2 --maa_ncbus_width 32 \
   --maa --maa_num_maas 1 --maa_num_tile_elements "$TILE" --maa_l2_uncacheable --maa_l3_uncacheable \
   --maa_num_initial_row_table_slices 32 \
-  --cmd "$TBIN" --options "MAA" --prog-interval=1000 > "$O/run.log" 2>&1
+  --cmd "$TBIN" --options "MAA" --prog-interval="$PROG_INTERVAL" > "$O/run.log" 2>&1
 RC=$?
 set -e
 echo "[restore] done (exit=$RC)"
