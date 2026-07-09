@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_gapbs_tile_smoke.sh -- checkpoint->restore tile-size smoke for GAPBS kernels.
 # Usage:
-#   run_gapbs_tile_smoke.sh [gem5_binary] [kernel] [tile] [scale] [iters] [mem_size]
+#   run_gapbs_tile_smoke.sh [gem5_binary] [kernel] [tile] [scale] [iters] [mem_size] [restore_timeout] [ckpt_timeout] [prog_interval]
 # Examples:
 #   run_gapbs_tile_smoke.sh gem5.opt.ovl_base bfs 4096 22 1 2GB
 #   run_gapbs_tile_smoke.sh gem5.opt.ovl_base pr  16384 22 1 2GB
@@ -19,6 +19,10 @@ TILE=${3:-16384}
 SCALE=${4:-22}
 ITERS=${5:-1}
 MEM_SIZE=${6:-2GB}
+RESTORE_TIMEOUT=${7:-${RESTORE_TIMEOUT:-14400}}
+CKPT_TIMEOUT=${8:-${CKPT_TIMEOUT:-3600}}
+PROG_INTERVAL=${9:-${PROG_INTERVAL:-1000}}
+OMP_THREADS=${OMP_THREADS:-4}
 
 GEM5_BIN=$GH/build/X86/$GBIN
 TAG=$(basename "$GBIN")
@@ -93,11 +97,15 @@ if [[ ! -f "$RESULTS" ]]; then
 fi
 
 echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
+echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s prog_interval=$PROG_INTERVAL"
 rm -f "$BIN"
 make -C "$GAP" GEM5_BUILD=1 MAA_MEM_SIZE="$MAA_MEM_HEX" "$BIN_BASENAME" > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
 
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
-[[ -f "$GRAPH_SG" || "$KERNEL" == "sssp" ]] || { echo "missing graph: $GRAPH_SG" >&2; exit 4; }
+if [[ ! -f "$GRAPH_SG" ]]; then
+  echo "[prep] generating graph: $GRAPH_SG"
+  "$GAP/converter" -u "$SCALE" -b "$GRAPH_SG"
+fi
 
 CKPT="$GH/ckpt_cache/gapbs_${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}"
 OUT="$CAMPAIGN_ROOT/${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${TAG}"
@@ -107,7 +115,7 @@ if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "[ckpt] creating checkpoint in $CKPT"
   rm -rf "$CKPT"
   mkdir -p "$CKPT"
-  OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 3600 "$GEM5_BIN" --outdir="$CKPT" "$SE" \
+  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$CKPT_TIMEOUT" "$GEM5_BIN" --outdir="$CKPT" "$SE" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size "$MEM_SIZE" --max-checkpoints=1 \
     --cmd "$BIN" --options "$OPTS" > "$CKPT/ckpt.log" 2>&1
   echo "[ckpt] done (exit=$?)"
@@ -123,7 +131,7 @@ mkdir -p "$OUT"
 cp -r "$CKPT"/cpt.* "$OUT"/
 echo "[restore] running $KERNEL tile=$TILE scale=$SCALE"
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 14400 "$GEM5_BIN" --outdir="$OUT" "$SE" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" --outdir="$OUT" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
   --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
@@ -133,7 +141,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 14400 "$GEM5_BIN" --outdir="$OUT" 
   --mem-type Ramulator2 --ramulator-config "$RAMCFG" --mem-channels 2 --maa_ncbus_width 32 \
   --maa --maa_num_maas 1 --maa_num_tile_elements "$TILE" --maa_l2_uncacheable --maa_l3_uncacheable \
   --maa_num_initial_row_table_slices 32 \
-  --cmd "$BIN" --options "$OPTS" --prog-interval=1000 > "$OUT/run.log" 2>&1
+  --cmd "$BIN" --options "$OPTS" --prog-interval="$PROG_INTERVAL" > "$OUT/run.log" 2>&1
 RC=$?
 set -e
 echo "[restore] done (exit=$RC)"
