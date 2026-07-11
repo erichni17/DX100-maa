@@ -23,6 +23,7 @@ RESTORE_TIMEOUT=${7:-${RESTORE_TIMEOUT:-14400}}
 CKPT_TIMEOUT=${8:-${CKPT_TIMEOUT:-3600}}
 PROG_INTERVAL=${9:-${PROG_INTERVAL:-1000}}
 OMP_THREADS=${OMP_THREADS:-4}
+BUILD_LOCK=${BUILD_LOCK:-$GAP/.build.lock}
 
 GEM5_BIN=$GH/build/X86/$GBIN
 TAG=$(basename "$GBIN")
@@ -98,8 +99,11 @@ fi
 
 echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
 echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s prog_interval=$PROG_INTERVAL"
-rm -f "$BIN"
-make -C "$GAP" GEM5_BUILD=1 MAA_MEM_SIZE="$MAA_MEM_HEX" "$BIN_BASENAME" > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
+echo "[build] waiting for lock: $BUILD_LOCK"
+{
+  flock -x 200
+  make -C "$GAP" GEM5_BUILD=1 MAA_MEM_SIZE="$MAA_MEM_HEX" "$BIN_BASENAME" > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
+} 200>"$BUILD_LOCK"
 
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
 if [[ ! -f "$GRAPH_SG" ]]; then
