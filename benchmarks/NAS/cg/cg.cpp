@@ -542,10 +542,7 @@ int main(int argc, char **argv) {
     }
 #endif
 
-    return 1;
-#ifdef GEM5
-    m5_exit(0);
-#endif
+    return 0;
 }
 
 /*
@@ -602,7 +599,7 @@ static void conj_grad_maa(int colidx[],
     const int lastcol_firstcol_plus1 = lastcol - firstcol + 1;
     const int lastcol_firstcol_plus1_divisible_by_32 = (int)(lastcol_firstcol_plus1 / total_thread_iters) * total_thread_iters;
     const int lastrow_firstrow_plus1_divisible_by_64K = ((int)(lastrow_firstrow_plus1 / (NUM_CORES * TILE_SIZE))) * NUM_CORES * TILE_SIZE;
-    const int tile_size = 1024;
+    const int tile_size = TILE_SIZE;
     float *my_q = &q[tid * 8];
     float *my_z = &z[tid * 8];
     float *my_r = &r[tid * 8];

@@ -84,6 +84,9 @@ GRAPH_WSG="$GAP/serialized_graph_${SCALE}.wsg"
 OPTS=""
 
 case "$KERNEL" in
+  bc)
+    OPTS="-f $GRAPH_SG -n 1 -i $ITERS -v"
+    ;;
   bfs)
     OPTS="-f $GRAPH_SG -l -n 1 -v"
     ;;
@@ -98,7 +101,7 @@ case "$KERNEL" in
     OPTS="-f $GRAPH_WSG -n 1 -v"
     ;;
   *)
-    echo "unsupported kernel: $KERNEL (supported: bfs|pr|sssp)" >&2
+    echo "unsupported kernel: $KERNEL (supported: bc|bfs|pr|sssp)" >&2
     exit 2
     ;;
 esac
@@ -129,7 +132,7 @@ if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "[ckpt] creating checkpoint in $CKPT"
   rm -rf "$CKPT"
   mkdir -p "$CKPT"
-  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$CKPT_TIMEOUT" "$GEM5_BIN" --outdir="$CKPT" "$SE" \
+  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$CKPT_TIMEOUT" "$GEM5_BIN" --listener-mode=off --outdir="$CKPT" "$SE" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size "$MEM_SIZE" --max-checkpoints=1 \
     --cmd "$BIN" --options "$OPTS" > "$CKPT/ckpt.log" 2>&1
   echo "[ckpt] done (exit=$?)"
@@ -145,7 +148,7 @@ mkdir -p "$OUT"
 cp -r "$CKPT"/cpt.* "$OUT"/
 echo "[restore] running $KERNEL tile=$TILE scale=$SCALE"
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" --outdir="$OUT" "$SE" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" --listener-mode=off --outdir="$OUT" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
   --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
