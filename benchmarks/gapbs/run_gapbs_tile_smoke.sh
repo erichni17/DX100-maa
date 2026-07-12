@@ -32,6 +32,16 @@ CAMPAIGN_ROOT=$GH/experiments/campaigns/${DATE_TAG}_gapbs_tile_smoke
 RESULTS=$CAMPAIGN_ROOT/results.tsv
 
 mkdir -p "$CAMPAIGN_ROOT"
+
+# Long simulations keep reading shell input as they progress. Run an immutable
+# campaign-local snapshot so edits to this source cannot corrupt an active job.
+if [[ "${GAPBS_FROZEN_RUNNER:-0}" != 1 ]]; then
+  RUNNER_SNAPSHOT="$CAMPAIGN_ROOT/runner_$(date +%Y%m%d_%H%M%S)_$$.sh"
+  cp -- "${BASH_SOURCE[0]}" "$RUNNER_SNAPSHOT"
+  chmod +x "$RUNNER_SNAPSHOT"
+  exec env GAPBS_FROZEN_RUNNER=1 "$RUNNER_SNAPSHOT" "$@"
+fi
+
 export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
 
 tile_suffix() {
