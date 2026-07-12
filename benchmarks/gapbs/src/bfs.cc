@@ -1,8 +1,10 @@
 // Copyright (c) 2015, The Regents of the University of California (Regents)
 // See LICENSE.txt for license details
 
-#include <iostream>
 #include <omp.h>
+
+#include <cstdint>
+#include <iostream>
 #include <vector>
 
 #include "benchmark.h"
@@ -21,13 +23,17 @@
 
 #ifdef GEM5
 #include <gem5/m5ops.h>
+
 #endif
 
 #if defined(FUNC)
 #include <MAA_functional.hpp>
+
 #elif defined(GEM5)
 #include <MAA_gem5.hpp>
+
 #include <gem5/m5ops.h>
+
 #elif defined(GEM5_MAGIC)
 #include "MAA_gem5_magic.hpp"
 #endif
@@ -419,12 +425,29 @@ pvector<NodeID> DOBFSMAA(const Graph &g, NodeID source, bool logging_enabled = f
     Bitmap front(g.num_nodes());
     front.reset();
 
+#ifdef BFS_FP_ENABLE
+    uint64_t fp_levels = 0;
+    uint64_t fp_reached = 0;
+    uint64_t fp_frontier_sq_sum = 0;
+    uint64_t fp_frontier_hash = 1469598103934665603ULL;
+#endif
+
 #ifdef GEM5
     std::cout << "ROI started: " << omp_get_num_threads() << " threads" << std::endl;
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
 #endif
     while (!queue.empty()) {
+#ifdef BFS_FP_ENABLE
+        const uint64_t frontier_size = static_cast<uint64_t>(queue.size());
+        fp_reached += frontier_size;
+        fp_frontier_sq_sum += frontier_size * frontier_size;
+        fp_frontier_hash ^= fp_levels;
+        fp_frontier_hash *= 1099511628211ULL;
+        fp_frontier_hash ^= frontier_size;
+        fp_frontier_hash *= 1099511628211ULL;
+        fp_levels++;
+#endif
         t.Start();
         bool isMAA = true;
         std::cout << "Starting TDStepMAA: " << queue.size() << " elements" << std::endl;
@@ -446,6 +469,11 @@ pvector<NodeID> DOBFSMAA(const Graph &g, NodeID source, bool logging_enabled = f
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
     std::cout << "ROI End!!!" << std::endl;
+#ifdef BFS_FP_ENABLE
+    std::cout << "BFS_FP levels=" << fp_levels << " reached=" << fp_reached
+              << " frontier_sq_sum=" << fp_frontier_sq_sum
+              << " frontier_hash=" << fp_frontier_hash << std::endl;
+#endif
     m5_exit(0);
 #endif
     return parent;
