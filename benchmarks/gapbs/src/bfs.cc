@@ -472,7 +472,43 @@ pvector<NodeID> DOBFSMAA(const Graph &g, NodeID source, bool logging_enabled = f
 #ifdef BFS_FP_ENABLE
     std::cout << "BFS_FP levels=" << fp_levels << " reached=" << fp_reached
               << " frontier_sq_sum=" << fp_frontier_sq_sum
-              << " frontier_hash=" << fp_frontier_hash << std::endl;
+              << " frontier_hash=" << fp_frontier_hash;
+    uint64_t depth_reached = 0;
+    uint64_t depth_sum = 0;
+    uint64_t depth_sq_sum = 0;
+    uint64_t depth_hash = 1469598103934665603ULL;
+    uint64_t invalid_chains = 0;
+    uint64_t max_depth = 0;
+    for (NodeID n = 0; n < g.num_nodes(); n++) {
+        if (parent[n] < 0)
+            continue;
+        NodeID current = n;
+        uint64_t depth = 0;
+        while (current != source && depth <= fp_levels) {
+            if (current < 0 || current >= g.num_nodes() || parent[current] < 0 ||
+                parent[current] == current)
+                break;
+            current = parent[current];
+            depth++;
+        }
+        if (current != source || depth > fp_levels) {
+            invalid_chains++;
+            continue;
+        }
+        depth_reached++;
+        depth_sum += depth;
+        depth_sq_sum += depth * depth;
+        if (depth > max_depth)
+            max_depth = depth;
+        depth_hash ^= static_cast<uint64_t>(n);
+        depth_hash *= 1099511628211ULL;
+        depth_hash ^= depth;
+        depth_hash *= 1099511628211ULL;
+    }
+    std::cout << " depth_reached=" << depth_reached << " depth_sum=" << depth_sum
+              << " depth_sq_sum=" << depth_sq_sum << " max_depth=" << max_depth
+              << " invalid_chains=" << invalid_chains
+              << " depth_hash=" << depth_hash << std::endl;
 #endif
     m5_exit(0);
 #endif
