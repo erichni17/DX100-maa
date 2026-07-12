@@ -28,6 +28,10 @@ target_link_libraries(gz_read z)
 option(BUILD_MAA "Build MAA version" OFF)
 option(BUILD_FUNC "Build with FUNC mode" OFF)
 option(BUILD_GEM5 "Build with GEM5 mode" OFF)
+set(MAA_MEM_SIZE "" CACHE STRING "Override MAA memory-region base to match gem5 --mem-size")
+if(MAA_MEM_SIZE)
+    add_compile_definitions(MAA_MEM_SIZE=${MAA_MEM_SIZE})
+endif()
 
 # Set paths for GEM5 and MAA
 get_filename_component(GEM5_HOME "${CMAKE_CURRENT_LIST_DIR}/../.." REALPATH)
