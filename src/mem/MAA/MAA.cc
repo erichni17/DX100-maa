@@ -87,7 +87,7 @@ MAA::MAA(const MAAParams &p)
     rf = new RF(num_regs);
     num_instructions_per_maa = num_instructions_per_core * num_cores_per_maas;
     num_instructions_total = num_instructions_per_maa * num_maas;
-    ifile = new IF(num_instructions_per_maa, num_maas, this);
+    ifile = new IF(num_instructions_per_maa, num_maas, num_tiles, this);
     streamAccessUnits = new StreamAccessUnit[num_maas];
     streamAccessIdle = new bool[num_maas];
     for (int i = 0; i < num_maas; i++) {

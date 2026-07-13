@@ -182,20 +182,24 @@ protected:
     Instruction **instructions;
     unsigned int num_instructions_per_maa;
     unsigned int num_maas;
+    unsigned int num_tiles;
     bool **valids;
     bool **completion_only_tiles;
     MAA *maa;
     Instruction::TileStatus getTileStatus(int tile_id, uint8_t tile_status);
 
 public:
-    IF(unsigned int _num_instructions_per_maa, unsigned int _num_maas, MAA *_maa) : num_instructions_per_maa(_num_instructions_per_maa), num_maas(_num_maas), maa(_maa) {
+    IF(unsigned int _num_instructions_per_maa, unsigned int _num_maas,
+       unsigned int _num_tiles, MAA *_maa)
+        : num_instructions_per_maa(_num_instructions_per_maa),
+          num_maas(_num_maas), num_tiles(_num_tiles), maa(_maa) {
         instructions = new Instruction *[num_maas];
         valids = new bool *[num_maas];
         completion_only_tiles = new bool *[num_maas];
         for (int i = 0; i < num_maas; i++) {
             instructions[i] = new Instruction[num_instructions_per_maa];
             valids[i] = new bool[num_instructions_per_maa];
-            completion_only_tiles[i] = new bool[32]();
+            completion_only_tiles[i] = new bool[num_tiles]();
             for (int j = 0; j < num_instructions_per_maa; j++) {
                 valids[i][j] = false;
             }
