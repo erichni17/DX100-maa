@@ -2,6 +2,7 @@
 #define __MEM_MAA_INDIRECT_ACCESS_HH__
 
 #include <cassert>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -74,6 +75,20 @@ protected:
     std::map<Addr, Tick> LoadsCacheHitAccessingTimeHistory;
     std::map<Addr, Tick> LoadsMemAccessingTimeHistory;
 
+    static constexpr int virtualResponseSlots = 8;
+    static constexpr int virtualMaxOutstandingWrites = 32;
+    struct VirtualResponseSlot {
+        bool valid = false;
+        int next_itr = -1;
+        std::array<uint8_t, 64> data{};
+    };
+    std::array<VirtualResponseSlot, virtualResponseSlots> virtual_response_slots;
+    int virtual_reserved_responses = 0;
+    int virtual_outstanding_writes = 0;
+    int virtual_max_reserved_responses = 0;
+    int virtual_max_outstanding_writes = 0;
+    bool virtual_build_incomplete = false;
+
 public:
     MAA *maa;
     IndirectAccessUnit();
@@ -98,6 +113,7 @@ public:
     void memReadPacketSent(Addr addr);
     void cacheWritePacketSent(Addr addr);
     void cacheReadPacketSent(Addr addr);
+    void retirementWriteComplete(Addr addr);
 
     bool recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached);
 
@@ -113,7 +129,7 @@ protected:
     int my_word_size = -1;
     int my_words_per_cl = -1;
     Addr my_virtual_addr = 0;
-    Addr my_base_addr, my_min_addr, my_max_addr;
+    Addr my_base_addr, my_backing_addr, my_min_addr, my_max_addr;
     int8_t my_addr_range_id;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max, my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
@@ -142,7 +158,10 @@ protected:
     std::set<Addr> my_unique_CL_addrs;
     std::set<Addr> my_unique_ROW_addrs;
 
-    Addr translatePacket(Addr vaddr);
+    Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
+                         unsigned size = 64);
+    void createRetirementWrite(int itr, const uint8_t *data);
+    void drainVirtualResponses();
     bool checkAndResetAllRowTablesSent();
     int getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank);
     Addr getGrowAddr(int RT_config, int bankgroup, int bank, int row);

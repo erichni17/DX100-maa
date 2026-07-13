@@ -43,9 +43,10 @@ public:
         ALU_SCALAR = 8,
         ALU_VECTOR = 9,
         ALU_REDUCE = 10,
+        INDIR_LD_VIRTUAL = 11,
         MAX
     };
-    std::string opcode_names[11] = {
+    std::string opcode_names[12] = {
         "STREAM_LD",
         "STREAM_ST",
         "INDIR_LD",
@@ -56,7 +57,8 @@ public:
         "RANGE_LOOP",
         "ALU_SCALAR",
         "ALU_VECTOR",
-        "ALU_REDUCE"};
+        "ALU_REDUCE",
+        "INDIR_LD_VIRTUAL"};
     enum class OPType : uint8_t {
         ADD_OP = 0,
         SUB_OP = 1,
@@ -141,7 +143,7 @@ public:
         "SRV",
         "FNS",
         "MAX"};
-    Addr baseAddr;
+    Addr baseAddr, backingAddr;
     Addr minAddr, maxAddr;
     int8_t addrRangeID;
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
@@ -181,6 +183,7 @@ protected:
     unsigned int num_instructions_per_maa;
     unsigned int num_maas;
     bool **valids;
+    bool **completion_only_tiles;
     MAA *maa;
     Instruction::TileStatus getTileStatus(int tile_id, uint8_t tile_status);
 
@@ -188,9 +191,11 @@ public:
     IF(unsigned int _num_instructions_per_maa, unsigned int _num_maas, MAA *_maa) : num_instructions_per_maa(_num_instructions_per_maa), num_maas(_num_maas), maa(_maa) {
         instructions = new Instruction *[num_maas];
         valids = new bool *[num_maas];
+        completion_only_tiles = new bool *[num_maas];
         for (int i = 0; i < num_maas; i++) {
             instructions[i] = new Instruction[num_instructions_per_maa];
             valids[i] = new bool[num_instructions_per_maa];
+            completion_only_tiles[i] = new bool[32]();
             for (int j = 0; j < num_instructions_per_maa; j++) {
                 valids[i][j] = false;
             }
@@ -202,7 +207,9 @@ public:
         for (int i = 0; i < num_maas; i++) {
             delete[] instructions[i];
             delete[] valids[i];
+            delete[] completion_only_tiles[i];
         }
+        delete[] completion_only_tiles;
     }
     bool pushInstruction(Instruction _instruction);
     bool canPushRegister(Register _reg);

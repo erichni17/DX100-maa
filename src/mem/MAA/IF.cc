@@ -10,6 +10,7 @@
 
 namespace gem5 {
 Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
+                             backingAddr(0xFFFFFFFFFFFFFFFF),
                              src1RegID(-1),
                              src2RegID(-1),
                              src3RegID(-1),
@@ -78,6 +79,7 @@ int Instruction::getWordSize(int tile_id) {
             return WordSize();
         }
         case OpcodeType::INDIR_LD:
+        case OpcodeType::INDIR_LD_VIRTUAL:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
         case OpcodeType::INDIR_RMW_VECTOR:
@@ -113,6 +115,7 @@ int Instruction::getWordSize(int tile_id) {
         }
         case OpcodeType::STREAM_LD:
         case OpcodeType::INDIR_LD:
+        case OpcodeType::INDIR_LD_VIRTUAL:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
         case OpcodeType::INDIR_RMW_VECTOR:
@@ -163,6 +166,7 @@ bool IF::pushInstruction(Instruction _instruction) {
         break;
     }
     case Instruction::OpcodeType::INDIR_LD:
+    case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
     case Instruction::OpcodeType::INDIR_ST_VECTOR:
     case Instruction::OpcodeType::INDIR_ST_SCALAR:
     case Instruction::OpcodeType::INDIR_RMW_VECTOR:
@@ -186,6 +190,14 @@ bool IF::pushInstruction(Instruction _instruction) {
     }
     int free_instruction_slot = -1;
     int maa_id = _instruction.maa_id;
+    auto reject_completion_source = [&](int tile_id) {
+        panic_if(tile_id != -1 && completion_only_tiles[maa_id][tile_id],
+                 "%s: tile %d is a virtual completion token, not SPD data\n",
+                 __func__, tile_id);
+    };
+    reject_completion_source(_instruction.src1SpdID);
+    reject_completion_source(_instruction.src2SpdID);
+    reject_completion_source(_instruction.condSpdID);
     for (int i = 0; i < num_instructions_per_maa; i++) {
         if (valids[maa_id][i] == false) {
             if (free_instruction_slot == -1) {
@@ -229,6 +241,12 @@ bool IF::pushInstruction(Instruction _instruction) {
     instructions[maa_id][free_instruction_slot] = _instruction;
     valids[maa_id][free_instruction_slot] = true;
     instructions[maa_id][free_instruction_slot].if_id = free_instruction_slot;
+    if (_instruction.dst1SpdID != -1) {
+        completion_only_tiles[maa_id][_instruction.dst1SpdID] =
+            _instruction.opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL;
+    }
+    if (_instruction.dst2SpdID != -1)
+        completion_only_tiles[maa_id][_instruction.dst2SpdID] = false;
     DPRINTF(MAAController, "%s: %s pushed to instruction[%d]!\n", __func__, _instruction.print(), free_instruction_slot);
     return true;
 }

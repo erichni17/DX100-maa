@@ -452,19 +452,23 @@ bool MAA::sendOutstandingCachePacket() {
                 break;
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
+            const bool needs_response = it->packet->needsResponse();
             if (sendPacketCache(it->packet) == false) {
                 DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
                 cache_bus_blocked[core] = true;
                 break;
             } else {
                 Addr paddr = it->paddr;
-                panic_if(it->packet->needsResponse(), "%s write packet %s needs response!\n", __func__, it->packet->print());
                 OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
-                my_outstanding_pkt_map.erase(paddr);
                 panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
                 panic_if(tmp.funcUnits[0] != FuncUnitType::INDIRECT, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::INDIRECT]);
-                my_num_outstanding_indirect_pkts[tmp.maaIDs[0]]--;
-                indirectAccessUnits[tmp.maaIDs[0]].cacheWritePacketSent(it->paddr);
+                if (needs_response) {
+                    my_outstanding_pkt_map[paddr].sent = true;
+                } else {
+                    my_outstanding_pkt_map.erase(paddr);
+                    my_num_outstanding_indirect_pkts[tmp.maaIDs[0]]--;
+                    indirectAccessUnits[tmp.maaIDs[0]].cacheWritePacketSent(it->paddr);
+                }
                 it = my_outstanding_indirect_cache_write_pkts[core].erase(it);
                 stats.port_cache_WR_packets += 1;
             }
@@ -596,8 +600,12 @@ bool MAA::sendOutstandingCachePacket() {
 }
 void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
     DPRINTF(MAAPort, "%s: received %s, cmd: %s, size: %d\n", __func__, pkt->print(), pkt->cmdString(), pkt->getSize());
-    panic_if(pkt->cmd.toInt() != MemCmd::ReadExResp && pkt->cmd.toInt() != MemCmd::ReadResp, "%s received an unknown response: %s\n", __func__, pkt->print());
-    assert(pkt->getSize() == 64);
+    panic_if(pkt->cmd.toInt() != MemCmd::ReadExResp &&
+             pkt->cmd.toInt() != MemCmd::ReadResp &&
+             pkt->cmd.toInt() != MemCmd::WriteResp,
+             "%s received an unknown response: %s\n", __func__, pkt->print());
+    if (pkt->cmd != MemCmd::WriteResp)
+        assert(pkt->getSize() == 64);
     Addr paddr = pkt->req->getPaddr();
     panic_if(my_outstanding_pkt_map.find(paddr) == my_outstanding_pkt_map.end(), "%s: response for packet %s not found in my_outstanding_pkt_map\n", __func__, pkt->print());
     OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
@@ -606,7 +614,12 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
     my_outstanding_pkt_map.erase(paddr);
     for (int i = 0; i < tmp.maaIDs.size(); i++) {
         if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {
-            panic_if(indirectAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>(), tmp.cached) == false, "%s: received %s but rejected from indirectAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
+            if (pkt->cmd == MemCmd::WriteResp) {
+                my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
+                indirectAccessUnits[tmp.maaIDs[i]].retirementWriteComplete(paddr);
+            } else {
+                panic_if(indirectAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>(), tmp.cached) == false, "%s: received %s but rejected from indirectAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
+            }
         } else if (tmp.funcUnits[i] == FuncUnitType::STREAM) {
             panic_if(streamAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>()) == false, "%s: received %s but rejected from streamAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
         } else {

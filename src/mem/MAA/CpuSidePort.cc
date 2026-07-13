@@ -200,6 +200,7 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->opcode = (data & NA_UINT8) == NA_UINT8 ? Instruction::OpcodeType::MAX : static_cast<Instruction::OpcodeType>(data & NA_UINT8);
                 assert(current_instruction->opcode != Instruction::OpcodeType::MAX);
                 if (current_instruction->opcode == Instruction::OpcodeType::STREAM_LD ||
+                    current_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode == Instruction::OpcodeType::INDIR_LD) {
                     current_instruction->accessType = Instruction::AccessType::READ;
                 } else if (current_instruction->opcode == Instruction::OpcodeType::STREAM_ST ||
@@ -244,8 +245,23 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->minAddr = addrRegions[current_instruction->addrRangeID].first;
                     current_instruction->maxAddr = addrRegions[current_instruction->addrRangeID].second;
                 }
+                if (current_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+                    break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController, "%s: %s received!\n", __func__, current_instruction->print());
+                respond_immediately = false;
+                scheduleDispatchInstructionEvent();
+                break;
+            }
+            case 3: {
+                panic_if(instruction_id == -1,
+                         "Received backing address before instruction header!\n");
+                panic_if(current_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL,
+                         "Backing address is only valid for virtual indirect loads!\n");
+                current_instruction->backingAddr = data;
+                my_instruction_recvs[instruction_id] = true;
+                DPRINTF(MAAController, "%s: %s received with backing address 0x%lx!\n",
+                        __func__, current_instruction->print(), current_instruction->backingAddr);
                 respond_immediately = false;
                 scheduleDispatchInstructionEvent();
                 break;

@@ -73,6 +73,7 @@ public:
                   bool _is_stream = false);
     void insert(int itr, int wid, int last_itr);
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
+    OffsetTableEntry consume_entry(int &itr);
     void reset();
     void check_reset();
     OffsetTableEntry *entries;
@@ -114,6 +115,7 @@ public:
     void check_reset();
     bool get_entry_send(Addr &addr);
     std::vector<OffsetTableEntry> get_entry_recv(Addr addr);
+    int get_entry_recv_head(Addr addr);
     bool all_entries_received();
     OffsetTable *offset_table;
     Addr grow_addr;
@@ -158,6 +160,7 @@ public:
     void get_send_grow_rowid();
     std::vector<OffsetTableEntry>
     get_entry_recv(Addr grow_addr, Addr addr, bool check_sent);
+    int get_entry_recv_head(Addr grow_addr, Addr addr, bool check_sent);
 
     void reset();
     void check_reset();

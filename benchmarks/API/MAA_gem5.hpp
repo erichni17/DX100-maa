@@ -45,7 +45,8 @@ enum OpcodeType : uint8_t {
     RANGE_LOOP = 7,
     ALU_SCALAR = 8,
     ALU_VECTOR = 9,
-    ALU_REDUCE = 10
+    ALU_REDUCE = 10,
+    INDIR_LD_VIRTUAL = 11
 };
 enum class DataType : uint8_t {
     UINT32_TYPE = 0,
@@ -60,6 +61,7 @@ enum class DataType : uint8_t {
 volatile uint64_t *INSTR_opcode_datatype_optype_tdst1_tdst2;
 volatile uint64_t *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc;
 volatile uint64_t *INSTR_baseaddr;
+volatile uint64_t *INSTR_backingaddr;
 uint64_t MAA_end_addr;
 int8_t region_count;
 
@@ -95,6 +97,8 @@ void alloc_MAA() {
     INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc = (volatile uint64_t *)(current_addr);
     current_addr += 8;
     INSTR_baseaddr = (volatile uint64_t *)(current_addr);
+    current_addr += 8;
+    INSTR_backingaddr = (volatile uint64_t *)(current_addr);
     current_addr += 8;
     MAA_end_addr = current_addr;
     clear_mem_region();
@@ -293,6 +297,28 @@ inline void maa_indirect_load(T1 *data, int idx_tile, int dst_tile, int cond_til
                                                             ((uint64_t)NA_UINT8 << 8) |                         // rsrc3
                                                             (uint64_t)(cond_tile == -1 ? NA_UINT8 : cond_tile); // cond
     *INSTR_baseaddr = (uint64_t)data;                                                                           // baseaddr
+    __asm__ __volatile__("mfence;");
+}
+template <class T1>
+inline void maa_indirect_load_virtual(T1 *data, int idx_tile, int completion_tile,
+                                      T1 *backing) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_LD_VIRTUAL << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)completion_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)idx_tile << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)NA_UINT8 << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)NA_UINT8 << 8) |
+        (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)backing;
     __asm__ __volatile__("mfence;");
 }
 template <class T1>

@@ -167,6 +167,16 @@ std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
     }
     return result;
 }
+OffsetTableEntry OffsetTable::consume_entry(int &itr) {
+    panic_if(itr < 0 || itr >= num_tile_elements || entries_valid[itr] == false,
+             "Entry %d is invalid!\n", itr);
+    OffsetTableEntry result = entries[itr];
+    entries_valid[itr] = false;
+    entries[itr].wid = -1;
+    entries[itr].next_itr = -1;
+    itr = result.next_itr;
+    return result;
+}
 void OffsetTable::check_reset() {
     for (int i = 0; i < num_tile_elements; i++) {
         panic_if(entries_valid[i], "Entry %d is valid: wid(%d) next_itr(%d)!\n",
@@ -285,6 +295,15 @@ std::vector<OffsetTableEntry> RowTableEntry::get_entry_recv(Addr addr) {
         }
     }
     return std::vector<OffsetTableEntry>();
+}
+int RowTableEntry::get_entry_recv_head(Addr addr) {
+    for (int i = 0; i < num_RT_entries_per_row; i++) {
+        if (entries_valid[i] && entries[i].addr == addr) {
+            entries_valid[i] = false;
+            return entries[i].first_itr;
+        }
+    }
+    return -1;
 }
 
 bool RowTableEntry::all_entries_received() {
@@ -473,6 +492,30 @@ std::vector<OffsetTableEntry> RowTableSlice::get_entry_recv(Addr grow_addr, Addr
         return a.itr < b.itr;
     });
     return results;
+}
+int RowTableSlice::get_entry_recv_head(Addr grow_addr, Addr addr, bool check_sent) {
+    int result = -1;
+    for (int i = 0; i < num_RT_rows_per_slice; i++) {
+        if (entries_valid[i] && (!check_sent || entries_sent[i]) &&
+            entries[i].grow_addr == grow_addr) {
+            int head = entries[i].get_entry_recv_head(addr);
+            if (head == -1)
+                continue;
+            panic_if(result != -1, "ROT[%d] %s: duplicate entry is not allowed!\n",
+                     my_table_id, __func__);
+            result = head;
+            if (entries[i].all_entries_received()) {
+                entries_valid[i] = false;
+                entries_sent[i] = false;
+                entries[i].check_reset();
+                if (i == last_sent_grow_rowid) {
+                    last_sent_grow_rowid = 0;
+                    last_sent_grow_addr = 0;
+                }
+            }
+        }
+    }
+    return result;
 }
 bool RowTableSlice::is_full() {
     for (int i = 0; i < num_RT_rows_per_slice; i++) {
