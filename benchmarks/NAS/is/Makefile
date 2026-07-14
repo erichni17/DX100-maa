@@ -21,6 +21,10 @@ ifdef GEM5_BUILD
 	CXX_FLAGS += -DGEM5
 endif
 
+ifdef VERIFY
+	CXX_FLAGS += -DDO_VERIFY
+endif
+
 ifdef DUMP
 	CXX_FLAGS += -DDUMP_TO_FILE
 else

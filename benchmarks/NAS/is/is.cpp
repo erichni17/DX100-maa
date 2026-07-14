@@ -81,6 +81,7 @@
 /*************/
 /*  CLASS B  */
 /*************/
+#define CLASS 'B'
 #if NUM_CORES == 4
 #ifdef SMALL_CLASS
 /* Smoke-test size for gem5 detailed timing: 2^22 = 4M keys (16MB key_array,
@@ -1125,23 +1126,30 @@ int main(int argc, char **argv) {
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
     std::cout << "ROI End!!!" << std::endl;
-    m5_exit(0);
 #endif
 
 #ifdef DO_VERIFY
+    std::cout << "Validation started" << std::endl;
     full_verify();
-    if (passed_verification == 5 * MAX_ITERATIONS + 1)
-        std::cout << "successfull: passed verification " << passed_verification << std::endl;
-    else
-        std::cout << "failed" << std::endl;
+    const int expected_verification = 5 * MAX_ITERATIONS + 1;
+    const bool verification_ok = passed_verification == expected_verification;
+    std::cout << "IS_VERIFY passed=" << passed_verification
+              << " expected=" << expected_verification
+              << " result=" << (verification_ok ? "PASS" : "FAIL") << std::endl;
+    std::cout << "Validation ended" << std::endl;
+#ifdef GEM5
+    m5_exit(0);
+#else
+    if (!verification_ok)
+        return 1;
+#endif
+#elif defined(GEM5)
+    m5_exit(0);
 #endif
 
     std::cout << "finished" << std::endl;
 
-    return 1;
-#ifdef GEM5
-    m5_exit(0);
-#endif
+    return 0;
     /**************************/
 } /*  E N D  P R O G R A M  */
 /**************************/
