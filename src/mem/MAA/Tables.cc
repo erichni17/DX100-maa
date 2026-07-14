@@ -177,6 +177,11 @@ OffsetTableEntry OffsetTable::consume_entry(int &itr) {
     itr = result.next_itr;
     return result;
 }
+OffsetTableEntry OffsetTable::peek_entry(int itr) const {
+    panic_if(itr < 0 || itr >= num_tile_elements || entries_valid[itr] == false,
+             "Entry %d is invalid!\n", itr);
+    return entries[itr];
+}
 void OffsetTable::check_reset() {
     for (int i = 0; i < num_tile_elements; i++) {
         panic_if(entries_valid[i], "Entry %d is valid: wid(%d) next_itr(%d)!\n",

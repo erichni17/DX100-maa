@@ -41,4 +41,4 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_num_initial_row_table_slices=16 --cmd "$binary" \
     --options "$n $pattern" >"$outdir/restore.log" 2>&1
 
-grep 'VIRTUAL_GATHER_RESULT' "$outdir/restore.log"
+grep -E 'VIRTUAL_GATHER(64)?_RESULT' "$outdir/restore.log"

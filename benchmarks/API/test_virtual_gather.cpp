@@ -24,7 +24,8 @@ int main(int argc, char **argv) {
     std::vector<int32_t> source(n * 4);
     std::vector<int32_t> indices(n);
     std::vector<int32_t> backing_storage(n + 1024, -1);
-    int32_t *backing = backing_storage.data() + (pattern == "page" ? 1019 : 0);
+    const int backing_offset = pattern == "page" ? 1019 : 0;
+    int32_t *backing = backing_storage.data() + backing_offset;
     for (int i = 0; i < static_cast<int>(source.size()); ++i)
         source[i] = i * 17 + 3;
     for (int i = 0; i < n; ++i) {
@@ -79,6 +80,15 @@ int main(int argc, char **argv) {
         if (result[i] != expected && errors++ < 10)
             std::cerr << "mismatch[" << i << "]: got " << result[i]
                       << ", expected " << expected << std::endl;
+    }
+    for (int i = 0; i < backing_offset; ++i) {
+        if (backing_storage[i] != -1 && errors++ < 10)
+            std::cerr << "prefix guard corrupted[" << i << "]" << std::endl;
+    }
+    for (int i = backing_offset + n;
+         i < static_cast<int>(backing_storage.size()); ++i) {
+        if (backing_storage[i] != -1 && errors++ < 10)
+            std::cerr << "suffix guard corrupted[" << i << "]" << std::endl;
     }
     std::cout << "VIRTUAL_GATHER_RESULT n=" << n << " pattern=" << pattern
               << " errors=" << errors

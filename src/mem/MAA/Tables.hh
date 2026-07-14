@@ -73,6 +73,7 @@ public:
                   bool _is_stream = false);
     void insert(int itr, int wid, int last_itr);
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
+    OffsetTableEntry peek_entry(int itr) const;
     OffsetTableEntry consume_entry(int &itr);
     void reset();
     void check_reset();

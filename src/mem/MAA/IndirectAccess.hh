@@ -77,14 +77,28 @@ protected:
 
     static constexpr int virtualResponseSlots = 8;
     static constexpr int virtualMaxOutstandingWrites = 32;
+    static constexpr int virtualCombineSlots = 16;
     struct VirtualResponseSlot {
         bool valid = false;
         int next_itr = -1;
         std::array<uint8_t, 64> data{};
     };
     std::array<VirtualResponseSlot, virtualResponseSlots> virtual_response_slots;
+    struct VirtualCombineSlot {
+        bool valid = false;
+        Addr line_vaddr = 0;
+        uint16_t valid_words = 0;
+        std::array<uint8_t, 64> data{};
+    };
+    std::array<VirtualCombineSlot, virtualCombineSlots> virtual_combine_slots;
     int virtual_reserved_responses = 0;
     int virtual_outstanding_writes = 0;
+    int virtual_source_expected = 0;
+    int virtual_source_received = 0;
+    int virtual_combine_victim = 0;
+    int virtual_full_line_writes = 0;
+    int virtual_partial_word_writes = 0;
+    bool virtual_final_flush = false;
     int virtual_max_reserved_responses = 0;
     int virtual_max_outstanding_writes = 0;
     bool virtual_build_incomplete = false;
@@ -161,7 +175,12 @@ protected:
     Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
                          unsigned size = 64);
     void createRetirementWrite(int itr, const uint8_t *data);
+    void createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data);
     void drainVirtualResponses();
+    bool insertVirtualCombineWord(int itr, const uint8_t *data);
+    void drainVirtualCombiner(bool flush_partial);
+    bool virtualCombinerEmpty() const;
+    bool virtualRetirementComplete() const;
     bool checkAndResetAllRowTablesSent();
     int getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank);
     Addr getGrowAddr(int RT_config, int bankgroup, int bank, int row);

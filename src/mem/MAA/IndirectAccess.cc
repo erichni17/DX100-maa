@@ -338,6 +338,8 @@ void IndirectAccessUnit::check_reset() {
              "I[%d] virtual retirement state is not empty: slots=%d writes=%d\n",
              my_indirect_id, virtual_reserved_responses,
              virtual_outstanding_writes);
+    panic_if(!virtualCombinerEmpty(),
+             "I[%d] virtual combiner is not empty at reset\n", my_indirect_id);
     panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");
     panic_if(my_decode_start_tick != 0, "Decode start tick is not 0: %lu!\n", my_decode_start_tick);
     panic_if(my_fill_start_tick != 0, "Fill start tick is not 0: %lu!\n", my_fill_start_tick);
@@ -556,6 +558,10 @@ void IndirectAccessUnit::executeInstruction() {
                      my_cond_tile != -1,
                  "I[%d] virtual indirect load does not support conditions\n",
                  my_indirect_id);
+        panic_if(my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
+                     !reorder_RT,
+                 "I[%d] virtual indirect load requires row-table reordering\n",
+                 my_indirect_id);
         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
             my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_VECTOR ||
             my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR) {
@@ -601,11 +607,19 @@ void IndirectAccessUnit::executeInstruction() {
         my_received_responses = my_expected_responses = 0;
         virtual_reserved_responses = 0;
         virtual_outstanding_writes = 0;
+        virtual_source_expected = 0;
+        virtual_source_received = 0;
+        virtual_combine_victim = 0;
+        virtual_full_line_writes = 0;
+        virtual_partial_word_writes = 0;
+        virtual_final_flush = false;
         virtual_max_reserved_responses = 0;
         virtual_max_outstanding_writes = 0;
         virtual_build_incomplete = false;
         for (auto &slot : virtual_response_slots)
             slot = VirtualResponseSlot();
+        for (auto &slot : virtual_combine_slots)
+            slot = VirtualCombineSlot();
         offset_table->reset();
         for (int i = 0; i < num_RT_slices[my_RT_config]; i++) {
             RT[my_RT_config][i].reset();
@@ -727,6 +741,7 @@ void IndirectAccessUnit::executeInstruction() {
                         my_expected_responses++;
                         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
                             virtual_reserved_responses++;
+                            virtual_source_expected++;
                             virtual_max_reserved_responses = std::max(
                                 virtual_max_reserved_responses,
                                 virtual_reserved_responses);
@@ -773,7 +788,22 @@ void IndirectAccessUnit::executeInstruction() {
                 my_fill_start_tick = 0;
             }
         }
-        if (maa->allIndirectPacketsSent(my_indirect_id) && my_received_responses == my_expected_responses) {
+        const bool virtual_sources_drained =
+            virtual_source_received == virtual_source_expected &&
+            virtual_reserved_responses == 0;
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
+            my_fill_finished && !virtual_build_incomplete &&
+            virtual_sources_drained) {
+            virtual_final_flush = true;
+            drainVirtualCombiner(true);
+        }
+        const bool responses_complete =
+            my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL
+                ? (virtual_build_incomplete ? virtual_sources_drained
+                                            : virtualRetirementComplete())
+                : (maa->allIndirectPacketsSent(my_indirect_id) &&
+                   my_received_responses == my_expected_responses);
+        if (responses_complete) {
             if (scheduleNextExecution()) {
                 DPRINTF(MAAIndirect, "I[%d] %s: requesting is still not ready, returning!\n", my_indirect_id, __func__);
                 break;
@@ -810,6 +840,10 @@ void IndirectAccessUnit::executeInstruction() {
                     my_indirect_id, virtual_max_reserved_responses,
                     virtualResponseSlots, virtual_max_outstanding_writes,
                     virtualMaxOutstandingWrites);
+            DPRINTF(MAAIndirect,
+                    "I[%d] virtual combining: full_lines=%d partial_words=%d\n",
+                    my_indirect_id, virtual_full_line_writes,
+                    virtual_partial_word_writes);
         }
         panic_if(scheduleNextExecution(), "I[%d] %s: Execution is not completed!\n", my_indirect_id, __func__);
         panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");
@@ -962,7 +996,9 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         slot->next_itr = virtual_head;
         std::memcpy(slot->data.data(), dataptr, block_size);
         my_received_responses++;
+        virtual_source_received++;
         drainVirtualResponses();
+        scheduleNextExecution(true);
         if (was_full && !is_full)
             scheduleNextExecution(true);
         return true;
@@ -1250,8 +1286,13 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
 }
 void IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
     Addr vaddr = my_backing_addr + itr * my_word_size;
-    Addr paddr = translatePacket(vaddr, BaseMMU::Write, my_word_size);
-    RequestPtr req = std::make_shared<Request>(paddr, my_word_size, flags,
+    createRetirementWrite(vaddr, my_word_size, data);
+}
+
+void IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
+                                                const uint8_t *data) {
+    Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
+    RequestPtr req = std::make_shared<Request>(paddr, size, flags,
                                                maa->requestorId);
     PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
     pkt->allocate();
@@ -1269,19 +1310,115 @@ void IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
 
 void IndirectAccessUnit::drainVirtualResponses() {
     for (auto &slot : virtual_response_slots) {
-        while (slot.valid &&
-               virtual_outstanding_writes < virtualMaxOutstandingWrites) {
-            OffsetTableEntry entry = offset_table->consume_entry(slot.next_itr);
-            createRetirementWrite(entry.itr,
-                                  slot.data.data() + entry.wid * my_word_size);
+        while (slot.valid) {
+            OffsetTableEntry entry = offset_table->peek_entry(slot.next_itr);
+            if (!insertVirtualCombineWord(
+                    entry.itr, slot.data.data() + entry.wid * my_word_size))
+                break;
+            OffsetTableEntry consumed = offset_table->consume_entry(slot.next_itr);
+            panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
+                     "I[%d] virtual offset cursor changed while stalled\n",
+                     my_indirect_id);
             if (slot.next_itr == -1) {
                 slot.valid = false;
                 virtual_reserved_responses--;
             }
         }
+        if (slot.valid)
+            break;
+    }
+    drainVirtualCombiner(false);
+}
+
+bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
+                                                   const uint8_t *data) {
+    // Each logical gather iteration owns one non-aliasing backing-array word.
+    const Addr vaddr = my_backing_addr + itr * my_word_size;
+    const Addr line_vaddr = vaddr & ~(block_size - 1);
+    const unsigned word = (vaddr - line_vaddr) / my_word_size;
+    const uint16_t word_bit = 1U << word;
+    VirtualCombineSlot *target = nullptr;
+    for (auto &slot : virtual_combine_slots) {
+        if (slot.valid && slot.line_vaddr == line_vaddr) {
+            target = &slot;
+            break;
+        }
+        if (!slot.valid && target == nullptr)
+            target = &slot;
+    }
+    if (target == nullptr) {
+        auto &victim = virtual_combine_slots[virtual_combine_victim];
+        while (victim.valid_words != 0 &&
+               virtual_outstanding_writes < virtualMaxOutstandingWrites) {
+            unsigned victim_word = __builtin_ctz(victim.valid_words);
+            createRetirementWrite(
+                victim.line_vaddr + victim_word * my_word_size, my_word_size,
+                victim.data.data() + victim_word * my_word_size);
+            victim.valid_words &= ~(1U << victim_word);
+            virtual_partial_word_writes++;
+        }
+        if (victim.valid_words != 0)
+            return false;
+        victim = VirtualCombineSlot();
+        target = &victim;
+        virtual_combine_victim =
+            (virtual_combine_victim + 1) % virtualCombineSlots;
+    }
+    if (!target->valid) {
+        target->valid = true;
+        target->line_vaddr = line_vaddr;
+    }
+    panic_if(target->valid_words & word_bit,
+             "I[%d] duplicate virtual output word %d at 0x%lx\n",
+             my_indirect_id, word, line_vaddr);
+    std::memcpy(target->data.data() + word * my_word_size, data, my_word_size);
+    target->valid_words |= word_bit;
+    return true;
+}
+
+void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
+    const uint16_t full_mask = (1U << my_words_per_cl) - 1;
+    for (auto &slot : virtual_combine_slots) {
+        if (!slot.valid)
+            continue;
+        if (slot.valid_words == full_mask &&
+            virtual_outstanding_writes < virtualMaxOutstandingWrites) {
+            createRetirementWrite(slot.line_vaddr, block_size, slot.data.data());
+            virtual_full_line_writes++;
+            slot = VirtualCombineSlot();
+            continue;
+        }
+        if (!flush_partial)
+            continue;
+        while (slot.valid_words != 0 &&
+               virtual_outstanding_writes < virtualMaxOutstandingWrites) {
+            unsigned word = __builtin_ctz(slot.valid_words);
+            createRetirementWrite(slot.line_vaddr + word * my_word_size,
+                                  my_word_size,
+                                  slot.data.data() + word * my_word_size);
+            slot.valid_words &= ~(1U << word);
+            virtual_partial_word_writes++;
+        }
+        if (slot.valid_words == 0)
+            slot = VirtualCombineSlot();
         if (virtual_outstanding_writes == virtualMaxOutstandingWrites)
             break;
     }
+}
+
+bool IndirectAccessUnit::virtualCombinerEmpty() const {
+    return std::all_of(virtual_combine_slots.begin(), virtual_combine_slots.end(),
+                       [](const VirtualCombineSlot &slot) {
+                           return !slot.valid;
+                       });
+}
+
+bool IndirectAccessUnit::virtualRetirementComplete() const {
+    return virtual_source_received == virtual_source_expected &&
+           virtual_reserved_responses == 0 && virtualCombinerEmpty() &&
+           virtual_outstanding_writes == 0 &&
+           maa->allIndirectPacketsSent(my_indirect_id) &&
+           my_received_responses == my_expected_responses;
 }
 
 void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
@@ -1293,10 +1430,9 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
              my_indirect_id, __func__);
     virtual_outstanding_writes--;
     drainVirtualResponses();
-    if (maa->allIndirectPacketsSent(my_indirect_id) &&
-        my_received_responses == my_expected_responses) {
-        scheduleNextExecution(true);
-    }
+    if (virtual_final_flush)
+        drainVirtualCombiner(true);
+    scheduleNextExecution(true);
 }
 
 Addr IndirectAccessUnit::translatePacket(Addr vaddr, BaseMMU::Mode mode,
