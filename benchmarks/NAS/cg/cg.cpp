@@ -1,11 +1,11 @@
 /*
 MIT License
 
-Copyright (c) 2021 Parallel Applications Modelling Group - GMAP 
-	GMAP website: https://gmap.pucrs.br
-	
-	Pontifical Catholic University of Rio Grande do Sul (PUCRS)
-	Av. Ipiranga, 6681, Porto Alegre - Brazil, 90619-900
+Copyright (c) 2021 Parallel Applications Modelling Group - GMAP
+        GMAP website: https://gmap.pucrs.br
+
+        Pontifical Catholic University of Rio Grande do Sul (PUCRS)
+        Av. Ipiranga, 6681, Porto Alegre - Brazil, 90619-900
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -27,8 +27,8 @@ SOFTWARE.
 
 ------------------------------------------------------------------------------
 
-The original NPB 3.4.1 version was written in Fortran and belongs to: 
-	http://www.nas.nasa.gov/Software/NPB/
+The original NPB 3.4.1 version was written in Fortran and belongs to:
+        http://www.nas.nasa.gov/Software/NPB/
 
 Authors of the Fortran code:
 	M. Yarrow
@@ -40,10 +40,10 @@ Authors of the Fortran code:
 The serial C++ version is a translation of the original NPB 3.4.1
 Serial C++ version: https://github.com/GMAP/NPB-CPP/tree/master/NPB-SER
 
-Authors of the C++ code: 
-	Dalvan Griebler <dalvangriebler@gmail.com>
-	Gabriell Araujo <hexenoften@gmail.com>
- 	Júnior Löff <loffjh@gmail.com>
+Authors of the C++ code:
+        Dalvan Griebler <dalvangriebler@gmail.com>
+        Gabriell Araujo <hexenoften@gmail.com>
+        Júnior Löff <loffjh@gmail.com>
 
 ------------------------------------------------------------------------------
 
@@ -52,7 +52,7 @@ OpenMP version: https://github.com/GMAP/NPB-CPP/tree/master/NPB-OMP
 
 Authors of the OpenMP code:
 	Júnior Löff <loffjh@gmail.com>
-	
+
 */
 
 #include "MAA.hpp"
@@ -138,6 +138,8 @@ static bool print_cg_fingerprint(const std::string &mode, const float x[],
     uint64_t z_q6 = 0x9b05688c2b3e6c1fULL;
     uint64_t nonfinite_x = 0;
     uint64_t nonfinite_z = 0;
+    uint64_t unquantizable_x = 0;
+    uint64_t unquantizable_z = 0;
     double x_sum = 0.0;
     double x_norm_sq = 0.0;
     double z_sum = 0.0;
@@ -157,26 +159,32 @@ static bool print_cg_fingerprint(const std::string &mode, const float x[],
         if (quantizable_float(x[i], 1.0e6)) {
             x_q5 = update_fingerprint(x_q5, i, quantize_float(x[i], 1.0e5));
             x_q6 = update_fingerprint(x_q6, i, quantize_float(x[i], 1.0e6));
+        } else {
+            unquantizable_x++;
         }
         if (quantizable_float(z[i], 1.0e6)) {
             z_q5 = update_fingerprint(z_q5, i, quantize_float(z[i], 1.0e5));
             z_q6 = update_fingerprint(z_q6, i, quantize_float(z[i], 1.0e6));
+        } else {
+            unquantizable_z++;
         }
     }
-    const bool pass = nonfinite_x == 0 && nonfinite_z == 0 &&
-                      std::isfinite(rnorm) && rnorm >= 0.0 &&
-                      std::isfinite(zeta) &&
-                      std::fabs(x_norm_sq - 1.0) <= 1.0e-4;
+    bool pass = nonfinite_x == 0 && nonfinite_z == 0 &&
+                 unquantizable_x == 0 && unquantizable_z == 0 &&
+                 std::isfinite(rnorm) && rnorm >= 0.0 && std::isfinite(zeta) &&
+                 std::fabs(x_norm_sq - 1.0) <= 1.0e-4;
     printf("CG_FINGERPRINT mode=%s elements=%d x_raw=%016" PRIx64
            " z_raw=%016" PRIx64 " x_q5=%016" PRIx64
            " x_q6=%016" PRIx64 " z_q5=%016" PRIx64
            " z_q6=%016" PRIx64 " x_sum=%.17g x_norm_sq=%.17g"
            " z_sum=%.17g z_norm_sq=%.17g rnorm=%.17g zeta=%.17g"
            " nonfinite_x=%" PRIu64 " nonfinite_z=%" PRIu64
-           " result=%s\n",
+            " unquantizable_x=%" PRIu64 " unquantizable_z=%" PRIu64
+            " result=%s\n",
            mode.c_str(), elements, x_raw, z_raw, x_q5, x_q6, z_q5, z_q6,
            x_sum, x_norm_sq, z_sum, z_norm_sq, rnorm, zeta, nonfinite_x,
-           nonfinite_z, pass ? "PASS" : "FAIL");
+            nonfinite_z, unquantizable_x, unquantizable_z,
+            pass ? "PASS" : "FAIL");
     return pass;
 }
 #endif
@@ -184,10 +192,9 @@ static bool print_cg_fingerprint(const std::string &mode, const float x[],
 #ifdef MAA_VIRTUAL_GATHER
 alignas(64) static float virtual_gather_backing[NUM_CORES][TILE_SIZE];
 #endif
-
 /*
  * ---------------------------------------------------------------------
- * note: please observe that in the routine conj_grad_base three 
+ * note: please observe that in the routine conj_grad_base three
  * implementations of the sparse matrix-vector multiply have
  * been supplied. the default matrix-vector multiply is not
  * loop unrolled. the alternate implementations are unrolled
@@ -196,7 +203,7 @@ alignas(64) static float virtual_gather_backing[NUM_CORES][TILE_SIZE];
  * architecture. if reporting timing results, any of these three may
  * be used without penalty.
  * ---------------------------------------------------------------------
- * class specific parameters: 
+ * class specific parameters:
  * it appears here for reference only.
  * these are their values, however, this info is imported in the npbparams.h
  * include file, which is written by the sys/setparams.c program.
@@ -523,15 +530,9 @@ int main(int argc, char **argv) {
     init_MAA();
 
     /*
-	 * ---------------------------------------------------------------------
-	 * note: as a result of the above call to makea:
-	 * values of j used in indexing rowstr go from 0 --> lastrow-firstrow
-	 * values of colidx which are col indexes go from firstcol --> lastcol
-	 * so:
-	 * shift the col index vals from actual (firstcol --> lastcol) 
-	 * to local, i.e., (0 --> lastcol-firstcol)
-	 * ---------------------------------------------------------------------
-	 */
+     * After makea, shift colidx values from the global firstcol..lastcol
+     * range to the local 0..lastcol-firstcol range.
+     */
 #pragma omp parallel private(it, i, j, k)
     {
 
@@ -607,9 +608,9 @@ int main(int argc, char **argv) {
                 x[j] = norm_temp2 * z[j];
             }
         } /* end of main iter inv pow meth */
-#ifdef GEM5
 #pragma omp single
         {
+#ifdef GEM5
             m5_dump_stats(0, 0);
             m5_work_end(0, 0);
             std::cout << "ROI End!!!" << std::endl;
@@ -656,7 +657,7 @@ int main(int argc, char **argv) {
 
 /*
  * ---------------------------------------------------------------------
- * floating point arrays here are named as in NPB1 spec discussion of 
+ * floating point arrays here are named as in NPB1 spec discussion of
  * CG algorithm
  * ---------------------------------------------------------------------
  */
@@ -791,18 +792,9 @@ static void conj_grad_maa(int colidx[],
     for (cgit = 1; cgit <= cgitmax; cgit++) {
 
         /*
-		 * ---------------------------------------------------------------------
-		 * q = A.p
-		 * the partition submatrix-vector multiply: use workspace w
-		 * ---------------------------------------------------------------------
-		 * 
-		 * note: this version of the multiply is actually (slightly: maybe %5) 
-		 * faster on the sp2 on 16 nodes than is the unrolled-by-2 version 
-		 * below. on the Cray t3d, the reverse is TRUE, i.e., the 
-		 * unrolled-by-two version is some 10% faster.  
-		 * the unrolled-by-8 version below is significantly faster
-		 * on the Cray t3d - overall speed of code is 1.5 times faster.
-		 */
+         * q = A.p using the workspace w. This version is slightly faster on
+         * SP2; the unrolled variants are faster on Cray systems.
+         */
 
 #pragma omp single nowait
         {
@@ -1298,7 +1290,7 @@ static void conj_grad_maa(int colidx[],
 
 /*
  * ---------------------------------------------------------------------
- * floating point arrays here are named as in NPB1 spec discussion of 
+ * floating point arrays here are named as in NPB1 spec discussion of
  * CG algorithm
  * ---------------------------------------------------------------------
  */
@@ -1360,18 +1352,9 @@ static void conj_grad_base(int colidx[],
     /* the conj grad iteration loop */
     for (cgit = 1; cgit <= cgitmax; cgit++) {
         /*
-		 * ---------------------------------------------------------------------
-		 * q = A.p
-		 * the partition submatrix-vector multiply: use workspace w
-		 * ---------------------------------------------------------------------
-		 * 
-		 * note: this version of the multiply is actually (slightly: maybe %5) 
-		 * faster on the sp2 on 16 nodes than is the unrolled-by-2 version 
-		 * below. on the Cray t3d, the reverse is TRUE, i.e., the 
-		 * unrolled-by-two version is some 10% faster.  
-		 * the unrolled-by-8 version below is significantly faster
-		 * on the Cray t3d - overall speed of code is 1.5 times faster.
-		 */
+         * q = A.p using the workspace w. This version is slightly faster on
+         * SP2; the unrolled variants are faster on Cray systems.
+         */
 
 #pragma omp single nowait
         {

@@ -92,6 +92,10 @@ endef
 %_maa_8C: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DNUM_CORES=8 -DTILE_SIZE=16384)
 
+# One binary supports BASE and MAA modes with the same precomputed matrix.
+cg_maa_16K_fp: cg.cpp m5op.o
+	$(call build_binary,-DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 -DCG_FP_ENABLE=1)
+
 m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@.tmp
 	mv $@.tmp $@
