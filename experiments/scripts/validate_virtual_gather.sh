@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 5 ]]; then
-    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY]" >&2
+if [[ $# -lt 3 || $# -gt 6 ]]; then
+    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS]" >&2
     exit 2
 fi
 
@@ -13,6 +13,7 @@ timeout_seconds=${4:-21600}
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 gem5="$root/build/X86/gem5.opt.virtual_v1"
 binary=${5:-$root/benchmarks/API/test_virtual_gather_T16K.o}
+combine_slots=${6:-16}
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
@@ -38,7 +39,8 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4 \
     --cacheline_size=64 --mem-type Ramulator2 --ramulator-config "$ramulator" \
     --mem-channels=1 --maa --maa_num_tile_elements=16384 \
-    --maa_num_initial_row_table_slices=16 --cmd "$binary" \
+    --maa_num_initial_row_table_slices=16 \
+    --maa_virtual_combine_slots="$combine_slots" --cmd "$binary" \
     --options "$n $pattern" >"$outdir/restore.log" 2>&1
 
 grep -E 'VIRTUAL_GATHER(64)?_RESULT' "$outdir/restore.log"

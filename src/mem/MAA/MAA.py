@@ -23,6 +23,7 @@ class MAA(ClockedObject):
     no_reorder = Param.Bool(False, "Do not reorder accesses using row table")
     force_cache_access = Param.Bool(False, "Force cache access instead of direct memory access for the indirect access unit")
     num_initial_row_table_slices = Param.Unsigned(32, "Number of initial row table slices if row table is not reconfigurable")
+    virtual_combine_slots = Param.Unsigned(16, "Tagged cache-line slots used by virtual gather retirement")
     spd_read_latency = Param.Cycles(1, "SPD read latency")
     spd_write_latency = Param.Cycles(1, "SPD write latency")
     num_spd_read_ports_per_maa = Param.Unsigned(4, "Number of SPD read ports per DX100 instance")

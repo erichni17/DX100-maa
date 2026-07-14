@@ -41,6 +41,9 @@ def _get_maa_opts(options):
 
     if(hasattr(options, "maa_num_initial_row_table_slices")):
         opts["num_initial_row_table_slices"] = getattr(options, "maa_num_initial_row_table_slices")
+
+    if hasattr(options, "maa_virtual_combine_slots"):
+        opts["virtual_combine_slots"] = getattr(options, "maa_virtual_combine_slots")
     
     if(hasattr(options, "maa_num_request_table_addresses")):
         opts["num_request_table_addresses"] = getattr(options, "maa_num_request_table_addresses")

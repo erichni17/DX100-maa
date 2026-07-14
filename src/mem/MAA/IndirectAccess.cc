@@ -90,6 +90,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _reconfigure_row_table,
                                   bool _reorder_row_table,
                                   int _num_initial_row_table_slice,
+                                  int _virtual_combine_slots,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -103,6 +104,10 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     reconfigure_RT = _reconfigure_row_table;
     reorder_RT = _reorder_row_table;
     num_initial_RT_slices = _num_initial_row_table_slice;
+    panic_if(_virtual_combine_slots <= 0,
+             "I[%d] virtual combiner must have at least one slot\n",
+             my_indirect_id);
+    virtual_combine_slots.resize(_virtual_combine_slots);
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -612,6 +617,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_combine_victim = 0;
         virtual_full_line_writes = 0;
         virtual_partial_word_writes = 0;
+        virtual_max_combine_occupancy = 0;
         virtual_final_flush = false;
         virtual_max_reserved_responses = 0;
         virtual_max_outstanding_writes = 0;
@@ -841,8 +847,10 @@ void IndirectAccessUnit::executeInstruction() {
                     virtualResponseSlots, virtual_max_outstanding_writes,
                     virtualMaxOutstandingWrites);
             DPRINTF(MAAIndirect,
-                    "I[%d] virtual combining: full_lines=%d partial_words=%d\n",
-                    my_indirect_id, virtual_full_line_writes,
+                    "I[%d] virtual combining: slots=%zu max_occupancy=%d "
+                    "full_lines=%d partial_words=%d\n",
+                    my_indirect_id, virtual_combine_slots.size(),
+                    virtual_max_combine_occupancy, virtual_full_line_writes,
                     virtual_partial_word_writes);
         }
         panic_if(scheduleNextExecution(), "I[%d] %s: Execution is not completed!\n", my_indirect_id, __func__);
@@ -1362,11 +1370,16 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         victim = VirtualCombineSlot();
         target = &victim;
         virtual_combine_victim =
-            (virtual_combine_victim + 1) % virtualCombineSlots;
+            (virtual_combine_victim + 1) % virtual_combine_slots.size();
     }
     if (!target->valid) {
         target->valid = true;
         target->line_vaddr = line_vaddr;
+        const int occupancy = std::count_if(
+            virtual_combine_slots.begin(), virtual_combine_slots.end(),
+            [](const VirtualCombineSlot &slot) { return slot.valid; });
+        virtual_max_combine_occupancy =
+            std::max(virtual_max_combine_occupancy, occupancy);
     }
     panic_if(target->valid_words & word_bit,
              "I[%d] duplicate virtual output word %d at 0x%lx\n",

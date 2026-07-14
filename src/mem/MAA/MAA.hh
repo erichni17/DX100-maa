@@ -396,6 +396,7 @@ public:
     bool reorder_row_table;
     bool force_cache_access;
     unsigned int num_initial_row_table_slices;
+    unsigned int virtual_combine_slots;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;
     unsigned int num_memory_channels;

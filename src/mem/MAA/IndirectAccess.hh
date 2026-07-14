@@ -77,7 +77,6 @@ protected:
 
     static constexpr int virtualResponseSlots = 8;
     static constexpr int virtualMaxOutstandingWrites = 32;
-    static constexpr int virtualCombineSlots = 16;
     struct VirtualResponseSlot {
         bool valid = false;
         int next_itr = -1;
@@ -90,7 +89,7 @@ protected:
         uint16_t valid_words = 0;
         std::array<uint8_t, 64> data{};
     };
-    std::array<VirtualCombineSlot, virtualCombineSlots> virtual_combine_slots;
+    std::vector<VirtualCombineSlot> virtual_combine_slots;
     int virtual_reserved_responses = 0;
     int virtual_outstanding_writes = 0;
     int virtual_source_expected = 0;
@@ -98,6 +97,7 @@ protected:
     int virtual_combine_victim = 0;
     int virtual_full_line_writes = 0;
     int virtual_partial_word_writes = 0;
+    int virtual_max_combine_occupancy = 0;
     bool virtual_final_flush = false;
     int virtual_max_reserved_responses = 0;
     int virtual_max_outstanding_writes = 0;
@@ -115,6 +115,7 @@ public:
                   bool _reconfigure_row_table,
                   bool _reorder_row_table,
                   int _num_initial_row_table_slice,
+                  int _virtual_combine_slots,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
