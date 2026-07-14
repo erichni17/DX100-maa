@@ -360,6 +360,14 @@ void IndirectAccessUnit::check_reset() {
     panic_if(my_fill_start_tick != 0, "Fill start tick is not 0: %lu!\n", my_fill_start_tick);
     panic_if(my_build_start_tick != 0, "Build start tick is not 0: %lu!\n", my_build_start_tick);
     panic_if(my_request_start_tick != 0, "Request start tick is not 0: %lu!\n", my_request_start_tick);
+    panic_if(virtual_request_reason != VirtualRequestReason::None ||
+                 virtual_request_reason_tick != 0 ||
+                 virtual_request_attributed_ticks != 0 ||
+                 std::any_of(virtual_request_reason_ticks.begin(),
+                             virtual_request_reason_ticks.end(),
+                             [](Tick ticks) { return ticks != 0; }),
+             "I[%d] virtual request attribution is still active\n",
+             my_indirect_id);
 }
 Cycles IndirectAccessUnit::updateLatency(int num_spd_read_data_accesses, int num_spd_read_condidx_accesses, int num_spd_write_accesses, int num_rowtable_read_accesses, int num_rowtable_write_accesses, int RT_access_parallelism) {
     if (num_spd_read_data_accesses != 0) {
@@ -632,6 +640,10 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_max_reserved_responses = 0;
         virtual_max_outstanding_writes = 0;
         virtual_build_incomplete = false;
+        virtual_request_reason = VirtualRequestReason::None;
+        virtual_request_reason_tick = 0;
+        virtual_request_attributed_ticks = 0;
+        virtual_request_reason_ticks.fill(0);
         for (auto &slot : virtual_response_slots)
             slot = VirtualResponseSlot();
         for (auto &slot : virtual_combine_slots)
@@ -674,6 +686,7 @@ void IndirectAccessUnit::executeInstruction() {
             my_fill_start_tick = curTick();
         }
         if (my_request_start_tick != 0) {
+            finishVirtualRequestInterval();
             (*maa->stats.IND_CyclesRequest[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_request_start_tick);
             my_request_start_tick = 0;
         }
@@ -713,11 +726,14 @@ void IndirectAccessUnit::executeInstruction() {
     }
     case Status::Build: {
         assert(my_instruction != nullptr);
+        accountVirtualRequestInterval();
         DPRINTF(MAAIndirect, "I[%d] %s: Building %s requests, fill finished: %s!\n",
                 my_indirect_id, __func__, my_instruction->print(), my_fill_finished ? "true" : "false");
         if (scheduleNextExecution()) {
             break;
         }
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+            (*maa->stats.IND_VirtBuildRounds[my_indirect_id])++;
         if (my_build_start_tick == 0) {
             my_build_start_tick = curTick();
         }
@@ -784,6 +800,7 @@ void IndirectAccessUnit::executeInstruction() {
         // Row table parallelism = total #banks. Each bank can give us a address in a cycle.
         updateLatency(0, 0, 0, num_rowtable_accesses, 0, total_num_RT_subslices);
         state = Status::Request;
+        accountVirtualRequestInterval();
         scheduleNextExecution(true);
         break;
     }
@@ -792,7 +809,9 @@ void IndirectAccessUnit::executeInstruction() {
         DPRINTF(MAAIndirect, "I[%d] %s: requesting %s!\n", my_indirect_id, __func__, my_instruction->print());
         if (my_request_start_tick == 0) {
             my_request_start_tick = curTick();
+            startVirtualRequestInterval();
         }
+        accountVirtualRequestInterval();
         if (reorder_RT) {
             if (my_build_start_tick != 0) {
                 (*maa->stats.IND_CyclesBuild[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_build_start_tick);
@@ -833,6 +852,7 @@ void IndirectAccessUnit::executeInstruction() {
             } else {
                 state = Status::Fill;
             }
+            accountVirtualRequestInterval();
             DPRINTF(MAAIndirect, "I[%d] %s: all responses received, calling execution again in state %s!\n", my_indirect_id, __func__, status_names[(int)state]);
             scheduleNextExecution(true);
             break;
@@ -874,6 +894,7 @@ void IndirectAccessUnit::executeInstruction() {
         DPRINTF(MAAIndirect, "I[%d] %s: state set to finish for request %s!\n", my_indirect_id, __func__, my_instruction->print());
         my_instruction->state = Instruction::Status::Finish;
         if (my_request_start_tick != 0) {
+            finishVirtualRequestInterval();
             (*maa->stats.IND_CyclesRequest[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_request_start_tick);
             my_request_start_tick = 0;
         }
@@ -1002,6 +1023,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         LoadsMemAccessingTimeHistory.erase(addr);
     }
     if (virtual_load) {
+        accountVirtualRequestInterval();
         auto slot = std::find_if(virtual_response_slots.begin(),
                                  virtual_response_slots.end(),
                                  [](const VirtualResponseSlot &candidate) {
@@ -1016,6 +1038,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         my_received_responses++;
         virtual_source_received++;
         drainVirtualResponses();
+        accountVirtualRequestInterval();
         scheduleNextExecution(true);
         if (was_full && !is_full)
             scheduleNextExecution(true);
@@ -1309,6 +1332,7 @@ void IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
 
 void IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
                                                 const uint8_t *data) {
+    accountVirtualRequestInterval();
     Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
     RequestPtr req = std::make_shared<Request>(paddr, size, flags,
                                                maa->requestorId);
@@ -1317,6 +1341,7 @@ void IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     pkt->setData(data);
     my_expected_responses++;
     virtual_outstanding_writes++;
+    (*maa->stats.IND_VirtWriteIssues[my_indirect_id])++;
     virtual_max_outstanding_writes = std::max(
         virtual_max_outstanding_writes, virtual_outstanding_writes);
     panic_if(virtual_outstanding_writes > virtual_max_outstanding_writes_limit,
@@ -1324,6 +1349,7 @@ void IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
              my_indirect_id);
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(0)), true);
+    accountVirtualRequestInterval();
 }
 
 
@@ -1446,7 +1472,118 @@ bool IndirectAccessUnit::virtualRetirementComplete() const {
            my_received_responses == my_expected_responses;
 }
 
+IndirectAccessUnit::VirtualRequestReason
+IndirectAccessUnit::classifyVirtualRequestReason() const {
+    if (state == Status::Build)
+        return VirtualRequestReason::Build;
+
+    const bool sources_arrived =
+        virtual_source_received == virtual_source_expected;
+    const bool sources_drained = sources_arrived && virtual_reserved_responses == 0;
+    if (virtual_final_flush && sources_drained &&
+        (!virtualCombinerEmpty() || virtual_outstanding_writes != 0))
+        return VirtualRequestReason::FinalDrain;
+    if (!sources_arrived)
+        return VirtualRequestReason::SourceFlight;
+    if (virtual_reserved_responses != 0)
+        return VirtualRequestReason::Retained;
+    if (virtual_outstanding_writes != 0)
+        return VirtualRequestReason::Writes;
+    return VirtualRequestReason::Runnable;
+}
+
+void IndirectAccessUnit::accountVirtualRequestInterval() {
+    if (my_request_start_tick == 0 || my_instruction == nullptr ||
+        my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+        return;
+
+    const Tick now = curTick();
+    if (virtual_request_reason_tick != 0 && now != virtual_request_reason_tick) {
+        const Tick elapsed = now - virtual_request_reason_tick;
+        virtual_request_attributed_ticks += elapsed;
+        size_t bucket = 0;
+        switch (virtual_request_reason) {
+        case VirtualRequestReason::Build:
+            bucket = 0;
+            break;
+        case VirtualRequestReason::SourceFlight:
+            bucket = 1;
+            break;
+        case VirtualRequestReason::Retained:
+            bucket = 2;
+            break;
+        case VirtualRequestReason::Writes:
+            bucket = 3;
+            break;
+        case VirtualRequestReason::FinalDrain:
+            bucket = 4;
+            break;
+        case VirtualRequestReason::Runnable:
+            bucket = 5;
+            break;
+        case VirtualRequestReason::None:
+            panic("I[%d] virtual request interval has no reason\n",
+                  my_indirect_id);
+        }
+        virtual_request_reason_ticks[bucket] += elapsed;
+    }
+    virtual_request_reason = classifyVirtualRequestReason();
+    virtual_request_reason_tick = now;
+}
+
+void IndirectAccessUnit::startVirtualRequestInterval() {
+    if (my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+        return;
+    panic_if(virtual_request_reason_tick != 0,
+             "I[%d] virtual request attribution already active\n",
+             my_indirect_id);
+    virtual_request_attributed_ticks = 0;
+    virtual_request_reason_ticks.fill(0);
+    virtual_request_reason = classifyVirtualRequestReason();
+    virtual_request_reason_tick = curTick();
+}
+
+void IndirectAccessUnit::finishVirtualRequestInterval() {
+    if (my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+        return;
+    accountVirtualRequestInterval();
+    panic_if(virtual_request_attributed_ticks !=
+                 curTick() - my_request_start_tick,
+             "I[%d] virtual request attribution mismatch: %lu != %lu ticks\n",
+             my_indirect_id, virtual_request_attributed_ticks,
+             curTick() - my_request_start_tick);
+    std::array<statistics::Scalar *, 6> buckets = {
+        maa->stats.IND_VirtRequestCyclesBuild[my_indirect_id],
+        maa->stats.IND_VirtRequestCyclesSourceFlight[my_indirect_id],
+        maa->stats.IND_VirtRequestCyclesRetained[my_indirect_id],
+        maa->stats.IND_VirtRequestCyclesWrites[my_indirect_id],
+        maa->stats.IND_VirtRequestCyclesFinalDrain[my_indirect_id],
+        maa->stats.IND_VirtRequestCyclesRunnable[my_indirect_id],
+    };
+    const Cycles request_cycles =
+        maa->getTicksToCycles(curTick() - my_request_start_tick);
+    Cycles non_source_cycles(0);
+    for (size_t i = 0; i < buckets.size(); ++i) {
+        if (i == 1)
+            continue;
+        Cycles cycles = maa->getTicksToCycles(virtual_request_reason_ticks[i]);
+        (*buckets[i]) += cycles;
+        non_source_cycles += cycles;
+    }
+    panic_if(non_source_cycles > request_cycles,
+             "I[%d] non-source virtual request buckets exceed total cycles\n",
+             my_indirect_id);
+    // Assign the residual to the dominant source-flight bucket so integer cycle
+    // rounding cannot make the mutually exclusive buckets exceed the total.
+    (*buckets[1]) += request_cycles - non_source_cycles;
+    virtual_request_reason = VirtualRequestReason::None;
+    virtual_request_reason_tick = 0;
+    virtual_request_attributed_ticks = 0;
+    virtual_request_reason_ticks.fill(0);
+}
+
 void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
+    accountVirtualRequestInterval();
     DPRINTF(MAAIndirect, "I[%d] %s: backing write 0x%lx completed\n",
             my_indirect_id, __func__, addr);
     my_received_responses++;
@@ -1454,9 +1591,11 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
              "I[%d] %s: no outstanding retirement write!\n",
              my_indirect_id, __func__);
     virtual_outstanding_writes--;
+    (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     drainVirtualResponses();
     if (virtual_final_flush)
         drainVirtualCombiner(true);
+    accountVirtualRequestInterval();
     scheduleNextExecution(true);
 }
 

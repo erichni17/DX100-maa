@@ -101,6 +101,19 @@ protected:
     int virtual_max_reserved_responses = 0;
     int virtual_max_outstanding_writes = 0;
     bool virtual_build_incomplete = false;
+    enum class VirtualRequestReason : uint8_t {
+        None,
+        Build,
+        SourceFlight,
+        Retained,
+        Writes,
+        FinalDrain,
+        Runnable,
+    };
+    VirtualRequestReason virtual_request_reason = VirtualRequestReason::None;
+    Tick virtual_request_reason_tick = 0;
+    Tick virtual_request_attributed_ticks = 0;
+    std::array<Tick, 6> virtual_request_reason_ticks{};
 
 public:
     MAA *maa;
@@ -183,6 +196,10 @@ protected:
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;
     bool virtualRetirementComplete() const;
+    VirtualRequestReason classifyVirtualRequestReason() const;
+    void accountVirtualRequestInterval();
+    void startVirtualRequestInterval();
+    void finishVirtualRequestInterval();
     bool checkAndResetAllRowTablesSent();
     int getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank);
     Addr getGrowAddr(int RT_config, int bankgroup, int bank, int row);

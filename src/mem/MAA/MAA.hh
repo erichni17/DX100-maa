@@ -565,6 +565,15 @@ public:
         std::vector<statistics::Scalar *> IND_CyclesFill;
         std::vector<statistics::Scalar *> IND_CyclesBuild;
         std::vector<statistics::Scalar *> IND_CyclesRequest;
+        std::vector<statistics::Scalar *> IND_VirtRequestCyclesBuild;
+        std::vector<statistics::Scalar *> IND_VirtRequestCyclesSourceFlight;
+        std::vector<statistics::Scalar *> IND_VirtRequestCyclesRetained;
+        std::vector<statistics::Scalar *> IND_VirtRequestCyclesWrites;
+        std::vector<statistics::Scalar *> IND_VirtRequestCyclesFinalDrain;
+        std::vector<statistics::Scalar *> IND_VirtRequestCyclesRunnable;
+        std::vector<statistics::Scalar *> IND_VirtBuildRounds;
+        std::vector<statistics::Scalar *> IND_VirtWriteIssues;
+        std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;
