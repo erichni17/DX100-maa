@@ -153,6 +153,16 @@ INT_TYPE key_array[NUM_KEYS];
 #else
 #error "Invalid number of cores"
 #endif
+#ifndef KEY_ARRAY_VALUE_COUNT
+#error "Precomputed IS header must declare KEY_ARRAY_VALUE_COUNT"
+#endif
+#ifndef KEY_ARRAY_MAX_KEY
+#error "Precomputed IS header must declare KEY_ARRAY_MAX_KEY"
+#endif
+static_assert(KEY_ARRAY_VALUE_COUNT == NUM_KEYS,
+              "Precomputed IS header cardinality does not match NUM_KEYS");
+static_assert(KEY_ARRAY_MAX_KEY == MAX_KEY,
+              "Precomputed IS header key range does not match MAX_KEY");
 #endif
 // 8MB
 INT_TYPE key_buff1[MAX_KEY];
@@ -1000,6 +1010,8 @@ void dump_key_array_to_header() {
 
     fprintf(f, "#ifndef KEY_ARRAY_H\n");
     fprintf(f, "#define KEY_ARRAY_H\n\n");
+    fprintf(f, "#define KEY_ARRAY_VALUE_COUNT %d\n", NUM_KEYS);
+    fprintf(f, "#define KEY_ARRAY_MAX_KEY %d\n\n", MAX_KEY);
     fprintf(f, "INT_TYPE key_array[NUM_KEYS] = {\n");
     for (int i = 0; i < NUM_KEYS; i++) {
         fprintf(f, "    %d", key_array[i]);
@@ -1075,6 +1087,8 @@ int main(int argc, char **argv) {
     create_seq(314159265.00, 1220703125.00); /* Random number gen mult */
 #else
     std::cout << "Using data from file!" << std::endl;
+    std::cout << "IS_INPUT values=" << KEY_ARRAY_VALUE_COUNT
+              << " max_key=" << KEY_ARRAY_MAX_KEY << std::endl;
 #endif
 #ifdef DUMP_TO_FILE
     dump_key_array_to_header();

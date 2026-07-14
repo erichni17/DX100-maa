@@ -21,6 +21,10 @@ ifdef GEM5_BUILD
 	CXX_FLAGS += -DGEM5
 endif
 
+ifdef FUNC_BUILD
+	CXX_FLAGS += -DFUNC
+endif
+
 ifdef VERIFY
 	CXX_FLAGS += -DDO_VERIFY
 endif
@@ -94,7 +98,7 @@ GEM5: m5op.o all
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=8 -DTILE_SIZE=16384 $(GEM5_LIB) m5op.o $< -o $@
 
 # m5op.o is not directly used here, but including it if needed
-m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
+m5op.o: $(GEM5_HOME)/util/m5/src/abi/x86/m5op.S
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@
 
 .PHONY: clean
