@@ -4,6 +4,9 @@
 
 #include "Spatter/Configuration.hh"
 #include "Spatter/Input.hh"
+#include <cstdint>
+#include <cstring>
+#include <vector>
 #ifdef GEM5
 #include <gem5/m5ops.h>
 #endif
@@ -55,6 +58,103 @@ void print_build_info(Spatter::ClArgs &cl) {
 }
 
 void alloc_MAA();
+
+#ifdef GEM5
+namespace {
+
+constexpr size_t fingerprint_element_limit = 2097152;
+
+uint64_t fingerprint_word(uint64_t hash, uint64_t word) {
+    constexpr uint64_t fnv_prime = 1099511628211ULL;
+    for (unsigned int shift = 0; shift < 64; shift += 8) {
+        hash ^= (word >> shift) & 0xffULL;
+        hash *= fnv_prime;
+    }
+    return hash;
+}
+
+uint64_t double_bits(double value) {
+    uint64_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value), "unexpected double width");
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+void print_semantic_fingerprint(const Spatter::ConfigurationBase &config) {
+    const size_t elements =
+        std::min(config.pattern.size(), fingerprint_element_limit);
+    uint64_t hash = 14695981039346656037ULL;
+    hash = fingerprint_word(hash, config.id);
+    hash = fingerprint_word(hash, elements);
+    size_t checked = 0;
+    size_t ambiguous = 0;
+    size_t mismatches = 0;
+
+    if (config.kernel == "gather") {
+        for (size_t j = 0; j < elements; ++j) {
+            const size_t index = config.pattern[j];
+            if (index >= config.sparse.size() || j >= config.dense.size()) {
+                ++mismatches;
+                continue;
+            }
+            const uint64_t actual = double_bits(config.dense[j]);
+            const uint64_t expected = double_bits(config.sparse[index]);
+            if (actual != expected)
+                ++mismatches;
+            hash = fingerprint_word(hash, j);
+            hash = fingerprint_word(hash, actual);
+            ++checked;
+        }
+    } else if (config.kernel == "scatter") {
+        // Repeated scatter destinations are race-compatible in Spatter. Accept
+        // any value issued to that destination, while hashing the actual final
+        // value so paired configurations must still produce identical output.
+        std::vector<uint32_t> writers(config.sparse.size(), 0);
+        std::vector<uint8_t> matched_writer(config.sparse.size(), 0);
+        for (size_t j = 0; j < elements; ++j) {
+            const size_t index = config.pattern[j];
+            if (index >= config.sparse.size() || j >= config.dense.size()) {
+                ++mismatches;
+                continue;
+            }
+            ++writers[index];
+        }
+        for (size_t j = 0; j < elements; ++j) {
+            const size_t index = config.pattern[j];
+            if (index >= config.sparse.size() || j >= config.dense.size())
+                continue;
+            if (double_bits(config.sparse[index]) == double_bits(config.dense[j]))
+                matched_writer[index] = 1;
+        }
+        for (size_t j = 0; j < elements; ++j) {
+            const size_t index = config.pattern[j];
+            if (index >= config.sparse.size() || writers[index] == 0)
+                continue;
+            const uint32_t writer_count = writers[index];
+            writers[index] = 0;
+            ++checked;
+            if (writer_count > 1)
+                ++ambiguous;
+            if (!matched_writer[index])
+                ++mismatches;
+            hash = fingerprint_word(hash, index);
+            hash = fingerprint_word(hash, double_bits(config.sparse[index]));
+        }
+    } else {
+        ++mismatches;
+    }
+
+    std::cout << "SPATTER_FP config=" << config.id
+              << " kernel=" << config.kernel
+              << " elements=" << elements
+              << " checked=" << checked
+              << " ambiguous=" << ambiguous
+              << " mismatches=" << mismatches
+              << " hash=" << hash << std::endl;
+}
+
+} // namespace
+#endif
 
 int main(int argc, char **argv) {
 
@@ -123,6 +223,15 @@ int main(int argc, char **argv) {
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
     std::cout << "ROI End!!!" << std::endl;
+
+    // Replay after the performance dump so validation cannot inflate ROI cycles.
+    std::cout << "Validation started" << std::endl;
+    for (std::unique_ptr<Spatter::ConfigurationBase> const &config : cl.configs) {
+        if (config->run(false, 0) != 0)
+            return -1;
+        print_semantic_fingerprint(*config);
+    }
+    std::cout << "Validation ended" << std::endl;
     m5_exit(0);
 #endif
 
