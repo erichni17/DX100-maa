@@ -120,6 +120,15 @@ bfs_maa_2G_fp: src/bfs.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 -DBFS_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
 	mv -f $@.tmp $@
 
+# Fingerprinted SSSP binaries with a post-ROI shortest-path certificate.
+sssp_maa_1K_fp: src/sssp.cc src/*.h m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
+	mv -f $@.tmp $@
+
+sssp_maa_2K_fp: src/sssp.cc src/*.h m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DTILE_SIZE=2048 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
+	mv -f $@.tmp $@
+
 # m5op.o is not directly used here, but including it if needed
 m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@

@@ -79,6 +79,84 @@ const WeightT kDistInf = numeric_limits<WeightT>::max() / 2;
 const size_t kMaxBin = numeric_limits<size_t>::max() / 2;
 const size_t kBinSizeThreshold = 1000;
 
+#ifdef SSSP_FP_ENABLE
+static uint64_t MixFingerprint(uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+static bool PrintSSSPFingerprint(const WGraph &g, NodeID source,
+                                 const pvector<WeightT> &dist) {
+    uint64_t hash_a = 0xcbf29ce484222325ULL;
+    uint64_t hash_b = 0x6a09e667f3bcc909ULL;
+    uint64_t distance_sum = 0;
+    uint64_t reached = 0;
+    WeightT max_distance = 0;
+    uint64_t triangle_violations = 0;
+    uint64_t missing_predecessors = 0;
+    uint64_t nonpositive_weights = 0;
+    uint64_t negative_distances = 0;
+    vector<uint8_t> has_tight_predecessor(g.num_nodes(), 0);
+
+    if (source >= 0 && source < g.num_nodes())
+        has_tight_predecessor[source] = 1;
+    for (NodeID u : g.vertices()) {
+        uint64_t encoded = static_cast<uint32_t>(dist[u]);
+        uint64_t indexed =
+            (static_cast<uint64_t>(static_cast<uint32_t>(u)) << 32) |
+            encoded;
+        hash_a ^= indexed;
+        hash_a *= 0x100000001b3ULL;
+        hash_b ^= MixFingerprint(indexed);
+        hash_b = (hash_b << 17) | (hash_b >> 47);
+        hash_b *= 0x9e3779b185ebca87ULL;
+        if (dist[u] != kDistInf) {
+            reached++;
+            if (dist[u] < 0)
+                negative_distances++;
+            distance_sum += static_cast<uint32_t>(dist[u]);
+            max_distance = max(max_distance, dist[u]);
+        }
+    }
+
+    for (NodeID u : g.vertices()) {
+        if (dist[u] == kDistInf)
+            continue;
+        for (WNode wn : g.out_neigh(u)) {
+            if (wn.w <= 0)
+                nonpositive_weights++;
+            int64_t candidate = static_cast<int64_t>(dist[u]) + wn.w;
+            if (dist[wn.v] == kDistInf || candidate < dist[wn.v])
+                triangle_violations++;
+            if (dist[wn.v] != kDistInf && candidate == dist[wn.v])
+                has_tight_predecessor[wn.v] = 1;
+        }
+    }
+    for (NodeID v : g.vertices()) {
+        if (dist[v] != kDistInf && !has_tight_predecessor[v])
+            missing_predecessors++;
+    }
+
+    bool pass = source >= 0 && source < g.num_nodes() && dist[source] == 0 &&
+                negative_distances == 0 && nonpositive_weights == 0 &&
+                triangle_violations == 0 && missing_predecessors == 0;
+    printf("SSSP_FINGERPRINT vertices=%" PRIu64 " reached=%" PRIu64
+           " unreachable=%" PRIu64 " distance_sum=%" PRIu64
+           " max_distance=%" PRId32 " hash_a=%016" PRIx64
+           " hash_b=%016" PRIx64 " triangle_violations=%" PRIu64
+           " missing_predecessors=%" PRIu64 " nonpositive_weights=%" PRIu64
+           " negative_distances=%" PRIu64 " result=%s\n",
+           static_cast<uint64_t>(g.num_nodes()), reached,
+           static_cast<uint64_t>(g.num_nodes()) - reached, distance_sum,
+           max_distance, hash_a, hash_b, triangle_violations,
+           missing_predecessors, nonpositive_weights, negative_distances,
+           pass ? "PASS" : "FAIL");
+    return pass;
+}
+#endif
+
 pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, bool logging_enabled = false) {
     int num_directed_edges = g.num_edges_directed();
     int num_nodes = g.num_nodes();
@@ -319,6 +397,11 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     m5_work_end(0, 0);
     clear_mem_region();
     std::cout << "ROI End!!!" << std::endl;
+#ifdef SSSP_FP_ENABLE
+    std::cout << "Validation started" << std::endl;
+    PrintSSSPFingerprint(g, source, dist);
+    std::cout << "Validation ended" << std::endl;
+#endif
     m5_exit(0);
 #endif
     return dist;
