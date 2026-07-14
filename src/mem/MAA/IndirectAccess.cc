@@ -91,6 +91,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _reorder_row_table,
                                   int _num_initial_row_table_slice,
                                   int _virtual_combine_slots,
+                                  int _virtual_response_slots,
+                                  int _virtual_max_outstanding_writes,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -108,6 +110,14 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] virtual combiner must have at least one slot\n",
              my_indirect_id);
     virtual_combine_slots.resize(_virtual_combine_slots);
+    panic_if(_virtual_response_slots <= 0,
+             "I[%d] virtual response buffer must have at least one slot\n",
+             my_indirect_id);
+    virtual_response_slots.resize(_virtual_response_slots);
+    panic_if(_virtual_max_outstanding_writes <= 0,
+             "I[%d] virtual retirement must allow at least one write\n",
+             my_indirect_id);
+    virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -734,7 +744,7 @@ void IndirectAccessUnit::executeInstruction() {
                 break;
             for (; last_RT_sent < num_RT_slices[my_RT_config]; last_RT_sent++) {
                 if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
-                    virtual_reserved_responses == virtualResponseSlots) {
+                    virtual_reserved_responses == virtual_response_slots.size()) {
                     virtual_capacity_full = true;
                     break;
                 }
@@ -751,7 +761,7 @@ void IndirectAccessUnit::executeInstruction() {
                             virtual_max_reserved_responses = std::max(
                                 virtual_max_reserved_responses,
                                 virtual_reserved_responses);
-                            panic_if(virtual_reserved_responses > virtualResponseSlots,
+                            panic_if(virtual_reserved_responses > virtual_response_slots.size(),
                                      "I[%d] virtual response slots exceeded capacity\n",
                                      my_indirect_id);
                         }
@@ -842,10 +852,10 @@ void IndirectAccessUnit::executeInstruction() {
         DPRINTF(MAATrace, "I[%d] End [%s]\n", my_indirect_id, my_instruction->print());
         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
             DPRINTF(MAAIndirect,
-                    "I[%d] virtual high water: response_slots=%d/%d writes=%d/%d\n",
+                    "I[%d] virtual high water: response_slots=%d/%zu writes=%d/%d\n",
                     my_indirect_id, virtual_max_reserved_responses,
-                    virtualResponseSlots, virtual_max_outstanding_writes,
-                    virtualMaxOutstandingWrites);
+                    virtual_response_slots.size(), virtual_max_outstanding_writes,
+                    virtual_max_outstanding_writes_limit);
             DPRINTF(MAAIndirect,
                     "I[%d] virtual combining: slots=%zu max_occupancy=%d "
                     "full_lines=%d partial_words=%d\n",
@@ -1309,12 +1319,13 @@ void IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     virtual_outstanding_writes++;
     virtual_max_outstanding_writes = std::max(
         virtual_max_outstanding_writes, virtual_outstanding_writes);
-    panic_if(virtual_outstanding_writes > virtualMaxOutstandingWrites,
+    panic_if(virtual_outstanding_writes > virtual_max_outstanding_writes_limit,
              "I[%d] virtual retirement writes exceeded capacity\n",
              my_indirect_id);
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(0)), true);
 }
+
 
 void IndirectAccessUnit::drainVirtualResponses() {
     for (auto &slot : virtual_response_slots) {
@@ -1357,7 +1368,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     if (target == nullptr) {
         auto &victim = virtual_combine_slots[virtual_combine_victim];
         while (victim.valid_words != 0 &&
-               virtual_outstanding_writes < virtualMaxOutstandingWrites) {
+               virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
             unsigned victim_word = __builtin_ctz(victim.valid_words);
             createRetirementWrite(
                 victim.line_vaddr + victim_word * my_word_size, my_word_size,
@@ -1395,8 +1406,9 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         if (!slot.valid)
             continue;
         if (slot.valid_words == full_mask &&
-            virtual_outstanding_writes < virtualMaxOutstandingWrites) {
-            createRetirementWrite(slot.line_vaddr, block_size, slot.data.data());
+            virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+            createRetirementWrite(slot.line_vaddr, block_size,
+                                  slot.data.data());
             virtual_full_line_writes++;
             slot = VirtualCombineSlot();
             continue;
@@ -1404,7 +1416,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         if (!flush_partial)
             continue;
         while (slot.valid_words != 0 &&
-               virtual_outstanding_writes < virtualMaxOutstandingWrites) {
+               virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
             unsigned word = __builtin_ctz(slot.valid_words);
             createRetirementWrite(slot.line_vaddr + word * my_word_size,
                                   my_word_size,
@@ -1414,7 +1426,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         }
         if (slot.valid_words == 0)
             slot = VirtualCombineSlot();
-        if (virtual_outstanding_writes == virtualMaxOutstandingWrites)
+        if (virtual_outstanding_writes == virtual_max_outstanding_writes_limit)
             break;
     }
 }

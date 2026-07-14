@@ -228,6 +228,8 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_force_cache_access", default=False, action="store_true", help="Force cache access instead of direct memory access for the indirect access unit")
     parser.add_argument("--maa_num_initial_row_table_slices", type=int, default=32, help="Number of initial row table slices if row table is not reconfigurable")
     parser.add_argument("--maa_virtual_combine_slots", type=int, default=16, help="Number of tagged cache-line slots used by virtual gather retirement")
+    parser.add_argument("--maa_virtual_response_slots", type=int, default=8, help="Number of retained source responses used by virtual gather retirement")
+    parser.add_argument("--maa_virtual_max_outstanding_writes", type=int, default=32, help="Maximum acknowledged writes in flight for virtual gather retirement")
     parser.add_argument("--maa_num_request_table_addresses", type=int, default=128, help="Number of addresses in the request table")
     parser.add_argument("--maa_num_request_table_entries_per_address", type=int, default=16, help="Number of entries in the request table per address")
     parser.add_argument("--maa_spd_read_latency", type=int, default=1, help="SPD read latency")

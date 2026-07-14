@@ -24,6 +24,7 @@ int main(int argc, char **argv) {
     std::vector<int32_t> source(n * 4);
     std::vector<int32_t> indices(n);
     std::vector<int32_t> backing_storage(n + 1024, -1);
+    std::vector<int32_t> cache_pollution(1 << 18, 1);
     const int backing_offset = pattern == "page" ? 1019 : 0;
     int32_t *backing = backing_storage.data() + backing_offset;
     for (int i = 0; i < static_cast<int>(source.size()); ++i)
@@ -34,9 +35,9 @@ int main(int argc, char **argv) {
         else
             indices[i] = (i * 97 + 13) % source.size();
     }
-    if (pattern != "random" && pattern != "fanout" && pattern != "page" &&
-        pattern != "native") {
-        std::cerr << "pattern must be random, fanout, page, or native"
+    if (pattern != "random" && pattern != "resident" &&
+        pattern != "fanout" && pattern != "page" && pattern != "native") {
+        std::cerr << "pattern must be random, resident, fanout, page, or native"
                   << std::endl;
         return 2;
     }
@@ -56,6 +57,15 @@ int main(int argc, char **argv) {
     int stride_reg = get_new_reg<int>(1);
     int idx_tile = get_new_tile<int>();
     int completion_tile = get_new_tile<int32_t>();
+
+    if (pattern == "resident") {
+        volatile int32_t residency_sink = 0;
+        for (int i = 0; i < n; i += 16)
+            residency_sink += backing[i];
+        for (int i = 0; i < static_cast<int>(cache_pollution.size()); i += 16)
+            residency_sink += cache_pollution[i];
+        asm volatile("" : : "r"(residency_sink) : "memory");
+    }
 
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);

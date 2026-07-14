@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 6 ]]; then
-    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS]" >&2
+if [[ $# -lt 3 || $# -gt 8 ]]; then
+    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS]" >&2
     exit 2
 fi
 
@@ -14,6 +14,8 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 gem5="$root/build/X86/gem5.opt.virtual_v1"
 binary=${5:-$root/benchmarks/API/test_virtual_gather_T16K.o}
 combine_slots=${6:-16}
+response_slots=${7:-8}
+write_credits=${8:-32}
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
@@ -40,7 +42,10 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --cacheline_size=64 --mem-type Ramulator2 --ramulator-config "$ramulator" \
     --mem-channels=1 --maa --maa_num_tile_elements=16384 \
     --maa_num_initial_row_table_slices=16 \
-    --maa_virtual_combine_slots="$combine_slots" --cmd "$binary" \
+    --maa_virtual_combine_slots="$combine_slots" \
+    --maa_virtual_response_slots="$response_slots" \
+    --maa_virtual_max_outstanding_writes="$write_credits" \
+    --cmd "$binary" \
     --options "$n $pattern" >"$outdir/restore.log" 2>&1
 
 grep -E 'VIRTUAL_GATHER(64)?_RESULT' "$outdir/restore.log"

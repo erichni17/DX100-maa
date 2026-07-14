@@ -75,14 +75,12 @@ protected:
     std::map<Addr, Tick> LoadsCacheHitAccessingTimeHistory;
     std::map<Addr, Tick> LoadsMemAccessingTimeHistory;
 
-    static constexpr int virtualResponseSlots = 8;
-    static constexpr int virtualMaxOutstandingWrites = 32;
     struct VirtualResponseSlot {
         bool valid = false;
         int next_itr = -1;
         std::array<uint8_t, 64> data{};
     };
-    std::array<VirtualResponseSlot, virtualResponseSlots> virtual_response_slots;
+    std::vector<VirtualResponseSlot> virtual_response_slots;
     struct VirtualCombineSlot {
         bool valid = false;
         Addr line_vaddr = 0;
@@ -90,6 +88,7 @@ protected:
         std::array<uint8_t, 64> data{};
     };
     std::vector<VirtualCombineSlot> virtual_combine_slots;
+    int virtual_max_outstanding_writes_limit = 0;
     int virtual_reserved_responses = 0;
     int virtual_outstanding_writes = 0;
     int virtual_source_expected = 0;
@@ -116,6 +115,8 @@ public:
                   bool _reorder_row_table,
                   int _num_initial_row_table_slice,
                   int _virtual_combine_slots,
+                  int _virtual_response_slots,
+                  int _virtual_max_outstanding_writes,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
