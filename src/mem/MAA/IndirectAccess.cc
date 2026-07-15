@@ -111,12 +111,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] virtual combiner must have at least one slot\n",
              my_indirect_id);
     virtual_combine_slots.resize(_virtual_combine_slots);
-    virtual_combine_words_limit = _virtual_combine_words == 0
-        ? _virtual_combine_slots * (block_size / sizeof(uint32_t))
-        : _virtual_combine_words;
-    panic_if(virtual_combine_words_limit <= 0,
-             "I[%d] virtual combiner must hold at least one word\n",
-             my_indirect_id);
+    virtual_combine_words_configured = _virtual_combine_words;
     panic_if(_virtual_response_slots <= 0,
              "I[%d] virtual response buffer must have at least one slot\n",
              my_indirect_id);
@@ -617,6 +612,12 @@ void IndirectAccessUnit::executeInstruction() {
             assert(false);
         }
         my_words_per_cl = 64 / my_word_size;
+        virtual_combine_words_limit = virtual_combine_words_configured == 0
+            ? virtual_combine_slots.size() * my_words_per_cl
+            : virtual_combine_words_configured;
+        panic_if(virtual_combine_words_limit <= 0,
+                 "I[%d] virtual combiner must hold at least one word\n",
+                 my_indirect_id);
         maa->stats.numInst++;
         (*maa->stats.IND_NumInsts[my_indirect_id])++;
         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {

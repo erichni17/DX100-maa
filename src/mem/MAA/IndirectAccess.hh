@@ -88,6 +88,7 @@ protected:
         std::array<uint8_t, 64> data{};
     };
     std::vector<VirtualCombineSlot> virtual_combine_slots;
+    int virtual_combine_words_configured = 0;
     int virtual_combine_words_limit = 0;
     int virtual_combine_words = 0;
     int virtual_max_combine_words = 0;
