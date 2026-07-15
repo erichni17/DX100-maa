@@ -358,7 +358,9 @@ void save_data_to_file() {
 #error
 #endif
 
-    // Preserve each binary32 value when generated data is compiled back in.
+    // Preserve each binary32 value exactly when the generated header is read
+    // back by the compiler. The default stream precision silently changes the
+    // matrix and invalidates comparisons with the generated-in-process path.
     outfile << std::setprecision(std::numeric_limits<float>::max_digits10);
 
     outfile << "#ifndef CG_DATA_H\n";
