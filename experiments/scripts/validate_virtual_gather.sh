@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 8 ]]; then
-    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS]" >&2
+if [[ $# -lt 3 || $# -gt 9 ]]; then
+    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS] [COMBINE_WORDS]" >&2
     exit 2
 fi
 
@@ -16,6 +16,7 @@ binary=${5:-$root/benchmarks/API/test_virtual_gather_T16K.o}
 combine_slots=${6:-16}
 response_slots=${7:-8}
 write_credits=${8:-32}
+combine_words=${9:-0}
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
@@ -43,6 +44,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --mem-channels=1 --maa --maa_num_tile_elements=16384 \
     --maa_num_initial_row_table_slices=16 \
     --maa_virtual_combine_slots="$combine_slots" \
+    --maa_virtual_combine_words="$combine_words" \
     --maa_virtual_response_slots="$response_slots" \
     --maa_virtual_max_outstanding_writes="$write_credits" \
     --cmd "$binary" \

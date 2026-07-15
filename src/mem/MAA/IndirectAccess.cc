@@ -91,6 +91,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _reorder_row_table,
                                   int _num_initial_row_table_slice,
                                   int _virtual_combine_slots,
+                                  int _virtual_combine_words,
                                   int _virtual_response_slots,
                                   int _virtual_max_outstanding_writes,
                                   Cycles _rowtable_latency,
@@ -110,6 +111,12 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] virtual combiner must have at least one slot\n",
              my_indirect_id);
     virtual_combine_slots.resize(_virtual_combine_slots);
+    virtual_combine_words_limit = _virtual_combine_words == 0
+        ? _virtual_combine_slots * (block_size / sizeof(uint32_t))
+        : _virtual_combine_words;
+    panic_if(virtual_combine_words_limit <= 0,
+             "I[%d] virtual combiner must hold at least one word\n",
+             my_indirect_id);
     panic_if(_virtual_response_slots <= 0,
              "I[%d] virtual response buffer must have at least one slot\n",
              my_indirect_id);
@@ -355,6 +362,9 @@ void IndirectAccessUnit::check_reset() {
              virtual_outstanding_writes);
     panic_if(!virtualCombinerEmpty(),
              "I[%d] virtual combiner is not empty at reset\n", my_indirect_id);
+    panic_if(virtual_combine_words != 0,
+             "I[%d] virtual combiner still accounts for %d words\n",
+             my_indirect_id, virtual_combine_words);
     panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");
     panic_if(my_decode_start_tick != 0, "Decode start tick is not 0: %lu!\n", my_decode_start_tick);
     panic_if(my_fill_start_tick != 0, "Fill start tick is not 0: %lu!\n", my_fill_start_tick);
@@ -636,6 +646,8 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_full_line_writes = 0;
         virtual_partial_word_writes = 0;
         virtual_max_combine_occupancy = 0;
+        virtual_combine_words = 0;
+        virtual_max_combine_words = 0;
         virtual_final_flush = false;
         virtual_max_reserved_responses = 0;
         virtual_max_outstanding_writes = 0;
@@ -878,9 +890,10 @@ void IndirectAccessUnit::executeInstruction() {
                     virtual_max_outstanding_writes_limit);
             DPRINTF(MAAIndirect,
                     "I[%d] virtual combining: slots=%zu max_occupancy=%d "
-                    "full_lines=%d partial_words=%d\n",
+                    "max_words=%d/%d full_lines=%d partial_words=%d\n",
                     my_indirect_id, virtual_combine_slots.size(),
-                    virtual_max_combine_occupancy, virtual_full_line_writes,
+                    virtual_max_combine_occupancy, virtual_max_combine_words,
+                    virtual_combine_words_limit, virtual_full_line_writes,
                     virtual_partial_word_writes);
         }
         panic_if(scheduleNextExecution(), "I[%d] %s: Execution is not completed!\n", my_indirect_id, __func__);
@@ -1383,16 +1396,36 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     const unsigned word = (vaddr - line_vaddr) / my_word_size;
     const uint16_t word_bit = 1U << word;
     VirtualCombineSlot *target = nullptr;
+    VirtualCombineSlot *free_slot = nullptr;
     for (auto &slot : virtual_combine_slots) {
         if (slot.valid && slot.line_vaddr == line_vaddr) {
             target = &slot;
             break;
         }
-        if (!slot.valid && target == nullptr)
-            target = &slot;
+        if (!slot.valid && free_slot == nullptr)
+            free_slot = &slot;
     }
-    if (target == nullptr) {
-        auto &victim = virtual_combine_slots[virtual_combine_victim];
+    if (virtual_combine_words == virtual_combine_words_limit)
+        drainVirtualCombiner(false);
+    const bool word_capacity_full =
+        virtual_combine_words == virtual_combine_words_limit;
+    const bool line_capacity_full = target == nullptr && free_slot == nullptr;
+    if (word_capacity_full || line_capacity_full) {
+        int victim_idx = -1;
+        for (int offset = 0; offset < virtual_combine_slots.size(); ++offset) {
+            const int idx = (virtual_combine_victim + offset) %
+                            virtual_combine_slots.size();
+            if (virtual_combine_slots[idx].valid &&
+                &virtual_combine_slots[idx] != target) {
+                victim_idx = idx;
+                break;
+            }
+        }
+        if (victim_idx == -1 && target != nullptr)
+            victim_idx = target - virtual_combine_slots.data();
+        panic_if(victim_idx == -1,
+                 "I[%d] virtual combiner has no valid victim\n", my_indirect_id);
+        auto &victim = virtual_combine_slots[victim_idx];
         while (victim.valid_words != 0 &&
                virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
             unsigned victim_word = __builtin_ctz(victim.valid_words);
@@ -1400,15 +1433,24 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                 victim.line_vaddr + victim_word * my_word_size, my_word_size,
                 victim.data.data() + victim_word * my_word_size);
             victim.valid_words &= ~(1U << victim_word);
+            panic_if(virtual_combine_words == 0,
+                     "I[%d] virtual word accounting underflow\n", my_indirect_id);
+            virtual_combine_words--;
             virtual_partial_word_writes++;
         }
         if (victim.valid_words != 0)
             return false;
+        if (target == &victim)
+            target = nullptr;
         victim = VirtualCombineSlot();
-        target = &victim;
+        free_slot = &victim;
         virtual_combine_victim =
-            (virtual_combine_victim + 1) % virtual_combine_slots.size();
+            (victim_idx + 1) % virtual_combine_slots.size();
     }
+    if (target == nullptr)
+        target = free_slot;
+    panic_if(target == nullptr,
+             "I[%d] virtual combiner has no insertion slot\n", my_indirect_id);
     if (!target->valid) {
         target->valid = true;
         target->line_vaddr = line_vaddr;
@@ -1423,6 +1465,13 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
              my_indirect_id, word, line_vaddr);
     std::memcpy(target->data.data() + word * my_word_size, data, my_word_size);
     target->valid_words |= word_bit;
+    virtual_combine_words++;
+    panic_if(virtual_combine_words > virtual_combine_words_limit,
+             "I[%d] virtual combiner exceeded word capacity: %d/%d\n",
+             my_indirect_id, virtual_combine_words,
+             virtual_combine_words_limit);
+    virtual_max_combine_words =
+        std::max(virtual_max_combine_words, virtual_combine_words);
     return true;
 }
 
@@ -1436,6 +1485,10 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             createRetirementWrite(slot.line_vaddr, block_size,
                                   slot.data.data());
             virtual_full_line_writes++;
+            panic_if(virtual_combine_words < my_words_per_cl,
+                     "I[%d] virtual full-line accounting underflow\n",
+                     my_indirect_id);
+            virtual_combine_words -= my_words_per_cl;
             slot = VirtualCombineSlot();
             continue;
         }
@@ -1448,6 +1501,9 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                                   my_word_size,
                                   slot.data.data() + word * my_word_size);
             slot.valid_words &= ~(1U << word);
+            panic_if(virtual_combine_words == 0,
+                     "I[%d] virtual word accounting underflow\n", my_indirect_id);
+            virtual_combine_words--;
             virtual_partial_word_writes++;
         }
         if (slot.valid_words == 0)
