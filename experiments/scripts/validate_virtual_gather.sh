@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 9 ]]; then
-    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS] [COMBINE_WORDS]" >&2
+if [[ $# -lt 3 || $# -gt 10 ]]; then
+    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS] [COMBINE_WORDS] [MASKED_WRITES]" >&2
     exit 2
 fi
 
@@ -17,6 +17,11 @@ combine_slots=${6:-16}
 response_slots=${7:-8}
 write_credits=${8:-32}
 combine_words=${9:-0}
+masked_writes=${10:-0}
+masked_args=()
+if [[ "$masked_writes" == 1 ]]; then
+    masked_args+=(--maa_virtual_masked_writes)
+fi
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
@@ -47,6 +52,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_combine_words="$combine_words" \
     --maa_virtual_response_slots="$response_slots" \
     --maa_virtual_max_outstanding_writes="$write_credits" \
+    "${masked_args[@]}" \
     --cmd "$binary" \
     --options "$n $pattern" >"$outdir/restore.log" 2>&1
 

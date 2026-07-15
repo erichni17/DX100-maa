@@ -400,6 +400,7 @@ public:
     unsigned int virtual_combine_words;
     unsigned int virtual_response_slots;
     unsigned int virtual_max_outstanding_writes;
+    bool virtual_masked_writes;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;
     unsigned int num_memory_channels;

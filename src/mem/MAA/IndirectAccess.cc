@@ -94,6 +94,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_combine_words,
                                   int _virtual_response_slots,
                                   int _virtual_max_outstanding_writes,
+                                  bool _virtual_masked_writes,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -120,6 +121,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] virtual retirement must allow at least one write\n",
              my_indirect_id);
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
+    virtual_masked_writes = _virtual_masked_writes;
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -355,6 +357,9 @@ void IndirectAccessUnit::check_reset() {
              "I[%d] virtual retirement state is not empty: slots=%d writes=%d\n",
              my_indirect_id, virtual_reserved_responses,
              virtual_outstanding_writes);
+    panic_if(!virtual_outstanding_write_lines.empty(),
+             "I[%d] virtual write-line scoreboard is not empty\n",
+             my_indirect_id);
     panic_if(!virtualCombinerEmpty(),
              "I[%d] virtual combiner is not empty at reset\n", my_indirect_id);
     panic_if(virtual_combine_words != 0,
@@ -1339,22 +1344,43 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
     }
     return true;
 }
-void IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
+bool IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
     Addr vaddr = my_backing_addr + itr * my_word_size;
-    createRetirementWrite(vaddr, my_word_size, data);
+    return createRetirementWrite(vaddr, my_word_size, data);
 }
 
-void IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
-                                                const uint8_t *data) {
+bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
+                                                const uint8_t *data,
+                                                uint16_t valid_words) {
     accountVirtualRequestInterval();
     Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
+    const Addr write_key = size == block_size
+        ? paddr & ~(block_size - 1) : paddr;
+    if (virtual_outstanding_write_lines.count(write_key) != 0)
+        return false;
     RequestPtr req = std::make_shared<Request>(paddr, size, flags,
                                                maa->requestorId);
+    std::vector<bool> byte_enable;
+    if (valid_words != 0) {
+        panic_if(size != block_size,
+                 "I[%d] masked retirement write is not a cache line\n",
+                 my_indirect_id);
+        byte_enable.resize(block_size, false);
+        for (unsigned word = 0; word < my_words_per_cl; ++word) {
+            if ((valid_words & (1U << word)) == 0)
+                continue;
+            std::fill(byte_enable.begin() + word * my_word_size,
+                      byte_enable.begin() + (word + 1) * my_word_size, true);
+        }
+    }
     PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
     pkt->allocate();
     pkt->setData(data);
+    if (!byte_enable.empty())
+        req->setByteEnable(byte_enable);
     my_expected_responses++;
     virtual_outstanding_writes++;
+    virtual_outstanding_write_lines.insert(write_key);
     (*maa->stats.IND_VirtWriteIssues[my_indirect_id])++;
     virtual_max_outstanding_writes = std::max(
         virtual_max_outstanding_writes, virtual_outstanding_writes);
@@ -1364,6 +1390,7 @@ void IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(0)), true);
     accountVirtualRequestInterval();
+    return true;
 }
 
 
@@ -1427,17 +1454,31 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         panic_if(victim_idx == -1,
                  "I[%d] virtual combiner has no valid victim\n", my_indirect_id);
         auto &victim = virtual_combine_slots[victim_idx];
-        while (victim.valid_words != 0 &&
-               virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
-            unsigned victim_word = __builtin_ctz(victim.valid_words);
-            createRetirementWrite(
-                victim.line_vaddr + victim_word * my_word_size, my_word_size,
-                victim.data.data() + victim_word * my_word_size);
-            victim.valid_words &= ~(1U << victim_word);
-            panic_if(virtual_combine_words == 0,
-                     "I[%d] virtual word accounting underflow\n", my_indirect_id);
-            virtual_combine_words--;
-            virtual_partial_word_writes++;
+        if (virtual_masked_writes && victim.valid_words != 0 &&
+            virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+            const int words = __builtin_popcount(victim.valid_words);
+            if (createRetirementWrite(victim.line_vaddr, block_size,
+                                      victim.data.data(), victim.valid_words)) {
+                virtual_combine_words -= words;
+                virtual_partial_word_writes++;
+                victim.valid_words = 0;
+            }
+        } else {
+            while (victim.valid_words != 0 &&
+                   virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+                unsigned victim_word = __builtin_ctz(victim.valid_words);
+                if (!createRetirementWrite(
+                        victim.line_vaddr + victim_word * my_word_size,
+                        my_word_size,
+                        victim.data.data() + victim_word * my_word_size))
+                    break;
+                victim.valid_words &= ~(1U << victim_word);
+                panic_if(virtual_combine_words == 0,
+                         "I[%d] virtual word accounting underflow\n",
+                         my_indirect_id);
+                virtual_combine_words--;
+                virtual_partial_word_writes++;
+            }
         }
         if (victim.valid_words != 0)
             return false;
@@ -1483,8 +1524,9 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             continue;
         if (slot.valid_words == full_mask &&
             virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
-            createRetirementWrite(slot.line_vaddr, block_size,
-                                  slot.data.data());
+            if (!createRetirementWrite(slot.line_vaddr, block_size,
+                                       slot.data.data()))
+                continue;
             virtual_full_line_writes++;
             panic_if(virtual_combine_words < my_words_per_cl,
                      "I[%d] virtual full-line accounting underflow\n",
@@ -1495,12 +1537,24 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         }
         if (!flush_partial)
             continue;
+        if (virtual_masked_writes && slot.valid_words != 0 &&
+            virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+            const int words = __builtin_popcount(slot.valid_words);
+            if (createRetirementWrite(slot.line_vaddr, block_size,
+                                      slot.data.data(), slot.valid_words)) {
+                virtual_combine_words -= words;
+                virtual_partial_word_writes++;
+                slot = VirtualCombineSlot();
+            }
+            continue;
+        }
         while (slot.valid_words != 0 &&
                virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
             unsigned word = __builtin_ctz(slot.valid_words);
-            createRetirementWrite(slot.line_vaddr + word * my_word_size,
-                                  my_word_size,
-                                  slot.data.data() + word * my_word_size);
+            if (!createRetirementWrite(
+                    slot.line_vaddr + word * my_word_size, my_word_size,
+                    slot.data.data() + word * my_word_size))
+                break;
             slot.valid_words &= ~(1U << word);
             panic_if(virtual_combine_words == 0,
                      "I[%d] virtual word accounting underflow\n", my_indirect_id);
@@ -1648,6 +1702,9 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
              "I[%d] %s: no outstanding retirement write!\n",
              my_indirect_id, __func__);
     virtual_outstanding_writes--;
+    panic_if(virtual_outstanding_write_lines.erase(addr) != 1,
+             "I[%d] %s: completed address 0x%lx was not outstanding\n",
+             my_indirect_id, __func__, addr);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     drainVirtualResponses();
     if (virtual_final_flush)

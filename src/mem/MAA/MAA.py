@@ -27,6 +27,7 @@ class MAA(ClockedObject):
     virtual_combine_words = Param.Unsigned(0, "Resident virtual gather data words (0 reserves every line slot fully)")
     virtual_response_slots = Param.Unsigned(8, "Retained source responses used by virtual gather retirement")
     virtual_max_outstanding_writes = Param.Unsigned(32, "Acknowledged virtual retirement writes allowed in flight")
+    virtual_masked_writes = Param.Bool(False, "Retire partial virtual lines as masked cache-line writes")
     spd_read_latency = Param.Cycles(1, "SPD read latency")
     spd_write_latency = Param.Cycles(1, "SPD write latency")
     num_spd_read_ports_per_maa = Param.Unsigned(4, "Number of SPD read ports per DX100 instance")

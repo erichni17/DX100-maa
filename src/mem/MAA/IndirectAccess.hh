@@ -93,6 +93,8 @@ protected:
     int virtual_combine_words = 0;
     int virtual_max_combine_words = 0;
     int virtual_max_outstanding_writes_limit = 0;
+    bool virtual_masked_writes = false;
+    std::set<Addr> virtual_outstanding_write_lines;
     int virtual_reserved_responses = 0;
     int virtual_outstanding_writes = 0;
     int virtual_source_expected = 0;
@@ -135,6 +137,7 @@ public:
                   int _virtual_combine_words,
                   int _virtual_response_slots,
                   int _virtual_max_outstanding_writes,
+                  bool _virtual_masked_writes,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
@@ -194,8 +197,9 @@ protected:
 
     Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
                          unsigned size = 64);
-    void createRetirementWrite(int itr, const uint8_t *data);
-    void createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data);
+    bool createRetirementWrite(int itr, const uint8_t *data);
+    bool createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data,
+                               uint16_t valid_words = 0);
     void drainVirtualResponses();
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     void drainVirtualCombiner(bool flush_partial);

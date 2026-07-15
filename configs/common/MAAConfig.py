@@ -53,6 +53,9 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_virtual_max_outstanding_writes"):
         opts["virtual_max_outstanding_writes"] = getattr(options, "maa_virtual_max_outstanding_writes")
+
+    if hasattr(options, "maa_virtual_masked_writes"):
+        opts["virtual_masked_writes"] = getattr(options, "maa_virtual_masked_writes")
     
     if(hasattr(options, "maa_num_request_table_addresses")):
         opts["num_request_table_addresses"] = getattr(options, "maa_num_request_table_addresses")
