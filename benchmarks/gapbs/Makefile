@@ -129,6 +129,12 @@ sssp_maa_2K_fp: src/sssp.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DTILE_SIZE=2048 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
 	mv -f $@.tmp $@
 
+# Scale-22 BC correctness binary: end the ROI before the serial verifier, then
+# exit gem5 only after GAPBS reports the verification result.
+bc_maa_1K_verify: src/bc.cc src/*.h m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 -DBC_VERIFY_AFTER_ROI=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
+	mv -f $@.tmp $@
+
 # m5op.o is not directly used here, but including it if needed
 m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@

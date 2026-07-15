@@ -417,7 +417,9 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp, NodeID num_iter
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
     std::cout << "ROI End!!!" << std::endl;
+#ifndef BC_VERIFY_AFTER_ROI
     m5_exit(0);
+#endif
 #endif
 
     return scores;
@@ -634,7 +636,9 @@ pvector<ScoreT> BrandesMaa(const Graph &g, SourcePicker<Graph> &sp, NodeID num_i
     clear_mem_region();
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
+#ifndef BC_VERIFY_AFTER_ROI
     m5_exit(0);
+#endif
     std::cout << "ROI End!!!" << std::endl;
 #endif
 
@@ -658,6 +662,9 @@ void PrintTopScores(const Graph &g, const pvector<ScoreT> &scores) {
 // - regenerates successors from depths
 bool BCVerifier(const Graph &g, SourcePicker<Graph> &sp, NodeID num_iters,
                 const pvector<ScoreT> &scores_to_test) {
+#ifdef BC_VERIFY_AFTER_ROI
+    cout << "BC_VALIDATION_START" << endl;
+#endif
     pvector<ScoreT> scores(g.num_nodes(), 0);
     for (int iter = 0; iter < num_iters; iter++) {
         NodeID source = sp.PickNext();
@@ -716,6 +723,9 @@ bool BCVerifier(const Graph &g, SourcePicker<Graph> &sp, NodeID num_iters,
             all_ok = false;
         }
     }
+#ifdef BC_VERIFY_AFTER_ROI
+    cout << "BC_VALIDATION_END result=" << (all_ok ? "PASS" : "FAIL") << endl;
+#endif
     return all_ok;
 }
 
@@ -745,6 +755,16 @@ int main(int argc, char *argv[]) {
                                       const pvector<ScoreT> &scores) {
         return BCVerifier(g, vsp, cli.num_iters(), scores);
     };
+#ifdef BC_VERIFY_AFTER_ROI
+    if (!cli.do_verify()) {
+        cerr << "BC_VERIFY_AFTER_ROI requires -v" << endl;
+        return 2;
+    }
+#endif
     BenchmarkKernel(cli, g, BCBound, PrintTopScores, VerifierBound);
+#if defined(GEM5) && defined(BC_VERIFY_AFTER_ROI)
+    cout << "BC_POST_VALIDATION_EXIT" << endl;
+    m5_exit(0);
+#endif
     return 0;
 }
