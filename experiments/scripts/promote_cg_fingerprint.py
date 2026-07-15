@@ -227,6 +227,14 @@ def main():
     parser.add_argument("--ramulator-config", required=True, type=Path)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--data-header", required=True, type=Path)
+    parser.add_argument(
+        "--expected-x-q5",
+        required=True,
+        type=lambda value: value
+        if re.fullmatch(r"[0-9a-f]{16}", value)
+        else parser.error("--expected-x-q5 must be 16 lowercase hex digits"),
+        help="independently qualified x-vector hash for this exact matrix",
+    )
     parser.add_argument("--checkpoint-timeout", type=int, default=43200)
     parser.add_argument("--run-timeout", type=int, default=259200)
     parser.add_argument("--dry-run", action="store_true")
@@ -306,6 +314,8 @@ def main():
         "gem5_sha256": sha256(args.gem5_bin),
         "launch_memory_available_bytes": available,
         "comparison_policy": {
+            "expected_elements": 150000,
+            "expected_x_q5": args.expected_x_q5,
             "required_exact": ["elements", "x_q5"],
             "scalar_relative_tolerances": SCALAR_TOLERANCES,
             "diagnostic_only": ["x_raw", "z_raw", "x_q6", "z_q5", "z_q6"],
@@ -435,6 +445,8 @@ def main():
                 fingerprint_pass=(
                     fingerprint is not None
                     and fingerprint["mode"] == mode
+                    and fingerprint["elements"] == 150000
+                    and fingerprint["x_q5"] == args.expected_x_q5
                     and fingerprint["result"] == "PASS"
                 ),
                 normal_exit="m5_exit instruction encountered" in text,
