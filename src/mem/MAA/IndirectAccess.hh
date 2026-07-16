@@ -79,8 +79,18 @@ protected:
         bool valid = false;
         int next_itr = -1;
         std::array<uint8_t, 64> data{};
+        std::vector<std::array<uint8_t, 8>> packed_words;
+        size_t next_packed_word = 0;
+        int reserved_words = 0;
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
+    int virtual_response_words = 0;
+    int virtual_response_word_pool_limit = 0;
+    int virtual_reserved_response_words = 0;
+    bool virtual_pending_source = false;
+    Addr virtual_pending_source_addr = 0;
+    int virtual_pending_source_words = 0;
+    std::map<Addr, int> virtual_response_word_reservations;
     struct VirtualCombineSlot {
         bool valid = false;
         Addr line_vaddr = 0;
@@ -105,6 +115,8 @@ protected:
     int virtual_max_combine_occupancy = 0;
     bool virtual_final_flush = false;
     int virtual_max_reserved_responses = 0;
+    int virtual_max_reserved_response_words = 0;
+    int virtual_response_word_pool_stalls = 0;
     int virtual_max_outstanding_writes = 0;
     bool virtual_build_incomplete = false;
     enum class VirtualRequestReason : uint8_t {
@@ -136,6 +148,8 @@ public:
                   int _virtual_combine_slots,
                   int _virtual_combine_words,
                   int _virtual_response_slots,
+                  int _virtual_response_words,
+                  int _virtual_response_word_pool,
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
                   Cycles _rowtable_latency,

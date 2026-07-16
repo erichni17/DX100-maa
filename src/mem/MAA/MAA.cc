@@ -62,6 +62,8 @@ MAA::MAA(const MAAParams &p)
       virtual_combine_slots(p.virtual_combine_slots),
       virtual_combine_words(p.virtual_combine_words),
       virtual_response_slots(p.virtual_response_slots),
+      virtual_response_words(p.virtual_response_words),
+      virtual_response_word_pool(p.virtual_response_word_pool),
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       num_request_table_addresses(p.num_request_table_addresses),
@@ -316,6 +318,8 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_combine_slots,
                                         virtual_combine_words,
                                         virtual_response_slots,
+                                        virtual_response_words,
+                                        virtual_response_word_pool,
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
                                         rowtable_latency,
@@ -943,6 +947,8 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_VirtRequestCyclesFinalDrain.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtRequestCyclesFinalDrain"), statistics::units::Count::get(), "virtual request-interval cycles draining output after all sources"));
         IND_VirtRequestCyclesRunnable.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtRequestCyclesRunnable"), statistics::units::Count::get(), "other virtual request-interval cycles"));
         IND_VirtBuildRounds.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtBuildRounds"), statistics::units::Count::get(), "number of virtual row-table build rounds"));
+        IND_VirtResponseWordHighWater.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtResponseWordHighWater"), statistics::units::Count::get(), "sum of per-instruction peak reserved virtual response words"));
+        IND_VirtResponseWordPoolStalls.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtResponseWordPoolStalls"), statistics::units::Count::get(), "virtual source requests deferred by the shared response-word pool"));
         IND_VirtWriteIssues.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteIssues"), statistics::units::Count::get(), "number of virtual retirement writes issued"));
         IND_VirtWriteCompletions.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteCompletions"), statistics::units::Count::get(), "number of virtual retirement writes completed"));
         IND_CyclesRTAccess.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_CyclesRTAccess"), statistics::units::Count::get(), "number of cycles spent on row table access"));

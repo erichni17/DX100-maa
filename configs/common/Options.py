@@ -230,6 +230,8 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_virtual_combine_slots", type=int, default=16, help="Number of tagged cache-line slots used by virtual gather retirement")
     parser.add_argument("--maa_virtual_combine_words", type=int, default=0, help="Resident virtual gather data words (0 reserves every line slot fully)")
     parser.add_argument("--maa_virtual_response_slots", type=int, default=8, help="Number of retained source responses used by virtual gather retirement")
+    parser.add_argument("--maa_virtual_response_words", type=int, default=0, help="Packed useful words per retained response (0 stores the full source line)")
+    parser.add_argument("--maa_virtual_response_word_pool", type=int, default=0, help="Total useful words retained across packed source responses")
     parser.add_argument("--maa_virtual_max_outstanding_writes", type=int, default=32, help="Maximum acknowledged writes in flight for virtual gather retirement")
     parser.add_argument("--maa_virtual_masked_writes", action="store_true", help="Retire partial virtual lines as masked cache-line writes")
     parser.add_argument("--maa_num_request_table_addresses", type=int, default=128, help="Number of addresses in the request table")

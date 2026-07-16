@@ -74,6 +74,7 @@ public:
     void insert(int itr, int wid, int last_itr);
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
     OffsetTableEntry peek_entry(int itr) const;
+    int count_entries(int itr) const;
     OffsetTableEntry consume_entry(int &itr);
     void reset();
     void check_reset();
@@ -117,6 +118,7 @@ public:
     bool get_entry_send(Addr &addr);
     std::vector<OffsetTableEntry> get_entry_recv(Addr addr);
     int get_entry_recv_head(Addr addr);
+    int count_entry_words(Addr addr) const;
     bool all_entries_received();
     OffsetTable *offset_table;
     Addr grow_addr;
@@ -162,6 +164,7 @@ public:
     std::vector<OffsetTableEntry>
     get_entry_recv(Addr grow_addr, Addr addr, bool check_sent);
     int get_entry_recv_head(Addr grow_addr, Addr addr, bool check_sent);
+    int count_entry_words(Addr grow_addr, Addr addr) const;
 
     void reset();
     void check_reset();

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 10 ]]; then
-    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS] [COMBINE_WORDS] [MASKED_WRITES]" >&2
+if [[ $# -lt 3 || $# -gt 12 ]]; then
+    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS] [COMBINE_WORDS] [MASKED_WRITES] [RESPONSE_WORDS] [RESPONSE_WORD_POOL]" >&2
     exit 2
 fi
 
@@ -11,13 +11,15 @@ pattern=$2
 outdir=$3
 timeout_seconds=${4:-21600}
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-gem5="$root/build/X86/gem5.opt.virtual_v1"
+gem5=${GEM5_BIN:-$root/build/X86/gem5.opt.virtual_v1}
 binary=${5:-$root/benchmarks/API/test_virtual_gather_T16K.o}
 combine_slots=${6:-16}
 response_slots=${7:-8}
 write_credits=${8:-32}
 combine_words=${9:-0}
 masked_writes=${10:-0}
+response_words=${11:-0}
+response_word_pool=${12:-0}
 masked_args=()
 if [[ "$masked_writes" == 1 ]]; then
     masked_args+=(--maa_virtual_masked_writes)
@@ -51,6 +53,8 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_combine_slots="$combine_slots" \
     --maa_virtual_combine_words="$combine_words" \
     --maa_virtual_response_slots="$response_slots" \
+    --maa_virtual_response_words="$response_words" \
+    --maa_virtual_response_word_pool="$response_word_pool" \
     --maa_virtual_max_outstanding_writes="$write_credits" \
     "${masked_args[@]}" \
     --cmd "$binary" \

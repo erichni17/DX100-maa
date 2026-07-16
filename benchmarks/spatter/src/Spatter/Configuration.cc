@@ -4,6 +4,8 @@
 
 // #include "row_buffer_analysis.hh"
 #include <atomic>
+#include <cstdint>
+#include <cstring>
 #include <numeric>
 
 #include "Configuration.hh"
@@ -510,8 +512,13 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         for (int j = 0; j < pattern_length; j += TILE_SIZE) {
             maa_const(j, reg1);
             maa_stream_load<int>(pattern_int.data(), reg1, reg2, reg3, tile1);
+#ifdef MAA_VIRTUAL_GATHER
+            maa_indirect_load_virtual<double>(sparse.data(), tile1, tile2,
+                                              dense.data() + j);
+#else
             maa_indirect_load<double>(sparse.data(), tile1, tile2);
             maa_stream_store<double>(dense.data(), reg1, reg2, reg3, tile2);
+#endif
             wait_ready(tile2);
         }
 #else
@@ -521,6 +528,25 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         }
 #endif
     }
+
+#ifdef MAA_VERIFY_GATHER
+    uint64_t hash = 1469598103934665603ULL;
+    for (int j = 0; j < pattern_length; ++j) {
+        const double expected = sparse[pattern_int[j]];
+        if (dense[j] != expected) {
+            std::cerr << "MAA_GATHER_VERIFY_FAIL index=" << j
+                      << " actual=" << dense[j] << " expected=" << expected
+                      << std::endl;
+            std::abort();
+        }
+        uint64_t bits;
+        std::memcpy(&bits, &dense[j], sizeof(bits));
+        hash ^= bits;
+        hash *= 1099511628211ULL;
+    }
+    std::cout << "MAA_GATHER_VERIFY_PASS length=" << pattern_length
+              << " hash=" << hash << std::endl;
+#endif
 
 #ifdef GEM5
     clear_mem_region();

@@ -80,6 +80,24 @@ add_library(Spatter_MAA_16K STATIC
     m5op.S
 )
 
+add_library(Spatter_MAA_Virtual_16K STATIC
+    ${SPATTER_INCLUDE_FILES}
+    Configuration.cc
+    JSONParser.cc
+    PatternParser.cc
+    Timer.cc
+    m5op.S
+)
+
+add_library(Spatter_MAA_Virtual_Verify_16K STATIC
+    ${SPATTER_INCLUDE_FILES}
+    Configuration.cc
+    JSONParser.cc
+    PatternParser.cc
+    Timer.cc
+    m5op.S
+)
+
 add_library(Spatter_MAA_32K STATIC
     ${SPATTER_INCLUDE_FILES}
     Configuration.cc
@@ -158,6 +176,18 @@ set_target_properties(Spatter_MAA_16K PROPERTIES
     COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;NUM_CORES=4;TILE_SIZE=16384"
     COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
     OUTPUT_NAME "Spatter_MAA_16K"
+)
+
+set_target_properties(Spatter_MAA_Virtual_16K PROPERTIES
+    COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;MAA_VIRTUAL_GATHER;NUM_CORES=4;TILE_SIZE=16384"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+    OUTPUT_NAME "Spatter_MAA_Virtual_16K"
+)
+
+set_target_properties(Spatter_MAA_Virtual_Verify_16K PROPERTIES
+    COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;MAA_VIRTUAL_GATHER;MAA_VERIFY_GATHER;NUM_CORES=4;TILE_SIZE=16384"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+    OUTPUT_NAME "Spatter_MAA_Virtual_Verify_16K"
 )
 
 set_target_properties(Spatter_MAA_32K PROPERTIES
@@ -245,6 +275,20 @@ target_include_directories(Spatter_MAA_16K
     $<INSTALL_INTERFACE:include/Spatter>
 )
 
+target_include_directories(Spatter_MAA_Virtual_16K
+    PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../experiments>
+    $<INSTALL_INTERFACE:include/Spatter>
+)
+
+target_include_directories(Spatter_MAA_Virtual_Verify_16K
+    PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../experiments>
+    $<INSTALL_INTERFACE:include/Spatter>
+)
+
 target_include_directories(Spatter_MAA_32K
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
@@ -319,6 +363,16 @@ target_link_libraries(Spatter_MAA_16K
     ${COMMON_LINK_LIBRARIES}
     )
 
+target_link_libraries(Spatter_MAA_Virtual_16K
+    PUBLIC
+    ${COMMON_LINK_LIBRARIES}
+)
+
+target_link_libraries(Spatter_MAA_Virtual_Verify_16K
+    PUBLIC
+    ${COMMON_LINK_LIBRARIES}
+)
+
 target_link_libraries(Spatter_MAA_32K
     PUBLIC
     ${COMMON_LINK_LIBRARIES}
@@ -370,7 +424,15 @@ target_compile_options(Spatter_MAA_8K
 
 target_compile_options(Spatter_MAA_16K
     PRIVATE ${WARNING_FLAGS}
-    )
+)
+
+target_compile_options(Spatter_MAA_Virtual_16K
+    PRIVATE ${WARNING_FLAGS}
+)
+
+target_compile_options(Spatter_MAA_Virtual_Verify_16K
+    PRIVATE ${WARNING_FLAGS}
+)
 
 target_compile_options(Spatter_MAA_32K
     PRIVATE ${WARNING_FLAGS}

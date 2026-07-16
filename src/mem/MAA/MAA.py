@@ -26,6 +26,8 @@ class MAA(ClockedObject):
     virtual_combine_slots = Param.Unsigned(16, "Tagged cache-line slots used by virtual gather retirement")
     virtual_combine_words = Param.Unsigned(0, "Resident virtual gather data words (0 reserves every line slot fully)")
     virtual_response_slots = Param.Unsigned(8, "Retained source responses used by virtual gather retirement")
+    virtual_response_words = Param.Unsigned(0, "Packed useful words per retained response (0 stores the full source line)")
+    virtual_response_word_pool = Param.Unsigned(0, "Total useful words retained across packed source responses")
     virtual_max_outstanding_writes = Param.Unsigned(32, "Acknowledged virtual retirement writes allowed in flight")
     virtual_masked_writes = Param.Bool(False, "Retire partial virtual lines as masked cache-line writes")
     spd_read_latency = Param.Cycles(1, "SPD read latency")

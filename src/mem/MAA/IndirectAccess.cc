@@ -93,6 +93,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_combine_slots,
                                   int _virtual_combine_words,
                                   int _virtual_response_slots,
+                                  int _virtual_response_words,
+                                  int _virtual_response_word_pool,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
                                   Cycles _rowtable_latency,
@@ -117,6 +119,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] virtual response buffer must have at least one slot\n",
              my_indirect_id);
     virtual_response_slots.resize(_virtual_response_slots);
+    virtual_response_words = _virtual_response_words;
+    virtual_response_word_pool_limit = _virtual_response_word_pool;
     panic_if(_virtual_max_outstanding_writes <= 0,
              "I[%d] virtual retirement must allow at least one write\n",
              my_indirect_id);
@@ -357,6 +361,10 @@ void IndirectAccessUnit::check_reset() {
              "I[%d] virtual retirement state is not empty: slots=%d writes=%d\n",
              my_indirect_id, virtual_reserved_responses,
              virtual_outstanding_writes);
+    panic_if(virtual_reserved_response_words != 0 || virtual_pending_source ||
+                 !virtual_response_word_reservations.empty(),
+             "I[%d] packed source reservation state is not empty\n",
+             my_indirect_id);
     panic_if(!virtual_outstanding_write_lines.empty(),
              "I[%d] virtual write-line scoreboard is not empty\n",
              my_indirect_id);
@@ -645,6 +653,11 @@ void IndirectAccessUnit::executeInstruction() {
         my_virtual_addr = 0;
         my_received_responses = my_expected_responses = 0;
         virtual_reserved_responses = 0;
+        virtual_reserved_response_words = 0;
+        virtual_pending_source = false;
+        virtual_pending_source_addr = 0;
+        virtual_pending_source_words = 0;
+        virtual_response_word_reservations.clear();
         virtual_outstanding_writes = 0;
         virtual_source_expected = 0;
         virtual_source_received = 0;
@@ -656,6 +669,8 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_max_combine_words = 0;
         virtual_final_flush = false;
         virtual_max_reserved_responses = 0;
+        virtual_max_reserved_response_words = 0;
+        virtual_response_word_pool_stalls = 0;
         virtual_max_outstanding_writes = 0;
         virtual_build_incomplete = false;
         virtual_request_reason = VirtualRequestReason::None;
@@ -773,7 +788,35 @@ void IndirectAccessUnit::executeInstruction() {
             }
         }
         bool virtual_capacity_full = false;
-        while (true) {
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
+            virtual_pending_source) {
+            if (virtual_reserved_responses == virtual_response_slots.size() ||
+                (virtual_response_word_pool_limit != 0 &&
+                 virtual_reserved_response_words + virtual_pending_source_words >
+                     virtual_response_word_pool_limit)) {
+                virtual_capacity_full = true;
+                if (virtual_response_word_pool_limit != 0 &&
+                    virtual_reserved_response_words +
+                            virtual_pending_source_words >
+                        virtual_response_word_pool_limit)
+                    virtual_response_word_pool_stalls++;
+            } else {
+                addr = virtual_pending_source_addr;
+                my_expected_responses++;
+                virtual_reserved_responses++;
+                virtual_reserved_response_words += virtual_pending_source_words;
+                virtual_max_reserved_response_words = std::max(
+                    virtual_max_reserved_response_words,
+                    virtual_reserved_response_words);
+                virtual_response_word_reservations[addr] =
+                    virtual_pending_source_words;
+                virtual_source_expected++;
+                num_rowtable_accesses++;
+                createReadPacket(addr, rowtable_latency);
+                virtual_pending_source = false;
+            }
+        }
+        while (!virtual_capacity_full) {
             if (checkAndResetAllRowTablesSent())
                 break;
             for (; last_RT_sent < num_RT_slices[my_RT_config]; last_RT_sent++) {
@@ -788,6 +831,45 @@ void IndirectAccessUnit::executeInstruction() {
                 if (my_RT_req_sent[my_RT_config][RT_idx] == false) {
                     if (RT[my_RT_config][RT_idx].get_entry_send(addr, my_fill_finished)) {
                         DPRINTF(MAAIndirect, "I[%d] %s: Creating packet for bank[%d], addr[0x%lx]!\n", my_indirect_id, __func__, RT_idx, addr);
+                        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+                            std::vector addr_vec = maa->map_addr(addr);
+                            int pending_rt = getRowTableIdx(
+                                my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
+                                addr_vec[ADDR_RANK_LEVEL],
+                                addr_vec[ADDR_BANKGROUP_LEVEL],
+                                addr_vec[ADDR_BANK_LEVEL]);
+                            Addr grow_addr = getGrowAddr(
+                                my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL],
+                                addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+                            const int words = RT[my_RT_config][pending_rt]
+                                .count_entry_words(grow_addr, addr);
+                            panic_if(words <= 0,
+                                     "I[%d] virtual source has no offset chain\n",
+                                     my_indirect_id);
+                            if (virtual_response_words != 0 &&
+                                virtual_response_word_pool_limit == 0)
+                                panic_if(words > virtual_response_words,
+                                         "I[%d] source response needs %d/%d packed words\n",
+                                         my_indirect_id, words,
+                                         virtual_response_words);
+                            if (virtual_response_word_pool_limit != 0 &&
+                                virtual_reserved_response_words + words >
+                                    virtual_response_word_pool_limit) {
+                                virtual_pending_source = true;
+                                virtual_pending_source_addr = addr;
+                                virtual_pending_source_words = words;
+                                virtual_response_word_pool_stalls++;
+                                virtual_capacity_full = true;
+                                break;
+                            }
+                            if (virtual_response_word_pool_limit != 0) {
+                                virtual_reserved_response_words += words;
+                                panic_if(!virtual_response_word_reservations
+                                             .emplace(addr, words).second,
+                                         "I[%d] duplicate word reservation for 0x%lx\n",
+                                         my_indirect_id, addr);
+                            }
+                        }
                         my_expected_responses++;
                         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
                             virtual_reserved_responses++;
@@ -795,6 +877,9 @@ void IndirectAccessUnit::executeInstruction() {
                             virtual_max_reserved_responses = std::max(
                                 virtual_max_reserved_responses,
                                 virtual_reserved_responses);
+                            virtual_max_reserved_response_words = std::max(
+                                virtual_max_reserved_response_words,
+                                virtual_reserved_response_words);
                             panic_if(virtual_reserved_responses > virtual_response_slots.size(),
                                      "I[%d] virtual response slots exceeded capacity\n",
                                      my_indirect_id);
@@ -901,6 +986,10 @@ void IndirectAccessUnit::executeInstruction() {
                     virtual_max_combine_occupancy, virtual_max_combine_words,
                     virtual_combine_words_limit, virtual_full_line_writes,
                     virtual_partial_word_writes);
+            (*maa->stats.IND_VirtResponseWordHighWater[my_indirect_id]) +=
+                virtual_max_reserved_response_words;
+            (*maa->stats.IND_VirtResponseWordPoolStalls[my_indirect_id]) +=
+                virtual_response_word_pool_stalls;
         }
         panic_if(scheduleNextExecution(), "I[%d] %s: Execution is not completed!\n", my_indirect_id, __func__);
         panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");
@@ -1053,7 +1142,33 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
                  my_indirect_id, __func__);
         slot->valid = true;
         slot->next_itr = virtual_head;
-        std::memcpy(slot->data.data(), dataptr, block_size);
+        if (virtual_response_word_pool_limit != 0) {
+            auto reservation = virtual_response_word_reservations.find(addr);
+            panic_if(reservation == virtual_response_word_reservations.end(),
+                     "I[%d] response 0x%lx has no packed-word reservation\n",
+                     my_indirect_id, addr);
+            slot->reserved_words = reservation->second;
+            virtual_response_word_reservations.erase(reservation);
+        }
+        const bool packed_response = virtual_response_words != 0 ||
+                                     virtual_response_word_pool_limit != 0;
+        if (!packed_response) {
+            std::memcpy(slot->data.data(), dataptr, block_size);
+        } else {
+            int itr = virtual_head;
+            while (itr != -1) {
+                OffsetTableEntry entry = offset_table->peek_entry(itr);
+                panic_if(virtual_response_word_pool_limit == 0 &&
+                             slot->packed_words.size() == virtual_response_words,
+                         "I[%d] source response needs more than %d packed words\n",
+                         my_indirect_id, virtual_response_words);
+                std::array<uint8_t, 8> word{};
+                std::memcpy(word.data(),
+                            dataptr + entry.wid * my_word_size, my_word_size);
+                slot->packed_words.push_back(word);
+                itr = entry.next_itr;
+            }
+        }
         my_received_responses++;
         virtual_source_received++;
         drainVirtualResponses();
@@ -1396,6 +1511,38 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
 
 void IndirectAccessUnit::drainVirtualResponses() {
     for (auto &slot : virtual_response_slots) {
+        if (virtual_response_words != 0 ||
+            virtual_response_word_pool_limit != 0) {
+            while (slot.valid &&
+                   slot.next_packed_word < slot.packed_words.size()) {
+                const OffsetTableEntry entry =
+                    offset_table->peek_entry(slot.next_itr);
+                const auto &word = slot.packed_words[slot.next_packed_word];
+                if (!insertVirtualCombineWord(entry.itr, word.data()))
+                    break;
+                OffsetTableEntry consumed =
+                    offset_table->consume_entry(slot.next_itr);
+                panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
+                         "I[%d] packed response cursor changed while stalled\n",
+                         my_indirect_id);
+                slot.next_packed_word++;
+            }
+            if (slot.valid &&
+                slot.next_packed_word == slot.packed_words.size()) {
+                panic_if(slot.next_itr != -1,
+                         "I[%d] packed response ended before offset chain\n",
+                         my_indirect_id);
+                panic_if(virtual_reserved_response_words < slot.reserved_words,
+                         "I[%d] packed response word accounting underflow\n",
+                         my_indirect_id);
+                virtual_reserved_response_words -= slot.reserved_words;
+                slot = VirtualResponseSlot();
+                virtual_reserved_responses--;
+            }
+            if (slot.valid)
+                break;
+            continue;
+        }
         while (slot.valid) {
             OffsetTableEntry entry = offset_table->peek_entry(slot.next_itr);
             if (!insertVirtualCombineWord(

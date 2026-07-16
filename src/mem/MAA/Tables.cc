@@ -182,6 +182,16 @@ OffsetTableEntry OffsetTable::peek_entry(int itr) const {
              "Entry %d is invalid!\n", itr);
     return entries[itr];
 }
+int OffsetTable::count_entries(int itr) const {
+    int count = 0;
+    while (itr != -1) {
+        panic_if(itr < 0 || itr >= num_tile_elements || !entries_valid[itr],
+                 "Entry %d is invalid while counting!\n", itr);
+        count++;
+        itr = entries[itr].next_itr;
+    }
+    return count;
+}
 void OffsetTable::check_reset() {
     for (int i = 0; i < num_tile_elements; i++) {
         panic_if(entries_valid[i], "Entry %d is valid: wid(%d) next_itr(%d)!\n",
@@ -307,6 +317,13 @@ int RowTableEntry::get_entry_recv_head(Addr addr) {
             entries_valid[i] = false;
             return entries[i].first_itr;
         }
+    }
+    return -1;
+}
+int RowTableEntry::count_entry_words(Addr addr) const {
+    for (int i = 0; i < num_RT_entries_per_row; i++) {
+        if (entries_valid[i] && entries[i].addr == addr)
+            return offset_table->count_entries(entries[i].first_itr);
     }
     return -1;
 }
@@ -519,6 +536,21 @@ int RowTableSlice::get_entry_recv_head(Addr grow_addr, Addr addr, bool check_sen
                 }
             }
         }
+    }
+    return result;
+}
+int RowTableSlice::count_entry_words(Addr grow_addr, Addr addr) const {
+    int result = -1;
+    for (int i = 0; i < num_RT_rows_per_slice; i++) {
+        if (!entries_valid[i] || entries[i].grow_addr != grow_addr)
+            continue;
+        int count = entries[i].count_entry_words(addr);
+        if (count == -1)
+            continue;
+        panic_if(result != -1,
+                 "ROT[%d] duplicate entry while counting addr 0x%lx\n",
+                 my_table_id, addr);
+        result = count;
     }
     return result;
 }
