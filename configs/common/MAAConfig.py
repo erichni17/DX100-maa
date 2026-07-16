@@ -48,6 +48,9 @@ def _get_maa_opts(options):
     if hasattr(options, "maa_virtual_combine_words"):
         opts["virtual_combine_words"] = getattr(options, "maa_virtual_combine_words")
 
+    if hasattr(options, "maa_virtual_combine_ways"):
+        opts["virtual_combine_ways"] = getattr(options, "maa_virtual_combine_ways")
+
     if hasattr(options, "maa_virtual_response_slots"):
         opts["virtual_response_slots"] = getattr(options, "maa_virtual_response_slots")
 
@@ -56,6 +59,9 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_virtual_response_word_pool"):
         opts["virtual_response_word_pool"] = getattr(options, "maa_virtual_response_word_pool")
+
+    if hasattr(options, "maa_virtual_words_per_cycle"):
+        opts["virtual_words_per_cycle"] = getattr(options, "maa_virtual_words_per_cycle")
 
     if hasattr(options, "maa_virtual_max_outstanding_writes"):
         opts["virtual_max_outstanding_writes"] = getattr(options, "maa_virtual_max_outstanding_writes")

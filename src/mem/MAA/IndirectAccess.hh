@@ -86,6 +86,9 @@ protected:
     std::vector<VirtualResponseSlot> virtual_response_slots;
     int virtual_response_words = 0;
     int virtual_response_word_pool_limit = 0;
+    int virtual_words_per_cycle_limit = 0;
+    Tick virtual_word_budget_tick = 0;
+    int virtual_words_retired_this_cycle = 0;
     int virtual_reserved_response_words = 0;
     bool virtual_pending_source = false;
     Addr virtual_pending_source_addr = 0;
@@ -99,6 +102,8 @@ protected:
     };
     std::vector<VirtualCombineSlot> virtual_combine_slots;
     int virtual_combine_words_configured = 0;
+    int virtual_combine_ways = 0;
+    std::vector<int> virtual_combine_set_victims;
     int virtual_combine_words_limit = 0;
     int virtual_combine_words = 0;
     int virtual_max_combine_words = 0;
@@ -147,9 +152,11 @@ public:
                   int _num_initial_row_table_slice,
                   int _virtual_combine_slots,
                   int _virtual_combine_words,
+                  int _virtual_combine_ways,
                   int _virtual_response_slots,
                   int _virtual_response_words,
                   int _virtual_response_word_pool,
+                  int _virtual_words_per_cycle,
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
                   Cycles _rowtable_latency,
@@ -214,7 +221,7 @@ protected:
     bool createRetirementWrite(int itr, const uint8_t *data);
     bool createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data,
                                uint16_t valid_words = 0);
-    void drainVirtualResponses();
+    bool drainVirtualResponses();
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;

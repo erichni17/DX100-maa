@@ -92,9 +92,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _num_initial_row_table_slice,
                                   int _virtual_combine_slots,
                                   int _virtual_combine_words,
+                                  int _virtual_combine_ways,
                                   int _virtual_response_slots,
                                   int _virtual_response_words,
                                   int _virtual_response_word_pool,
+                                  int _virtual_words_per_cycle,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
                                   Cycles _rowtable_latency,
@@ -115,12 +117,21 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              my_indirect_id);
     virtual_combine_slots.resize(_virtual_combine_slots);
     virtual_combine_words_configured = _virtual_combine_words;
+    virtual_combine_ways = _virtual_combine_ways;
+    panic_if(virtual_combine_ways != 0 &&
+                 (_virtual_combine_slots % virtual_combine_ways) != 0,
+             "I[%d] virtual combiner slots (%d) must divide into %d ways\n",
+             my_indirect_id, _virtual_combine_slots, virtual_combine_ways);
+    if (virtual_combine_ways != 0)
+        virtual_combine_set_victims.resize(
+            _virtual_combine_slots / virtual_combine_ways, 0);
     panic_if(_virtual_response_slots <= 0,
              "I[%d] virtual response buffer must have at least one slot\n",
              my_indirect_id);
     virtual_response_slots.resize(_virtual_response_slots);
     virtual_response_words = _virtual_response_words;
     virtual_response_word_pool_limit = _virtual_response_word_pool;
+    virtual_words_per_cycle_limit = _virtual_words_per_cycle;
     panic_if(_virtual_max_outstanding_writes <= 0,
              "I[%d] virtual retirement must allow at least one write\n",
              my_indirect_id);
@@ -654,6 +665,8 @@ void IndirectAccessUnit::executeInstruction() {
         my_received_responses = my_expected_responses = 0;
         virtual_reserved_responses = 0;
         virtual_reserved_response_words = 0;
+        virtual_word_budget_tick = curTick();
+        virtual_words_retired_this_cycle = 0;
         virtual_pending_source = false;
         virtual_pending_source_addr = 0;
         virtual_pending_source_words = 0;
@@ -662,6 +675,8 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_source_expected = 0;
         virtual_source_received = 0;
         virtual_combine_victim = 0;
+        std::fill(virtual_combine_set_victims.begin(),
+                  virtual_combine_set_victims.end(), 0);
         virtual_full_line_writes = 0;
         virtual_partial_word_writes = 0;
         virtual_max_combine_occupancy = 0;
@@ -915,6 +930,11 @@ void IndirectAccessUnit::executeInstruction() {
             startVirtualRequestInterval();
         }
         accountVirtualRequestInterval();
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
+            drainVirtualResponses()) {
+            scheduleExecuteInstructionEvent(1);
+            break;
+        }
         if (reorder_RT) {
             if (my_build_start_tick != 0) {
                 (*maa->stats.IND_CyclesBuild[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_build_start_tick);
@@ -1171,10 +1191,13 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         }
         my_received_responses++;
         virtual_source_received++;
-        drainVirtualResponses();
+        const bool response_throttled = drainVirtualResponses();
         accountVirtualRequestInterval();
-        scheduleNextExecution(true);
-        if (was_full && !is_full)
+        if (response_throttled)
+            scheduleExecuteInstructionEvent(1);
+        else
+            scheduleNextExecution(true);
+        if (!response_throttled && was_full && !is_full)
             scheduleNextExecution(true);
         return true;
     }
@@ -1509,12 +1532,22 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
 }
 
 
-void IndirectAccessUnit::drainVirtualResponses() {
+bool IndirectAccessUnit::drainVirtualResponses() {
+    if (virtual_word_budget_tick != curTick()) {
+        virtual_word_budget_tick = curTick();
+        virtual_words_retired_this_cycle = 0;
+    }
+    auto budget_exhausted = [this]() {
+        return virtual_words_per_cycle_limit != 0 &&
+               virtual_words_retired_this_cycle >= virtual_words_per_cycle_limit;
+    };
     for (auto &slot : virtual_response_slots) {
         if (virtual_response_words != 0 ||
             virtual_response_word_pool_limit != 0) {
             while (slot.valid &&
                    slot.next_packed_word < slot.packed_words.size()) {
+                if (budget_exhausted())
+                    return true;
                 const OffsetTableEntry entry =
                     offset_table->peek_entry(slot.next_itr);
                 const auto &word = slot.packed_words[slot.next_packed_word];
@@ -1526,6 +1559,7 @@ void IndirectAccessUnit::drainVirtualResponses() {
                          "I[%d] packed response cursor changed while stalled\n",
                          my_indirect_id);
                 slot.next_packed_word++;
+                virtual_words_retired_this_cycle++;
             }
             if (slot.valid &&
                 slot.next_packed_word == slot.packed_words.size()) {
@@ -1544,11 +1578,14 @@ void IndirectAccessUnit::drainVirtualResponses() {
             continue;
         }
         while (slot.valid) {
+            if (budget_exhausted())
+                return true;
             OffsetTableEntry entry = offset_table->peek_entry(slot.next_itr);
             if (!insertVirtualCombineWord(
                     entry.itr, slot.data.data() + entry.wid * my_word_size))
                 break;
             OffsetTableEntry consumed = offset_table->consume_entry(slot.next_itr);
+            virtual_words_retired_this_cycle++;
             panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
                      "I[%d] virtual offset cursor changed while stalled\n",
                      my_indirect_id);
@@ -1561,6 +1598,7 @@ void IndirectAccessUnit::drainVirtualResponses() {
             break;
     }
     drainVirtualCombiner(false);
+    return false;
 }
 
 bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
@@ -1572,7 +1610,15 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     const uint16_t word_bit = 1U << word;
     VirtualCombineSlot *target = nullptr;
     VirtualCombineSlot *free_slot = nullptr;
-    for (auto &slot : virtual_combine_slots) {
+    const int ways = virtual_combine_ways == 0
+        ? virtual_combine_slots.size() : virtual_combine_ways;
+    const int num_sets = virtual_combine_slots.size() / ways;
+    const int set = virtual_combine_ways == 0
+        ? 0 : (line_vaddr / block_size) % num_sets;
+    const int set_begin = set * ways;
+    const int set_end = set_begin + ways;
+    for (int idx = set_begin; idx < set_end; ++idx) {
+        auto &slot = virtual_combine_slots[idx];
         if (slot.valid && slot.line_vaddr == line_vaddr) {
             target = &slot;
             break;
@@ -1587,9 +1633,11 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     const bool line_capacity_full = target == nullptr && free_slot == nullptr;
     if (word_capacity_full || line_capacity_full) {
         int victim_idx = -1;
-        for (int offset = 0; offset < virtual_combine_slots.size(); ++offset) {
-            const int idx = (virtual_combine_victim + offset) %
-                            virtual_combine_slots.size();
+        const int victim_start = virtual_combine_ways == 0
+            ? virtual_combine_victim
+            : virtual_combine_set_victims[set];
+        for (int offset = 0; offset < ways; ++offset) {
+            const int idx = set_begin + (victim_start + offset) % ways;
             if (virtual_combine_slots[idx].valid &&
                 &virtual_combine_slots[idx] != target) {
                 victim_idx = idx;
@@ -1633,8 +1681,11 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
             target = nullptr;
         victim = VirtualCombineSlot();
         free_slot = &victim;
-        virtual_combine_victim =
-            (victim_idx + 1) % virtual_combine_slots.size();
+        if (virtual_combine_ways == 0)
+            virtual_combine_victim = (victim_idx + 1) % ways;
+        else
+            virtual_combine_set_victims[set] =
+                (victim_idx - set_begin + 1) % ways;
     }
     if (target == nullptr)
         target = free_slot;
@@ -1853,11 +1904,14 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
              "I[%d] %s: completed address 0x%lx was not outstanding\n",
              my_indirect_id, __func__, addr);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
-    drainVirtualResponses();
+    const bool response_throttled = drainVirtualResponses();
     if (virtual_final_flush)
         drainVirtualCombiner(true);
     accountVirtualRequestInterval();
-    scheduleNextExecution(true);
+    if (response_throttled)
+        scheduleExecuteInstructionEvent(1);
+    else
+        scheduleNextExecution(true);
 }
 
 Addr IndirectAccessUnit::translatePacket(Addr vaddr, BaseMMU::Mode mode,
