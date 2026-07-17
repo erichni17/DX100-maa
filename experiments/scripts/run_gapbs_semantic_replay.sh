@@ -110,7 +110,9 @@ validate_certificate() {
 
 run_case() {
     local name=$1 binary=$2 tile_elements=$3 options=$4
-    local out=$campaign/$name checkpoint=$out/checkpoint run=$out/run
+    local out=$campaign/$name
+    local checkpoint=$out/checkpoint
+    local run=$out/run
     mkdir -p "$checkpoint" "$run"
     local -a checkpoint_command=(
         timeout "$checkpoint_timeout" "$gem5" --listener-mode=off
