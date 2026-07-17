@@ -56,15 +56,20 @@ Authors of the OpenMP code:
 */
 
 #include "MAA.hpp"
-#include <iostream>
-#include <fstream>
-#include <math.h>
-#include <stdlib.h>
 #include <omp.h>
+
+#include <cinttypes>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
 #include <string>
 
 #ifdef _OPENMP
 #include "omp.h"
+
 #endif
 
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
@@ -76,6 +81,7 @@ Authors of the OpenMP code:
 #elif defined(GEM5)
 #include "MAA_gem5.hpp"
 #include <gem5/m5ops.h>
+
 #elif defined(GEM5_MAGIC)
 #include "MAA_gem5_magic.hpp"
 #endif
@@ -86,6 +92,96 @@ Authors of the OpenMP code:
 #define CGITMAX 4
 // Run for one iteration so GEM5 does not die!
 #define NITER 1
+
+#ifdef CG_FP_ENABLE
+static uint64_t mix_fingerprint(uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+static uint64_t update_fingerprint(uint64_t hash, uint64_t index,
+                                   uint64_t value) {
+    hash ^= mix_fingerprint((index << 32) ^ value);
+    hash = (hash << 19) | (hash >> 45);
+    return hash * 0x9e3779b185ebca87ULL;
+}
+
+static uint64_t float_bits(float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static int64_t quantize_float(float value, double scale) {
+    return static_cast<int64_t>(
+        std::llround(static_cast<double>(value) * scale));
+}
+
+static bool quantizable_float(float value, double scale) {
+    return std::isfinite(value) &&
+           std::fabs(static_cast<double>(value)) <=
+               static_cast<double>(INT64_MAX) / scale;
+}
+
+static bool print_cg_fingerprint(const std::string &mode, const float x[],
+                                 const float z[], int elements, double rnorm,
+                                 double zeta) {
+    uint64_t x_raw = 0xcbf29ce484222325ULL;
+    uint64_t z_raw = 0x6a09e667f3bcc909ULL;
+    uint64_t x_q5 = 0x3c6ef372fe94f82bULL;
+    uint64_t x_q6 = 0xa54ff53a5f1d36f1ULL;
+    uint64_t z_q5 = 0x510e527fade682d1ULL;
+    uint64_t z_q6 = 0x9b05688c2b3e6c1fULL;
+    uint64_t nonfinite_x = 0;
+    uint64_t nonfinite_z = 0;
+    double x_sum = 0.0;
+    double x_norm_sq = 0.0;
+    double z_sum = 0.0;
+    double z_norm_sq = 0.0;
+
+    for (int i = 0; i < elements; i++) {
+        if (!std::isfinite(x[i]))
+            nonfinite_x++;
+        if (!std::isfinite(z[i]))
+            nonfinite_z++;
+        x_sum += x[i];
+        x_norm_sq += static_cast<double>(x[i]) * x[i];
+        z_sum += z[i];
+        z_norm_sq += static_cast<double>(z[i]) * z[i];
+        x_raw = update_fingerprint(x_raw, i, float_bits(x[i]));
+        z_raw = update_fingerprint(z_raw, i, float_bits(z[i]));
+        if (quantizable_float(x[i], 1.0e6)) {
+            x_q5 = update_fingerprint(x_q5, i, quantize_float(x[i], 1.0e5));
+            x_q6 = update_fingerprint(x_q6, i, quantize_float(x[i], 1.0e6));
+        }
+        if (quantizable_float(z[i], 1.0e6)) {
+            z_q5 = update_fingerprint(z_q5, i, quantize_float(z[i], 1.0e5));
+            z_q6 = update_fingerprint(z_q6, i, quantize_float(z[i], 1.0e6));
+        }
+    }
+    const bool pass = nonfinite_x == 0 && nonfinite_z == 0 &&
+                      std::isfinite(rnorm) && rnorm >= 0.0 &&
+                      std::isfinite(zeta) &&
+                      std::fabs(x_norm_sq - 1.0) <= 1.0e-4;
+    printf("CG_FINGERPRINT mode=%s elements=%d x_raw=%016" PRIx64
+           " z_raw=%016" PRIx64 " x_q5=%016" PRIx64
+           " x_q6=%016" PRIx64 " z_q5=%016" PRIx64
+           " z_q6=%016" PRIx64 " x_sum=%.17g x_norm_sq=%.17g"
+           " z_sum=%.17g z_norm_sq=%.17g rnorm=%.17g zeta=%.17g"
+           " nonfinite_x=%" PRIu64 " nonfinite_z=%" PRIu64
+           " result=%s\n",
+           mode.c_str(), elements, x_raw, z_raw, x_q5, x_q6, z_q5, z_q6,
+           x_sum, x_norm_sq, z_sum, z_norm_sq, rnorm, zeta, nonfinite_x,
+           nonfinite_z, pass ? "PASS" : "FAIL");
+    return pass;
+}
+#endif
+
+#ifdef MAA_VIRTUAL_GATHER
+alignas(64) static float virtual_gather_backing[NUM_CORES][TILE_SIZE];
+#endif
 
 /*
  * ---------------------------------------------------------------------
@@ -147,10 +243,13 @@ static float a[NZ];
 #else
 #if NUM_CORES == 4
 #include "cg_data_4C.h"
+
 #elif NUM_CORES == 8
 #include "cg_data_8C.h"
+
 #elif NUM_CORES == 16
 #include "cg_data_16C.h"
+
 #else
 #error
 #endif
@@ -509,6 +608,11 @@ int main(int argc, char **argv) {
             m5_dump_stats(0, 0);
             m5_work_end(0, 0);
             std::cout << "ROI End!!!" << std::endl;
+#ifdef CG_FP_ENABLE
+            std::cout << "Validation started" << std::endl;
+            print_cg_fingerprint(mode, x, z, NA, rnorm, zeta);
+            std::cout << "Validation ended" << std::endl;
+#endif
             m5_exit(0);
         }
 #endif
@@ -581,6 +685,10 @@ static void conj_grad_maa(int colidx[],
         add_mem_region(z, &z[NA + 2]);           // 11
         add_mem_region(r, &r[NA + 2]);           // 12
         add_mem_region(x, &x[NA + 2]);           // 13
+#ifdef MAA_VIRTUAL_GATHER
+        add_mem_region(&virtual_gather_backing[0][0],
+                       &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]);
+#endif
     }
 #endif
 
@@ -752,7 +860,22 @@ static void conj_grad_maa(int colidx[],
 
                 // t4 = p[colidx[k]]
                 // free t6
+#ifdef MAA_VIRTUAL_GATHER
+                const int gather_size = k_max - k_base < TILE_SIZE
+                                            ? k_max - k_base
+                                            : TILE_SIZE;
+                maa_indirect_load_virtual<float>(
+                    p, t6, t4, virtual_gather_backing[tid]);
+                wait_ready(t4);
+                maa_const<int>(0, r2);
+                maa_const<int>(gather_size, r3);
+                maa_stream_load<float>(virtual_gather_backing[tid], r2, r3,
+                                       r1, t4);
+                maa_const<int>(k_base, r2);
+                maa_const<int>(k_max, r3);
+#else
                 maa_indirect_load<float>(p, t6, t4);
+#endif
                 // [t1 t5 t6 t7] available
 
                 // t5 = a[k]
@@ -981,7 +1104,22 @@ static void conj_grad_maa(int colidx[],
 
             // t4 = z[colidx[k]]
             // free t6
+#ifdef MAA_VIRTUAL_GATHER
+            const int gather_size = k_max - k_base < TILE_SIZE
+                                        ? k_max - k_base
+                                        : TILE_SIZE;
+            maa_indirect_load_virtual<float>(
+                z, t6, t4, virtual_gather_backing[tid]);
+            wait_ready(t4);
+            maa_const<int>(0, r2);
+            maa_const<int>(gather_size, r3);
+            maa_stream_load<float>(virtual_gather_backing[tid], r2, r3, r1,
+                                   t4);
+            maa_const<int>(k_base, r2);
+            maa_const<int>(k_max, r3);
+#else
             maa_indirect_load<float>(z, t6, t4);
+#endif
             // [t1 t5 t6 t7] available
 
             // t5 = a[k]
