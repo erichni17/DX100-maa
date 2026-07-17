@@ -86,7 +86,7 @@ static void mark_points_without_active_corners() {
 }
 #endif
 
-#ifdef UME_GATHER_VERIFY
+#if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
 static std::atomic<uint64_t> gather_verify_errors{0};
 static std::atomic<uint64_t> gather_verify_lanes{0};
 static uint64_t expected_active_corners = 0;
@@ -258,8 +258,10 @@ void gradzatp_MAA() {
     add_mem_region(point_type.data(), point_type.data() + point_type.size());             // 13
     add_mem_region(corner_type.data(), corner_type.data() + corner_type.size());          // 14
 #ifdef MAA_VIRTUAL_GATHER
-    add_mem_region(&virtual_gather_backing[0][0],
-                   &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]); // 15
+    for (int core = 0; core < NUM_CORES; ++core) {
+        add_mem_region(virtual_gather_backing[core],
+                       virtual_gather_backing[core] + TILE_SIZE);
+    }
 #else
     add_mem_region(point_normal.data(),
                    point_normal.data() + point_normal.size()); // 15
@@ -394,13 +396,13 @@ void gradzatp_MAA() {
 #if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
     uint64_t nonfinite;
     const uint64_t output_hash = hash_outputs(nonfinite);
+    const ReferenceErrors reference_errors = report_reference_errors();
+    const uint64_t reference_error_count =
+        reference_errors.point_volume + reference_errors.point_gradient;
 #endif
 #ifdef UME_GATHER_VERIFY
     const uint64_t gather_errors = gather_verify_errors.load();
     const uint64_t gather_lanes = gather_verify_lanes.load();
-    const ReferenceErrors reference_errors = report_reference_errors();
-    const uint64_t reference_error_count =
-        reference_errors.point_volume + reference_errors.point_gradient;
     if (gather_errors != 0 || gather_lanes != expected_active_corners ||
         reference_error_count != 0 || nonfinite != 0) {
         std::cerr << "UME_GRADZATP_VERIFY_FAIL gather_errors="
@@ -421,8 +423,20 @@ void gradzatp_MAA() {
               << " output_hash=" << output_hash << " nonfinite=0"
               << std::endl;
 #elif defined(UME_OUTPUT_FINGERPRINT)
+    if (reference_error_count != 0 || nonfinite != 0) {
+        std::cerr << "UME_OUTPUT_FP_FAIL output_hash=" << output_hash
+                  << " reference_volume_errors="
+                  << reference_errors.point_volume
+                  << " reference_gradient_errors="
+                  << reference_errors.point_gradient
+                  << " nonfinite=" << nonfinite << std::endl;
+        std::abort();
+    }
     std::cout << "UME_OUTPUT_FP output_hash=" << output_hash
               << " nonfinite=" << nonfinite << std::endl;
+    std::cout << "UME_REFERENCE_PASS point_volume_errors=0 "
+              << "point_gradient_errors=0 elements=" << point_volume.size()
+              << std::endl;
 #endif
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
@@ -543,7 +557,7 @@ int main(int argc, char *argv[]) {
 #if defined(UME_GATHER_VERIFY) || defined(UME_FIXED_INPUT)
     mark_points_without_active_corners();
 #endif
-#ifdef UME_GATHER_VERIFY
+#if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
     build_scalar_reference();
 #endif
 
