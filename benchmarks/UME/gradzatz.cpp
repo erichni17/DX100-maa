@@ -1,11 +1,17 @@
-#include <iostream>
-#include <string>
-#include <ctime>
-#include <vector>
-#include <algorithm> // For std::iota and std::fill
-#include <cstdlib>   // For rand()
-#include <cmath>     // For std::fabs
 #include <omp.h>
+
+#include <algorithm> // For std::iota and std::fill
+#include <atomic>
+#include <cmath>     // For std::fabs
+#include <cstdint>
+#include <cstdlib>   // For rand()
+#include <cstring>
+#include <ctime>
+#include <iostream>
+#include <limits>
+#include <string>
+#include <vector>
+
 using namespace std;
 
 #define DATATYPE float
@@ -29,20 +35,94 @@ std::vector<DATATYPE> zone_gradient;
 std::vector<DATATYPE> zone_volume_exp;
 std::vector<DATATYPE> zone_gradient_exp;
 
+#ifdef MAA_VIRTUAL_GATHER
+alignas(64) static DATATYPE virtual_gather_backing[NUM_CORES][TILE_SIZE];
+#endif
+
+#ifdef UME_GRADZATZ_VERIFY
+static std::atomic<uint64_t> gather_verify_errors{0};
+static std::atomic<uint64_t> gather_verify_lanes{0};
+static uint64_t expected_active_corners = 0;
+
+static uint32_t value_bits(DATATYPE value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static uint64_t update_output_hash(uint64_t hash, uint64_t index,
+                                   DATATYPE value) {
+    hash ^= (index << 32) ^ value_bits(value);
+    hash *= 1099511628211ULL;
+    return hash;
+}
+
+static void build_scalar_reference() {
+    std::fill(zone_volume_exp.begin(), zone_volume_exp.end(), 0.0f);
+    std::fill(zone_gradient_exp.begin(), zone_gradient_exp.end(), 0.0f);
+    expected_active_corners = 0;
+    for (size_t c = 0; c < corner_type.size(); ++c) {
+        if (corner_type[c] < 1)
+            continue;
+        expected_active_corners++;
+        zone_volume_exp[c_to_z_map[c]] += corner_volume[c];
+    }
+    for (size_t c = 0; c < corner_type.size(); ++c) {
+        if (corner_type[c] < 1)
+            continue;
+        const int z = c_to_z_map[c];
+        const int p = c_to_p_map[c];
+        const DATATYPE ratio = corner_volume[c] / zone_volume_exp[z];
+        zone_gradient_exp[z] += point_gradient[p] * ratio;
+    }
+}
+
+struct ReferenceErrors
+{
+    uint64_t volume = 0;
+    uint64_t gradient = 0;
+    uint64_t nonfinite = 0;
+    uint64_t hash = 1469598103934665603ULL;
+};
+
+static ReferenceErrors check_scalar_reference() {
+    ReferenceErrors errors;
+    for (size_t z = 0; z < zone_volume.size(); ++z) {
+        errors.nonfinite += !std::isfinite(zone_volume[z]);
+        errors.nonfinite += !std::isfinite(zone_gradient[z]);
+        if (value_bits(zone_volume[z]) != value_bits(zone_volume_exp[z]))
+            errors.volume++;
+        if (value_bits(zone_gradient[z]) != value_bits(zone_gradient_exp[z]))
+            errors.gradient++;
+        errors.hash = update_output_hash(errors.hash, z * 2, zone_volume[z]);
+        errors.hash =
+            update_output_hash(errors.hash, z * 2 + 1, zone_gradient[z]);
+    }
+    return errors;
+}
+#endif
+
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
 #define GEM5
 #endif
 
 #if defined(FUNC)
 #include <MAA_functional.hpp>
+
 #elif defined(GEM5)
 #include <MAA_gem5.hpp>
+
 #include <gem5/m5ops.h>
+
 #elif defined(GEM5_MAGIC)
 #include "MAA_gem5_magic.hpp"
 #endif
-int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES], tiles3[NUM_CORES], tiles4[NUM_CORES];
+int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
+int tiles3[NUM_CORES], tiles4[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
+#ifdef MAA_VIRTUAL_GATHER
+int backing_start_regs[NUM_CORES], backing_end_regs[NUM_CORES];
+#endif
 
 void gradzatz() {
     int num_corners = corner_type.size();
@@ -107,6 +187,12 @@ void gradzatz_MAA() {
     add_mem_region(c_to_z_map.data(), c_to_z_map.data() + c_to_z_map.size());             // 10
     add_mem_region(corner_type.data(), corner_type.data() + corner_type.size());          // 11
     add_mem_region(point_gradient.data(), point_gradient.data() + point_gradient.size()); // 12
+#ifdef MAA_VIRTUAL_GATHER
+    for (int core = 0; core < NUM_CORES; ++core) {
+        add_mem_region(virtual_gather_backing[core],
+                       virtual_gather_backing[core] + TILE_SIZE);
+    }
+#endif
     std::cout << "ROI Begin" << std::endl;
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
@@ -114,11 +200,18 @@ void gradzatz_MAA() {
 #pragma omp parallel
     {
         int reg0, reg1, reg2;
+#ifdef MAA_VIRTUAL_GATHER
+        int backing_start_reg, backing_end_reg;
+#endif
         int tile0, tile2, tile3, tile5, tileCond;
         int omp_thread_id = omp_get_thread_num();
         reg0 = regs0[omp_thread_id];
         reg1 = regs1[omp_thread_id];
         reg2 = regs2[omp_thread_id];
+#ifdef MAA_VIRTUAL_GATHER
+        backing_start_reg = backing_start_regs[omp_thread_id];
+        backing_end_reg = backing_end_regs[omp_thread_id];
+#endif
         tile0 = tiles0[omp_thread_id];
         tile2 = tiles1[omp_thread_id];
         tileCond = tiles3[omp_thread_id];
@@ -127,6 +220,9 @@ void gradzatz_MAA() {
 
         maa_const<int>(1, reg2);
         maa_const<int>(num_corners, reg1);
+#ifdef MAA_VIRTUAL_GATHER
+        maa_const<int>(0, backing_start_reg);
+#endif
 #pragma omp for
         for (int c = 0; c < num_corners; c += TILE_SIZE) {
             maa_const<int>(c, reg0);
@@ -157,28 +253,61 @@ void gradzatz_MAA() {
         DATATYPE *tile5Ptr = get_cacheable_tile_pointer<DATATYPE>(tile5);
         DATATYPE *tile2Ptr = get_cacheable_tile_pointer<DATATYPE>(tile2);
         DATATYPE *tile0Ptr = get_cacheable_tile_pointer<DATATYPE>(tile0);
+#ifdef UME_GRADZATZ_VERIFY
+        int *tile5IndexPtr = get_cacheable_tile_pointer<int>(tile5);
+        uint64_t local_gather_errors = 0;
+        uint64_t local_gather_lanes = 0;
+#endif
 #pragma omp for
         for (int c = 0; c < num_corners; c += TILE_SIZE) {
+            const int gather_size = std::min(num_corners - c, TILE_SIZE);
             maa_const<int>(c, reg0);
             // Step1: Load corner_type
             maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2, tile0);
             // Step2: Perform comparison
             maa_alu_scalar<int>(tile0, reg2, tileCond, Operation_t::GTE_OP);
             // Step3: Load c_to_z_map
-            maa_stream_load<int>(c_to_z_map.data(), reg0, reg1, reg2, tile3, tileCond); //3 -> z
+            maa_stream_load<int>(c_to_z_map.data(), reg0, reg1, reg2, tile3,
+                                 tileCond); // tile3 -> z
             // Step4: Load c_to_p_map
-            maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2, tile5, tileCond); // 5 -> p
+            maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2, tile5,
+                                 tileCond); // tile5 -> p
             // Step5: Load point_gradient[p]
-            maa_indirect_load<DATATYPE>(point_gradient.data(), tile5, tile0, tileCond); // 0 -> point_gradient
-            // Transfer: tileCond (assuming step3 is also mapped to the same region)
+#ifdef MAA_VIRTUAL_GATHER
+            maa_indirect_load_virtual<DATATYPE>(
+                point_gradient.data(), tile5, tile0,
+                virtual_gather_backing[omp_thread_id], tileCond);
+#else
+            maa_indirect_load<DATATYPE>(point_gradient.data(), tile5, tile0,
+                                        tileCond); // tile0 -> point_gradient
+#endif
+            // Transfer tileCond; step 3 is mapped to the same region.
             // Step6: Load zone_gradient[z]
-            maa_indirect_load<DATATYPE>(zone_volume.data(), tile3, tile2, tileCond); // 2 -> zone_volume
+            maa_indirect_load<DATATYPE>(zone_volume.data(), tile3, tile2,
+                                        tileCond); // tile2 -> zone_volume
             wait_ready(tile2);
             wait_ready(tile0);
-            int tile_size = get_tile_size(tileCond);
+#ifdef MAA_VIRTUAL_GATHER
+            maa_const<int>(gather_size, backing_end_reg);
+            maa_stream_load<DATATYPE>(virtual_gather_backing[omp_thread_id],
+                                      backing_start_reg, backing_end_reg, reg2,
+                                      tile0);
+            wait_ready(tile0);
+#endif
+
+#ifdef UME_GRADZATZ_VERIFY
+            for (int i = 0; i < gather_size; ++i) {
+                if (tileCondPtr[i] == 0)
+                    continue;
+                if (value_bits(tile0Ptr[i]) !=
+                    value_bits(point_gradient[tile5IndexPtr[i]]))
+                    local_gather_errors++;
+                local_gather_lanes++;
+            }
+#endif
 
 #pragma omp simd simdlen(4)
-            for (int i = 0; i < tile_size; i++) {
+            for (int i = 0; i < gather_size; i++) {
                 if (tileCondPtr[i] == 1) {
                     DATATYPE c_z_vol_ratio = corner_volume[c + i] / tile2Ptr[i];
                     tile5Ptr[i] = tile0Ptr[i] * c_z_vol_ratio;
@@ -189,6 +318,12 @@ void gradzatz_MAA() {
             maa_indirect_rmw_vector<DATATYPE>(zone_gradient.data(), tile3, tile5, Operation_t::ADD_OP, tileCond);
         }
         wait_ready(tile5);
+#ifdef UME_GRADZATZ_VERIFY
+        gather_verify_errors.fetch_add(local_gather_errors,
+                                       std::memory_order_relaxed);
+        gather_verify_lanes.fetch_add(local_gather_lanes,
+                                      std::memory_order_relaxed);
+#endif
         // #pragma omp for
         // for (int c = 0; c < num_corners; ++c) {
         //     if (corner_type[c] < 1)
@@ -202,6 +337,35 @@ void gradzatz_MAA() {
 #ifdef GEM5
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
+#ifdef UME_GRADZATZ_VERIFY
+    const ReferenceErrors reference = check_scalar_reference();
+    const uint64_t gather_errors = gather_verify_errors.load();
+    const uint64_t gather_lanes = gather_verify_lanes.load();
+    const uint64_t reference_errors =
+        reference.volume + reference.gradient;
+    constexpr uint64_t expected_hash = 5900127901050159227ULL;
+    if (gather_errors != 0 || gather_lanes != expected_active_corners ||
+        reference_errors != 0 || reference.nonfinite != 0 ||
+        reference.hash != expected_hash) {
+        std::cerr << "UME_GRADZATZ_VERIFY_FAIL gather_errors="
+                  << gather_errors << " gather_lanes=" << gather_lanes
+                  << " expected_lanes=" << expected_active_corners
+                  << " reference_errors=" << reference_errors
+                  << " volume_errors=" << reference.volume
+                  << " gradient_errors=" << reference.gradient
+                  << " elements=" << zone_volume.size()
+                  << " output_hash=" << reference.hash
+                  << " nonfinite=" << reference.nonfinite << std::endl;
+        std::abort();
+    }
+    std::cout << "UME_GRADZATZ_VERIFY_PASS gather_errors=0 gather_lanes="
+              << gather_lanes << " expected_lanes="
+              << expected_active_corners
+              << " reference_errors=0 volume_errors=0 gradient_errors=0"
+              << " elements=" << zone_volume.size()
+              << " output_hash=" << reference.hash << " nonfinite=0"
+              << std::endl;
+#endif
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
 #endif
@@ -243,9 +407,25 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    char *end = nullptr;
+    const long long parsed_n = std::strtoll(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0' || parsed_n <= 0 ||
+        parsed_n > std::numeric_limits<int>::max() - 2 * PADDING_LEN) {
+        std::cerr << "n must be a positive padded 32-bit size" << std::endl;
+        return 2;
+    }
+    int n = static_cast<int>(parsed_n);
+#ifdef UME_GRADZATZ_VERIFY
+    if (n != 4097) {
+        std::cerr << "UME_GRADZATZ_VERIFY requires n=4097" << std::endl;
+        return 2;
+    }
+#else
     srand((unsigned)time(NULL));
-    int n = stoi(argv[1]);
+#endif
+#ifndef UME_GRADZATZ_VERIFY
     float branch_bias = 0.95;
+#endif
 
     int total_size = n;
     int num_points = total_size + 2 * PADDING_LEN;
@@ -265,12 +445,24 @@ int main(int argc, char *argv[]) {
     zone_gradient_exp.resize(num_zones);
     zone_volume_exp.resize(num_zones);
 
+#ifdef UME_GRADZATZ_VERIFY
+    for (int i = 0; i < num_corners; ++i) {
+        corner_type[i] = i % 20 != 0 ? 1 : -1;
+        corner_volume[i] = 1.0f;
+        c_to_z_map[i] = PADDING_LEN + i;
+        c_to_p_map[i] =
+            PADDING_LEN + ((97 * i + 13) % num_corners);
+    }
+    for (int i = 0; i < num_points; ++i)
+        point_gradient[i] = static_cast<float>(i + 1);
+#else
     // Initialize data arrays with random values
     for (int i = 0; i < num_corners; ++i) {
         corner_type[i] = (rand() % 100 < branch_bias * 100) ? 1 : -1;
     }
     std::fill(point_gradient.begin(), point_gradient.end(), 1.0);
     std::fill(corner_volume.begin(), corner_volume.end(), 1.0);
+#endif
 
     std::fill(zone_volume.begin(), zone_volume.end(), 0.0);
     std::fill(zone_gradient.begin(), zone_gradient.end(), 0.0);
@@ -278,6 +470,7 @@ int main(int argc, char *argv[]) {
     std::fill(zone_gradient_exp.begin(), zone_gradient_exp.end(), 0.0);
     std::fill(zone_volume_exp.begin(), zone_volume_exp.end(), 0.0);
 
+#ifndef UME_GRADZATZ_VERIFY
     // Initialize c_to_p_map and c_to_z_map with random valid indices
     for (int c = DISTANCE_OTEHRS; c < num_corners + DISTANCE_OTEHRS; ++c) {
         int idx = c - DISTANCE_OTEHRS;
@@ -295,6 +488,9 @@ int main(int argc, char *argv[]) {
         else if (c_to_z_map[idx] >= num_zones)
             assert(false && "c_to_z_map[c] >= num_zones");
     }
+#else
+    build_scalar_reference();
+#endif
 
 #ifdef GEM5
     cout << "Starting checkpoint" << endl;
@@ -311,6 +507,14 @@ int main(int argc, char *argv[]) {
 
 #pragma omp parallel
     {
+#pragma omp single
+        {
+            if (omp_get_num_threads() != NUM_CORES) {
+                std::cerr << "OpenMP team size must equal NUM_CORES"
+                          << std::endl;
+                std::abort();
+            }
+        }
 #pragma omp critical
         {
             int thread_id = omp_get_thread_num();
@@ -322,6 +526,10 @@ int main(int argc, char *argv[]) {
             regs0[thread_id] = get_new_reg<int>();
             regs1[thread_id] = get_new_reg<int>();
             regs2[thread_id] = get_new_reg<int>();
+#ifdef MAA_VIRTUAL_GATHER
+            backing_start_regs[thread_id] = get_new_reg<int>();
+            backing_end_regs[thread_id] = get_new_reg<int>();
+#endif
         }
     }
     gradzatz_MAA();

@@ -119,6 +119,12 @@ gradzatp_maa_16K_fixed_fp: gradzatp.cpp m5op.o
 gradzatp_maa_16K_virtual_fixed_fp: gradzatp.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DUME_FIXED_INPUT -DUME_OUTPUT_FINGERPRINT -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
 
+gradzatz_maa_1K_verify: gradzatz.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DUME_GRADZATZ_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
+gradzatz_maa_1K_virtual_verify: gradzatz.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DUME_GRADZATZ_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
 # m5op.o is not directly used here, but including it if needed
 m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@
