@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import shlex
 import statistics
@@ -38,7 +39,7 @@ EXPECTED_FINGERPRINT = {
     "z_q6": "35dce54d02fd013a",
 }
 
-GEOMETRY = {
+DEFAULT_GEOMETRY = {
     "combine_slots": 384,
     "combine_words": 4096,
     "response_slots": 96,
@@ -72,6 +73,21 @@ def atomic_json(path, value):
     atomic_write(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def storage_accounting(geometry):
+    core_bytes = (
+        geometry["combine_slots"] * 72
+        + geometry["response_slots"] * 8
+        + geometry["response_word_pool"] * 8
+        + geometry["max_outstanding_writes"] * 8
+    )
+    write_payload_bytes = geometry["max_outstanding_writes"] * 64
+    return {
+        "core_structure_bytes": core_bytes,
+        "conservative_inflight_write_payload_bytes": write_payload_bytes,
+        "conservative_total_bytes": core_bytes + write_payload_bytes,
+    }
+
+
 def parse_args():
     repo = Path(__file__).resolve().parents[2]
     default_campaign = (
@@ -82,7 +98,49 @@ def parse_args():
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--summarize-only", action="store_true")
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        choices=("control", "virtual"),
+        default=("control", "virtual"),
+    )
     parser.add_argument("--campaign-root", type=Path, default=default_campaign)
+    parser.add_argument("--control-checkpoint", type=Path)
+    parser.add_argument(
+        "--combine-slots",
+        type=int,
+        default=DEFAULT_GEOMETRY["combine_slots"],
+    )
+    parser.add_argument(
+        "--combine-words",
+        type=int,
+        default=DEFAULT_GEOMETRY["combine_words"],
+    )
+    parser.add_argument(
+        "--response-slots",
+        type=int,
+        default=DEFAULT_GEOMETRY["response_slots"],
+    )
+    parser.add_argument(
+        "--response-word-pool",
+        type=int,
+        default=DEFAULT_GEOMETRY["response_word_pool"],
+    )
+    parser.add_argument(
+        "--combine-ways",
+        type=int,
+        default=DEFAULT_GEOMETRY["combine_ways"],
+    )
+    parser.add_argument(
+        "--words-per-cycle",
+        type=int,
+        default=DEFAULT_GEOMETRY["words_per_cycle"],
+    )
+    parser.add_argument(
+        "--max-outstanding-writes",
+        type=int,
+        default=DEFAULT_GEOMETRY["max_outstanding_writes"],
+    )
     parser.add_argument(
         "--gem5",
         type=Path,
@@ -116,13 +174,31 @@ def parse_args():
         parser.error("--replicas must be positive")
     if args.poll_seconds < 1:
         parser.error("--poll-seconds must be positive")
+    if len(set(args.cases)) != len(args.cases):
+        parser.error("--cases contains a duplicate")
     args.repo = repo
     args.config = repo / "configs/deprecated/example/se.py"
     args.control_binary = repo / "benchmarks/NAS/cg/cg_maa_16K_fp_frozen"
     args.virtual_binary = (
         repo / "benchmarks/NAS/cg/cg_maa_16K_virtual_fp_frozen"
     )
-    args.control_checkpoint = args.campaign_root / "control_fp_checkpoint"
+    if args.control_checkpoint is None:
+        args.control_checkpoint = args.campaign_root / "control_fp_checkpoint"
+    args.geometry = {
+        "combine_slots": args.combine_slots,
+        "combine_words": args.combine_words,
+        "response_slots": args.response_slots,
+        "response_word_pool": args.response_word_pool,
+        "combine_ways": args.combine_ways,
+        "words_per_cycle": args.words_per_cycle,
+        "max_outstanding_writes": args.max_outstanding_writes,
+        "masked_writes": True,
+    }
+    for name, value in args.geometry.items():
+        if name != "masked_writes" and value <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.combine_slots % args.combine_ways != 0:
+        parser.error("--combine-slots must be divisible by --combine-ways")
     return args
 
 
@@ -167,6 +243,25 @@ def verify_artifacts(args):
         if not path.is_file():
             raise RuntimeError(f"missing {name}: {path}")
         identities[name] = {"path": str(path), "sha256": sha256_file(path)}
+    return identities
+
+
+def verify_recorded_artifacts(manifest):
+    identities = manifest.get("artifacts")
+    if not isinstance(identities, dict):
+        raise RuntimeError("campaign manifest has no artifact identities")
+    for name, identity in identities.items():
+        path = Path(identity["path"])
+        if not path.is_file():
+            raise RuntimeError(f"missing recorded {name}: {path}")
+        actual = sha256_file(path)
+        if actual != identity["sha256"]:
+            raise RuntimeError(
+                f"recorded {name} SHA-256 mismatch: "
+                f"expected {identity['sha256']}, got {actual}"
+            )
+        if name in EXPECTED_SHA256 and actual != EXPECTED_SHA256[name]:
+            raise RuntimeError(f"{name} no longer matches frozen oracle")
     return identities
 
 
@@ -237,19 +332,19 @@ def gem5_command(args, case, outdir):
         "--maa_num_initial_row_table_slices",
         "32",
         "--maa_virtual_combine_slots",
-        str(GEOMETRY["combine_slots"]),
+        str(args.geometry["combine_slots"]),
         "--maa_virtual_combine_words",
-        str(GEOMETRY["combine_words"]),
+        str(args.geometry["combine_words"]),
         "--maa_virtual_response_slots",
-        str(GEOMETRY["response_slots"]),
+        str(args.geometry["response_slots"]),
         "--maa_virtual_response_word_pool",
-        str(GEOMETRY["response_word_pool"]),
+        str(args.geometry["response_word_pool"]),
         "--maa_virtual_combine_ways",
-        str(GEOMETRY["combine_ways"]),
+        str(args.geometry["combine_ways"]),
         "--maa_virtual_words_per_cycle",
-        str(GEOMETRY["words_per_cycle"]),
+        str(args.geometry["words_per_cycle"]),
         "--maa_virtual_max_outstanding_writes",
-        str(GEOMETRY["max_outstanding_writes"]),
+        str(args.geometry["max_outstanding_writes"]),
         "--maa_virtual_masked_writes",
         "--cmd",
         str(binary),
@@ -266,7 +361,7 @@ def build_manifest(args, identities):
         ["git", "rev-parse", "HEAD"], cwd=args.repo, text=True
     ).strip()
     runs = []
-    for case in ("control", "virtual"):
+    for case in args.cases:
         for replica in range(1, args.replicas + 1):
             run_id = f"{case}_r{replica}"
             outdir = args.campaign_root / run_id
@@ -282,11 +377,13 @@ def build_manifest(args, identities):
     return {
         "artifacts": identities,
         "created_at": utc_now(),
-        "geometry": GEOMETRY,
+        "cases": list(args.cases),
+        "geometry": args.geometry,
         "host": os.uname().nodename,
         "replicas_per_case": args.replicas,
         "runs": runs,
         "source_commit": source_commit,
+        "storage_accounting": storage_accounting(args.geometry),
     }
 
 
@@ -361,16 +458,16 @@ def read_int(path):
     return int(path.read_text().strip())
 
 
-def parse_instantiated_geometry(path):
+def parse_instantiated_geometry(path, geometry):
     expected_keys = {
-        "virtual_combine_slots": GEOMETRY["combine_slots"],
-        "virtual_combine_words": GEOMETRY["combine_words"],
-        "virtual_response_slots": GEOMETRY["response_slots"],
-        "virtual_response_word_pool": GEOMETRY["response_word_pool"],
+        "virtual_combine_slots": geometry["combine_slots"],
+        "virtual_combine_words": geometry["combine_words"],
+        "virtual_response_slots": geometry["response_slots"],
+        "virtual_response_word_pool": geometry["response_word_pool"],
         "virtual_response_words": 0,
-        "virtual_combine_ways": GEOMETRY["combine_ways"],
-        "virtual_words_per_cycle": GEOMETRY["words_per_cycle"],
-        "virtual_max_outstanding_writes": GEOMETRY["max_outstanding_writes"],
+        "virtual_combine_ways": geometry["combine_ways"],
+        "virtual_words_per_cycle": geometry["words_per_cycle"],
+        "virtual_max_outstanding_writes": geometry["max_outstanding_writes"],
         "virtual_masked_writes": "true",
     }
     values = {}
@@ -382,14 +479,23 @@ def parse_instantiated_geometry(path):
     return expected_keys, values
 
 
-def validate_run(run):
+def validate_run(run, geometry):
     outdir = Path(run["outdir"])
     errors = []
     log_path = outdir / "run.log"
     stats_path = outdir / "stats.txt"
     exit_path = outdir / "exit_code"
     config_path = outdir / "config.ini"
-    for path in (log_path, stats_path, exit_path, config_path):
+    run_manifest_path = outdir / "run_manifest.json"
+    command_path = outdir / "command.txt"
+    for path in (
+        log_path,
+        stats_path,
+        exit_path,
+        config_path,
+        run_manifest_path,
+        command_path,
+    ):
         if not path.is_file():
             errors.append(f"missing {path.name}")
     if errors:
@@ -399,7 +505,7 @@ def validate_run(run):
     log = log_path.read_text(errors="replace")
     metrics, section_count = parse_first_stats(stats_path)
     expected_geometry, instantiated_geometry = parse_instantiated_geometry(
-        config_path
+        config_path, geometry
     )
     fingerprint_lines = [
         line for line in log.splitlines() if line.startswith("CG_FINGERPRINT ")
@@ -409,6 +515,22 @@ def validate_run(run):
         if len(fingerprint_lines) == 1
         else {}
     )
+
+    recorded_run = json.loads(run_manifest_path.read_text())
+    if recorded_run != run:
+        errors.append("run_manifest.json does not match campaign manifest")
+    expected_command = shlex.join(run["command"])
+    if command_path.read_text().strip() != expected_command:
+        errors.append("command.txt does not match campaign manifest")
+    command_lines = [
+        line.removeprefix("command line: ")
+        for line in log.splitlines()
+        if line.startswith("command line: ")
+    ]
+    if len(command_lines) != 1:
+        errors.append(f"gem5 command-line count {len(command_lines)}")
+    elif shlex.split(command_lines[0]) != run["command"]:
+        errors.append("gem5 command line does not match campaign manifest")
 
     if exit_code != 0:
         errors.append(f"exit code {exit_code}")
@@ -443,6 +565,21 @@ def validate_run(run):
     for key in ("nonfinite_x", "nonfinite_z"):
         if fingerprint.get(key) != "0":
             errors.append(f"{key} is not zero")
+    scalar_checks = {
+        "rnorm": (0.0010974915931001306, 5.0e-9),
+        "zeta": (109.99944232372989, 1.0e-10),
+    }
+    for key, (expected, tolerance) in scalar_checks.items():
+        try:
+            actual = float(fingerprint[key])
+        except (KeyError, ValueError):
+            errors.append(f"missing numeric {key}")
+            continue
+        if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=tolerance):
+            errors.append(
+                f"{key} mismatch: expected {expected} +/- {tolerance}, "
+                f"got {actual}"
+            )
     for key, expected in expected_geometry.items():
         if instantiated_geometry.get(key) != expected:
             errors.append(
@@ -521,8 +658,9 @@ def distribution(values):
     }
 
 
-def summarize(args, runs):
-    results = [validate_run(run) for run in runs]
+def summarize(args, manifest):
+    geometry = manifest["geometry"]
+    results = [validate_run(run, geometry) for run in manifest["runs"]]
     rows = []
     for result in results:
         metrics = result.get("first_dump_metrics", {})
@@ -571,6 +709,7 @@ def summarize(args, runs):
         "completed_at": utc_now(),
         "results": results,
         "status": "PASS" if valid else "FAIL",
+        "storage_accounting": storage_accounting(geometry),
     }
     if valid:
         control = [
@@ -583,22 +722,29 @@ def summarize(args, runs):
             for result in results
             if result["case"] == "virtual"
         ]
-        control_mean = statistics.fmean(control)
-        virtual_mean = statistics.fmean(virtual)
-        speedup = control_mean / virtual_mean
-        summary["performance"] = {
-            "control_simTicks": distribution(control),
-            "paired_speedups": [
-                control[index] / virtual[index]
-                for index in range(min(len(control), len(virtual)))
-            ],
-            "speedup_percent": (speedup - 1.0) * 100.0,
-            "speedup_ratio": speedup,
-            "tick_reduction_percent": (
-                (control_mean - virtual_mean) / control_mean * 100.0
-            ),
-            "virtual_simTicks": distribution(virtual),
-        }
+        performance = {}
+        if control:
+            performance["control_simTicks"] = distribution(control)
+        if virtual:
+            performance["virtual_simTicks"] = distribution(virtual)
+        if control and virtual:
+            control_mean = statistics.fmean(control)
+            virtual_mean = statistics.fmean(virtual)
+            speedup = control_mean / virtual_mean
+            performance.update(
+                {
+                    "paired_speedups": [
+                        control[index] / virtual[index]
+                        for index in range(min(len(control), len(virtual)))
+                    ],
+                    "speedup_percent": (speedup - 1.0) * 100.0,
+                    "speedup_ratio": speedup,
+                    "tick_reduction_percent": (
+                        (control_mean - virtual_mean) / control_mean * 100.0
+                    ),
+                }
+            )
+        summary["performance"] = performance
     atomic_json(args.campaign_root / "terminal_summary.json", summary)
     atomic_write(
         args.campaign_root / "campaign_exit_code", "0\n" if valid else "1\n"
@@ -634,13 +780,22 @@ def launch(args, manifest):
 
 def main():
     args = parse_args()
-    identities = verify_artifacts(args)
-    manifest = build_manifest(args, identities)
+    args.campaign_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = args.campaign_root / "campaign_manifest.json"
+    if args.summarize_only:
+        if not manifest_path.is_file():
+            raise RuntimeError(
+                f"missing frozen campaign manifest: {manifest_path}"
+            )
+        manifest = json.loads(manifest_path.read_text())
+        verify_recorded_artifacts(manifest)
+    else:
+        identities = verify_artifacts(args)
+        manifest = build_manifest(args, identities)
     if args.dry_run:
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
-    args.campaign_root.mkdir(parents=True, exist_ok=True)
     if not args.summarize_only:
         occupied = [
             run["outdir"]
@@ -652,10 +807,10 @@ def main():
                 "refusing to overwrite existing run directories: "
                 + ", ".join(occupied)
             )
-        atomic_json(args.campaign_root / "campaign_manifest.json", manifest)
+        atomic_json(manifest_path, manifest)
         launch(args, manifest)
 
-    valid, summary = summarize(args, manifest["runs"])
+    valid, summary = summarize(args, manifest)
     print(json.dumps(summary.get("performance", {}), indent=2, sort_keys=True))
     print(f"campaign {summary['status']}")
     return 0 if valid else 1
