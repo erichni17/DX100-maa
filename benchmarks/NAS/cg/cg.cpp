@@ -64,7 +64,9 @@ Authors of the OpenMP code:
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <string>
 
 #ifdef _OPENMP
@@ -348,6 +350,9 @@ void save_data_to_file() {
 #else
 #error
 #endif
+
+    // Preserve each binary32 value when generated data is compiled back in.
+    outfile << std::setprecision(std::numeric_limits<float>::max_digits10);
 
     outfile << "#ifndef CG_DATA_H\n";
     outfile << "#define CG_DATA_H\n\n";
