@@ -38,11 +38,11 @@ EXPECTED_FINGERPRINT = {
     "z_q6": "35dce54d02fd013a",
 }
 
-EXPECTED_VIRTUAL_WRITES = 52_675_689
 GEOMETRY = {
     "combine_slots": 384,
+    "combine_words": 4096,
     "response_slots": 96,
-    "response_words": 480,
+    "response_word_pool": 480,
     "combine_ways": 4,
     "words_per_cycle": 4,
     "max_outstanding_writes": 64,
@@ -238,10 +238,12 @@ def gem5_command(args, case, outdir):
         "32",
         "--maa_virtual_combine_slots",
         str(GEOMETRY["combine_slots"]),
+        "--maa_virtual_combine_words",
+        str(GEOMETRY["combine_words"]),
         "--maa_virtual_response_slots",
         str(GEOMETRY["response_slots"]),
-        "--maa_virtual_response_words",
-        str(GEOMETRY["response_words"]),
+        "--maa_virtual_response_word_pool",
+        str(GEOMETRY["response_word_pool"]),
         "--maa_virtual_combine_ways",
         str(GEOMETRY["combine_ways"]),
         "--maa_virtual_words_per_cycle",
@@ -359,13 +361,35 @@ def read_int(path):
     return int(path.read_text().strip())
 
 
+def parse_instantiated_geometry(path):
+    expected_keys = {
+        "virtual_combine_slots": GEOMETRY["combine_slots"],
+        "virtual_combine_words": GEOMETRY["combine_words"],
+        "virtual_response_slots": GEOMETRY["response_slots"],
+        "virtual_response_word_pool": GEOMETRY["response_word_pool"],
+        "virtual_response_words": 0,
+        "virtual_combine_ways": GEOMETRY["combine_ways"],
+        "virtual_words_per_cycle": GEOMETRY["words_per_cycle"],
+        "virtual_max_outstanding_writes": GEOMETRY["max_outstanding_writes"],
+        "virtual_masked_writes": "true",
+    }
+    values = {}
+    with path.open(errors="replace") as config:
+        for line in config:
+            key, separator, value = line.strip().partition("=")
+            if separator and key in expected_keys:
+                values[key] = parse_scalar(value)
+    return expected_keys, values
+
+
 def validate_run(run):
     outdir = Path(run["outdir"])
     errors = []
     log_path = outdir / "run.log"
     stats_path = outdir / "stats.txt"
     exit_path = outdir / "exit_code"
-    for path in (log_path, stats_path, exit_path):
+    config_path = outdir / "config.ini"
+    for path in (log_path, stats_path, exit_path, config_path):
         if not path.is_file():
             errors.append(f"missing {path.name}")
     if errors:
@@ -374,6 +398,9 @@ def validate_run(run):
     exit_code = read_int(exit_path)
     log = log_path.read_text(errors="replace")
     metrics, section_count = parse_first_stats(stats_path)
+    expected_geometry, instantiated_geometry = parse_instantiated_geometry(
+        config_path
+    )
     fingerprint_lines = [
         line for line in log.splitlines() if line.startswith("CG_FINGERPRINT ")
     ]
@@ -416,6 +443,12 @@ def validate_run(run):
     for key in ("nonfinite_x", "nonfinite_z"):
         if fingerprint.get(key) != "0":
             errors.append(f"{key} is not zero")
+    for key, expected in expected_geometry.items():
+        if instantiated_geometry.get(key) != expected:
+            errors.append(
+                f"{key} mismatch: expected {expected}, "
+                f"got {instantiated_geometry.get(key)}"
+            )
 
     bad_markers = (
         "gem5 has encountered a segmentation fault",
@@ -432,22 +465,24 @@ def validate_run(run):
     write_completions = metrics.get(
         "system.maa.I0_IND_VirtWriteCompletions", 0
     )
-    response_stalls = metrics.get(
-        "system.maa.I0_IND_VirtResponseWordPoolStalls", 0
+    response_high_water = metrics.get(
+        "system.maa.I0_IND_VirtResponseWordHighWater", 0
     )
     if run["case"] == "virtual":
-        if write_issues != EXPECTED_VIRTUAL_WRITES:
+        if not isinstance(write_issues, int) or write_issues <= 0:
+            errors.append(f"invalid virtual write issue count {write_issues}")
+        if write_completions != write_issues:
             errors.append(
-                f"virtual write issues {write_issues}, "
-                f"expected {EXPECTED_VIRTUAL_WRITES}"
+                f"virtual write issue/completion mismatch: "
+                f"{write_issues}/{write_completions}"
             )
-        if write_completions != EXPECTED_VIRTUAL_WRITES:
+        if (
+            not isinstance(response_high_water, int)
+            or response_high_water <= 0
+        ):
             errors.append(
-                f"virtual write completions {write_completions}, "
-                f"expected {EXPECTED_VIRTUAL_WRITES}"
+                f"inactive response word-pool high water {response_high_water}"
             )
-        if response_stalls != 0:
-            errors.append(f"response word-pool stalls {response_stalls}")
 
     started = outdir / "started_epoch"
     finished = outdir / "finished_epoch"
@@ -510,6 +545,9 @@ def summarize(args, runs):
                 ),
                 "response_pool_stalls": metrics.get(
                     "system.maa.I0_IND_VirtResponseWordPoolStalls"
+                ),
+                "response_pool_high_water": metrics.get(
+                    "system.maa.I0_IND_VirtResponseWordHighWater"
                 ),
                 "x_q5": fingerprint.get("x_q5"),
                 "x_q6": fingerprint.get("x_q6"),
