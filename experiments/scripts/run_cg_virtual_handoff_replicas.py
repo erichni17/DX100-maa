@@ -155,6 +155,11 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--expected-gem5-sha256",
+        default=EXPECTED_SHA256["gem5"],
+        help="Required SHA-256 for the selected simulator binary",
+    )
+    parser.add_argument(
         "--ramulator-config",
         type=Path,
         default=Path(
@@ -205,6 +210,15 @@ def parse_args():
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.combine_slots % args.combine_ways != 0:
         parser.error("--combine-slots must be divisible by --combine-ways")
+    if len(args.expected_gem5_sha256) != 64 or any(
+        character not in "0123456789abcdef"
+        for character in args.expected_gem5_sha256
+    ):
+        parser.error("--expected-gem5-sha256 must be 64 lowercase hex digits")
+    args.expected_sha256 = {
+        **EXPECTED_SHA256,
+        "gem5": args.expected_gem5_sha256,
+    }
     return args
 
 
@@ -233,7 +247,7 @@ def verify_artifacts(args):
         if not path.is_file():
             raise RuntimeError(f"missing {name}: {path}")
         actual = sha256_file(path)
-        expected = EXPECTED_SHA256[name]
+        expected = args.expected_sha256[name]
         if actual != expected:
             raise RuntimeError(
                 f"{name} SHA-256 mismatch: expected {expected}, got {actual}"
@@ -256,6 +270,11 @@ def verify_recorded_artifacts(manifest):
     identities = manifest.get("artifacts")
     if not isinstance(identities, dict):
         raise RuntimeError("campaign manifest has no artifact identities")
+    expected_hashes = manifest.get("expected_sha256", EXPECTED_SHA256)
+    if set(expected_hashes) != set(EXPECTED_SHA256):
+        raise RuntimeError(
+            "campaign manifest has invalid expected SHA-256 keys"
+        )
     for name, identity in identities.items():
         path = Path(identity["path"])
         if not path.is_file():
@@ -266,7 +285,7 @@ def verify_recorded_artifacts(manifest):
                 f"recorded {name} SHA-256 mismatch: "
                 f"expected {identity['sha256']}, got {actual}"
             )
-        if name in EXPECTED_SHA256 and actual != EXPECTED_SHA256[name]:
+        if name in expected_hashes and actual != expected_hashes[name]:
             raise RuntimeError(f"{name} no longer matches frozen oracle")
     return identities
 
@@ -384,6 +403,7 @@ def build_manifest(args, identities):
         "artifacts": identities,
         "created_at": utc_now(),
         "cases": list(args.cases),
+        "expected_sha256": args.expected_sha256,
         "geometry": args.geometry,
         "host": os.uname().nodename,
         "replicas_per_case": args.replicas,

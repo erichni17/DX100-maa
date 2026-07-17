@@ -1357,8 +1357,20 @@ bool BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         if (wb_entry) {
             assert(wb_entry->getNumTargets() == 1);
             PacketPtr wbPkt = wb_entry->getTarget()->pkt;
-            if (wbPkt->isWriteback() == false) {
-                panic_if(true, "Writeback expected in write buffer, got %s\n", wbPkt->print());
+            if (!wbPkt->isWriteback()) {
+                // Multiple upper caches can evict the same shared clean line
+                // before the first notification leaves a banked write queue.
+                // One pending CleanEvict is sufficient because neither packet
+                // carries data or ownership.
+                if (wbPkt->isCleanEviction() && pkt->isCleanEviction()) {
+                    DPRINTF(Cache, "Coalescing duplicate CleanEvict %#llx\n",
+                            pkt->getAddr());
+                    lat = calculateTagOnlyLatency(pkt->headerDelay,
+                                                  tag_latency);
+                    return true;
+                }
+                panic("Writeback expected for incoming %s, got queued %s\n",
+                      pkt->print(), wbPkt->print());
             }
 
             if (pkt->isCleanEviction()) {
