@@ -119,6 +119,10 @@ bool SPD::getTileDirty(int tile_id) {
 }
 void SPD::setTileReady(int tile_id, int word_size) {
     check_tile_id(tile_id, sizeof(uint32_t));
+    panic_if(tiles_ready[tile_id] == 0 ||
+                 (word_size == 8 && tiles_ready[tile_id + 1] == 0),
+             "Tile %d received a ready credit without a matching debit\n",
+             tile_id);
     tiles_ready[tile_id]++;
     wakeup_waiting_units(tile_id);
     if (word_size == 8) {

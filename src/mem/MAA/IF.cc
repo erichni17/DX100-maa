@@ -26,6 +26,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              src2SpdID(-1),
                              src1Status(TileStatus::WaitForInvalidation),
                              src2Status(TileStatus::WaitForInvalidation),
+                             src1MustBeFinished(false),
                              dst1SpdID(-1),
                              dst2SpdID(-1),
                              dst1Status(TileStatus::WaitForInvalidation),
@@ -35,6 +36,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              opcode(OpcodeType::MAX),
                              optype(OPType::MAX),
                              datatype(DataType::MAX),
+                             accessType(AccessType::MAX),
                              state(Status::Idle),
                              funcUniType(FuncUnitType::MAX),
                              CID(-1),
@@ -166,7 +168,8 @@ int Instruction::WordSize() {
     assert(false);
     return -1;
 }
-bool IF::pushInstruction(Instruction _instruction, int *inserted_slot) {
+bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
+                         int ignored_hazard_slot) {
     if (_instruction.opcode ==
         Instruction::OpcodeType::INDIR_LD_SPD_STREAM) {
         Instruction load = _instruction;
@@ -185,6 +188,8 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot) {
         stream.addrRangeID = _instruction.backingAddrRangeID;
         stream.src1SpdID = _instruction.dst1SpdID;
         stream.src1Status = Instruction::TileStatus::WaitForService;
+        stream.src1MustBeFinished =
+            load.addrRangeID == stream.addrRangeID;
         stream.src2SpdID = stream.dst1SpdID = stream.dst2SpdID = -1;
         stream.condSpdID = -1;
         stream.backingAddr = 0xFFFFFFFFFFFFFFFF;
@@ -195,7 +200,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot) {
         int load_slot = -1;
         if (!pushInstruction(load, &load_slot))
             return false;
-        if (!pushInstruction(stream)) {
+        if (!pushInstruction(stream, nullptr, load_slot)) {
             panic_if(load_slot < 0, "Fused load did not report its IF slot\n");
             DPRINTF(MAAController,
                     "%s: rolled back fused load slot %d because its stream "
@@ -257,6 +262,8 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot) {
                 free_instruction_slot = i;
             }
         } else {
+            if (i == ignored_hazard_slot)
+                continue;
             if (_instruction.dst1SpdID != -1) {
                 if ((instructions[maa_id][i].dst1SpdID != -1 && _instruction.dst1SpdID == instructions[maa_id][i].dst1SpdID) ||
                     (instructions[maa_id][i].dst2SpdID != -1 && _instruction.dst1SpdID == instructions[maa_id][i].dst2SpdID) ||
@@ -359,11 +366,30 @@ Instruction *IF::getReady(FuncUnitType funcUniType, int maa_id) {
             if (valids[maa_id][instr_idx] &&
                 instructions[maa_id][instr_idx].maa_id == maa_id &&
                 instructions[maa_id][instr_idx].state == Instruction::Status::Idle &&
-                (instructions[maa_id][instr_idx].src1SpdID == -1 || instructions[maa_id][instr_idx].src1Status == Instruction::TileStatus::Service || instructions[maa_id][instr_idx].src1Status == Instruction::TileStatus::Finished) &&
-                (instructions[maa_id][instr_idx].src2SpdID == -1 || instructions[maa_id][instr_idx].src2Status == Instruction::TileStatus::Service || instructions[maa_id][instr_idx].src2Status == Instruction::TileStatus::Finished) &&
-                (instructions[maa_id][instr_idx].condSpdID == -1 || instructions[maa_id][instr_idx].condStatus == Instruction::TileStatus::Service || instructions[maa_id][instr_idx].condStatus == Instruction::TileStatus::Finished) &&
-                (instructions[maa_id][instr_idx].dst1SpdID == -1 || instructions[maa_id][instr_idx].dst1Status == Instruction::TileStatus::WaitForService) &&
-                (instructions[maa_id][instr_idx].dst2SpdID == -1 || instructions[maa_id][instr_idx].dst2Status == Instruction::TileStatus::WaitForService) &&
+                (instructions[maa_id][instr_idx].src1SpdID == -1 ||
+                 (instructions[maa_id][instr_idx].src1MustBeFinished
+                      ? instructions[maa_id][instr_idx].src1Status ==
+                            Instruction::TileStatus::Finished
+                      : instructions[maa_id][instr_idx].src1Status ==
+                                Instruction::TileStatus::Service ||
+                            instructions[maa_id][instr_idx].src1Status ==
+                                Instruction::TileStatus::Finished)) &&
+                (instructions[maa_id][instr_idx].src2SpdID == -1 ||
+                 instructions[maa_id][instr_idx].src2Status ==
+                         Instruction::TileStatus::Service ||
+                 instructions[maa_id][instr_idx].src2Status ==
+                         Instruction::TileStatus::Finished) &&
+                (instructions[maa_id][instr_idx].condSpdID == -1 ||
+                 instructions[maa_id][instr_idx].condStatus ==
+                         Instruction::TileStatus::Service ||
+                 instructions[maa_id][instr_idx].condStatus ==
+                         Instruction::TileStatus::Finished) &&
+                (instructions[maa_id][instr_idx].dst1SpdID == -1 ||
+                 instructions[maa_id][instr_idx].dst1Status ==
+                         Instruction::TileStatus::WaitForService) &&
+                (instructions[maa_id][instr_idx].dst2SpdID == -1 ||
+                 instructions[maa_id][instr_idx].dst2Status ==
+                         Instruction::TileStatus::WaitForService) &&
                 instructions[maa_id][instr_idx].funcUniType == funcUniType) {
                 if (maa->num_maas == 1 || maa->getAddrRegionPermit(&instructions[maa_id][instr_idx])) {
                     issueInstructionCompute(&instructions[maa_id][instr_idx]);

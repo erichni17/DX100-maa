@@ -621,6 +621,15 @@ void MAA::dispatchInstruction() {
                 if (instruction->src2SpdID != -1) {
                     spd->setTileNotReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
                 }
+                if (instruction->opcode ==
+                    Instruction::OpcodeType::INDIR_LD_SPD_STREAM) {
+                    panic_if(instruction->dst1SpdID == -1,
+                             "Fused load-stream requires a destination "
+                             "tile\n");
+                    spd->setTileNotReady(
+                        instruction->dst1SpdID,
+                        instruction->getWordSize(instruction->dst1SpdID));
+                }
                 pkt->makeTimingResponse();
                 pkt->headerDelay = pkt->payloadDelay = 0;
                 cpuSidePorts[0]->schedTimingResp(pkt, getClockEdge(Cycles(1)));

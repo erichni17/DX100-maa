@@ -153,6 +153,7 @@ public:
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
     int16_t src1SpdID, src2SpdID;
     TileStatus src1Status, src2Status;
+    bool src1MustBeFinished;
     int16_t dst1SpdID, dst2SpdID;
     TileStatus dst1Status, dst2Status;
     int16_t condSpdID;
@@ -220,7 +221,8 @@ public:
         delete[] completion_only_tiles;
     }
     bool pushInstruction(Instruction _instruction,
-                         int *inserted_slot = nullptr);
+                         int *inserted_slot = nullptr,
+                         int ignored_hazard_slot = -1);
     bool canPushRegister(Register _reg);
     Instruction *getReady(FuncUnitType funcUniType, int maa_id = -1);
     void finishInstructionCompute(Instruction *instruction);
