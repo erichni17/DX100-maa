@@ -1,11 +1,16 @@
+#include <omp.h>
+
+#include <algorithm> // For std::iota and std::fill
+#include <atomic>
+#include <cmath>     // For std::fabs
+#include <cstdint>
+#include <cstdlib>   // For rand()
+#include <cstring>
+#include <ctime>
 #include <iostream>
 #include <string>
-#include <ctime>
 #include <vector>
-#include <algorithm> // For std::iota and std::fill
-#include <cstdlib>   // For rand()
-#include <cmath>     // For std::fabs
-#include <omp.h>
+
 using namespace std;
 
 // #define VERIFY
@@ -40,20 +45,59 @@ std::vector<DATATYPE> point_gradient_exp;
 
 std::vector<int> point_type;
 
+#ifdef MAA_VIRTUAL_GATHER
+alignas(64) static DATATYPE virtual_gather_backing[NUM_CORES][TILE_SIZE];
+#endif
+
+#ifdef UME_GATHER_VERIFY
+static std::atomic<uint64_t> gather_verify_errors{0};
+static std::atomic<uint64_t> gather_verify_lanes{0};
+
+static uint64_t update_output_hash(uint64_t hash, uint64_t index,
+                                   DATATYPE value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    hash ^= (index << 32) ^ bits;
+    hash *= 1099511628211ULL;
+    return hash;
+}
+
+static uint64_t hash_outputs(uint64_t &nonfinite) {
+    uint64_t hash = 1469598103934665603ULL;
+    nonfinite = 0;
+    for (size_t i = 0; i < point_volume.size(); ++i) {
+        if (!std::isfinite(point_volume[i]))
+            nonfinite++;
+        if (!std::isfinite(point_gradient[i]))
+            nonfinite++;
+        hash = update_output_hash(hash, i * 2, point_volume[i]);
+        hash = update_output_hash(hash, i * 2 + 1, point_gradient[i]);
+    }
+    return hash;
+}
+#endif
+
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
 #define GEM5
 #endif
 
 #if defined(FUNC)
 #include <MAA_functional.hpp>
+
 #elif defined(GEM5)
 #include <MAA_gem5.hpp>
+
 #include <gem5/m5ops.h>
+
 #elif defined(GEM5_MAGIC)
 #include "MAA_gem5_magic.hpp"
 #endif
-int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES], tiles3[NUM_CORES], tiles4[NUM_CORES], tiles5[NUM_CORES], tilesi[NUM_CORES];
-int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES], regs3[NUM_CORES], regs4[NUM_CORES], last_i_regs[NUM_CORES], last_j_regs[NUM_CORES];
+int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
+int tiles3[NUM_CORES], tiles4[NUM_CORES], tiles5[NUM_CORES];
+int tilesi[NUM_CORES];
+int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
+int regs3[NUM_CORES], regs4[NUM_CORES], last_i_regs[NUM_CORES];
+int last_j_regs[NUM_CORES];
 
 void gradzatp_invert_CSR() {
     int num_points = point_volume_exp.size();
@@ -133,7 +177,13 @@ void gradzatp_invert_MAA_CSR() {
     add_mem_region(c_to_z_map.data(), c_to_z_map.data() + c_to_z_map.size());             // 12
     add_mem_region(p_to_c_indptr.data(), p_to_c_indptr.data() + p_to_c_indptr.size());    // 13
     add_mem_region(point_type.data(), point_type.data() + point_type.size());             // 14
-    add_mem_region(point_normal.data(), point_normal.data() + point_normal.size());       // 15
+#ifdef MAA_VIRTUAL_GATHER
+    add_mem_region(&virtual_gather_backing[0][0],
+                   &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]); // 15
+#else
+    add_mem_region(point_normal.data(),
+                   point_normal.data() + point_normal.size()); // 15
+#endif
     std::cout << "ROI Begin" << std::endl;
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
@@ -171,7 +221,14 @@ void gradzatp_invert_MAA_CSR() {
         DATATYPE *tilej_ptr = get_cacheable_tile_pointer<DATATYPE>(tilej);
         DATATYPE *tile5_ptr = get_cacheable_tile_pointer<DATATYPE>(tile5);
         DATATYPE *tile0_ptr = get_cacheable_tile_pointer<DATATYPE>(tile0);
+#ifdef UME_GATHER_VERIFY
+        int *tile3_ptr = get_cacheable_tile_pointer<int>(tile3);
+#endif
         int *tilei_ptr = get_cacheable_tile_pointer<int>(tilei);
+#ifdef UME_GATHER_VERIFY
+        uint64_t local_verify_errors = 0;
+        uint64_t local_verify_lanes = 0;
+#endif
 #pragma omp for
         for (int p = 0; p < num_points; p += TILE_SIZE) {
             maa_const<int>(p, reg0);
@@ -198,14 +255,43 @@ void gradzatp_invert_MAA_CSR() {
                 // Step6: load csurf[c]
                 maa_indirect_load<DATATYPE>(csurf.data(), tile0, tile5); // 5->csurf
                 // Step7: load zone_field[z]
-                maa_indirect_load<DATATYPE>(zone_field.data(), tile3, tile0); // 0->zone_field
+#ifdef MAA_VIRTUAL_GATHER
+                maa_indirect_load_virtual<DATATYPE>(
+                    zone_field.data(), tile3, tile0,
+                    virtual_gather_backing[thread_id]);
+#else
+                maa_indirect_load<DATATYPE>(zone_field.data(), tile3,
+                                            tile0); // 0->zone_field
+#endif
                 curr_tilej_size = min(j_max - j_base, TILE_SIZE);
                 wait_ready(tilei);
                 wait_ready(tile0);
+#ifdef MAA_VIRTUAL_GATHER
+                // Reload through the MAA so the CPU never retains coherent
+                // ownership of backing lines that the next gather overwrites.
+                maa_const<int>(0, reg0);
+                maa_const<int>(curr_tilej_size, reg4);
+                maa_stream_load<DATATYPE>(virtual_gather_backing[thread_id],
+                                          reg0, reg4, reg2, tile0);
+                wait_ready(tile0);
+#endif
+                DATATYPE *gathered_zone_field = tile0_ptr;
 #pragma omp simd simdlen(4)
                 for (int j = 0; j < curr_tilej_size; j++) {
+#ifdef UME_GATHER_VERIFY
+                    uint32_t actual_bits;
+                    uint32_t expected_bits;
+                    std::memcpy(&actual_bits, &gathered_zone_field[j],
+                                sizeof(actual_bits));
+                    std::memcpy(&expected_bits, &zone_field[tile3_ptr[j]],
+                                sizeof(expected_bits));
+                    if (actual_bits != expected_bits)
+                        local_verify_errors++;
+                    local_verify_lanes++;
+#endif
                     curr_point_volume[tilei_ptr[j]] += tilej_ptr[j];
-                    curr_point_gradient[tilei_ptr[j]] += tile5_ptr[j] * tile0_ptr[j];
+                    curr_point_gradient[tilei_ptr[j]] +=
+                        tile5_ptr[j] * gathered_zone_field[j];
                 }
             }
         }
@@ -221,10 +307,31 @@ void gradzatp_invert_MAA_CSR() {
                 point_gradient[p] = (point_gradient[p] - point_normal[p] * ppdot) / point_volume[p];
             }
         }
+#ifdef UME_GATHER_VERIFY
+        gather_verify_errors.fetch_add(local_verify_errors,
+                                       std::memory_order_relaxed);
+        gather_verify_lanes.fetch_add(local_verify_lanes,
+                                      std::memory_order_relaxed);
+#endif
     }
 #ifdef GEM5
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
+#ifdef UME_GATHER_VERIFY
+    uint64_t nonfinite;
+    const uint64_t output_hash = hash_outputs(nonfinite);
+    const uint64_t errors = gather_verify_errors.load();
+    const uint64_t lanes = gather_verify_lanes.load();
+    if (errors != 0 || nonfinite != 0) {
+        std::cerr << "UME_GATHER_VERIFY_FAIL errors=" << errors
+                  << " lanes=" << lanes << " output_hash=" << output_hash
+                  << " nonfinite=" << nonfinite << std::endl;
+        std::abort();
+    }
+    std::cout << "UME_GATHER_VERIFY_PASS errors=0 lanes=" << lanes
+              << " output_hash=" << output_hash << " nonfinite=0"
+              << std::endl;
+#endif
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
 #endif
@@ -328,7 +435,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+#ifdef UME_GATHER_VERIFY
+    srand(1);
+#else
     srand((unsigned)time(NULL));
+#endif
     int n = stoi(argv[1]);
     float branch_bias = 0.95;
 
@@ -358,10 +469,19 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < num_points; ++i) {
         point_type[i] = (rand() % 100 < branch_bias * 100) ? 1 : -1;
     }
-    std::fill(corner_volume.begin(), corner_volume.end(), 1.0);
     std::fill(point_normal.begin(), point_normal.end(), 1.0);
+#ifdef UME_GATHER_VERIFY
+    for (int i = 0; i < num_corners; ++i) {
+        corner_volume[i] = 1.0f + static_cast<float>(i % 7) * 0.125f;
+        csurf[i] = 0.5f + static_cast<float>(i % 5) * 0.25f;
+    }
+    for (int i = 0; i < num_zones; ++i)
+        zone_field[i] = static_cast<float>((i % 31) + 1) * 0.0625f;
+#else
+    std::fill(corner_volume.begin(), corner_volume.end(), 1.0);
     std::fill(csurf.begin(), csurf.end(), 1.0);
     std::fill(zone_field.begin(), zone_field.end(), 1.0);
+#endif
 
     std::fill(point_volume.begin(), point_volume.end(), 0.0);
     std::fill(point_gradient.begin(), point_gradient.end(), 0.0);
@@ -388,6 +508,10 @@ int main(int argc, char *argv[]) {
     }
 
     init_inverse_map_CSR(num_points, num_zones, num_corners);
+    for (int p = 0; p < num_points; ++p) {
+        if (p_to_c_indptr[p] == p_to_c_indptr[p + 1])
+            point_type[p] = 0;
+    }
 
 #ifdef GEM5
     cout << "Starting checkpoint" << endl;

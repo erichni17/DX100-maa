@@ -92,6 +92,15 @@ GEM5: m5op.o all
 %_maa_16C: %.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=16 -DTILE_SIZE=16384 $(GEM5_LIB) m5op.o $< -o $@
 
+gradzatp_invert_maa_1K_verify: gradzatp_invert.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DUME_GATHER_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
+gradzatp_invert_maa_1K_virtual_verify: gradzatp_invert.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DUME_GATHER_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
+gradzatp_invert_maa_16K_virtual: gradzatp_invert.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
 # m5op.o is not directly used here, but including it if needed
 m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@
