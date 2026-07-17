@@ -125,6 +125,12 @@ gradzatz_maa_1K_verify: gradzatz.cpp m5op.o
 gradzatz_maa_1K_virtual_verify: gradzatz.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DUME_GRADZATZ_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
 
+gradzatz_invert_maa_1K_verify: gradzatz_invert.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DUME_GRADZATZ_INVERT_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
+gradzatz_invert_maa_1K_virtual_verify: gradzatz_invert.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DUME_GRADZATZ_INVERT_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
 # m5op.o is not directly used here, but including it if needed
 m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@
