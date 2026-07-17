@@ -29,6 +29,11 @@ EXPECTED_SHA256 = {
     "virtual_m5_cpt": "70bd7d793c849c14dc3913cab7549ce496e06467cd86194d8c13b8e57bc6b2fe",
     "virtual_pmem": "8daf8846bd519e58494bc1e046bd1ee516dfae7a03162f71b05d0d18044d4622",
 }
+EXPECTED_SUPPLEMENTAL_SHA256 = {
+    "se_config": "aacc6e624b7ab0e7b032d5cb913974fa790efdca84598bf468c11f14b9575d0f",
+    "ramulator_config": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b",
+    "ramulator_library": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+}
 LEGACY_GEM5_SHA256 = (
     "15813d45877c7ca34b3b08944e9a6f61f177a4317542aa6b98f80857fec94e3d"
 )
@@ -159,8 +164,7 @@ def parse_args():
     parser.add_argument(
         "--gem5",
         type=Path,
-        default=repo
-        / "build/X86/gem5.opt.virtual_banks_capped_f4e7491213bc",
+        default=repo / "build/X86/gem5.opt.virtual_banks_capped_f4e7491213bc",
     )
     parser.add_argument(
         "--expected-gem5-sha256",
@@ -276,23 +280,59 @@ def verify_artifacts(args):
     for name, path in supplemental.items():
         if not path.is_file():
             raise RuntimeError(f"missing {name}: {path}")
-        identities[name] = {"path": str(path), "sha256": sha256_file(path)}
+        actual = sha256_file(path)
+        expected = EXPECTED_SUPPLEMENTAL_SHA256[name]
+        if actual != expected:
+            raise RuntimeError(
+                f"{name} SHA-256 mismatch: expected {expected}, got {actual}"
+            )
+        identities[name] = {"path": str(path), "sha256": actual}
     return identities
+
+
+def recorded_expected_hashes(manifest):
+    recorded = manifest.get("expected_sha256")
+    if recorded is None:
+        return {**EXPECTED_SHA256, "gem5": LEGACY_GEM5_SHA256}
+    if not isinstance(recorded, dict) or set(recorded) != set(EXPECTED_SHA256):
+        raise RuntimeError(
+            "campaign manifest has invalid expected SHA-256 keys"
+        )
+    for name, expected in EXPECTED_SHA256.items():
+        if name != "gem5" and recorded[name] != expected:
+            raise RuntimeError(
+                f"campaign manifest redefines frozen {name} SHA-256"
+            )
+    gem5_hash = recorded["gem5"]
+    if (
+        not isinstance(gem5_hash, str)
+        or len(gem5_hash) != 64
+        or any(character not in "0123456789abcdef" for character in gem5_hash)
+    ):
+        raise RuntimeError("campaign manifest has invalid gem5 SHA-256")
+    return {**EXPECTED_SHA256, "gem5": gem5_hash}
 
 
 def verify_recorded_artifacts(manifest):
     identities = manifest.get("artifacts")
     if not isinstance(identities, dict):
         raise RuntimeError("campaign manifest has no artifact identities")
-    expected_hashes = manifest.get(
-        "expected_sha256",
-        {**EXPECTED_SHA256, "gem5": LEGACY_GEM5_SHA256},
-    )
-    if set(expected_hashes) != set(EXPECTED_SHA256):
+    expected_hashes = {
+        **recorded_expected_hashes(manifest),
+        **EXPECTED_SUPPLEMENTAL_SHA256,
+    }
+    if set(identities) != set(expected_hashes):
         raise RuntimeError(
-            "campaign manifest has invalid expected SHA-256 keys"
+            "campaign manifest has invalid artifact identity keys"
         )
     for name, identity in identities.items():
+        if not isinstance(identity, dict) or set(identity) != {
+            "path",
+            "sha256",
+        }:
+            raise RuntimeError(
+                f"campaign manifest has invalid {name} identity"
+            )
         path = Path(identity["path"])
         if not path.is_file():
             raise RuntimeError(f"missing recorded {name}: {path}")
@@ -302,7 +342,7 @@ def verify_recorded_artifacts(manifest):
                 f"recorded {name} SHA-256 mismatch: "
                 f"expected {identity['sha256']}, got {actual}"
             )
-        if name in expected_hashes and actual != expected_hashes[name]:
+        if actual != expected_hashes[name]:
             raise RuntimeError(f"{name} no longer matches frozen oracle")
     return identities
 

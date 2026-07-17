@@ -1362,17 +1362,17 @@ bool BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                 // before the first notification leaves a banked write queue.
                 // One pending CleanEvict is sufficient because neither packet
                 // carries data or ownership.
-                if (wbPkt->isCleanEviction() && pkt->isCleanEviction()) {
+                if (wbPkt->cmd == MemCmd::CleanEvict &&
+                    pkt->cmd == MemCmd::CleanEvict) {
                     DPRINTF(Cache, "Coalescing duplicate CleanEvict %#llx\n",
                             pkt->getAddr());
                     lat = calculateTagOnlyLatency(pkt->headerDelay,
                                                   tag_latency);
                     return true;
                 }
-                if (wbPkt->isCleanEviction() &&
-                    pkt->cmd == MemCmd::WritebackDirty) {
-                    // The dirty writeback has the authoritative data. Remove
-                    // the older data-less notification before accepting it.
+                if (wbPkt->cmd == MemCmd::CleanEvict && pkt->isWriteback()) {
+                    // The writeback has authoritative data. Remove the older
+                    // data-less notification before accepting it.
                     markInService(wb_entry);
                     delete wbPkt;
                 } else {
