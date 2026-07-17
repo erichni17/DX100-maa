@@ -88,7 +88,7 @@ protected:
     int virtual_response_word_pool_limit = 0;
     int virtual_words_per_cycle_limit = 0;
     Tick virtual_word_budget_tick = 0;
-    int virtual_words_retired_this_cycle = 0;
+    int virtual_word_attempts_this_cycle = 0;
     int virtual_reserved_response_words = 0;
     bool virtual_pending_source = false;
     Addr virtual_pending_source_addr = 0;

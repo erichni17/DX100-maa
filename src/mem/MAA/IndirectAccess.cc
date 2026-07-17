@@ -677,7 +677,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_reserved_responses = 0;
         virtual_reserved_response_words = 0;
         virtual_word_budget_tick = curTick();
-        virtual_words_retired_this_cycle = 0;
+        virtual_word_attempts_this_cycle = 0;
         virtual_combine_bank_tick = curTick();
         virtual_combine_bank_conflict_tick = 0;
         std::fill(virtual_combine_bank_used.begin(),
@@ -1550,7 +1550,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
 bool IndirectAccessUnit::drainVirtualResponses() {
     if (virtual_word_budget_tick != curTick()) {
         virtual_word_budget_tick = curTick();
-        virtual_words_retired_this_cycle = 0;
+        virtual_word_attempts_this_cycle = 0;
     }
     if (virtual_combine_bank_tick != curTick()) {
         virtual_combine_bank_tick = curTick();
@@ -1559,7 +1559,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
     }
     auto budget_exhausted = [this]() {
         return virtual_words_per_cycle_limit != 0 &&
-               virtual_words_retired_this_cycle >= virtual_words_per_cycle_limit;
+               virtual_word_attempts_this_cycle >=
+                   virtual_words_per_cycle_limit;
     };
     bool bank_stalled = false;
     for (auto &slot : virtual_response_slots) {
@@ -1577,6 +1578,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                     bank_stalled = true;
                     break;
                 }
+                virtual_word_attempts_this_cycle++;
                 if (!insertVirtualCombineWord(entry.itr, word.data())) {
                     capacity_stalled = true;
                     break;
@@ -1587,7 +1589,6 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                          "I[%d] packed response cursor changed while stalled\n",
                          my_indirect_id);
                 slot.next_packed_word++;
-                virtual_words_retired_this_cycle++;
             }
             if (slot.valid &&
                 slot.next_packed_word == slot.packed_words.size()) {
@@ -1614,6 +1615,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 bank_stalled = true;
                 break;
             }
+            virtual_word_attempts_this_cycle++;
             if (!insertVirtualCombineWord(
                     entry.itr, slot.data.data() + entry.wid * my_word_size)) {
                 capacity_stalled = true;
@@ -1621,7 +1623,6 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             }
             OffsetTableEntry consumed =
                 offset_table->consume_entry(slot.next_itr);
-            virtual_words_retired_this_cycle++;
             panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
                      "I[%d] virtual offset cursor changed while stalled\n",
                      my_indirect_id);

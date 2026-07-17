@@ -29,7 +29,6 @@ class MAA(ClockedObject):
     virtual_response_slots = Param.Unsigned(8, "Retained source responses used by virtual gather retirement")
     virtual_response_words = Param.Unsigned(0, "Packed useful words per retained response (0 stores the full source line)")
     virtual_response_word_pool = Param.Unsigned(0, "Total useful words retained across packed source responses")
-    virtual_words_per_cycle = Param.Unsigned(0, "Useful virtual response words retired per cycle (0 is unlimited)")
     virtual_max_outstanding_writes = Param.Unsigned(32, "Acknowledged virtual retirement writes allowed in flight")
     virtual_masked_writes = Param.Bool(False, "Retire partial virtual lines as masked cache-line writes")
     spd_read_latency = Param.Cycles(1, "SPD read latency")
@@ -63,6 +62,9 @@ class MAA(ClockedObject):
     system = Param.System(Parent.any, "System we belong to")
     virtual_combine_banks = Param.Unsigned(
         0, "Single-update combiner banks (0 disables bank conflicts)"
+    )
+    virtual_words_per_cycle = Param.Unsigned(
+        0, "Response-word combiner attempts per cycle (0 is unlimited)"
     )
 
     def addRamulatorInstance(self, simObj):

@@ -233,7 +233,6 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_virtual_response_slots", type=int, default=8, help="Number of retained source responses used by virtual gather retirement")
     parser.add_argument("--maa_virtual_response_words", type=int, default=0, help="Packed useful words per retained response (0 stores the full source line)")
     parser.add_argument("--maa_virtual_response_word_pool", type=int, default=0, help="Total useful words retained across packed source responses")
-    parser.add_argument("--maa_virtual_words_per_cycle", type=int, default=0, help="Useful virtual response words retired per cycle (0 is unlimited)")
     parser.add_argument("--maa_virtual_max_outstanding_writes", type=int, default=32, help="Maximum acknowledged writes in flight for virtual gather retirement")
     parser.add_argument("--maa_virtual_masked_writes", action="store_true", help="Retire partial virtual lines as masked cache-line writes")
     parser.add_argument("--maa_num_request_table_addresses", type=int, default=128, help="Number of addresses in the request table")
@@ -255,6 +254,12 @@ def addNoISAOptions(parser):
         type=int,
         default=0,
         help="Single-update combiner banks (0 disables bank conflicts)",
+    )
+    parser.add_argument(
+        "--maa_virtual_words_per_cycle",
+        type=int,
+        default=0,
+        help="Response-word combiner attempts per cycle (0 is unlimited)",
     )
     parser.add_argument("--l1d_repl_policy",  default="LRURP",
                     choices=ObjectList.rp_list.get_names(),
