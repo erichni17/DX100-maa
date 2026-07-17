@@ -54,6 +54,10 @@ alignas(64) static DATATYPE virtual_gather_backing[NUM_CORES][TILE_SIZE];
 #ifdef UME_GRADZATZ_INVERT_VERIFY
 static std::atomic<uint64_t> gather_verify_errors{0};
 static std::atomic<uint64_t> gather_verify_lanes{0};
+#endif
+
+#if defined(UME_GRADZATZ_INVERT_VERIFY) || \
+    defined(UME_GRADZATZ_INVERT_OUTPUT_FINGERPRINT)
 static uint64_t expected_gather_lanes = 0;
 
 static uint32_t
@@ -355,12 +359,14 @@ void gradzatz_invert_MAA_CSR() {
 #ifdef GEM5
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
-#ifdef UME_GRADZATZ_INVERT_VERIFY
+#if defined(UME_GRADZATZ_INVERT_VERIFY) || \
+    defined(UME_GRADZATZ_INVERT_OUTPUT_FINGERPRINT)
     const ReferenceErrors reference = check_scalar_reference();
-    const uint64_t gather_errors = gather_verify_errors.load();
-    const uint64_t gather_lanes = gather_verify_lanes.load();
     const uint64_t reference_errors =
         reference.volume + reference.gradient;
+#ifdef UME_GRADZATZ_INVERT_VERIFY
+    const uint64_t gather_errors = gather_verify_errors.load();
+    const uint64_t gather_lanes = gather_verify_lanes.load();
     constexpr uint64_t expected_hash = 15373220985331308248ULL;
     if (gather_errors != 0 || gather_lanes != expected_gather_lanes ||
         reference_errors != 0 || reference.nonfinite != 0 ||
@@ -383,6 +389,23 @@ void gradzatz_invert_MAA_CSR() {
               << " elements=" << zone_gradient.size()
               << " output_hash=" << reference.hash << " nonfinite=0"
               << std::endl;
+#else
+    constexpr uint64_t expected_hash =
+        UME_GRADZATZ_INVERT_EXPECTED_HASH;
+    if (reference_errors != 0 || reference.nonfinite != 0 ||
+        reference.hash != expected_hash) {
+        std::cerr << "UME_OUTPUT_FP_FAIL output_hash=" << reference.hash
+                  << " expected_hash=" << expected_hash
+                  << " reference_volume_errors=" << reference.volume
+                  << " reference_gradient_errors=" << reference.gradient
+                  << " nonfinite=" << reference.nonfinite << std::endl;
+        std::abort();
+    }
+    std::cout << "UME_OUTPUT_FP output_hash=" << reference.hash
+              << " nonfinite=0" << std::endl;
+    std::cout << "UME_REFERENCE_PASS volume_errors=0 gradient_errors=0"
+              << " elements=" << zone_gradient.size() << std::endl;
+#endif
 #endif
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
@@ -495,12 +518,21 @@ int main(int argc, char *argv[]) {
         return 2;
     }
     const int n = static_cast<int>(parsed_n);
+#if defined(UME_GRADZATZ_INVERT_VERIFY) || \
+    defined(UME_GRADZATZ_INVERT_FIXED_INPUT)
 #ifdef UME_GRADZATZ_INVERT_VERIFY
     if (n != 4097) {
         std::cerr << "UME_GRADZATZ_INVERT_VERIFY requires n=4097"
                   << std::endl;
         return 2;
     }
+#else
+    if (n != UME_GRADZATZ_INVERT_EXPECTED_N) {
+        std::cerr << "fixed-input binary requires n="
+                  << UME_GRADZATZ_INVERT_EXPECTED_N << std::endl;
+        return 2;
+    }
+#endif
 #else
     srand((unsigned)time(NULL));
     float branch_bias = 0.95;
@@ -525,7 +557,8 @@ int main(int argc, char *argv[]) {
     zone_gradient_exp.resize(num_zones);
     zone_volume_exp.resize(num_zones);
 
-#ifdef UME_GRADZATZ_INVERT_VERIFY
+#if defined(UME_GRADZATZ_INVERT_VERIFY) || \
+    defined(UME_GRADZATZ_INVERT_FIXED_INPUT)
     std::fill(zone_type.begin(), zone_type.end(), 0);
     for (int p = 0; p < num_points; ++p)
         point_gradient[p] = 0.5f + static_cast<float>(p % 31) * 0.125f;
@@ -572,7 +605,8 @@ int main(int argc, char *argv[]) {
     std::fill(zone_volume_exp.begin(), zone_volume_exp.end(), 0.0f);
 
     init_inverse_map_CSR(num_points, num_zones, num_corners);
-#ifdef UME_GRADZATZ_INVERT_VERIFY
+#if defined(UME_GRADZATZ_INVERT_VERIFY) || \
+    defined(UME_GRADZATZ_INVERT_OUTPUT_FINGERPRINT)
     build_scalar_reference();
 #endif
 
