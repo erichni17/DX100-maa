@@ -585,9 +585,13 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                         my_instruction->optype == OPType::ADD_OP ||
                         my_instruction->optype == OPType::MIN_OP ||
                         my_instruction->optype == OPType::MAX_OP;
+                    // A destination tile exposes each pre-update value (for
+                    // example, HashJoin uses it as a unique scatter slot).
+                    // Combining those updates would erase required results.
+                    const bool accumulator_only = my_dst_tile == -1;
                     rmw_opportunity_profiler.observe(
                         block_paddr + wid * my_word_size,
-                        integer_type && supported_op);
+                        integer_type && supported_op && accumulator_only);
                 }
                 my_unique_WORD_addrs.insert(vaddr);
                 my_unique_CL_addrs.insert(block_paddr);

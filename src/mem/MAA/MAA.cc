@@ -832,7 +832,8 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
           "profiler"),
       ADD_STAT(
           rmwProfEligibleUpdates, statistics::units::Count::get(),
-          "integer ADD/MIN/MAX updates eligible for exact delta combining"),
+          "accumulator-only integer ADD/MIN/MAX updates eligible for exact "
+          "delta combining"),
       ADD_STAT(
           rmwProfUniqueWords, statistics::units::Count::get(),
           "sum of per-instruction unique eligible destination words"),
