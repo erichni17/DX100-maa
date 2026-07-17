@@ -16,7 +16,7 @@ pattern=$2
 outdir=$3
 timeout_seconds=${4:-21600}
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-gem5=${GEM5_BIN:-$root/build/X86/gem5.opt.virtual_v1}
+gem5=${GEM5_BIN:-$root/build/X86/gem5.opt.virtual_banks_capped_f4e7491213bc}
 binary=${5:-$root/benchmarks/API/test_virtual_gather_T16K.o}
 combine_slots=${6:-16}
 response_slots=${7:-8}
@@ -71,4 +71,15 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --cmd "$binary" \
     --options "$n $pattern" >"$outdir/restore.log" 2>&1
 
-grep -E 'VIRTUAL_GATHER(64)?_RESULT' "$outdir/restore.log"
+mapfile -t results < <(
+    grep -E 'VIRTUAL_GATHER(64)?_RESULT' "$outdir/restore.log" || true
+)
+if [[ ${#results[@]} -ne 1 ]]; then
+    printf 'expected one result marker, found %d\n' "${#results[@]}" >&2
+    exit 1
+fi
+printf '%s\n' "${results[0]}"
+if [[ ! ${results[0]} =~ (^|[[:space:]])errors=0($|[[:space:]]) ]]; then
+    echo "virtual gather verifier reported errors" >&2
+    exit 1
+fi

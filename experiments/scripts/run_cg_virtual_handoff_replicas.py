@@ -20,7 +20,7 @@ from datetime import (
 from pathlib import Path
 
 EXPECTED_SHA256 = {
-    "gem5": "15813d45877c7ca34b3b08944e9a6f61f177a4317542aa6b98f80857fec94e3d",
+    "gem5": "f4e7491213bcfb2ede76be95f94d6483418e288ed1454556ffff3d24c6f9fe2e",
     "precomputed_header": "f2b18716e4a2356c597c95ee3583549def72700f2cb3294b0fcaacca46dbe131",
     "control_binary": "5bbcfcec1a1a7f47b31dbaa9a5e37a574a5b06d0545e12f58e5ec4e676da270e",
     "virtual_binary": "656dcfca21d91d22e7ced2a380575f81920fff31d675d2af7b7e534f0014cc2a",
@@ -29,6 +29,9 @@ EXPECTED_SHA256 = {
     "virtual_m5_cpt": "70bd7d793c849c14dc3913cab7549ce496e06467cd86194d8c13b8e57bc6b2fe",
     "virtual_pmem": "8daf8846bd519e58494bc1e046bd1ee516dfae7a03162f71b05d0d18044d4622",
 }
+LEGACY_GEM5_SHA256 = (
+    "15813d45877c7ca34b3b08944e9a6f61f177a4317542aa6b98f80857fec94e3d"
+)
 
 # The corrected native BASE/MAA gate established x_q5 as the exact semantic
 # hash. Finer hashes are diagnostics because legal floating-point scheduling
@@ -156,9 +159,8 @@ def parse_args():
     parser.add_argument(
         "--gem5",
         type=Path,
-        default=Path(
-            "/data1/nier/DX100/build/X86/gem5.opt.virtual_hw_15813d45877c"
-        ),
+        default=repo
+        / "build/X86/gem5.opt.virtual_banks_capped_f4e7491213bc",
     )
     parser.add_argument(
         "--expected-gem5-sha256",
@@ -282,7 +284,10 @@ def verify_recorded_artifacts(manifest):
     identities = manifest.get("artifacts")
     if not isinstance(identities, dict):
         raise RuntimeError("campaign manifest has no artifact identities")
-    expected_hashes = manifest.get("expected_sha256", EXPECTED_SHA256)
+    expected_hashes = manifest.get(
+        "expected_sha256",
+        {**EXPECTED_SHA256, "gem5": LEGACY_GEM5_SHA256},
+    )
     if set(expected_hashes) != set(EXPECTED_SHA256):
         raise RuntimeError(
             "campaign manifest has invalid expected SHA-256 keys"
