@@ -612,14 +612,15 @@ int main(int argc, char *argv[]) {
 #pragma omp critical
         {
             int thread_id = omp_get_thread_num();
+            tiles_volume[thread_id] = get_new_tile<int>();
             tiles0[thread_id] = get_new_tile<int>();
             tiles1[thread_id] = get_new_tile<int>();
             tiles2[thread_id] = get_new_tile<int>();
-            tiles3[thread_id] = get_new_tile<int>();
             tiles4[thread_id] = get_new_tile<int>();
             tiles5[thread_id] = get_new_tile<int>();
             tilesi[thread_id] = get_new_tile<int>();
-            tiles_volume[thread_id] = get_new_tile<int>();
+            // Keep the CPU-unread range-loop scratch tile at the SPD boundary.
+            tiles3[thread_id] = get_new_tile<int>();
             regs0[thread_id] = get_new_reg<int>();
             regs1[thread_id] = get_new_reg<int>();
             regs2[thread_id] = get_new_reg<int>();
