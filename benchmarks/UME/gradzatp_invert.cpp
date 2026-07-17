@@ -52,7 +52,9 @@ alignas(64) static DATATYPE virtual_gather_backing[NUM_CORES][TILE_SIZE];
 #ifdef UME_GATHER_VERIFY
 static std::atomic<uint64_t> gather_verify_errors{0};
 static std::atomic<uint64_t> gather_verify_lanes{0};
+#endif
 
+#if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
 static uint64_t update_output_hash(uint64_t hash, uint64_t index,
                                    DATATYPE value) {
     uint32_t bits;
@@ -317,9 +319,10 @@ void gradzatp_invert_MAA_CSR() {
 #ifdef GEM5
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
-#ifdef UME_GATHER_VERIFY
+#if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
     uint64_t nonfinite;
     const uint64_t output_hash = hash_outputs(nonfinite);
+#ifdef UME_GATHER_VERIFY
     const uint64_t errors = gather_verify_errors.load();
     const uint64_t lanes = gather_verify_lanes.load();
     if (errors != 0 || nonfinite != 0) {
@@ -331,6 +334,15 @@ void gradzatp_invert_MAA_CSR() {
     std::cout << "UME_GATHER_VERIFY_PASS errors=0 lanes=" << lanes
               << " output_hash=" << output_hash << " nonfinite=0"
               << std::endl;
+#else
+    if (nonfinite != 0) {
+        std::cerr << "UME_OUTPUT_FP_FAIL output_hash=" << output_hash
+                  << " nonfinite=" << nonfinite << std::endl;
+        std::abort();
+    }
+    std::cout << "UME_OUTPUT_FP output_hash=" << output_hash
+              << " nonfinite=0" << std::endl;
+#endif
 #endif
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
@@ -435,7 +447,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-#ifdef UME_GATHER_VERIFY
+#if defined(UME_GATHER_VERIFY) || defined(UME_FIXED_INPUT)
     srand(1);
 #else
     srand((unsigned)time(NULL));
@@ -470,7 +482,7 @@ int main(int argc, char *argv[]) {
         point_type[i] = (rand() % 100 < branch_bias * 100) ? 1 : -1;
     }
     std::fill(point_normal.begin(), point_normal.end(), 1.0);
-#ifdef UME_GATHER_VERIFY
+#if defined(UME_GATHER_VERIFY) || defined(UME_FIXED_INPUT)
     for (int i = 0; i < num_corners; ++i) {
         corner_volume[i] = 1.0f + static_cast<float>(i % 7) * 0.125f;
         csurf[i] = 0.5f + static_cast<float>(i % 5) * 0.25f;
