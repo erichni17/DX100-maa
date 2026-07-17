@@ -20,7 +20,7 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_num_instructions_per_core"):
         opts["num_instructions_per_core"] = getattr(options, "maa_num_instructions_per_core")
-    
+
     if hasattr(options, "maa_num_row_table_rows_per_slice"):
         opts["num_row_table_rows_per_slice"] = getattr(options, "maa_num_row_table_rows_per_slice")
 
@@ -29,7 +29,7 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_num_row_table_config_cache_entries"):
         opts["num_row_table_config_cache_entries"] = getattr(options, "maa_num_row_table_config_cache_entries")
-    
+
     if(hasattr(options, "maa_reconfigure_row_table")):
         opts["reconfigure_row_table"] = getattr(options, "maa_reconfigure_row_table")
 
@@ -68,10 +68,13 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_virtual_masked_writes"):
         opts["virtual_masked_writes"] = getattr(options, "maa_virtual_masked_writes")
-    
+
+    if hasattr(options, "maa_rmw_profile"):
+        opts["rmw_profile"] = getattr(options, "maa_rmw_profile")
+
     if(hasattr(options, "maa_num_request_table_addresses")):
         opts["num_request_table_addresses"] = getattr(options, "maa_num_request_table_addresses")
-    
+
     if hasattr(options, "maa_num_request_table_entries_per_address"):
         opts["num_request_table_entries_per_address"] = getattr(options, "maa_num_request_table_entries_per_address")
 
@@ -86,25 +89,25 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_num_spd_write_ports_per_maa"):
         opts["num_spd_write_ports_per_maa"] = getattr(options, "maa_num_spd_write_ports_per_maa")
-    
+
     if hasattr(options, "maa_rowtable_latency"):
         opts["rowtable_latency"] = getattr(options, "maa_rowtable_latency")
-    
+
     if hasattr(options, "maa_ALU_lane_latency"):
         opts["ALU_lane_latency"] = getattr(options, "maa_ALU_lane_latency")
 
     if hasattr(options, "maa_num_ALU_lanes"):
         opts["num_ALU_lanes"] = getattr(options, "maa_num_ALU_lanes")
-    
+
     if hasattr(options, "maa_num_maas"):
         opts["num_maas"] = getattr(options, "maa_num_maas")
 
     if hasattr(options, "maa_num_indirect_units_per_maa"):
         opts["num_indirect_units_per_maa"] = getattr(options, "maa_num_indirect_units_per_maa")
-    
+
     opts["num_memory_channels"] = options.mem_channels
     opts["num_cores"] = options.num_cpus
-    
+
     addr_ranges = []
     start = options.mem_size
 
@@ -176,7 +179,7 @@ def config_maa(options, system):
     if _dropped:
         print(f"warn: MAAConfig dropping opts not in this binary's SharedMAA: {_dropped}")
     system.maa = SharedMAA(clk_domain=system.cpu_clk_domain, **opts)
-    
+
     # Increasing LLC side packets to accommodate the MAA routing table.
     # Accommodate one stream unit plus the configured indirect units per MAA.
     num_maas = opts.get("num_maas", 1)
@@ -207,7 +210,7 @@ def config_maa(options, system):
     system.membus.snoop_filter.max_capacity = max_capacity
     system.tol3bus.snoop_filter.max_capacity = max_capacity
     print(f"MAA max snoop filter capacity: {system.tol3bus.snoop_filter.max_capacity}/{system.membus.snoop_filter.max_capacity}")
-    
+
     for _ in range(options.num_cpus):
         system.maa.cpu_sides = system.membus.mem_side_ports
 

@@ -1,6 +1,7 @@
 #ifndef __MEM_MAA_MAA_HH__
 #define __MEM_MAA_MAA_HH__
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -8,7 +9,9 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
+#include "arch/generic/mmu.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "mem/MAA/IF.hh"
@@ -16,11 +19,10 @@
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
 #include "mem/qport.hh"
-#include "mem/request.hh"
 #include "mem/ramulator2.hh"
+#include "mem/request.hh"
 #include "sim/clocked_object.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
 
 #define ADDR_CHANNEL_LEVEL   0
 #define ADDR_RANK_LEVEL      1
@@ -405,6 +407,7 @@ public:
     unsigned int virtual_words_per_cycle;
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
+    bool rmw_profile;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;
     unsigned int num_memory_channels;
@@ -502,6 +505,21 @@ public:
         statistics::Scalar numInst_ALUR;
         statistics::Scalar numInst_INV;
         statistics::Scalar numInst;
+
+        /** Non-functional bounded RMW delta-buffer opportunity profile. */
+        statistics::Scalar rmwProfInstructions;
+        statistics::Scalar rmwProfEligibleInstructions;
+        statistics::Scalar rmwProfUpdates;
+        statistics::Scalar rmwProfEligibleUpdates;
+        statistics::Scalar rmwProfUniqueWords;
+        statistics::Scalar rmwProfUniqueLines;
+        statistics::Scalar rmwProfBaselineReadExRequests;
+        statistics::Scalar rmwProfEligibleBaselineReadExRequests;
+        std::vector<statistics::Scalar *> RMWProfLineHits;
+        std::vector<statistics::Scalar *> RMWProfLineMisses;
+        std::vector<statistics::Scalar *> RMWProfEvictions;
+        std::vector<statistics::Scalar *> RMWProfAvoidableReadExRequests;
+        std::vector<statistics::Scalar *> RMWProfExtraReadExRequests;
 
         /** Cycles of instructions. */
         statistics::Scalar cycles_INDRD;

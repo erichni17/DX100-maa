@@ -313,6 +313,14 @@ def addNoISAOptions(parser):
         "Direct parameters of the root object are not accessible, "
         "only parameters of its children.",
     )
+    parser.add_argument(
+        "--maa_rmw_profile",
+        action="store_true",
+        help=(
+            "Profile bounded pre-request RMW delta-combining opportunities "
+            "without changing execution"
+        ),
+    )
 
 
 # Add common options that assume a non-NULL ISA.
@@ -456,7 +464,7 @@ def addCommonOptions(parser, default_isa: Optional[ISA] = None):
         help="Size of indirect prefetch range, limited by Cache blkSize",
     )
     parser.add_argument(
-        "--dmp-notify", 
+        "--dmp-notify",
         default=None,
         action="store",
         type=str,

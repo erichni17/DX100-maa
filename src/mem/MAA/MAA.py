@@ -32,6 +32,11 @@ class MAA(ClockedObject):
     virtual_words_per_cycle = Param.Unsigned(0, "Useful virtual response words retired per cycle (0 is unlimited)")
     virtual_max_outstanding_writes = Param.Unsigned(32, "Acknowledged virtual retirement writes allowed in flight")
     virtual_masked_writes = Param.Bool(False, "Retire partial virtual lines as masked cache-line writes")
+    rmw_profile = Param.Bool(
+        False,
+        "Profile bounded pre-request RMW delta-combining opportunities "
+        "without changing execution",
+    )
     spd_read_latency = Param.Cycles(1, "SPD read latency")
     spd_write_latency = Param.Cycles(1, "SPD write latency")
     num_spd_read_ports_per_maa = Param.Unsigned(4, "Number of SPD read ports per DX100 instance")

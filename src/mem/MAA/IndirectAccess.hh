@@ -1,21 +1,22 @@
 #ifndef __MEM_MAA_INDIRECT_ACCESS_HH__
 #define __MEM_MAA_INDIRECT_ACCESS_HH__
 
-#include <cassert>
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
-#include <string>
 #include <map>
 #include <set>
+#include <string>
 
+#include "arch/generic/mmu.hh"
 #include "base/statistics.hh"
 #include "base/types.hh"
+#include "mem/MAA/RMWOpportunityProfiler.hh"
+#include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
-#include "mem/MAA/Tables.hh"
 
 namespace gem5 {
 
@@ -137,6 +138,7 @@ protected:
     Tick virtual_request_reason_tick = 0;
     Tick virtual_request_attributed_ticks = 0;
     std::array<Tick, 6> virtual_request_reason_ticks{};
+    RMWOpportunityProfiler rmw_opportunity_profiler;
 
 public:
     MAA *maa;
@@ -159,6 +161,7 @@ public:
                   int _virtual_words_per_cycle,
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
+                  bool _rmw_profile,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,

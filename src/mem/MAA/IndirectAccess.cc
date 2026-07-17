@@ -99,6 +99,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_words_per_cycle,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
+                                  bool _rmw_profile,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -137,6 +138,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              my_indirect_id);
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     virtual_masked_writes = _virtual_masked_writes;
+    rmw_opportunity_profiler.setEnabled(_rmw_profile);
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -569,6 +571,24 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                 (*maa->stats.IND_NumRTFull[my_indirect_id])++;
                 break;
             } else {
+                using Opcode = Instruction::OpcodeType;
+                using DataType = Instruction::DataType;
+                using OPType = Instruction::OPType;
+                if (my_instruction->opcode == Opcode::INDIR_RMW_VECTOR ||
+                    my_instruction->opcode == Opcode::INDIR_RMW_SCALAR) {
+                    const bool integer_type =
+                        my_instruction->datatype == DataType::UINT32_TYPE ||
+                        my_instruction->datatype == DataType::INT32_TYPE ||
+                        my_instruction->datatype == DataType::UINT64_TYPE ||
+                        my_instruction->datatype == DataType::INT64_TYPE;
+                    const bool supported_op =
+                        my_instruction->optype == OPType::ADD_OP ||
+                        my_instruction->optype == OPType::MIN_OP ||
+                        my_instruction->optype == OPType::MAX_OP;
+                    rmw_opportunity_profiler.observe(
+                        block_paddr + wid * my_word_size,
+                        integer_type && supported_op);
+                }
                 my_unique_WORD_addrs.insert(vaddr);
                 my_unique_CL_addrs.insert(block_paddr);
                 my_unique_ROW_addrs.insert(grow_addr + my_RT_idx * num_RT_possible_grows[my_RT_config]);
@@ -692,6 +712,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_request_reason_tick = 0;
         virtual_request_attributed_ticks = 0;
         virtual_request_reason_ticks.fill(0);
+        rmw_opportunity_profiler.reset();
         for (auto &slot : virtual_response_slots)
             slot = VirtualResponseSlot();
         for (auto &slot : virtual_combine_slots)
@@ -1011,22 +1032,81 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_VirtResponseWordPoolStalls[my_indirect_id]) +=
                 virtual_response_word_pool_stalls;
         }
-        panic_if(scheduleNextExecution(), "I[%d] %s: Execution is not completed!\n", my_indirect_id, __func__);
-        panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");
-        panic_if(my_cond_tile_ready == false, "I[%d] %s: cond tile[%d] is not ready!\n", my_indirect_id, __func__, my_cond_tile);
-        panic_if(my_idx_tile_ready == false, "I[%d] %s: idx tile[%d] is not ready!\n", my_indirect_id, __func__, my_idx_tile);
-        panic_if(my_src_tile_ready == false, "I[%d] %s: src tile[%d] is not ready!\n", my_indirect_id, __func__, my_src_tile);
-        panic_if(LoadsCacheHitRespondingTimeHistory.size() != 0, "I[%d] %s: LoadsCacheHitRespondingTimeHistory is not empty!\n", my_indirect_id, __func__);
-        panic_if(LoadsCacheHitAccessingTimeHistory.size() != 0, "I[%d] %s: LoadsCacheHitAccessingTimeHistory is not empty!\n", my_indirect_id, __func__);
-        panic_if(LoadsMemAccessingTimeHistory.size() != 0, "I[%d] %s: LoadsMemAccessingTimeHistory is not empty!\n", my_indirect_id, __func__);
-        DPRINTF(MAAIndirect, "I[%d] %s: state set to finish for request %s!\n", my_indirect_id, __func__, my_instruction->print());
+        using Opcode = Instruction::OpcodeType;
+        const bool rmw_instruction =
+            my_instruction->opcode == Opcode::INDIR_RMW_VECTOR ||
+            my_instruction->opcode == Opcode::INDIR_RMW_SCALAR;
+        if (rmw_instruction && rmw_opportunity_profiler.enabled()) {
+            const auto profile = rmw_opportunity_profiler.summary();
+            maa->stats.rmwProfInstructions += 1;
+            maa->stats.rmwProfUpdates += profile.totalUpdates;
+            maa->stats.rmwProfEligibleUpdates += profile.eligibleUpdates;
+            maa->stats.rmwProfUniqueWords += profile.uniqueWords;
+            maa->stats.rmwProfUniqueLines += profile.uniqueLines;
+            maa->stats.rmwProfBaselineReadExRequests +=
+                profile.baselineRequests;
+            const bool fully_eligible = profile.totalUpdates != 0 &&
+                profile.totalUpdates == profile.eligibleUpdates;
+            if (fully_eligible) {
+                maa->stats.rmwProfEligibleInstructions += 1;
+                maa->stats.rmwProfEligibleBaselineReadExRequests +=
+                    profile.baselineRequests;
+            }
+            for (std::size_t i = 0; i < profile.caches.size(); ++i) {
+                (*maa->stats.RMWProfLineHits[i]) += profile.caches[i].hits;
+                (*maa->stats.RMWProfLineMisses[i]) += profile.caches[i].misses;
+                (*maa->stats.RMWProfEvictions[i]) +=
+                    profile.caches[i].evictions;
+                if (fully_eligible) {
+                    const uint64_t shadow_requests = profile.caches[i].misses;
+                    if (profile.baselineRequests >= shadow_requests) {
+                        (*maa->stats.RMWProfAvoidableReadExRequests[i]) +=
+                            profile.baselineRequests - shadow_requests;
+                    } else {
+                        (*maa->stats.RMWProfExtraReadExRequests[i]) +=
+                            shadow_requests - profile.baselineRequests;
+                    }
+                }
+            }
+        }
+        panic_if(scheduleNextExecution(),
+                 "I[%d] %s: Execution is not completed!\n",
+                 my_indirect_id, __func__);
+        panic_if(!maa->allIndirectPacketsSent(my_indirect_id),
+                 "All indirect packets are not sent!\n");
+        panic_if(!my_cond_tile_ready,
+                 "I[%d] %s: cond tile[%d] is not ready!\n",
+                 my_indirect_id, __func__, my_cond_tile);
+        panic_if(!my_idx_tile_ready,
+                 "I[%d] %s: idx tile[%d] is not ready!\n",
+                 my_indirect_id, __func__, my_idx_tile);
+        panic_if(!my_src_tile_ready,
+                 "I[%d] %s: src tile[%d] is not ready!\n",
+                 my_indirect_id, __func__, my_src_tile);
+        panic_if(!LoadsCacheHitRespondingTimeHistory.empty(),
+                 "I[%d] %s: LoadsCacheHitRespondingTimeHistory "
+                 "is not empty!\n",
+                 my_indirect_id, __func__);
+        panic_if(!LoadsCacheHitAccessingTimeHistory.empty(),
+                 "I[%d] %s: LoadsCacheHitAccessingTimeHistory "
+                 "is not empty!\n",
+                 my_indirect_id, __func__);
+        panic_if(!LoadsMemAccessingTimeHistory.empty(),
+                 "I[%d] %s: LoadsMemAccessingTimeHistory "
+                 "is not empty!\n",
+                 my_indirect_id, __func__);
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: state set to finish for request %s!\n",
+                my_indirect_id, __func__, my_instruction->print());
         my_instruction->state = Instruction::Status::Finish;
         if (my_request_start_tick != 0) {
             finishVirtualRequestInterval();
-            (*maa->stats.IND_CyclesRequest[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_request_start_tick);
+            (*maa->stats.IND_CyclesRequest[my_indirect_id]) +=
+                maa->getTicksToCycles(curTick() - my_request_start_tick);
             my_request_start_tick = 0;
         }
-        Cycles total_cycles = maa->getTicksToCycles(curTick() - my_decode_start_tick);
+        Cycles total_cycles =
+            maa->getTicksToCycles(curTick() - my_decode_start_tick);
         maa->stats.cycles += total_cycles;
         my_decode_start_tick = 0;
         state = Status::Idle;
@@ -1074,6 +1154,7 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
         read_pkt = new Packet(real_req, MemCmd::ReadReq);
     } else {
         read_pkt = new Packet(real_req, MemCmd::ReadExReq);
+        rmw_opportunity_profiler.observeBaselineRequest();
     }
     read_pkt->headerDelay = read_pkt->payloadDelay = 0;
     read_pkt->allocate();
