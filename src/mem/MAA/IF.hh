@@ -44,9 +44,10 @@ public:
         ALU_VECTOR = 9,
         ALU_REDUCE = 10,
         INDIR_LD_VIRTUAL = 11,
+        INDIR_LD_SPD_STREAM = 12,
         MAX
     };
-    std::string opcode_names[12] = {
+    std::string opcode_names[13] = {
         "STREAM_LD",
         "STREAM_ST",
         "INDIR_LD",
@@ -58,8 +59,11 @@ public:
         "ALU_SCALAR",
         "ALU_VECTOR",
         "ALU_REDUCE",
-        "INDIR_LD_VIRTUAL"};
-    enum class OPType : uint8_t {
+        "INDIR_LD_VIRTUAL",
+        "INDIR_LD_SPD_STREAM"
+    };
+    enum class OPType : uint8_t
+    {
         ADD_OP = 0,
         SUB_OP = 1,
         MUL_OP = 2,
@@ -144,8 +148,8 @@ public:
         "FNS",
         "MAX"};
     Addr baseAddr, backingAddr;
-    Addr minAddr, maxAddr;
-    int8_t addrRangeID;
+    Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
+    int8_t addrRangeID, backingAddrRangeID;
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
     int16_t src1SpdID, src2SpdID;
     TileStatus src1Status, src2Status;
@@ -215,7 +219,8 @@ public:
         }
         delete[] completion_only_tiles;
     }
-    bool pushInstruction(Instruction _instruction);
+    bool pushInstruction(Instruction _instruction,
+                         int *inserted_slot = nullptr);
     bool canPushRegister(Register _reg);
     Instruction *getReady(FuncUnitType funcUniType, int maa_id = -1);
     void finishInstructionCompute(Instruction *instruction);

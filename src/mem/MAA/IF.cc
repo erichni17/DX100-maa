@@ -11,6 +11,12 @@
 namespace gem5 {
 Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              backingAddr(0xFFFFFFFFFFFFFFFF),
+                             minAddr(0xFFFFFFFFFFFFFFFF),
+                             maxAddr(0xFFFFFFFFFFFFFFFF),
+                             backingMinAddr(0xFFFFFFFFFFFFFFFF),
+                             backingMaxAddr(0xFFFFFFFFFFFFFFFF),
+                             addrRangeID(-1),
+                             backingAddrRangeID(-1),
                              src1RegID(-1),
                              src2RegID(-1),
                              src3RegID(-1),
@@ -80,6 +86,7 @@ int Instruction::getWordSize(int tile_id) {
         }
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
+        case OpcodeType::INDIR_LD_SPD_STREAM:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
         case OpcodeType::INDIR_RMW_VECTOR:
@@ -116,6 +123,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::STREAM_LD:
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
+        case OpcodeType::INDIR_LD_SPD_STREAM:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
         case OpcodeType::INDIR_RMW_VECTOR:
@@ -158,7 +166,52 @@ int Instruction::WordSize() {
     assert(false);
     return -1;
 }
-bool IF::pushInstruction(Instruction _instruction) {
+bool IF::pushInstruction(Instruction _instruction, int *inserted_slot) {
+    if (_instruction.opcode ==
+        Instruction::OpcodeType::INDIR_LD_SPD_STREAM) {
+        Instruction load = _instruction;
+        load.opcode = Instruction::OpcodeType::INDIR_LD;
+        load.accessType = Instruction::AccessType::READ;
+        load.src1RegID = load.src2RegID = load.src3RegID = -1;
+        load.backingAddr = 0xFFFFFFFFFFFFFFFF;
+        load.backingAddrRangeID = -1;
+
+        Instruction stream = _instruction;
+        stream.opcode = Instruction::OpcodeType::STREAM_ST;
+        stream.accessType = Instruction::AccessType::WRITE;
+        stream.baseAddr = _instruction.backingAddr;
+        stream.minAddr = _instruction.backingMinAddr;
+        stream.maxAddr = _instruction.backingMaxAddr;
+        stream.addrRangeID = _instruction.backingAddrRangeID;
+        stream.src1SpdID = _instruction.dst1SpdID;
+        stream.src1Status = Instruction::TileStatus::WaitForService;
+        stream.src2SpdID = stream.dst1SpdID = stream.dst2SpdID = -1;
+        stream.condSpdID = -1;
+        stream.backingAddr = 0xFFFFFFFFFFFFFFFF;
+        stream.backingAddrRangeID = -1;
+
+        bool old_completion =
+            completion_only_tiles[_instruction.maa_id][_instruction.dst1SpdID];
+        int load_slot = -1;
+        if (!pushInstruction(load, &load_slot))
+            return false;
+        if (!pushInstruction(stream)) {
+            panic_if(load_slot < 0, "Fused load did not report its IF slot\n");
+            DPRINTF(MAAController,
+                    "%s: rolled back fused load slot %d because its stream "
+                    "micro-op could not be inserted\n",
+                    __func__, load_slot);
+            valids[_instruction.maa_id][load_slot] = false;
+            instructions[_instruction.maa_id][load_slot] = Instruction();
+            completion_only_tiles[_instruction.maa_id]
+                                 [_instruction.dst1SpdID] = old_completion;
+            return false;
+        }
+        if (inserted_slot)
+            *inserted_slot = load_slot;
+        return true;
+    }
+
     switch (_instruction.opcode) {
     case Instruction::OpcodeType::STREAM_LD:
     case Instruction::OpcodeType::STREAM_ST: {
@@ -241,6 +294,8 @@ bool IF::pushInstruction(Instruction _instruction) {
     instructions[maa_id][free_instruction_slot] = _instruction;
     valids[maa_id][free_instruction_slot] = true;
     instructions[maa_id][free_instruction_slot].if_id = free_instruction_slot;
+    if (inserted_slot)
+        *inserted_slot = free_instruction_slot;
     if (_instruction.dst1SpdID != -1) {
         completion_only_tiles[maa_id][_instruction.dst1SpdID] =
             _instruction.opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL;

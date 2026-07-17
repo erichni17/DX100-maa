@@ -512,7 +512,11 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         for (int j = 0; j < pattern_length; j += TILE_SIZE) {
             maa_const(j, reg1);
             maa_stream_load<int>(pattern_int.data(), reg1, reg2, reg3, tile1);
-#ifdef MAA_VIRTUAL_GATHER
+#ifdef MAA_FUSED_SPD_GATHER
+            maa_indirect_load_spd_stream<double>(
+                sparse.data(), tile1, tile2, dense.data(),
+                reg1, reg2, reg3);
+#elif defined(MAA_VIRTUAL_GATHER)
             maa_indirect_load_virtual<double>(sparse.data(), tile1, tile2,
                                               dense.data() + j);
 #else

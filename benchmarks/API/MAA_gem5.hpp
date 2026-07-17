@@ -46,7 +46,8 @@ enum OpcodeType : uint8_t {
     ALU_SCALAR = 8,
     ALU_VECTOR = 9,
     ALU_REDUCE = 10,
-    INDIR_LD_VIRTUAL = 11
+    INDIR_LD_VIRTUAL = 11,
+    INDIR_LD_SPD_STREAM = 12
 };
 enum class DataType : uint8_t {
     UINT32_TYPE = 0,
@@ -322,7 +323,32 @@ inline void maa_indirect_load_virtual(T1 *data, int idx_tile, int completion_til
     __asm__ __volatile__("mfence;");
 }
 template <class T1>
-inline void maa_indirect_store_vector(T1 *data, int idx_tile, int src_tile, int cond_tile = -1, int dst_tile = -1) {
+inline void maa_indirect_load_spd_stream(
+    T1 *data, int idx_tile, int dst_tile, T1 *stream_base,
+    int min_reg, int max_reg, int stride_reg) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_LD_SPD_STREAM << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)dst_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)idx_tile << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) |
+        ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) |
+        (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)stream_base;
+    __asm__ __volatile__("mfence;");
+}
+template <class T1>
+inline void maa_indirect_store_vector(
+    T1 *data, int idx_tile, int src_tile, int cond_tile = -1,
+    int dst_tile = -1) {
     DataType data_type = get_data_type<T1>();
     *INSTR_opcode_datatype_optype_tdst1_tdst2 = ((uint64_t)OpcodeType::INDIR_ST_VECTOR << 32) |                 // opcode
                                                 ((uint64_t)data_type << 24) |                                   // datatype

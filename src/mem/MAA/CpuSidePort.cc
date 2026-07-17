@@ -199,16 +199,29 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 data = data >> 8;
                 current_instruction->opcode = (data & NA_UINT8) == NA_UINT8 ? Instruction::OpcodeType::MAX : static_cast<Instruction::OpcodeType>(data & NA_UINT8);
                 assert(current_instruction->opcode != Instruction::OpcodeType::MAX);
-                if (current_instruction->opcode == Instruction::OpcodeType::STREAM_LD ||
-                    current_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
-                    current_instruction->opcode == Instruction::OpcodeType::INDIR_LD) {
-                    current_instruction->accessType = Instruction::AccessType::READ;
-                } else if (current_instruction->opcode == Instruction::OpcodeType::STREAM_ST ||
-                           current_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR ||
-                           current_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR ||
-                           current_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR ||
-                           current_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_VECTOR) {
-                    current_instruction->accessType = Instruction::AccessType::WRITE;
+                if (current_instruction->opcode ==
+                        Instruction::OpcodeType::STREAM_LD ||
+                    current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
+                    current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_SPD_STREAM ||
+                    current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD) {
+                    current_instruction->accessType =
+                        Instruction::AccessType::READ;
+                } else if (
+                    current_instruction->opcode ==
+                            Instruction::OpcodeType::STREAM_ST ||
+                        current_instruction->opcode ==
+                            Instruction::OpcodeType::INDIR_ST_SCALAR ||
+                        current_instruction->opcode ==
+                            Instruction::OpcodeType::INDIR_ST_VECTOR ||
+                        current_instruction->opcode ==
+                            Instruction::OpcodeType::INDIR_RMW_SCALAR ||
+                        current_instruction->opcode ==
+                            Instruction::OpcodeType::INDIR_RMW_VECTOR) {
+                    current_instruction->accessType =
+                        Instruction::AccessType::WRITE;
                 } else {
                     current_instruction->accessType = Instruction::AccessType::COMPUTE;
                 }
@@ -245,7 +258,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->minAddr = addrRegions[current_instruction->addrRangeID].first;
                     current_instruction->maxAddr = addrRegions[current_instruction->addrRangeID].second;
                 }
-                if (current_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+                if (current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
+                    current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_SPD_STREAM)
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController, "%s: %s received!\n", __func__, current_instruction->print());
@@ -256,12 +272,25 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             case 3: {
                 panic_if(instruction_id == -1,
                          "Received backing address before instruction header!\n");
-                panic_if(current_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL,
-                         "Backing address is only valid for virtual indirect loads!\n");
+                panic_if(
+                    current_instruction->opcode !=
+                            Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::INDIR_LD_SPD_STREAM,
+                    "Backing address is only valid for virtual or fused "
+                    "indirect loads!\n");
                 current_instruction->backingAddr = data;
+                current_instruction->backingAddrRangeID = getAddrRegion(data);
+                current_instruction->backingMinAddr =
+                    addrRegions[current_instruction->backingAddrRangeID].first;
+                current_instruction->backingMaxAddr = addrRegions[
+                    current_instruction->backingAddrRangeID].second;
                 my_instruction_recvs[instruction_id] = true;
-                DPRINTF(MAAController, "%s: %s received with backing address 0x%lx!\n",
-                        __func__, current_instruction->print(), current_instruction->backingAddr);
+                DPRINTF(
+                    MAAController,
+                    "%s: %s received with backing address 0x%lx!\n",
+                    __func__, current_instruction->print(),
+                    current_instruction->backingAddr);
                 respond_immediately = false;
                 scheduleDispatchInstructionEvent();
                 break;
