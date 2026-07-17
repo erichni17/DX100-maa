@@ -617,11 +617,8 @@ void IndirectAccessUnit::executeInstruction() {
         my_src_reg = my_instruction->src1RegID;
         my_dst_tile = my_instruction->dst1SpdID;
         my_cond_tile = my_instruction->condSpdID;
-        panic_if(my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
-                     my_cond_tile != -1,
-                 "I[%d] virtual indirect load does not support conditions\n",
-                 my_indirect_id);
-        panic_if(my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
+        panic_if(my_instruction->opcode ==
+                         Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
                      !reorder_RT,
                  "I[%d] virtual indirect load requires row-table reordering\n",
                  my_indirect_id);

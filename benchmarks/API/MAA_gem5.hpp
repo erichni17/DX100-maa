@@ -302,7 +302,7 @@ inline void maa_indirect_load(T1 *data, int idx_tile, int dst_tile, int cond_til
 }
 template <class T1>
 inline void maa_indirect_load_virtual(T1 *data, int idx_tile, int completion_tile,
-                                      T1 *backing) {
+                                      T1 *backing, int cond_tile = -1) {
     DataType data_type = get_data_type<T1>();
     *INSTR_opcode_datatype_optype_tdst1_tdst2 =
         ((uint64_t)OpcodeType::INDIR_LD_VIRTUAL << 32) |
@@ -317,7 +317,7 @@ inline void maa_indirect_load_virtual(T1 *data, int idx_tile, int completion_til
         ((uint64_t)NA_UINT8 << 24) |
         ((uint64_t)NA_UINT8 << 16) |
         ((uint64_t)NA_UINT8 << 8) |
-        (uint64_t)NA_UINT8;
+        (uint64_t)(cond_tile == -1 ? NA_UINT8 : cond_tile);
     *INSTR_baseaddr = (uint64_t)data;
     *INSTR_backingaddr = (uint64_t)backing;
     __asm__ __volatile__("mfence;");
