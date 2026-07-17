@@ -103,7 +103,11 @@ protected:
     std::vector<VirtualCombineSlot> virtual_combine_slots;
     int virtual_combine_words_configured = 0;
     int virtual_combine_ways = 0;
+    int virtual_combine_banks = 0;
     std::vector<int> virtual_combine_set_victims;
+    std::vector<bool> virtual_combine_bank_used;
+    Tick virtual_combine_bank_tick = 0;
+    Tick virtual_combine_bank_conflict_tick = 0;
     int virtual_combine_words_limit = 0;
     int virtual_combine_words = 0;
     int virtual_max_combine_words = 0;
@@ -153,6 +157,7 @@ public:
                   int _virtual_combine_slots,
                   int _virtual_combine_words,
                   int _virtual_combine_ways,
+                  int _virtual_combine_banks,
                   int _virtual_response_slots,
                   int _virtual_response_words,
                   int _virtual_response_word_pool,
@@ -222,6 +227,7 @@ protected:
     bool createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data,
                                uint16_t valid_words = 0);
     bool drainVirtualResponses();
+    bool reserveVirtualCombineBank(int itr);
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;

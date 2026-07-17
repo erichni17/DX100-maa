@@ -61,6 +61,9 @@ class MAA(ClockedObject):
     mmu = Param.BaseMMU(X86MMU(), "CPU memory management unit")
 
     system = Param.System(Parent.any, "System we belong to")
+    virtual_combine_banks = Param.Unsigned(
+        0, "Single-update combiner banks (0 disables bank conflicts)"
+    )
 
     def addRamulatorInstance(self, simObj):
         self.getCCObject().addRamulator(simObj.getCCObject())

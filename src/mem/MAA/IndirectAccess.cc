@@ -93,6 +93,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_combine_slots,
                                   int _virtual_combine_words,
                                   int _virtual_combine_ways,
+                                  int _virtual_combine_banks,
                                   int _virtual_response_slots,
                                   int _virtual_response_words,
                                   int _virtual_response_word_pool,
@@ -125,6 +126,16 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     if (virtual_combine_ways != 0)
         virtual_combine_set_victims.resize(
             _virtual_combine_slots / virtual_combine_ways, 0);
+    virtual_combine_banks = _virtual_combine_banks;
+    panic_if(virtual_combine_banks != 0 && virtual_combine_ways == 0,
+             "I[%d] banked virtual combiner requires finite associativity\n",
+             my_indirect_id);
+    const int virtual_combine_sets = virtual_combine_ways == 0
+        ? 1 : _virtual_combine_slots / virtual_combine_ways;
+    panic_if(virtual_combine_banks > virtual_combine_sets,
+             "I[%d] virtual combiner banks (%d) exceed sets (%d)\n",
+             my_indirect_id, virtual_combine_banks, virtual_combine_sets);
+    virtual_combine_bank_used.resize(virtual_combine_banks, false);
     panic_if(_virtual_response_slots <= 0,
              "I[%d] virtual response buffer must have at least one slot\n",
              my_indirect_id);
@@ -667,6 +678,10 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_reserved_response_words = 0;
         virtual_word_budget_tick = curTick();
         virtual_words_retired_this_cycle = 0;
+        virtual_combine_bank_tick = curTick();
+        virtual_combine_bank_conflict_tick = 0;
+        std::fill(virtual_combine_bank_used.begin(),
+                  virtual_combine_bank_used.end(), false);
         virtual_pending_source = false;
         virtual_pending_source_addr = 0;
         virtual_pending_source_words = 0;
@@ -1537,13 +1552,20 @@ bool IndirectAccessUnit::drainVirtualResponses() {
         virtual_word_budget_tick = curTick();
         virtual_words_retired_this_cycle = 0;
     }
+    if (virtual_combine_bank_tick != curTick()) {
+        virtual_combine_bank_tick = curTick();
+        std::fill(virtual_combine_bank_used.begin(),
+                  virtual_combine_bank_used.end(), false);
+    }
     auto budget_exhausted = [this]() {
         return virtual_words_per_cycle_limit != 0 &&
                virtual_words_retired_this_cycle >= virtual_words_per_cycle_limit;
     };
+    bool bank_stalled = false;
     for (auto &slot : virtual_response_slots) {
         if (virtual_response_words != 0 ||
             virtual_response_word_pool_limit != 0) {
+            bool capacity_stalled = false;
             while (slot.valid &&
                    slot.next_packed_word < slot.packed_words.size()) {
                 if (budget_exhausted())
@@ -1551,8 +1573,14 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 const OffsetTableEntry entry =
                     offset_table->peek_entry(slot.next_itr);
                 const auto &word = slot.packed_words[slot.next_packed_word];
-                if (!insertVirtualCombineWord(entry.itr, word.data()))
+                if (!reserveVirtualCombineBank(entry.itr)) {
+                    bank_stalled = true;
                     break;
+                }
+                if (!insertVirtualCombineWord(entry.itr, word.data())) {
+                    capacity_stalled = true;
+                    break;
+                }
                 OffsetTableEntry consumed =
                     offset_table->consume_entry(slot.next_itr);
                 panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
@@ -1573,18 +1601,26 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 slot = VirtualResponseSlot();
                 virtual_reserved_responses--;
             }
-            if (slot.valid)
+            if (capacity_stalled)
                 break;
             continue;
         }
+        bool capacity_stalled = false;
         while (slot.valid) {
             if (budget_exhausted())
                 return true;
             OffsetTableEntry entry = offset_table->peek_entry(slot.next_itr);
-            if (!insertVirtualCombineWord(
-                    entry.itr, slot.data.data() + entry.wid * my_word_size))
+            if (!reserveVirtualCombineBank(entry.itr)) {
+                bank_stalled = true;
                 break;
-            OffsetTableEntry consumed = offset_table->consume_entry(slot.next_itr);
+            }
+            if (!insertVirtualCombineWord(
+                    entry.itr, slot.data.data() + entry.wid * my_word_size)) {
+                capacity_stalled = true;
+                break;
+            }
+            OffsetTableEntry consumed =
+                offset_table->consume_entry(slot.next_itr);
             virtual_words_retired_this_cycle++;
             panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
                      "I[%d] virtual offset cursor changed while stalled\n",
@@ -1594,11 +1630,33 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 virtual_reserved_responses--;
             }
         }
-        if (slot.valid)
+        if (capacity_stalled)
             break;
     }
     drainVirtualCombiner(false);
-    return false;
+    return bank_stalled;
+}
+
+bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
+    if (virtual_combine_banks == 0)
+        return true;
+
+    const Addr vaddr = my_backing_addr + itr * my_word_size;
+    const Addr line_vaddr = vaddr & ~(block_size - 1);
+    const int ways = virtual_combine_ways;
+    const int num_sets = virtual_combine_slots.size() / ways;
+    const int set = (line_vaddr / block_size) % num_sets;
+    const int bank = set % virtual_combine_banks;
+    if (virtual_combine_bank_used[bank]) {
+        if (virtual_combine_bank_conflict_tick != curTick()) {
+            virtual_combine_bank_conflict_tick = curTick();
+            (*maa->stats.IND_VirtCombineBankConflictCycles[my_indirect_id])++;
+        }
+        return false;
+    }
+    virtual_combine_bank_used[bank] = true;
+    (*maa->stats.IND_VirtCombineBankAccesses[my_indirect_id])++;
+    return true;
 }
 
 bool IndirectAccessUnit::insertVirtualCombineWord(int itr,

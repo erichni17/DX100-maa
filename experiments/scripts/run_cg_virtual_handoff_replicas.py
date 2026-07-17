@@ -51,6 +51,7 @@ DEFAULT_GEOMETRY = {
     "response_slots": 96,
     "response_word_pool": 480,
     "combine_ways": 4,
+    "combine_banks": 0,
     "words_per_cycle": 4,
     "max_outstanding_writes": 64,
     "masked_writes": True,
@@ -138,6 +139,11 @@ def parse_args():
         default=DEFAULT_GEOMETRY["combine_ways"],
     )
     parser.add_argument(
+        "--combine-banks",
+        type=int,
+        default=DEFAULT_GEOMETRY["combine_banks"],
+    )
+    parser.add_argument(
         "--words-per-cycle",
         type=int,
         default=DEFAULT_GEOMETRY["words_per_cycle"],
@@ -201,15 +207,21 @@ def parse_args():
         "response_slots": args.response_slots,
         "response_word_pool": args.response_word_pool,
         "combine_ways": args.combine_ways,
+        "combine_banks": args.combine_banks,
         "words_per_cycle": args.words_per_cycle,
         "max_outstanding_writes": args.max_outstanding_writes,
         "masked_writes": True,
     }
     for name, value in args.geometry.items():
-        if name != "masked_writes" and value <= 0:
+        if name not in ("masked_writes", "combine_banks") and value <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.combine_banks < 0:
+        parser.error("--combine-banks must be non-negative")
     if args.combine_slots % args.combine_ways != 0:
         parser.error("--combine-slots must be divisible by --combine-ways")
+    combine_sets = args.combine_slots // args.combine_ways
+    if args.combine_banks > combine_sets:
+        parser.error("--combine-banks cannot exceed the number of sets")
     if len(args.expected_gem5_sha256) != 64 or any(
         character not in "0123456789abcdef"
         for character in args.expected_gem5_sha256
@@ -366,6 +378,8 @@ def gem5_command(args, case, outdir):
         str(args.geometry["response_word_pool"]),
         "--maa_virtual_combine_ways",
         str(args.geometry["combine_ways"]),
+        "--maa_virtual_combine_banks",
+        str(args.geometry["combine_banks"]),
         "--maa_virtual_words_per_cycle",
         str(args.geometry["words_per_cycle"]),
         "--maa_virtual_max_outstanding_writes",
@@ -496,6 +510,8 @@ def parse_instantiated_geometry(path, geometry):
         "virtual_max_outstanding_writes": geometry["max_outstanding_writes"],
         "virtual_masked_writes": "true",
     }
+    if "combine_banks" in geometry:
+        expected_keys["virtual_combine_banks"] = geometry["combine_banks"]
     values = {}
     with path.open(errors="replace") as config:
         for line in config:
@@ -627,6 +643,12 @@ def validate_run(run, geometry):
     response_high_water = metrics.get(
         "system.maa.I0_IND_VirtResponseWordHighWater", 0
     )
+    combine_bank_accesses = metrics.get(
+        "system.maa.I0_IND_VirtCombineBankAccesses", 0
+    )
+    combine_bank_conflicts = metrics.get(
+        "system.maa.I0_IND_VirtCombineBankConflictCycles"
+    )
     if run["case"] == "virtual":
         if not isinstance(write_issues, int) or write_issues <= 0:
             errors.append(f"invalid virtual write issue count {write_issues}")
@@ -642,6 +664,23 @@ def validate_run(run, geometry):
             errors.append(
                 f"inactive response word-pool high water {response_high_water}"
             )
+        if geometry.get("combine_banks", 0) != 0:
+            if (
+                not isinstance(combine_bank_accesses, int)
+                or combine_bank_accesses <= 0
+            ):
+                errors.append(
+                    "inactive combine-bank access count "
+                    f"{combine_bank_accesses}"
+                )
+            if (
+                not isinstance(combine_bank_conflicts, int)
+                or combine_bank_conflicts < 0
+            ):
+                errors.append(
+                    "invalid combine-bank conflict count "
+                    f"{combine_bank_conflicts}"
+                )
 
     started = outdir / "started_epoch"
     finished = outdir / "finished_epoch"
@@ -708,6 +747,12 @@ def summarize(args, manifest):
                 ),
                 "response_pool_high_water": metrics.get(
                     "system.maa.I0_IND_VirtResponseWordHighWater"
+                ),
+                "combine_bank_accesses": metrics.get(
+                    "system.maa.I0_IND_VirtCombineBankAccesses"
+                ),
+                "combine_bank_conflict_cycles": metrics.get(
+                    "system.maa.I0_IND_VirtCombineBankConflictCycles"
                 ),
                 "x_q5": fingerprint.get("x_q5"),
                 "x_q6": fingerprint.get("x_q6"),

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 12 ]]; then
-    echo "usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS] [RESPONSE_SLOTS] [WRITE_CREDITS] [COMBINE_WORDS] [MASKED_WRITES] [RESPONSE_WORDS] [RESPONSE_WORD_POOL]" >&2
+if [[ $# -lt 3 || $# -gt 15 ]]; then
+    cat >&2 <<EOF
+usage: $0 N PATTERN OUTDIR [TIMEOUT_SECONDS] [BINARY] [COMBINE_SLOTS]
+       [RESPONSE_SLOTS] [WRITE_CREDITS] [COMBINE_WORDS] [MASKED_WRITES]
+       [RESPONSE_WORDS] [RESPONSE_WORD_POOL] [COMBINE_WAYS]
+       [WORDS_PER_CYCLE] [COMBINE_BANKS]
+EOF
     exit 2
 fi
 
@@ -20,6 +25,9 @@ combine_words=${9:-0}
 masked_writes=${10:-0}
 response_words=${11:-0}
 response_word_pool=${12:-0}
+combine_ways=${13:-0}
+words_per_cycle=${14:-0}
+combine_banks=${15:-0}
 masked_args=()
 if [[ "$masked_writes" == 1 ]]; then
     masked_args+=(--maa_virtual_masked_writes)
@@ -52,9 +60,12 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_num_initial_row_table_slices=16 \
     --maa_virtual_combine_slots="$combine_slots" \
     --maa_virtual_combine_words="$combine_words" \
+    --maa_virtual_combine_ways="$combine_ways" \
+    --maa_virtual_combine_banks="$combine_banks" \
     --maa_virtual_response_slots="$response_slots" \
     --maa_virtual_response_words="$response_words" \
     --maa_virtual_response_word_pool="$response_word_pool" \
+    --maa_virtual_words_per_cycle="$words_per_cycle" \
     --maa_virtual_max_outstanding_writes="$write_credits" \
     "${masked_args[@]}" \
     --cmd "$binary" \

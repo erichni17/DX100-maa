@@ -250,6 +250,12 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_num_maas", type=int, default=1, help="Number of MAA instances")
     parser.add_argument("--maa_num_indirect_units_per_maa", type=int, default=1, help="Number of indirect access units per MAA instance")
     parser.add_argument("--maa_ncbus_width", type=int, default=32, help="Width of the Non-Coherent Bus")
+    parser.add_argument(
+        "--maa_virtual_combine_banks",
+        type=int,
+        default=0,
+        help="Single-update combiner banks (0 disables bank conflicts)",
+    )
     parser.add_argument("--l1d_repl_policy",  default="LRURP",
                     choices=ObjectList.rp_list.get_names(),
                     help="""

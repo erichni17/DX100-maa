@@ -51,6 +51,11 @@ def _get_maa_opts(options):
     if hasattr(options, "maa_virtual_combine_ways"):
         opts["virtual_combine_ways"] = getattr(options, "maa_virtual_combine_ways")
 
+    if hasattr(options, "maa_virtual_combine_banks"):
+        opts["virtual_combine_banks"] = getattr(
+            options, "maa_virtual_combine_banks"
+        )
+
     if hasattr(options, "maa_virtual_response_slots"):
         opts["virtual_response_slots"] = getattr(options, "maa_virtual_response_slots")
 

@@ -399,6 +399,7 @@ public:
     unsigned int virtual_combine_slots;
     unsigned int virtual_combine_words;
     unsigned int virtual_combine_ways;
+    unsigned int virtual_combine_banks;
     unsigned int virtual_response_slots;
     unsigned int virtual_response_words;
     unsigned int virtual_response_word_pool;
@@ -580,6 +581,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtBuildRounds;
         std::vector<statistics::Scalar *> IND_VirtResponseWordHighWater;
         std::vector<statistics::Scalar *> IND_VirtResponseWordPoolStalls;
+        std::vector<statistics::Scalar *> IND_VirtCombineBankAccesses;
+        std::vector<statistics::Scalar *> IND_VirtCombineBankConflictCycles;
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;

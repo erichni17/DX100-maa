@@ -62,6 +62,7 @@ MAA::MAA(const MAAParams &p)
       virtual_combine_slots(p.virtual_combine_slots),
       virtual_combine_words(p.virtual_combine_words),
       virtual_combine_ways(p.virtual_combine_ways),
+      virtual_combine_banks(p.virtual_combine_banks),
       virtual_response_slots(p.virtual_response_slots),
       virtual_response_words(p.virtual_response_words),
       virtual_response_word_pool(p.virtual_response_word_pool),
@@ -320,6 +321,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_combine_slots,
                                         virtual_combine_words,
                                         virtual_combine_ways,
+                                        virtual_combine_banks,
                                         virtual_response_slots,
                                         virtual_response_words,
                                         virtual_response_word_pool,
@@ -1050,6 +1052,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         (*IND_AvgLoadsMemAccessingLatency[indirect_id]).flags(statistics::nozero | statistics::nonan);
         (*IND_AvgStoresMemAccessingPerInst[indirect_id]).flags(statistics::nozero | statistics::nonan);
         (*IND_AvgEvictssPerInst[indirect_id]).flags(statistics::nozero | statistics::nonan);
+        IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
+            statistics::units::Count::get(),
+            "virtual destination-combiner word lookup/update accesses"));
+        IND_VirtCombineBankConflictCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankConflictCycles"),
+            statistics::units::Count::get(),
+            "cycles with a virtual destination-combiner same-bank conflict"));
     }
     for (int stream_id = 0; stream_id < maa->num_maas; stream_id++) {
         STR_NumInsts.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumInsts"), statistics::units::Count::get(), "number of instructions"));
