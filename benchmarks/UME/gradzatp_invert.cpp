@@ -77,6 +77,50 @@ static uint64_t hash_outputs(uint64_t &nonfinite) {
     }
     return hash;
 }
+
+struct ReferenceErrors
+{
+    uint64_t point_volume = 0;
+    uint64_t point_gradient = 0;
+};
+
+static uint32_t value_bits(DATATYPE value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static void build_scalar_reference() {
+    std::fill(point_volume_exp.begin(), point_volume_exp.end(), 0.0f);
+    std::fill(point_gradient_exp.begin(), point_gradient_exp.end(), 0.0f);
+    for (size_t p = 0; p < point_volume_exp.size(); ++p) {
+        for (int idx = p_to_c_indptr[p]; idx < p_to_c_indptr[p + 1]; ++idx) {
+            const int c = p_to_c_indices[idx];
+            point_volume_exp[p] += corner_volume[c];
+            point_gradient_exp[p] += csurf[c] * zone_field[c_to_z_map[c]];
+        }
+        if (point_type[p] > 0) {
+            point_gradient_exp[p] /= point_volume_exp[p];
+        } else if (point_type[p] == -1) {
+            const double ppdot = point_gradient_exp[p] * point_normal[p];
+            point_gradient_exp[p] =
+                (point_gradient_exp[p] - point_normal[p] * ppdot) /
+                point_volume_exp[p];
+        }
+    }
+}
+
+static ReferenceErrors count_reference_errors() {
+    ReferenceErrors errors;
+    for (size_t p = 0; p < point_volume.size(); ++p) {
+        if (value_bits(point_volume[p]) != value_bits(point_volume_exp[p]))
+            errors.point_volume++;
+        if (value_bits(point_gradient[p]) != value_bits(point_gradient_exp[p]))
+            errors.point_gradient++;
+    }
+    return errors;
+}
+
 #endif
 
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
@@ -97,6 +141,7 @@ static uint64_t hash_outputs(uint64_t &nonfinite) {
 int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
 int tiles3[NUM_CORES], tiles4[NUM_CORES], tiles5[NUM_CORES];
 int tilesi[NUM_CORES];
+int tiles_volume[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
 int regs3[NUM_CORES], regs4[NUM_CORES], last_i_regs[NUM_CORES];
 int last_j_regs[NUM_CORES];
@@ -180,8 +225,10 @@ void gradzatp_invert_MAA_CSR() {
     add_mem_region(p_to_c_indptr.data(), p_to_c_indptr.data() + p_to_c_indptr.size());    // 13
     add_mem_region(point_type.data(), point_type.data() + point_type.size());             // 14
 #ifdef MAA_VIRTUAL_GATHER
-    add_mem_region(&virtual_gather_backing[0][0],
-                   &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]); // 15
+    for (int core = 0; core < NUM_CORES; ++core) {
+        add_mem_region(virtual_gather_backing[core],
+                       virtual_gather_backing[core] + TILE_SIZE);
+    }
 #else
     add_mem_region(point_normal.data(),
                    point_normal.data() + point_normal.size()); // 15
@@ -193,7 +240,7 @@ void gradzatp_invert_MAA_CSR() {
 #pragma omp parallel
     {
         int reg0, reg1, reg2, reg3, reg4, last_i_reg, last_j_reg;
-        int tile0, tilelb, tileub, tile3, tile5, tilei, tilej;
+        int tile0, tilelb, tileub, tile3, tile5, tilei, tilej, tile_volume;
         int thread_id = omp_get_thread_num();
         tile0 = tiles0[thread_id];
         tile5 = tiles1[thread_id];
@@ -202,6 +249,7 @@ void gradzatp_invert_MAA_CSR() {
         tilelb = tiles4[thread_id];
         tileub = tiles5[thread_id];
         tile3 = tilesi[thread_id];
+        tile_volume = tiles_volume[thread_id];
         reg0 = regs0[thread_id];
         reg1 = regs1[thread_id];
         reg2 = regs2[thread_id];
@@ -220,7 +268,8 @@ void gradzatp_invert_MAA_CSR() {
         //         point_gradient[p] += csurf[c] * zone_field[z];
         //     }
         // }
-        DATATYPE *tilej_ptr = get_cacheable_tile_pointer<DATATYPE>(tilej);
+        DATATYPE *tile_volume_ptr =
+            get_cacheable_tile_pointer<DATATYPE>(tile_volume);
         DATATYPE *tile5_ptr = get_cacheable_tile_pointer<DATATYPE>(tile5);
         DATATYPE *tile0_ptr = get_cacheable_tile_pointer<DATATYPE>(tile0);
 #ifdef UME_GATHER_VERIFY
@@ -252,7 +301,8 @@ void gradzatp_invert_MAA_CSR() {
                 // Step3: load c_to_z_map
                 maa_indirect_load<int>(c_to_z_map.data(), tile0, tile3); // 3->z
                 // Step4: load corner_volume[c]
-                maa_indirect_load<DATATYPE>(corner_volume.data(), tile0, tilej); // j->corner_volume
+                maa_indirect_load<DATATYPE>(corner_volume.data(), tile0,
+                                            tile_volume);
                 // Transfer tile0 (ssuming step 3 is also here)
                 // Step6: load csurf[c]
                 maa_indirect_load<DATATYPE>(csurf.data(), tile0, tile5); // 5->csurf
@@ -268,6 +318,8 @@ void gradzatp_invert_MAA_CSR() {
                 curr_tilej_size = min(j_max - j_base, TILE_SIZE);
                 wait_ready(tilei);
                 wait_ready(tile0);
+                wait_ready(tile_volume);
+                wait_ready(tile5);
 #ifdef MAA_VIRTUAL_GATHER
                 // Reload through the MAA so the CPU never retains coherent
                 // ownership of backing lines that the next gather overwrites.
@@ -278,7 +330,6 @@ void gradzatp_invert_MAA_CSR() {
                 wait_ready(tile0);
 #endif
                 DATATYPE *gathered_zone_field = tile0_ptr;
-#pragma omp simd simdlen(4)
                 for (int j = 0; j < curr_tilej_size; j++) {
 #ifdef UME_GATHER_VERIFY
                     uint32_t actual_bits;
@@ -291,7 +342,7 @@ void gradzatp_invert_MAA_CSR() {
                         local_verify_errors++;
                     local_verify_lanes++;
 #endif
-                    curr_point_volume[tilei_ptr[j]] += tilej_ptr[j];
+                    curr_point_volume[tilei_ptr[j]] += tile_volume_ptr[j];
                     curr_point_gradient[tilei_ptr[j]] +=
                         tile5_ptr[j] * gathered_zone_field[j];
                 }
@@ -322,12 +373,19 @@ void gradzatp_invert_MAA_CSR() {
 #if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
     uint64_t nonfinite;
     const uint64_t output_hash = hash_outputs(nonfinite);
+    const ReferenceErrors reference_errors = count_reference_errors();
+    const uint64_t reference_error_count =
+        reference_errors.point_volume + reference_errors.point_gradient;
 #ifdef UME_GATHER_VERIFY
     const uint64_t errors = gather_verify_errors.load();
     const uint64_t lanes = gather_verify_lanes.load();
-    if (errors != 0 || nonfinite != 0) {
+    if (errors != 0 || nonfinite != 0 || reference_error_count != 0) {
         std::cerr << "UME_GATHER_VERIFY_FAIL errors=" << errors
                   << " lanes=" << lanes << " output_hash=" << output_hash
+                  << " reference_volume_errors="
+                  << reference_errors.point_volume
+                  << " reference_gradient_errors="
+                  << reference_errors.point_gradient
                   << " nonfinite=" << nonfinite << std::endl;
         std::abort();
     }
@@ -335,14 +393,21 @@ void gradzatp_invert_MAA_CSR() {
               << " output_hash=" << output_hash << " nonfinite=0"
               << std::endl;
 #else
-    if (nonfinite != 0) {
+    if (nonfinite != 0 || reference_error_count != 0) {
         std::cerr << "UME_OUTPUT_FP_FAIL output_hash=" << output_hash
+                  << " reference_volume_errors="
+                  << reference_errors.point_volume
+                  << " reference_gradient_errors="
+                  << reference_errors.point_gradient
                   << " nonfinite=" << nonfinite << std::endl;
         std::abort();
     }
     std::cout << "UME_OUTPUT_FP output_hash=" << output_hash
               << " nonfinite=0" << std::endl;
 #endif
+    std::cout << "UME_REFERENCE_PASS point_volume_errors=0 "
+              << "point_gradient_errors=0 elements=" << point_volume.size()
+              << std::endl;
 #endif
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
@@ -525,6 +590,10 @@ int main(int argc, char *argv[]) {
             point_type[p] = 0;
     }
 
+#if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
+    build_scalar_reference();
+#endif
+
 #ifdef GEM5
     cout << "Starting checkpoint" << endl;
     m5_checkpoint(0, 0);
@@ -550,6 +619,7 @@ int main(int argc, char *argv[]) {
             tiles4[thread_id] = get_new_tile<int>();
             tiles5[thread_id] = get_new_tile<int>();
             tilesi[thread_id] = get_new_tile<int>();
+            tiles_volume[thread_id] = get_new_tile<int>();
             regs0[thread_id] = get_new_reg<int>();
             regs1[thread_id] = get_new_reg<int>();
             regs2[thread_id] = get_new_reg<int>();
