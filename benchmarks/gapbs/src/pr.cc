@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -15,7 +17,6 @@
 #include "command_line.h"
 #include "graph.h"
 #include "pvector.h"
-#include <string.h>
 
 #if !defined(FUNC) && !defined(GEM5) && !defined(GEM5_MAGIC)
 #define GEM5
@@ -55,14 +56,66 @@ using namespace std;
 typedef float ScoreT;
 const float kDamp = 0.85;
 
+#ifdef MAA_VIRTUAL_GATHER
+alignas(64) static ScoreT virtual_gather_backing[NUM_CORES][TILE_SIZE];
+#endif
+
+#ifdef PR_FP_ENABLE
+static uint64_t MixFingerprint(uint64_t value) {
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+static uint64_t UpdateFingerprint(uint64_t hash, uint64_t index,
+                                  uint64_t value) {
+    hash ^= MixFingerprint((index << 32) ^ value);
+    hash = (hash << 19) | (hash >> 45);
+    return hash * 0x9e3779b185ebca87ULL;
+}
+
+static uint32_t ScoreBits(ScoreT value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+#endif
+
 static inline void PrintScoreFingerprint(const pvector<ScoreT> &scores) {
 #ifdef PR_FP_ENABLE
     double sum = 0.0;
     double absum = 0.0;
     double minv = std::numeric_limits<double>::infinity();
     double maxv = -std::numeric_limits<double>::infinity();
+    uint64_t raw = 0xcbf29ce484222325ULL;
+    uint64_t normalized_q5 = 0x6a09e667f3bcc909ULL;
+    uint64_t normalized_q6 = 0x3c6ef372fe94f82bULL;
+    uint64_t nonfinite = 0;
+    uint64_t unquantizable = 0;
     for (size_t i = 0; i < scores.size(); i++) {
         double v = static_cast<double>(scores[i]);
+        raw = UpdateFingerprint(raw, i, ScoreBits(scores[i]));
+        if (std::isfinite(v)) {
+            const double normalized = v * scores.size();
+            const double max_normalized =
+                static_cast<double>(std::numeric_limits<int64_t>::max()) /
+                1.0e6;
+            if (std::fabs(normalized) <= max_normalized) {
+                normalized_q5 = UpdateFingerprint(
+                    normalized_q5, i,
+                    static_cast<uint64_t>(
+                        std::llround(normalized * 1.0e5)));
+                normalized_q6 = UpdateFingerprint(
+                    normalized_q6, i,
+                    static_cast<uint64_t>(
+                        std::llround(normalized * 1.0e6)));
+            } else {
+                unquantizable++;
+            }
+        } else {
+            nonfinite++;
+        }
         sum += v;
         absum += std::fabs(v);
         minv = std::min(minv, v);
@@ -70,10 +123,17 @@ static inline void PrintScoreFingerprint(const pvector<ScoreT> &scores) {
     }
     std::cout << std::scientific << std::setprecision(17)
               << "PR_FP"
+              << " elements=" << scores.size()
+              << " raw=" << std::hex << raw
+              << " normalized_q5=" << normalized_q5
+              << " normalized_q6=" << normalized_q6
+              << std::dec
               << " sum=" << sum
               << " absum=" << absum
               << " min=" << minv
               << " max=" << maxv
+              << " nonfinite=" << nonfinite
+              << " unquantizable=" << unquantizable
               << std::defaultfloat << std::endl;
 #endif
 }
@@ -219,11 +279,19 @@ pvector<ScoreT> PageRankPullMAA(const Graph &g, int max_iters, double epsilon = 
         add_mem_region(g.in_neighbors_, &g.in_neighbors_[VertexOffsets[num_nodes]]); // 9
         add_mem_region(scores.beginp(), scores.endp());                              // 10
         add_mem_region(incoming_totals, &incoming_totals[num_nodes]);                // 11
+#ifdef MAA_VIRTUAL_GATHER
+        add_mem_region(&virtual_gather_backing[0][0],
+                       &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]);
+#endif
 #endif
 #pragma omp parallel
         {
             int tilelb, tileub, tile3, tile5, tilei, tilej;
-            int reg0, reg1, regOne, j_start_reg, j_end_reg, last_i_reg, last_j_reg;
+            int reg0, reg1, regOne, j_start_reg, j_end_reg;
+            int last_i_reg, last_j_reg;
+#ifdef MAA_VIRTUAL_GATHER
+            int backing_start_reg;
+#endif
             int tid = omp_get_thread_num();
             tilelb = tiles1[tid];
             tileub = tiles2[tid];
@@ -236,11 +304,17 @@ pvector<ScoreT> PageRankPullMAA(const Graph &g, int max_iters, double epsilon = 
             regOne = regs2[tid];
             j_start_reg = regs3[tid];
             j_end_reg = regs4[tid];
+#ifdef MAA_VIRTUAL_GATHER
+            backing_start_reg = regs5[tid];
+#endif
             last_i_reg = last_i_regs[tid];
             last_j_reg = last_j_regs[tid];
 
             maa_const<int>(1, regOne);
             maa_const<int>(num_nodes, reg1);
+#ifdef MAA_VIRTUAL_GATHER
+            maa_const<int>(0, backing_start_reg);
+#endif
 
 #pragma omp for schedule(dynamic) reduction(+ : error)
             for (int uidx = 0; uidx < num_nodes; uidx += TILE_SIZE) {
@@ -264,7 +338,21 @@ pvector<ScoreT> PageRankPullMAA(const Graph &g, int max_iters, double epsilon = 
                     maa_stream_load<NodeID>(g.in_neighbors_, j_start_reg, j_end_reg, regOne, tile3);
                     // Transfer tilei, tile3
                     // then load curr_contrib[g.in_neighbors_[j]]
-                    maa_indirect_load<ScoreT>(curr_contrib.data(), tile3, tile5);
+#ifdef MAA_VIRTUAL_GATHER
+                    const int gather_size =
+                        std::min(j_max - j_base, TILE_SIZE);
+                    maa_indirect_load_virtual<ScoreT>(
+                        curr_contrib.data(), tile3, tile5,
+                        virtual_gather_backing[tid]);
+                    wait_ready(tile5);
+                    maa_const(gather_size, reg0);
+                    maa_stream_load<ScoreT>(virtual_gather_backing[tid],
+                                            backing_start_reg, reg0, regOne,
+                                            tile5);
+#else
+                    maa_indirect_load<ScoreT>(curr_contrib.data(), tile3,
+                                              tile5);
+#endif
                     // then do rmw for incoming_total[itile]
                     maa_indirect_rmw_vector<ScoreT>(incoming_total, tilei, tile5, Operation_t::ADD_OP);
                     wait_ready(tile3);
