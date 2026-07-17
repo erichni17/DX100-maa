@@ -488,7 +488,7 @@ int main(int argc, char *argv[]) {
         csurf[i] = 0.5f + static_cast<float>(i % 5) * 0.25f;
     }
     for (int i = 0; i < num_zones; ++i)
-        zone_field[i] = static_cast<float>((i % 31) + 1) * 0.0625f;
+        zone_field[i] = static_cast<float>(i + 1);
 #else
     std::fill(corner_volume.begin(), corner_volume.end(), 1.0);
     std::fill(csurf.begin(), csurf.end(), 1.0);
