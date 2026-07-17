@@ -30,7 +30,7 @@ protected:
     uint8_t *tiles_data;
     TileStatus *tiles_status;
     bool *tiles_dirty;
-    uint8_t *tiles_ready;
+    uint16_t *tiles_ready;
     uint32_t *tiles_size;
     bool *element_finished;
     std::vector<uint8_t> *waiting_units_funcs;

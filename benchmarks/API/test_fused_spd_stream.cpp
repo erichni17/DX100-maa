@@ -1,6 +1,7 @@
 #include "MAA.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <vector>
@@ -73,8 +74,14 @@ main()
         hash *= 1099511628211ULL;
     }
 
+    if (errors != 0) {
+        std::cerr << "FUSED_SPD_STREAM_FAIL length=" << length
+                  << " hash=" << hash << " errors=" << errors << std::endl;
+        std::abort();
+    }
+
     std::cout << "FUSED_SPD_STREAM_RESULT length=" << length
-              << " hash=" << hash << " errors=" << errors << std::endl;
+              << " hash=" << hash << " errors=0" << std::endl;
     m5_exit(0);
-    return errors == 0 ? 0 : 1;
+    return 0;
 }

@@ -1,16 +1,19 @@
 #include "mem/MAA/SPD.hh"
-#include "base/trace.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/MAA.hh"
-#include "mem/MAA/StreamAccess.hh"
-#include "mem/MAA/ALU.hh"
-#include "mem/MAA/RangeFuser.hh"
-#include "mem/MAA/IndirectAccess.hh"
-#include "base/types.hh"
-#include "debug/SPD.hh"
-#include "sim/cur_tick.hh"
+
 #include <cassert>
 #include <cstring>
+#include <limits>
+
+#include "base/trace.hh"
+#include "base/types.hh"
+#include "debug/SPD.hh"
+#include "mem/MAA/ALU.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/IndirectAccess.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/RangeFuser.hh"
+#include "mem/MAA/StreamAccess.hh"
+#include "sim/cur_tick.hh"
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -123,18 +126,23 @@ void SPD::setTileReady(int tile_id, int word_size) {
                  (word_size == 8 && tiles_ready[tile_id + 1] == 0),
              "Tile %d received a ready credit without a matching debit\n",
              tile_id);
-    tiles_ready[tile_id]++;
+    tiles_ready[tile_id]--;
     wakeup_waiting_units(tile_id);
     if (word_size == 8) {
-        tiles_ready[tile_id + 1]++;
+        tiles_ready[tile_id + 1]--;
         wakeup_waiting_units(tile_id + 1);
     }
 }
 void SPD::setTileNotReady(int tile_id, int word_size) {
     check_tile_id(tile_id, sizeof(uint32_t));
-    tiles_ready[tile_id]--;
+    constexpr auto max_ready_refs = std::numeric_limits<uint16_t>::max();
+    panic_if(tiles_ready[tile_id] == max_ready_refs ||
+                 (word_size == 8 &&
+                  tiles_ready[tile_id + 1] == max_ready_refs),
+             "Tile %d exceeded the readiness-reference limit\n", tile_id);
+    tiles_ready[tile_id]++;
     if (word_size == 8) {
-        tiles_ready[tile_id + 1]--;
+        tiles_ready[tile_id + 1]++;
     }
 }
 bool SPD::getTileReady(int tile_id) {
@@ -221,7 +229,7 @@ SPD::SPD(MAA *_maa,
     tiles_data = new uint8_t[num_tiles * num_tile_elements * sizeof(uint32_t)];
     tiles_status = new SPD::TileStatus[num_tiles];
     tiles_dirty = new bool[num_tiles];
-    tiles_ready = new uint8_t[num_tiles];
+    tiles_ready = new uint16_t[num_tiles];
     tiles_size = new uint32_t[num_tiles];
     for (int i = 0; i < num_tiles; i++) {
         tiles_status[i] = SPD::TileStatus::Finished;
