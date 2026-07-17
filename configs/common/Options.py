@@ -236,6 +236,11 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_virtual_words_per_cycle", type=int, default=0, help="Useful virtual response words retired per cycle (0 is unlimited)")
     parser.add_argument("--maa_virtual_max_outstanding_writes", type=int, default=32, help="Maximum acknowledged writes in flight for virtual gather retirement")
     parser.add_argument("--maa_virtual_masked_writes", action="store_true", help="Retire partial virtual lines as masked cache-line writes")
+    parser.add_argument(
+        "--maa_chain_profile",
+        action="store_true",
+        help="Profile native indirect-load/ALU/RMW value lifetimes without changing execution",
+    )
     parser.add_argument("--maa_num_request_table_addresses", type=int, default=128, help="Number of addresses in the request table")
     parser.add_argument("--maa_num_request_table_entries_per_address", type=int, default=16, help="Number of entries in the request table per address")
     parser.add_argument("--maa_spd_read_latency", type=int, default=1, help="SPD read latency")

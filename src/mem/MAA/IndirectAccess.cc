@@ -548,7 +548,18 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         if (my_cond_tile != -1) {
             num_spd_read_condidx_accesses++;
         }
-        if (my_cond_tile == -1 || maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0) {
+        const bool condition_enabled =
+            my_cond_tile == -1 ||
+            maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0;
+        if (!condition_enabled &&
+            my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_RMW_VECTOR) {
+            maa->chainProfileConsume(
+                my_src_tile,
+                ChainedConsumerProfiler::Stage::IndirectRmw,
+                my_i, false);
+        }
+        if (condition_enabled) {
             uint32_t idx = maa->spd->getData<uint32_t>(my_idx_tile, my_i);
             num_spd_read_condidx_accesses++;
             Addr vaddr = my_base_addr + my_word_size * idx;
@@ -605,6 +616,13 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         } else if (my_dst_tile != -1) {
             DPRINTF(MAAIndirect, "I[%d] %s: SPD[%d][%d] = %u (cond not taken)\n", my_indirect_id, __func__, my_dst_tile, my_i, 0);
             maa->spd->setFakeData(my_dst_tile, my_i, my_word_size);
+            if (my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_LD) {
+                maa->chainProfileProduce(
+                    my_dst_tile,
+                    ChainedConsumerProfiler::Stage::IndirectLoad,
+                    my_i, false);
+            }
         }
         my_i++;
     }
@@ -1307,6 +1325,13 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
                 DPRINTF(MAAIndirect, "I[%d] %s: SPD[%d][%d] = %lu/%ld/%lf!\n", my_indirect_id, __func__, my_dst_tile, itr, ((uint64_t *)new_data)[wid], ((int64_t *)new_data)[wid], ((double *)new_data)[wid]);
             }
             num_recv_spd_write_accesses++;
+            if (my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_LD) {
+                maa->chainProfileProduce(
+                    my_dst_tile,
+                    ChainedConsumerProfiler::Stage::IndirectLoad,
+                    itr, true);
+            }
         }
         switch (my_instruction->opcode) {
         case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
@@ -1335,6 +1360,10 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
             break;
         }
         case Instruction::OpcodeType::INDIR_RMW_VECTOR: {
+            maa->chainProfileConsume(
+                my_src_tile,
+                ChainedConsumerProfiler::Stage::IndirectRmw,
+                itr, true);
             switch (my_instruction->datatype) {
             case Instruction::DataType::UINT32_TYPE: {
                 uint32_t word_data = maa->spd->getData<uint32_t>(my_src_tile, itr);

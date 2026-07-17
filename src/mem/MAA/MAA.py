@@ -37,6 +37,11 @@ class MAA(ClockedObject):
         "Profile bounded pre-request RMW delta-combining opportunities "
         "without changing execution",
     )
+    chain_profile = Param.Bool(
+        False,
+        "Profile native indirect-load/ALU/RMW producer-consumer lifetimes "
+        "without changing execution",
+    )
     spd_read_latency = Param.Cycles(1, "SPD read latency")
     spd_write_latency = Param.Cycles(1, "SPD write latency")
     num_spd_read_ports_per_maa = Param.Unsigned(4, "Number of SPD read ports per DX100 instance")

@@ -14,6 +14,7 @@
 #include "arch/generic/mmu.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
+#include "mem/MAA/ChainedConsumerProfiler.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
@@ -408,6 +409,7 @@ public:
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     bool rmw_profile;
+    bool chain_profile;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;
     unsigned int num_memory_channels;
@@ -455,6 +457,14 @@ public:
     void resetStats() override;
     bool getAddrRegionPermit(Instruction *instruction);
     void scheduleIssueInstructionEvent(int latency = 0);
+    void chainProfileDispatch(const Instruction *instruction);
+    void chainProfileProduce(int tile,
+                             ChainedConsumerProfiler::Stage producer,
+                             int element, bool payload_enabled);
+    void chainProfileConsume(int tile,
+                             ChainedConsumerProfiler::Stage consumer,
+                             int element, bool payload_enabled);
+    void chainProfileFinish(const Instruction *instruction);
 
 protected:
     std::vector<RequestorID> my_instruction_RIDs;
@@ -478,6 +488,7 @@ protected:
     bool *aluUnitsIdle;
     bool *rangeUnitsIdle;
     bool invalidatorIdle;
+    ChainedConsumerProfiler chainedConsumerProfiler;
     std::unique_ptr<Packet> pendingDelete;
 
 public:
@@ -520,6 +531,23 @@ public:
         std::vector<statistics::Scalar *> RMWProfEvictions;
         std::vector<statistics::Scalar *> RMWProfAvoidableReadExRequests;
         std::vector<statistics::Scalar *> RMWProfExtraReadExRequests;
+
+        /** Non-functional native chained-consumer opportunity profile. */
+        statistics::Scalar chainProfEdges;
+        statistics::Scalar chainProfLoadAluEdges;
+        statistics::Scalar chainProfAluRmwEdges;
+        statistics::Scalar chainProfLogicalElements;
+        statistics::Scalar chainProfEnabledElements;
+        statistics::Scalar chainProfSkippedElements;
+        statistics::Scalar chainProfReadyOrderRegressions;
+        statistics::Scalar chainProfLiveValueTicks;
+        statistics::Scalar chainProfPeakLiveSum;
+        statistics::Scalar chainProfPeakLiveMax;
+        statistics::Scalar chainProfPeakSpanMax;
+        statistics::Scalar chainProfIncompleteEdges;
+        statistics::Scalar chainProfUnsupportedFanouts;
+        statistics::Scalar chainProfMalformedEvents;
+        std::vector<statistics::Scalar *> ChainProfEdgesOverCapacity;
 
         /** Cycles of instructions. */
         statistics::Scalar cycles_INDRD;

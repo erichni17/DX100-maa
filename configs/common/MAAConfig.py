@@ -72,6 +72,9 @@ def _get_maa_opts(options):
     if hasattr(options, "maa_rmw_profile"):
         opts["rmw_profile"] = getattr(options, "maa_rmw_profile")
 
+    if hasattr(options, "maa_chain_profile"):
+        opts["chain_profile"] = getattr(options, "maa_chain_profile")
+
     if(hasattr(options, "maa_num_request_table_addresses")):
         opts["num_request_table_addresses"] = getattr(options, "maa_num_request_table_addresses")
 

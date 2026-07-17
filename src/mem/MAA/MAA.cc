@@ -69,6 +69,7 @@ MAA::MAA(const MAAParams &p)
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       rmw_profile(p.rmw_profile),
+      chain_profile(p.chain_profile),
       num_request_table_addresses(p.num_request_table_addresses),
       num_request_table_entries_per_address(p.num_request_table_entries_per_address),
       num_memory_channels(p.num_memory_channels),
@@ -88,6 +89,8 @@ MAA::MAA(const MAAParams &p)
       sendCacheEvent([this] { sendOutstandingCachePacket(); }, name()),
       sendMemEvent([this] { sendOutstandingMemPacket(); }, name()) {
 
+    chainedConsumerProfiler.configure(
+        chain_profile, num_tiles, num_tile_elements);
     m_core_addr_bits = calc_log2(num_cores);
     panic_if(num_cores % num_maas != 0, "Number of cores %d must be a multiple of the number of MAAs %s\n", num_cores, num_maas);
     panic_if(num_indirect_units_per_maa == 0, "Number of indirect units per MAA must be positive\n");
@@ -603,6 +606,7 @@ void MAA::dispatchInstruction() {
             instruction->dst2Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->dst2SpdID, true);
             if (ifile->pushInstruction(*instruction)) {
                 DPRINTF(MAAController, "%s: %s dispatched!\n", __func__, instruction->print());
+                chainProfileDispatch(instruction);
                 if (instruction->dst1SpdID != -1) {
                     assert(instruction->dst1SpdID != instruction->src1SpdID);
                     assert(instruction->dst1SpdID != instruction->src2SpdID);
@@ -645,8 +649,134 @@ void MAA::dispatchInstruction() {
         }
     }
 }
+void MAA::chainProfileDispatch(const Instruction *instruction) {
+    if (!chain_profile)
+        return;
+
+    using Opcode = Instruction::OpcodeType;
+    using OP = Instruction::OPType;
+    using Stage = ChainedConsumerProfiler::Stage;
+    const uint64_t malformed_before =
+        chainedConsumerProfiler.malformedEvents();
+    const uint64_t fanout_before =
+        chainedConsumerProfiler.unsupportedFanouts();
+
+    if (instruction->dst1SpdID != -1) {
+        Stage producer = Stage::Other;
+        if (instruction->opcode == Opcode::INDIR_LD)
+            producer = Stage::IndirectLoad;
+        else if (instruction->opcode == Opcode::ALU_VECTOR &&
+                 instruction->optype == OP::MUL_OP)
+            producer = Stage::Alu;
+        chainedConsumerProfiler.declareProducer(
+            instruction->dst1SpdID, producer);
+    }
+    if (instruction->dst2SpdID != -1) {
+        chainedConsumerProfiler.declareProducer(
+            instruction->dst2SpdID, Stage::Other);
+    }
+
+    if (instruction->opcode == Opcode::ALU_VECTOR &&
+        instruction->optype == OP::MUL_OP) {
+        chainedConsumerProfiler.declareConsumer(
+            instruction->src1SpdID, Stage::Alu);
+        if (instruction->src2SpdID != instruction->src1SpdID) {
+            chainedConsumerProfiler.declareConsumer(
+                instruction->src2SpdID, Stage::Alu);
+        }
+    } else if (instruction->opcode == Opcode::INDIR_RMW_VECTOR &&
+               instruction->optype == OP::ADD_OP) {
+        chainedConsumerProfiler.declareConsumer(
+            instruction->src2SpdID, Stage::IndirectRmw);
+    }
+
+    stats.chainProfMalformedEvents +=
+        chainedConsumerProfiler.malformedEvents() - malformed_before;
+    stats.chainProfUnsupportedFanouts +=
+        chainedConsumerProfiler.unsupportedFanouts() - fanout_before;
+}
+void MAA::chainProfileProduce(int tile,
+                              ChainedConsumerProfiler::Stage producer,
+                              int element, bool payload_enabled) {
+    if (!chain_profile)
+        return;
+    const uint64_t malformed_before =
+        chainedConsumerProfiler.malformedEvents();
+    chainedConsumerProfiler.produce(
+        tile, producer, element, payload_enabled, curTick());
+    stats.chainProfMalformedEvents +=
+        chainedConsumerProfiler.malformedEvents() - malformed_before;
+}
+void MAA::chainProfileConsume(int tile,
+                              ChainedConsumerProfiler::Stage consumer,
+                              int element, bool payload_enabled) {
+    if (!chain_profile)
+        return;
+    const uint64_t malformed_before =
+        chainedConsumerProfiler.malformedEvents();
+    chainedConsumerProfiler.consume(
+        tile, consumer, element, payload_enabled, curTick());
+    stats.chainProfMalformedEvents +=
+        chainedConsumerProfiler.malformedEvents() - malformed_before;
+}
+void MAA::chainProfileFinish(const Instruction *instruction) {
+    if (!chain_profile)
+        return;
+
+    using Opcode = Instruction::OpcodeType;
+    using OP = Instruction::OPType;
+    using Stage = ChainedConsumerProfiler::Stage;
+    auto record = [this](
+                      const std::optional<
+                          ChainedConsumerProfiler::EdgeSummary> &summary) {
+        if (!summary.has_value())
+            return;
+        const auto &edge = *summary;
+        stats.chainProfEdges++;
+        if (edge.producer == Stage::IndirectLoad &&
+            edge.consumer == Stage::Alu) {
+            stats.chainProfLoadAluEdges++;
+        } else if (edge.producer == Stage::Alu &&
+                   edge.consumer == Stage::IndirectRmw) {
+            stats.chainProfAluRmwEdges++;
+        }
+        stats.chainProfLogicalElements += edge.logicalElements;
+        stats.chainProfEnabledElements += edge.enabledElements;
+        stats.chainProfSkippedElements += edge.skippedElements;
+        stats.chainProfReadyOrderRegressions +=
+            edge.readyOrderRegressions;
+        stats.chainProfLiveValueTicks += edge.liveValueTicks;
+        stats.chainProfPeakLiveSum += edge.maxLiveValues;
+        if (stats.chainProfPeakLiveMax.value() < edge.maxLiveValues)
+            stats.chainProfPeakLiveMax = edge.maxLiveValues;
+        if (stats.chainProfPeakSpanMax.value() < edge.maxLiveSpan)
+            stats.chainProfPeakSpanMax = edge.maxLiveSpan;
+        if (edge.incomplete)
+            stats.chainProfIncompleteEdges++;
+        const std::array<uint64_t, 4> capacities = {64, 128, 256, 512};
+        for (std::size_t i = 0; i < capacities.size(); ++i) {
+            if (edge.maxLiveValues > capacities[i])
+                (*stats.ChainProfEdgesOverCapacity[i])++;
+        }
+    };
+
+    if (instruction->opcode == Opcode::ALU_VECTOR &&
+        instruction->optype == OP::MUL_OP) {
+        record(chainedConsumerProfiler.finishConsumer(
+            instruction->src1SpdID, Stage::Alu));
+        if (instruction->src2SpdID != instruction->src1SpdID) {
+            record(chainedConsumerProfiler.finishConsumer(
+                instruction->src2SpdID, Stage::Alu));
+        }
+    } else if (instruction->opcode == Opcode::INDIR_RMW_VECTOR &&
+               instruction->optype == OP::ADD_OP) {
+        record(chainedConsumerProfiler.finishConsumer(
+            instruction->src2SpdID, Stage::IndirectRmw));
+    }
+}
 void MAA::finishInstructionCompute(Instruction *instruction) {
     DPRINTF(MAAController, "%s: %s finishing!\n", __func__, instruction->print());
+    chainProfileFinish(instruction);
     if (instruction->dst1SpdID != -1) {
         spd->setTileFinished(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
         setTileReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
@@ -849,6 +979,50 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
           "baseline ReadEx requests from fully eligible integer ADD/MIN/MAX "
           "instructions"),
       ADD_STAT(
+          chainProfEdges, statistics::units::Count::get(),
+          "eligible native producer-consumer edges profiled"),
+      ADD_STAT(
+          chainProfLoadAluEdges, statistics::units::Count::get(),
+          "native indirect-load to multiply-ALU edges profiled"),
+      ADD_STAT(
+          chainProfAluRmwEdges, statistics::units::Count::get(),
+          "native multiply-ALU to ADD-RMW edges profiled"),
+      ADD_STAT(
+          chainProfLogicalElements, statistics::units::Count::get(),
+          "logical elements observed across eligible chain edges"),
+      ADD_STAT(
+          chainProfEnabledElements, statistics::units::Count::get(),
+          "condition-enabled values produced across chain edges"),
+      ADD_STAT(
+          chainProfSkippedElements, statistics::units::Count::get(),
+          "condition-disabled logical elements across chain edges"),
+      ADD_STAT(
+          chainProfReadyOrderRegressions, statistics::units::Count::get(),
+          "producer-ready events whose logical index regressed"),
+      ADD_STAT(
+          chainProfLiveValueTicks, statistics::units::Count::get(),
+          "sum of ticks from value production to native consumption"),
+      ADD_STAT(
+          chainProfPeakLiveSum, statistics::units::Count::get(),
+          "sum of per-edge peak produced-not-consumed values"),
+      ADD_STAT(
+          chainProfPeakLiveMax, statistics::units::Count::get(),
+          "maximum produced-not-consumed values on any edge"),
+      ADD_STAT(
+          chainProfPeakSpanMax, statistics::units::Count::get(),
+          "maximum logical-index span of live values on any edge"),
+      ADD_STAT(
+          chainProfIncompleteEdges, statistics::units::Count::get(),
+          "profiled edges with unmatched production/consumption"),
+      ADD_STAT(
+          chainProfUnsupportedFanouts, statistics::units::Count::get(),
+          "additional consumers rejected by the version-1 single-consumer "
+          "profile"),
+      ADD_STAT(
+          chainProfMalformedEvents, statistics::units::Count::get(),
+          "duplicate, out-of-range, mismatched-condition, or otherwise "
+          "malformed profiler events"),
+      ADD_STAT(
           cycles_INDRD, statistics::units::Count::get(),
           "number of indirect read instruction cycles"),
       ADD_STAT(cycles_INDWR, statistics::units::Count::get(), "number of indirect write instruction cycles"),
@@ -908,6 +1082,20 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
     rmwProfUniqueLines.flags(statistics::nozero);
     rmwProfBaselineReadExRequests.flags(statistics::nozero);
     rmwProfEligibleBaselineReadExRequests.flags(statistics::nozero);
+    chainProfEdges.flags(statistics::nozero);
+    chainProfLoadAluEdges.flags(statistics::nozero);
+    chainProfAluRmwEdges.flags(statistics::nozero);
+    chainProfLogicalElements.flags(statistics::nozero);
+    chainProfEnabledElements.flags(statistics::nozero);
+    chainProfSkippedElements.flags(statistics::nozero);
+    chainProfReadyOrderRegressions.flags(statistics::nozero);
+    chainProfLiveValueTicks.flags(statistics::nozero);
+    chainProfPeakLiveSum.flags(statistics::nozero);
+    chainProfPeakLiveMax.flags(statistics::nozero);
+    chainProfPeakSpanMax.flags(statistics::nozero);
+    chainProfIncompleteEdges.flags(statistics::nozero);
+    chainProfUnsupportedFanouts.flags(statistics::nozero);
+    chainProfMalformedEvents.flags(statistics::nozero);
     cycles_INDRD.flags(statistics::nozero);
     cycles_INDWR.flags(statistics::nozero);
     cycles_INDRMW.flags(statistics::nozero);
@@ -998,6 +1186,17 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         RMWProfEvictions.back()->flags(statistics::nozero);
         RMWProfAvoidableReadExRequests.back()->flags(statistics::nozero);
         RMWProfExtraReadExRequests.back()->flags(statistics::nozero);
+    }
+
+    const std::array<int, 4> chain_capacities = {64, 128, 256, 512};
+    for (const int capacity : chain_capacities) {
+        ChainProfEdgesOverCapacity.push_back(new statistics::Scalar(
+            this,
+            ("ChainProfEdgesOver" + std::to_string(capacity)).c_str(),
+            statistics::units::Count::get(),
+            "native chain edges whose peak live values exceed this task "
+            "capacity"));
+        ChainProfEdgesOverCapacity.back()->flags(statistics::nozero);
     }
 
     for (int indirect_id = 0; indirect_id < num_indirect_units; indirect_id++) {

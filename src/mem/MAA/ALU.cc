@@ -260,7 +260,22 @@ void ALUUnit::executeInstruction() {
                 updateLatency(num_spd_read_data_accesses, num_spd_read_cond_accesses, num_spd_write_accesses, num_alu_accesses);
                 return;
             }
-            if (my_cond_tile == -1 || maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0) {
+            const bool condition_enabled =
+                my_cond_tile == -1 ||
+                maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0;
+            if (my_instruction->opcode ==
+                    Instruction::OpcodeType::ALU_VECTOR &&
+                my_instruction->optype == Instruction::OPType::MUL_OP) {
+                maa->chainProfileConsume(
+                    my_src1_tile, ChainedConsumerProfiler::Stage::Alu,
+                    my_i, condition_enabled);
+                if (my_src2_tile != my_src1_tile) {
+                    maa->chainProfileConsume(
+                        my_src2_tile, ChainedConsumerProfiler::Stage::Alu,
+                        my_i, condition_enabled);
+                }
+            }
+            if (condition_enabled) {
                 num_alu_accesses++;
                 switch (my_instruction->datatype) {
                 case Instruction::DataType::UINT32_TYPE: {
@@ -820,6 +835,13 @@ void ALUUnit::executeInstruction() {
                         assert(false);
                     }
                 }
+            }
+            if (my_instruction->opcode ==
+                    Instruction::OpcodeType::ALU_VECTOR &&
+                my_instruction->optype == Instruction::OPType::MUL_OP) {
+                maa->chainProfileProduce(
+                    my_dst_tile, ChainedConsumerProfiler::Stage::Alu,
+                    my_i, condition_enabled);
             }
             my_i++;
         }
