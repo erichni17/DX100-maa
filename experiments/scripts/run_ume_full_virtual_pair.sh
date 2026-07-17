@@ -27,8 +27,23 @@ expected_elements=$8
 config=$root/configs/deprecated/example/se.py
 ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
 runner=$(realpath "$0")
+if [[ -e $campaign ]]; then
+    echo "campaign output already exists; choose a new path: $campaign" >&2
+    exit 2
+fi
 mkdir -p "$campaign"
-exec > >(tee -a "$campaign/controller.log") 2>&1
+campaign_initialized=1
+finish_campaign() {
+    local rc=$?
+    trap - EXIT
+    if [[ ${campaign_initialized:-0} -eq 1 && $rc -ne 0 ]]; then
+        rm -f "$campaign/campaign.pass"
+        printf '%s\n' "$rc" > "$campaign/campaign.fail"
+    fi
+    exit "$rc"
+}
+trap finish_campaign EXIT
+exec > >(tee "$campaign/controller.log") 2>&1
 
 sha256sum "$gem5" "$config" "$ramulator" "$native" "$virtual" \
     "$root/benchmarks/API/MAA_gem5.hpp" "$source_file" \
@@ -41,7 +56,7 @@ sha256sum "$gem5" "$config" "$ramulator" "$native" "$virtual" \
     printf 'n=%s\n' "$n"
     printf 'expected_hash=%s\n' "$expected_hash"
     printf 'expected_elements=%s\n' "$expected_elements"
-    printf '%s\n' 'oracle_policy=predeclared scalar hash and exact final reference'
+    printf '%s\n' 'oracle_policy=caller-supplied expected hash and exact final scalar reference'
     printf '%s\n' 'timing_policy=first ROI stats; fingerprint and reference are out of ROI'
 } > "$campaign/source.txt"
 export LD_LIBRARY_PATH="$root/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
@@ -114,19 +129,27 @@ virtual_args=(
 extract_first_stats() {
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
-        section == 1 && $1 == "simTicks" { ticks=$2 }
-        section == 1 && $1 == "system.maa.cycles_TOTAL" { cycles=$2 }
+        section == 1 && $1 == "simTicks" { ticks=$2; ticks_seen++ }
+        section == 1 && $1 == "system.maa.cycles_TOTAL" {
+            cycles=$2; cycles_seen++
+        }
         section == 1 && $1 ~ /^system\.maa\.I[0-9]+_IND_VirtWriteIssues$/ {
-            issues += $2
+            issues += $2; issues_seen++
         }
         section == 1 && $1 ~ /^system\.maa\.I[0-9]+_IND_VirtWriteCompletions$/ {
-            completions += $2
+            completions += $2; completions_seen++
         }
         /^---------- End Simulation Statistics/ && section == 1 {
-            printf "%s\t%s\t%s\t%s\n", ticks, cycles,
-                issues + 0, completions + 0
-            exit
+            if (ticks_seen != 1 || cycles_seen != 1 ||
+                issues_seen == 0 || completions_seen == 0 ||
+                ticks !~ /^[0-9]+$/ || cycles !~ /^[0-9]+$/)
+                exit 2
+            printf "%s\n%s\n%.0f\n%.0f\n", ticks, cycles,
+                issues, completions
+            emitted=1
+            exit 0
         }
+        END { if (!emitted) exit 2 }
     ' "$1"
 }
 
@@ -154,6 +177,8 @@ restore_one() {
     printf '%s\n' "$rc" > "$out/restore.exit"
 
     local roi fatal fp_count reference_count ticks cycles issues completions
+    local stats_blob
+    local -a stats_fields=()
     local valid=1
     roi=$(grep -Fxc 'ROI Ended' "$out/restore.log" || true)
     fatal=$(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' \
@@ -161,13 +186,30 @@ restore_one() {
     fp_count=$(grep -Fxc \
         "UME_OUTPUT_FP output_hash=$expected_hash nonfinite=0" \
         "$out/restore.log" || true)
-    reference_count=$(grep -Fxc \
-        "UME_REFERENCE_PASS point_volume_errors=0 point_gradient_errors=0 elements=$expected_elements" \
+    reference_count=$(grep -Exc \
+        "UME_REFERENCE_PASS (point_)?volume_errors=0 (point_)?gradient_errors=0 elements=$expected_elements" \
         "$out/restore.log" || true)
-    read -r ticks cycles issues completions \
-        < <(extract_first_stats "$out/stats.txt")
+    ticks=NA
+    cycles=NA
+    issues=-1
+    completions=-1
+    if stats_blob=$(extract_first_stats "$out/stats.txt"); then
+        mapfile -t stats_fields <<< "$stats_blob"
+        if [[ ${#stats_fields[@]} -eq 4 ]]; then
+            ticks=${stats_fields[0]}
+            cycles=${stats_fields[1]}
+            issues=${stats_fields[2]}
+            completions=${stats_fields[3]}
+        else
+            valid=0
+        fi
+    else
+        valid=0
+    fi
+    [[ $ticks =~ ^[1-9][0-9]*$ && $cycles =~ ^[1-9][0-9]*$ &&
+       $issues =~ ^[0-9]+$ && $completions =~ ^[0-9]+$ ]] || valid=0
     [[ $rc -eq 0 && $roi -eq 1 && $fatal -eq 0 && $fp_count -eq 1 && \
-       $reference_count -eq 1 && -n $ticks && -n $cycles ]] || valid=0
+       $reference_count -eq 1 ]] || valid=0
     if [[ $arm == virtual ]]; then
         [[ $issues -gt 0 && $issues -eq $completions ]] || valid=0
     else
@@ -198,8 +240,22 @@ run_phase() {
         wait "$pid" || status=1
     done
     [[ $status -eq 0 ]]
+    local -a replica_dirs=()
+    mapfile -t replica_dirs < <(
+        find "$campaign/runs/$arm" -mindepth 1 -maxdepth 1 -type d \
+            -name 'replica_*' -printf '%f\n' | sort
+    )
+    [[ ${#replica_dirs[@]} -eq 3 &&
+       ${replica_dirs[0]} == replica_1 &&
+       ${replica_dirs[1]} == replica_2 &&
+       ${replica_dirs[2]} == replica_3 ]]
+    for replica in 1 2 3; do
+        [[ -f $campaign/runs/$arm/replica_$replica/result.tsv ]]
+    done
     mapfile -t unique_ticks \
-        < <(cut -f4 "$campaign"/runs/$arm/*/result.tsv | sort -u)
+        < <(for replica in 1 2 3; do
+            cut -f4 "$campaign/runs/$arm/replica_$replica/result.tsv"
+        done | sort -u)
     [[ ${#unique_ticks[@]} -eq 1 ]]
 }
 
@@ -209,6 +265,10 @@ run_phase virtual "$virtual" "${virtual_args[@]}"
 
 printf 'arm\treplica\trc\tsim_ticks\tmaa_cycles\twrite_issues\twrite_completions\toutput_hash\tfatal_count\tvalid\n' \
     > "$campaign/results.tsv"
-cat "$campaign"/runs/{native,virtual}/*/result.tsv >> "$campaign/results.tsv"
+for arm in native virtual; do
+    for replica in 1 2 3; do
+        cat "$campaign/runs/$arm/replica_$replica/result.tsv"
+    done
+done >> "$campaign/results.tsv"
 : > "$campaign/campaign.pass"
 cat "$campaign/results.tsv"

@@ -29,7 +29,14 @@ int main(int argc, char **argv) {
         pattern == "condition" || pattern == "allfalse" ||
         pattern == "alltrue" || pattern == "boundary";
     constexpr int line_guard_words = 16;
-    const int pattern_offset = pattern == "page" ? 509 : conditioned ? 5 : 0;
+    int pattern_offset = pattern == "page" ? 509 : conditioned ? 5 : 0;
+    if (pattern == "line") {
+        const uintptr_t base =
+            reinterpret_cast<uintptr_t>(backing_storage.data());
+        const int words_to_line =
+            ((64 - (base & 63)) & 63) / sizeof(int64_t);
+        pattern_offset = words_to_line + 1;
+    }
     const int backing_offset = line_guard_words + pattern_offset;
     int64_t *backing = backing_storage.data() + backing_offset;
     for (int i = 0; i < static_cast<int>(source.size()); ++i)
@@ -51,10 +58,10 @@ int main(int argc, char **argv) {
     if (pattern != "random" && pattern != "fanout" &&
         pattern != "page" && pattern != "native" &&
         pattern != "condition" && pattern != "allfalse" &&
-        pattern != "alltrue" && pattern != "boundary" &&
+        pattern != "alltrue" && pattern != "boundary" && pattern != "line" &&
         pattern != "short" && pattern != "unregistered") {
         std::cerr << "pattern must be random, fanout, page, native, "
-                     "condition, allfalse, alltrue, boundary, short, or "
+                     "condition, allfalse, alltrue, boundary, line, short, or "
                      "unregistered"
                   << std::endl;
         return 2;
@@ -70,6 +77,8 @@ int main(int argc, char **argv) {
     add_mem_region(indices.data(), indices.data() + indices.size());
     if (pattern == "short")
         add_mem_region(backing, backing + n - 1);
+    else if (pattern == "line")
+        add_mem_region(backing, backing + n);
     else if (pattern != "unregistered")
         add_mem_region(backing_storage.data(),
                        backing_storage.data() + backing_storage.size());
