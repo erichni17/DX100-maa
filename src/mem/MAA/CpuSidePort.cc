@@ -281,6 +281,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     "indirect loads!\n");
                 current_instruction->backingAddr = data;
                 current_instruction->backingAddrRangeID = getAddrRegion(data);
+                panic_if(current_instruction->backingAddrRangeID < 0,
+                         "Backing address 0x%lx is not in a registered "
+                         "memory region\n",
+                         data);
                 current_instruction->backingMinAddr =
                     addrRegions[current_instruction->backingAddrRangeID].first;
                 current_instruction->backingMaxAddr = addrRegions[

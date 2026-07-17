@@ -23,20 +23,39 @@ int main(int argc, char **argv) {
 
     std::vector<int64_t> source(n * 4);
     std::vector<int32_t> indices(n);
-    std::vector<int64_t> backing_storage(n + 1024, -1);
-    const int backing_offset = pattern == "page" ? 509 : 0;
+    std::vector<int32_t> conditions(n);
+    std::vector<int64_t> backing_storage(n + 2048, -1);
+    const bool conditioned =
+        pattern == "condition" || pattern == "allfalse" ||
+        pattern == "alltrue" || pattern == "boundary";
+    constexpr int line_guard_words = 16;
+    const int pattern_offset = pattern == "page" ? 509 : conditioned ? 5 : 0;
+    const int backing_offset = line_guard_words + pattern_offset;
     int64_t *backing = backing_storage.data() + backing_offset;
     for (int i = 0; i < static_cast<int>(source.size()); ++i)
         source[i] = i * 17 + 3;
     for (int i = 0; i < n; ++i) {
+        if (pattern == "allfalse")
+            conditions[i] = 0;
+        else if (pattern == "alltrue")
+            conditions[i] = 1;
+        else if (pattern == "boundary")
+            conditions[i] = i < 2 || i >= n - 2 || i == 7 || i == 8;
+        else
+            conditions[i] = (i % 3) != 0;
         if (pattern == "fanout")
             indices[i] = 13;
         else
             indices[i] = (i * 97 + 13) % source.size();
     }
-    if (pattern != "random" && pattern != "fanout" && pattern != "page" &&
-        pattern != "native") {
-        std::cerr << "pattern must be random, fanout, page, or native"
+    if (pattern != "random" && pattern != "fanout" &&
+        pattern != "page" && pattern != "native" &&
+        pattern != "condition" && pattern != "allfalse" &&
+        pattern != "alltrue" && pattern != "boundary" &&
+        pattern != "short" && pattern != "unregistered") {
+        std::cerr << "pattern must be random, fanout, page, native, "
+                     "condition, allfalse, alltrue, boundary, short, or "
+                     "unregistered"
                   << std::endl;
         return 2;
     }
@@ -49,23 +68,38 @@ int main(int argc, char **argv) {
     clear_mem_region();
     add_mem_region(source.data(), source.data() + source.size());
     add_mem_region(indices.data(), indices.data() + indices.size());
-    add_mem_region(backing, backing + n);
+    if (pattern == "short")
+        add_mem_region(backing, backing + n - 1);
+    else if (pattern != "unregistered")
+        add_mem_region(backing_storage.data(),
+                       backing_storage.data() + backing_storage.size());
+    add_mem_region(conditions.data(), conditions.data() + conditions.size());
 
     int min_reg = get_new_reg<int>(0);
     int max_reg = get_new_reg<int>(n);
     int stride_reg = get_new_reg<int>(1);
     int idx_tile = get_new_tile<int>();
+    int cond_tile = get_new_tile<int>();
     int completion_tile = get_new_tile<int64_t>();
 
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
 
-    maa_stream_load<int>(indices.data(), min_reg, max_reg, stride_reg, idx_tile);
+    if (conditioned) {
+        maa_stream_load<int>(conditions.data(), min_reg, max_reg, stride_reg,
+                             cond_tile);
+        maa_stream_load<int>(indices.data(), min_reg, max_reg, stride_reg,
+                             idx_tile, cond_tile);
+    } else {
+        maa_stream_load<int>(indices.data(), min_reg, max_reg, stride_reg,
+                             idx_tile);
+    }
     if (pattern == "native")
         maa_indirect_load<int64_t>(source.data(), idx_tile, completion_tile);
     else
         maa_indirect_load_virtual<int64_t>(source.data(), idx_tile,
-                                           completion_tile, backing);
+                                           completion_tile, backing,
+                                           conditioned ? cond_tile : -1);
     wait_ready(completion_tile);
 
     m5_dump_stats(0, 0);
@@ -76,7 +110,9 @@ int main(int argc, char **argv) {
                           ? get_cacheable_tile_pointer<int64_t>(completion_tile)
                           : backing;
     for (int i = 0; i < n; ++i) {
-        const int64_t expected = source[indices[i]];
+        const int64_t expected = conditioned && !conditions[i]
+                                     ? -1
+                                     : source[indices[i]];
         if (result[i] != expected && errors++ < 10)
             std::cerr << "mismatch[" << i << "]: got " << result[i]
                       << ", expected " << expected << std::endl;
@@ -93,6 +129,7 @@ int main(int argc, char **argv) {
     std::cout << "VIRTUAL_GATHER64_RESULT n=" << n << " pattern=" << pattern
               << " errors=" << errors
               << std::endl;
+    std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
     return errors == 0 ? 0 : 1;
 }

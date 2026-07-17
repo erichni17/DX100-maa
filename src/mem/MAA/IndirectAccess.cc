@@ -729,6 +729,21 @@ void IndirectAccessUnit::executeInstruction() {
         my_min_addr = my_instruction->minAddr;
         my_max_addr = my_instruction->maxAddr;
         my_addr_range_id = my_instruction->addrRangeID;
+        my_backing_min_addr = my_instruction->backingMinAddr;
+        my_backing_max_addr = my_instruction->backingMaxAddr;
+        my_backing_addr_range_id = my_instruction->backingAddrRangeID;
+        if (my_instruction->opcode ==
+            Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+            panic_if(my_backing_addr_range_id < 0,
+                     "I[%d] virtual backing has no registered region\n",
+                     my_indirect_id);
+            panic_if(my_backing_addr < my_backing_min_addr ||
+                         my_backing_addr >= my_backing_max_addr,
+                     "I[%d] virtual backing 0x%lx out of range "
+                     "[0x%lx, 0x%lx)\n",
+                     my_indirect_id, my_backing_addr, my_backing_min_addr,
+                     my_backing_max_addr);
+        }
 
         // Setting the state of the instruction and stream unit
         my_instruction->state = Instruction::Status::Service;
@@ -1494,8 +1509,41 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
     }
     return true;
 }
+Addr IndirectAccessUnit::backingWordAddr(int itr) const {
+    panic_if(itr < 0, "I[%d] negative virtual backing index %d\n",
+             my_indirect_id, itr);
+    panic_if(my_word_size <= 0,
+             "I[%d] invalid virtual backing word size %d\n",
+             my_indirect_id, my_word_size);
+    panic_if(my_backing_addr < my_backing_min_addr ||
+                 my_backing_addr >= my_backing_max_addr,
+             "I[%d] virtual backing base 0x%lx out of range "
+             "[0x%lx, 0x%lx)\n",
+             my_indirect_id, my_backing_addr, my_backing_min_addr,
+             my_backing_max_addr);
+    const Addr remaining = my_backing_max_addr - my_backing_addr;
+    const Addr index = static_cast<Addr>(itr);
+    panic_if(index >= remaining / static_cast<Addr>(my_word_size),
+             "I[%d] virtual backing index %d with word size %d exceeds "
+             "[0x%lx, 0x%lx)\n",
+             my_indirect_id, itr, my_word_size, my_backing_min_addr,
+             my_backing_max_addr);
+    return my_backing_addr + index * my_word_size;
+}
+
+void IndirectAccessUnit::validateRetirementWriteRange(Addr vaddr,
+                                                       unsigned size) const {
+    panic_if(size == 0 || vaddr < my_backing_min_addr ||
+                 vaddr >= my_backing_max_addr ||
+                 static_cast<Addr>(size) > my_backing_max_addr - vaddr,
+             "I[%d] virtual retirement write [0x%lx, 0x%lx) exceeds "
+             "backing range [0x%lx, 0x%lx)\n",
+             my_indirect_id, vaddr, vaddr + size, my_backing_min_addr,
+             my_backing_max_addr);
+}
+
 bool IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
-    Addr vaddr = my_backing_addr + itr * my_word_size;
+    const Addr vaddr = backingWordAddr(itr);
     return createRetirementWrite(vaddr, my_word_size, data);
 }
 
@@ -1503,6 +1551,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
                                                 const uint8_t *data,
                                                 uint16_t valid_words) {
     accountVirtualRequestInterval();
+    validateRetirementWriteRange(vaddr, size);
     Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
     const Addr write_key = size == block_size
         ? paddr & ~(block_size - 1) : paddr;
@@ -1510,6 +1559,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
         return false;
     RequestPtr req = std::make_shared<Request>(paddr, size, flags,
                                                maa->requestorId);
+    req->setRegion(my_backing_addr_range_id);
     std::vector<bool> byte_enable;
     if (valid_words != 0) {
         panic_if(size != block_size,
@@ -1639,7 +1689,7 @@ bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
     if (virtual_combine_banks == 0)
         return true;
 
-    const Addr vaddr = my_backing_addr + itr * my_word_size;
+    const Addr vaddr = backingWordAddr(itr);
     const Addr line_vaddr = vaddr & ~(block_size - 1);
     const int ways = virtual_combine_ways;
     const int num_sets = virtual_combine_slots.size() / ways;
@@ -1660,7 +1710,7 @@ bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
 bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                                                    const uint8_t *data) {
     // Each logical gather iteration owns one non-aliasing backing-array word.
-    const Addr vaddr = my_backing_addr + itr * my_word_size;
+    const Addr vaddr = backingWordAddr(itr);
     const Addr line_vaddr = vaddr & ~(block_size - 1);
     const unsigned word = (vaddr - line_vaddr) / my_word_size;
     const uint16_t word_bit = 1U << word;

@@ -193,8 +193,10 @@ protected:
     int my_words_per_cl = -1;
     Addr my_virtual_addr = 0;
     Addr my_base_addr, my_backing_addr, my_min_addr, my_max_addr;
-    int8_t my_addr_range_id;
-    int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max, my_idx_tile;
+    Addr my_backing_min_addr, my_backing_max_addr;
+    int8_t my_addr_range_id, my_backing_addr_range_id;
+    int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
+    int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
     int my_expected_responses;
     int my_received_responses;
@@ -223,6 +225,8 @@ protected:
 
     Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
                          unsigned size = 64);
+    Addr backingWordAddr(int itr) const;
+    void validateRetirementWriteRange(Addr vaddr, unsigned size) const;
     bool createRetirementWrite(int itr, const uint8_t *data);
     bool createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data,
                                uint16_t valid_words = 0);

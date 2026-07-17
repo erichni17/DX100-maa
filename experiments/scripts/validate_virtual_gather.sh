@@ -28,6 +28,8 @@ response_word_pool=${12:-0}
 combine_ways=${13:-0}
 words_per_cycle=${14:-0}
 combine_banks=${15:-0}
+expect_failure=${EXPECT_FAILURE:-0}
+expected_failure_regex=${EXPECTED_FAILURE_REGEX:-virtual (backing index|retirement write).*exceeds}
 masked_args=()
 if [[ "$masked_writes" == 1 ]]; then
     masked_args+=(--maa_virtual_masked_writes)
@@ -38,11 +40,20 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 rm -rf "$outdir"
 mkdir -p "$outdir"
 
+set +e
 /usr/bin/time -f 'checkpoint_wall=%e checkpoint_rss_kb=%M' \
     timeout 300 "$gem5" --listener-mode=off --outdir="$outdir" "$config" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB --max-checkpoints=1 \
     --cmd "$binary" --options "$n $pattern" >"$outdir/checkpoint.log" 2>&1
+checkpoint_rc=$?
+set -e
+printf '%s\n' "$checkpoint_rc" >"$outdir/checkpoint.exit"
+[[ $checkpoint_rc -eq 0 ]] || {
+    echo "checkpoint failed with rc=$checkpoint_rc" >&2
+    exit 1
+}
 
+set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
 /usr/bin/time -f 'restore_wall=%e restore_rss_kb=%M' \
     timeout "$timeout_seconds" "$gem5" --listener-mode=off \
@@ -70,6 +81,27 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "${masked_args[@]}" \
     --cmd "$binary" \
     --options "$n $pattern" >"$outdir/restore.log" 2>&1
+restore_rc=$?
+set -e
+printf '%s\n' "$restore_rc" >"$outdir/restore.exit"
+
+if [[ $expect_failure == 1 ]]; then
+    [[ $restore_rc -ne 0 ]] || {
+        echo "expected restore failure but command exited zero" >&2
+        exit 1
+    }
+    grep -Eiq "$expected_failure_regex" "$outdir/restore.log" || {
+        echo "restore failed without expected bounds diagnostic" >&2
+        exit 1
+    }
+    echo "VIRTUAL_GATHER_EXPECTED_FAILURE pattern=$pattern rc=$restore_rc"
+    exit 0
+fi
+
+[[ $restore_rc -eq 0 ]] || {
+    echo "restore failed with rc=$restore_rc" >&2
+    exit 1
+}
 
 mapfile -t results < <(
     grep -E 'VIRTUAL_GATHER(64)?_RESULT' "$outdir/restore.log" || true
@@ -78,6 +110,14 @@ if [[ ${#results[@]} -ne 1 ]]; then
     printf 'expected one result marker, found %d\n' "${#results[@]}" >&2
     exit 1
 fi
+roi_count=$(grep -Fxc 'ROI Ended' "$outdir/restore.log" || true)
+fatal_count=$(grep -Eic \
+    'panic|fatal|assert|abort|segmentation fault|error:' \
+    "$outdir/restore.log" || true)
+[[ $roi_count -eq 1 && $fatal_count -eq 0 ]] || {
+    echo "invalid completion: roi_count=$roi_count fatal_count=$fatal_count" >&2
+    exit 1
+}
 printf '%s\n' "${results[0]}"
 if [[ ! ${results[0]} =~ (^|[[:space:]])errors=0($|[[:space:]]) ]]; then
     echo "virtual gather verifier reported errors" >&2
