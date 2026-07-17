@@ -69,18 +69,31 @@ using namespace std;
 int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES], tiles3[NUM_CORES], tiles4[NUM_CORES], tiles5[NUM_CORES], tilesi[NUM_CORES], tilesj[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES], regs3[NUM_CORES], regs4[NUM_CORES], regs5[NUM_CORES], last_i_regs[NUM_CORES], last_j_regs[NUM_CORES];
 
-void TDStepMAA(const Graph &g, pvector<SGOffset> &VertexOffsets, pvector<NodeID> &parent, SlidingQueue<NodeID> &queue, int num_nodes, int num_edges) {
+#ifdef MAA_VIRTUAL_GATHER
+alignas(64) static NodeID virtual_gather_backing[NUM_CORES][TILE_SIZE];
+#endif
+
+void TDStepMAA(const Graph &g, pvector<SGOffset> &VertexOffsets,
+               pvector<NodeID> &parent, SlidingQueue<NodeID> &queue,
+               int num_nodes, int num_edges) {
 #ifdef GEM5
     clear_mem_region();
     add_mem_region(queue.beginp(), queue.endp());                   // 6
     add_mem_region(VertexOffsets.beginp(), VertexOffsets.endp());   // 7
     add_mem_region(g.out_neighbors_, &g.out_neighbors_[num_edges]); // 8
     add_mem_region(parent.beginp(), parent.endp());                 // 9
+#ifdef MAA_VIRTUAL_GATHER
+    add_mem_region(&virtual_gather_backing[0][0],
+                   &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]);
+#endif
 #endif
 #pragma omp parallel
     {
         int tile0, tile1, tile2, tile3, tile4, tile5, tile6, tile7;
         int reg0, reg1, regOne, regZero, last_i_reg, last_j_reg;
+#ifdef MAA_VIRTUAL_GATHER
+        int backing_start_reg, backing_end_reg;
+#endif
         int tid = omp_get_thread_num();
         tile0 = tiles0[tid];
         tile1 = tiles1[tid];
@@ -94,13 +107,22 @@ void TDStepMAA(const Graph &g, pvector<SGOffset> &VertexOffsets, pvector<NodeID>
         reg1 = regs1[tid];
         regOne = regs2[tid];
         regZero = regs3[tid];
+#ifdef MAA_VIRTUAL_GATHER
+        backing_start_reg = regs4[tid];
+        backing_end_reg = regs5[tid];
+#endif
         last_i_reg = last_i_regs[tid];
         last_j_reg = last_j_regs[tid];
         QueueBuffer<NodeID> lqueue(queue);
         maa_const<int>(1, regOne);
         maa_const<int>(0, regZero);
-        __restrict__ uint32_t *tile0Ptr = get_cacheable_tile_pointer<uint32_t>(tile0);
-        __restrict__ uint32_t *tile4Ptr = get_cacheable_tile_pointer<uint32_t>(tile4);
+#ifdef MAA_VIRTUAL_GATHER
+        maa_const<int>(0, backing_start_reg);
+#endif
+        __restrict__ uint32_t *tile0Ptr =
+            get_cacheable_tile_pointer<uint32_t>(tile0);
+        __restrict__ uint32_t *tile4Ptr =
+            get_cacheable_tile_pointer<uint32_t>(tile4);
         int *tile5Ptr = get_cacheable_tile_pointer<int>(tile5);
         int idx = (int)queue.shared_out_start;
         int len = (int)queue.shared_out_end;
@@ -171,9 +193,16 @@ void TDStepMAA(const Graph &g, pvector<SGOffset> &VertexOffsets, pvector<NodeID>
                 do {
                     // tile6 = i
                     // tile7 = j
-                    maa_range_loop<int>(last_i_reg, last_j_reg, tile1, tile2, regOne, tile6, tile7);
+                    maa_range_loop<int>(last_i_reg, last_j_reg, tile1, tile2,
+                                        regOne, tile6, tile7);
                     // tile0 = v = g.out_neighbors_[j]
+#ifdef MAA_VIRTUAL_GATHER
+                    maa_indirect_load_virtual<int>(
+                        g.out_neighbors_, tile7, tile0,
+                        virtual_gather_backing[tid]);
+#else
                     maa_indirect_load<int>(g.out_neighbors_, tile7, tile0);
+#endif
                     // tile3 = inner u = queue.shared[i]
                     maa_indirect_load<int>((NodeID *)(queue.shared + min), tile6, tile3);
                     // Transfer tile7, tile0, tile3
@@ -182,6 +211,13 @@ void TDStepMAA(const Graph &g, pvector<SGOffset> &VertexOffsets, pvector<NodeID>
                     if (curr_tile7_size == 0) {
                         break;
                     }
+#ifdef MAA_VIRTUAL_GATHER
+                    wait_ready(tile0);
+                    maa_const<int>(curr_tile7_size, backing_end_reg);
+                    maa_stream_load<int>(virtual_gather_backing[tid],
+                                         backing_start_reg, backing_end_reg,
+                                         regOne, tile0);
+#endif
 #pragma omp critical
                     {
                         // tile7 = parent[v]

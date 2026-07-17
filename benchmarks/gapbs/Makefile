@@ -120,6 +120,10 @@ bfs_maa_2G_fp: src/bfs.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 -DBFS_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
 	mv -f $@.tmp $@
 
+bfs_maa_2G_virtual_fp: src/bfs.cc src/*.h m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 -DBFS_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
+	mv -f $@.tmp $@
+
 # Fingerprinted SSSP binaries with a post-ROI shortest-path certificate.
 sssp_maa_1K_fp: src/sssp.cc src/*.h m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DGEM5 -DMAA -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 -DSSSP_FP_ENABLE=1 $(GEM5_LIB) m5op.o $< -o $@.tmp
