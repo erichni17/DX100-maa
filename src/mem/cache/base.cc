@@ -1369,11 +1369,18 @@ bool BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                                                   tag_latency);
                     return true;
                 }
-                panic("Writeback expected for incoming %s, got queued %s\n",
-                      pkt->print(), wbPkt->print());
-            }
-
-            if (pkt->isCleanEviction()) {
+                if (wbPkt->isCleanEviction() &&
+                    pkt->cmd == MemCmd::WritebackDirty) {
+                    // The dirty writeback has the authoritative data. Remove
+                    // the older data-less notification before accepting it.
+                    markInService(wb_entry);
+                    delete wbPkt;
+                } else {
+                    panic("Writeback expected for incoming %s, "
+                          "got queued %s\n",
+                          pkt->print(), wbPkt->print());
+                }
+            } else if (pkt->isCleanEviction()) {
                 // The CleanEvict and WritebackClean snoops into other
                 // peer caches of the same level while traversing the
                 // crossbar. If a copy of the block is found, the
