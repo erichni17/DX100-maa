@@ -264,10 +264,14 @@ restore_one() {
     [[ $ticks =~ ^[1-9][0-9]*$ && $cycles =~ ^[1-9][0-9]*$ &&
        $indrd =~ ^[1-9][0-9]*$ && $retries =~ ^[0-9]+$ &&
        $issues =~ ^[0-9]+$ && $completions =~ ^[0-9]+$ ]] || valid=0
-    if [[ $arm == virtual ]]; then
-        [[ $issues -gt 0 && $issues -eq $completions ]] || valid=0
+    if [[ $issues =~ ^[0-9]+$ && $completions =~ ^[0-9]+$ ]]; then
+        if [[ $arm == virtual ]]; then
+            [[ $issues -gt 0 && $issues -eq $completions ]] || valid=0
+        else
+            [[ $issues -eq 0 && $completions -eq 0 ]] || valid=0
+        fi
     else
-        [[ $issues -eq 0 && $completions -eq 0 ]] || valid=0
+        valid=0
     fi
     grep -E '^BFS_FP ' "$out/restore.log" > "$out/certificate.txt" || true
     printf 'arm\treplica\trc\tsim_ticks\tmaa_cycles\tindirect_reads\ttile_read_retries\twrite_issues\twrite_completions\tcertificate_sha256\tfatal_count\tvalid\n' \
