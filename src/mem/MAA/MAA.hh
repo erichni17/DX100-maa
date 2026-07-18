@@ -93,9 +93,8 @@ class MAA : public ClockedObject {
         int maxOutstandingCpuSidePackets;
         bool is_blocked;
         bool mustRetryTileRequest;
-        bool tileRequestRetrySignaled;
+        bool tileRequestRetryOutstanding;
         int retryTileID;
-        PacketPtr retryTilePacket;
         int core_id;
 
     public:
@@ -545,6 +544,7 @@ public:
         statistics::Scalar port_mem_RD_packets;
         statistics::Scalar cpu_spd_data_read_deferrals;
         statistics::Scalar cpu_spd_data_read_retry_signals;
+        statistics::Scalar cpu_spd_data_read_retry_attempts;
         statistics::Scalar cpu_spd_data_read_retry_acceptances;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous

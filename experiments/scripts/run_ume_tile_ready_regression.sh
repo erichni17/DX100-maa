@@ -79,14 +79,16 @@ jq -e '
     ([.scalar_oracle.upstream_manifest_sha256,
       .scalar_oracle.source_sha256] |
         all(type == "string" and test("^[0-9a-f]{64}$"))) and
-    .acceptance.exact_identity_match_required == true and
+    .acceptance.port_level_retry_protocol_required == true and
     .acceptance.one_roi_end == true and
     .acceptance.one_exact_fingerprint == true and
     .acceptance.one_exact_scalar_reference_pass == true and
     .acceptance.positive_tile_read_deferrals == true and
     .acceptance.positive_retry_signals == true and
+    .acceptance.positive_retry_attempts == true and
     .acceptance.positive_retry_acceptances == true and
-    .acceptance.retry_counter_equality == true and
+    .acceptance.retry_signal_attempt_equality == true and
+    .acceptance.retry_acceptances_bounded_by_attempts == true and
     .acceptance.fatal_markers == 0
 ' "$oracle" >/dev/null || die "oracle manifest schema or policy mismatch"
 
@@ -223,7 +225,7 @@ sha256sum "$campaign/$(basename "$checkpoint")/m5.cpt" \
     printf 'n=%s\nexpected_hash=%s\nexpected_elements=%s\n' \
         "$n" "$expected_hash" "$expected_elements"
     printf '%s\n' \
-        'acceptance=exact oracle identities, semantic hash, scalar reference, and equal positive deferral/signal/acceptance counts'
+        'acceptance=exact artifact identities and semantic oracles, equal positive deferral/signal/attempt counts, and bounded positive retry acceptances'
 } > "$campaign/source.txt"
 
 export LD_LIBRARY_PATH="$root/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
@@ -266,16 +268,21 @@ stats_blob=$(awk '
     section == 1 && $1 == "system.maa.cpu_spd_data_read_retry_signals" {
         signals=$2; signals_seen++
     }
+    section == 1 && $1 == "system.maa.cpu_spd_data_read_retry_attempts" {
+        attempts=$2; attempts_seen++
+    }
     section == 1 && $1 == "system.maa.cpu_spd_data_read_retry_acceptances" {
         acceptances=$2; acceptances_seen++
     }
     /^---------- End Simulation Statistics/ && section == 1 {
         if (ticks_seen != 1 || deferrals_seen != 1 || signals_seen != 1 ||
-            acceptances_seen != 1 || ticks !~ /^[0-9]+$/ ||
+            attempts_seen != 1 || acceptances_seen != 1 ||
+            ticks !~ /^[0-9]+$/ ||
             deferrals !~ /^[0-9]+$/ || signals !~ /^[0-9]+$/ ||
-            acceptances !~ /^[0-9]+$/)
+            attempts !~ /^[0-9]+$/ || acceptances !~ /^[0-9]+$/)
             exit 2
-        printf "%s\n%s\n%s\n%s\n", ticks, deferrals, signals, acceptances
+        printf "%s\n%s\n%s\n%s\n%s\n", ticks, deferrals, signals,
+            attempts, acceptances
         emitted=1
         exit 0
     }
@@ -285,7 +292,8 @@ mapfile -t stats_fields <<< "$stats_blob"
 ticks=${stats_fields[0]:-NA}
 deferrals=${stats_fields[1]:-NA}
 signals=${stats_fields[2]:-NA}
-acceptances=${stats_fields[3]:-NA}
+attempts=${stats_fields[3]:-NA}
+acceptances=${stats_fields[4]:-NA}
 roi=$(grep -Fxc 'ROI Ended' "$campaign/restore.log" || true)
 fp=$(grep -Fxc -- "$fingerprint_marker" "$campaign/restore.log" || true)
 reference=$(grep -Fxc -- "$reference_marker" "$campaign/restore.log" || true)
@@ -297,15 +305,16 @@ valid=1
 [[ $rc -eq 0 && $roi -eq 1 && $fp -eq 1 && $reference -eq 1 &&
    $fatal -eq 0 && $ticks =~ ^[1-9][0-9]*$ &&
    $deferrals =~ ^[1-9][0-9]*$ && $signals =~ ^[1-9][0-9]*$ &&
-   $acceptances =~ ^[1-9][0-9]*$ ]] || valid=0
+   $attempts =~ ^[1-9][0-9]*$ && $acceptances =~ ^[1-9][0-9]*$ ]] || valid=0
 if [[ $valid -eq 1 ]] &&
-   ((deferrals != signals || signals != acceptances)); then
+   ((deferrals != signals || signals != attempts ||
+     acceptances > attempts)); then
     valid=0
 fi
-printf 'rc\tsim_ticks\tdeferrals\tretry_signals\tretry_acceptances\toutput_hash\tfatal_count\tvalid\n' \
+printf 'rc\tsim_ticks\tdeferrals\tretry_signals\tretry_attempts\tretry_acceptances\toutput_hash\tfatal_count\tvalid\n' \
     > "$campaign/result.tsv"
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$rc" "$ticks" "$deferrals" "$signals" "$acceptances" \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$rc" "$ticks" "$deferrals" "$signals" "$attempts" "$acceptances" \
     "$expected_hash" "$fatal" "$valid" >> "$campaign/result.tsv"
 cat "$campaign/result.tsv"
 [[ $valid -eq 1 ]]

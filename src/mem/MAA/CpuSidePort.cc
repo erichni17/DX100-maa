@@ -67,18 +67,6 @@ bool MAA::CpuSidePort::tryTiming(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAACpuPort, "%s: received %s\n", __func__, pkt->print());
 
-    if (tileRequestRetrySignaled) {
-        assert(!mustRetryTileRequest);
-        assert(retryTileID >= 0);
-        panic_if(pkt != retryTilePacket,
-                 "%s: retried packet differs from deferred tile request\n",
-                 name());
-        panic_if(!maa.spd->getTileReady(retryTileID),
-                 "%s: tile[%d] became unavailable after retry signal\n",
-                 name(), retryTileID);
-        return true;
-    }
-
     if (mustRetryTileRequest) {
         return false;
     }
@@ -95,10 +83,9 @@ bool MAA::CpuSidePort::tryTiming(PacketPtr pkt) {
                 offset / (maa.num_tile_elements * sizeof(uint32_t));
             if (!maa.spd->getTileReady(tile_id)) {
                 assert(retryTileID == -1);
-                assert(retryTilePacket == nullptr);
+                assert(!tileRequestRetryOutstanding);
                 mustRetryTileRequest = true;
                 retryTileID = tile_id;
-                retryTilePacket = pkt;
                 maa.stats.cpu_spd_data_read_deferrals++;
                 DPRINTF(MAACpuPort,
                         "%s: deferring cacheable read for tile[%d]\n",
@@ -476,12 +463,16 @@ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAACpuPort, "%s: received %s\n", __func__, pkt->print());
 
+    // A timing retry grants the source port another attempt; gem5 does not
+    // require that attempt to carry the same logical request.
+    const bool is_retry_attempt = tileRequestRetryOutstanding;
+    if (is_retry_attempt) {
+        assert(!mustRetryTileRequest);
+        tileRequestRetryOutstanding = false;
+        maa.stats.cpu_spd_data_read_retry_attempts++;
+    }
     if (tryTiming(pkt)) {
-        if (tileRequestRetrySignaled) {
-            assert(pkt == retryTilePacket);
-            tileRequestRetrySignaled = false;
-            retryTileID = -1;
-            retryTilePacket = nullptr;
+        if (is_retry_attempt) {
             maa.stats.cpu_spd_data_read_retry_acceptances++;
         }
         maa.recvTimingReq(pkt, core_id);
@@ -528,16 +519,21 @@ bool MAA::CpuSidePort::sendSnoopInvalidatePacket(PacketPtr pkt) {
     return true;
 }
 void MAA::CpuSidePort::retryTileRequest() {
-    if (!mustRetryTileRequest || !maa.spd->getTileReady(retryTileID)) {
+    if (!mustRetryTileRequest) {
+        return;
+    }
+    assert(retryTileID >= 0);
+    if (!maa.spd->getTileReady(retryTileID)) {
         return;
     }
 
-    assert(!tileRequestRetrySignaled);
-    assert(retryTilePacket != nullptr);
+    assert(!tileRequestRetryOutstanding);
+    const int tile_id = retryTileID;
     DPRINTF(MAACpuPort, "%s: retrying request for tile[%d]\n", __func__,
-            retryTileID);
+            tile_id);
     mustRetryTileRequest = false;
-    tileRequestRetrySignaled = true;
+    tileRequestRetryOutstanding = true;
+    retryTileID = -1;
     maa.stats.cpu_spd_data_read_retry_signals++;
     sendRetryReq();
 }
@@ -559,9 +555,8 @@ void MAA::CpuSidePort::allocate(int _core_id, int _maxOutstandingCpuSidePackets)
     maxOutstandingCpuSidePackets = _maxOutstandingCpuSidePackets - 16;
     is_blocked = false;
     mustRetryTileRequest = false;
-    tileRequestRetrySignaled = false;
+    tileRequestRetryOutstanding = false;
     retryTileID = -1;
-    retryTilePacket = nullptr;
 }
 
 MAA::CpuSidePort::CpuSidePort(const std::string &_name, MAA &_maa,

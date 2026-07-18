@@ -184,6 +184,9 @@ extract_first_stats() {
         section == 1 && $1 == "system.maa.cpu_spd_data_read_retry_signals" {
             signals=$2; signals_seen++
         }
+        section == 1 && $1 == "system.maa.cpu_spd_data_read_retry_attempts" {
+            attempts=$2; attempts_seen++
+        }
         section == 1 &&
             $1 == "system.maa.cpu_spd_data_read_retry_acceptances" {
             acceptances=$2; acceptances_seen++
@@ -197,15 +200,16 @@ extract_first_stats() {
         /^---------- End Simulation Statistics/ && section == 1 {
             if (ticks_seen != 1 || cycles_seen != 1 || indrd_seen != 1 ||
                 deferrals_seen != 1 || signals_seen != 1 ||
-                acceptances_seen != 1 || issues_seen == 0 ||
+                attempts_seen != 1 || acceptances_seen != 1 ||
+                issues_seen == 0 ||
                 completions_seen == 0 || ticks !~ /^[0-9]+$/ ||
                 cycles !~ /^[0-9]+$/ || indrd !~ /^[0-9]+$/ ||
                 deferrals !~ /^[0-9]+$/ || signals !~ /^[0-9]+$/ ||
-                acceptances !~ /^[0-9]+$/)
+                attempts !~ /^[0-9]+$/ || acceptances !~ /^[0-9]+$/)
                 exit 2
-            printf "%s\n%s\n%s\n%s\n%s\n%s\n%.0f\n%.0f\n", ticks,
-                cycles, indrd, deferrals, signals, acceptances, issues,
-                completions
+            printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n%.0f\n%.0f\n",
+                ticks, cycles, indrd, deferrals, signals, attempts,
+                acceptances, issues, completions
             emitted=1
             exit 0
         }
@@ -241,7 +245,7 @@ restore_one() {
 
     local roi exits fatal certificate_lines certificate_matches
     local stats_blob ticks=NA cycles=NA indrd=NA deferrals=NA signals=NA
-    local acceptances=NA
+    local attempts=NA acceptances=NA
     local issues=NA completions=NA valid=1
     local -a stats_fields=()
     roi=$(grep -Fxc 'ROI End!!!' "$out/restore.log" || true)
@@ -255,15 +259,16 @@ restore_one() {
     [[ $certificate_lines -eq 1 && $certificate_matches -eq 1 ]] || valid=0
     if stats_blob=$(extract_first_stats "$out/stats.txt"); then
         mapfile -t stats_fields <<< "$stats_blob"
-        if [[ ${#stats_fields[@]} -eq 8 ]]; then
+        if [[ ${#stats_fields[@]} -eq 9 ]]; then
             ticks=${stats_fields[0]}
             cycles=${stats_fields[1]}
             indrd=${stats_fields[2]}
             deferrals=${stats_fields[3]}
             signals=${stats_fields[4]}
-            acceptances=${stats_fields[5]}
-            issues=${stats_fields[6]}
-            completions=${stats_fields[7]}
+            attempts=${stats_fields[5]}
+            acceptances=${stats_fields[6]}
+            issues=${stats_fields[7]}
+            completions=${stats_fields[8]}
         else
             valid=0
         fi
@@ -276,11 +281,13 @@ restore_one() {
         "$out/restore.log" || valid=0
     [[ $ticks =~ ^[1-9][0-9]*$ && $cycles =~ ^[1-9][0-9]*$ &&
        $indrd =~ ^[1-9][0-9]*$ && $deferrals =~ ^[0-9]+$ &&
-       $signals =~ ^[0-9]+$ && $acceptances =~ ^[0-9]+$ &&
+       $signals =~ ^[0-9]+$ && $attempts =~ ^[0-9]+$ &&
+       $acceptances =~ ^[0-9]+$ &&
        $issues =~ ^[0-9]+$ && $completions =~ ^[0-9]+$ ]] || valid=0
     if [[ $deferrals =~ ^[0-9]+$ && $signals =~ ^[0-9]+$ &&
-          $acceptances =~ ^[0-9]+$ ]]; then
-        [[ $deferrals -eq $signals && $signals -eq $acceptances ]] || valid=0
+          $attempts =~ ^[0-9]+$ && $acceptances =~ ^[0-9]+$ ]]; then
+        [[ $deferrals -eq $signals && $signals -eq $attempts &&
+           $acceptances -le $attempts ]] || valid=0
     else
         valid=0
     fi
@@ -294,11 +301,12 @@ restore_one() {
         valid=0
     fi
     grep -E '^BFS_FP ' "$out/restore.log" > "$out/certificate.txt" || true
-    printf 'arm\treplica\trc\tsim_ticks\tmaa_cycles\tindirect_reads\ttile_read_deferrals\tretry_signals\tretry_acceptances\twrite_issues\twrite_completions\tcertificate_sha256\tfatal_count\tvalid\n' \
+    printf 'arm\treplica\trc\tsim_ticks\tmaa_cycles\tindirect_reads\ttile_read_deferrals\tretry_signals\tretry_attempts\tretry_acceptances\twrite_issues\twrite_completions\tcertificate_sha256\tfatal_count\tvalid\n' \
         > "$out/result.tsv"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm" "$replica" "$rc" "$ticks" "$cycles" "$indrd" \
-        "$deferrals" "$signals" "$acceptances" "$issues" "$completions" \
+        "$deferrals" "$signals" "$attempts" "$acceptances" \
+        "$issues" "$completions" \
         "$(sha256sum "$out/certificate.txt" | cut -d' ' -f1)" \
         "$fatal" "$valid" >> "$out/result.tsv"
     [[ $valid -eq 1 ]] || return 1
@@ -321,7 +329,7 @@ run_phase() {
     mapfile -t signatures < <(
         for ((replica = 1; replica <= replicas; replica++)); do
             awk -F '\t' 'NR == 2 {
-                print $4, $5, $6, $7, $8, $9, $10, $11, $12
+                print $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
             }' "$campaign/runs/$arm/replica_$replica/result.tsv"
         done | sort -u
     )
@@ -331,7 +339,7 @@ run_phase() {
 run_phase native "$native"
 run_phase virtual "$virtual" "${virtual_options[@]}"
 
-printf 'arm\treplica\trc\tsim_ticks\tmaa_cycles\tindirect_reads\ttile_read_deferrals\tretry_signals\tretry_acceptances\twrite_issues\twrite_completions\tcertificate_sha256\tfatal_count\tvalid\n' \
+printf 'arm\treplica\trc\tsim_ticks\tmaa_cycles\tindirect_reads\ttile_read_deferrals\tretry_signals\tretry_attempts\tretry_acceptances\twrite_issues\twrite_completions\tcertificate_sha256\tfatal_count\tvalid\n' \
     > "$campaign/results.tsv"
 for arm in native virtual; do
     for ((replica = 1; replica <= replicas; replica++)); do
