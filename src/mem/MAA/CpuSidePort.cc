@@ -66,6 +66,47 @@ bool MAA::CpuSidePort::recvTimingSnoopResp(PacketPtr pkt) {
 bool MAA::CpuSidePort::tryTiming(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAACpuPort, "%s: received %s\n", __func__, pkt->print());
+
+    if (tileRequestRetrySignaled) {
+        assert(!mustRetryTileRequest);
+        assert(retryTileID >= 0);
+        panic_if(pkt != retryTilePacket,
+                 "%s: retried packet differs from deferred tile request\n",
+                 name());
+        panic_if(!maa.spd->getTileReady(retryTileID),
+                 "%s: tile[%d] became unavailable after retry signal\n",
+                 name(), retryTileID);
+        return true;
+    }
+
+    if (mustRetryTileRequest) {
+        return false;
+    }
+
+    if (pkt->cmd == MemCmd::ReadExReq ||
+        pkt->cmd == MemCmd::ReadSharedReq) {
+        AddressRangeType address_range =
+            AddressRangeType(pkt->getAddr(), maa.addrRanges);
+        if (address_range.isValid() &&
+            address_range.getType() ==
+                AddressRangeType::Type::SPD_DATA_CACHEABLE_RANGE) {
+            const Addr offset = address_range.getOffset();
+            const int tile_id =
+                offset / (maa.num_tile_elements * sizeof(uint32_t));
+            if (!maa.spd->getTileReady(tile_id)) {
+                assert(retryTileID == -1);
+                assert(retryTilePacket == nullptr);
+                mustRetryTileRequest = true;
+                retryTileID = tile_id;
+                retryTilePacket = pkt;
+                maa.stats.cpu_spd_data_read_deferrals++;
+                DPRINTF(MAACpuPort,
+                        "%s: deferring cacheable read for tile[%d]\n",
+                        __func__, tile_id);
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -436,6 +477,13 @@ bool MAA::CpuSidePort::recvTimingReq(PacketPtr pkt) {
     DPRINTF(MAACpuPort, "%s: received %s\n", __func__, pkt->print());
 
     if (tryTiming(pkt)) {
+        if (tileRequestRetrySignaled) {
+            assert(pkt == retryTilePacket);
+            tileRequestRetrySignaled = false;
+            retryTileID = -1;
+            retryTilePacket = nullptr;
+            maa.stats.cpu_spd_data_read_retry_acceptances++;
+        }
         maa.recvTimingReq(pkt, core_id);
         return true;
     }
@@ -479,6 +527,20 @@ bool MAA::CpuSidePort::sendSnoopInvalidatePacket(PacketPtr pkt) {
         outstandingCpuSidePackets++;
     return true;
 }
+void MAA::CpuSidePort::retryTileRequest() {
+    if (!mustRetryTileRequest || !maa.spd->getTileReady(retryTileID)) {
+        return;
+    }
+
+    assert(!tileRequestRetrySignaled);
+    assert(retryTilePacket != nullptr);
+    DPRINTF(MAACpuPort, "%s: retrying request for tile[%d]\n", __func__,
+            retryTileID);
+    mustRetryTileRequest = false;
+    tileRequestRetrySignaled = true;
+    maa.stats.cpu_spd_data_read_retry_signals++;
+    sendRetryReq();
+}
 bool MAA::sendSnoopInvalidateCpu(PacketPtr pkt) {
     panic_if(pkt->isExpressSnoop() == false, "Packet is not an express snoop packet\n");
     int pkt_core_id = core_addr(pkt->getAddr());
@@ -496,6 +558,10 @@ void MAA::CpuSidePort::allocate(int _core_id, int _maxOutstandingCpuSidePackets)
     core_id = _core_id;
     maxOutstandingCpuSidePackets = _maxOutstandingCpuSidePackets - 16;
     is_blocked = false;
+    mustRetryTileRequest = false;
+    tileRequestRetrySignaled = false;
+    retryTileID = -1;
+    retryTilePacket = nullptr;
 }
 
 MAA::CpuSidePort::CpuSidePort(const std::string &_name, MAA &_maa,

@@ -704,28 +704,30 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
 void MAA::setTileReady(int tileID, int wordSize) {
     DPRINTF(MAAController, "%s: tile[%d] is ready!\n", __func__, tileID);
     spd->setTileReady(tileID, wordSize);
-    if (spd->getTileReady(tileID)) {
-        assert(my_ready_pkts.size() == my_ready_tile_ids.size());
-        auto pkt_it = my_ready_pkts.begin();
-        auto tile_id_it = my_ready_tile_ids.begin();
-        while (pkt_it != my_ready_pkts.end() && tile_id_it != my_ready_tile_ids.end()) {
-            bool is_ready = (*tile_id_it == tileID);
-            if (wordSize == 8) {
-                is_ready = is_ready || (*tile_id_it == tileID + 1);
-            }
-            if (is_ready) {
-                PacketPtr pkt = *pkt_it;
-                DPRINTF(MAAController, "%s: responding to outstanding ready packet %s!\n", __func__, pkt->print());
-                pkt->makeTimingResponse();
-                pkt->headerDelay = pkt->payloadDelay = 0;
-                cpuSidePorts[0]->schedTimingResp(pkt, getClockEdge(Cycles(1)));
-                pkt_it = my_ready_pkts.erase(pkt_it);
-                tile_id_it = my_ready_tile_ids.erase(tile_id_it);
-            } else {
-                pkt_it++;
-                tile_id_it++;
-            }
+    assert(my_ready_pkts.size() == my_ready_tile_ids.size());
+    auto pkt_it = my_ready_pkts.begin();
+    auto tile_id_it = my_ready_tile_ids.begin();
+    while (pkt_it != my_ready_pkts.end() &&
+           tile_id_it != my_ready_tile_ids.end()) {
+        const bool affected = *tile_id_it == tileID ||
+            (wordSize == 8 && *tile_id_it == tileID + 1);
+        if (affected && spd->getTileReady(*tile_id_it)) {
+            PacketPtr pkt = *pkt_it;
+            DPRINTF(MAAController,
+                    "%s: responding to outstanding ready packet %s!\n",
+                    __func__, pkt->print());
+            pkt->makeTimingResponse();
+            pkt->headerDelay = pkt->payloadDelay = 0;
+            cpuSidePorts[0]->schedTimingResp(pkt, getClockEdge(Cycles(1)));
+            pkt_it = my_ready_pkts.erase(pkt_it);
+            tile_id_it = my_ready_tile_ids.erase(tile_id_it);
+        } else {
+            pkt_it++;
+            tile_id_it++;
         }
+    }
+    for (auto *port : cpuSidePorts) {
+        port->retryTileRequest();
     }
 }
 void MAA::finishInstructionInvalidate(Instruction *instruction, int tileID) {
@@ -856,15 +858,43 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(port_cache_RD_packets, statistics::units::Count::get(), "number of cache read packets"),
       ADD_STAT(port_mem_WR_packets, statistics::units::Count::get(), "number of memory write packets"),
       ADD_STAT(port_mem_RD_packets, statistics::units::Count::get(), "number of memory read packets"),
-      ADD_STAT(port_mem_WR_rowhit, statistics::units::Count::get(), "indirect writebacks issued to an already-open DRAM row (per-bank)"),
-      ADD_STAT(port_cache_packets, statistics::units::Count::get(), "number of cache packets"),
-      ADD_STAT(port_mem_packets, statistics::units::Count::get(), "number of memory packets"),
-      ADD_STAT(port_cache_WR_BW, statistics::units::Count::get(), "cache write bandwidth (GB/s)"),
-      ADD_STAT(port_cache_RD_BW, statistics::units::Count::get(), "cache read bandwidth (GB/s)"),
-      ADD_STAT(port_cache_BW, statistics::units::Count::get(), "cache total bandwidth (GB/s)"),
-      ADD_STAT(port_mem_WR_BW, statistics::units::Count::get(), "memory write bandwidth (GB/s)"),
-      ADD_STAT(port_mem_RD_BW, statistics::units::Count::get(), "memory read bandwidth (GB/s)"),
-      ADD_STAT(port_mem_BW, statistics::units::Count::get(), "memory total bandwidth (GB/s)") {
+      ADD_STAT(cpu_spd_data_read_deferrals,
+               statistics::units::Count::get(),
+               "cacheable SPD data reads deferred for tile readiness"),
+      ADD_STAT(cpu_spd_data_read_retry_signals,
+               statistics::units::Count::get(),
+               "retry signals issued for deferred cacheable SPD data reads"),
+      ADD_STAT(cpu_spd_data_read_retry_acceptances,
+               statistics::units::Count::get(),
+               "deferred cacheable SPD data reads accepted after retry"),
+      ADD_STAT(port_mem_WR_rowhit,
+               statistics::units::Count::get(),
+               "indirect writebacks issued to an already-open DRAM row "
+               "(per-bank)"),
+      ADD_STAT(port_cache_packets,
+               statistics::units::Count::get(),
+               "number of cache packets"),
+      ADD_STAT(port_mem_packets,
+               statistics::units::Count::get(),
+               "number of memory packets"),
+      ADD_STAT(port_cache_WR_BW,
+               statistics::units::Count::get(),
+               "cache write bandwidth (GB/s)"),
+      ADD_STAT(port_cache_RD_BW,
+               statistics::units::Count::get(),
+               "cache read bandwidth (GB/s)"),
+      ADD_STAT(port_cache_BW,
+               statistics::units::Count::get(),
+               "cache total bandwidth (GB/s)"),
+      ADD_STAT(port_mem_WR_BW,
+               statistics::units::Count::get(),
+               "memory write bandwidth (GB/s)"),
+      ADD_STAT(port_mem_RD_BW,
+               statistics::units::Count::get(),
+               "memory read bandwidth (GB/s)"),
+      ADD_STAT(port_mem_BW,
+               statistics::units::Count::get(),
+               "memory total bandwidth (GB/s)") {
 
     numInst_INDRD.flags(statistics::nozero);
     numInst_INDWR.flags(statistics::nozero);

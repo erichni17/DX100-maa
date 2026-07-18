@@ -92,10 +92,15 @@ class MAA : public ClockedObject {
         int outstandingCpuSidePackets;
         int maxOutstandingCpuSidePackets;
         bool is_blocked;
+        bool mustRetryTileRequest;
+        bool tileRequestRetrySignaled;
+        int retryTileID;
+        PacketPtr retryTilePacket;
         int core_id;
 
     public:
         bool sendSnoopInvalidatePacket(PacketPtr pkt);
+        void retryTileRequest();
         void allocate(int _core_id, int _maxOutstandingCpuSidePackets);
 
     public:
@@ -538,6 +543,9 @@ public:
         statistics::Scalar port_cache_RD_packets;
         statistics::Scalar port_mem_WR_packets;
         statistics::Scalar port_mem_RD_packets;
+        statistics::Scalar cpu_spd_data_read_deferrals;
+        statistics::Scalar cpu_spd_data_read_retry_signals;
+        statistics::Scalar cpu_spd_data_read_retry_acceptances;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.
