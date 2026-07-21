@@ -20,3 +20,9 @@
 - A sweep repair may start only after checking `MemAvailable` and recent
   `vmstat` swap-in/swap-out. Do not treat idle CPU as permission to oversubscribe
   memory.
+- Full-Class-B NAS IS uses about 60 GiB RSS per gem5 process on this host. Run
+  at most one IS task at a time; never place IS in a generic fixed-parallelism
+  batch.
+- Launch the recovery manager only through its systemd user unit with
+  `MemoryHigh=220G`, `MemoryMax=240G`, and `MemorySwapMax=0`. The manager must
+  verify these cgroup files itself and refuse uncapped execution.

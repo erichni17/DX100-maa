@@ -1,13 +1,13 @@
 /*************************************************************************
- *                                                                       * 
+ *                                                                       *
  *       N  A  S     P A R A L L E L     B E N C H M A R K S  3.3        *
  *                                                                       *
  *                      O p e n M P     V E R S I O N                    *
- *                                                                       * 
- *                                  I S                                  * 
- *                                                                       * 
- ************************************************************************* 
- *                                                                       * 
+ *                                                                       *
+ *                                  I S                                  *
+ *                                                                       *
+ *************************************************************************
+ *                                                                       *
  *   This benchmark is an OpenMP version of the NPB IS code.             *
  *   It is described in NAS Technical Report 99-011.                     *
  *                                                                       *
@@ -33,11 +33,11 @@
  *         E-mail:  npb@nas.nasa.gov                                     *
  *         Fax:     (650) 604-3957                                       *
  *                                                                       *
- ************************************************************************* 
- *                                                                       * 
- *   Author: M. Yarrow                                                   * 
- *           H. Jin                                                      * 
- *                                                                       * 
+ *************************************************************************
+ *                                                                       *
+ *   Author: M. Yarrow                                                   *
+ *           H. Jin                                                      *
+ *                                                                       *
  *************************************************************************/
 
 #include <iostream>
@@ -505,7 +505,7 @@ void full_verify(void) {
         for (i = 0; i < NUM_KEYS; i++)
             key_buff2[i] = key_array[i];
 
-        /* This is actual sorting. Each thread is responsible for 
+        /* This is actual sorting. Each thread is responsible for
        a subset of key values */
         j = omp_get_num_threads();
         j = (MAX_KEY + j - 1) / j;
@@ -1138,8 +1138,16 @@ int main(int argc, char **argv) {
     }
 #ifdef GEM5
     m5_dump_stats(0, 0);
-    m5_work_end(0, 0);
     std::cout << "ROI End!!!" << std::endl;
+    /*
+     * Do not issue m5_work_end here.  Corrected full-Class-B runs were
+     * observed to dump the ROI stats and then remain inside that pseudo-op
+     * indefinitely, retaining roughly 60 GiB per gem5 process.  The timed
+     * section is already frozen by m5_dump_stats; verification below remains
+     * outside the first stats window and m5_exit supplies the clean terminal
+     * event after correctness is established.
+     */
+    std::cout << "IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit" << std::endl;
 #endif
 
 #ifdef DO_VERIFY

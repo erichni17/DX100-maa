@@ -88,6 +88,7 @@ def scan_log(path, oracle_kind):
     result = {
         "m5_exit": False,
         "panic_or_fatal": False,
+        "is_exit_policy": False,
         "markers": [],
     }
     if not path.exists():
@@ -110,6 +111,8 @@ def scan_log(path, oracle_kind):
                 result["m5_exit"] = True
             if "panic:" in lowered or "fatal:" in lowered:
                 result["panic_or_fatal"] = True
+            if line == "IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit":
+                result["is_exit_policy"] = True
             if marker_pattern and marker_pattern.search(line):
                 result["markers"].append(line)
     return result
@@ -206,6 +209,8 @@ def validate_row(row, oracle_kind, expected_hash=None, prior=False):
                     f"expected exactly one {oracle_kind} correctness marker, found {len(markers)}"
                 )
             oracle_id = markers[0] if markers else ""
+            if oracle_kind == "is" and not log["is_exit_policy"]:
+                notes.append("corrected IS ROI-exit policy marker missing")
     return not notes, ticks, oracle_id, notes
 
 
@@ -259,67 +264,63 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
         {
             "id": "gapbs-bfs-s22",
             "label": "GAPBS BFS S22",
-            "source": run_root / "gapbs_repair1/results.tsv",
+            "source": run_root / "gapbs_recovery2/results.tsv",
             "filters": {"kernel": "bfs", "scale": "22", "iters": "1"},
             "oracle": "bfs",
             "task": "gapbs-bfs-t{tile}",
-            "workflow": "repair",
+            "workflow": "recovery_normal",
             "compare_oracle": True,
         },
         {
             "id": "gapbs-sssp-s22",
             "label": "GAPBS SSSP S22",
-            "source": run_root / "gapbs_repair1/results.tsv",
+            "source": run_root / "gapbs_recovery2/results.tsv",
             "filters": {"kernel": "sssp", "scale": "22", "iters": "1"},
             "oracle": "sssp",
             "task": "gapbs-sssp-t{tile}",
-            "workflow": "repair",
+            "workflow": "recovery_normal",
             "compare_oracle": True,
         },
         {
             "id": "gapbs-bc-s22",
             "label": "GAPBS BC S22",
-            "source": run_root / "gapbs_repair1/results.tsv",
+            "source": run_root / "gapbs_recovery2/results.tsv",
             "filters": {"kernel": "bc", "scale": "22", "iters": "1"},
             "oracle": "bc",
             "task": "gapbs-bc-t{tile}",
-            "workflow": "repair",
+            "workflow": "recovery_normal",
         },
         {
             "id": "nas-is-full",
             "label": "NAS IS full class",
-            "sources": [
-                run_root / "is/results.tsv",
-                run_root / "is_repair1/results.tsv",
-            ],
+            "source": run_root / "is_recovery2/results.tsv",
             "filters": {"small": "0"},
             "oracle": "is",
             "task": "nas-is-t{tile}",
-            "workflow": "original",
-            "workflow_by_tile": {1024: "repair", 4096: "repair"},
+            "workflow": "recovery_is",
         },
         {
             "id": "nas-cg",
             "label": "NAS CG",
-            "source": run_root / "cg/results.tsv",
+            "source": run_root / "cg_recovery2/results.tsv",
             "filters": {},
             "oracle": "cg",
             "task": "nas-cg-t{tile}",
-            "workflow": "original",
+            "workflow": "recovery_normal",
             "compare_oracle": True,
         },
         {
             "id": "ume-gradzatp",
             "label": "UME gradzatp n=1M",
             "sources": [
-                run_root / "ume_repair1/results.tsv",
+                run_root / "ume_recovery2/results.tsv",
                 run_root / "ume/results_oracle_v2.tsv",
             ],
             "filters": {"kernel": "gradzatp", "n": "1000000"},
             "oracle": "ume",
             "expected_hash": 11225737641199706160,
             "task": "ume-gradzatp-t{tile}",
-            "workflow": "repair",
+            "workflow": "recovery_normal",
             "workflow_by_tile": {65536: "original"},
             "compare_oracle": True,
         },
@@ -327,25 +328,25 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "id": "ume-gradzatz",
             "label": "UME gradzatz n=1M",
             "sources": [
-                run_root / "ume_repair1/results.tsv",
+                run_root / "ume_recovery2/results.tsv",
                 run_root / "ume/results_oracle_v2.tsv",
             ],
             "filters": {"kernel": "gradzatz", "n": "1000000"},
             "oracle": "ume",
             "expected_hash": 9234467062988358067,
             "task": "ume-gradzatz-t{tile}",
-            "workflow": "repair",
+            "workflow": "recovery_normal",
             "workflow_by_tile": {65536: "original"},
             "compare_oracle": True,
         },
         {
             "id": "xrage-all",
             "label": "XRAGE all.json",
-            "source": run_root / "xrage/results.tsv",
+            "source": run_root / "xrage_recovery2/results.tsv",
             "filters": {},
             "oracle": "xrage",
             "task": "xrage-t{tile}",
-            "workflow": "original",
+            "workflow": "recovery_normal",
             "compare_oracle": True,
             "unsupported": {
                 65536: "No 64K Spatter build target in the frozen artifact"
@@ -688,24 +689,34 @@ def main():
     prior_hashjoin = [path.resolve() for path in prior_hashjoin]
     prior_gapbs = args.prior_gapbs_results.resolve()
     original_state_path = state_root / "workflows/dx100-full-tile-sweep-20260720.json"
-    repair_state_path = (
-        state_root / "workflows/dx100-full-tile-sweep-repair1-20260721.json"
+    normal_state_path = state_root / (
+        "workflows/dx100-full-tile-sweep-recovery2-normal-20260721.json"
+    )
+    is_state_path = state_root / (
+        "workflows/dx100-full-tile-sweep-recovery2-is-20260721.json"
     )
     states = {
         "original": read_json(original_state_path),
-        "repair": read_json(repair_state_path),
+        "recovery_normal": read_json(normal_state_path),
+        "recovery_is": read_json(is_state_path),
     }
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     rows, issues = build_rows(workload_specs, states)
     legal_rows = [row for row in rows if row["status"] != "unsupported"]
     counts = dict(Counter(row["status"] for row in rows))
-    terminal = workflow_terminal(states["original"]) and workflow_terminal(
-        states["repair"]
+    parent_tasks_complete = all(
+        task_state(states["original"], task).get("state") == "completed"
+        for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
+    )
+    terminal = (
+        workflow_terminal(states["recovery_normal"])
+        and workflow_terminal(states["recovery_is"])
+        and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
     if not terminal:
         issues.append(
-            "original and repair workflows have not both reached terminal state"
+            "recovery workflows are not terminal or parent-owned UME 64K evidence is incomplete"
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -718,9 +729,10 @@ def main():
     svg_plot(figure, workload_specs, rows)
     provenance = [
         run_root / "manifest.json",
-        run_root / "repair1-manifest.json",
+        run_root / "recovery2-manifest.json",
         original_state_path,
-        repair_state_path,
+        normal_state_path,
+        is_state_path,
         prior_gapbs,
         *prior_hashjoin,
     ]

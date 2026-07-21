@@ -121,6 +121,9 @@ echo "[restore] done (exit=$RC)"
 if [[ "$RC" == 0 ]]; then
   rg -q '^IS_VERIFY .*result=PASS$' "$O/run.log" || RC=90
 fi
+if [[ "$RC" == 0 ]]; then
+  rg -q '^IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit$' "$O/run.log" || RC=93
+fi
 
 STATS=$O/stats.txt
 SIMTICKS=$(awk '$1=="simTicks"{print $2; exit}' "$STATS" 2>/dev/null || true)

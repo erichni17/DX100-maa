@@ -51,3 +51,23 @@ new simulation allowance, requires five continuous minutes without swap-counter
 movement, and then `exec`s the repair workflow. The supervisor itself is
 launched in tmux, so it can be inspected or retired without a raw PID signal. It
 never kills or pauses an existing simulation.
+
+## 2026-07-21 OOM reboot
+
+The original fixed-parallelism workflow admitted seven corrected full-Class-B
+NAS IS jobs concurrently. Two were killed with rc=137; the five survivors held
+316,161,776 KiB RSS (301.5 GiB) by themselves. Immediately before the host
+became unreachable, total memory use was 316 of 330 GiB, `MemAvailable` was
+about 12 GiB, all 2 GiB of swap was occupied, and `vmstat` showed intermittent
+swap traffic. The host rebooted at 13:53:46 EDT. The old workflow JSON still
+said 18 tasks were running, but no corresponding processes survived.
+
+The recovery campaign therefore does not resume the stale workflow. It uses a
+new systemd-owned manager with a campaign-wide 220 GiB `MemoryHigh`, 240 GiB
+`MemoryMax`, and zero `MemorySwapMax`. Normal 2-GiB configurations run at most
+eight at a time; full-Class-B IS runs strictly one at a time. Before each phase,
+the manager also requires at least 96 GiB host `MemAvailable` and five continuous
+minutes without swap-counter movement. It records PID plus kernel start time
+and refuses to start when an owned gem5, tile runner, or `dx-runtime` process is
+already live. The manager independently reads its cgroup limits and exits before
+launching any child if the hard boundary is absent or different.
