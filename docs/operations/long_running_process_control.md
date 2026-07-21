@@ -56,11 +56,16 @@ never kills or pauses an existing simulation.
 
 The original fixed-parallelism workflow admitted seven corrected full-Class-B
 NAS IS jobs concurrently. Two were killed with rc=137; the five survivors held
-316,161,776 KiB RSS (301.5 GiB) by themselves. Immediately before the host
-became unreachable, total memory use was 316 of 330 GiB, `MemAvailable` was
-about 12 GiB, all 2 GiB of swap was occupied, and `vmstat` showed intermittent
-swap traffic. The host rebooted at 13:53:46 EDT. The old workflow JSON still
-said 18 tasks were running, but no corresponding processes survived.
+316,161,776 KiB RSS (301.5 GiB) by themselves. An early pre-crash snapshot had
+316 of 330 GiB in use and about 12 GiB `MemAvailable`. The timestamped
+`vmstat.log` later reached its worst recorded point at 13:40:53 EDT: only
+420,616 KiB of 346,566,728 KiB RAM was free, buffers plus cache were just
+810,332 KiB, and all 2,097,148 KiB of swap was occupied. That corresponds to
+345,335,780 KiB (329.338 GiB) of non-cache RAM in use and only 1.174 GiB left
+as free, buffers, and cache. The account cannot read the prior boot's kernel
+journal, so this proves severe memory exhaustion and thrashing but not a saved
+kernel OOM-killer event. The host rebooted at 13:53:46 EDT. The old workflow
+JSON still said 18 tasks were running, but no corresponding processes survived.
 
 The recovery campaign therefore does not resume the stale workflow. It uses a
 new systemd-owned manager with a campaign-wide 220 GiB `MemoryHigh`, 240 GiB

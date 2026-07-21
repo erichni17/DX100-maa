@@ -61,7 +61,9 @@ def repair_task(original, source_root, run_root, checkpoint_root):
     repaired["env"] = dict(original["env"])
     repaired["env"]["DX100_SOURCE_ROOT"] = str(source_root)
     repaired["env"]["CHECKPOINT_ROOT"] = str(checkpoint_root)
-    repaired["env"]["CAMPAIGN_ROOT"] = str(run_root / f"{task_family}_recovery2")
+    repaired["env"]["CAMPAIGN_ROOT"] = str(
+        run_root / f"{task_family}_recovery2"
+    )
     return repaired
 
 
@@ -99,7 +101,9 @@ def main():
         text=True,
     ).strip()
     if dirty:
-        raise SystemExit("source worktree has tracked changes; commit before launch")
+        raise SystemExit(
+            "source worktree has tracked changes; commit before launch"
+        )
     source_commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=source_root, text=True
     ).strip()
@@ -117,7 +121,9 @@ def main():
                 repair_task(task, source_root, run_root, checkpoint_root)
             )
         elif task_id.startswith("nas-is-"):
-            repaired = repair_task(task, source_root, run_root, checkpoint_root)
+            repaired = repair_task(
+                task, source_root, run_root, checkpoint_root
+            )
             if task_id == "nas-is-t16384":
                 is_gate_tasks.append(repaired)
             else:
@@ -183,6 +189,14 @@ def main():
             "pre_reboot_host_available_gib": 12,
             "pre_reboot_swap_used_gib": 2,
             "five_is_processes_rss_kib": 316161776,
+            "vmstat_path": str(run_root / "vmstat.log"),
+            "vmstat_worst_sample_at": "2026-07-21T13:40:53-04:00",
+            "vmstat_mem_total_kib": 346566728,
+            "vmstat_minimum_free_kib": 420616,
+            "vmstat_buffers_kib_at_minimum_free": 5684,
+            "vmstat_cache_kib_at_minimum_free": 804648,
+            "vmstat_noncache_used_kib_at_minimum_free": 345335780,
+            "vmstat_maximum_swap_used_kib": 2097148,
             "host_rebooted_at": "2026-07-21T13:53:46-04:00",
         },
     }
