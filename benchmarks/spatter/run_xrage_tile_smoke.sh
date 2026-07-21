@@ -3,11 +3,12 @@
 # Usage: run_xrage_tile_smoke.sh [gem5_bin] [tile] [mem_size] [restore_timeout] [ckpt_timeout] [prog_interval]
 set -euo pipefail
 
-GH=/data1/nier/DX100
+GH=${DX100_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+RUNTIME_ROOT=${DX100_RUNTIME_ROOT:-$GH}
 SP=$GH/benchmarks/spatter
-SE=$GH/configs/deprecated/example/se.py
-RAMCFG=$GH/ext/ramulator2/ramulator2/example_gem5_config.yaml
-DATA=$SP/tests/test-data/xrage/all.json
+SE=${DX100_SE_CONFIG:-$RUNTIME_ROOT/configs/deprecated/example/se.py}
+RAMCFG=${DX100_RAMULATOR_CONFIG:-$RUNTIME_ROOT/ext/ramulator2/ramulator2/example_gem5_config.yaml}
+DATA=${XRAGE_DATA:-$SP/tests/test-data/xrage/all.json}
 GBIN=${1:-gem5.opt.ovl_base}
 TILE=${2:-16384}
 MEM_SIZE=${3:-2GB}
@@ -15,9 +16,10 @@ RESTORE_TIMEOUT=${4:-${RESTORE_TIMEOUT:-43200}}
 CKPT_TIMEOUT=${5:-${CKPT_TIMEOUT:-36000}}
 PROG_INTERVAL=${6:-${PROG_INTERVAL:-1000}}
 OMP_THREADS=${OMP_THREADS:-4}
-GEM5_BIN=$GH/build/X86/$GBIN
+GEM5_BIN=${DX100_GEM5_BIN:-$RUNTIME_ROOT/build/X86/$GBIN}
 TAG=$(basename "$GBIN")
-CAMPAIGN_ROOT=${CAMPAIGN_ROOT:-$GH/experiments/campaigns/$(date +%Y-%m-%d)_xrage_tile_smoke}
+CAMPAIGN_ROOT=${CAMPAIGN_ROOT:-$RUNTIME_ROOT/experiments/campaigns/$(date +%Y-%m-%d)_xrage_tile_smoke}
+CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-$RUNTIME_ROOT/ckpt_cache}
 RESULTS=$CAMPAIGN_ROOT/results.tsv
 mkdir -p "$CAMPAIGN_ROOT"
 
@@ -29,7 +31,17 @@ if [[ "${XRAGE_FROZEN_RUNNER:-0}" != 1 ]]; then
   exec env XRAGE_FROZEN_RUNNER=1 CAMPAIGN_ROOT="$CAMPAIGN_ROOT" "$snapshot" "$@"
 fi
 
-export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${DX100_RAMULATOR_LIBDIR:-$RUNTIME_ROOT/ext/ramulator2/ramulator2}:${LD_LIBRARY_PATH:-}"
+
+run_with_optional_timeout() {
+  local seconds=$1
+  shift
+  if [[ "$seconds" == 0 ]]; then
+    "$@"
+  else
+    timeout "$seconds" "$@"
+  fi
+}
 
 tile_suffix() {
   case "$1" in
@@ -42,7 +54,7 @@ tile_suffix() {
 SUF=$(tile_suffix "$TILE")
 MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
 BIN=$SP/build_xrage_gem5/spatter_maa_$SUF
-CKPT=$GH/ckpt_cache/xrage_t${TILE}_m${MEM_TAG}
+CKPT=$CHECKPOINT_ROOT/xrage_t${TILE}_m${MEM_TAG}
 OUT=$CAMPAIGN_ROOT/xrage_t${TILE}_m${MEM_TAG}_${TAG}
 
 [[ -f "$DATA" ]] || "$SP/setup_xrage.sh"
@@ -55,7 +67,7 @@ if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "[ckpt] creating $CKPT"
   rm -rf "$CKPT"
   mkdir -p "$CKPT"
-  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$CKPT_TIMEOUT" \
+  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$CKPT_TIMEOUT" \
     "$GEM5_BIN" --listener-mode=off --outdir="$CKPT" "$SE" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size "$MEM_SIZE" --max-checkpoints=1 \
     --cmd "$BIN" --options "-f $DATA" > "$CKPT/ckpt.log" 2>&1
@@ -70,7 +82,7 @@ mkdir -p "$OUT"
 cp -r "$CKPT"/cpt.* "$OUT"/
 echo "[restore] XRAGE tile=$TILE"
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$RESTORE_TIMEOUT" \
   "$GEM5_BIN" --listener-mode=off --outdir="$OUT" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
@@ -85,15 +97,23 @@ OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" \
 RC=$?
 set -e
 
+if [[ "$RC" == 0 ]]; then
+  FP_COUNT=$(rg -c '^SPATTER_FP .*mismatches=0 ' "$OUT/run.log" || true)
+  [[ "$FP_COUNT" == 9 ]] || RC=90
+  if rg -q '^SPATTER_FP .*mismatches=[1-9][0-9]* ' "$OUT/run.log"; then RC=90; fi
+fi
+
 STATS=$OUT/stats.txt
-SIMTICKS=$(awk '$1=="simTicks"{v=$2} END{print v}' "$STATS" 2>/dev/null || true)
-MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{v=$2} END{print v}' "$STATS" 2>/dev/null || true)
+SIMTICKS=$(awk '$1=="simTicks"{print $2; exit}' "$STATS" 2>/dev/null || true)
+MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$STATS" 2>/dev/null || true)
 OVERLAP=$(sed -n 's/.*OVERLAP_AUDIT.*both\/any=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
 WRTAIL=$(sed -n 's/.*WRITE_TAIL_AUDIT.*write_only\/write=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
 CONFIGS=$(rg -c '^Config [0-9]+/9$' "$OUT/run.log" || true)
 GATHERS=$(rg -c '^MAA gather execution ' "$OUT/run.log" || true)
 SCATTERS=$(rg -c '^MAA scatter execution ' "$OUT/run.log" || true)
 TS=$(date +%Y-%m-%dT%H:%M:%S)
+[[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
+rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 echo -e "${TS}\t${GBIN}\t${TILE}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${CONFIGS:-0}\t${GATHERS:-0}\t${SCATTERS:-0}\t${OUT}" >> "$RESULTS"
 
 echo "[restore] done rc=$RC ticks=${SIMTICKS:-missing} configs=${CONFIGS:-0} gathers=${GATHERS:-0} scatters=${SCATTERS:-0}"

@@ -3,10 +3,11 @@
 # Usage: run_cg_tile_smoke.sh [gem5_bin] [tile] [mem_size] [restore_timeout] [ckpt_timeout] [prog_interval]
 set -euo pipefail
 
-GH=/data1/nier/DX100
+GH=${DX100_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
+RUNTIME_ROOT=${DX100_RUNTIME_ROOT:-$GH}
 CG=$GH/benchmarks/NAS/cg
-SE=$GH/configs/deprecated/example/se.py
-RAMCFG=$GH/ext/ramulator2/ramulator2/example_gem5_config.yaml
+SE=${DX100_SE_CONFIG:-$RUNTIME_ROOT/configs/deprecated/example/se.py}
+RAMCFG=${DX100_RAMULATOR_CONFIG:-$RUNTIME_ROOT/ext/ramulator2/ramulator2/example_gem5_config.yaml}
 GBIN=${1:-gem5.opt.ovl_base}
 TILE=${2:-16384}
 MEM_SIZE=${3:-2GB}
@@ -15,10 +16,11 @@ CKPT_TIMEOUT=${5:-${CKPT_TIMEOUT:-21600}}
 PROG_INTERVAL=${6:-${PROG_INTERVAL:-1000}}
 OMP_THREADS=${OMP_THREADS:-4}
 BUILD_LOCK=${BUILD_LOCK:-$CG/.build.lock}
-GEM5_BIN=$GH/build/X86/$GBIN
+GEM5_BIN=${DX100_GEM5_BIN:-$RUNTIME_ROOT/build/X86/$GBIN}
 TAG=$(basename "$GBIN")
 DATE_TAG=$(date +%Y-%m-%d)
-CAMPAIGN_ROOT=${CAMPAIGN_ROOT:-$GH/experiments/campaigns/${DATE_TAG}_cg_tile_smoke}
+CAMPAIGN_ROOT=${CAMPAIGN_ROOT:-$RUNTIME_ROOT/experiments/campaigns/${DATE_TAG}_cg_tile_smoke}
+CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-$RUNTIME_ROOT/ckpt_cache}
 RESULTS=$CAMPAIGN_ROOT/results.tsv
 
 mkdir -p "$CAMPAIGN_ROOT"
@@ -31,7 +33,17 @@ if [[ "${CG_FROZEN_RUNNER:-0}" != 1 ]]; then
   exec env CG_FROZEN_RUNNER=1 CAMPAIGN_ROOT="$CAMPAIGN_ROOT" "$snapshot" "$@"
 fi
 
-export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${DX100_RAMULATOR_LIBDIR:-$RUNTIME_ROOT/ext/ramulator2/ramulator2}:${LD_LIBRARY_PATH:-}"
+
+run_with_optional_timeout() {
+  local seconds=$1
+  shift
+  if [[ "$seconds" == 0 ]]; then
+    "$@"
+  else
+    timeout "$seconds" "$@"
+  fi
+}
 
 tile_suffix() {
   case "$1" in
@@ -61,7 +73,7 @@ MAA_MEM_HEX=$(mem_size_to_hex "$MEM_SIZE")
 MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
 BIN_BASENAME=cg_maa_$SUF
 BIN=$CG/$BIN_BASENAME
-CKPT=$GH/ckpt_cache/cg_t${TILE}_m${MEM_TAG}
+CKPT=$CHECKPOINT_ROOT/cg_t${TILE}_m${MEM_TAG}
 OUT=$CAMPAIGN_ROOT/cg_t${TILE}_m${MEM_TAG}_${TAG}
 
 if [[ ! -f "$RESULTS" ]]; then
@@ -81,7 +93,7 @@ if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "[ckpt] creating $CKPT"
   rm -rf "$CKPT"
   mkdir -p "$CKPT"
-  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$CKPT_TIMEOUT" \
+  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$CKPT_TIMEOUT" \
     "$GEM5_BIN" --listener-mode=off --outdir="$CKPT" "$SE" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size "$MEM_SIZE" --max-checkpoints=1 \
     --cmd "$BIN" --options MAA > "$CKPT/ckpt.log" 2>&1
@@ -96,7 +108,7 @@ mkdir -p "$OUT"
 cp -r "$CKPT"/cpt.* "$OUT"/
 echo "[restore] CG tile=$TILE"
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$RESTORE_TIMEOUT" \
   "$GEM5_BIN" --listener-mode=off --outdir="$OUT" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
@@ -111,9 +123,13 @@ OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" \
 RC=$?
 set -e
 
+if [[ "$RC" == 0 ]]; then
+  rg -q '^CG_FINGERPRINT mode=MAA .*result=PASS$' "$OUT/run.log" || RC=90
+fi
+
 STATS=$OUT/stats.txt
-SIMTICKS=$(awk '$1=="simTicks"{v=$2} END{print v}' "$STATS" 2>/dev/null || true)
-MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{v=$2} END{print v}' "$STATS" 2>/dev/null || true)
+SIMTICKS=$(awk '$1=="simTicks"{print $2; exit}' "$STATS" 2>/dev/null || true)
+MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$STATS" 2>/dev/null || true)
 OVERLAP=$(sed -n 's/.*OVERLAP_AUDIT.*both\/any=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
 WRTAIL=$(sed -n 's/.*WRITE_TAIL_AUDIT.*write_only\/write=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
 FINGERPRINT=$(awk '/^[[:space:]]+1[[:space:]]/ {r=$2; z=$3} END {print r "\t" z}' "$OUT/run.log")
@@ -121,6 +137,8 @@ RNORM=${FINGERPRINT%%$'\t'*}
 ZETA=${FINGERPRINT#*$'\t'}
 [[ "$FINGERPRINT" == *$'\t'* ]] || { RNORM=; ZETA=; }
 TS=$(date +%Y-%m-%dT%H:%M:%S)
+[[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
+rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 echo -e "${TS}\t${GBIN}\t${TILE}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${RNORM:-}\t${ZETA:-}\t${OUT}" >> "$RESULTS"
 
 echo "[restore] done rc=$RC ticks=${SIMTICKS:-missing} rnorm=${RNORM:-missing} zeta=${ZETA:-missing}"

@@ -6,10 +6,11 @@
 #   run_ume_tile_smoke.sh gem5.opt.ovl_base gradzatz 4096 1000000 2GB
 set -euo pipefail
 
-GH=/data1/nier/DX100
+GH=${DX100_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+RUNTIME_ROOT=${DX100_RUNTIME_ROOT:-$GH}
 UME=$GH/benchmarks/UME
-SE=$GH/configs/deprecated/example/se.py
-RAMCFG=$GH/ext/ramulator2/ramulator2/example_gem5_config.yaml
+SE=${DX100_SE_CONFIG:-$RUNTIME_ROOT/configs/deprecated/example/se.py}
+RAMCFG=${DX100_RAMULATOR_CONFIG:-$RUNTIME_ROOT/ext/ramulator2/ramulator2/example_gem5_config.yaml}
 
 GBIN=${1:-gem5.opt.ovl_base}
 KERNEL=${2:-gradzatz}
@@ -20,15 +21,27 @@ RESTORE_TIMEOUT=${6:-${RESTORE_TIMEOUT:-14400}}
 CKPT_TIMEOUT=${7:-${CKPT_TIMEOUT:-3600}}
 PROG_INTERVAL=${8:-${PROG_INTERVAL:-1000}}
 OMP_THREADS=${OMP_THREADS:-4}
+BUILD_LOCK=${BUILD_LOCK:-$UME/.build.lock}
 
-GEM5_BIN=$GH/build/X86/$GBIN
+GEM5_BIN=${DX100_GEM5_BIN:-$RUNTIME_ROOT/build/X86/$GBIN}
 TAG=$(basename "$GBIN")
 DATE_TAG=$(date +%Y-%m-%d)
-CAMPAIGN_ROOT=$GH/experiments/campaigns/${DATE_TAG}_ume_tile_smoke
+CAMPAIGN_ROOT=${CAMPAIGN_ROOT:-$RUNTIME_ROOT/experiments/campaigns/${DATE_TAG}_ume_tile_smoke}
+CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-$RUNTIME_ROOT/ckpt_cache}
 RESULTS=$CAMPAIGN_ROOT/results.tsv
 
 mkdir -p "$CAMPAIGN_ROOT"
-export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${DX100_RAMULATOR_LIBDIR:-$RUNTIME_ROOT/ext/ramulator2/ramulator2}:${LD_LIBRARY_PATH:-}"
+
+run_with_optional_timeout() {
+  local seconds=$1
+  shift
+  if [[ "$seconds" == 0 ]]; then
+    "$@"
+  else
+    timeout "$seconds" "$@"
+  fi
+}
 
 tile_suffix() {
   case "$1" in
@@ -80,11 +93,15 @@ fi
 
 echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE n=$N mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
 echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s prog_interval=$PROG_INTERVAL"
-rm -f "$BIN"
-make -C "$UME" MAA_MEM_SIZE="$MAA_MEM_HEX" "$BIN_BASENAME" > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
+{
+  flock -x 200
+  rm -f "$BIN"
+  make -C "$UME" MAA_MEM_SIZE="$MAA_MEM_HEX" "$BIN_BASENAME" \
+    > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
+} 200>"$BUILD_LOCK"
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
 
-CKPT="$GH/ckpt_cache/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
+CKPT="$CHECKPOINT_ROOT/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
 OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}"
 
 # --- step 1: checkpoint ---
@@ -92,7 +109,7 @@ if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "[ckpt] creating checkpoint in $CKPT"
   rm -rf "$CKPT"
   mkdir -p "$CKPT"
-  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$CKPT_TIMEOUT" "$GEM5_BIN" --outdir="$CKPT" "$SE" \
+  OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$CKPT_TIMEOUT" "$GEM5_BIN" --outdir="$CKPT" "$SE" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size "$MEM_SIZE" --max-checkpoints=1 \
     --cmd "$BIN" --options "$OPTS" > "$CKPT/ckpt.log" 2>&1
   echo "[ckpt] done (exit=$?)"
@@ -108,7 +125,7 @@ mkdir -p "$OUT"
 cp -r "$CKPT"/cpt.* "$OUT"/
 echo "[restore] running $KERNEL tile=$TILE n=$N"
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" --outdir="$OUT" "$SE" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" --outdir="$OUT" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
   --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
@@ -123,12 +140,27 @@ RC=$?
 set -e
 echo "[restore] done (exit=$RC)"
 
+if [[ "$RC" == 0 ]]; then
+  case "$KERNEL" in
+    gradzatp) VERIFY_MARKER='^UME_GRADZATP_VERIFY_PASS ' ;;
+    gradzatz) VERIFY_MARKER='^UME_GRADZATZ_VERIFY_PASS ' ;;
+    gradzatp_invert) VERIFY_MARKER='^UME_GATHER_VERIFY_PASS ' ;;
+    gradzatz_invert) VERIFY_MARKER='^UME_GRADZATZ_INVERT_VERIFY_PASS ' ;;
+  esac
+  rg -q "$VERIFY_MARKER" "$OUT/run.log" || RC=90
+  rg -q '^UME_REFERENCE_PASS ' "$OUT/run.log" || RC=90
+  if rg -q 'UME_.*_FAIL' "$OUT/run.log"; then RC=90; fi
+fi
+
 STATS="$OUT/stats.txt"
-SIMTICKS=$(awk '$1=="simTicks"{print $2}' "$STATS" 2>/dev/null | tail -1 || true)
-MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2}' "$STATS" 2>/dev/null | tail -1 || true)
+SIMTICKS=$(awk '$1=="simTicks"{print $2; exit}' "$STATS" 2>/dev/null || true)
+MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$STATS" 2>/dev/null || true)
 OVERLAP=$(grep 'OVERLAP_AUDIT' "$OUT/run.log" 2>/dev/null | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p' || true)
 WRTAIL=$(grep 'WRITE_TAIL_AUDIT' "$OUT/run.log" 2>/dev/null | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p' || true)
 TS=$(date +%Y-%m-%dT%H:%M:%S)
+
+[[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
+rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 
 echo -e "${TS}\t${GBIN}\t${KERNEL}\t${TILE}\t${N}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${OUT}" >> "$RESULTS"
 

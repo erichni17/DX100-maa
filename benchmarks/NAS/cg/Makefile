@@ -1,6 +1,6 @@
 GEM5_HOME=../../..
 MAA_HOME = $(GEM5_HOME)/benchmarks/API/
-CXX_FLAGS += -std=c++11 -O3 -Wall -g3 -fopenmp
+CXX_FLAGS += -std=c++11 -O3 -Wall -g3 -fopenmp -DCG_FP_ENABLE=1
 GEM5_INCLUDE = -I$(GEM5_HOME)/include/ -I$(GEM5_HOME)/util/m5/src/
 MAA_INCLUDE = -I$(MAA_HOME)
 GEM5_LIB = -L$(GEM5_HOME)/util/m5/build/x86/out

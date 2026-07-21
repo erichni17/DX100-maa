@@ -9,7 +9,8 @@
 # and appends a TSV row to results.tsv.
 set -euo pipefail
 
-GH=/data1/nier/DX100
+GH=${DX100_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
+RUNTIME_ROOT=${DX100_RUNTIME_ROOT:-$GH}
 GBIN=${1:-gem5.opt.ovl_base}
 TILE=${2:-16384}
 SMALL=${3:-1}
@@ -17,16 +18,28 @@ RESTORE_TIMEOUT=${4:-${RESTORE_TIMEOUT:-1800}}
 CKPT_TIMEOUT=${5:-${CKPT_TIMEOUT:-900}}
 PROG_INTERVAL=${6:-${PROG_INTERVAL:-1000}}
 OMP_THREADS=${OMP_THREADS:-4}
-G=$GH/build/X86/$GBIN
-RAMCFG=$GH/ext/ramulator2/ramulator2/example_gem5_config.yaml
-SE=$GH/configs/deprecated/example/se.py
+BUILD_LOCK=${BUILD_LOCK:-$GH/benchmarks/NAS/is/.build.lock}
+G=${DX100_GEM5_BIN:-$RUNTIME_ROOT/build/X86/$GBIN}
+RAMCFG=${DX100_RAMULATOR_CONFIG:-$RUNTIME_ROOT/ext/ramulator2/ramulator2/example_gem5_config.yaml}
+SE=${DX100_SE_CONFIG:-$RUNTIME_ROOT/configs/deprecated/example/se.py}
 IS_DIR=$GH/benchmarks/NAS/is
 TAG=$(basename "$GBIN")
 DATE_TAG=$(date +%Y-%m-%d)
-CAMPAIGN_ROOT=$GH/experiments/campaigns/${DATE_TAG}_is_tile_smoke
+CAMPAIGN_ROOT=${CAMPAIGN_ROOT:-$RUNTIME_ROOT/experiments/campaigns/${DATE_TAG}_is_tile_smoke}
+CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-$RUNTIME_ROOT/ckpt_cache}
 RESULTS=$CAMPAIGN_ROOT/results.tsv
 
-export LD_LIBRARY_PATH="$GH/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${DX100_RAMULATOR_LIBDIR:-$RUNTIME_ROOT/ext/ramulator2/ramulator2}:${LD_LIBRARY_PATH:-}"
+
+run_with_optional_timeout() {
+  local seconds=$1
+  shift
+  if [[ "$seconds" == 0 ]]; then
+    "$@"
+  else
+    timeout "$seconds" "$@"
+  fi
+}
 
 tile_suffix() {
   case "$1" in
@@ -54,7 +67,7 @@ if [[ "$SMALL" != "0" ]]; then
   MAKE_SMALL=(SMALL=1)
 fi
 
-C=$GH/ckpt_cache/is_maa_smoke_t${TILE}${SMALL_TAG}
+C=$CHECKPOINT_ROOT/is_maa_smoke_t${TILE}${SMALL_TAG}
 O=$CAMPAIGN_ROOT/t${TILE}_${TAG}${SMALL_TAG}
 
 mkdir -p "$CAMPAIGN_ROOT"
@@ -64,14 +77,19 @@ fi
 
 echo "[build] target=$TBIN_BASENAME tile=$TILE small=$SMALL"
 echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s prog_interval=$PROG_INTERVAL"
-make -C "$IS_DIR" GEM5_BUILD=1 "${MAKE_SMALL[@]}" "$TBIN_BASENAME" > "$CAMPAIGN_ROOT/build_t${TILE}${SMALL_TAG}.log" 2>&1
+{
+  flock -x 200
+  rm -f "$TBIN"
+  make -C "$IS_DIR" GEM5_BUILD=1 VERIFY=1 "${MAKE_SMALL[@]}" "$TBIN_BASENAME" \
+    > "$CAMPAIGN_ROOT/build_t${TILE}${SMALL_TAG}.log" 2>&1
+} 200>"$BUILD_LOCK"
 
 # --- step 1: checkpoint (AtomicSimpleCPU) if not present ---
 if ! ls "$C"/cpt.* >/dev/null 2>&1; then
   rm -rf "$C"
   mkdir -p "$C"
   echo "[ckpt] creating checkpoint in $C ..."
-  timeout "$CKPT_TIMEOUT" "$G" --outdir="$C" "$SE" \
+  run_with_optional_timeout "$CKPT_TIMEOUT" "$G" --outdir="$C" "$SE" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size 16GB --max-checkpoints=1 \
     --cmd "$TBIN" --options "MAA" > "$C/ckpt.log" 2>&1
   echo "[ckpt] done (exit=$?)"
@@ -85,7 +103,7 @@ mkdir -p "$O"
 cp -r "$C"/cpt.* "$O"/
 echo "[restore] running $GBIN, tile=$TILE, small=$SMALL ..."
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$G" --outdir="$O" "$SE" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$RESTORE_TIMEOUT" "$G" --outdir="$O" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size 16GB \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
   --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
@@ -100,12 +118,19 @@ RC=$?
 set -e
 echo "[restore] done (exit=$RC)"
 
+if [[ "$RC" == 0 ]]; then
+  rg -q '^IS_VERIFY .*result=PASS$' "$O/run.log" || RC=90
+fi
+
 STATS=$O/stats.txt
-SIMTICKS=$(awk '$1=="simTicks"{print $2}' "$STATS" 2>/dev/null | tail -1 || true)
-MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2}' "$STATS" 2>/dev/null | tail -1 || true)
+SIMTICKS=$(awk '$1=="simTicks"{print $2; exit}' "$STATS" 2>/dev/null || true)
+MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$STATS" 2>/dev/null || true)
 OVERLAP=$(grep 'OVERLAP_AUDIT' "$O/run.log" 2>/dev/null | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p' || true)
 WRTAIL=$(grep 'WRITE_TAIL_AUDIT' "$O/run.log" 2>/dev/null | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p' || true)
 TS=$(date +%Y-%m-%dT%H:%M:%S)
+
+[[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
+rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$O/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 
 echo -e "${TS}\t${GBIN}\t${TILE}\t${SMALL}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${O}" >> "$RESULTS"
 
