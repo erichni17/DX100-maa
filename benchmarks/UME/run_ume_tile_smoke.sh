@@ -31,6 +31,22 @@ CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-$RUNTIME_ROOT/ckpt_cache}
 RESULTS=$CAMPAIGN_ROOT/results.tsv
 
 mkdir -p "$CAMPAIGN_ROOT"
+
+# Keep the corrected schema separate from a campaign created by the older
+# runner, which had no output_hash column.
+if [[ -f "$RESULTS" ]] && ! head -1 "$RESULTS" | grep -q $'\toutput_hash\t'; then
+  RESULTS=$CAMPAIGN_ROOT/results_oracle_v2.tsv
+fi
+
+# Long simulations keep reading shell input as they progress. Run an immutable
+# campaign-local snapshot so edits to this source cannot corrupt an active job.
+if [[ "${UME_FROZEN_RUNNER:-0}" != 1 ]]; then
+  RUNNER_SNAPSHOT="$CAMPAIGN_ROOT/runner_$(date +%Y%m%d_%H%M%S)_$$.sh"
+  cp -- "${BASH_SOURCE[0]}" "$RUNNER_SNAPSHOT"
+  chmod +x "$RUNNER_SNAPSHOT"
+  exec env UME_FROZEN_RUNNER=1 "$RUNNER_SNAPSHOT" "$@"
+fi
+
 export LD_LIBRARY_PATH="${DX100_RAMULATOR_LIBDIR:-$RUNTIME_ROOT/ext/ramulator2/ramulator2}:${LD_LIBRARY_PATH:-}"
 
 run_with_optional_timeout() {
@@ -73,9 +89,28 @@ mem_size_to_hex() {
 }
 
 case "$KERNEL" in
-  gradzatp|gradzatz|gradzatp_invert|gradzatz_invert) ;;
+  gradzatp)
+    [[ "$N" == 1000000 ]] || {
+      echo "gradzatp fixed-input oracle requires n=1000000 (got $N)" >&2
+      exit 2
+    }
+    VERIFY_FLAGS="-DUME_FIXED_INPUT -DUME_OUTPUT_FINGERPRINT"
+    EXPECTED_OUTPUT_HASH=11225737641199706160
+    EXPECTED_FP="UME_OUTPUT_FP output_hash=${EXPECTED_OUTPUT_HASH} nonfinite=0"
+    EXPECTED_REFERENCE="UME_REFERENCE_PASS point_volume_errors=0 point_gradient_errors=0 elements=1180000"
+    ;;
+  gradzatz)
+    [[ "$N" == 1000000 ]] || {
+      echo "gradzatz fixed-input oracle requires n=1000000 (got $N)" >&2
+      exit 2
+    }
+    VERIFY_FLAGS="-DUME_GRADZATZ_FIXED_INPUT -DUME_GRADZATZ_OUTPUT_FINGERPRINT -DUME_GRADZATZ_EXPECTED_N=1000000 -DUME_GRADZATZ_EXPECTED_HASH=9234467062988358067ULL"
+    EXPECTED_OUTPUT_HASH=9234467062988358067
+    EXPECTED_FP="UME_OUTPUT_FP output_hash=${EXPECTED_OUTPUT_HASH} nonfinite=0"
+    EXPECTED_REFERENCE="UME_REFERENCE_PASS volume_errors=0 gradient_errors=0 elements=1180000"
+    ;;
   *)
-    echo "unsupported kernel: $KERNEL (supported: gradzatp|gradzatz|gradzatp_invert|gradzatz_invert)" >&2
+    echo "unsupported kernel for the full fixed-input oracle: $KERNEL (supported: gradzatp|gradzatz)" >&2
     exit 2
     ;;
 esac
@@ -88,7 +123,7 @@ MAA_MEM_HEX=$(mem_size_to_hex "$MEM_SIZE")
 MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
 
 if [[ ! -f "$RESULTS" ]]; then
-  echo -e "timestamp\tgem5_bin\tkernel\ttile\tn\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutdir" > "$RESULTS"
+  echo -e "timestamp\tgem5_bin\tkernel\ttile\tn\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutput_hash\toutdir" > "$RESULTS"
 fi
 
 echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE n=$N mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
@@ -96,7 +131,7 @@ echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeo
 {
   flock -x 200
   rm -f "$BIN"
-  make -C "$UME" MAA_MEM_SIZE="$MAA_MEM_HEX" "$BIN_BASENAME" \
+  make -C "$UME" MAA_MEM_SIZE="$MAA_MEM_HEX" EXTRA_CXX_FLAGS="$VERIFY_FLAGS" "$BIN_BASENAME" \
     > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
 } 200>"$BUILD_LOCK"
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
@@ -141,14 +176,8 @@ set -e
 echo "[restore] done (exit=$RC)"
 
 if [[ "$RC" == 0 ]]; then
-  case "$KERNEL" in
-    gradzatp) VERIFY_MARKER='^UME_GRADZATP_VERIFY_PASS ' ;;
-    gradzatz) VERIFY_MARKER='^UME_GRADZATZ_VERIFY_PASS ' ;;
-    gradzatp_invert) VERIFY_MARKER='^UME_GATHER_VERIFY_PASS ' ;;
-    gradzatz_invert) VERIFY_MARKER='^UME_GRADZATZ_INVERT_VERIFY_PASS ' ;;
-  esac
-  rg -q "$VERIFY_MARKER" "$OUT/run.log" || RC=90
-  rg -q '^UME_REFERENCE_PASS ' "$OUT/run.log" || RC=90
+  rg -Fqx -- "$EXPECTED_FP" "$OUT/run.log" || RC=90
+  rg -Fqx -- "$EXPECTED_REFERENCE" "$OUT/run.log" || RC=90
   if rg -q 'UME_.*_FAIL' "$OUT/run.log"; then RC=90; fi
 fi
 
@@ -157,12 +186,13 @@ SIMTICKS=$(awk '$1=="simTicks"{print $2; exit}' "$STATS" 2>/dev/null || true)
 MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$STATS" 2>/dev/null || true)
 OVERLAP=$(grep 'OVERLAP_AUDIT' "$OUT/run.log" 2>/dev/null | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p' || true)
 WRTAIL=$(grep 'WRITE_TAIL_AUDIT' "$OUT/run.log" 2>/dev/null | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p' || true)
+OUTPUT_HASH=$(sed -n 's/^UME_OUTPUT_FP output_hash=\([0-9][0-9]*\) nonfinite=0$/\1/p' "$OUT/run.log" 2>/dev/null | tail -1 || true)
 TS=$(date +%Y-%m-%dT%H:%M:%S)
 
 [[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
 rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 
-echo -e "${TS}\t${GBIN}\t${KERNEL}\t${TILE}\t${N}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${OUT}" >> "$RESULTS"
+echo -e "${TS}\t${GBIN}\t${KERNEL}\t${TILE}\t${N}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${OUTPUT_HASH:-}\t${OUT}" >> "$RESULTS"
 
 echo "===== results ($KERNEL, tile=$TILE, n=$N) ====="
 grep -E "ROI|iteration|Verif|correct|PASS|FAIL|m5_exit|panic|fatal" "$OUT/run.log" | tail -30 || true

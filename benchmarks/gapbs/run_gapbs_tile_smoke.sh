@@ -56,6 +56,23 @@ run_with_optional_timeout() {
   fi
 }
 
+prepare_graph() {
+  local target=$1
+  shift
+  local temporary="${target}.tmp.$$"
+  if [[ -s "$target" ]]; then
+    return 0
+  fi
+  echo "[prep] generating graph: $target"
+  if "$GAP/converter" -u "$SCALE" "$@" -b "$temporary"; then
+    mv -f "$temporary" "$target"
+  else
+    local rc=$?
+    rm -f "$temporary"
+    return "$rc"
+  fi
+}
+
 tile_suffix() {
   case "$1" in
     1024) echo "1K" ;;
@@ -110,10 +127,6 @@ case "$KERNEL" in
     VERIFY_FLAGS="-DPR_FP_ENABLE=1"
     ;;
   sssp)
-    if [[ ! -f "$GRAPH_WSG" ]]; then
-      echo "[prep] generating weighted graph: $GRAPH_WSG"
-      "$GAP/converter" -u "$SCALE" -w -b "$GRAPH_WSG"
-    fi
     OPTS="-f $GRAPH_WSG -n 1 -v"
     VERIFY_FLAGS="-DSSSP_FP_ENABLE=1"
     ;;
@@ -134,15 +147,16 @@ echo "[build] waiting for lock: $BUILD_LOCK"
   flock -x 200
   rm -f "$BIN"
   make -C "$GAP" GEM5_BUILD=1 MAA_MEM_SIZE="$MAA_MEM_HEX" \
-    EXTRA_CXX_FLAGS="$VERIFY_FLAGS" "$BIN_BASENAME" \
+    EXTRA_CXX_FLAGS="$VERIFY_FLAGS" "$BIN_BASENAME" converter \
     > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
+  if [[ "$KERNEL" == sssp ]]; then
+    prepare_graph "$GRAPH_WSG" -w
+  else
+    prepare_graph "$GRAPH_SG"
+  fi
 } 200>"$BUILD_LOCK"
 
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
-if [[ ! -f "$GRAPH_SG" ]]; then
-  echo "[prep] generating graph: $GRAPH_SG"
-  "$GAP/converter" -u "$SCALE" -b "$GRAPH_SG"
-fi
 
 CKPT="$CHECKPOINT_ROOT/gapbs_${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}"
 OUT="$CAMPAIGN_ROOT/${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${TAG}"
