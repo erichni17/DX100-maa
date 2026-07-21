@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a successor workflow for the failed GAPBS and UME sweep cells."""
+"""Create a successor workflow for failed or invalid tile-sweep cells."""
 
 import argparse
 import hashlib
@@ -41,8 +41,12 @@ def main():
     original = json.loads(parent_workflow.read_text())
     selected = []
     parent_owned = {"ume-gradzatp-t65536", "ume-gradzatz-t65536"}
+    memory_pressure_retries = {"nas-is-t1024", "nas-is-t4096"}
     for original_task in original["tasks"]:
-        if not original_task["id"].startswith(("gapbs-", "ume-")):
+        if not (
+            original_task["id"].startswith(("gapbs-", "ume-"))
+            or original_task["id"] in memory_pressure_retries
+        ):
             continue
         if original_task["id"] in parent_owned:
             continue
@@ -53,14 +57,23 @@ def main():
             repaired["command"][0] = str(
                 source_root / "benchmarks/gapbs/run_gapbs_tile_smoke.sh"
             )
-        else:
+        elif repaired["id"].startswith("ume-"):
             repaired["command"][0] = str(
                 source_root / "benchmarks/UME/run_ume_tile_smoke.sh"
+            )
+        else:
+            repaired["command"][0] = str(
+                source_root / "benchmarks/NAS/is/run_is_smoke.sh"
             )
         repaired["env"] = dict(original_task["env"])
         repaired["env"]["DX100_SOURCE_ROOT"] = str(source_root)
         repaired["env"]["CHECKPOINT_ROOT"] = str(checkpoint_root)
-        family = "gapbs" if repaired["id"].startswith("gapbs-") else "ume"
+        if repaired["id"].startswith("gapbs-"):
+            family = "gapbs"
+        elif repaired["id"].startswith("ume-"):
+            family = "ume"
+        else:
+            family = "is"
         repaired["env"]["CAMPAIGN_ROOT"] = str(run_root / f"{family}_repair1")
         selected.append(repaired)
 
@@ -78,7 +91,7 @@ def main():
         raise SystemExit("source worktree has tracked changes; commit before launch")
     manifest = {
         "schema_version": 1,
-        "objective": "Retry only GAPBS and UME cells after fail-closed harness repair",
+        "objective": "Retry invalid GAPBS/UME cells and IS cells lost to memory pressure",
         "source_root": str(source_root),
         "source_commit": source_commit,
         "parent_workflow": str(parent_workflow),
@@ -91,6 +104,7 @@ def main():
         "campaign_roots": {
             "gapbs": str(run_root / "gapbs_repair1"),
             "ume": str(run_root / "ume_repair1"),
+            "is": str(run_root / "is_repair1"),
         },
         "wall_clock_timeout_seconds": None,
         "task_count": len(selected),
@@ -101,6 +115,7 @@ def main():
             "Build UME fixed-input fingerprint binaries and enforce exact scalar oracles",
             "Use fresh checkpoints so pre-ROI inputs match the repaired binaries",
             "Leave the parent's not-yet-started 64K UME cells with the parent to avoid duplicate simulations",
+            "Retry only the two NAS IS cells whose original gem5 processes exited 137 under host memory pressure",
         ],
     }
     write_json(run_root / "repair1-manifest.json", manifest)

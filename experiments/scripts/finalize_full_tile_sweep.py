@@ -288,11 +288,15 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
         {
             "id": "nas-is-full",
             "label": "NAS IS full class",
-            "source": run_root / "is/results.tsv",
+            "sources": [
+                run_root / "is/results.tsv",
+                run_root / "is_repair1/results.tsv",
+            ],
             "filters": {"small": "0"},
             "oracle": "is",
             "task": "nas-is-t{tile}",
             "workflow": "original",
+            "workflow_by_tile": {1024: "repair", 4096: "repair"},
         },
         {
             "id": "nas-cg",
