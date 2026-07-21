@@ -28,6 +28,9 @@ def main():
     parser.add_argument("--state-root", type=Path, required=True)
     parser.add_argument("--workflow", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument(
+        "--runtime", default="/home/nier/.local/bin/dx-runtime"
+    )
     parser.add_argument("--available-gib", type=int, default=96)
     parser.add_argument("--swap-quiet-seconds", type=int, default=300)
     parser.add_argument("--interval", type=int, default=30)
@@ -52,7 +55,7 @@ def main():
     run_root = args.run_root.resolve()
     log = run_root / "recovery2-is-gate-manager.log"
     status = run_root / "recovery2-is-gate-manager-status.json"
-    runtime = shutil.which("dx-runtime")
+    runtime = shutil.which(args.runtime)
     if runtime is None:
         raise SystemExit("dx-runtime is unavailable")
     if not workflow.is_file():

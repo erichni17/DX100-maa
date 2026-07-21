@@ -107,7 +107,12 @@ def workflow_completed(path):
 
 
 def proc_stat(pid):
-    fields = (Path("/proc") / str(pid) / "stat").read_text().rsplit(") ", 1)[1].split()
+    fields = (
+        (Path("/proc") / str(pid) / "stat")
+        .read_text()
+        .rsplit(") ", 1)[1]
+        .split()
+    )
     return {"ppid": int(fields[1]), "start_time_ticks": int(fields[19])}
 
 
@@ -130,7 +135,9 @@ def conflicting_processes(source_root, run_root):
         if not entry.name.isdigit() or int(entry.name) in ignored:
             continue
         try:
-            command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode()
+            command = (
+                (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode()
+            )
             identity = proc_stat(int(entry.name))
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
@@ -169,7 +176,9 @@ def wait_for_admission(log, available_gib, quiet_seconds, interval):
             quiet_since = now
         current_available = mem_available_kib() / GIB_KIB
         quiet_for = now - quiet_since
-        admitted = current_available >= available_gib and quiet_for >= quiet_seconds
+        admitted = (
+            current_available >= available_gib and quiet_for >= quiet_seconds
+        )
         report = (int(current_available // 8), admitted)
         if report != prior_report:
             append_log(
@@ -195,10 +204,16 @@ def run_workflow(runtime, state_root, workflow, parallelism, log):
         str(parallelism),
         str(workflow),
     ]
-    append_log(log, f"workflow launch path={workflow} max_parallel={parallelism}")
+    append_log(
+        log, f"workflow launch path={workflow} max_parallel={parallelism}"
+    )
     with log.open("a") as output:
-        completed = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT)
-    append_log(log, f"workflow return path={workflow} rc={completed.returncode}")
+        completed = subprocess.run(
+            command, stdout=output, stderr=subprocess.STDOUT
+        )
+    append_log(
+        log, f"workflow return path={workflow} rc={completed.returncode}"
+    )
     return completed.returncode
 
 
@@ -208,6 +223,9 @@ def main():
     parser.add_argument("--normal-workflow", type=Path, required=True)
     parser.add_argument("--is-workflow", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument(
+        "--runtime", default="/home/nier/.local/bin/dx-runtime"
+    )
     parser.add_argument(
         "--is-gate-name",
         default="dx100-full-tile-sweep-recovery2-is-gate-20260721",
@@ -231,7 +249,9 @@ def main():
         )
         < 1
     ):
-        raise SystemExit("parallelism and admission thresholds must be positive")
+        raise SystemExit(
+            "parallelism and admission thresholds must be positive"
+        )
     if args.expected_memory_high_gib >= args.expected_memory_max_gib:
         raise SystemExit("memory.high must be below memory.max")
 
@@ -241,7 +261,7 @@ def main():
     run_root = args.run_root.resolve()
     log = run_root / "recovery2-manager.log"
     status = run_root / "recovery2-manager-status.json"
-    runtime = shutil.which("dx-runtime")
+    runtime = shutil.which(args.runtime)
     if runtime is None:
         raise SystemExit("dx-runtime is unavailable")
     for path in (normal_workflow, is_workflow):
@@ -266,7 +286,9 @@ def main():
             "refusing launch with live owned processes: "
             + json.dumps(conflicts, sort_keys=True)
         )
-    limits = verify_cgroup(args.expected_memory_high_gib, args.expected_memory_max_gib)
+    limits = verify_cgroup(
+        args.expected_memory_high_gib, args.expected_memory_max_gib
+    )
     atomic_json(
         status,
         {
@@ -277,8 +299,12 @@ def main():
             "phase": "admission-normal",
         },
     )
-    append_log(log, f"manager started pid={os.getpid()} cgroup={json.dumps(limits)}")
-    watcher_script = Path(__file__).resolve().with_name("watch_full_tile_completion.py")
+    append_log(
+        log, f"manager started pid={os.getpid()} cgroup={json.dumps(limits)}"
+    )
+    watcher_script = (
+        Path(__file__).resolve().with_name("watch_full_tile_completion.py")
+    )
     watcher_command = [
         os.environ.get("PYTHON", "/usr/bin/python3"),
         str(watcher_script),
@@ -293,7 +319,9 @@ def main():
         )
     append_log(log, f"validation watcher started pid={watcher.pid}")
 
-    wait_for_admission(log, args.available_gib, args.swap_quiet_seconds, args.interval)
+    wait_for_admission(
+        log, args.available_gib, args.swap_quiet_seconds, args.interval
+    )
     normal_rc = run_workflow(
         runtime, state_root, normal_workflow, args.normal_parallel, log
     )
@@ -307,8 +335,12 @@ def main():
             "normal_rc": normal_rc,
         },
     )
-    wait_for_admission(log, args.available_gib, args.swap_quiet_seconds, args.interval)
-    is_rc = run_workflow(runtime, state_root, is_workflow, args.is_parallel, log)
+    wait_for_admission(
+        log, args.available_gib, args.swap_quiet_seconds, args.interval
+    )
+    is_rc = run_workflow(
+        runtime, state_root, is_workflow, args.is_parallel, log
+    )
     watcher_rc = watcher.wait()
     final = {
         "terminal": True,
