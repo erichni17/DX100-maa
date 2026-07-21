@@ -47,6 +47,7 @@ Source: <https://learn.chatgpt.com/docs/agent-configuration/rules> and
 
 `wait_and_run_full_tile_repair.py` waits for enough `MemAvailable`, selects a
 parallelism limit that keeps a 32 GiB reserve under a conservative 16 GiB per
-new simulation allowance, and then `exec`s the repair workflow. The supervisor
-itself is launched in tmux, so it can be inspected or retired without a raw PID
-signal. It never kills or pauses an existing simulation.
+new simulation allowance, requires five continuous minutes without swap-counter
+movement, and then `exec`s the repair workflow. The supervisor itself is
+launched in tmux, so it can be inspected or retired without a raw PID signal. It
+never kills or pauses an existing simulation.
