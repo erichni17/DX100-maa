@@ -75,6 +75,28 @@ if [[ ! -f "$RESULTS" ]]; then
   echo -e "timestamp\tgem5_bin\ttile\tsmall\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutdir" > "$RESULTS"
 fi
 
+reuse_completed_run() {
+  local stats="$O/stats.txt"
+  [[ -s "$O/run.log" && -s "$stats" ]] || return 1
+  grep -Eq '^IS_VERIFY .*result=PASS$' "$O/run.log" || return 1
+  grep -Fqx -- 'IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit' "$O/run.log" || return 1
+  ! grep -Eq 'IS_VERIFY .*result=FAIL|panic:|fatal:' "$O/run.log" || return 1
+  grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$O/run.log" || return 1
+  local simticks maa_cycles overlap wrtail timestamp
+  simticks=$(awk '$1=="simTicks"{print $2; exit}' "$stats")
+  [[ -n "$simticks" ]] || return 1
+  maa_cycles=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$stats")
+  overlap=$(grep 'OVERLAP_AUDIT' "$O/run.log" | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p')
+  wrtail=$(grep 'WRITE_TAIL_AUDIT' "$O/run.log" | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p')
+  timestamp=$(date +%Y-%m-%dT%H:%M:%S)
+  echo -e "${timestamp}\t${GBIN}\t${TILE}\t${SMALL}\t0\t${simticks}\t${maa_cycles:-}\t${overlap:-}\t${wrtail:-}\t${O}" >> "$RESULTS"
+  echo "[reuse] accepted existing correctness-complete run: $O"
+}
+
+if reuse_completed_run; then
+  exit 0
+fi
+
 echo "[build] target=$TBIN_BASENAME tile=$TILE small=$SMALL"
 echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s progress_frequency_hz=$PROG_INTERVAL"
 {
@@ -123,10 +145,10 @@ set -e
 echo "[restore] done (exit=$RC)"
 
 if [[ "$RC" == 0 ]]; then
-  rg -q '^IS_VERIFY .*result=PASS$' "$O/run.log" || RC=90
+  grep -Eq '^IS_VERIFY .*result=PASS$' "$O/run.log" || RC=90
 fi
 if [[ "$RC" == 0 ]]; then
-  rg -q '^IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit$' "$O/run.log" || RC=93
+  grep -Eq '^IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit$' "$O/run.log" || RC=93
 fi
 
 STATS=$O/stats.txt
@@ -137,7 +159,7 @@ WRTAIL=$(grep 'WRITE_TAIL_AUDIT' "$O/run.log" 2>/dev/null | tail -1 | sed -n 's/
 TS=$(date +%Y-%m-%dT%H:%M:%S)
 
 [[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
-rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$O/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
+grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$O/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 
 echo -e "${TS}\t${GBIN}\t${TILE}\t${SMALL}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${O}" >> "$RESULTS"
 

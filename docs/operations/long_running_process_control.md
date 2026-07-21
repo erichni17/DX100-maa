@@ -97,3 +97,16 @@ all other owned gem5/runtime processes. The two concurrent services therefore
 have an aggregate hard maximum of 240 GiB. After both are terminal, the normal
 workflow state is reused rather than launched again; the original 220/240 GiB
 manager runs only the remaining serial IS workflow and final validation.
+
+The first two UME tasks in the overlapping normal unit exposed a service-PATH
+failure: gem5 completed with the exact output hash, exact reference PASS, final
+stats, and clean `m5_exit`, but the wrapper returned rc=90 because `rg` exists
+only in Codex's injected PATH and is absent from systemd's base PATH. All tile
+runners now use base-system `grep` for terminal classification. They also have
+a retry-only fast path that accepts an existing output directory only after
+rechecking the workload oracle, nonempty stats, clean `m5_exit`, and absence of
+panic/fatal markers, then appends a successor rc=0 result row. This lets
+`dx-runtime workflow resume --retry-failed` repair wrapper-only failures
+without repeating a completed simulation. The immutable snapshots of tasks
+already in flight remain untouched; their artifacts are repaired only through
+the explicit retry path after the workflow becomes terminal.

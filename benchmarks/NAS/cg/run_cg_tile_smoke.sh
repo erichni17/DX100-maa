@@ -80,6 +80,32 @@ if [[ ! -f "$RESULTS" ]]; then
   echo -e 'timestamp\tgem5_bin\ttile\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\trnorm\tzeta\toutdir' > "$RESULTS"
 fi
 
+reuse_completed_run() {
+  local stats="$OUT/stats.txt"
+  [[ -s "$OUT/run.log" && -s "$stats" ]] || return 1
+  [[ $(grep -Ec '^CG_FINGERPRINT mode=MAA .*result=PASS$' "$OUT/run.log" || true) == 1 ]] || return 1
+  ! grep -Eq 'CG_FINGERPRINT mode=MAA .*result=FAIL|panic:|fatal:' "$OUT/run.log" || return 1
+  grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || return 1
+  local simticks maa_cycles overlap wrtail fingerprint rnorm zeta timestamp
+  simticks=$(awk '$1=="simTicks"{print $2; exit}' "$stats")
+  [[ -n "$simticks" ]] || return 1
+  maa_cycles=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$stats")
+  overlap=$(sed -n 's/.*OVERLAP_AUDIT.*both\/any=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
+  wrtail=$(sed -n 's/.*WRITE_TAIL_AUDIT.*write_only\/write=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
+  fingerprint=$(awk '/^[[:space:]]+1[[:space:]]/ {r=$2; z=$3} END {print r "\t" z}' "$OUT/run.log")
+  [[ "$fingerprint" == *$'\t'* ]] || return 1
+  rnorm=${fingerprint%%$'\t'*}
+  zeta=${fingerprint#*$'\t'}
+  [[ -n "$rnorm" && -n "$zeta" ]] || return 1
+  timestamp=$(date +%Y-%m-%dT%H:%M:%S)
+  echo -e "${timestamp}\t${GBIN}\t${TILE}\t0\t${simticks}\t${maa_cycles:-}\t${overlap:-}\t${wrtail:-}\t${rnorm}\t${zeta}\t${OUT}" >> "$RESULTS"
+  echo "[reuse] accepted existing correctness-complete run: $OUT"
+}
+
+if reuse_completed_run; then
+  exit 0
+fi
+
 echo "[build] target=$BIN_BASENAME tile=$TILE mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
 {
   flock -x 200
@@ -124,7 +150,7 @@ RC=$?
 set -e
 
 if [[ "$RC" == 0 ]]; then
-  rg -q '^CG_FINGERPRINT mode=MAA .*result=PASS$' "$OUT/run.log" || RC=90
+  grep -Eq '^CG_FINGERPRINT mode=MAA .*result=PASS$' "$OUT/run.log" || RC=90
 fi
 
 STATS=$OUT/stats.txt
@@ -138,9 +164,9 @@ ZETA=${FINGERPRINT#*$'\t'}
 [[ "$FINGERPRINT" == *$'\t'* ]] || { RNORM=; ZETA=; }
 TS=$(date +%Y-%m-%dT%H:%M:%S)
 [[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
-rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
+grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 echo -e "${TS}\t${GBIN}\t${TILE}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${RNORM:-}\t${ZETA:-}\t${OUT}" >> "$RESULTS"
 
 echo "[restore] done rc=$RC ticks=${SIMTICKS:-missing} rnorm=${RNORM:-missing} zeta=${ZETA:-missing}"
-rg 'iteration|ROI End|panic|fatal|Error:' "$OUT/run.log" | tail -20 || true
+grep -E 'iteration|ROI End|panic|fatal|Error:' "$OUT/run.log" | tail -20 || true
 exit "$RC"

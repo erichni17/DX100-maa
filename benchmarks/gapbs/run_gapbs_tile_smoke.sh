@@ -136,8 +136,43 @@ case "$KERNEL" in
     ;;
 esac
 
+CKPT="$CHECKPOINT_ROOT/gapbs_${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}"
+OUT="$CAMPAIGN_ROOT/${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${TAG}"
+
 if [[ ! -f "$RESULTS" ]]; then
   echo -e "timestamp\tgem5_bin\tkernel\ttile\tscale\titers\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutdir" > "$RESULTS"
+fi
+
+correctness_marker_present() {
+  local pattern
+  case "$KERNEL" in
+    bc) pattern='^BC_VALIDATION_END result=PASS$' ;;
+    bfs) pattern='^BFS_FP .*invalid_chains=0 ' ;;
+    pr) pattern='^PR_FP .*nonfinite=0 unquantizable=0$' ;;
+    sssp) pattern='^SSSP_FINGERPRINT .*result=PASS$' ;;
+  esac
+  [[ $(grep -Ec "$pattern" "$OUT/run.log" || true) == 1 ]]
+}
+
+reuse_completed_run() {
+  local stats="$OUT/stats.txt"
+  [[ -s "$OUT/run.log" && -s "$stats" ]] || return 1
+  correctness_marker_present || return 1
+  ! grep -Eq 'panic:|fatal:' "$OUT/run.log" || return 1
+  grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || return 1
+  local simticks maa_cycles overlap wrtail timestamp
+  simticks=$(awk '$1=="simTicks"{print $2; exit}' "$stats")
+  [[ -n "$simticks" ]] || return 1
+  maa_cycles=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$stats")
+  overlap=$(grep 'OVERLAP_AUDIT' "$OUT/run.log" | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p')
+  wrtail=$(grep 'WRITE_TAIL_AUDIT' "$OUT/run.log" | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p')
+  timestamp=$(date +%Y-%m-%dT%H:%M:%S)
+  echo -e "${timestamp}\t${GBIN}\t${KERNEL}\t${TILE}\t${SCALE}\t${ITERS}\t0\t${simticks}\t${maa_cycles:-}\t${overlap:-}\t${wrtail:-}\t${OUT}" >> "$RESULTS"
+  echo "[reuse] accepted existing correctness-complete run: $OUT"
+}
+
+if reuse_completed_run; then
+  exit 0
 fi
 
 echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
@@ -157,9 +192,6 @@ echo "[build] waiting for lock: $BUILD_LOCK"
 } 200>"$BUILD_LOCK"
 
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
-
-CKPT="$CHECKPOINT_ROOT/gapbs_${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}"
-OUT="$CAMPAIGN_ROOT/${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${TAG}"
 
 # --- step 1: checkpoint ---
 if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
@@ -199,10 +231,10 @@ echo "[restore] done (exit=$RC)"
 
 if [[ "$RC" == 0 ]]; then
   case "$KERNEL" in
-    bc) rg -q '^BC_VALIDATION_END result=PASS$' "$OUT/run.log" || RC=90 ;;
-    bfs) rg -q '^BFS_FP .*invalid_chains=0 ' "$OUT/run.log" || RC=90 ;;
-    pr) rg -q '^PR_FP .*nonfinite=0 unquantizable=0$' "$OUT/run.log" || RC=90 ;;
-    sssp) rg -q '^SSSP_FINGERPRINT .*result=PASS$' "$OUT/run.log" || RC=90 ;;
+    bc) grep -Eq '^BC_VALIDATION_END result=PASS$' "$OUT/run.log" || RC=90 ;;
+    bfs) grep -Eq '^BFS_FP .*invalid_chains=0 ' "$OUT/run.log" || RC=90 ;;
+    pr) grep -Eq '^PR_FP .*nonfinite=0 unquantizable=0$' "$OUT/run.log" || RC=90 ;;
+    sssp) grep -Eq '^SSSP_FINGERPRINT .*result=PASS$' "$OUT/run.log" || RC=90 ;;
   esac
 fi
 
@@ -214,7 +246,7 @@ WRTAIL=$(grep 'WRITE_TAIL_AUDIT' "$OUT/run.log" 2>/dev/null | tail -1 | sed -n '
 TS=$(date +%Y-%m-%dT%H:%M:%S)
 
 [[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
-rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
+grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 
 echo -e "${TS}\t${GBIN}\t${KERNEL}\t${TILE}\t${SCALE}\t${ITERS}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${OUT}" >> "$RESULTS"
 

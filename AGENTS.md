@@ -32,3 +32,9 @@
   gate's 96 GiB hard limit, the aggregate campaign hard limit remains 240 GiB.
   The combined 220/240 GiB manager may start only after both overlapping units
   are terminal.
+- Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
+  Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
+  explicit executable path; do not make correctness classification depend on
+  `rg` being available. Retry paths must reuse an existing run only after
+  independently rechecking its exact oracle, stats, clean exit, and absence of
+  panic/fatal markers.

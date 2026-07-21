@@ -63,6 +63,31 @@ if [[ ! -f "$RESULTS" ]]; then
   echo -e 'timestamp\tgem5_bin\ttile\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\tconfigs\tgathers\tscatters\toutdir' > "$RESULTS"
 fi
 
+reuse_completed_run() {
+  local stats="$OUT/stats.txt"
+  [[ -s "$OUT/run.log" && -s "$stats" ]] || return 1
+  [[ $(grep -Ec '^SPATTER_FP .*mismatches=0 ' "$OUT/run.log" || true) == 9 ]] || return 1
+  ! grep -Eq '^SPATTER_FP .*mismatches=[1-9][0-9]* |panic:|fatal:' "$OUT/run.log" || return 1
+  grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || return 1
+  local simticks maa_cycles overlap wrtail configs gathers scatters timestamp
+  simticks=$(awk '$1=="simTicks"{print $2; exit}' "$stats")
+  [[ -n "$simticks" ]] || return 1
+  maa_cycles=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$stats")
+  overlap=$(sed -n 's/.*OVERLAP_AUDIT.*both\/any=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
+  wrtail=$(sed -n 's/.*WRITE_TAIL_AUDIT.*write_only\/write=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
+  configs=$(grep -Ec '^Config [0-9]+/9$' "$OUT/run.log" || true)
+  gathers=$(grep -Ec '^MAA gather execution ' "$OUT/run.log" || true)
+  scatters=$(grep -Ec '^MAA scatter execution ' "$OUT/run.log" || true)
+  [[ "$configs" == 9 ]] || return 1
+  timestamp=$(date +%Y-%m-%dT%H:%M:%S)
+  echo -e "${timestamp}\t${GBIN}\t${TILE}\t0\t${simticks}\t${maa_cycles:-}\t${overlap:-}\t${wrtail:-}\t${configs}\t${gathers}\t${scatters}\t${OUT}" >> "$RESULTS"
+  echo "[reuse] accepted existing correctness-complete run: $OUT"
+}
+
+if reuse_completed_run; then
+  exit 0
+fi
+
 if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
   echo "[ckpt] creating $CKPT"
   rm -rf "$CKPT"
@@ -98,9 +123,9 @@ RC=$?
 set -e
 
 if [[ "$RC" == 0 ]]; then
-  FP_COUNT=$(rg -c '^SPATTER_FP .*mismatches=0 ' "$OUT/run.log" || true)
+  FP_COUNT=$(grep -Ec '^SPATTER_FP .*mismatches=0 ' "$OUT/run.log" || true)
   [[ "$FP_COUNT" == 9 ]] || RC=90
-  if rg -q '^SPATTER_FP .*mismatches=[1-9][0-9]* ' "$OUT/run.log"; then RC=90; fi
+  if grep -Eq '^SPATTER_FP .*mismatches=[1-9][0-9]* ' "$OUT/run.log"; then RC=90; fi
 fi
 
 STATS=$OUT/stats.txt
@@ -108,14 +133,14 @@ SIMTICKS=$(awk '$1=="simTicks"{print $2; exit}' "$STATS" 2>/dev/null || true)
 MAA_CYCLES=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$STATS" 2>/dev/null || true)
 OVERLAP=$(sed -n 's/.*OVERLAP_AUDIT.*both\/any=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
 WRTAIL=$(sed -n 's/.*WRITE_TAIL_AUDIT.*write_only\/write=\([0-9.]*\).*/\1/p' "$OUT/run.log" | tail -1)
-CONFIGS=$(rg -c '^Config [0-9]+/9$' "$OUT/run.log" || true)
-GATHERS=$(rg -c '^MAA gather execution ' "$OUT/run.log" || true)
-SCATTERS=$(rg -c '^MAA scatter execution ' "$OUT/run.log" || true)
+CONFIGS=$(grep -Ec '^Config [0-9]+/9$' "$OUT/run.log" || true)
+GATHERS=$(grep -Ec '^MAA gather execution ' "$OUT/run.log" || true)
+SCATTERS=$(grep -Ec '^MAA scatter execution ' "$OUT/run.log" || true)
 TS=$(date +%Y-%m-%dT%H:%M:%S)
 [[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
-rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
+grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 echo -e "${TS}\t${GBIN}\t${TILE}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${CONFIGS:-0}\t${GATHERS:-0}\t${SCATTERS:-0}\t${OUT}" >> "$RESULTS"
 
 echo "[restore] done rc=$RC ticks=${SIMTICKS:-missing} configs=${CONFIGS:-0} gathers=${GATHERS:-0} scatters=${SCATTERS:-0}"
-rg 'Config |ROI End|panic|fatal|Error:' "$OUT/run.log" | tail -30 || true
+grep -E 'Config |ROI End|panic|fatal|Error:' "$OUT/run.log" | tail -30 || true
 exit "$RC"

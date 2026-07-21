@@ -8,6 +8,14 @@ sys.path.insert(0, str(SCRIPTS))
 import run_full_tile_recovery as full_recovery  # noqa: E402
 import run_normal_tile_recovery as normal_recovery  # noqa: E402
 
+TILE_RUNNERS = (
+    Path("benchmarks/UME/run_ume_tile_smoke.sh"),
+    Path("benchmarks/NAS/is/run_is_smoke.sh"),
+    Path("benchmarks/NAS/cg/run_cg_tile_smoke.sh"),
+    Path("benchmarks/gapbs/run_gapbs_tile_smoke.sh"),
+    Path("benchmarks/spatter/run_xrage_tile_smoke.sh"),
+)
+
 
 def write_state(path, states):
     path.write_text(
@@ -51,3 +59,9 @@ def test_only_processes_in_gate_cgroup_are_allowed(monkeypatch, tmp_path):
     assert normal_recovery.outside_allowed_cgroup(conflicts, gate) == [
         {"pid": 2}
     ]
+
+
+def test_tile_runners_do_not_depend_on_codex_rg_path():
+    root = Path(__file__).resolve().parents[2]
+    for relative in TILE_RUNNERS:
+        assert "rg " not in (root / relative).read_text()

@@ -121,9 +121,35 @@ BIN="$UME/$BIN_BASENAME"
 OPTS="$N"
 MAA_MEM_HEX=$(mem_size_to_hex "$MEM_SIZE")
 MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
+CKPT="$CHECKPOINT_ROOT/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
+OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}"
 
 if [[ ! -f "$RESULTS" ]]; then
   echo -e "timestamp\tgem5_bin\tkernel\ttile\tn\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutput_hash\toutdir" > "$RESULTS"
+fi
+
+reuse_completed_run() {
+  local stats="$OUT/stats.txt"
+  [[ -s "$OUT/run.log" && -s "$stats" ]] || return 1
+  grep -Fqx -- "$EXPECTED_FP" "$OUT/run.log" || return 1
+  grep -Fqx -- "$EXPECTED_REFERENCE" "$OUT/run.log" || return 1
+  ! grep -Eq 'UME_.*_FAIL|panic:|fatal:' "$OUT/run.log" || return 1
+  grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || return 1
+  local simticks maa_cycles overlap wrtail output_hash timestamp
+  simticks=$(awk '$1=="simTicks"{print $2; exit}' "$stats")
+  [[ -n "$simticks" ]] || return 1
+  maa_cycles=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$stats")
+  overlap=$(grep 'OVERLAP_AUDIT' "$OUT/run.log" | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p')
+  wrtail=$(grep 'WRITE_TAIL_AUDIT' "$OUT/run.log" | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p')
+  output_hash=$(sed -n 's/^UME_OUTPUT_FP output_hash=\([0-9][0-9]*\) nonfinite=0$/\1/p' "$OUT/run.log" | tail -1)
+  [[ "$output_hash" == "$EXPECTED_OUTPUT_HASH" ]] || return 1
+  timestamp=$(date +%Y-%m-%dT%H:%M:%S)
+  echo -e "${timestamp}\t${GBIN}\t${KERNEL}\t${TILE}\t${N}\t0\t${simticks}\t${maa_cycles:-}\t${overlap:-}\t${wrtail:-}\t${output_hash}\t${OUT}" >> "$RESULTS"
+  echo "[reuse] accepted existing correctness-complete run: $OUT"
+}
+
+if reuse_completed_run; then
+  exit 0
 fi
 
 echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE n=$N mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
@@ -135,9 +161,6 @@ echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeo
     > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
 } 200>"$BUILD_LOCK"
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
-
-CKPT="$CHECKPOINT_ROOT/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
-OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}"
 
 # --- step 1: checkpoint ---
 if ! ls "$CKPT"/cpt.* >/dev/null 2>&1; then
@@ -176,9 +199,9 @@ set -e
 echo "[restore] done (exit=$RC)"
 
 if [[ "$RC" == 0 ]]; then
-  rg -Fqx -- "$EXPECTED_FP" "$OUT/run.log" || RC=90
-  rg -Fqx -- "$EXPECTED_REFERENCE" "$OUT/run.log" || RC=90
-  if rg -q 'UME_.*_FAIL' "$OUT/run.log"; then RC=90; fi
+  grep -Fqx -- "$EXPECTED_FP" "$OUT/run.log" || RC=90
+  grep -Fqx -- "$EXPECTED_REFERENCE" "$OUT/run.log" || RC=90
+  if grep -Eq 'UME_.*_FAIL' "$OUT/run.log"; then RC=90; fi
 fi
 
 STATS="$OUT/stats.txt"
@@ -190,7 +213,7 @@ OUTPUT_HASH=$(sed -n 's/^UME_OUTPUT_FP output_hash=\([0-9][0-9]*\) nonfinite=0$/
 TS=$(date +%Y-%m-%dT%H:%M:%S)
 
 [[ -n "$SIMTICKS" ]] || { [[ "$RC" != 0 ]] || RC=91; }
-rg -q 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
+grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$OUT/run.log" || { [[ "$RC" != 0 ]] || RC=92; }
 
 echo -e "${TS}\t${GBIN}\t${KERNEL}\t${TILE}\t${N}\t${RC}\t${SIMTICKS:-}\t${MAA_CYCLES:-}\t${OVERLAP:-}\t${WRTAIL:-}\t${OUTPUT_HASH:-}\t${OUT}" >> "$RESULTS"
 
