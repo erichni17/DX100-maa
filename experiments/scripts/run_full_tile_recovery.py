@@ -106,6 +106,17 @@ def workflow_completed(path):
     )
 
 
+def workflow_terminal(path):
+    if not path.exists():
+        return False
+    document = json.loads(path.read_text())
+    tasks = document.get("tasks", {})
+    return bool(tasks) and all(
+        item.get("state") in {"completed", "failed", "skipped"}
+        for item in tasks.values()
+    )
+
+
 def proc_stat(pid):
     fields = (
         (Path("/proc") / str(pid) / "stat")
@@ -268,14 +279,15 @@ def main():
         if not path.is_file():
             raise SystemExit(f"workflow missing: {path}")
 
-    names = [workflow_name(normal_workflow), workflow_name(is_workflow)]
-    existing = [
-        str(workflow_state_path(state_root, name))
-        for name in names
-        if workflow_state_path(state_root, name).exists()
-    ]
-    if existing:
-        raise SystemExit(f"refusing duplicate workflow state: {existing}")
+    normal_state = workflow_state_path(
+        state_root, workflow_name(normal_workflow)
+    )
+    is_state = workflow_state_path(state_root, workflow_name(is_workflow))
+    if is_state.exists():
+        raise SystemExit(f"refusing duplicate workflow state: {is_state}")
+    reuse_normal = normal_state.exists()
+    if reuse_normal and not workflow_terminal(normal_state):
+        raise SystemExit(f"normal workflow is not terminal: {normal_state}")
     gate_state = workflow_state_path(state_root, args.is_gate_name)
     if not workflow_completed(gate_state):
         raise SystemExit(f"IS exit gate is not completed: {gate_state}")
@@ -319,12 +331,20 @@ def main():
         )
     append_log(log, f"validation watcher started pid={watcher.pid}")
 
-    wait_for_admission(
-        log, args.available_gib, args.swap_quiet_seconds, args.interval
-    )
-    normal_rc = run_workflow(
-        runtime, state_root, normal_workflow, args.normal_parallel, log
-    )
+    if reuse_normal:
+        normal_rc = 0 if workflow_completed(normal_state) else 1
+        append_log(
+            log,
+            f"reusing terminal normal workflow path={normal_state} "
+            f"rc={normal_rc}",
+        )
+    else:
+        wait_for_admission(
+            log, args.available_gib, args.swap_quiet_seconds, args.interval
+        )
+        normal_rc = run_workflow(
+            runtime, state_root, normal_workflow, args.normal_parallel, log
+        )
     atomic_json(
         status,
         {

@@ -87,3 +87,13 @@ lines in its first 22 GiB and made unusably slow progress. IS recovery commands
 now pass the runner's zero sentinel, which omits `--prog-interval` and preserves
 BaseCPU's `0Hz` default. The stopped attempt is retained under
 `failed-attempts/2026-07-21-is-gate-every-tick-progress`.
+
+The IS exit/correctness gate blocks only the remaining six IS points. It does
+not block the 46 non-IS recovery points. Those points may run concurrently in
+the dedicated `dx100-full-tile-normal-recovery2-20260721.service` with
+`MemoryHigh=128G`, `MemoryMax=144G`, and `MemorySwapMax=0`. Its manager admits
+only the already-owned IS gate cgroup as a live campaign conflict and rejects
+all other owned gem5/runtime processes. The two concurrent services therefore
+have an aggregate hard maximum of 240 GiB. After both are terminal, the normal
+workflow state is reused rather than launched again; the original 220/240 GiB
+manager runs only the remaining serial IS workflow and final validation.

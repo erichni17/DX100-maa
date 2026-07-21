@@ -26,3 +26,9 @@
 - Launch the recovery manager only through its systemd user unit with
   `MemoryHigh=220G`, `MemoryMax=240G`, and `MemorySwapMax=0`. The manager must
   verify these cgroup files itself and refuse uncapped execution.
+- The dedicated non-IS recovery may overlap the isolated IS gate only through
+  `dx100-full-tile-normal-recovery2-20260721.service`, with
+  `MemoryHigh=128G`, `MemoryMax=144G`, and `MemorySwapMax=0`. Together with the
+  gate's 96 GiB hard limit, the aggregate campaign hard limit remains 240 GiB.
+  The combined 220/240 GiB manager may start only after both overlapping units
+  are terminal.
