@@ -71,8 +71,9 @@ The recovery campaign therefore does not resume the stale workflow. It uses a
 new systemd-owned manager with a campaign-wide 220 GiB `MemoryHigh`, 240 GiB
 `MemoryMax`, and zero `MemorySwapMax`. Normal 2-GiB configurations run at most
 eight at a time; full-Class-B IS runs strictly one at a time. Before each phase,
-the manager also requires at least 96 GiB host `MemAvailable` and five continuous
-minutes without swap-counter movement. It records PID plus kernel start time
-and refuses to start when an owned gem5, tile runner, or `dx-runtime` process is
-already live. The manager independently reads its cgroup limits and exits before
-launching any child if the hard boundary is absent or different.
+the normal manager and isolated IS gate both require at least 96 GiB host
+`MemAvailable` and five continuous minutes without swap-counter movement. They
+record PID plus kernel start time and refuse to start when an owned gem5, tile
+runner, or `dx-runtime` process is already live. Each manager independently
+reads its cgroup limits and exits before launching any child if the hard
+boundary is absent or different.

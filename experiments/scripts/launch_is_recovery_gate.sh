@@ -16,5 +16,7 @@ exec systemd-run --user --no-block --collect \
   --property=MemorySwapMax=0 \
   --property=OOMPolicy=stop \
   --property=KillMode=control-group \
-  /home/nier/.local/bin/dx-runtime --state-root "$STATE_ROOT" \
-  workflow run --max-parallel 1 "$RUN_ROOT/recovery2-is-gate-workflow.json"
+  /usr/bin/python3 "$SOURCE_ROOT/experiments/scripts/run_is_recovery_gate.py" \
+  --state-root "$STATE_ROOT" \
+  --workflow "$RUN_ROOT/recovery2-is-gate-workflow.json" \
+  --run-root "$RUN_ROOT"
