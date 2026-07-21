@@ -72,10 +72,15 @@ def main():
     parser.add_argument("--parent-manifest", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--normal-output", type=Path, required=True)
+    parser.add_argument("--is-gate-output", type=Path, required=True)
     parser.add_argument("--is-output", type=Path, required=True)
     parser.add_argument(
         "--normal-name",
         default="dx100-full-tile-sweep-recovery2-normal-20260721",
+    )
+    parser.add_argument(
+        "--is-gate-name",
+        default="dx100-full-tile-sweep-recovery2-is-gate-20260721",
     )
     parser.add_argument(
         "--is-name",
@@ -101,6 +106,7 @@ def main():
 
     original = json.loads(parent_workflow.read_text())
     normal_tasks = []
+    is_gate_tasks = []
     is_tasks = []
     for task in original["tasks"]:
         task_id = task["id"]
@@ -111,17 +117,28 @@ def main():
                 repair_task(task, source_root, run_root, checkpoint_root)
             )
         elif task_id.startswith("nas-is-"):
-            is_tasks.append(repair_task(task, source_root, run_root, checkpoint_root))
+            repaired = repair_task(task, source_root, run_root, checkpoint_root)
+            if task_id == "nas-is-t16384":
+                is_gate_tasks.append(repaired)
+            else:
+                is_tasks.append(repaired)
 
     normal_workflow = {
         "version": 1,
         "name": args.normal_name,
         "tasks": normal_tasks,
     }
+    is_gate_workflow = {
+        "version": 1,
+        "name": args.is_gate_name,
+        "tasks": is_gate_tasks,
+    }
     is_workflow = {"version": 1, "name": args.is_name, "tasks": is_tasks}
     normal_output = args.normal_output.resolve()
+    is_gate_output = args.is_gate_output.resolve()
     is_output = args.is_output.resolve()
     write_json(normal_output, normal_workflow)
+    write_json(is_gate_output, is_gate_workflow)
     write_json(is_output, is_workflow)
 
     manifest = {
@@ -135,6 +152,8 @@ def main():
         "parent_manifest_sha256": sha256(parent_manifest),
         "normal_workflow": str(normal_output),
         "normal_workflow_sha256": sha256(normal_output),
+        "is_gate_workflow": str(is_gate_output),
+        "is_gate_workflow_sha256": sha256(is_gate_output),
         "is_workflow": str(is_output),
         "is_workflow_sha256": sha256(is_output),
         "checkpoint_root": str(checkpoint_root),
@@ -153,8 +172,10 @@ def main():
         },
         "wall_clock_timeout_seconds": None,
         "normal_task_count": len(normal_tasks),
+        "is_gate_task_count": len(is_gate_tasks),
         "is_task_count": len(is_tasks),
         "normal_task_ids": [item["id"] for item in normal_tasks],
+        "is_gate_task_ids": [item["id"] for item in is_gate_tasks],
         "is_task_ids": [item["id"] for item in is_tasks],
         "parent_owned_tasks": sorted(PARENT_OWNED),
         "incident_evidence": {
@@ -171,6 +192,8 @@ def main():
             {
                 "normal_workflow": str(normal_output),
                 "normal_tasks": len(normal_tasks),
+                "is_gate_workflow": str(is_gate_output),
+                "is_gate_tasks": len(is_gate_tasks),
                 "is_workflow": str(is_output),
                 "is_tasks": len(is_tasks),
             }

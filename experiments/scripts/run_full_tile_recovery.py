@@ -96,6 +96,16 @@ def workflow_state_path(state_root, name):
     return state_root / "workflows" / f"{name}.json"
 
 
+def workflow_completed(path):
+    if not path.exists():
+        return False
+    document = json.loads(path.read_text())
+    tasks = document.get("tasks", {})
+    return bool(tasks) and all(
+        item.get("state") == "completed" for item in tasks.values()
+    )
+
+
 def proc_stat(pid):
     fields = (Path("/proc") / str(pid) / "stat").read_text().rsplit(") ", 1)[1].split()
     return {"ppid": int(fields[1]), "start_time_ticks": int(fields[19])}
@@ -198,6 +208,10 @@ def main():
     parser.add_argument("--normal-workflow", type=Path, required=True)
     parser.add_argument("--is-workflow", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument(
+        "--is-gate-name",
+        default="dx100-full-tile-sweep-recovery2-is-gate-20260721",
+    )
     parser.add_argument("--normal-parallel", type=int, default=8)
     parser.add_argument("--is-parallel", type=int, default=1)
     parser.add_argument("--available-gib", type=int, default=96)
@@ -242,6 +256,9 @@ def main():
     ]
     if existing:
         raise SystemExit(f"refusing duplicate workflow state: {existing}")
+    gate_state = workflow_state_path(state_root, args.is_gate_name)
+    if not workflow_completed(gate_state):
+        raise SystemExit(f"IS exit gate is not completed: {gate_state}")
     source_root = Path(__file__).resolve().parents[2]
     conflicts = conflicting_processes(source_root, run_root)
     if conflicts:

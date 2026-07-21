@@ -298,6 +298,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "oracle": "is",
             "task": "nas-is-t{tile}",
             "workflow": "recovery_is",
+            "workflow_by_tile": {16384: "recovery_is_gate"},
         },
         {
             "id": "nas-cg",
@@ -695,9 +696,13 @@ def main():
     is_state_path = state_root / (
         "workflows/dx100-full-tile-sweep-recovery2-is-20260721.json"
     )
+    is_gate_state_path = state_root / (
+        "workflows/dx100-full-tile-sweep-recovery2-is-gate-20260721.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
+        "recovery_is_gate": read_json(is_gate_state_path),
         "recovery_is": read_json(is_state_path),
     }
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
@@ -710,6 +715,7 @@ def main():
     )
     terminal = (
         workflow_terminal(states["recovery_normal"])
+        and workflow_terminal(states["recovery_is_gate"])
         and workflow_terminal(states["recovery_is"])
         and parent_tasks_complete
     )
@@ -732,6 +738,7 @@ def main():
         run_root / "recovery2-manifest.json",
         original_state_path,
         normal_state_path,
+        is_gate_state_path,
         is_state_path,
         prior_gapbs,
         *prior_hashjoin,

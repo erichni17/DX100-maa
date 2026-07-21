@@ -15,6 +15,7 @@ from pathlib import Path
 TERMINAL_STATES = {"completed", "failed", "skipped"}
 WORKFLOWS = (
     "dx100-full-tile-sweep-recovery2-normal-20260721",
+    "dx100-full-tile-sweep-recovery2-is-gate-20260721",
     "dx100-full-tile-sweep-recovery2-is-20260721",
 )
 
