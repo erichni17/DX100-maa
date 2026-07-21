@@ -77,3 +77,13 @@ record PID plus kernel start time and refuse to start when an owned gem5, tile
 runner, or `dx-runtime` process is already live. Each manager independently
 reads its cgroup limits and exits before launching any child if the hard
 boundary is absent or different.
+
+The first contained IS gate exposed an independent logging failure and was
+stopped through its named systemd unit. gem5's `--prog-interval` is a
+`Param.Frequency`, despite its name. Setting it to `1000000000000` requested a
+1 THz progress frequency and produced `progress_interval=1` in `config.ini`, so
+four CPUs printed a line every simulated tick. The run emitted 188,840,011
+lines in its first 22 GiB and made unusably slow progress. IS recovery commands
+now pass the runner's zero sentinel, which omits `--prog-interval` and preserves
+BaseCPU's `0Hz` default. The stopped attempt is retained under
+`failed-attempts/2026-07-21-is-gate-every-tick-progress`.
