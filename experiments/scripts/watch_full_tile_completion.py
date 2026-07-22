@@ -17,6 +17,7 @@ WORKFLOWS = (
     "dx100-full-tile-sweep-recovery2-normal-20260721",
     "dx100-full-tile-sweep-recovery2-is-gate-20260721",
     "dx100-full-tile-sweep-recovery2-is-20260721",
+    "dx100-full-tile-sweep-recovery2-auxiliary-20260721",
 )
 
 
@@ -31,7 +32,8 @@ def terminal(document):
     if not document or not document.get("tasks"):
         return False
     return all(
-        task.get("state") in TERMINAL_STATES for task in document["tasks"].values()
+        task.get("state") in TERMINAL_STATES
+        for task in document["tasks"].values()
     )
 
 
@@ -64,16 +66,32 @@ def main():
 
     run_root = args.run_root.resolve()
     state_root = args.state_root.resolve()
-    finalizer = Path(__file__).resolve().with_name("finalize_full_tile_sweep.py")
-    state_paths = [state_root / "workflows" / f"{name}.json" for name in WORKFLOWS]
+    finalizer = (
+        Path(__file__).resolve().with_name("finalize_full_tile_sweep.py")
+    )
+    state_paths = [
+        state_root / "workflows" / f"{name}.json" for name in WORKFLOWS
+    ]
+    auxiliary_retry_manifest = (
+        run_root / "recovery2-auxiliary-retry-manifest-v2.json"
+    )
+    auxiliary_retry_done = run_root / "recovery2-auxiliary-retry-done.json"
+    signature_paths = [*state_paths, auxiliary_retry_done]
     watcher_log = run_root / "final/watcher.log"
     prior_signature = None
     append_log(watcher_log, f"watcher started pid={__import__('os').getpid()}")
 
     while True:
-        current_signature = signature(state_paths)
+        current_signature = signature(signature_paths)
         documents = [load(path) for path in state_paths]
-        all_terminal = all(terminal(document) for document in documents)
+        retry_record = load(auxiliary_retry_done)
+        retry_terminal = not auxiliary_retry_manifest.is_file() or bool(
+            retry_record and retry_record.get("terminal") is True
+        )
+        all_terminal = (
+            all(terminal(document) for document in documents)
+            and retry_terminal
+        )
         if current_signature != prior_signature or all_terminal:
             command = [
                 sys.executable,
