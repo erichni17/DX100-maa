@@ -168,6 +168,7 @@ def memory_safety_summary(telemetry_snapshots, required_cgroups=()):
     }
     required.update(required_cgroups)
     issues = []
+    warnings = []
     vmstat = summary["vmstat"]
     if not vmstat or not vmstat.get("sample_count"):
         issues.append("recovery vmstat telemetry is missing or empty")
@@ -188,9 +189,14 @@ def memory_safety_summary(telemetry_snapshots, required_cgroups=()):
         if not cgroup.get("sample_count"):
             issues.append(f"{name} is empty")
             continue
+        high_events = cgroup.get("maximum_high_events")
+        if high_events:
+            warnings.append(
+                f"{name} maximum_high_events={high_events} "
+                "(memory.high reclaim/throttling occurred)"
+            )
         for field in (
             "maximum_swap_current_bytes",
-            "maximum_high_events",
             "maximum_max_events",
             "maximum_oom_events",
             "maximum_oom_kill_events",
@@ -200,6 +206,7 @@ def memory_safety_summary(telemetry_snapshots, required_cgroups=()):
     summary["required_cgroup_telemetry"] = sorted(required)
     summary["safe"] = not issues
     summary["issues"] = issues
+    summary["warnings"] = warnings
     return summary
 
 
@@ -858,6 +865,10 @@ def markdown_report(
         )
     lines.append(
         f"- Safety gate: {'PASS' if memory_safety.get('safe') else 'INCOMPLETE/FAIL'}"
+    )
+    lines.extend(
+        f"- Safety warning: {warning}"
+        for warning in memory_safety.get("warnings", [])
     )
     lines.extend(["", "## Provenance", ""])
     lines.extend(f"- `{item}`" for item in provenance)

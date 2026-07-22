@@ -36,10 +36,11 @@ def test_memory_safety_accepts_required_zero_pressure_telemetry(tmp_path):
     summary = finalizer.memory_safety_summary(safe_telemetry(tmp_path))
     assert summary["safe"]
     assert summary["issues"] == []
+    assert summary["warnings"] == []
     assert summary["vmstat"]["minimum_free_kib"] == 1000
 
 
-def test_memory_safety_rejects_swap_or_pressure(tmp_path):
+def test_memory_safety_rejects_swap_but_reports_soft_high_pressure(tmp_path):
     records = safe_telemetry(tmp_path)
     vmstat = tmp_path / "recovery2-vmstat.log"
     vmstat.write_text(
@@ -50,7 +51,23 @@ def test_memory_safety_rejects_swap_or_pressure(tmp_path):
     summary = finalizer.memory_safety_summary(records)
     assert not summary["safe"]
     assert any("maximum_swap_used_kib=4" in item for item in summary["issues"])
-    assert any("maximum_high_events=1" in item for item in summary["issues"])
+    assert not any(
+        "maximum_high_events=1" in item for item in summary["issues"]
+    )
+    assert any("maximum_high_events=1" in item for item in summary["warnings"])
+
+
+def test_memory_safety_rejects_hard_limit_or_oom_events(tmp_path):
+    records = safe_telemetry(tmp_path)
+    normal = tmp_path / "recovery2-normal-cgroup.tsv"
+    write_cgroup(normal, maximum=2, oom=1, oom_kill=1)
+    summary = finalizer.memory_safety_summary(records)
+    assert not summary["safe"]
+    assert any("maximum_max_events=2" in item for item in summary["issues"])
+    assert any("maximum_oom_events=1" in item for item in summary["issues"])
+    assert any(
+        "maximum_oom_kill_events=1" in item for item in summary["issues"]
+    )
 
 
 def test_auxiliary_telemetry_can_be_required(tmp_path):
