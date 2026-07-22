@@ -38,3 +38,8 @@
   `rg` being available. Retry paths must reuse an existing run only after
   independently rechecking its exact oracle, stats, clean exit, and absence of
   panic/fatal markers.
+- A terminal normal workflow with failed/skipped tasks receives at most one
+  automatic `dx-runtime workflow resume --retry-failed` pass through
+  `dx100-full-tile-normal-retry-recovery2-20260721.service`, using the same
+  128/144 GiB and zero-swap limits. Do not loop retries; inspect any failures
+  left after that pass.

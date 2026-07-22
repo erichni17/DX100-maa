@@ -110,3 +110,13 @@ panic/fatal markers, then appends a successor rc=0 result row. This lets
 without repeating a completed simulation. The immutable snapshots of tasks
 already in flight remain untouched; their artifacts are repaired only through
 the explicit retry path after the workflow becomes terminal.
+
+The normal workflow receives exactly one automatic retry pass after its first
+terminal state. The retry runs through
+`dx100-full-tile-normal-retry-recovery2-20260721.service` with the same
+128/144 GiB zero-swap cgroup and five-minute admission gate. Correctness-complete
+wrapper failures take the fast reuse path; incomplete or genuinely failing
+runs are attempted normally. Any task still failed after that one pass requires
+inspection rather than an unbounded retry loop. The post-overlap callback
+requires all 46 normal tasks to be completed, so the remaining IS phase cannot
+silently advance past unresolved normal failures.

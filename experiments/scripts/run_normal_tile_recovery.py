@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 from datetime import (
     datetime,
     timezone,
@@ -56,6 +57,7 @@ def main():
     parser.add_argument("--workflow", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--allowed-live-cgroup", type=Path, required=True)
+    parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument(
         "--runtime", default="/home/nier/.local/bin/dx-runtime"
     )
@@ -86,25 +88,46 @@ def main():
     workflow = args.workflow.resolve()
     run_root = args.run_root.resolve()
     allowed_live_cgroup = args.allowed_live_cgroup.resolve()
-    log = run_root / "recovery2-normal-manager.log"
-    status = run_root / "recovery2-normal-manager-status.json"
+    stem = (
+        "recovery2-normal-retry-manager"
+        if args.retry_failed
+        else "recovery2-normal-manager"
+    )
+    log = run_root / f"{stem}.log"
+    status = run_root / f"{stem}-status.json"
     runtime = shutil.which(args.runtime)
     if runtime is None:
         raise SystemExit("dx-runtime is unavailable")
     if not workflow.is_file():
         raise SystemExit(f"workflow missing: {workflow}")
-    state = workflow_state_path(state_root, workflow_name(workflow))
-    if state.exists():
+    name = workflow_name(workflow)
+    state = workflow_state_path(state_root, name)
+    if args.retry_failed:
+        if not state.exists():
+            raise SystemExit(f"retry state is absent: {state}")
+        document = json.loads(state.read_text())
+        task_states = [
+            task.get("state") for task in document.get("tasks", {}).values()
+        ]
+        if not task_states or not all(
+            item in {"completed", "failed", "skipped"} for item in task_states
+        ):
+            raise SystemExit(f"retry state is not terminal: {state}")
+        if "failed" not in task_states and "skipped" not in task_states:
+            raise SystemExit(
+                f"retry state has no failed/skipped tasks: {state}"
+            )
+    elif state.exists():
         raise SystemExit(f"refusing duplicate workflow state: {state}")
-    if not allowed_live_cgroup.is_dir():
+    if not args.retry_failed and not allowed_live_cgroup.is_dir():
         raise SystemExit(
             f"allowed gate cgroup is absent: {allowed_live_cgroup}"
         )
 
     source_root = Path(__file__).resolve().parents[2]
-    conflicts = outside_allowed_cgroup(
-        conflicting_processes(source_root, run_root), allowed_live_cgroup
-    )
+    conflicts = conflicting_processes(source_root, run_root)
+    if allowed_live_cgroup.is_dir():
+        conflicts = outside_allowed_cgroup(conflicts, allowed_live_cgroup)
     if conflicts:
         raise SystemExit(
             "refusing launch with unexpected live owned processes: "
@@ -136,7 +159,28 @@ def main():
         args.swap_quiet_seconds,
         args.interval,
     )
-    rc = run_workflow(runtime, state_root, workflow, args.parallel, log)
+    if args.retry_failed:
+        command = [
+            runtime,
+            "--state-root",
+            str(state_root),
+            "workflow",
+            "resume",
+            name,
+            "--retry-failed",
+            "--max-parallel",
+            str(args.parallel),
+        ]
+        append_log(
+            log, f"workflow retry name={name} max_parallel={args.parallel}"
+        )
+        with log.open("a") as output:
+            rc = subprocess.run(
+                command, stdout=output, stderr=subprocess.STDOUT
+            ).returncode
+        append_log(log, f"workflow retry return name={name} rc={rc}")
+    else:
+        rc = run_workflow(runtime, state_root, workflow, args.parallel, log)
     atomic_json(
         status,
         {
