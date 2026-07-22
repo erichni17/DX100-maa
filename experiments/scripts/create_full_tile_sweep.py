@@ -172,25 +172,24 @@ def main():
             ]
             workflow_tasks.append(task(f"ume-{kernel}-t{tile}", command, env))
 
-        if tile <= 32768:
-            env = dict(
-                common,
-                CAMPAIGN_ROOT=str(run_root / "xrage"),
-                XRAGE_DATA=str(
-                    runtime_root
-                    / "benchmarks/spatter/tests/test-data/xrage/all.json"
-                ),
-            )
-            command = [
-                source_root / "benchmarks/spatter/run_xrage_tile_smoke.sh",
-                "gem5.opt.ovl_base",
-                tile,
-                "2GB",
-                0,
-                0,
-                10000000,
-            ]
-            workflow_tasks.append(task(f"xrage-t{tile}", command, env))
+        env = dict(
+            common,
+            CAMPAIGN_ROOT=str(run_root / "xrage"),
+            XRAGE_DATA=str(
+                runtime_root
+                / "benchmarks/spatter/tests/test-data/xrage/all.json"
+            ),
+        )
+        command = [
+            source_root / "benchmarks/spatter/run_xrage_tile_smoke.sh",
+            "gem5.opt.ovl_base",
+            tile,
+            "2GB",
+            0,
+            0,
+            10000000,
+        ]
+        workflow_tasks.append(task(f"xrage-t{tile}", command, env))
 
     workflow = {
         "version": 1,
@@ -235,13 +234,7 @@ def main():
             "HashJoin PRH 2M/2M",
             "HashJoin PRO 2M/2M",
         ],
-        "unsupported_points": [
-            {
-                "workload": "XRAGE",
-                "tile": 65536,
-                "reason": "No 64K Spatter build target in the current artifact",
-            }
-        ],
+        "unsupported_points": [],
         "correctness_policy": "Each runner fails closed on its post-ROI semantic marker; cross-tile fingerprints are compared before graphing.",
         "workflow": str(args.output.resolve()),
         "task_count": len(workflow_tasks),

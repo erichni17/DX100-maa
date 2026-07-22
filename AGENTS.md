@@ -84,6 +84,14 @@
   unchanged 272 GiB aggregate ceiling. The T32 launcher must treat this lane as
   an allowed owned cgroup, and the serial IS recovery/finalizer must wait for
   and record it.
+- XRAGE 64K is a required sweep point, not an unsupported exception. Build the
+  `spatter_maa_64K` target with `TILE_SIZE=65536`, then reuse the original XRAGE
+  surge lane's released reservation as
+  `dx100-full-tile-xrage64-recovery2-20260722.service`, with
+  `MemoryHigh=24G`, `MemoryMax=32G`, `MemorySwapMax=0`, and one task. Launch it
+  only after the original XRAGE surge workflow is terminal and its unit is
+  inactive. The T8/T32 launchers may treat it as an allowed owned cgroup, and
+  the serial IS recovery/finalizer must wait for and record it.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on

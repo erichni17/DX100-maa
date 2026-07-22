@@ -199,6 +199,34 @@ def test_xrage_runner_serializes_same_output_directory():
     assert runner.index("flock -x 9") < runner.index(
         "if reuse_completed_run; then"
     )
+    assert "65536) echo 64K" in runner
+
+
+def test_xrage_64k_build_target_is_complete():
+    root = Path(__file__).resolve().parents[2]
+    executable_cmake = (
+        root / "benchmarks/spatter/src/CMakeLists.txt"
+    ).read_text()
+    library_cmake = (
+        root / "benchmarks/spatter/src/Spatter/CMakeLists.txt"
+    ).read_text()
+    assert "add_executable(spatter_maa_64K" in executable_cmake
+    assert "TILE_SIZE=65536" in executable_cmake
+    assert "add_library(Spatter_MAA_64K" in library_cmake
+    assert "target_link_libraries(Spatter_MAA_64K" in library_cmake
+    assert "TILE_SIZE=65536" in library_cmake
+
+
+def test_xrage_64k_lane_accepts_primary_retry_cgroup():
+    root = Path(__file__).resolve().parents[2]
+    launcher = (
+        root / "experiments/scripts/launch_xrage64_tile_lane.sh"
+    ).read_text()
+    assert "dx100-full-tile-normal-recovery2-20260721.service" in launcher
+    assert (
+        "dx100-full-tile-normal-retry-recovery2-20260721.service" in launcher
+    )
+    assert "--aggregate-memory-max-gib 272" in launcher
 
 
 def test_ume_runner_serializes_same_output_directory():

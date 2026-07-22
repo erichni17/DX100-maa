@@ -17,7 +17,8 @@ for unit in \
     dx100-is-exit-gate-recovery2-20260721.service \
     dx100-full-tile-surge-recovery2-20260722.service \
     dx100-full-tile-ume-surge-recovery2-20260722.service \
-    dx100-full-tile-t8-surge-recovery2-20260722.service; do
+    dx100-full-tile-t8-surge-recovery2-20260722.service \
+    dx100-full-tile-xrage64-recovery2-20260722.service; do
   relative=$(systemctl --user show "$unit" --property=ControlGroup --value 2>/dev/null || true)
   cgroup=/sys/fs/cgroup${relative}
   if [[ -n "$relative" && -d "$cgroup" ]]; then

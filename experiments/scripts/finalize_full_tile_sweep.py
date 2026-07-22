@@ -494,10 +494,8 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "oracle": "xrage",
             "task": "xrage-t{tile}",
             "workflow": "recovery_normal",
+            "workflow_by_tile": {65536: "xrage64"},
             "compare_oracle": True,
-            "unsupported": {
-                65536: "No 64K Spatter build target in the frozen artifact"
-            },
         },
     ]
 
@@ -953,6 +951,9 @@ def main():
     t8_surge_state_path = state_root / (
         "workflows/dx100-full-tile-sweep-recovery2-t8-surge-20260722.json"
     )
+    xrage64_state_path = state_root / (
+        "workflows/dx100-full-tile-sweep-recovery2-xrage64-20260722.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
@@ -963,6 +964,7 @@ def main():
         "ume_surge": read_json(ume_surge_state_path),
         "t32_surge": read_json(t32_surge_state_path),
         "t8_surge": read_json(t8_surge_state_path),
+        "xrage64": read_json(xrage64_state_path),
     }
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     rows, issues = build_rows(workload_specs, states)
@@ -982,9 +984,12 @@ def main():
     ume_surge_workflow = run_root / "recovery2-ume-surge-workflow.json"
     t32_surge_manifest = run_root / "recovery2-t32-surge-manifest.json"
     t32_surge_manifest_v2 = run_root / "recovery2-t32-surge-manifest-v2.json"
+    t32_surge_manifest_v3 = run_root / "recovery2-t32-surge-manifest-v3.json"
     t32_surge_workflow = run_root / "recovery2-t32-surge-workflow.json"
     t8_surge_manifest = run_root / "recovery2-t8-surge-manifest.json"
     t8_surge_workflow = run_root / "recovery2-t8-surge-workflow.json"
+    xrage64_manifest = run_root / "recovery2-xrage64-manifest.json"
+    xrage64_workflow = run_root / "recovery2-xrage64-workflow.json"
     auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
     auxiliary_terminal = not auxiliary_manifest.is_file() or (
         workflow_terminal(states["auxiliary"])
@@ -1005,6 +1010,9 @@ def main():
     t8_surge_terminal = not t8_surge_manifest.is_file() or workflow_terminal(
         states["t8_surge"]
     )
+    xrage64_terminal = xrage64_manifest.is_file() and workflow_terminal(
+        states["xrage64"]
+    )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
         for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
@@ -1018,6 +1026,7 @@ def main():
         and ume_surge_terminal
         and t32_surge_terminal
         and t8_surge_terminal
+        and xrage64_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
@@ -1044,6 +1053,7 @@ def main():
         run_root / "recovery2-ume-surge-cgroup.tsv",
         run_root / "recovery2-t32-surge-cgroup.tsv",
         run_root / "recovery2-t8-surge-cgroup.tsv",
+        run_root / "recovery2-xrage64-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
     ]
     telemetry_snapshots = []
@@ -1072,6 +1082,8 @@ def main():
         required_cgroups.add("recovery2-t32-surge-cgroup.tsv")
     if t8_surge_manifest.is_file():
         required_cgroups.add("recovery2-t8-surge-cgroup.tsv")
+    if xrage64_manifest.is_file():
+        required_cgroups.add("recovery2-xrage64-cgroup.tsv")
     memory_safety = memory_safety_summary(
         telemetry_snapshots, required_cgroups
     )
@@ -1099,9 +1111,12 @@ def main():
         ume_surge_workflow,
         t32_surge_manifest,
         t32_surge_manifest_v2,
+        t32_surge_manifest_v3,
         t32_surge_workflow,
         t8_surge_manifest,
         t8_surge_workflow,
+        xrage64_manifest,
+        xrage64_workflow,
         finalizer_path,
         original_state_path,
         normal_state_path,
@@ -1112,6 +1127,7 @@ def main():
         ume_surge_state_path,
         t32_surge_state_path,
         t8_surge_state_path,
+        xrage64_state_path,
         prior_gapbs,
         *prior_hashjoin,
         *(Path(item["snapshot"]) for item in telemetry_snapshots),

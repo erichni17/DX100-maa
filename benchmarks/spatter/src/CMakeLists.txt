@@ -55,6 +55,8 @@ if(BUILD_GEM5)
     target_include_directories(spatter_maa_virtual_verify_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_32K main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_32K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
+    add_executable(spatter_maa_64K main.cc $<TARGET_OBJECTS:m5op>)
+    target_include_directories(spatter_maa_64K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_4C main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_4C PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_8C main.cc $<TARGET_OBJECTS:m5op>)
@@ -81,6 +83,8 @@ else()
     target_include_directories(spatter_maa_virtual_verify_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_32K main.cc)
     target_include_directories(spatter_maa_32K PRIVATE ${MAA_HOME})
+    add_executable(spatter_maa_64K main.cc)
+    target_include_directories(spatter_maa_64K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_4C main.cc)
     target_include_directories(spatter_maa_4C PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_8C main.cc)
@@ -156,6 +160,14 @@ set_target_properties(spatter_maa_virtual_verify_16K PROPERTIES
 target_link_libraries(spatter_maa_32K ${COMMON_LINK_LIBRARIES} Spatter_MAA_32K)
 target_compile_definitions(spatter_maa_32K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA NUM_CORES=4 TILE_SIZE=32768)
 set_target_properties(spatter_maa_32K PROPERTIES
+    COMPILE_OPTIONS "${WARNING_FLAGS}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+)
+
+target_link_libraries(spatter_maa_64K ${COMMON_LINK_LIBRARIES} Spatter_MAA_64K)
+target_compile_definitions(spatter_maa_64K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA NUM_CORES=4 TILE_SIZE=65536)
+set_target_properties(spatter_maa_64K PROPERTIES
     COMPILE_OPTIONS "${WARNING_FLAGS}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"

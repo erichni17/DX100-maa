@@ -107,6 +107,15 @@ add_library(Spatter_MAA_32K STATIC
     m5op.S
 )
 
+add_library(Spatter_MAA_64K STATIC
+    ${SPATTER_INCLUDE_FILES}
+    Configuration.cc
+    JSONParser.cc
+    PatternParser.cc
+    Timer.cc
+    m5op.S
+)
+
 add_library(Spatter_MAA_4C STATIC
     ${SPATTER_INCLUDE_FILES}
     Configuration.cc
@@ -194,6 +203,12 @@ set_target_properties(Spatter_MAA_32K PROPERTIES
     COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;NUM_CORES=4;TILE_SIZE=32768"
     COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
     OUTPUT_NAME "Spatter_MAA_32K"
+)
+
+set_target_properties(Spatter_MAA_64K PROPERTIES
+    COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;NUM_CORES=4;TILE_SIZE=65536"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+    OUTPUT_NAME "Spatter_MAA_64K"
 )
 
 set_target_properties(Spatter_MAA_4C PROPERTIES
@@ -296,6 +311,13 @@ target_include_directories(Spatter_MAA_32K
     $<INSTALL_INTERFACE:include/Spatter>
 )
 
+target_include_directories(Spatter_MAA_64K
+    PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../experiments>
+    $<INSTALL_INTERFACE:include/Spatter>
+)
+
 target_include_directories(Spatter_MAA_4C
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
@@ -378,6 +400,11 @@ target_link_libraries(Spatter_MAA_32K
     ${COMMON_LINK_LIBRARIES}
     )
 
+target_link_libraries(Spatter_MAA_64K
+    PUBLIC
+    ${COMMON_LINK_LIBRARIES}
+    )
+
 target_link_libraries(Spatter_MAA_4C
     PUBLIC
     ${COMMON_LINK_LIBRARIES}
@@ -435,6 +462,10 @@ target_compile_options(Spatter_MAA_Virtual_Verify_16K
 )
 
 target_compile_options(Spatter_MAA_32K
+    PRIVATE ${WARNING_FLAGS}
+    )
+
+target_compile_options(Spatter_MAA_64K
     PRIVATE ${WARNING_FLAGS}
     )
 

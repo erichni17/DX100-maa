@@ -47,6 +47,7 @@ tile_suffix() {
   case "$1" in
     1024) echo 1K ;; 2048) echo 2K ;; 4096) echo 4K ;;
     8192) echo 8K ;; 16384) echo 16K ;; 32768) echo 32K ;;
+    65536) echo 64K ;;
     *) echo "unsupported tile size: $1" >&2; return 1 ;;
   esac
 }
