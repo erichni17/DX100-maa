@@ -20,4 +20,5 @@ exec systemd-run --user --no-block --collect \
   --state-root "$STATE_ROOT" \
   --normal-workflow "$RUN_ROOT/recovery2-normal-workflow.json" \
   --is-workflow "$RUN_ROOT/recovery2-is-workflow.json" \
-  --run-root "$RUN_ROOT"
+  --run-root "$RUN_ROOT" \
+  --is-parallel 3

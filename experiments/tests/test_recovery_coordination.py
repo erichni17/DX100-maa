@@ -248,6 +248,17 @@ def test_normal_retry_uses_prefetch_fixed_gem5_successor():
     assert "recovery2-prefetch-fix-manifest.json" in launcher
 
 
+def test_final_is_recovery_uses_safe_three_way_parallelism():
+    root = Path(__file__).resolve().parents[2]
+    launcher = (
+        root / "experiments/scripts/launch_full_tile_recovery.sh"
+    ).read_text()
+    assert "--is-parallel 3" in launcher
+    assert "--property=MemoryHigh=220G" in launcher
+    assert "--property=MemoryMax=240G" in launcher
+    assert "--property=MemorySwapMax=0" in launcher
+
+
 def test_ume_runner_serializes_same_output_directory():
     root = Path(__file__).resolve().parents[2]
     runner = (root / "benchmarks/UME/run_ume_tile_smoke.sh").read_text()
