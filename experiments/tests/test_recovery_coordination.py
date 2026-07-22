@@ -8,6 +8,7 @@ sys.path.insert(0, str(SCRIPTS))
 import create_auxiliary_tile_workflow as auxiliary  # noqa: E402
 import run_full_tile_recovery as full_recovery  # noqa: E402
 import run_normal_tile_recovery as normal_recovery  # noqa: E402
+import watch_full_tile_completion as completion_watcher  # noqa: E402
 
 TILE_RUNNERS = (
     Path("benchmarks/UME/run_ume_tile_smoke.sh"),
@@ -138,6 +139,29 @@ def test_auxiliary_tasks_must_not_be_live_in_primary_state(tmp_path):
         assert "live" in str(error)
     else:
         raise AssertionError("live primary task was accepted")
+
+
+def test_completion_watcher_requires_auxiliary_retry_record():
+    completed = {"tasks": {"task": {"state": "completed"}}}
+    documents = [completed, completed, completed, completed]
+    assert completion_watcher.campaign_terminal(documents, False, None)
+    assert not completion_watcher.campaign_terminal(documents, True, None)
+    assert not completion_watcher.campaign_terminal(
+        documents, True, {"terminal": False}
+    )
+    assert completion_watcher.campaign_terminal(
+        documents, True, {"terminal": True}
+    )
+
+
+def test_completion_watcher_rejects_live_auxiliary_state():
+    completed = {"tasks": {"task": {"state": "completed"}}}
+    running = {"tasks": {"task": {"state": "running"}}}
+    assert not completion_watcher.campaign_terminal(
+        [completed, completed, completed, running],
+        True,
+        {"terminal": True},
+    )
 
 
 def test_tile_runners_do_not_depend_on_codex_rg_path():

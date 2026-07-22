@@ -37,6 +37,13 @@ def terminal(document):
     )
 
 
+def campaign_terminal(documents, retry_required, retry_record):
+    retry_terminal = not retry_required or bool(
+        retry_record and retry_record.get("terminal") is True
+    )
+    return all(terminal(document) for document in documents) and retry_terminal
+
+
 def signature(paths):
     values = []
     for path in paths:
@@ -85,12 +92,10 @@ def main():
         current_signature = signature(signature_paths)
         documents = [load(path) for path in state_paths]
         retry_record = load(auxiliary_retry_done)
-        retry_terminal = not auxiliary_retry_manifest.is_file() or bool(
-            retry_record and retry_record.get("terminal") is True
-        )
-        all_terminal = (
-            all(terminal(document) for document in documents)
-            and retry_terminal
+        all_terminal = campaign_terminal(
+            documents,
+            auxiliary_retry_manifest.is_file(),
+            retry_record,
         )
         if current_signature != prior_signature or all_terminal:
             command = [
