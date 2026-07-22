@@ -8,6 +8,7 @@ import html
 import json
 import math
 import re
+import shutil
 from collections import Counter
 from pathlib import Path
 
@@ -52,6 +53,13 @@ def atomic_text(path, text):
 
 def atomic_json(path, document):
     atomic_text(path, json.dumps(document, indent=2, sort_keys=True) + "\n")
+
+
+def atomic_copy(source, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    shutil.copyfile(source, temporary)
+    temporary.replace(destination)
 
 
 def sha256(path):
@@ -793,6 +801,27 @@ def main():
     report = output_dir / "README.md"
     validation = output_dir / "validation.json"
     status = output_dir / "status.json"
+    telemetry_sources = [
+        run_root / "recovery2-vmstat.log",
+        run_root / "recovery2-normal-cgroup.tsv",
+        run_root / "recovery2-is-gate-cgroup.tsv",
+        run_root / "recovery2-normal-retry-cgroup.tsv",
+        run_root / "recovery2-is-gate-retry-cgroup.tsv",
+        run_root / "recovery2-full-cgroup.tsv",
+    ]
+    telemetry_snapshots = []
+    for source in telemetry_sources:
+        if not source.is_file():
+            continue
+        snapshot = output_dir / "telemetry" / source.name
+        atomic_copy(source, snapshot)
+        telemetry_snapshots.append(
+            {
+                "source": str(source),
+                "snapshot": str(snapshot),
+                "sha256": sha256(snapshot),
+            }
+        )
     write_source_tsv(source_tsv, rows)
     svg_plot(figure, workload_specs, rows)
     provenance = [
@@ -807,12 +836,7 @@ def main():
         is_state_path,
         prior_gapbs,
         *prior_hashjoin,
-        run_root / "recovery2-vmstat.log",
-        run_root / "recovery2-normal-cgroup.tsv",
-        run_root / "recovery2-is-gate-cgroup.tsv",
-        run_root / "recovery2-normal-retry-cgroup.tsv",
-        run_root / "recovery2-is-gate-retry-cgroup.tsv",
-        run_root / "recovery2-full-cgroup.tsv",
+        *(Path(item["snapshot"]) for item in telemetry_snapshots),
     ]
     markdown_report(
         report,
@@ -837,6 +861,7 @@ def main():
         },
         "point_counts": counts,
         "issues": issues,
+        "telemetry_snapshots": telemetry_snapshots,
         "provenance": [
             {
                 "path": str(item),
@@ -848,7 +873,13 @@ def main():
         "rows": rows,
     }
     atomic_json(validation, validation_document)
-    artifacts = [source_tsv, figure, report, validation]
+    artifacts = [
+        source_tsv,
+        figure,
+        report,
+        validation,
+        *(Path(item["snapshot"]) for item in telemetry_snapshots),
+    ]
     status_document = {
         "terminal": terminal,
         "complete": complete,
