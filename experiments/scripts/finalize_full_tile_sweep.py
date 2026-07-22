@@ -932,8 +932,20 @@ def main():
     legal_rows = [row for row in rows if row["status"] != "unsupported"]
     counts = dict(Counter(row["status"] for row in rows))
     auxiliary_manifest = run_root / "recovery2-auxiliary-manifest.json"
-    auxiliary_terminal = not auxiliary_manifest.is_file() or workflow_terminal(
-        states["auxiliary"]
+    auxiliary_retry_manifest_v1 = (
+        run_root / "recovery2-auxiliary-retry-manifest.json"
+    )
+    auxiliary_retry_manifest = (
+        run_root / "recovery2-auxiliary-retry-manifest-v2.json"
+    )
+    auxiliary_retry_done = run_root / "recovery2-auxiliary-retry-done.json"
+    auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
+    auxiliary_terminal = not auxiliary_manifest.is_file() or (
+        workflow_terminal(states["auxiliary"])
+        and (
+            not auxiliary_retry_manifest.is_file()
+            or auxiliary_retry_record.get("terminal") is True
+        )
     )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
@@ -981,8 +993,6 @@ def main():
                 "sha256": sha256(snapshot),
             }
         )
-    auxiliary_retry_done = run_root / "recovery2-auxiliary-retry-done.json"
-    auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
     required_cgroups = set()
     if auxiliary_manifest.is_file():
         required_cgroups.add("recovery2-auxiliary-cgroup.tsv")
@@ -1006,6 +1016,8 @@ def main():
         run_root / "recovery2-systemd-path-repair-manifest.json",
         run_root / "recovery2-one-shot-retry-manifest.json",
         auxiliary_manifest,
+        auxiliary_retry_manifest_v1,
+        auxiliary_retry_manifest,
         auxiliary_retry_done,
         finalizer_path,
         original_state_path,
