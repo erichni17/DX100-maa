@@ -43,3 +43,9 @@
   `dx100-full-tile-normal-retry-recovery2-20260721.service`, using the same
   128/144 GiB and zero-swap limits. Do not loop retries; inspect any failures
   left after that pass.
+- If the IS gate's immutable runner snapshot fails only in post-processing,
+  retry it at most once through
+  `dx100-is-exit-gate-retry-recovery2-20260721.service`, retaining the gate's
+  80/96 GiB and zero-swap limits. The source runner must revalidate the exact IS
+  oracle, final stats, clean `m5_exit`, and absence of panic/fatal markers before
+  reusing artifacts.

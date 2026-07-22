@@ -120,3 +120,10 @@ runs are attempted normally. Any task still failed after that one pass requires
 inspection rather than an unbounded retry loop. The post-overlap callback
 requires all 46 normal tasks to be completed, so the remaining IS phase cannot
 silently advance past unresolved normal failures.
+
+The isolated 16K IS gate has the same one-pass repair rule. Its retry runs in
+`dx100-is-exit-gate-retry-recovery2-20260721.service` with the original 80/96
+GiB zero-swap cgroup. The repair may overlap the normal 128/144 GiB group, but
+only after the original gate service is inactive and after the same five-minute
+host admission check. An artifact-reuse success still requires the exact IS
+verification marker, final stats, clean `m5_exit`, and no panic/fatal marker.

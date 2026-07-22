@@ -58,6 +58,7 @@ def main():
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--allowed-live-cgroup", type=Path, required=True)
     parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument("--artifact-stem")
     parser.add_argument(
         "--runtime", default="/home/nier/.local/bin/dx-runtime"
     )
@@ -88,11 +89,13 @@ def main():
     workflow = args.workflow.resolve()
     run_root = args.run_root.resolve()
     allowed_live_cgroup = args.allowed_live_cgroup.resolve()
-    stem = (
+    stem = args.artifact_stem or (
         "recovery2-normal-retry-manager"
         if args.retry_failed
         else "recovery2-normal-manager"
     )
+    if Path(stem).name != stem:
+        raise SystemExit("artifact stem must be a filename stem")
     log = run_root / f"{stem}.log"
     status = run_root / f"{stem}-status.json"
     runtime = shutil.which(args.runtime)
