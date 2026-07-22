@@ -45,6 +45,18 @@
   A failed auxiliary task receives at most one retry in the same 24/32 GiB
   envelope after the first auxiliary unit is terminal; keep the normal unit at
   96/112 GiB until that retry is also terminal.
+- A speculative XRAGE surge lane may additionally overlap these owned units
+  only as `dx100-full-tile-surge-recovery2-20260722.service`, with
+  `MemoryHigh=24G`, `MemoryMax=32G`, `MemorySwapMax=0`, and at most three
+  non-IS tasks. Its manager must verify the normal, gate, and auxiliary
+  cgroups and the aggregate `112G + 96G + 32G + 32G = 272G` hard limit before
+  admission, require at least 96 GiB available after five quiet swap minutes,
+  and select only far-end pending XRAGE tasks. XRAGE runners must hold an
+  output-specific `flock` across reuse validation and simulation so a later
+  normal-lane claimant waits and fast-reuses instead of launching a duplicate.
+  The remaining serial IS recovery must wait until the surge workflow is
+  terminal and its unit is inactive. Record the surge cgroup independently and
+  require that telemetry in final validation.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on

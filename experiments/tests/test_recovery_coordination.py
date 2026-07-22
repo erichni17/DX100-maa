@@ -86,17 +86,19 @@ def test_processes_in_multiple_owned_cgroups_are_allowed(
 def test_aggregate_memory_limit_is_enforced(tmp_path):
     normal = tmp_path / "normal"
     gate = tmp_path / "gate"
-    normal.mkdir()
-    gate.mkdir()
+    auxiliary = tmp_path / "auxiliary"
+    for path in (normal, gate, auxiliary):
+        path.mkdir()
     (normal / "memory.max").write_text(str(112 * 1024**3))
     (gate / "memory.max").write_text(str(96 * 1024**3))
+    (auxiliary / "memory.max").write_text(str(32 * 1024**3))
     summary = normal_recovery.verify_aggregate_memory_max(
-        32 * 1024**3, [normal, gate], 240
+        32 * 1024**3, [normal, gate, auxiliary], 272
     )
-    assert summary["total"] == 240 * 1024**3
+    assert summary["total"] == 272 * 1024**3
     try:
         normal_recovery.verify_aggregate_memory_max(
-            33 * 1024**3, [normal, gate], 240
+            33 * 1024**3, [normal, gate, auxiliary], 272
         )
     except SystemExit as error:
         assert "unsafe aggregate memory.max" in str(error)
@@ -168,3 +170,13 @@ def test_tile_runners_do_not_depend_on_codex_rg_path():
     root = Path(__file__).resolve().parents[2]
     for relative in TILE_RUNNERS:
         assert "rg " not in (root / relative).read_text()
+
+
+def test_xrage_runner_serializes_same_output_directory():
+    root = Path(__file__).resolve().parents[2]
+    runner = (root / "benchmarks/spatter/run_xrage_tile_smoke.sh").read_text()
+    assert "RUN_LOCK=" in runner
+    assert "flock -x 9" in runner
+    assert runner.index("flock -x 9") < runner.index(
+        "if reuse_completed_run; then"
+    )

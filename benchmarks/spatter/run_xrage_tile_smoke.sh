@@ -56,6 +56,14 @@ MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
 BIN=$SP/build_xrage_gem5/spatter_maa_$SUF
 CKPT=$CHECKPOINT_ROOT/xrage_t${TILE}_m${MEM_TAG}
 OUT=$CAMPAIGN_ROOT/xrage_t${TILE}_m${MEM_TAG}_${TAG}
+RUN_LOCK=$CAMPAIGN_ROOT/.xrage_t${TILE}_m${MEM_TAG}_${TAG}.run.lock
+
+# Multiple recovery lanes may speculatively claim a far-end tile. Serialize the
+# exact output directory, then re-check the completed artifact under the lock.
+# A later claimant waits without launching gem5 and fast-reuses the first
+# correctness-complete result.
+exec 9>"$RUN_LOCK"
+flock -x 9
 
 [[ -f "$DATA" ]] || "$SP/setup_xrage.sh"
 [[ -x "$BIN" ]] || { echo "missing XRAGE binary: $BIN" >&2; exit 3; }

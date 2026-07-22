@@ -920,12 +920,16 @@ def main():
     auxiliary_state_path = state_root / (
         "workflows/dx100-full-tile-sweep-recovery2-auxiliary-20260721.json"
     )
+    surge_state_path = state_root / (
+        "workflows/dx100-full-tile-sweep-recovery2-surge-20260722.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
         "recovery_is_gate": read_json(is_gate_state_path),
         "recovery_is": read_json(is_state_path),
         "auxiliary": read_json(auxiliary_state_path),
+        "surge": read_json(surge_state_path),
     }
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     rows, issues = build_rows(workload_specs, states)
@@ -939,6 +943,8 @@ def main():
         run_root / "recovery2-auxiliary-retry-manifest-v2.json"
     )
     auxiliary_retry_done = run_root / "recovery2-auxiliary-retry-done.json"
+    surge_manifest = run_root / "recovery2-surge-manifest.json"
+    surge_workflow = run_root / "recovery2-surge-workflow.json"
     auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
     auxiliary_terminal = not auxiliary_manifest.is_file() or (
         workflow_terminal(states["auxiliary"])
@@ -946,6 +952,9 @@ def main():
             not auxiliary_retry_manifest.is_file()
             or auxiliary_retry_record.get("terminal") is True
         )
+    )
+    surge_terminal = not surge_manifest.is_file() or workflow_terminal(
+        states["surge"]
     )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
@@ -956,12 +965,13 @@ def main():
         and workflow_terminal(states["recovery_is_gate"])
         and workflow_terminal(states["recovery_is"])
         and auxiliary_terminal
+        and surge_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
     if not terminal:
         issues.append(
-            "recovery workflows (including the declared auxiliary lane) are not terminal or parent-owned UME 64K evidence is incomplete"
+            "recovery workflows (including declared auxiliary/surge lanes) are not terminal or parent-owned UME 64K evidence is incomplete"
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -978,6 +988,7 @@ def main():
         run_root / "recovery2-is-gate-retry-cgroup.tsv",
         run_root / "recovery2-auxiliary-cgroup.tsv",
         run_root / "recovery2-auxiliary-retry-cgroup.tsv",
+        run_root / "recovery2-surge-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
     ]
     telemetry_snapshots = []
@@ -998,6 +1009,8 @@ def main():
         required_cgroups.add("recovery2-auxiliary-cgroup.tsv")
     if auxiliary_retry_record.get("retry_launched"):
         required_cgroups.add("recovery2-auxiliary-retry-cgroup.tsv")
+    if surge_manifest.is_file():
+        required_cgroups.add("recovery2-surge-cgroup.tsv")
     memory_safety = memory_safety_summary(
         telemetry_snapshots, required_cgroups
     )
@@ -1019,12 +1032,15 @@ def main():
         auxiliary_retry_manifest_v1,
         auxiliary_retry_manifest,
         auxiliary_retry_done,
+        surge_manifest,
+        surge_workflow,
         finalizer_path,
         original_state_path,
         normal_state_path,
         is_gate_state_path,
         is_state_path,
         auxiliary_state_path,
+        surge_state_path,
         prior_gapbs,
         *prior_hashjoin,
         *(Path(item["snapshot"]) for item in telemetry_snapshots),
