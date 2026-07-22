@@ -21,6 +21,7 @@ WORKFLOWS = (
     "dx100-full-tile-sweep-recovery2-surge-20260722",
     "dx100-full-tile-sweep-recovery2-ume-surge-20260722",
     "dx100-full-tile-sweep-recovery2-t32-surge-20260722",
+    "dx100-full-tile-sweep-recovery2-t8-surge-20260722",
 )
 
 

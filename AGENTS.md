@@ -77,6 +77,13 @@
   Restore the normal lane to 128/144 GiB only after this lane is terminal and
   inactive; the serial IS recovery and finalizer must wait for it and require
   its cgroup telemetry.
+- After the UME surge is terminal, immediately reuse its released 24 GiB cap as
+  `dx100-full-tile-t8-surge-recovery2-20260722.service`, with
+  `MemoryHigh=16G`, `MemoryMax=24G`, `MemorySwapMax=0`, and at most two 8K
+  GAPBS/CG tasks. Its manager must verify the remaining live cgroups and the
+  unchanged 272 GiB aggregate ceiling. The T32 launcher must treat this lane as
+  an allowed owned cgroup, and the serial IS recovery/finalizer must wait for
+  and record it.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on
