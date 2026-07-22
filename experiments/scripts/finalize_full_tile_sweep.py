@@ -9,6 +9,7 @@ import json
 import math
 import re
 import shutil
+import subprocess
 from collections import Counter
 from pathlib import Path
 
@@ -883,6 +884,16 @@ def main():
     run_root = args.run_root.resolve()
     state_root = args.state_root.resolve()
     output_dir = (args.output_dir or run_root / "final").resolve()
+    finalizer_path = Path(__file__).resolve()
+    source_root = finalizer_path.parents[2]
+    source_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source_root, text=True
+    ).strip()
+    tracked_changes = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=source_root,
+        text=True,
+    ).strip()
     prior_hashjoin = args.prior_hashjoin_results or [
         Path(
             "/data1/nier/DX100/experiments/campaigns/2026-07-10_hashjoin_tile_smoke/results.tsv"
@@ -962,6 +973,9 @@ def main():
     if terminal and not memory_safety["safe"]:
         complete = False
         issues.extend(memory_safety["issues"])
+    if terminal and tracked_changes:
+        complete = False
+        issues.append("finalizer source worktree has tracked changes")
     write_source_tsv(source_tsv, rows)
     svg_plot(figure, workload_specs, rows)
     provenance = [
@@ -970,6 +984,7 @@ def main():
         run_root / "recovery2-normal-overlap-manifest.json",
         run_root / "recovery2-systemd-path-repair-manifest.json",
         run_root / "recovery2-one-shot-retry-manifest.json",
+        finalizer_path,
         original_state_path,
         normal_state_path,
         is_gate_state_path,
@@ -1004,6 +1019,13 @@ def main():
         "issues": issues,
         "telemetry_snapshots": telemetry_snapshots,
         "memory_safety": memory_safety,
+        "finalizer": {
+            "path": str(finalizer_path),
+            "sha256": sha256(finalizer_path),
+            "source_root": str(source_root),
+            "source_commit": source_commit,
+            "tracked_worktree_clean": not tracked_changes,
+        },
         "provenance": [
             {
                 "path": str(item),
