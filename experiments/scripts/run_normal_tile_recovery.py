@@ -13,9 +13,11 @@ from datetime import (
 from pathlib import Path
 
 from run_full_tile_recovery import (
+    GIB_BYTES,
     append_log,
     atomic_json,
     conflicting_processes,
+    read_limit,
     run_workflow,
     verify_cgroup,
     wait_for_admission,
@@ -37,18 +39,81 @@ def process_cgroup_directory(pid):
 
 
 def outside_allowed_cgroup(conflicts, allowed_cgroup):
-    allowed = allowed_cgroup.resolve()
+    return outside_allowed_cgroups(conflicts, [allowed_cgroup])
+
+
+def outside_allowed_cgroups(conflicts, allowed_cgroups):
+    allowed = [path.resolve() for path in allowed_cgroups]
     unexpected = []
     for conflict in conflicts:
         actual = process_cgroup_directory(conflict["pid"])
         if actual is None:
             unexpected.append(conflict)
             continue
-        try:
-            actual.resolve().relative_to(allowed)
-        except ValueError:
+        actual = actual.resolve()
+        if not any(path_is_within(actual, parent) for parent in allowed):
             unexpected.append(conflict)
     return unexpected
+
+
+def path_is_within(path, parent):
+    if path == parent:
+        return True
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def verify_primary_task_states(workflow, primary_state):
+    workflow_document = json.loads(workflow.read_text())
+    task_ids = [task.get("id") for task in workflow_document.get("tasks", [])]
+    if not task_ids or None in task_ids or len(set(task_ids)) != len(task_ids):
+        raise SystemExit(
+            "auxiliary workflow task ids are missing or duplicated"
+        )
+    state_document = json.loads(primary_state.read_text())
+    primary_tasks = state_document.get("tasks", {})
+    if not isinstance(primary_tasks, dict):
+        raise SystemExit(
+            f"primary workflow tasks are invalid: {primary_state}"
+        )
+    selected_states = {}
+    for task_id in task_ids:
+        task = primary_tasks.get(task_id)
+        if not isinstance(task, dict) or "state" not in task:
+            raise SystemExit(
+                f"auxiliary task is absent from primary state: {task_id}"
+            )
+        selected_states[task_id] = task["state"]
+    unsafe = {
+        task_id: state
+        for task_id, state in selected_states.items()
+        if state not in {"pending", "failed", "completed", "skipped"}
+    }
+    if unsafe:
+        raise SystemExit(
+            "auxiliary tasks are live in primary workflow: "
+            + json.dumps(unsafe, sort_keys=True)
+        )
+    return selected_states
+
+
+def verify_aggregate_memory_max(own_max, allowed_cgroups, maximum_gib):
+    members = {"manager": own_max}
+    for path in allowed_cgroups:
+        value = read_limit(path / "memory.max")
+        if value == "max":
+            raise SystemExit(f"uncapped allowed cgroup: {path}")
+        members[str(path)] = value
+    total = sum(members.values())
+    maximum = maximum_gib * GIB_BYTES
+    if total > maximum:
+        raise SystemExit(
+            f"unsafe aggregate memory.max: total={total} limit={maximum}"
+        )
+    return {"members": members, "total": total, "limit": maximum}
 
 
 def main():
@@ -56,7 +121,14 @@ def main():
     parser.add_argument("--state-root", type=Path, required=True)
     parser.add_argument("--workflow", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
-    parser.add_argument("--allowed-live-cgroup", type=Path, required=True)
+    parser.add_argument(
+        "--allowed-live-cgroup",
+        type=Path,
+        action="append",
+        required=True,
+    )
+    parser.add_argument("--aggregate-memory-max-gib", type=int)
+    parser.add_argument("--primary-workflow-state", type=Path)
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--artifact-stem")
     parser.add_argument(
@@ -88,7 +160,14 @@ def main():
     state_root = args.state_root.resolve()
     workflow = args.workflow.resolve()
     run_root = args.run_root.resolve()
-    allowed_live_cgroup = args.allowed_live_cgroup.resolve()
+    allowed_live_cgroups = [
+        path.resolve() for path in args.allowed_live_cgroup
+    ]
+    primary_workflow_state = (
+        args.primary_workflow_state.resolve()
+        if args.primary_workflow_state is not None
+        else None
+    )
     stem = args.artifact_stem or (
         "recovery2-normal-retry-manager"
         if args.retry_failed
@@ -103,6 +182,13 @@ def main():
         raise SystemExit("dx-runtime is unavailable")
     if not workflow.is_file():
         raise SystemExit(f"workflow missing: {workflow}")
+    if (
+        primary_workflow_state is not None
+        and not primary_workflow_state.is_file()
+    ):
+        raise SystemExit(
+            f"primary workflow state missing: {primary_workflow_state}"
+        )
     name = workflow_name(workflow)
     state = workflow_state_path(state_root, name)
     if args.retry_failed:
@@ -122,15 +208,25 @@ def main():
             )
     elif state.exists():
         raise SystemExit(f"refusing duplicate workflow state: {state}")
-    if not args.retry_failed and not allowed_live_cgroup.is_dir():
+    primary_task_states = None
+    if primary_workflow_state is not None:
+        primary_task_states = verify_primary_task_states(
+            workflow, primary_workflow_state
+        )
+    missing_allowed = [
+        path for path in allowed_live_cgroups if not path.is_dir()
+    ]
+    if not args.retry_failed and missing_allowed:
         raise SystemExit(
-            f"allowed gate cgroup is absent: {allowed_live_cgroup}"
+            "allowed live cgroup is absent: "
+            + ", ".join(str(path) for path in missing_allowed)
         )
 
     source_root = Path(__file__).resolve().parents[2]
     conflicts = conflicting_processes(source_root, run_root)
-    if allowed_live_cgroup.is_dir():
-        conflicts = outside_allowed_cgroup(conflicts, allowed_live_cgroup)
+    existing_allowed = [path for path in allowed_live_cgroups if path.is_dir()]
+    if existing_allowed:
+        conflicts = outside_allowed_cgroups(conflicts, existing_allowed)
     if conflicts:
         raise SystemExit(
             "refusing launch with unexpected live owned processes: "
@@ -140,6 +236,20 @@ def main():
         args.expected_memory_high_gib,
         args.expected_memory_max_gib,
     )
+    aggregate = None
+    if args.aggregate_memory_max_gib is not None:
+        if args.aggregate_memory_max_gib < 1:
+            raise SystemExit("aggregate memory maximum must be positive")
+        if len(existing_allowed) != len(allowed_live_cgroups):
+            raise SystemExit(
+                "aggregate verification requires every allowed cgroup"
+            )
+        aggregate = verify_aggregate_memory_max(
+            limits["memory_max"],
+            existing_allowed,
+            args.aggregate_memory_max_gib,
+        )
+    allowed_record = [str(path) for path in allowed_live_cgroups]
     atomic_json(
         status,
         {
@@ -147,14 +257,19 @@ def main():
             "pid": os.getpid(),
             "started_at": datetime.now(timezone.utc).isoformat(),
             "cgroup": limits,
-            "allowed_live_cgroup": str(allowed_live_cgroup),
+            "allowed_live_cgroups": allowed_record,
+            "aggregate_memory_max": aggregate,
+            "primary_workflow_state": str(primary_workflow_state)
+            if primary_workflow_state is not None
+            else None,
+            "primary_task_states": primary_task_states,
             "phase": "admission",
         },
     )
     append_log(
         log,
         f"normal manager started cgroup={limits} "
-        f"allowed_live_cgroup={allowed_live_cgroup}",
+        f"allowed_live_cgroups={allowed_record} aggregate={aggregate}",
     )
     wait_for_admission(
         log,
@@ -190,7 +305,12 @@ def main():
             "terminal": True,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "cgroup": limits,
-            "allowed_live_cgroup": str(allowed_live_cgroup),
+            "allowed_live_cgroups": allowed_record,
+            "aggregate_memory_max": aggregate,
+            "primary_workflow_state": str(primary_workflow_state)
+            if primary_workflow_state is not None
+            else None,
+            "primary_task_states": primary_task_states,
             "phase": "terminal",
             "workflow_rc": rc,
         },

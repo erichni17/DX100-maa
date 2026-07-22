@@ -5,6 +5,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import create_auxiliary_tile_workflow as auxiliary  # noqa: E402
 import run_full_tile_recovery as full_recovery  # noqa: E402
 import run_normal_tile_recovery as normal_recovery  # noqa: E402
 
@@ -59,6 +60,84 @@ def test_only_processes_in_gate_cgroup_are_allowed(monkeypatch, tmp_path):
     assert normal_recovery.outside_allowed_cgroup(conflicts, gate) == [
         {"pid": 2}
     ]
+
+
+def test_processes_in_multiple_owned_cgroups_are_allowed(
+    monkeypatch, tmp_path
+):
+    normal = tmp_path / "normal"
+    gate = tmp_path / "gate"
+    outside = tmp_path / "other"
+    for path in (normal, gate, outside):
+        path.mkdir()
+    mapping = {1: normal / "child", 2: gate, 3: outside}
+    monkeypatch.setattr(
+        normal_recovery,
+        "process_cgroup_directory",
+        lambda pid: mapping[pid],
+    )
+    conflicts = [{"pid": 1}, {"pid": 2}, {"pid": 3}]
+    assert normal_recovery.outside_allowed_cgroups(
+        conflicts, [normal, gate]
+    ) == [{"pid": 3}]
+
+
+def test_aggregate_memory_limit_is_enforced(tmp_path):
+    normal = tmp_path / "normal"
+    gate = tmp_path / "gate"
+    normal.mkdir()
+    gate.mkdir()
+    (normal / "memory.max").write_text(str(112 * 1024**3))
+    (gate / "memory.max").write_text(str(96 * 1024**3))
+    summary = normal_recovery.verify_aggregate_memory_max(
+        32 * 1024**3, [normal, gate], 240
+    )
+    assert summary["total"] == 240 * 1024**3
+    try:
+        normal_recovery.verify_aggregate_memory_max(
+            33 * 1024**3, [normal, gate], 240
+        )
+    except SystemExit as error:
+        assert "unsafe aggregate memory.max" in str(error)
+    else:
+        raise AssertionError("unsafe aggregate was accepted")
+
+
+def test_auxiliary_workflow_preserves_requested_task_order():
+    document = {
+        "tasks": [
+            {"id": "first", "command": ["one"]},
+            {"id": "second", "command": ["two"]},
+        ]
+    }
+    assert auxiliary.select_tasks(document, ["second", "first"]) == [
+        {"id": "second", "command": ["two"]},
+        {"id": "first", "command": ["one"]},
+    ]
+
+
+def test_auxiliary_tasks_must_not_be_live_in_primary_state(tmp_path):
+    workflow = tmp_path / "auxiliary.json"
+    primary = tmp_path / "primary.json"
+    workflow.write_text(
+        json.dumps({"tasks": [{"id": "safe"}, {"id": "live"}]})
+    )
+    primary.write_text(
+        json.dumps(
+            {
+                "tasks": {
+                    "safe": {"state": "pending"},
+                    "live": {"state": "running"},
+                }
+            }
+        )
+    )
+    try:
+        normal_recovery.verify_primary_task_states(workflow, primary)
+    except SystemExit as error:
+        assert "live" in str(error)
+    else:
+        raise AssertionError("live primary task was accepted")
 
 
 def test_tile_runners_do_not_depend_on_codex_rg_path():

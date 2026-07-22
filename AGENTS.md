@@ -32,6 +32,16 @@
   gate's 96 GiB hard limit, the aggregate campaign hard limit remains 240 GiB.
   The combined 220/240 GiB manager may start only after both overlapping units
   are terminal.
+- A disjoint auxiliary lane may overlap the normal recovery and IS gate only
+  after the live normal unit is reduced to `MemoryHigh=96G` and
+  `MemoryMax=112G`. Launch it only as
+  `dx100-full-tile-auxiliary-recovery2-20260721.service`, with
+  `MemoryHigh=24G`, `MemoryMax=32G`, `MemorySwapMax=0`, and at most three
+  non-IS tasks. Its manager must verify the two existing cgroups and the
+  aggregate `112G + 96G + 32G = 240G` hard limit before admission. Select only
+  wrapper-only repairs and far-end pending tasks whose exact completed
+  artifacts the main workflow will independently revalidate and fast-reuse;
+  never overlap an output directory with a live task.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on

@@ -53,6 +53,24 @@ def test_memory_safety_rejects_swap_or_pressure(tmp_path):
     assert any("maximum_high_events=1" in item for item in summary["issues"])
 
 
+def test_auxiliary_telemetry_can_be_required(tmp_path):
+    records = safe_telemetry(tmp_path)
+    summary = finalizer.memory_safety_summary(
+        records, {"recovery2-auxiliary-cgroup.tsv"}
+    )
+    assert not summary["safe"]
+    assert any(
+        "recovery2-auxiliary-cgroup.tsv" in item for item in summary["issues"]
+    )
+    auxiliary = tmp_path / "recovery2-auxiliary-cgroup.tsv"
+    write_cgroup(auxiliary)
+    records.append({"snapshot": str(auxiliary)})
+    summary = finalizer.memory_safety_summary(
+        records, {"recovery2-auxiliary-cgroup.tsv"}
+    )
+    assert summary["safe"]
+
+
 def test_prior_handoff_and_fresh_exact_oracle_are_distinct(tmp_path):
     outdir = tmp_path / "run"
     outdir.mkdir()

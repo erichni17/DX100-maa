@@ -149,7 +149,7 @@ def summarize_cgroup(path):
     return summary
 
 
-def memory_safety_summary(telemetry_snapshots):
+def memory_safety_summary(telemetry_snapshots, required_cgroups=()):
     summary = {"vmstat": None, "cgroups": {}}
     for record in telemetry_snapshots:
         path = Path(record["snapshot"])
@@ -162,6 +162,7 @@ def memory_safety_summary(telemetry_snapshots):
         "recovery2-is-gate-cgroup.tsv",
         "recovery2-full-cgroup.tsv",
     }
+    required.update(required_cgroups)
     issues = []
     vmstat = summary["vmstat"]
     if not vmstat or not vmstat.get("sample_count"):
@@ -916,11 +917,15 @@ def main():
     is_gate_state_path = state_root / (
         "workflows/dx100-full-tile-sweep-recovery2-is-gate-20260721.json"
     )
+    auxiliary_state_path = state_root / (
+        "workflows/dx100-full-tile-sweep-recovery2-auxiliary-20260721.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
         "recovery_is_gate": read_json(is_gate_state_path),
         "recovery_is": read_json(is_state_path),
+        "auxiliary": read_json(auxiliary_state_path),
     }
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     rows, issues = build_rows(workload_specs, states)
@@ -954,6 +959,7 @@ def main():
         run_root / "recovery2-is-gate-cgroup.tsv",
         run_root / "recovery2-normal-retry-cgroup.tsv",
         run_root / "recovery2-is-gate-retry-cgroup.tsv",
+        run_root / "recovery2-auxiliary-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
     ]
     telemetry_snapshots = []
@@ -969,7 +975,15 @@ def main():
                 "sha256": sha256(snapshot),
             }
         )
-    memory_safety = memory_safety_summary(telemetry_snapshots)
+    auxiliary_manifest = run_root / "recovery2-auxiliary-manifest.json"
+    required_cgroups = (
+        {"recovery2-auxiliary-cgroup.tsv"}
+        if auxiliary_manifest.is_file()
+        else set()
+    )
+    memory_safety = memory_safety_summary(
+        telemetry_snapshots, required_cgroups
+    )
     if terminal and not memory_safety["safe"]:
         complete = False
         issues.extend(memory_safety["issues"])
@@ -984,11 +998,13 @@ def main():
         run_root / "recovery2-normal-overlap-manifest.json",
         run_root / "recovery2-systemd-path-repair-manifest.json",
         run_root / "recovery2-one-shot-retry-manifest.json",
+        auxiliary_manifest,
         finalizer_path,
         original_state_path,
         normal_state_path,
         is_gate_state_path,
         is_state_path,
+        auxiliary_state_path,
         prior_gapbs,
         *prior_hashjoin,
         *(Path(item["snapshot"]) for item in telemetry_snapshots),
