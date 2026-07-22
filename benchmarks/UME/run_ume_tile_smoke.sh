@@ -123,6 +123,13 @@ MAA_MEM_HEX=$(mem_size_to_hex "$MEM_SIZE")
 MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
 CKPT="$CHECKPOINT_ROOT/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
 OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}"
+RUN_LOCK="$CAMPAIGN_ROOT/.${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}.run.lock"
+
+# A speculative lane and the primary workflow may reach the same far-end
+# point. Serialize that exact output directory and re-check reuse under the
+# lock so only one gem5 process can ever produce it.
+exec 9>"$RUN_LOCK"
+flock -x 9
 
 if [[ ! -f "$RESULTS" ]]; then
   echo -e "timestamp\tgem5_bin\tkernel\ttile\tn\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutput_hash\toutdir" > "$RESULTS"

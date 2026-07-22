@@ -106,6 +106,25 @@ def test_aggregate_memory_limit_is_enforced(tmp_path):
         raise AssertionError("unsafe aggregate was accepted")
 
 
+def test_rebalanced_aggregate_memory_limit_is_enforced(tmp_path):
+    maxima = {
+        "normal": 112,
+        "gate": 72,
+        "auxiliary": 32,
+        "xrage-surge": 32,
+    }
+    cgroups = []
+    for name, maximum in maxima.items():
+        path = tmp_path / name
+        path.mkdir()
+        (path / "memory.max").write_text(str(maximum * 1024**3))
+        cgroups.append(path)
+    summary = normal_recovery.verify_aggregate_memory_max(
+        24 * 1024**3, cgroups, 272
+    )
+    assert summary["total"] == 272 * 1024**3
+
+
 def test_auxiliary_workflow_preserves_requested_task_order():
     document = {
         "tasks": [
@@ -175,6 +194,16 @@ def test_tile_runners_do_not_depend_on_codex_rg_path():
 def test_xrage_runner_serializes_same_output_directory():
     root = Path(__file__).resolve().parents[2]
     runner = (root / "benchmarks/spatter/run_xrage_tile_smoke.sh").read_text()
+    assert "RUN_LOCK=" in runner
+    assert "flock -x 9" in runner
+    assert runner.index("flock -x 9") < runner.index(
+        "if reuse_completed_run; then"
+    )
+
+
+def test_ume_runner_serializes_same_output_directory():
+    root = Path(__file__).resolve().parents[2]
+    runner = (root / "benchmarks/UME/run_ume_tile_smoke.sh").read_text()
     assert "RUN_LOCK=" in runner
     assert "flock -x 9" in runner
     assert runner.index("flock -x 9") < runner.index(

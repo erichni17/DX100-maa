@@ -19,6 +19,7 @@ WORKFLOWS = (
     "dx100-full-tile-sweep-recovery2-is-20260721",
     "dx100-full-tile-sweep-recovery2-auxiliary-20260721",
     "dx100-full-tile-sweep-recovery2-surge-20260722",
+    "dx100-full-tile-sweep-recovery2-ume-surge-20260722",
 )
 
 

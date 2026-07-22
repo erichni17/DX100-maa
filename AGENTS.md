@@ -57,6 +57,16 @@
   The remaining serial IS recovery must wait until the surge workflow is
   terminal and its unit is inactive. Record the surge cgroup independently and
   require that telemetry in final validation.
+- After the XRAGE surge is live, a UME surge may use the gate's conservatively
+  released reservation only after its recorded peak remains below 64 GiB and
+  the live gate is reduced to `MemoryHigh=64G`, `MemoryMax=72G`, with swap
+  still disabled. Launch the UME lane only as
+  `dx100-full-tile-ume-surge-recovery2-20260722.service`, with
+  `MemoryHigh=16G`, `MemoryMax=24G`, `MemorySwapMax=0`, and at most three
+  tasks. Its manager must verify `112G + 72G + 32G + 32G + 24G = 272G`, the
+  same 96 GiB/five-minute admission gate, and pending primary ownership. UME
+  runners must use the same output-specific lock/revalidate contract. The
+  serial IS recovery and finalizer must also wait for and record this lane.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on
