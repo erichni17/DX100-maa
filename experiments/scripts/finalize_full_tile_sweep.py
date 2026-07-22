@@ -391,6 +391,9 @@ def build_rows(workload_specs, states):
                 "performance_16k": None,
                 "rc": "",
                 "oracle": "",
+                "evidence_tier": (
+                    "accepted-prior" if spec.get("prior") else "fresh-exact"
+                ),
                 "evidence_source": ";".join(
                     str(path) for path in source_paths
                 ),
@@ -399,7 +402,11 @@ def build_rows(workload_specs, states):
             }
             unsupported = spec.get("unsupported", {}).get(tile)
             if unsupported:
-                base.update(status="unsupported", note=unsupported)
+                base.update(
+                    status="unsupported",
+                    evidence_tier="unsupported",
+                    note=unsupported,
+                )
                 workload_rows.append(base)
                 continue
 
@@ -485,6 +492,7 @@ def write_source_tsv(path, rows):
         "performance_16k",
         "rc",
         "oracle",
+        "evidence_tier",
         "evidence_source",
         "outdir",
         "note",
@@ -676,6 +684,25 @@ def markdown_report(
     if issues:
         lines.extend(["", "## Outstanding issues", ""])
         lines.extend(f"- {item}" for item in issues)
+    prior_valid = sum(
+        item["status"] == "valid" and item["evidence_tier"] == "accepted-prior"
+        for item in rows
+    )
+    fresh_valid = sum(
+        item["status"] == "valid" and item["evidence_tier"] == "fresh-exact"
+        for item in rows
+    )
+    lines.extend(
+        [
+            "",
+            "## Evidence tiers",
+            "",
+            f"- Fresh exact-oracle points: {fresh_valid}",
+            f"- Accepted prior handoff points: {prior_valid}",
+            "",
+            "`fresh-exact` points require a completed workflow task, wrapper rc=0, matching first-ROI `simTicks`, a clean `m5_exit`, and the benchmark-specific exact oracle. `accepted-prior` points are the PageRank and HashJoin curves recorded as complete in the July 20 meeting handoff; their older runners provide rc=0, raw stats, and clean `m5_exit`, but did not emit the newer semantic fingerprints. They are therefore not represented as independently exact-oracle revalidated.",
+        ]
+    )
     lines.extend(["", "## Provenance", ""])
     lines.extend(f"- `{item}`" for item in provenance)
     lines.extend(
@@ -801,6 +828,10 @@ def main():
         "terminal": terminal,
         "complete": complete,
         "normalization": "simTicks(16384) / simTicks(tile)",
+        "evidence_policy": {
+            "fresh-exact": "workflow completion, wrapper rc=0, first-ROI simTicks, clean m5_exit, no panic/fatal, and benchmark-specific exact oracle",
+            "accepted-prior": "accepted July 20 meeting handoff curve with wrapper rc=0, recorded simTicks, clean m5_exit, and no panic/fatal; older runner emitted no exact semantic fingerprint",
+        },
         "workflow_counts": {
             name: workflow_counts(state) for name, state in states.items()
         },
