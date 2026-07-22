@@ -138,6 +138,13 @@ esac
 
 CKPT="$CHECKPOINT_ROOT/gapbs_${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}"
 OUT="$CAMPAIGN_ROOT/${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${TAG}"
+RUN_LOCK="$CAMPAIGN_ROOT/.${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${TAG}.run.lock"
+
+# Speculative lanes may reach a far-end point before the primary workflow.
+# Serialize the exact output and re-check reuse under the lock so a later
+# claimant never launches a duplicate gem5 process.
+exec 9>"$RUN_LOCK"
+flock -x 9
 
 if [[ ! -f "$RESULTS" ]]; then
   echo -e "timestamp\tgem5_bin\tkernel\ttile\tscale\titers\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\toutdir" > "$RESULTS"

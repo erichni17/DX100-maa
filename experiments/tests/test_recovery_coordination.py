@@ -209,3 +209,17 @@ def test_ume_runner_serializes_same_output_directory():
     assert runner.index("flock -x 9") < runner.index(
         "if reuse_completed_run; then"
     )
+
+
+def test_gapbs_and_cg_runners_serialize_same_output_directory():
+    root = Path(__file__).resolve().parents[2]
+    for relative in (
+        "benchmarks/gapbs/run_gapbs_tile_smoke.sh",
+        "benchmarks/NAS/cg/run_cg_tile_smoke.sh",
+    ):
+        runner = (root / relative).read_text()
+        assert "RUN_LOCK=" in runner
+        assert "flock -x 9" in runner
+        assert runner.index("flock -x 9") < runner.index(
+            "if reuse_completed_run; then"
+        )

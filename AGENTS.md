@@ -67,6 +67,16 @@
   same 96 GiB/five-minute admission gate, and pending primary ownership. UME
   runners must use the same output-specific lock/revalidate contract. The
   serial IS recovery and finalizer must also wait for and record this lane.
+- When the auxiliary lane and its one-shot retry are both terminal, keep the
+  normal lane at 96/112 GiB and reuse the released 32 GiB reservation as
+  `dx100-full-tile-t32-surge-recovery2-20260722.service`, with
+  `MemoryHigh=24G`, `MemoryMax=32G`, `MemorySwapMax=0`, and at most three
+  tasks. Select only the far-end 32K GAPBS/CG tasks, whose runners must hold
+  output-specific locks and independently revalidate reuse. The manager must
+  verify the remaining live cgroups and the unchanged 272 GiB aggregate cap.
+  Restore the normal lane to 128/144 GiB only after this lane is terminal and
+  inactive; the serial IS recovery and finalizer must wait for it and require
+  its cgroup telemetry.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on

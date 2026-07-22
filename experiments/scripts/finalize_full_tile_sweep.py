@@ -936,6 +936,9 @@ def main():
     ume_surge_state_path = state_root / (
         "workflows/dx100-full-tile-sweep-recovery2-ume-surge-20260722.json"
     )
+    t32_surge_state_path = state_root / (
+        "workflows/dx100-full-tile-sweep-recovery2-t32-surge-20260722.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
@@ -944,6 +947,7 @@ def main():
         "auxiliary": read_json(auxiliary_state_path),
         "surge": read_json(surge_state_path),
         "ume_surge": read_json(ume_surge_state_path),
+        "t32_surge": read_json(t32_surge_state_path),
     }
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     rows, issues = build_rows(workload_specs, states)
@@ -961,6 +965,8 @@ def main():
     surge_workflow = run_root / "recovery2-surge-workflow.json"
     ume_surge_manifest = run_root / "recovery2-ume-surge-manifest.json"
     ume_surge_workflow = run_root / "recovery2-ume-surge-workflow.json"
+    t32_surge_manifest = run_root / "recovery2-t32-surge-manifest.json"
+    t32_surge_workflow = run_root / "recovery2-t32-surge-workflow.json"
     auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
     auxiliary_terminal = not auxiliary_manifest.is_file() or (
         workflow_terminal(states["auxiliary"])
@@ -975,6 +981,9 @@ def main():
     ume_surge_terminal = not ume_surge_manifest.is_file() or workflow_terminal(
         states["ume_surge"]
     )
+    t32_surge_terminal = not t32_surge_manifest.is_file() or workflow_terminal(
+        states["t32_surge"]
+    )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
         for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
@@ -986,6 +995,7 @@ def main():
         and auxiliary_terminal
         and surge_terminal
         and ume_surge_terminal
+        and t32_surge_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
@@ -1010,6 +1020,7 @@ def main():
         run_root / "recovery2-auxiliary-retry-cgroup.tsv",
         run_root / "recovery2-surge-cgroup.tsv",
         run_root / "recovery2-ume-surge-cgroup.tsv",
+        run_root / "recovery2-t32-surge-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
     ]
     telemetry_snapshots = []
@@ -1034,6 +1045,8 @@ def main():
         required_cgroups.add("recovery2-surge-cgroup.tsv")
     if ume_surge_manifest.is_file():
         required_cgroups.add("recovery2-ume-surge-cgroup.tsv")
+    if t32_surge_manifest.is_file():
+        required_cgroups.add("recovery2-t32-surge-cgroup.tsv")
     memory_safety = memory_safety_summary(
         telemetry_snapshots, required_cgroups
     )
@@ -1059,6 +1072,8 @@ def main():
         surge_workflow,
         ume_surge_manifest,
         ume_surge_workflow,
+        t32_surge_manifest,
+        t32_surge_workflow,
         finalizer_path,
         original_state_path,
         normal_state_path,
@@ -1067,6 +1082,7 @@ def main():
         auxiliary_state_path,
         surge_state_path,
         ume_surge_state_path,
+        t32_surge_state_path,
         prior_gapbs,
         *prior_hashjoin,
         *(Path(item["snapshot"]) for item in telemetry_snapshots),

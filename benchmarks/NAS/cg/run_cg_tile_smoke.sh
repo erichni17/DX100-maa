@@ -75,6 +75,13 @@ BIN_BASENAME=cg_maa_$SUF
 BIN=$CG/$BIN_BASENAME
 CKPT=$CHECKPOINT_ROOT/cg_t${TILE}_m${MEM_TAG}
 OUT=$CAMPAIGN_ROOT/cg_t${TILE}_m${MEM_TAG}_${TAG}
+RUN_LOCK=$CAMPAIGN_ROOT/.cg_t${TILE}_m${MEM_TAG}_${TAG}.run.lock
+
+# Serialize the exact output across speculative and primary recovery lanes.
+# The later claimant revalidates and reuses the completed artifact under this
+# lock instead of launching a second gem5 process.
+exec 9>"$RUN_LOCK"
+flock -x 9
 
 if [[ ! -f "$RESULTS" ]]; then
   echo -e 'timestamp\tgem5_bin\ttile\trc\tsimTicks\tmaa_cycles_total\toverlap_both_any\twrite_only_over_write\trnorm\tzeta\toutdir' > "$RESULTS"
