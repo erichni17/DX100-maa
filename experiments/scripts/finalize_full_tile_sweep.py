@@ -107,7 +107,9 @@ def scan_log(path, oracle_kind):
         for line in source:
             line = line.rstrip("\n")
             lowered = line.lower()
-            if re.search(r"Exiting @ tick .*m5_exit instruction encountered", line):
+            if re.search(
+                r"Exiting @ tick .*m5_exit instruction encountered", line
+            ):
                 result["m5_exit"] = True
             if "panic:" in lowered or "fatal:" in lowered:
                 result["panic_or_fatal"] = True
@@ -131,7 +133,10 @@ def select_latest(rows, filters, tile):
     for index, row in enumerate(rows):
         if parse_positive_int(row.get("tile")) != tile:
             continue
-        if all(str(row.get(key, "")) == str(value) for key, value in filters.items()):
+        if all(
+            str(row.get(key, "")) == str(value)
+            for key, value in filters.items()
+        ):
             matches.append((row.get("timestamp", ""), index, row))
     if not matches:
         return None
@@ -181,14 +186,18 @@ def validate_row(row, oracle_kind, expected_hash=None, prior=False):
         markers = log["markers"]
         if oracle_kind == "xrage":
             if len(markers) != 9:
-                notes.append(f"expected 9 SPATTER_FP markers, found {len(markers)}")
+                notes.append(
+                    f"expected 9 SPATTER_FP markers, found {len(markers)}"
+                )
             oracle_id = "\n".join(markers)
         elif oracle_kind == "ume":
             fingerprint = [
                 line for line in markers if line.startswith("UME_OUTPUT_FP ")
             ]
             reference = [
-                line for line in markers if line.startswith("UME_REFERENCE_PASS ")
+                line
+                for line in markers
+                if line.startswith("UME_REFERENCE_PASS ")
             ]
             if len(fingerprint) != 1 or len(reference) != 1:
                 notes.append(
@@ -196,7 +205,9 @@ def validate_row(row, oracle_kind, expected_hash=None, prior=False):
                 )
             oracle_id = "\n".join(fingerprint + reference)
             if expected_hash is not None:
-                expected = f"UME_OUTPUT_FP output_hash={expected_hash} nonfinite=0"
+                expected = (
+                    f"UME_OUTPUT_FP output_hash={expected_hash} nonfinite=0"
+                )
                 if fingerprint != [expected]:
                     notes.append(
                         f"exact UME output fingerprint mismatch (expected {expected_hash})"
@@ -218,7 +229,8 @@ def workflow_terminal(state):
     if not state or not state.get("tasks"):
         return False
     return all(
-        record.get("state") in TERMINAL_STATES for record in state["tasks"].values()
+        record.get("state") in TERMINAL_STATES
+        for record in state["tasks"].values()
     )
 
 
@@ -226,7 +238,9 @@ def workflow_counts(state):
     if not state:
         return {"missing": 1}
     return dict(
-        Counter(item.get("state", "unknown") for item in state["tasks"].values())
+        Counter(
+            item.get("state", "unknown") for item in state["tasks"].values()
+        )
     )
 
 
@@ -377,7 +391,9 @@ def build_rows(workload_specs, states):
                 "performance_16k": None,
                 "rc": "",
                 "oracle": "",
-                "evidence_source": ";".join(str(path) for path in source_paths),
+                "evidence_source": ";".join(
+                    str(path) for path in source_paths
+                ),
                 "outdir": "",
                 "note": "",
             }
@@ -389,8 +405,12 @@ def build_rows(workload_specs, states):
 
             row = select_latest(source_rows, spec.get("filters", {}), tile)
             if not spec.get("prior"):
-                workflow = spec.get("workflow_by_tile", {}).get(tile, spec["workflow"])
-                state = task_state(states.get(workflow), spec["task"].format(tile=tile))
+                workflow = spec.get("workflow_by_tile", {}).get(
+                    tile, spec["workflow"]
+                )
+                state = task_state(
+                    states.get(workflow), spec["task"].format(tile=tile)
+                )
                 current = state.get("state", "pending")
                 if current != "completed":
                     note = state.get("reason", "")
@@ -398,7 +418,9 @@ def build_rows(workload_specs, states):
                         note = f"workflow task failed rc={state.get('returncode', 'unknown')}"
                     base.update(status=current, note=note)
                     if row:
-                        base.update(rc=row.get("rc", ""), outdir=row.get("outdir", ""))
+                        base.update(
+                            rc=row.get("rc", ""), outdir=row.get("outdir", "")
+                        )
                     workload_rows.append(base)
                     continue
 
@@ -441,7 +463,9 @@ def build_rows(workload_specs, states):
             None,
         )
         if reference is None:
-            issues.append(f"{spec['label']}: valid 16K normalization point missing")
+            issues.append(
+                f"{spec['label']}: valid 16K normalization point missing"
+            )
         else:
             for item in workload_rows:
                 if item["status"] == "valid" and item["simTicks"]:
@@ -468,12 +492,16 @@ def write_source_tsv(path, rows):
     temporary = path.with_name(f".{path.name}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     with temporary.open("w", newline="") as output:
-        writer = csv.DictWriter(output, fields, delimiter="\t", lineterminator="\n")
+        writer = csv.DictWriter(
+            output, fields, delimiter="\t", lineterminator="\n"
+        )
         writer.writeheader()
         for row in rows:
             formatted = dict(row)
             if formatted["performance_16k"] is not None:
-                formatted["performance_16k"] = f"{formatted['performance_16k']:.9f}"
+                formatted[
+                    "performance_16k"
+                ] = f"{formatted['performance_16k']:.9f}"
             if formatted["simTicks"] is None:
                 formatted["simTicks"] = ""
             writer.writerow(formatted)
@@ -562,7 +590,10 @@ def svg_plot(path, workload_specs, rows):
                 )
         for item in items:
             xx = x(item["tile"])
-            if item["status"] == "valid" and item["performance_16k"] is not None:
+            if (
+                item["status"] == "valid"
+                and item["performance_16k"] is not None
+            ):
                 yy = y(item["performance_16k"])
                 parts.append(
                     f'<circle class="marker" cx="{xx:.2f}" cy="{yy:.2f}" r="4.2" fill="white" stroke="{color}"/>'
@@ -616,7 +647,9 @@ def svg_plot(path, workload_specs, rows):
     atomic_text(path, "\n".join(parts))
 
 
-def markdown_report(path, workload_specs, rows, counts, complete, issues, provenance):
+def markdown_report(
+    path, workload_specs, rows, counts, complete, issues, provenance
+):
     row_map = {(item["workload_id"], item["tile"]): item for item in rows}
     lines = [
         "# DX100 physical tile-size sweep",
@@ -689,7 +722,9 @@ def main():
     ]
     prior_hashjoin = [path.resolve() for path in prior_hashjoin]
     prior_gapbs = args.prior_gapbs_results.resolve()
-    original_state_path = state_root / "workflows/dx100-full-tile-sweep-20260720.json"
+    original_state_path = (
+        state_root / "workflows/dx100-full-tile-sweep-20260720.json"
+    )
     normal_state_path = state_root / (
         "workflows/dx100-full-tile-sweep-recovery2-normal-20260721.json"
     )
@@ -736,12 +771,21 @@ def main():
     provenance = [
         run_root / "manifest.json",
         run_root / "recovery2-manifest.json",
+        run_root / "recovery2-normal-overlap-manifest.json",
+        run_root / "recovery2-systemd-path-repair-manifest.json",
+        run_root / "recovery2-one-shot-retry-manifest.json",
         original_state_path,
         normal_state_path,
         is_gate_state_path,
         is_state_path,
         prior_gapbs,
         *prior_hashjoin,
+        run_root / "recovery2-vmstat.log",
+        run_root / "recovery2-normal-cgroup.tsv",
+        run_root / "recovery2-is-gate-cgroup.tsv",
+        run_root / "recovery2-normal-retry-cgroup.tsv",
+        run_root / "recovery2-is-gate-retry-cgroup.tsv",
+        run_root / "recovery2-full-cgroup.tsv",
     ]
     markdown_report(
         report,
@@ -762,6 +806,14 @@ def main():
         },
         "point_counts": counts,
         "issues": issues,
+        "provenance": [
+            {
+                "path": str(item),
+                "exists": item.is_file(),
+                "sha256": sha256(item) if item.is_file() else None,
+            }
+            for item in provenance
+        ],
         "rows": rows,
     }
     atomic_json(validation, validation_document)
@@ -771,11 +823,16 @@ def main():
         "complete": complete,
         "issues": issues,
         "artifacts": {
-            item.name: {"path": str(item), "sha256": sha256(item)} for item in artifacts
+            item.name: {"path": str(item), "sha256": sha256(item)}
+            for item in artifacts
         },
     }
     atomic_json(status, status_document)
-    print(json.dumps({"terminal": terminal, "complete": complete, "counts": counts}))
+    print(
+        json.dumps(
+            {"terminal": terminal, "complete": complete, "counts": counts}
+        )
+    )
     if complete or args.allow_incomplete:
         return 0
     return 2
