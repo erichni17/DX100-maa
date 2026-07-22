@@ -194,14 +194,38 @@ void PBFSMAA(const Graph &g, SGOffset *VertexOffsetsData, NodeID source, pvector
             int idx = 0;
             while (idx < len) {
                 int current_len_size = len - idx;
-#if TILE_SIZE == 32768
-                const int tile_size = current_len_size > NUM_CORES * 32768   ? 32768
-                                      : current_len_size > NUM_CORES * 16384 ? 16384
-                                      : current_len_size > NUM_CORES * 8192  ? 8192
-                                      : current_len_size > NUM_CORES * 4096  ? 4096
-                                      : current_len_size > NUM_CORES * 2048  ? 2048
-                                      : current_len_size > NUM_CORES * 1024  ? 1024
-                                                                             : -1;
+#if TILE_SIZE == 65536
+                int tile_size = -1;
+                if (current_len_size > NUM_CORES * 65536) {
+                    tile_size = 65536;
+                } else if (current_len_size > NUM_CORES * 32768) {
+                    tile_size = 32768;
+                } else if (current_len_size > NUM_CORES * 16384) {
+                    tile_size = 16384;
+                } else if (current_len_size > NUM_CORES * 8192) {
+                    tile_size = 8192;
+                } else if (current_len_size > NUM_CORES * 4096) {
+                    tile_size = 4096;
+                } else if (current_len_size > NUM_CORES * 2048) {
+                    tile_size = 2048;
+                } else if (current_len_size > NUM_CORES * 1024) {
+                    tile_size = 1024;
+                }
+#elif TILE_SIZE == 32768
+                int tile_size = -1;
+                if (current_len_size > NUM_CORES * 32768) {
+                    tile_size = 32768;
+                } else if (current_len_size > NUM_CORES * 16384) {
+                    tile_size = 16384;
+                } else if (current_len_size > NUM_CORES * 8192) {
+                    tile_size = 8192;
+                } else if (current_len_size > NUM_CORES * 4096) {
+                    tile_size = 4096;
+                } else if (current_len_size > NUM_CORES * 2048) {
+                    tile_size = 2048;
+                } else if (current_len_size > NUM_CORES * 1024) {
+                    tile_size = 1024;
+                }
 #elif TILE_SIZE == 16384
                 const int tile_size = current_len_size > NUM_CORES * 16384  ? 16384
                                       : current_len_size > NUM_CORES * 8192 ? 8192
@@ -524,14 +548,38 @@ pvector<ScoreT> BrandesMaa(const Graph &g, SourcePicker<Graph> &sp, NodeID num_i
                 int idx = depth_index[d];
                 while (idx < len) {
                     int current_len_size = len - idx;
-#if TILE_SIZE == 32768
-                    const int tile_size = current_len_size > NUM_CORES * 32768   ? 32768
-                                          : current_len_size > NUM_CORES * 16384 ? 16384
-                                          : current_len_size > NUM_CORES * 8192  ? 8192
-                                          : current_len_size > NUM_CORES * 4096  ? 4096
-                                          : current_len_size > NUM_CORES * 2048  ? 2048
-                                          : current_len_size > NUM_CORES * 1024  ? 1024
-                                                                                 : -1;
+#if TILE_SIZE == 65536
+                    int tile_size = -1;
+                    if (current_len_size > NUM_CORES * 65536) {
+                        tile_size = 65536;
+                    } else if (current_len_size > NUM_CORES * 32768) {
+                        tile_size = 32768;
+                    } else if (current_len_size > NUM_CORES * 16384) {
+                        tile_size = 16384;
+                    } else if (current_len_size > NUM_CORES * 8192) {
+                        tile_size = 8192;
+                    } else if (current_len_size > NUM_CORES * 4096) {
+                        tile_size = 4096;
+                    } else if (current_len_size > NUM_CORES * 2048) {
+                        tile_size = 2048;
+                    } else if (current_len_size > NUM_CORES * 1024) {
+                        tile_size = 1024;
+                    }
+#elif TILE_SIZE == 32768
+                    int tile_size = -1;
+                    if (current_len_size > NUM_CORES * 32768) {
+                        tile_size = 32768;
+                    } else if (current_len_size > NUM_CORES * 16384) {
+                        tile_size = 16384;
+                    } else if (current_len_size > NUM_CORES * 8192) {
+                        tile_size = 8192;
+                    } else if (current_len_size > NUM_CORES * 4096) {
+                        tile_size = 4096;
+                    } else if (current_len_size > NUM_CORES * 2048) {
+                        tile_size = 2048;
+                    } else if (current_len_size > NUM_CORES * 1024) {
+                        tile_size = 1024;
+                    }
 #elif TILE_SIZE == 16384
                     const int tile_size = current_len_size > NUM_CORES * 16384  ? 16384
                                           : current_len_size > NUM_CORES * 8192 ? 8192

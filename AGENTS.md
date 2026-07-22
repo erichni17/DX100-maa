@@ -42,6 +42,9 @@
   wrapper-only repairs and far-end pending tasks whose exact completed
   artifacts the main workflow will independently revalidate and fast-reuse;
   never overlap an output directory with a live task.
+  A failed auxiliary task receives at most one retry in the same 24/32 GiB
+  envelope after the first auxiliary unit is terminal; keep the normal unit at
+  96/112 GiB until that retry is also terminal.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on

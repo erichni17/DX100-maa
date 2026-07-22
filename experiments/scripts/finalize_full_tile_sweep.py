@@ -931,6 +931,10 @@ def main():
     rows, issues = build_rows(workload_specs, states)
     legal_rows = [row for row in rows if row["status"] != "unsupported"]
     counts = dict(Counter(row["status"] for row in rows))
+    auxiliary_manifest = run_root / "recovery2-auxiliary-manifest.json"
+    auxiliary_terminal = not auxiliary_manifest.is_file() or workflow_terminal(
+        states["auxiliary"]
+    )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
         for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
@@ -939,12 +943,13 @@ def main():
         workflow_terminal(states["recovery_normal"])
         and workflow_terminal(states["recovery_is_gate"])
         and workflow_terminal(states["recovery_is"])
+        and auxiliary_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
     if not terminal:
         issues.append(
-            "recovery workflows are not terminal or parent-owned UME 64K evidence is incomplete"
+            "recovery workflows (including the declared auxiliary lane) are not terminal or parent-owned UME 64K evidence is incomplete"
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -960,6 +965,7 @@ def main():
         run_root / "recovery2-normal-retry-cgroup.tsv",
         run_root / "recovery2-is-gate-retry-cgroup.tsv",
         run_root / "recovery2-auxiliary-cgroup.tsv",
+        run_root / "recovery2-auxiliary-retry-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
     ]
     telemetry_snapshots = []
@@ -975,12 +981,13 @@ def main():
                 "sha256": sha256(snapshot),
             }
         )
-    auxiliary_manifest = run_root / "recovery2-auxiliary-manifest.json"
-    required_cgroups = (
-        {"recovery2-auxiliary-cgroup.tsv"}
-        if auxiliary_manifest.is_file()
-        else set()
-    )
+    auxiliary_retry_done = run_root / "recovery2-auxiliary-retry-done.json"
+    auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
+    required_cgroups = set()
+    if auxiliary_manifest.is_file():
+        required_cgroups.add("recovery2-auxiliary-cgroup.tsv")
+    if auxiliary_retry_record.get("retry_launched"):
+        required_cgroups.add("recovery2-auxiliary-retry-cgroup.tsv")
     memory_safety = memory_safety_summary(
         telemetry_snapshots, required_cgroups
     )
@@ -999,6 +1006,7 @@ def main():
         run_root / "recovery2-systemd-path-repair-manifest.json",
         run_root / "recovery2-one-shot-retry-manifest.json",
         auxiliary_manifest,
+        auxiliary_retry_done,
         finalizer_path,
         original_state_path,
         normal_state_path,
