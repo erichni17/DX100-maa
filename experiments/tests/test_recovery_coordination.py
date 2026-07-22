@@ -238,6 +238,16 @@ def test_cross_page_prefetch_drops_uncacheable_translation():
     assert uncacheable < create_packet
 
 
+def test_normal_retry_uses_prefetch_fixed_gem5_successor():
+    root = Path(__file__).resolve().parents[2]
+    launcher = (
+        root / "experiments/scripts/launch_normal_tile_retry.sh"
+    ).read_text()
+    assert "recovery2-normal-retry-workflow-v2.json" in launcher
+    assert "build/X86/gem5.opt" in launcher
+    assert "recovery2-prefetch-fix-manifest.json" in launcher
+
+
 def test_ume_runner_serializes_same_output_directory():
     root = Path(__file__).resolve().parents[2]
     runner = (root / "benchmarks/UME/run_ume_tile_smoke.sh").read_text()

@@ -971,6 +971,13 @@ def main():
     legal_rows = [row for row in rows if row["status"] != "unsupported"]
     counts = dict(Counter(row["status"] for row in rows))
     auxiliary_manifest = run_root / "recovery2-auxiliary-manifest.json"
+    normal_retry_manifest_v2 = (
+        run_root / "recovery2-one-shot-retry-manifest-v2.json"
+    )
+    normal_retry_workflow_v2 = (
+        run_root / "recovery2-normal-retry-workflow-v2.json"
+    )
+    prefetch_fix_manifest = run_root / "recovery2-prefetch-fix-manifest.json"
     auxiliary_retry_manifest_v1 = (
         run_root / "recovery2-auxiliary-retry-manifest.json"
     )
@@ -1101,6 +1108,9 @@ def main():
         run_root / "recovery2-normal-overlap-manifest.json",
         run_root / "recovery2-systemd-path-repair-manifest.json",
         run_root / "recovery2-one-shot-retry-manifest.json",
+        normal_retry_manifest_v2,
+        normal_retry_workflow_v2,
+        prefetch_fix_manifest,
         auxiliary_manifest,
         auxiliary_retry_manifest_v1,
         auxiliary_retry_manifest,

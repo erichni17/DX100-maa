@@ -101,7 +101,12 @@
 - A terminal normal workflow with failed/skipped tasks receives at most one
   automatic `dx-runtime workflow resume --retry-failed` pass through
   `dx100-full-tile-normal-retry-recovery2-20260721.service`, using the same
-  128/144 GiB and zero-swap limits. Do not loop retries; inspect any failures
+  128/144 GiB and zero-swap limits. If a small-tile workload crosses from the
+  cacheable scratchpad mapping into adjacent uncacheable MAA space, rebuild
+  gem5 with the queued-prefetch guard and use the frozen successor workflow;
+  hardware prefetches must be dropped after translating to an uncacheable
+  page. Wait for that build and every speculative non-IS lane to release its
+  cgroup before starting the retry. Do not loop retries; inspect any failures
   left after that pass.
 - If the IS gate's immutable runner snapshot fails only in post-processing,
   retry it at most once through
