@@ -329,8 +329,18 @@ void Queued::translationComplete(DeferredPacket *dp, bool failed,
                 it->translationRequest->getVaddr(),
                 it->translationRequest->getPaddr());
         Addr target_paddr = it->translationRequest->getPaddr();
+        // A cross-page candidate can translate from cacheable memory into an
+        // uncacheable MMIO/device mapping.  Issuing that candidate would lose
+        // the translation attributes when createPkt() builds the HardPFReq,
+        // allowing the cache hierarchy to turn it into a normal read.  Drop
+        // it instead: hardware prefetches must never access uncacheable pages.
+        if (it->translationRequest->isUncacheable()) {
+            DPRINTF(HWPrefetch,
+                    "Dropping prefetch translated to uncacheable address "
+                    "%#x\n",
+                    target_paddr);
         // check if this prefetch is already redundant
-        if (cacheSnoop &&
+        } else if (cacheSnoop &&
             (cache.inCache(target_paddr, it->pfInfo.isSecure()) ||
              cache.inMissQueue(target_paddr, it->pfInfo.isSecure()))) {
             statsQueued.pfInCache++;

@@ -229,6 +229,15 @@ def test_xrage_64k_lane_accepts_primary_retry_cgroup():
     assert "--aggregate-memory-max-gib 272" in launcher
 
 
+def test_cross_page_prefetch_drops_uncacheable_translation():
+    root = Path(__file__).resolve().parents[2]
+    queued = (root / "src/mem/cache/prefetch/queued.cc").read_text()
+    translation = queued[queued.index("Queued::translationComplete") :]
+    uncacheable = translation.index("it->translationRequest->isUncacheable()")
+    create_packet = translation.index("it->createPkt(")
+    assert uncacheable < create_packet
+
+
 def test_ume_runner_serializes_same_output_directory():
     root = Path(__file__).resolve().parents[2]
     runner = (root / "benchmarks/UME/run_ume_tile_smoke.sh").read_text()
