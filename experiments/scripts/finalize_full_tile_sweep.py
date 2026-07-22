@@ -92,6 +92,111 @@ def stats_ticks(path):
     return values
 
 
+def summarize_vmstat(path):
+    samples = []
+    with path.open(errors="replace") as source:
+        for line in source:
+            fields = line.split()
+            if len(fields) < 17 or not fields[0].isdigit():
+                continue
+            try:
+                samples.append(
+                    {
+                        "swpd_kib": int(fields[2]),
+                        "free_kib": int(fields[3]),
+                        "swap_in_kib_per_second": int(fields[6]),
+                        "swap_out_kib_per_second": int(fields[7]),
+                    }
+                )
+            except ValueError:
+                continue
+    if not samples:
+        return {"sample_count": 0}
+    return {
+        "sample_count": len(samples),
+        "minimum_free_kib": min(item["free_kib"] for item in samples),
+        "maximum_swap_used_kib": max(item["swpd_kib"] for item in samples),
+        "maximum_swap_in_kib_per_second": max(
+            item["swap_in_kib_per_second"] for item in samples
+        ),
+        "maximum_swap_out_kib_per_second": max(
+            item["swap_out_kib_per_second"] for item in samples
+        ),
+    }
+
+
+def summarize_cgroup(path):
+    rows = read_tsv(path)
+    fields = (
+        "current_bytes",
+        "peak_bytes",
+        "swap_current_bytes",
+        "high_events",
+        "max_events",
+        "oom_events",
+        "oom_kill_events",
+    )
+    summary = {"sample_count": len(rows)}
+    for field in fields:
+        values = []
+        for row in rows:
+            try:
+                values.append(int(row.get(field, "")))
+            except (TypeError, ValueError):
+                pass
+        summary[f"maximum_{field}"] = max(values, default=None)
+    return summary
+
+
+def memory_safety_summary(telemetry_snapshots):
+    summary = {"vmstat": None, "cgroups": {}}
+    for record in telemetry_snapshots:
+        path = Path(record["snapshot"])
+        if path.name == "recovery2-vmstat.log":
+            summary["vmstat"] = summarize_vmstat(path)
+        elif path.name.endswith("-cgroup.tsv"):
+            summary["cgroups"][path.name] = summarize_cgroup(path)
+    required = {
+        "recovery2-normal-cgroup.tsv",
+        "recovery2-is-gate-cgroup.tsv",
+        "recovery2-full-cgroup.tsv",
+    }
+    issues = []
+    vmstat = summary["vmstat"]
+    if not vmstat or not vmstat.get("sample_count"):
+        issues.append("recovery vmstat telemetry is missing or empty")
+    else:
+        for field in (
+            "maximum_swap_used_kib",
+            "maximum_swap_in_kib_per_second",
+            "maximum_swap_out_kib_per_second",
+        ):
+            if vmstat.get(field) != 0:
+                issues.append(f"recovery vmstat {field}={vmstat.get(field)}")
+    missing = sorted(required - summary["cgroups"].keys())
+    if missing:
+        issues.append(
+            "required cgroup telemetry missing: " + ", ".join(missing)
+        )
+    for name, cgroup in summary["cgroups"].items():
+        if not cgroup.get("sample_count"):
+            issues.append(f"{name} is empty")
+            continue
+        for field in (
+            "maximum_swap_current_bytes",
+            "maximum_high_events",
+            "maximum_max_events",
+            "maximum_oom_events",
+            "maximum_oom_kill_events",
+        ):
+            if cgroup.get(field) != 0:
+                issues.append(f"{name} {field}={cgroup.get(field)}")
+    summary["required_cgroup_telemetry"] = sorted(required)
+    summary["safe"] = not issues
+    summary["issues"] = issues
+    return summary
+
+
 def scan_log(path, oracle_kind):
     result = {
         "m5_exit": False,
@@ -664,7 +769,14 @@ def svg_plot(path, workload_specs, rows):
 
 
 def markdown_report(
-    path, workload_specs, rows, counts, complete, issues, provenance
+    path,
+    workload_specs,
+    rows,
+    counts,
+    complete,
+    issues,
+    provenance,
+    memory_safety,
 ):
     row_map = {(item["workload_id"], item["tile"]): item for item in rows}
     lines = [
@@ -710,6 +822,30 @@ def markdown_report(
             "",
             "`fresh-exact` points require a completed workflow task, wrapper rc=0, matching first-ROI `simTicks`, a clean `m5_exit`, and the benchmark-specific exact oracle. `accepted-prior` points are the PageRank and HashJoin curves recorded as complete in the July 20 meeting handoff; their older runners provide rc=0, raw stats, and clean `m5_exit`, but did not emit the newer semantic fingerprints. They are therefore not represented as independently exact-oracle revalidated.",
         ]
+    )
+    lines.extend(["", "## Memory safety", ""])
+    vmstat = memory_safety.get("vmstat") or {}
+    lines.append(
+        "- Recovery vmstat: "
+        f"{vmstat.get('sample_count', 0)} samples, "
+        f"minimum free {vmstat.get('minimum_free_kib', 'missing')} KiB, "
+        f"maximum swap used {vmstat.get('maximum_swap_used_kib', 'missing')} KiB."
+    )
+    for name, summary in sorted(memory_safety.get("cgroups", {}).items()):
+        peak = summary.get("maximum_peak_bytes")
+        peak_gib = peak / 1024**3 if peak is not None else None
+        lines.append(
+            f"- {name}: peak "
+            f"{f'{peak_gib:.2f} GiB' if peak_gib is not None else 'missing'}, "
+            f"swap/high/max/oom/oom-kill maxima "
+            f"{summary.get('maximum_swap_current_bytes')}/"
+            f"{summary.get('maximum_high_events')}/"
+            f"{summary.get('maximum_max_events')}/"
+            f"{summary.get('maximum_oom_events')}/"
+            f"{summary.get('maximum_oom_kill_events')}."
+        )
+    lines.append(
+        f"- Safety gate: {'PASS' if memory_safety.get('safe') else 'INCOMPLETE/FAIL'}"
     )
     lines.extend(["", "## Provenance", ""])
     lines.extend(f"- `{item}`" for item in provenance)
@@ -822,6 +958,10 @@ def main():
                 "sha256": sha256(snapshot),
             }
         )
+    memory_safety = memory_safety_summary(telemetry_snapshots)
+    if terminal and not memory_safety["safe"]:
+        complete = False
+        issues.extend(memory_safety["issues"])
     write_source_tsv(source_tsv, rows)
     svg_plot(figure, workload_specs, rows)
     provenance = [
@@ -846,6 +986,7 @@ def main():
         complete,
         issues,
         [str(item) for item in provenance],
+        memory_safety,
     )
     validation_document = {
         "schema_version": 1,
@@ -862,6 +1003,7 @@ def main():
         "point_counts": counts,
         "issues": issues,
         "telemetry_snapshots": telemetry_snapshots,
+        "memory_safety": memory_safety,
         "provenance": [
             {
                 "path": str(item),
