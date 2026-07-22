@@ -147,7 +147,7 @@ correctness_marker_present() {
   local pattern
   case "$KERNEL" in
     bc) pattern='^BC_VALIDATION_END result=PASS$' ;;
-    bfs) pattern='^BFS_FP .*invalid_chains=0 ' ;;
+    bfs) pattern='^BFS_FP .* depth_reached=4194304 depth_sum=19771483 depth_sq_sum=94148523 max_depth=6 invalid_chains=0 depth_hash=10642142323936141248$' ;;
     pr) pattern='^PR_FP .*nonfinite=0 unquantizable=0$' ;;
     sssp) pattern='^SSSP_FINGERPRINT .*result=PASS$' ;;
   esac
@@ -232,7 +232,7 @@ echo "[restore] done (exit=$RC)"
 if [[ "$RC" == 0 ]]; then
   case "$KERNEL" in
     bc) grep -Eq '^BC_VALIDATION_END result=PASS$' "$OUT/run.log" || RC=90 ;;
-    bfs) grep -Eq '^BFS_FP .*invalid_chains=0 ' "$OUT/run.log" || RC=90 ;;
+    bfs) grep -Eq '^BFS_FP .* depth_reached=4194304 depth_sum=19771483 depth_sq_sum=94148523 max_depth=6 invalid_chains=0 depth_hash=10642142323936141248$' "$OUT/run.log" || RC=90 ;;
     pr) grep -Eq '^PR_FP .*nonfinite=0 unquantizable=0$' "$OUT/run.log" || RC=90 ;;
     sssp) grep -Eq '^SSSP_FINGERPRINT .*result=PASS$' "$OUT/run.log" || RC=90 ;;
   esac

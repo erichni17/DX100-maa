@@ -91,3 +91,21 @@ def test_prior_handoff_and_fresh_exact_oracle_are_distinct(tmp_path):
     valid, _, _, notes = finalizer.validate_row(row, "ume", expected_hash=8)
     assert not valid
     assert "exact UME output fingerprint mismatch (expected 8)" in notes
+
+
+def test_bfs_oracle_uses_exact_output_depth_not_schedule_frontiers(tmp_path):
+    expected = finalizer.BFS_DEPTH_ORACLE
+    oracle_ids = []
+    for index, frontier in enumerate(("reached=4194304", "reached=4194244")):
+        outdir = tmp_path / f"bfs-{index}"
+        outdir.mkdir()
+        (outdir / "stats.txt").write_text("simTicks 123\n")
+        (outdir / "run.log").write_text(
+            f"BFS_FP levels=7 {frontier} frontier_hash={index} {expected}\n"
+            "Exiting @ tick 456 because m5_exit instruction encountered\n"
+        )
+        row = {"rc": "0", "simTicks": "123", "outdir": str(outdir)}
+        valid, _, oracle, notes = finalizer.validate_row(row, "bfs")
+        assert valid, notes
+        oracle_ids.append(oracle)
+    assert oracle_ids == [expected, expected]

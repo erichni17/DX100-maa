@@ -24,6 +24,10 @@ TILE_LABELS = {
     65536: "64K",
 }
 TERMINAL_STATES = {"completed", "failed", "skipped"}
+BFS_DEPTH_ORACLE = (
+    "depth_reached=4194304 depth_sum=19771483 depth_sq_sum=94148523 "
+    "max_depth=6 invalid_chains=0 depth_hash=10642142323936141248"
+)
 COLORS = (
     "#0072B2",
     "#D55E00",
@@ -209,7 +213,7 @@ def scan_log(path, oracle_kind):
     if not path.exists():
         return result
     patterns = {
-        "bfs": re.compile(r"^BFS_FP .*invalid_chains=0 "),
+        "bfs": re.compile(r"^BFS_FP .* " + re.escape(BFS_DEPTH_ORACLE) + r"$"),
         "sssp": re.compile(r"^SSSP_FINGERPRINT .*result=PASS$"),
         "bc": re.compile(r"^BC_VALIDATION_END result=PASS$"),
         "is": re.compile(r"^IS_VERIFY .*result=PASS$"),
@@ -329,6 +333,12 @@ def validate_row(row, oracle_kind, expected_hash=None, prior=False):
                     )
                 if row.get("output_hash") != str(expected_hash):
                     notes.append("results.tsv output_hash mismatch")
+        elif oracle_kind == "bfs":
+            if len(markers) != 1:
+                notes.append(
+                    f"expected exactly one exact BFS depth oracle, found {len(markers)}"
+                )
+            oracle_id = BFS_DEPTH_ORACLE if markers else ""
         else:
             if len(markers) != 1:
                 notes.append(
