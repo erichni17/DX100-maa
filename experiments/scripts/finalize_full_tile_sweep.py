@@ -970,6 +970,7 @@ def main():
     ume_surge_manifest = run_root / "recovery2-ume-surge-manifest.json"
     ume_surge_workflow = run_root / "recovery2-ume-surge-workflow.json"
     t32_surge_manifest = run_root / "recovery2-t32-surge-manifest.json"
+    t32_surge_manifest_v2 = run_root / "recovery2-t32-surge-manifest-v2.json"
     t32_surge_workflow = run_root / "recovery2-t32-surge-workflow.json"
     t8_surge_manifest = run_root / "recovery2-t8-surge-manifest.json"
     t8_surge_workflow = run_root / "recovery2-t8-surge-workflow.json"
@@ -1086,6 +1087,7 @@ def main():
         ume_surge_manifest,
         ume_surge_workflow,
         t32_surge_manifest,
+        t32_surge_manifest_v2,
         t32_surge_workflow,
         t8_surge_manifest,
         t8_surge_workflow,
