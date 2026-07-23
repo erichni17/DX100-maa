@@ -18,6 +18,8 @@ campaign=$(realpath -m "$6")
 config=$root/configs/deprecated/example/se.py
 ramulator=$root/ext/ramulator2/ramulator2/example_gem5_config.yaml
 runner=$(realpath "$0")
+oracle_root=$(cd "$(dirname "$oracle")/../.." && pwd)
+oracle_rel=$(realpath --relative-to="$oracle_root" "$oracle")
 checkpoint_timeout=${CHECKPOINT_TIMEOUT:-21600}
 restore_timeout=${RESTORE_TIMEOUT:-172800}
 replicas=3
@@ -36,11 +38,49 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 3; }
     exit 2
 }
 
+jq -e '
+    .schema_version == 2 and
+    .oracle_id == "gapbs-bfs-s16-virtual-v1" and
+    .policy.native_and_virtual_must_match_exact_certificate == true and
+    .policy.same_final_simulator_required_for_timing == true and
+    (.approved_simulator.source_commit |
+        type == "string" and test("^[0-9a-f]{40}$")) and
+    (.approved_simulator.gem5_sha256 |
+        type == "string" and test("^[0-9a-f]{64}$")) and
+    (.approved_simulator.runner_sha256 |
+        type == "string" and test("^[0-9a-f]{64}$")) and
+    (.approved_simulator.config_sha256 |
+        type == "string" and test("^[0-9a-f]{64}$")) and
+    (.approved_simulator.ramulator_sha256 |
+        type == "string" and test("^[0-9a-f]{64}$")) and
+    (.benchmark.native_binary_sha256 |
+        type == "string" and test("^[0-9a-f]{64}$")) and
+    (.benchmark.virtual_binary_sha256 |
+        type == "string" and test("^[0-9a-f]{64}$")) and
+    (.benchmark.makefile_sha256 |
+        type == "string" and test("^[0-9a-f]{64}$"))
+' "$oracle" >/dev/null || {
+    echo "oracle schema or identity policy is invalid" >&2
+    exit 3
+}
+
 expected_certificate=$(jq -er '.expected_certificate.text' "$oracle")
 expected_certificate_sha=$(jq -er '.expected_certificate.sha256' "$oracle")
 expected_graph_sha=$(jq -er '.workload.graph_sha256' "$oracle")
 expected_source_sha=$(jq -er '.benchmark.source_sha256' "$oracle")
 expected_source_commit=$(jq -er '.benchmark.source_commit' "$oracle")
+expected_makefile_sha=$(jq -er '.benchmark.makefile_sha256' "$oracle")
+expected_native_sha=$(jq -er '.benchmark.native_binary_sha256' "$oracle")
+expected_virtual_sha=$(jq -er '.benchmark.virtual_binary_sha256' "$oracle")
+expected_simulator_commit=$(
+    jq -er '.approved_simulator.source_commit' "$oracle"
+)
+expected_gem5_sha=$(jq -er '.approved_simulator.gem5_sha256' "$oracle")
+expected_runner_sha=$(jq -er '.approved_simulator.runner_sha256' "$oracle")
+expected_config_sha=$(jq -er '.approved_simulator.config_sha256' "$oracle")
+expected_ramulator_sha=$(
+    jq -er '.approved_simulator.ramulator_sha256' "$oracle"
+)
 actual_certificate_sha=$(
     printf '%s\n' "$expected_certificate" | sha256sum | cut -d' ' -f1
 )
@@ -48,6 +88,7 @@ actual_graph_sha=$(sha256sum "$graph" | cut -d' ' -f1)
 actual_source_sha=$(
     sha256sum "$root/benchmarks/gapbs/src/bfs.cc" | cut -d' ' -f1
 )
+current_simulator_commit=$(git -C "$root" rev-parse HEAD)
 [[ $expected_certificate_sha =~ ^[0-9a-f]{64}$ &&
    $expected_graph_sha =~ ^[0-9a-f]{64}$ &&
    $expected_source_sha =~ ^[0-9a-f]{64}$ &&
@@ -67,10 +108,63 @@ actual_source_sha=$(
     echo "BFS source does not match frozen oracle" >&2
     exit 3
 }
+[[ $(sha256sum "$root/benchmarks/gapbs/Makefile" | cut -d' ' -f1) == \
+   "$expected_makefile_sha" ]] || {
+    echo "GAPBS Makefile does not match frozen oracle" >&2
+    exit 3
+}
 git -C "$root" merge-base --is-ancestor "$expected_source_commit" HEAD || {
     echo "frozen BFS source commit is not in the current history" >&2
     exit 3
 }
+[[ $current_simulator_commit == "$expected_simulator_commit" ]] || {
+    echo "simulator commit does not match frozen oracle" >&2
+    exit 3
+}
+[[ $(sha256sum "$gem5" | cut -d' ' -f1) == "$expected_gem5_sha" ]] || {
+    echo "gem5 binary does not match frozen oracle" >&2
+    exit 3
+}
+[[ $(sha256sum "$runner" | cut -d' ' -f1) == "$expected_runner_sha" ]] || {
+    echo "BFS pair runner does not match frozen oracle" >&2
+    exit 3
+}
+[[ $(sha256sum "$config" | cut -d' ' -f1) == "$expected_config_sha" ]] || {
+    echo "gem5 configuration does not match frozen oracle" >&2
+    exit 3
+}
+[[ $(sha256sum "$ramulator" | cut -d' ' -f1) == \
+   "$expected_ramulator_sha" ]] || {
+    echo "Ramulator configuration does not match frozen oracle" >&2
+    exit 3
+}
+[[ $(sha256sum "$native" | cut -d' ' -f1) == "$expected_native_sha" ]] || {
+    echo "native BFS binary does not match frozen oracle" >&2
+    exit 3
+}
+[[ $(sha256sum "$virtual" | cut -d' ' -f1) == "$expected_virtual_sha" ]] || {
+    echo "virtual BFS binary does not match frozen oracle" >&2
+    exit 3
+}
+git -C "$oracle_root" ls-files --error-unmatch "$oracle_rel" >/dev/null 2>&1 ||
+    {
+        echo "oracle manifest is not tracked" >&2
+        exit 3
+    }
+git -C "$oracle_root" diff --quiet HEAD -- "$oracle_rel" || {
+    echo "oracle manifest differs from its committed version" >&2
+    exit 3
+}
+for source in src/mem/MAA/MAA.hh src/mem/MAA/MAA.cc \
+              src/mem/MAA/CpuSidePort.cc src/mem/MAA/IndirectAccess.hh \
+              src/mem/MAA/IndirectAccess.cc benchmarks/gapbs/src/bfs.cc \
+              benchmarks/gapbs/Makefile \
+              experiments/scripts/run_gapbs_bfs_virtual_pair.sh; do
+    git -C "$root" diff --quiet HEAD -- "$source" || {
+        echo "acceptance source differs from simulator HEAD: $source" >&2
+        exit 3
+    }
+done
 
 mkdir -p "$campaign/checkpoints" "$campaign/runs"
 finish_campaign() {
@@ -91,8 +185,8 @@ sha256sum "$gem5" "$native" "$virtual" "$graph" "$oracle" "$config" \
     "$ramulator" "$runner" "$root/benchmarks/gapbs/src/bfs.cc" \
     "$root/benchmarks/gapbs/Makefile" > "$campaign/artifact_sha256.txt"
 {
-    printf 'simulator_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
-    printf 'simulator_sha256=%s\n' "$(sha256sum "$gem5" | cut -d' ' -f1)"
+    printf 'simulator_commit=%s\n' "$current_simulator_commit"
+    printf 'simulator_sha256=%s\n' "$expected_gem5_sha"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'replicas_per_arm=%s\n' "$replicas"
     printf 'oracle_sha256=%s\n' "$(sha256sum "$oracle" | cut -d' ' -f1)"
