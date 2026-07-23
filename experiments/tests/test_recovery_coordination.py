@@ -259,6 +259,48 @@ def test_final_is_recovery_uses_safe_three_way_parallelism():
     assert "--property=MemorySwapMax=0" in launcher
 
 
+def test_retry_state_repoints_to_successor_workflow(tmp_path):
+    state = tmp_path / "state.json"
+    workflow = tmp_path / "successor.json"
+    state.write_text(
+        json.dumps(
+            {
+                "name": "campaign",
+                "file": "/old/workflow.json",
+                "tasks": {
+                    "done": {"state": "completed"},
+                    "dead": {"state": "running"},
+                    "failed": {"state": "failed"},
+                    "new": {"state": "pending"},
+                },
+            }
+        )
+    )
+    workflow.write_text(
+        json.dumps(
+            {
+                "name": "campaign",
+                "tasks": [
+                    {"id": "done"},
+                    {"id": "dead"},
+                    {"id": "failed"},
+                    {"id": "new"},
+                ],
+            }
+        )
+    )
+    result = normal_recovery.prepare_retry_state(state, workflow.resolve())
+    document = json.loads(state.read_text())
+    assert document["file"] == str(workflow.resolve())
+    assert document["retry_workflow_repointed_from"] == "/old/workflow.json"
+    assert result["states"] == {
+        "completed": 1,
+        "running": 1,
+        "failed": 1,
+        "pending": 1,
+    }
+
+
 def test_ume_runner_serializes_same_output_directory():
     root = Path(__file__).resolve().parents[2]
     runner = (root / "benchmarks/UME/run_ume_tile_smoke.sh").read_text()

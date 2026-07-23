@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections import Counter
 from datetime import (
     datetime,
     timezone,
@@ -116,6 +117,39 @@ def verify_aggregate_memory_max(own_max, allowed_cgroups, maximum_gib):
     return {"members": members, "total": total, "limit": maximum}
 
 
+def prepare_retry_state(state_path, workflow_path):
+    state = json.loads(state_path.read_text())
+    workflow = json.loads(workflow_path.read_text())
+    workflow_tasks = workflow.get("tasks", [])
+    workflow_ids = [task.get("id") for task in workflow_tasks]
+    state_tasks = state.get("tasks", {})
+    if workflow.get("name") != state.get("name"):
+        raise SystemExit("retry workflow name does not match workflow state")
+    if (
+        not workflow_ids
+        or any(not task_id for task_id in workflow_ids)
+        or len(workflow_ids) != len(set(workflow_ids))
+        or set(workflow_ids) != set(state_tasks)
+    ):
+        raise SystemExit("retry workflow tasks do not match workflow state")
+    states = [task.get("state") for task in state_tasks.values()]
+    allowed = {"completed", "failed", "skipped", "pending", "running"}
+    if not states or any(item not in allowed for item in states):
+        raise SystemExit("retry workflow state contains an invalid task state")
+    if all(item == "completed" for item in states):
+        raise SystemExit("retry workflow state is already complete")
+    previous = state.get("file")
+    state["file"] = str(workflow_path)
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state["retry_workflow_repointed_from"] = previous
+    atomic_json(state_path, state)
+    return {
+        "previous": previous,
+        "current": str(workflow_path),
+        "states": dict(Counter(states)),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-root", type=Path, required=True)
@@ -198,14 +232,8 @@ def main():
         task_states = [
             task.get("state") for task in document.get("tasks", {}).values()
         ]
-        if not task_states or not all(
-            item in {"completed", "failed", "skipped"} for item in task_states
-        ):
-            raise SystemExit(f"retry state is not terminal: {state}")
-        if "failed" not in task_states and "skipped" not in task_states:
-            raise SystemExit(
-                f"retry state has no failed/skipped tasks: {state}"
-            )
+        if not task_states or all(item == "completed" for item in task_states):
+            raise SystemExit(f"retry state has no incomplete tasks: {state}")
     elif state.exists():
         raise SystemExit(f"refusing duplicate workflow state: {state}")
     primary_task_states = None
@@ -232,6 +260,9 @@ def main():
             "refusing launch with unexpected live owned processes: "
             + json.dumps(conflicts, sort_keys=True)
         )
+    retry_repoint = None
+    if args.retry_failed:
+        retry_repoint = prepare_retry_state(state, workflow)
     limits = verify_cgroup(
         args.expected_memory_high_gib,
         args.expected_memory_max_gib,
@@ -263,13 +294,15 @@ def main():
             if primary_workflow_state is not None
             else None,
             "primary_task_states": primary_task_states,
+            "retry_workflow_repoint": retry_repoint,
             "phase": "admission",
         },
     )
     append_log(
         log,
         f"normal manager started cgroup={limits} "
-        f"allowed_live_cgroups={allowed_record} aggregate={aggregate}",
+        f"allowed_live_cgroups={allowed_record} aggregate={aggregate} "
+        f"retry_workflow_repoint={retry_repoint}",
     )
     wait_for_admission(
         log,
@@ -311,6 +344,7 @@ def main():
             if primary_workflow_state is not None
             else None,
             "primary_task_states": primary_task_states,
+            "retry_workflow_repoint": retry_repoint,
             "phase": "terminal",
             "workflow_rc": rc,
         },
