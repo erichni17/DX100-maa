@@ -246,6 +246,23 @@ def test_normal_retry_uses_prefetch_fixed_gem5_successor():
     assert "recovery2-normal-retry-workflow-v2.json" in launcher
     assert "build/X86/gem5.opt" in launcher
     assert "recovery2-prefetch-fix-manifest.json" in launcher
+    assert "dx100-full-tile-auxiliary-recovery2-20260721.service" in launcher
+    assert "dx100-full-tile-t8-surge-recovery2-20260722.service" in launcher
+    assert "--aggregate-memory-max-gib 272" in launcher
+
+
+def test_successor_launchers_accept_normal_retry_cgroup():
+    root = Path(__file__).resolve().parents[2]
+    for relative in (
+        "experiments/scripts/launch_auxiliary_tile_retry.sh",
+        "experiments/scripts/launch_t32_surge_tile_lane.sh",
+        "experiments/scripts/launch_xrage64_tile_lane.sh",
+    ):
+        launcher = (root / relative).read_text()
+        assert (
+            "dx100-full-tile-normal-retry-recovery2-20260721.service"
+            in launcher
+        )
 
 
 def test_final_is_recovery_uses_safe_three_way_parallelism():

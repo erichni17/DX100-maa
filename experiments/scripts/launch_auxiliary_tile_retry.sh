@@ -7,19 +7,31 @@ STATE_ROOT=/data1/nier/.dx-runtime-state
 PRIMARY_STATE="$STATE_ROOT/workflows/dx100-full-tile-sweep-recovery2-normal-20260721.json"
 UNIT=dx100-full-tile-auxiliary-retry-recovery2-20260721
 ORIGINAL_UNIT=dx100-full-tile-auxiliary-recovery2-20260721.service
-NORMAL_UNIT=dx100-full-tile-normal-recovery2-20260721.service
-GATE_UNIT=dx100-is-exit-gate-recovery2-20260721.service
 
 if systemctl --user is-active --quiet "$ORIGINAL_UNIT"; then
   echo "original auxiliary unit is still active" >&2
   exit 1
 fi
 
-NORMAL_CGROUP_REL=$(systemctl --user show "$NORMAL_UNIT" --property=ControlGroup --value)
-GATE_CGROUP_REL=$(systemctl --user show "$GATE_UNIT" --property=ControlGroup --value)
-[[ -n "$NORMAL_CGROUP_REL" && -n "$GATE_CGROUP_REL" ]]
-NORMAL_CGROUP=/sys/fs/cgroup${NORMAL_CGROUP_REL}
-GATE_CGROUP=/sys/fs/cgroup${GATE_CGROUP_REL}
+allowed=()
+for unit in \
+    dx100-full-tile-normal-recovery2-20260721.service \
+    dx100-full-tile-normal-retry-recovery2-20260721.service \
+    dx100-is-exit-gate-recovery2-20260721.service \
+    dx100-full-tile-surge-recovery2-20260722.service \
+    dx100-full-tile-t32-surge-recovery2-20260722.service \
+    dx100-full-tile-t8-surge-recovery2-20260722.service \
+    dx100-full-tile-xrage64-recovery2-20260722.service; do
+  relative=$(systemctl --user show "$unit" --property=ControlGroup --value 2>/dev/null || true)
+  cgroup=/sys/fs/cgroup${relative}
+  if [[ -n "$relative" && -d "$cgroup" ]]; then
+    allowed+=(--allowed-live-cgroup "$cgroup")
+  fi
+done
+if ((${#allowed[@]} == 0)); then
+  printf 'refusing auxiliary retry without any owned live cgroup\n' >&2
+  exit 1
+fi
 
 exec systemd-run --user --no-block --collect \
   --unit="$UNIT" \
@@ -35,8 +47,7 @@ exec systemd-run --user --no-block --collect \
   --state-root "$STATE_ROOT" \
   --workflow "$RUN_ROOT/recovery2-auxiliary-workflow.json" \
   --run-root "$RUN_ROOT" \
-  --allowed-live-cgroup "$NORMAL_CGROUP" \
-  --allowed-live-cgroup "$GATE_CGROUP" \
+  "${allowed[@]}" \
   --aggregate-memory-max-gib 240 \
   --primary-workflow-state "$PRIMARY_STATE" \
   --retry-failed \

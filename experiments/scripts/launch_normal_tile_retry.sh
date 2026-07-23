@@ -8,11 +8,30 @@ UNIT=dx100-full-tile-normal-retry-recovery2-20260721
 WORKFLOW=$RUN_ROOT/recovery2-normal-retry-workflow-v2.json
 PATCHED_GEM5=$SOURCE_ROOT/build/X86/gem5.opt
 PATCH_MANIFEST=$RUN_ROOT/recovery2-prefetch-fix-manifest.json
-GATE_UNIT=dx100-is-exit-gate-recovery2-20260721.service
-GATE_CGROUP_REL=$(systemctl --user show "$GATE_UNIT" --property=ControlGroup --value 2>/dev/null || true)
-GATE_CGROUP=/sys/fs/cgroup${GATE_CGROUP_REL:-/gate-not-active}
 
 [[ -x "$PATCHED_GEM5" && -s "$WORKFLOW" && -s "$PATCH_MANIFEST" ]]
+
+allowed=()
+for unit in \
+    dx100-is-exit-gate-recovery2-20260721.service \
+    dx100-full-tile-auxiliary-recovery2-20260721.service \
+    dx100-full-tile-auxiliary-retry-recovery2-20260721.service \
+    dx100-full-tile-surge-recovery2-20260722.service \
+    dx100-full-tile-ume-surge-recovery2-20260722.service \
+    dx100-full-tile-t32-surge-recovery2-20260722.service \
+    dx100-full-tile-t8-surge-recovery2-20260722.service \
+    dx100-full-tile-xrage64-recovery2-20260722.service; do
+  relative=$(systemctl --user show "$unit" --property=ControlGroup --value 2>/dev/null || true)
+  cgroup=/sys/fs/cgroup${relative}
+  if [[ -n "$relative" && -d "$cgroup" ]]; then
+    allowed+=(--allowed-live-cgroup "$cgroup")
+  fi
+done
+if ((${#allowed[@]} == 0)); then
+  allowed+=(--allowed-live-cgroup /sys/fs/cgroup/no-other-dx100-lane-active)
+else
+  allowed+=(--aggregate-memory-max-gib 272)
+fi
 
 exec systemd-run --user --no-block --collect \
   --unit="$UNIT" \
@@ -28,5 +47,5 @@ exec systemd-run --user --no-block --collect \
   --state-root "$STATE_ROOT" \
   --workflow "$WORKFLOW" \
   --run-root "$RUN_ROOT" \
-  --allowed-live-cgroup "$GATE_CGROUP" \
+  "${allowed[@]}" \
   --retry-failed

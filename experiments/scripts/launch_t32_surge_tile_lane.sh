@@ -6,14 +6,11 @@ RUN_ROOT=/data1/nier/dx100-runs/2026-07-20-full-tile-sweep
 STATE_ROOT=/data1/nier/.dx-runtime-state
 PRIMARY_STATE="$STATE_ROOT/workflows/dx100-full-tile-sweep-recovery2-normal-20260721.json"
 UNIT=dx100-full-tile-t32-surge-recovery2-20260722
-NORMAL_UNIT=dx100-full-tile-normal-recovery2-20260721.service
 
-normal_cgroup_rel=$(systemctl --user show "$NORMAL_UNIT" --property=ControlGroup --value)
-normal_cgroup=/sys/fs/cgroup${normal_cgroup_rel}
-[[ -n "$normal_cgroup_rel" && -d "$normal_cgroup" ]]
-
-allowed=(--allowed-live-cgroup "$normal_cgroup")
+allowed=()
 for unit in \
+    dx100-full-tile-normal-recovery2-20260721.service \
+    dx100-full-tile-normal-retry-recovery2-20260721.service \
     dx100-is-exit-gate-recovery2-20260721.service \
     dx100-full-tile-surge-recovery2-20260722.service \
     dx100-full-tile-ume-surge-recovery2-20260722.service \
@@ -25,6 +22,10 @@ for unit in \
     allowed+=(--allowed-live-cgroup "$cgroup")
   fi
 done
+if ((${#allowed[@]} == 0)); then
+  printf 'refusing 32K launch without any owned live cgroup\n' >&2
+  exit 1
+fi
 
 exec systemd-run --user --no-block --collect \
   --unit="$UNIT" \
