@@ -98,6 +98,12 @@
   `rg` being available. Retry paths must reuse an existing run only after
   independently rechecking its exact oracle, stats, clean exit, and absence of
   panic/fatal markers.
+- New overlapping workflows that contain any equal tile task IDs must use one
+  explicit `dx-runtime --ownership-scope` across every participating workflow.
+  A task whose lease is held elsewhere stays pending instead of consuming a
+  parallel slot; after release its wrapper must still take the output lock and
+  independently revalidate/fast-reuse the artifact. Do not retrofit a scope
+  onto only part of an already-live legacy campaign.
 - A terminal normal workflow with failed/skipped tasks receives at most one
   automatic `dx-runtime workflow resume --retry-failed` pass through
   `dx100-full-tile-normal-retry-recovery2-20260721.service`, using the same

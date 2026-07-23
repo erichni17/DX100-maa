@@ -204,7 +204,14 @@ def wait_for_admission(log, available_gib, quiet_seconds, interval):
         time.sleep(interval)
 
 
-def run_workflow(runtime, state_root, workflow, parallelism, log):
+def run_workflow(
+    runtime,
+    state_root,
+    workflow,
+    parallelism,
+    log,
+    ownership_scope=None,
+):
     command = [
         runtime,
         "--state-root",
@@ -213,10 +220,14 @@ def run_workflow(runtime, state_root, workflow, parallelism, log):
         "run",
         "--max-parallel",
         str(parallelism),
-        str(workflow),
     ]
+    if ownership_scope is not None:
+        command.extend(["--ownership-scope", ownership_scope])
+    command.append(str(workflow))
     append_log(
-        log, f"workflow launch path={workflow} max_parallel={parallelism}"
+        log,
+        f"workflow launch path={workflow} max_parallel={parallelism} "
+        f"ownership_scope={ownership_scope}",
     )
     with log.open("a") as output:
         completed = subprocess.run(

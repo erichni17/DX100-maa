@@ -26,6 +26,10 @@ from run_full_tile_recovery import (
     workflow_state_path,
 )
 
+SAFE_ID_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+
 
 def process_cgroup_directory(pid):
     try:
@@ -67,7 +71,9 @@ def path_is_within(path, parent):
     return True
 
 
-def verify_primary_task_states(workflow, primary_state):
+def verify_primary_task_states(
+    workflow, primary_state, ownership_scope=None
+):
     workflow_document = json.loads(workflow.read_text())
     task_ids = [task.get("id") for task in workflow_document.get("tasks", [])]
     if not task_ids or None in task_ids or len(set(task_ids)) != len(task_ids):
@@ -75,6 +81,13 @@ def verify_primary_task_states(workflow, primary_state):
             "auxiliary workflow task ids are missing or duplicated"
         )
     state_document = json.loads(primary_state.read_text())
+    if ownership_scope is not None:
+        primary_scope = state_document.get("ownership_scope")
+        if primary_scope != ownership_scope:
+            raise SystemExit(
+                "primary workflow does not share task ownership scope: "
+                f"expected={ownership_scope!r} actual={primary_scope!r}"
+            )
     primary_tasks = state_document.get("tasks", {})
     if not isinstance(primary_tasks, dict):
         raise SystemExit(
@@ -88,16 +101,28 @@ def verify_primary_task_states(workflow, primary_state):
                 f"auxiliary task is absent from primary state: {task_id}"
             )
         selected_states[task_id] = task["state"]
-    unsafe = {
+    allowed_states = {"pending", "failed", "completed", "skipped", "running"}
+    invalid = {
         task_id: state
         for task_id, state in selected_states.items()
-        if state not in {"pending", "failed", "completed", "skipped"}
+        if state not in allowed_states
     }
-    if unsafe:
+    if invalid:
         raise SystemExit(
-            "auxiliary tasks are live in primary workflow: "
-            + json.dumps(unsafe, sort_keys=True)
+            "auxiliary tasks have invalid primary workflow states: "
+            + json.dumps(invalid, sort_keys=True)
         )
+    if ownership_scope is None:
+        unsafe = {
+            task_id: state
+            for task_id, state in selected_states.items()
+            if state == "running"
+        }
+        if unsafe:
+            raise SystemExit(
+                "auxiliary tasks are live in primary workflow: "
+                + json.dumps(unsafe, sort_keys=True)
+            )
     return selected_states
 
 
@@ -150,6 +175,50 @@ def prepare_retry_state(state_path, workflow_path):
     }
 
 
+def verify_runtime_ownership_support(runtime):
+    completed = subprocess.run(
+        [runtime, "workflow", "run", "--help"],
+        text=True,
+        capture_output=True,
+    )
+    if (
+        completed.returncode != 0
+        or "--ownership-scope" not in completed.stdout
+    ):
+        raise SystemExit(
+            "dx-runtime does not support nonblocking task ownership; "
+            "install the reviewed runtime update before using "
+            "--ownership-scope"
+        )
+
+
+def validate_ownership_scope(value):
+    if value is None:
+        return None
+    if (
+        not value
+        or len(value) > 96
+        or value[0] in ".-"
+        or any(character not in SAFE_ID_CHARS for character in value)
+    ):
+        raise SystemExit(f"invalid task ownership scope: {value!r}")
+    return value
+
+
+def select_ownership_scope(*candidates):
+    scopes = {
+        validate_ownership_scope(value)
+        for value in candidates
+        if value is not None
+    }
+    if len(scopes) > 1:
+        raise SystemExit(
+            "task ownership scopes disagree: "
+            + json.dumps(sorted(scopes))
+        )
+    return next(iter(scopes), None)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-root", type=Path, required=True)
@@ -163,6 +232,7 @@ def main():
     )
     parser.add_argument("--aggregate-memory-max-gib", type=int)
     parser.add_argument("--primary-workflow-state", type=Path)
+    parser.add_argument("--ownership-scope")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--artifact-stem")
     parser.add_argument(
@@ -225,21 +295,39 @@ def main():
         )
     name = workflow_name(workflow)
     state = workflow_state_path(state_root, name)
+    retry_state_document = None
     if args.retry_failed:
         if not state.exists():
             raise SystemExit(f"retry state is absent: {state}")
-        document = json.loads(state.read_text())
+        retry_state_document = json.loads(state.read_text())
         task_states = [
-            task.get("state") for task in document.get("tasks", {}).values()
+            task.get("state")
+            for task in retry_state_document.get("tasks", {}).values()
         ]
         if not task_states or all(item == "completed" for item in task_states):
             raise SystemExit(f"retry state has no incomplete tasks: {state}")
     elif state.exists():
         raise SystemExit(f"refusing duplicate workflow state: {state}")
+    primary_state_document = (
+        json.loads(primary_workflow_state.read_text())
+        if primary_workflow_state is not None
+        else {}
+    )
+    ownership_scope = select_ownership_scope(
+        args.ownership_scope,
+        retry_state_document.get("ownership_scope")
+        if retry_state_document is not None
+        else None,
+        primary_state_document.get("ownership_scope"),
+    )
+    if ownership_scope is not None:
+        verify_runtime_ownership_support(runtime)
     primary_task_states = None
     if primary_workflow_state is not None:
         primary_task_states = verify_primary_task_states(
-            workflow, primary_workflow_state
+            workflow,
+            primary_workflow_state,
+            ownership_scope,
         )
     missing_allowed = [
         path for path in allowed_live_cgroups if not path.is_dir()
@@ -294,6 +382,7 @@ def main():
             if primary_workflow_state is not None
             else None,
             "primary_task_states": primary_task_states,
+            "ownership_scope": ownership_scope,
             "retry_workflow_repoint": retry_repoint,
             "phase": "admission",
         },
@@ -302,7 +391,8 @@ def main():
         log,
         f"normal manager started cgroup={limits} "
         f"allowed_live_cgroups={allowed_record} aggregate={aggregate} "
-        f"retry_workflow_repoint={retry_repoint}",
+        f"retry_workflow_repoint={retry_repoint} "
+        f"ownership_scope={ownership_scope}",
     )
     wait_for_admission(
         log,
@@ -322,6 +412,10 @@ def main():
             "--max-parallel",
             str(args.parallel),
         ]
+        if ownership_scope is not None:
+            command.extend(
+                ["--ownership-scope", ownership_scope]
+            )
         append_log(
             log, f"workflow retry name={name} max_parallel={args.parallel}"
         )
@@ -331,7 +425,14 @@ def main():
             ).returncode
         append_log(log, f"workflow retry return name={name} rc={rc}")
     else:
-        rc = run_workflow(runtime, state_root, workflow, args.parallel, log)
+        rc = run_workflow(
+            runtime,
+            state_root,
+            workflow,
+            args.parallel,
+            log,
+            ownership_scope,
+        )
     atomic_json(
         status,
         {
@@ -344,6 +445,7 @@ def main():
             if primary_workflow_state is not None
             else None,
             "primary_task_states": primary_task_states,
+            "ownership_scope": ownership_scope,
             "retry_workflow_repoint": retry_repoint,
             "phase": "terminal",
             "workflow_rc": rc,
