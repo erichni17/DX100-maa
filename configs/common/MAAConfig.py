@@ -20,7 +20,7 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_num_instructions_per_core"):
         opts["num_instructions_per_core"] = getattr(options, "maa_num_instructions_per_core")
-    
+
     if hasattr(options, "maa_num_row_table_rows_per_slice"):
         opts["num_row_table_rows_per_slice"] = getattr(options, "maa_num_row_table_rows_per_slice")
 
@@ -29,7 +29,7 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_num_row_table_config_cache_entries"):
         opts["num_row_table_config_cache_entries"] = getattr(options, "maa_num_row_table_config_cache_entries")
-    
+
     if(hasattr(options, "maa_reconfigure_row_table")):
         opts["reconfigure_row_table"] = getattr(options, "maa_reconfigure_row_table")
 
@@ -73,10 +73,10 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_virtual_masked_writes"):
         opts["virtual_masked_writes"] = getattr(options, "maa_virtual_masked_writes")
-    
+
     if(hasattr(options, "maa_num_request_table_addresses")):
         opts["num_request_table_addresses"] = getattr(options, "maa_num_request_table_addresses")
-    
+
     if hasattr(options, "maa_num_request_table_entries_per_address"):
         opts["num_request_table_entries_per_address"] = getattr(options, "maa_num_request_table_entries_per_address")
 
@@ -91,25 +91,25 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_num_spd_write_ports_per_maa"):
         opts["num_spd_write_ports_per_maa"] = getattr(options, "maa_num_spd_write_ports_per_maa")
-    
+
     if hasattr(options, "maa_rowtable_latency"):
         opts["rowtable_latency"] = getattr(options, "maa_rowtable_latency")
-    
+
     if hasattr(options, "maa_ALU_lane_latency"):
         opts["ALU_lane_latency"] = getattr(options, "maa_ALU_lane_latency")
 
     if hasattr(options, "maa_num_ALU_lanes"):
         opts["num_ALU_lanes"] = getattr(options, "maa_num_ALU_lanes")
-    
+
     if hasattr(options, "maa_num_maas"):
         opts["num_maas"] = getattr(options, "maa_num_maas")
 
     if hasattr(options, "maa_num_indirect_units_per_maa"):
         opts["num_indirect_units_per_maa"] = getattr(options, "maa_num_indirect_units_per_maa")
-    
+
     opts["num_memory_channels"] = options.mem_channels
     opts["num_cores"] = options.num_cpus
-    
+
     addr_ranges = []
     start = options.mem_size
 
@@ -193,10 +193,29 @@ def config_maa(options, system):
         retirement_cache_response_latency = getattr(
             options, "maa_retirement_cache_response_latency", 1
         )
-        if retirement_cache_response_latency <= 0:
-            raise ValueError(
-                "maa_retirement_cache_response_latency must be positive"
-            )
+        retirement_cache_mshrs = getattr(
+            options, "maa_retirement_cache_mshrs", 16
+        )
+        retirement_cache_targets_per_mshr = getattr(
+            options, "maa_retirement_cache_targets_per_mshr", 16
+        )
+        retirement_cache_write_buffers = getattr(
+            options, "maa_retirement_cache_write_buffers", 16
+        )
+        retirement_cache_positive_options = {
+            "maa_retirement_cache_response_latency":
+                retirement_cache_response_latency,
+            "maa_retirement_cache_mshrs": retirement_cache_mshrs,
+            "maa_retirement_cache_targets_per_mshr":
+                retirement_cache_targets_per_mshr,
+            "maa_retirement_cache_write_buffers":
+                retirement_cache_write_buffers,
+        }
+        for option_name, option_value in (
+            retirement_cache_positive_options.items()
+        ):
+            if option_value <= 0:
+                raise ValueError(f"{option_name} must be positive")
         system.maa_retirement_caches = [
             Cache(
                 size=retirement_cache_size,
@@ -204,9 +223,9 @@ def config_maa(options, system):
                 tag_latency=1,
                 data_latency=1,
                 response_latency=retirement_cache_response_latency,
-                mshrs=16,
-                tgts_per_mshr=16,
-                write_buffers=16,
+                mshrs=retirement_cache_mshrs,
+                tgts_per_mshr=retirement_cache_targets_per_mshr,
+                write_buffers=retirement_cache_write_buffers,
                 sequential_access=False,
                 clk_domain=system.cpu_clk_domain,
             )
@@ -219,9 +238,12 @@ def config_maa(options, system):
             "MAA virtual-retirement caches: "
             f"{options.num_cpus} address banks x {retirement_cache_size} "
             f"= {retirement_cache_total} data bytes, "
-            f"response latency {retirement_cache_response_latency} cycles"
+            f"response latency {retirement_cache_response_latency} cycles, "
+            f"{retirement_cache_mshrs} MSHRs, "
+            f"{retirement_cache_targets_per_mshr} targets/MSHR, "
+            f"{retirement_cache_write_buffers} write buffers per bank"
         )
-    
+
     # Increasing LLC side packets to accommodate the MAA routing table.
     # Accommodate one stream unit plus the configured indirect units per MAA.
     num_maas = opts.get("num_maas", 1)
@@ -256,7 +278,7 @@ def config_maa(options, system):
     system.membus.snoop_filter.max_capacity = max_capacity
     system.tol3bus.snoop_filter.max_capacity = max_capacity
     print(f"MAA max snoop filter capacity: {system.tol3bus.snoop_filter.max_capacity}/{system.membus.snoop_filter.max_capacity}")
-    
+
     for _ in range(options.num_cpus):
         system.maa.cpu_sides = system.membus.mem_side_ports
 

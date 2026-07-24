@@ -238,6 +238,9 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_retirement_cache_size", default="1kB", help="Per-address-bank coherent virtual-retirement cache size")
     parser.add_argument("--maa_retirement_cache_assoc", type=int, default=4, help="Per-address-bank coherent virtual-retirement cache associativity")
     parser.add_argument("--maa_retirement_cache_response_latency", type=int, default=1, help="Coherent virtual-retirement cache response latency in cycles")
+    parser.add_argument("--maa_retirement_cache_mshrs", type=int, default=16, help="MSHRs per coherent virtual-retirement cache bank")
+    parser.add_argument("--maa_retirement_cache_targets_per_mshr", type=int, default=16, help="Targets per MSHR in each coherent virtual-retirement cache bank")
+    parser.add_argument("--maa_retirement_cache_write_buffers", type=int, default=16, help="Write buffers per coherent virtual-retirement cache bank")
     parser.add_argument("--maa_num_request_table_addresses", type=int, default=128, help="Number of addresses in the request table")
     parser.add_argument("--maa_num_request_table_entries_per_address", type=int, default=16, help="Number of entries in the request table per address")
     parser.add_argument("--maa_spd_read_latency", type=int, default=1, help="SPD read latency")
@@ -470,7 +473,7 @@ def addCommonOptions(parser, default_isa: Optional[ISA] = None):
         help="Size of indirect prefetch range, limited by Cache blkSize",
     )
     parser.add_argument(
-        "--dmp-notify", 
+        "--dmp-notify",
         default=None,
         action="store",
         type=str,
