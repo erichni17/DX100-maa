@@ -346,6 +346,10 @@ def test_sssp_tiles_use_live_surge_workflows(tmp_path):
         8192: "t8_surge",
         65536: "auxiliary",
     }
+    assert sssp_spec["workflow_overlays"] == [
+        "recovery_gapbs_repair5",
+        "recovery_gapbs_repair6",
+    ]
 
 
 def test_scan_log_cache_is_stat_bound_and_invalidated(tmp_path):

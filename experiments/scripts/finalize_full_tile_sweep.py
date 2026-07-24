@@ -1230,7 +1230,10 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "oracle": "bfs",
             "task": "gapbs-bfs-t{tile}",
             "workflow": "recovery_normal",
-            "workflow_overlays": ["recovery_gapbs_repair5"],
+            "workflow_overlays": [
+                "recovery_gapbs_repair5",
+                "recovery_gapbs_repair6",
+            ],
             "compare_oracle": True,
         },
         {
@@ -1250,7 +1253,10 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 8192: "t8_surge",
                 65536: "auxiliary",
             },
-            "workflow_overlays": ["recovery_gapbs_repair5"],
+            "workflow_overlays": [
+                "recovery_gapbs_repair5",
+                "recovery_gapbs_repair6",
+            ],
             "compare_oracle": True,
         },
         {
@@ -1266,7 +1272,10 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "oracle": "bc",
             "task": "gapbs-bc-t{tile}",
             "workflow": "recovery_normal",
-            "workflow_overlays": ["recovery_gapbs_repair5"],
+            "workflow_overlays": [
+                "recovery_gapbs_repair5",
+                "recovery_gapbs_repair6",
+            ],
         },
         {
             "id": "nas-is-full",
