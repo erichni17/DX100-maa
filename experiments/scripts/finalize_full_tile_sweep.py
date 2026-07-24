@@ -1300,6 +1300,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 32768: "recovery_is_node1_high",
                 65536: "recovery_is_node1_high",
             },
+            "workflow_overlays": ["recovery_is_node1_surge6"],
         },
         {
             "id": "nas-cg",

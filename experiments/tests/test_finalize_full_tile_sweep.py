@@ -331,6 +331,7 @@ def test_is_tiles_use_numa_safe_recovery4_workflows(tmp_path):
         32768: "recovery_is_node1_high",
         65536: "recovery_is_node1_high",
     }
+    assert is_spec["workflow_overlays"] == ["recovery_is_node1_surge6"]
 
 
 def test_sssp_tiles_use_live_surge_workflows(tmp_path):
