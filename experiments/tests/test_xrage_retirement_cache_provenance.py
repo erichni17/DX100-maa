@@ -1014,8 +1014,12 @@ class TreatmentConfigTests(TemporaryDirectoryTest):
         )
 
         self.assertEqual(
-            VERIFIER.normalized_treatment_config(reference),
-            VERIFIER.normalized_treatment_config(compact),
+            VERIFIER.normalized_treatment_config(
+                reference, VERIFIER.runtime_config_identity(reference)
+            ),
+            VERIFIER.normalized_treatment_config(
+                compact, VERIFIER.runtime_config_identity(compact)
+            ),
         )
 
     def test_unexplained_snoop_capacity_change_is_rejected(self):
@@ -1025,8 +1029,12 @@ class TreatmentConfigTests(TemporaryDirectoryTest):
         self.write_config(compact, 256, 20_000 - 4 * (1024 - 256) + 1)
 
         self.assertNotEqual(
-            VERIFIER.normalized_treatment_config(reference),
-            VERIFIER.normalized_treatment_config(compact),
+            VERIFIER.normalized_treatment_config(
+                reference, VERIFIER.runtime_config_identity(reference)
+            ),
+            VERIFIER.normalized_treatment_config(
+                compact, VERIFIER.runtime_config_identity(compact)
+            ),
         )
 
     def test_unrelated_config_change_remains_visible(self):
@@ -1041,8 +1049,12 @@ class TreatmentConfigTests(TemporaryDirectoryTest):
         )
 
         self.assertNotEqual(
-            VERIFIER.normalized_treatment_config(reference),
-            VERIFIER.normalized_treatment_config(compact),
+            VERIFIER.normalized_treatment_config(
+                reference, VERIFIER.runtime_config_identity(reference)
+            ),
+            VERIFIER.normalized_treatment_config(
+                compact, VERIFIER.runtime_config_identity(compact)
+            ),
         )
 
     def test_unexpected_workload_arguments_are_rejected(self):
@@ -1055,7 +1067,40 @@ class TreatmentConfigTests(TemporaryDirectoryTest):
         config.write_text(content, encoding="utf-8")
 
         with self.assertRaisesRegex(SystemExit, "unexpected workload command"):
-            VERIFIER.normalized_treatment_config(config)
+            VERIFIER.runtime_config_identity(config)
+
+    def test_changed_runtime_artifact_identities_are_rejected(self):
+        replacements = {
+            "executable": (
+                "/reference/verify",
+                "/unapproved/verify",
+            ),
+            "input": (
+                "/reference/input.json",
+                "/unapproved/input.json",
+            ),
+            "cwd": (
+                "cwd=/reference/simulator",
+                "cwd=/unapproved/simulator",
+            ),
+            "ramulator": (
+                "/reference/ramulator.yaml",
+                "/unapproved/ramulator.yaml",
+            ),
+        }
+        for label, (old, new) in replacements.items():
+            with self.subTest(label=label):
+                config = self.root / f"{label}.ini"
+                self.write_config(config, 1024, 20_000)
+                expected = VERIFIER.runtime_config_identity(config)
+                config.write_text(
+                    config.read_text().replace(old, new),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    SystemExit, "runtime artifact identity differs"
+                ):
+                    VERIFIER.normalized_treatment_config(config, expected)
 
 
 if __name__ == "__main__":

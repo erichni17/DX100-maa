@@ -1157,7 +1157,68 @@ def verify_cache_config(path: Path, candidate: dict[str, Any]) -> None:
                 )
 
 
-def normalized_treatment_config(path: Path) -> str:
+def runtime_config_identity(path: Path) -> dict[str, str]:
+    sections: dict[str, dict[str, str]] = {}
+    section: str | None = None
+    for line in regular_file(path).read_text().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            sections[section] = {}
+        elif section is not None and "=" in line:
+            key, value = line.split("=", 1)
+            sections[section][key] = value
+    workload = sections.get("system.cpu0.workload")
+    if workload is None or not {"cmd", "cwd", "executable"}.issubset(workload):
+        fail(f"workload identity is incomplete in config: {path}")
+    command = shlex.split(workload["cmd"])
+    if (
+        len(command) != 3
+        or command[1] != "-f"
+        or command[0] != workload["executable"]
+    ):
+        fail(f"unexpected workload command in config: {path}")
+    controller_names = {"system.mem_ctrls0", "system.mem_ctrls1"}
+    if not controller_names.issubset(sections):
+        fail(f"memory-controller identity is incomplete in config: {path}")
+    ramulator_paths = {
+        sections[name].get("config_path") for name in controller_names
+    }
+    if None in ramulator_paths or len(ramulator_paths) != 1:
+        fail(f"Ramulator config identity differs across controllers: {path}")
+    return {
+        "executable": workload["executable"],
+        "input": command[2],
+        "cwd": workload["cwd"],
+        "ramulator_config": str(next(iter(ramulator_paths))),
+    }
+
+
+def expected_staged_runtime(campaign: Path, phase: str) -> dict[str, str]:
+    inputs = campaign / "inputs"
+    if phase == "screen_correctness":
+        binary = inputs / "benchmark/xrage_virtual_verify"
+        data = inputs / "benchmark/xrage_20k.json"
+    elif phase == "full_correctness":
+        binary = inputs / "benchmark/xrage_virtual_verify"
+        data = inputs / "benchmark/xrage_full.json"
+    elif phase == "full_performance":
+        binary = inputs / "benchmark/xrage_virtual"
+        data = inputs / "benchmark/xrage_full.json"
+    else:
+        fail(f"unknown config phase: {phase}")
+    return {
+        "executable": str(binary),
+        "input": str(data),
+        "cwd": str(inputs / "simulator"),
+        "ramulator_config": str(inputs / "ramulator.yaml"),
+    }
+
+
+def normalized_treatment_config(
+    path: Path, expected_runtime: dict[str, str]
+) -> str:
+    if runtime_config_identity(path) != expected_runtime:
+        fail(f"runtime artifact identity differs in config: {path}")
     lines = regular_file(path).read_text().splitlines()
     retirement_cache_sizes: list[int] = []
     section = ""
@@ -1188,9 +1249,6 @@ def normalized_treatment_config(path: Path) -> str:
             ):
                 line = "host_paths=<RUNTIME_ROOT>"
             elif section == "system.cpu0.workload" and key == "cmd":
-                command = shlex.split(value)
-                if len(command) != 3 or command[1] != "-f":
-                    fail(f"unexpected workload command in config: {path}")
                 line = "cmd=<WORKLOAD_EXECUTABLE> -f <WORKLOAD_INPUT>"
             elif section == "system.cpu0.workload" and key in {
                 "cwd",
@@ -1344,12 +1402,15 @@ def verify_selection(
         or any(row["replica"] != "1" for row in screen_rows)
     ):
         fail("screen matrix is incomplete")
+    screen_runtime = expected_staged_runtime(campaign, "screen_correctness")
     screen_reference_config = normalized_treatment_config(
-        campaign / "runs/screen_correctness/reference/replica_1/config.ini"
+        campaign / "runs/screen_correctness/reference/replica_1/config.ini",
+        screen_runtime,
     )
     for name in ("targets1", "compact"):
         candidate_config = normalized_treatment_config(
-            campaign / f"runs/screen_correctness/{name}/replica_1/config.ini"
+            campaign / f"runs/screen_correctness/{name}/replica_1/config.ini",
+            screen_runtime,
         )
         if candidate_config != screen_reference_config:
             fail(f"screen config differs beyond the treatment: {name}")
@@ -1381,11 +1442,19 @@ def verify_selection(
     reference_correctness_config: str | None = None
     reference_performance_config: str | None = None
     if eligible_names:
-        reference_correctness_config = normalized_treatment_config(
+        reference_correctness_path = (
             campaign / "inputs/reference/full_correctness_config.ini"
         )
-        reference_performance_config = normalized_treatment_config(
+        reference_correctness_config = normalized_treatment_config(
+            reference_correctness_path,
+            runtime_config_identity(reference_correctness_path),
+        )
+        reference_performance_path = (
             campaign / "inputs/reference_evidence/virtual_config_replica_1.ini"
+        )
+        reference_performance_config = normalized_treatment_config(
+            reference_performance_path,
+            runtime_config_identity(reference_performance_path),
         )
 
     promoted_rows = []
@@ -1440,7 +1509,8 @@ def verify_selection(
         ):
             fail(f"eligible candidate has no approved reference: {name}")
         candidate_correctness_config = normalized_treatment_config(
-            campaign / f"runs/full_correctness/{name}/replica_1/config.ini"
+            campaign / f"runs/full_correctness/{name}/replica_1/config.ini",
+            expected_staged_runtime(campaign, "full_correctness"),
         )
         if candidate_correctness_config != reference_correctness_config:
             fail(f"full correctness config differs beyond treatment: {name}")
@@ -1448,7 +1518,8 @@ def verify_selection(
             candidate_performance_config = normalized_treatment_config(
                 campaign
                 / f"runs/full_performance/{name}"
-                / f"replica_{item['replica']}/config.ini"
+                / f"replica_{item['replica']}/config.ini",
+                expected_staged_runtime(campaign, "full_performance"),
             )
             if candidate_performance_config != reference_performance_config:
                 fail(
