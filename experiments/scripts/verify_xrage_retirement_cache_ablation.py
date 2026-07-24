@@ -12,11 +12,12 @@ import json
 import math
 import os
 import re
-import secrets
 import shlex
 import stat
 import struct
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,14 @@ CAMPAIGN_WATCH_MASK = (
 )
 INOTIFY_EVENT = struct.Struct("iIII")
 AUTH_ENV = {
-    "HOME": "/data1/nier/.dx-runtime-state/retirement-cache-home",
+    "DX100_PRIVATE_HOME": os.environ.get(
+        "DX100_PRIVATE_HOME",
+        "/data1/nier/.dx-runtime-state/retirement-cache-test-home",
+    ),
+    "HOME": os.environ.get(
+        "DX100_PRIVATE_HOME",
+        "/data1/nier/.dx-runtime-state/retirement-cache-test-home",
+    ),
     "LANG": "C",
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
@@ -63,13 +71,15 @@ AUTH_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_NO_REPLACE_OBJECTS": "1",
-    "GIT_CONFIG_COUNT": "3",
+    "GIT_CONFIG_COUNT": "4",
     "GIT_CONFIG_KEY_0": "core.fsmonitor",
     "GIT_CONFIG_VALUE_0": "false",
     "GIT_CONFIG_KEY_1": "core.hooksPath",
     "GIT_CONFIG_VALUE_1": "/dev/null",
     "GIT_CONFIG_KEY_2": "core.untrackedCache",
     "GIT_CONFIG_VALUE_2": "false",
+    "GIT_CONFIG_KEY_3": "status.showUntrackedFiles",
+    "GIT_CONFIG_VALUE_3": "all",
 }
 RESULT_FIELDS = (
     "phase",
@@ -226,71 +236,6 @@ def verify_campaign_guard(guard: CampaignGuard) -> None:
         fail("campaign directory identity changed during verification")
 
 
-def publish_pass(guard: CampaignGuard) -> None:
-    verify_campaign_guard(guard)
-    for name in ("campaign.pass", "campaign.fail"):
-        try:
-            os.stat(
-                name,
-                dir_fd=guard.campaign_descriptor,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            continue
-        fail(f"refusing pass publication with existing {name}")
-    temporary = f".campaign.pass.{os.getpid()}.{secrets.token_hex(8)}"
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o400,
-        dir_fd=guard.campaign_descriptor,
-    )
-    try:
-        os.fchmod(descriptor, 0o444)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    os.rename(
-        temporary,
-        "campaign.pass",
-        src_dir_fd=guard.campaign_descriptor,
-        dst_dir_fd=guard.campaign_descriptor,
-    )
-    os.fsync(guard.campaign_descriptor)
-
-
-def verify_publication_authority(
-    args: argparse.Namespace, guard: CampaignGuard
-) -> None:
-    verifier = Path(__file__).resolve(strict=True)
-    launcher = verifier.with_name("launch_xrage_retirement_cache_ablation.sh")
-    expect_hash(verifier, args.expected_verifier_sha)
-    expect_hash(launcher, args.expected_launcher_sha)
-    repository = verifier.parents[2]
-    verify_git_state(repository, args.expected_sim_commit)
-    raw_fd_path = str(args.launcher_lock_fd_path)
-    if re.fullmatch(r"/proc/[1-9][0-9]*/fd/[0-9]+", raw_fd_path) is None:
-        fail("launcher lock descriptor path is malformed")
-    descriptor_stat = os.stat(raw_fd_path)
-    lock_root = Path(
-        "/data1/nier/.dx-runtime-state/retirement-cache-launch.lock"
-    )
-    path_stat = lock_root.lstat()
-    identity = f"{descriptor_stat.st_dev}:{descriptor_stat.st_ino}"
-    if (
-        args.expected_launcher_lock_identity != identity
-        or not stat.S_ISDIR(descriptor_stat.st_mode)
-        or descriptor_stat.st_uid != os.getuid()
-        or stat.S_IMODE(descriptor_stat.st_mode) != 0o700
-        or lock_root.is_symlink()
-        or not lock_root.is_dir()
-        or path_stat.st_dev != descriptor_stat.st_dev
-        or path_stat.st_ino != descriptor_stat.st_ino
-    ):
-        fail("launcher publication-lock authority differs")
-    verify_campaign_guard(guard)
-
-
 def regular_file(path: Path, *, empty: bool | None = None) -> Path:
     if path.is_symlink() or not path.is_file():
         fail(f"required regular file is missing or symlinked: {path}")
@@ -329,6 +274,77 @@ def file_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def fd_sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        block = os.read(descriptor, 1024 * 1024)
+        if not block:
+            break
+        digest.update(block)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def run_python_fd(
+    script: Path,
+    expected_sha256: str,
+    arguments: list[str],
+) -> subprocess.CompletedProcess[str]:
+    descriptor = os.open(script, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if fd_sha256(descriptor) != expected_sha256:
+            fail(f"authorized Python program changed: {script}")
+        return subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-I",
+                f"/proc/self/fd/{descriptor}",
+                *arguments,
+            ],
+            check=False,
+            env=AUTH_ENV,
+            pass_fds=(descriptor,),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_noreplace(path: Path, content: str) -> None:
+    if path.exists() or path.is_symlink():
+        fail(f"certificate output already exists: {path}")
+    reject_symlink_components(path.parent)
+    parent = path.parent.resolve(strict=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o400)
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            fail(f"certificate output was created concurrently: {path}")
+        temporary.unlink()
+        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def correctness_campaign_fingerprint(campaign: Path) -> str:
@@ -409,7 +425,16 @@ def verify_git_state(repository: Path, expected_commit: str) -> None:
     )
     if head.strip() != expected_commit:
         fail("workflow/config worktree commit differs")
-    if str(git_output(repository, "status", "--porcelain=v1")):
+    if str(
+        git_output(
+            repository,
+            "-c",
+            "status.showUntrackedFiles=all",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        )
+    ):
         fail("workflow/config worktree is dirty")
     replacements = str(
         git_output(
@@ -593,6 +618,20 @@ def verify_source_correctness(
     return row["marker"]
 
 
+def semantic_config_sha256(path: Path) -> str:
+    section = ""
+    normalized: list[str] = []
+    for line in regular_file(path).read_text().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        if re.fullmatch(
+            r"system\.redirect_paths[0-9]+", section
+        ) and line.startswith("host_paths="):
+            line = "host_paths=<REPLICA_RUNTIME_ROOT>"
+        normalized.append(line)
+    return hashlib.sha256(("\n".join(normalized) + "\n").encode()).hexdigest()
+
+
 def staged_reference_result(
     campaign: Path,
     source: dict[str, Any],
@@ -603,9 +642,9 @@ def staged_reference_result(
         campaign / "inputs/manifests/reference_result_approval.json"
     )
     if (
-        result_approval.get("schema_version") != 1
+        result_approval.get("schema_version") != 2
         or result_approval.get("experiment_id")
-        != "xrage-replicated-reference-result-v1"
+        != "xrage-replicated-reference-result-v2"
         or result_approval.get("reference_campaign")
         != source.get("reference_campaign")
         or result_approval.get("reference_approval_sha256")
@@ -626,10 +665,58 @@ def staged_reference_result(
         "3",
     }:
         fail("staged reference-result config closure differs")
-    expect_hash(
-        campaign / "inputs/reference/virtual_config.ini",
-        str(config_hashes["1"]),
-    )
+    config_paths = {
+        str(replica): (
+            campaign
+            / "inputs/reference_evidence"
+            / f"virtual_config_replica_{replica}.ini"
+        )
+        for replica in (1, 2, 3)
+    }
+    for replica, path in config_paths.items():
+        expect_hash(path, str(config_hashes[replica]))
+    semantic_hash = evidence.get("virtual_config_semantic_sha256")
+    if (
+        not isinstance(semantic_hash, str)
+        or SHA256_RE.fullmatch(semantic_hash) is None
+        or {semantic_config_sha256(path) for path in config_paths.values()}
+        != {semantic_hash}
+    ):
+        fail("staged reference replica configs are not semantically equal")
+    raw_evidence = {
+        "manifest_sha256": (
+            campaign / "inputs/reference_evidence/evidence_sha256.txt"
+        ),
+        "results_sha256": (campaign / "inputs/reference_evidence/results.tsv"),
+        "source_sha256": campaign / "inputs/reference_evidence/source.txt",
+        "attribution_sha256": (
+            campaign / "inputs/reference_evidence/attribution.tsv"
+        ),
+        "staged_input_manifest_sha256": (
+            campaign / "inputs/reference_evidence/staged_input_sha256.txt"
+        ),
+        "virtual_checkpoint_manifest_sha256": (
+            campaign
+            / "inputs/reference_evidence/private_checkpoint_sha256.txt"
+        ),
+    }
+    for key, path in raw_evidence.items():
+        expected = evidence.get(key)
+        if not isinstance(expected, str):
+            fail(f"staged reference-result hash is malformed: {key}")
+        expect_hash(path, expected)
+
+    fields, rows = read_tsv(raw_evidence["results_sha256"])
+    virtual = [row for row in rows if row.get("arm") == "virtual"]
+    if (
+        not {"arm", "replica", "sim_ticks", "valid"}.issubset(fields)
+        or len(virtual) != 3
+        or {row["replica"] for row in virtual} != {"1", "2", "3"}
+        or any(row["valid"] != "1" for row in virtual)
+        or {row["sim_ticks"] for row in virtual}
+        != {str(result_approval.get("virtual_sim_ticks"))}
+    ):
+        fail("staged raw reference results differ from approval")
     checkpoint_root = campaign / "inputs/checkpoints/full_performance"
     staged_checkpoint = verify_checkpoint(
         checkpoint_root, "checkpoint_sha256.txt"
@@ -1013,6 +1100,11 @@ def normalized_treatment_config(path: Path) -> str:
         if "=" in line:
             key, _ = line.split("=", 1)
             if (
+                re.fullmatch(r"system\.redirect_paths[0-9]+", section)
+                and key == "host_paths"
+            ):
+                line = "host_paths=<RUNTIME_ROOT>"
+            elif (
                 re.fullmatch(r"system\.maa_retirement_caches[0-9]+", section)
                 and key in {"size", "tgts_per_mshr"}
             ) or (
@@ -1182,7 +1274,7 @@ def verify_selection(
             campaign / "inputs/reference/full_correctness_config.ini"
         )
         reference_performance_config = normalized_treatment_config(
-            campaign / "inputs/reference/virtual_config.ini"
+            campaign / "inputs/reference_evidence/virtual_config_replica_1.ini"
         )
 
     promoted_rows = []
@@ -1344,6 +1436,8 @@ def verify_selection(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("campaign", type=Path)
+    parser.add_argument("--certificate-output", type=Path, required=True)
+    parser.add_argument("--sim-root", type=Path, required=True)
     parser.add_argument("--expected-sim-commit", required=True)
     parser.add_argument("--expected-launcher-sha", required=True)
     parser.add_argument("--expected-verifier-sha", required=True)
@@ -1364,8 +1458,6 @@ def main() -> None:
         "--expected-reference-campaign", type=Path, required=True
     )
     parser.add_argument("--expected-bfs-campaign", type=Path, required=True)
-    parser.add_argument("--launcher-lock-fd-path", type=Path, required=True)
-    parser.add_argument("--expected-launcher-lock-identity", required=True)
     parser.add_argument(
         "--expected-screen-overhead-limit", type=float, default=0.01
     )
@@ -1377,7 +1469,6 @@ def main() -> None:
         type=int,
         default=24 * 1024 * 1024,
     )
-    parser.add_argument("--publish-pass", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sim_commit):
         fail("expected simulator commit is malformed")
@@ -1398,19 +1489,14 @@ def main() -> None:
         fail("an expected authorization hash is malformed")
     expected_source_20k = args.expected_source_20k.resolve(strict=True)
     expected_source_full = args.expected_source_full.resolve(strict=True)
-    expected_reference_campaign = args.expected_reference_campaign.resolve(
-        strict=True
-    )
+    expected_reference_campaign = args.expected_reference_campaign.absolute()
     expected_bfs_campaign = args.expected_bfs_campaign.resolve(strict=True)
     if args.campaign.is_symlink():
         fail("campaign path is symlinked")
     campaign = args.campaign.resolve(strict=True)
     campaign_guard = create_campaign_guard(campaign)
     regular_file(campaign / "execution.complete", empty=True)
-    if (campaign / "campaign.pass").exists():
-        if args.publish_pass:
-            fail("campaign pass already exists before publication")
-        regular_file(campaign / "campaign.pass", empty=True)
+    regular_file(campaign / "campaign.pass", empty=True)
     if (campaign / "campaign.fail").exists():
         fail("campaign has a fail state")
     for path in campaign.rglob("*"):
@@ -1424,7 +1510,8 @@ def main() -> None:
         source.get("schema_version") != 1
         or source.get("execution") != "serial"
         or source.get("wall_clock_timeout") != "none"
-        or source.get("environment_policy") != "sanitized-fixed-minimal-v2"
+        or source.get("environment_policy")
+        != "sanitized-private-home-fd-exec-v3"
         or source.get("simulation_lock")
         != "/data1/nier/.dx100-virtual-simulation.lock"
         or source.get("simulator_commit") != args.expected_sim_commit
@@ -1441,7 +1528,7 @@ def main() -> None:
             strict=True
         )
         != expected_source_full
-        or Path(source.get("reference_campaign", "")).resolve(strict=True)
+        or Path(source.get("reference_campaign", "")).absolute()
         != expected_reference_campaign
         or Path(source.get("bfs_campaign", "")).resolve(strict=True)
         != expected_bfs_campaign
@@ -1477,13 +1564,41 @@ def main() -> None:
         "input_20k": campaign / "inputs/benchmark/xrage_20k.json",
         "input_full": campaign / "inputs/benchmark/xrage_full.json",
         "runner": campaign / "inputs/runner.py",
+        "launcher": campaign / "inputs/launcher.py",
+        "verifier": campaign / "inputs/verifier.py",
         "reference_approval": (
             campaign / "inputs/manifests/reference_approval.json"
         ),
         "reference_result_approval": (
             campaign / "inputs/manifests/reference_result_approval.json"
         ),
-        "reference_config": (campaign / "inputs/reference/virtual_config.ini"),
+        **{
+            f"reference_config_{replica}": (
+                campaign
+                / "inputs/reference_evidence"
+                / f"virtual_config_replica_{replica}.ini"
+            )
+            for replica in (1, 2, 3)
+        },
+        "reference_results": (
+            campaign / "inputs/reference_evidence/results.tsv"
+        ),
+        "reference_source": (
+            campaign / "inputs/reference_evidence/source.txt"
+        ),
+        "reference_attribution": (
+            campaign / "inputs/reference_evidence/attribution.tsv"
+        ),
+        "reference_staged_input_manifest": (
+            campaign / "inputs/reference_evidence/staged_input_sha256.txt"
+        ),
+        "reference_evidence_manifest": (
+            campaign / "inputs/reference_evidence/evidence_sha256.txt"
+        ),
+        "reference_checkpoint_manifest": (
+            campaign
+            / "inputs/reference_evidence/private_checkpoint_sha256.txt"
+        ),
         "source_full_config": (
             campaign / "inputs/reference/full_correctness_config.ini"
         ),
@@ -1516,15 +1631,42 @@ def main() -> None:
             staged_approval, "benchmark_binaries", "virtual_sha256"
         ),
         "runner": args.expected_runner_sha,
+        "launcher": args.expected_launcher_sha,
+        "verifier": args.expected_verifier_sha,
         "reference_approval": args.expected_reference_approval_sha,
         "reference_result_approval": (
             args.expected_reference_result_approval_sha
         ),
-        "reference_config": nested(
+        **{
+            f"reference_config_{replica}": nested(
+                staged_result_approval,
+                "evidence",
+                "virtual_config_sha256",
+                str(replica),
+            )
+            for replica in (1, 2, 3)
+        },
+        "reference_results": nested(
+            staged_result_approval, "evidence", "results_sha256"
+        ),
+        "reference_source": nested(
+            staged_result_approval, "evidence", "source_sha256"
+        ),
+        "reference_attribution": nested(
+            staged_result_approval, "evidence", "attribution_sha256"
+        ),
+        "reference_staged_input_manifest": nested(
             staged_result_approval,
             "evidence",
-            "virtual_config_sha256",
-            "1",
+            "staged_input_manifest_sha256",
+        ),
+        "reference_evidence_manifest": nested(
+            staged_result_approval, "evidence", "manifest_sha256"
+        ),
+        "reference_checkpoint_manifest": nested(
+            staged_result_approval,
+            "evidence",
+            "virtual_checkpoint_manifest_sha256",
         ),
         "source_full_config": nested(
             staged_approval,
@@ -1573,22 +1715,16 @@ def main() -> None:
     if source.get("upstream_reference_sim_ticks") != reference_ticks:
         fail("source upstream-reference simTicks differs")
     bfs_campaign = expected_bfs_campaign
-    bfs_verification = subprocess.run(
+    bfs_verification = run_python_fd(
+        staged_verifier,
+        args.expected_reference_verifier_sha,
         [
-            "/usr/bin/python3",
-            "-I",
-            str(staged_verifier),
             "bfs",
             str(bfs_campaign),
             str(campaign / "inputs/manifests/bfs_approval.json"),
             "--oracle",
             str(campaign / "inputs/manifests/bfs_oracle.json"),
         ],
-        check=False,
-        env=AUTH_ENV,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
     )
     if bfs_verification.returncode != 0:
         fail(
@@ -1596,7 +1732,8 @@ def main() -> None:
             + bfs_verification.stdout.strip()
         )
 
-    simulator_root = Path(__file__).resolve(strict=True).parents[2]
+    simulator_root = args.sim_root.resolve(strict=True)
+    expect_hash(Path(__file__), args.expected_verifier_sha)
     verify_git_state(simulator_root, args.expected_sim_commit)
     binary_commit = nested(staged_approval, "candidate", "simulator_commit")
     if binary_commit != source.get(
@@ -1703,9 +1840,40 @@ def main() -> None:
     for row in rows:
         verify_case(campaign, source, candidates, row)
     verify_selection(campaign, source, rows, candidates, reference_result)
-    verify_publication_authority(args, campaign_guard)
-    if args.publish_pass:
-        publish_pass(campaign_guard)
+    certificate = args.certificate_output.absolute()
+    try:
+        certificate.relative_to(campaign)
+    except ValueError:
+        pass
+    else:
+        fail("verification certificate must be outside the campaign")
+    record = {
+        "schema_version": 1,
+        "experiment_id": "xrage-retirement-cache-verification-v1",
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "campaign_device": campaign_guard.device,
+        "campaign_inode": campaign_guard.inode,
+        "simulator_commit": args.expected_sim_commit,
+        "launcher_sha256": args.expected_launcher_sha,
+        "runner_sha256": args.expected_runner_sha,
+        "verifier_sha256": args.expected_verifier_sha,
+        "evidence_manifest_sha256": file_sha256(
+            campaign / "evidence_sha256.txt"
+        ),
+        "staged_input_manifest_sha256": file_sha256(
+            campaign / "staged_input_sha256.json"
+        ),
+        "source_sha256": file_sha256(campaign / "source.json"),
+        "results_sha256": file_sha256(campaign / "results.tsv"),
+        "selection_sha256": file_sha256(campaign / "selection.tsv"),
+        "summary_sha256": file_sha256(campaign / "summary.json"),
+    }
+    verify_campaign_guard(campaign_guard)
+    atomic_write_noreplace(
+        certificate, json.dumps(record, indent=2, sort_keys=True) + "\n"
+    )
+    os.close(campaign_guard.campaign_descriptor)
+    os.close(campaign_guard.watch_descriptor)
     print(f"XRAGE retirement-cache ablation verified: {campaign}")
 
 

@@ -11,8 +11,10 @@ import hashlib
 import json
 import os
 import re
+import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -43,14 +45,6 @@ WATCH_MASK = (
     | IN_MOVE_SELF
 )
 INOTIFY_EVENT = struct.Struct("iIII")
-AUTH_ENV = {
-    "HOME": "/data1/nier/.dx-runtime-state/retirement-cache-home",
-    "LANG": "C",
-    "LC_ALL": "C",
-    "PATH": "/usr/bin:/bin",
-    "PYTHONDONTWRITEBYTECODE": "1",
-    "PYTHONHASHSEED": "0",
-}
 
 
 @dataclass
@@ -74,6 +68,122 @@ def file_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def fd_sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        block = os.read(descriptor, 1024 * 1024)
+        if not block:
+            break
+        digest.update(block)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def stage_approved(
+    source: Path,
+    destination: Path,
+    expected_sha256: str,
+    *,
+    executable: bool,
+) -> Path:
+    reject_symlink_components(source)
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    destination_fd = -1
+    try:
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            fail(f"trust anchor is not a regular file: {source}")
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_NOFOLLOW
+            | os.O_CLOEXEC,
+            0o500 if executable else 0o400,
+        )
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(source_fd, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            view = memoryview(block)
+            while view:
+                written = os.write(destination_fd, view)
+                view = view[written:]
+        after = os.fstat(source_fd)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_ctime_ns,
+        ):
+            fail(f"trust anchor changed during staging: {source}")
+        if digest.hexdigest() != expected_sha256:
+            fail(f"trust-anchor SHA-256 differs: {source}")
+        os.fchmod(destination_fd, 0o500 if executable else 0o400)
+        os.fsync(destination_fd)
+    finally:
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        os.close(source_fd)
+    if file_sha256(destination) != expected_sha256:
+        fail(f"staged trust-anchor SHA-256 differs: {destination}")
+    return destination
+
+
+def run_python_fd(
+    script: Path,
+    expected_sha256: str,
+    arguments: list[str],
+    environment: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    descriptor = os.open(script, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if fd_sha256(descriptor) != expected_sha256:
+            fail(f"staged verifier changed: {script}")
+        return subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-I",
+                f"/proc/self/fd/{descriptor}",
+                *arguments,
+            ],
+            check=False,
+            env=environment,
+            pass_fds=(descriptor,),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def private_environment(home: Path) -> dict[str, str]:
+    return {
+        "HOME": str(home),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONHASHSEED": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "status.showUntrackedFiles",
+        "GIT_CONFIG_VALUE_0": "all",
+    }
 
 
 def regular_file(path: Path, *, empty: bool | None = None) -> Path:
@@ -286,7 +396,21 @@ def checkpoint_entries(root: Path) -> dict[str, str]:
     return entries
 
 
-def atomic_write(path: Path, content: str) -> None:
+def semantic_config_sha256(path: Path) -> str:
+    section = ""
+    normalized: list[str] = []
+    for line in regular_file(path, empty=False).read_text().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        if re.fullmatch(
+            r"system\.redirect_paths[0-9]+", section
+        ) and line.startswith("host_paths="):
+            line = "host_paths=<REPLICA_RUNTIME_ROOT>"
+        normalized.append(line)
+    return hashlib.sha256(("\n".join(normalized) + "\n").encode()).hexdigest()
+
+
+def atomic_write_noreplace(path: Path, content: str) -> None:
     parent = path.parent.resolve(strict=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=parent
@@ -299,7 +423,11 @@ def atomic_write(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            fail(f"approval output was created concurrently: {path}")
+        temporary.unlink()
         directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(directory)
@@ -312,6 +440,8 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def main() -> None:
+    if not sys.flags.isolated:
+        fail("approval generator requires /usr/bin/python3 -I")
     parser = argparse.ArgumentParser()
     parser.add_argument("reference_campaign", type=Path)
     parser.add_argument("reference_approval", type=Path)
@@ -348,132 +478,167 @@ def main() -> None:
         if path.is_symlink():
             fail(f"reference campaign contains a symlink: {path}")
 
-    guard = create_guard(campaign)
-    try:
-        completed = subprocess.run(
-            [
-                "/usr/bin/python3",
-                "-I",
-                str(verifier),
-                "xrage",
-                str(campaign),
-                str(approval),
-            ],
-            check=False,
-            env=AUTH_ENV,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+    with tempfile.TemporaryDirectory(
+        prefix=".xrage-reference-approval.", dir=output.parent
+    ) as raw_execution_root:
+        execution_root = Path(raw_execution_root)
+        execution_root.chmod(0o700)
+        home = execution_root / "home"
+        home.mkdir(mode=0o700)
+        environment = private_environment(home)
+        staged_approval = stage_approved(
+            approval,
+            execution_root / "reference_approval.json",
+            expected_approval_sha,
+            executable=False,
         )
-        if completed.returncode != 0:
-            fail("reference verifier failed: " + completed.stdout.strip())
-        verify_guard(guard)
-        if file_sha256(approval) != expected_approval_sha:
-            fail("reference approval changed during result approval")
-        if file_sha256(verifier) != expected_verifier_sha:
-            fail("reference verifier changed during result approval")
-        manifest_entries = evidence_entries(campaign)
-        fields, rows = read_results(campaign / "results.tsv")
-        if not {"arm", "replica", "sim_ticks", "valid"}.issubset(fields):
-            fail("reference results lack required fields")
-        virtual = [row for row in rows if row["arm"] == "virtual"]
-        if (
-            len(virtual) != 3
-            or {row["replica"] for row in virtual} != {"1", "2", "3"}
-            or any(row["valid"] != "1" for row in virtual)
-        ):
-            fail("reference lacks valid virtual replicas 1,2,3")
-        ticks = {row["sim_ticks"] for row in virtual}
-        if len(ticks) != 1 or not next(iter(ticks)).isdigit():
-            fail("reference virtual replicas are not deterministic")
-        sim_ticks = int(next(iter(ticks)))
-        if sim_ticks <= 0:
-            fail("reference simTicks is not positive")
+        staged_verifier = stage_approved(
+            verifier,
+            execution_root / "reference_verifier.py",
+            expected_verifier_sha,
+            executable=True,
+        )
 
-        selected = {
-            "results.tsv": campaign / "results.tsv",
-            "source.txt": campaign / "source.txt",
-            "attribution.tsv": campaign / "attribution.tsv",
-            "staged_input_sha256.txt": (campaign / "staged_input_sha256.txt"),
-            "checkpoints/virtual/private_checkpoint_sha256.txt": (
-                campaign / "checkpoints/virtual/private_checkpoint_sha256.txt"
-            ),
-        }
-        configs = {
-            str(replica): (
-                campaign / f"runs/virtual/replica_{replica}/config.ini"
+        guard = create_guard(campaign)
+        try:
+            completed = run_python_fd(
+                staged_verifier,
+                expected_verifier_sha,
+                [
+                    "xrage",
+                    str(campaign),
+                    str(staged_approval),
+                ],
+                environment,
             )
-            for replica in (1, 2, 3)
-        }
-        for relative, path in {
-            **selected,
-            **{
-                f"runs/virtual/replica_{replica}/config.ini": path
-                for replica, path in configs.items()
-            },
-        }.items():
-            regular_file(path, empty=False)
-            if manifest_entries.get(relative) != file_sha256(path):
-                fail(f"selected reference evidence differs: {relative}")
+            if completed.returncode != 0:
+                fail("reference verifier failed: " + completed.stdout.strip())
+            verify_guard(guard)
+            if file_sha256(staged_approval) != expected_approval_sha:
+                fail("staged reference approval changed")
+            if file_sha256(staged_verifier) != expected_verifier_sha:
+                fail("staged reference verifier changed")
+            manifest_entries = evidence_entries(campaign)
+            fields, rows = read_results(campaign / "results.tsv")
+            if not {"arm", "replica", "sim_ticks", "valid"}.issubset(fields):
+                fail("reference results lack required fields")
+            virtual = [row for row in rows if row["arm"] == "virtual"]
+            if (
+                len(virtual) != 3
+                or {row["replica"] for row in virtual} != {"1", "2", "3"}
+                or any(row["valid"] != "1" for row in virtual)
+            ):
+                fail("reference lacks valid virtual replicas 1,2,3")
+            ticks = {row["sim_ticks"] for row in virtual}
+            if len(ticks) != 1 or not next(iter(ticks)).isdigit():
+                fail("reference virtual replicas are not deterministic")
+            sim_ticks = int(next(iter(ticks)))
+            if sim_ticks <= 0:
+                fail("reference simTicks is not positive")
 
-        approval_json = load_json(approval)
-        binary_commit = nested(approval_json, "candidate", "simulator_commit")
-        if (
-            not isinstance(binary_commit, str)
-            or re.fullmatch(r"[0-9a-f]{40}", binary_commit) is None
-        ):
-            fail("reference binary commit is malformed")
-        checkpoint_root = campaign / "checkpoints/virtual"
-        record = {
-            "schema_version": 1,
-            "experiment_id": "xrage-replicated-reference-result-v1",
-            "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "reference_campaign": str(campaign),
-            "reference_approval_sha256": expected_approval_sha,
-            "reference_verifier_sha256": expected_verifier_sha,
-            "binary_simulator_commit": binary_commit,
-            "virtual_sim_ticks": sim_ticks,
-            "virtual_replicas": [
-                {"replica": replica, "sim_ticks": sim_ticks}
+            selected = {
+                "results.tsv": campaign / "results.tsv",
+                "source.txt": campaign / "source.txt",
+                "attribution.tsv": campaign / "attribution.tsv",
+                "staged_input_sha256.txt": (
+                    campaign / "staged_input_sha256.txt"
+                ),
+                "checkpoints/virtual/private_checkpoint_sha256.txt": (
+                    campaign
+                    / "checkpoints/virtual/private_checkpoint_sha256.txt"
+                ),
+            }
+            configs = {
+                str(replica): (
+                    campaign / f"runs/virtual/replica_{replica}/config.ini"
+                )
                 for replica in (1, 2, 3)
-            ],
-            "evidence": {
-                "manifest_sha256": file_sha256(
-                    campaign / "evidence_sha256.txt"
-                ),
-                "results_sha256": file_sha256(selected["results.tsv"]),
-                "source_sha256": file_sha256(selected["source.txt"]),
-                "attribution_sha256": file_sha256(selected["attribution.tsv"]),
-                "staged_input_manifest_sha256": file_sha256(
-                    selected["staged_input_sha256.txt"]
-                ),
-                "virtual_checkpoint_manifest_sha256": file_sha256(
-                    selected[
-                        "checkpoints/virtual/" "private_checkpoint_sha256.txt"
-                    ]
-                ),
-                "virtual_checkpoint_payload_sha256": checkpoint_entries(
-                    checkpoint_root
-                ),
-                "virtual_config_sha256": {
-                    replica: file_sha256(path)
+            }
+            for relative, path in {
+                **selected,
+                **{
+                    f"runs/virtual/replica_{replica}/config.ini": path
                     for replica, path in configs.items()
                 },
-            },
-        }
-        verify_guard(guard)
-        if file_sha256(approval) != expected_approval_sha:
-            fail("reference approval changed before publication")
-        if file_sha256(verifier) != expected_verifier_sha:
-            fail("reference verifier changed before publication")
-        atomic_write(
-            output,
-            json.dumps(record, indent=2, sort_keys=True) + "\n",
-        )
-        verify_guard(guard)
-    finally:
-        os.close(guard.campaign_descriptor)
-        os.close(guard.watch_descriptor)
+            }.items():
+                regular_file(path, empty=False)
+                if manifest_entries.get(relative) != file_sha256(path):
+                    fail(f"selected reference evidence differs: {relative}")
+            semantic_hashes = {
+                semantic_config_sha256(path) for path in configs.values()
+            }
+            if len(semantic_hashes) != 1:
+                fail(
+                    "reference virtual replica configs differ beyond "
+                    "runtime-only host paths"
+                )
+            semantic_hash = semantic_hashes.pop()
+
+            approval_json = load_json(staged_approval)
+            binary_commit = nested(
+                approval_json, "candidate", "simulator_commit"
+            )
+            if (
+                not isinstance(binary_commit, str)
+                or re.fullmatch(r"[0-9a-f]{40}", binary_commit) is None
+            ):
+                fail("reference binary commit is malformed")
+            checkpoint_root = campaign / "checkpoints/virtual"
+            record = {
+                "schema_version": 2,
+                "experiment_id": "xrage-replicated-reference-result-v2",
+                "created_utc": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+                "reference_campaign": str(campaign),
+                "reference_approval_sha256": expected_approval_sha,
+                "reference_verifier_sha256": expected_verifier_sha,
+                "binary_simulator_commit": binary_commit,
+                "virtual_sim_ticks": sim_ticks,
+                "virtual_replicas": [
+                    {"replica": replica, "sim_ticks": sim_ticks}
+                    for replica in (1, 2, 3)
+                ],
+                "evidence": {
+                    "manifest_sha256": file_sha256(
+                        campaign / "evidence_sha256.txt"
+                    ),
+                    "results_sha256": file_sha256(selected["results.tsv"]),
+                    "source_sha256": file_sha256(selected["source.txt"]),
+                    "attribution_sha256": file_sha256(
+                        selected["attribution.tsv"]
+                    ),
+                    "staged_input_manifest_sha256": file_sha256(
+                        selected["staged_input_sha256.txt"]
+                    ),
+                    "virtual_checkpoint_manifest_sha256": file_sha256(
+                        selected[
+                            "checkpoints/virtual/"
+                            "private_checkpoint_sha256.txt"
+                        ]
+                    ),
+                    "virtual_checkpoint_payload_sha256": checkpoint_entries(
+                        checkpoint_root
+                    ),
+                    "virtual_config_sha256": {
+                        replica: file_sha256(path)
+                        for replica, path in configs.items()
+                    },
+                    "virtual_config_semantic_sha256": semantic_hash,
+                },
+            }
+            verify_guard(guard)
+            if file_sha256(staged_approval) != expected_approval_sha:
+                fail("staged reference approval changed before publication")
+            if file_sha256(staged_verifier) != expected_verifier_sha:
+                fail("staged reference verifier changed before publication")
+            atomic_write_noreplace(
+                output,
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+            )
+        finally:
+            os.close(guard.campaign_descriptor)
+            os.close(guard.watch_descriptor)
     print(output)
 
 

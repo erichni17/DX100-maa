@@ -30,6 +30,14 @@ VERIFIER = load_script(
     "xrage_retirement_verifier",
     "verify_xrage_retirement_cache_ablation.py",
 )
+LAUNCHER = load_script(
+    "xrage_retirement_launcher",
+    "launch_xrage_retirement_cache_ablation.py",
+)
+GENERATOR = load_script(
+    "xrage_reference_result_generator",
+    "create_xrage_reference_result_approval.py",
+)
 
 
 class TemporaryDirectoryTest(unittest.TestCase):
@@ -40,22 +48,83 @@ class TemporaryDirectoryTest(unittest.TestCase):
 
 
 class SanitizedLauncherTests(TemporaryDirectoryTest):
-    def test_direct_execution_cannot_process_bash_env(self):
-        launcher = SCRIPTS / "launch_xrage_retirement_cache_ablation.sh"
-        payload = self.root / "bash_env"
+    def test_direct_execution_cannot_load_python_startup_code(self):
+        launcher = self.root / "launcher.py"
+        launcher.write_bytes(
+            (
+                SCRIPTS / "launch_xrage_retirement_cache_ablation.py"
+            ).read_bytes()
+        )
+        launcher.chmod(0o755)
+        startup = self.root / "sitecustomize.py"
         marker = self.root / "executed"
-        payload.write_text(f"touch {marker}\n", encoding="utf-8")
+        startup.write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
         completed = subprocess.run(
             [str(launcher)],
             check=False,
             env={
-                "BASH_ENV": str(payload),
                 "HOME": str(self.root),
                 "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": str(self.root),
             },
             capture_output=True,
         )
         self.assertNotEqual(completed.returncode, 0)
+        self.assertFalse(marker.exists())
+
+    def test_operational_env_i_invocation_cannot_process_bash_env(self):
+        launcher = SCRIPTS / "launch_xrage_retirement_cache_ablation.py"
+        payload = self.root / "bash_env"
+        marker = self.root / "executed"
+        payload.write_text(f"touch {marker}\n", encoding="utf-8")
+        completed = subprocess.run(
+            [
+                "/usr/bin/env",
+                "-i",
+                "DX100_SANITIZED_LAUNCH=1",
+                "HOME=/data1/nier/.dx-runtime-state",
+                "LANG=C",
+                "LC_ALL=C",
+                "PATH=/usr/bin:/bin",
+                "/usr/bin/python3",
+                "-I",
+                str(launcher),
+            ],
+            check=False,
+            env={"BASH_ENV": str(payload), "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertFalse(marker.exists())
+
+    def test_staged_program_is_not_changed_by_source_path_swap(self):
+        source = self.root / "source.py"
+        destination = self.root / "staged.py"
+        marker = self.root / "executed"
+        source.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        LAUNCHER.stage_approved(source, destination, digest, executable=True)
+        replacement = self.root / "replacement.py"
+        replacement.write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
+        os.replace(replacement, source)
+        completed = LAUNCHER.run_python_fd(
+            destination,
+            digest,
+            [],
+            {
+                "HOME": str(self.root),
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            },
+        )
+        self.assertEqual(completed.returncode, 0)
         self.assertFalse(marker.exists())
 
 
@@ -88,6 +157,40 @@ class ApprovalGeneratorTests(TemporaryDirectoryTest):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("reference approval differs", completed.stderr)
         self.assertFalse((self.root / "result.json").exists())
+
+    def test_approval_publication_never_clobbers_existing_output(self):
+        output = self.root / "approval.json"
+        output.write_text("existing\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "created concurrently"):
+            GENERATOR.atomic_write_noreplace(output, "replacement\n")
+        self.assertEqual(output.read_text(), "existing\n")
+
+    def test_replica_config_semantics_reject_non_runtime_difference(self):
+        first = self.root / "first.ini"
+        second = self.root / "second.ini"
+        first.write_text(
+            "[system.redirect_paths0]\nhost_paths=/run/one\n"
+            "[system.maa]\nvalue=1\n",
+            encoding="utf-8",
+        )
+        second.write_text(
+            "[system.redirect_paths0]\nhost_paths=/run/two\n"
+            "[system.maa]\nvalue=2\n",
+            encoding="utf-8",
+        )
+        self.assertNotEqual(
+            GENERATOR.semantic_config_sha256(first),
+            GENERATOR.semantic_config_sha256(second),
+        )
+        second.write_text(
+            "[system.redirect_paths0]\nhost_paths=/run/two\n"
+            "[system.maa]\nvalue=1\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            GENERATOR.semantic_config_sha256(first),
+            GENERATOR.semantic_config_sha256(second),
+        )
 
 
 class GitProvenanceTests(TemporaryDirectoryTest):
@@ -140,12 +243,39 @@ class RecursiveCampaignGuardTests(TemporaryDirectoryTest):
             VERIFIER.verify_campaign_guard(guard)
 
 
+class ProcessGroupCleanupTests(TemporaryDirectoryTest):
+    def test_exited_leader_descendants_are_terminated(self):
+        program = self.root / "fork_child.py"
+        program.write_text(
+            "import os, time\n"
+            "if os.fork() == 0:\n"
+            "    time.sleep(60)\n"
+            "else:\n"
+            "    time.sleep(0.5)\n",
+            encoding="utf-8",
+        )
+        process = subprocess.Popen(
+            ["/usr/bin/python3", str(program)],
+            start_new_session=True,
+        )
+        start_time = RUNNER.process_start_time(process.pid)
+        process_group = os.getpgid(process.pid)
+        process.wait(timeout=5)
+        self.assertTrue(RUNNER.process_group_exists(process_group))
+        RUNNER.terminate_process_group(
+            process,
+            leader_start_time=start_time,
+            process_group=process_group,
+        )
+        self.assertFalse(RUNNER.process_group_exists(process_group))
+
+
 class ReferenceResultTests(TemporaryDirectoryTest):
     def approval_record(self, campaign):
         digest = "a" * 64
         return {
-            "schema_version": 1,
-            "experiment_id": "xrage-replicated-reference-result-v1",
+            "schema_version": 2,
+            "experiment_id": "xrage-replicated-reference-result-v2",
             "reference_campaign": str(campaign),
             "reference_approval_sha256": digest,
             "reference_verifier_sha256": digest,
@@ -165,6 +295,7 @@ class ReferenceResultTests(TemporaryDirectoryTest):
                 "virtual_config_sha256": {
                     str(replica): digest for replica in (1, 2, 3)
                 },
+                "virtual_config_semantic_sha256": digest,
             },
         }
 
@@ -202,6 +333,11 @@ class ReferenceResultTests(TemporaryDirectoryTest):
             ),
             mock.patch.object(
                 RUNNER,
+                "semantic_config_sha256",
+                return_value="a" * 64,
+            ),
+            mock.patch.object(
+                RUNNER,
                 "read_tsv",
                 return_value=(
                     ["arm", "replica", "sim_ticks", "valid"],
@@ -220,7 +356,7 @@ class ReferenceResultTests(TemporaryDirectoryTest):
     def test_full_performance_checkpoint_uses_staged_approved_payload(self):
         campaign = self.root / "campaign"
         manifests = campaign / "inputs" / "manifests"
-        reference = campaign / "inputs" / "reference"
+        reference = campaign / "inputs" / "reference_evidence"
         checkpoint = (
             campaign / "inputs" / "checkpoints" / "full_performance" / "cpt.1"
         )
@@ -228,9 +364,18 @@ class ReferenceResultTests(TemporaryDirectoryTest):
         reference.mkdir(parents=True)
         checkpoint.mkdir(parents=True)
 
-        config = reference / "virtual_config.ini"
-        config.write_text("[system]\nvalue=1\n", encoding="utf-8")
-        config_digest = hashlib.sha256(config.read_bytes()).hexdigest()
+        configs = {}
+        for replica in (1, 2, 3):
+            config = reference / f"virtual_config_replica_{replica}.ini"
+            config.write_text(
+                "[system.redirect_paths0]\n"
+                f"host_paths=/replica/{replica}\n"
+                "[system]\nvalue=1\n",
+                encoding="utf-8",
+            )
+            configs[str(replica)] = hashlib.sha256(
+                config.read_bytes()
+            ).hexdigest()
         payload = checkpoint / "m5.cpt"
         payload.write_text("checkpoint\n", encoding="utf-8")
         payload_digest = hashlib.sha256(payload.read_bytes()).hexdigest()
@@ -241,12 +386,46 @@ class ReferenceResultTests(TemporaryDirectoryTest):
         )
 
         record = self.approval_record(Path("/approved/reference"))
-        record["evidence"]["virtual_config_sha256"] = {
-            str(replica): config_digest for replica in (1, 2, 3)
-        }
+        record["evidence"]["virtual_config_sha256"] = configs
+        record["evidence"][
+            "virtual_config_semantic_sha256"
+        ] = VERIFIER.semantic_config_sha256(
+            reference / "virtual_config_replica_1.ini"
+        )
         record["evidence"]["virtual_checkpoint_payload_sha256"] = {
             "cpt.1/m5.cpt": payload_digest
         }
+        raw = {
+            "results_sha256": (
+                reference / "results.tsv",
+                "arm\treplica\tsim_ticks\tvalid\n"
+                "virtual\t1\t123\t1\n"
+                "virtual\t2\t123\t1\n"
+                "virtual\t3\t123\t1\n",
+            ),
+            "source_sha256": (reference / "source.txt", "source\n"),
+            "attribution_sha256": (
+                reference / "attribution.tsv",
+                "metric\tvalue\nspeedup\t1.0\n",
+            ),
+            "staged_input_manifest_sha256": (
+                reference / "staged_input_sha256.txt",
+                "inputs\n",
+            ),
+            "manifest_sha256": (
+                reference / "evidence_sha256.txt",
+                "evidence\n",
+            ),
+            "virtual_checkpoint_manifest_sha256": (
+                reference / "private_checkpoint_sha256.txt",
+                manifest.read_text(),
+            ),
+        }
+        for key, (path, content) in raw.items():
+            path.write_text(content, encoding="utf-8")
+            record["evidence"][key] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
         (manifests / "reference_result_approval.json").write_text(
             json.dumps(record),
             encoding="utf-8",
@@ -263,6 +442,7 @@ class ReferenceResultTests(TemporaryDirectoryTest):
             "a" * 64,
         )
         self.assertEqual(observed["virtual_sim_ticks"], 123)
+        self.assertFalse(Path("/approved/reference").exists())
 
 
 if __name__ == "__main__":

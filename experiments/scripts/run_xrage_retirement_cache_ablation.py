@@ -14,6 +14,7 @@ import os
 import re
 import select
 import shlex
+import signal
 import stat
 import struct
 import subprocess
@@ -63,7 +64,14 @@ LOCK_WATCH_MASK = (
 CHECKPOINT_WATCH_MASK = LOCK_WATCH_MASK
 INOTIFY_EVENT = struct.Struct("iIII")
 AUTH_ENV = {
-    "HOME": "/data1/nier/.dx-runtime-state/retirement-cache-home",
+    "DX100_PRIVATE_HOME": os.environ.get(
+        "DX100_PRIVATE_HOME",
+        "/data1/nier/.dx-runtime-state/retirement-cache-test-home",
+    ),
+    "HOME": os.environ.get(
+        "DX100_PRIVATE_HOME",
+        "/data1/nier/.dx-runtime-state/retirement-cache-test-home",
+    ),
     "LANG": "C",
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
@@ -72,13 +80,15 @@ AUTH_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_NO_REPLACE_OBJECTS": "1",
-    "GIT_CONFIG_COUNT": "3",
+    "GIT_CONFIG_COUNT": "4",
     "GIT_CONFIG_KEY_0": "core.fsmonitor",
     "GIT_CONFIG_VALUE_0": "false",
     "GIT_CONFIG_KEY_1": "core.hooksPath",
     "GIT_CONFIG_VALUE_1": "/dev/null",
     "GIT_CONFIG_KEY_2": "core.untrackedCache",
     "GIT_CONFIG_VALUE_2": "false",
+    "GIT_CONFIG_KEY_3": "status.showUntrackedFiles",
+    "GIT_CONFIG_VALUE_3": "all",
 }
 
 
@@ -174,6 +184,45 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def fd_sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        block = os.read(descriptor, 1024 * 1024)
+        if not block:
+            break
+        digest.update(block)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def run_python_fd(
+    script: Path,
+    expected_sha256: str,
+    arguments: list[str],
+) -> subprocess.CompletedProcess[str]:
+    descriptor = os.open(script, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if fd_sha256(descriptor) != expected_sha256:
+            fail(f"authorized Python program changed: {script}")
+        return subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-I",
+                f"/proc/self/fd/{descriptor}",
+                *arguments,
+            ],
+            check=False,
+            env=AUTH_ENV,
+            pass_fds=(descriptor,),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    finally:
+        os.close(descriptor)
+
+
 def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
     parent = path.parent.resolve(strict=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -240,7 +289,16 @@ def verify_git_state(repository: Path, expected_commit: str) -> None:
             "cost worktree is not at the authorized commit: "
             f"expected={expected_commit} actual={head.strip()}"
         )
-    if str(git_output(repository, "status", "--porcelain=v1")):
+    if str(
+        git_output(
+            repository,
+            "-c",
+            "status.showUntrackedFiles=all",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        )
+    ):
         fail("cost worktree is dirty")
     replacements = str(
         git_output(
@@ -399,17 +457,78 @@ def checkpoint_payload(
     return checkpoint_dir, entries
 
 
-def copy_reflink(
-    source: Path, destination: Path, *, recursive: bool = False
+def secure_copy_approved(
+    source: Path, destination: Path, expected_sha256: str
 ) -> None:
-    command = ["/bin/cp", "-a", "--reflink=auto"]
-    if recursive:
-        command.append(str(source))
-        command.append(str(destination))
-    else:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        command.extend((str(source), str(destination)))
-    subprocess.run(command, check=True, env=AUTH_ENV)
+    if not SHA256_RE.fullmatch(expected_sha256):
+        fail(f"malformed approved SHA-256 for {source}")
+    reject_symlink_components(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    destination_fd = -1
+    try:
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            fail(f"approved copy source is not regular: {source}")
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_NOFOLLOW
+            | os.O_CLOEXEC,
+            stat.S_IMODE(before.st_mode) & 0o555,
+        )
+        cloned = False
+        try:
+            # Linux FICLONE pins the opened inode and avoids a path-reopen race.
+            fcntl.ioctl(destination_fd, 0x40049409, source_fd)
+            cloned = True
+        except OSError as error:
+            if error.errno not in {
+                errno.EBADF,
+                errno.EINVAL,
+                errno.ENOTTY,
+                errno.EOPNOTSUPP,
+                errno.EXDEV,
+            }:
+                raise
+        if not cloned:
+            digest = hashlib.sha256()
+            while True:
+                block = os.read(source_fd, 1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+                view = memoryview(block)
+                while view:
+                    written = os.write(destination_fd, view)
+                    view = view[written:]
+            if digest.hexdigest() != expected_sha256:
+                fail(f"approved copy source hash mismatch: {source}")
+        os.fchmod(
+            destination_fd,
+            0o500 if before.st_mode & stat.S_IXUSR else 0o400,
+        )
+        os.fsync(destination_fd)
+        after = os.fstat(source_fd)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_ctime_ns,
+        ):
+            fail(f"approved copy source changed while open: {source}")
+    finally:
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        os.close(source_fd)
+    expect_hash("staged approved copy", destination, expected_sha256)
 
 
 def stage_checkpoint(
@@ -417,13 +536,11 @@ def stage_checkpoint(
 ) -> dict[Path, str]:
     source_dir, source_entries = checkpoint_payload(source_root, manifest_name)
     destination_root.mkdir(parents=True)
-    copy_reflink(
-        source_dir, destination_root / source_dir.name, recursive=True
-    )
-    staged_entries = {
-        destination_root / path.relative_to(source_root): digest
-        for path, digest in source_entries.items()
-    }
+    staged_entries: dict[Path, str] = {}
+    for path, digest in source_entries.items():
+        destination = destination_root / path.relative_to(source_root)
+        secure_copy_approved(path, destination, digest)
+        staged_entries[destination] = digest
     manifest = destination_root / "checkpoint_sha256.txt"
     with manifest.open("w", encoding="utf-8") as handle:
         for target, digest in sorted(
@@ -772,6 +889,57 @@ def write_command(path: Path, command: list[str]) -> None:
     path.write_text(shlex.join(command) + "\n", encoding="utf-8")
 
 
+def process_start_time(pid: int) -> int:
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().split()
+    except FileNotFoundError:
+        return -1
+    if len(fields) < 22:
+        fail(f"malformed /proc stat for process {pid}")
+    return int(fields[21])
+
+
+def process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError as error:
+        fail(f"cannot inspect owned process group {process_group}: {error}")
+    return True
+
+
+def wait_for_group_exit(process_group: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while process_group_exists(process_group):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def terminate_process_group(
+    process: subprocess.Popen[Any],
+    *,
+    leader_start_time: int,
+    process_group: int,
+) -> None:
+    if not process_group_exists(process_group):
+        process.wait()
+        return
+    current_start = process_start_time(process.pid)
+    if current_start not in {-1, leader_start_time}:
+        fail("refusing to signal a reused process identity")
+    if current_start != -1 and os.getpgid(process.pid) != process_group:
+        fail("refusing to signal a process with changed group identity")
+    os.killpg(process_group, signal.SIGTERM)
+    if not wait_for_group_exit(process_group, 10):
+        os.killpg(process_group, signal.SIGKILL)
+        if not wait_for_group_exit(process_group, 10):
+            fail(f"owned process group survived SIGKILL: {process_group}")
+    process.wait()
+
+
 def run_with_lock_monitor(
     command: list[str],
     *,
@@ -790,6 +958,20 @@ def run_with_lock_monitor(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    leader_start_time = process_start_time(process.pid)
+    process_group = os.getpgid(process.pid)
+    if leader_start_time < 0 or process_group != process.pid:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        fail("simulation leader did not establish an owned process group")
+    try:
+        pidfd = os.pidfd_open(process.pid) if hasattr(os, "pidfd_open") else -1
+    except ProcessLookupError:
+        pidfd = -1
     try:
         while process.poll() is None:
             readable, _, _ = select.select(
@@ -808,19 +990,29 @@ def run_with_lock_monitor(
                 verify_checkpoint_guard(checkpoint_guard)
             if inputs_guard.descriptor in readable:
                 verify_checkpoint_guard(inputs_guard)
+        return_code = int(process.wait())
+        if process_group_exists(process_group):
+            if not wait_for_group_exit(process_group, 1):
+                terminate_process_group(
+                    process,
+                    leader_start_time=leader_start_time,
+                    process_group=process_group,
+                )
+                fail("simulation leader exited while descendants survived")
         verify_lock_identity(lock)
         verify_checkpoint_guard(checkpoint_guard)
         verify_checkpoint_guard(inputs_guard)
-        return int(process.returncode)
+        return return_code
     except BaseException:
-        if process.poll() is None:
-            os.killpg(process.pid, 15)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, 9)
-                process.wait()
+        terminate_process_group(
+            process,
+            leader_start_time=leader_start_time,
+            process_group=process_group,
+        )
         raise
+    finally:
+        if pidfd >= 0:
+            os.close(pidfd)
 
 
 def first_stats(path: Path) -> dict[str, int]:
@@ -1089,7 +1281,9 @@ def run_case(
         checkpoint_root, "checkpoint_sha256.txt"
     )
     checkpoint_guard = create_checkpoint_guard(output, source_dir.name)
-    copy_reflink(source_dir, output / source_dir.name, recursive=True)
+    for path, digest in source_entries.items():
+        destination = output / path.relative_to(checkpoint_root)
+        secure_copy_approved(path, destination, digest)
     verify_checkpoint_guard(checkpoint_guard, allow_initialization=True)
     copied_checkpoint = output / source_dir.name
     add_checkpoint_tree_watches(checkpoint_guard, copied_checkpoint)
@@ -1205,6 +1399,7 @@ def stage_inputs(
 ) -> dict[str, Any]:
     inputs = campaign / "inputs"
     inputs.mkdir()
+    reference_campaign = args.reference_campaign.resolve(strict=True)
     artifacts = {
         "gem5": regular_file(args.gem5.resolve(strict=True), executable=True),
         "ramulator_yaml": regular_file(
@@ -1222,15 +1417,39 @@ def stage_inputs(
         "runner": regular_file(
             Path(__file__).resolve(strict=True), executable=True
         ),
+        "launcher": regular_file(
+            args.launcher.resolve(strict=True), executable=True
+        ),
+        "verifier": regular_file(
+            args.ablation_verifier.resolve(strict=True), executable=True
+        ),
         "reference_approval": regular_file(
             args.reference_approval.resolve(strict=True)
         ),
         "reference_result_approval": regular_file(
             args.reference_result_approval.resolve(strict=True)
         ),
-        "reference_config": regular_file(
-            args.reference_campaign.resolve(strict=True)
-            / "runs/virtual/replica_1/config.ini"
+        **{
+            f"reference_config_{replica}": regular_file(
+                reference_campaign
+                / f"runs/virtual/replica_{replica}/config.ini"
+            )
+            for replica in (1, 2, 3)
+        },
+        "reference_results": regular_file(reference_campaign / "results.tsv"),
+        "reference_source": regular_file(reference_campaign / "source.txt"),
+        "reference_attribution": regular_file(
+            reference_campaign / "attribution.tsv"
+        ),
+        "reference_staged_input_manifest": regular_file(
+            reference_campaign / "staged_input_sha256.txt"
+        ),
+        "reference_evidence_manifest": regular_file(
+            reference_campaign / "evidence_sha256.txt"
+        ),
+        "reference_checkpoint_manifest": regular_file(
+            reference_campaign
+            / "checkpoints/virtual/private_checkpoint_sha256.txt"
         ),
         "source_full_config": regular_file(
             args.source_full_correctness.resolve(strict=True)
@@ -1251,11 +1470,33 @@ def stage_inputs(
         "input_20k": inputs / "benchmark/xrage_20k.json",
         "input_full": inputs / "benchmark/xrage_full.json",
         "runner": inputs / "runner.py",
+        "launcher": inputs / "launcher.py",
+        "verifier": inputs / "verifier.py",
         "reference_approval": inputs / "manifests/reference_approval.json",
         "reference_result_approval": (
             inputs / "manifests/reference_result_approval.json"
         ),
-        "reference_config": inputs / "reference/virtual_config.ini",
+        **{
+            f"reference_config_{replica}": (
+                inputs
+                / f"reference_evidence/virtual_config_replica_{replica}.ini"
+            )
+            for replica in (1, 2, 3)
+        },
+        "reference_results": inputs / "reference_evidence/results.tsv",
+        "reference_source": inputs / "reference_evidence/source.txt",
+        "reference_attribution": (
+            inputs / "reference_evidence/attribution.tsv"
+        ),
+        "reference_staged_input_manifest": (
+            inputs / "reference_evidence/staged_input_sha256.txt"
+        ),
+        "reference_evidence_manifest": (
+            inputs / "reference_evidence/evidence_sha256.txt"
+        ),
+        "reference_checkpoint_manifest": (
+            inputs / "reference_evidence/private_checkpoint_sha256.txt"
+        ),
         "source_full_config": inputs / "reference/full_correctness_config.ini",
         "reference_verifier": inputs / "reference_verifier.py",
         "bfs_approval": inputs / "manifests/bfs_approval.json",
@@ -1264,11 +1505,7 @@ def stage_inputs(
     if set(artifacts) != set(expected_hashes):
         fail("expected artifact hash closure differs")
     for name, source in artifacts.items():
-        expect_hash(f"authorized {name}", source, expected_hashes[name])
-        copy_reflink(source, destinations[name])
-        expect_hash(
-            f"staged {name}", destinations[name], expected_hashes[name]
-        )
+        secure_copy_approved(source, destinations[name], expected_hashes[name])
 
     sim_root = args.sim_root.resolve(strict=True)
     tracked_configs = subprocess.run(
@@ -1411,6 +1648,20 @@ def evidence_entries(campaign: Path) -> dict[str, str]:
     return entries
 
 
+def semantic_config_sha256(path: Path) -> str:
+    section = ""
+    normalized: list[str] = []
+    for line in regular_file(path).read_text().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        if re.fullmatch(
+            r"system\.redirect_paths[0-9]+", section
+        ) and line.startswith("host_paths="):
+            line = "host_paths=<REPLICA_RUNTIME_ROOT>"
+        normalized.append(line)
+    return hashlib.sha256(("\n".join(normalized) + "\n").encode()).hexdigest()
+
+
 def reference_result_record(
     result_approval: Path,
     reference_campaign: Path,
@@ -1419,9 +1670,9 @@ def reference_result_record(
 ) -> dict[str, Any]:
     record = load_json(result_approval)
     if (
-        record.get("schema_version") != 1
+        record.get("schema_version") != 2
         or record.get("experiment_id")
-        != "xrage-replicated-reference-result-v1"
+        != "xrage-replicated-reference-result-v2"
         or Path(record.get("reference_campaign", "")).resolve(strict=True)
         != reference_campaign
         or record.get("reference_approval_sha256")
@@ -1457,6 +1708,11 @@ def reference_result_record(
         "3",
     }:
         fail("reference-result config hash closure differs")
+    approved_semantic = evidence.get("virtual_config_semantic_sha256")
+    if not isinstance(approved_semantic, str) or not SHA256_RE.fullmatch(
+        approved_semantic
+    ):
+        fail("reference-result semantic config hash is malformed")
     expected_files.update(
         {
             f"runs/virtual/replica_{replica}/config.ini": digest
@@ -1483,6 +1739,14 @@ def reference_result_record(
             continue
         if manifest_entries.get(relative) != digest:
             fail(f"reference evidence manifest differs: {relative}")
+    semantic_hashes = {
+        semantic_config_sha256(
+            reference_campaign / f"runs/virtual/replica_{replica}/config.ini"
+        )
+        for replica in (1, 2, 3)
+    }
+    if semantic_hashes != {approved_semantic}:
+        fail("reference virtual replica configs are not semantically equal")
 
     fields, rows = read_tsv(reference_campaign / "results.tsv")
     if not {"arm", "replica", "sim_ticks", "valid"}.issubset(fields):
@@ -1586,6 +1850,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sim-root", type=Path, required=True)
     parser.add_argument("--expected-sim-commit", required=True)
+    parser.add_argument("--launcher", type=Path, required=True)
+    parser.add_argument("--ablation-verifier", type=Path, required=True)
     parser.add_argument("--gem5", type=Path, required=True)
     parser.add_argument("--ramulator-yaml", type=Path, required=True)
     parser.add_argument("--ramulator-lib", type=Path, required=True)
@@ -1604,6 +1870,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bfs-campaign", type=Path, required=True)
     parser.add_argument("--bfs-approval", type=Path, required=True)
     parser.add_argument("--bfs-oracle", type=Path, required=True)
+    parser.add_argument("--expected-launcher-sha", required=True)
+    parser.add_argument("--expected-verifier-sha", required=True)
     parser.add_argument("--expected-runner-sha", required=True)
     parser.add_argument("--expected-reference-verifier-sha", required=True)
     parser.add_argument("--expected-reference-approval-sha", required=True)
@@ -1630,6 +1898,8 @@ def main() -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sim_commit):
         fail("--expected-sim-commit must be a full Git object ID")
     expected_sha_values = (
+        args.expected_launcher_sha,
+        args.expected_verifier_sha,
         args.expected_runner_sha,
         args.expected_reference_verifier_sha,
         args.expected_reference_approval_sha,
@@ -1656,11 +1926,30 @@ def main() -> None:
         Path(__file__).resolve(strict=True),
         args.expected_runner_sha,
     )
+    expect_hash(
+        "authorized launcher",
+        args.launcher.resolve(strict=True),
+        args.expected_launcher_sha,
+    )
+    expect_hash(
+        "authorized ablation verifier",
+        args.ablation_verifier.resolve(strict=True),
+        args.expected_verifier_sha,
+    )
 
     output = args.output.resolve()
     if output.exists():
-        fail(f"output already exists: {output}")
-    output.mkdir(parents=True)
+        info = output.lstat()
+        if (
+            output.is_symlink()
+            or not output.is_dir()
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+            or any(output.iterdir())
+        ):
+            fail(f"precreated output staging directory is unsafe: {output}")
+    else:
+        output.mkdir(parents=True, mode=0o700)
     try:
         source_20k = args.source_20k.resolve(strict=True)
         source_full = args.source_full_correctness.resolve(strict=True)
@@ -1721,22 +2010,16 @@ def main() -> None:
             reference_approval,
             reference_verifier,
         )
-        bfs_verification = subprocess.run(
+        bfs_verification = run_python_fd(
+            reference_verifier,
+            args.expected_reference_verifier_sha,
             [
-                "/usr/bin/python3",
-                "-I",
-                str(reference_verifier),
                 "bfs",
                 str(bfs_campaign),
                 str(bfs_approval),
                 "--oracle",
                 str(bfs_oracle),
             ],
-            check=False,
-            env=AUTH_ENV,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
         )
         (output / "bfs_verification.log").write_text(
             bfs_verification.stdout, encoding="utf-8"
@@ -1814,15 +2097,42 @@ def main() -> None:
             "input_20k": args.expected_input_20k_sha,
             "input_full": nested(approval, "workload", "input_sha256"),
             "runner": args.expected_runner_sha,
+            "launcher": args.expected_launcher_sha,
+            "verifier": args.expected_verifier_sha,
             "reference_approval": args.expected_reference_approval_sha,
             "reference_result_approval": (
                 args.expected_reference_result_approval_sha
             ),
-            "reference_config": nested(
+            **{
+                f"reference_config_{replica}": nested(
+                    reference_record,
+                    "evidence",
+                    "virtual_config_sha256",
+                    str(replica),
+                )
+                for replica in (1, 2, 3)
+            },
+            "reference_results": nested(
+                reference_record, "evidence", "results_sha256"
+            ),
+            "reference_source": nested(
+                reference_record, "evidence", "source_sha256"
+            ),
+            "reference_attribution": nested(
+                reference_record, "evidence", "attribution_sha256"
+            ),
+            "reference_staged_input_manifest": nested(
                 reference_record,
                 "evidence",
-                "virtual_config_sha256",
-                "1",
+                "staged_input_manifest_sha256",
+            ),
+            "reference_evidence_manifest": nested(
+                reference_record, "evidence", "manifest_sha256"
+            ),
+            "reference_checkpoint_manifest": nested(
+                reference_record,
+                "evidence",
+                "virtual_checkpoint_manifest_sha256",
             ),
             "source_full_config": nested(
                 approval,
@@ -1847,7 +2157,7 @@ def main() -> None:
             "binary_simulator_commit": binary_commit,
             "execution": "serial",
             "wall_clock_timeout": "none",
-            "environment_policy": "sanitized-fixed-minimal-v2",
+            "environment_policy": "sanitized-private-home-fd-exec-v3",
             "simulation_lock": str(SIMULATION_LOCK),
             "minimum_available_kib": args.minimum_available_kib,
             "screen_overhead_limit": args.screen_overhead_limit,
