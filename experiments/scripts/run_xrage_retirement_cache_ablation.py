@@ -79,6 +79,10 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def bytes_sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
 def expect_hash(label: str, path: Path, expected: str) -> None:
     regular_file(path)
     if not SHA256_RE.fullmatch(expected):
@@ -86,6 +90,26 @@ def expect_hash(label: str, path: Path, expected: str) -> None:
     actual = file_sha256(path)
     if actual != expected:
         fail(f"{label} hash mismatch: expected={expected} actual={actual}")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    regular_file(path)
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        fail(f"invalid JSON in {path}: {error}")
+    if not isinstance(value, dict):
+        fail(f"expected JSON object: {path}")
+    return value
+
+
+def nested(value: dict[str, Any], *keys: str) -> Any:
+    current: Any = value
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            fail(f"JSON is missing {'.'.join(keys)}")
+        current = current[key]
+    return current
 
 
 def read_tsv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -275,10 +299,11 @@ def wait_for_capacity(minimum_available_kib: int, poll_seconds: int) -> int:
             try:
                 descriptor = os.open(
                     SIMULATION_LOCK,
-                    os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
+                    os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
                     0o600,
                 )
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                verify_lock_identity(descriptor)
                 return descriptor
             except BlockingIOError:
                 os.close(descriptor)
@@ -288,6 +313,19 @@ def wait_for_capacity(minimum_available_kib: int, poll_seconds: int) -> int:
             flush=True,
         )
         time.sleep(poll_seconds)
+
+
+def verify_lock_identity(descriptor: int) -> None:
+    descriptor_stat = os.fstat(descriptor)
+    path_stat = SIMULATION_LOCK.lstat()
+    if (
+        not stat.S_ISREG(descriptor_stat.st_mode)
+        or descriptor_stat.st_uid != os.getuid()
+        or descriptor_stat.st_nlink != 1
+        or path_stat.st_dev != descriptor_stat.st_dev
+        or path_stat.st_ino != descriptor_stat.st_ino
+    ):
+        fail(f"simulation lock identity is unsafe: {SIMULATION_LOCK}")
 
 
 def write_command(path: Path, command: list[str]) -> None:
@@ -652,7 +690,11 @@ def run_case(
     return result
 
 
-def stage_inputs(args: argparse.Namespace, campaign: Path) -> dict[str, Any]:
+def stage_inputs(
+    args: argparse.Namespace,
+    campaign: Path,
+    expected_hashes: dict[str, str],
+) -> dict[str, Any]:
     inputs = campaign / "inputs"
     inputs.mkdir()
     artifacts = {
@@ -678,6 +720,8 @@ def stage_inputs(args: argparse.Namespace, campaign: Path) -> dict[str, Any]:
         "reference_verifier": regular_file(
             args.reference_verifier.resolve(strict=True), executable=True
         ),
+        "bfs_approval": regular_file(args.bfs_approval.resolve(strict=True)),
+        "bfs_oracle": regular_file(args.bfs_oracle.resolve(strict=True)),
     }
     destinations = {
         "gem5": inputs / "bin/gem5.opt",
@@ -690,13 +734,31 @@ def stage_inputs(args: argparse.Namespace, campaign: Path) -> dict[str, Any]:
         "runner": inputs / "runner.py",
         "reference_approval": inputs / "manifests/reference_approval.json",
         "reference_verifier": inputs / "reference_verifier.py",
+        "bfs_approval": inputs / "manifests/bfs_approval.json",
+        "bfs_oracle": inputs / "manifests/bfs_oracle.json",
     }
+    if set(artifacts) != set(expected_hashes):
+        fail("expected artifact hash closure differs")
     for name, source in artifacts.items():
+        expect_hash(f"authorized {name}", source, expected_hashes[name])
         copy_reflink(source, destinations[name])
+        expect_hash(
+            f"staged {name}", destinations[name], expected_hashes[name]
+        )
 
     sim_root = args.sim_root.resolve(strict=True)
     tracked_configs = subprocess.run(
-        ["git", "-C", str(sim_root), "ls-files", "-z", "--", "configs"],
+        [
+            "git",
+            "-C",
+            str(sim_root),
+            "ls-tree",
+            "-rz",
+            "--name-only",
+            args.expected_sim_commit,
+            "--",
+            "configs",
+        ],
         check=True,
         stdout=subprocess.PIPE,
     ).stdout.split(b"\0")
@@ -704,10 +766,20 @@ def stage_inputs(args: argparse.Namespace, campaign: Path) -> dict[str, Any]:
         if not raw:
             continue
         relative = Path(os.fsdecode(raw))
-        source = sim_root / relative
-        if source.is_symlink() or not source.is_file():
-            fail(f"tracked config is not a regular file: {source}")
-        copy_reflink(source, inputs / "simulator" / relative)
+        committed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(sim_root),
+                "show",
+                f"{args.expected_sim_commit}:{relative}",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        destination = inputs / "simulator" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(committed)
 
     checkpoint_sources = {
         "screen": (
@@ -745,9 +817,7 @@ def stage_inputs(args: argparse.Namespace, campaign: Path) -> dict[str, Any]:
         path.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
     return {
         "paths": {name: str(path) for name, path in artifacts.items()},
-        "sha256": {
-            name: file_sha256(path) for name, path in artifacts.items()
-        },
+        "sha256": expected_hashes,
         "staged_manifest_sha256": file_sha256(manifest),
     }
 
@@ -860,6 +930,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-campaign", type=Path, required=True)
     parser.add_argument("--reference-approval", type=Path, required=True)
     parser.add_argument("--reference-verifier", type=Path, required=True)
+    parser.add_argument("--bfs-campaign", type=Path, required=True)
+    parser.add_argument("--bfs-approval", type=Path, required=True)
+    parser.add_argument("--bfs-oracle", type=Path, required=True)
+    parser.add_argument("--expected-runner-sha", required=True)
+    parser.add_argument("--expected-reference-verifier-sha", required=True)
+    parser.add_argument("--expected-input-20k-sha", required=True)
+    parser.add_argument("--expected-bfs-approval-sha", required=True)
+    parser.add_argument("--expected-bfs-oracle-sha", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--minimum-available-kib", type=int, default=24 * 1024 * 1024
@@ -874,6 +952,15 @@ def main() -> None:
     args = parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sim_commit):
         fail("--expected-sim-commit must be a full Git object ID")
+    expected_sha_values = (
+        args.expected_runner_sha,
+        args.expected_reference_verifier_sha,
+        args.expected_input_20k_sha,
+        args.expected_bfs_approval_sha,
+        args.expected_bfs_oracle_sha,
+    )
+    if any(not SHA256_RE.fullmatch(value) for value in expected_sha_values):
+        fail("all expected artifact hashes must be full SHA-256 values")
     if args.minimum_available_kib < 0 or args.capacity_poll_seconds <= 0:
         fail("capacity controls must be nonnegative/positive")
     for limit in (args.screen_overhead_limit, args.full_overhead_limit):
@@ -900,6 +987,11 @@ def main() -> None:
     ).stdout
     if status:
         fail("cost worktree is dirty")
+    expect_hash(
+        "authorized runner",
+        Path(__file__).resolve(strict=True),
+        args.expected_runner_sha,
+    )
 
     output = args.output.resolve()
     if output.exists():
@@ -909,14 +1001,40 @@ def main() -> None:
         source_20k = args.source_20k.resolve(strict=True)
         source_full = args.source_full_correctness.resolve(strict=True)
         reference = args.reference_campaign.resolve(strict=True)
+        bfs_campaign = args.bfs_campaign.resolve(strict=True)
+        reference_verifier = args.reference_verifier.resolve(strict=True)
+        reference_approval = args.reference_approval.resolve(strict=True)
+        bfs_approval = args.bfs_approval.resolve(strict=True)
+        bfs_oracle = args.bfs_oracle.resolve(strict=True)
+        expect_hash(
+            "authorized reference verifier",
+            reference_verifier,
+            args.expected_reference_verifier_sha,
+        )
+        expect_hash(
+            "authorized 20K input",
+            args.input_20k.resolve(strict=True),
+            args.expected_input_20k_sha,
+        )
+        expect_hash(
+            "authorized BFS approval",
+            bfs_approval,
+            args.expected_bfs_approval_sha,
+        )
+        expect_hash(
+            "authorized BFS oracle",
+            bfs_oracle,
+            args.expected_bfs_oracle_sha,
+        )
         marker_20k = correctness_marker(source_20k)
         marker_full = correctness_marker(source_full)
+        reference_approval_sha = file_sha256(reference_approval)
         reference_verification = subprocess.run(
             [
-                str(args.reference_verifier.resolve(strict=True)),
+                str(reference_verifier),
                 "xrage",
                 str(reference),
-                str(args.reference_approval.resolve(strict=True)),
+                str(reference_approval),
             ],
             check=False,
             text=True,
@@ -928,7 +1046,74 @@ def main() -> None:
         )
         if reference_verification.returncode != 0:
             fail("external reference-campaign verification failed")
-        ref_ticks = reference_ticks(reference)
+        expect_hash(
+            "reference approval after verification",
+            reference_approval,
+            reference_approval_sha,
+        )
+        bfs_verification = subprocess.run(
+            [
+                str(reference_verifier),
+                "bfs",
+                str(bfs_campaign),
+                str(bfs_approval),
+                "--oracle",
+                str(bfs_oracle),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        (output / "bfs_verification.log").write_text(
+            bfs_verification.stdout, encoding="utf-8"
+        )
+        if bfs_verification.returncode != 0:
+            fail("external upstream BFS verification failed")
+        expect_hash(
+            "reference verifier after dependency checks",
+            reference_verifier,
+            args.expected_reference_verifier_sha,
+        )
+        expect_hash(
+            "BFS approval after verification",
+            bfs_approval,
+            args.expected_bfs_approval_sha,
+        )
+        expect_hash(
+            "BFS oracle after verification",
+            bfs_oracle,
+            args.expected_bfs_oracle_sha,
+        )
+        upstream_ref_ticks = reference_ticks(reference)
+        approval = load_json(reference_approval)
+        expected_hashes = {
+            "gem5": nested(approval, "candidate", "gem5_sha256"),
+            "ramulator_yaml": nested(
+                approval, "candidate", "ramulator_sha256"
+            ),
+            "ramulator_lib": nested(
+                approval, "candidate", "ramulator_library_sha256"
+            ),
+            "virtual_verify": nested(
+                approval, "verifier_binaries", "virtual_sha256"
+            ),
+            "virtual_perf": nested(
+                approval, "benchmark_binaries", "virtual_sha256"
+            ),
+            "input_20k": args.expected_input_20k_sha,
+            "input_full": nested(approval, "workload", "input_sha256"),
+            "runner": args.expected_runner_sha,
+            "reference_approval": reference_approval_sha,
+            "reference_verifier": args.expected_reference_verifier_sha,
+            "bfs_approval": args.expected_bfs_approval_sha,
+            "bfs_oracle": args.expected_bfs_oracle_sha,
+        }
+        if any(
+            not isinstance(value, str) or not SHA256_RE.fullmatch(value)
+            for value in expected_hashes.values()
+        ):
+            fail("approved staged artifact hashes are malformed")
         source = {
             "schema_version": 1,
             "simulator_commit": current_commit,
@@ -938,8 +1123,9 @@ def main() -> None:
             "minimum_available_kib": args.minimum_available_kib,
             "screen_overhead_limit": args.screen_overhead_limit,
             "full_overhead_limit": args.full_overhead_limit,
-            "reference_sim_ticks": ref_ticks,
+            "upstream_reference_sim_ticks": upstream_ref_ticks,
             "reference_campaign": str(reference),
+            "bfs_campaign": str(bfs_campaign),
             "source_20k_campaign": str(source_20k),
             "source_full_correctness_campaign": str(source_full),
             "screen_expected_marker": marker_20k,
@@ -947,7 +1133,7 @@ def main() -> None:
             "candidates": [asdict(candidate) for candidate in CANDIDATES],
             "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        staged = stage_inputs(args, output)
+        staged = stage_inputs(args, output, expected_hashes)
         source["source_artifacts"] = staged
         (output / "source.json").write_text(
             json.dumps(source, indent=2, sort_keys=True) + "\n"
@@ -974,6 +1160,7 @@ def main() -> None:
 
             screen_results: dict[str, dict[str, Any]] = {}
             for candidate in CANDIDATES:
+                verify_lock_identity(lock_descriptor)
                 verify_staged_inputs(output)
                 result = run_case(
                     output,
@@ -1001,6 +1188,48 @@ def main() -> None:
                 and screen_results[name]["sim_ticks"]
                 <= screen_reference * (1 + args.screen_overhead_limit)
             }
+            reference_candidate = CANDIDATES[0]
+            verify_lock_identity(lock_descriptor)
+            reference_correctness = run_case(
+                output,
+                inputs,
+                full_correctness_checkpoint,
+                verify_bin,
+                input_full,
+                reference_candidate,
+                "full_correctness",
+                1,
+                marker_full,
+            )
+            records.append(reference_correctness)
+            if reference_correctness["valid"] != 1:
+                fail("fresh full reference correctness failed")
+            reference_performance: list[dict[str, Any]] = []
+            for replica in range(1, 4):
+                verify_lock_identity(lock_descriptor)
+                verify_staged_inputs(output)
+                result = run_case(
+                    output,
+                    inputs,
+                    full_performance_checkpoint,
+                    perf_bin,
+                    input_full,
+                    reference_candidate,
+                    "full_performance",
+                    replica,
+                    None,
+                )
+                records.append(result)
+                reference_performance.append(result)
+            if any(result["valid"] != 1 for result in reference_performance):
+                fail("fresh full reference performance failed")
+            fresh_reference_ticks = {
+                result["sim_ticks"] for result in reference_performance
+            }
+            if len(fresh_reference_ticks) != 1:
+                fail("fresh full reference replicas are not deterministic")
+            ref_ticks = int(next(iter(fresh_reference_ticks)))
+
             selection_rows: list[dict[str, Any]] = []
             promoted: Candidate | None = None
             promoted_ticks: int | None = None
@@ -1021,6 +1250,7 @@ def main() -> None:
                 if name not in eligible:
                     selection_rows.append(row)
                     continue
+                verify_lock_identity(lock_descriptor)
                 verify_staged_inputs(output)
                 correctness = run_case(
                     output,
@@ -1039,6 +1269,7 @@ def main() -> None:
                     fail(f"full correctness failed for {candidate.name}")
                 performance: list[dict[str, Any]] = []
                 for replica in range(1, 4):
+                    verify_lock_identity(lock_descriptor)
                     verify_staged_inputs(output)
                     result = run_case(
                         output,
@@ -1122,8 +1353,9 @@ def main() -> None:
                 json.dumps(summary, indent=2, sort_keys=True) + "\n"
             )
             verify_staged_inputs(output)
+            verify_lock_identity(lock_descriptor)
+            (output / "execution.complete").write_text("")
             evidence_manifest(output)
-            (output / "campaign.pass").write_text("")
         finally:
             fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
             os.close(lock_descriptor)

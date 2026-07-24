@@ -399,13 +399,120 @@ def candidate_map(source: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return candidates
 
 
-def command_option(command: list[str], prefix: str) -> str:
-    matches = [
-        token[len(prefix) :] for token in command if token.startswith(prefix)
+def command_difference(actual: list[str], expected: list[str]) -> str:
+    for index in range(max(len(actual), len(expected))):
+        actual_token = actual[index] if index < len(actual) else "<missing>"
+        expected_token = (
+            expected[index] if index < len(expected) else "<missing>"
+        )
+        if actual_token != expected_token:
+            return (
+                f"token={index} actual={actual_token!r} "
+                f"expected={expected_token!r} "
+                f"actual_length={len(actual)} expected_length={len(expected)}"
+            )
+    return "unknown difference"
+
+
+def expected_command(
+    campaign: Path,
+    root: Path,
+    phase: str,
+    candidate: dict[str, Any],
+) -> list[str]:
+    inputs = campaign / "inputs"
+    binary = (
+        inputs / "benchmark/xrage_virtual"
+        if phase == "full_performance"
+        else inputs / "benchmark/xrage_virtual_verify"
+    )
+    data = (
+        inputs / "benchmark/xrage_20k.json"
+        if phase == "screen_correctness"
+        else inputs / "benchmark/xrage_full.json"
+    )
+    return [
+        str(inputs / "bin/gem5.opt"),
+        "--listener-mode=off",
+        f"--outdir={root}",
+        str(inputs / "simulator/configs/deprecated/example/se.py"),
+        "--cpu-type",
+        "X86O3CPU",
+        "-r",
+        "1",
+        "-n",
+        "4",
+        "--mem-size",
+        "2GB",
+        "--sys-clock",
+        "3.2GHz",
+        "--cpu-clock",
+        "3.2GHz",
+        "--caches",
+        "--l1d_size=32kB",
+        "--l1d_assoc=8",
+        "--l1d-hwp-type=StridePrefetcher",
+        "--l1d_mshrs=16",
+        "--l1d_write_buffers=8",
+        "--l1i_size=32kB",
+        "--l1i_assoc=8",
+        "--l1i-hwp-type=StridePrefetcher",
+        "--l1i_mshrs=16",
+        "--l1i_write_buffers=8",
+        "--l2cache",
+        "--l2_size=256kB",
+        "--l2_assoc=4",
+        "--l2-hwp-type=StridePrefetcher",
+        "--l2_mshrs=32",
+        "--l2_write_buffers=16",
+        "--l3cache",
+        "--l3_size=8MB",
+        "--l3_assoc=16",
+        "--l3_mshrs=256",
+        "--l3_write_buffers=128",
+        "--l3_ports=4",
+        "--cacheline_size=64",
+        "--mem-type",
+        "Ramulator2",
+        "--ramulator-config",
+        str(inputs / "ramulator.yaml"),
+        "--mem-channels=2",
+        "--maa_ncbus_width=32",
+        "--maa",
+        "--maa_num_maas=1",
+        "--maa_num_tile_elements=16384",
+        "--maa_l2_uncacheable",
+        "--maa_l3_uncacheable",
+        "--maa_num_initial_row_table_slices=32",
+        "--maa_virtual_combine_slots=384",
+        "--maa_virtual_combine_words=4096",
+        "--maa_virtual_combine_ways=4",
+        "--maa_virtual_combine_banks=4",
+        "--maa_virtual_response_slots=96",
+        "--maa_virtual_response_word_pool=480",
+        "--maa_virtual_words_per_cycle=4",
+        "--maa_virtual_max_outstanding_writes=64",
+        "--maa_virtual_masked_writes",
+        f"--maa_retirement_cache_size={candidate['size']}",
+        f"--maa_retirement_cache_assoc={candidate['assoc']}",
+        (
+            "--maa_retirement_cache_response_latency="
+            f"{candidate['response_latency']}"
+        ),
+        f"--maa_retirement_cache_mshrs={candidate['mshrs']}",
+        (
+            "--maa_retirement_cache_targets_per_mshr="
+            f"{candidate['targets_per_mshr']}"
+        ),
+        (
+            "--maa_retirement_cache_write_buffers="
+            f"{candidate['write_buffers']}"
+        ),
+        "--cmd",
+        str(binary),
+        "--options",
+        f"-f {data}",
     ]
-    if len(matches) != 1:
-        fail(f"command does not contain exactly one {prefix} option")
-    return matches[0]
 
 
 def verify_cache_config(path: Path, candidate: dict[str, Any]) -> None:
@@ -440,6 +547,30 @@ def verify_cache_config(path: Path, candidate: dict[str, Any]) -> None:
                     f"effective cache config differs for {key}: "
                     f"expected={value} actual={bank.get(key)!r} path={path}"
                 )
+
+
+def normalized_treatment_config(path: Path) -> str:
+    normalized: list[str] = []
+    section = ""
+    for line in regular_file(path).read_text().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        if "=" in line:
+            key, _ = line.split("=", 1)
+            if (
+                re.fullmatch(r"system\.maa_retirement_caches[0-9]+", section)
+                and key in {"size", "tgts_per_mshr"}
+            ) or (
+                re.fullmatch(
+                    r"system\.maa_retirement_caches[0-9]+"
+                    r"\.tags(?:\.indexing_policy)?",
+                    section,
+                )
+                and key == "size"
+            ):
+                line = f"{key}=<RETIREMENT_CACHE_TREATMENT>"
+        normalized.append(line)
+    return "\n".join(normalized) + "\n"
 
 
 def verify_case(
@@ -505,44 +636,14 @@ def verify_case(
     if expected_marker is not None and markers != [expected_marker]:
         fail(f"exact output marker differs: {root}")
 
-    command = shlex.split(regular_file(root / "restore.command").read_text())
     item = candidates[candidate_name]
-    expected_options = {
-        "--maa_retirement_cache_size=": str(item["size"]),
-        "--maa_retirement_cache_assoc=": str(item["assoc"]),
-        "--maa_retirement_cache_response_latency=": str(
-            item["response_latency"]
-        ),
-        "--maa_retirement_cache_mshrs=": str(item["mshrs"]),
-        "--maa_retirement_cache_targets_per_mshr=": str(
-            item["targets_per_mshr"]
-        ),
-        "--maa_retirement_cache_write_buffers=": str(item["write_buffers"]),
-    }
-    for prefix, expected in expected_options.items():
-        if command_option(command, prefix) != expected:
-            fail(f"command treatment differs for {prefix}: {root}")
-    if command_option(command, "--outdir=") != str(root):
-        fail(f"command outdir differs: {root}")
-    if command[0] != str(campaign / "inputs/bin/gem5.opt"):
-        fail(f"command uses the wrong gem5: {root}")
-    command_index = command.index("--cmd")
-    options_index = command.index("--options")
-    expected_binary = (
-        campaign / "inputs/benchmark/xrage_virtual"
-        if phase == "full_performance"
-        else campaign / "inputs/benchmark/xrage_virtual_verify"
-    )
-    expected_data = (
-        campaign / "inputs/benchmark/xrage_20k.json"
-        if phase == "screen_correctness"
-        else campaign / "inputs/benchmark/xrage_full.json"
-    )
-    if (
-        command[command_index + 1] != str(expected_binary)
-        or command[options_index + 1] != f"-f {expected_data}"
-    ):
-        fail(f"command workload differs: {root}")
+    command = shlex.split(regular_file(root / "restore.command").read_text())
+    expected = expected_command(campaign, root, phase, item)
+    if command != expected:
+        fail(
+            f"restore command differs: {root}: "
+            f"{command_difference(command, expected)}"
+        )
 
 
 def verify_selection(
@@ -584,9 +685,56 @@ def verify_selection(
         or any(row["replica"] != "1" for row in screen_rows)
     ):
         fail("screen matrix is incomplete")
+    screen_reference_config = normalized_treatment_config(
+        campaign / "runs/screen_correctness/reference/replica_1/config.ini"
+    )
+    for name in ("targets1", "compact"):
+        candidate_config = normalized_treatment_config(
+            campaign / f"runs/screen_correctness/{name}/replica_1/config.ini"
+        )
+        if candidate_config != screen_reference_config:
+            fail(f"screen config differs beyond the treatment: {name}")
     reference_screen_ticks = int(screen["reference"]["sim_ticks"])
     screen_limit = float(source["screen_overhead_limit"])
-    reference_ticks = int(source["reference_sim_ticks"])
+    reference_correctness = [
+        row
+        for row in results
+        if row["phase"] == "full_correctness"
+        and row["candidate"] == "reference"
+    ]
+    reference_performance = [
+        row
+        for row in results
+        if row["phase"] == "full_performance"
+        and row["candidate"] == "reference"
+    ]
+    if (
+        len(reference_correctness) != 1
+        or reference_correctness[0]["replica"] != "1"
+        or reference_correctness[0]["valid"] != "1"
+        or len(reference_performance) != 3
+        or {row["replica"] for row in reference_performance} != {"1", "2", "3"}
+        or any(row["valid"] != "1" for row in reference_performance)
+    ):
+        fail("fresh full reference evidence is incomplete")
+    reference_tick_values = {row["sim_ticks"] for row in reference_performance}
+    if len(reference_tick_values) != 1:
+        fail("fresh full reference replicas are not deterministic")
+    reference_ticks = int(next(iter(reference_tick_values)))
+    reference_correctness_config = normalized_treatment_config(
+        campaign / "runs/full_correctness/reference/replica_1/config.ini"
+    )
+    reference_performance_config = normalized_treatment_config(
+        campaign / "runs/full_performance/reference/replica_1/config.ini"
+    )
+    for row in reference_performance[1:]:
+        replica_config = normalized_treatment_config(
+            campaign
+            / "runs/full_performance/reference"
+            / f"replica_{row['replica']}/config.ini"
+        )
+        if replica_config != reference_performance_config:
+            fail("fresh reference replica configs differ")
     promoted_rows = []
     for row in rows:
         name = row["candidate"]
@@ -622,6 +770,21 @@ def verify_selection(
             or {row["replica"] for row in full_performance} != {"1", "2", "3"}
         ):
             fail(f"eligible full candidate lacks three replicas: {name}")
+        candidate_correctness_config = normalized_treatment_config(
+            campaign / f"runs/full_correctness/{name}/replica_1/config.ini"
+        )
+        if candidate_correctness_config != reference_correctness_config:
+            fail(f"full correctness config differs beyond treatment: {name}")
+        for item in full_performance:
+            candidate_performance_config = normalized_treatment_config(
+                campaign
+                / f"runs/full_performance/{name}"
+                / f"replica_{item['replica']}/config.ini"
+            )
+            if candidate_performance_config != reference_performance_config:
+                fail(
+                    f"full performance config differs beyond treatment: {name}"
+                )
         ticks = {item["sim_ticks"] for item in full_performance}
         deterministic = int(len(ticks) == 1)
         if row["full_deterministic"] != str(deterministic):
@@ -646,6 +809,7 @@ def verify_selection(
         row
         for row in results
         if row["phase"] != "screen_correctness"
+        and row["candidate"] != "reference"
         and row["candidate"] not in selected_names
     ]
     if extras:
@@ -704,10 +868,11 @@ def main() -> None:
     if args.campaign.is_symlink():
         fail("campaign path is symlinked")
     campaign = args.campaign.resolve(strict=True)
-    empty_marker = regular_file(campaign / "campaign.pass", empty=True)
-    del empty_marker
+    regular_file(campaign / "execution.complete", empty=True)
+    if (campaign / "campaign.pass").exists():
+        regular_file(campaign / "campaign.pass", empty=True)
     if (campaign / "campaign.fail").exists():
-        fail("campaign has both pass and fail state")
+        fail("campaign has a fail state")
     for path in campaign.rglob("*"):
         if path.is_symlink():
             fail(f"campaign contains a symlink: {path}")
@@ -745,6 +910,8 @@ def main() -> None:
             campaign / "inputs/manifests/reference_approval.json"
         ),
         "reference_verifier": campaign / "inputs/reference_verifier.py",
+        "bfs_approval": campaign / "inputs/manifests/bfs_approval.json",
+        "bfs_oracle": campaign / "inputs/manifests/bfs_oracle.json",
     }
     if set(source_artifacts["sha256"]) != set(staged_by_name):
         fail("source artifact name closure differs")
@@ -774,8 +941,28 @@ def main() -> None:
             + completed.stdout.strip()
         )
     reference_ticks = verified_reference_ticks(reference_campaign)
-    if source.get("reference_sim_ticks") != reference_ticks:
-        fail("source reference simTicks differs from verified campaign")
+    if source.get("upstream_reference_sim_ticks") != reference_ticks:
+        fail("source upstream-reference simTicks differs")
+    bfs_campaign = Path(source["bfs_campaign"]).resolve(strict=True)
+    bfs_verification = subprocess.run(
+        [
+            str(staged_verifier),
+            "bfs",
+            str(bfs_campaign),
+            str(campaign / "inputs/manifests/bfs_approval.json"),
+            "--oracle",
+            str(campaign / "inputs/manifests/bfs_oracle.json"),
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if bfs_verification.returncode != 0:
+        fail(
+            "external BFS dependency verification no longer passes: "
+            + bfs_verification.stdout.strip()
+        )
     screen_marker = verify_source_correctness(
         Path(source["source_20k_campaign"]).resolve(strict=True)
     )
