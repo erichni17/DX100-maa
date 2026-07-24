@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import struct
 import subprocess
@@ -25,6 +26,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RUNTIME_ROOT = Path("/data1/nier/.dx-runtime-state/retirement-cache-ablation")
 PUBLICATION_LOCK = RUNTIME_ROOT / "publication.lock"
+TERMINATION_SIGNALS = frozenset((signal.SIGTERM, signal.SIGHUP, signal.SIGINT))
 INITIAL_ENV = {
     "DX100_SANITIZED_LAUNCH": "1",
     "HOME": "/data1/nier/.dx-runtime-state",
@@ -32,6 +34,81 @@ INITIAL_ENV = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
+SEALED_BOOTSTRAP_SOURCE = """\
+import fcntl
+import hashlib
+import os
+import stat
+import sys
+
+if len(sys.argv) < 3:
+    raise SystemExit("usage: bootstrap LAUNCHER EXPECTED_SHA [ARGS...]")
+source_path = sys.argv[1]
+expected_sha = sys.argv[2]
+source_fd = os.open(
+    source_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+)
+memory_fd = -1
+try:
+    before = os.fstat(source_fd)
+    if not stat.S_ISREG(before.st_mode):
+        raise SystemExit("launcher source is not a regular file")
+    memory_fd = os.memfd_create(
+        "dx100-retirement-cache-launcher",
+        os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
+    digest = hashlib.sha256()
+    while True:
+        block = os.read(source_fd, 1024 * 1024)
+        if not block:
+            break
+        digest.update(block)
+        view = memoryview(block)
+        while view:
+            written = os.write(memory_fd, view)
+            view = view[written:]
+    after = os.fstat(source_fd)
+    if (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_ctime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_ctime_ns,
+    ):
+        raise SystemExit("launcher source changed while authenticating")
+    if digest.hexdigest() != expected_sha:
+        raise SystemExit("launcher SHA-256 mismatch")
+    seals = (
+        fcntl.F_SEAL_SEAL
+        | fcntl.F_SEAL_SHRINK
+        | fcntl.F_SEAL_GROW
+        | fcntl.F_SEAL_WRITE
+    )
+    fcntl.fcntl(memory_fd, fcntl.F_ADD_SEALS, seals)
+    if fcntl.fcntl(memory_fd, fcntl.F_GET_SEALS) != seals:
+        raise SystemExit("launcher memory file was not fully sealed")
+    os.lseek(memory_fd, 0, os.SEEK_SET)
+    os.set_inheritable(memory_fd, True)
+finally:
+    os.close(source_fd)
+if memory_fd < 0:
+    raise SystemExit("failed to create sealed launcher")
+os.execve(
+    "/usr/bin/python3",
+    [
+        "/usr/bin/python3",
+        "-I",
+        f"/proc/self/fd/{memory_fd}",
+        expected_sha,
+        *sys.argv[3:],
+    ],
+    os.environ,
+)
+"""
 FORBIDDEN_ENV = {
     "BASH_ENV",
     "CDPATH",
@@ -83,6 +160,31 @@ class TreeGuard:
     inode: int
 
 
+@dataclass(frozen=True)
+class DirectoryAnchor:
+    path: Path
+    descriptor: int
+    device: int
+    inode: int
+
+
+class TerminationRequested(RuntimeError):
+    pass
+
+
+@dataclass
+class TerminationController:
+    signal_number: int | None = None
+
+    def __call__(self, signal_number: int, _frame: Any) -> None:
+        if self.signal_number is not None:
+            return
+        self.signal_number = signal_number
+        raise TerminationRequested(
+            f"termination requested by signal {signal_number}"
+        )
+
+
 def fail(message: str) -> None:
     raise RuntimeError(message)
 
@@ -94,6 +196,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("expected_verifier_sha")
     parser.add_argument("expected_reference_verifier_sha")
     parser.add_argument("expected_sim_commit")
+    parser.add_argument("sim_root", type=Path)
     parser.add_argument("bfs_campaign", type=Path)
     parser.add_argument("bfs_approval", type=Path)
     parser.add_argument("expected_bfs_approval_sha")
@@ -195,22 +298,22 @@ def fd_sha256(descriptor: int) -> str:
     return digest.hexdigest()
 
 
-def stage_approved(
-    source: Path,
+def stage_approved_descriptor(
+    source_fd: int,
     destination: Path,
     expected: str,
     *,
     executable: bool,
+    label: str,
 ) -> Path:
     if not SHA256_RE.fullmatch(expected):
-        fail(f"malformed expected SHA-256 for {source}")
-    reject_symlink_components(source)
-    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fail(f"malformed expected SHA-256 for {label}")
     destination_fd = -1
     try:
         before = os.fstat(source_fd)
         if not stat.S_ISREG(before.st_mode):
-            fail(f"approved source is not a regular file: {source}")
+            fail(f"approved source is not a regular file: {label}")
+        os.lseek(source_fd, 0, os.SEEK_SET)
         destination_fd = os.open(
             destination,
             os.O_WRONLY
@@ -242,18 +345,127 @@ def stage_approved(
             after.st_size,
             after.st_ctime_ns,
         ):
-            fail(f"approved source changed while staging: {source}")
+            fail(f"approved source changed while staging: {label}")
         if digest.hexdigest() != expected:
-            fail(f"approved source hash mismatch: {source}")
+            fail(f"approved source hash mismatch: {label}")
         os.fchmod(destination_fd, 0o500 if executable else 0o400)
         os.fsync(destination_fd)
     finally:
         if destination_fd >= 0:
             os.close(destination_fd)
-        os.close(source_fd)
     if file_sha256(destination) != expected:
         fail(f"staged approved file hash mismatch: {destination}")
     return destination
+
+
+def stage_approved(
+    source: Path,
+    destination: Path,
+    expected: str,
+    *,
+    executable: bool,
+) -> Path:
+    reject_symlink_components(source)
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        return stage_approved_descriptor(
+            source_fd,
+            destination,
+            expected,
+            executable=executable,
+            label=str(source),
+        )
+    finally:
+        os.close(source_fd)
+
+
+def stage_running_launcher(destination: Path, expected: str) -> Path:
+    match = re.fullmatch(r"/proc/self/fd/([0-9]+)", __file__)
+    if match is None:
+        fail("launcher must execute from the sealed bootstrap descriptor")
+    inherited_fd = int(match.group(1))
+    descriptor = os.dup(inherited_fd)
+    try:
+        required_seals = (
+            fcntl.F_SEAL_SEAL
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_WRITE
+        )
+        try:
+            observed_seals = fcntl.fcntl(descriptor, fcntl.F_GET_SEALS)
+        except OSError as error:
+            fail(f"running launcher is not a sealed memory file: {error}")
+        if observed_seals != required_seals:
+            fail("running launcher does not have all required seals")
+        return stage_approved_descriptor(
+            descriptor,
+            destination,
+            expected,
+            executable=True,
+            label="sealed running launcher",
+        )
+    finally:
+        os.close(descriptor)
+
+
+def install_termination_handlers() -> TerminationController:
+    controller = TerminationController()
+    for signal_number in TERMINATION_SIGNALS:
+        signal.signal(signal_number, controller)
+    return controller
+
+
+def process_start_time(pid: int) -> int:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return -1
+    close = raw.rfind(")")
+    if close < 0:
+        fail(f"malformed /proc stat for process {pid}")
+    fields = raw[close + 2 :].split()
+    if len(fields) < 20:
+        fail(f"malformed /proc stat for process {pid}")
+    return int(fields[19])
+
+
+def terminate_supervised_child(
+    process: subprocess.Popen[str], start_time: int
+) -> None:
+    if process.poll() is not None:
+        process.wait()
+        return
+    current_start = process_start_time(process.pid)
+    if current_start != start_time:
+        fail("refusing to signal a changed child process identity")
+    try:
+        process.send_signal(signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait()
+        return
+    while process.poll() is None:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            current_start = process_start_time(process.pid)
+            if current_start not in {-1, start_time}:
+                fail("supervised child identity changed during termination")
+
+
+def terminate_unbound_child(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        process.wait()
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        fail("newly spawned child did not terminate")
+
+
+def restore_signal_mask(mask: set[signal.Signals]) -> None:
+    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 def git_output(
@@ -319,19 +531,51 @@ def run_python_fd(
     try:
         if fd_sha256(descriptor) != expected:
             fail(f"authorized Python program changed: {script}")
-        return subprocess.run(
-            [
-                "/usr/bin/python3",
-                "-I",
-                f"/proc/self/fd/{descriptor}",
-                *arguments,
-            ],
-            check=False,
-            env=environment,
-            pass_fds=(descriptor,),
-            text=True,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.STDOUT if capture else None,
+        command = [
+            "/usr/bin/python3",
+            "-I",
+            f"/proc/self/fd/{descriptor}",
+            *arguments,
+        ]
+        previous_mask = signal.pthread_sigmask(
+            signal.SIG_BLOCK, TERMINATION_SIGNALS
+        )
+        process: subprocess.Popen[str] | None = None
+        start_time = -1
+        try:
+            process = subprocess.Popen(
+                command,
+                env=environment,
+                pass_fds=(descriptor,),
+                text=True,
+                stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.STDOUT if capture else None,
+                preexec_fn=lambda: restore_signal_mask(previous_mask),
+            )
+            start_time = process_start_time(process.pid)
+            if start_time < 0 and process.poll() is None:
+                fail("could not bind supervised child identity")
+        except BaseException:
+            try:
+                if process is not None:
+                    terminate_unbound_child(process)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            raise
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            if start_time < 0:
+                return_code = process.poll()
+                stdout, _ = process.communicate()
+                return subprocess.CompletedProcess(
+                    command, return_code, stdout=stdout
+                )
+            stdout, _ = process.communicate()
+        except BaseException:
+            terminate_supervised_child(process, start_time)
+            raise
+        return subprocess.CompletedProcess(
+            command, process.returncode, stdout=stdout
         )
     finally:
         os.close(descriptor)
@@ -464,7 +708,70 @@ def seal_tree(root: Path) -> None:
     root.chmod(0o500)
 
 
-def rename_noreplace(source: Path, destination: Path) -> None:
+def open_directory_anchor(path: Path) -> DirectoryAnchor:
+    reject_symlink_components(path)
+    canonical = path.resolve(strict=True)
+    descriptor = os.open(
+        canonical,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    info = os.fstat(descriptor)
+    return DirectoryAnchor(
+        path=canonical,
+        descriptor=descriptor,
+        device=info.st_dev,
+        inode=info.st_ino,
+    )
+
+
+def verify_directory_anchor(anchor: DirectoryAnchor) -> None:
+    descriptor = os.fstat(anchor.descriptor)
+    current = anchor.path.lstat()
+    if (
+        anchor.path.is_symlink()
+        or not anchor.path.is_dir()
+        or descriptor.st_dev != anchor.device
+        or descriptor.st_ino != anchor.inode
+        or current.st_dev != anchor.device
+        or current.st_ino != anchor.inode
+    ):
+        fail(f"publication directory identity changed: {anchor.path}")
+
+
+def verify_child_identity(
+    parent: DirectoryAnchor, name: str, device: int, inode: int
+) -> None:
+    try:
+        current = os.stat(
+            name, dir_fd=parent.descriptor, follow_symlinks=False
+        )
+    except FileNotFoundError:
+        fail(f"publication source disappeared: {name}")
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or current.st_dev != device
+        or current.st_ino != inode
+    ):
+        fail(f"publication child identity changed: {name}")
+
+
+def rename_noreplace(
+    source_name: str,
+    destination_name: str,
+    source_parent: DirectoryAnchor,
+    destination_parent: DirectoryAnchor,
+    *,
+    expected_device: int,
+    expected_inode: int,
+) -> None:
+    if (
+        Path(source_name).name != source_name
+        or Path(destination_name).name != destination_name
+    ):
+        fail("publication names must be single path components")
+    verify_child_identity(
+        source_parent, source_name, expected_device, expected_inode
+    )
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = getattr(libc, "renameat2", None)
     if renameat2 is None:
@@ -477,20 +784,25 @@ def rename_noreplace(source: Path, destination: Path) -> None:
         ctypes.c_uint,
     ]
     renameat2.restype = ctypes.c_int
-    at_fdcwd = -100
     rename_noreplace_flag = 1
     if (
         renameat2(
-            at_fdcwd,
-            os.fsencode(source),
-            at_fdcwd,
-            os.fsencode(destination),
+            source_parent.descriptor,
+            os.fsencode(source_name),
+            destination_parent.descriptor,
+            os.fsencode(destination_name),
             rename_noreplace_flag,
         )
         != 0
     ):
         error = ctypes.get_errno()
         fail(f"atomic campaign publication failed: {os.strerror(error)}")
+    verify_child_identity(
+        destination_parent,
+        destination_name,
+        expected_device,
+        expected_inode,
+    )
 
 
 def verifier_arguments(
@@ -580,6 +892,7 @@ def verify_certificate(
 
 
 def main() -> None:
+    install_termination_handlers()
     check_initial_environment()
     args = parse_args()
     hashes = (
@@ -600,8 +913,7 @@ def main() -> None:
     if COMMIT_RE.fullmatch(args.expected_sim_commit) is None:
         fail("expected simulator commit must be a full Git object ID")
 
-    launcher = Path(__file__).resolve(strict=True)
-    sim_root = launcher.parents[2]
+    sim_root = args.sim_root.resolve(strict=True)
     runner = (
         sim_root / "experiments/scripts/run_xrage_retirement_cache_ablation.py"
     )
@@ -625,11 +937,14 @@ def main() -> None:
     input_20k = Path(
         "/data1/nier/DX100/experiments/inputs/xrage_gather0_20k.json"
     )
-    output = args.output.absolute()
-    reject_symlink_components(output.parent)
-    output.parent.resolve(strict=True)
+    requested_output = args.output.absolute()
+    if requested_output.name in {"", ".", ".."}:
+        fail("output must name a child of an existing directory")
+    output_parent = open_directory_anchor(requested_output.parent)
+    output = output_parent.path / requested_output.name
 
     safe_runtime_root()
+    runtime_parent = open_directory_anchor(RUNTIME_ROOT)
     execution_root = Path(tempfile.mkdtemp(prefix="launch.", dir=RUNTIME_ROOT))
     execution_root.chmod(0o700)
     home = execution_root / "home"
@@ -638,11 +953,9 @@ def main() -> None:
     verify_git_state(sim_root, args.expected_sim_commit, environment)
 
     staged = {
-        "launcher": stage_approved(
-            launcher,
+        "launcher": stage_running_launcher(
             execution_root / "launcher.py",
             args.expected_self_sha,
-            executable=True,
         ),
         "runner": stage_approved(
             runner,
@@ -709,6 +1022,7 @@ def main() -> None:
             fail("unsafe publication lock")
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
+        verify_directory_anchor(output_parent)
         if output.exists() or output.is_symlink():
             if (
                 output.is_symlink()
@@ -742,6 +1056,7 @@ def main() -> None:
                     )
                 verify_tree_guard(guard)
                 verify_certificate(certificate, output, args)
+                verify_directory_anchor(output_parent)
             finally:
                 close_guard(guard)
             print(f"retirement-cache ablation already verified: {output}")
@@ -868,14 +1183,29 @@ def main() -> None:
             verify_certificate(certificate, staging, args)
             verify_git_state(sim_root, args.expected_sim_commit, environment)
             verify_tree_guard(guard)
-            rename_noreplace(staging, output)
-            parent_fd = os.open(
-                output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+            verify_directory_anchor(runtime_parent)
+            verify_directory_anchor(output_parent)
+            transit_name = f".publish.{os.getpid()}.{os.urandom(16).hex()}"
+            rename_noreplace(
+                staging.name,
+                transit_name,
+                runtime_parent,
+                runtime_parent,
+                expected_device=guard.device,
+                expected_inode=guard.inode,
             )
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
+            rename_noreplace(
+                transit_name,
+                output.name,
+                runtime_parent,
+                output_parent,
+                expected_device=guard.device,
+                expected_inode=guard.inode,
+            )
+            os.fsync(runtime_parent.descriptor)
+            os.fsync(output_parent.descriptor)
+            verify_directory_anchor(runtime_parent)
+            verify_directory_anchor(output_parent)
         finally:
             close_guard(guard)
         print(
@@ -885,6 +1215,8 @@ def main() -> None:
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
+        os.close(runtime_parent.descriptor)
+        os.close(output_parent.descriptor)
         try:
             shutil.rmtree(execution_root)
         except OSError:

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
+import fcntl
 import hashlib
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -48,6 +51,93 @@ class TemporaryDirectoryTest(unittest.TestCase):
 
 
 class SanitizedLauncherTests(TemporaryDirectoryTest):
+    def run_bootstrap(self, launcher, expected_sha, *arguments):
+        return subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-I",
+                "-c",
+                LAUNCHER.SEALED_BOOTSTRAP_SOURCE,
+                str(launcher),
+                expected_sha,
+                *map(str, arguments),
+            ],
+            check=False,
+            env={
+                "HOME": str(self.root),
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            },
+            text=True,
+            capture_output=True,
+        )
+
+    def test_bootstrap_rejects_hash_before_launcher_execution(self):
+        marker = self.root / "executed"
+        launcher = self.root / "malicious.py"
+        launcher.write_text(
+            "from pathlib import Path\n" f"Path({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
+        completed = self.run_bootstrap(launcher, "0" * 64)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("launcher SHA-256 mismatch", completed.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_bootstrap_executes_sealed_fd_with_expected_arguments(self):
+        record = self.root / "record.json"
+        launcher = self.root / "inspect.py"
+        launcher.write_text(
+            "import fcntl, json, sys\n"
+            "from pathlib import Path\n"
+            "fd = int(__file__.rsplit('/', 1)[1])\n"
+            "Path(sys.argv[2]).write_text(json.dumps({\n"
+            "    'argv': sys.argv[1:],\n"
+            "    'seals': fcntl.fcntl(fd, fcntl.F_GET_SEALS),\n"
+            "}))\n",
+            encoding="utf-8",
+        )
+        digest = hashlib.sha256(launcher.read_bytes()).hexdigest()
+        completed = self.run_bootstrap(launcher, digest, record, "payload")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        observed = json.loads(record.read_text())
+        self.assertEqual(observed["argv"], [digest, str(record), "payload"])
+        required_seals = (
+            fcntl.F_SEAL_SEAL
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_WRITE
+        )
+        self.assertEqual(observed["seals"], required_seals)
+
+    def test_fd_executed_program_can_authenticate_resolved_self(self):
+        program = self.root / "self_auth.py"
+        program.write_text(
+            "import hashlib, sys\n"
+            "from pathlib import Path\n"
+            "self_path = Path(__file__).resolve(strict=True)\n"
+            "if self_path.is_symlink() or not self_path.is_file():\n"
+            "    raise SystemExit(2)\n"
+            "if hashlib.sha256(self_path.read_bytes()).hexdigest() != "
+            "sys.argv[1]:\n"
+            "    raise SystemExit(3)\n",
+            encoding="utf-8",
+        )
+        digest = hashlib.sha256(program.read_bytes()).hexdigest()
+        completed = LAUNCHER.run_python_fd(
+            program,
+            digest,
+            [digest],
+            {
+                "HOME": str(self.root),
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            },
+        )
+        self.assertEqual(completed.returncode, 0)
+
     def test_direct_execution_cannot_load_python_startup_code(self):
         launcher = self.root / "launcher.py"
         launcher.write_bytes(
@@ -165,6 +255,59 @@ class ApprovalGeneratorTests(TemporaryDirectoryTest):
             GENERATOR.atomic_write_noreplace(output, "replacement\n")
         self.assertEqual(output.read_text(), "existing\n")
 
+    def test_certificate_publication_never_clobbers_existing_output(self):
+        output = self.root / "certificate.json"
+        output.write_text("existing\n", encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "created concurrently"):
+            VERIFIER.atomic_write_noreplace(output, "replacement\n")
+        self.assertEqual(output.read_text(), "existing\n")
+
+    def test_atomic_publication_uses_one_open_parent_descriptor(self):
+        output = self.root / "approval.json"
+        real_link = GENERATOR.link_fd_noreplace
+        observed = {}
+
+        def inspect_link(descriptor, parent_fd, destination):
+            observed["descriptor"] = descriptor
+            observed["parent_fd"] = parent_fd
+            observed["destination"] = destination
+            return real_link(descriptor, parent_fd, destination)
+
+        with mock.patch.object(
+            GENERATOR, "link_fd_noreplace", side_effect=inspect_link
+        ):
+            GENERATOR.atomic_write_noreplace(output, "approved\n")
+        self.assertEqual(output.read_text(), "approved\n")
+        self.assertIsInstance(observed["descriptor"], int)
+        self.assertIsInstance(observed["parent_fd"], int)
+        self.assertEqual(observed["destination"], output.name)
+
+    def test_atomic_publication_detects_parent_replacement(self):
+        parent = self.root / "parent"
+        moved = self.root / "parent.moved"
+        parent.mkdir()
+        output = parent / "approval.json"
+        real_link = GENERATOR.link_fd_noreplace
+
+        def replace_parent_then_link(descriptor, parent_fd, destination):
+            parent.rename(moved)
+            parent.mkdir()
+            return real_link(descriptor, parent_fd, destination)
+
+        with (
+            mock.patch.object(
+                GENERATOR,
+                "link_fd_noreplace",
+                side_effect=replace_parent_then_link,
+            ),
+            self.assertRaisesRegex(
+                RuntimeError, "publication directory changed"
+            ),
+        ):
+            GENERATOR.atomic_write_noreplace(output, "approved\n")
+        self.assertFalse(output.exists())
+        self.assertEqual((moved / "approval.json").read_text(), "approved\n")
+
     def test_replica_config_semantics_reject_non_runtime_difference(self):
         first = self.root / "first.ini"
         second = self.root / "second.ini"
@@ -244,6 +387,187 @@ class RecursiveCampaignGuardTests(TemporaryDirectoryTest):
 
 
 class ProcessGroupCleanupTests(TemporaryDirectoryTest):
+    def test_real_launcher_signal_during_identity_binding_cleans_child(self):
+        child = self.root / "child.py"
+        child.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+        digest = hashlib.sha256(child.read_bytes()).hexdigest()
+        pid_record = self.root / "launcher-child.pid"
+        completion = self.root / "launcher-cleanup.complete"
+        harness = self.root / "launcher_signal_harness.py"
+        harness.write_text(
+            "import importlib.util, os, signal, sys\n"
+            "from pathlib import Path\n"
+            f"script = Path({str(SCRIPTS / 'launch_xrage_retirement_cache_ablation.py')!r})\n"
+            "spec = importlib.util.spec_from_file_location('target', script)\n"
+            "target = importlib.util.module_from_spec(spec)\n"
+            "sys.modules['target'] = target\n"
+            "spec.loader.exec_module(target)\n"
+            "target.install_termination_handlers()\n"
+            "original = target.process_start_time\n"
+            "def inject(pid):\n"
+            f"    Path({str(pid_record)!r}).write_text(str(pid))\n"
+            "    os.kill(os.getpid(), signal.SIGTERM)\n"
+            "    return original(pid)\n"
+            "target.process_start_time = inject\n"
+            "try:\n"
+            f"    target.run_python_fd(Path({str(child)!r}), {digest!r}, [], "
+            f"{{'HOME': {str(self.root)!r}, 'LANG': 'C', 'LC_ALL': 'C', "
+            "'PATH': '/usr/bin:/bin'})\n"
+            "except target.TerminationRequested:\n"
+            f"    Path({str(completion)!r}).touch()\n"
+            "else:\n"
+            "    raise SystemExit('termination was not delivered')\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", str(harness)],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completion.exists())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pid_record.read_text()), 0)
+
+    def test_real_runner_signal_during_identity_binding_cleans_session(self):
+        pid_record = self.root / "runner-child.pid"
+        completion = self.root / "runner-cleanup.complete"
+        harness = self.root / "runner_signal_harness.py"
+        harness.write_text(
+            "import importlib.util, os, signal, subprocess, sys\n"
+            "from pathlib import Path\n"
+            f"script = Path({str(SCRIPTS / 'run_xrage_retirement_cache_ablation.py')!r})\n"
+            "spec = importlib.util.spec_from_file_location('target', script)\n"
+            "target = importlib.util.module_from_spec(spec)\n"
+            "sys.modules['target'] = target\n"
+            "spec.loader.exec_module(target)\n"
+            "target.install_termination_handlers()\n"
+            "original = target.process_identity\n"
+            "injected = False\n"
+            "def inject(pid):\n"
+            "    global injected\n"
+            "    if not injected:\n"
+            "        injected = True\n"
+            f"        Path({str(pid_record)!r}).write_text(str(pid))\n"
+            "        os.kill(os.getpid(), signal.SIGTERM)\n"
+            "    return original(pid)\n"
+            "target.process_identity = inject\n"
+            "try:\n"
+            "    target.run_with_lock_monitor(\n"
+            "        ['/bin/sleep', '60'],\n"
+            f"        cwd=Path({str(self.root)!r}),\n"
+            "        environment={'PATH': '/usr/bin:/bin'},\n"
+            "        log=subprocess.DEVNULL,\n"
+            "        lock=None,\n"
+            "        checkpoint_guard=None,\n"
+            "        inputs_guard=None,\n"
+            "    )\n"
+            "except target.TerminationRequested:\n"
+            f"    Path({str(completion)!r}).touch()\n"
+            "else:\n"
+            "    raise SystemExit('termination was not delivered')\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", str(harness)],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completion.exists())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pid_record.read_text()), 0)
+
+    def test_launcher_cleans_child_if_identity_binding_is_interrupted(self):
+        program = self.root / "program.py"
+        program.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        digest = hashlib.sha256(program.read_bytes()).hexdigest()
+        child = mock.Mock(pid=123)
+        with (
+            mock.patch.object(
+                LAUNCHER.subprocess, "Popen", return_value=child
+            ),
+            mock.patch.object(
+                LAUNCHER,
+                "process_start_time",
+                side_effect=LAUNCHER.TerminationRequested("injected"),
+            ),
+            mock.patch.object(
+                LAUNCHER, "terminate_unbound_child"
+            ) as terminate,
+        ):
+            with self.assertRaises(LAUNCHER.TerminationRequested):
+                LAUNCHER.run_python_fd(
+                    program,
+                    digest,
+                    [],
+                    {
+                        "HOME": str(self.root),
+                        "LANG": "C",
+                        "LC_ALL": "C",
+                        "PATH": "/usr/bin:/bin",
+                    },
+                )
+        terminate.assert_called_once_with(child)
+
+    def test_runner_cleans_session_if_identity_binding_is_interrupted(self):
+        child = mock.Mock(pid=456)
+        with (
+            mock.patch.object(RUNNER.subprocess, "Popen", return_value=child),
+            mock.patch.object(
+                RUNNER,
+                "process_identity",
+                side_effect=RUNNER.TerminationRequested("injected"),
+            ),
+            mock.patch.object(
+                RUNNER, "terminate_unbound_new_session"
+            ) as terminate,
+        ):
+            with self.assertRaises(RUNNER.TerminationRequested):
+                RUNNER.run_with_lock_monitor(
+                    ["/bin/false"],
+                    cwd=self.root,
+                    environment={},
+                    log=subprocess.DEVNULL,
+                    lock=mock.Mock(),
+                    checkpoint_guard=mock.Mock(),
+                    inputs_guard=mock.Mock(),
+                )
+        terminate.assert_called_once_with(child)
+
+    def test_proc_stat_parser_handles_parentheses_in_command_name(self):
+        fields = ["S", "1", "456", "456"] + ["0"] * 16
+        fields[19] = "987654"
+        raw = "123 (command ) with spaces) " + " ".join(fields)
+        with mock.patch.object(Path, "read_text", return_value=raw):
+            identity = RUNNER.process_identity(123)
+        self.assertEqual(
+            identity,
+            RUNNER.ProcessIdentity(
+                pid=123,
+                start_time=987654,
+                process_group=456,
+                session=456,
+            ),
+        )
+
+    def test_first_termination_signal_raises_and_later_signals_are_ignored(
+        self,
+    ):
+        for controller_class, exception_class in (
+            (RUNNER.TerminationController, RUNNER.TerminationRequested),
+            (LAUNCHER.TerminationController, LAUNCHER.TerminationRequested),
+        ):
+            controller = controller_class()
+            with self.assertRaises(exception_class):
+                controller(signal.SIGTERM, None)
+            controller(signal.SIGINT, None)
+            self.assertEqual(controller.signal_number, signal.SIGTERM)
+
     def test_exited_leader_descendants_are_terminated(self):
         program = self.root / "fork_child.py"
         program.write_text(
@@ -258,16 +582,208 @@ class ProcessGroupCleanupTests(TemporaryDirectoryTest):
             ["/usr/bin/python3", str(program)],
             start_new_session=True,
         )
-        start_time = RUNNER.process_start_time(process.pid)
-        process_group = os.getpgid(process.pid)
-        process.wait(timeout=5)
-        self.assertTrue(RUNNER.process_group_exists(process_group))
-        RUNNER.terminate_process_group(
+        leader = RUNNER.process_identity(process.pid)
+        self.addCleanup(
+            RUNNER.terminate_process_session,
             process,
-            leader_start_time=start_time,
-            process_group=process_group,
+            leader_start_time=leader.start_time,
+            session_id=leader.session,
         )
-        self.assertFalse(RUNNER.process_group_exists(process_group))
+        process.wait(timeout=5)
+        self.assertTrue(RUNNER.session_members(leader.session))
+        RUNNER.terminate_process_session(
+            process,
+            leader_start_time=leader.start_time,
+            session_id=leader.session,
+        )
+        self.assertFalse(RUNNER.session_members(leader.session))
+
+    def test_changed_process_identity_is_not_signaled(self):
+        observed = RUNNER.ProcessIdentity(
+            pid=123,
+            start_time=1,
+            process_group=456,
+            session=456,
+        )
+        changed = RUNNER.ProcessIdentity(
+            pid=123,
+            start_time=2,
+            process_group=789,
+            session=789,
+        )
+        with (
+            mock.patch.object(
+                RUNNER, "session_members", return_value=[observed]
+            ),
+            mock.patch.object(
+                RUNNER, "process_identity", return_value=changed
+            ),
+            mock.patch.object(RUNNER.os, "pidfd_open", return_value=10),
+            mock.patch.object(RUNNER.os, "close"),
+            mock.patch.object(
+                RUNNER.signal, "pidfd_send_signal"
+            ) as send_signal,
+        ):
+            self.assertEqual(
+                RUNNER.signal_session_members(456, signal.SIGTERM), 0
+            )
+        send_signal.assert_not_called()
+
+    def test_cleanup_reaps_live_session_leader_before_exit_wait(self):
+        process = subprocess.Popen(
+            ["/usr/bin/python3", "-c", "import time; time.sleep(60)"],
+            start_new_session=True,
+        )
+        leader = RUNNER.process_identity(process.pid)
+        self.addCleanup(
+            RUNNER.terminate_process_session,
+            process,
+            leader_start_time=leader.start_time,
+            session_id=leader.session,
+        )
+        RUNNER.terminate_process_session(
+            process,
+            leader_start_time=leader.start_time,
+            session_id=leader.session,
+        )
+        self.assertIsNotNone(process.returncode)
+        self.assertFalse(RUNNER.session_members(leader.session))
+
+    def test_cleanup_reaches_descendant_in_separate_process_group(self):
+        child_pid = self.root / "child.pid"
+        program = self.root / "separate_group.py"
+        program.write_text(
+            "import os, sys, time\n"
+            "from pathlib import Path\n"
+            "if os.fork() == 0:\n"
+            "    os.setpgid(0, 0)\n"
+            "    Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "    time.sleep(60)\n"
+            "else:\n"
+            "    time.sleep(60)\n",
+            encoding="utf-8",
+        )
+        process = subprocess.Popen(
+            ["/usr/bin/python3", str(program), str(child_pid)],
+            start_new_session=True,
+        )
+        leader = RUNNER.process_identity(process.pid)
+        self.addCleanup(
+            RUNNER.terminate_process_session,
+            process,
+            leader_start_time=leader.start_time,
+            session_id=leader.session,
+        )
+        for _ in range(100):
+            if child_pid.exists():
+                break
+            time.sleep(0.01)
+        self.assertTrue(child_pid.exists())
+        groups = {
+            member.process_group
+            for member in RUNNER.session_members(leader.session)
+        }
+        self.assertGreaterEqual(len(groups), 2)
+        RUNNER.terminate_process_session(
+            process,
+            leader_start_time=leader.start_time,
+            session_id=leader.session,
+        )
+        self.assertFalse(RUNNER.session_members(leader.session))
+
+    def test_launcher_termination_waits_for_child_cleanup(self):
+        marker = self.root / "cleaned"
+        program = self.root / "signal_child.py"
+        program.write_text(
+            "import signal, sys, time\n"
+            "from pathlib import Path\n"
+            "def stop(_signal, _frame):\n"
+            "    Path(sys.argv[1]).touch()\n"
+            "    raise SystemExit(0)\n"
+            "signal.signal(signal.SIGTERM, stop)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(60)\n",
+            encoding="utf-8",
+        )
+        process = subprocess.Popen(
+            ["/usr/bin/python3", str(program), str(marker)],
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        self.assertEqual(process.stdout.readline().strip(), "ready")
+        start_time = LAUNCHER.process_start_time(process.pid)
+        LAUNCHER.terminate_supervised_child(process, start_time)
+        process.stdout.close()
+        self.assertEqual(process.returncode, 0)
+        self.assertTrue(marker.exists())
+
+
+class PublicationAnchorTests(TemporaryDirectoryTest):
+    def test_replaced_destination_parent_is_rejected(self):
+        original = self.root / "destination"
+        moved = self.root / "destination.moved"
+        original.mkdir()
+        anchor = LAUNCHER.open_directory_anchor(original)
+        self.addCleanup(os.close, anchor.descriptor)
+        original.rename(moved)
+        original.mkdir()
+        with self.assertRaisesRegex(
+            RuntimeError, "publication directory identity changed"
+        ):
+            LAUNCHER.verify_directory_anchor(anchor)
+
+    def test_directory_rename_never_clobbers_existing_destination(self):
+        source_parent_path = self.root / "source"
+        destination_parent_path = self.root / "destination"
+        source_parent_path.mkdir()
+        destination_parent_path.mkdir()
+        (source_parent_path / "campaign").mkdir()
+        (destination_parent_path / "campaign").mkdir()
+        source = LAUNCHER.open_directory_anchor(source_parent_path)
+        destination = LAUNCHER.open_directory_anchor(destination_parent_path)
+        self.addCleanup(os.close, source.descriptor)
+        self.addCleanup(os.close, destination.descriptor)
+        source_info = (source_parent_path / "campaign").lstat()
+        with self.assertRaisesRegex(
+            RuntimeError, "atomic campaign publication failed"
+        ):
+            LAUNCHER.rename_noreplace(
+                "campaign",
+                "campaign",
+                source,
+                destination,
+                expected_device=source_info.st_dev,
+                expected_inode=source_info.st_ino,
+            )
+        self.assertTrue((source_parent_path / "campaign").is_dir())
+        self.assertTrue((destination_parent_path / "campaign").is_dir())
+
+    def test_replaced_source_inode_is_never_published(self):
+        source_parent_path = self.root / "source"
+        destination_parent_path = self.root / "destination"
+        source_parent_path.mkdir()
+        destination_parent_path.mkdir()
+        original = source_parent_path / "campaign"
+        original.mkdir()
+        original_info = original.lstat()
+        original.rename(source_parent_path / "verified.moved")
+        original.mkdir()
+        source = LAUNCHER.open_directory_anchor(source_parent_path)
+        destination = LAUNCHER.open_directory_anchor(destination_parent_path)
+        self.addCleanup(os.close, source.descriptor)
+        self.addCleanup(os.close, destination.descriptor)
+        with self.assertRaisesRegex(
+            RuntimeError, "publication child identity changed"
+        ):
+            LAUNCHER.rename_noreplace(
+                "campaign",
+                "published",
+                source,
+                destination,
+                expected_device=original_info.st_dev,
+                expected_inode=original_info.st_ino,
+            )
+        self.assertFalse((destination_parent_path / "published").exists())
 
 
 class ReferenceResultTests(TemporaryDirectoryTest):

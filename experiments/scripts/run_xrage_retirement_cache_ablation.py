@@ -38,6 +38,7 @@ MARKER_RE = re.compile(
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SIMULATION_LOCK = Path("/data1/nier/.dx100-virtual-simulation.lock")
+TERMINATION_SIGNALS = frozenset((signal.SIGTERM, signal.SIGHUP, signal.SIGINT))
 IN_ATTRIB = 0x00000004
 IN_MODIFY = 0x00000002
 IN_CLOSE_WRITE = 0x00000008
@@ -126,6 +127,31 @@ class CheckpointGuard:
     inode: int
 
 
+@dataclass(frozen=True)
+class ProcessIdentity:
+    pid: int
+    start_time: int
+    process_group: int
+    session: int
+
+
+class TerminationRequested(RuntimeError):
+    pass
+
+
+@dataclass
+class TerminationController:
+    signal_number: int | None = None
+
+    def __call__(self, signal_number: int, _frame: Any) -> None:
+        if self.signal_number is not None:
+            return
+        self.signal_number = signal_number
+        raise TerminationRequested(
+            f"termination requested by signal {signal_number}"
+        )
+
+
 CANDIDATES = (
     Candidate("reference", "1kB", 4, 1, 16, 16, 16),
     Candidate("targets1", "1kB", 4, 1, 16, 1, 16),
@@ -136,6 +162,17 @@ PROMOTION_ORDER = ("compact", "targets1")
 
 def fail(message: str) -> None:
     raise RuntimeError(message)
+
+
+def install_termination_handlers() -> TerminationController:
+    controller = TerminationController()
+    for signal_number in TERMINATION_SIGNALS:
+        signal.signal(signal_number, controller)
+    return controller
+
+
+def restore_signal_mask(mask: set[signal.Signals]) -> None:
+    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 def regular_file(path: Path, *, executable: bool = False) -> Path:
@@ -889,55 +926,105 @@ def write_command(path: Path, command: list[str]) -> None:
     path.write_text(shlex.join(command) + "\n", encoding="utf-8")
 
 
-def process_start_time(pid: int) -> int:
+def process_identity(pid: int) -> ProcessIdentity | None:
     try:
-        fields = Path(f"/proc/{pid}/stat").read_text().split()
+        raw = Path(f"/proc/{pid}/stat").read_text()
     except FileNotFoundError:
-        return -1
-    if len(fields) < 22:
+        return None
+    close = raw.rfind(")")
+    if close < 0:
         fail(f"malformed /proc stat for process {pid}")
-    return int(fields[21])
+    fields = raw[close + 2 :].split()
+    if len(fields) < 20:
+        fail(f"malformed /proc stat for process {pid}")
+    return ProcessIdentity(
+        pid=pid,
+        start_time=int(fields[19]),
+        process_group=int(fields[2]),
+        session=int(fields[3]),
+    )
 
 
-def process_group_exists(process_group: int) -> bool:
-    try:
-        os.killpg(process_group, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError as error:
-        fail(f"cannot inspect owned process group {process_group}: {error}")
-    return True
+def session_members(session_id: int) -> list[ProcessIdentity]:
+    members: list[ProcessIdentity] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        identity = process_identity(int(entry.name))
+        if identity is not None and identity.session == session_id:
+            members.append(identity)
+    return sorted(members, key=lambda member: member.pid)
 
 
-def wait_for_group_exit(process_group: int, seconds: float) -> bool:
+def signal_session_members(session_id: int, signal_number: int) -> int:
+    signaled = 0
+    for member in session_members(session_id):
+        try:
+            descriptor = os.pidfd_open(member.pid)
+        except ProcessLookupError:
+            continue
+        try:
+            current = process_identity(member.pid)
+            if current is None:
+                continue
+            if (
+                current.start_time != member.start_time
+                or current.session != session_id
+            ):
+                continue
+            try:
+                signal.pidfd_send_signal(descriptor, signal_number, None, 0)
+            except ProcessLookupError:
+                continue
+            signaled += 1
+        finally:
+            os.close(descriptor)
+    return signaled
+
+
+def wait_for_session_exit(session_id: int, seconds: float) -> bool:
     deadline = time.monotonic() + seconds
-    while process_group_exists(process_group):
+    while session_members(session_id):
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.05)
     return True
 
 
-def terminate_process_group(
+def terminate_process_session(
     process: subprocess.Popen[Any],
     *,
-    leader_start_time: int,
-    process_group: int,
+    leader_start_time: int | None,
+    session_id: int,
 ) -> None:
-    if not process_group_exists(process_group):
-        process.wait()
-        return
-    current_start = process_start_time(process.pid)
-    if current_start not in {-1, leader_start_time}:
+    current = process_identity(process.pid)
+    if (
+        leader_start_time is not None
+        and current is not None
+        and current.start_time != leader_start_time
+    ):
         fail("refusing to signal a reused process identity")
-    if current_start != -1 and os.getpgid(process.pid) != process_group:
-        fail("refusing to signal a process with changed group identity")
-    os.killpg(process_group, signal.SIGTERM)
-    if not wait_for_group_exit(process_group, 10):
-        os.killpg(process_group, signal.SIGKILL)
-        if not wait_for_group_exit(process_group, 10):
-            fail(f"owned process group survived SIGKILL: {process_group}")
-    process.wait()
+    if current is not None and current.session != session_id:
+        fail("refusing to signal a process with changed session identity")
+    signal_session_members(session_id, signal.SIGTERM)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        signal_session_members(session_id, signal.SIGKILL)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            fail(f"simulation session leader survived SIGKILL: {session_id}")
+    if not wait_for_session_exit(session_id, 10):
+        signal_session_members(session_id, signal.SIGKILL)
+        if not wait_for_session_exit(session_id, 10):
+            fail(f"simulation session survived SIGKILL: {session_id}")
+
+
+def terminate_unbound_new_session(process: subprocess.Popen[Any]) -> None:
+    terminate_process_session(
+        process, leader_start_time=None, session_id=process.pid
+    )
 
 
 def run_with_lock_monitor(
@@ -950,29 +1037,37 @@ def run_with_lock_monitor(
     checkpoint_guard: CheckpointGuard,
     inputs_guard: CheckpointGuard,
 ) -> int:
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=environment,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
+    previous_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK, TERMINATION_SIGNALS
     )
-    leader_start_time = process_start_time(process.pid)
-    process_group = os.getpgid(process.pid)
-    if leader_start_time < 0 or process_group != process.pid:
-        process.terminate()
+    process: subprocess.Popen[Any] | None = None
+    leader: ProcessIdentity | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=environment,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            preexec_fn=lambda: restore_signal_mask(previous_mask),
+        )
+        leader = process_identity(process.pid)
+        if leader is None or not (
+            leader.pid == leader.process_group == leader.session
+        ):
+            fail("simulation leader did not establish an owned process group")
+    except BaseException:
         try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        fail("simulation leader did not establish an owned process group")
+            if process is not None:
+                terminate_unbound_new_session(process)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        raise
+    leader_start_time = leader.start_time
+    session_id = leader.session
     try:
-        pidfd = os.pidfd_open(process.pid) if hasattr(os, "pidfd_open") else -1
-    except ProcessLookupError:
-        pidfd = -1
-    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         while process.poll() is None:
             readable, _, _ = select.select(
                 [
@@ -991,12 +1086,12 @@ def run_with_lock_monitor(
             if inputs_guard.descriptor in readable:
                 verify_checkpoint_guard(inputs_guard)
         return_code = int(process.wait())
-        if process_group_exists(process_group):
-            if not wait_for_group_exit(process_group, 1):
-                terminate_process_group(
+        if session_members(session_id):
+            if not wait_for_session_exit(session_id, 1):
+                terminate_process_session(
                     process,
                     leader_start_time=leader_start_time,
-                    process_group=process_group,
+                    session_id=session_id,
                 )
                 fail("simulation leader exited while descendants survived")
         verify_lock_identity(lock)
@@ -1004,15 +1099,12 @@ def run_with_lock_monitor(
         verify_checkpoint_guard(inputs_guard)
         return return_code
     except BaseException:
-        terminate_process_group(
+        terminate_process_session(
             process,
             leader_start_time=leader_start_time,
-            process_group=process_group,
+            session_id=session_id,
         )
         raise
-    finally:
-        if pidfd >= 0:
-            os.close(pidfd)
 
 
 def first_stats(path: Path) -> dict[str, int]:
@@ -1894,6 +1986,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    install_termination_handlers()
     args = parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sim_commit):
         fail("--expected-sim-commit must be a full Git object ID")

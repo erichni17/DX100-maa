@@ -16,7 +16,6 @@ import shlex
 import stat
 import struct
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -315,36 +314,103 @@ def run_python_fd(
         os.close(descriptor)
 
 
+def verify_directory_identity(
+    path: Path, descriptor: int, device: int, inode: int
+) -> None:
+    current = path.lstat()
+    opened = os.fstat(descriptor)
+    if (
+        path.is_symlink()
+        or not path.is_dir()
+        or current.st_dev != device
+        or current.st_ino != inode
+        or opened.st_dev != device
+        or opened.st_ino != inode
+    ):
+        fail(f"certificate publication directory changed: {path}")
+
+
+def link_fd_noreplace(
+    descriptor: int, parent_fd: int, destination_name: str
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = libc.linkat
+    linkat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    linkat.restype = ctypes.c_int
+    if (
+        linkat(
+            -100,  # AT_FDCWD
+            os.fsencode(f"/proc/self/fd/{descriptor}"),
+            parent_fd,
+            os.fsencode(destination_name),
+            0x400,  # AT_SYMLINK_FOLLOW
+        )
+        != 0
+    ):
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            fail(
+                "certificate output was created concurrently: "
+                f"{destination_name}"
+            )
+        fail(
+            "could not publish certificate from its open inode: "
+            f"{os.strerror(error)}"
+        )
+
+
 def atomic_write_noreplace(path: Path, content: str) -> None:
-    if path.exists() or path.is_symlink():
-        fail(f"certificate output already exists: {path}")
-    reject_symlink_components(path.parent)
-    parent = path.parent.resolve(strict=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=parent
+    requested = path.absolute()
+    if requested.name in {"", ".", ".."}:
+        fail("certificate output must have a safe file name")
+    reject_symlink_components(requested.parent)
+    parent = requested.parent.resolve(strict=True)
+    parent_fd = os.open(
+        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
-    temporary = Path(temporary_name)
+    parent_info = os.fstat(parent_fd)
+    descriptor = -1
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), 0o400)
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError:
-            fail(f"certificate output was created concurrently: {path}")
-        temporary.unlink()
-        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        descriptor = os.open(
+            ".",
+            os.O_WRONLY | os.O_TMPFILE | os.O_CLOEXEC,
+            0o400,
+            dir_fd=parent_fd,
+        )
+        encoded = content.encode("utf-8")
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+        verify_directory_identity(
+            parent, parent_fd, parent_info.st_dev, parent_info.st_ino
+        )
+        link_fd_noreplace(descriptor, parent_fd, requested.name)
+        source_info = os.fstat(descriptor)
+        destination_info = os.stat(
+            requested.name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        if (
+            source_info.st_dev != destination_info.st_dev
+            or source_info.st_ino != destination_info.st_ino
+        ):
+            fail("published certificate inode differs from the open source")
+        os.fsync(parent_fd)
+        verify_directory_identity(
+            parent, parent_fd, parent_info.st_dev, parent_info.st_ino
+        )
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        temporary.unlink(missing_ok=True)
+        os.close(parent_fd)
 
 
 def correctness_campaign_fingerprint(campaign: Path) -> str:
@@ -1733,7 +1799,11 @@ def main() -> None:
         )
 
     simulator_root = args.sim_root.resolve(strict=True)
-    expect_hash(Path(__file__), args.expected_verifier_sha)
+    # FD execution exposes /proc/self/fd/N as __file__; resolve it to the
+    # already-open, private staged inode before applying regular-file checks.
+    expect_hash(
+        Path(__file__).resolve(strict=True), args.expected_verifier_sha
+    )
     verify_git_state(simulator_root, args.expected_sim_commit)
     binary_commit = nested(staged_approval, "candidate", "simulator_commit")
     if binary_commit != source.get(

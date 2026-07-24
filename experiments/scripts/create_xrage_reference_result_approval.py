@@ -410,33 +410,103 @@ def semantic_config_sha256(path: Path) -> str:
     return hashlib.sha256(("\n".join(normalized) + "\n").encode()).hexdigest()
 
 
+def verify_directory_identity(
+    path: Path, descriptor: int, device: int, inode: int
+) -> None:
+    current = path.lstat()
+    opened = os.fstat(descriptor)
+    if (
+        path.is_symlink()
+        or not path.is_dir()
+        or current.st_dev != device
+        or current.st_ino != inode
+        or opened.st_dev != device
+        or opened.st_ino != inode
+    ):
+        fail(f"approval publication directory changed: {path}")
+
+
+def link_fd_noreplace(
+    descriptor: int, parent_fd: int, destination_name: str
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = libc.linkat
+    linkat.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    linkat.restype = ctypes.c_int
+    if (
+        linkat(
+            -100,  # AT_FDCWD
+            os.fsencode(f"/proc/self/fd/{descriptor}"),
+            parent_fd,
+            os.fsencode(destination_name),
+            0x400,  # AT_SYMLINK_FOLLOW
+        )
+        != 0
+    ):
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            fail(
+                "approval output was created concurrently: "
+                f"{destination_name}"
+            )
+        fail(
+            "could not publish approval from its open inode: "
+            f"{os.strerror(error)}"
+        )
+
+
 def atomic_write_noreplace(path: Path, content: str) -> None:
-    parent = path.parent.resolve(strict=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=parent
+    requested = path.absolute()
+    if requested.name in {"", ".", ".."}:
+        fail("approval output must have a safe file name")
+    reject_symlink_components(requested.parent)
+    parent = requested.parent.resolve(strict=True)
+    parent_fd = os.open(
+        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
-    temporary = Path(temporary_name)
+    parent_info = os.fstat(parent_fd)
+    descriptor = -1
     try:
+        descriptor = os.open(
+            ".",
+            os.O_WRONLY | os.O_TMPFILE | os.O_CLOEXEC,
+            0o444,
+            dir_fd=parent_fd,
+        )
+        encoded = content.encode("utf-8")
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
         os.fchmod(descriptor, 0o444)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError:
-            fail(f"approval output was created concurrently: {path}")
-        temporary.unlink()
-        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        os.fsync(descriptor)
+        verify_directory_identity(
+            parent, parent_fd, parent_info.st_dev, parent_info.st_ino
+        )
+        link_fd_noreplace(descriptor, parent_fd, requested.name)
+        source_info = os.fstat(descriptor)
+        destination_info = os.stat(
+            requested.name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        if (
+            source_info.st_dev != destination_info.st_dev
+            or source_info.st_ino != destination_info.st_ino
+        ):
+            fail("published approval inode differs from the open source")
+        os.fsync(parent_fd)
+        verify_directory_identity(
+            parent, parent_fd, parent_info.st_dev, parent_info.st_ino
+        )
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        temporary.unlink(missing_ok=True)
+        os.close(parent_fd)
 
 
 def main() -> None:
