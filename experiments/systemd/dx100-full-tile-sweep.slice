@@ -1,0 +1,8 @@
+[Unit]
+Description=DX100 full tile sweep aggregate memory containment
+
+[Slice]
+MemoryAccounting=yes
+MemoryHigh=256G
+MemoryMax=272G
+MemorySwapMax=0
