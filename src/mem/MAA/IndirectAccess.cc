@@ -700,6 +700,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_response_word_pool_stalls = 0;
         virtual_max_outstanding_writes = 0;
         virtual_build_incomplete = false;
+        virtual_write_address_blocked = false;
         virtual_request_reason = VirtualRequestReason::None;
         virtual_request_reason_tick = 0;
         virtual_request_attributed_ticks = 0;
@@ -951,6 +952,7 @@ void IndirectAccessUnit::executeInstruction() {
     }
     case Status::Request: {
         assert(my_instruction != nullptr);
+        virtual_write_address_blocked = false;
         DPRINTF(MAAIndirect, "I[%d] %s: requesting %s!\n", my_indirect_id, __func__, my_instruction->print());
         if (my_request_start_tick == 0) {
             my_request_start_tick = curTick();
@@ -1014,6 +1016,8 @@ void IndirectAccessUnit::executeInstruction() {
             // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
             updateLatency(0, num_spd_read_condidx_accesses, 0, 0, num_rowtable_accesses, total_num_RT_subslices);
         }
+        if (virtual_write_address_blocked)
+            scheduleExecuteInstructionEvent(1);
         break;
     }
     case Status::Response: {
@@ -1491,7 +1495,9 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
                 DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] = %f!\n", my_indirect_id, __func__, i, write_pkt->getPtr<double>()[i]);
         }
         DPRINTF(MAAIndirect, "I[%d] %s: created %s to send in %d cycles\n", my_indirect_id, __func__, write_pkt->print(), total_latency);
-        maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, write_pkt, maa->getClockEdge(total_latency), my_force_cache);
+        maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, write_pkt,
+                        maa->getClockEdge(total_latency), my_force_cache,
+                        false, true);
         (*maa->stats.IND_StoresMemAccessing[my_indirect_id])++;
     } else {
         my_received_responses++;
@@ -1557,6 +1563,11 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
         ? paddr & ~(block_size - 1) : paddr;
     if (virtual_outstanding_write_lines.count(write_key) != 0)
         return false;
+    if (maa->hasOutstandingPacket(paddr)) {
+        (*maa->stats.IND_VirtWriteAddressConflicts[my_indirect_id])++;
+        virtual_write_address_blocked = true;
+        return false;
+    }
     RequestPtr req = std::make_shared<Request>(paddr, size, flags,
                                                maa->requestorId);
     req->setRegion(my_backing_addr_range_id);
@@ -1588,7 +1599,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
              "I[%d] virtual retirement writes exceeded capacity\n",
              my_indirect_id);
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
-                    maa->getClockEdge(Cycles(0)), true);
+                    maa->getClockEdge(Cycles(0)), true, true);
     accountVirtualRequestInterval();
     return true;
 }

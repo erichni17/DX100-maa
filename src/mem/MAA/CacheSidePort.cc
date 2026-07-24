@@ -116,6 +116,10 @@ bool MAA::sendPacketCache(PacketPtr pkt) {
     int pkt_bus_id = core_addr(pkt->getAddr());
     return cacheSidePorts[pkt_bus_id]->sendPacket(pkt);
 }
+bool MAA::sendPacketRetirementCache(PacketPtr pkt) {
+    int pkt_bus_id = core_addr(pkt->getAddr());
+    return retirementSidePorts[pkt_bus_id]->sendPacket(pkt);
+}
 void MAA::CacheSidePort::setUnblocked(BlockReason reason) {
     assert(blockReason == reason);
     blockReason = BlockReason::NOT_BLOCKED;

@@ -434,7 +434,8 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
         write_pkt->allocate();
         write_pkt->setData(new_data);
         DPRINTF(MAAStream, "S[%d] %s: created %s to send in %d cycles\n", my_stream_id, __func__, write_pkt->print(), total_latency);
-        maa->sendPacket(FuncUnitType::STREAM, my_stream_id, write_pkt, maa->getClockEdge(total_latency));
+        maa->sendPacket(FuncUnitType::STREAM, my_stream_id, write_pkt,
+                        maa->getClockEdge(total_latency), false, false, true);
     }
     if (was_request_table_full) {
         scheduleNextExecution(true);

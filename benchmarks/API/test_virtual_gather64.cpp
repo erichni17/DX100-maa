@@ -55,12 +55,12 @@ int main(int argc, char **argv) {
         else
             indices[i] = (i * 97 + 13) % source.size();
     }
-    if (pattern != "random" && pattern != "fanout" &&
+    if (pattern != "random" && pattern != "dirty" && pattern != "fanout" &&
         pattern != "page" && pattern != "native" &&
         pattern != "condition" && pattern != "allfalse" &&
         pattern != "alltrue" && pattern != "boundary" && pattern != "line" &&
         pattern != "short" && pattern != "unregistered") {
-        std::cerr << "pattern must be random, fanout, page, native, "
+        std::cerr << "pattern must be random, dirty, fanout, page, native, "
                      "condition, allfalse, alltrue, boundary, line, short, or "
                      "unregistered"
                   << std::endl;
@@ -90,6 +90,12 @@ int main(int argc, char **argv) {
     int idx_tile = get_new_tile<int>();
     int cond_tile = get_new_tile<int>();
     int completion_tile = get_new_tile<int64_t>();
+
+    if (pattern == "dirty") {
+        for (int i = 0; i < n; ++i)
+            backing[i] = -1;
+        asm volatile("" : : "r"(backing) : "memory");
+    }
 
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);

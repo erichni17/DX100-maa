@@ -133,6 +133,14 @@ MAA::MAA(const MAAParams &p)
         cacheSidePorts.push_back(new CacheSidePort(portName, this, "CacheSidePort"));
         cacheSidePorts[i]->allocate(i, p.max_outstanding_cache_side_packets);
     }
+    for (int i = 0; i < p.port_retirement_sides_connection_count; ++i) {
+        std::string portName =
+            csprintf("%s.retirement_side_port[%d]", p.name, i);
+        retirementSidePorts.push_back(
+            new CacheSidePort(portName, this, "RetirementSidePort"));
+        retirementSidePorts[i]->allocate(
+            i, p.max_outstanding_cache_side_packets);
+    }
     panic_if(p.port_cpu_sides_connection_count != num_cores, "Number of CPU ports must be equal to the number of cores");
     for (int i = 0; i < num_cores; ++i) {
         cpuPortAddrRanges.push_back(AddrRangeList());
@@ -202,9 +210,15 @@ void MAA::init() {
 }
 
 MAA::~MAA() {
+    for (auto &[paddr, packets] : my_deferred_pkt_map) {
+        for (auto &deferred : packets)
+            delete deferred.packet;
+    }
     for (auto port : memSidePorts)
         delete port;
     for (auto port : cacheSidePorts)
+        delete port;
+    for (auto port : retirementSidePorts)
         delete port;
     for (auto port : cpuSidePorts)
         delete port;
@@ -260,6 +274,9 @@ Port &MAA::getPort(const std::string &if_name, PortID idx) {
         return *cpuSidePorts[idx];
     } else if (if_name == "cache_sides" && idx < cacheSidePorts.size()) {
         return *cacheSidePorts[idx];
+    } else if (if_name == "retirement_sides" &&
+               idx < retirementSidePorts.size()) {
+        return *retirementSidePorts[idx];
     } else {
         return ClockedObject::getPort(if_name, idx);
     }
@@ -304,6 +321,9 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
         mem_channels_blocked[i] = false;
     }
     panic_if(cacheSidePorts.size() != num_cores, "Number of cores %d != number of cacheside ports %d\n", num_cores, cacheSidePorts.size());
+    panic_if(retirementSidePorts.size() != num_cores,
+             "Number of cores %d != number of retirement ports %d\n",
+             num_cores, retirementSidePorts.size());
     cache_bus_blocked = new bool[num_cores];
     for (int i = 0; i < num_cores; i++) {
         cache_bus_blocked[i] = false;
@@ -870,6 +890,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(cpu_spd_data_read_retry_acceptances,
                statistics::units::Count::get(),
                "requests accepted after cacheable SPD read retry signals"),
+      ADD_STAT(virtual_retirement_native_deferrals,
+               statistics::units::Count::get(),
+               "MAA packets deferred by virtual-retirement exact-address "
+               "serialization"),
+      ADD_STAT(virtual_retirement_queue_deferrals,
+               statistics::units::Count::get(),
+               "MAA packets deferred by a nonempty exact-address FIFO after "
+               "the virtual-retirement owner completed"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "
@@ -999,6 +1027,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_VirtResponseWordPoolStalls.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtResponseWordPoolStalls"), statistics::units::Count::get(), "virtual source requests deferred by the shared response-word pool"));
         IND_VirtWriteIssues.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteIssues"), statistics::units::Count::get(), "number of virtual retirement writes issued"));
         IND_VirtWriteCompletions.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteCompletions"), statistics::units::Count::get(), "number of virtual retirement writes completed"));
+        IND_VirtWriteAddressConflicts.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteAddressConflicts"), statistics::units::Count::get(), "virtual retirement write attempts deferred by an exact-address MAA transaction conflict"));
         IND_CyclesRTAccess.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_CyclesRTAccess"), statistics::units::Count::get(), "number of cycles spent on row table access"));
         IND_CyclesSPDReadAccess.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_CyclesSPDReadAccess"), statistics::units::Count::get(), "number of cycles spent on SPD read access"));
         IND_CyclesSPDWriteAccess.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_CyclesSPDWriteAccess"), statistics::units::Count::get(), "number of cycles spent on SPD write access"));

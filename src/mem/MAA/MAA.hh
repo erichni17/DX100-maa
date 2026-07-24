@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <queue>
 #include <string>
@@ -270,6 +271,7 @@ protected:
     std::vector<CpuSidePort *> cpuSidePorts;
     std::vector<MemSidePort *> memSidePorts;
     std::vector<CacheSidePort *> cacheSidePorts;
+    std::vector<CacheSidePort *> retirementSidePorts;
 
 public:
     SPD *spd;
@@ -297,6 +299,7 @@ public:
     void addRamulator(memory::Ramulator2 *_ramulator2);
     bool sendPacketMem(PacketPtr pkt);
     bool sendPacketCache(PacketPtr pkt);
+    bool sendPacketRetirementCache(PacketPtr pkt);
     void sendSnoopPacketCpu(PacketPtr pkt);
     bool sendSnoopInvalidateCpu(PacketPtr pkt);
 
@@ -546,6 +549,8 @@ public:
         statistics::Scalar cpu_spd_data_read_retry_signals;
         statistics::Scalar cpu_spd_data_read_retry_attempts;
         statistics::Scalar cpu_spd_data_read_retry_acceptances;
+        statistics::Scalar virtual_retirement_native_deferrals;
+        statistics::Scalar virtual_retirement_queue_deferrals;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.
@@ -593,6 +598,7 @@ public:
         std::vector<statistics::Scalar *> IND_VirtCombineBankConflictCycles;
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
+        std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;
@@ -697,11 +703,13 @@ protected:
         Tick tick;
         MemCmd cmd;
         bool cached;
+        bool virtualRetirement;
         bool sent;
         std::vector<int> maaIDs;
         std::vector<FuncUnitType> funcUnits;
         OutstandingPacket(PacketPtr _packet, Addr _paddr, Tick _tick, MemCmd _cmd)
-            : packet(_packet), paddr(_paddr), tick(_tick), cmd(_cmd), cached(false), sent(false) {}
+            : packet(_packet), paddr(_paddr), tick(_tick), cmd(_cmd),
+              cached(false), virtualRetirement(false), sent(false) {}
         OutstandingPacket() {}
         OutstandingPacket(const OutstandingPacket &other) {
             packet = other.packet;
@@ -712,6 +720,7 @@ protected:
             maaIDs = other.maaIDs;
             sent = other.sent;
             cached = other.cached;
+            virtualRetirement = other.virtualRetirement;
         }
         bool operator<(const OutstandingPacket &rhs) const {
             return tick < rhs.tick;
@@ -722,6 +731,14 @@ protected:
         bool operator()(const OutstandingPacket &lhs, const OutstandingPacket &rhs) const {
             return lhs.tick < rhs.tick;
         }
+    };
+    struct DeferredPacket {
+        FuncUnitType funcUnit;
+        int maaID;
+        PacketPtr packet;
+        Tick tick;
+        bool forceCache;
+        bool forceRetirementCache;
     };
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_read_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_write_pkts;
@@ -738,6 +755,8 @@ protected:
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_mem_write_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_mem_read_pkts;
     std::unordered_map<Addr, OutstandingPacket> my_outstanding_pkt_map;
+    std::unordered_map<Addr, std::deque<DeferredPacket>>
+        my_deferred_pkt_map;
     uint32_t *my_num_outstanding_indirect_pkts;
     uint32_t *my_num_outstanding_stream_pkts;
     bool allIndirectEmpty();
@@ -747,6 +766,7 @@ protected:
     void scheduleSendMemEvent(int latency = 0);
     bool sendOutstandingCachePacket();
     bool sendOutstandingMemPacket();
+    void sendNextDeferredPacket(Addr paddr);
     EventFunctionWrapper sendCacheEvent;
     EventFunctionWrapper sendMemEvent;
     bool *mem_channels_blocked;
@@ -755,7 +775,14 @@ protected:
     void unblockCache(int core_id);
 
 public:
-    void sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick, bool force_cache = false);
+    void sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
+                    bool force_cache = false,
+                    bool force_retirement_cache = false,
+                    bool bypass_deferred_queue = false);
+    bool hasOutstandingPacket(Addr paddr) const {
+        return my_outstanding_pkt_map.find(paddr) !=
+               my_outstanding_pkt_map.end();
+    }
     bool allIndirectPacketsSent(int maaID);
     bool allStreamPacketsSent(int maaID);
 };

@@ -181,6 +181,46 @@ def config_maa(options, system):
     if _dropped:
         print(f"warn: MAAConfig dropping opts not in this binary's SharedMAA: {_dropped}")
     system.maa = SharedMAA(clk_domain=system.cpu_clk_domain, **opts)
+
+    has_retirement_ports = "retirement_sides" in SharedMAA._ports
+    retirement_cache_size = getattr(
+        options, "maa_retirement_cache_size", "1kB"
+    )
+    if has_retirement_ports:
+        retirement_cache_assoc = getattr(
+            options, "maa_retirement_cache_assoc", 4
+        )
+        retirement_cache_response_latency = getattr(
+            options, "maa_retirement_cache_response_latency", 1
+        )
+        if retirement_cache_response_latency <= 0:
+            raise ValueError(
+                "maa_retirement_cache_response_latency must be positive"
+            )
+        system.maa_retirement_caches = [
+            Cache(
+                size=retirement_cache_size,
+                assoc=retirement_cache_assoc,
+                tag_latency=1,
+                data_latency=1,
+                response_latency=retirement_cache_response_latency,
+                mshrs=16,
+                tgts_per_mshr=16,
+                write_buffers=16,
+                sequential_access=False,
+                clk_domain=system.cpu_clk_domain,
+            )
+            for _ in range(options.num_cpus)
+        ]
+        retirement_cache_total = (
+            MemorySize(retirement_cache_size).value * options.num_cpus
+        )
+        print(
+            "MAA virtual-retirement caches: "
+            f"{options.num_cpus} address banks x {retirement_cache_size} "
+            f"= {retirement_cache_total} data bytes, "
+            f"response latency {retirement_cache_response_latency} cycles"
+        )
     
     # Increasing LLC side packets to accommodate the MAA routing table.
     # Accommodate one stream unit plus the configured indirect units per MAA.
@@ -209,6 +249,10 @@ def config_maa(options, system):
     max_capacity.value += MemorySize(_get_cache_opts("l2", options)["size"]).value * options.num_cpus
     max_capacity.value += MemorySize(_get_cache_opts("l1i", options)["size"]).value * options.num_cpus
     max_capacity.value += MemorySize(_get_cache_opts("l1d", options)["size"]).value * options.num_cpus
+    if has_retirement_ports:
+        max_capacity.value += (
+            MemorySize(retirement_cache_size).value * options.num_cpus
+        )
     system.membus.snoop_filter.max_capacity = max_capacity
     system.tol3bus.snoop_filter.max_capacity = max_capacity
     print(f"MAA max snoop filter capacity: {system.tol3bus.snoop_filter.max_capacity}/{system.membus.snoop_filter.max_capacity}")
@@ -218,6 +262,11 @@ def config_maa(options, system):
 
     for _ in range(options.num_cpus):
         system.maa.cache_sides = system.tol3bus.cpu_side_ports
+
+    if has_retirement_ports:
+        for cache in system.maa_retirement_caches:
+            system.maa.retirement_sides = cache.cpu_sides
+            cache.mem_sides = system.tol3bus.cpu_side_ports
 
     for _ in range(options.mem_channels):
         system.membusnc.cpu_side_ports = system.maa.mem_sides

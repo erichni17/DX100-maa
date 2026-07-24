@@ -30,6 +30,16 @@ words_per_cycle=${14:-0}
 combine_banks=${15:-0}
 expect_failure=${EXPECT_FAILURE:-0}
 expected_failure_regex=${EXPECTED_FAILURE_REGEX:-virtual (backing index|retirement write).*exceeds}
+indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
+[[ $indirect_units =~ ^[1-9][0-9]*$ ]] || {
+    echo "MAA_NUM_INDIRECT_UNITS_PER_MAA must be a positive integer" >&2
+    exit 2
+}
+retirement_cache_response_latency=${MAA_RETIREMENT_CACHE_RESPONSE_LATENCY:-1}
+[[ $retirement_cache_response_latency =~ ^[1-9][0-9]*$ ]] || {
+    echo "MAA_RETIREMENT_CACHE_RESPONSE_LATENCY must be a positive integer" >&2
+    exit 2
+}
 masked_args=()
 if [[ "$masked_writes" == 1 ]]; then
     masked_args+=(--maa_virtual_masked_writes)
@@ -68,6 +78,8 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4 \
     --cacheline_size=64 --mem-type Ramulator2 --ramulator-config "$ramulator" \
     --mem-channels=1 --maa --maa_num_tile_elements=16384 \
+    --maa_num_indirect_units_per_maa="$indirect_units" \
+    --maa_retirement_cache_response_latency="$retirement_cache_response_latency" \
     --maa_num_initial_row_table_slices=16 \
     --maa_virtual_combine_slots="$combine_slots" \
     --maa_virtual_combine_words="$combine_words" \

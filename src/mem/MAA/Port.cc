@@ -26,10 +26,36 @@
 #define TRACING_ON 1
 #endif
 namespace gem5 {
-void MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick, bool force_cache) {
+void MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
+                     bool force_cache, bool force_retirement_cache,
+                     bool bypass_deferred_queue) {
     Addr paddr = pkt->req->getPaddr();
+    panic_if(force_retirement_cache && !force_cache,
+             "%s: retirement-cache routing requires force_cache\n", __func__);
     panic_if(pkt->getAddr() != paddr, "%s: paddr 0x%lx and addr 0x%lx do not match for packet %s\n", __func__, paddr, pkt->getAddr(), pkt->print());
-    if (my_outstanding_pkt_map.find(paddr) != my_outstanding_pkt_map.end()) {
+    const auto outstanding_it = my_outstanding_pkt_map.find(paddr);
+    const auto deferred_it = my_deferred_pkt_map.find(paddr);
+    const bool has_deferred_packets =
+        deferred_it != my_deferred_pkt_map.end() &&
+        !deferred_it->second.empty();
+    const bool retirement_owns_address =
+        outstanding_it != my_outstanding_pkt_map.end() &&
+        outstanding_it->second.virtualRetirement;
+    if (!bypass_deferred_queue &&
+        (has_deferred_packets || retirement_owns_address)) {
+        DPRINTF(MAAPort,
+                "%s: deferring packet %s behind exact-address "
+                "retirement serialization at 0x%lx\n",
+                __func__, pkt->print(), paddr);
+        my_deferred_pkt_map[paddr].push_back(
+            {funcUnit, maaID, pkt, tick, force_cache,
+             force_retirement_cache});
+        stats.virtual_retirement_native_deferrals += 1;
+        if (!retirement_owns_address)
+            stats.virtual_retirement_queue_deferrals += 1;
+        return;
+    }
+    if (outstanding_it != my_outstanding_pkt_map.end()) {
         DPRINTF(MAAPort, "%s: found %s in outstanding packets\n", __func__, pkt->print());
         if (my_outstanding_pkt_map[paddr].cmd == MemCmd::WritebackDirty && pkt->cmd == MemCmd::ReadExReq) {
             DPRINTF(MAAPort, "%s: store to load forwarding for outstanding write packet %s and new read packet %s\n", __func__, my_outstanding_pkt_map[paddr].packet->print(), pkt->print());
@@ -100,6 +126,8 @@ void MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
         }
     } else {
         my_outstanding_pkt_map[paddr] = OutstandingPacket(pkt, paddr, tick, pkt->cmd);
+        my_outstanding_pkt_map[paddr].virtualRetirement =
+            force_retirement_cache;
         bool hit_cache = true;
         if (force_cache_access == false && force_cache == false) {
             RequestPtr snoop_req = std::make_shared<Request>(pkt->req->getPaddr(), pkt->req->getSize(), pkt->req->getFlags(), pkt->req->requestorId());
@@ -173,6 +201,26 @@ void MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
             scheduleNextSendMem();
         }
     }
+}
+void MAA::sendNextDeferredPacket(Addr paddr) {
+    auto deferred_it = my_deferred_pkt_map.find(paddr);
+    if (deferred_it == my_deferred_pkt_map.end() ||
+        deferred_it->second.empty() ||
+        my_outstanding_pkt_map.find(paddr) !=
+            my_outstanding_pkt_map.end()) {
+        return;
+    }
+
+    DeferredPacket deferred = deferred_it->second.front();
+    deferred_it->second.pop_front();
+    if (deferred_it->second.empty())
+        my_deferred_pkt_map.erase(deferred_it);
+
+    DPRINTF(MAAPort, "%s: releasing deferred packet %s at 0x%lx\n",
+            __func__, deferred.packet->print(), paddr);
+    sendPacket(deferred.funcUnit, deferred.maaID, deferred.packet,
+               deferred.tick, deferred.forceCache,
+               deferred.forceRetirementCache, true);
 }
 bool MAA::scheduleNextSendMem() {
     bool return_val = false;
@@ -382,6 +430,7 @@ bool MAA::sendOutstandingMemPacket() {
                 panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
                 panic_if(tmp.funcUnits[0] != FuncUnitType::INDIRECT, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::INDIRECT]);
                 my_num_outstanding_indirect_pkts[tmp.maaIDs[0]]--;
+                sendNextDeferredPacket(paddr);
                 indirectAccessUnits[tmp.maaIDs[0]].memWritePacketSent(paddr);
                 uint64_t bank_key;
                 Addr row;
@@ -453,7 +502,10 @@ bool MAA::sendOutstandingCachePacket() {
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
             const bool needs_response = it->packet->needsResponse();
-            if (sendPacketCache(it->packet) == false) {
+            const bool sent = it->virtualRetirement
+                ? sendPacketRetirementCache(it->packet)
+                : sendPacketCache(it->packet);
+            if (sent == false) {
                 DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
                 cache_bus_blocked[core] = true;
                 break;
@@ -467,6 +519,7 @@ bool MAA::sendOutstandingCachePacket() {
                 } else {
                     my_outstanding_pkt_map.erase(paddr);
                     my_num_outstanding_indirect_pkts[tmp.maaIDs[0]]--;
+                    sendNextDeferredPacket(paddr);
                     indirectAccessUnits[tmp.maaIDs[0]].cacheWritePacketSent(it->paddr);
                 }
                 it = my_outstanding_indirect_cache_write_pkts[core].erase(it);
@@ -494,6 +547,7 @@ bool MAA::sendOutstandingCachePacket() {
                 panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
                 panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::STREAM]);
                 my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
+                sendNextDeferredPacket(paddr);
                 streamAccessUnits[tmp.maaIDs[0]].writePacketSent(it->paddr);
                 it = my_outstanding_stream_cache_write_pkts[core].erase(it);
                 stats.port_cache_WR_packets += 1;
@@ -553,6 +607,7 @@ bool MAA::sendOutstandingCachePacket() {
                     panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
                     panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::STREAM]);
                     my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
+                    sendNextDeferredPacket(paddr);
                     streamAccessUnits[tmp.maaIDs[0]].writePacketSent(it->paddr);
                     it = my_outstanding_stream_mem_write_pkts[core].erase(it);
                     stats.port_cache_WR_packets += 1;
@@ -616,6 +671,7 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
         if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {
             if (pkt->cmd == MemCmd::WriteResp) {
                 my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
+                sendNextDeferredPacket(paddr);
                 indirectAccessUnits[tmp.maaIDs[i]].retirementWriteComplete(paddr);
             } else {
                 panic_if(indirectAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>(), tmp.cached) == false, "%s: received %s but rejected from indirectAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
@@ -626,6 +682,7 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
             panic("Invalid func unit type\n");
         }
     }
+    sendNextDeferredPacket(paddr);
 }
 void MAA::scheduleSendCacheEvent(int latency) {
     DPRINTF(MAAPort, "%s: scheduling send cache packet in the next %d cycles!\n", __func__, latency);

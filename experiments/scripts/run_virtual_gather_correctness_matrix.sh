@@ -7,6 +7,7 @@ if [[ $# -ne 2 ]]; then
 fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+script=$(realpath "$0")
 gem5=$(realpath "$1")
 out=$(realpath -m "$2")
 max_parallel=${MAX_PARALLEL:-4}
@@ -37,13 +38,29 @@ common=(
     printf 'max_parallel=%s\n' "$max_parallel"
 } > "$out/source.txt"
 sha256sum "$gem5" \
+    "$root/src/mem/MAA/MAA.py" \
+    "$root/src/mem/MAA/MAA.hh" \
+    "$root/src/mem/MAA/MAA.cc" \
+    "$root/src/mem/MAA/Port.cc" \
+    "$root/src/mem/MAA/CacheSidePort.cc" \
+    "$root/src/mem/MAA/IndirectAccess.cc" \
+    "$root/src/mem/MAA/IndirectAccess.hh" \
+    "$root/src/mem/MAA/StreamAccess.cc" \
+    "$root/configs/common/Options.py" \
+    "$root/configs/common/MAAConfig.py" \
     "$root/benchmarks/API/test_virtual_gather.cpp" \
     "$root/benchmarks/API/test_virtual_gather64.cpp" \
-    "$root/benchmarks/API/MAA_gem5.hpp" "$0" "$out"/bin/* \
+    "$root/benchmarks/API/MAA_gem5.hpp" \
+    "$root/experiments/scripts/validate_virtual_gather.sh" \
+    "$script" "$out"/bin/* \
     > "$out/artifact_sha256.txt"
-git -C "$root" diff -- \
-    src/mem/MAA/CpuSidePort.cc src/mem/MAA/IndirectAccess.cc \
-    src/mem/MAA/IndirectAccess.hh \
+git -C "$root" diff HEAD -- \
+    src/mem/MAA/CpuSidePort.cc src/mem/MAA/MAA.py \
+    src/mem/MAA/MAA.hh src/mem/MAA/MAA.cc src/mem/MAA/Port.cc \
+    src/mem/MAA/CacheSidePort.cc src/mem/MAA/IndirectAccess.cc \
+    src/mem/MAA/IndirectAccess.hh src/mem/MAA/StreamAccess.cc \
+    configs/common/Options.py \
+    configs/common/MAAConfig.py \
     benchmarks/API/test_virtual_gather.cpp \
     benchmarks/API/test_virtual_gather64.cpp \
     experiments/scripts/validate_virtual_gather.sh \
@@ -54,6 +71,7 @@ cases=(
     '32_native_unmasked|32|native|0|0'
     '32_random_unmasked|32|random|0|0'
     '32_random_masked|32|random|1|0'
+    '32_dirty_masked|32|dirty|1|0'
     '32_condition_unmasked|32|condition|0|0'
     '32_condition_masked|32|condition|1|0'
     '32_allfalse_unmasked|32|allfalse|0|0'
@@ -71,6 +89,7 @@ cases=(
     '64_native_unmasked|64|native|0|0'
     '64_random_unmasked|64|random|0|0'
     '64_random_masked|64|random|1|0'
+    '64_dirty_masked|64|dirty|1|0'
     '64_condition_unmasked|64|condition|0|0'
     '64_condition_masked|64|condition|1|0'
     '64_allfalse_unmasked|64|allfalse|0|0'

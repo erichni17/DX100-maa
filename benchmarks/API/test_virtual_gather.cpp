@@ -56,14 +56,14 @@ int main(int argc, char **argv) {
         else
             indices[i] = (i * 97 + 13) % source.size();
     }
-    if (pattern != "random" && pattern != "resident" &&
+    if (pattern != "random" && pattern != "resident" && pattern != "dirty" &&
         pattern != "fanout" && pattern != "page" && pattern != "native" &&
         pattern != "condition" && pattern != "allfalse" &&
         pattern != "alltrue" && pattern != "boundary" && pattern != "line" &&
         pattern != "short" && pattern != "unregistered") {
-        std::cerr << "pattern must be random, resident, fanout, page, native, "
-                     "condition, allfalse, alltrue, boundary, line, short, or "
-                     "unregistered"
+        std::cerr << "pattern must be random, resident, dirty, fanout, page, "
+                     "native, condition, allfalse, alltrue, boundary, line, "
+                     "short, or unregistered"
                   << std::endl;
         return 2;
     }
@@ -99,6 +99,10 @@ int main(int argc, char **argv) {
         for (int i = 0; i < static_cast<int>(cache_pollution.size()); i += 16)
             residency_sink += cache_pollution[i];
         asm volatile("" : : "r"(residency_sink) : "memory");
+    } else if (pattern == "dirty") {
+        for (int i = 0; i < n; ++i)
+            backing[i] = -1;
+        asm volatile("" : : "r"(backing) : "memory");
     }
 
     m5_work_begin(0, 0);

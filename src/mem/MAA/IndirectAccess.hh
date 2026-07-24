@@ -128,6 +128,7 @@ protected:
     int virtual_response_word_pool_stalls = 0;
     int virtual_max_outstanding_writes = 0;
     bool virtual_build_incomplete = false;
+    bool virtual_write_address_blocked = false;
     enum class VirtualRequestReason : uint8_t {
         None,
         Build,

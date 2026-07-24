@@ -53,6 +53,9 @@ class MAA(ClockedObject):
     #     mem_sides, "`master` is now called `mem_sides`"
     # )
     cache_sides = VectorRequestPort("Vector port for connecting to to LLC")
+    retirement_sides = VectorRequestPort(
+        "Vector port for coherent virtual-gather retirement writes"
+    )
 
     addr_ranges = VectorParam.AddrRange(
         [AllMemory], "Address range for scratchpad data, scratchpad size, scratchpad ready, scalar registers, and instruction file"
