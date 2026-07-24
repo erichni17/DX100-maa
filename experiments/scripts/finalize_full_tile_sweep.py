@@ -1233,6 +1233,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "workflow_overlays": [
                 "recovery_gapbs_repair5",
                 "recovery_gapbs_repair6",
+                "recovery_gapbs_repair7",
             ],
             "compare_oracle": True,
         },
@@ -1256,6 +1257,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "workflow_overlays": [
                 "recovery_gapbs_repair5",
                 "recovery_gapbs_repair6",
+                "recovery_gapbs_repair7",
             ],
             "compare_oracle": True,
         },
@@ -1275,6 +1277,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "workflow_overlays": [
                 "recovery_gapbs_repair5",
                 "recovery_gapbs_repair6",
+                "recovery_gapbs_repair7",
             ],
         },
         {
@@ -1903,6 +1906,10 @@ def main():
         "workflows/"
         "dx100-full-tile-sweep-repair6-gapbs-node1-surge-20260724.json"
     )
+    gapbs_repair7_state_path = state_root / (
+        "workflows/"
+        "dx100-full-tile-sweep-repair7-gapbs-node1-final-20260724.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
@@ -1925,6 +1932,8 @@ def main():
         )
     if (run_root / "repair6-gapbs-node1-surge-workflow.json").is_file():
         states["recovery_gapbs_repair6"] = read_json(gapbs_repair6_state_path)
+    if (run_root / "repair7-gapbs-node1-final-workflow.json").is_file():
+        states["recovery_gapbs_repair7"] = read_json(gapbs_repair7_state_path)
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     result_sources = sorted(
         {
@@ -1984,6 +1993,9 @@ def main():
     gapbs_repair6_workflow = (
         run_root / "repair6-gapbs-node1-surge-workflow.json"
     )
+    gapbs_repair7_workflow = (
+        run_root / "repair7-gapbs-node1-final-workflow.json"
+    )
     auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
     auxiliary_terminal = not auxiliary_manifest.is_file() or (
         workflow_terminal(states["auxiliary"])
@@ -2027,6 +2039,10 @@ def main():
         not gapbs_repair6_workflow.is_file()
         or workflow_terminal(states.get("recovery_gapbs_repair6"))
     )
+    gapbs_repair7_terminal = (
+        not gapbs_repair7_workflow.is_file()
+        or workflow_terminal(states.get("recovery_gapbs_repair7"))
+    )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
         for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
@@ -2047,6 +2063,7 @@ def main():
         and gapbs_repair5_terminal
         and is_node1_surge6_terminal
         and gapbs_repair6_terminal
+        and gapbs_repair7_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
@@ -2083,6 +2100,7 @@ def main():
         run_root / "recovery6-is-node1-surge-cgroup.tsv",
         run_root / "repair5-gapbs-retry-cgroup.tsv",
         run_root / "repair6-gapbs-node1-surge-cgroup.tsv",
+        run_root / "repair7-gapbs-node1-final-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
         run_root / "recovery5-app-slice-cgroup.tsv",
     ]
@@ -2128,6 +2146,8 @@ def main():
         required_cgroups.add("repair5-gapbs-retry-cgroup.tsv")
     if gapbs_repair6_workflow.is_file():
         required_cgroups.add("repair6-gapbs-node1-surge-cgroup.tsv")
+    if gapbs_repair7_workflow.is_file():
+        required_cgroups.add("repair7-gapbs-node1-final-cgroup.tsv")
     safety_snapshots = [
         record
         for record in telemetry_snapshots

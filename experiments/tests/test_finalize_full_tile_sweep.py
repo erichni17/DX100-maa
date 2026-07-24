@@ -349,6 +349,7 @@ def test_sssp_tiles_use_live_surge_workflows(tmp_path):
     assert sssp_spec["workflow_overlays"] == [
         "recovery_gapbs_repair5",
         "recovery_gapbs_repair6",
+        "recovery_gapbs_repair7",
     ]
 
 

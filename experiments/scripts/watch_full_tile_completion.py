@@ -28,6 +28,7 @@ WORKFLOWS = (
     "dx100-full-tile-sweep-recovery2-xrage64-20260722",
     "dx100-full-tile-sweep-repair5-gapbs-retry-20260723",
     "dx100-full-tile-sweep-repair6-gapbs-node1-surge-20260724",
+    "dx100-full-tile-sweep-repair7-gapbs-node1-final-20260724",
 )
 
 
