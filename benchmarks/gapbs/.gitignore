@@ -62,6 +62,7 @@ pr_spmv_maa_16K
 sssp_maa_16K
 tc_maa_16K
 *_32K
+*_64K
 *_4C
 *_8C
 *_16C

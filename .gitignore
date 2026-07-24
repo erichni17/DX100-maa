@@ -107,3 +107,4 @@ experiments/scripts/legacy_root_2026-07/
 benchmarks/gapbs/bfs_maa_*
 benchmarks/gapbs/pr_maa_*
 benchmarks/gapbs/gen*.log
+benchmarks/**/.build.lock
