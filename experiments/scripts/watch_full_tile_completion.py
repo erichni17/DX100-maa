@@ -17,12 +17,15 @@ WORKFLOWS = (
     "dx100-full-tile-sweep-recovery2-normal-20260721",
     "dx100-full-tile-sweep-recovery2-is-gate-20260721",
     "dx100-full-tile-sweep-recovery2-is-20260721",
+    "dx100-full-tile-sweep-recovery4-is-node1-low-20260723",
+    "dx100-full-tile-sweep-recovery4-is-node1-mid-20260723",
+    "dx100-full-tile-sweep-recovery4-is-node1-high-20260723",
     "dx100-full-tile-sweep-recovery2-auxiliary-20260721",
     "dx100-full-tile-sweep-recovery2-surge-20260722",
     "dx100-full-tile-sweep-recovery2-ume-surge-20260722",
-    "dx100-full-tile-sweep-recovery2-t32-surge-20260722",
     "dx100-full-tile-sweep-recovery2-t8-surge-20260722",
     "dx100-full-tile-sweep-recovery2-xrage64-20260722",
+    "dx100-full-tile-sweep-repair5-gapbs-retry-20260723",
 )
 
 
@@ -81,6 +84,11 @@ def main():
     finalizer = (
         Path(__file__).resolve().with_name("finalize_full_tile_sweep.py")
     )
+    promoter = (
+        Path(__file__).resolve().with_name(
+            "promote_tile_gem5_binary_cohort.py"
+        )
+    )
     state_paths = [
         state_root / "workflows" / f"{name}.json" for name in WORKFLOWS
     ]
@@ -88,7 +96,13 @@ def main():
         run_root / "recovery2-auxiliary-retry-manifest-v2.json"
     )
     auxiliary_retry_done = run_root / "recovery2-auxiliary-retry-done.json"
-    signature_paths = [*state_paths, auxiliary_retry_done]
+    signature_paths = [
+        *state_paths,
+        auxiliary_retry_done,
+        run_root / "repair3-validation/gapbs/results_provenance_v2.tsv",
+        run_root / "repair3-validation/ume/results_provenance_v2.tsv",
+        run_root / "gem5-binary-cohort.json",
+    ]
     watcher_log = run_root / "final/watcher.log"
     prior_signature = None
     append_log(watcher_log, f"watcher started pid={__import__('os').getpid()}")
@@ -103,6 +117,24 @@ def main():
             retry_record,
         )
         if current_signature != prior_signature or all_terminal:
+            promotion = subprocess.run(
+                [
+                    sys.executable,
+                    str(promoter),
+                    "--run-root",
+                    str(run_root),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            promotion_detail = (
+                promotion.stdout.strip() or promotion.stderr.strip()
+            )
+            append_log(
+                watcher_log,
+                f"cohort-promoter rc={promotion.returncode} "
+                f"{promotion_detail}",
+            )
             command = [
                 sys.executable,
                 str(finalizer),
@@ -120,9 +152,10 @@ def main():
                 f"finalizer rc={completed.returncode} terminal={all_terminal} {detail}",
             )
             prior_signature = current_signature
-            if all_terminal:
+            validation = load(run_root / "final/validation.json")
+            if validation and validation.get("complete") is True:
                 append_log(watcher_log, "watcher terminal")
-                return completed.returncode
+                return 0
         time.sleep(args.interval)
 
 
