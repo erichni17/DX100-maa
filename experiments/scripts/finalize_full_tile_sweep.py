@@ -884,9 +884,7 @@ def memory_safety_summary(
             continue
         baseline = name in baseline_cgroups
         high_field = (
-            "maximum_delta_high_events"
-            if baseline
-            else "maximum_high_events"
+            "maximum_delta_high_events" if baseline else "maximum_high_events"
         )
         high_events = cgroup.get(high_field)
         if high_events:
@@ -958,7 +956,9 @@ def scan_log(path, oracle_kind):
     }
     if (
         isinstance(cached, dict)
-        and all(cached.get(key) == value for key, value in cache_identity.items())
+        and all(
+            cached.get(key) == value for key, value in cache_identity.items()
+        )
         and isinstance(cached.get("result"), dict)
     ):
         return cached["result"]
@@ -1042,9 +1042,7 @@ def task_state(state, task_id):
 
 
 def task_workflow(states, spec, tile, task_id):
-    workflow = spec.get("workflow_by_tile", {}).get(
-        tile, spec["workflow"]
-    )
+    workflow = spec.get("workflow_by_tile", {}).get(tile, spec["workflow"])
     for overlay in spec.get("workflow_overlays", ()):
         overlay_state = states.get(overlay)
         if task_id in (overlay_state or {}).get("tasks", {}):
@@ -1402,9 +1400,7 @@ def build_rows(workload_specs, states, binary_cohort=None):
             row = select_latest(source_rows, spec.get("filters", {}), tile)
             if not spec.get("prior"):
                 task_id = spec["task"].format(tile=tile)
-                workflow = task_workflow(
-                    states, spec, tile, task_id
-                )
+                workflow = task_workflow(states, spec, tile, task_id)
                 state = task_state(states.get(workflow), task_id)
                 current = state.get("state", "pending")
                 if current != "completed":
@@ -1884,8 +1880,15 @@ def main():
         "workflows/dx100-full-tile-sweep-recovery2-xrage64-20260722.json"
     )
     gapbs_repair5_state_path = state_root / (
+        "workflows/" "dx100-full-tile-sweep-repair5-gapbs-retry-20260723.json"
+    )
+    is_node1_surge6_state_path = state_root / (
         "workflows/"
-        "dx100-full-tile-sweep-repair5-gapbs-retry-20260723.json"
+        "dx100-full-tile-sweep-recovery6-is-node1-surge-20260724.json"
+    )
+    gapbs_repair6_state_path = state_root / (
+        "workflows/"
+        "dx100-full-tile-sweep-repair6-gapbs-node1-surge-20260724.json"
     )
     states = {
         "original": read_json(original_state_path),
@@ -1903,6 +1906,12 @@ def main():
         "xrage64": read_json(xrage64_state_path),
         "recovery_gapbs_repair5": read_json(gapbs_repair5_state_path),
     }
+    if (run_root / "recovery6-is-node1-surge-workflow.json").is_file():
+        states["recovery_is_node1_surge6"] = read_json(
+            is_node1_surge6_state_path
+        )
+    if (run_root / "repair6-gapbs-node1-surge-workflow.json").is_file():
+        states["recovery_gapbs_repair6"] = read_json(gapbs_repair6_state_path)
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     result_sources = sorted(
         {
@@ -1946,22 +1955,14 @@ def main():
     t32_surge_manifest_v2 = run_root / "recovery2-t32-surge-manifest-v2.json"
     t32_surge_manifest_v3 = run_root / "recovery2-t32-surge-manifest-v3.json"
     t32_surge_workflow = run_root / "recovery2-t32-surge-workflow.json"
-    t32_surge_superseded = (
-        run_root / "recovery2-t32-surge-superseded.json"
-    )
+    t32_surge_superseded = run_root / "recovery2-t32-surge-superseded.json"
     t8_surge_manifest = run_root / "recovery2-t8-surge-manifest.json"
     t8_surge_workflow = run_root / "recovery2-t8-surge-workflow.json"
     xrage64_manifest = run_root / "recovery2-xrage64-manifest.json"
     xrage64_workflow = run_root / "recovery2-xrage64-workflow.json"
-    is_node1_low_workflow = (
-        run_root / "recovery4-is-node1-low-workflow.json"
-    )
-    is_node1_mid_workflow = (
-        run_root / "recovery4-is-node1-mid-workflow.json"
-    )
-    is_node1_high_workflow = (
-        run_root / "recovery4-is-node1-high-workflow.json"
-    )
+    is_node1_low_workflow = run_root / "recovery4-is-node1-low-workflow.json"
+    is_node1_mid_workflow = run_root / "recovery4-is-node1-mid-workflow.json"
+    is_node1_high_workflow = run_root / "recovery4-is-node1-high-workflow.json"
     gapbs_repair5_manifest = run_root / "repair5-gapbs-retry-manifest.json"
     gapbs_repair5_workflow = run_root / "repair5-gapbs-retry-workflow.json"
     auxiliary_retry_record = read_json(auxiliary_retry_done) or {}

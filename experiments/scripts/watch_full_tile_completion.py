@@ -20,12 +20,14 @@ WORKFLOWS = (
     "dx100-full-tile-sweep-recovery4-is-node1-low-20260723",
     "dx100-full-tile-sweep-recovery4-is-node1-mid-20260723",
     "dx100-full-tile-sweep-recovery4-is-node1-high-20260723",
+    "dx100-full-tile-sweep-recovery6-is-node1-surge-20260724",
     "dx100-full-tile-sweep-recovery2-auxiliary-20260721",
     "dx100-full-tile-sweep-recovery2-surge-20260722",
     "dx100-full-tile-sweep-recovery2-ume-surge-20260722",
     "dx100-full-tile-sweep-recovery2-t8-surge-20260722",
     "dx100-full-tile-sweep-recovery2-xrage64-20260722",
     "dx100-full-tile-sweep-repair5-gapbs-retry-20260723",
+    "dx100-full-tile-sweep-repair6-gapbs-node1-surge-20260724",
 )
 
 
@@ -85,9 +87,9 @@ def main():
         Path(__file__).resolve().with_name("finalize_full_tile_sweep.py")
     )
     promoter = (
-        Path(__file__).resolve().with_name(
-            "promote_tile_gem5_binary_cohort.py"
-        )
+        Path(__file__)
+        .resolve()
+        .with_name("promote_tile_gem5_binary_cohort.py")
     )
     state_paths = [
         state_root / "workflows" / f"{name}.json" for name in WORKFLOWS

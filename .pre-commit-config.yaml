@@ -80,6 +80,8 @@ repos:
       rev: 23.9.1
       hooks:
           - id: black
+            entry: python3 experiments/scripts/run_black_serial.py
+            require_serial: true
     - repo: https://github.com/asottile/pyupgrade
       rev: v3.14.0
       hooks:
