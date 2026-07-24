@@ -1967,8 +1967,14 @@ def main():
     is_node1_low_workflow = run_root / "recovery4-is-node1-low-workflow.json"
     is_node1_mid_workflow = run_root / "recovery4-is-node1-mid-workflow.json"
     is_node1_high_workflow = run_root / "recovery4-is-node1-high-workflow.json"
+    is_node1_surge6_workflow = (
+        run_root / "recovery6-is-node1-surge-workflow.json"
+    )
     gapbs_repair5_manifest = run_root / "repair5-gapbs-retry-manifest.json"
     gapbs_repair5_workflow = run_root / "repair5-gapbs-retry-workflow.json"
+    gapbs_repair6_workflow = (
+        run_root / "repair6-gapbs-node1-surge-workflow.json"
+    )
     auxiliary_retry_record = read_json(auxiliary_retry_done) or {}
     auxiliary_terminal = not auxiliary_manifest.is_file() or (
         workflow_terminal(states["auxiliary"])
@@ -2004,6 +2010,14 @@ def main():
         not gapbs_repair5_manifest.is_file()
         or workflow_terminal(states["recovery_gapbs_repair5"])
     )
+    is_node1_surge6_terminal = (
+        not is_node1_surge6_workflow.is_file()
+        or workflow_terminal(states.get("recovery_is_node1_surge6"))
+    )
+    gapbs_repair6_terminal = (
+        not gapbs_repair6_workflow.is_file()
+        or workflow_terminal(states.get("recovery_gapbs_repair6"))
+    )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
         for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
@@ -2022,6 +2036,8 @@ def main():
         and t8_surge_terminal
         and xrage64_terminal
         and gapbs_repair5_terminal
+        and is_node1_surge6_terminal
+        and gapbs_repair6_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
@@ -2055,7 +2071,9 @@ def main():
         run_root / "recovery4-is-node1-low-cgroup.tsv",
         run_root / "recovery4-is-node1-mid-cgroup.tsv",
         run_root / "recovery4-is-node1-high-cgroup.tsv",
+        run_root / "recovery6-is-node1-surge-cgroup.tsv",
         run_root / "repair5-gapbs-retry-cgroup.tsv",
+        run_root / "repair6-gapbs-node1-surge-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
         run_root / "recovery5-app-slice-cgroup.tsv",
     ]
@@ -2095,8 +2113,12 @@ def main():
         required_cgroups.add("recovery4-is-node1-mid-cgroup.tsv")
     if is_node1_high_workflow.is_file():
         required_cgroups.add("recovery4-is-node1-high-cgroup.tsv")
+    if is_node1_surge6_workflow.is_file():
+        required_cgroups.add("recovery6-is-node1-surge-cgroup.tsv")
     if gapbs_repair5_manifest.is_file():
         required_cgroups.add("repair5-gapbs-retry-cgroup.tsv")
+    if gapbs_repair6_workflow.is_file():
+        required_cgroups.add("repair6-gapbs-node1-surge-cgroup.tsv")
     safety_snapshots = [
         record
         for record in telemetry_snapshots
