@@ -866,7 +866,8 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                "retry signals issued for deferred cacheable SPD data reads"),
       ADD_STAT(cpu_spd_data_read_retry_acceptances,
                statistics::units::Count::get(),
-               "deferred cacheable SPD data reads accepted after retry"),
+               "request attempts accepted while a cacheable SPD tile-read "
+               "retry signal was outstanding"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "

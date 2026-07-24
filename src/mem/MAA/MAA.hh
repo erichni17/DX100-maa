@@ -95,7 +95,6 @@ class MAA : public ClockedObject {
         bool mustRetryTileRequest;
         bool tileRequestRetrySignaled;
         int retryTileID;
-        PacketPtr retryTilePacket;
         int core_id;
 
     public:

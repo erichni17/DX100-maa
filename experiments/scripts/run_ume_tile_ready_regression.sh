@@ -86,7 +86,8 @@ jq -e '
     .acceptance.positive_tile_read_deferrals == true and
     .acceptance.positive_retry_signals == true and
     .acceptance.positive_retry_acceptances == true and
-    .acceptance.retry_counter_equality == true and
+    .acceptance.retry_counter_ordering == true and
+    .acceptance.terminal_deferral_signal_balance == true and
     .acceptance.fatal_markers == 0
 ' "$oracle" >/dev/null || die "oracle manifest schema or policy mismatch"
 
@@ -223,7 +224,7 @@ sha256sum "$campaign/$(basename "$checkpoint")/m5.cpt" \
     printf 'n=%s\nexpected_hash=%s\nexpected_elements=%s\n' \
         "$n" "$expected_hash" "$expected_elements"
     printf '%s\n' \
-        'acceptance=exact oracle identities, semantic hash, scalar reference, and equal positive deferral/signal/acceptance counts'
+        'acceptance=exact oracle identities, semantic hash, scalar reference, positive ordered retry counters, and terminal deferral/signal balance'
 } > "$campaign/source.txt"
 
 export LD_LIBRARY_PATH="$root/ext/ramulator2/ramulator2:${LD_LIBRARY_PATH:-}"
@@ -298,8 +299,19 @@ valid=1
    $fatal -eq 0 && $ticks =~ ^[1-9][0-9]*$ &&
    $deferrals =~ ^[1-9][0-9]*$ && $signals =~ ^[1-9][0-9]*$ &&
    $acceptances =~ ^[1-9][0-9]*$ ]] || valid=0
+# A cache retry queue may reconstruct the rejected packet or choose another
+# ready entry. Consequently, a retry attempt can be rejected again, so
+# acceptances can be lower than signals. A retry signal can also produce no
+# packet at all if the cache entry disappeared. The existing counters cannot
+# distinguish that no-packet case from a rejected retry attempt; do not treat
+# signal/acceptance equality as a correctness invariant.
+#
+# At the terminal ROI sample every observed deferral must at least have
+# progressed to a retry signal, while every accepted retry attempt must have
+# been preceded by a signal.
 if [[ $valid -eq 1 ]] &&
-   ((deferrals != signals || signals != acceptances)); then
+   ((acceptances > signals || signals > deferrals ||
+     deferrals != signals)); then
     valid=0
 fi
 printf 'rc\tsim_ticks\tdeferrals\tretry_signals\tretry_acceptances\toutput_hash\tfatal_count\tvalid\n' \
