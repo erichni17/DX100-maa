@@ -961,5 +961,102 @@ class ReferenceResultTests(TemporaryDirectoryTest):
         self.assertFalse(Path("/approved/reference").exists())
 
 
+class TreatmentConfigTests(TemporaryDirectoryTest):
+    def write_config(
+        self,
+        path,
+        cache_size,
+        snoop_capacity,
+        extra="value=1",
+        root="/reference",
+    ):
+        sections = [
+            "[system.cpu0.workload]",
+            f"cmd={root}/verify -f {root}/input.json",
+            f"cwd={root}/simulator",
+            f"executable={root}/verify",
+            "[system.mem_ctrls0]",
+            f"config_path={root}/ramulator.yaml",
+            "[system.mem_ctrls1]",
+            f"config_path={root}/ramulator.yaml",
+        ]
+        for bank in range(4):
+            sections.extend(
+                [
+                    f"[system.maa_retirement_caches{bank}]",
+                    f"size={cache_size}",
+                    "tgts_per_mshr=1",
+                    ("[system.maa_retirement_caches" f"{bank}.tags]"),
+                    f"size={cache_size}",
+                ]
+            )
+        sections.extend(
+            [
+                "[system.membus.snoop_filter]",
+                f"max_capacity={snoop_capacity}",
+                "[system.tol3bus.snoop_filter]",
+                f"max_capacity={snoop_capacity}",
+                "[system.other]",
+                extra,
+            ]
+        )
+        path.write_text("\n".join(sections) + "\n", encoding="utf-8")
+
+    def test_derived_snoop_capacity_is_part_of_cache_size_treatment(self):
+        reference = self.root / "reference.ini"
+        compact = self.root / "compact.ini"
+        self.write_config(reference, 1024, 20_000)
+        self.write_config(
+            compact,
+            256,
+            20_000 - 4 * (1024 - 256),
+            root="/staged",
+        )
+
+        self.assertEqual(
+            VERIFIER.normalized_treatment_config(reference),
+            VERIFIER.normalized_treatment_config(compact),
+        )
+
+    def test_unexplained_snoop_capacity_change_is_rejected(self):
+        reference = self.root / "reference.ini"
+        compact = self.root / "compact.ini"
+        self.write_config(reference, 1024, 20_000)
+        self.write_config(compact, 256, 20_000 - 4 * (1024 - 256) + 1)
+
+        self.assertNotEqual(
+            VERIFIER.normalized_treatment_config(reference),
+            VERIFIER.normalized_treatment_config(compact),
+        )
+
+    def test_unrelated_config_change_remains_visible(self):
+        reference = self.root / "reference.ini"
+        compact = self.root / "compact.ini"
+        self.write_config(reference, 1024, 20_000)
+        self.write_config(
+            compact,
+            256,
+            20_000 - 4 * (1024 - 256),
+            extra="value=2",
+        )
+
+        self.assertNotEqual(
+            VERIFIER.normalized_treatment_config(reference),
+            VERIFIER.normalized_treatment_config(compact),
+        )
+
+    def test_unexpected_workload_arguments_are_rejected(self):
+        config = self.root / "config.ini"
+        self.write_config(config, 1024, 20_000)
+        content = config.read_text().replace(
+            "cmd=/reference/verify -f /reference/input.json",
+            "cmd=/reference/verify --different /reference/input.json",
+        )
+        config.write_text(content, encoding="utf-8")
+
+        with self.assertRaisesRegex(SystemExit, "unexpected workload command"):
+            VERIFIER.normalized_treatment_config(config)
+
+
 if __name__ == "__main__":
     unittest.main()

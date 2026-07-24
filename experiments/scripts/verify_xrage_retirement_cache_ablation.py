@@ -1158,18 +1158,50 @@ def verify_cache_config(path: Path, candidate: dict[str, Any]) -> None:
 
 
 def normalized_treatment_config(path: Path) -> str:
+    lines = regular_file(path).read_text().splitlines()
+    retirement_cache_sizes: list[int] = []
+    section = ""
+    for line in lines:
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+", section
+        ) and line.startswith("size="):
+            try:
+                retirement_cache_sizes.append(int(line.split("=", 1)[1]))
+            except ValueError:
+                fail(f"invalid retirement-cache size in config: {path}")
+    if len(retirement_cache_sizes) != 4:
+        fail(f"expected four retirement-cache sizes in config: {path}")
+    retirement_cache_bytes = sum(retirement_cache_sizes)
+
     normalized: list[str] = []
     section = ""
-    for line in regular_file(path).read_text().splitlines():
+    for line in lines:
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1]
         if "=" in line:
-            key, _ = line.split("=", 1)
+            key, value = line.split("=", 1)
             if (
                 re.fullmatch(r"system\.redirect_paths[0-9]+", section)
                 and key == "host_paths"
             ):
                 line = "host_paths=<RUNTIME_ROOT>"
+            elif section == "system.cpu0.workload" and key == "cmd":
+                command = shlex.split(value)
+                if len(command) != 3 or command[1] != "-f":
+                    fail(f"unexpected workload command in config: {path}")
+                line = "cmd=<WORKLOAD_EXECUTABLE> -f <WORKLOAD_INPUT>"
+            elif section == "system.cpu0.workload" and key in {
+                "cwd",
+                "executable",
+            }:
+                line = f"{key}=<WORKLOAD_{key.upper()}>"
+            elif (
+                re.fullmatch(r"system\.mem_ctrls[0-9]+", section)
+                and key == "config_path"
+            ):
+                line = "config_path=<RAMULATOR_CONFIG>"
             elif (
                 re.fullmatch(r"system\.maa_retirement_caches[0-9]+", section)
                 and key in {"size", "tgts_per_mshr"}
@@ -1182,6 +1214,19 @@ def normalized_treatment_config(path: Path) -> str:
                 and key == "size"
             ):
                 line = f"{key}=<RETIREMENT_CACHE_TREATMENT>"
+            elif (
+                section
+                in {
+                    "system.membus.snoop_filter",
+                    "system.tol3bus.snoop_filter",
+                }
+                and key == "max_capacity"
+            ):
+                try:
+                    base_capacity = int(value) - retirement_cache_bytes
+                except ValueError:
+                    fail(f"invalid snoop-filter capacity in config: {path}")
+                line = f"max_capacity=<BASE_CAPACITY:{base_capacity}>"
         normalized.append(line)
     return "\n".join(normalized) + "\n"
 
