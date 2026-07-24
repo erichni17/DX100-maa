@@ -1,0 +1,1142 @@
+#!/usr/bin/env python3
+"""Screen and promote lower-cost XRAGE virtual-retirement cache settings."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import stat
+import subprocess
+import sys
+import time
+from dataclasses import (
+    asdict,
+    dataclass,
+)
+from pathlib import Path
+from typing import Any
+
+FATAL_RE = re.compile(
+    r"panic|fatal|assert|abort|segmentation fault|error:|"
+    r"MAA_GATHER_VERIFY_FAIL",
+    re.IGNORECASE,
+)
+MARKER_RE = re.compile(
+    r"^MAA_GATHER_VERIFY_PASS length=[1-9][0-9]* hash=[0-9]+$"
+)
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SIMULATION_LOCK = Path("/data1/nier/.dx100-virtual-simulation.lock")
+
+
+@dataclass(frozen=True)
+class Candidate:
+    name: str
+    size: str
+    assoc: int
+    response_latency: int
+    mshrs: int
+    targets_per_mshr: int
+    write_buffers: int
+
+
+CANDIDATES = (
+    Candidate("reference", "1kB", 4, 1, 16, 16, 16),
+    Candidate("targets1", "1kB", 4, 1, 16, 1, 16),
+    Candidate("compact", "256B", 4, 1, 16, 1, 16),
+)
+PROMOTION_ORDER = ("compact", "targets1")
+
+
+def fail(message: str) -> None:
+    raise RuntimeError(message)
+
+
+def regular_file(path: Path, *, executable: bool = False) -> Path:
+    if path.is_symlink() or not path.is_file():
+        fail(f"required regular file is missing or symlinked: {path}")
+    if executable and not os.access(path, os.X_OK):
+        fail(f"required file is not executable: {path}")
+    return path
+
+
+def empty_marker(path: Path) -> None:
+    regular_file(path)
+    if path.stat().st_size != 0:
+        fail(f"marker is not empty: {path}")
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def expect_hash(label: str, path: Path, expected: str) -> None:
+    regular_file(path)
+    if not SHA256_RE.fullmatch(expected):
+        fail(f"{label} has malformed expected SHA-256: {expected!r}")
+    actual = file_sha256(path)
+    if actual != expected:
+        fail(f"{label} hash mismatch: expected={expected} actual={actual}")
+
+
+def read_tsv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    regular_file(path)
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        rows = list(reader)
+    if reader.fieldnames is None or not rows:
+        fail(f"empty TSV: {path}")
+    if any(
+        None in row or any(value is None for value in row.values())
+        for row in rows
+    ):
+        fail(f"malformed TSV: {path}")
+    return reader.fieldnames, rows
+
+
+def parse_sha256_manifest(path: Path, root: Path) -> dict[Path, str]:
+    regular_file(path)
+    entries: dict[Path, str] = {}
+    for line_number, line in enumerate(path.read_text().splitlines(), 1):
+        match = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)", line)
+        if match is None:
+            fail(f"malformed SHA-256 manifest line {line_number}: {path}")
+        digest, raw_path = match.groups()
+        recorded = Path(raw_path)
+        target = recorded if recorded.is_absolute() else root / recorded
+        target = target.resolve(strict=True)
+        if target in entries:
+            fail(f"duplicate manifest path: {target}")
+        entries[target] = digest
+    if not entries:
+        fail(f"empty SHA-256 manifest: {path}")
+    return entries
+
+
+def verify_manifest(path: Path, root: Path) -> dict[Path, str]:
+    entries = parse_sha256_manifest(path, root)
+    for target, expected in entries.items():
+        expect_hash("manifest artifact", target, expected)
+    return entries
+
+
+def checkpoint_payload(
+    checkpoint_root: Path, manifest_name: str
+) -> tuple[Path, dict[Path, str]]:
+    manifest = regular_file(checkpoint_root / manifest_name)
+    entries: dict[Path, str] = {}
+    for line_number, line in enumerate(manifest.read_text().splitlines(), 1):
+        match = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)", line)
+        if match is None:
+            fail(
+                f"malformed checkpoint manifest line {line_number}: {manifest}"
+            )
+        digest, raw_path = match.groups()
+        relative = Path(raw_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            fail(f"unsafe checkpoint path in {manifest}: {relative}")
+        target = checkpoint_root / relative
+        if target in entries:
+            fail(f"duplicate checkpoint path in {manifest}: {relative}")
+        entries[target] = digest
+    checkpoint_dirs = {
+        path.parent
+        for path in checkpoint_root.glob("*/m5.cpt")
+        if path.is_file() and not path.is_symlink()
+    }
+    if len(checkpoint_dirs) != 1:
+        fail(f"expected one checkpoint payload under {checkpoint_root}")
+    checkpoint_dir = checkpoint_dirs.pop()
+    actual = {
+        path
+        for path in checkpoint_dir.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    for path in checkpoint_dir.rglob("*"):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            fail(f"unsupported checkpoint entry: {path}")
+    if actual != set(entries):
+        fail(f"checkpoint closure differs from manifest: {checkpoint_root}")
+    for target, expected in entries.items():
+        expect_hash("checkpoint payload", target, expected)
+    return checkpoint_dir, entries
+
+
+def copy_reflink(
+    source: Path, destination: Path, *, recursive: bool = False
+) -> None:
+    command = ["cp", "-a", "--reflink=auto"]
+    if recursive:
+        command.append(str(source))
+        command.append(str(destination))
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        command.extend((str(source), str(destination)))
+    subprocess.run(command, check=True)
+
+
+def stage_checkpoint(
+    source_root: Path, manifest_name: str, destination_root: Path
+) -> dict[Path, str]:
+    source_dir, source_entries = checkpoint_payload(source_root, manifest_name)
+    destination_root.mkdir(parents=True)
+    copy_reflink(
+        source_dir, destination_root / source_dir.name, recursive=True
+    )
+    staged_entries = {
+        destination_root / path.relative_to(source_root): digest
+        for path, digest in source_entries.items()
+    }
+    manifest = destination_root / "checkpoint_sha256.txt"
+    with manifest.open("w", encoding="utf-8") as handle:
+        for target, digest in sorted(
+            staged_entries.items(), key=lambda item: str(item[0])
+        ):
+            handle.write(f"{digest}  {target.relative_to(destination_root)}\n")
+    checkpoint_payload(destination_root, "checkpoint_sha256.txt")
+    return staged_entries
+
+
+def verify_artifact_campaign(campaign: Path) -> None:
+    if campaign.is_symlink() or not campaign.is_dir():
+        fail(f"campaign is missing or symlinked: {campaign}")
+    empty_marker(campaign / "campaign.pass")
+    if (campaign / "campaign.fail").exists():
+        fail(f"campaign has both pass and fail state: {campaign}")
+    verify_manifest(campaign / "artifact_sha256.txt", campaign)
+
+
+def correctness_marker(campaign: Path) -> str:
+    verify_artifact_campaign(campaign)
+    fields, rows = read_tsv(campaign / "results.tsv")
+    expected_fields = (
+        "arm",
+        "rc",
+        "marker_count",
+        "roi_count",
+        "write_issues",
+        "write_completions",
+        "valid",
+        "marker",
+    )
+    if tuple(fields) != expected_fields:
+        fail(f"unexpected correctness schema: {campaign / 'results.tsv'}")
+    virtual = [row for row in rows if row["arm"] == "virtual"]
+    if len(virtual) != 1:
+        fail(f"correctness campaign lacks one virtual row: {campaign}")
+    row = virtual[0]
+    if (
+        row["rc"] != "0"
+        or row["marker_count"] != "1"
+        or row["roi_count"] != "1"
+        or row["valid"] != "1"
+        or not MARKER_RE.fullmatch(row["marker"])
+        or not row["write_issues"].isdigit()
+        or row["write_issues"] == "0"
+        or row["write_issues"] != row["write_completions"]
+    ):
+        fail(f"correctness campaign has an invalid virtual row: {campaign}")
+    run = campaign / "runs/virtual"
+    for name in (
+        "restore.command",
+        "restore.exit",
+        "restore.log",
+        "result.tsv",
+        "stats.txt",
+        "config.ini",
+        "config.json",
+        "validation.pass",
+    ):
+        regular_file(run / name)
+    if (run / "restore.exit").read_text().strip() != "0":
+        fail(f"correctness virtual restore did not exit cleanly: {campaign}")
+    return row["marker"]
+
+
+def wait_for_capacity(minimum_available_kib: int, poll_seconds: int) -> int:
+    while True:
+        values: dict[str, int] = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, raw = line.split(":", 1)
+            fields = raw.split()
+            if fields and fields[0].isdigit():
+                values[key] = int(fields[0])
+        available = values.get("MemAvailable", 0)
+        if available >= minimum_available_kib:
+            try:
+                descriptor = os.open(
+                    SIMULATION_LOCK,
+                    os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
+                    0o600,
+                )
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return descriptor
+            except BlockingIOError:
+                os.close(descriptor)
+        print(
+            f"[{time.strftime('%Y-%m-%dT%H:%M:%S%z')}] waiting: "
+            f"MemAvailable={available} KiB, required={minimum_available_kib} KiB",
+            flush=True,
+        )
+        time.sleep(poll_seconds)
+
+
+def write_command(path: Path, command: list[str]) -> None:
+    path.write_text(shlex.join(command) + "\n", encoding="utf-8")
+
+
+def first_stats(path: Path) -> dict[str, int]:
+    sections: list[list[str]] = []
+    current: list[str] | None = None
+    for line in regular_file(path).read_text().splitlines():
+        if line.startswith("---------- Begin Simulation Statistics"):
+            if current is not None:
+                fail(f"nested stats section: {path}")
+            current = []
+        elif line.startswith("---------- End Simulation Statistics"):
+            if current is None:
+                fail(f"stats section closes without opening: {path}")
+            sections.append(current)
+            current = None
+        elif current is not None:
+            current.append(line)
+    if current is not None or len(sections) != 2:
+        fail(f"expected exactly two complete stats sections: {path}")
+
+    values: dict[str, int] = {
+        "sim_ticks": -1,
+        "maa_cycles": -1,
+        "write_issues": 0,
+        "write_completions": 0,
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "cache_writebacks": 0,
+        "mshr_misses": 0,
+        "blocked_no_mshrs_cycles": 0,
+        "blocked_no_mshrs_events": 0,
+        "blocked_no_wb_cycles": 0,
+        "blocked_no_wb_events": 0,
+    }
+    seen: dict[str, int] = {}
+    for line in sections[0]:
+        fields = line.split()
+        if len(fields) < 2 or not re.fullmatch(r"-?[0-9]+", fields[1]):
+            continue
+        name, raw = fields[:2]
+        value = int(raw)
+        if name == "simTicks":
+            key = "sim_ticks"
+        elif name == "system.maa.cycles_TOTAL":
+            key = "maa_cycles"
+        elif re.fullmatch(r"system\.maa\.I[0-9]+_IND_VirtWriteIssues", name):
+            key = "write_issues"
+        elif re.fullmatch(
+            r"system\.maa\.I[0-9]+_IND_VirtWriteCompletions", name
+        ):
+            key = "write_completions"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+\.demandHits_8::maa", name
+        ):
+            key = "cache_hits"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+\.demandMisses_8::maa", name
+        ):
+            key = "cache_misses"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+"
+            r"\.writebacks_8::writebacks",
+            name,
+        ):
+            key = "cache_writebacks"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+"
+            r"\.demandMshrMisses_8::maa",
+            name,
+        ):
+            key = "mshr_misses"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+"
+            r"\.blockedCycles_T::no_mshrs",
+            name,
+        ):
+            key = "blocked_no_mshrs_cycles"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+"
+            r"\.blockedCauses_T::no_mshrs",
+            name,
+        ):
+            key = "blocked_no_mshrs_events"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+" r"\.blockedCycles_T::no_wb",
+            name,
+        ):
+            key = "blocked_no_wb_cycles"
+        elif re.fullmatch(
+            r"system\.maa_retirement_caches[0-9]+" r"\.blockedCauses_T::no_wb",
+            name,
+        ):
+            key = "blocked_no_wb_events"
+        else:
+            continue
+        if key in ("sim_ticks", "maa_cycles"):
+            seen[key] = seen.get(key, 0) + 1
+            values[key] = value
+        else:
+            values[key] += value
+            seen[key] = seen.get(key, 0) + 1
+
+    if seen.get("sim_ticks") != 1 or seen.get("maa_cycles") != 1:
+        fail(f"missing unique timing metrics in first stats section: {path}")
+    if seen.get("write_issues", 0) <= 0 or seen.get(
+        "write_issues"
+    ) != seen.get("write_completions"):
+        fail(f"unbalanced virtual-write stat keys: {path}")
+    for key in ("cache_misses", "cache_writebacks", "mshr_misses"):
+        if seen.get(key) != 4:
+            fail(f"expected four retirement-bank values for {key}: {path}")
+    if seen.get("cache_hits", 0) not in (0, 4):
+        fail(f"expected zero or four retirement-bank hit values: {path}")
+    if values["sim_ticks"] <= 0 or values["maa_cycles"] <= 0:
+        fail(f"nonpositive timing metrics: {path}")
+    if (
+        values["write_issues"] <= 0
+        or values["write_issues"] != values["write_completions"]
+        or values["cache_hits"] + values["cache_misses"]
+        != values["write_issues"]
+        or values["cache_writebacks"] > values["cache_misses"]
+        or values["mshr_misses"] > values["cache_misses"]
+    ):
+        fail(f"virtual-retirement accounting is inconsistent: {path}")
+    return values
+
+
+def parse_cache_config(path: Path, candidate: Candidate) -> None:
+    sections: dict[str, dict[str, str]] = {}
+    section: str | None = None
+    for line in regular_file(path).read_text().splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            sections[section] = {}
+        elif section is not None and "=" in line:
+            key, value = line.split("=", 1)
+            sections[section][key] = value
+    banks = [
+        values
+        for name, values in sections.items()
+        if re.fullmatch(r"system\.maa_retirement_caches[0-9]+", name)
+    ]
+    if len(banks) != 4:
+        fail(f"expected four retirement caches in {path}")
+    expected = {
+        "size": str({"1kB": 1024, "256B": 256}[candidate.size]),
+        "assoc": str(candidate.assoc),
+        "response_latency": str(candidate.response_latency),
+        "mshrs": str(candidate.mshrs),
+        "tgts_per_mshr": str(candidate.targets_per_mshr),
+        "write_buffers": str(candidate.write_buffers),
+    }
+    for bank in banks:
+        for key, value in expected.items():
+            if bank.get(key) != value:
+                fail(
+                    f"effective cache config mismatch for {key}: "
+                    f"expected={value} actual={bank.get(key)!r}"
+                )
+
+
+def base_command(
+    inputs: Path,
+    output: Path,
+    binary: Path,
+    data: Path,
+    candidate: Candidate,
+) -> list[str]:
+    gem5 = inputs / "bin/gem5.opt"
+    config = inputs / "simulator/configs/deprecated/example/se.py"
+    ramulator = inputs / "ramulator.yaml"
+    return [
+        str(gem5),
+        "--listener-mode=off",
+        f"--outdir={output}",
+        str(config),
+        "--cpu-type",
+        "X86O3CPU",
+        "-r",
+        "1",
+        "-n",
+        "4",
+        "--mem-size",
+        "2GB",
+        "--sys-clock",
+        "3.2GHz",
+        "--cpu-clock",
+        "3.2GHz",
+        "--caches",
+        "--l1d_size=32kB",
+        "--l1d_assoc=8",
+        "--l1d-hwp-type=StridePrefetcher",
+        "--l1d_mshrs=16",
+        "--l1d_write_buffers=8",
+        "--l1i_size=32kB",
+        "--l1i_assoc=8",
+        "--l1i-hwp-type=StridePrefetcher",
+        "--l1i_mshrs=16",
+        "--l1i_write_buffers=8",
+        "--l2cache",
+        "--l2_size=256kB",
+        "--l2_assoc=4",
+        "--l2-hwp-type=StridePrefetcher",
+        "--l2_mshrs=32",
+        "--l2_write_buffers=16",
+        "--l3cache",
+        "--l3_size=8MB",
+        "--l3_assoc=16",
+        "--l3_mshrs=256",
+        "--l3_write_buffers=128",
+        "--l3_ports=4",
+        "--cacheline_size=64",
+        "--mem-type",
+        "Ramulator2",
+        "--ramulator-config",
+        str(ramulator),
+        "--mem-channels=2",
+        "--maa_ncbus_width=32",
+        "--maa",
+        "--maa_num_maas=1",
+        "--maa_num_tile_elements=16384",
+        "--maa_l2_uncacheable",
+        "--maa_l3_uncacheable",
+        "--maa_num_initial_row_table_slices=32",
+        "--maa_virtual_combine_slots=384",
+        "--maa_virtual_combine_words=4096",
+        "--maa_virtual_combine_ways=4",
+        "--maa_virtual_combine_banks=4",
+        "--maa_virtual_response_slots=96",
+        "--maa_virtual_response_word_pool=480",
+        "--maa_virtual_words_per_cycle=4",
+        "--maa_virtual_max_outstanding_writes=64",
+        "--maa_virtual_masked_writes",
+        f"--maa_retirement_cache_size={candidate.size}",
+        f"--maa_retirement_cache_assoc={candidate.assoc}",
+        f"--maa_retirement_cache_response_latency={candidate.response_latency}",
+        f"--maa_retirement_cache_mshrs={candidate.mshrs}",
+        (
+            "--maa_retirement_cache_targets_per_mshr="
+            f"{candidate.targets_per_mshr}"
+        ),
+        f"--maa_retirement_cache_write_buffers={candidate.write_buffers}",
+        "--cmd",
+        str(binary),
+        "--options",
+        f"-f {data}",
+    ]
+
+
+def run_case(
+    campaign: Path,
+    inputs: Path,
+    checkpoint_root: Path,
+    binary: Path,
+    data: Path,
+    candidate: Candidate,
+    phase: str,
+    replica: int,
+    expected_marker: str | None,
+) -> dict[str, Any]:
+    output = campaign / "runs" / phase / candidate.name / f"replica_{replica}"
+    output.mkdir(parents=True)
+    source_dir, source_entries = checkpoint_payload(
+        checkpoint_root, "checkpoint_sha256.txt"
+    )
+    copy_reflink(source_dir, output / source_dir.name, recursive=True)
+    restore_manifest = output / "restore_checkpoint_sha256.txt"
+    with restore_manifest.open("w", encoding="utf-8") as handle:
+        for path, digest in sorted(
+            source_entries.items(), key=lambda item: str(item[0])
+        ):
+            handle.write(f"{digest}  {path.relative_to(checkpoint_root)}\n")
+    checkpoint_payload(output, "restore_checkpoint_sha256.txt")
+    copied_checkpoint = output / source_dir.name
+    for path in (copied_checkpoint, *copied_checkpoint.rglob("*")):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+
+    command = base_command(inputs, output, binary, data, candidate)
+    write_command(output / "restore.command", command)
+    environment = os.environ.copy()
+    environment[
+        "LD_LIBRARY_PATH"
+    ] = f"{inputs / 'lib'}:{environment.get('LD_LIBRARY_PATH', '')}"
+    environment["OMP_PROC_BIND"] = "false"
+    environment["OMP_NUM_THREADS"] = "4"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    started = time.monotonic()
+    with (output / "restore.log").open("wb") as log:
+        completed = subprocess.run(
+            command,
+            cwd=inputs / "simulator",
+            env=environment,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    wall_seconds = time.monotonic() - started
+    (output / "restore.exit").write_text(f"{completed.returncode}\n")
+    checkpoint_payload(output, "restore_checkpoint_sha256.txt")
+
+    log_text = (output / "restore.log").read_text(errors="replace")
+    roi_count = sum(line == "ROI End!!!" for line in log_text.splitlines())
+    exit_count = log_text.count("because m5_exit instruction encountered")
+    fatal_count = len(FATAL_RE.findall(log_text))
+    markers = [
+        line
+        for line in log_text.splitlines()
+        if MARKER_RE.fullmatch(line) is not None
+    ]
+    parse_error = ""
+    stats = {
+        "sim_ticks": -1,
+        "maa_cycles": -1,
+        "write_issues": -1,
+        "write_completions": -1,
+        "cache_hits": -1,
+        "cache_misses": -1,
+        "cache_writebacks": -1,
+        "mshr_misses": -1,
+        "blocked_no_mshrs_cycles": -1,
+        "blocked_no_mshrs_events": -1,
+        "blocked_no_wb_cycles": -1,
+        "blocked_no_wb_events": -1,
+    }
+    try:
+        stats = first_stats(output / "stats.txt")
+        parse_cache_config(output / "config.ini", candidate)
+    except RuntimeError as error:
+        parse_error = str(error)
+    valid = (
+        completed.returncode == 0
+        and roi_count == 1
+        and exit_count == 1
+        and fatal_count == 0
+        and not parse_error
+        and (
+            expected_marker is None
+            or (len(markers) == 1 and markers[0] == expected_marker)
+        )
+    )
+    result: dict[str, Any] = {
+        "phase": phase,
+        "candidate": candidate.name,
+        "replica": replica,
+        "return_code": completed.returncode,
+        "wall_seconds": round(wall_seconds, 6),
+        "roi_count": roi_count,
+        "exit_count": exit_count,
+        "fatal_count": fatal_count,
+        "marker": markers[0] if len(markers) == 1 else "NA",
+        "parse_error": parse_error,
+        "valid": int(valid),
+        **stats,
+    }
+    (output / "result.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n"
+    )
+    return result
+
+
+def stage_inputs(args: argparse.Namespace, campaign: Path) -> dict[str, Any]:
+    inputs = campaign / "inputs"
+    inputs.mkdir()
+    artifacts = {
+        "gem5": regular_file(args.gem5.resolve(strict=True), executable=True),
+        "ramulator_yaml": regular_file(
+            args.ramulator_yaml.resolve(strict=True)
+        ),
+        "ramulator_lib": regular_file(args.ramulator_lib.resolve(strict=True)),
+        "virtual_verify": regular_file(
+            args.virtual_verify_bin.resolve(strict=True), executable=True
+        ),
+        "virtual_perf": regular_file(
+            args.virtual_perf_bin.resolve(strict=True), executable=True
+        ),
+        "input_20k": regular_file(args.input_20k.resolve(strict=True)),
+        "input_full": regular_file(args.input_full.resolve(strict=True)),
+        "runner": regular_file(
+            Path(__file__).resolve(strict=True), executable=True
+        ),
+        "reference_approval": regular_file(
+            args.reference_approval.resolve(strict=True)
+        ),
+        "reference_verifier": regular_file(
+            args.reference_verifier.resolve(strict=True), executable=True
+        ),
+    }
+    destinations = {
+        "gem5": inputs / "bin/gem5.opt",
+        "ramulator_yaml": inputs / "ramulator.yaml",
+        "ramulator_lib": inputs / "lib/libramulator.so",
+        "virtual_verify": inputs / "benchmark/xrage_virtual_verify",
+        "virtual_perf": inputs / "benchmark/xrage_virtual",
+        "input_20k": inputs / "benchmark/xrage_20k.json",
+        "input_full": inputs / "benchmark/xrage_full.json",
+        "runner": inputs / "runner.py",
+        "reference_approval": inputs / "manifests/reference_approval.json",
+        "reference_verifier": inputs / "reference_verifier.py",
+    }
+    for name, source in artifacts.items():
+        copy_reflink(source, destinations[name])
+
+    sim_root = args.sim_root.resolve(strict=True)
+    tracked_configs = subprocess.run(
+        ["git", "-C", str(sim_root), "ls-files", "-z", "--", "configs"],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout.split(b"\0")
+    for raw in tracked_configs:
+        if not raw:
+            continue
+        relative = Path(os.fsdecode(raw))
+        source = sim_root / relative
+        if source.is_symlink() or not source.is_file():
+            fail(f"tracked config is not a regular file: {source}")
+        copy_reflink(source, inputs / "simulator" / relative)
+
+    checkpoint_sources = {
+        "screen": (
+            args.source_20k.resolve(strict=True) / "checkpoints/virtual",
+            "checkpoint_sha256.txt",
+        ),
+        "full_correctness": (
+            args.source_full_correctness.resolve(strict=True)
+            / "checkpoints/virtual",
+            "checkpoint_sha256.txt",
+        ),
+        "full_performance": (
+            args.reference_campaign.resolve(strict=True)
+            / "checkpoints/virtual",
+            "private_checkpoint_sha256.txt",
+        ),
+    }
+    for name, (source_root, manifest_name) in checkpoint_sources.items():
+        stage_checkpoint(
+            source_root, manifest_name, inputs / "checkpoints" / name
+        )
+
+    manifest_entries: dict[str, str] = {}
+    for path in sorted(inputs.rglob("*")):
+        if path.is_symlink():
+            fail(f"staged input contains a symlink: {path}")
+        if path.is_file():
+            manifest_entries[str(path.relative_to(inputs))] = file_sha256(path)
+    manifest = campaign / "staged_input_sha256.json"
+    manifest.write_text(
+        json.dumps(manifest_entries, indent=2, sort_keys=True) + "\n"
+    )
+    for path in inputs.rglob("*"):
+        mode = path.stat().st_mode
+        path.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    return {
+        "paths": {name: str(path) for name, path in artifacts.items()},
+        "sha256": {
+            name: file_sha256(path) for name, path in artifacts.items()
+        },
+        "staged_manifest_sha256": file_sha256(manifest),
+    }
+
+
+def verify_staged_inputs(campaign: Path) -> None:
+    inputs = campaign / "inputs"
+    manifest = json.loads(
+        regular_file(campaign / "staged_input_sha256.json").read_text()
+    )
+    if not isinstance(manifest, dict) or not manifest:
+        fail("staged input manifest is empty or malformed")
+    actual_paths = {
+        str(path.relative_to(inputs))
+        for path in inputs.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    if actual_paths != set(manifest):
+        fail("staged input path closure changed")
+    for relative, expected in manifest.items():
+        expect_hash("staged input", inputs / relative, expected)
+
+
+def reference_ticks(campaign: Path) -> int:
+    fields, rows = read_tsv(campaign / "results.tsv")
+    required = {"arm", "replica", "sim_ticks", "valid"}
+    if not required.issubset(fields):
+        fail("reference campaign result schema is incomplete")
+    virtual = [row for row in rows if row["arm"] == "virtual"]
+    if len(virtual) != 3 or any(row["valid"] != "1" for row in virtual):
+        fail("reference campaign lacks three valid virtual replicas")
+    ticks = {row["sim_ticks"] for row in virtual}
+    if len(ticks) != 1 or not next(iter(ticks)).isdigit():
+        fail("reference virtual replicas are not deterministic")
+    value = int(next(iter(ticks)))
+    if value <= 0:
+        fail("reference simTicks is not positive")
+    return value
+
+
+def write_results(campaign: Path, records: list[dict[str, Any]]) -> None:
+    fields = [
+        "phase",
+        "candidate",
+        "replica",
+        "return_code",
+        "sim_ticks",
+        "maa_cycles",
+        "write_issues",
+        "write_completions",
+        "cache_hits",
+        "cache_misses",
+        "cache_writebacks",
+        "mshr_misses",
+        "blocked_no_mshrs_cycles",
+        "blocked_no_mshrs_events",
+        "blocked_no_wb_cycles",
+        "blocked_no_wb_events",
+        "roi_count",
+        "exit_count",
+        "fatal_count",
+        "marker",
+        "parse_error",
+        "wall_seconds",
+        "valid",
+    ]
+    with (campaign / "results.tsv").open(
+        "w", encoding="utf-8", newline=""
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(
+            {field: row[field] for field in fields} for row in records
+        )
+
+
+def evidence_manifest(campaign: Path) -> None:
+    included: list[Path] = []
+    for path in campaign.rglob("*"):
+        if not path.is_file() or path.name in {
+            "campaign.pass",
+            "campaign.fail",
+            "evidence_sha256.txt",
+        }:
+            continue
+        if "inputs" in path.relative_to(campaign).parts:
+            continue
+        included.append(path)
+    with (campaign / "evidence_sha256.txt").open(
+        "w", encoding="utf-8"
+    ) as handle:
+        for path in sorted(included):
+            handle.write(
+                f"{file_sha256(path)}  {path.relative_to(campaign)}\n"
+            )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sim-root", type=Path, required=True)
+    parser.add_argument("--expected-sim-commit", required=True)
+    parser.add_argument("--gem5", type=Path, required=True)
+    parser.add_argument("--ramulator-yaml", type=Path, required=True)
+    parser.add_argument("--ramulator-lib", type=Path, required=True)
+    parser.add_argument("--virtual-verify-bin", type=Path, required=True)
+    parser.add_argument("--virtual-perf-bin", type=Path, required=True)
+    parser.add_argument("--input-20k", type=Path, required=True)
+    parser.add_argument("--input-full", type=Path, required=True)
+    parser.add_argument("--source-20k", type=Path, required=True)
+    parser.add_argument("--source-full-correctness", type=Path, required=True)
+    parser.add_argument("--reference-campaign", type=Path, required=True)
+    parser.add_argument("--reference-approval", type=Path, required=True)
+    parser.add_argument("--reference-verifier", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--minimum-available-kib", type=int, default=24 * 1024 * 1024
+    )
+    parser.add_argument("--capacity-poll-seconds", type=int, default=600)
+    parser.add_argument("--screen-overhead-limit", type=float, default=0.01)
+    parser.add_argument("--full-overhead-limit", type=float, default=0.01)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sim_commit):
+        fail("--expected-sim-commit must be a full Git object ID")
+    if args.minimum_available_kib < 0 or args.capacity_poll_seconds <= 0:
+        fail("capacity controls must be nonnegative/positive")
+    for limit in (args.screen_overhead_limit, args.full_overhead_limit):
+        if not 0 <= limit <= 0.10:
+            fail("overhead limits must be between 0 and 0.10")
+
+    sim_root = args.sim_root.resolve(strict=True)
+    current_commit = subprocess.run(
+        ["git", "-C", str(sim_root), "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    if current_commit != args.expected_sim_commit:
+        fail(
+            "cost worktree is not at the authorized commit: "
+            f"expected={args.expected_sim_commit} actual={current_commit}"
+        )
+    status = subprocess.run(
+        ["git", "-C", str(sim_root), "status", "--porcelain=v1"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    if status:
+        fail("cost worktree is dirty")
+
+    output = args.output.resolve()
+    if output.exists():
+        fail(f"output already exists: {output}")
+    output.mkdir(parents=True)
+    try:
+        source_20k = args.source_20k.resolve(strict=True)
+        source_full = args.source_full_correctness.resolve(strict=True)
+        reference = args.reference_campaign.resolve(strict=True)
+        marker_20k = correctness_marker(source_20k)
+        marker_full = correctness_marker(source_full)
+        reference_verification = subprocess.run(
+            [
+                str(args.reference_verifier.resolve(strict=True)),
+                "xrage",
+                str(reference),
+                str(args.reference_approval.resolve(strict=True)),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        (output / "reference_verification.log").write_text(
+            reference_verification.stdout, encoding="utf-8"
+        )
+        if reference_verification.returncode != 0:
+            fail("external reference-campaign verification failed")
+        ref_ticks = reference_ticks(reference)
+        source = {
+            "schema_version": 1,
+            "simulator_commit": current_commit,
+            "execution": "serial",
+            "wall_clock_timeout": "none",
+            "simulation_lock": str(SIMULATION_LOCK),
+            "minimum_available_kib": args.minimum_available_kib,
+            "screen_overhead_limit": args.screen_overhead_limit,
+            "full_overhead_limit": args.full_overhead_limit,
+            "reference_sim_ticks": ref_ticks,
+            "reference_campaign": str(reference),
+            "source_20k_campaign": str(source_20k),
+            "source_full_correctness_campaign": str(source_full),
+            "screen_expected_marker": marker_20k,
+            "full_expected_marker": marker_full,
+            "candidates": [asdict(candidate) for candidate in CANDIDATES],
+            "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        staged = stage_inputs(args, output)
+        source["source_artifacts"] = staged
+        (output / "source.json").write_text(
+            json.dumps(source, indent=2, sort_keys=True) + "\n"
+        )
+        verify_staged_inputs(output)
+
+        lock_descriptor = wait_for_capacity(
+            args.minimum_available_kib, args.capacity_poll_seconds
+        )
+        try:
+            records: list[dict[str, Any]] = []
+            inputs = output / "inputs"
+            screen_checkpoint = inputs / "checkpoints/screen"
+            full_correctness_checkpoint = (
+                inputs / "checkpoints/full_correctness"
+            )
+            full_performance_checkpoint = (
+                inputs / "checkpoints/full_performance"
+            )
+            verify_bin = inputs / "benchmark/xrage_virtual_verify"
+            perf_bin = inputs / "benchmark/xrage_virtual"
+            input_20k = inputs / "benchmark/xrage_20k.json"
+            input_full = inputs / "benchmark/xrage_full.json"
+
+            screen_results: dict[str, dict[str, Any]] = {}
+            for candidate in CANDIDATES:
+                verify_staged_inputs(output)
+                result = run_case(
+                    output,
+                    inputs,
+                    screen_checkpoint,
+                    verify_bin,
+                    input_20k,
+                    candidate,
+                    "screen_correctness",
+                    1,
+                    marker_20k,
+                )
+                records.append(result)
+                screen_results[candidate.name] = result
+                if result["valid"] != 1:
+                    fail(f"invalid screen result for {candidate.name}")
+
+            if screen_results["reference"]["valid"] != 1:
+                fail("reference screen case is invalid")
+            screen_reference = screen_results["reference"]["sim_ticks"]
+            eligible = {
+                name
+                for name in PROMOTION_ORDER
+                if screen_results[name]["valid"] == 1
+                and screen_results[name]["sim_ticks"]
+                <= screen_reference * (1 + args.screen_overhead_limit)
+            }
+            selection_rows: list[dict[str, Any]] = []
+            promoted: Candidate | None = None
+            promoted_ticks: int | None = None
+            for name in PROMOTION_ORDER:
+                candidate = next(
+                    item for item in CANDIDATES if item.name == name
+                )
+                row: dict[str, Any] = {
+                    "candidate": name,
+                    "screen_eligible": int(name in eligible),
+                    "full_correct": 0,
+                    "full_deterministic": 0,
+                    "reference_ticks": ref_ticks,
+                    "candidate_ticks": "NA",
+                    "overhead_fraction": "NA",
+                    "promoted": 0,
+                }
+                if name not in eligible:
+                    selection_rows.append(row)
+                    continue
+                verify_staged_inputs(output)
+                correctness = run_case(
+                    output,
+                    inputs,
+                    full_correctness_checkpoint,
+                    verify_bin,
+                    input_full,
+                    candidate,
+                    "full_correctness",
+                    1,
+                    marker_full,
+                )
+                records.append(correctness)
+                row["full_correct"] = correctness["valid"]
+                if correctness["valid"] != 1:
+                    fail(f"full correctness failed for {candidate.name}")
+                performance: list[dict[str, Any]] = []
+                for replica in range(1, 4):
+                    verify_staged_inputs(output)
+                    result = run_case(
+                        output,
+                        inputs,
+                        full_performance_checkpoint,
+                        perf_bin,
+                        input_full,
+                        candidate,
+                        "full_performance",
+                        replica,
+                        None,
+                    )
+                    records.append(result)
+                    performance.append(result)
+                if any(result["valid"] != 1 for result in performance):
+                    fail(f"full performance failed for {candidate.name}")
+                ticks = {result["sim_ticks"] for result in performance}
+                row["full_deterministic"] = int(len(ticks) == 1)
+                if len(ticks) != 1:
+                    selection_rows.append(row)
+                    continue
+                candidate_ticks = int(next(iter(ticks)))
+                overhead = candidate_ticks / ref_ticks - 1
+                row["candidate_ticks"] = candidate_ticks
+                row["overhead_fraction"] = f"{overhead:.9f}"
+                if overhead <= args.full_overhead_limit:
+                    row["promoted"] = 1
+                    promoted = candidate
+                    promoted_ticks = candidate_ticks
+                    selection_rows.append(row)
+                    break
+                selection_rows.append(row)
+
+            write_results(output, records)
+            selection_fields = [
+                "candidate",
+                "screen_eligible",
+                "full_correct",
+                "full_deterministic",
+                "reference_ticks",
+                "candidate_ticks",
+                "overhead_fraction",
+                "promoted",
+            ]
+            with (output / "selection.tsv").open(
+                "w", encoding="utf-8", newline=""
+            ) as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=selection_fields, delimiter="\t"
+                )
+                writer.writeheader()
+                writer.writerows(selection_rows)
+
+            if promoted is None or promoted_ticks is None:
+                (output / "no_promotion").write_text("")
+                summary = {
+                    "status": "complete_without_promotion",
+                    "reference_sim_ticks": ref_ticks,
+                }
+            else:
+                data_bytes_per_bank = {"1kB": 1024, "256B": 256}[promoted.size]
+                summary = {
+                    "status": "promoted",
+                    "candidate": asdict(promoted),
+                    "reference_sim_ticks": ref_ticks,
+                    "candidate_sim_ticks": promoted_ticks,
+                    "speedup": ref_ticks / promoted_ticks,
+                    "elapsed_change_percent": (promoted_ticks / ref_ticks - 1)
+                    * 100,
+                    "retirement_cache_data_bytes_total": data_bytes_per_bank
+                    * 4,
+                    "retirement_cache_target_slots_total": (
+                        promoted.mshrs * promoted.targets_per_mshr * 4
+                    ),
+                    "cost_scope": (
+                        "retirement-cache data and target slots only; no "
+                        "whole-DX100 area or power claim"
+                    ),
+                }
+            (output / "summary.json").write_text(
+                json.dumps(summary, indent=2, sort_keys=True) + "\n"
+            )
+            verify_staged_inputs(output)
+            evidence_manifest(output)
+            (output / "campaign.pass").write_text("")
+        finally:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+            os.close(lock_descriptor)
+    except BaseException as error:
+        (output / "campaign.fail").write_text(
+            f"{type(error).__name__}: {error}\n"
+        )
+        raise
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RuntimeError as error:
+        print(f"retirement-cache ablation failed: {error}", file=sys.stderr)
+        raise SystemExit(1)
