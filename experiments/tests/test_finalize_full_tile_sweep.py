@@ -71,8 +71,7 @@ def test_memory_safety_warns_on_stable_host_swap_occupancy(tmp_path):
     records = safe_telemetry(tmp_path)
     vmstat = tmp_path / "recovery2-vmstat.log"
     vmstat.write_text(
-        "1 0 4 1000 0 0 0 0 0 0 0 0 0 0 100 0 0 "
-        "2026-07-21 00:00:00\n"
+        "1 0 4 1000 0 0 0 0 0 0 0 0 0 0 100 0 0 " "2026-07-21 00:00:00\n"
     )
     summary = finalizer.memory_safety_summary(records)
     assert summary["safe"]
@@ -86,8 +85,7 @@ def test_memory_safety_can_select_post_containment_epoch(tmp_path):
     records = safe_telemetry(tmp_path)
     recovery5 = tmp_path / "recovery5-vmstat.log"
     recovery5.write_text(
-        "1 0 0 1000 0 0 0 0 0 0 0 0 0 0 100 0 0 "
-        "2026-07-23 00:00:00\n"
+        "1 0 0 1000 0 0 0 0 0 0 0 0 0 0 100 0 0 " "2026-07-23 00:00:00\n"
     )
     app_slice = tmp_path / "recovery5-app-slice-cgroup.tsv"
     write_cgroup(app_slice)
@@ -157,17 +155,14 @@ def test_post_containment_vmstat_requires_quiet_tail(tmp_path):
     )
     assert summary["safe"]
     assert summary["vmstat"]["swap_activity_sample_count"] == 1
-    assert summary["vmstat"][
-        "latest_consecutive_zero_swap_samples"
-    ] == 3
+    assert summary["vmstat"]["latest_consecutive_zero_swap_samples"] == 3
     assert any(
         "1 historical swap-activity samples" in warning
         for warning in summary["warnings"]
     )
 
     recovery5.write_text(
-        recovery5.read_text()
-        + "1 0 4 600 0 0 0 1 0 0 0 0 0 0 100 0 0\n"
+        recovery5.read_text() + "1 0 4 600 0 0 0 1 0 0 0 0 0 0 100 0 0\n"
     )
     summary = finalizer.memory_safety_summary(
         records,
@@ -199,15 +194,17 @@ def test_post_containment_cgroup_gates_growth_not_baseline(tmp_path):
         baseline_cgroups={"recovery5-app-slice-cgroup.tsv"},
     )
     assert summary["safe"]
-    assert summary["cgroups"][app_slice.name][
-        "maximum_delta_oom_kill_events"
-    ] == 0
+    assert (
+        summary["cgroups"][app_slice.name]["maximum_delta_oom_kill_events"]
+        == 0
+    )
     assert any(
-        "first_swap_current_bytes=4096" in item
-        for item in summary["warnings"]
+        "first_swap_current_bytes=4096" in item for item in summary["warnings"]
     )
 
-    app_slice.write_text(app_slice.read_text() + "t2\t1\t2\t8192\t11\t3\t2\t2\n")
+    app_slice.write_text(
+        app_slice.read_text() + "t2\t1\t2\t8192\t11\t3\t2\t2\n"
+    )
     summary = finalizer.memory_safety_summary(
         records,
         base_required_cgroups={"recovery5-app-slice-cgroup.tsv"},
@@ -215,12 +212,10 @@ def test_post_containment_cgroup_gates_growth_not_baseline(tmp_path):
     )
     assert not summary["safe"]
     assert any(
-        "maximum_swap_growth_bytes=4096" in item
-        for item in summary["issues"]
+        "maximum_swap_growth_bytes=4096" in item for item in summary["issues"]
     )
     assert any(
-        "maximum_delta_oom_kill_events=1" in item
-        for item in summary["issues"]
+        "maximum_delta_oom_kill_events=1" in item for item in summary["issues"]
     )
 
 
@@ -338,6 +333,21 @@ def test_is_tiles_use_numa_safe_recovery4_workflows(tmp_path):
     }
 
 
+def test_sssp_tiles_use_live_surge_workflows(tmp_path):
+    workload_specs = finalizer.specs(
+        tmp_path,
+        tmp_path / "gapbs.tsv",
+        [tmp_path / "hashjoin.tsv"],
+    )
+    sssp_spec = next(
+        item for item in workload_specs if item["id"] == "gapbs-sssp-s22"
+    )
+    assert sssp_spec["workflow_by_tile"] == {
+        8192: "t8_surge",
+        65536: "auxiliary",
+    }
+
+
 def test_scan_log_cache_is_stat_bound_and_invalidated(tmp_path):
     log = tmp_path / "run.log"
     log.write_text(
@@ -370,21 +380,15 @@ def test_task_workflow_uses_overlay_only_when_task_is_present():
         }
     }
     assert (
-        finalizer.task_workflow(
-            states, spec, 1024, "gapbs-bfs-t1024"
-        )
+        finalizer.task_workflow(states, spec, 1024, "gapbs-bfs-t1024")
         == "repair"
     )
     assert (
-        finalizer.task_workflow(
-            states, spec, 2048, "gapbs-bfs-t2048"
-        )
+        finalizer.task_workflow(states, spec, 2048, "gapbs-bfs-t2048")
         == "normal"
     )
     assert (
-        finalizer.task_workflow(
-            states, spec, 16384, "gapbs-bfs-t16384"
-        )
+        finalizer.task_workflow(states, spec, 16384, "gapbs-bfs-t16384")
         == "gate"
     )
 

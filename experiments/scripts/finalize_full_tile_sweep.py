@@ -1246,6 +1246,10 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "oracle": "sssp",
             "task": "gapbs-sssp-t{tile}",
             "workflow": "recovery_normal",
+            "workflow_by_tile": {
+                8192: "t8_surge",
+                65536: "auxiliary",
+            },
             "workflow_overlays": ["recovery_gapbs_repair5"],
             "compare_oracle": True,
         },
