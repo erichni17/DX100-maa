@@ -1,5 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+umask 077
+unset CDPATH ENV BASH_ENV PYTHONHOME PYTHONPATH LD_AUDIT LD_PRELOAD
+export HOME=/tmp
+export LANG=C
+export LC_ALL=C
+export PATH=/usr/bin:/bin
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONHASHSEED=0
 
 if [[ $# -ne 16 ]]; then
     cat >&2 <<EOF
@@ -13,18 +21,18 @@ expected_runner_sha=$2
 expected_verifier_sha=$3
 expected_reference_verifier_sha=$4
 expected_sim_commit=$5
-bfs_campaign=$(realpath "$6")
-bfs_approval=$(realpath "$7")
+bfs_campaign=$(/usr/bin/realpath "$6")
+bfs_approval=$(/usr/bin/realpath "$7")
 expected_bfs_approval_sha=$8
-bfs_oracle=$(realpath "$9")
+bfs_oracle=$(/usr/bin/realpath "$9")
 expected_bfs_oracle_sha=${10}
 expected_input_20k_sha=${11}
-reference_approval=$(realpath "${12}")
+reference_approval=$(/usr/bin/realpath "${12}")
 expected_reference_approval_sha=${13}
 expected_source_20k_fingerprint=${14}
 expected_source_full_fingerprint=${15}
-output=$(realpath -m "${16}")
-self=$(realpath "$0")
+output=$(/usr/bin/realpath -m "${16}")
+self=$(/usr/bin/realpath "$0")
 sim_root=$(cd "$(dirname "$self")/../.." && pwd)
 runner=$sim_root/experiments/scripts/run_xrage_retirement_cache_ablation.py
 verifier=$sim_root/experiments/scripts/verify_xrage_retirement_cache_ablation.py
@@ -38,7 +46,7 @@ reference_inputs=$reference_campaign/inputs
 input_20k=/data1/nier/DX100/experiments/inputs/xrage_gather0_20k.json
 
 hash_file() {
-    sha256sum "$1" | cut -d' ' -f1
+    /usr/bin/sha256sum "$1" | /usr/bin/cut -d' ' -f1
 }
 
 for expected in "$expected_self_sha" "$expected_runner_sha" \
@@ -72,15 +80,16 @@ assert_authorized_state() {
         echo "an authorized workflow artifact changed" >&2
         return 1
     }
-    [[ $(git -C "$sim_root" rev-parse HEAD) == "$expected_sim_commit" &&
-       -z $(git -C "$sim_root" status --porcelain=v1) ]] || {
+    [[ $(/usr/bin/git -C "$sim_root" rev-parse HEAD) == \
+           "$expected_sim_commit" &&
+       -z $(/usr/bin/git -C "$sim_root" status --porcelain=v1) ]] || {
         echo "retirement-cache cost worktree changed after authorization" >&2
         return 1
     }
 }
 
 verify_output() {
-    "$verifier" "$output" \
+    /usr/bin/python3 -I "$verifier" "$output" \
         --expected-sim-commit "$expected_sim_commit" \
         --expected-runner-sha "$expected_runner_sha" \
         --expected-reference-verifier-sha \
@@ -97,25 +106,18 @@ verify_output() {
         --expected-source-20k "$source_20k" \
         --expected-source-full "$source_full" \
         --expected-reference-campaign "$reference_campaign" \
-        --expected-bfs-campaign "$bfs_campaign"
+        --expected-bfs-campaign "$bfs_campaign" \
+        "$@"
 }
 
 atomic_marker() {
     local destination=$1
     local content=$2
     local temporary
-    temporary=$(mktemp "$output/.${destination##*/}.XXXXXX")
+    temporary=$(/usr/bin/mktemp "$output/.${destination##*/}.XXXXXX")
     printf '%s' "$content" > "$temporary"
-    chmod 0444 "$temporary"
-    mv -T "$temporary" "$destination"
-}
-
-publish_pass() {
-    [[ ! -e $output/campaign.fail ]] || {
-        echo "refusing to publish pass beside a fail marker" >&2
-        return 1
-    }
-    atomic_marker "$output/campaign.pass" ""
+    /usr/bin/chmod 0444 "$temporary"
+    /usr/bin/mv -T "$temporary" "$destination"
 }
 
 publish_fail() {
@@ -123,20 +125,21 @@ publish_fail() {
 }
 
 campaign_lock_root=/data1/nier/.dx-runtime-state/retirement-cache-launch.lock
-mkdir -p -m 0700 "$campaign_lock_root"
+/usr/bin/mkdir -p -m 0700 "$campaign_lock_root"
 [[ -d $campaign_lock_root && ! -L $campaign_lock_root &&
-   $(stat -c %u "$campaign_lock_root") == "$(id -u)" ]] || {
+   $(/usr/bin/stat -c %u "$campaign_lock_root") == \
+       "$(/usr/bin/id -u)" ]] || {
     echo "campaign publication lock directory is unsafe" >&2
     exit 2
 }
-[[ $(stat -c %a "$campaign_lock_root") == 700 ]] ||
-    chmod 0700 "$campaign_lock_root"
+[[ $(/usr/bin/stat -c %a "$campaign_lock_root") == 700 ]] ||
+    /usr/bin/chmod 0700 "$campaign_lock_root"
 exec {campaign_lock_fd}< "$campaign_lock_root"
-flock -x "$campaign_lock_fd"
-campaign_lock_identity=$(stat -Lc '%d:%i' \
+/usr/bin/flock -x "$campaign_lock_fd"
+campaign_lock_identity=$(/usr/bin/stat -Lc '%d:%i' \
     "/proc/$$/fd/$campaign_lock_fd")
 assert_campaign_lock() {
-    [[ $(stat -Lc '%d:%i' "$campaign_lock_root") == \
+    [[ $(/usr/bin/stat -Lc '%d:%i' "$campaign_lock_root") == \
        "$campaign_lock_identity" ]] || {
         echo "campaign publication lock identity changed" >&2
         return 1
@@ -152,7 +155,7 @@ assert_authorized_state
     echo "the upstream BFS replay is not in a clean pass state" >&2
     exit 3
 }
-"$reference_verifier" bfs "$bfs_campaign" "$bfs_approval" \
+/usr/bin/python3 -I "$reference_verifier" bfs "$bfs_campaign" "$bfs_approval" \
     --oracle "$bfs_oracle"
 assert_authorized_state
 
@@ -165,13 +168,12 @@ if [[ -f $output/campaign.pass ]]; then
 fi
 if [[ -f $output/execution.complete &&
       ! -e $output/campaign.fail ]]; then
-    verify_output || {
+    verify_output --publish-pass || {
         publish_fail "independent verification failed"
         exit 4
     }
     assert_campaign_lock
     assert_authorized_state
-    publish_pass
     echo "published previously completed retirement-cache ablation: $output"
     exit 0
 fi
@@ -181,7 +183,7 @@ fi
 }
 
 assert_authorized_state
-"$runner" \
+/usr/bin/python3 -I "$runner" \
     --sim-root "$sim_root" \
     --expected-sim-commit "$expected_sim_commit" \
     --expected-runner-sha "$expected_runner_sha" \
@@ -213,11 +215,10 @@ assert_authorized_state
     --output "$output"
 assert_campaign_lock
 assert_authorized_state
-verify_output || {
+verify_output --publish-pass || {
     publish_fail "independent verification failed"
     exit 4
 }
 assert_campaign_lock
 assert_authorized_state
-publish_pass
 echo "completed, independently verified, and published retirement-cache ablation: $output"

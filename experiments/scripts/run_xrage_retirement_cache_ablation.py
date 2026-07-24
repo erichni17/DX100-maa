@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Screen and promote lower-cost XRAGE virtual-retirement cache settings."""
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import shlex
 import stat
 import struct
@@ -37,6 +38,8 @@ MARKER_RE = re.compile(
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SIMULATION_LOCK = Path("/data1/nier/.dx100-virtual-simulation.lock")
 IN_ATTRIB = 0x00000004
+IN_MODIFY = 0x00000002
+IN_CLOSE_WRITE = 0x00000008
 IN_MOVED_FROM = 0x00000040
 IN_MOVED_TO = 0x00000080
 IN_CREATE = 0x00000100
@@ -45,8 +48,11 @@ IN_DELETE_SELF = 0x00000400
 IN_MOVE_SELF = 0x00000800
 IN_Q_OVERFLOW = 0x00004000
 IN_IGNORED = 0x00008000
+IN_ISDIR = 0x40000000
 LOCK_WATCH_MASK = (
-    IN_ATTRIB
+    IN_MODIFY
+    | IN_ATTRIB
+    | IN_CLOSE_WRITE
     | IN_MOVED_FROM
     | IN_MOVED_TO
     | IN_CREATE
@@ -54,7 +60,16 @@ LOCK_WATCH_MASK = (
     | IN_DELETE_SELF
     | IN_MOVE_SELF
 )
+CHECKPOINT_WATCH_MASK = LOCK_WATCH_MASK
 INOTIFY_EVENT = struct.Struct("iIII")
+AUTH_ENV = {
+    "HOME": "/tmp",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "PATH": "/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONHASHSEED": "0",
+}
 
 
 @dataclass(frozen=True)
@@ -75,6 +90,20 @@ class SimulationLock:
     device: int
     inode: int
     ctime_ns: int
+
+
+@dataclass
+class CheckpointGuard:
+    descriptor: int
+    root_descriptor: int
+    parent_watch: int
+    output_watch: int
+    output: Path
+    output_name: bytes
+    checkpoint_name: bytes
+    tree_watches: set[int]
+    device: int
+    inode: int
 
 
 CANDIDATES = (
@@ -241,6 +270,20 @@ def correctness_campaign_fingerprint(campaign: Path) -> str:
         campaign / "results.tsv",
         campaign / "source.txt",
     ]
+    for arm in ("native", "fused", "virtual"):
+        required.extend(
+            campaign / "runs" / arm / name
+            for name in (
+                "restore.command",
+                "restore.exit",
+                "restore.log",
+                "result.tsv",
+                "stats.txt",
+                "config.ini",
+                "config.json",
+                "validation.pass",
+            )
+        )
     checkpoint_manifests = sorted(
         campaign.glob("checkpoints/*/checkpoint_sha256.txt")
     )
@@ -305,14 +348,14 @@ def checkpoint_payload(
 def copy_reflink(
     source: Path, destination: Path, *, recursive: bool = False
 ) -> None:
-    command = ["cp", "-a", "--reflink=auto"]
+    command = ["/bin/cp", "-a", "--reflink=auto"]
     if recursive:
         command.append(str(source))
         command.append(str(destination))
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
         command.extend((str(source), str(destination)))
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, env=AUTH_ENV)
 
 
 def stage_checkpoint(
@@ -427,7 +470,151 @@ def create_lock_watch() -> int:
     return descriptor
 
 
-def verify_lock_watch(lock: SimulationLock) -> None:
+def create_checkpoint_guard(
+    output: Path, checkpoint_name: str
+) -> CheckpointGuard:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.inotify_init1.argtypes = [ctypes.c_int]
+    libc.inotify_init1.restype = ctypes.c_int
+    libc.inotify_add_watch.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+    ]
+    libc.inotify_add_watch.restype = ctypes.c_int
+    descriptor = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if descriptor < 0:
+        error = ctypes.get_errno()
+        fail(f"checkpoint inotify_init1 failed: {os.strerror(error)}")
+    parent_watch = libc.inotify_add_watch(
+        descriptor,
+        os.fsencode(output.parent),
+        CHECKPOINT_WATCH_MASK,
+    )
+    if parent_watch < 0:
+        error = ctypes.get_errno()
+        os.close(descriptor)
+        fail(f"checkpoint parent watch failed: {os.strerror(error)}")
+    root_descriptor = os.open(
+        output,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    watch = libc.inotify_add_watch(
+        descriptor,
+        os.fsencode(output),
+        CHECKPOINT_WATCH_MASK,
+    )
+    if watch < 0:
+        error = ctypes.get_errno()
+        os.close(root_descriptor)
+        os.close(descriptor)
+        fail(f"checkpoint inotify_add_watch failed: {os.strerror(error)}")
+    root_stat = os.fstat(root_descriptor)
+    guard = CheckpointGuard(
+        descriptor=descriptor,
+        root_descriptor=root_descriptor,
+        parent_watch=parent_watch,
+        output_watch=watch,
+        output=output,
+        output_name=os.fsencode(output.name),
+        checkpoint_name=os.fsencode(checkpoint_name),
+        tree_watches=set(),
+        device=root_stat.st_dev,
+        inode=root_stat.st_ino,
+    )
+    verify_checkpoint_guard(guard)
+    return guard
+
+
+def add_checkpoint_tree_watches(
+    guard: CheckpointGuard, checkpoint: Path
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.inotify_add_watch.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+    ]
+    libc.inotify_add_watch.restype = ctypes.c_int
+    directories = [
+        checkpoint,
+        *sorted(path for path in checkpoint.rglob("*") if path.is_dir()),
+    ]
+    for directory in directories:
+        reject_symlink_components(directory)
+        watch = libc.inotify_add_watch(
+            guard.descriptor,
+            os.fsencode(directory),
+            CHECKPOINT_WATCH_MASK,
+        )
+        if watch < 0:
+            error = ctypes.get_errno()
+            fail(
+                "checkpoint tree inotify_add_watch failed: "
+                f"{os.strerror(error)}"
+            )
+        guard.tree_watches.add(watch)
+
+
+def verify_checkpoint_guard(
+    guard: CheckpointGuard, *, allow_initialization: bool = False
+) -> None:
+    while True:
+        try:
+            data = os.read(guard.descriptor, 64 * 1024)
+        except OSError as error:
+            if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                break
+            fail(f"checkpoint watch failed: {error}")
+        if not data:
+            fail("checkpoint watch closed unexpectedly")
+        offset = 0
+        while offset < len(data):
+            if len(data) - offset < INOTIFY_EVENT.size:
+                fail("checkpoint watch returned a truncated event")
+            watch, mask, _, name_length = INOTIFY_EVENT.unpack_from(
+                data, offset
+            )
+            offset += INOTIFY_EVENT.size
+            if len(data) - offset < name_length:
+                fail("checkpoint watch returned a truncated name")
+            raw_name = data[offset : offset + name_length]
+            offset += name_length
+            name = raw_name.rstrip(b"\0")
+            if mask & (IN_Q_OVERFLOW | IN_IGNORED):
+                fail("checkpoint watch lost event coverage")
+            if (watch == guard.parent_watch and name == guard.output_name) or (
+                watch == guard.output_watch
+                and mask & (IN_DELETE_SELF | IN_MOVE_SELF)
+            ):
+                fail("guarded run directory changed while in use")
+            relevant = watch in guard.tree_watches or (
+                watch == guard.output_watch and name == guard.checkpoint_name
+            )
+            if not relevant:
+                continue
+            operation_mask = mask & ~IN_ISDIR
+            if allow_initialization and not operation_mask & ~(
+                IN_CREATE | IN_ATTRIB | IN_MODIFY | IN_CLOSE_WRITE
+            ):
+                continue
+            fail("restored checkpoint changed while in use")
+    descriptor_stat = os.fstat(guard.root_descriptor)
+    path_stat = guard.output.lstat()
+    if (
+        not guard.output.is_dir()
+        or guard.output.is_symlink()
+        or descriptor_stat.st_dev != guard.device
+        or descriptor_stat.st_ino != guard.inode
+        or path_stat.st_dev != guard.device
+        or path_stat.st_ino != guard.inode
+    ):
+        fail("guarded run directory identity changed")
+
+
+def verify_lock_watch(
+    lock: SimulationLock, *, allow_initialization: bool = False
+) -> None:
     while True:
         try:
             data = os.read(lock.watch_descriptor, 64 * 1024)
@@ -451,6 +638,10 @@ def verify_lock_watch(lock: SimulationLock) -> None:
             if mask & (IN_Q_OVERFLOW | IN_IGNORED):
                 fail("simulation lock watch lost event coverage")
             if not name or name == os.fsencode(SIMULATION_LOCK.name):
+                if allow_initialization and not mask & ~(
+                    IN_CREATE | IN_ATTRIB
+                ):
+                    continue
                 fail("simulation lock pathname changed while held")
 
 
@@ -466,15 +657,17 @@ def wait_for_capacity(
                 values[key] = int(fields[0])
         available = values.get("MemAvailable", 0)
         if available >= minimum_available_kib:
+            descriptor: int | None = None
+            watch_descriptor = create_lock_watch()
             try:
                 descriptor = os.open(
                     SIMULATION_LOCK,
                     os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
                     0o600,
                 )
-                os.fchmod(descriptor, 0o600)
+                if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
+                    os.fchmod(descriptor, 0o600)
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                watch_descriptor = create_lock_watch()
                 descriptor_stat = os.fstat(descriptor)
                 lock = SimulationLock(
                     descriptor=descriptor,
@@ -483,10 +676,18 @@ def wait_for_capacity(
                     inode=descriptor_stat.st_ino,
                     ctime_ns=descriptor_stat.st_ctime_ns,
                 )
+                verify_lock_watch(lock, allow_initialization=True)
                 verify_lock_identity(lock)
                 return lock
             except BlockingIOError:
-                os.close(descriptor)
+                if descriptor is not None:
+                    os.close(descriptor)
+                os.close(watch_descriptor)
+            except BaseException:
+                if descriptor is not None:
+                    os.close(descriptor)
+                os.close(watch_descriptor)
+                raise
         print(
             f"[{time.strftime('%Y-%m-%dT%H:%M:%S%z')}] waiting: "
             f"MemAvailable={available} KiB, required={minimum_available_kib} KiB",
@@ -515,6 +716,56 @@ def verify_lock_identity(lock: SimulationLock) -> None:
 
 def write_command(path: Path, command: list[str]) -> None:
     path.write_text(shlex.join(command) + "\n", encoding="utf-8")
+
+
+def run_with_lock_monitor(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    log: Any,
+    lock: SimulationLock,
+    checkpoint_guard: CheckpointGuard,
+    inputs_guard: CheckpointGuard,
+) -> int:
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=environment,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+    )
+    try:
+        while process.poll() is None:
+            readable, _, _ = select.select(
+                [
+                    lock.watch_descriptor,
+                    checkpoint_guard.descriptor,
+                    inputs_guard.descriptor,
+                ],
+                [],
+                [],
+                1.0,
+            )
+            if lock.watch_descriptor in readable:
+                verify_lock_identity(lock)
+            if checkpoint_guard.descriptor in readable:
+                verify_checkpoint_guard(checkpoint_guard)
+            if inputs_guard.descriptor in readable:
+                verify_checkpoint_guard(inputs_guard)
+        verify_lock_identity(lock)
+        verify_checkpoint_guard(checkpoint_guard)
+        verify_checkpoint_guard(inputs_guard)
+        return int(process.returncode)
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        raise
 
 
 def first_stats(path: Path) -> dict[str, int]:
@@ -774,13 +1025,19 @@ def run_case(
     phase: str,
     replica: int,
     expected_marker: str | None,
+    simulation_lock: SimulationLock,
+    inputs_guard: CheckpointGuard,
 ) -> dict[str, Any]:
     output = campaign / "runs" / phase / candidate.name / f"replica_{replica}"
     output.mkdir(parents=True)
     source_dir, source_entries = checkpoint_payload(
         checkpoint_root, "checkpoint_sha256.txt"
     )
+    checkpoint_guard = create_checkpoint_guard(output, source_dir.name)
     copy_reflink(source_dir, output / source_dir.name, recursive=True)
+    verify_checkpoint_guard(checkpoint_guard, allow_initialization=True)
+    copied_checkpoint = output / source_dir.name
+    add_checkpoint_tree_watches(checkpoint_guard, copied_checkpoint)
     restore_manifest = output / "restore_checkpoint_sha256.txt"
     with restore_manifest.open("w", encoding="utf-8") as handle:
         for path, digest in sorted(
@@ -788,9 +1045,11 @@ def run_case(
         ):
             handle.write(f"{digest}  {path.relative_to(checkpoint_root)}\n")
     checkpoint_payload(output, "restore_checkpoint_sha256.txt")
-    copied_checkpoint = output / source_dir.name
     for path in (copied_checkpoint, *copied_checkpoint.rglob("*")):
         path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    verify_checkpoint_guard(checkpoint_guard, allow_initialization=True)
+    checkpoint_payload(output, "restore_checkpoint_sha256.txt")
+    verify_checkpoint_guard(checkpoint_guard)
 
     command = base_command(inputs, output, binary, data, candidate)
     write_command(output / "restore.command", command)
@@ -807,17 +1066,21 @@ def run_case(
     }
     started = time.monotonic()
     with (output / "restore.log").open("wb") as log:
-        completed = subprocess.run(
+        return_code = run_with_lock_monitor(
             command,
             cwd=inputs / "simulator",
-            env=environment,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            check=False,
+            environment=environment,
+            log=log,
+            lock=simulation_lock,
+            checkpoint_guard=checkpoint_guard,
+            inputs_guard=inputs_guard,
         )
     wall_seconds = time.monotonic() - started
-    (output / "restore.exit").write_text(f"{completed.returncode}\n")
+    (output / "restore.exit").write_text(f"{return_code}\n")
     checkpoint_payload(output, "restore_checkpoint_sha256.txt")
+    verify_checkpoint_guard(checkpoint_guard)
+    os.close(checkpoint_guard.root_descriptor)
+    os.close(checkpoint_guard.descriptor)
 
     log_text = (output / "restore.log").read_text(errors="replace")
     roi_count = sum(line == "ROI End!!!" for line in log_text.splitlines())
@@ -849,7 +1112,7 @@ def run_case(
     except RuntimeError as error:
         parse_error = str(error)
     valid = (
-        completed.returncode == 0
+        return_code == 0
         and roi_count == 1
         and exit_count == 1
         and fatal_count == 0
@@ -863,7 +1126,7 @@ def run_case(
         "phase": phase,
         "candidate": candidate.name,
         "replica": replica,
-        "return_code": completed.returncode,
+        "return_code": return_code,
         "wall_seconds": round(wall_seconds, 6),
         "roi_count": roi_count,
         "exit_count": exit_count,
@@ -938,7 +1201,7 @@ def stage_inputs(
     sim_root = args.sim_root.resolve(strict=True)
     tracked_configs = subprocess.run(
         [
-            "git",
+            "/usr/bin/git",
             "-C",
             str(sim_root),
             "ls-tree",
@@ -949,6 +1212,7 @@ def stage_inputs(
             "configs",
         ],
         check=True,
+        env=AUTH_ENV,
         stdout=subprocess.PIPE,
     ).stdout.split(b"\0")
     for raw in tracked_configs:
@@ -957,13 +1221,14 @@ def stage_inputs(
         relative = Path(os.fsdecode(raw))
         committed = subprocess.run(
             [
-                "git",
+                "/usr/bin/git",
                 "-C",
                 str(sim_root),
                 "show",
                 f"{args.expected_sim_commit}:{relative}",
             ],
             check=True,
+            env=AUTH_ENV,
             stdout=subprocess.PIPE,
         ).stdout
         destination = inputs / "simulator" / relative
@@ -1011,11 +1276,17 @@ def stage_inputs(
     }
 
 
-def verify_staged_inputs(campaign: Path) -> None:
+def verify_staged_inputs(
+    campaign: Path, expected_manifest_sha256: str
+) -> None:
     inputs = campaign / "inputs"
-    manifest = json.loads(
-        regular_file(campaign / "staged_input_sha256.json").read_text()
+    manifest_path = regular_file(campaign / "staged_input_sha256.json")
+    expect_hash(
+        "staged input manifest",
+        manifest_path,
+        expected_manifest_sha256,
     )
+    manifest = json.loads(manifest_path.read_text())
     if not isinstance(manifest, dict) or not manifest:
         fail("staged input manifest is empty or malformed")
     actual_paths = {
@@ -1165,8 +1436,9 @@ def main() -> None:
 
     sim_root = args.sim_root.resolve(strict=True)
     current_commit = subprocess.run(
-        ["git", "-C", str(sim_root), "rev-parse", "HEAD"],
+        ["/usr/bin/git", "-C", str(sim_root), "rev-parse", "HEAD"],
         check=True,
+        env=AUTH_ENV,
         text=True,
         stdout=subprocess.PIPE,
     ).stdout.strip()
@@ -1176,8 +1448,9 @@ def main() -> None:
             f"expected={args.expected_sim_commit} actual={current_commit}"
         )
     status = subprocess.run(
-        ["git", "-C", str(sim_root), "status", "--porcelain=v1"],
+        ["/usr/bin/git", "-C", str(sim_root), "status", "--porcelain=v1"],
         check=True,
+        env=AUTH_ENV,
         text=True,
         stdout=subprocess.PIPE,
     ).stdout
@@ -1241,12 +1514,15 @@ def main() -> None:
         marker_full = correctness_marker(source_full)
         reference_verification = subprocess.run(
             [
+                "/usr/bin/python3",
+                "-I",
                 str(reference_verifier),
                 "xrage",
                 str(reference),
                 str(reference_approval),
             ],
             check=False,
+            env=AUTH_ENV,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1263,6 +1539,8 @@ def main() -> None:
         )
         bfs_verification = subprocess.run(
             [
+                "/usr/bin/python3",
+                "-I",
                 str(reference_verifier),
                 "bfs",
                 str(bfs_campaign),
@@ -1271,6 +1549,7 @@ def main() -> None:
                 str(bfs_oracle),
             ],
             check=False,
+            env=AUTH_ENV,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1348,6 +1627,7 @@ def main() -> None:
         }
         staged = stage_inputs(args, output, expected_hashes)
         source["source_artifacts"] = staged
+        staged_manifest_sha256 = staged["staged_manifest_sha256"]
         if (
             correctness_campaign_fingerprint(source_20k)
             != args.expected_source_20k_fingerprint
@@ -1358,7 +1638,10 @@ def main() -> None:
         (output / "source.json").write_text(
             json.dumps(source, indent=2, sort_keys=True) + "\n"
         )
-        verify_staged_inputs(output)
+        inputs_guard = create_checkpoint_guard(output, "inputs")
+        add_checkpoint_tree_watches(inputs_guard, output / "inputs")
+        verify_staged_inputs(output, staged_manifest_sha256)
+        verify_checkpoint_guard(inputs_guard)
 
         simulation_lock = wait_for_capacity(
             args.minimum_available_kib, args.capacity_poll_seconds
@@ -1381,7 +1664,7 @@ def main() -> None:
             screen_results: dict[str, dict[str, Any]] = {}
             for candidate in CANDIDATES:
                 verify_lock_identity(simulation_lock)
-                verify_staged_inputs(output)
+                verify_staged_inputs(output, staged_manifest_sha256)
                 result = run_case(
                     output,
                     inputs,
@@ -1392,6 +1675,8 @@ def main() -> None:
                     "screen_correctness",
                     1,
                     marker_20k,
+                    simulation_lock,
+                    inputs_guard,
                 )
                 records.append(result)
                 screen_results[candidate.name] = result
@@ -1408,7 +1693,7 @@ def main() -> None:
                 and screen_results[name]["sim_ticks"]
                 <= screen_reference * (1 + args.screen_overhead_limit)
             }
-            ref_ticks: int | None = None
+            ref_ticks: int | None = upstream_ref_ticks if eligible else None
             candidate_correctness: dict[str, dict[str, Any]] = {}
             if eligible:
                 first_eligible = next(
@@ -1418,7 +1703,7 @@ def main() -> None:
                     item for item in CANDIDATES if item.name == first_eligible
                 )
                 verify_lock_identity(simulation_lock)
-                verify_staged_inputs(output)
+                verify_staged_inputs(output, staged_manifest_sha256)
                 first_correctness = run_case(
                     output,
                     inputs,
@@ -1429,56 +1714,13 @@ def main() -> None:
                     "full_correctness",
                     1,
                     marker_full,
+                    simulation_lock,
+                    inputs_guard,
                 )
                 records.append(first_correctness)
                 candidate_correctness[first_eligible] = first_correctness
                 if first_correctness["valid"] != 1:
                     fail(f"full correctness failed for {first_candidate.name}")
-
-                reference_candidate = CANDIDATES[0]
-                verify_lock_identity(simulation_lock)
-                verify_staged_inputs(output)
-                reference_correctness = run_case(
-                    output,
-                    inputs,
-                    full_correctness_checkpoint,
-                    verify_bin,
-                    input_full,
-                    reference_candidate,
-                    "full_correctness",
-                    1,
-                    marker_full,
-                )
-                records.append(reference_correctness)
-                if reference_correctness["valid"] != 1:
-                    fail("fresh full reference correctness failed")
-                reference_performance: list[dict[str, Any]] = []
-                for replica in range(1, 4):
-                    verify_lock_identity(simulation_lock)
-                    verify_staged_inputs(output)
-                    result = run_case(
-                        output,
-                        inputs,
-                        full_performance_checkpoint,
-                        perf_bin,
-                        input_full,
-                        reference_candidate,
-                        "full_performance",
-                        replica,
-                        None,
-                    )
-                    records.append(result)
-                    reference_performance.append(result)
-                if any(
-                    result["valid"] != 1 for result in reference_performance
-                ):
-                    fail("fresh full reference performance failed")
-                fresh_reference_ticks = {
-                    result["sim_ticks"] for result in reference_performance
-                }
-                if len(fresh_reference_ticks) != 1:
-                    fail("fresh full reference replicas are not deterministic")
-                ref_ticks = int(next(iter(fresh_reference_ticks)))
 
             selection_rows: list[dict[str, Any]] = []
             promoted: Candidate | None = None
@@ -1505,7 +1747,7 @@ def main() -> None:
                 correctness = candidate_correctness.get(name)
                 if correctness is None:
                     verify_lock_identity(simulation_lock)
-                    verify_staged_inputs(output)
+                    verify_staged_inputs(output, staged_manifest_sha256)
                     correctness = run_case(
                         output,
                         inputs,
@@ -1516,6 +1758,8 @@ def main() -> None:
                         "full_correctness",
                         1,
                         marker_full,
+                        simulation_lock,
+                        inputs_guard,
                     )
                     records.append(correctness)
                     candidate_correctness[name] = correctness
@@ -1525,7 +1769,7 @@ def main() -> None:
                 performance: list[dict[str, Any]] = []
                 for replica in range(1, 4):
                     verify_lock_identity(simulation_lock)
-                    verify_staged_inputs(output)
+                    verify_staged_inputs(output, staged_manifest_sha256)
                     result = run_case(
                         output,
                         inputs,
@@ -1536,6 +1780,8 @@ def main() -> None:
                         "full_performance",
                         replica,
                         None,
+                        simulation_lock,
+                        inputs_guard,
                     )
                     records.append(result)
                     performance.append(result)
@@ -1547,7 +1793,7 @@ def main() -> None:
                     selection_rows.append(row)
                     continue
                 if ref_ticks is None:
-                    fail("eligible candidate has no fresh reference")
+                    fail("eligible candidate has no approved reference")
                 candidate_ticks = int(next(iter(ticks)))
                 overhead = candidate_ticks / ref_ticks - 1
                 row["candidate_ticks"] = candidate_ticks
@@ -1588,7 +1834,7 @@ def main() -> None:
                 }
             else:
                 if ref_ticks is None:
-                    fail("promoted candidate has no fresh reference")
+                    fail("promoted candidate has no approved reference")
                 data_bytes_per_bank = {"1kB": 1024, "256B": 256}[promoted.size]
                 summary = {
                     "status": "promoted",
@@ -1611,7 +1857,8 @@ def main() -> None:
             (output / "summary.json").write_text(
                 json.dumps(summary, indent=2, sort_keys=True) + "\n"
             )
-            verify_staged_inputs(output)
+            verify_staged_inputs(output, staged_manifest_sha256)
+            verify_checkpoint_guard(inputs_guard)
             verify_lock_identity(simulation_lock)
             evidence_manifest(output)
             atomic_write(output / "execution.complete", "", 0o444)
@@ -1619,6 +1866,8 @@ def main() -> None:
             os.close(simulation_lock.watch_descriptor)
             fcntl.flock(simulation_lock.descriptor, fcntl.LOCK_UN)
             os.close(simulation_lock.descriptor)
+            os.close(inputs_guard.root_descriptor)
+            os.close(inputs_guard.descriptor)
     except BaseException as error:
         atomic_write(
             output / "campaign.fail",
