@@ -32,8 +32,8 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
             path.write_text(
                 "[Slice]\n"
                 "MemoryAccounting=yes\n"
-                "MemoryHigh=256G\n"
-                "MemoryMax=272G\n"
+                "MemoryHigh=276G\n"
+                "MemoryMax=280G\n"
                 "MemorySwapMax=0\n"
                 "[Install]\n"
                 "WantedBy=default.target\n"
@@ -47,8 +47,8 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
                 "Description=DX100 full tile sweep aggregate memory containment\n"
                 "[Slice]\n"
                 "MemoryAccounting=yes\n"
-                "MemoryHigh=256G\n"
-                "MemoryMax=272G\n"
+                "MemoryHigh=276G\n"
+                "MemoryMax=280G\n"
                 "MemorySwapMax=0\n"
                 "ManagedOOMMemoryPressure=kill\n"
             )
@@ -137,8 +137,8 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
                     "ActiveState=inactive",
                     f"FragmentPath={fragment}",
                     "MemoryAccounting=yes",
-                    f"MemoryHigh={256 * memory.GIB_BYTES}",
-                    f"MemoryMax={272 * memory.GIB_BYTES}",
+                    f"MemoryHigh={276 * memory.GIB_BYTES}",
+                    f"MemoryMax={280 * memory.GIB_BYTES}",
                     "MemorySwapMax=0",
                 )
             )
@@ -155,7 +155,7 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
             finally:
                 deployment.subprocess.run = original
             self.assertEqual(checked["active_state"], "inactive")
-            self.assertEqual(checked["memory_max_gib"], 272)
+            self.assertEqual(checked["memory_max_gib"], 280)
 
     def test_launcher_always_uses_aggregate_slice_and_no_timeout(self):
         command = launcher.build_systemd_run(
@@ -196,7 +196,7 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
                 (path / "memory.swap.max").write_text("0\n")
 
             write_limits(child, 56, 64)
-            write_limits(aggregate, 256, 272)
+            write_limits(aggregate, 276, 280)
             child_properties = {
                 "LoadState": "loaded",
                 "ActiveState": "active",
@@ -212,8 +212,8 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
                 "ActiveState": "active",
                 "ControlGroup": "/aggregate",
                 "MemoryAccounting": "yes",
-                "MemoryHigh": str(256 * memory.GIB_BYTES),
-                "MemoryMax": str(272 * memory.GIB_BYTES),
+                "MemoryHigh": str(276 * memory.GIB_BYTES),
+                "MemoryMax": str(280 * memory.GIB_BYTES),
                 "MemorySwapMax": "0",
             }
             original = launcher.show_service
@@ -236,7 +236,7 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
                     "fixture", root
                 )
                 self.assertEqual(checked["slice"], memory.TARGET_SLICE)
-                self.assertEqual(parent["memory_max_gib"], 272)
+                self.assertEqual(parent["memory_max_gib"], 280)
                 (child / "memory.swap.max").write_text("1\n")
                 with self.assertRaisesRegex(
                     launcher.LaunchError, "memory.swap.max"
@@ -258,8 +258,8 @@ class FullTileSliceDeploymentTests(unittest.TestCase):
             launcher.validate_request(
                 "dx100-full-tile-fixture",
                 Path("/tmp"),
-                256,
-                273,
+                280,
+                281,
                 ["/usr/bin/true"],
             )
 

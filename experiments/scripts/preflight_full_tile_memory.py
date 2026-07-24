@@ -18,8 +18,8 @@ from pathlib import Path
 
 GIB_BYTES = 1 << 30
 KIB_BYTES = 1 << 10
-FINAL_SLICE_CAP_GIB = 272
-SLICE_HIGH_GIB = 256
+FINAL_SLICE_CAP_GIB = 280
+SLICE_HIGH_GIB = 276
 TRANSITION_LIMIT_GIB = 296
 MIN_AVAILABLE_GIB = 50
 LIVE_STATES = {"active", "activating", "reloading", "deactivating"}

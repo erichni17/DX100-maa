@@ -21,8 +21,8 @@ import preflight_full_tile_memory as memory
 UNIT_NAME = memory.TARGET_SLICE
 EXPECTED = {
     "MemoryAccounting": "yes",
-    "MemoryHigh": "256G",
-    "MemoryMax": "272G",
+    "MemoryHigh": "276G",
+    "MemoryMax": "280G",
     "MemorySwapMax": "0",
 }
 EXPECTED_UNIT = {

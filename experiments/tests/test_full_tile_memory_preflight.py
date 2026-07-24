@@ -80,8 +80,8 @@ class FullTileMemoryPreflightTests(unittest.TestCase):
             / "experiments/systemd/dx100-full-tile-sweep.slice"
         ).read_text()
         self.assertIn("MemoryAccounting=yes", text)
-        self.assertIn("MemoryHigh=256G", text)
-        self.assertIn("MemoryMax=272G", text)
+        self.assertIn("MemoryHigh=276G", text)
+        self.assertIn("MemoryMax=280G", text)
         self.assertIn("MemorySwapMax=0", text)
         self.assertNotIn("[Install]", text)
 
@@ -115,7 +115,7 @@ class FullTileMemoryPreflightTests(unittest.TestCase):
         units = [unit("retired.service", 64, active=False)]
         current = report(units)
         self.assertEqual(current["legacy"]["active_hard_sum_gib"], 0)
-        self.assertEqual(current["slice"]["safe_slice_cap_gib"], 272)
+        self.assertEqual(current["slice"]["safe_slice_cap_gib"], 280)
         self.assertTrue(current["ok"])
 
     def test_non_binary_gib_memory_max_is_rejected(self):
@@ -173,7 +173,7 @@ class FullTileMemoryPreflightTests(unittest.TestCase):
                 "oom_group_kill 0\n"
             )
             (path / "memory.swap.current").write_text("0\n")
-            expected = 272 * preflight.GIB_BYTES
+            expected = 280 * preflight.GIB_BYTES
             (path / "memory.max").write_text(f"{expected}\n")
             leaf = preflight.read_cgroup_health(
                 "leaf", path, expected
@@ -200,8 +200,8 @@ class FullTileMemoryPreflightTests(unittest.TestCase):
         )
         self.assertEqual(current["slice"]["safe_slice_cap_gib"], 24)
 
-    def test_safe_cap_rises_to_272_as_legacy_units_retire(self):
-        expected = {272: 24, 208: 88, 96: 200, 24: 272, 0: 272}
+    def test_safe_cap_rises_to_280_as_legacy_units_retire(self):
+        expected = {272: 24, 208: 88, 96: 200, 24: 272, 0: 280}
         for legacy_gib, safe_gib in expected.items():
             with self.subTest(legacy_gib=legacy_gib):
                 units = (

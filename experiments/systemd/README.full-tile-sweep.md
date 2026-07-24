@@ -3,8 +3,8 @@
 `dx100-full-tile-sweep.slice` is the production aggregate memory boundary for
 future full-tile transient services:
 
-- `MemoryHigh=256G` applies reclaim pressure before the emergency boundary.
-- `MemoryMax=272G` is the campaign-wide hard cap.
+- `MemoryHigh=276G` applies reclaim pressure before the emergency boundary.
+- `MemoryMax=280G` is the campaign-wide hard cap.
 - `MemorySwapMax=0` prevents campaign memory from entering swap.
 - child services retain their own `MemoryHigh`, `MemoryMax`, `OOMPolicy=stop`,
   and `KillMode=control-group` settings.
@@ -18,18 +18,25 @@ than linking it to a disposable worktree.
 
 The server has 330.51 binary GiB of RAM. Its exact 90% threshold is about
 297.46 GiB; the migration ceiling is intentionally rounded down to 296 GiB.
-The slice's 272 GiB hard cap leaves roughly 58.5 GiB outside the campaign for
+The slice's 280 GiB hard cap leaves roughly 50.5 GiB outside the campaign for
 the kernel, SSH sessions, other users, and services.
 
-Child `MemoryMax` values may sum above 272 GiB after migration. The parent
+Live calibration on the 2026-07-20 full-tile sweep showed that a 256 GiB
+`memory.high` boundary produced roughly 10--12% full cgroup stalls and about
+40% I/O wait while more than 50 GiB remained available to the host. Raising
+the live boundary to 276 GiB restored useful CPU utilization while retaining
+more than 12% measured host headroom. The 280 GiB hard cap remains below the
+host's 90% ceiling.
+
+Child `MemoryMax` values may sum above 280 GiB after migration. The parent
 slice, not a hand-maintained sum of child reservations, enforces the real
 aggregate ceiling. This permits more concurrent simulations without exposing
 the host to their combined worst case.
 
 During migration, active legacy services remain outside the slice. Their
-hard caps plus the proposed 272 GiB slice must remain at or below both 296 GiB
+hard caps plus the proposed 280 GiB slice must remain at or below both 296 GiB
 and 90% of physical RAM. Consequently, a full-sized slice may coexist with no
-more than 24 GiB of active legacy caps. Prefer zero legacy services at cutover.
+more than 16 GiB of active legacy caps. Prefer zero legacy services at cutover.
 
 ## One-time, no-sudo deployment
 
@@ -82,11 +89,11 @@ swap remains a hard refusal.
 The JSON field `safe_slice_cap_gib` is:
 
 ```text
-min(272 GiB, 296 GiB - active legacy MemoryMax sum)
+min(280 GiB, 296 GiB - active legacy MemoryMax sum)
 ```
 
-The launcher always proposes the production 272 GiB cap; it therefore refuses
-to launch while the active legacy sum exceeds 24 GiB.
+The launcher always proposes the production 280 GiB cap; it therefore refuses
+to launch while the active legacy sum exceeds 16 GiB.
 
 ## Canonical transient launch
 
@@ -106,7 +113,7 @@ python3 experiments/scripts/run_full_tile_transient.py \
 ```
 
 The launcher takes a user-runtime admission lock, verifies the installed
-slice has exactly `256G/272G/0`, performs the migration and pressure checks,
+slice has exactly `276G/280G/0`, performs the migration and pressure checks,
 and calls `systemd-run --user --slice=dx100-full-tile-sweep.slice`. It waits
 only for systemd's startup transaction, not for simulation completion, and
 sets no runtime timeout. After startup it verifies both the child and parent
