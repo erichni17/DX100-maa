@@ -31,7 +31,7 @@ exec systemd-run --user --no-block --collect \
   --description="DX100 OOM-contained XRAGE 64K tile lane" \
   --working-directory="$SOURCE_ROOT" \
   --property=MemoryAccounting=yes \
-  --property=MemoryHigh=24G \
+  --property=MemoryHigh=31G \
   --property=MemoryMax=32G \
   --property=MemorySwapMax=0 \
   --property=OOMPolicy=stop \
@@ -45,6 +45,6 @@ exec systemd-run --user --no-block --collect \
   --parallel 1 \
   --available-gib 96 \
   --swap-quiet-seconds 300 \
-  --expected-memory-high-gib 24 \
+  --expected-memory-high-gib 31 \
   --expected-memory-max-gib 32 \
   --artifact-stem recovery2-xrage64-manager

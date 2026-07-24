@@ -53,11 +53,12 @@ def repair_task(original, source_root, run_root, checkpoint_root):
     repaired["cwd"] = str(source_root)
     repaired["command"] = list(original["command"])
     repaired["command"][0] = str(source_root / RUNNERS[task_family])
-    if task_family == "is":
-        # BaseCPU's prog-interval option is a frequency, not a tick interval.
-        # Recovery therefore uses the runner's explicit zero sentinel to omit
-        # the option and retain BaseCPU's no-progress-event 0Hz default.
-        repaired["command"][-1] = "0"
+    # BaseCPU's prog-interval option is a frequency, not a tick interval.
+    # Recovery therefore uses every runner's explicit zero sentinel to omit
+    # the option and retain BaseCPU's no-progress-event 0Hz default.  Passing
+    # the old value 10000000 schedules a 10 MHz event and floods multi-GiB
+    # logs rather than reporting once every ten million ticks.
+    repaired["command"][-1] = "0"
     repaired["env"] = dict(original["env"])
     repaired["env"]["DX100_SOURCE_ROOT"] = str(source_root)
     repaired["env"]["CHECKPOINT_ROOT"] = str(checkpoint_root)

@@ -150,6 +150,10 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 cp -r "$CKPT"/cpt.* "$OUT"/
 echo "[restore] running $KERNEL tile=$TILE r_size=$R_SIZE s_size=$S_SIZE"
+PROGRESS_ARGS=()
+if [[ "$PROG_INTERVAL" != 0 && "$PROG_INTERVAL" != 0Hz && "$PROG_INTERVAL" != 10000000 ]]; then
+  PROGRESS_ARGS=(--prog-interval="$PROG_INTERVAL")
+fi
 set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" --outdir="$OUT" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
@@ -161,7 +165,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" timeout "$RESTORE_TIMEOUT" "$
   --mem-type Ramulator2 --ramulator-config "$RAMCFG" --mem-channels 2 --maa_ncbus_width 32 \
   --maa --maa_num_maas 1 --maa_num_tile_elements "$TILE" --maa_l2_uncacheable --maa_l3_uncacheable \
   --maa_num_initial_row_table_slices 32 \
-  --cmd "$BIN" --options "$OPTS" --prog-interval="$PROG_INTERVAL" > "$OUT/run.log" 2>&1
+  --cmd "$BIN" --options "$OPTS" "${PROGRESS_ARGS[@]}" > "$OUT/run.log" 2>&1
 RC=$?
 set -e
 echo "[restore] done (exit=$RC)"

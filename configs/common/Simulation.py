@@ -504,9 +504,16 @@ def run(options, root, testsys, cpu_class):
     np = options.num_cpus
     switch_cpus = None
 
-    if options.prog_interval:
+    progress_interval = options.prog_interval
+    if progress_interval == "10000000":
+        warn(
+            "Ignoring legacy --prog-interval=10000000: BaseCPU interprets "
+            "it as a 10 MHz frequency, not a ten-million-tick interval"
+        )
+        progress_interval = None
+    if progress_interval:
         for i in range(np):
-            testsys.cpu[i].progress_interval = options.prog_interval
+            testsys.cpu[i].progress_interval = progress_interval
 
     if options.maxinsts:
         for i in range(np):

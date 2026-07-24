@@ -6,6 +6,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import create_auxiliary_tile_workflow as auxiliary  # noqa: E402
+import create_full_tile_recovery as recovery  # noqa: E402
 import run_full_tile_recovery as full_recovery  # noqa: E402
 import run_normal_tile_recovery as normal_recovery  # noqa: E402
 import watch_full_tile_completion as completion_watcher  # noqa: E402
@@ -185,10 +186,53 @@ def test_completion_watcher_rejects_live_auxiliary_state():
     )
 
 
+def test_completion_watcher_tracks_numa_safe_is_recovery4_workflows():
+    assert {
+        "dx100-full-tile-sweep-recovery4-is-node1-low-20260723",
+        "dx100-full-tile-sweep-recovery4-is-node1-mid-20260723",
+        "dx100-full-tile-sweep-recovery4-is-node1-high-20260723",
+    }.issubset(completion_watcher.WORKFLOWS)
+
+
 def test_tile_runners_do_not_depend_on_codex_rg_path():
     root = Path(__file__).resolve().parents[2]
     for relative in TILE_RUNNERS:
         assert "rg " not in (root / relative).read_text()
+
+
+def test_recovery_disables_frequency_typed_progress_event(tmp_path):
+    original = {
+        "id": "gapbs-bfs-t1024",
+        "command": ["old-runner", "gem5.opt", "bfs", "1024", "22", "1",
+                    "2GB", "0", "0", "10000000"],
+        "env": {},
+    }
+    repaired = recovery.repair_task(
+        original, tmp_path, tmp_path / "runs", tmp_path / "checkpoints"
+    )
+    assert repaired["command"][-1] == "0"
+
+
+def test_non_is_tile_runners_omit_zero_progress_frequency():
+    root = Path(__file__).resolve().parents[2]
+    for relative in (
+        "benchmarks/gapbs/run_gapbs_tile_smoke.sh",
+        "benchmarks/NAS/cg/run_cg_tile_smoke.sh",
+        "benchmarks/UME/run_ume_tile_smoke.sh",
+        "benchmarks/spatter/run_xrage_tile_smoke.sh",
+        "benchmarks/hashjoin/run_hashjoin_tile_smoke.sh",
+    ):
+        runner = (root / relative).read_text()
+        assert 'PROGRESS_ARGS=()' in runner
+        assert '"${PROGRESS_ARGS[@]}"' in runner
+        assert '"$PROG_INTERVAL" != 10000000' in runner
+
+
+def test_simulation_rejects_legacy_10mhz_progress_frequency():
+    root = Path(__file__).resolve().parents[2]
+    simulation = (root / "configs/common/Simulation.py").read_text()
+    assert 'progress_interval == "10000000"' in simulation
+    assert "10 MHz frequency" in simulation
 
 
 def test_xrage_runner_serializes_same_output_directory():
@@ -265,14 +309,15 @@ def test_successor_launchers_accept_normal_retry_cgroup():
         )
 
 
-def test_final_is_recovery_uses_safe_three_way_parallelism():
+def test_final_is_recovery_uses_safe_serial_overlap():
     root = Path(__file__).resolve().parents[2]
     launcher = (
         root / "experiments/scripts/launch_full_tile_recovery.sh"
     ).read_text()
-    assert "--is-parallel 3" in launcher
-    assert "--property=MemoryHigh=220G" in launcher
-    assert "--property=MemoryMax=240G" in launcher
+    assert "--parallel 1" in launcher
+    assert "--aggregate-memory-max-gib 272" in launcher
+    assert "--property=MemoryHigh=72G" in launcher
+    assert "--property=MemoryMax=80G" in launcher
     assert "--property=MemorySwapMax=0" in launcher
 
 
