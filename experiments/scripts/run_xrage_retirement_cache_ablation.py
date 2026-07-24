@@ -63,12 +63,22 @@ LOCK_WATCH_MASK = (
 CHECKPOINT_WATCH_MASK = LOCK_WATCH_MASK
 INOTIFY_EVENT = struct.Struct("iIII")
 AUTH_ENV = {
-    "HOME": "/tmp",
+    "HOME": "/data1/nier/.dx-runtime-state/retirement-cache-home",
     "LANG": "C",
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
     "PYTHONDONTWRITEBYTECODE": "1",
     "PYTHONHASHSEED": "0",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_CONFIG_COUNT": "3",
+    "GIT_CONFIG_KEY_0": "core.fsmonitor",
+    "GIT_CONFIG_VALUE_0": "false",
+    "GIT_CONFIG_KEY_1": "core.hooksPath",
+    "GIT_CONFIG_VALUE_1": "/dev/null",
+    "GIT_CONFIG_KEY_2": "core.untrackedCache",
+    "GIT_CONFIG_VALUE_2": "false",
 }
 
 
@@ -207,6 +217,50 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail(f"expected JSON object: {path}")
     return value
+
+
+def git_output(
+    repository: Path, *arguments: str, text: bool = True
+) -> str | bytes:
+    return subprocess.run(
+        ["/usr/bin/git", "-C", str(repository), *arguments],
+        check=True,
+        env=AUTH_ENV,
+        text=text,
+        stdout=subprocess.PIPE,
+    ).stdout
+
+
+def verify_git_state(repository: Path, expected_commit: str) -> None:
+    head = str(
+        git_output(repository, "rev-parse", "--verify", "HEAD^{commit}")
+    )
+    if head.strip() != expected_commit:
+        fail(
+            "cost worktree is not at the authorized commit: "
+            f"expected={expected_commit} actual={head.strip()}"
+        )
+    if str(git_output(repository, "status", "--porcelain=v1")):
+        fail("cost worktree is dirty")
+    replacements = str(
+        git_output(
+            repository,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/replace",
+        )
+    )
+    if replacements.strip():
+        fail("Git replacement refs are forbidden")
+    raw_common = str(
+        git_output(repository, "rev-parse", "--git-common-dir")
+    ).strip()
+    common = Path(raw_common)
+    if not common.is_absolute():
+        common = repository / common
+    common = common.resolve(strict=True)
+    if (common / "info/grafts").exists():
+        fail("legacy Git grafts are forbidden")
 
 
 def nested(value: dict[str, Any], *keys: str) -> Any:
@@ -734,6 +788,7 @@ def run_with_lock_monitor(
         env=environment,
         stdout=log,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
     try:
         while process.poll() is None:
@@ -759,11 +814,11 @@ def run_with_lock_monitor(
         return int(process.returncode)
     except BaseException:
         if process.poll() is None:
-            process.terminate()
+            os.killpg(process.pid, 15)
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                process.kill()
+                os.killpg(process.pid, 9)
                 process.wait()
         raise
 
@@ -1054,13 +1109,13 @@ def run_case(
     command = base_command(inputs, output, binary, data, candidate)
     write_command(output / "restore.command", command)
     environment = {
-        "HOME": "/tmp",
+        "HOME": AUTH_ENV["HOME"],
         "LANG": "C",
         "LC_ALL": "C",
         "LD_LIBRARY_PATH": str(inputs / "lib"),
         "OMP_NUM_THREADS": "4",
         "OMP_PROC_BIND": "false",
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": "/usr/bin:/bin",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONHASHSEED": "0",
     }
@@ -1146,6 +1201,7 @@ def stage_inputs(
     args: argparse.Namespace,
     campaign: Path,
     expected_hashes: dict[str, str],
+    reference_record: dict[str, Any],
 ) -> dict[str, Any]:
     inputs = campaign / "inputs"
     inputs.mkdir()
@@ -1169,6 +1225,17 @@ def stage_inputs(
         "reference_approval": regular_file(
             args.reference_approval.resolve(strict=True)
         ),
+        "reference_result_approval": regular_file(
+            args.reference_result_approval.resolve(strict=True)
+        ),
+        "reference_config": regular_file(
+            args.reference_campaign.resolve(strict=True)
+            / "runs/virtual/replica_1/config.ini"
+        ),
+        "source_full_config": regular_file(
+            args.source_full_correctness.resolve(strict=True)
+            / "runs/virtual/config.ini"
+        ),
         "reference_verifier": regular_file(
             args.reference_verifier.resolve(strict=True), executable=True
         ),
@@ -1185,6 +1252,11 @@ def stage_inputs(
         "input_full": inputs / "benchmark/xrage_full.json",
         "runner": inputs / "runner.py",
         "reference_approval": inputs / "manifests/reference_approval.json",
+        "reference_result_approval": (
+            inputs / "manifests/reference_result_approval.json"
+        ),
+        "reference_config": inputs / "reference/virtual_config.ini",
+        "source_full_config": inputs / "reference/full_correctness_config.ini",
         "reference_verifier": inputs / "reference_verifier.py",
         "bfs_approval": inputs / "manifests/bfs_approval.json",
         "bfs_oracle": inputs / "manifests/bfs_oracle.json",
@@ -1255,6 +1327,20 @@ def stage_inputs(
         stage_checkpoint(
             source_root, manifest_name, inputs / "checkpoints" / name
         )
+    _, staged_performance_entries = checkpoint_payload(
+        inputs / "checkpoints/full_performance",
+        "checkpoint_sha256.txt",
+    )
+    staged_performance = {
+        str(path.relative_to(inputs / "checkpoints/full_performance")): digest
+        for path, digest in staged_performance_entries.items()
+    }
+    if staged_performance != nested(
+        reference_record,
+        "evidence",
+        "virtual_checkpoint_payload_sha256",
+    ):
+        fail("staged performance checkpoint differs from approval")
 
     manifest_entries: dict[str, str] = {}
     for path in sorted(inputs.rglob("*")):
@@ -1300,21 +1386,142 @@ def verify_staged_inputs(
         expect_hash("staged input", inputs / relative, expected)
 
 
-def reference_ticks(campaign: Path) -> int:
-    fields, rows = read_tsv(campaign / "results.tsv")
-    required = {"arm", "replica", "sim_ticks", "valid"}
-    if not required.issubset(fields):
+def evidence_entries(campaign: Path) -> dict[str, str]:
+    manifest = regular_file(campaign / "evidence_sha256.txt")
+    entries: dict[str, str] = {}
+    for line_number, line in enumerate(manifest.read_text().splitlines(), 1):
+        match = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)", line)
+        if match is None:
+            fail(f"malformed reference evidence line {line_number}")
+        digest, raw_path = match.groups()
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = campaign / path
+        reject_symlink_components(path)
+        resolved = regular_file(path.resolve(strict=True))
+        try:
+            relative = str(resolved.relative_to(campaign))
+        except ValueError:
+            fail(f"reference evidence escapes its campaign: {resolved}")
+        if relative in entries:
+            fail(f"duplicate reference evidence path: {relative}")
+        entries[relative] = digest
+    if not entries:
+        fail("reference evidence manifest is empty")
+    return entries
+
+
+def reference_result_record(
+    result_approval: Path,
+    reference_campaign: Path,
+    reference_approval: Path,
+    reference_verifier: Path,
+) -> dict[str, Any]:
+    record = load_json(result_approval)
+    if (
+        record.get("schema_version") != 1
+        or record.get("experiment_id")
+        != "xrage-replicated-reference-result-v1"
+        or Path(record.get("reference_campaign", "")).resolve(strict=True)
+        != reference_campaign
+        or record.get("reference_approval_sha256")
+        != file_sha256(reference_approval)
+        or record.get("reference_verifier_sha256")
+        != file_sha256(reference_verifier)
+    ):
+        fail("reference-result approval identity differs")
+    binary_commit = record.get("binary_simulator_commit")
+    if not isinstance(binary_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", binary_commit
+    ):
+        fail("reference-result binary commit is malformed")
+    evidence = record.get("evidence")
+    if not isinstance(evidence, dict):
+        fail("reference-result evidence binding is malformed")
+    expected_files = {
+        "evidence_sha256.txt": evidence.get("manifest_sha256"),
+        "results.tsv": evidence.get("results_sha256"),
+        "source.txt": evidence.get("source_sha256"),
+        "attribution.tsv": evidence.get("attribution_sha256"),
+        "staged_input_sha256.txt": evidence.get(
+            "staged_input_manifest_sha256"
+        ),
+        "checkpoints/virtual/private_checkpoint_sha256.txt": evidence.get(
+            "virtual_checkpoint_manifest_sha256"
+        ),
+    }
+    config_hashes = evidence.get("virtual_config_sha256")
+    if not isinstance(config_hashes, dict) or set(config_hashes) != {
+        "1",
+        "2",
+        "3",
+    }:
+        fail("reference-result config hash closure differs")
+    expected_files.update(
+        {
+            f"runs/virtual/replica_{replica}/config.ini": digest
+            for replica, digest in config_hashes.items()
+        }
+    )
+    if any(
+        not isinstance(digest, str) or SHA256_RE.fullmatch(digest) is None
+        for digest in expected_files.values()
+    ):
+        fail("reference-result evidence hash is malformed")
+    empty_marker(reference_campaign / "campaign.pass")
+    if (reference_campaign / "campaign.fail").exists():
+        fail("reference campaign has a fail state")
+    for relative, digest in expected_files.items():
+        expect_hash(
+            f"approved reference evidence {relative}",
+            reference_campaign / relative,
+            str(digest),
+        )
+    manifest_entries = evidence_entries(reference_campaign)
+    for relative, digest in expected_files.items():
+        if relative == "evidence_sha256.txt":
+            continue
+        if manifest_entries.get(relative) != digest:
+            fail(f"reference evidence manifest differs: {relative}")
+
+    fields, rows = read_tsv(reference_campaign / "results.tsv")
+    if not {"arm", "replica", "sim_ticks", "valid"}.issubset(fields):
         fail("reference campaign result schema is incomplete")
     virtual = [row for row in rows if row["arm"] == "virtual"]
-    if len(virtual) != 3 or any(row["valid"] != "1" for row in virtual):
-        fail("reference campaign lacks three valid virtual replicas")
+    if (
+        len(virtual) != 3
+        or {row["replica"] for row in virtual} != {"1", "2", "3"}
+        or any(row["valid"] != "1" for row in virtual)
+    ):
+        fail("reference campaign lacks exact valid virtual replicas 1,2,3")
     ticks = {row["sim_ticks"] for row in virtual}
     if len(ticks) != 1 or not next(iter(ticks)).isdigit():
         fail("reference virtual replicas are not deterministic")
     value = int(next(iter(ticks)))
-    if value <= 0:
-        fail("reference simTicks is not positive")
-    return value
+    approved_replicas = record.get("virtual_replicas")
+    expected_replicas = [
+        {"replica": int(row["replica"]), "sim_ticks": int(row["sim_ticks"])}
+        for row in sorted(virtual, key=lambda item: int(item["replica"]))
+    ]
+    if (
+        value <= 0
+        or record.get("virtual_sim_ticks") != value
+        or approved_replicas != expected_replicas
+    ):
+        fail("reference-result tick approval differs")
+
+    checkpoint_root = reference_campaign / "checkpoints/virtual"
+    _, checkpoint_entries = checkpoint_payload(
+        checkpoint_root, "private_checkpoint_sha256.txt"
+    )
+    approved_checkpoint = evidence.get("virtual_checkpoint_payload_sha256")
+    actual_checkpoint = {
+        str(path.relative_to(checkpoint_root)): digest
+        for path, digest in checkpoint_entries.items()
+    }
+    if approved_checkpoint != actual_checkpoint:
+        fail("reference-result checkpoint payload approval differs")
+    return record
 
 
 def write_results(campaign: Path, records: list[dict[str, Any]]) -> None:
@@ -1390,6 +1597,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-full-correctness", type=Path, required=True)
     parser.add_argument("--reference-campaign", type=Path, required=True)
     parser.add_argument("--reference-approval", type=Path, required=True)
+    parser.add_argument(
+        "--reference-result-approval", type=Path, required=True
+    )
     parser.add_argument("--reference-verifier", type=Path, required=True)
     parser.add_argument("--bfs-campaign", type=Path, required=True)
     parser.add_argument("--bfs-approval", type=Path, required=True)
@@ -1397,6 +1607,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-runner-sha", required=True)
     parser.add_argument("--expected-reference-verifier-sha", required=True)
     parser.add_argument("--expected-reference-approval-sha", required=True)
+    parser.add_argument(
+        "--expected-reference-result-approval-sha", required=True
+    )
     parser.add_argument("--expected-input-20k-sha", required=True)
     parser.add_argument("--expected-bfs-approval-sha", required=True)
     parser.add_argument("--expected-bfs-oracle-sha", required=True)
@@ -1420,6 +1633,7 @@ def main() -> None:
         args.expected_runner_sha,
         args.expected_reference_verifier_sha,
         args.expected_reference_approval_sha,
+        args.expected_reference_result_approval_sha,
         args.expected_input_20k_sha,
         args.expected_bfs_approval_sha,
         args.expected_bfs_oracle_sha,
@@ -1435,27 +1649,8 @@ def main() -> None:
             fail("overhead limits must be between 0 and 0.10")
 
     sim_root = args.sim_root.resolve(strict=True)
-    current_commit = subprocess.run(
-        ["/usr/bin/git", "-C", str(sim_root), "rev-parse", "HEAD"],
-        check=True,
-        env=AUTH_ENV,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout.strip()
-    if current_commit != args.expected_sim_commit:
-        fail(
-            "cost worktree is not at the authorized commit: "
-            f"expected={args.expected_sim_commit} actual={current_commit}"
-        )
-    status = subprocess.run(
-        ["/usr/bin/git", "-C", str(sim_root), "status", "--porcelain=v1"],
-        check=True,
-        env=AUTH_ENV,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout
-    if status:
-        fail("cost worktree is dirty")
+    verify_git_state(sim_root, args.expected_sim_commit)
+    current_commit = args.expected_sim_commit
     expect_hash(
         "authorized runner",
         Path(__file__).resolve(strict=True),
@@ -1473,6 +1668,9 @@ def main() -> None:
         bfs_campaign = args.bfs_campaign.resolve(strict=True)
         reference_verifier = args.reference_verifier.resolve(strict=True)
         reference_approval = args.reference_approval.resolve(strict=True)
+        reference_result_approval = args.reference_result_approval.resolve(
+            strict=True
+        )
         bfs_approval = args.bfs_approval.resolve(strict=True)
         bfs_oracle = args.bfs_oracle.resolve(strict=True)
         expect_hash(
@@ -1484,6 +1682,11 @@ def main() -> None:
             "authorized reference approval",
             reference_approval,
             args.expected_reference_approval_sha,
+        )
+        expect_hash(
+            "authorized reference-result approval",
+            reference_result_approval,
+            args.expected_reference_result_approval_sha,
         )
         expect_hash(
             "authorized 20K input",
@@ -1512,30 +1715,11 @@ def main() -> None:
             fail("full source correctness fingerprint differs")
         marker_20k = correctness_marker(source_20k)
         marker_full = correctness_marker(source_full)
-        reference_verification = subprocess.run(
-            [
-                "/usr/bin/python3",
-                "-I",
-                str(reference_verifier),
-                "xrage",
-                str(reference),
-                str(reference_approval),
-            ],
-            check=False,
-            env=AUTH_ENV,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        (output / "reference_verification.log").write_text(
-            reference_verification.stdout, encoding="utf-8"
-        )
-        if reference_verification.returncode != 0:
-            fail("external reference-campaign verification failed")
-        expect_hash(
-            "reference approval after verification",
+        reference_record = reference_result_record(
+            reference_result_approval,
+            reference,
             reference_approval,
-            args.expected_reference_approval_sha,
+            reference_verifier,
         )
         bfs_verification = subprocess.run(
             [
@@ -1574,8 +1758,45 @@ def main() -> None:
             bfs_oracle,
             args.expected_bfs_oracle_sha,
         )
-        upstream_ref_ticks = reference_ticks(reference)
+        upstream_ref_ticks = int(reference_record["virtual_sim_ticks"])
         approval = load_json(reference_approval)
+        binary_commit = nested(approval, "candidate", "simulator_commit")
+        if (
+            binary_commit != reference_record["binary_simulator_commit"]
+            or not isinstance(binary_commit, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", binary_commit)
+        ):
+            fail("reference binary-commit approvals differ")
+        ancestry = subprocess.run(
+            [
+                "/usr/bin/git",
+                "-C",
+                str(sim_root),
+                "merge-base",
+                "--is-ancestor",
+                binary_commit,
+                current_commit,
+            ],
+            check=False,
+            env=AUTH_ENV,
+        )
+        if ancestry.returncode != 0:
+            fail("workflow/config commit does not descend from binary commit")
+        changed_paths = str(
+            git_output(
+                sim_root,
+                "diff",
+                "--name-only",
+                f"{binary_commit}..{current_commit}",
+            )
+        ).splitlines()
+        if any(
+            not (
+                path.startswith("configs/") or path.startswith("experiments/")
+            )
+            for path in changed_paths
+        ):
+            fail("binary-incompatible source changed after the approved build")
         expected_hashes = {
             "gem5": nested(approval, "candidate", "gem5_sha256"),
             "ramulator_yaml": nested(
@@ -1594,6 +1815,22 @@ def main() -> None:
             "input_full": nested(approval, "workload", "input_sha256"),
             "runner": args.expected_runner_sha,
             "reference_approval": args.expected_reference_approval_sha,
+            "reference_result_approval": (
+                args.expected_reference_result_approval_sha
+            ),
+            "reference_config": nested(
+                reference_record,
+                "evidence",
+                "virtual_config_sha256",
+                "1",
+            ),
+            "source_full_config": nested(
+                approval,
+                "correctness_campaign",
+                "runs",
+                "virtual",
+                "config_ini_sha256",
+            ),
             "reference_verifier": args.expected_reference_verifier_sha,
             "bfs_approval": args.expected_bfs_approval_sha,
             "bfs_oracle": args.expected_bfs_oracle_sha,
@@ -1606,15 +1843,18 @@ def main() -> None:
         source = {
             "schema_version": 1,
             "simulator_commit": current_commit,
+            "workflow_config_commit": current_commit,
+            "binary_simulator_commit": binary_commit,
             "execution": "serial",
             "wall_clock_timeout": "none",
-            "environment_policy": "fixed-minimal-v1",
+            "environment_policy": "sanitized-fixed-minimal-v2",
             "simulation_lock": str(SIMULATION_LOCK),
             "minimum_available_kib": args.minimum_available_kib,
             "screen_overhead_limit": args.screen_overhead_limit,
             "full_overhead_limit": args.full_overhead_limit,
             "upstream_reference_sim_ticks": upstream_ref_ticks,
             "reference_campaign": str(reference),
+            "reference_result_approval": str(reference_result_approval),
             "bfs_campaign": str(bfs_campaign),
             "source_20k_campaign": str(source_20k),
             "source_full_correctness_campaign": str(source_full),
@@ -1625,7 +1865,7 @@ def main() -> None:
             "candidates": [asdict(candidate) for candidate in CANDIDATES],
             "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        staged = stage_inputs(args, output, expected_hashes)
+        staged = stage_inputs(args, output, expected_hashes, reference_record)
         source["source_artifacts"] = staged
         staged_manifest_sha256 = staged["staged_manifest_sha256"]
         if (
