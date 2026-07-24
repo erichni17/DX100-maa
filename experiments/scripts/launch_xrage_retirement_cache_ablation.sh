@@ -71,11 +71,22 @@ assert_authorized_state() {
     }
 }
 
-publish_pass() {
-    local temporary=$output/.campaign.pass.$$
-    : > "$temporary"
+atomic_marker() {
+    local destination=$1
+    local content=$2
+    local temporary
+    temporary=$(mktemp "$output/.${destination##*/}.XXXXXX")
+    printf '%s' "$content" > "$temporary"
     chmod 0444 "$temporary"
-    mv -T "$temporary" "$output/campaign.pass"
+    mv -T "$temporary" "$destination"
+}
+
+publish_pass() {
+    atomic_marker "$output/campaign.pass" ""
+}
+
+publish_fail() {
+    atomic_marker "$output/campaign.fail" "$1"$'\n'
 }
 
 assert_authorized_state
@@ -99,13 +110,11 @@ fi
 if [[ -f $output/execution.complete &&
       ! -e $output/campaign.fail ]]; then
     "$verifier" "$output" || {
-        printf '%s\n' "independent verification failed" \
-            > "$output/campaign.fail"
+        publish_fail "independent verification failed"
         exit 4
     }
-    publish_pass
-    "$verifier" "$output"
     assert_authorized_state
+    publish_pass
     echo "published previously completed retirement-cache ablation: $output"
     exit 0
 fi
@@ -142,11 +151,9 @@ assert_authorized_state
     --output "$output"
 assert_authorized_state
 "$verifier" "$output" || {
-    printf '%s\n' "independent verification failed" \
-        > "$output/campaign.fail"
+    publish_fail "independent verification failed"
     exit 4
 }
-publish_pass
-"$verifier" "$output"
 assert_authorized_state
+publish_pass
 echo "completed, independently verified, and published retirement-cache ablation: $output"

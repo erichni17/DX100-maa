@@ -696,6 +696,12 @@ def verify_selection(
             fail(f"screen config differs beyond the treatment: {name}")
     reference_screen_ticks = int(screen["reference"]["sim_ticks"])
     screen_limit = float(source["screen_overhead_limit"])
+    eligible_names = {
+        name
+        for name in ("compact", "targets1")
+        if int(screen[name]["sim_ticks"])
+        <= reference_screen_ticks * (1 + screen_limit)
+    }
     reference_correctness = [
         row
         for row in results
@@ -708,43 +714,53 @@ def verify_selection(
         if row["phase"] == "full_performance"
         and row["candidate"] == "reference"
     ]
-    if (
-        len(reference_correctness) != 1
-        or reference_correctness[0]["replica"] != "1"
-        or reference_correctness[0]["valid"] != "1"
-        or len(reference_performance) != 3
-        or {row["replica"] for row in reference_performance} != {"1", "2", "3"}
-        or any(row["valid"] != "1" for row in reference_performance)
-    ):
-        fail("fresh full reference evidence is incomplete")
-    reference_tick_values = {row["sim_ticks"] for row in reference_performance}
-    if len(reference_tick_values) != 1:
-        fail("fresh full reference replicas are not deterministic")
-    reference_ticks = int(next(iter(reference_tick_values)))
-    reference_correctness_config = normalized_treatment_config(
-        campaign / "runs/full_correctness/reference/replica_1/config.ini"
-    )
-    reference_performance_config = normalized_treatment_config(
-        campaign / "runs/full_performance/reference/replica_1/config.ini"
-    )
-    for row in reference_performance[1:]:
-        replica_config = normalized_treatment_config(
-            campaign
-            / "runs/full_performance/reference"
-            / f"replica_{row['replica']}/config.ini"
+    reference_ticks: int | None = None
+    reference_correctness_config: str | None = None
+    reference_performance_config: str | None = None
+    if eligible_names:
+        if (
+            len(reference_correctness) != 1
+            or reference_correctness[0]["replica"] != "1"
+            or reference_correctness[0]["valid"] != "1"
+            or len(reference_performance) != 3
+            or {row["replica"] for row in reference_performance}
+            != {"1", "2", "3"}
+            or any(row["valid"] != "1" for row in reference_performance)
+        ):
+            fail("fresh full reference evidence is incomplete")
+        reference_tick_values = {
+            row["sim_ticks"] for row in reference_performance
+        }
+        if len(reference_tick_values) != 1:
+            fail("fresh full reference replicas are not deterministic")
+        reference_ticks = int(next(iter(reference_tick_values)))
+        reference_correctness_config = normalized_treatment_config(
+            campaign / "runs/full_correctness/reference/replica_1/config.ini"
         )
-        if replica_config != reference_performance_config:
-            fail("fresh reference replica configs differ")
+        reference_performance_config = normalized_treatment_config(
+            campaign / "runs/full_performance/reference/replica_1/config.ini"
+        )
+        for row in reference_performance[1:]:
+            replica_config = normalized_treatment_config(
+                campaign
+                / "runs/full_performance/reference"
+                / f"replica_{row['replica']}/config.ini"
+            )
+            if replica_config != reference_performance_config:
+                fail("fresh reference replica configs differ")
+    elif reference_correctness or reference_performance:
+        fail("full reference ran despite every candidate failing the screen")
+
     promoted_rows = []
     for row in rows:
         name = row["candidate"]
-        eligible = int(
-            int(screen[name]["sim_ticks"])
-            <= reference_screen_ticks * (1 + screen_limit)
-        )
+        eligible = int(name in eligible_names)
         if row["screen_eligible"] != str(eligible):
             fail(f"screen eligibility was computed incorrectly: {name}")
-        if row["reference_ticks"] != str(reference_ticks):
+        expected_reference_ticks = (
+            str(reference_ticks) if reference_ticks is not None else "NA"
+        )
+        if row["reference_ticks"] != expected_reference_ticks:
             fail(f"selection uses the wrong reference ticks: {name}")
         full_correctness = [
             item
@@ -761,15 +777,31 @@ def verify_selection(
         if eligible == 0:
             if full_correctness or full_performance:
                 fail(f"ineligible candidate received full runs: {name}")
+            if (
+                row["full_correct"] != "0"
+                or row["full_deterministic"] != "0"
+                or row["candidate_ticks"] != "NA"
+                or row["overhead_fraction"] != "NA"
+                or row["promoted"] != "0"
+            ):
+                fail(f"ineligible candidate selection fields differ: {name}")
             continue
         if len(full_correctness) != 1 or full_correctness[0]["valid"] != "1":
             fail(f"eligible candidate lacks exact full correctness: {name}")
+        if row["full_correct"] != "1":
+            fail(f"full correctness classification differs: {name}")
         if (
             full_correctness[0]["replica"] != "1"
             or len(full_performance) != 3
             or {row["replica"] for row in full_performance} != {"1", "2", "3"}
         ):
             fail(f"eligible full candidate lacks three replicas: {name}")
+        if (
+            reference_ticks is None
+            or reference_correctness_config is None
+            or reference_performance_config is None
+        ):
+            fail(f"eligible candidate has no fresh reference: {name}")
         candidate_correctness_config = normalized_treatment_config(
             campaign / f"runs/full_correctness/{name}/replica_1/config.ini"
         )
@@ -790,6 +822,14 @@ def verify_selection(
         if row["full_deterministic"] != str(deterministic):
             fail(f"full determinism classification differs: {name}")
         if not deterministic:
+            if (
+                row["candidate_ticks"] != "NA"
+                or row["overhead_fraction"] != "NA"
+                or row["promoted"] != "0"
+            ):
+                fail(
+                    f"nondeterministic candidate selection fields differ: {name}"
+                )
             continue
         candidate_ticks = int(next(iter(ticks)))
         overhead = candidate_ticks / reference_ticks - 1
@@ -804,6 +844,10 @@ def verify_selection(
             promoted_rows.append(row)
     if len(promoted_rows) > 1:
         fail("multiple candidates were promoted")
+    if len(rows) == 1 and not promoted_rows:
+        fail("selection stopped before evaluating the fallback candidate")
+    if promoted_rows and rows[-1] != promoted_rows[0]:
+        fail("selection continued after promotion")
     selected_names = {row["candidate"] for row in rows}
     extras = [
         row
@@ -817,6 +861,8 @@ def verify_selection(
 
     summary = load_json(campaign / "summary.json")
     if promoted_rows:
+        if reference_ticks is None:
+            fail("promoted campaign has no fresh reference")
         if (campaign / "no_promotion").exists():
             fail("promoted campaign also has no_promotion")
         row = promoted_rows[0]

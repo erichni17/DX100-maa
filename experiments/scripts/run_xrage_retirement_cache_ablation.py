@@ -14,6 +14,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import (
     asdict,
@@ -79,8 +80,29 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def bytes_sha256(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
+def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
+    parent = path.parent.resolve(strict=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def expect_hash(label: str, path: Path, expected: str) -> None:
@@ -302,6 +324,7 @@ def wait_for_capacity(minimum_available_kib: int, poll_seconds: int) -> int:
                     os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
                     0o600,
                 )
+                os.fchmod(descriptor, 0o600)
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 verify_lock_identity(descriptor)
                 return descriptor
@@ -322,6 +345,7 @@ def verify_lock_identity(descriptor: int) -> None:
         not stat.S_ISREG(descriptor_stat.st_mode)
         or descriptor_stat.st_uid != os.getuid()
         or descriptor_stat.st_nlink != 1
+        or stat.S_IMODE(descriptor_stat.st_mode) != 0o600
         or path_stat.st_dev != descriptor_stat.st_dev
         or path_stat.st_ino != descriptor_stat.st_ino
     ):
@@ -1188,47 +1212,52 @@ def main() -> None:
                 and screen_results[name]["sim_ticks"]
                 <= screen_reference * (1 + args.screen_overhead_limit)
             }
-            reference_candidate = CANDIDATES[0]
-            verify_lock_identity(lock_descriptor)
-            reference_correctness = run_case(
-                output,
-                inputs,
-                full_correctness_checkpoint,
-                verify_bin,
-                input_full,
-                reference_candidate,
-                "full_correctness",
-                1,
-                marker_full,
-            )
-            records.append(reference_correctness)
-            if reference_correctness["valid"] != 1:
-                fail("fresh full reference correctness failed")
-            reference_performance: list[dict[str, Any]] = []
-            for replica in range(1, 4):
+            ref_ticks: int | None = None
+            if eligible:
+                reference_candidate = CANDIDATES[0]
                 verify_lock_identity(lock_descriptor)
                 verify_staged_inputs(output)
-                result = run_case(
+                reference_correctness = run_case(
                     output,
                     inputs,
-                    full_performance_checkpoint,
-                    perf_bin,
+                    full_correctness_checkpoint,
+                    verify_bin,
                     input_full,
                     reference_candidate,
-                    "full_performance",
-                    replica,
-                    None,
+                    "full_correctness",
+                    1,
+                    marker_full,
                 )
-                records.append(result)
-                reference_performance.append(result)
-            if any(result["valid"] != 1 for result in reference_performance):
-                fail("fresh full reference performance failed")
-            fresh_reference_ticks = {
-                result["sim_ticks"] for result in reference_performance
-            }
-            if len(fresh_reference_ticks) != 1:
-                fail("fresh full reference replicas are not deterministic")
-            ref_ticks = int(next(iter(fresh_reference_ticks)))
+                records.append(reference_correctness)
+                if reference_correctness["valid"] != 1:
+                    fail("fresh full reference correctness failed")
+                reference_performance: list[dict[str, Any]] = []
+                for replica in range(1, 4):
+                    verify_lock_identity(lock_descriptor)
+                    verify_staged_inputs(output)
+                    result = run_case(
+                        output,
+                        inputs,
+                        full_performance_checkpoint,
+                        perf_bin,
+                        input_full,
+                        reference_candidate,
+                        "full_performance",
+                        replica,
+                        None,
+                    )
+                    records.append(result)
+                    reference_performance.append(result)
+                if any(
+                    result["valid"] != 1 for result in reference_performance
+                ):
+                    fail("fresh full reference performance failed")
+                fresh_reference_ticks = {
+                    result["sim_ticks"] for result in reference_performance
+                }
+                if len(fresh_reference_ticks) != 1:
+                    fail("fresh full reference replicas are not deterministic")
+                ref_ticks = int(next(iter(fresh_reference_ticks)))
 
             selection_rows: list[dict[str, Any]] = []
             promoted: Candidate | None = None
@@ -1242,7 +1271,9 @@ def main() -> None:
                     "screen_eligible": int(name in eligible),
                     "full_correct": 0,
                     "full_deterministic": 0,
-                    "reference_ticks": ref_ticks,
+                    "reference_ticks": (
+                        ref_ticks if ref_ticks is not None else "NA"
+                    ),
                     "candidate_ticks": "NA",
                     "overhead_fraction": "NA",
                     "promoted": 0,
@@ -1291,6 +1322,8 @@ def main() -> None:
                 if len(ticks) != 1:
                     selection_rows.append(row)
                     continue
+                if ref_ticks is None:
+                    fail("eligible candidate has no fresh reference")
                 candidate_ticks = int(next(iter(ticks)))
                 overhead = candidate_ticks / ref_ticks - 1
                 row["candidate_ticks"] = candidate_ticks
@@ -1324,12 +1357,14 @@ def main() -> None:
                 writer.writerows(selection_rows)
 
             if promoted is None or promoted_ticks is None:
-                (output / "no_promotion").write_text("")
+                atomic_write(output / "no_promotion", "", 0o444)
                 summary = {
                     "status": "complete_without_promotion",
                     "reference_sim_ticks": ref_ticks,
                 }
             else:
+                if ref_ticks is None:
+                    fail("promoted candidate has no fresh reference")
                 data_bytes_per_bank = {"1kB": 1024, "256B": 256}[promoted.size]
                 summary = {
                     "status": "promoted",
@@ -1354,14 +1389,16 @@ def main() -> None:
             )
             verify_staged_inputs(output)
             verify_lock_identity(lock_descriptor)
-            (output / "execution.complete").write_text("")
+            atomic_write(output / "execution.complete", "", 0o444)
             evidence_manifest(output)
         finally:
             fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
             os.close(lock_descriptor)
     except BaseException as error:
-        (output / "campaign.fail").write_text(
-            f"{type(error).__name__}: {error}\n"
+        atomic_write(
+            output / "campaign.fail",
+            f"{type(error).__name__}: {error}\n",
+            0o444,
         )
         raise
 
