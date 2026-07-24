@@ -62,11 +62,64 @@ def regular_file(path: Path, *, empty: bool | None = None) -> Path:
     return path
 
 
+def reject_symlink_components(path: Path) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            fail(f"path contains a symlink component: {path}")
+
+
+def contained_regular_file(root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or ".." in relative.parts:
+        fail(f"unsafe relative path under {root}: {relative}")
+    reject_symlink_components(root)
+    target = root / relative
+    reject_symlink_components(target)
+    resolved_root = root.resolve(strict=True)
+    resolved = target.resolve(strict=True)
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError:
+        fail(f"path escapes its root: root={root} path={relative}")
+    return regular_file(resolved)
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
+    return digest.hexdigest()
+
+
+def correctness_campaign_fingerprint(campaign: Path) -> str:
+    reject_symlink_components(campaign)
+    campaign = campaign.resolve(strict=True)
+    required = [
+        campaign / "campaign.pass",
+        campaign / "artifact_sha256.txt",
+        campaign / "results.tsv",
+        campaign / "source.txt",
+    ]
+    checkpoint_manifests = sorted(
+        campaign.glob("checkpoints/*/checkpoint_sha256.txt")
+    )
+    if {path.parent.name for path in checkpoint_manifests} != {
+        "native",
+        "fused",
+        "virtual",
+    }:
+        fail(f"correctness checkpoint-manifest closure differs: {campaign}")
+    digest = hashlib.sha256()
+    for path in sorted((*required, *checkpoint_manifests)):
+        reject_symlink_components(path)
+        regular_file(path)
+        relative = str(path.relative_to(campaign)).encode()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(bytes.fromhex(file_sha256(path)))
     return digest.hexdigest()
 
 
@@ -129,7 +182,12 @@ def verify_evidence(campaign: Path) -> None:
         and not path.is_symlink()
         and "inputs" not in path.relative_to(campaign).parts
         and path.name
-        not in {"campaign.pass", "campaign.fail", "evidence_sha256.txt"}
+        not in {
+            "campaign.pass",
+            "campaign.fail",
+            "execution.complete",
+            "evidence_sha256.txt",
+        }
     }
     if covered != expected:
         fail("evidence manifest does not exactly cover non-input evidence")
@@ -155,7 +213,10 @@ def verify_staged_inputs(campaign: Path) -> None:
 
 
 def verify_checkpoint(root: Path, manifest_name: str) -> None:
-    manifest = regular_file(root / manifest_name, empty=False)
+    reject_symlink_components(root)
+    manifest = contained_regular_file(root, Path(manifest_name))
+    if manifest.stat().st_size == 0:
+        fail(f"empty checkpoint manifest: {manifest}")
     entries: dict[Path, str] = {}
     for line_number, line in enumerate(manifest.read_text().splitlines(), 1):
         match = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)", line)
@@ -163,9 +224,7 @@ def verify_checkpoint(root: Path, manifest_name: str) -> None:
             fail(f"malformed checkpoint line {line_number}: {manifest}")
         digest, raw = match.groups()
         relative = Path(raw)
-        if relative.is_absolute() or ".." in relative.parts:
-            fail(f"unsafe checkpoint path: {relative}")
-        path = root / relative
+        path = contained_regular_file(root, relative)
         if path in entries:
             fail(f"duplicate checkpoint path: {relative}")
         entries[path] = digest
@@ -188,7 +247,11 @@ def verify_checkpoint(root: Path, manifest_name: str) -> None:
         expect_hash(path, digest)
 
 
-def verify_source_correctness(campaign: Path) -> str:
+def verify_source_correctness(
+    campaign: Path, expected_fingerprint: str
+) -> str:
+    if correctness_campaign_fingerprint(campaign) != expected_fingerprint:
+        fail(f"source correctness fingerprint differs: {campaign}")
     regular_file(campaign / "campaign.pass", empty=True)
     if (campaign / "campaign.fail").exists():
         fail(f"source correctness campaign has fail state: {campaign}")
@@ -740,14 +803,19 @@ def verify_selection(
         reference_performance_config = normalized_treatment_config(
             campaign / "runs/full_performance/reference/replica_1/config.ini"
         )
-        for row in reference_performance[1:]:
+        reference_performance_by_replica = {
+            row["replica"]: row for row in reference_performance
+        }
+        for replica in ("1", "2", "3"):
+            if replica not in reference_performance_by_replica:
+                fail(f"fresh reference is missing replica {replica}")
             replica_config = normalized_treatment_config(
                 campaign
                 / "runs/full_performance/reference"
-                / f"replica_{row['replica']}/config.ini"
+                / f"replica_{replica}/config.ini"
             )
             if replica_config != reference_performance_config:
-                fail("fresh reference replica configs differ")
+                fail(f"fresh reference replica config differs: {replica}")
     elif reference_correctness or reference_performance:
         fail("full reference ran despite every candidate failing the screen")
 
@@ -910,7 +978,53 @@ def verify_selection(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("campaign", type=Path)
+    parser.add_argument("--expected-sim-commit", required=True)
+    parser.add_argument("--expected-runner-sha", required=True)
+    parser.add_argument("--expected-reference-verifier-sha", required=True)
+    parser.add_argument("--expected-reference-approval-sha", required=True)
+    parser.add_argument("--expected-input-20k-sha", required=True)
+    parser.add_argument("--expected-bfs-approval-sha", required=True)
+    parser.add_argument("--expected-bfs-oracle-sha", required=True)
+    parser.add_argument("--expected-source-20k-fingerprint", required=True)
+    parser.add_argument("--expected-source-full-fingerprint", required=True)
+    parser.add_argument("--expected-source-20k", type=Path, required=True)
+    parser.add_argument("--expected-source-full", type=Path, required=True)
+    parser.add_argument(
+        "--expected-reference-campaign", type=Path, required=True
+    )
+    parser.add_argument("--expected-bfs-campaign", type=Path, required=True)
+    parser.add_argument(
+        "--expected-screen-overhead-limit", type=float, default=0.01
+    )
+    parser.add_argument(
+        "--expected-full-overhead-limit", type=float, default=0.01
+    )
+    parser.add_argument(
+        "--expected-minimum-available-kib",
+        type=int,
+        default=24 * 1024 * 1024,
+    )
     args = parser.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sim_commit):
+        fail("expected simulator commit is malformed")
+    expected_hashes = (
+        args.expected_runner_sha,
+        args.expected_reference_verifier_sha,
+        args.expected_reference_approval_sha,
+        args.expected_input_20k_sha,
+        args.expected_bfs_approval_sha,
+        args.expected_bfs_oracle_sha,
+        args.expected_source_20k_fingerprint,
+        args.expected_source_full_fingerprint,
+    )
+    if any(SHA256_RE.fullmatch(value) is None for value in expected_hashes):
+        fail("an expected authorization hash is malformed")
+    expected_source_20k = args.expected_source_20k.resolve(strict=True)
+    expected_source_full = args.expected_source_full.resolve(strict=True)
+    expected_reference_campaign = args.expected_reference_campaign.resolve(
+        strict=True
+    )
+    expected_bfs_campaign = args.expected_bfs_campaign.resolve(strict=True)
     if args.campaign.is_symlink():
         fail("campaign path is symlinked")
     campaign = args.campaign.resolve(strict=True)
@@ -930,11 +1044,30 @@ def main() -> None:
         source.get("schema_version") != 1
         or source.get("execution") != "serial"
         or source.get("wall_clock_timeout") != "none"
+        or source.get("environment_policy") != "fixed-minimal-v1"
         or source.get("simulation_lock")
         != "/data1/nier/.dx100-virtual-simulation.lock"
-        or not re.fullmatch(
-            r"[0-9a-f]{40}", source.get("simulator_commit", "")
+        or source.get("simulator_commit") != args.expected_sim_commit
+        or source.get("minimum_available_kib")
+        != args.expected_minimum_available_kib
+        or source.get("screen_overhead_limit")
+        != args.expected_screen_overhead_limit
+        or source.get("full_overhead_limit")
+        != args.expected_full_overhead_limit
+        or Path(source.get("source_20k_campaign", "")).resolve(strict=True)
+        != expected_source_20k
+        or Path(source.get("source_full_correctness_campaign", "")).resolve(
+            strict=True
         )
+        != expected_source_full
+        or Path(source.get("reference_campaign", "")).resolve(strict=True)
+        != expected_reference_campaign
+        or Path(source.get("bfs_campaign", "")).resolve(strict=True)
+        != expected_bfs_campaign
+        or source.get("source_20k_fingerprint")
+        != args.expected_source_20k_fingerprint
+        or source.get("source_full_fingerprint")
+        != args.expected_source_full_fingerprint
     ):
         fail("source policy or identity is invalid")
     candidates = candidate_map(source)
@@ -961,14 +1094,31 @@ def main() -> None:
     }
     if set(source_artifacts["sha256"]) != set(staged_by_name):
         fail("source artifact name closure differs")
+    trusted_staged_hashes = {
+        "runner": args.expected_runner_sha,
+        "reference_approval": args.expected_reference_approval_sha,
+        "reference_verifier": args.expected_reference_verifier_sha,
+        "input_20k": args.expected_input_20k_sha,
+        "bfs_approval": args.expected_bfs_approval_sha,
+        "bfs_oracle": args.expected_bfs_oracle_sha,
+    }
+    for name, expected in trusted_staged_hashes.items():
+        if source_artifacts["sha256"].get(name) != expected:
+            fail(f"source authorization hash differs: {name}")
+    staged_manifest_sha = source_artifacts.get("staged_manifest_sha256")
+    if (
+        not isinstance(staged_manifest_sha, str)
+        or SHA256_RE.fullmatch(staged_manifest_sha) is None
+        or file_sha256(campaign / "staged_input_sha256.json")
+        != staged_manifest_sha
+    ):
+        fail("recorded staged-input manifest hash differs")
     for name, path in staged_by_name.items():
         expect_hash(path, source_artifacts["sha256"][name])
 
     staged_verifier = campaign / "inputs/reference_verifier.py"
     staged_approval = campaign / "inputs/manifests/reference_approval.json"
-    reference_campaign = Path(source["reference_campaign"]).resolve(
-        strict=True
-    )
+    reference_campaign = expected_reference_campaign
     completed = subprocess.run(
         [
             str(staged_verifier),
@@ -989,7 +1139,7 @@ def main() -> None:
     reference_ticks = verified_reference_ticks(reference_campaign)
     if source.get("upstream_reference_sim_ticks") != reference_ticks:
         fail("source upstream-reference simTicks differs")
-    bfs_campaign = Path(source["bfs_campaign"]).resolve(strict=True)
+    bfs_campaign = expected_bfs_campaign
     bfs_verification = subprocess.run(
         [
             str(staged_verifier),
@@ -1010,10 +1160,10 @@ def main() -> None:
             + bfs_verification.stdout.strip()
         )
     screen_marker = verify_source_correctness(
-        Path(source["source_20k_campaign"]).resolve(strict=True)
+        expected_source_20k, args.expected_source_20k_fingerprint
     )
     full_marker = verify_source_correctness(
-        Path(source["source_full_correctness_campaign"]).resolve(strict=True)
+        expected_source_full, args.expected_source_full_fingerprint
     )
     if (
         source.get("screen_expected_marker") != screen_marker

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 13 ]]; then
+if [[ $# -ne 16 ]]; then
     cat >&2 <<EOF
-usage: $0 EXPECTED_SELF_SHA256 EXPECTED_RUNNER_SHA256 EXPECTED_VERIFIER_SHA256 EXPECTED_REFERENCE_VERIFIER_SHA256 EXPECTED_SIM_COMMIT BFS_CAMPAIGN BFS_APPROVAL EXPECTED_BFS_APPROVAL_SHA256 BFS_ORACLE EXPECTED_BFS_ORACLE_SHA256 EXPECTED_INPUT_20K_SHA256 REFERENCE_APPROVAL OUTPUT
+usage: $0 EXPECTED_SELF_SHA256 EXPECTED_RUNNER_SHA256 EXPECTED_VERIFIER_SHA256 EXPECTED_REFERENCE_VERIFIER_SHA256 EXPECTED_SIM_COMMIT BFS_CAMPAIGN BFS_APPROVAL EXPECTED_BFS_APPROVAL_SHA256 BFS_ORACLE EXPECTED_BFS_ORACLE_SHA256 EXPECTED_INPUT_20K_SHA256 REFERENCE_APPROVAL EXPECTED_REFERENCE_APPROVAL_SHA256 EXPECTED_SOURCE_20K_FINGERPRINT EXPECTED_SOURCE_FULL_FINGERPRINT OUTPUT
 EOF
     exit 2
 fi
@@ -20,7 +20,10 @@ bfs_oracle=$(realpath "$9")
 expected_bfs_oracle_sha=${10}
 expected_input_20k_sha=${11}
 reference_approval=$(realpath "${12}")
-output=$(realpath -m "${13}")
+expected_reference_approval_sha=${13}
+expected_source_20k_fingerprint=${14}
+expected_source_full_fingerprint=${15}
+output=$(realpath -m "${16}")
 self=$(realpath "$0")
 sim_root=$(cd "$(dirname "$self")/../.." && pwd)
 runner=$sim_root/experiments/scripts/run_xrage_retirement_cache_ablation.py
@@ -41,7 +44,10 @@ hash_file() {
 for expected in "$expected_self_sha" "$expected_runner_sha" \
                 "$expected_verifier_sha" "$expected_reference_verifier_sha" \
                 "$expected_bfs_approval_sha" "$expected_bfs_oracle_sha" \
-                "$expected_input_20k_sha"; do
+                "$expected_input_20k_sha" \
+                "$expected_reference_approval_sha" \
+                "$expected_source_20k_fingerprint" \
+                "$expected_source_full_fingerprint"; do
     [[ $expected =~ ^[0-9a-f]{64}$ ]] || {
         echo "expected artifact hashes must be full SHA-256 values" >&2
         exit 2
@@ -58,6 +64,8 @@ assert_authorized_state() {
        $(hash_file "$verifier") == "$expected_verifier_sha" &&
        $(hash_file "$reference_verifier") == \
            "$expected_reference_verifier_sha" &&
+       $(hash_file "$reference_approval") == \
+           "$expected_reference_approval_sha" &&
        $(hash_file "$bfs_approval") == "$expected_bfs_approval_sha" &&
        $(hash_file "$bfs_oracle") == "$expected_bfs_oracle_sha" &&
        $(hash_file "$input_20k") == "$expected_input_20k_sha" ]] || {
@@ -71,6 +79,27 @@ assert_authorized_state() {
     }
 }
 
+verify_output() {
+    "$verifier" "$output" \
+        --expected-sim-commit "$expected_sim_commit" \
+        --expected-runner-sha "$expected_runner_sha" \
+        --expected-reference-verifier-sha \
+            "$expected_reference_verifier_sha" \
+        --expected-reference-approval-sha \
+            "$expected_reference_approval_sha" \
+        --expected-input-20k-sha "$expected_input_20k_sha" \
+        --expected-bfs-approval-sha "$expected_bfs_approval_sha" \
+        --expected-bfs-oracle-sha "$expected_bfs_oracle_sha" \
+        --expected-source-20k-fingerprint \
+            "$expected_source_20k_fingerprint" \
+        --expected-source-full-fingerprint \
+            "$expected_source_full_fingerprint" \
+        --expected-source-20k "$source_20k" \
+        --expected-source-full "$source_full" \
+        --expected-reference-campaign "$reference_campaign" \
+        --expected-bfs-campaign "$bfs_campaign"
+}
+
 atomic_marker() {
     local destination=$1
     local content=$2
@@ -82,6 +111,10 @@ atomic_marker() {
 }
 
 publish_pass() {
+    [[ ! -e $output/campaign.fail ]] || {
+        echo "refusing to publish pass beside a fail marker" >&2
+        return 1
+    }
     atomic_marker "$output/campaign.pass" ""
 }
 
@@ -89,6 +122,28 @@ publish_fail() {
     atomic_marker "$output/campaign.fail" "$1"$'\n'
 }
 
+campaign_lock_root=/data1/nier/.dx-runtime-state/retirement-cache-launch.lock
+mkdir -p -m 0700 "$campaign_lock_root"
+[[ -d $campaign_lock_root && ! -L $campaign_lock_root &&
+   $(stat -c %u "$campaign_lock_root") == "$(id -u)" ]] || {
+    echo "campaign publication lock directory is unsafe" >&2
+    exit 2
+}
+[[ $(stat -c %a "$campaign_lock_root") == 700 ]] ||
+    chmod 0700 "$campaign_lock_root"
+exec {campaign_lock_fd}< "$campaign_lock_root"
+flock -x "$campaign_lock_fd"
+campaign_lock_identity=$(stat -Lc '%d:%i' \
+    "/proc/$$/fd/$campaign_lock_fd")
+assert_campaign_lock() {
+    [[ $(stat -Lc '%d:%i' "$campaign_lock_root") == \
+       "$campaign_lock_identity" ]] || {
+        echo "campaign publication lock identity changed" >&2
+        return 1
+    }
+}
+
+assert_campaign_lock
 assert_authorized_state
 [[ -f $bfs_campaign/campaign.pass &&
    ! -L $bfs_campaign/campaign.pass &&
@@ -102,17 +157,19 @@ assert_authorized_state
 assert_authorized_state
 
 if [[ -f $output/campaign.pass ]]; then
-    "$verifier" "$output"
+    verify_output
+    assert_campaign_lock
     assert_authorized_state
     echo "retirement-cache ablation already passed and verified: $output"
     exit 0
 fi
 if [[ -f $output/execution.complete &&
       ! -e $output/campaign.fail ]]; then
-    "$verifier" "$output" || {
+    verify_output || {
         publish_fail "independent verification failed"
         exit 4
     }
+    assert_campaign_lock
     assert_authorized_state
     publish_pass
     echo "published previously completed retirement-cache ablation: $output"
@@ -129,9 +186,14 @@ assert_authorized_state
     --expected-sim-commit "$expected_sim_commit" \
     --expected-runner-sha "$expected_runner_sha" \
     --expected-reference-verifier-sha "$expected_reference_verifier_sha" \
+    --expected-reference-approval-sha "$expected_reference_approval_sha" \
     --expected-input-20k-sha "$expected_input_20k_sha" \
     --expected-bfs-approval-sha "$expected_bfs_approval_sha" \
     --expected-bfs-oracle-sha "$expected_bfs_oracle_sha" \
+    --expected-source-20k-fingerprint \
+        "$expected_source_20k_fingerprint" \
+    --expected-source-full-fingerprint \
+        "$expected_source_full_fingerprint" \
     --gem5 "$reference_inputs/bin/gem5.opt" \
     --ramulator-yaml "$reference_inputs/ramulator.yaml" \
     --ramulator-lib "$reference_inputs/lib/libramulator.so" \
@@ -149,11 +211,13 @@ assert_authorized_state
     --bfs-approval "$bfs_approval" \
     --bfs-oracle "$bfs_oracle" \
     --output "$output"
+assert_campaign_lock
 assert_authorized_state
-"$verifier" "$output" || {
+verify_output || {
     publish_fail "independent verification failed"
     exit 4
 }
+assert_campaign_lock
 assert_authorized_state
 publish_pass
 echo "completed, independently verified, and published retirement-cache ablation: $output"

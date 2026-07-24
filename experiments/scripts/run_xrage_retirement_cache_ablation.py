@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -12,6 +14,7 @@ import os
 import re
 import shlex
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -33,6 +36,25 @@ MARKER_RE = re.compile(
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SIMULATION_LOCK = Path("/data1/nier/.dx100-virtual-simulation.lock")
+IN_ATTRIB = 0x00000004
+IN_MOVED_FROM = 0x00000040
+IN_MOVED_TO = 0x00000080
+IN_CREATE = 0x00000100
+IN_DELETE = 0x00000200
+IN_DELETE_SELF = 0x00000400
+IN_MOVE_SELF = 0x00000800
+IN_Q_OVERFLOW = 0x00004000
+IN_IGNORED = 0x00008000
+LOCK_WATCH_MASK = (
+    IN_ATTRIB
+    | IN_MOVED_FROM
+    | IN_MOVED_TO
+    | IN_CREATE
+    | IN_DELETE
+    | IN_DELETE_SELF
+    | IN_MOVE_SELF
+)
+INOTIFY_EVENT = struct.Struct("iIII")
 
 
 @dataclass(frozen=True)
@@ -44,6 +66,15 @@ class Candidate:
     mshrs: int
     targets_per_mshr: int
     write_buffers: int
+
+
+@dataclass(frozen=True)
+class SimulationLock:
+    descriptor: int
+    watch_descriptor: int
+    device: int
+    inode: int
+    ctime_ns: int
 
 
 CANDIDATES = (
@@ -64,6 +95,30 @@ def regular_file(path: Path, *, executable: bool = False) -> Path:
     if executable and not os.access(path, os.X_OK):
         fail(f"required file is not executable: {path}")
     return path
+
+
+def reject_symlink_components(path: Path) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            fail(f"path contains a symlink component: {path}")
+
+
+def contained_regular_file(root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or ".." in relative.parts:
+        fail(f"unsafe relative path under {root}: {relative}")
+    reject_symlink_components(root)
+    target = root / relative
+    reject_symlink_components(target)
+    resolved_root = root.resolve(strict=True)
+    resolved = target.resolve(strict=True)
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError:
+        fail(f"path escapes its root: root={root} path={relative}")
+    return regular_file(resolved)
 
 
 def empty_marker(path: Path) -> None:
@@ -149,7 +204,7 @@ def read_tsv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     return reader.fieldnames, rows
 
 
-def parse_sha256_manifest(path: Path, root: Path) -> dict[Path, str]:
+def parse_external_artifact_manifest(path: Path) -> dict[Path, str]:
     regular_file(path)
     entries: dict[Path, str] = {}
     for line_number, line in enumerate(path.read_text().splitlines(), 1):
@@ -158,8 +213,10 @@ def parse_sha256_manifest(path: Path, root: Path) -> dict[Path, str]:
             fail(f"malformed SHA-256 manifest line {line_number}: {path}")
         digest, raw_path = match.groups()
         recorded = Path(raw_path)
-        target = recorded if recorded.is_absolute() else root / recorded
-        target = target.resolve(strict=True)
+        if not recorded.is_absolute() or ".." in recorded.parts:
+            fail(f"artifact manifest path must be absolute: {recorded}")
+        reject_symlink_components(recorded)
+        target = regular_file(recorded).resolve(strict=True)
         if target in entries:
             fail(f"duplicate manifest path: {target}")
         entries[target] = digest
@@ -168,17 +225,47 @@ def parse_sha256_manifest(path: Path, root: Path) -> dict[Path, str]:
     return entries
 
 
-def verify_manifest(path: Path, root: Path) -> dict[Path, str]:
-    entries = parse_sha256_manifest(path, root)
+def verify_external_artifact_manifest(path: Path) -> dict[Path, str]:
+    entries = parse_external_artifact_manifest(path)
     for target, expected in entries.items():
         expect_hash("manifest artifact", target, expected)
     return entries
 
 
+def correctness_campaign_fingerprint(campaign: Path) -> str:
+    reject_symlink_components(campaign)
+    campaign = campaign.resolve(strict=True)
+    required = [
+        campaign / "campaign.pass",
+        campaign / "artifact_sha256.txt",
+        campaign / "results.tsv",
+        campaign / "source.txt",
+    ]
+    checkpoint_manifests = sorted(
+        campaign.glob("checkpoints/*/checkpoint_sha256.txt")
+    )
+    if {path.parent.name for path in checkpoint_manifests} != {
+        "native",
+        "fused",
+        "virtual",
+    }:
+        fail(f"correctness checkpoint-manifest closure differs: {campaign}")
+    digest = hashlib.sha256()
+    for path in sorted((*required, *checkpoint_manifests)):
+        reject_symlink_components(path)
+        regular_file(path)
+        relative = str(path.relative_to(campaign)).encode()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(bytes.fromhex(file_sha256(path)))
+    return digest.hexdigest()
+
+
 def checkpoint_payload(
     checkpoint_root: Path, manifest_name: str
 ) -> tuple[Path, dict[Path, str]]:
-    manifest = regular_file(checkpoint_root / manifest_name)
+    reject_symlink_components(checkpoint_root)
+    manifest = contained_regular_file(checkpoint_root, Path(manifest_name))
     entries: dict[Path, str] = {}
     for line_number, line in enumerate(manifest.read_text().splitlines(), 1):
         match = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)", line)
@@ -188,9 +275,7 @@ def checkpoint_payload(
             )
         digest, raw_path = match.groups()
         relative = Path(raw_path)
-        if relative.is_absolute() or ".." in relative.parts:
-            fail(f"unsafe checkpoint path in {manifest}: {relative}")
-        target = checkpoint_root / relative
+        target = contained_regular_file(checkpoint_root, relative)
         if target in entries:
             fail(f"duplicate checkpoint path in {manifest}: {relative}")
         entries[target] = digest
@@ -249,6 +334,14 @@ def stage_checkpoint(
         ):
             handle.write(f"{digest}  {target.relative_to(destination_root)}\n")
     checkpoint_payload(destination_root, "checkpoint_sha256.txt")
+    fresh_source_dir, fresh_source_entries = checkpoint_payload(
+        source_root, manifest_name
+    )
+    if (
+        fresh_source_dir != source_dir
+        or fresh_source_entries != source_entries
+    ):
+        fail(f"source checkpoint changed during staging: {source_root}")
     return staged_entries
 
 
@@ -258,7 +351,7 @@ def verify_artifact_campaign(campaign: Path) -> None:
     empty_marker(campaign / "campaign.pass")
     if (campaign / "campaign.fail").exists():
         fail(f"campaign has both pass and fail state: {campaign}")
-    verify_manifest(campaign / "artifact_sha256.txt", campaign)
+    verify_external_artifact_manifest(campaign / "artifact_sha256.txt")
 
 
 def correctness_marker(campaign: Path) -> str:
@@ -308,7 +401,62 @@ def correctness_marker(campaign: Path) -> str:
     return row["marker"]
 
 
-def wait_for_capacity(minimum_available_kib: int, poll_seconds: int) -> int:
+def create_lock_watch() -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.inotify_init1.argtypes = [ctypes.c_int]
+    libc.inotify_init1.restype = ctypes.c_int
+    libc.inotify_add_watch.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+    ]
+    libc.inotify_add_watch.restype = ctypes.c_int
+    descriptor = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if descriptor < 0:
+        error = ctypes.get_errno()
+        fail(f"inotify_init1 failed: {os.strerror(error)}")
+    watch = libc.inotify_add_watch(
+        descriptor,
+        os.fsencode(SIMULATION_LOCK.parent),
+        LOCK_WATCH_MASK,
+    )
+    if watch < 0:
+        error = ctypes.get_errno()
+        os.close(descriptor)
+        fail(f"inotify_add_watch failed: {os.strerror(error)}")
+    return descriptor
+
+
+def verify_lock_watch(lock: SimulationLock) -> None:
+    while True:
+        try:
+            data = os.read(lock.watch_descriptor, 64 * 1024)
+        except OSError as error:
+            if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return
+            fail(f"simulation lock watch failed: {error}")
+        if not data:
+            fail("simulation lock watch closed unexpectedly")
+        offset = 0
+        while offset < len(data):
+            if len(data) - offset < INOTIFY_EVENT.size:
+                fail("simulation lock watch returned a truncated event")
+            _, mask, _, name_length = INOTIFY_EVENT.unpack_from(data, offset)
+            offset += INOTIFY_EVENT.size
+            if len(data) - offset < name_length:
+                fail("simulation lock watch returned a truncated name")
+            raw_name = data[offset : offset + name_length]
+            offset += name_length
+            name = raw_name.rstrip(b"\0")
+            if mask & (IN_Q_OVERFLOW | IN_IGNORED):
+                fail("simulation lock watch lost event coverage")
+            if not name or name == os.fsencode(SIMULATION_LOCK.name):
+                fail("simulation lock pathname changed while held")
+
+
+def wait_for_capacity(
+    minimum_available_kib: int, poll_seconds: int
+) -> SimulationLock:
     while True:
         values: dict[str, int] = {}
         for line in Path("/proc/meminfo").read_text().splitlines():
@@ -326,8 +474,17 @@ def wait_for_capacity(minimum_available_kib: int, poll_seconds: int) -> int:
                 )
                 os.fchmod(descriptor, 0o600)
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                verify_lock_identity(descriptor)
-                return descriptor
+                watch_descriptor = create_lock_watch()
+                descriptor_stat = os.fstat(descriptor)
+                lock = SimulationLock(
+                    descriptor=descriptor,
+                    watch_descriptor=watch_descriptor,
+                    device=descriptor_stat.st_dev,
+                    inode=descriptor_stat.st_ino,
+                    ctime_ns=descriptor_stat.st_ctime_ns,
+                )
+                verify_lock_identity(lock)
+                return lock
             except BlockingIOError:
                 os.close(descriptor)
         print(
@@ -338,14 +495,18 @@ def wait_for_capacity(minimum_available_kib: int, poll_seconds: int) -> int:
         time.sleep(poll_seconds)
 
 
-def verify_lock_identity(descriptor: int) -> None:
-    descriptor_stat = os.fstat(descriptor)
+def verify_lock_identity(lock: SimulationLock) -> None:
+    verify_lock_watch(lock)
+    descriptor_stat = os.fstat(lock.descriptor)
     path_stat = SIMULATION_LOCK.lstat()
     if (
         not stat.S_ISREG(descriptor_stat.st_mode)
         or descriptor_stat.st_uid != os.getuid()
         or descriptor_stat.st_nlink != 1
         or stat.S_IMODE(descriptor_stat.st_mode) != 0o600
+        or descriptor_stat.st_dev != lock.device
+        or descriptor_stat.st_ino != lock.inode
+        or descriptor_stat.st_ctime_ns != lock.ctime_ns
         or path_stat.st_dev != descriptor_stat.st_dev
         or path_stat.st_ino != descriptor_stat.st_ino
     ):
@@ -633,13 +794,17 @@ def run_case(
 
     command = base_command(inputs, output, binary, data, candidate)
     write_command(output / "restore.command", command)
-    environment = os.environ.copy()
-    environment[
-        "LD_LIBRARY_PATH"
-    ] = f"{inputs / 'lib'}:{environment.get('LD_LIBRARY_PATH', '')}"
-    environment["OMP_PROC_BIND"] = "false"
-    environment["OMP_NUM_THREADS"] = "4"
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment = {
+        "HOME": "/tmp",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "LD_LIBRARY_PATH": str(inputs / "lib"),
+        "OMP_NUM_THREADS": "4",
+        "OMP_PROC_BIND": "false",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONHASHSEED": "0",
+    }
     started = time.monotonic()
     with (output / "restore.log").open("wb") as log:
         completed = subprocess.run(
@@ -923,6 +1088,7 @@ def evidence_manifest(campaign: Path) -> None:
         if not path.is_file() or path.name in {
             "campaign.pass",
             "campaign.fail",
+            "execution.complete",
             "evidence_sha256.txt",
         }:
             continue
@@ -959,9 +1125,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bfs-oracle", type=Path, required=True)
     parser.add_argument("--expected-runner-sha", required=True)
     parser.add_argument("--expected-reference-verifier-sha", required=True)
+    parser.add_argument("--expected-reference-approval-sha", required=True)
     parser.add_argument("--expected-input-20k-sha", required=True)
     parser.add_argument("--expected-bfs-approval-sha", required=True)
     parser.add_argument("--expected-bfs-oracle-sha", required=True)
+    parser.add_argument("--expected-source-20k-fingerprint", required=True)
+    parser.add_argument("--expected-source-full-fingerprint", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--minimum-available-kib", type=int, default=24 * 1024 * 1024
@@ -979,9 +1148,12 @@ def main() -> None:
     expected_sha_values = (
         args.expected_runner_sha,
         args.expected_reference_verifier_sha,
+        args.expected_reference_approval_sha,
         args.expected_input_20k_sha,
         args.expected_bfs_approval_sha,
         args.expected_bfs_oracle_sha,
+        args.expected_source_20k_fingerprint,
+        args.expected_source_full_fingerprint,
     )
     if any(not SHA256_RE.fullmatch(value) for value in expected_sha_values):
         fail("all expected artifact hashes must be full SHA-256 values")
@@ -1036,6 +1208,11 @@ def main() -> None:
             args.expected_reference_verifier_sha,
         )
         expect_hash(
+            "authorized reference approval",
+            reference_approval,
+            args.expected_reference_approval_sha,
+        )
+        expect_hash(
             "authorized 20K input",
             args.input_20k.resolve(strict=True),
             args.expected_input_20k_sha,
@@ -1050,9 +1227,18 @@ def main() -> None:
             bfs_oracle,
             args.expected_bfs_oracle_sha,
         )
+        if (
+            correctness_campaign_fingerprint(source_20k)
+            != args.expected_source_20k_fingerprint
+        ):
+            fail("20K source correctness fingerprint differs")
+        if (
+            correctness_campaign_fingerprint(source_full)
+            != args.expected_source_full_fingerprint
+        ):
+            fail("full source correctness fingerprint differs")
         marker_20k = correctness_marker(source_20k)
         marker_full = correctness_marker(source_full)
-        reference_approval_sha = file_sha256(reference_approval)
         reference_verification = subprocess.run(
             [
                 str(reference_verifier),
@@ -1073,7 +1259,7 @@ def main() -> None:
         expect_hash(
             "reference approval after verification",
             reference_approval,
-            reference_approval_sha,
+            args.expected_reference_approval_sha,
         )
         bfs_verification = subprocess.run(
             [
@@ -1128,7 +1314,7 @@ def main() -> None:
             "input_20k": args.expected_input_20k_sha,
             "input_full": nested(approval, "workload", "input_sha256"),
             "runner": args.expected_runner_sha,
-            "reference_approval": reference_approval_sha,
+            "reference_approval": args.expected_reference_approval_sha,
             "reference_verifier": args.expected_reference_verifier_sha,
             "bfs_approval": args.expected_bfs_approval_sha,
             "bfs_oracle": args.expected_bfs_oracle_sha,
@@ -1143,6 +1329,7 @@ def main() -> None:
             "simulator_commit": current_commit,
             "execution": "serial",
             "wall_clock_timeout": "none",
+            "environment_policy": "fixed-minimal-v1",
             "simulation_lock": str(SIMULATION_LOCK),
             "minimum_available_kib": args.minimum_available_kib,
             "screen_overhead_limit": args.screen_overhead_limit,
@@ -1152,6 +1339,8 @@ def main() -> None:
             "bfs_campaign": str(bfs_campaign),
             "source_20k_campaign": str(source_20k),
             "source_full_correctness_campaign": str(source_full),
+            "source_20k_fingerprint": args.expected_source_20k_fingerprint,
+            "source_full_fingerprint": args.expected_source_full_fingerprint,
             "screen_expected_marker": marker_20k,
             "full_expected_marker": marker_full,
             "candidates": [asdict(candidate) for candidate in CANDIDATES],
@@ -1159,12 +1348,19 @@ def main() -> None:
         }
         staged = stage_inputs(args, output, expected_hashes)
         source["source_artifacts"] = staged
+        if (
+            correctness_campaign_fingerprint(source_20k)
+            != args.expected_source_20k_fingerprint
+            or correctness_campaign_fingerprint(source_full)
+            != args.expected_source_full_fingerprint
+        ):
+            fail("a source correctness campaign changed during staging")
         (output / "source.json").write_text(
             json.dumps(source, indent=2, sort_keys=True) + "\n"
         )
         verify_staged_inputs(output)
 
-        lock_descriptor = wait_for_capacity(
+        simulation_lock = wait_for_capacity(
             args.minimum_available_kib, args.capacity_poll_seconds
         )
         try:
@@ -1184,7 +1380,7 @@ def main() -> None:
 
             screen_results: dict[str, dict[str, Any]] = {}
             for candidate in CANDIDATES:
-                verify_lock_identity(lock_descriptor)
+                verify_lock_identity(simulation_lock)
                 verify_staged_inputs(output)
                 result = run_case(
                     output,
@@ -1213,9 +1409,34 @@ def main() -> None:
                 <= screen_reference * (1 + args.screen_overhead_limit)
             }
             ref_ticks: int | None = None
+            candidate_correctness: dict[str, dict[str, Any]] = {}
             if eligible:
+                first_eligible = next(
+                    name for name in PROMOTION_ORDER if name in eligible
+                )
+                first_candidate = next(
+                    item for item in CANDIDATES if item.name == first_eligible
+                )
+                verify_lock_identity(simulation_lock)
+                verify_staged_inputs(output)
+                first_correctness = run_case(
+                    output,
+                    inputs,
+                    full_correctness_checkpoint,
+                    verify_bin,
+                    input_full,
+                    first_candidate,
+                    "full_correctness",
+                    1,
+                    marker_full,
+                )
+                records.append(first_correctness)
+                candidate_correctness[first_eligible] = first_correctness
+                if first_correctness["valid"] != 1:
+                    fail(f"full correctness failed for {first_candidate.name}")
+
                 reference_candidate = CANDIDATES[0]
-                verify_lock_identity(lock_descriptor)
+                verify_lock_identity(simulation_lock)
                 verify_staged_inputs(output)
                 reference_correctness = run_case(
                     output,
@@ -1233,7 +1454,7 @@ def main() -> None:
                     fail("fresh full reference correctness failed")
                 reference_performance: list[dict[str, Any]] = []
                 for replica in range(1, 4):
-                    verify_lock_identity(lock_descriptor)
+                    verify_lock_identity(simulation_lock)
                     verify_staged_inputs(output)
                     result = run_case(
                         output,
@@ -1281,26 +1502,29 @@ def main() -> None:
                 if name not in eligible:
                     selection_rows.append(row)
                     continue
-                verify_lock_identity(lock_descriptor)
-                verify_staged_inputs(output)
-                correctness = run_case(
-                    output,
-                    inputs,
-                    full_correctness_checkpoint,
-                    verify_bin,
-                    input_full,
-                    candidate,
-                    "full_correctness",
-                    1,
-                    marker_full,
-                )
-                records.append(correctness)
+                correctness = candidate_correctness.get(name)
+                if correctness is None:
+                    verify_lock_identity(simulation_lock)
+                    verify_staged_inputs(output)
+                    correctness = run_case(
+                        output,
+                        inputs,
+                        full_correctness_checkpoint,
+                        verify_bin,
+                        input_full,
+                        candidate,
+                        "full_correctness",
+                        1,
+                        marker_full,
+                    )
+                    records.append(correctness)
+                    candidate_correctness[name] = correctness
                 row["full_correct"] = correctness["valid"]
                 if correctness["valid"] != 1:
                     fail(f"full correctness failed for {candidate.name}")
                 performance: list[dict[str, Any]] = []
                 for replica in range(1, 4):
-                    verify_lock_identity(lock_descriptor)
+                    verify_lock_identity(simulation_lock)
                     verify_staged_inputs(output)
                     result = run_case(
                         output,
@@ -1388,12 +1612,13 @@ def main() -> None:
                 json.dumps(summary, indent=2, sort_keys=True) + "\n"
             )
             verify_staged_inputs(output)
-            verify_lock_identity(lock_descriptor)
-            atomic_write(output / "execution.complete", "", 0o444)
+            verify_lock_identity(simulation_lock)
             evidence_manifest(output)
+            atomic_write(output / "execution.complete", "", 0o444)
         finally:
-            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
-            os.close(lock_descriptor)
+            os.close(simulation_lock.watch_descriptor)
+            fcntl.flock(simulation_lock.descriptor, fcntl.LOCK_UN)
+            os.close(simulation_lock.descriptor)
     except BaseException as error:
         atomic_write(
             output / "campaign.fail",
