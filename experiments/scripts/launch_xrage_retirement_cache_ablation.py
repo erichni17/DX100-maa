@@ -1161,6 +1161,8 @@ def main() -> None:
             str(staged["bfs_oracle"]),
             "--output",
             str(staging),
+            "--publication-name",
+            output.name,
         ]
         completed = run_python_fd(
             staged["runner"],

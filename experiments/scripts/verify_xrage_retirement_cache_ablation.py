@@ -1024,11 +1024,13 @@ def command_difference(actual: list[str], expected: list[str]) -> str:
 
 def expected_command(
     campaign: Path,
+    execution_root: Path,
     root: Path,
     phase: str,
     candidate: dict[str, Any],
 ) -> list[str]:
-    inputs = campaign / "inputs"
+    inputs = execution_root / "inputs"
+    execution_run_root = execution_root / root.relative_to(campaign)
     binary = (
         inputs / "benchmark/xrage_virtual"
         if phase == "full_performance"
@@ -1042,7 +1044,7 @@ def expected_command(
     return [
         str(inputs / "bin/gem5.opt"),
         "--listener-mode=off",
-        f"--outdir={root}",
+        f"--outdir={execution_run_root}",
         str(inputs / "simulator/configs/deprecated/example/se.py"),
         "--cpu-type",
         "X86O3CPU",
@@ -1193,8 +1195,41 @@ def runtime_config_identity(path: Path) -> dict[str, str]:
     }
 
 
-def expected_staged_runtime(campaign: Path, phase: str) -> dict[str, str]:
-    inputs = campaign / "inputs"
+def authorized_execution_root(campaign: Path, source: dict[str, Any]) -> Path:
+    raw_root = source.get("execution_root")
+    publication_name = source.get("publication_name")
+    if (
+        not isinstance(raw_root, str)
+        or not isinstance(publication_name, str)
+        or Path(publication_name).name != publication_name
+    ):
+        fail("publication identity is malformed")
+    execution_root = Path(raw_root)
+    if (
+        not execution_root.is_absolute()
+        or execution_root.parent != campaign.parent
+        or re.fullmatch(
+            rf"\.staging\.{re.escape(publication_name)}\.[0-9a-f]{{32}}",
+            execution_root.name,
+        )
+        is None
+    ):
+        fail("execution-root identity is malformed")
+    if campaign.name == execution_root.name:
+        if campaign != execution_root:
+            fail("prepublication execution-root path differs")
+    elif campaign.name == publication_name:
+        if execution_root.exists() or execution_root.is_symlink():
+            fail("postpublication execution-root path still exists")
+    else:
+        fail("campaign name does not match its publication identity")
+    return execution_root
+
+
+def expected_staged_runtime(
+    execution_root: Path, phase: str
+) -> dict[str, str]:
+    inputs = execution_root / "inputs"
     if phase == "screen_correctness":
         binary = inputs / "benchmark/xrage_virtual_verify"
         data = inputs / "benchmark/xrage_20k.json"
@@ -1291,6 +1326,7 @@ def normalized_treatment_config(
 
 def verify_case(
     campaign: Path,
+    execution_root: Path,
     source: dict[str, Any],
     candidates: dict[str, dict[str, Any]],
     row: dict[str, str],
@@ -1354,7 +1390,7 @@ def verify_case(
 
     item = candidates[candidate_name]
     command = shlex.split(regular_file(root / "restore.command").read_text())
-    expected = expected_command(campaign, root, phase, item)
+    expected = expected_command(campaign, execution_root, root, phase, item)
     if command != expected:
         fail(
             f"restore command differs: {root}: "
@@ -1364,6 +1400,7 @@ def verify_case(
 
 def verify_selection(
     campaign: Path,
+    execution_root: Path,
     source: dict[str, Any],
     results: list[dict[str, str]],
     candidates: dict[str, dict[str, Any]],
@@ -1402,7 +1439,9 @@ def verify_selection(
         or any(row["replica"] != "1" for row in screen_rows)
     ):
         fail("screen matrix is incomplete")
-    screen_runtime = expected_staged_runtime(campaign, "screen_correctness")
+    screen_runtime = expected_staged_runtime(
+        execution_root, "screen_correctness"
+    )
     screen_reference_config = normalized_treatment_config(
         campaign / "runs/screen_correctness/reference/replica_1/config.ini",
         screen_runtime,
@@ -1510,7 +1549,7 @@ def verify_selection(
             fail(f"eligible candidate has no approved reference: {name}")
         candidate_correctness_config = normalized_treatment_config(
             campaign / f"runs/full_correctness/{name}/replica_1/config.ini",
-            expected_staged_runtime(campaign, "full_correctness"),
+            expected_staged_runtime(execution_root, "full_correctness"),
         )
         if candidate_correctness_config != reference_correctness_config:
             fail(f"full correctness config differs beyond treatment: {name}")
@@ -1519,7 +1558,7 @@ def verify_selection(
                 campaign
                 / f"runs/full_performance/{name}"
                 / f"replica_{item['replica']}/config.ini",
-                expected_staged_runtime(campaign, "full_performance"),
+                expected_staged_runtime(execution_root, "full_performance"),
             )
             if candidate_performance_config != reference_performance_config:
                 fail(
@@ -1720,6 +1759,7 @@ def main() -> None:
         != args.expected_source_full_fingerprint
     ):
         fail("source policy or identity is invalid")
+    execution_root = authorized_execution_root(campaign, source)
     screen_marker = verify_source_correctness(
         expected_source_20k, args.expected_source_20k_fingerprint
     )
@@ -2024,8 +2064,15 @@ def main() -> None:
     if len(identities) != len(rows):
         fail("results contain duplicate run identities")
     for row in rows:
-        verify_case(campaign, source, candidates, row)
-    verify_selection(campaign, source, rows, candidates, reference_result)
+        verify_case(campaign, execution_root, source, candidates, row)
+    verify_selection(
+        campaign,
+        execution_root,
+        source,
+        rows,
+        candidates,
+        reference_result,
+    )
     certificate = args.certificate_output.absolute()
     try:
         certificate.relative_to(campaign)

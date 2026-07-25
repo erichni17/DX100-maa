@@ -1976,6 +1976,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-source-20k-fingerprint", required=True)
     parser.add_argument("--expected-source-full-fingerprint", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--publication-name", required=True)
     parser.add_argument(
         "--minimum-available-kib", type=int, default=24 * 1024 * 1024
     )
@@ -2031,6 +2032,15 @@ def main() -> None:
     )
 
     output = args.output.resolve()
+    if (
+        Path(args.publication_name).name != args.publication_name
+        or re.fullmatch(
+            rf"\.staging\.{re.escape(args.publication_name)}\.[0-9a-f]{{32}}",
+            output.name,
+        )
+        is None
+    ):
+        fail("output staging name does not bind the publication name")
     if output.exists():
         info = output.lstat()
         if (
@@ -2247,6 +2257,8 @@ def main() -> None:
             "schema_version": 1,
             "simulator_commit": current_commit,
             "workflow_config_commit": current_commit,
+            "execution_root": str(output),
+            "publication_name": args.publication_name,
             "binary_simulator_commit": binary_commit,
             "execution": "serial",
             "wall_clock_timeout": "none",

@@ -820,6 +820,51 @@ class PublicationAnchorTests(TemporaryDirectoryTest):
             LAUNCHER.create_private_staging(parent, "campaign")
 
 
+class ExecutionRootTests(TemporaryDirectoryTest):
+    def create_staging(self):
+        publication_name = "campaign"
+        staging = self.root / (f".staging.{publication_name}." + "a" * 32)
+        staging.mkdir()
+        source = {
+            "execution_root": str(staging),
+            "publication_name": publication_name,
+        }
+        return staging, source
+
+    def test_prepublication_execution_root_is_exact(self):
+        staging, source = self.create_staging()
+
+        self.assertEqual(
+            VERIFIER.authorized_execution_root(staging, source), staging
+        )
+
+    def test_postpublication_execution_root_is_bound_and_absent(self):
+        staging, source = self.create_staging()
+        published = self.root / source["publication_name"]
+        staging.rename(published)
+
+        self.assertEqual(
+            VERIFIER.authorized_execution_root(published, source), staging
+        )
+
+    def test_postpublication_rejects_recreated_staging_path(self):
+        staging, source = self.create_staging()
+        published = self.root / source["publication_name"]
+        staging.rename(published)
+        staging.mkdir()
+
+        with self.assertRaisesRegex(SystemExit, "still exists"):
+            VERIFIER.authorized_execution_root(published, source)
+
+    def test_publication_name_cannot_redirect_to_another_sibling(self):
+        staging, source = self.create_staging()
+        other = self.root / "other"
+        staging.rename(other)
+
+        with self.assertRaisesRegex(SystemExit, "campaign name"):
+            VERIFIER.authorized_execution_root(other, source)
+
+
 class ReferenceResultTests(TemporaryDirectoryTest):
     def approval_record(self, campaign):
         digest = "a" * 64
