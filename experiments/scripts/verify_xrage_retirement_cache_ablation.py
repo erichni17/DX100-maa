@@ -117,6 +117,8 @@ class CampaignGuard:
     tree_watches: set[int]
     device: int
     inode: int
+    protected_parent_names: set[bytes]
+    absent_sibling: Path | None
 
 
 def fail(message: str) -> None:
@@ -181,8 +183,9 @@ def create_campaign_guard(campaign: Path) -> CampaignGuard:
                 tree_watches=tree_watches,
                 device=descriptor_stat.st_dev,
                 inode=descriptor_stat.st_ino,
+                protected_parent_names={os.fsencode(campaign.name)},
+                absent_sibling=None,
             )
-            verify_campaign_guard(guard)
             return guard
         except BaseException:
             os.close(campaign_descriptor)
@@ -219,7 +222,7 @@ def verify_campaign_guard(guard: CampaignGuard) -> None:
                 fail("campaign watch lost event coverage")
             if watch in guard.tree_watches or (
                 watch == guard.parent_watch
-                and name == os.fsencode(guard.campaign.name)
+                and name in guard.protected_parent_names
             ):
                 fail("campaign changed during independent verification")
     descriptor_stat = os.fstat(guard.campaign_descriptor)
@@ -233,6 +236,29 @@ def verify_campaign_guard(guard: CampaignGuard) -> None:
         or path_stat.st_ino != guard.inode
     ):
         fail("campaign directory identity changed during verification")
+    if guard.absent_sibling is not None and (
+        guard.absent_sibling.exists() or guard.absent_sibling.is_symlink()
+    ):
+        fail("campaign publication sibling changed during verification")
+
+
+def bind_publication_guard(
+    guard: CampaignGuard, execution_root: Path, publication_name: str
+) -> None:
+    publication_path = execution_root.parent / publication_name
+    absent_sibling = (
+        execution_root
+        if guard.campaign.name == publication_name
+        else publication_path
+    )
+    guard.protected_parent_names.update(
+        {
+            os.fsencode(execution_root.name),
+            os.fsencode(publication_name),
+        }
+    )
+    guard.absent_sibling = absent_sibling
+    verify_campaign_guard(guard)
 
 
 def regular_file(path: Path, *, empty: bool | None = None) -> Path:
@@ -1218,6 +1244,9 @@ def authorized_execution_root(campaign: Path, source: dict[str, Any]) -> Path:
     if campaign.name == execution_root.name:
         if campaign != execution_root:
             fail("prepublication execution-root path differs")
+        publication_path = campaign.parent / publication_name
+        if publication_path.exists() or publication_path.is_symlink():
+            fail("prepublication publication path already exists")
     elif campaign.name == publication_name:
         if execution_root.exists() or execution_root.is_symlink():
             fail("postpublication execution-root path still exists")
@@ -1760,6 +1789,9 @@ def main() -> None:
     ):
         fail("source policy or identity is invalid")
     execution_root = authorized_execution_root(campaign, source)
+    bind_publication_guard(
+        campaign_guard, execution_root, source["publication_name"]
+    )
     screen_marker = verify_source_correctness(
         expected_source_20k, args.expected_source_20k_fingerprint
     )

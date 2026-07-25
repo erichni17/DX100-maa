@@ -385,6 +385,34 @@ class RecursiveCampaignGuardTests(TemporaryDirectoryTest):
         with self.assertRaisesRegex(SystemExit, "campaign changed"):
             VERIFIER.verify_campaign_guard(guard)
 
+    def test_postpublication_recreated_staging_root_is_rejected(self):
+        publication_name = "campaign"
+        staging = self.root / (f".staging.{publication_name}." + "a" * 32)
+        staging.mkdir()
+        published = self.root / publication_name
+        staging.rename(published)
+        guard = VERIFIER.create_campaign_guard(published)
+        self.addCleanup(os.close, guard.campaign_descriptor)
+        self.addCleanup(os.close, guard.watch_descriptor)
+
+        VERIFIER.bind_publication_guard(guard, staging, publication_name)
+        staging.mkdir()
+        with self.assertRaisesRegex(SystemExit, "campaign changed"):
+            VERIFIER.verify_campaign_guard(guard)
+
+    def test_prepublication_created_final_sibling_is_rejected(self):
+        publication_name = "campaign"
+        staging = self.root / (f".staging.{publication_name}." + "a" * 32)
+        staging.mkdir()
+        guard = VERIFIER.create_campaign_guard(staging)
+        self.addCleanup(os.close, guard.campaign_descriptor)
+        self.addCleanup(os.close, guard.watch_descriptor)
+
+        VERIFIER.bind_publication_guard(guard, staging, publication_name)
+        (self.root / publication_name).mkdir()
+        with self.assertRaisesRegex(SystemExit, "campaign changed"):
+            VERIFIER.verify_campaign_guard(guard)
+
 
 class ProcessGroupCleanupTests(TemporaryDirectoryTest):
     def test_real_launcher_signal_during_identity_binding_cleans_child(self):
@@ -837,6 +865,13 @@ class ExecutionRootTests(TemporaryDirectoryTest):
         self.assertEqual(
             VERIFIER.authorized_execution_root(staging, source), staging
         )
+
+    def test_prepublication_rejects_existing_final_sibling(self):
+        staging, source = self.create_staging()
+        (self.root / source["publication_name"]).mkdir()
+
+        with self.assertRaisesRegex(SystemExit, "already exists"):
+            VERIFIER.authorized_execution_root(staging, source)
 
     def test_postpublication_execution_root_is_bound_and_absent(self):
         staging, source = self.create_staging()
