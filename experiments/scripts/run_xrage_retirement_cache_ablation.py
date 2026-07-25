@@ -929,7 +929,7 @@ def write_command(path: Path, command: list[str]) -> None:
 def process_identity(pid: int) -> ProcessIdentity | None:
     try:
         raw = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     close = raw.rfind(")")
     if close < 0:

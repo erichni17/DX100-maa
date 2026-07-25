@@ -439,6 +439,48 @@ def atomic_write_noreplace(path: Path, content: str) -> None:
         os.close(parent_fd)
 
 
+def publish_verification_certificate(
+    certificate: Path, content: str, campaign_guard: CampaignGuard
+) -> None:
+    atomic_write_noreplace(certificate, content)
+    certificate_info = certificate.lstat()
+    try:
+        verify_campaign_guard(campaign_guard)
+    except BaseException:
+        try:
+            current = certificate.lstat()
+            if (
+                not certificate.is_symlink()
+                and stat.S_ISREG(current.st_mode)
+                and current.st_dev == certificate_info.st_dev
+                and current.st_ino == certificate_info.st_ino
+            ):
+                certificate.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def validate_certificate_output(
+    certificate: Path,
+    campaign: Path,
+    execution_root: Path,
+    publication_name: str,
+) -> None:
+    protected_publication_paths = {
+        execution_root,
+        execution_root.parent / publication_name,
+    }
+    if certificate in protected_publication_paths:
+        fail("verification certificate collides with a publication path")
+    try:
+        certificate.relative_to(campaign)
+    except ValueError:
+        pass
+    else:
+        fail("verification certificate must be outside the campaign")
+
+
 def correctness_campaign_fingerprint(campaign: Path) -> str:
     reject_symlink_components(campaign)
     campaign = campaign.resolve(strict=True)
@@ -2106,12 +2148,12 @@ def main() -> None:
         reference_result,
     )
     certificate = args.certificate_output.absolute()
-    try:
-        certificate.relative_to(campaign)
-    except ValueError:
-        pass
-    else:
-        fail("verification certificate must be outside the campaign")
+    validate_certificate_output(
+        certificate,
+        campaign,
+        execution_root,
+        source["publication_name"],
+    )
     record = {
         "schema_version": 1,
         "experiment_id": "xrage-retirement-cache-verification-v1",
@@ -2134,8 +2176,10 @@ def main() -> None:
         "summary_sha256": file_sha256(campaign / "summary.json"),
     }
     verify_campaign_guard(campaign_guard)
-    atomic_write_noreplace(
-        certificate, json.dumps(record, indent=2, sort_keys=True) + "\n"
+    publish_verification_certificate(
+        certificate,
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
+        campaign_guard,
     )
     os.close(campaign_guard.campaign_descriptor)
     os.close(campaign_guard.watch_descriptor)

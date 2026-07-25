@@ -400,6 +400,20 @@ class RecursiveCampaignGuardTests(TemporaryDirectoryTest):
         with self.assertRaisesRegex(SystemExit, "campaign changed"):
             VERIFIER.verify_campaign_guard(guard)
 
+    def test_postpublication_prebind_staging_event_is_rejected(self):
+        publication_name = "campaign"
+        staging = self.root / (f".staging.{publication_name}." + "a" * 32)
+        staging.mkdir()
+        published = self.root / publication_name
+        staging.rename(published)
+        guard = VERIFIER.create_campaign_guard(published)
+        self.addCleanup(os.close, guard.campaign_descriptor)
+        self.addCleanup(os.close, guard.watch_descriptor)
+
+        staging.mkdir()
+        with self.assertRaisesRegex(SystemExit, "campaign changed"):
+            VERIFIER.bind_publication_guard(guard, staging, publication_name)
+
     def test_prepublication_created_final_sibling_is_rejected(self):
         publication_name = "campaign"
         staging = self.root / (f".staging.{publication_name}." + "a" * 32)
@@ -413,8 +427,40 @@ class RecursiveCampaignGuardTests(TemporaryDirectoryTest):
         with self.assertRaisesRegex(SystemExit, "campaign changed"):
             VERIFIER.verify_campaign_guard(guard)
 
+    def test_certificate_publication_drains_sibling_race(self):
+        publication_name = "campaign"
+        staging = self.root / (f".staging.{publication_name}." + "a" * 32)
+        staging.mkdir()
+        published = self.root / publication_name
+        staging.rename(published)
+        guard = VERIFIER.create_campaign_guard(published)
+        self.addCleanup(os.close, guard.campaign_descriptor)
+        self.addCleanup(os.close, guard.watch_descriptor)
+        VERIFIER.bind_publication_guard(guard, staging, publication_name)
+        certificate = self.root / "certificate.json"
+        original_write = VERIFIER.atomic_write_noreplace
+
+        def inject_race(path, content):
+            original_write(path, content)
+            staging.mkdir()
+
+        with mock.patch.object(
+            VERIFIER, "atomic_write_noreplace", side_effect=inject_race
+        ):
+            with self.assertRaisesRegex(SystemExit, "campaign changed"):
+                VERIFIER.publish_verification_certificate(
+                    certificate, "{}\n", guard
+                )
+        self.assertFalse(certificate.exists())
+
 
 class ProcessGroupCleanupTests(TemporaryDirectoryTest):
+    def test_process_identity_tolerates_proc_exit_race(self):
+        with mock.patch.object(
+            Path, "read_text", side_effect=ProcessLookupError()
+        ):
+            self.assertIsNone(RUNNER.process_identity(12345))
+
     def test_real_launcher_signal_during_identity_binding_cleans_child(self):
         child = self.root / "child.py"
         child.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
@@ -898,6 +944,21 @@ class ExecutionRootTests(TemporaryDirectoryTest):
 
         with self.assertRaisesRegex(SystemExit, "campaign name"):
             VERIFIER.authorized_execution_root(other, source)
+
+    def test_certificate_cannot_replace_either_publication_path(self):
+        staging, source = self.create_staging()
+        published = self.root / source["publication_name"]
+        staging.rename(published)
+
+        for certificate in (staging, published):
+            with self.subTest(certificate=certificate):
+                with self.assertRaisesRegex(SystemExit, "collides"):
+                    VERIFIER.validate_certificate_output(
+                        certificate,
+                        published,
+                        staging,
+                        source["publication_name"],
+                    )
 
 
 class ReferenceResultTests(TemporaryDirectoryTest):
