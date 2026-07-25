@@ -785,6 +785,40 @@ class PublicationAnchorTests(TemporaryDirectoryTest):
             )
         self.assertFalse((destination_parent_path / "published").exists())
 
+    def test_sealed_campaign_publishes_within_output_parent(self):
+        parent_path = self.root / "output"
+        parent_path.mkdir(mode=0o700)
+        campaign = parent_path / "staging"
+        campaign.mkdir(mode=0o700)
+        campaign_info = campaign.lstat()
+        campaign.chmod(0o500)
+        parent = LAUNCHER.open_directory_anchor(parent_path)
+        self.addCleanup(os.close, parent.descriptor)
+
+        LAUNCHER.rename_noreplace(
+            campaign.name,
+            "published",
+            parent,
+            parent,
+            expected_device=campaign_info.st_dev,
+            expected_inode=campaign_info.st_ino,
+        )
+
+        published = parent_path / "published"
+        self.assertFalse(campaign.exists())
+        self.assertTrue(published.is_dir())
+        self.assertEqual(published.stat().st_ino, campaign_info.st_ino)
+        self.assertEqual(published.stat().st_mode & 0o777, 0o500)
+
+    def test_private_staging_rejects_group_writable_parent(self):
+        parent_path = self.root / "output"
+        parent_path.mkdir(mode=0o770)
+        parent = LAUNCHER.open_directory_anchor(parent_path)
+        self.addCleanup(os.close, parent.descriptor)
+
+        with self.assertRaisesRegex(RuntimeError, "not owner-private"):
+            LAUNCHER.create_private_staging(parent, "campaign")
+
 
 class ReferenceResultTests(TemporaryDirectoryTest):
     def approval_record(self, campaign):

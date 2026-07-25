@@ -738,6 +738,36 @@ def verify_directory_anchor(anchor: DirectoryAnchor) -> None:
         fail(f"publication directory identity changed: {anchor.path}")
 
 
+def verify_private_directory_anchor(anchor: DirectoryAnchor) -> None:
+    verify_directory_anchor(anchor)
+    info = os.fstat(anchor.descriptor)
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        fail(f"publication directory is not owner-private: {anchor.path}")
+
+
+def create_private_staging(parent: DirectoryAnchor, output_name: str) -> Path:
+    verify_private_directory_anchor(parent)
+    if Path(output_name).name != output_name:
+        fail("staging output name must be a single path component")
+    for _ in range(128):
+        name = f".staging.{output_name}.{os.urandom(16).hex()}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent.descriptor)
+        except FileExistsError:
+            continue
+        info = os.stat(name, dir_fd=parent.descriptor, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            fail("new staging directory identity is unsafe")
+        os.fsync(parent.descriptor)
+        verify_private_directory_anchor(parent)
+        return parent.path / name
+    fail("could not allocate a private staging directory")
+
+
 def verify_child_identity(
     parent: DirectoryAnchor, name: str, device: int, inode: int
 ) -> None:
@@ -941,10 +971,10 @@ def main() -> None:
     if requested_output.name in {"", ".", ".."}:
         fail("output must name a child of an existing directory")
     output_parent = open_directory_anchor(requested_output.parent)
+    verify_private_directory_anchor(output_parent)
     output = output_parent.path / requested_output.name
 
     safe_runtime_root()
-    runtime_parent = open_directory_anchor(RUNTIME_ROOT)
     execution_root = Path(tempfile.mkdtemp(prefix="launch.", dir=RUNTIME_ROOT))
     execution_root.chmod(0o700)
     home = execution_root / "home"
@@ -1022,7 +1052,7 @@ def main() -> None:
             fail("unsafe publication lock")
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-        verify_directory_anchor(output_parent)
+        verify_private_directory_anchor(output_parent)
         if output.exists() or output.is_symlink():
             if (
                 output.is_symlink()
@@ -1056,18 +1086,13 @@ def main() -> None:
                     )
                 verify_tree_guard(guard)
                 verify_certificate(certificate, output, args)
-                verify_directory_anchor(output_parent)
+                verify_private_directory_anchor(output_parent)
             finally:
                 close_guard(guard)
             print(f"retirement-cache ablation already verified: {output}")
             return
 
-        staging = Path(
-            tempfile.mkdtemp(
-                prefix=f"campaign.{output.name}.", dir=RUNTIME_ROOT
-            )
-        )
-        staging.chmod(0o700)
+        staging = create_private_staging(output_parent, output.name)
         reference_inputs = (
             args.reference_campaign.resolve(strict=True) / "inputs"
         )
@@ -1183,29 +1208,17 @@ def main() -> None:
             verify_certificate(certificate, staging, args)
             verify_git_state(sim_root, args.expected_sim_commit, environment)
             verify_tree_guard(guard)
-            verify_directory_anchor(runtime_parent)
-            verify_directory_anchor(output_parent)
-            transit_name = f".publish.{os.getpid()}.{os.urandom(16).hex()}"
+            verify_private_directory_anchor(output_parent)
             rename_noreplace(
                 staging.name,
-                transit_name,
-                runtime_parent,
-                runtime_parent,
-                expected_device=guard.device,
-                expected_inode=guard.inode,
-            )
-            rename_noreplace(
-                transit_name,
                 output.name,
-                runtime_parent,
+                output_parent,
                 output_parent,
                 expected_device=guard.device,
                 expected_inode=guard.inode,
             )
-            os.fsync(runtime_parent.descriptor)
             os.fsync(output_parent.descriptor)
-            verify_directory_anchor(runtime_parent)
-            verify_directory_anchor(output_parent)
+            verify_private_directory_anchor(output_parent)
         finally:
             close_guard(guard)
         print(
@@ -1215,7 +1228,6 @@ def main() -> None:
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
-        os.close(runtime_parent.descriptor)
         os.close(output_parent.descriptor)
         try:
             shutil.rmtree(execution_root)
