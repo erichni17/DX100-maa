@@ -1,4 +1,4 @@
-# Artifcat of the DX100 Paper, ISCA 2025
+# Artifact of the DX100 Paper, ISCA 2025
 
 This repository provides the gem5 simulator, benchmarks, and automation scripts required for the artifact evaluation of the "DX100: A Programmable Data Access Accelerator for Indirection" paper published in ISCA 2025.
 
