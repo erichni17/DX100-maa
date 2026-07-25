@@ -451,7 +451,33 @@ class RecursiveCampaignGuardTests(TemporaryDirectoryTest):
                 VERIFIER.publish_verification_certificate(
                     certificate, "{}\n", guard
                 )
-        self.assertFalse(certificate.exists())
+        self.assertEqual(certificate.read_text(), "{}\n")
+
+    def test_certificate_replacement_is_rejected_without_deletion(self):
+        campaign = self.root / "campaign"
+        campaign.mkdir()
+        guard = VERIFIER.create_campaign_guard(campaign)
+        self.addCleanup(os.close, guard.campaign_descriptor)
+        self.addCleanup(os.close, guard.watch_descriptor)
+        certificate = self.root / "certificate.json"
+        original_write = VERIFIER.atomic_write_noreplace
+
+        def replace_after_publication(path, content):
+            identity = original_write(path, content)
+            path.unlink()
+            path.write_text("replacement\n", encoding="utf-8")
+            return identity
+
+        with mock.patch.object(
+            VERIFIER,
+            "atomic_write_noreplace",
+            side_effect=replace_after_publication,
+        ):
+            with self.assertRaisesRegex(SystemExit, "identity changed"):
+                VERIFIER.publish_verification_certificate(
+                    certificate, "{}\n", guard
+                )
+        self.assertEqual(certificate.read_text(), "replacement\n")
 
 
 class ProcessGroupCleanupTests(TemporaryDirectoryTest):
@@ -959,6 +985,24 @@ class ExecutionRootTests(TemporaryDirectoryTest):
                         staging,
                         source["publication_name"],
                     )
+
+    def test_certificate_alias_is_canonicalized_before_validation(self):
+        staging, source = self.create_staging()
+        published = self.root / source["publication_name"]
+        staging.rename(published)
+        alias = self.root / "alias"
+        alias.mkdir()
+        requested = alias / ".." / staging.name
+
+        canonical = VERIFIER.canonical_certificate_output(requested)
+        self.assertEqual(canonical, staging)
+        with self.assertRaisesRegex(SystemExit, "collides"):
+            VERIFIER.validate_certificate_output(
+                canonical,
+                published,
+                staging,
+                source["publication_name"],
+            )
 
 
 class ReferenceResultTests(TemporaryDirectoryTest):

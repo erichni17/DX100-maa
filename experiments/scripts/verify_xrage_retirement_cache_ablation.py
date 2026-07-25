@@ -121,6 +121,16 @@ class CampaignGuard:
     absent_sibling: Path | None
 
 
+@dataclass(frozen=True)
+class PublishedFileIdentity:
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
 def fail(message: str) -> None:
     raise SystemExit(f"ablation verification failed: {message}")
 
@@ -391,7 +401,7 @@ def link_fd_noreplace(
         )
 
 
-def atomic_write_noreplace(path: Path, content: str) -> None:
+def atomic_write_noreplace(path: Path, content: str) -> PublishedFileIdentity:
     requested = path.absolute()
     if requested.name in {"", ".", ".."}:
         fail("certificate output must have a safe file name")
@@ -433,6 +443,14 @@ def atomic_write_noreplace(path: Path, content: str) -> None:
         verify_directory_identity(
             parent, parent_fd, parent_info.st_dev, parent_info.st_ino
         )
+        return PublishedFileIdentity(
+            device=source_info.st_dev,
+            inode=source_info.st_ino,
+            mode=source_info.st_mode,
+            size=source_info.st_size,
+            mtime_ns=source_info.st_mtime_ns,
+            ctime_ns=source_info.st_ctime_ns,
+        )
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -442,23 +460,32 @@ def atomic_write_noreplace(path: Path, content: str) -> None:
 def publish_verification_certificate(
     certificate: Path, content: str, campaign_guard: CampaignGuard
 ) -> None:
-    atomic_write_noreplace(certificate, content)
-    certificate_info = certificate.lstat()
+    expected = atomic_write_noreplace(certificate, content)
+    verify_campaign_guard(campaign_guard)
     try:
-        verify_campaign_guard(campaign_guard)
-    except BaseException:
-        try:
-            current = certificate.lstat()
-            if (
-                not certificate.is_symlink()
-                and stat.S_ISREG(current.st_mode)
-                and current.st_dev == certificate_info.st_dev
-                and current.st_ino == certificate_info.st_ino
-            ):
-                certificate.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+        current = certificate.lstat()
+    except FileNotFoundError:
+        fail("verification certificate disappeared after publication")
+    observed = PublishedFileIdentity(
+        device=current.st_dev,
+        inode=current.st_ino,
+        mode=current.st_mode,
+        size=current.st_size,
+        mtime_ns=current.st_mtime_ns,
+        ctime_ns=current.st_ctime_ns,
+    )
+    if certificate.is_symlink() or not stat.S_ISREG(current.st_mode):
+        fail("verification certificate type changed after publication")
+    if observed != expected:
+        fail("verification certificate identity changed after publication")
+
+
+def canonical_certificate_output(path: Path) -> Path:
+    requested = path.absolute()
+    if requested.name in {"", ".", ".."}:
+        fail("certificate output must have a safe file name")
+    reject_symlink_components(requested.parent)
+    return requested.parent.resolve(strict=True) / requested.name
 
 
 def validate_certificate_output(
@@ -2147,7 +2174,7 @@ def main() -> None:
         candidates,
         reference_result,
     )
-    certificate = args.certificate_output.absolute()
+    certificate = canonical_certificate_output(args.certificate_output)
     validate_certificate_output(
         certificate,
         campaign,
