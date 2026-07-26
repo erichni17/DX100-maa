@@ -1,0 +1,5 @@
+name	repetition	valid	errors	first_dump_simTicks	first_dump_simInsts	maa_cycles	write_issues	write_completions	full_line_writes	partial_writes	response_slot_high_water	write_high_water	combine_line_high_water	combine_word_high_water
+b23k	1	true	0	4028936	797	12872	257	257	255	2	64	27	122	1057
+b23k	2	true	0	4028936	797	12872	257	257	255	2	64	27	122	1057
+b32k	1	true	0	3990750	797	12750	257	257	255	2	93	25	120	1056
+b32k	2	true	0	3990750	797	12750	257	257	255	2	93	25	120	1056

@@ -1,0 +1,41 @@
+---
+campaign_id: 2026-07-26_transparent_virtual_direct_gather_replicated
+question: Are the two configurations around the direct-gather cost knee deterministic across independent reruns?
+hypothesis: Exact reruns reproduce simulated time, work, and coalescing counters.
+
+predecessor:
+    campaign_id: 2026-07-26_transparent_virtual_direct_gather
+    dx100_commit: abb62900c60957609610507814be566474c9fca6
+    table: ../2026-07-26_transparent_virtual_direct_gather/tables/cost_sweep.tsv
+
+repos:
+    dx100_sha: 107afd6d247859c610145cbeac102dcfc64e5fe6
+
+artifacts:
+    gem5_sha256: 54f3fbb8712f3e31c99d4e5932c54b002e95f3c7a7b70b6ba97f17fff09786dc
+    verifier_sha256: 993f2f2fe22b8b61b03c2e43221b4e29b3c4d0bfd5e5005802b07084c8f4e647
+    verifier_mem_size: '0x80000000'
+    launch_sha256: 5dc9483ce6f83e9e126cdfe7e47ac9bd44dab0b9e2d07e9270776a525ec8f351
+
+run:
+    output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-cost-knee-replicas-107afd6
+    cases:
+        - b23k_r2
+        - b32k_r2
+    gem5_memory: 2GB
+    cgroup_memory_high: 14G
+    cgroup_memory_max: 16G
+    cgroup_swap_max: '0'
+    execution: sequential
+
+validation:
+    expected_layout: mem_size=2147483648
+    correctness: exact errors=0
+    roi_count: 1
+    completion: normal m5_exit and zero checkpoint/restore exit codes
+    swap_samples: 96
+    nonzero_swap_io_samples: 0
+
+outputs:
+    table: tables/replicas.tsv
+    notes_file: notes/summary.md
