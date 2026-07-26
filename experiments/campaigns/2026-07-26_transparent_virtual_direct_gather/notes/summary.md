@@ -9,6 +9,13 @@ The native arm took 3,658,970 first-dump `simTicks`; the virtual arm took
 This is the expected direction for a design that replaces direct scratchpad
 completion with backing-memory retirement.
 
+The CG retirement geometry then reduced virtual time to 3,961,328 ticks. This
+is a 1.584702908x speedup over the default virtual geometry and leaves 8.263473%
+overhead relative to native. It converted 4096 partial writes into 255 full-line
+writes and two partial writes. Its conservative structure and in-flight payload
+budget is 36,864 bytes. The optimized arm therefore improves the mechanism for
+a concrete reason, while preserving the expected native-versus-virtual order.
+
 This result isolates one direct gather. It does not explain application-level
 CG or XRAGE performance, and it has one observation per arm. Application
 speedups require separate attribution to fusion, overlap, scheduling, or a

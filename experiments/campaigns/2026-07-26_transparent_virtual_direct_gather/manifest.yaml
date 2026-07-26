@@ -22,9 +22,11 @@ workloads:
 run:
     native_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-native-107afd6/run
     virtual_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-random-107afd6/run
+    optimized_virtual_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-cg-geometry-107afd6/run
     gem5_memory: 2GB
     cgroup_memory_max: 16G
     cgroup_swap_max: '0'
+    optimized_virtual_structure_bytes: 36864
 
 outputs:
     table: tables/paired.tsv

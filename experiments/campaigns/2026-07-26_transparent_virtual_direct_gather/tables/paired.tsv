@@ -1,3 +1,4 @@
 case	valid	errors	first_dump_simTicks	first_dump_simInsts	maa_cycles	virtual_write_issues	virtual_write_completions	response_slot_high_water	write_high_water	combine_line_high_water	combine_word_high_water
 native	true	0	3658970	797	11690	0	0	0	0	0	0
 virtual	true	0	6277528	797	20056	4096	4096	8	32	16	59
+virtual_cg_geometry	true	0	3961328	797	12656	257	257	96	21	120	1056
