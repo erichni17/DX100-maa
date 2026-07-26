@@ -6,22 +6,37 @@ to be in flight while preserving the rule that each line remains resident
 until all of its useful words are consumed. Returned lines may arrive out of
 order, and an index word is consumed only after row-table insertion succeeds.
 
-## Paired result
+## Depth sweep
 
-The paired 4,096-element random-gather test changed only
-`virtual_index_buffer_lines` from 1 to 4. Both arms used gem5 SHA-256
+The 4,096-element random-gather sweep changed only
+`virtual_index_buffer_lines`. All four arms used gem5 SHA-256
 `f73cf818dc65987d3be343f93dfca2aaf76d0ba992a996516c83454414a3e4c5`
 and test-binary SHA-256
 `6382974de0c4d2e276294863de88082139a5e1709013aae62e06381ad0988cc0`.
-Their generated `config.ini` files differ only in the treatment parameter and
-output-directory paths.
+Their generated `config.ini` files differ only in that treatment parameter and
+output-directory paths. Depths 1 and 4 captured the uncommitted source state;
+depths 2 and 8 captured commit `d9e7fd6`. The only source-content difference
+was a brace-style correction made after freezing gem5, so the executable hash
+is the authoritative treatment control.
 
-Depth 1 took 6,968,632 first-ROI `simTicks`; depth 4 took 4,244,906. Depth 4
-is 1.641645775x faster, corresponding to a 39.085519% latency reduction. Both
-runs produced output hash `5061705292974490889`, zero element or guard errors,
-one ROI, normal `m5_exit`, 256 index-line reads, 4,096 delivered index words,
-257 issued and completed retirement writes, and zero scratchpad index reads.
-The intended mechanism changed: index-line high water increased from 1 to 4.
+| Lines | Payload | `simTicks` | Speedup vs. depth 1 | Latency reduction |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 64 B | 6,968,632 | 1.000000000x | 0.000000% |
+| 2 | 128 B | 4,970,440 | 1.402015113x | 28.674093% |
+| 4 | 256 B | 4,244,906 | 1.641645775x | 39.085519% |
+| 8 | 512 B | 4,184,810 | 1.665220643x | 39.947898% |
+
+Depth 8 improves latency by only 1.415720% over depth 4 while doubling the
+payload budget. Depth 4 is therefore the measured performance-capacity knee:
+it is only 1.436051% slower than depth 8 with half the payload. Depth 2 is the
+lower-cost point and captures a 28.674093% latency reduction with only 64
+additional payload bytes.
+
+All runs produced output hash `5061705292974490889`, zero element or guard
+errors, one ROI, normal `m5_exit`, 233 simulated instructions, 256 index-line
+reads, 4,096 delivered index words, 257 issued and completed retirement
+writes, and zero scratchpad index reads. The intended mechanism changed:
+index-line high water equaled 1, 2, 4, and 8 respectively.
 
 The earlier 3,961,328-tick result is not the depth-1 baseline for this test. It
 used an SPD-resident index tile and therefore did not model direct-index line
@@ -30,10 +45,13 @@ index reads.
 
 ## Cost and limits
 
-The conservative index payload budget rises from 64 to 256 bytes, an increase
-of 192 bytes, plus tags and control state for up to three additional line
-transactions. This is a capacity count, not a synthesized area or power
-estimate.
+The conservative depth-4 index payload budget is 256 bytes, an increase of 192
+bytes over depth 1, plus tags and control state for up to three additional
+line transactions. This is a capacity count, not a synthesized area or power
+estimate. Depth-2 host telemetry recorded 32 KiB of aggregate swap-in across
+four one-second samples from other workloads, with no swap-out. The job's
+cgroup prohibited swap, and gem5 performance is reported in simulated ticks,
+not host wall time.
 
 This is one microbenchmark observation. It did not encounter a row-table-full
 retry. Promotion still requires the 16K attribution result, a retry-path gate,
