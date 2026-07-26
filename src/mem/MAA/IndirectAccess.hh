@@ -242,7 +242,8 @@ protected:
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
     bool ensureDirectIndex(int itr);
-    uint32_t takeDirectIndex(int itr);
+    uint32_t peekDirectIndex(int itr) const;
+    void consumeDirectIndex(int itr);
     bool receiveDirectIndex(Addr addr, uint8_t *dataptr,
                             bool is_block_cached);
     void createDirectIndexReadPacket(Addr addr, int latency);

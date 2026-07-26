@@ -576,14 +576,17 @@ bool IndirectAccessUnit::ensureDirectIndex(int itr) {
     createDirectIndexReadPacket(block_paddr, rowtable_latency);
     return false;
 }
-uint32_t IndirectAccessUnit::takeDirectIndex(int itr) {
+uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
     auto entry = direct_index_words.find(itr);
     panic_if(entry == direct_index_words.end(),
              "I[%d] streamed index %d is not buffered\n",
              my_indirect_id, itr);
-    const uint32_t value = entry->second;
-    direct_index_words.erase(entry);
-    return value;
+    return entry->second;
+}
+void IndirectAccessUnit::consumeDirectIndex(int itr) {
+    panic_if(direct_index_words.erase(itr) != 1,
+             "I[%d] streamed index %d cannot be consumed\n",
+             my_indirect_id, itr);
 }
 bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
                                             bool is_block_cached) {
@@ -739,7 +742,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         }
         if (my_cond_tile == -1 || maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0) {
             uint32_t idx = isDirectIndexLoad()
-                ? takeDirectIndex(my_i)
+                ? peekDirectIndex(my_i)
                 : maa->spd->getData<uint32_t>(my_idx_tile, my_i);
             if (!isDirectIndexLoad())
                 num_spd_read_condidx_accesses++;
@@ -776,6 +779,8 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             DPRINTF(MAAIndirect, "I[%d] %s: SPD[%d][%d] = %u (cond not taken)\n", my_indirect_id, __func__, my_dst_tile, my_i, 0);
             maa->spd->setFakeData(my_dst_tile, my_i, my_word_size);
         }
+        if (isDirectIndexLoad())
+            consumeDirectIndex(my_i);
         my_i++;
     }
 }
