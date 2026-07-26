@@ -15,6 +15,14 @@ n=$1
 pattern=$2
 outdir=$3
 timeout_seconds=${4:-21600}
+[[ $timeout_seconds =~ ^[0-9]+$ ]] || {
+    echo "TIMEOUT_SECONDS must be a non-negative integer" >&2
+    exit 2
+}
+restore_timeout=()
+if [[ $timeout_seconds -ne 0 ]]; then
+    restore_timeout=(timeout "$timeout_seconds")
+fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 gem5=${GEM5_BIN:-$root/build/X86/gem5.opt.virtual_banks_capped_f4e7491213bc}
 binary=${5:-$root/benchmarks/API/test_virtual_gather_T16K.o}
@@ -78,7 +86,8 @@ fi
 set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
 /usr/bin/time -f 'restore_wall=%e restore_rss_kb=%M' \
-    timeout "$timeout_seconds" "$gem5" --listener-mode=off \
+    "${restore_timeout[@]}" \
+    "$gem5" --listener-mode=off \
     --outdir="$outdir" "$config" --cpu-type X86O3CPU -r 1 -n 4 \
     --mem-size 2GB --sys-clock 3.2GHz --cpu-clock 3.2GHz \
     --caches --l1d_size=32kB --l1d_assoc=8 \
