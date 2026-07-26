@@ -30,6 +30,8 @@ WORKFLOWS = (
     "dx100-full-tile-sweep-repair6-gapbs-node1-surge-20260724",
     "dx100-full-tile-sweep-repair7-gapbs-node1-final-20260724",
     "dx100-full-tile-sweep-repair8-bfs1-reconcile-20260724",
+    "dx100-full-tile-final-gapbs-recovery-v3-20260726",
+    "dx100-full-tile-final-is-recovery-v3-20260726",
 )
 
 
