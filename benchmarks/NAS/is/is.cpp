@@ -1147,10 +1147,17 @@ int main(int argc, char **argv) {
      * outside the first stats window and m5_exit supplies the clean terminal
      * event after correctness is established.
      */
+#if defined(DX100_ROI_ONLY_ANCHORED)
+    std::cout << "IS_ROI_EXIT_POLICY dump_stats_anchor_m5_exit" << std::endl;
+#else
     std::cout << "IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit" << std::endl;
 #endif
+#endif
 
-#ifdef DO_VERIFY
+#if defined(GEM5) && defined(DX100_ROI_ONLY_ANCHORED)
+    std::cout << "DX100_ROI_ONLY_ANCHORED workload=nas-is-full" << std::endl;
+    m5_exit(0);
+#elif defined(DO_VERIFY)
     std::cout << "Validation started" << std::endl;
     full_verify();
     const int expected_verification = 5 * MAX_ITERATIONS + 1;

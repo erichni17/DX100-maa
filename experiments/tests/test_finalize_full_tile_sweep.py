@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -313,6 +314,119 @@ def test_xrage_oracle_ignores_randomized_output_hash(tmp_path):
     assert oracle_ids[0] == oracle_ids[1]
 
 
+def test_cg_oracle_accepts_documented_floating_reordering():
+    common = (
+        "CG_FINGERPRINT mode=MAA elements=150000 x_raw=abc z_raw=def "
+        "x_q5=1 x_q6=2 z_q5=3 z_q6=4 x_sum=-385.9 "
+        "x_norm_sq={norm} z_sum=-1793 z_norm_sq=21.58 "
+        "rnorm={rnorm} zeta={zeta} nonfinite_x=0 nonfinite_z=0 "
+        "unquantizable_x=0 unquantizable_z=0 result=PASS"
+    )
+    first = finalizer.cg_oracle_id(
+        common.format(
+            norm="0.99999999995", rnorm="0.00109749", zeta="109.99944"
+        )
+    )
+    second = finalizer.cg_oracle_id(
+        common.format(
+            norm="0.99999999979", rnorm="0.00109754", zeta="109.99945"
+        )
+    )
+    assert first
+    assert first == second
+
+
+def test_roi_evidence_policy_is_exact_outdir_and_artifact_bound(tmp_path):
+    outdir = tmp_path / "run"
+    outdir.mkdir()
+    stats = outdir / "stats.txt"
+    run_log = outdir / "run.log"
+    stats.write_text("simTicks 123\n")
+    run_log.write_text("ROI End!!!\nvalidator still running\n")
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "policy_id": "fixture",
+                "records": [
+                    {
+                        "workload_id": "gapbs-bc-s22",
+                        "tile": 32768,
+                        "anchor_tile": 16384,
+                        "outdir": str(outdir),
+                        "wrapper_rc": "143",
+                        "simTicks": 123,
+                        "stats_sha256": finalizer.sha256(stats),
+                        "run_log_tail_sha256": finalizer.tail_sha256(run_log),
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+    policy = finalizer.load_roi_evidence_policy(policy_path)
+    assert ("gapbs-bc-s22", 32768) in policy["records"]
+    stats.write_text("simTicks 124\n")
+    try:
+        finalizer.load_roi_evidence_policy(policy_path)
+    except ValueError as error:
+        assert "stats hash mismatch" in str(error)
+    else:
+        raise AssertionError("accepted modified ROI stats")
+
+
+def test_planned_roi_only_result_requires_explicit_marker_and_identity(
+    tmp_path,
+):
+    binary = tmp_path / "gem5"
+    binary.write_bytes(b"gem5\n")
+    binary.chmod(0o555)
+    digest = finalizer.sha256(binary)
+    campaign = tmp_path / "manifest.json"
+    campaign.write_text(
+        json.dumps({"gem5_binary": str(binary), "gem5_sha256": digest}) + "\n"
+    )
+    cohort = finalizer.load_binary_cohort(campaign)
+    outdir = tmp_path / "run"
+    outdir.mkdir()
+    (outdir / "stats.txt").write_text("simTicks 123\n")
+    marker = "DX100_ROI_ONLY_ANCHORED workload=gapbs-bc-s22"
+    (outdir / "run.log").write_text(
+        f"command line: {binary} --outdir={outdir} config.py\n"
+        f"{marker}\n"
+        "Exiting @ tick 456 because m5_exit instruction encountered\n"
+    )
+    (outdir / "gem5_provenance.tsv").write_text(
+        "schema_version\t2\n"
+        "requested_gbin\tgem5\n"
+        f"resolved_path\t{binary}\n"
+        f"execution_snapshot\t{binary}\n"
+        f"sha256\t{digest}\n"
+        "output_tag\tgem5\n"
+    )
+    row = {
+        "rc": "0",
+        "simTicks": "123",
+        "outdir": str(outdir),
+        "gem5_resolved_path": str(binary),
+        "gem5_sha256": digest,
+        "gem5_output_tag": "gem5",
+    }
+    (
+        present,
+        valid,
+        ticks,
+        identity,
+        notes,
+    ) = finalizer.validate_planned_roi_row(
+        row, {"id": "gapbs-bc-s22", "oracle": "bc"}, cohort
+    )
+    assert present and valid, notes
+    assert ticks == 123
+    assert identity["sha256"] == digest
+
+
 def test_is_tiles_use_numa_safe_recovery4_workflows(tmp_path):
     workload_specs = finalizer.specs(
         tmp_path,
@@ -331,7 +445,11 @@ def test_is_tiles_use_numa_safe_recovery4_workflows(tmp_path):
         32768: "recovery_is_node1_high",
         65536: "recovery_is_node1_high",
     }
-    assert is_spec["workflow_overlays"] == ["recovery_is_node1_surge6"]
+    assert is_spec["workflow_overlays"] == [
+        "recovery_is_node1_surge6",
+        "final_is_recovery",
+    ]
+    assert is_spec["roi_anchor_tile"] == 16384
 
 
 def test_sssp_tiles_use_live_surge_workflows(tmp_path):
@@ -351,7 +469,9 @@ def test_sssp_tiles_use_live_surge_workflows(tmp_path):
         "recovery_gapbs_repair5",
         "recovery_gapbs_repair6",
         "recovery_gapbs_repair7",
+        "final_gapbs_recovery",
     ]
+    assert sssp_spec["roi_anchor_tile"] == 8192
     bfs_spec = next(
         item for item in workload_specs if item["id"] == "gapbs-bfs-s22"
     )
@@ -361,6 +481,11 @@ def test_sssp_tiles_use_live_surge_workflows(tmp_path):
         "recovery_gapbs_repair7",
         "recovery_gapbs_repair8",
     ]
+    bc_spec = next(
+        item for item in workload_specs if item["id"] == "gapbs-bc-s22"
+    )
+    assert bc_spec["workflow_overlays"][-1] == "final_gapbs_recovery"
+    assert bc_spec["roi_anchor_tile"] == 16384
 
 
 def test_scan_log_cache_is_stat_bound_and_invalidated(tmp_path):

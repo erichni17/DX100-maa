@@ -1,6 +1,9 @@
 GEM5_HOME=../../..
 MAA_HOME = $(GEM5_HOME)/benchmarks/API/
 CXX_FLAGS += -std=c++11 -O3 -Wall -g3 -fopenmp
+ifneq ($(EXTRA_CXX_FLAGS),)
+	CXX_FLAGS += $(EXTRA_CXX_FLAGS)
+endif
 GEM5_INCLUDE = -I$(GEM5_HOME)/include/ -I$(GEM5_HOME)/util/m5/src/
 MAA_INCLUDE = -I$(MAA_HOME)
 GEM5_LIB = -L$(GEM5_HOME)/util/m5/build/x86/out
@@ -11,7 +14,7 @@ SUITE = is
 BASELINE_BINARIES = $(SUITE)_base
 BASELINE_BINARIES += $(SUITE)_base_4C
 BASELINE_BINARIES += $(SUITE)_base_8C
-MAA_BINARIES = 
+MAA_BINARIES =
 
 ifdef SMALL
 	CXX_FLAGS += -DSMALL_CLASS

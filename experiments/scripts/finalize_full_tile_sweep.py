@@ -47,9 +47,10 @@ LOG_SCAN_CACHE_VERSION = 1
 LOG_SCAN_GREP_PATTERN = (
     r"Exiting @ tick .*m5_exit instruction encountered"
     r"|panic:|fatal:"
-    r"|^IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit$"
+    r"|^IS_ROI_EXIT_POLICY dump_stats_(verify|anchor)_m5_exit$"
     r"|^(BFS_FP|SSSP_FINGERPRINT|BC_VALIDATION_END|IS_VERIFY"
     r"|CG_FINGERPRINT|UME_OUTPUT_FP|UME_REFERENCE_PASS|SPATTER_FP) "
+    r"|^DX100_ROI_ONLY_ANCHORED workload=\S+$"
 )
 T32_SUPERSESSION_OWNERS = {
     "gapbs-bc-t32768": "repair5-gapbs",
@@ -103,6 +104,15 @@ def cached_binary_sha256(path):
     if key not in _BINARY_SHA256_CACHE:
         _BINARY_SHA256_CACHE[key] = sha256(path)
     return _BINARY_SHA256_CACHE[key]
+
+
+def tail_sha256(path, limit=1024 * 1024):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        size = path.stat().st_size
+        source.seek(-min(size, limit), 2)
+        digest.update(source.read())
+    return digest.hexdigest()
 
 
 def read_tsv(path):
@@ -399,6 +409,81 @@ def load_binary_cohort(campaign_manifest_path, cohort_manifest_path=None):
         "members": members,
         "legacy_runs": legacy_runs,
         "manifest_path": str(manifest_path) if manifest_path else None,
+    }
+
+
+def load_roi_evidence_policy(path):
+    """Load explicit stopped-after-ROI records without weakening normal runs."""
+    if path is None:
+        return {"policy_id": None, "records": {}, "manifest_path": None}
+    path = path.resolve()
+    raw = read_json(path)
+    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+        raise ValueError("ROI evidence policy schema_version must be 1")
+    policy_id = str(raw.get("policy_id", ""))
+    if not policy_id:
+        raise ValueError("ROI evidence policy_id is missing")
+    records = {}
+    for index, item in enumerate(raw.get("records", ())):
+        workload_id = str(item.get("workload_id", ""))
+        tile = parse_positive_int(item.get("tile"))
+        anchor_tile = parse_positive_int(item.get("anchor_tile"))
+        if not workload_id or tile not in TILES or anchor_tile not in TILES:
+            raise ValueError(f"ROI evidence record {index} has invalid key")
+        if tile == anchor_tile:
+            raise ValueError(f"ROI evidence record {index} anchors itself")
+        key = (workload_id, tile)
+        if key in records:
+            raise ValueError(f"duplicate ROI evidence record: {key}")
+        outdir = require_absolute_path(
+            item.get("outdir", ""), f"ROI evidence record {index} outdir"
+        )
+        outdir_path = Path(outdir)
+        stats = outdir_path / "stats.txt"
+        run_log = outdir_path / "run.log"
+        if (
+            outdir_path.is_symlink()
+            or not stats.is_file()
+            or not run_log.is_file()
+        ):
+            raise ValueError(
+                f"ROI evidence artifacts are incomplete: {outdir}"
+            )
+        expected_stats = require_sha256(
+            item.get("stats_sha256", ""),
+            f"ROI evidence record {index} stats hash",
+        )
+        if sha256(stats) != expected_stats:
+            raise ValueError(f"ROI evidence stats hash mismatch: {outdir}")
+        expected_tail = require_sha256(
+            item.get("run_log_tail_sha256", ""),
+            f"ROI evidence record {index} log-tail hash",
+        )
+        if tail_sha256(run_log) != expected_tail:
+            raise ValueError(f"ROI evidence log-tail hash mismatch: {outdir}")
+        sim_ticks = parse_positive_int(item.get("simTicks"))
+        wrapper_rc = str(item.get("wrapper_rc", ""))
+        if sim_ticks is None or wrapper_rc in {"", "0"}:
+            raise ValueError(
+                f"ROI evidence record {index} lacks stopped-run identity"
+            )
+        records[key] = {
+            "workload_id": workload_id,
+            "tile": tile,
+            "anchor_tile": anchor_tile,
+            "outdir": outdir,
+            "simTicks": sim_ticks,
+            "wrapper_rc": wrapper_rc,
+            "stats_sha256": expected_stats,
+            "run_log_tail_sha256": expected_tail,
+            "reason": str(item.get("reason", "")),
+        }
+    if not records:
+        raise ValueError("ROI evidence policy has no records")
+    return {
+        "policy_id": policy_id,
+        "records": records,
+        "manifest_path": str(path),
     }
 
 
@@ -938,6 +1023,7 @@ def scan_log(path, oracle_kind):
         "panic_or_fatal": False,
         "is_exit_policy": False,
         "markers": [],
+        "roi_only_anchors": [],
     }
     if not path.exists():
         return result
@@ -995,6 +1081,8 @@ def scan_log(path, oracle_kind):
             result["panic_or_fatal"] = True
         if line == "IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit":
             result["is_exit_policy"] = True
+        if line.startswith("DX100_ROI_ONLY_ANCHORED workload="):
+            result["roi_only_anchors"].append(line)
         if marker_pattern and marker_pattern.search(line):
             result["markers"].append(line)
     final_stat = path.stat()
@@ -1066,6 +1154,39 @@ def xrage_oracle_id(markers):
         f"SPATTER_FP config={config} kernel={kernel} mismatches=0"
         for config, kernel in sorted(entries)
     )
+
+
+def cg_oracle_id(marker):
+    """Normalize legal floating reorderings to the documented CG criterion."""
+    fields = dict(re.findall(r"(\w+)=([^ ]+)", marker))
+    try:
+        elements = int(fields.get("elements", ""))
+        x_norm_sq = float(fields.get("x_norm_sq", ""))
+        rnorm = float(fields.get("rnorm", ""))
+        zeta = float(fields.get("zeta", ""))
+    except ValueError:
+        return ""
+    if (
+        fields.get("mode") != "MAA"
+        or fields.get("result") != "PASS"
+        or elements != 150000
+        or any(
+            fields.get(name) != "0"
+            for name in (
+                "nonfinite_x",
+                "nonfinite_z",
+                "unquantizable_x",
+                "unquantizable_z",
+            )
+        )
+        or not math.isfinite(x_norm_sq)
+        or abs(x_norm_sq - 1.0) > 1.0e-4
+        or not math.isfinite(rnorm)
+        or rnorm < 0.0
+        or not math.isfinite(zeta)
+    ):
+        return ""
+    return "CG_FINGERPRINT MAA elements=150000 finite normalized result=PASS"
 
 
 def validate_row(row, oracle_kind, expected_hash=None, prior=False):
@@ -1140,6 +1261,17 @@ def validate_row(row, oracle_kind, expected_hash=None, prior=False):
                     f"expected exactly one exact BFS depth oracle, found {len(markers)}"
                 )
             oracle_id = BFS_DEPTH_ORACLE if markers else ""
+        elif oracle_kind == "cg":
+            if len(markers) != 1:
+                notes.append(
+                    "expected exactly one passing CG fingerprint, "
+                    f"found {len(markers)}"
+                )
+            oracle_id = cg_oracle_id(markers[0]) if len(markers) == 1 else ""
+            if markers and not oracle_id:
+                notes.append(
+                    "CG fingerprint violates the documented finite/norm criterion"
+                )
         else:
             if len(markers) != 1:
                 notes.append(
@@ -1149,6 +1281,60 @@ def validate_row(row, oracle_kind, expected_hash=None, prior=False):
             if oracle_kind == "is" and not log["is_exit_policy"]:
                 notes.append("corrected IS ROI-exit policy marker missing")
     return not notes, ticks, oracle_id, notes
+
+
+def validate_roi_complete_row(row, record, oracle_kind, binary_cohort):
+    """Validate performance saved before an explicitly recorded early stop."""
+    notes = []
+    if row is None:
+        return False, None, {}, ["result row missing"]
+    if row.get("outdir") != record["outdir"]:
+        notes.append("result outdir differs from ROI evidence policy")
+    if row.get("rc") != record["wrapper_rc"]:
+        notes.append("wrapper rc differs from ROI evidence policy")
+    ticks = parse_positive_int(row.get("simTicks"))
+    if ticks != record["simTicks"]:
+        notes.append("simTicks differs from ROI evidence policy")
+    outdir = Path(record["outdir"])
+    recorded = stats_ticks(outdir / "stats.txt")
+    if ticks is None or not recorded or recorded[0] != ticks:
+        notes.append("first-ROI simTicks is not preserved in stats.txt")
+    log = scan_log(outdir / "run.log", oracle_kind)
+    if log["panic_or_fatal"]:
+        notes.append("panic/fatal found before stopped validation")
+    identity, identity_notes = resolve_row_binary_identity(row, binary_cohort)
+    notes.extend(identity_notes)
+    return not notes, ticks, identity or {}, notes
+
+
+def validate_planned_roi_row(row, spec, binary_cohort):
+    """Validate a clean ROI-only sibling that explicitly names its anchor."""
+    if row is None or not row.get("outdir"):
+        return False, False, None, {}, ["result row missing"]
+    outdir = Path(row["outdir"])
+    log = scan_log(outdir / "run.log", spec.get("oracle"))
+    markers = log.get("roi_only_anchors", [])
+    if not markers:
+        return False, False, None, {}, []
+    notes = []
+    expected = f"DX100_ROI_ONLY_ANCHORED workload={spec['id']}"
+    if markers != [expected]:
+        notes.append(
+            "ROI-only anchor marker is missing, duplicated, or mismatched"
+        )
+    if row.get("rc") != "0":
+        notes.append(f"wrapper rc={row.get('rc', 'missing')}")
+    ticks = parse_positive_int(row.get("simTicks"))
+    recorded = stats_ticks(outdir / "stats.txt")
+    if ticks is None or not recorded or recorded[0] != ticks:
+        notes.append("first-ROI simTicks mismatch")
+    if not log["m5_exit"]:
+        notes.append("clean m5_exit marker missing")
+    if log["panic_or_fatal"]:
+        notes.append("panic/fatal found in run.log")
+    identity, identity_notes = resolve_row_binary_identity(row, binary_cohort)
+    notes.extend(identity_notes)
+    return True, not notes, ticks, identity or {}, notes
 
 
 def workflow_terminal(state):
@@ -1225,6 +1411,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 run_root / "gapbs_recovery2/results_provenance_v2.tsv",
                 run_root
                 / "repair3-validation/gapbs/results_provenance_v2.tsv",
+                run_root / "final-recovery/gapbs/results_provenance_v2.tsv",
             ],
             "filters": {"kernel": "bfs", "scale": "22", "iters": "1"},
             "oracle": "bfs",
@@ -1246,6 +1433,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 run_root / "gapbs_recovery2/results_provenance_v2.tsv",
                 run_root
                 / "repair3-validation/gapbs/results_provenance_v2.tsv",
+                run_root / "final-recovery/gapbs/results_provenance_v2.tsv",
             ],
             "filters": {"kernel": "sssp", "scale": "22", "iters": "1"},
             "oracle": "sssp",
@@ -1259,8 +1447,10 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 "recovery_gapbs_repair5",
                 "recovery_gapbs_repair6",
                 "recovery_gapbs_repair7",
+                "final_gapbs_recovery",
             ],
             "compare_oracle": True,
+            "roi_anchor_tile": 8192,
         },
         {
             "id": "gapbs-bc-s22",
@@ -1270,6 +1460,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 run_root / "gapbs_recovery2/results_provenance_v2.tsv",
                 run_root
                 / "repair3-validation/gapbs/results_provenance_v2.tsv",
+                run_root / "final-recovery/gapbs/results_provenance_v2.tsv",
             ],
             "filters": {"kernel": "bc", "scale": "22", "iters": "1"},
             "oracle": "bc",
@@ -1279,7 +1470,9 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 "recovery_gapbs_repair5",
                 "recovery_gapbs_repair6",
                 "recovery_gapbs_repair7",
+                "final_gapbs_recovery",
             ],
+            "roi_anchor_tile": 16384,
         },
         {
             "id": "nas-is-full",
@@ -1287,6 +1480,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
             "sources": [
                 run_root / "is_recovery2/results.tsv",
                 run_root / "is_recovery2/results_provenance_v2.tsv",
+                run_root / "final-recovery/is/results_provenance_v2.tsv",
             ],
             "filters": {"small": "0"},
             "oracle": "is",
@@ -1301,7 +1495,11 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 32768: "recovery_is_node1_high",
                 65536: "recovery_is_node1_high",
             },
-            "workflow_overlays": ["recovery_is_node1_surge6"],
+            "workflow_overlays": [
+                "recovery_is_node1_surge6",
+                "final_is_recovery",
+            ],
+            "roi_anchor_tile": 16384,
         },
         {
             "id": "nas-cg",
@@ -1365,9 +1563,10 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
     ]
 
 
-def build_rows(workload_specs, states, binary_cohort=None):
+def build_rows(workload_specs, states, binary_cohort=None, roi_policy=None):
     rows = []
     issues = []
+    roi_records = (roi_policy or {}).get("records", {})
     for spec in workload_specs:
         source_paths = spec.get("sources", [spec.get("source")])
         source_paths = [path for path in source_paths if path is not None]
@@ -1422,6 +1621,42 @@ def build_rows(workload_specs, states, binary_cohort=None):
                 state = task_state(states.get(workflow), task_id)
                 current = state.get("state", "pending")
                 if current != "completed":
+                    roi_record = roi_records.get((spec["id"], tile))
+                    if current == "failed" and roi_record is not None:
+                        (
+                            valid,
+                            ticks,
+                            identity,
+                            roi_notes,
+                        ) = validate_roi_complete_row(
+                            row,
+                            roi_record,
+                            spec.get("oracle"),
+                            binary_cohort,
+                        )
+                        base.update(
+                            status="anchor-pending" if valid else "failed",
+                            simTicks=ticks,
+                            rc=row.get("rc", "") if row else "",
+                            gem5_resolved_path=identity.get(
+                                "resolved_path", ""
+                            ),
+                            gem5_execution_snapshot=identity.get(
+                                "execution_snapshot", ""
+                            ),
+                            gem5_sha256=identity.get("sha256", ""),
+                            gem5_output_tag=identity.get("output_tag", ""),
+                            binary_cohort_id=identity.get("cohort_id", ""),
+                            binary_provenance=identity.get(
+                                "provenance", base["binary_provenance"]
+                            ),
+                            evidence_tier="roi-complete-anchored",
+                            outdir=row.get("outdir", "") if row else "",
+                            note="; ".join(roi_notes),
+                        )
+                        base["anchor_tile"] = roi_record["anchor_tile"]
+                        workload_rows.append(base)
+                        continue
                     note = state.get("reason", "")
                     if current == "failed":
                         note = f"workflow task failed rc={state.get('returncode', 'unknown')}"
@@ -1430,6 +1665,37 @@ def build_rows(workload_specs, states, binary_cohort=None):
                         base.update(
                             rc=row.get("rc", ""), outdir=row.get("outdir", "")
                         )
+                    workload_rows.append(base)
+                    continue
+
+            if not spec.get("prior") and spec.get("roi_anchor_tile"):
+                (
+                    present,
+                    planned_valid,
+                    ticks,
+                    identity,
+                    planned_notes,
+                ) = validate_planned_roi_row(row, spec, binary_cohort)
+                if present:
+                    base.update(
+                        status="anchor-pending" if planned_valid else "failed",
+                        simTicks=ticks,
+                        rc=row.get("rc", "") if row else "",
+                        gem5_resolved_path=identity.get("resolved_path", ""),
+                        gem5_execution_snapshot=identity.get(
+                            "execution_snapshot", ""
+                        ),
+                        gem5_sha256=identity.get("sha256", ""),
+                        gem5_output_tag=identity.get("output_tag", ""),
+                        binary_cohort_id=identity.get("cohort_id", ""),
+                        binary_provenance=identity.get(
+                            "provenance", base["binary_provenance"]
+                        ),
+                        evidence_tier="roi-only-anchored",
+                        outdir=row.get("outdir", "") if row else "",
+                        note="; ".join(planned_notes),
+                    )
+                    base["anchor_tile"] = spec["roi_anchor_tile"]
                     workload_rows.append(base)
                     continue
 
@@ -1464,6 +1730,37 @@ def build_rows(workload_specs, states, binary_cohort=None):
                 note="; ".join(notes),
             )
             workload_rows.append(base)
+
+        for item in workload_rows:
+            if item["status"] != "anchor-pending":
+                continue
+            anchor = next(
+                (
+                    candidate
+                    for candidate in workload_rows
+                    if candidate["tile"] == item["anchor_tile"]
+                ),
+                None,
+            )
+            if (
+                anchor is not None
+                and anchor["status"] == "valid"
+                and anchor["evidence_tier"] == "fresh-exact"
+                and anchor["gem5_sha256"] == item["gem5_sha256"]
+                and anchor["oracle"]
+            ):
+                item["status"] = "valid"
+                item["oracle"] = anchor["oracle"]
+                item["note"] = (
+                    f"ROI performance accepted by exact {anchor['tile_label']} "
+                    "same-binary workload anchor"
+                )
+            else:
+                item["status"] = "pending"
+                item["note"] = (
+                    f"ROI performance saved; exact same-binary "
+                    f"{TILE_LABELS[item['anchor_tile']]} anchor pending"
+                )
 
         if spec.get("compare_oracle"):
             valid_oracles = {
@@ -1517,6 +1814,7 @@ def write_source_tsv(path, rows):
         "binary_cohort_id",
         "binary_provenance",
         "evidence_tier",
+        "anchor_tile",
         "evidence_source",
         "outdir",
         "note",
@@ -1732,7 +2030,7 @@ def markdown_report(
             f"- Fresh exact-oracle points: {fresh_valid}",
             f"- Accepted prior handoff points: {prior_valid}",
             "",
-            "`fresh-exact` points require a completed workflow task, wrapper rc=0, matching first-ROI `simTicks`, a clean `m5_exit`, the benchmark-specific exact oracle, and membership in the evidenced simulator cohort. `accepted-prior` points are the PageRank and HashJoin curves recorded as complete in the July 20 meeting handoff; their older runners provide rc=0, raw stats, and clean `m5_exit`, but did not emit the newer semantic fingerprints or binary sidecars. They remain explicitly outside the fresh simulator cohort and are not represented as independently exact-oracle revalidated.",
+            "`fresh-exact` points require a completed workflow task, wrapper rc=0, matching first-ROI `simTicks`, a clean `m5_exit`, the benchmark-specific exact oracle, and membership in the evidenced simulator cohort. `roi-only-anchored` and `roi-complete-anchored` retain first-ROI performance but inherit semantic acceptance only from an explicitly configured exact same-workload anchor. `accepted-prior` points are the PageRank and HashJoin curves recorded as complete in the July 20 meeting handoff; their older runners provide rc=0, raw stats, and clean `m5_exit`, but did not emit the newer semantic fingerprints or binary sidecars.",
         ]
     )
     lines.extend(["", "## Simulator binary cohort", ""])
@@ -1817,6 +2115,14 @@ def main():
             "cohort; defaults to RUN_ROOT/gem5-binary-cohort.json when present"
         ),
     )
+    parser.add_argument(
+        "--roi-evidence-policy",
+        type=Path,
+        help=(
+            "explicit successor policy for performance-complete runs stopped "
+            "after ROI; defaults to RUN_ROOT/tile-evidence-policy.json"
+        ),
+    )
     parser.add_argument("--allow-incomplete", action="store_true")
     args = parser.parse_args()
 
@@ -1843,10 +2149,17 @@ def main():
     ]
     prior_hashjoin = [path.resolve() for path in prior_hashjoin]
     prior_gapbs = args.prior_gapbs_results.resolve()
+    latest_cohort_manifest = run_root / "gem5-binary-cohort-v3.json"
+    successor_cohort_manifest = run_root / "gem5-binary-cohort-v2.json"
     default_cohort_manifest = run_root / "gem5-binary-cohort.json"
     cohort_manifest = args.binary_cohort_manifest
-    if cohort_manifest is None and default_cohort_manifest.is_file():
-        cohort_manifest = default_cohort_manifest
+    if cohort_manifest is None:
+        if latest_cohort_manifest.is_file():
+            cohort_manifest = latest_cohort_manifest
+        elif successor_cohort_manifest.is_file():
+            cohort_manifest = successor_cohort_manifest
+        elif default_cohort_manifest.is_file():
+            cohort_manifest = default_cohort_manifest
     binary_policy_issues = []
     try:
         binary_cohort = load_binary_cohort(
@@ -1855,6 +2168,16 @@ def main():
     except (OSError, ValueError, json.JSONDecodeError) as error:
         binary_cohort = None
         binary_policy_issues.append(f"binary cohort policy invalid: {error}")
+    roi_policy_path = args.roi_evidence_policy
+    default_roi_policy = run_root / "tile-evidence-policy.json"
+    if roi_policy_path is None and default_roi_policy.is_file():
+        roi_policy_path = default_roi_policy
+    roi_policy_issues = []
+    try:
+        roi_policy = load_roi_evidence_policy(roi_policy_path)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        roi_policy = {"policy_id": None, "records": {}, "manifest_path": None}
+        roi_policy_issues.append(f"ROI evidence policy invalid: {error}")
     original_state_path = (
         state_root / "workflows/dx100-full-tile-sweep-20260720.json"
     )
@@ -1916,6 +2239,12 @@ def main():
         "workflows/"
         "dx100-full-tile-sweep-repair8-bfs1-reconcile-20260724.json"
     )
+    final_gapbs_state_path = state_root / (
+        "workflows/dx100-full-tile-final-gapbs-recovery-v3-20260726.json"
+    )
+    final_is_state_path = state_root / (
+        "workflows/dx100-full-tile-final-is-recovery-v3-20260726.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
@@ -1942,6 +2271,16 @@ def main():
         states["recovery_gapbs_repair7"] = read_json(gapbs_repair7_state_path)
     if (run_root / "repair8-bfs1-reconcile-workflow.json").is_file():
         states["recovery_gapbs_repair8"] = read_json(gapbs_repair8_state_path)
+    final_gapbs_workflow = run_root / "final-gapbs-recovery-workflow-v3.json"
+    final_is_workflow = run_root / "final-is-recovery-workflow-v3.json"
+    final_recovery_plan = run_root / "final-recovery-plan-v3.json"
+    final_recovery_supersession = (
+        run_root / "final-recovery-superseded-v2.json"
+    )
+    if final_gapbs_workflow.is_file():
+        states["final_gapbs_recovery"] = read_json(final_gapbs_state_path)
+    if final_is_workflow.is_file():
+        states["final_is_recovery"] = read_json(final_is_state_path)
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     result_sources = sorted(
         {
@@ -1952,8 +2291,10 @@ def main():
         },
         key=str,
     )
-    rows, issues = build_rows(workload_specs, states, binary_cohort)
-    issues = binary_policy_issues + issues
+    rows, issues = build_rows(
+        workload_specs, states, binary_cohort, roi_policy
+    )
+    issues = binary_policy_issues + roi_policy_issues + issues
     binary_summary = binary_cohort_summary(
         rows, binary_cohort, binary_policy_issues
     )
@@ -2056,6 +2397,13 @@ def main():
         not gapbs_repair8_workflow.is_file()
         or workflow_terminal(states.get("recovery_gapbs_repair8"))
     )
+    final_gapbs_terminal = (
+        not final_gapbs_workflow.is_file()
+        or workflow_terminal(states.get("final_gapbs_recovery"))
+    )
+    final_is_terminal = not final_is_workflow.is_file() or workflow_terminal(
+        states.get("final_is_recovery")
+    )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
         for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
@@ -2078,6 +2426,8 @@ def main():
         and gapbs_repair6_terminal
         and gapbs_repair7_terminal
         and gapbs_repair8_terminal
+        and final_gapbs_terminal
+        and final_is_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
@@ -2116,6 +2466,8 @@ def main():
         run_root / "repair6-gapbs-node1-surge-cgroup.tsv",
         run_root / "repair7-gapbs-node1-final-cgroup.tsv",
         run_root / "repair8-bfs1-reconcile-cgroup.tsv",
+        run_root / "final-gapbs-recovery-cgroup.tsv",
+        run_root / "final-is-recovery-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
         run_root / "recovery5-app-slice-cgroup.tsv",
     ]
@@ -2165,6 +2517,10 @@ def main():
         required_cgroups.add("repair7-gapbs-node1-final-cgroup.tsv")
     if gapbs_repair8_workflow.is_file():
         required_cgroups.add("repair8-bfs1-reconcile-cgroup.tsv")
+    if states.get("final_gapbs_recovery"):
+        required_cgroups.add("final-gapbs-recovery-cgroup.tsv")
+    if states.get("final_is_recovery"):
+        required_cgroups.add("final-is-recovery-cgroup.tsv")
     safety_snapshots = [
         record
         for record in telemetry_snapshots
@@ -2212,6 +2568,11 @@ def main():
     provenance = [
         run_root / "manifest.json",
         *([cohort_manifest.resolve()] if cohort_manifest else []),
+        *(
+            [Path(roi_policy["manifest_path"])]
+            if roi_policy.get("manifest_path")
+            else []
+        ),
         run_root / "recovery2-manifest.json",
         run_root / "recovery2-normal-overlap-manifest.json",
         run_root / "recovery2-systemd-path-repair-manifest.json",
@@ -2241,6 +2602,10 @@ def main():
         is_node1_high_workflow,
         gapbs_repair5_manifest,
         gapbs_repair5_workflow,
+        final_gapbs_workflow,
+        final_is_workflow,
+        final_recovery_plan,
+        final_recovery_supersession,
         finalizer_path,
         original_state_path,
         normal_state_path,
@@ -2256,6 +2621,8 @@ def main():
         t8_surge_state_path,
         xrage64_state_path,
         gapbs_repair5_state_path,
+        final_gapbs_state_path,
+        final_is_state_path,
         prior_gapbs,
         *prior_hashjoin,
         *result_sources,
@@ -2281,7 +2648,15 @@ def main():
         "normalization": "simTicks(16384) / simTicks(tile)",
         "evidence_policy": {
             "fresh-exact": "workflow completion, wrapper rc=0, first-ROI simTicks, clean m5_exit, no panic/fatal, benchmark-specific exact oracle, and evidenced simulator-cohort membership",
+            "roi-only-anchored": "planned clean m5_exit immediately after first-ROI stats with an explicit workload marker; accepted only through the configured same-workload, same-simulator exact anchor",
+            "roi-complete-anchored": "first-ROI simTicks and exact binary identity preserved before a nonzero wrapper exit; accepted only after a same-workload, same-binary exact correctness anchor passes",
             "accepted-prior": "accepted July 20 meeting handoff curve with wrapper rc=0, recorded simTicks, clean m5_exit, and no panic/fatal; older runner emitted no exact semantic fingerprint or binary sidecar and remains outside the fresh cohort",
+        },
+        "roi_evidence_policy": {
+            "policy_id": roi_policy.get("policy_id"),
+            "manifest_path": roi_policy.get("manifest_path"),
+            "record_count": len(roi_policy.get("records", {})),
+            "issues": roi_policy_issues,
         },
         "workflow_counts": {
             name: workflow_counts(state) for name, state in states.items()

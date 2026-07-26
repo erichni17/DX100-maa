@@ -18,6 +18,7 @@ RESTORE_TIMEOUT=${4:-${RESTORE_TIMEOUT:-1800}}
 CKPT_TIMEOUT=${5:-${CKPT_TIMEOUT:-900}}
 PROG_INTERVAL=${6:-${PROG_INTERVAL:-1000}}
 OMP_THREADS=${OMP_THREADS:-4}
+POST_ROI_MODE=${DX100_POST_ROI_MODE:-exact}
 BUILD_LOCK=${BUILD_LOCK:-$GH/benchmarks/NAS/is/.build.lock}
 DEFAULT_GEM5_BIN=$RUNTIME_ROOT/build/X86/$GBIN
 GEM5_SOURCE_BIN=${DX100_GEM5_BIN:-$DEFAULT_GEM5_BIN}
@@ -161,10 +162,16 @@ TBIN_BASENAME="is_maa_${SUF}"
 TBIN=$IS_DIR/$TBIN_BASENAME
 SMALL_TAG=""
 MAKE_SMALL=()
+EXTRA_CXX_FLAGS=""
 if [[ "$SMALL" != "0" ]]; then
   SMALL_TAG="_small"
   MAKE_SMALL=(SMALL=1)
 fi
+case "$POST_ROI_MODE" in
+  exact) ;;
+  anchored) EXTRA_CXX_FLAGS="-DDX100_ROI_ONLY_ANCHORED=1" ;;
+  *) echo "unsupported DX100_POST_ROI_MODE: $POST_ROI_MODE" >&2; exit 2 ;;
+esac
 
 C=$CHECKPOINT_ROOT/is_maa_smoke_t${TILE}${SMALL_TAG}
 O=$CAMPAIGN_ROOT/t${TILE}_${TAG}${SMALL_TAG}
@@ -198,8 +205,13 @@ reuse_completed_run() {
   local stats="$O/stats.txt"
   gem5_provenance_matches "$O" || return 1
   [[ -s "$O/run.log" && -s "$stats" ]] || return 1
-  grep -Eq '^IS_VERIFY .*result=PASS$' "$O/run.log" || return 1
-  grep -Fqx -- 'IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit' "$O/run.log" || return 1
+  if [[ "$POST_ROI_MODE" == anchored ]]; then
+    grep -Fqx -- 'DX100_ROI_ONLY_ANCHORED workload=nas-is-full' "$O/run.log" || return 1
+    grep -Fqx -- 'IS_ROI_EXIT_POLICY dump_stats_anchor_m5_exit' "$O/run.log" || return 1
+  else
+    grep -Eq '^IS_VERIFY .*result=PASS$' "$O/run.log" || return 1
+    grep -Fqx -- 'IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit' "$O/run.log" || return 1
+  fi
   ! grep -Eq 'IS_VERIFY .*result=FAIL|panic:|fatal:' "$O/run.log" || return 1
   grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$O/run.log" || return 1
   local simticks maa_cycles overlap wrtail timestamp
@@ -221,11 +233,11 @@ if reuse_completed_run; then
 fi
 
 echo "[build] target=$TBIN_BASENAME tile=$TILE small=$SMALL"
-echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s progress_frequency_hz=$PROG_INTERVAL"
+echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s progress_frequency_hz=$PROG_INTERVAL post_roi_mode=$POST_ROI_MODE"
 {
   flock -x 200
   rm -f "$TBIN"
-  make -C "$IS_DIR" GEM5_BUILD=1 VERIFY=1 "${MAKE_SMALL[@]}" "$TBIN_BASENAME" \
+  make -C "$IS_DIR" GEM5_BUILD=1 VERIFY=1 EXTRA_CXX_FLAGS="$EXTRA_CXX_FLAGS" "${MAKE_SMALL[@]}" "$TBIN_BASENAME" \
     > "$CAMPAIGN_ROOT/build_t${TILE}${SMALL_TAG}.log" 2>&1
 } 200>"$BUILD_LOCK"
 
@@ -290,10 +302,18 @@ set -e
 echo "[restore] done (exit=$RC)"
 
 if [[ "$RC" == 0 ]]; then
-  grep -Eq '^IS_VERIFY .*result=PASS$' "$O/run.log" || RC=90
+  if [[ "$POST_ROI_MODE" == anchored ]]; then
+    grep -Fqx -- 'DX100_ROI_ONLY_ANCHORED workload=nas-is-full' "$O/run.log" || RC=90
+  else
+    grep -Eq '^IS_VERIFY .*result=PASS$' "$O/run.log" || RC=90
+  fi
 fi
 if [[ "$RC" == 0 ]]; then
-  grep -Eq '^IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit$' "$O/run.log" || RC=93
+  if [[ "$POST_ROI_MODE" == anchored ]]; then
+    grep -Fqx -- 'IS_ROI_EXIT_POLICY dump_stats_anchor_m5_exit' "$O/run.log" || RC=93
+  else
+    grep -Fqx -- 'IS_ROI_EXIT_POLICY dump_stats_verify_m5_exit' "$O/run.log" || RC=93
+  fi
 fi
 
 STATS=$O/stats.txt

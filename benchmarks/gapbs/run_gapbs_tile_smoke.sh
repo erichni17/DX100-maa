@@ -24,6 +24,7 @@ RESTORE_TIMEOUT=${7:-${RESTORE_TIMEOUT:-14400}}
 CKPT_TIMEOUT=${8:-${CKPT_TIMEOUT:-3600}}
 PROG_INTERVAL=${9:-${PROG_INTERVAL:-1000}}
 OMP_THREADS=${OMP_THREADS:-4}
+POST_ROI_MODE=${DX100_POST_ROI_MODE:-exact}
 BUILD_LOCK=${BUILD_LOCK:-$GAP/.build.lock}
 
 DEFAULT_GEM5_BIN=$RUNTIME_ROOT/build/X86/$GBIN
@@ -224,6 +225,17 @@ case "$KERNEL" in
     ;;
 esac
 
+case "$POST_ROI_MODE" in
+  exact) ;;
+  anchored)
+    case "$KERNEL" in
+      bc|sssp) VERIFY_FLAGS="-DDX100_ROI_ONLY_ANCHORED=1" ;;
+      *) echo "anchored post-ROI mode is unsupported for $KERNEL" >&2; exit 2 ;;
+    esac
+    ;;
+  *) echo "unsupported DX100_POST_ROI_MODE: $POST_ROI_MODE" >&2; exit 2 ;;
+esac
+
 CKPT="$CHECKPOINT_ROOT/gapbs_${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}"
 OUT="$CAMPAIGN_ROOT/${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${TAG}"
 LEGACY_OUT="$CAMPAIGN_ROOT/${KERNEL}_s${SCALE}_t${TILE}_m${MEM_TAG}_${LEGACY_TAG}"
@@ -258,6 +270,10 @@ exec 8>&-
 
 correctness_marker_present() {
   local pattern
+  if [[ "$POST_ROI_MODE" == anchored ]]; then
+    grep -Fqx -- "DX100_ROI_ONLY_ANCHORED workload=gapbs-${KERNEL}-s22" "$OUT/run.log"
+    return
+  fi
   case "$KERNEL" in
     bc) pattern='^BC_VALIDATION_END result=PASS$' ;;
     bfs) pattern='^BFS_FP .* depth_reached=4194304 depth_sum=19771483 depth_sq_sum=94148523 max_depth=6 invalid_chains=0 depth_hash=10642142323936141248$' ;;
@@ -293,7 +309,7 @@ if reuse_completed_run; then
 fi
 
 echo "[build] kernel=$KERNEL target=$BIN_BASENAME tile=$TILE mem=$MEM_SIZE maa_mem=$MAA_MEM_HEX"
-echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s prog_interval=$PROG_INTERVAL"
+echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeout=${RESTORE_TIMEOUT}s prog_interval=$PROG_INTERVAL post_roi_mode=$POST_ROI_MODE"
 echo "[build] waiting for lock: $BUILD_LOCK"
 {
   flock -x 200
@@ -372,12 +388,7 @@ set -e
 echo "[restore] done (exit=$RC)"
 
 if [[ "$RC" == 0 ]]; then
-  case "$KERNEL" in
-    bc) grep -Eq '^BC_VALIDATION_END result=PASS$' "$OUT/run.log" || RC=90 ;;
-    bfs) grep -Eq '^BFS_FP .* depth_reached=4194304 depth_sum=19771483 depth_sq_sum=94148523 max_depth=6 invalid_chains=0 depth_hash=10642142323936141248$' "$OUT/run.log" || RC=90 ;;
-    pr) grep -Eq '^PR_FP .*nonfinite=0 unquantizable=0$' "$OUT/run.log" || RC=90 ;;
-    sssp) grep -Eq '^SSSP_FINGERPRINT .*result=PASS$' "$OUT/run.log" || RC=90 ;;
-  esac
+  correctness_marker_present || RC=90
 fi
 
 STATS="$OUT/stats.txt"

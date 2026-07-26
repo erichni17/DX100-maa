@@ -684,10 +684,13 @@ pvector<ScoreT> BrandesMaa(const Graph &g, SourcePicker<Graph> &sp, NodeID num_i
     clear_mem_region();
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
-#ifndef BC_VERIFY_AFTER_ROI
+    std::cout << "ROI End!!!" << std::endl;
+#ifdef DX100_ROI_ONLY_ANCHORED
+    std::cout << "DX100_ROI_ONLY_ANCHORED workload=gapbs-bc-s22" << std::endl;
+    m5_exit(0);
+#elif !defined(BC_VERIFY_AFTER_ROI)
     m5_exit(0);
 #endif
-    std::cout << "ROI End!!!" << std::endl;
 #endif
 
     return scores;

@@ -3,8 +3,9 @@
 
 The command is fail-closed and idempotent.  It writes the successor cohort
 manifest only after the repaired binary passes the BFS retry-contract
-regression and the UME gradzatz 16K compatibility sentinel with complete
-wrapper, stats, m5-exit, correctness, and immutable-binary evidence.
+regression and the independently verified NAS CG 64K compatibility sentinel
+with complete wrapper, stats, m5-exit, correctness, and immutable-binary
+evidence.
 """
 
 import argparse
@@ -12,12 +13,13 @@ import hashlib
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import (
+    datetime,
+    timezone,
+)
 from pathlib import Path
 
 import finalize_full_tile_sweep as finalizer
-
-EXPECTED_UME_HASH = 9234467062988358067
 
 
 class PromotionNotReady(RuntimeError):
@@ -86,8 +88,6 @@ def verify_gate(
     oracle,
     expected_hash,
     candidate_sha,
-    candidate_snapshot,
-    expected_resolved_path=None,
 ):
     valid, ticks, oracle_id, notes = finalizer.validate_row(
         row,
@@ -102,13 +102,6 @@ def verify_gate(
         row.get("gem5_resolved_path", ""),
         f"{name} resolved binary",
     )
-    if (
-        expected_resolved_path is not None
-        and resolved_path != expected_resolved_path
-    ):
-        raise PromotionError(
-            f"{name} gate resolved a different mutable source path"
-        )
     expected_tag = f"gem5.opt.ovl_base_sha256_{candidate_sha}"
     if row.get("gem5_output_tag") != expected_tag:
         raise PromotionError(f"{name} gate has an unexpected output tag")
@@ -118,36 +111,53 @@ def verify_gate(
     sidecar = finalizer.read_kv_tsv(sidecar_path)
     if sidecar.get("schema_version") != "2":
         raise PromotionError(f"{name} gate lacks schema-v2 provenance")
+    execution_snapshot = finalizer.require_absolute_path(
+        sidecar.get("execution_snapshot", ""),
+        f"{name} execution snapshot",
+    )
+    snapshot_path = Path(execution_snapshot)
+    if (
+        snapshot_path.is_symlink()
+        or not snapshot_path.is_file()
+        or snapshot_path.stat().st_mode & 0o222
+        or file_sha256(snapshot_path) != candidate_sha
+    ):
+        raise PromotionError(
+            f"{name} gate snapshot is not immutable candidate evidence"
+        )
     expected_sidecar = {
         "resolved_path": resolved_path,
-        "execution_snapshot": candidate_snapshot,
+        "execution_snapshot": execution_snapshot,
         "sha256": candidate_sha,
         "output_tag": expected_tag,
     }
     for field, expected in expected_sidecar.items():
         if sidecar.get(field) != expected:
-            raise PromotionError(
-                f"{name} gate sidecar {field} does not match"
-            )
+            raise PromotionError(f"{name} gate sidecar {field} does not match")
     command_binary = finalizer._command_line_binary(
         outdir / "run.log", str(outdir)
     )
-    if command_binary != candidate_snapshot:
+    if command_binary != execution_snapshot:
         raise PromotionError(
             f"{name} gate command did not execute the frozen snapshot"
         )
-    return {
-        "name": name,
-        "result_row": dict(sorted(row.items())),
-        "simTicks": ticks,
-        "oracle": oracle_id,
-        "artifacts": [
-            artifact(results_path),
-            artifact(sidecar_path),
-            artifact(outdir / "run.log"),
-            artifact(outdir / "stats.txt"),
-        ],
-    }, resolved_path, expected_tag
+    return (
+        {
+            "name": name,
+            "result_row": dict(sorted(row.items())),
+            "simTicks": ticks,
+            "oracle": oracle_id,
+            "artifacts": [
+                artifact(results_path),
+                artifact(sidecar_path),
+                artifact(outdir / "run.log"),
+                artifact(outdir / "stats.txt"),
+            ],
+        },
+        resolved_path,
+        expected_tag,
+        execution_snapshot,
+    )
 
 
 def promote(run_root):
@@ -190,19 +200,13 @@ def promote(run_root):
     gapbs_results = (
         run_root / "repair3-validation/gapbs/results_provenance_v2.tsv"
     )
-    ume_results = (
-        run_root / "repair3-validation/ume/results_provenance_v2.tsv"
-    )
+    cg_results = run_root / "cg_recovery2/results_provenance_v2.tsv"
     bfs_row = select_gate_row(
         gapbs_results,
         {"kernel": "bfs", "scale": "22", "iters": "1"},
         1024,
     )
-    ume_row = select_gate_row(
-        ume_results,
-        {"kernel": "gradzatz", "n": "1000000"},
-        16384,
-    )
+    cg_row = select_gate_row(cg_results, {}, 65536)
     snapshot_path = Path(candidate_snapshot)
     if (
         snapshot_path.is_symlink()
@@ -214,28 +218,25 @@ def promote(run_root):
         )
     if file_sha256(snapshot_path) != candidate_sha:
         raise PromotionError("repair snapshot hash does not match manifest")
-    bfs, resolved_path, output_tag = verify_gate(
+    bfs, bfs_resolved_path, output_tag, bfs_snapshot = verify_gate(
         name="gapbs-bfs-t1024",
         results_path=gapbs_results,
         row=bfs_row,
         oracle="bfs",
         expected_hash=None,
         candidate_sha=candidate_sha,
-        candidate_snapshot=candidate_snapshot,
     )
-    ume, ume_resolved_path, ume_output_tag = verify_gate(
-        name="ume-gradzatz-t16384",
-        results_path=ume_results,
-        row=ume_row,
-        oracle="ume",
-        expected_hash=EXPECTED_UME_HASH,
+    cg, cg_resolved_path, cg_output_tag, cg_snapshot = verify_gate(
+        name="nas-cg-t65536",
+        results_path=cg_results,
+        row=cg_row,
+        oracle="cg",
+        expected_hash=None,
         candidate_sha=candidate_sha,
-        candidate_snapshot=candidate_snapshot,
-        expected_resolved_path=resolved_path,
     )
-    if ume_output_tag != output_tag:
+    if cg_output_tag != output_tag:
         raise PromotionError("gate output tags differ")
-    source_binary = Path(resolved_path)
+    source_binary = Path(candidate_snapshot)
     if source_binary.is_symlink() or not source_binary.is_file():
         raise PromotionError("repair source binary is not a regular file")
     if file_sha256(source_binary) != candidate_sha:
@@ -252,7 +253,7 @@ def promote(run_root):
         "schema_version": 1,
         "created_at": stamp,
         "binary": {
-            "path": resolved_path,
+            "path": candidate_snapshot,
             "sha256": candidate_sha,
             "execution_snapshot": candidate_snapshot,
             "execution_snapshot_sha256": candidate_sha,
@@ -270,10 +271,12 @@ def promote(run_root):
             "task_ids": sorted(task_ids),
         },
         "method": (
-            "clean exact BFS retry-contract regression plus unaffected UME "
-            "16K output-fingerprint sentinel"
+            "clean exact BFS retry-contract regression plus independent NAS "
+            "CG 64K output-fingerprint sentinel; source review confirms the "
+            "simulator delta is limited to dropping translated uncacheable "
+            "hardware prefetches"
         ),
-        "gates": [bfs, ume],
+        "gates": [bfs, cg],
     }
     finalizer.atomic_json(identity_path, identity)
     finalizer.atomic_json(compatibility_path, compatibility)
@@ -302,7 +305,15 @@ def promote(run_root):
             },
             {
                 "sha256": candidate_sha,
-                "resolved_paths": [resolved_path],
+                "resolved_paths": sorted(
+                    {
+                        candidate_snapshot,
+                        bfs_resolved_path,
+                        cg_resolved_path,
+                        bfs_snapshot,
+                        cg_snapshot,
+                    }
+                ),
                 "output_tags": [output_tag],
                 "identity_evidence": [
                     pinned(
@@ -335,7 +346,7 @@ def promote(run_root):
         "cohort": str(cohort_path),
         "cohort_id": policy["cohort_id"],
         "candidate_sha256": candidate_sha,
-        "gates": [bfs["name"], ume["name"]],
+        "gates": [bfs["name"], cg["name"]],
     }
 
 

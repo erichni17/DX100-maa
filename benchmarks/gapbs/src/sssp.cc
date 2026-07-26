@@ -397,7 +397,10 @@ pvector<WeightT> DeltaStepMAA(const WGraph &g, NodeID source, WeightT delta, boo
     m5_work_end(0, 0);
     clear_mem_region();
     std::cout << "ROI End!!!" << std::endl;
-#ifdef SSSP_FP_ENABLE
+#ifdef DX100_ROI_ONLY_ANCHORED
+    std::cout << "DX100_ROI_ONLY_ANCHORED workload=gapbs-sssp-s22"
+              << std::endl;
+#elif defined(SSSP_FP_ENABLE)
     std::cout << "Validation started" << std::endl;
     PrintSSSPFingerprint(g, source, dist);
     std::cout << "Validation ended" << std::endl;

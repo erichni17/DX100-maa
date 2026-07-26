@@ -74,9 +74,9 @@ def fixture(tmp_path):
     )
     tag = f"gem5.opt.ovl_base_sha256_{digest}"
     gapbs = run_root / "repair3-validation/gapbs"
-    ume = run_root / "repair3-validation/ume"
+    cg = run_root / "cg_recovery2"
     gapbs.mkdir(parents=True)
-    ume.mkdir(parents=True)
+    cg.mkdir(parents=True)
     bfs_out = gapbs / "bfs"
     make_gate(
         bfs_out,
@@ -87,16 +87,19 @@ def fixture(tmp_path):
         [f"BFS_FP fixture {finalizer.BFS_DEPTH_ORACLE}"],
         101,
     )
-    ume_out = ume / "ume"
+    cg_out = cg / "cg"
     make_gate(
-        ume_out,
+        cg_out,
         snapshot,
         source,
         digest,
         tag,
         [
-            "UME_OUTPUT_FP output_hash=9234467062988358067 nonfinite=0",
-            "UME_REFERENCE_PASS fixture",
+            "CG_FINGERPRINT mode=MAA elements=150000 x_raw=abc z_raw=def "
+            "x_q5=1 x_q6=2 z_q5=3 z_q6=4 x_sum=-385.9 "
+            "x_norm_sq=0.99999999995 z_sum=-1793 z_norm_sq=21.58 "
+            "rnorm=0.00109749 zeta=109.99944 nonfinite_x=0 "
+            "nonfinite_z=0 unquantizable_x=0 unquantizable_z=0 result=PASS",
         ],
         202,
     )
@@ -124,15 +127,12 @@ def fixture(tmp_path):
         },
     )
     write_table(
-        ume / "results_provenance_v2.tsv",
+        cg / "results_provenance_v2.tsv",
         {
             **common,
-            "kernel": "gradzatz",
-            "tile": "16384",
-            "n": "1000000",
+            "tile": "65536",
             "simTicks": "202",
-            "output_hash": "9234467062988358067",
-            "outdir": str(ume_out),
+            "outdir": str(cg_out),
         },
     )
     return run_root, digest
@@ -140,13 +140,13 @@ def fixture(tmp_path):
 
 def test_promotion_waits_for_both_terminal_gates(tmp_path):
     run_root, _digest = fixture(tmp_path)
-    (run_root / "repair3-validation/ume/results_provenance_v2.tsv").unlink()
+    (run_root / "cg_recovery2/results_provenance_v2.tsv").unlink()
     try:
         promoter.promote(run_root)
     except promoter.PromotionNotReady:
         pass
     else:
-        raise AssertionError("promotion accepted a missing UME gate")
+        raise AssertionError("promotion accepted a missing CG gate")
     assert not (run_root / "gem5-binary-cohort.json").exists()
 
 
@@ -163,18 +163,16 @@ def test_promotion_writes_loadable_idempotent_cohort(tmp_path):
     assert again["action"] == "already-promoted"
 
 
-def test_promotion_rejects_wrong_ume_fingerprint(tmp_path):
+def test_promotion_rejects_wrong_cg_fingerprint(tmp_path):
     run_root, _digest = fixture(tmp_path)
-    results = run_root / "repair3-validation/ume/results_provenance_v2.tsv"
-    results.write_text(
-        results.read_text().replace(
-            "9234467062988358067", "9234467062988358066"
-        )
+    run_log = run_root / "cg_recovery2/cg/run.log"
+    run_log.write_text(
+        run_log.read_text().replace("result=PASS", "result=FAIL")
     )
     try:
         promoter.promote(run_root)
     except promoter.PromotionError as error:
-        assert "output_hash" in str(error)
+        assert "passing CG fingerprint" in str(error)
     else:
-        raise AssertionError("promotion accepted a wrong UME fingerprint")
+        raise AssertionError("promotion accepted a wrong CG fingerprint")
     assert not (run_root / "gem5-binary-cohort.json").exists()
