@@ -84,8 +84,8 @@ void SPD::setTileIdle(int tile_id, int word_size) {
     if (word_size == 8) {
         tiles_status[tile_id + 1] = SPD::TileStatus::Idle;
     }
-    for (int i = 0; i < num_tile_elements * word_size / 4; i++) {
-        element_finished[tile_id * num_tile_elements + i] = false;
+    for (int i = 0; i < physical_tile_elements * word_size / 4; i++) {
+        element_finished[tile_id * physical_tile_elements + i] = false;
     }
 }
 void SPD::setTileFinished(int tile_id, int word_size) {
@@ -149,13 +149,16 @@ bool SPD::getTileReady(int tile_id) {
     check_tile_id(tile_id, sizeof(uint32_t));
     return tiles_ready[tile_id] == 0;
 }
-bool SPD::getElementFinished(int tile_id, int element_id, int word_size, uint8_t func, int id) {
+bool SPD::getElementFinished(int tile_id, int element_id, int word_size,
+                             uint8_t func, int id) {
     check_tile_id(tile_id, sizeof(uint32_t));
     bool is_element_finished;
     if (element_id >= num_tile_elements) {
         is_element_finished = false;
     } else {
-        int tile_element_id = tile_id * num_tile_elements + element_id * word_size / 4;
+        check_tile_element_id(tile_id, element_id, word_size);
+        int tile_element_id = tile_id * physical_tile_elements +
+                              element_id * word_size / 4;
         is_element_finished = element_finished[tile_element_id];
     }
     if (is_element_finished == false &&
@@ -206,27 +209,42 @@ int SPD::getSize(int tile_id) {
 }
 void SPD::setSize(int tile_id, int size) {
     assert((0 <= tile_id) && (tile_id < num_tiles));
+    panic_if(size < 0 || size > static_cast<int>(physical_tile_elements),
+             "SPD tile size %d exceeds physical capacity %u "
+             "(logical capacity %u) for tile[%d]!\n",
+             size, physical_tile_elements, num_tile_elements, tile_id);
+    tiles_size[tile_id] = size;
+}
+void SPD::setVirtualSize(int tile_id, int size) {
+    assert((0 <= tile_id) && (tile_id < num_tiles));
     panic_if(size < 0 || size > static_cast<int>(num_tile_elements),
-             "Invalid SPD tile size %d (max=%u) for tile[%d]!\n",
+             "Invalid virtual tile size %d (logical max=%u) for tile[%d]!\n",
              size, num_tile_elements, tile_id);
     tiles_size[tile_id] = size;
 }
 SPD::SPD(MAA *_maa,
          unsigned int _num_tiles,
          unsigned int _num_tile_elements,
+         unsigned int _physical_tile_elements,
          Cycles _read_latency,
          Cycles _write_latency,
          int _num_read_ports,
          int _num_write_ports)
     : num_tiles(_num_tiles),
       num_tile_elements(_num_tile_elements),
+      physical_tile_elements(_physical_tile_elements),
       read_latency(_read_latency),
       write_latency(_write_latency),
       num_read_ports(_num_read_ports),
       num_write_ports(_num_write_ports),
       maa(_maa) {
 
-    tiles_data = new uint8_t[num_tiles * num_tile_elements * sizeof(uint32_t)];
+    panic_if(physical_tile_elements == 0 ||
+                 physical_tile_elements > num_tile_elements,
+             "Invalid physical/logical SPD capacities: %u/%u\n",
+             physical_tile_elements, num_tile_elements);
+    tiles_data = new uint8_t[
+        num_tiles * physical_tile_elements * sizeof(uint32_t)];
     tiles_status = new SPD::TileStatus[num_tiles];
     tiles_dirty = new bool[num_tiles];
     tiles_ready = new uint16_t[num_tiles];
@@ -237,13 +255,14 @@ SPD::SPD(MAA *_maa,
         tiles_dirty[i] = false;
         tiles_ready[i] = 0;
     }
-    element_finished = new bool[num_tiles * num_tile_elements];
-    for (int i = 0; i < num_tiles * num_tile_elements; i++) {
+    element_finished = new bool[num_tiles * physical_tile_elements];
+    for (int i = 0; i < num_tiles * physical_tile_elements; i++) {
         element_finished[i] = true;
     }
     waiting_units_funcs = new std::vector<uint8_t>[num_tiles];
     waiting_units_ids = new std::vector<int>[num_tiles];
-    memset(tiles_data, 0, num_tiles * num_tile_elements * sizeof(uint32_t));
+    memset(tiles_data, 0,
+           num_tiles * physical_tile_elements * sizeof(uint32_t));
     read_port_busy_until = new Tick[num_read_ports];
     write_port_busy_until = new Tick[num_write_ports];
     for (int i = 0; i < num_read_ports; i++) {

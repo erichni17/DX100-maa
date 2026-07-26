@@ -3,9 +3,11 @@ from m5.objects import *
 
 from gem5.isas import ISA
 
+
 class SharedMAA(MAA):
     num_tiles_per_core = 8
     num_tile_elements = 16384
+    physical_tile_elements = 0
     num_regs_per_core = 8
     num_instructions_per_core = 8
     num_row_table_rows_per_slice = 64

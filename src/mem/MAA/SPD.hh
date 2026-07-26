@@ -37,6 +37,7 @@ protected:
     std::vector<int> *waiting_units_ids;
     unsigned int num_tiles;
     unsigned int num_tile_elements;
+    unsigned int physical_tile_elements;
     Tick *read_port_busy_until;
     Tick *write_port_busy_until;
     const Cycles read_latency, write_latency;
@@ -51,36 +52,50 @@ public:
     }
     void check_tile_element_id(int tile_id, int element_id, int word_size) {
         check_tile_id(tile_id, word_size);
-        panic_if(element_id < 0 || element_id >= num_tile_elements, "Invalid element_id: %d\n", element_id);
+        panic_if(element_id < 0 || element_id >= physical_tile_elements,
+                 "SPD element %d exceeds physical tile capacity %u "
+                 "(logical capacity %u)\n",
+                 element_id, physical_tile_elements, num_tile_elements);
     }
     template <typename T>
     T getData(int tile_id, int element_id) {
         check_tile_element_id(tile_id, element_id, sizeof(T));
-        return *((T *)(tiles_data + tile_id * num_tile_elements * 4 + element_id * sizeof(T)));
+        return *((T *)(tiles_data + tile_id * physical_tile_elements * 4 +
+                       element_id * sizeof(T)));
     }
     uint8_t *getDataPtr(int tile_id, int element_id) {
         check_tile_element_id(tile_id, element_id, sizeof(uint32_t));
-        return (uint8_t *)(tiles_data + tile_id * num_tile_elements * 4 + element_id * 4);
+        return (uint8_t *)(tiles_data +
+                           tile_id * physical_tile_elements * 4 +
+                           element_id * 4);
     }
     template <typename T>
     void setData(int tile_id, int element_id, T _data) {
         check_tile_element_id(tile_id, element_id, sizeof(T));
-        *((T *)(tiles_data + tile_id * num_tile_elements * 4 + element_id * sizeof(T))) = _data;
-        int tile_element_id = tile_id * num_tile_elements + element_id * sizeof(T) / 4;
+        *((T *)(tiles_data + tile_id * physical_tile_elements * 4 +
+                element_id * sizeof(T))) = _data;
+        int tile_element_id = tile_id * physical_tile_elements +
+                              element_id * sizeof(T) / 4;
         element_finished[tile_element_id] = true;
-        DPRINTF(SPD, "%s: tile[%d] element[%d] tile_element[%d] finished\n", __func__, tile_id, element_id, tile_element_id);
+        DPRINTF(SPD,
+                "%s: tile[%d] element[%d] tile_element[%d] finished\n",
+                __func__, tile_id, element_id, tile_element_id);
     }
     void setFakeData(int tile_id, int element_id, int word_size) {
         check_tile_element_id(tile_id, element_id, word_size);
-        int tile_element_id = tile_id * num_tile_elements + element_id * word_size / 4;
+        int tile_element_id = tile_id * physical_tile_elements +
+                              element_id * word_size / 4;
         element_finished[tile_element_id] = true;
-        DPRINTF(SPD, "%s: tile[%d] element[%d] tile_element[%d] fake finished\n", __func__, tile_id, element_id, tile_element_id);
+        DPRINTF(SPD,
+                "%s: tile[%d] element[%d] tile_element[%d] fake finished\n",
+                __func__, tile_id, element_id, tile_element_id);
     }
     void wakeup_waiting_units(int tile_id);
     Cycles getDataLatency(int num_accesses);
     Cycles setDataLatency(int tile_id, int num_accesses);
     TileStatus getTileStatus(int tile_id);
-    bool getElementFinished(int tile_id, int element_id, int word_size, uint8_t func, int id);
+    bool getElementFinished(int tile_id, int element_id, int word_size,
+                            uint8_t func, int id);
     void setTileIdle(int tile_id, int word_size);
     void setTileService(int tile_id, int word_size);
     void setTileFinished(int tile_id, int word_size);
@@ -92,11 +107,13 @@ public:
     bool getTileReady(int tile_id);
     int getSize(int tile_id);
     void setSize(int tile_id, int size);
+    void setVirtualSize(int tile_id, int size);
 
 public:
     SPD(MAA *_maa,
         unsigned int _num_tiles,
         unsigned int _num_tile_elements,
+        unsigned int _physical_tile_elements,
         Cycles _read_latency,
         Cycles _write_latency,
         int _num_read_ports,

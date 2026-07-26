@@ -1,8 +1,9 @@
 from m5.objects.ClockedObject import ClockedObject
+from m5.objects.X86MMU import X86MMU
 from m5.params import *
 from m5.proxy import *
-from m5.objects.X86MMU import X86MMU
 from m5.SimObject import *
+
 
 class MAA(ClockedObject):
     type = "MAA"
@@ -12,6 +13,9 @@ class MAA(ClockedObject):
 
     num_tiles_per_core = Param.Unsigned(8, "Number of SPD tiles per core attached to the DX100 instance")
     num_tile_elements = Param.Unsigned(16384, "Number of elements in each tile")
+    physical_tile_elements = Param.Unsigned(
+        0, "Physical elements allocated per SPD tile (0 matches logical size)"
+    )
     num_regs_per_core = Param.Unsigned(8, "Number of 32-bit scalar registers per core attached to the DX100 instance")
     num_instructions_per_core = Param.Unsigned(8, "Number of instructions in the instruction file per core attached to the DX100 instance")
     num_row_table_rows_per_slice = Param.Unsigned(64, "Number of rows in each row table slice")

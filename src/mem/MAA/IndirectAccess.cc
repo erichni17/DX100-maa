@@ -545,7 +545,11 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         if (my_max != -1 && my_i >= my_max) {
             if (my_dst_tile != -1) {
                 panic_if(my_max != -1 && my_i != my_max, "I[%d] %s: my_i(%d) != my_max(%d)!\n", my_indirect_id, __func__, my_i, my_max);
-                maa->spd->setSize(my_dst_tile, my_i);
+                if (my_instruction->opcode ==
+                    Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+                    maa->spd->setVirtualSize(my_dst_tile, my_i);
+                else
+                    maa->spd->setSize(my_dst_tile, my_i);
             }
             if (checkReadyForFinish()) {
                 finished = true;

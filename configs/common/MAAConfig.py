@@ -6,6 +6,7 @@ from m5.objects import *
 
 from gem5.isas import ISA
 
+
 def _get_maa_opts(options):
     opts = {}
 
@@ -14,6 +15,11 @@ def _get_maa_opts(options):
 
     if hasattr(options, "maa_num_tile_elements"):
         opts["num_tile_elements"] = getattr(options, "maa_num_tile_elements")
+
+    if hasattr(options, "maa_physical_tile_elements"):
+        opts["physical_tile_elements"] = getattr(
+            options, "maa_physical_tile_elements"
+        )
 
     if hasattr(options, "maa_num_regs_per_core"):
         opts["num_regs_per_core"] = getattr(options, "maa_num_regs_per_core")

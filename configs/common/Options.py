@@ -218,6 +218,7 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa", action="store_true")
     parser.add_argument("--maa_num_tiles_per_core", type=int, default=8, help="Number of SPD tiles per core attached to the DX100 instance")
     parser.add_argument("--maa_num_tile_elements", type=int, default=16384, help="Number of elements in each tile")
+    parser.add_argument("--maa_physical_tile_elements", type=int, default=0, help="Physical elements allocated per SPD tile (0 matches logical size)")
     parser.add_argument("--maa_num_regs_per_core", type=int, default=8, help="Number of 32-bit scalar registers per core attached to the DX100 instance")
     parser.add_argument("--maa_num_instructions_per_core", type=int, default=8, help="Number of instructions in the instruction file per core attached to the DX100 instance")
     parser.add_argument("--maa_num_row_table_rows_per_slice", type=int, default=64, help="Number of rows in each row table slice")

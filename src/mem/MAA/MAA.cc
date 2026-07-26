@@ -50,6 +50,9 @@ MAA::MAA(const MAAParams &p)
       addrRanges(p.addr_ranges.begin(), p.addr_ranges.end()),
       num_tiles(p.num_tiles_per_core * p.num_cores),
       num_tile_elements(p.num_tile_elements),
+      physical_tile_elements(p.physical_tile_elements == 0
+                                 ? p.num_tile_elements
+                                 : p.physical_tile_elements),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -91,9 +94,16 @@ MAA::MAA(const MAAParams &p)
     m_core_addr_bits = calc_log2(num_cores);
     panic_if(num_cores % num_maas != 0, "Number of cores %d must be a multiple of the number of MAAs %s\n", num_cores, num_maas);
     panic_if(num_indirect_units_per_maa == 0, "Number of indirect units per MAA must be positive\n");
+    panic_if(physical_tile_elements > num_tile_elements,
+             "Physical tile capacity %u exceeds logical capacity %u\n",
+             physical_tile_elements, num_tile_elements);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
-    spd = new SPD(this, num_tiles, num_tile_elements, p.spd_read_latency, p.spd_write_latency, p.num_spd_read_ports_per_maa * num_maas, p.num_spd_write_ports_per_maa * num_maas);
+    spd = new SPD(this, num_tiles, num_tile_elements,
+                  physical_tile_elements, p.spd_read_latency,
+                  p.spd_write_latency,
+                  p.num_spd_read_ports_per_maa * num_maas,
+                  p.num_spd_write_ports_per_maa * num_maas);
     rf = new RF(num_regs);
     num_instructions_per_maa = num_instructions_per_core * num_cores_per_maas;
     num_instructions_total = num_instructions_per_maa * num_maas;
