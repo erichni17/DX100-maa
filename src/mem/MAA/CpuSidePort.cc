@@ -232,6 +232,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_SPD_STREAM ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD) {
@@ -289,6 +291,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_SPD_STREAM)
                     break;
                 my_instruction_recvs[instruction_id] = true;
@@ -304,6 +308,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
                         current_instruction->opcode !=
+                            Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+                        current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_SPD_STREAM,
                     "Backing address is only valid for virtual or fused "
                     "indirect loads!\n");
@@ -317,12 +323,42 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     addrRegions[current_instruction->backingAddrRangeID].first;
                 current_instruction->backingMaxAddr = addrRegions[
                     current_instruction->backingAddrRangeID].second;
+                if (current_instruction->opcode ==
+                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX)
+                    break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(
                     MAAController,
                     "%s: %s received with backing address 0x%lx!\n",
                     __func__, current_instruction->print(),
                     current_instruction->backingAddr);
+                respond_immediately = false;
+                scheduleDispatchInstructionEvent();
+                break;
+            }
+            case 4: {
+                panic_if(instruction_id == -1,
+                         "Received index address before instruction "
+                         "header!\n");
+                panic_if(current_instruction->opcode !=
+                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX,
+                         "Index address is only valid for direct-index "
+                         "virtual loads!\n");
+                current_instruction->indexAddr = data;
+                current_instruction->indexAddrRangeID = getAddrRegion(data);
+                panic_if(current_instruction->indexAddrRangeID < 0,
+                         "Index address 0x%lx is not in a registered memory "
+                         "region\n",
+                         data);
+                current_instruction->indexMinAddr =
+                    addrRegions[current_instruction->indexAddrRangeID].first;
+                current_instruction->indexMaxAddr =
+                    addrRegions[current_instruction->indexAddrRangeID].second;
+                my_instruction_recvs[instruction_id] = true;
+                DPRINTF(MAAController,
+                        "%s: %s received with index address 0x%lx!\n",
+                        __func__, current_instruction->print(),
+                        current_instruction->indexAddr);
                 respond_immediately = false;
                 scheduleDispatchInstructionEvent();
                 break;

@@ -45,9 +45,10 @@ public:
         ALU_REDUCE = 10,
         INDIR_LD_VIRTUAL = 11,
         INDIR_LD_SPD_STREAM = 12,
+        INDIR_LD_VIRTUAL_INDEX = 13,
         MAX
     };
-    std::string opcode_names[13] = {
+    std::string opcode_names[14] = {
         "STREAM_LD",
         "STREAM_ST",
         "INDIR_LD",
@@ -60,7 +61,8 @@ public:
         "ALU_VECTOR",
         "ALU_REDUCE",
         "INDIR_LD_VIRTUAL",
-        "INDIR_LD_SPD_STREAM"
+        "INDIR_LD_SPD_STREAM",
+        "INDIR_LD_VIRTUAL_INDEX"
     };
     enum class OPType : uint8_t
     {
@@ -147,9 +149,10 @@ public:
         "SRV",
         "FNS",
         "MAX"};
-    Addr baseAddr, backingAddr;
+    Addr baseAddr, backingAddr, indexAddr;
     Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
-    int8_t addrRangeID, backingAddrRangeID;
+    Addr indexMinAddr, indexMaxAddr;
+    int8_t addrRangeID, backingAddrRangeID, indexAddrRangeID;
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
     int16_t src1SpdID, src2SpdID;
     TileStatus src1Status, src2Status;

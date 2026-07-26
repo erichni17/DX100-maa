@@ -1133,6 +1133,18 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         (*IND_AvgLoadsMemAccessingLatency[indirect_id]).flags(statistics::nozero | statistics::nonan);
         (*IND_AvgStoresMemAccessingPerInst[indirect_id]).flags(statistics::nozero | statistics::nonan);
         (*IND_AvgEvictssPerInst[indirect_id]).flags(statistics::nozero | statistics::nonan);
+        IND_VirtIndexLineReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineReads"),
+            statistics::units::Count::get(),
+            "cache-line reads issued by direct virtual-index ingestion"));
+        IND_VirtIndexWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexWords"),
+            statistics::units::Count::get(),
+            "index words delivered to direct virtual-index ingestion"));
+        IND_VirtIndexWordHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexWordHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak buffered direct-index words"));
         IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
             statistics::units::Count::get(),

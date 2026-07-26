@@ -8,6 +8,8 @@
 #include <string>
 #include <map>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include "base/statistics.hh"
 #include "base/types.hh"
@@ -199,7 +201,14 @@ protected:
     Addr my_virtual_addr = 0;
     Addr my_base_addr, my_backing_addr, my_min_addr, my_max_addr;
     Addr my_backing_min_addr, my_backing_max_addr;
-    int8_t my_addr_range_id, my_backing_addr_range_id;
+    Addr my_index_addr, my_index_min_addr, my_index_max_addr;
+    int8_t my_addr_range_id, my_backing_addr_range_id, my_index_addr_range_id;
+    int my_index_min, my_index_stride;
+    bool direct_index_pending = false;
+    Addr direct_index_pending_paddr = 0;
+    std::vector<std::pair<int, uint16_t>> direct_index_pending_words;
+    std::map<int, uint32_t> direct_index_words;
+    int direct_index_max_words = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
@@ -230,6 +239,14 @@ protected:
 
     Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
                          unsigned size = 64);
+    bool isVirtualLoad() const;
+    bool isDirectIndexLoad() const;
+    bool ensureDirectIndex(int itr);
+    uint32_t takeDirectIndex(int itr);
+    bool receiveDirectIndex(Addr addr, uint8_t *dataptr,
+                            bool is_block_cached);
+    void createDirectIndexReadPacket(Addr addr, int latency);
+    void accountReadResponse(Addr addr, bool is_block_cached);
     Addr backingWordAddr(int itr) const;
     void validateRetirementWriteRange(Addr vaddr, unsigned size) const;
     bool createRetirementWrite(int itr, const uint8_t *data);

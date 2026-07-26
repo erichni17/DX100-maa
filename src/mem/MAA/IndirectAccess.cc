@@ -415,6 +415,10 @@ void IndirectAccessUnit::check_reset() {
                              [](Tick ticks) { return ticks != 0; }),
              "I[%d] virtual pipeline attribution is still active\n",
              my_indirect_id);
+    panic_if(direct_index_pending || !direct_index_pending_words.empty() ||
+                 !direct_index_words.empty(),
+             "I[%d] direct-index buffer is not empty at reset\n",
+             my_indirect_id);
 }
 Cycles IndirectAccessUnit::updateLatency(int num_spd_read_data_accesses, int num_spd_read_condidx_accesses, int num_spd_write_accesses, int num_rowtable_read_accesses, int num_rowtable_write_accesses, int RT_access_parallelism) {
     if (num_spd_read_data_accesses != 0) {
@@ -472,6 +476,140 @@ bool IndirectAccessUnit::scheduleNextExecution(bool force) {
     }
     return false;
 }
+bool IndirectAccessUnit::isVirtualLoad() const {
+    return my_instruction != nullptr &&
+           (my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
+            my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX);
+}
+bool IndirectAccessUnit::isDirectIndexLoad() const {
+    return my_instruction != nullptr &&
+           my_instruction->opcode ==
+               Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX;
+}
+void IndirectAccessUnit::accountReadResponse(Addr addr,
+                                             bool is_block_cached) {
+    if (is_block_cached) {
+        auto responding = LoadsCacheHitRespondingTimeHistory.find(addr);
+        auto accessing = LoadsCacheHitAccessingTimeHistory.find(addr);
+        if (responding != LoadsCacheHitRespondingTimeHistory.end()) {
+            (*maa->stats.IND_LoadsCacheHitRespondingLatency[my_indirect_id]) +=
+                maa->getTicksToCycles(curTick() - responding->second);
+            LoadsCacheHitRespondingTimeHistory.erase(responding);
+        } else if (accessing != LoadsCacheHitAccessingTimeHistory.end()) {
+            (*maa->stats.IND_LoadsCacheHitAccessingLatency[my_indirect_id]) +=
+                maa->getTicksToCycles(curTick() - accessing->second);
+            LoadsCacheHitAccessingTimeHistory.erase(accessing);
+        } else {
+            panic("I[%d] %s: addr(0x%lx) is not in the cache hit history!\n",
+                  my_indirect_id, __func__, addr);
+        }
+    } else {
+        auto accessing = LoadsMemAccessingTimeHistory.find(addr);
+        panic_if(accessing == LoadsMemAccessingTimeHistory.end(),
+                 "I[%d] %s: addr(0x%lx) is not in the memory history!\n",
+                 my_indirect_id, __func__, addr);
+        (*maa->stats.IND_LoadsMemAccessingLatency[my_indirect_id]) +=
+            maa->getTicksToCycles(curTick() - accessing->second);
+        LoadsMemAccessingTimeHistory.erase(accessing);
+    }
+}
+bool IndirectAccessUnit::ensureDirectIndex(int itr) {
+    if (!isDirectIndexLoad())
+        return true;
+    if (direct_index_words.find(itr) != direct_index_words.end())
+        return true;
+    if (direct_index_pending)
+        return false;
+
+    const int64_t source_index =
+        static_cast<int64_t>(my_index_min) +
+        static_cast<int64_t>(itr) * my_index_stride;
+    panic_if(source_index < 0,
+             "I[%d] negative streamed-index position %ld for itr %d\n",
+             my_indirect_id, source_index, itr);
+    const uint64_t byte_offset =
+        static_cast<uint64_t>(source_index) * sizeof(uint32_t);
+    const Addr index_bytes = my_index_max_addr - my_index_addr;
+    panic_if(my_index_addr < my_index_min_addr ||
+                 my_index_addr >= my_index_max_addr ||
+                 index_bytes < sizeof(uint32_t) ||
+                 byte_offset > index_bytes - sizeof(uint32_t),
+             "I[%d] streamed-index position %ld exceeds [0x%lx, 0x%lx)\n",
+             my_indirect_id, source_index, my_index_min_addr,
+             my_index_max_addr);
+    const Addr first_vaddr = my_index_addr + byte_offset;
+    const Addr block_vaddr = addrBlockAligner(first_vaddr, block_size);
+    const Addr block_paddr =
+        addrBlockAligner(translatePacket(block_vaddr), block_size);
+    if (maa->hasOutstandingPacket(block_paddr)) {
+        scheduleExecuteInstructionEvent(1);
+        return false;
+    }
+
+    direct_index_pending_words.clear();
+    for (int candidate = itr; candidate < my_max; ++candidate) {
+        const int64_t candidate_source =
+            static_cast<int64_t>(my_index_min) +
+            static_cast<int64_t>(candidate) * my_index_stride;
+        if (candidate_source < 0)
+            break;
+        const uint64_t candidate_offset =
+            static_cast<uint64_t>(candidate_source) * sizeof(uint32_t);
+        if (index_bytes < sizeof(uint32_t) ||
+            candidate_offset > index_bytes - sizeof(uint32_t))
+            break;
+        const Addr candidate_vaddr = my_index_addr + candidate_offset;
+        if (addrBlockAligner(candidate_vaddr, block_size) != block_vaddr)
+            break;
+        direct_index_pending_words.emplace_back(
+            candidate,
+            static_cast<uint16_t>((candidate_vaddr - block_vaddr) /
+                                  sizeof(uint32_t)));
+    }
+    panic_if(direct_index_pending_words.empty(),
+             "I[%d] direct-index request at itr %d captured no words\n",
+             my_indirect_id, itr);
+    direct_index_pending = true;
+    direct_index_pending_paddr = block_paddr;
+    createDirectIndexReadPacket(block_paddr, rowtable_latency);
+    return false;
+}
+uint32_t IndirectAccessUnit::takeDirectIndex(int itr) {
+    auto entry = direct_index_words.find(itr);
+    panic_if(entry == direct_index_words.end(),
+             "I[%d] streamed index %d is not buffered\n",
+             my_indirect_id, itr);
+    const uint32_t value = entry->second;
+    direct_index_words.erase(entry);
+    return value;
+}
+bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
+                                            bool is_block_cached) {
+    if (!isDirectIndexLoad() || !direct_index_pending ||
+        addr != direct_index_pending_paddr)
+        return false;
+    accountReadResponse(addr, is_block_cached);
+    const auto *words = reinterpret_cast<const uint32_t *>(dataptr);
+    for (const auto &[itr, wid] : direct_index_pending_words) {
+        panic_if(wid >= block_size / sizeof(uint32_t),
+                 "I[%d] invalid streamed-index word %u\n",
+                 my_indirect_id, wid);
+        panic_if(!direct_index_words.emplace(itr, words[wid]).second,
+                 "I[%d] duplicate streamed index %d\n",
+                 my_indirect_id, itr);
+    }
+    (*maa->stats.IND_VirtIndexWords[my_indirect_id]) +=
+        direct_index_pending_words.size();
+    direct_index_max_words = std::max(
+        direct_index_max_words, static_cast<int>(direct_index_words.size()));
+    direct_index_pending = false;
+    direct_index_pending_paddr = 0;
+    direct_index_pending_words.clear();
+    scheduleNextExecution(true);
+    return true;
+}
 void IndirectAccessUnit::checkTileReady() {
     // Check if any of the source tiles are ready
     // Set my_max to the size of the ready tile
@@ -485,7 +623,10 @@ void IndirectAccessUnit::checkTileReady() {
             panic_if(maa->spd->getSize(my_cond_tile) != my_max, "I[%d] %s: cond size (%d) != max (%d)!\n", my_indirect_id, __func__, maa->spd->getSize(my_cond_tile), my_max);
         }
     }
-    if (maa->spd->getTileStatus(my_idx_tile) == SPD::TileStatus::Finished) {
+    if (isDirectIndexLoad()) {
+        my_idx_tile_ready = true;
+    } else if (maa->spd->getTileStatus(my_idx_tile) ==
+               SPD::TileStatus::Finished) {
         my_idx_tile_ready = true;
         if (my_max == -1) {
             my_max = maa->spd->getSize(my_idx_tile);
@@ -493,23 +634,52 @@ void IndirectAccessUnit::checkTileReady() {
         }
         panic_if(maa->spd->getSize(my_idx_tile) != my_max, "I[%d] %s: idx size (%d) != max (%d)!\n", my_indirect_id, __func__, maa->spd->getSize(my_idx_tile), my_max);
     }
-    if (my_instruction->opcode != Instruction::OpcodeType::INDIR_LD && my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL && my_instruction->opcode != Instruction::OpcodeType::INDIR_ST_SCALAR && my_instruction->opcode != Instruction::OpcodeType::INDIR_RMW_SCALAR && maa->spd->getTileStatus(my_src_tile) == SPD::TileStatus::Finished) {
+    if (my_instruction->opcode != Instruction::OpcodeType::INDIR_LD &&
+        !isVirtualLoad() &&
+        my_instruction->opcode !=
+            Instruction::OpcodeType::INDIR_ST_SCALAR &&
+        my_instruction->opcode !=
+            Instruction::OpcodeType::INDIR_RMW_SCALAR &&
+        maa->spd->getTileStatus(my_src_tile) == SPD::TileStatus::Finished) {
         my_src_tile_ready = true;
     }
 }
 bool IndirectAccessUnit::checkElementReady() {
     bool cond_ready = my_cond_tile == -1 || maa->spd->getElementFinished(my_cond_tile, my_i, 4, (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
-    bool idx_ready = cond_ready && maa->spd->getElementFinished(my_idx_tile, my_i, 4, (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
-    bool src_ready = idx_ready && (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL || my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR || my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR || maa->spd->getElementFinished(my_src_tile, my_i, my_word_size, (uint8_t)FuncUnitType::INDIRECT, my_indirect_id));
-    if (cond_ready == false) {
-        DPRINTF(MAAIndirect, "I[%d] %s: cond tile[%d] element[%d] not ready, returning!\n", my_indirect_id, __func__, my_cond_tile, my_i);
-    } else if (idx_ready == false) {
-        DPRINTF(MAAIndirect, "I[%d] %s: idx tile[%d] element[%d] not ready, returning!\n", my_indirect_id, __func__, my_idx_tile, my_i);
-    } else if (src_ready == false) {
+    bool idx_ready = cond_ready &&
+        (isDirectIndexLoad()
+             ? ensureDirectIndex(my_i)
+             : maa->spd->getElementFinished(
+                   my_idx_tile, my_i, 4,
+                   (uint8_t)FuncUnitType::INDIRECT, my_indirect_id));
+    bool src_ready = idx_ready &&
+        (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+         isVirtualLoad() ||
+         my_instruction->opcode ==
+             Instruction::OpcodeType::INDIR_RMW_SCALAR ||
+         my_instruction->opcode ==
+             Instruction::OpcodeType::INDIR_ST_SCALAR ||
+         maa->spd->getElementFinished(
+             my_src_tile, my_i, my_word_size,
+             (uint8_t)FuncUnitType::INDIRECT, my_indirect_id));
+    if (!cond_ready) {
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: cond tile[%d] element[%d] not ready, "
+                "returning!\n",
+                my_indirect_id, __func__, my_cond_tile, my_i);
+    } else if (!idx_ready) {
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: idx tile[%d] element[%d] not ready, "
+                "returning!\n",
+                my_indirect_id, __func__, my_idx_tile, my_i);
+    } else if (!src_ready) {
         // TODO: this is too early to check src_ready, check it in other stages
-        DPRINTF(MAAIndirect, "I[%d] %s: src tile[%d] element[%d] not ready, returning!\n", my_indirect_id, __func__, my_src_tile, my_i);
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: src tile[%d] element[%d] not ready, "
+                "returning!\n",
+                my_indirect_id, __func__, my_src_tile, my_i);
     }
-    if (cond_ready == false || idx_ready == false || src_ready == false) {
+    if (!cond_ready || !idx_ready || !src_ready) {
         return false;
     }
     return true;
@@ -545,8 +715,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         if (my_max != -1 && my_i >= my_max) {
             if (my_dst_tile != -1) {
                 panic_if(my_max != -1 && my_i != my_max, "I[%d] %s: my_i(%d) != my_max(%d)!\n", my_indirect_id, __func__, my_i, my_max);
-                if (my_instruction->opcode ==
-                    Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+                if (isVirtualLoad())
                     maa->spd->setVirtualSize(my_dst_tile, my_i);
                 else
                     maa->spd->setSize(my_dst_tile, my_i);
@@ -569,8 +738,11 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             num_spd_read_condidx_accesses++;
         }
         if (my_cond_tile == -1 || maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0) {
-            uint32_t idx = maa->spd->getData<uint32_t>(my_idx_tile, my_i);
-            num_spd_read_condidx_accesses++;
+            uint32_t idx = isDirectIndexLoad()
+                ? takeDirectIndex(my_i)
+                : maa->spd->getData<uint32_t>(my_idx_tile, my_i);
+            if (!isDirectIndexLoad())
+                num_spd_read_condidx_accesses++;
             Addr vaddr = my_base_addr + my_word_size * idx;
             panic_if(vaddr < my_min_addr || vaddr >= my_max_addr, "I[%d] %s: vaddr 0x%lx out of range [0x%lx, 0x%lx)!\n", my_indirect_id, __func__, vaddr, my_min_addr, my_max_addr);
             Addr block_vaddr = addrBlockAligner(vaddr, block_size);
@@ -623,19 +795,21 @@ void IndirectAccessUnit::executeInstruction() {
         // Decoding the instruction
         my_base_addr = my_instruction->baseAddr;
         my_backing_addr = my_instruction->backingAddr;
+        my_index_addr = my_instruction->indexAddr;
         my_idx_tile = my_instruction->src1SpdID;
         my_src_tile = my_instruction->src2SpdID;
         my_src_reg = my_instruction->src1RegID;
         my_dst_tile = my_instruction->dst1SpdID;
         my_cond_tile = my_instruction->condSpdID;
-        panic_if(my_instruction->opcode ==
-                         Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
-                     !reorder_RT,
+        panic_if(isVirtualLoad() && !reorder_RT,
                  "I[%d] virtual indirect load requires row-table reordering\n",
                  my_indirect_id);
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
-            my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_VECTOR ||
-            my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR) {
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+            isVirtualLoad() ||
+            my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_RMW_VECTOR ||
+            my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_RMW_SCALAR) {
             my_is_load = true;
         } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR ||
                    my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR) {
@@ -643,7 +817,8 @@ void IndirectAccessUnit::executeInstruction() {
         } else {
             assert(false);
         }
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+            isVirtualLoad()) {
             my_word_size = my_instruction->getWordSize(my_dst_tile);
         } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR ||
                    my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_VECTOR) {
@@ -663,7 +838,8 @@ void IndirectAccessUnit::executeInstruction() {
                  my_indirect_id);
         maa->stats.numInst++;
         (*maa->stats.IND_NumInsts[my_indirect_id])++;
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+            isVirtualLoad()) {
             maa->stats.numInst_INDRD++;
         } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR ||
                    my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR) {
@@ -676,7 +852,13 @@ void IndirectAccessUnit::executeInstruction() {
         }
         my_cond_tile_ready = (my_cond_tile == -1) ? true : false;
         my_idx_tile_ready = false;
-        my_src_tile_ready = (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL || my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR || my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR) ? true : false;
+        my_src_tile_ready =
+            (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+             isVirtualLoad() ||
+             my_instruction->opcode ==
+                 Instruction::OpcodeType::INDIR_ST_SCALAR ||
+             my_instruction->opcode ==
+                 Instruction::OpcodeType::INDIR_RMW_SCALAR);
         my_RT_config = getRowTableConfig(my_base_addr);
 
         // Initialization
@@ -731,6 +913,37 @@ void IndirectAccessUnit::executeInstruction() {
         }
         my_i = 0;
         my_max = -1;
+        my_index_min = 0;
+        my_index_stride = 1;
+        direct_index_pending = false;
+        direct_index_pending_paddr = 0;
+        direct_index_pending_words.clear();
+        direct_index_words.clear();
+        direct_index_max_words = 0;
+        if (isDirectIndexLoad()) {
+            panic_if(my_cond_tile != -1,
+                     "I[%d] direct-index virtual load does not yet support "
+                     "condition tiles\n",
+                     my_indirect_id);
+            my_index_min =
+                maa->rf->getData<int>(my_instruction->src1RegID);
+            const int index_max =
+                maa->rf->getData<int>(my_instruction->src2RegID);
+            my_index_stride =
+                maa->rf->getData<int>(my_instruction->src3RegID);
+            panic_if(my_index_stride <= 0 || index_max < my_index_min,
+                     "I[%d] invalid streamed-index range %d:%d:%d\n",
+                     my_indirect_id, my_index_min, index_max,
+                     my_index_stride);
+            my_max = index_max == my_index_min
+                ? 0
+                : (index_max - my_index_min - 1) / my_index_stride + 1;
+            panic_if(my_max > num_tile_elements,
+                     "I[%d] streamed-index length %d exceeds logical tile "
+                     "capacity %d\n",
+                     my_indirect_id, my_max, num_tile_elements);
+            my_idx_tile_ready = true;
+        }
         my_SPD_read_finish_tick = curTick();
         my_SPD_write_finish_tick = curTick();
         my_RT_read_access_finish_tick = curTick();
@@ -748,8 +961,10 @@ void IndirectAccessUnit::executeInstruction() {
         my_backing_min_addr = my_instruction->backingMinAddr;
         my_backing_max_addr = my_instruction->backingMaxAddr;
         my_backing_addr_range_id = my_instruction->backingAddrRangeID;
-        if (my_instruction->opcode ==
-            Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+        my_index_min_addr = my_instruction->indexMinAddr;
+        my_index_max_addr = my_instruction->indexMaxAddr;
+        my_index_addr_range_id = my_instruction->indexAddrRangeID;
+        if (isVirtualLoad()) {
             panic_if(my_backing_addr_range_id < 0,
                      "I[%d] virtual backing has no registered region\n",
                      my_indirect_id);
@@ -759,6 +974,17 @@ void IndirectAccessUnit::executeInstruction() {
                      "[0x%lx, 0x%lx)\n",
                      my_indirect_id, my_backing_addr, my_backing_min_addr,
                      my_backing_max_addr);
+        }
+        if (isDirectIndexLoad()) {
+            panic_if(my_index_addr_range_id < 0,
+                     "I[%d] direct index has no registered region\n",
+                     my_indirect_id);
+            panic_if(my_index_addr < my_index_min_addr ||
+                         my_index_addr >= my_index_max_addr,
+                     "I[%d] direct index 0x%lx out of range "
+                     "[0x%lx, 0x%lx)\n",
+                     my_indirect_id, my_index_addr, my_index_min_addr,
+                     my_index_max_addr);
         }
 
         // Setting the state of the instruction and stream unit
@@ -823,7 +1049,7 @@ void IndirectAccessUnit::executeInstruction() {
         if (scheduleNextExecution()) {
             break;
         }
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+        if (isVirtualLoad())
             (*maa->stats.IND_VirtBuildRounds[my_indirect_id])++;
         if (my_build_start_tick == 0) {
             my_build_start_tick = curTick();
@@ -846,8 +1072,7 @@ void IndirectAccessUnit::executeInstruction() {
             }
         }
         bool virtual_capacity_full = false;
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
-            virtual_pending_source) {
+        if (isVirtualLoad() && virtual_pending_source) {
             if (virtual_reserved_responses == virtual_response_slots.size() ||
                 (virtual_response_word_pool_limit != 0 &&
                  virtual_reserved_response_words + virtual_pending_source_words >
@@ -878,8 +1103,9 @@ void IndirectAccessUnit::executeInstruction() {
             if (checkAndResetAllRowTablesSent())
                 break;
             for (; last_RT_sent < num_RT_slices[my_RT_config]; last_RT_sent++) {
-                if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
-                    virtual_reserved_responses == virtual_response_slots.size()) {
+                if (isVirtualLoad() &&
+                    virtual_reserved_responses ==
+                        virtual_response_slots.size()) {
                     virtual_capacity_full = true;
                     break;
                 }
@@ -889,7 +1115,7 @@ void IndirectAccessUnit::executeInstruction() {
                 if (my_RT_req_sent[my_RT_config][RT_idx] == false) {
                     if (RT[my_RT_config][RT_idx].get_entry_send(addr, my_fill_finished)) {
                         DPRINTF(MAAIndirect, "I[%d] %s: Creating packet for bank[%d], addr[0x%lx]!\n", my_indirect_id, __func__, RT_idx, addr);
-                        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+                        if (isVirtualLoad()) {
                             std::vector addr_vec = maa->map_addr(addr);
                             int pending_rt = getRowTableIdx(
                                 my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
@@ -929,7 +1155,7 @@ void IndirectAccessUnit::executeInstruction() {
                             }
                         }
                         my_expected_responses++;
-                        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+                        if (isVirtualLoad()) {
                             virtual_reserved_responses++;
                             virtual_source_expected++;
                             virtual_max_reserved_responses = std::max(
@@ -974,8 +1200,7 @@ void IndirectAccessUnit::executeInstruction() {
             startVirtualRequestInterval();
         }
         accountVirtualRequestInterval();
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
-            drainVirtualResponses()) {
+        if (isVirtualLoad() && drainVirtualResponses()) {
             scheduleExecuteInstructionEvent(1);
             break;
         }
@@ -993,18 +1218,17 @@ void IndirectAccessUnit::executeInstruction() {
         const bool virtual_sources_drained =
             virtual_source_received == virtual_source_expected &&
             virtual_reserved_responses == 0;
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
-            my_fill_finished && !virtual_build_incomplete &&
+        if (isVirtualLoad() && my_fill_finished &&
+            !virtual_build_incomplete &&
             virtual_sources_drained) {
             virtual_final_flush = true;
             drainVirtualCombiner(true);
         }
-        const bool responses_complete =
-            my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL
-                ? (virtual_build_incomplete ? virtual_sources_drained
-                                            : virtualRetirementComplete())
-                : (maa->allIndirectPacketsSent(my_indirect_id) &&
-                   my_received_responses == my_expected_responses);
+        const bool responses_complete = isVirtualLoad()
+            ? (virtual_build_incomplete ? virtual_sources_drained
+                                        : virtualRetirementComplete())
+            : (maa->allIndirectPacketsSent(my_indirect_id) &&
+               my_received_responses == my_expected_responses);
         if (responses_complete) {
             if (scheduleNextExecution()) {
                 DPRINTF(MAAIndirect, "I[%d] %s: requesting is still not ready, returning!\n", my_indirect_id, __func__);
@@ -1039,7 +1263,7 @@ void IndirectAccessUnit::executeInstruction() {
         assert(my_instruction != nullptr);
         DPRINTF(MAAIndirect, "I[%d] %s: responding %s!\n", my_indirect_id, __func__, my_instruction->print());
         DPRINTF(MAATrace, "I[%d] End [%s]\n", my_indirect_id, my_instruction->print());
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+        if (isVirtualLoad()) {
             DPRINTF(MAAIndirect,
                     "I[%d] virtual high water: response_slots=%d/%zu writes=%d/%d\n",
                     my_indirect_id, virtual_max_reserved_responses,
@@ -1069,28 +1293,52 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
         }
-        panic_if(scheduleNextExecution(), "I[%d] %s: Execution is not completed!\n", my_indirect_id, __func__);
-        panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");
-        panic_if(my_cond_tile_ready == false, "I[%d] %s: cond tile[%d] is not ready!\n", my_indirect_id, __func__, my_cond_tile);
-        panic_if(my_idx_tile_ready == false, "I[%d] %s: idx tile[%d] is not ready!\n", my_indirect_id, __func__, my_idx_tile);
-        panic_if(my_src_tile_ready == false, "I[%d] %s: src tile[%d] is not ready!\n", my_indirect_id, __func__, my_src_tile);
-        panic_if(LoadsCacheHitRespondingTimeHistory.size() != 0, "I[%d] %s: LoadsCacheHitRespondingTimeHistory is not empty!\n", my_indirect_id, __func__);
-        panic_if(LoadsCacheHitAccessingTimeHistory.size() != 0, "I[%d] %s: LoadsCacheHitAccessingTimeHistory is not empty!\n", my_indirect_id, __func__);
-        panic_if(LoadsMemAccessingTimeHistory.size() != 0, "I[%d] %s: LoadsMemAccessingTimeHistory is not empty!\n", my_indirect_id, __func__);
-        DPRINTF(MAAIndirect, "I[%d] %s: state set to finish for request %s!\n", my_indirect_id, __func__, my_instruction->print());
+        if (isDirectIndexLoad()) {
+            (*maa->stats.IND_VirtIndexWordHighWater[my_indirect_id]) +=
+                direct_index_max_words;
+        }
+        panic_if(scheduleNextExecution(),
+                 "I[%d] %s: Execution is not completed!\n",
+                 my_indirect_id, __func__);
+        panic_if(!maa->allIndirectPacketsSent(my_indirect_id),
+                 "All indirect packets are not sent!\n");
+        panic_if(!my_cond_tile_ready,
+                 "I[%d] %s: cond tile[%d] is not ready!\n",
+                 my_indirect_id, __func__, my_cond_tile);
+        panic_if(!my_idx_tile_ready,
+                 "I[%d] %s: idx tile[%d] is not ready!\n",
+                 my_indirect_id, __func__, my_idx_tile);
+        panic_if(!my_src_tile_ready,
+                 "I[%d] %s: src tile[%d] is not ready!\n",
+                 my_indirect_id, __func__, my_src_tile);
+        panic_if(!LoadsCacheHitRespondingTimeHistory.empty(),
+                 "I[%d] %s: cache-responding history is not empty!\n",
+                 my_indirect_id, __func__);
+        panic_if(!LoadsCacheHitAccessingTimeHistory.empty(),
+                 "I[%d] %s: cache-accessing history is not empty!\n",
+                 my_indirect_id, __func__);
+        panic_if(!LoadsMemAccessingTimeHistory.empty(),
+                 "I[%d] %s: memory-accessing history is not empty!\n",
+                 my_indirect_id, __func__);
+        DPRINTF(MAAIndirect,
+                "I[%d] %s: state set to finish for request %s!\n",
+                my_indirect_id, __func__, my_instruction->print());
         my_instruction->state = Instruction::Status::Finish;
         if (my_request_start_tick != 0) {
             finishVirtualRequestInterval();
-            (*maa->stats.IND_CyclesRequest[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_request_start_tick);
+            (*maa->stats.IND_CyclesRequest[my_indirect_id]) +=
+                maa->getTicksToCycles(curTick() - my_request_start_tick);
             my_request_start_tick = 0;
         }
-        Cycles total_cycles = maa->getTicksToCycles(curTick() - my_decode_start_tick);
+        Cycles total_cycles =
+            maa->getTicksToCycles(curTick() - my_decode_start_tick);
         maa->stats.cycles += total_cycles;
         my_decode_start_tick = 0;
         state = Status::Idle;
         check_reset();
         maa->finishInstructionCompute(my_instruction);
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+            isVirtualLoad()) {
             maa->stats.cycles_INDRD += total_cycles;
         } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR ||
                    my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR) {
@@ -1128,7 +1376,8 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
     RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
     real_req->setRegion(my_addr_range_id);
     PacketPtr read_pkt;
-    if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD || my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+    if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+        isVirtualLoad()) {
         read_pkt = new Packet(real_req, MemCmd::ReadReq);
     } else {
         read_pkt = new Packet(real_req, MemCmd::ReadExReq);
@@ -1137,6 +1386,20 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
     read_pkt->allocate();
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, read_pkt, maa->getClockEdge(Cycles(latency)), my_force_cache);
     DPRINTF(MAAIndirect, "I[%d] %s: created %s for mem\n", my_indirect_id, __func__, read_pkt->print());
+}
+void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
+    RequestPtr real_req = std::make_shared<Request>(
+        addr, block_size, flags, maa->requestorId);
+    real_req->setRegion(my_index_addr_range_id);
+    PacketPtr read_pkt = new Packet(real_req, MemCmd::ReadReq);
+    read_pkt->headerDelay = read_pkt->payloadDelay = 0;
+    read_pkt->allocate();
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, read_pkt,
+                    maa->getClockEdge(Cycles(latency)));
+    (*maa->stats.IND_VirtIndexLineReads[my_indirect_id])++;
+    DPRINTF(MAAIndirect,
+            "I[%d] %s: created direct-index read %s\n",
+            my_indirect_id, __func__, read_pkt->print());
 }
 void IndirectAccessUnit::memReadPacketSent(Addr addr) {
     DPRINTF(MAAIndirect, "I[%d] %s: mem read packet 0x%lx sent\n", my_indirect_id, __func__, addr);
@@ -1169,14 +1432,15 @@ void IndirectAccessUnit::cacheWritePacketSent(Addr addr) {
     }
 }
 bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached) {
+    if (receiveDirectIndex(addr, dataptr, is_block_cached))
+        return true;
     std::vector addr_vec = maa->map_addr(addr);
     int RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
     Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
     bool was_full = false;
     if (RT_idx == my_RT_idx)
         was_full = RT[my_RT_config][RT_idx].is_full();
-    const bool virtual_load =
-        my_instruction->opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL;
+    const bool virtual_load = isVirtualLoad();
     int virtual_head = -1;
     std::vector<OffsetTableEntry> entries;
     if (virtual_load) {
@@ -1193,21 +1457,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
     if ((!virtual_load && entries.empty()) || (virtual_load && virtual_head == -1)) {
         return false;
     }
-    if (is_block_cached) {
-        if (LoadsCacheHitRespondingTimeHistory.find(addr) != LoadsCacheHitRespondingTimeHistory.end()) {
-            (*maa->stats.IND_LoadsCacheHitRespondingLatency[my_indirect_id]) += maa->getTicksToCycles(curTick() - LoadsCacheHitRespondingTimeHistory[addr]);
-            LoadsCacheHitRespondingTimeHistory.erase(addr);
-        } else if (LoadsCacheHitAccessingTimeHistory.find(addr) != LoadsCacheHitAccessingTimeHistory.end()) {
-            (*maa->stats.IND_LoadsCacheHitAccessingLatency[my_indirect_id]) += maa->getTicksToCycles(curTick() - LoadsCacheHitAccessingTimeHistory[addr]);
-            LoadsCacheHitAccessingTimeHistory.erase(addr);
-        } else {
-            panic("I[%d] %s: addr(0x%lx) is not in the cache hit history!\n", my_indirect_id, __func__, addr);
-        }
-    } else {
-        panic_if(LoadsMemAccessingTimeHistory.find(addr) == LoadsMemAccessingTimeHistory.end(), "I[%d] %s: addr(0x%lx) is not in the memory accessing history!\n", my_indirect_id, __func__, addr);
-        (*maa->stats.IND_LoadsMemAccessingLatency[my_indirect_id]) += maa->getTicksToCycles(curTick() - LoadsMemAccessingTimeHistory[addr]);
-        LoadsMemAccessingTimeHistory.erase(addr);
-    }
+    accountReadResponse(addr, is_block_cached);
     if (virtual_load) {
         accountVirtualRequestInterval();
         auto slot = std::find_if(virtual_response_slots.begin(),
@@ -1270,8 +1520,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         int itr = entry.itr;
         int wid = entry.wid;
         DPRINTF(MAAIndirect, "I[%d] %s: itr (%d) wid (%d) matched!\n", my_indirect_id, __func__, itr, wid);
-        if (my_dst_tile != -1 &&
-            my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL) {
+        if (my_dst_tile != -1 && !isVirtualLoad()) {
             if (my_word_size == 4) {
                 maa->spd->setData<uint32_t>(my_dst_tile, itr, dataptr_u32_typed[wid]);
                 DPRINTF(MAAIndirect, "I[%d] %s: SPD[%d][%d] = %u/%d/%f!\n", my_indirect_id, __func__, my_dst_tile, itr, ((uint32_t *)new_data)[wid], ((int32_t *)new_data)[wid], ((float *)new_data)[wid]);
@@ -1283,6 +1532,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         }
         switch (my_instruction->opcode) {
         case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
+        case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX:
             panic("Virtual load must use bounded response retirement\n");
         case Instruction::OpcodeType::INDIR_LD: {
             assert(my_dst_tile != -1);
@@ -1947,7 +2197,7 @@ IndirectAccessUnit::classifyVirtualRequestReason() const {
 
 void IndirectAccessUnit::accountVirtualRequestInterval() {
     if (my_request_start_tick == 0 || my_instruction == nullptr ||
-        my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+        !isVirtualLoad())
         return;
 
     const Tick now = curTick();
@@ -1998,7 +2248,7 @@ void IndirectAccessUnit::accountVirtualRequestInterval() {
 }
 
 void IndirectAccessUnit::startVirtualRequestInterval() {
-    if (my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+    if (!isVirtualLoad())
         return;
     panic_if(virtual_request_reason_tick != 0,
              "I[%d] virtual request attribution already active\n",
@@ -2016,7 +2266,7 @@ void IndirectAccessUnit::startVirtualRequestInterval() {
 }
 
 void IndirectAccessUnit::finishVirtualRequestInterval() {
-    if (my_instruction->opcode != Instruction::OpcodeType::INDIR_LD_VIRTUAL)
+    if (!isVirtualLoad())
         return;
     accountVirtualRequestInterval();
     panic_if(virtual_request_attributed_ticks !=

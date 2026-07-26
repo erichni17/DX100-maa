@@ -11,12 +11,16 @@
 namespace gem5 {
 Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              backingAddr(0xFFFFFFFFFFFFFFFF),
+                             indexAddr(0xFFFFFFFFFFFFFFFF),
                              minAddr(0xFFFFFFFFFFFFFFFF),
                              maxAddr(0xFFFFFFFFFFFFFFFF),
                              backingMinAddr(0xFFFFFFFFFFFFFFFF),
                              backingMaxAddr(0xFFFFFFFFFFFFFFFF),
+                             indexMinAddr(0xFFFFFFFFFFFFFFFF),
+                             indexMaxAddr(0xFFFFFFFFFFFFFFFF),
                              addrRangeID(-1),
                              backingAddrRangeID(-1),
+                             indexAddrRangeID(-1),
                              src1RegID(-1),
                              src2RegID(-1),
                              src3RegID(-1),
@@ -88,6 +92,7 @@ int Instruction::getWordSize(int tile_id) {
         }
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
+        case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
@@ -125,6 +130,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::STREAM_LD:
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
+        case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
@@ -225,6 +231,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
     }
     case Instruction::OpcodeType::INDIR_LD:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
+    case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX:
     case Instruction::OpcodeType::INDIR_ST_VECTOR:
     case Instruction::OpcodeType::INDIR_ST_SCALAR:
     case Instruction::OpcodeType::INDIR_RMW_VECTOR:
@@ -305,7 +312,9 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         *inserted_slot = free_instruction_slot;
     if (_instruction.dst1SpdID != -1) {
         completion_only_tiles[maa_id][_instruction.dst1SpdID] =
-            _instruction.opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL;
+            _instruction.opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
+            _instruction.opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX;
     }
     if (_instruction.dst2SpdID != -1)
         completion_only_tiles[maa_id][_instruction.dst2SpdID] = false;

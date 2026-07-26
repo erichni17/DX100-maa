@@ -610,6 +610,9 @@ public:
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;
+        std::vector<statistics::Scalar *> IND_VirtIndexLineReads;
+        std::vector<statistics::Scalar *> IND_VirtIndexWords;
+        std::vector<statistics::Scalar *> IND_VirtIndexWordHighWater;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;
