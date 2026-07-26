@@ -67,6 +67,8 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    std::cout << "VIRTUAL_GATHER64_LAYOUT mem_size="
+              << static_cast<uint64_t>(MEM_SIZE) << std::endl;
     m5_checkpoint(0, 0);
 
     alloc_MAA();

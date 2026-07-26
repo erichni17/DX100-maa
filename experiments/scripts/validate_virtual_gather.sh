@@ -65,6 +65,15 @@ printf '%s\n' "$checkpoint_rc" >"$outdir/checkpoint.exit"
     echo "checkpoint failed with rc=$checkpoint_rc" >&2
     exit 1
 }
+mapfile -t layouts < <(
+    grep -E 'VIRTUAL_GATHER(64)?_LAYOUT' "$outdir/checkpoint.log" || true
+)
+if [[ ${#layouts[@]} -ne 1 ]] ||
+   [[ ! ${layouts[0]} =~ (^|[[:space:]])mem_size=2147483648($|[[:space:]]) ]]; then
+    echo "verifier memory map does not match gem5 --mem-size=2GB" >&2
+    printf 'layout markers: %s\n' "${layouts[*]:-<none>}" >&2
+    exit 1
+fi
 
 set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
