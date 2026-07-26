@@ -1037,10 +1037,22 @@ void IndirectAccessUnit::executeInstruction() {
                     virtual_max_combine_occupancy, virtual_max_combine_words,
                     virtual_combine_words_limit, virtual_full_line_writes,
                     virtual_partial_word_writes);
+            (*maa->stats.IND_VirtResponseSlotHighWater[my_indirect_id]) +=
+                virtual_max_reserved_responses;
             (*maa->stats.IND_VirtResponseWordHighWater[my_indirect_id]) +=
                 virtual_max_reserved_response_words;
             (*maa->stats.IND_VirtResponseWordPoolStalls[my_indirect_id]) +=
                 virtual_response_word_pool_stalls;
+            (*maa->stats.IND_VirtOutstandingWriteHighWater[my_indirect_id]) +=
+                virtual_max_outstanding_writes;
+            (*maa->stats.IND_VirtCombineLineHighWater[my_indirect_id]) +=
+                virtual_max_combine_occupancy;
+            (*maa->stats.IND_VirtCombineWordHighWater[my_indirect_id]) +=
+                virtual_max_combine_words;
+            (*maa->stats.IND_VirtFullLineWrites[my_indirect_id]) +=
+                virtual_full_line_writes;
+            (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
+                virtual_partial_word_writes;
         }
         panic_if(scheduleNextExecution(), "I[%d] %s: Execution is not completed!\n", my_indirect_id, __func__);
         panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");

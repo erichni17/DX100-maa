@@ -460,6 +460,9 @@ Configuration<Spatter::Serial>::Configuration(const size_t id,
     pattern_scatter_int.resize(pattern_scatter.size());
     for (size_t i = 0; i < pattern_scatter.size(); ++i)
         pattern_scatter_int[i] = static_cast<int>(pattern_scatter[i]);
+#ifdef MAA_VIRTUAL_BACKED_GATHER
+    virtual_backing.resize(pattern.size());
+#endif
 }
 
 void setup_MAA() {
@@ -487,6 +490,11 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
     add_mem_region(pattern_int.data(), &pattern_int.data()[pattern_int.size()]); // 6
     add_mem_region(sparse.data(), &sparse.data()[sparse.size()]);                // 7
     add_mem_region(dense.data(), &dense.data()[dense.size()]);                   // 8
+#ifdef MAA_VIRTUAL_BACKED_GATHER
+    // Intermediate memory region for the transparent virtual-tile control.
+    add_mem_region(virtual_backing.data(),
+                   &virtual_backing.data()[virtual_backing.size()]);
+#endif
 #endif
 
     assert(count == 1 && "MAA Evaluation only supports count = 1");
@@ -516,6 +524,9 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             maa_indirect_load_spd_stream<double>(
                 sparse.data(), tile1, tile2, dense.data(),
                 reg1, reg2, reg3);
+#elif defined(MAA_VIRTUAL_BACKED_GATHER)
+            maa_indirect_load_virtual<double>(sparse.data(), tile1, tile2,
+                                              virtual_backing.data() + j);
 #elif defined(MAA_VIRTUAL_GATHER)
             maa_indirect_load_virtual<double>(sparse.data(), tile1, tile2,
                                               dense.data() + j);
@@ -524,6 +535,11 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             maa_stream_store<double>(dense.data(), reg1, reg2, reg3, tile2);
 #endif
             wait_ready(tile2);
+#ifdef MAA_VIRTUAL_BACKED_GATHER
+            const int chunk_end = std::min(j + TILE_SIZE, pattern_length);
+            for (int k = j; k < chunk_end; ++k)
+                dense[k] = virtual_backing[k];
+#endif
         }
 #else
 #pragma omp for

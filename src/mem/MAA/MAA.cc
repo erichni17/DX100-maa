@@ -1131,6 +1131,31 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankConflictCycles"),
             statistics::units::Count::get(),
             "cycles with a virtual destination-combiner same-bank conflict"));
+        IND_VirtResponseSlotHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtResponseSlotHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak occupied virtual response slots"));
+        IND_VirtOutstandingWriteHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtOutstandingWriteHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak outstanding virtual retirement "
+            "writes"));
+        IND_VirtCombineLineHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineLineHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak occupied virtual combiner lines"));
+        IND_VirtCombineWordHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineWordHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak buffered virtual combiner words"));
+        IND_VirtFullLineWrites.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtFullLineWrites"),
+            statistics::units::Count::get(),
+            "number of full-cache-line virtual retirement writes"));
+        IND_VirtPartialWrites.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
+            statistics::units::Count::get(),
+            "number of partial-word virtual retirement writes"));
     }
     for (int stream_id = 0; stream_id < maa->num_maas; stream_id++) {
         STR_NumInsts.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumInsts"), statistics::units::Count::get(), "number of instructions"));

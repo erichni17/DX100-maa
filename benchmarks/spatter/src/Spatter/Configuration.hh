@@ -167,6 +167,10 @@ public:
     void scatter_gather(bool timed, unsigned long run_id);
     void multi_gather(bool timed, unsigned long run_id);
     void multi_scatter(bool timed, unsigned long run_id);
+
+private:
+    // LLC-backed logical tile used only by the transparent virtualization arm.
+    aligned_vector<double> virtual_backing;
 };
 
 #ifdef USE_OPENMP

@@ -592,8 +592,14 @@ public:
         std::vector<statistics::Scalar *> IND_VirtRequestCyclesFinalDrain;
         std::vector<statistics::Scalar *> IND_VirtRequestCyclesRunnable;
         std::vector<statistics::Scalar *> IND_VirtBuildRounds;
+        std::vector<statistics::Scalar *> IND_VirtResponseSlotHighWater;
         std::vector<statistics::Scalar *> IND_VirtResponseWordHighWater;
         std::vector<statistics::Scalar *> IND_VirtResponseWordPoolStalls;
+        std::vector<statistics::Scalar *> IND_VirtOutstandingWriteHighWater;
+        std::vector<statistics::Scalar *> IND_VirtCombineLineHighWater;
+        std::vector<statistics::Scalar *> IND_VirtCombineWordHighWater;
+        std::vector<statistics::Scalar *> IND_VirtFullLineWrites;
+        std::vector<statistics::Scalar *> IND_VirtPartialWrites;
         std::vector<statistics::Scalar *> IND_VirtCombineBankAccesses;
         std::vector<statistics::Scalar *> IND_VirtCombineBankConflictCycles;
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;

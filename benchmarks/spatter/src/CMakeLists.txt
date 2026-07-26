@@ -53,6 +53,10 @@ if(BUILD_GEM5)
     target_include_directories(spatter_maa_virtual_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_virtual_verify_16K main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_virtual_verify_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
+    add_executable(spatter_maa_virtual_backed_16K main.cc $<TARGET_OBJECTS:m5op>)
+    target_include_directories(spatter_maa_virtual_backed_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
+    add_executable(spatter_maa_virtual_backed_verify_16K main.cc $<TARGET_OBJECTS:m5op>)
+    target_include_directories(spatter_maa_virtual_backed_verify_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_32K main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_32K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_4C main.cc $<TARGET_OBJECTS:m5op>)
@@ -79,6 +83,10 @@ else()
     target_include_directories(spatter_maa_virtual_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_virtual_verify_16K main.cc)
     target_include_directories(spatter_maa_virtual_verify_16K PRIVATE ${MAA_HOME})
+    add_executable(spatter_maa_virtual_backed_16K main.cc)
+    target_include_directories(spatter_maa_virtual_backed_16K PRIVATE ${MAA_HOME})
+    add_executable(spatter_maa_virtual_backed_verify_16K main.cc)
+    target_include_directories(spatter_maa_virtual_backed_verify_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_32K main.cc)
     target_include_directories(spatter_maa_32K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_4C main.cc)
@@ -148,6 +156,22 @@ set_target_properties(spatter_maa_virtual_16K PROPERTIES
 target_link_libraries(spatter_maa_virtual_verify_16K ${COMMON_LINK_LIBRARIES} Spatter_MAA_Virtual_Verify_16K)
 target_compile_definitions(spatter_maa_virtual_verify_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_VIRTUAL_GATHER MAA_VERIFY_GATHER NUM_CORES=4 TILE_SIZE=16384)
 set_target_properties(spatter_maa_virtual_verify_16K PROPERTIES
+    COMPILE_OPTIONS "${WARNING_FLAGS}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+)
+
+target_link_libraries(spatter_maa_virtual_backed_16K ${COMMON_LINK_LIBRARIES} Spatter_MAA_Virtual_Backed_16K)
+target_compile_definitions(spatter_maa_virtual_backed_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_VIRTUAL_BACKED_GATHER NUM_CORES=4 TILE_SIZE=16384)
+set_target_properties(spatter_maa_virtual_backed_16K PROPERTIES
+    COMPILE_OPTIONS "${WARNING_FLAGS}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+)
+
+target_link_libraries(spatter_maa_virtual_backed_verify_16K ${COMMON_LINK_LIBRARIES} Spatter_MAA_Virtual_Backed_Verify_16K)
+target_compile_definitions(spatter_maa_virtual_backed_verify_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_VIRTUAL_BACKED_GATHER MAA_VERIFY_GATHER NUM_CORES=4 TILE_SIZE=16384)
+set_target_properties(spatter_maa_virtual_backed_verify_16K PROPERTIES
     COMPILE_OPTIONS "${WARNING_FLAGS}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
