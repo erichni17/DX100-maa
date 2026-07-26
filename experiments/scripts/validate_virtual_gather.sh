@@ -47,7 +47,10 @@ fi
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
-rm -rf "$outdir"
+if [[ -e "$outdir" ]]; then
+    echo "refusing to overwrite existing output path: $outdir" >&2
+    exit 2
+fi
 mkdir -p "$outdir"
 
 set +e
