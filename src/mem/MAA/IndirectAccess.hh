@@ -142,6 +142,10 @@ protected:
     Tick virtual_request_reason_tick = 0;
     Tick virtual_request_attributed_ticks = 0;
     std::array<Tick, 6> virtual_request_reason_ticks{};
+    uint8_t virtual_pipeline_state = 0;
+    Tick virtual_pipeline_tick = 0;
+    Tick virtual_pipeline_attributed_ticks = 0;
+    std::array<Tick, 4> virtual_pipeline_ticks{};
 
 public:
     MAA *maa;

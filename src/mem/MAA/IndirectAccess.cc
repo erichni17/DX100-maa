@@ -408,6 +408,13 @@ void IndirectAccessUnit::check_reset() {
                              [](Tick ticks) { return ticks != 0; }),
              "I[%d] virtual request attribution is still active\n",
              my_indirect_id);
+    panic_if(virtual_pipeline_state != 0 || virtual_pipeline_tick != 0 ||
+                 virtual_pipeline_attributed_ticks != 0 ||
+                 std::any_of(virtual_pipeline_ticks.begin(),
+                             virtual_pipeline_ticks.end(),
+                             [](Tick ticks) { return ticks != 0; }),
+             "I[%d] virtual pipeline attribution is still active\n",
+             my_indirect_id);
 }
 Cycles IndirectAccessUnit::updateLatency(int num_spd_read_data_accesses, int num_spd_read_condidx_accesses, int num_spd_write_accesses, int num_rowtable_read_accesses, int num_rowtable_write_accesses, int RT_access_parallelism) {
     if (num_spd_read_data_accesses != 0) {
@@ -705,6 +712,10 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_request_reason_tick = 0;
         virtual_request_attributed_ticks = 0;
         virtual_request_reason_ticks.fill(0);
+        virtual_pipeline_state = 0;
+        virtual_pipeline_tick = 0;
+        virtual_pipeline_attributed_ticks = 0;
+        virtual_pipeline_ticks.fill(0);
         for (auto &slot : virtual_response_slots)
             slot = VirtualResponseSlot();
         for (auto &slot : virtual_combine_slots)
@@ -1936,7 +1947,20 @@ void IndirectAccessUnit::accountVirtualRequestInterval() {
         return;
 
     const Tick now = curTick();
-    if (virtual_request_reason_tick != 0 && now != virtual_request_reason_tick) {
+    if (virtual_pipeline_tick != 0 && now != virtual_pipeline_tick) {
+        const Tick elapsed = now - virtual_pipeline_tick;
+        virtual_pipeline_attributed_ticks += elapsed;
+        virtual_pipeline_ticks[virtual_pipeline_state] += elapsed;
+    }
+    const bool source_active =
+        virtual_source_received != virtual_source_expected;
+    const bool write_active = virtual_outstanding_writes != 0;
+    virtual_pipeline_state = (source_active ? 1 : 0) |
+                             (write_active ? 2 : 0);
+    virtual_pipeline_tick = now;
+
+    if (virtual_request_reason_tick != 0 &&
+        now != virtual_request_reason_tick) {
         const Tick elapsed = now - virtual_request_reason_tick;
         virtual_request_attributed_ticks += elapsed;
         size_t bucket = 0;
@@ -1979,6 +2003,12 @@ void IndirectAccessUnit::startVirtualRequestInterval() {
     virtual_request_reason_ticks.fill(0);
     virtual_request_reason = classifyVirtualRequestReason();
     virtual_request_reason_tick = curTick();
+    virtual_pipeline_attributed_ticks = 0;
+    virtual_pipeline_ticks.fill(0);
+    virtual_pipeline_state =
+        (virtual_source_received != virtual_source_expected ? 1 : 0) |
+        (virtual_outstanding_writes != 0 ? 2 : 0);
+    virtual_pipeline_tick = curTick();
 }
 
 void IndirectAccessUnit::finishVirtualRequestInterval() {
@@ -1989,6 +2019,11 @@ void IndirectAccessUnit::finishVirtualRequestInterval() {
                  curTick() - my_request_start_tick,
              "I[%d] virtual request attribution mismatch: %lu != %lu ticks\n",
              my_indirect_id, virtual_request_attributed_ticks,
+             curTick() - my_request_start_tick);
+    panic_if(virtual_pipeline_attributed_ticks !=
+                 curTick() - my_request_start_tick,
+             "I[%d] virtual pipeline attribution mismatch: %lu != %lu ticks\n",
+             my_indirect_id, virtual_pipeline_attributed_ticks,
              curTick() - my_request_start_tick);
     std::array<statistics::Scalar *, 6> buckets = {
         maa->stats.IND_VirtRequestCyclesBuild[my_indirect_id],
@@ -2014,10 +2049,45 @@ void IndirectAccessUnit::finishVirtualRequestInterval() {
     // Assign the residual to the dominant source-flight bucket so integer cycle
     // rounding cannot make the mutually exclusive buckets exceed the total.
     (*buckets[1]) += request_cycles - non_source_cycles;
+    std::array<statistics::Scalar *, 4> pipeline_buckets = {
+        maa->stats.IND_VirtPipelineCyclesIdle[my_indirect_id],
+        maa->stats.IND_VirtPipelineCyclesSourceOnly[my_indirect_id],
+        maa->stats.IND_VirtPipelineCyclesWriteOnly[my_indirect_id],
+        maa->stats.IND_VirtPipelineCyclesOverlap[my_indirect_id],
+    };
+    std::array<uint64_t, 4> pipeline_cycles{};
+    uint64_t pipeline_cycle_sum = 0;
+    size_t largest_pipeline_bucket = 0;
+    for (size_t i = 0; i < pipeline_buckets.size(); ++i) {
+        pipeline_cycles[i] =
+            maa->getTicksToCycles(virtual_pipeline_ticks[i]);
+        pipeline_cycle_sum += pipeline_cycles[i];
+        if (virtual_pipeline_ticks[i] >
+            virtual_pipeline_ticks[largest_pipeline_bucket])
+            largest_pipeline_bucket = i;
+    }
+    const uint64_t total_request_cycles = request_cycles;
+    if (pipeline_cycle_sum < total_request_cycles) {
+        pipeline_cycles[largest_pipeline_bucket] +=
+            total_request_cycles - pipeline_cycle_sum;
+    } else if (pipeline_cycle_sum > total_request_cycles) {
+        const uint64_t rounding_excess =
+            pipeline_cycle_sum - total_request_cycles;
+        panic_if(pipeline_cycles[largest_pipeline_bucket] < rounding_excess,
+                 "I[%d] virtual pipeline rounding exceeds largest bucket\n",
+                 my_indirect_id);
+        pipeline_cycles[largest_pipeline_bucket] -= rounding_excess;
+    }
+    for (size_t i = 0; i < pipeline_buckets.size(); ++i)
+        (*pipeline_buckets[i]) += Cycles(pipeline_cycles[i]);
     virtual_request_reason = VirtualRequestReason::None;
     virtual_request_reason_tick = 0;
     virtual_request_attributed_ticks = 0;
     virtual_request_reason_ticks.fill(0);
+    virtual_pipeline_state = 0;
+    virtual_pipeline_tick = 0;
+    virtual_pipeline_attributed_ticks = 0;
+    virtual_pipeline_ticks.fill(0);
 }
 
 void IndirectAccessUnit::retirementWriteComplete(Addr addr) {

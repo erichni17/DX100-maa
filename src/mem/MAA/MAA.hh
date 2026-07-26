@@ -591,6 +591,10 @@ public:
         std::vector<statistics::Scalar *> IND_VirtRequestCyclesWrites;
         std::vector<statistics::Scalar *> IND_VirtRequestCyclesFinalDrain;
         std::vector<statistics::Scalar *> IND_VirtRequestCyclesRunnable;
+        std::vector<statistics::Scalar *> IND_VirtPipelineCyclesIdle;
+        std::vector<statistics::Scalar *> IND_VirtPipelineCyclesSourceOnly;
+        std::vector<statistics::Scalar *> IND_VirtPipelineCyclesWriteOnly;
+        std::vector<statistics::Scalar *> IND_VirtPipelineCyclesOverlap;
         std::vector<statistics::Scalar *> IND_VirtBuildRounds;
         std::vector<statistics::Scalar *> IND_VirtResponseSlotHighWater;
         std::vector<statistics::Scalar *> IND_VirtResponseWordHighWater;
