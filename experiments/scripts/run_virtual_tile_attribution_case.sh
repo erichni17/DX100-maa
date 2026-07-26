@@ -89,6 +89,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
 /usr/bin/time -f 'restore_wall=%e restore_rss_kb=%M' \
     "$gem5" --listener-mode=off --outdir="$out/run" "$config" \
     --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB \
+    --checkpoint-dir="$out/checkpoint" \
     --sys-clock 3.2GHz --cpu-clock 3.2GHz \
     --caches --l1d_size=32kB --l1d_assoc=8 \
     --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
