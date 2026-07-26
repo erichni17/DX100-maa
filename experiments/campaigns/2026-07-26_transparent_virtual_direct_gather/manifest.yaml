@@ -33,3 +33,4 @@ outputs:
     table: tables/paired.tsv
     cost_table: tables/cost_sweep.tsv
     notes_file: notes/summary.md
+    storage_model: notes/storage_model.md
