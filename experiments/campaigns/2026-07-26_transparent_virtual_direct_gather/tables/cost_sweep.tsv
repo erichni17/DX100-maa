@@ -1,0 +1,6 @@
+name	modeled_structure_and_payload_bytes	plus_fixed_cache_data_bytes	first_dump_simTicks	overhead_vs_native_pct	write_issues	write_completions	full_line_writes	partial_writes
+b3k	3456	7552	8190271	123.840890	2066	2066	0	2066
+b7k	6912	11008	4979830	36.099230	740	740	55	685
+b14k	13824	17920	4261182	16.458512	326	326	201	125
+b23k	23808	27904	4028936	10.111206	257	257	255	2
+b32k	32768	36864	3990750	9.067579	257	257	255	2

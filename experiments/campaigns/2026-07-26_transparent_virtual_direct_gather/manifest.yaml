@@ -23,6 +23,7 @@ run:
     native_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-native-107afd6/run
     virtual_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-random-107afd6/run
     optimized_virtual_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-cg-geometry-107afd6/run
+    cost_sweep_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-cost-sweep-107afd6
     gem5_memory: 2GB
     cgroup_memory_max: 16G
     cgroup_swap_max: '0'
@@ -30,4 +31,5 @@ run:
 
 outputs:
     table: tables/paired.tsv
+    cost_table: tables/cost_sweep.tsv
     notes_file: notes/summary.md
