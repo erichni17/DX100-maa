@@ -1,0 +1,31 @@
+---
+campaign_id: 2026-07-26_transparent_virtual_direct_gather
+question: Does LLC-backed virtual gather carry overhead relative to native 16K gather for the same 4096-element access pattern?
+hypothesis: Virtual gather is slower because it must retire data to backing memory instead of completing directly in the scratchpad.
+
+repos:
+    dx100_sha: 107afd6d247859c610145cbeac102dcfc64e5fe6
+
+artifacts:
+    gem5_sha256: 54f3fbb8712f3e31c99d4e5932c54b002e95f3c7a7b70b6ba97f17fff09786dc
+    verifier_sha256: 993f2f2fe22b8b61b03c2e43221b4e29b3c4d0bfd5e5005802b07084c8f4e647
+    verifier_mem_size: '0x80000000'
+
+workloads:
+    - name: native direct gather
+      scale: 4096 int32 elements
+      input: deterministic index i -> (97*i + 13) mod 16384
+    - name: LLC-backed virtual direct gather
+      scale: 4096 int32 elements
+      input: deterministic index i -> (97*i + 13) mod 16384
+
+run:
+    native_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-native-107afd6/run
+    virtual_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-random-107afd6/run
+    gem5_memory: 2GB
+    cgroup_memory_max: 16G
+    cgroup_swap_max: '0'
+
+outputs:
+    table: tables/paired.tsv
+    notes_file: notes/summary.md

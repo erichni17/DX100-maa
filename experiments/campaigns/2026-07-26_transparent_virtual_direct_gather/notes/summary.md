@@ -1,0 +1,16 @@
+# Transparent Virtual Direct Gather
+
+Both arms completed with one exact `errors=0` result, one ROI marker, normal
+`m5_exit`, and no panic or fatal diagnostic. The virtual arm issued and
+completed 4096 retirement writes, so the candidate mechanism was active.
+
+The native arm took 3,658,970 first-dump `simTicks`; the virtual arm took
+6,277,528. Virtual gather was 1.715654405x slower, or 71.565441% overhead.
+This is the expected direction for a design that replaces direct scratchpad
+completion with backing-memory retirement.
+
+This result isolates one direct gather. It does not explain application-level
+CG or XRAGE performance, and it has one observation per arm. Application
+speedups require separate attribution to fusion, overlap, scheduling, or a
+configuration mismatch rather than a claim that virtualization itself is
+intrinsically faster.
