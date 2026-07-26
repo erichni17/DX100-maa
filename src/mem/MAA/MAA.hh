@@ -414,6 +414,7 @@ public:
     unsigned int virtual_words_per_cycle;
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
+    unsigned int virtual_index_buffer_lines;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;
     unsigned int num_memory_channels;
@@ -611,6 +612,7 @@ public:
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;
         std::vector<statistics::Scalar *> IND_VirtIndexLineReads;
+        std::vector<statistics::Scalar *> IND_VirtIndexLineHighWater;
         std::vector<statistics::Scalar *> IND_VirtIndexWords;
         std::vector<statistics::Scalar *> IND_VirtIndexWordHighWater;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;

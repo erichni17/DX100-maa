@@ -72,6 +72,7 @@ MAA::MAA(const MAAParams &p)
       virtual_words_per_cycle(p.virtual_words_per_cycle),
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
+      virtual_index_buffer_lines(p.virtual_index_buffer_lines),
       num_request_table_addresses(p.num_request_table_addresses),
       num_request_table_entries_per_address(p.num_request_table_entries_per_address),
       num_memory_channels(p.num_memory_channels),
@@ -358,6 +359,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_words_per_cycle,
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
+                                        virtual_index_buffer_lines,
                                         rowtable_latency,
                                         num_channels,
                                         num_cores,
@@ -1137,6 +1139,10 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineReads"),
             statistics::units::Count::get(),
             "cache-line reads issued by direct virtual-index ingestion"));
+        IND_VirtIndexLineHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak direct-index lines in flight"));
         IND_VirtIndexWords.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexWords"),
             statistics::units::Count::get(),

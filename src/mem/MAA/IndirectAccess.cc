@@ -100,6 +100,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_words_per_cycle,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
+                                  int _virtual_index_buffer_lines,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -148,6 +149,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              my_indirect_id);
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     virtual_masked_writes = _virtual_masked_writes;
+    panic_if(_virtual_index_buffer_lines <= 0 ||
+                 _virtual_index_buffer_lines > 64,
+             "I[%d] direct-index buffer lines (%d) must be in [1,64]\n",
+             my_indirect_id, _virtual_index_buffer_lines);
+    direct_index_buffer_lines = _virtual_index_buffer_lines;
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -415,7 +421,8 @@ void IndirectAccessUnit::check_reset() {
                              [](Tick ticks) { return ticks != 0; }),
              "I[%d] virtual pipeline attribution is still active\n",
              my_indirect_id);
-    panic_if(direct_index_pending || !direct_index_pending_words.empty() ||
+    panic_if(!direct_index_pending_lines.empty() ||
+                 !direct_index_ready_lines.empty() ||
                  !direct_index_words.empty(),
              "I[%d] direct-index buffer is not empty at reset\n",
              my_indirect_id);
@@ -515,101 +522,141 @@ void IndirectAccessUnit::accountReadResponse(Addr addr,
         LoadsMemAccessingTimeHistory.erase(accessing);
     }
 }
+void IndirectAccessUnit::fillDirectIndexWindow() {
+    if (!isDirectIndexLoad())
+        return;
+    while (direct_index_pending_lines.size() +
+               direct_index_ready_lines.size() <
+           static_cast<size_t>(direct_index_buffer_lines)) {
+        const int itr = direct_index_next_prefetch_itr;
+        if (itr >= my_max)
+            return;
+        const int64_t source_index =
+            static_cast<int64_t>(my_index_min) +
+            static_cast<int64_t>(itr) * my_index_stride;
+        panic_if(source_index < 0,
+                 "I[%d] negative streamed-index position %ld for itr %d\n",
+                 my_indirect_id, source_index, itr);
+        const uint64_t byte_offset =
+            static_cast<uint64_t>(source_index) * sizeof(uint32_t);
+        const Addr index_bytes = my_index_max_addr - my_index_addr;
+        panic_if(my_index_addr < my_index_min_addr ||
+                     my_index_addr >= my_index_max_addr ||
+                     index_bytes < sizeof(uint32_t) ||
+                     byte_offset > index_bytes - sizeof(uint32_t),
+                 "I[%d] streamed-index position %ld exceeds "
+                 "[0x%lx, 0x%lx)\n",
+                 my_indirect_id, source_index, my_index_min_addr,
+                 my_index_max_addr);
+        const Addr first_vaddr = my_index_addr + byte_offset;
+        const Addr block_vaddr = addrBlockAligner(first_vaddr, block_size);
+        const Addr block_paddr =
+            addrBlockAligner(translatePacket(block_vaddr), block_size);
+        if (maa->hasOutstandingPacket(block_paddr)) {
+            scheduleExecuteInstructionEvent(1);
+            return;
+        }
+
+        std::vector<std::pair<int, uint16_t>> pending_words;
+        int candidate = itr;
+        for (; candidate < my_max; ++candidate) {
+            const int64_t candidate_source =
+                static_cast<int64_t>(my_index_min) +
+                static_cast<int64_t>(candidate) * my_index_stride;
+            if (candidate_source < 0)
+                break;
+            const uint64_t candidate_offset =
+                static_cast<uint64_t>(candidate_source) * sizeof(uint32_t);
+            if (index_bytes < sizeof(uint32_t) ||
+                candidate_offset > index_bytes - sizeof(uint32_t))
+                break;
+            const Addr candidate_vaddr = my_index_addr + candidate_offset;
+            if (addrBlockAligner(candidate_vaddr, block_size) != block_vaddr)
+                break;
+            pending_words.emplace_back(
+                candidate,
+                static_cast<uint16_t>((candidate_vaddr - block_vaddr) /
+                                      sizeof(uint32_t)));
+        }
+        panic_if(pending_words.empty(),
+                 "I[%d] direct-index request at itr %d captured no words\n",
+                 my_indirect_id, itr);
+        panic_if(direct_index_pending_lines.find(block_paddr) !=
+                     direct_index_pending_lines.end() ||
+                     direct_index_ready_lines.find(block_paddr) !=
+                         direct_index_ready_lines.end(),
+                 "I[%d] direct-index line 0x%lx is already buffered\n",
+                 my_indirect_id, block_paddr);
+        direct_index_pending_lines.emplace(
+            block_paddr, std::move(pending_words));
+        direct_index_next_prefetch_itr = candidate;
+        direct_index_max_lines = std::max(
+            direct_index_max_lines,
+            static_cast<int>(direct_index_pending_lines.size() +
+                             direct_index_ready_lines.size()));
+        createDirectIndexReadPacket(block_paddr, rowtable_latency);
+    }
+}
 bool IndirectAccessUnit::ensureDirectIndex(int itr) {
     if (!isDirectIndexLoad())
         return true;
-    if (direct_index_words.find(itr) != direct_index_words.end())
-        return true;
-    if (direct_index_pending)
-        return false;
-
-    const int64_t source_index =
-        static_cast<int64_t>(my_index_min) +
-        static_cast<int64_t>(itr) * my_index_stride;
-    panic_if(source_index < 0,
-             "I[%d] negative streamed-index position %ld for itr %d\n",
-             my_indirect_id, source_index, itr);
-    const uint64_t byte_offset =
-        static_cast<uint64_t>(source_index) * sizeof(uint32_t);
-    const Addr index_bytes = my_index_max_addr - my_index_addr;
-    panic_if(my_index_addr < my_index_min_addr ||
-                 my_index_addr >= my_index_max_addr ||
-                 index_bytes < sizeof(uint32_t) ||
-                 byte_offset > index_bytes - sizeof(uint32_t),
-             "I[%d] streamed-index position %ld exceeds [0x%lx, 0x%lx)\n",
-             my_indirect_id, source_index, my_index_min_addr,
-             my_index_max_addr);
-    const Addr first_vaddr = my_index_addr + byte_offset;
-    const Addr block_vaddr = addrBlockAligner(first_vaddr, block_size);
-    const Addr block_paddr =
-        addrBlockAligner(translatePacket(block_vaddr), block_size);
-    if (maa->hasOutstandingPacket(block_paddr)) {
-        scheduleExecuteInstructionEvent(1);
-        return false;
-    }
-
-    direct_index_pending_words.clear();
-    for (int candidate = itr; candidate < my_max; ++candidate) {
-        const int64_t candidate_source =
-            static_cast<int64_t>(my_index_min) +
-            static_cast<int64_t>(candidate) * my_index_stride;
-        if (candidate_source < 0)
-            break;
-        const uint64_t candidate_offset =
-            static_cast<uint64_t>(candidate_source) * sizeof(uint32_t);
-        if (index_bytes < sizeof(uint32_t) ||
-            candidate_offset > index_bytes - sizeof(uint32_t))
-            break;
-        const Addr candidate_vaddr = my_index_addr + candidate_offset;
-        if (addrBlockAligner(candidate_vaddr, block_size) != block_vaddr)
-            break;
-        direct_index_pending_words.emplace_back(
-            candidate,
-            static_cast<uint16_t>((candidate_vaddr - block_vaddr) /
-                                  sizeof(uint32_t)));
-    }
-    panic_if(direct_index_pending_words.empty(),
-             "I[%d] direct-index request at itr %d captured no words\n",
-             my_indirect_id, itr);
-    direct_index_pending = true;
-    direct_index_pending_paddr = block_paddr;
-    createDirectIndexReadPacket(block_paddr, rowtable_latency);
-    return false;
+    fillDirectIndexWindow();
+    return direct_index_words.find(itr) != direct_index_words.end();
 }
 uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
     auto entry = direct_index_words.find(itr);
     panic_if(entry == direct_index_words.end(),
              "I[%d] streamed index %d is not buffered\n",
              my_indirect_id, itr);
-    return entry->second;
+    return entry->second.value;
 }
 void IndirectAccessUnit::consumeDirectIndex(int itr) {
-    panic_if(direct_index_words.erase(itr) != 1,
+    auto word = direct_index_words.find(itr);
+    panic_if(word == direct_index_words.end(),
              "I[%d] streamed index %d cannot be consumed\n",
              my_indirect_id, itr);
+    const Addr line_addr = word->second.line_addr;
+    direct_index_words.erase(word);
+    auto line = direct_index_ready_lines.find(line_addr);
+    panic_if(line == direct_index_ready_lines.end() || line->second <= 0,
+             "I[%d] streamed index %d has no ready line 0x%lx\n",
+             my_indirect_id, itr, line_addr);
+    if (--line->second == 0)
+        direct_index_ready_lines.erase(line);
 }
 bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
                                             bool is_block_cached) {
-    if (!isDirectIndexLoad() || !direct_index_pending ||
-        addr != direct_index_pending_paddr)
+    if (!isDirectIndexLoad())
+        return false;
+    auto pending = direct_index_pending_lines.find(addr);
+    if (pending == direct_index_pending_lines.end())
         return false;
     accountReadResponse(addr, is_block_cached);
     const auto *words = reinterpret_cast<const uint32_t *>(dataptr);
-    for (const auto &[itr, wid] : direct_index_pending_words) {
+    const auto pending_words = std::move(pending->second);
+    direct_index_pending_lines.erase(pending);
+    panic_if(!direct_index_ready_lines.emplace(
+                  addr, static_cast<int>(pending_words.size())).second,
+             "I[%d] duplicate ready direct-index line 0x%lx\n",
+             my_indirect_id, addr);
+    for (const auto &[itr, wid] : pending_words) {
         panic_if(wid >= block_size / sizeof(uint32_t),
                  "I[%d] invalid streamed-index word %u\n",
                  my_indirect_id, wid);
-        panic_if(!direct_index_words.emplace(itr, words[wid]).second,
+        panic_if(!direct_index_words
+                      .emplace(itr, DirectIndexWord{words[wid], addr})
+                      .second,
                  "I[%d] duplicate streamed index %d\n",
                  my_indirect_id, itr);
     }
     (*maa->stats.IND_VirtIndexWords[my_indirect_id]) +=
-        direct_index_pending_words.size();
+        pending_words.size();
+    direct_index_max_lines = std::max(
+        direct_index_max_lines,
+        static_cast<int>(direct_index_pending_lines.size() +
+                         direct_index_ready_lines.size()));
     direct_index_max_words = std::max(
         direct_index_max_words, static_cast<int>(direct_index_words.size()));
-    direct_index_pending = false;
-    direct_index_pending_paddr = 0;
-    direct_index_pending_words.clear();
     scheduleNextExecution(true);
     return true;
 }
@@ -920,10 +967,11 @@ void IndirectAccessUnit::executeInstruction() {
         my_max = -1;
         my_index_min = 0;
         my_index_stride = 1;
-        direct_index_pending = false;
-        direct_index_pending_paddr = 0;
-        direct_index_pending_words.clear();
+        direct_index_next_prefetch_itr = 0;
+        direct_index_pending_lines.clear();
+        direct_index_ready_lines.clear();
         direct_index_words.clear();
+        direct_index_max_lines = 0;
         direct_index_max_words = 0;
         if (isDirectIndexLoad()) {
             panic_if(my_cond_tile != -1,
@@ -1299,6 +1347,8 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_partial_word_writes;
         }
         if (isDirectIndexLoad()) {
+            (*maa->stats.IND_VirtIndexLineHighWater[my_indirect_id]) +=
+                direct_index_max_lines;
             (*maa->stats.IND_VirtIndexWordHighWater[my_indirect_id]) +=
                 direct_index_max_words;
         }

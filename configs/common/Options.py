@@ -236,6 +236,7 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_virtual_response_word_pool", type=int, default=0, help="Total useful words retained across packed source responses")
     parser.add_argument("--maa_virtual_max_outstanding_writes", type=int, default=32, help="Maximum acknowledged writes in flight for virtual gather retirement")
     parser.add_argument("--maa_virtual_masked_writes", action="store_true", help="Retire partial virtual lines as masked cache-line writes")
+    parser.add_argument("--maa_virtual_index_buffer_lines", type=int, default=1, help="Cache lines buffered or in flight for direct virtual-index ingestion")
     parser.add_argument("--maa_retirement_cache_size", default="1kB", help="Per-address-bank coherent virtual-retirement cache size")
     parser.add_argument("--maa_retirement_cache_assoc", type=int, default=4, help="Per-address-bank coherent virtual-retirement cache associativity")
     parser.add_argument("--maa_retirement_cache_response_latency", type=int, default=1, help="Coherent virtual-retirement cache response latency in cycles")

@@ -66,11 +66,17 @@ int main(int argc, char **argv) {
     m5_work_end(0, 0);
 
     int errors = 0;
+    uint64_t hash = 1469598103934665603ULL;
     for (int i = 0; i < n; ++i) {
         const int32_t expected = source[indices[i]];
         if (backing[i] != expected && errors++ < 10) {
             std::cerr << "mismatch[" << i << "]: got " << backing[i]
                       << ", expected " << expected << std::endl;
+        }
+        const uint32_t value = static_cast<uint32_t>(backing[i]);
+        for (unsigned byte = 0; byte < sizeof(value); ++byte) {
+            hash ^= (value >> (byte * 8)) & 0xff;
+            hash *= 1099511628211ULL;
         }
     }
     for (int i = 0; i < guard_words; ++i) {
@@ -84,7 +90,8 @@ int main(int argc, char **argv) {
     }
 
     std::cout << "VIRTUAL_GATHER_RESULT n=" << n
-              << " pattern=" << pattern << " errors=" << errors
+              << " pattern=" << pattern << " hash=" << hash
+              << " errors=" << errors
               << std::endl;
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);

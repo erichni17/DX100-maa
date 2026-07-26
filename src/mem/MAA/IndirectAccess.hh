@@ -171,6 +171,7 @@ public:
                   int _virtual_words_per_cycle,
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
+                  int _virtual_index_buffer_lines,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
@@ -204,10 +205,18 @@ protected:
     Addr my_index_addr, my_index_min_addr, my_index_max_addr;
     int8_t my_addr_range_id, my_backing_addr_range_id, my_index_addr_range_id;
     int my_index_min, my_index_stride;
-    bool direct_index_pending = false;
-    Addr direct_index_pending_paddr = 0;
-    std::vector<std::pair<int, uint16_t>> direct_index_pending_words;
-    std::map<int, uint32_t> direct_index_words;
+    struct DirectIndexWord
+    {
+        uint32_t value = 0;
+        Addr line_addr = 0;
+    };
+    int direct_index_buffer_lines = 1;
+    int direct_index_next_prefetch_itr = 0;
+    std::map<Addr, std::vector<std::pair<int, uint16_t>>>
+        direct_index_pending_lines;
+    std::map<Addr, int> direct_index_ready_lines;
+    std::map<int, DirectIndexWord> direct_index_words;
+    int direct_index_max_lines = 0;
     int direct_index_max_words = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
@@ -241,6 +250,7 @@ protected:
                          unsigned size = 64);
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
+    void fillDirectIndexWindow();
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
     void consumeDirectIndex(int itr);
