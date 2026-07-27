@@ -1142,6 +1142,24 @@ def task_workflow(states, spec, tile, task_id):
     return workflow
 
 
+def resolved_task_state(states, spec, tile, task_id):
+    """Merge the authoritative workflow with declared concurrent tile owners."""
+    workflow = task_workflow(states, spec, tile, task_id)
+    candidates = [task_state(states.get(workflow), task_id)]
+    for overlay in spec.get("tile_state_overlays", ()):
+        state = states.get(overlay)
+        if state is None:
+            continue
+        candidate = state.get("tasks", {}).get(str(tile))
+        if candidate is not None:
+            candidates.append(candidate)
+    for status in ("running", "completed", "pending", "failed"):
+        for candidate in reversed(candidates):
+            if candidate.get("state") == status:
+                return candidate
+    return candidates[0]
+
+
 def xrage_oracle_id(markers):
     """Return the stable semantic portion of randomized XRAGE markers."""
     entries = []
@@ -1503,6 +1521,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 "recovery_is_node1_surge6",
                 "final_is_recovery",
             ],
+            "tile_state_overlays": ["final_is_memory_admission"],
             "roi_anchor_tile": 16384,
         },
         {
@@ -1621,8 +1640,7 @@ def build_rows(workload_specs, states, binary_cohort=None, roi_policy=None):
             row = select_latest(source_rows, spec.get("filters", {}), tile)
             if not spec.get("prior"):
                 task_id = spec["task"].format(tile=tile)
-                workflow = task_workflow(states, spec, tile, task_id)
-                state = task_state(states.get(workflow), task_id)
+                state = resolved_task_state(states, spec, tile, task_id)
                 current = state.get("state", "pending")
                 if current != "completed":
                     roi_record = roi_records.get((spec["id"], tile))

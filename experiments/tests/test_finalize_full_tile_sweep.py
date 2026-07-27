@@ -471,6 +471,27 @@ def test_schema_v2_identity_uses_executed_snapshot_not_source_alias(tmp_path):
     assert identity["provenance"].endswith("+immutable-snapshot-sha256-alias")
 
 
+def test_concurrent_tile_owner_prefers_running_then_completed():
+    spec = {
+        "workflow": "authoritative",
+        "workflow_overlays": [],
+        "tile_state_overlays": ["memory_admission"],
+    }
+    states = {
+        "authoritative": {"tasks": {"nas-is-t8192": {"state": "completed"}}},
+        "memory_admission": {
+            "tasks": {"8192": {"state": "running", "unit": "is-8k"}}
+        },
+    }
+    state = finalizer.resolved_task_state(states, spec, 8192, "nas-is-t8192")
+    assert state == {"state": "running", "unit": "is-8k"}
+
+    states["authoritative"]["tasks"]["nas-is-t8192"] = {"state": "pending"}
+    states["memory_admission"]["tasks"]["8192"] = {"state": "completed"}
+    state = finalizer.resolved_task_state(states, spec, 8192, "nas-is-t8192")
+    assert state == {"state": "completed"}
+
+
 def test_is_tiles_use_numa_safe_recovery4_workflows(tmp_path):
     workload_specs = finalizer.specs(
         tmp_path,
