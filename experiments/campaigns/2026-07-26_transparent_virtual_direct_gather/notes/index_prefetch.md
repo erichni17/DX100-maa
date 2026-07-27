@@ -54,6 +54,34 @@ cgroup prohibited swap, and gem5 performance is reported in simulated ticks,
 not host wall time.
 
 This is one microbenchmark observation. It did not encounter a row-table-full
-retry. Promotion still requires the 16K attribution result, a retry-path gate,
-and representative application validation. No application speedup is claimed
-from this pair alone.
+retry. Promotion still requires a retry-path gate and representative
+application validation. No application speedup is claimed from this pair
+alone.
+
+## 16K scaling check
+
+A successor pair increased the random gather from 4,096 to 16,384 elements
+while retaining a 16K logical window and 4K physical tile capacity. It compared
+depth 1 with the depth-4 knee selected above. Both arms used the same frozen
+gem5 and test-binary hashes, and their generated configurations differ only in
+`virtual_index_buffer_lines` and output-directory paths.
+
+| Lines | Payload | `simTicks` | Speedup vs. depth 1 | Latency reduction |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 64 B | 31,973,889 | 1.000000000x | 0.000000% |
+| 4 | 256 B | 20,307,753 | 1.574467101x | 36.486447% |
+
+Both arms produced exact output hash `1782858901698472045`, zero element or
+guard errors, one ROI, normal `m5_exit`, 233 simulated instructions, 1,025
+index-line reads, all 16,384 index words, zero row-table-full events, and zero
+scratchpad index reads. Index-line high water changed from 1 to 4 as intended.
+Every retirement write completed: depth 1 issued/completed 2,322 writes and
+depth 4 issued/completed 2,318. The four-write reduction is a schedule-dependent
+combining effect of the treatment, not evidence that source work was omitted;
+the exact output and index-work counters are unchanged.
+
+The larger pair confirms that the four-line window's benefit survives at the
+full 16K logical-window size. It does not establish virtualization overhead
+relative to native 16K hardware and must not be presented as a production-
+benchmark speedup. The matched native/virtual attribution matrix and an
+application-level test remain separate requirements.

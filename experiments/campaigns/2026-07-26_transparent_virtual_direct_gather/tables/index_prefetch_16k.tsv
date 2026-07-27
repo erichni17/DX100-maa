@@ -1,0 +1,3 @@
+elements	buffer_lines	buffer_bytes	simTicks	simInsts	output_hash	line_reads	line_hwm	index_words	index_hwm	rt_full	write_issues	write_completions	spd_read_cycles
+16384	1	64	31973889	233	1782858901698472045	1025	1	16384	16	0	2322	2322	0
+16384	4	256	20307753	233	1782858901698472045	1025	4	16384	16	0	2318	2318	0
