@@ -2245,6 +2245,12 @@ def main():
     final_is_state_path = state_root / (
         "workflows/dx100-full-tile-final-is-recovery-v3-20260726.json"
     )
+    is_memory_admission_state_path = (
+        run_root / "final-is-memory-admission-state-v1.json"
+    )
+    is_memory_admission_manifest_path = (
+        run_root / "final-is-memory-admission-manifest-v1.json"
+    )
     states = {
         "original": read_json(original_state_path),
         "recovery_normal": read_json(normal_state_path),
@@ -2281,6 +2287,10 @@ def main():
         states["final_gapbs_recovery"] = read_json(final_gapbs_state_path)
     if final_is_workflow.is_file():
         states["final_is_recovery"] = read_json(final_is_state_path)
+    if is_memory_admission_state_path.is_file():
+        states["final_is_memory_admission"] = read_json(
+            is_memory_admission_state_path
+        )
     workload_specs = specs(run_root, prior_gapbs, prior_hashjoin)
     result_sources = sorted(
         {
@@ -2404,6 +2414,10 @@ def main():
     final_is_terminal = not final_is_workflow.is_file() or workflow_terminal(
         states.get("final_is_recovery")
     )
+    is_memory_admission_terminal = (
+        not is_memory_admission_state_path.is_file()
+        or states.get("final_is_memory_admission", {}).get("terminal") is True
+    )
     parent_tasks_complete = all(
         task_state(states["original"], task).get("state") == "completed"
         for task in ("ume-gradzatp-t65536", "ume-gradzatz-t65536")
@@ -2428,6 +2442,7 @@ def main():
         and gapbs_repair8_terminal
         and final_gapbs_terminal
         and final_is_terminal
+        and is_memory_admission_terminal
         and parent_tasks_complete
     )
     complete = terminal and all(row["status"] == "valid" for row in legal_rows)
@@ -2470,6 +2485,7 @@ def main():
         run_root / "final-is-recovery-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
         run_root / "recovery5-app-slice-cgroup.tsv",
+        *sorted(run_root.glob("final-is-memory-t*-cgroup.tsv")),
     ]
     telemetry_snapshots = []
     for source in telemetry_sources:
@@ -2521,6 +2537,11 @@ def main():
         required_cgroups.add("final-gapbs-recovery-cgroup.tsv")
     if states.get("final_is_recovery"):
         required_cgroups.add("final-is-recovery-cgroup.tsv")
+    for tile, task in (
+        states.get("final_is_memory_admission", {}).get("tasks", {}).items()
+    ):
+        if task.get("attempts", 0):
+            required_cgroups.add(f"final-is-memory-t{tile}-cgroup.tsv")
     safety_snapshots = [
         record
         for record in telemetry_snapshots
@@ -2604,6 +2625,7 @@ def main():
         gapbs_repair5_workflow,
         final_gapbs_workflow,
         final_is_workflow,
+        is_memory_admission_manifest_path,
         final_recovery_plan,
         final_recovery_supersession,
         finalizer_path,
@@ -2623,6 +2645,7 @@ def main():
         gapbs_repair5_state_path,
         final_gapbs_state_path,
         final_is_state_path,
+        is_memory_admission_state_path,
         prior_gapbs,
         *prior_hashjoin,
         *result_sources,

@@ -69,14 +69,17 @@ JSON still said 18 tasks were running, but no corresponding processes survived.
 
 The recovery campaign therefore does not resume the stale workflow. It uses a
 new systemd-owned manager with a campaign-wide 220 GiB `MemoryHigh`, 240 GiB
-`MemoryMax`, and zero `MemorySwapMax`. Normal 2-GiB configurations run at most
-eight at a time; full-Class-B IS runs strictly one at a time. Before each phase,
-the normal manager and isolated IS gate both require at least 96 GiB host
-`MemAvailable` and five continuous minutes without swap-counter movement. They
-record PID plus kernel start time and refuse to start when an owned gem5, tile
-runner, or `dx-runtime` process is already live. Each manager independently
-reads its cgroup limits and exits before launching any child if the hard
-boundary is absent or different.
+`MemoryMax`, and zero `MemorySwapMax`. The initial emergency recovery serialized
+full-Class-B IS. That fixed task-count rule was superseded on 2026-07-27 by
+memory-token admission: each live IS task reserves 64 GiB, and the number of
+new tasks comes from projected memory headroom rather than a hard-coded process
+count. Before every launch, the controller subtracts the exact 10% host reserve
+and every active full-tile service's unconsumed `MemoryMax - MemoryCurrent`
+reservation from `MemAvailable`. Admission is serialized by a runtime lock and
+recomputed after every launch and completion. Each IS task retains independent
+`MemoryHigh=60G`, `MemoryMax=64G`, and `MemorySwapMax=0` containment. Active
+swap, memory PSI, max/OOM events, or insufficient projected headroom blocks new
+admission without terminating healthy running tasks.
 
 The first contained IS gate exposed an independent logging failure and was
 stopped through its named systemd unit. gem5's `--prog-interval` is a
@@ -95,8 +98,12 @@ the dedicated `dx100-full-tile-normal-recovery2-20260721.service` with
 only the already-owned IS gate cgroup as a live campaign conflict and rejects
 all other owned gem5/runtime processes. The two concurrent services therefore
 have an aggregate hard maximum of 240 GiB. After both are terminal, the normal
-workflow state is reused rather than launched again; the original 220/240 GiB
-manager runs only the remaining serial IS workflow and final validation.
+workflow state is reused rather than launched again. The original serial IS
+workflow remains an authoritative revalidation chain, while
+`run_memory_admitted_is_recovery.py` may run far-end pending IS outputs early
+when memory tokens are available. Output-specific locks prevent duplicate
+execution, and the authoritative wrapper independently fast-reuses each
+completed artifact.
 
 The first two UME tasks in the overlapping normal unit exposed a service-PATH
 failure: gem5 completed with the exact output hash, exact reference PASS, final

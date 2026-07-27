@@ -20,9 +20,16 @@
 - A sweep repair may start only after checking `MemAvailable` and recent
   `vmstat` swap-in/swap-out. Do not treat idle CPU as permission to oversubscribe
   memory.
-- Full-Class-B NAS IS uses about 60 GiB RSS per gem5 process on this host. Run
-  at most one IS task at a time; never place IS in a generic fixed-parallelism
-  batch.
+- Full-Class-B NAS IS reserves 64 GiB per live task on this host (the measured
+  single-task peak is about 61 GiB). Do not impose a fixed IS task-count cap.
+  Serialize admission with the owner runtime lock and, before every launch,
+  subtract the exact 10% host reserve plus the unconsumed peak reservations of
+  active full-tile services from `MemAvailable`; admit only the number of new
+  64-GiB IS reservations that fit. Recompute after every launch and completion.
+  Each IS task must remain independently contained at `MemoryHigh=60G`,
+  `MemoryMax=64G`, and `MemorySwapMax=0`; active swap, memory PSI, max/OOM
+  events, or insufficient projected headroom blocks new admissions but does not
+  terminate healthy running tasks.
 - Launch the recovery manager only through its systemd user unit with
   `MemoryHigh=220G`, `MemoryMax=240G`, and `MemorySwapMax=0`. The manager must
   verify these cgroup files itself and refuse uncapped execution.
@@ -54,9 +61,9 @@
   and select only far-end pending XRAGE tasks. XRAGE runners must hold an
   output-specific `flock` across reuse validation and simulation so a later
   normal-lane claimant waits and fast-reuses instead of launching a duplicate.
-  The remaining serial IS recovery must wait until the surge workflow is
-  terminal and its unit is inactive. Record the surge cgroup independently and
-  require that telemetry in final validation.
+  The remaining memory-admitted IS recovery must wait until the surge workflow
+  is terminal and its unit is inactive. Record the surge cgroup independently
+  and require that telemetry in final validation.
 - After the XRAGE surge is live, a UME surge may use the gate's conservatively
   released reservation only after its recorded peak remains below 64 GiB and
   the live gate is reduced to `MemoryHigh=64G`, `MemoryMax=72G`, with swap
@@ -66,7 +73,8 @@
   tasks. Its manager must verify `112G + 72G + 32G + 32G + 24G = 272G`, the
   same 96 GiB/five-minute admission gate, and pending primary ownership. UME
   runners must use the same output-specific lock/revalidate contract. The
-  serial IS recovery and finalizer must also wait for and record this lane.
+  memory-admitted IS recovery and finalizer must also wait for and record this
+  lane.
 - When the auxiliary lane and its one-shot retry are both terminal, keep the
   normal lane at 96/112 GiB and reuse the released 32 GiB reservation as
   `dx100-full-tile-t32-surge-recovery2-20260722.service`, with
@@ -75,15 +83,15 @@
   output-specific locks and independently revalidate reuse. The manager must
   verify the remaining live cgroups and the unchanged 272 GiB aggregate cap.
   Restore the normal lane to 128/144 GiB only after this lane is terminal and
-  inactive; the serial IS recovery and finalizer must wait for it and require
-  its cgroup telemetry.
+  inactive; the memory-admitted IS recovery and finalizer must wait for it and
+  require its cgroup telemetry.
 - After the UME surge is terminal, immediately reuse its released 24 GiB cap as
   `dx100-full-tile-t8-surge-recovery2-20260722.service`, with
   `MemoryHigh=16G`, `MemoryMax=24G`, `MemorySwapMax=0`, and at most two 8K
   GAPBS/CG tasks. Its manager must verify the remaining live cgroups and the
   unchanged 272 GiB aggregate ceiling. The T32 launcher must treat this lane as
-  an allowed owned cgroup, and the serial IS recovery/finalizer must wait for
-  and record it.
+  an allowed owned cgroup, and the memory-admitted IS recovery/finalizer must
+  wait for and record it.
 - XRAGE 64K is a required sweep point, not an unsupported exception. Build the
   `spatter_maa_64K` target with `TILE_SIZE=65536`, then reuse the original XRAGE
   surge lane's released reservation as
@@ -91,7 +99,7 @@
   `MemoryHigh=24G`, `MemoryMax=32G`, `MemorySwapMax=0`, and one task. Launch it
   only after the original XRAGE surge workflow is terminal and its unit is
   inactive. The T8/T32 launchers may treat it as an allowed owned cgroup, and
-  the serial IS recovery/finalizer must wait for and record it.
+  the memory-admitted IS recovery/finalizer must wait for and record it.
 - Durable units inherit systemd's base PATH, not Codex's injected tool PATH.
   Tile runners must use base-system utilities (`grep`, `sed`, `awk`) or an
   explicit executable path; do not make correctness classification depend on

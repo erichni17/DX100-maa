@@ -105,6 +105,7 @@ def main():
     signature_paths = [
         *state_paths,
         auxiliary_retry_done,
+        run_root / "final-is-memory-admission-state-v1.json",
         run_root / "repair3-validation/gapbs/results_provenance_v2.tsv",
         run_root / "repair3-validation/ume/results_provenance_v2.tsv",
         run_root / "gem5-binary-cohort.json",
