@@ -20,23 +20,39 @@ int main(int argc, char **argv) {
         std::cerr << "n must be in (0, TILE_SIZE]" << std::endl;
         return 2;
     }
-    if (pattern != "random" && pattern != "fanout") {
-        std::cerr << "pattern must be random or fanout" << std::endl;
+    if (pattern != "random" && pattern != "fanout" &&
+        pattern != "same_line" && pattern != "line_revisit") {
+        std::cerr << "pattern must be random, fanout, same_line, or "
+                  << "line_revisit" << std::endl;
         return 2;
     }
 
-    std::vector<int32_t> source(n * 4);
+    // The retry pattern must exceed the 8K-line Row-Table capacity so it
+    // exercises drain/refill while a repeated source line is outstanding.
+    const int source_elements = pattern == "line_revisit" ? n * 32 : n * 4;
+    std::vector<int32_t> source_storage(source_elements + 16);
+    const uintptr_t source_addr =
+        (reinterpret_cast<uintptr_t>(source_storage.data()) + 63) &
+        ~uintptr_t(63);
+    int32_t *source = reinterpret_cast<int32_t *>(source_addr);
     std::vector<uint32_t> indices(n);
     std::vector<int32_t> backing_storage(n + 64, -1);
     constexpr int guard_words = 32;
     int32_t *backing = backing_storage.data() + guard_words;
 
-    for (int i = 0; i < static_cast<int>(source.size()); ++i)
+    for (int i = 0; i < source_elements; ++i)
         source[i] = i * 17 + 3;
     for (int i = 0; i < n; ++i) {
-        indices[i] = pattern == "fanout"
-            ? 13
-            : static_cast<uint32_t>((i * 97 + 13) % source.size());
+        if (pattern == "fanout") {
+            indices[i] = 13;
+        } else if (pattern == "same_line") {
+            indices[i] = static_cast<uint32_t>((i * 5 + 3) % 16);
+        } else if (pattern == "line_revisit" && i % 64 == 0) {
+            indices[i] = 13;
+        } else {
+            indices[i] =
+                static_cast<uint32_t>((i * 97 + 13) % source_elements);
+        }
     }
 
     std::cout << "VIRTUAL_GATHER_LAYOUT mem_size="
@@ -46,7 +62,7 @@ int main(int argc, char **argv) {
     alloc_MAA();
     init_MAA();
     clear_mem_region();
-    add_mem_region(source.data(), source.data() + source.size());
+    add_mem_region(source, source + source_elements);
     add_mem_region(indices.data(), indices.data() + indices.size());
     add_mem_region(backing_storage.data(),
                    backing_storage.data() + backing_storage.size());
@@ -59,7 +75,7 @@ int main(int argc, char **argv) {
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
     maa_indirect_load_virtual_index<int32_t>(
-        source.data(), indices.data(), completion_tile, backing,
+        source, indices.data(), completion_tile, backing,
         min_reg, max_reg, stride_reg);
     wait_ready(completion_tile);
     m5_dump_stats(0, 0);

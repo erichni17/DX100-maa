@@ -300,6 +300,29 @@ bool RowTableEntry::get_entry_send(Addr &addr) {
     }
     return false;
 }
+bool RowTableEntry::claim_entry_send(Addr &addr, int &head, int &words) {
+    // Virtual claims free their slot immediately, so refill may reuse an
+    // earlier slot before this row is drained. The native monotonic send
+    // cursor would skip that newly inserted work.
+    for (int entry_id = 0; entry_id < num_RT_entries_per_row; entry_id++) {
+        if (!entries_valid[entry_id])
+            continue;
+        addr = entries[entry_id].addr;
+        head = entries[entry_id].first_itr;
+        words = offset_table->count_entries(head);
+        panic_if(words <= 0,
+                 "ROT[%d] ROW[%d] cannot claim empty entry[%d]\n",
+                 my_table_id, my_table_row_id, entry_id);
+        entries_valid[entry_id] = false;
+        DPRINTF(MAARowTable,
+                "ROT[%d] ROW[%d] %s: claimed entry[%d] addr[0x%lx] "
+                "head[%d] words[%d]!\n",
+                my_table_id, my_table_row_id, __func__,
+                entry_id, addr, head, words);
+        return true;
+    }
+    return false;
+}
 std::vector<OffsetTableEntry> RowTableEntry::get_entry_recv(Addr addr) {
     for (int i = 0; i < num_RT_entries_per_row; i++) {
         if (entries_valid[i] == true && entries[i].addr == addr) {
@@ -487,6 +510,36 @@ bool RowTableSlice::get_entry_send(Addr &addr, bool drain) {
         }
         entries_sent[last_sent_grow_rowid] = true;
         get_send_grow_rowid();
+    }
+    return false;
+}
+bool RowTableSlice::claim_entry_send(Addr &addr, int &head, int &words,
+                                     bool drain) {
+    // Claimed virtual rows are immediately reusable. Scan the bounded row
+    // array directly so refill cannot insert work behind native send cursors.
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; row_id++) {
+        if (!entries_valid[row_id] || entries_sent[row_id])
+            continue;
+        if (entries[row_id].claim_entry_send(addr, head, words)) {
+            DPRINTF(MAARowTable,
+                    "ROT[%d] %s: ROW[%d] claimed!\n",
+                    my_table_id, __func__, row_id);
+            if (entries[row_id].all_entries_received()) {
+                entries_valid[row_id] = false;
+                entries_sent[row_id] = false;
+                entries[row_id].check_reset();
+            }
+            return true;
+        }
+        DPRINTF(MAARowTable,
+                "ROT[%d] %s: ROW[%d] finished!\n",
+                my_table_id, __func__, row_id);
+        panic_if(!entries[row_id].all_entries_received(),
+                 "ROT[%d] ROW[%d] still owns entries after claim drain\n",
+                 my_table_id, row_id);
+        entries_valid[row_id] = false;
+        entries_sent[row_id] = false;
+        entries[row_id].check_reset();
     }
     return false;
 }

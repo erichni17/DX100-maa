@@ -116,6 +116,7 @@ public:
     void reset();
     void check_reset();
     bool get_entry_send(Addr &addr);
+    bool claim_entry_send(Addr &addr, int &head, int &words);
     std::vector<OffsetTableEntry> get_entry_recv(Addr addr);
     int get_entry_recv_head(Addr addr);
     int count_entry_words(Addr addr) const;
@@ -158,6 +159,7 @@ public:
                   bool _is_stream = false);
     bool insert(Addr grow_addr, Addr addr, int itr, int wid, bool &first_CL_access);
     bool get_entry_send(Addr &addr, bool drain);
+    bool claim_entry_send(Addr &addr, int &head, int &words, bool drain);
     bool find_next_grow_addr();
     bool is_full();
     void get_send_grow_rowid();

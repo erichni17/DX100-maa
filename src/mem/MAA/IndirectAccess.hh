@@ -94,8 +94,13 @@ protected:
     int virtual_reserved_response_words = 0;
     bool virtual_pending_source = false;
     Addr virtual_pending_source_addr = 0;
+    int virtual_pending_source_head = -1;
     int virtual_pending_source_words = 0;
-    std::map<Addr, int> virtual_response_word_reservations;
+    struct VirtualSourceReservation {
+        int head = -1;
+        int words = 0;
+    };
+    std::map<Addr, VirtualSourceReservation> virtual_source_reservations;
     struct VirtualCombineSlot {
         bool valid = false;
         Addr line_vaddr = 0;
@@ -120,6 +125,7 @@ protected:
     int virtual_outstanding_writes = 0;
     int virtual_source_expected = 0;
     int virtual_source_received = 0;
+    uint64_t virtual_trace_request_calls = 0;
     int virtual_combine_victim = 0;
     int virtual_full_line_writes = 0;
     int virtual_partial_word_writes = 0;

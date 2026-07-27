@@ -8,6 +8,7 @@
 #include "base/types.hh"
 #include "debug/MAAIndirect.hh"
 #include "debug/MAATrace.hh"
+#include "debug/MAAVirtualTrace.hh"
 #include "mem/packet.hh"
 #include "sim/cur_tick.hh"
 #include <cassert>
@@ -390,7 +391,7 @@ void IndirectAccessUnit::check_reset() {
              my_indirect_id, virtual_reserved_responses,
              virtual_outstanding_writes);
     panic_if(virtual_reserved_response_words != 0 || virtual_pending_source ||
-                 !virtual_response_word_reservations.empty(),
+                 !virtual_source_reservations.empty(),
              "I[%d] packed source reservation state is not empty\n",
              my_indirect_id);
     panic_if(!virtual_outstanding_write_lines.empty(),
@@ -813,6 +814,8 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                 (*maa->stats.IND_NumRTFull[my_indirect_id])++;
                 break;
             } else {
+                if (isVirtualLoad())
+                    my_RT_req_sent[my_RT_config][my_RT_idx] = false;
                 my_unique_WORD_addrs.insert(vaddr);
                 my_unique_CL_addrs.insert(block_paddr);
                 my_unique_ROW_addrs.insert(grow_addr + my_RT_idx * num_RT_possible_grows[my_RT_config]);
@@ -926,8 +929,9 @@ void IndirectAccessUnit::executeInstruction() {
                   virtual_combine_bank_used.end(), false);
         virtual_pending_source = false;
         virtual_pending_source_addr = 0;
+        virtual_pending_source_head = -1;
         virtual_pending_source_words = 0;
-        virtual_response_word_reservations.clear();
+        virtual_source_reservations.clear();
         virtual_outstanding_writes = 0;
         virtual_source_expected = 0;
         virtual_source_received = 0;
@@ -954,6 +958,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_pipeline_tick = 0;
         virtual_pipeline_attributed_ticks = 0;
         virtual_pipeline_ticks.fill(0);
+        virtual_trace_request_calls = 0;
         for (auto &slot : virtual_response_slots)
             slot = VirtualResponseSlot();
         for (auto &slot : virtual_combine_slots)
@@ -1074,6 +1079,12 @@ void IndirectAccessUnit::executeInstruction() {
             DPRINTF(MAAIndirect, "I[%d] %s: waiting for fill element %s!\n", my_indirect_id, __func__, my_instruction->print());
         } else if (needDrain) {
             DPRINTF(MAAIndirect, "I[%d] %s: fill needs to drain %s!\n", my_indirect_id, __func__, my_instruction->print());
+            DPRINTF(MAAVirtualTrace,
+                    "event=fill_drain unit=%d itr=%d expected=%d "
+                    "received=%d reserved=%d writes=%d\n",
+                    my_indirect_id, my_i, virtual_source_expected,
+                    virtual_source_received, virtual_reserved_responses,
+                    virtual_outstanding_writes);
             my_fill_finished = false;
             buildReady = true;
         } else {
@@ -1104,6 +1115,13 @@ void IndirectAccessUnit::executeInstruction() {
         }
         if (isVirtualLoad())
             (*maa->stats.IND_VirtBuildRounds[my_indirect_id])++;
+        DPRINTF(MAAVirtualTrace,
+                "event=build_begin unit=%d itr=%d fill_finished=%d "
+                "pending=%d expected=%d received=%d reserved=%d writes=%d\n",
+                my_indirect_id, my_i, my_fill_finished,
+                virtual_pending_source, virtual_source_expected,
+                virtual_source_received, virtual_reserved_responses,
+                virtual_outstanding_writes);
         if (my_build_start_tick == 0) {
             my_build_start_tick = curTick();
         }
@@ -1144,12 +1162,20 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_max_reserved_response_words = std::max(
                     virtual_max_reserved_response_words,
                     virtual_reserved_response_words);
-                virtual_response_word_reservations[addr] =
-                    virtual_pending_source_words;
+                panic_if(!virtual_source_reservations
+                              .emplace(addr,
+                                       VirtualSourceReservation{
+                                           virtual_pending_source_head,
+                                           virtual_pending_source_words})
+                              .second,
+                         "I[%d] duplicate source reservation for 0x%lx\n",
+                         my_indirect_id, addr);
                 virtual_source_expected++;
                 num_rowtable_accesses++;
                 createReadPacket(addr, rowtable_latency);
                 virtual_pending_source = false;
+                virtual_pending_source_head = -1;
+                virtual_pending_source_words = 0;
             }
         }
         while (!virtual_capacity_full) {
@@ -1166,46 +1192,57 @@ void IndirectAccessUnit::executeInstruction() {
                 assert(RT_idx < num_RT_slices[my_RT_config]);
                 DPRINTF(MAAIndirect, "I[%d] %s: Checking row table bank[%d]!\n", my_indirect_id, __func__, RT_idx);
                 if (my_RT_req_sent[my_RT_config][RT_idx] == false) {
-                    if (RT[my_RT_config][RT_idx].get_entry_send(addr, my_fill_finished)) {
+                    int virtual_head = -1;
+                    int virtual_words = 0;
+                    const bool entry_ready = isVirtualLoad()
+                        ? RT[my_RT_config][RT_idx].claim_entry_send(
+                              addr, virtual_head, virtual_words,
+                              my_fill_finished)
+                        : RT[my_RT_config][RT_idx].get_entry_send(
+                              addr, my_fill_finished);
+                    if (entry_ready) {
                         DPRINTF(MAAIndirect, "I[%d] %s: Creating packet for bank[%d], addr[0x%lx]!\n", my_indirect_id, __func__, RT_idx, addr);
                         if (isVirtualLoad()) {
-                            std::vector addr_vec = maa->map_addr(addr);
-                            int pending_rt = getRowTableIdx(
-                                my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
-                                addr_vec[ADDR_RANK_LEVEL],
-                                addr_vec[ADDR_BANKGROUP_LEVEL],
-                                addr_vec[ADDR_BANK_LEVEL]);
-                            Addr grow_addr = getGrowAddr(
-                                my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL],
-                                addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
-                            const int words = RT[my_RT_config][pending_rt]
-                                .count_entry_words(grow_addr, addr);
-                            panic_if(words <= 0,
-                                     "I[%d] virtual source has no offset chain\n",
+                            panic_if(virtual_head < 0 || virtual_words <= 0,
+                                     "I[%d] virtual source claim is empty\n",
                                      my_indirect_id);
                             if (virtual_response_words != 0 &&
                                 virtual_response_word_pool_limit == 0)
-                                panic_if(words > virtual_response_words,
+                                panic_if(virtual_words > virtual_response_words,
                                          "I[%d] source response needs %d/%d packed words\n",
-                                         my_indirect_id, words,
+                                         my_indirect_id, virtual_words,
                                          virtual_response_words);
+                            if (virtual_response_word_pool_limit != 0)
+                                panic_if(virtual_words >
+                                             virtual_response_word_pool_limit,
+                                         "I[%d] source response needs %d/%d pooled words\n",
+                                         my_indirect_id, virtual_words,
+                                         virtual_response_word_pool_limit);
                             if (virtual_response_word_pool_limit != 0 &&
-                                virtual_reserved_response_words + words >
+                                virtual_reserved_response_words +
+                                        virtual_words >
                                     virtual_response_word_pool_limit) {
                                 virtual_pending_source = true;
                                 virtual_pending_source_addr = addr;
-                                virtual_pending_source_words = words;
+                                virtual_pending_source_head = virtual_head;
+                                virtual_pending_source_words = virtual_words;
                                 virtual_response_word_pool_stalls++;
                                 virtual_capacity_full = true;
                                 break;
                             }
                             if (virtual_response_word_pool_limit != 0) {
-                                virtual_reserved_response_words += words;
-                                panic_if(!virtual_response_word_reservations
-                                             .emplace(addr, words).second,
-                                         "I[%d] duplicate word reservation for 0x%lx\n",
-                                         my_indirect_id, addr);
+                                virtual_reserved_response_words +=
+                                    virtual_words;
                             }
+                            panic_if(!virtual_source_reservations
+                                          .emplace(
+                                              addr,
+                                              VirtualSourceReservation{
+                                                  virtual_head,
+                                                  virtual_words})
+                                          .second,
+                                     "I[%d] duplicate source reservation for 0x%lx\n",
+                                     my_indirect_id, addr);
                         }
                         my_expected_responses++;
                         if (isVirtualLoad()) {
@@ -1236,6 +1273,13 @@ void IndirectAccessUnit::executeInstruction() {
             last_RT_sent = (last_RT_sent >= num_RT_slices[my_RT_config]) ? 0 : last_RT_sent;
         }
         virtual_build_incomplete = virtual_capacity_full;
+        DPRINTF(MAAVirtualTrace,
+                "event=build_end unit=%d itr=%d incomplete=%d pending=%d "
+                "expected=%d received=%d reserved=%d words=%d writes=%d\n",
+                my_indirect_id, my_i, virtual_build_incomplete,
+                virtual_pending_source, virtual_source_expected,
+                virtual_source_received, virtual_reserved_responses,
+                virtual_reserved_response_words, virtual_outstanding_writes);
         DPRINTF(MAAIndirect, "I[%d] %s: state set to Request for %s!\n", my_indirect_id, __func__, my_instruction->print());
         // Row table parallelism = total #banks. Each bank can give us a address in a cycle.
         updateLatency(0, 0, 0, num_rowtable_accesses, 0, total_num_RT_subslices);
@@ -1251,6 +1295,23 @@ void IndirectAccessUnit::executeInstruction() {
         if (my_request_start_tick == 0) {
             my_request_start_tick = curTick();
             startVirtualRequestInterval();
+        }
+        if (isVirtualLoad()) {
+            virtual_trace_request_calls++;
+            if ((virtual_trace_request_calls &
+                 (virtual_trace_request_calls - 1)) == 0) {
+                DPRINTF(MAAVirtualTrace,
+                        "event=request_heartbeat unit=%d calls=%lu itr=%d "
+                        "fill_finished=%d incomplete=%d expected=%d "
+                        "received=%d reserved=%d words=%d writes=%d "
+                        "combine_words=%d\n",
+                        my_indirect_id, virtual_trace_request_calls, my_i,
+                        my_fill_finished, virtual_build_incomplete,
+                        virtual_source_expected, virtual_source_received,
+                        virtual_reserved_responses,
+                        virtual_reserved_response_words,
+                        virtual_outstanding_writes, virtual_combine_words);
+            }
         }
         accountVirtualRequestInterval();
         if (isVirtualLoad() && drainVirtualResponses()) {
@@ -1296,6 +1357,12 @@ void IndirectAccessUnit::executeInstruction() {
             } else {
                 state = Status::Fill;
             }
+            DPRINTF(MAAVirtualTrace,
+                    "event=request_complete unit=%d calls=%lu itr=%d "
+                    "next=%s expected=%d received=%d writes=%d\n",
+                    my_indirect_id, virtual_trace_request_calls, my_i,
+                    status_names[(int)state], virtual_source_expected,
+                    virtual_source_received, virtual_outstanding_writes);
             accountVirtualRequestInterval();
             DPRINTF(MAAIndirect, "I[%d] %s: all responses received, calling execution again in state %s!\n", my_indirect_id, __func__, status_names[(int)state]);
             scheduleNextExecution(true);
@@ -1304,7 +1371,21 @@ void IndirectAccessUnit::executeInstruction() {
         if (my_fill_finished == false) {
             bool finished, waitForFinish, waitForElement, needDrain;
             int num_spd_read_condidx_accesses, num_rowtable_accesses;
+            const int fill_start_itr = my_i;
             fillRowTable(finished, waitForFinish, waitForElement, needDrain, num_spd_read_condidx_accesses, num_rowtable_accesses);
+            if (isVirtualLoad()) {
+                if (finished)
+                    my_fill_finished = true;
+                if (my_i != fill_start_itr || needDrain)
+                    virtual_build_incomplete = true;
+                if (finished || needDrain) {
+                    DPRINTF(MAAVirtualTrace,
+                            "event=request_refill unit=%d from=%d to=%d "
+                            "finished=%d need_drain=%d incomplete=%d\n",
+                            my_indirect_id, fill_start_itr, my_i, finished,
+                            needDrain, virtual_build_incomplete);
+                }
+            }
             // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
             updateLatency(0, num_spd_read_condidx_accesses, 0, 0, num_rowtable_accesses, total_num_RT_subslices);
         }
@@ -1497,10 +1578,15 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         was_full = RT[my_RT_config][RT_idx].is_full();
     const bool virtual_load = isVirtualLoad();
     int virtual_head = -1;
+    int virtual_reserved_words = 0;
     std::vector<OffsetTableEntry> entries;
     if (virtual_load) {
-        virtual_head = RT[my_RT_config][RT_idx].get_entry_recv_head(
-            grow_addr, addr, false);
+        auto reservation = virtual_source_reservations.find(addr);
+        if (reservation == virtual_source_reservations.end())
+            return false;
+        virtual_head = reservation->second.head;
+        virtual_reserved_words = reservation->second.words;
+        virtual_source_reservations.erase(reservation);
     } else {
         entries = RT[my_RT_config][RT_idx].get_entry_recv(
             grow_addr, addr, reorder_RT);
@@ -1526,12 +1612,10 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         slot->valid = true;
         slot->next_itr = virtual_head;
         if (virtual_response_word_pool_limit != 0) {
-            auto reservation = virtual_response_word_reservations.find(addr);
-            panic_if(reservation == virtual_response_word_reservations.end(),
+            panic_if(virtual_reserved_words <= 0,
                      "I[%d] response 0x%lx has no packed-word reservation\n",
                      my_indirect_id, addr);
-            slot->reserved_words = reservation->second;
-            virtual_response_word_reservations.erase(reservation);
+            slot->reserved_words = virtual_reserved_words;
         }
         const bool packed_response = virtual_response_words != 0 ||
                                      virtual_response_word_pool_limit != 0;
