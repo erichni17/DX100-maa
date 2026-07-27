@@ -467,6 +467,17 @@ def initial_state(args):
     }
 
 
+def classify_task_state(task, artifact_complete, unit):
+    """Prefer a live owned process over a concurrently completed artifact."""
+    if unit and unit.get("active"):
+        return "running"
+    if artifact_complete:
+        return "completed"
+    if task.get("unit") and task.get("attempts", 0):
+        return "failed"
+    return task["state"]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-root", type=Path, required=True)
@@ -527,19 +538,26 @@ def main(argv=None):
 
     while True:
         for tile_text, task in state["tasks"].items():
+            if task["state"] == "completed":
+                continue
             tile = int(tile_text)
-            if completed_artifact(args.run_root, tile, args.binary_sha):
-                task["state"] = "completed"
-                task["finished_at"] = now_iso()
-                continue
             unit_name = task.get("unit")
-            if not unit_name:
-                continue
-            unit = systemctl_show(unit_name, args.systemctl)
-            if unit.get("active"):
+            unit = (
+                systemctl_show(unit_name, args.systemctl)
+                if unit_name
+                else None
+            )
+            artifact_complete = completed_artifact(
+                args.run_root, tile, args.binary_sha
+            )
+            next_state = classify_task_state(task, artifact_complete, unit)
+            if next_state == "running":
                 task["state"] = "running"
                 record_telemetry(args.run_root, unit)
-            elif task.get("attempts", 0):
+            elif next_state == "completed":
+                task["state"] = "completed"
+                task["finished_at"] = now_iso()
+            elif next_state == "failed":
                 task["state"] = "failed"
                 task["finished_at"] = now_iso()
 

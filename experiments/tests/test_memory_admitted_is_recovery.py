@@ -12,6 +12,19 @@ import run_memory_admitted_is_recovery as admission  # noqa: E402
 
 
 class MemoryAdmittedISRecoveryTests(unittest.TestCase):
+    def test_live_owned_task_overrides_concurrent_completed_artifact(self):
+        task = {
+            "state": "running",
+            "attempts": 1,
+            "unit": "memory-is-t8192-a1.service",
+        }
+        self.assertEqual(
+            admission.classify_task_state(
+                task, artifact_complete=True, unit={"active": True}
+            ),
+            "running",
+        )
+
     def test_tile_parser_ignores_tile_in_prefix(self):
         self.assertEqual(
             admission.tile_from_unit(

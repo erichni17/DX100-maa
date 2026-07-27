@@ -4,7 +4,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 FRESH_TILE_RUNNERS = (
     Path("benchmarks/gapbs/run_gapbs_tile_smoke.sh"),
@@ -104,9 +103,9 @@ def test_fresh_tile_runners_use_immutable_sha_identity_and_publication():
         assert "RESULTS=$CAMPAIGN_ROOT/results_provenance_v2.tsv" in runner
         assert "execution_snapshot" in runner
         assert "gem5_provenance_matches" in runner
-        assert 'printf \'resolved_path\\t%s\\n\'' in runner
-        assert 'printf \'sha256\\t%s\\n\'' in runner
-        assert 'printf \'output_tag\\t%s\\n\'' in runner
+        assert "printf 'resolved_path\\t%s\\n'" in runner
+        assert "printf 'sha256\\t%s\\n'" in runner
+        assert "printf 'output_tag\\t%s\\n'" in runner
         assert "write_gem5_provenance" in runner
         assert "CKPT_LOCK=" in runner
         assert "flock -x 8" in runner
@@ -215,7 +214,9 @@ def test_gapbs_override_has_distinct_output_and_exact_sha_reuse(tmp_path):
     provenance = (patched_out / "gem5_provenance.tsv").read_text()
     assert f"resolved_path\t{patched.resolve()}\n" in provenance
     assert f"sha256\t{patched_sha}\n" in provenance
-    assert f"output_tag\tgem5.opt.ovl_base_sha256_{patched_sha}\n" in provenance
+    assert (
+        f"output_tag\tgem5.opt.ovl_base_sha256_{patched_sha}\n" in provenance
+    )
     snapshot = Path(
         next(
             line.split("\t", 1)[1]
@@ -252,9 +253,10 @@ def test_gapbs_override_has_distinct_output_and_exact_sha_reuse(tmp_path):
         "patched\trestore",
         "patched\trestore",
     ]
-    assert f"sha256\t{patched_sha}\n" in (
-        patched_out / "gem5_provenance.tsv"
-    ).read_text()
+    assert (
+        f"sha256\t{patched_sha}\n"
+        in (patched_out / "gem5_provenance.tsv").read_text()
+    )
 
     (patched_out / "gem5_provenance.tsv").write_text(
         "schema_version\t1\n"
@@ -376,8 +378,10 @@ def test_concurrent_variants_share_one_atomic_checkpoint(tmp_path):
     assert (checkpoint / "cpt.1").is_dir()
     assert not list(fixture["checkpoints"].glob("*.tmp.*"))
     results = (
-        fixture["campaign"] / "results_provenance_v2.tsv"
-    ).read_text().splitlines()
+        (fixture["campaign"] / "results_provenance_v2.tsv")
+        .read_text()
+        .splitlines()
+    )
     assert len(results) == 3
     assert results[0].endswith(
         "\tgem5_resolved_path\tgem5_sha256\tgem5_output_tag"
@@ -436,8 +440,10 @@ def test_old_live_results_file_is_not_mixed_with_provenance_rows(tmp_path):
     assert result.returncode == 0, result.stdout
     assert old_results.read_text() == original
     provenance_results = (
-        fixture["campaign"] / "results_provenance_v2.tsv"
-    ).read_text().splitlines()
+        (fixture["campaign"] / "results_provenance_v2.tsv")
+        .read_text()
+        .splitlines()
+    )
     assert len(provenance_results) == 2
     assert provenance_results[0].endswith(
         "\tgem5_resolved_path\tgem5_sha256\tgem5_output_tag"
@@ -532,7 +538,66 @@ def test_legacy_backfill_requires_manifest_and_command_binding(tmp_path):
 def test_is_runner_uses_frozen_snapshot_and_output_lock():
     runner = (ROOT / "benchmarks/NAS/is/run_is_smoke.sh").read_text()
     assert "IS_FROZEN_RUNNER" in runner
+    assert "--allow-resolved-path-alias" in runner
+    assert "reused_resolved_path" in runner
     assert 'exec 9>"$RUN_LOCK"' in runner
     assert runner.index("flock -x 9") < runner.index(
         "if reuse_completed_run; then"
     )
+
+
+def test_schema_v2_alias_requires_opt_in_and_exact_snapshot_hash(tmp_path):
+    current_source = tmp_path / "current/gem5.opt.ovl_base"
+    historical_source = tmp_path / "historical/gem5"
+    snapshot = tmp_path / "snapshots/gem5"
+    outdir = tmp_path / "output"
+    write_executable(current_source, "#!/usr/bin/env bash\nexit 0\n")
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_bytes(current_source.read_bytes())
+    snapshot.chmod(0o555)
+    outdir.mkdir()
+    digest = sha256(snapshot)
+    tag = f"gem5.opt.ovl_base_sha256_{digest}"
+    (outdir / "run.log").write_text(
+        f"command line: {snapshot} --outdir={outdir} config.py\n"
+    )
+    (outdir / "gem5_provenance.tsv").write_text(
+        "schema_version\t2\n"
+        "requested_gbin\tgem5.opt.ovl_base\n"
+        f"resolved_path\t{historical_source}\n"
+        f"execution_snapshot\t{snapshot}\n"
+        f"sha256\t{digest}\n"
+        f"output_tag\t{tag}\n"
+    )
+    command = [
+        str(VERIFIER),
+        "--outdir",
+        str(outdir),
+        "--resolved-path",
+        str(current_source),
+        "--sha256",
+        digest,
+        "--output-tag",
+        tag,
+        "--requested-gbin",
+        "gem5.opt.ovl_base",
+    ]
+
+    strict = subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert strict.returncode == 2
+    assert "resolved gem5 path differs" in strict.stdout
+
+    aliased = subprocess.run(
+        [*command, "--allow-resolved-path-alias"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert aliased.returncode == 0, aliased.stdout

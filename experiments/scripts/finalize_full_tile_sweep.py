@@ -726,7 +726,11 @@ def resolve_row_binary_identity(row, binary_cohort):
                 f"gem5 hash {identity['sha256']} is outside expected cohort"
             )
         if identity["resolved_path"] not in member["resolved_paths"]:
-            raise ValueError("gem5 resolved path is outside expected cohort")
+            if sidecar is None or schema_version != "2":
+                raise ValueError(
+                    "gem5 resolved path is outside expected cohort"
+                )
+            identity["provenance"] += "+immutable-snapshot-sha256-alias"
         if identity["output_tag"] not in member["output_tags"]:
             raise ValueError("gem5 output tag is outside expected cohort")
         identity["cohort_id"] = binary_cohort["cohort_id"]

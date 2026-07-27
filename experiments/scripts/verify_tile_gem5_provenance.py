@@ -12,7 +12,6 @@ import shlex
 import sys
 from pathlib import Path
 
-
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -81,24 +80,34 @@ def verify(arguments: argparse.Namespace) -> None:
     resolved_path = require_absolute(
         str(arguments.resolved_path), "expected gem5 path"
     )
-    expected_sha = require_sha256(
-        arguments.sha256, "expected gem5 hash"
-    )
+    expected_sha = require_sha256(arguments.sha256, "expected gem5 hash")
     sidecar_path = outdir / "gem5_provenance.tsv"
     if not sidecar_path.is_file():
         raise ValueError(f"provenance sidecar is missing: {sidecar_path}")
     sidecar = read_sidecar(sidecar_path)
     if sidecar.get("requested_gbin") != arguments.requested_gbin:
-        raise ValueError("requested gem5 label differs from provenance sidecar")
-    if sidecar.get("resolved_path") != str(resolved_path):
-        raise ValueError("resolved gem5 path differs from provenance sidecar")
+        raise ValueError(
+            "requested gem5 label differs from provenance sidecar"
+        )
+    sidecar_resolved_path = require_absolute(
+        sidecar.get("resolved_path", ""), "sidecar gem5 path"
+    )
     if sidecar.get("sha256") != expected_sha:
         raise ValueError("gem5 hash differs from provenance sidecar")
 
     command_binary, command_outdir = command_binding(outdir / "run.log")
-    target_outdir = outdir.resolve(strict=True) if outdir.is_symlink() else outdir
+    target_outdir = (
+        outdir.resolve(strict=True) if outdir.is_symlink() else outdir
+    )
     schema_version = sidecar.get("schema_version")
     if schema_version == "2":
+        if (
+            sidecar_resolved_path != resolved_path
+            and not arguments.allow_resolved_path_alias
+        ):
+            raise ValueError(
+                "resolved gem5 path differs from provenance sidecar"
+            )
         if sidecar.get("output_tag") != arguments.output_tag:
             raise ValueError("gem5 output tag differs from provenance sidecar")
         snapshot = require_absolute(
@@ -116,6 +125,10 @@ def verify(arguments: argparse.Namespace) -> None:
         expected_binary = snapshot
         expected_outdir = target_outdir
     elif schema_version == "1":
+        if sidecar_resolved_path != resolved_path:
+            raise ValueError(
+                "resolved gem5 path differs from provenance sidecar"
+            )
         manifest = require_absolute(
             sidecar.get("attestation_manifest", ""),
             "attestation manifest",
@@ -138,7 +151,9 @@ def verify(arguments: argparse.Namespace) -> None:
                 "attestation manifest names a different gem5 binary"
             )
         if document.get("gem5_sha256") != expected_sha:
-            raise ValueError("attestation manifest names a different gem5 hash")
+            raise ValueError(
+                "attestation manifest names a different gem5 hash"
+            )
         attested_outdir = require_absolute(
             sidecar.get("attested_command_outdir", ""),
             "attested command output directory",
@@ -165,6 +180,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sha256", required=True)
     parser.add_argument("--output-tag", required=True)
     parser.add_argument("--requested-gbin", required=True)
+    parser.add_argument(
+        "--allow-resolved-path-alias",
+        action="store_true",
+        help=(
+            "for schema-v2 sidecars only, accept a different source path "
+            "when the immutable executed snapshot matches the exact SHA-256"
+        ),
+    )
     return parser.parse_args()
 
 

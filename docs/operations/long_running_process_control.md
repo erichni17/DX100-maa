@@ -105,6 +105,14 @@ when memory tokens are available. Output-specific locks prevent duplicate
 execution, and the authoritative wrapper independently fast-reuses each
 completed artifact.
 
+The final IS recovery and memory-admitted lane can reach the same immutable
+gem5 bits through different source paths. Schema-v2 reuse therefore treats the
+executed snapshot plus exact SHA-256 as authoritative and retains the producing
+sidecar's source path in the reused results row. The older schema-v1 attestation
+path remains exact-path-only. This avoids rerunning a completed IS point merely
+because one launcher named the canonical build and another named an immutable
+snapshot.
+
 The first two UME tasks in the overlapping normal unit exposed a service-PATH
 failure: gem5 completed with the exact output hash, exact reference PASS, final
 stats, and clean `m5_exit`, but the wrapper returned rc=90 because `rg` exists

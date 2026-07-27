@@ -427,6 +427,50 @@ def test_planned_roi_only_result_requires_explicit_marker_and_identity(
     assert identity["sha256"] == digest
 
 
+def test_schema_v2_identity_uses_executed_snapshot_not_source_alias(tmp_path):
+    canonical = tmp_path / "canonical/gem5"
+    canonical.parent.mkdir()
+    canonical.write_bytes(b"gem5\n")
+    canonical.chmod(0o555)
+    digest = finalizer.sha256(canonical)
+    campaign = tmp_path / "manifest.json"
+    campaign.write_text(
+        json.dumps({"gem5_binary": str(canonical), "gem5_sha256": digest})
+        + "\n"
+    )
+    cohort = finalizer.load_binary_cohort(campaign)
+    snapshot = tmp_path / "snapshots/gem5"
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(canonical.read_bytes())
+    snapshot.chmod(0o555)
+    historical_alias = tmp_path / "historical/gem5"
+    outdir = tmp_path / "run"
+    outdir.mkdir()
+    (outdir / "run.log").write_text(
+        f"command line: {snapshot} --outdir={outdir} config.py\n"
+    )
+    (outdir / "gem5_provenance.tsv").write_text(
+        "schema_version\t2\n"
+        "requested_gbin\tgem5\n"
+        f"resolved_path\t{historical_alias}\n"
+        f"execution_snapshot\t{snapshot}\n"
+        f"sha256\t{digest}\n"
+        "output_tag\tgem5\n"
+    )
+    row = {
+        "outdir": str(outdir),
+        "gem5_resolved_path": str(historical_alias),
+        "gem5_sha256": digest,
+        "gem5_output_tag": "gem5",
+    }
+
+    identity, notes = finalizer.resolve_row_binary_identity(row, cohort)
+    assert notes == []
+    assert identity["sha256"] == digest
+    assert identity["execution_snapshot"] == str(snapshot)
+    assert identity["provenance"].endswith("+immutable-snapshot-sha256-alias")
+
+
 def test_is_tiles_use_numa_safe_recovery4_workflows(tmp_path):
     workload_specs = finalizer.specs(
         tmp_path,

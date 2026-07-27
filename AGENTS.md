@@ -106,6 +106,12 @@
   `rg` being available. Retry paths must reuse an existing run only after
   independently rechecking its exact oracle, stats, clean exit, and absence of
   panic/fatal markers.
+- A schema-v2 gem5 sidecar binds the immutable execution snapshot, exact
+  SHA-256, output directory, requested label, and output tag. For NAS IS reuse,
+  a different source-path alias is acceptable only when that executed snapshot
+  remains immutable and hashes to the exact expected cohort member. Preserve
+  the sidecar's original source path in any reused results row; a filename
+  difference alone must not relaunch identical simulator bits.
 - New overlapping workflows that contain any equal tile task IDs must use one
   explicit `dx-runtime --ownership-scope` across every participating workflow.
   A task whose lease is held elsewhere stays pending instead of consuming a

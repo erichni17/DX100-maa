@@ -124,7 +124,8 @@ gem5_provenance_matches() {
     --resolved-path "$GEM5_RESOLVED_PATH" \
     --sha256 "$GEM5_SHA256" \
     --output-tag "$TAG" \
-    --requested-gbin "$GBIN"
+    --requested-gbin "$GBIN" \
+    --allow-resolved-path-alias
 }
 
 write_gem5_provenance() {
@@ -214,16 +215,18 @@ reuse_completed_run() {
   fi
   ! grep -Eq 'IS_VERIFY .*result=FAIL|panic:|fatal:' "$O/run.log" || return 1
   grep -Eq 'Exiting @ tick .*m5_exit instruction encountered' "$O/run.log" || return 1
-  local simticks maa_cycles overlap wrtail timestamp
+  local simticks maa_cycles overlap wrtail timestamp reused_resolved_path
   simticks=$(awk '$1=="simTicks"{print $2; exit}' "$stats")
   [[ -n "$simticks" ]] || return 1
   maa_cycles=$(awk '$1=="system.maa.cycles_TOTAL"{print $2; exit}' "$stats")
   overlap=$(grep 'OVERLAP_AUDIT' "$O/run.log" | tail -1 | sed -n 's/.*both\/any=\([0-9.]*\).*/\1/p')
   wrtail=$(grep 'WRITE_TAIL_AUDIT' "$O/run.log" | tail -1 | sed -n 's/.*write_only\/write=\([0-9.]*\).*/\1/p')
+  reused_resolved_path=$(awk -F '\t' '$1=="resolved_path"{print $2; exit}' "$O/gem5_provenance.tsv")
+  [[ -n "$reused_resolved_path" ]] || return 1
   timestamp=$(date +%Y-%m-%dT%H:%M:%S)
   {
     flock -x 6
-    echo -e "${timestamp}\t${GBIN}\t${TILE}\t${SMALL}\t0\t${simticks}\t${maa_cycles:-}\t${overlap:-}\t${wrtail:-}\t${O}\t${GEM5_RESOLVED_PATH}\t${GEM5_SHA256}\t${TAG}" >> "$RESULTS"
+    echo -e "${timestamp}\t${GBIN}\t${TILE}\t${SMALL}\t0\t${simticks}\t${maa_cycles:-}\t${overlap:-}\t${wrtail:-}\t${O}\t${reused_resolved_path}\t${GEM5_SHA256}\t${TAG}" >> "$RESULTS"
   } 6>"$RESULTS_LOCK"
   echo "[reuse] accepted existing correctness-complete run: $O"
 }
