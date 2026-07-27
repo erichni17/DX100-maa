@@ -53,6 +53,7 @@ main(int argc, char **argv)
     std::vector<uint32_t> indices(total_elements);
     std::vector<double> destination_storage(
         total_elements + 2 * guard_elements, -1.0);
+    std::vector<double> fence_storage(1, 0.0);
     double *destination = destination_storage.data() + guard_elements;
 
     for (int i = 0; i < static_cast<int>(source.size()); ++i)
@@ -73,6 +74,8 @@ main(int argc, char **argv)
     add_mem_region(indices.data(), indices.data() + indices.size());
     add_mem_region(destination_storage.data(),
                    destination_storage.data() + destination_storage.size());
+    add_mem_region(fence_storage.data(),
+                   fence_storage.data() + fence_storage.size());
 
     const int min_reg = get_new_reg<int>(0);
     const int max_reg = get_new_reg<int>(total_elements);
@@ -106,6 +109,14 @@ main(int argc, char **argv)
             wait_ready(dst_tile);
         }
     }
+
+    // Reusing TD as a destination waits for any native stream-store reader.
+    // The virtual completion token is already drained but pays the same fence.
+    maa_const(0, min_reg);
+    maa_const(1, max_reg);
+    maa_stream_load<double>(fence_storage.data(), min_reg, max_reg, stride_reg,
+                            dst_tile);
+    wait_ready(dst_tile);
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
 
