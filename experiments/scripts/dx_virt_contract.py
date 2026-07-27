@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit a fail-closed storage and dataflow contract for virtual gather runs."""
+"""Audit one explicit native or virtual DX100 gather storage contract."""
 
 from __future__ import annotations
 
@@ -11,15 +11,48 @@ import os
 import tempfile
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+
+SCHEMA_VERSION = 2
 LINE_BYTES = 64
 SPD_WORD_BYTES = 4
-COMBINE_ENTRY_BYTES = 72
-RESPONSE_ID_BYTES = 8
-RESPONSE_WORD_BYTES = 8
-WRITE_TAG_BYTES = 8
+COMBINE_MIN_BYTES = 74
+SOURCE_RESERVATION_MIN_BYTES = 16
+WRITE_TAG_MIN_BYTES = 8
 
-DEFAULTS = {
+MODES = {
+    "native": {
+        "index_residency": "scratchpad",
+        "result_residency": "scratchpad",
+        "completion_tile_role": "result",
+        "steps": [
+            "fill the complete index tile in scratchpad",
+            "schedule derived source lines through Row/Offset Tables",
+            "materialize returned values in the destination tile",
+        ],
+    },
+    "compact_spd_index": {
+        "index_residency": "scratchpad",
+        "result_residency": "backing_memory",
+        "completion_tile_role": "token",
+        "steps": [
+            "retain the complete index tile in scratchpad",
+            "schedule derived source lines through Row/Offset Tables",
+            "combine returned values and retire them to backing memory",
+        ],
+    },
+    "direct_index_virtual": {
+        "index_residency": "memory_stream",
+        "result_residency": "backing_memory",
+        "completion_tile_role": "token",
+        "steps": [
+            "stream bounded index lines from memory",
+            "retain derived source descriptors in Row/Offset Tables",
+            "combine returned values and retire them to backing memory",
+        ],
+    },
+}
+
+INTEGER_DEFAULTS = {
     "num_cores": 4,
     "num_tiles_per_core": 8,
     "num_tile_elements": 16384,
@@ -27,18 +60,24 @@ DEFAULTS = {
     "num_initial_row_table_slices": 32,
     "num_row_table_rows_per_slice": 64,
     "num_row_table_entries_per_subslice_row": 8,
+    "num_maas": 1,
+    "num_indirect_units_per_maa": 1,
     "virtual_combine_slots": 16,
-    "virtual_combine_words": 256,
+    "virtual_combine_words": 0,
     "virtual_combine_ways": 0,
     "virtual_combine_banks": 0,
     "virtual_response_slots": 8,
-    "virtual_response_word_pool": 128,
-    "virtual_words_per_cycle": 1,
-    "virtual_max_outstanding_writes": 8,
+    "virtual_response_words": 0,
+    "virtual_response_word_pool": 0,
+    "virtual_words_per_cycle": 0,
+    "virtual_max_outstanding_writes": 32,
     "virtual_index_buffer_lines": 1,
 }
-
-INTEGER_KEYS = frozenset(DEFAULTS)
+BOOL_DEFAULTS = {
+    "virtual_masked_writes": False,
+    "no_reorder": False,
+    "reconfigure_row_table": False,
+}
 
 
 class ContractError(ValueError):
@@ -49,9 +88,20 @@ def parse_int(value: str, key: str) -> int:
     try:
         return int(value, 0)
     except ValueError as exc:
-        raise ContractError(
-            f"{key} must be an integer, got {value!r}"
-        ) from exc
+        raise ContractError(f"{key} must be an integer, got {value!r}") from exc
+
+
+def parse_bool(value: str, key: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "yes", "1"}:
+        return True
+    if normalized in {"false", "no", "0"}:
+        return False
+    raise ContractError(f"{key} must be a boolean, got {value!r}")
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def find_maa_section(parser: configparser.ConfigParser) -> str:
@@ -63,260 +113,384 @@ def find_maa_section(parser: configparser.ConfigParser) -> str:
     ]
     if len(matches) != 1:
         raise ContractError(
-            "config must contain exactly one MAA section with "
-            "num_tile_elements and num_tiles_per_core; found "
-            f"{matches}"
+            "config must contain exactly one MAA section; found " + repr(matches)
         )
     return matches[0]
 
 
-def load_configuration(path: Path | None) -> tuple[dict[str, int], dict]:
-    values = dict(DEFAULTS)
-    source = {
-        "kind": "defaults",
-        "path": None,
-        "sha256": None,
-        "section": None,
-    }
-    if path is None:
-        return values, source
-
+def load_config(path: Path) -> tuple[dict, dict]:
     path = path.resolve(strict=True)
     parser = configparser.ConfigParser(interpolation=None, strict=True)
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open(encoding="utf-8") as handle:
         parser.read_file(handle)
     section = find_maa_section(parser)
-    for key in INTEGER_KEYS:
+    values = dict(INTEGER_DEFAULTS)
+    values.update(BOOL_DEFAULTS)
+    for key in INTEGER_DEFAULTS:
         if parser.has_option(section, key):
             values[key] = parse_int(parser.get(section, key), key)
-    source = {
-        "kind": "gem5_config_ini",
+    for key in BOOL_DEFAULTS:
+        if parser.has_option(section, key):
+            values[key] = parse_bool(parser.get(section, key), key)
+
+    cache_sections = [
+        item
+        for item in parser.sections()
+        if item.startswith("system.maa_retirement_caches")
+        and parser.get(item, "type", fallback="") == "Cache"
+    ]
+    cache_data_bytes = sum(
+        parse_int(parser.get(item, "size"), f"{item}.size")
+        for item in cache_sections
+    )
+    cache_geometry = [
+        {
+            "section": item,
+            "size_bytes": parse_int(parser.get(item, "size"), "size"),
+            "assoc": parse_int(parser.get(item, "assoc"), "assoc"),
+            "mshrs": parse_int(parser.get(item, "mshrs"), "mshrs"),
+            "targets_per_mshr": parse_int(
+                parser.get(item, "tgts_per_mshr"), "tgts_per_mshr"
+            ),
+            "write_buffers": parse_int(
+                parser.get(item, "write_buffers"), "write_buffers"
+            ),
+        }
+        for item in cache_sections
+    ]
+    return values, {
         "path": str(path),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "section": section,
+        "sha256": sha256_bytes(path.read_bytes()),
+        "maa_section": section,
+        "retirement_caches": cache_geometry,
+        "retirement_cache_data_bytes": cache_data_bytes,
     }
-    return values, source
 
 
-def apply_overrides(values: dict[str, int], overrides: list[str]) -> None:
-    for item in overrides:
-        if "=" not in item:
-            raise ContractError(f"override must be KEY=VALUE, got {item!r}")
-        key, raw = item.split("=", 1)
-        if key not in INTEGER_KEYS:
-            raise ContractError(f"unsupported override key {key!r}")
-        values[key] = parse_int(raw, key)
+def load_case(path: Path) -> tuple[dict, Path]:
+    path = path.resolve(strict=True)
+    try:
+        case = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ContractError(f"invalid case JSON: {exc}") from exc
+    if case.get("schema_version") != 1:
+        raise ContractError("case manifest schema_version must be 1")
+    for key in ("case_id", "mode", "config_ini", "instruction"):
+        if key not in case:
+            raise ContractError(f"case manifest is missing {key}")
+    if case["mode"] not in MODES:
+        raise ContractError(f"unsupported mode {case['mode']!r}")
+    config_path = Path(case["config_ini"])
+    if not config_path.is_absolute():
+        config_path = path.parent / config_path
+    return case, config_path
 
 
-def validate(values: dict[str, int], effective_entries: int | None) -> None:
-    positive = INTEGER_KEYS - {
-        "physical_tile_elements",
-        "virtual_combine_ways",
-        "virtual_combine_banks",
+def validate(case: dict, values: dict) -> None:
+    instruction = case["instruction"]
+    for key in (
+        "logical_iterations",
+        "element_bytes",
+        "index_residency",
+        "result_residency",
+        "completion_tile_role",
+    ):
+        if key not in instruction:
+            raise ContractError(f"instruction is missing {key}")
+    if instruction["logical_iterations"] <= 0:
+        raise ContractError("logical_iterations must be positive")
+    if instruction["logical_iterations"] > values["num_tile_elements"]:
+        raise ContractError("logical_iterations exceeds logical tile capacity")
+    if instruction["element_bytes"] not in {4, 8}:
+        raise ContractError("element_bytes must be 4 or 8")
+    expected = MODES[case["mode"]]
+    for key in (
+        "index_residency",
+        "result_residency",
+        "completion_tile_role",
+    ):
+        if instruction[key] != expected[key]:
+            raise ContractError(
+                f"{case['mode']} requires {key}={expected[key]!r}"
+            )
+
+    positive = {
+        "num_cores",
+        "num_tiles_per_core",
+        "num_tile_elements",
+        "num_initial_row_table_slices",
+        "num_row_table_rows_per_slice",
+        "num_row_table_entries_per_subslice_row",
+        "num_maas",
+        "num_indirect_units_per_maa",
+        "virtual_combine_slots",
+        "virtual_response_slots",
+        "virtual_max_outstanding_writes",
+        "virtual_index_buffer_lines",
     }
-    for key in sorted(positive):
+    for key in positive:
         if values[key] <= 0:
             raise ContractError(f"{key} must be positive")
-    for key in (
-        "physical_tile_elements",
-        "virtual_combine_ways",
-        "virtual_combine_banks",
-    ):
+    for key in set(INTEGER_DEFAULTS) - positive:
         if values[key] < 0:
             raise ContractError(f"{key} must be non-negative")
-
     logical = values["num_tile_elements"]
     physical = values["physical_tile_elements"] or logical
     if physical > logical:
         raise ContractError("physical_tile_elements exceeds num_tile_elements")
-    slots = values["virtual_combine_slots"]
+    if not 1 <= values["virtual_index_buffer_lines"] <= 64:
+        raise ContractError("virtual_index_buffer_lines must be in [1,64]")
     ways = values["virtual_combine_ways"]
-    if ways > slots:
-        raise ContractError(
-            "virtual_combine_ways exceeds virtual_combine_slots"
-        )
+    slots = values["virtual_combine_slots"]
     if ways and slots % ways:
-        raise ContractError(
-            "virtual_combine_slots must be divisible by virtual_combine_ways"
-        )
-    if effective_entries is not None and effective_entries <= 0:
-        raise ContractError(
-            "row-table effective entries per row must be positive"
-        )
+        raise ContractError("virtual_combine_slots must divide into ways")
+    sets = 1 if ways == 0 else slots // ways
+    banks = values["virtual_combine_banks"]
+    if banks and ways == 0:
+        raise ContractError("banked combiner requires finite associativity")
+    if banks > sets:
+        raise ContractError("virtual_combine_banks exceeds combiner sets")
+    if case["mode"] != "native" and values["no_reorder"]:
+        raise ContractError("virtual reorder claim is invalid with no_reorder=true")
 
 
-def build_contract(
-    values: dict[str, int],
-    source: dict,
-    effective_entries_per_row: int | None,
-) -> dict:
-    validate(values, effective_entries_per_row)
+def response_storage(values: dict, element_bytes: int) -> tuple[int, int, str]:
+    slots = values["virtual_response_slots"]
+    if values["virtual_response_word_pool"]:
+        words = values["virtual_response_word_pool"]
+        return words * 8, words * element_bytes, "shared_word_pool"
+    if values["virtual_response_words"]:
+        words = slots * values["virtual_response_words"]
+        return words * 8, words * element_bytes, "fixed_words_per_slot"
+    return slots * LINE_BYTES, slots * LINE_BYTES, "full_cache_line_per_slot"
+
+
+def build_contract(case: dict, values: dict, source: dict) -> dict:
+    validate(case, values)
+    mode = case["mode"]
+    instruction = case["instruction"]
     logical = values["num_tile_elements"]
     physical = values["physical_tile_elements"] or logical
     tiles = values["num_cores"] * values["num_tiles_per_core"]
-
+    units = values["num_maas"] * values["num_indirect_units_per_maa"]
     native_spd = tiles * logical * SPD_WORD_BYTES
     physical_spd = tiles * physical * SPD_WORD_BYTES
-    native_completion = (tiles * logical + 7) // 8
-    physical_completion = (tiles * physical + 7) // 8
+    native_completion_target = (tiles * logical + 7) // 8
+    physical_completion_target = (tiles * physical + 7) // 8
+    simulator_completion = tiles * physical
 
-    combine = values["virtual_combine_slots"] * COMBINE_ENTRY_BYTES
-    responses = values["virtual_response_slots"] * RESPONSE_ID_BYTES
-    response_words = values["virtual_response_word_pool"] * RESPONSE_WORD_BYTES
-    write_tags = values["virtual_max_outstanding_writes"] * WRITE_TAG_BYTES
-    write_payload = values["virtual_max_outstanding_writes"] * LINE_BYTES
-    retirement = (
-        combine + responses + response_words + write_tags + write_payload
+    simulator_response, target_response, response_kind = response_storage(
+        values, instruction["element_bytes"]
     )
-    index_payload = values["virtual_index_buffer_lines"] * LINE_BYTES
+    per_unit_simulator = {
+        "combine_minimum": values["virtual_combine_slots"] * COMBINE_MIN_BYTES,
+        "response_identities_minimum": (
+            values["virtual_response_slots"] * SOURCE_RESERVATION_MIN_BYTES
+        ),
+        "response_payload": simulator_response,
+        "write_tags_minimum": (
+            values["virtual_max_outstanding_writes"] * WRITE_TAG_MIN_BYTES
+        ),
+        "retained_packet_payload_upper_bound": (
+            values["virtual_max_outstanding_writes"] * LINE_BYTES
+        ),
+    }
+    per_unit_target = dict(per_unit_simulator)
+    per_unit_target["response_payload"] = target_response
+    packet_payload_per_unit = per_unit_target.pop(
+        "retained_packet_payload_upper_bound"
+    )
+    simulator_virtual_conservative = units * sum(per_unit_simulator.values())
+    target_virtual_lower = units * sum(per_unit_target.values())
+    target_packet_payload_upper = units * packet_payload_per_unit
+    index_payload = (
+        values["virtual_index_buffer_lines"] * LINE_BYTES * units
+        if mode == "direct_index_virtual"
+        else 0
+    )
+    cache_data = source["retirement_cache_data_bytes"] if mode != "native" else 0
+    native_reference = native_spd + native_completion_target
+    if mode == "native":
+        target_lower = native_reference
+        target_conservative = native_reference
+    else:
+        target_lower = (
+            physical_spd
+            + physical_completion_target
+            + target_virtual_lower
+            + index_payload
+            + cache_data
+        )
+        target_conservative = target_lower + target_packet_payload_upper
 
-    native_total = native_spd + native_completion
-    virtual_total = (
-        physical_spd + physical_completion + retirement + index_payload
+    effective_entries = case.get("topology", {}).get(
+        "row_table_effective_entries_per_row"
     )
-    reduction = native_total - virtual_total
+    unique_line_capacity = None
+    if effective_entries is not None:
+        if not isinstance(effective_entries, int) or effective_entries <= 0:
+            raise ContractError("effective Row-Table entries/row must be positive")
+        unique_line_capacity = (
+            values["num_initial_row_table_slices"]
+            * values["num_row_table_rows_per_slice"]
+            * effective_entries
+        )
 
-    configured_entries = values["num_row_table_entries_per_subslice_row"]
-    entries_per_row = effective_entries_per_row or configured_entries
-    capacity = (
-        values["num_initial_row_table_slices"]
-        * values["num_row_table_rows_per_slice"]
-        * entries_per_row
+    resolved_input = {
+        "case": case,
+        "config_sha256": source["sha256"],
+        "configured_hardware": values,
+    }
+    resolved_sha = sha256_bytes(
+        json.dumps(resolved_input, sort_keys=True, separators=(",", ":")).encode()
     )
-    capacity_kind = (
-        "exact_user_supplied"
-        if effective_entries_per_row
-        else "configured_lower_bound"
-    )
-
     return {
         "schema_version": SCHEMA_VERSION,
+        "case_id": case["case_id"],
+        "mode": mode,
+        "resolved_input_sha256": resolved_sha,
         "source": source,
-        "configuration": {
+        "instruction": instruction,
+        "configured_hardware": {
             **values,
             "resolved_physical_tile_elements": physical,
             "total_tiles": tiles,
-            "spd_word_bytes": SPD_WORD_BYTES,
-            "cache_line_bytes": LINE_BYTES,
+            "total_indirect_units": units,
         },
-        "dataflow": {
-            "native": [
-                "stream B/index memory into a complete SPD index tile",
-                "insert derived A cache-line descriptors into Row/Word Tables",
-                "issue A reads in Row-Table order",
-                "write returned words into a distinct SPD destination tile",
-            ],
-            "compact_spd_index": [
-                "retain the complete SPD B/index tile",
-                "retain native Row/Word-Table scheduling",
-                "combine returned words and retire them to backing memory",
-            ],
-            "direct_index_virtual": [
-                "stream B cache lines through the bounded index feeder",
-                "retain derived A descriptors in native Row/Word Tables",
-                "combine returned words and retire them to backing memory",
-                "use the destination tile ID only as a completion token",
-            ],
-        },
-        "storage_bytes": {
-            "native_logical": {
-                "spd_payload": native_spd,
-                "bitpacked_completion_target": native_completion,
-                "counted_total": native_total,
-            },
-            "configured_virtual": {
-                "spd_payload": physical_spd,
-                "bitpacked_completion_target": physical_completion,
-                "virtual_retirement": {
-                    "combine_entries": combine,
-                    "response_identities": responses,
-                    "response_word_pool": response_words,
-                    "write_tags": write_tags,
-                    "retained_write_payload": write_payload,
-                    "total": retirement,
-                },
-                "direct_index_payload": index_payload,
-                "counted_total": virtual_total,
-            },
-            "reduction_vs_native": {
-                "bytes": reduction,
-                "percent": reduction * 100.0 / native_total,
-            },
-        },
-        "reorder_contract": {
-            "logical_iterations": logical,
-            "direct_index_feeder_lines": values["virtual_index_buffer_lines"],
-            "row_table_descriptor_capacity": capacity,
-            "capacity_kind": capacity_kind,
-            "effective_entries_per_row": entries_per_row,
-            "preservation_claim": (
-                "native-equivalent Row/Word-Table scheduling until capacity forces a drain"
+        "active_dataflow": MODES[mode]["steps"],
+        "simulator_allocation": {
+            "physical_spd_payload_bytes": physical_spd,
+            "completion_bool_array_bytes": simulator_completion,
+            "per_indirect_unit_conservative_components": per_unit_simulator,
+            "all_indirect_units_conservative_bytes": (
+                simulator_virtual_conservative
             ),
-            "not_claimed": "all logical iterations are simultaneously resident for every address distribution",
+            "direct_index_payload_bytes": index_payload,
+            "retirement_cache_data_bytes": cache_data,
+            "response_storage_kind": response_kind,
+            "excludes": [
+                "C++ object and container metadata",
+                "cache tags and cache controller metadata",
+                "network, packet, routing, and arbitration state beyond listed payload",
+            ],
         },
-        "exclusions": [
-            "Row/Word Tables retained by both compared designs",
-            "cache and buffer tags beyond explicit byte allowances",
-            "ports, arbitration, routing, control, and physical design",
-            "area, frequency, power, and energy",
-            "support for non-direct-gather producer/consumer chains",
+        "target_hardware_budget": {
+            "scope": "capacity_bounds_not_area_power_or_frequency",
+            "native_reference_bytes": native_reference,
+            "physical_spd_payload_bytes": (
+                native_spd if mode == "native" else physical_spd
+            ),
+            "bitpacked_completion_bytes": (
+                native_completion_target
+                if mode == "native"
+                else physical_completion_target
+            ),
+            "per_indirect_unit_minimum_bytes": (
+                {} if mode == "native" else per_unit_target
+            ),
+            "all_indirect_units_minimum_bytes": (
+                0 if mode == "native" else target_virtual_lower
+            ),
+            "retained_packet_payload_upper_bound_bytes": (
+                0 if mode == "native" else target_packet_payload_upper
+            ),
+            "direct_index_payload_bytes": index_payload,
+            "retirement_cache_data_bytes": cache_data,
+            "counted_lower_bound_bytes": target_lower,
+            "conservative_counted_bytes": target_conservative,
+            "conservative_difference_vs_native_bytes": (
+                target_conservative - native_reference
+            ),
+            "conservative_reduction_vs_native_percent": (
+                (native_reference - target_conservative)
+                * 100.0
+                / native_reference
+            ),
+            "excludes": [
+                "cache tags, MSHR payload, and cache control",
+                "ports, interconnect, arbitration, and routing",
+                "physical design, area, power, energy, and timing closure",
+            ],
+        },
+        "reorder_resources": {
+            "offset_iteration_capacity_per_unit": logical,
+            "row_table_rows": (
+                values["num_initial_row_table_slices"]
+                * values["num_row_table_rows_per_slice"]
+            ),
+            "row_table_unique_line_capacity": unique_line_capacity,
+            "configured_entries_per_subslice_row": values[
+                "num_row_table_entries_per_subslice_row"
+            ],
+            "effective_reorder_window": (
+                "bounded by logical iterations, unique-line capacity, and "
+                "address distribution"
+            ),
+            "claim": (
+                "native-equivalent Row/Offset-Table scheduling until "
+                "capacity forces a drain"
+            ),
+        },
+        "unsupported_scope": [
+            "transparent producer/consumer paging",
+            "scatter and read-modify-write virtualization",
+            "whole-scratchpad replacement by the direct-gather opcode",
         ],
     }
 
 
 def markdown(contract: dict) -> str:
-    cfg = contract["configuration"]
-    storage = contract["storage_bytes"]
-    reorder = contract["reorder_contract"]
-    retirement = storage["configured_virtual"]["virtual_retirement"]
+    target = contract["target_hardware_budget"]
+    reorder = contract["reorder_resources"]
+    line_capacity = reorder["row_table_unique_line_capacity"]
+    line_capacity_text = (
+        str(line_capacity)
+        if line_capacity is not None
+        else "unknown without topology input"
+    )
     lines = [
-        "# Virtual Gather Contract",
+        f"# Virtual Gather Contract: {contract['case_id']}",
         "",
-        "## Configuration",
+        f"- Mode: `{contract['mode']}`.",
+        f"- Logical iterations: {contract['instruction']['logical_iterations']:,}.",
+        "- Physical tile: "
+        f"{contract['configured_hardware']['resolved_physical_tile_elements']:,} "
+        "elements.",
+        "- Indirect units provisioned: "
+        f"{contract['configured_hardware']['total_indirect_units']}.",
+        f"- Row-Table unique-line capacity: {line_capacity_text}.",
         "",
-        f"- Logical tile: {cfg['num_tile_elements']:,} elements.",
-        f"- Physical tile: {cfg['resolved_physical_tile_elements']:,} elements.",
-        f"- Scratchpad tiles: {cfg['total_tiles']}.",
-        f"- Direct-index feeder: {reorder['direct_index_feeder_lines']} cache lines.",
-        f"- Row-Table descriptor capacity ({reorder['capacity_kind']}): "
-        f"{reorder['row_table_descriptor_capacity']:,}.",
-        "",
-        "## Counted Storage",
-        "",
-        "| Component | Bytes |",
-        "|---|---:|",
-        f"| Native logical SPD payload | {storage['native_logical']['spd_payload']:,} |",
-        f"| Configured physical SPD payload | {storage['configured_virtual']['spd_payload']:,} |",
-        f"| Configured completion-state target | {storage['configured_virtual']['bitpacked_completion_target']:,} |",
-        f"| Virtual combine entries | {retirement['combine_entries']:,} |",
-        f"| Virtual response identities | {retirement['response_identities']:,} |",
-        f"| Virtual response-word pool | {retirement['response_word_pool']:,} |",
-        f"| Virtual write tags | {retirement['write_tags']:,} |",
-        f"| Retained write payload | {retirement['retained_write_payload']:,} |",
-        f"| Direct-index payload | {storage['configured_virtual']['direct_index_payload']:,} |",
-        f"| **Configured virtual counted total** | **{storage['configured_virtual']['counted_total']:,}** |",
-        "",
-        f"Counted reduction versus native: {storage['reduction_vs_native']['bytes']:,} bytes "
-        f"({storage['reduction_vs_native']['percent']:.2f}%).",
-        "",
-        "## Reordering Claim",
-        "",
-        reorder["preservation_claim"] + ".",
-        "",
-        "Not claimed: " + reorder["not_claimed"] + ".",
-        "",
-        "## Exclusions",
+        "## Active Dataflow",
         "",
     ]
-    lines.extend(f"- {item}." for item in contract["exclusions"])
+    lines.extend(f"{index}. {step}." for index, step in enumerate(
+        contract["active_dataflow"], 1
+    ))
+    lines.extend(
+        [
+            "",
+            "## Target Hardware Budget",
+            "",
+            f"- Native reference: {target['native_reference_bytes']:,} bytes.",
+            "- Counted structural lower bound: "
+            f"{target['counted_lower_bound_bytes']:,} bytes.",
+            "- Conservative count with in-flight write payload: "
+            f"{target['conservative_counted_bytes']:,} bytes.",
+            "- Conservative reduction versus native: "
+            f"{target['conservative_reduction_vs_native_percent']:.2f}%.",
+            "",
+            "This is a capacity ledger with explicit bounds, not an area, "
+            "power, or timing result.",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
 def atomic_write(path: Path, data: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -331,15 +505,7 @@ def atomic_write(path: Path, data: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, help="gem5 config.ini")
-    parser.add_argument(
-        "--set", action="append", default=[], metavar="KEY=VALUE"
-    )
-    parser.add_argument(
-        "--row-table-effective-entries-per-row",
-        type=int,
-        help="supply the derived entries/row when one slice covers multiple subslices",
-    )
+    parser.add_argument("--case", type=Path, required=True)
     parser.add_argument("--json", type=Path, dest="json_path")
     parser.add_argument("--markdown", type=Path, dest="markdown_path")
     return parser.parse_args()
@@ -348,14 +514,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        values, source = load_configuration(args.config)
-        apply_overrides(values, args.set)
-        contract = build_contract(
-            values, source, args.row_table_effective_entries_per_row
-        )
+        case, config_path = load_case(args.case)
+        values, source = load_config(config_path)
+        source["case_manifest_path"] = str(args.case.resolve())
+        source["case_manifest_sha256"] = sha256_bytes(args.case.read_bytes())
+        contract = build_contract(case, values, source)
     except (ContractError, OSError, configparser.Error) as exc:
         raise SystemExit(f"dx-virt-contract: {exc}") from exc
-
     json_text = json.dumps(contract, indent=2, sort_keys=True) + "\n"
     if args.json_path:
         atomic_write(args.json_path, json_text)

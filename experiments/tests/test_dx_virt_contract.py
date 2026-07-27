@@ -8,114 +8,144 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = (
-    Path(__file__).resolve().parents[1] / "scripts" / "dx_virt_contract.py"
-)
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dx_virt_contract.py"
 SPEC = importlib.util.spec_from_file_location("dx_virt_contract", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
+def write_config(path: Path, overrides=None, units=(1, 1), caches=4):
+    values = dict(MODULE.INTEGER_DEFAULTS)
+    values.update(MODULE.BOOL_DEFAULTS)
+    values.update(overrides or {})
+    values["num_maas"], values["num_indirect_units_per_maa"] = units
+    lines = ["[system.maa]", "type=MAA"]
+    for key, value in values.items():
+        if isinstance(value, bool):
+            value = str(value).lower()
+        lines.append(f"{key}={value}")
+    for index in range(caches):
+        lines.extend(
+            [
+                "",
+                f"[system.maa_retirement_caches{index}]",
+                "type=Cache",
+                "size=1024",
+                "assoc=4",
+                "mshrs=16",
+                "tgts_per_mshr=16",
+                "write_buffers=16",
+            ]
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def case(mode, config="config.ini"):
+    expected = MODULE.MODES[mode]
+    return {
+        "schema_version": 1,
+        "case_id": f"test_{mode}",
+        "mode": mode,
+        "config_ini": config,
+        "instruction": {
+            "logical_iterations": 16384,
+            "element_bytes": 4,
+            "index_residency": expected["index_residency"],
+            "result_residency": expected["result_residency"],
+            "completion_tile_role": expected["completion_tile_role"],
+        },
+        "topology": {"row_table_effective_entries_per_row": 8},
+    }
+
+
 class ContractTests(unittest.TestCase):
-    def test_known_16k_on_4k_storage_contract(self):
-        values = dict(MODULE.DEFAULTS)
-        values.update(
-            physical_tile_elements=4096,
-            num_initial_row_table_slices=16,
-            virtual_combine_slots=384,
-            virtual_combine_words=4096,
-            virtual_combine_ways=4,
-            virtual_response_slots=96,
-            virtual_response_word_pool=480,
-            virtual_max_outstanding_writes=64,
-            virtual_index_buffer_lines=4,
-        )
-        contract = MODULE.build_contract(values, {"kind": "test"}, 8)
-        storage = contract["storage_bytes"]
-        self.assertEqual(storage["native_logical"]["counted_total"], 2162688)
+    def build(self, root, mode, overrides=None, units=(1, 1), caches=4):
+        config_path = root / "config.ini"
+        write_config(config_path, overrides, units, caches)
+        values, source = MODULE.load_config(config_path)
+        return MODULE.build_contract(case(mode), values, source)
+
+    def test_direct_index_contract_is_source_grounded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            contract = self.build(
+                Path(temporary),
+                "direct_index_virtual",
+                {
+                    "physical_tile_elements": 4096,
+                    "num_initial_row_table_slices": 16,
+                    "virtual_combine_slots": 384,
+                    "virtual_combine_words": 4096,
+                    "virtual_combine_ways": 4,
+                    "virtual_response_slots": 96,
+                    "virtual_response_word_pool": 480,
+                    "virtual_max_outstanding_writes": 64,
+                    "virtual_index_buffer_lines": 4,
+                },
+            )
+        self.assertEqual(contract["configured_hardware"]["total_tiles"], 32)
         self.assertEqual(
-            storage["configured_virtual"]["virtual_retirement"]["total"],
-            36864,
-        )
-        self.assertEqual(
-            storage["configured_virtual"]["counted_total"], 577792
-        )
-        self.assertAlmostEqual(
-            storage["reduction_vs_native"]["percent"], 73.2836174242
-        )
-        self.assertEqual(
-            contract["reorder_contract"]["row_table_descriptor_capacity"],
+            contract["reorder_resources"]["row_table_unique_line_capacity"],
             8192,
         )
+        self.assertEqual(
+            contract["simulator_allocation"]["retirement_cache_data_bytes"],
+            4096,
+        )
+        self.assertEqual(
+            contract["target_hardware_budget"]["native_reference_bytes"],
+            2162688,
+        )
 
-    def test_config_ini_and_override_are_recorded(self):
+    def test_zero_semantics_match_gem5_defaults(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "config.ini"
-            path.write_text(
-                "[system.maa]\n"
-                "num_cores=4\n"
-                "num_tiles_per_core=8\n"
-                "num_tile_elements=16384\n"
-                "physical_tile_elements=4096\n"
-                "virtual_index_buffer_lines=4\n",
-                encoding="utf-8",
-            )
-            values, source = MODULE.load_configuration(path)
-            MODULE.apply_overrides(values, ["virtual_index_buffer_lines=8"])
-            contract = MODULE.build_contract(values, source, None)
-            self.assertEqual(
-                contract["configuration"]["virtual_index_buffer_lines"], 8
-            )
-            self.assertEqual(source["section"], "system.maa")
-            self.assertEqual(len(source["sha256"]), 64)
+            contract = self.build(Path(temporary), "native", caches=0)
+        hardware = contract["configured_hardware"]
+        self.assertEqual(hardware["virtual_combine_words"], 0)
+        self.assertEqual(hardware["virtual_response_word_pool"], 0)
+        self.assertEqual(hardware["virtual_words_per_cycle"], 0)
 
-    def test_multiple_maa_sections_fail_closed(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "config.ini"
-            path.write_text(
-                "[system.maa]\nnum_tiles_per_core=8\nnum_tile_elements=16384\n"
-                "[system.other_maa]\nnum_tiles_per_core=8\nnum_tile_elements=16384\n",
-                encoding="utf-8",
-            )
-            with self.assertRaises(MODULE.ContractError):
-                MODULE.load_configuration(path)
-
-    def test_invalid_physical_capacity_fails(self):
-        values = dict(MODULE.DEFAULTS)
-        values["physical_tile_elements"] = 32768
-        with self.assertRaisesRegex(
-            MODULE.ContractError, "physical_tile_elements exceeds"
-        ):
-            MODULE.build_contract(values, {"kind": "test"}, None)
-
-    def test_cli_writes_json_and_markdown(self):
+    def test_per_unit_structures_are_multiplied(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            json_path = root / "contract.json"
-            markdown_path = root / "contract.md"
+            single = self.build(root, "direct_index_virtual", units=(1, 1))
+            multi = self.build(root, "direct_index_virtual", units=(2, 3))
+        self.assertEqual(multi["configured_hardware"]["total_indirect_units"], 6)
+        self.assertEqual(
+            multi["target_hardware_budget"]["all_indirect_units_minimum_bytes"],
+            6 * single["target_hardware_budget"]["all_indirect_units_minimum_bytes"],
+        )
+
+    def test_mode_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = root / "config.ini"
+            write_config(config_path)
+            values, source = MODULE.load_config(config_path)
+            manifest = case("direct_index_virtual")
+            manifest["instruction"]["index_residency"] = "scratchpad"
+            with self.assertRaisesRegex(MODULE.ContractError, "requires"):
+                MODULE.build_contract(manifest, values, source)
+
+    def test_cli_records_resolved_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_config(root / "config.ini", {"physical_tile_elements": 4096})
+            manifest_path = root / "case.json"
+            manifest_path.write_text(json.dumps(case("direct_index_virtual")))
+            output = root / "contract.json"
             completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPT),
-                    "--set",
-                    "physical_tile_elements=4096",
-                    "--json",
-                    str(json_path),
-                    "--markdown",
-                    str(markdown_path),
-                ],
-                check=False,
+                [sys.executable, str(SCRIPT), "--case", str(manifest_path),
+                 "--json", str(output)],
                 text=True,
                 capture_output=True,
+                check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(
-                json.loads(json_path.read_text())["schema_version"], 1
-            )
-            self.assertIn(
-                "# Virtual Gather Contract", markdown_path.read_text()
-            )
+            contract = json.loads(output.read_text())
+            self.assertEqual(len(contract["resolved_input_sha256"]), 64)
+            self.assertEqual(contract["mode"], "direct_index_virtual")
 
 
 if __name__ == "__main__":
