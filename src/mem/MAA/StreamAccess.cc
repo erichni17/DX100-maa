@@ -417,7 +417,7 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
         }
     }
 
-    Cycles total_latency;
+    Cycles total_latency = Cycles(0);
     if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
         my_received_responses++;
         updateLatency(0, 0, entries.size(), 1);
@@ -428,6 +428,7 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
             DPRINTF(MAAStream, "S[%d] %s: expected: %d, received: %d!\n", my_stream_id, __func__, my_received_responses, my_received_responses);
         }
     } else {
+        total_latency = updateLatency(0, entries.size(), 0, 1);
         RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
         real_req->setRegion(my_addr_range_id);
         PacketPtr write_pkt = new Packet(real_req, MemCmd::WritebackDirty);

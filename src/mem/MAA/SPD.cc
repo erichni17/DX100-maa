@@ -153,7 +153,10 @@ bool SPD::getElementFinished(int tile_id, int element_id, int word_size,
                              uint8_t func, int id) {
     check_tile_id(tile_id, sizeof(uint32_t));
     bool is_element_finished;
-    if (element_id >= num_tile_elements) {
+    // Functional units use one-past-the-tile as a sentinel while waiting for
+    // the producer to mark the whole tile finished. With a smaller physical
+    // tile, that sentinel begins at physical rather than logical capacity.
+    if (element_id >= physical_tile_elements) {
         is_element_finished = false;
     } else {
         check_tile_element_id(tile_id, element_id, word_size);
