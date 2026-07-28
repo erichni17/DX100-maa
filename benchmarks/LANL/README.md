@@ -33,3 +33,21 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
 ```
 
 The packed cell word and bounded step count are microbenchmark mechanisms, not claims about Branson's in-memory ABI or physics.
+
+## `sparta_particle_cell_step`
+
+This kernel maps two pinned SPARTA paths. `src/KOKKOS/update_kokkos.cpp` loads a particle's cell, follows child/parent/neighbor cells while moving it, and retains continuation state; `src/KOKKOS/compute_thermal_grid_kokkos.cpp` maps each particle to a cell and accumulates six values: count, mass, three momentum components, and mass times squared velocity. The SPARTA revision is `ca0ce28fd76080d8b2828db77adde14fdc382c76`.
+
+The microbenchmark uses a bounded two-neighbor cell record and a generated visit count. It runs either cell-sorted or shuffled particle order on the same scalar and model paths. Final particle cell/visit state must be exact; relaxed floating tallies use a `1e-12` relative/absolute tolerance.
+
+```sh
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
+    benchmarks/LANL/sparta_particle_cell_step.cc \
+    -o /tmp/sparta_particle_cell_step
+/tmp/sparta_particle_cell_step --particles 2048 --cells 1024 \
+    --visits 8 --window 64 --order sorted --seed 0x535041525441
+/tmp/sparta_particle_cell_step --particles 2048 --cells 1024 \
+    --visits 8 --window 64 --order shuffled --seed 0x535041525441
+```
+
+The comparison isolates the value of particle grouping for the modeled memory phase. It does not model SPARTA collision physics, surfaces, MPI migration, or the cost of sorting particles.
