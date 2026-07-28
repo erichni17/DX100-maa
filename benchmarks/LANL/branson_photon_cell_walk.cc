@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -81,7 +82,10 @@ struct Options
     size_t continuationContexts = 0;
     size_t combinerEntries = 0;
     size_t combinerBanks = 4;
+    size_t descriptorItems = 16;
     uint64_t seed = 0x4252414e534f4eULL;
+    std::string descriptorAssembly;
+    std::string descriptorMetadata;
 };
 
 constexpr uint64_t NextMask = (uint64_t{1} << 24) - 1;
@@ -90,6 +94,13 @@ constexpr uint64_t TrackMask = (uint64_t{1} << 12) - 1;
 constexpr uint64_t TerminalBit = uint64_t{1} << 52;
 constexpr uint64_t TallyBase = 0x200000000ULL;
 constexpr double EnergyCutoff = 1.0e-8;
+constexpr uint64_t DescriptorAddress = 0x800;
+constexpr uint64_t DescriptorStartVector = 0x900;
+constexpr uint64_t DescriptorResultVector = 0xa00;
+constexpr uint64_t DescriptorCompletion = 0xb00;
+constexpr uint64_t DescriptorRecordBase = 0xc00;
+constexpr uint64_t DescriptorTerminal =
+    std::numeric_limits<uint64_t>::max();
 
 template <class T>
 uint64_t
@@ -256,6 +267,148 @@ runScalar(const Dataset &data, size_t maximumSteps)
             cellIndex, static_cast<uint32_t>(steps), energy};
     }
     return result;
+}
+
+struct StagedRoot
+{
+    uint32_t start = 0;
+    uint32_t steps = 0;
+    uint64_t expected = 0;
+};
+
+uint64_t
+descriptorPayload(const Cell &cell)
+{
+    return static_cast<uint64_t>(cell.absorption) + cell.trackScale;
+}
+
+std::vector<StagedRoot>
+selectStagedRoots(
+    const Dataset &data, size_t maximumSteps, size_t requestedItems)
+{
+    std::vector<StagedRoot> roots;
+    roots.reserve(requestedItems);
+    for (const auto &photon : data.photons) {
+        uint32_t cellIndex = photon.cell;
+        uint64_t expected = 0;
+        for (size_t step = 1; step <= maximumSteps; ++step) {
+            const Cell cell = unpackCell(data.packedCells[cellIndex]);
+            expected += descriptorPayload(cell);
+            if (cell.terminal) {
+                roots.push_back(StagedRoot{
+                    photon.cell, static_cast<uint32_t>(step), expected});
+                break;
+            }
+            cellIndex = cell.next;
+        }
+        if (roots.size() == requestedItems) {
+            break;
+        }
+    }
+    if (roots.size() != requestedItems) {
+        throw std::runtime_error(
+            "not enough explicitly terminating photon roots for descriptor");
+    }
+    return roots;
+}
+
+void
+emitDescriptorStaging(const Dataset &data, const Options &options)
+{
+    const bool emitAssembly = !options.descriptorAssembly.empty();
+    const bool emitMetadata = !options.descriptorMetadata.empty();
+    if (emitAssembly != emitMetadata) {
+        throw std::invalid_argument(
+            "descriptor assembly and metadata must be requested together");
+    }
+    if (!emitAssembly) {
+        return;
+    }
+    if (data.packedCells.size() > std::numeric_limits<uint32_t>::max() ||
+        options.maximumSteps > std::numeric_limits<uint32_t>::max() ||
+        options.descriptorItems > std::numeric_limits<uint32_t>::max()) {
+        throw std::invalid_argument(
+            "descriptor staging field exceeds v1 width");
+    }
+
+    const auto roots = selectStagedRoots(
+        data, options.maximumSteps, options.descriptorItems);
+    uint64_t visits = 0;
+    for (const auto &root : roots) {
+        visits += root.steps;
+    }
+
+    std::ofstream assembly(options.descriptorAssembly);
+    if (!assembly) {
+        throw std::runtime_error("cannot create descriptor assembly");
+    }
+    assembly << "    .section .data\n"
+             << "    .balign 64\n"
+             << "    .org 0x" << std::hex << DescriptorAddress << "\n"
+             << "    .quad 0x0002000131414d4c\n"
+             << "    .quad " << std::dec << roots.size() << "\n"
+             << "    .quad 0x" << std::hex << DescriptorStartVector << "\n"
+             << "    .quad 0x" << DescriptorResultVector << "\n"
+             << "    .quad 0x" << DescriptorCompletion << "\n"
+             << "    .quad 0x" << DescriptorRecordBase << "\n"
+             << "    .long " << std::dec << data.packedCells.size() << "\n"
+             << "    .long " << options.maximumSteps << "\n"
+             << "    .quad 0xffffffffffffffff\n"
+             << "    .org 0x" << std::hex << DescriptorStartVector << "\n";
+    for (const auto &root : roots) {
+        assembly << "    .quad " << std::dec << root.start << "\n";
+    }
+    assembly << "    .org 0x" << std::hex << DescriptorResultVector << "\n"
+             << "    .zero " << std::dec
+             << roots.size() * sizeof(uint64_t) << "\n"
+             << "    .org 0x" << std::hex << DescriptorCompletion << "\n"
+             << "    .zero 32\n"
+             << "    .org 0x" << DescriptorRecordBase << "\n";
+    for (const uint64_t packed : data.packedCells) {
+        const Cell cell = unpackCell(packed);
+        assembly << "    .quad " << std::dec
+                 << (cell.terminal ? DescriptorTerminal : cell.next) << ", "
+                 << descriptorPayload(cell) << "\n";
+    }
+    assembly.close();
+    if (!assembly) {
+        throw std::runtime_error("failed to write descriptor assembly");
+    }
+
+    std::ofstream metadata(options.descriptorMetadata);
+    if (!metadata) {
+        throw std::runtime_error("cannot create descriptor metadata");
+    }
+    metadata << "{\n"
+             << "  \"schema_version\": 1,\n"
+             << "  \"mapping\": \"Branson packed-cell continuation "
+                "projection; payload is absorption_plus_track_scale\",\n"
+             << "  \"descriptor_address\": " << DescriptorAddress << ",\n"
+             << "  \"start_vector\": " << DescriptorStartVector << ",\n"
+             << "  \"result_vector\": " << DescriptorResultVector << ",\n"
+             << "  \"completion_record\": " << DescriptorCompletion << ",\n"
+             << "  \"record_base\": " << DescriptorRecordBase << ",\n"
+             << "  \"record_count\": " << data.packedCells.size() << ",\n"
+             << "  \"maximum_steps\": " << options.maximumSteps << ",\n"
+             << "  \"descriptor_items\": " << roots.size() << ",\n"
+             << "  \"executed_record_visits\": " << visits << ",\n"
+             << "  \"start_indices\": [";
+    for (size_t index = 0; index < roots.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << roots[index].start;
+    }
+    metadata << "],\n  \"root_steps\": [";
+    for (size_t index = 0; index < roots.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << roots[index].steps;
+    }
+    metadata << "],\n  \"expected_results\": [";
+    for (size_t index = 0; index < roots.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << roots[index].expected;
+    }
+    metadata << "]\n}\n";
+    metadata.close();
+    if (!metadata) {
+        throw std::runtime_error("failed to write descriptor metadata");
+    }
 }
 
 uint64_t
@@ -535,7 +688,9 @@ parseOptions(int argc, char **argv)
                          "[--cells N] [--steps N] [--window N] "
                          "[--line-entries N] [--contexts N] "
                          "[--combiner-entries N] [--combiner-banks N] "
-                         "[--seed N]\n";
+                         "[--descriptor-items N] [--seed N] "
+                         "[--emit-descriptor-assembly PATH] "
+                         "[--emit-descriptor-metadata PATH]\n";
             std::exit(0);
         }
         if (argument + 1 == argc) {
@@ -558,8 +713,14 @@ parseOptions(int argc, char **argv)
             options.combinerEntries = parseSize(value, option);
         } else if (option == "--combiner-banks") {
             options.combinerBanks = parseSize(value, option);
+        } else if (option == "--descriptor-items") {
+            options.descriptorItems = parseSize(value, option);
         } else if (option == "--seed") {
             options.seed = std::stoull(value, nullptr, 0);
+        } else if (option == "--emit-descriptor-assembly") {
+            options.descriptorAssembly = value;
+        } else if (option == "--emit-descriptor-metadata") {
+            options.descriptorMetadata = value;
         } else {
             throw std::invalid_argument("unknown option " + option);
         }
@@ -576,6 +737,7 @@ main(int argc, char **argv)
         const Options options = parseOptions(argc, argv);
         const Configuration configuration = configurationFor(options);
         const Dataset data = makeDataset(options);
+        emitDescriptorStaging(data, options);
         const Result scalar = runScalar(data, options.maximumSteps);
         const ModelResult model = runModel(
             data, options.maximumSteps, configuration);

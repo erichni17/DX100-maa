@@ -34,6 +34,28 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
 
 The packed cell word and bounded step count are microbenchmark mechanisms, not claims about Branson's in-memory ABI or physics.
 
+The same executable can materialize the explicit opcode-2 staging view used by
+the gem5 descriptor smoke. It selects a requested number of generated photons
+whose packed-cell path reaches an explicit terminal within the bound, writes a
+16-byte `{next_index, payload}` record for every packed cell, and emits exact
+per-root unsigned checksum results. The payload is
+`absorption + track_scale`; it is a memory/control projection, not photon
+energy or either physical tally.
+
+```sh
+/tmp/branson_photon_cell_walk --photons 256 --cells 64 --steps 12 \
+    --window 16 --descriptor-items 8 \
+    --emit-descriptor-assembly /tmp/branson_descriptor.S \
+    --emit-descriptor-metadata /tmp/branson_descriptor.json
+```
+
+`tests/lanl_maa/run_branson_descriptor_staging_smoke.py` compiles this
+benchmark, requires its scalar/reference-model check to pass, assembles the
+emitted memory image, submits it through the CPU-visible test MMIO port, and
+checks the exact descriptor results. This connects a Branson-derived generated
+dataset to the descriptor ABI, but it remains a test-only staging workflow and
+does not establish native Branson ABI compatibility or application speedup.
+
 ## `sparta_particle_cell_step`
 
 This kernel maps two pinned SPARTA paths. `src/KOKKOS/update_kokkos.cpp` loads a particle's cell, follows child/parent/neighbor cells while moving it, and retains continuation state; `src/KOKKOS/compute_thermal_grid_kokkos.cpp` maps each particle to a cell and accumulates six values: count, mass, three momentum components, and mass times squared velocity. The SPARTA revision is `ca0ce28fd76080d8b2828db77adde14fdc382c76`.
