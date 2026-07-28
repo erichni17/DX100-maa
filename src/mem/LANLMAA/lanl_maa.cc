@@ -67,6 +67,7 @@ LANLMAA::UpdateEntry::clear()
     state = UpdateState::Free;
     address = 0;
     contribution = 0;
+    kind = UpdateKind::Uint64Add;
     packet = nullptr;
     waiters.clear();
 }
@@ -165,6 +166,10 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Accepted unsigned 64-bit atomic MAX requests"),
       ADD_STAT(atomicFp64AddUpdates, statistics::units::Count::get(),
                "Accepted FP64 atomic ADD requests"),
+      ADD_STAT(atomicFp64MinUpdates, statistics::units::Count::get(),
+               "Accepted FP64 atomic MIN requests"),
+      ADD_STAT(atomicFp64MaxUpdates, statistics::units::Count::get(),
+               "Accepted FP64 atomic MAX requests"),
       ADD_STAT(strictFp64Serializations, statistics::units::Count::get(),
                "FP64 updates serialized to preserve per-address order"),
       ADD_STAT(atomicAcknowledgements, statistics::units::Count::get(),
@@ -194,6 +199,13 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Completion-record writes acknowledged"),
       ADD_STAT(descriptorErrors, statistics::units::Count::get(),
                "Descriptors rejected before completion publication"),
+      ADD_STAT(descriptorPredicatesSkipped, statistics::units::Count::get(),
+               "Descriptor items retired without memory for false predicate"),
+      ADD_STAT(descriptorFaceValuesComputed, statistics::units::Count::get(),
+               "Finite EAP-derived weighted face values computed"),
+      ADD_STAT(descriptorFaceUpdatesAcknowledged,
+               statistics::units::Count::get(),
+               "EAP-derived logical MIN/MAX updates acknowledged"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -511,7 +523,9 @@ LANLMAA::controlAccess(PacketPtr packet)
             (uint64_t{1} <<
              static_cast<uint8_t>(DescriptorOpcode::IndexedCellWalk)) |
             (uint64_t{1} << static_cast<uint8_t>(
-                 DescriptorOpcode::PackedDirectionalCellWalk));
+                 DescriptorOpcode::PackedDirectionalCellWalk)) |
+            (uint64_t{1} <<
+             static_cast<uint8_t>(DescriptorOpcode::FaceMinMax));
         break;
       default:
         packet->setBadAddress();
@@ -545,6 +559,8 @@ LANLMAA::rearmDescriptorEngine()
     descriptorError = DescriptorError::None;
     descriptorAddressCursor = 0;
     descriptorResultCursor = 0;
+    descriptorFaceUpdatesAcknowledged = 0;
+    descriptorFaceUpdatePhase = false;
     nextAdmission = 0;
     nextRetirement = 0;
     nextVerification = 0;
@@ -613,6 +629,8 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
 
     descriptorError = error;
     descriptorState = DescriptorState::EngineErrorDraining;
+    panic_if(!allUpdateEntriesFree(),
+             "LANLMAA descriptor error drain cannot roll back updates");
     activeOperations = 0;
     activeContexts = 0;
     for (auto &operation : operations) {
@@ -656,12 +674,12 @@ LANLMAA::rangeIsMemory(uint64_t begin, uint64_t bytes) const
         begin > std::numeric_limits<Addr>::max() - (bytes - 1)) {
         return false;
     }
-    for (uint64_t offset = 0; offset < bytes; ++offset) {
-        if (!system->isMemAddr(static_cast<Addr>(begin + offset))) {
-            return false;
-        }
-    }
-    return true;
+    const AddrRange requested = RangeSize(static_cast<Addr>(begin), bytes);
+    const AddrRangeList ranges = system->getPhysMem().getConfAddrRanges();
+    return std::any_of(
+        ranges.begin(), ranges.end(), [&requested](const AddrRange &range) {
+            return requested.isSubset(range);
+        });
 }
 
 bool
@@ -778,7 +796,11 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 7, 0, 1);
         writeLe(data, 8, descriptorSlot, 4);
         writeLe(data, 16, operations.size(), 8);
-        writeLe(data, 24, descriptorResultCursor, 8);
+        writeLe(
+            data, 24,
+            faceMinMaxDescriptor() ? descriptorFaceUpdatesAcknowledged :
+                                     descriptorResultCursor,
+            8);
         tagRequest(
             completionPacket, TrafficKind::Completion, &completionPacket);
     }
@@ -910,16 +932,67 @@ LANLMAA::activeDependentMode() const
 }
 
 bool
+LANLMAA::faceMinMaxDescriptor() const
+{
+    return descriptorMode &&
+           descriptor.opcode == DescriptorOpcode::FaceMinMax;
+}
+
+LANLMAA::UpdateKind
+LANLMAA::configuredUpdateKind() const
+{
+    switch (updateOperation) {
+      case enums::uint64_add:
+        return UpdateKind::Uint64Add;
+      case enums::uint64_min:
+        return UpdateKind::Uint64Min;
+      case enums::uint64_max:
+        return UpdateKind::Uint64Max;
+      case enums::fp64_add_relaxed:
+        return UpdateKind::Fp64AddRelaxed;
+      case enums::fp64_add_strict:
+        return UpdateKind::Fp64AddStrict;
+      default:
+        panic("LANLMAA update operation became invalid");
+    }
+}
+
+bool
+LANLMAA::floatingUpdate(UpdateKind kind)
+{
+    return kind == UpdateKind::Fp64AddRelaxed ||
+           kind == UpdateKind::Fp64AddStrict ||
+           kind == UpdateKind::Fp64Min || kind == UpdateKind::Fp64Max;
+}
+
+bool
+LANLMAA::strictFloatingUpdate(UpdateKind kind)
+{
+    return kind == UpdateKind::Fp64AddStrict;
+}
+
+LANLMAA::UpdateKind
+LANLMAA::operationUpdateKind(const Operation &operation) const
+{
+    if (!faceMinMaxDescriptor()) {
+        return configuredUpdateKind();
+    }
+    panic_if(operation.faceUpdateOrdinal >= FaceMinMaxOutputArrays,
+             "LANLMAA face update ordinal is out of range");
+    return operation.faceUpdateOrdinal % 2 == 0 ?
+        UpdateKind::Fp64Min : UpdateKind::Fp64Max;
+}
+
+bool
 LANLMAA::floatingUpdate() const
 {
-    return updateOperation == enums::fp64_add_relaxed ||
-           updateOperation == enums::fp64_add_strict;
+    return floatingUpdate(configuredUpdateKind());
 }
 
 bool
 LANLMAA::strictFloatingUpdate() const
 {
-    return updateOperation == enums::fp64_add_strict;
+    return strictFloatingUpdate(configuredUpdateKind());
 }
 
 uint64_t
@@ -938,6 +1011,75 @@ LANLMAA::decodeDouble(uint64_t bits)
     static_assert(sizeof(bits) == sizeof(value));
     std::memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+Addr
+LANLMAA::faceGatherAddress(const Operation &operation) const
+{
+    panic_if(!faceMinMaxDescriptor() || !operation.faceActive ||
+                 operation.faceGatherStage >= 4,
+             "LANLMAA requested an invalid face gather address");
+    const uint64_t cell =
+        operation.faceGatherStage == 0 || operation.faceGatherStage == 3 ?
+            operation.faceHigh : operation.faceLow;
+    constexpr std::array<uint64_t, 4> offsets = {
+        0, sizeof(uint64_t), 3 * sizeof(uint64_t),
+        2 * sizeof(uint64_t)};
+    const uint64_t raw = descriptor.resultVector +
+        cell * FaceMinMaxCellRecordBytes +
+        offsets[operation.faceGatherStage];
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA face gather address overflowed Addr");
+    return address;
+}
+
+Addr
+LANLMAA::faceUpdateAddress(const Operation &operation) const
+{
+    panic_if(!faceMinMaxDescriptor() || !operation.faceActive ||
+                 operation.faceUpdateOrdinal >= FaceMinMaxOutputArrays,
+             "LANLMAA requested an invalid face update address");
+    const uint64_t cell = operation.faceUpdateOrdinal < 2 ?
+        operation.faceHigh : operation.faceLow;
+    const uint64_t raw = descriptor.recordBase +
+        (operation.faceUpdateOrdinal * descriptor.recordCount + cell) *
+            sizeof(uint64_t);
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA face update address overflowed Addr");
+    return address;
+}
+
+bool
+LANLMAA::faceGatheringComplete() const
+{
+    return faceMinMaxDescriptor() && !descriptorFaceUpdatePhase &&
+        nextAdmission == operations.size() &&
+        std::all_of(
+            operations.begin(), operations.end(), [](const Operation &op) {
+                return op.state == OperationState::FaceGatherComplete;
+            }) &&
+        std::all_of(lines.begin(), lines.end(), [](const LineEntry &line) {
+            return line.state == LineState::Free;
+        });
+}
+
+void
+LANLMAA::beginFaceUpdatePhase()
+{
+    panic_if(!faceGatheringComplete(),
+             "LANLMAA began face updates before gathers completed");
+    descriptorFaceUpdatePhase = true;
+    for (auto &operation : operations) {
+        if (operation.faceActive) {
+            operation.faceUpdateOrdinal = 0;
+            operation.address = faceUpdateAddress(operation);
+            operation.state = OperationState::FaceUpdateReady;
+        } else {
+            operation.state = OperationState::RetireReady;
+        }
+    }
 }
 
 void
@@ -1000,6 +1142,11 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         return true;
     }
     descriptor = decoded.descriptor;
+    if (faceMinMaxDescriptor() &&
+        descriptor.itemCount > continuationEntries) {
+        rejectDescriptor(DescriptorError::TooManyItems);
+        return true;
+    }
 
     uint64_t addressEnd = 0;
     uint64_t resultEnd = 0;
@@ -1008,12 +1155,20 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     const bool rangesValid = descriptorRange(
         descriptor.addressVector, descriptor.itemCount, sizeof(uint64_t),
         addressEnd) && descriptorRange(
-        descriptor.resultVector, descriptor.itemCount, sizeof(uint64_t),
+        descriptor.resultVector,
+        faceMinMaxDescriptor() ? descriptor.recordCount :
+                                 descriptor.itemCount,
+        faceMinMaxDescriptor() ? FaceMinMaxCellRecordBytes :
+                                 sizeof(uint64_t),
         resultEnd) && descriptorRange(
         descriptor.completionRecord, 1, 32, completionEnd) &&
-        (!descriptorIsRecordWalk(descriptor.opcode) ||
-         descriptorRange(descriptor.recordBase, descriptor.recordCount,
-                         descriptorRecordBytes(descriptor.opcode), recordEnd));
+        (!descriptorHasRecordRange(descriptor.opcode) ||
+         descriptorRange(
+             descriptor.recordBase,
+             faceMinMaxDescriptor() ?
+                 descriptor.recordCount * FaceMinMaxOutputArrays :
+                 descriptor.recordCount,
+             descriptorRecordBytes(descriptor.opcode), recordEnd));
     panic_if(!rangesValid,
              "LANLMAA decoded descriptor lost its range invariant");
 
@@ -1029,7 +1184,7 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     if (unsafeRange(descriptor.addressVector, addressEnd) ||
         unsafeRange(descriptor.resultVector, resultEnd) ||
         unsafeRange(descriptor.completionRecord, completionEnd) ||
-        (descriptorIsRecordWalk(descriptor.opcode) &&
+        (descriptorHasRecordRange(descriptor.opcode) &&
          unsafeRange(descriptor.recordBase, recordEnd))) {
         rejectDescriptor(DescriptorError::UnsafeAddressRange);
         return true;
@@ -1104,6 +1259,25 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
             operation.remainingSteps = static_cast<uint32_t>(remaining);
             operation.positiveDirection =
                 (rawAddress & PackedDirectionalDirectionBit) != 0;
+        } else if (descriptor.opcode == DescriptorOpcode::FaceMinMax) {
+            const uint64_t low = rawAddress & FaceMinMaxCellMask;
+            const uint64_t high =
+                (rawAddress >> FaceMinMaxHighCellShift) &
+                FaceMinMaxCellMask;
+            const bool active = (rawAddress & FaceMinMaxActiveBit) != 0;
+            if ((rawAddress & FaceMinMaxReservedMask) != 0 ||
+                (active &&
+                 (low >= descriptor.recordCount ||
+                  high >= descriptor.recordCount))) {
+                vectorError = DescriptorError::BadStartState;
+                break;
+            }
+            auto &operation = operations[descriptorAddressCursor];
+            operation.faceLow = static_cast<uint32_t>(low);
+            operation.faceHigh = static_cast<uint32_t>(high);
+            operation.faceActive = active;
+            operation.faceGatherStage = 0;
+            target = active ? faceGatherAddress(operation) : 0;
         } else {
             target = static_cast<Addr>(rawAddress);
             if (static_cast<uint64_t>(target) != rawAddress ||
@@ -1180,6 +1354,8 @@ LANLMAA::beginDescriptorExecution()
     nextVerification = 0;
     activeOperations = 0;
     activeContexts = 0;
+    descriptorFaceUpdatesAcknowledged = 0;
+    descriptorFaceUpdatePhase = false;
     descriptorState = DescriptorState::Executing;
 }
 
@@ -1196,14 +1372,20 @@ LANLMAA::beginDescriptorResults()
                      return line.state != LineState::Free;
                  }),
              "LANLMAA descriptor reached results with allocated lines");
+    panic_if(!allUpdateEntriesFree(),
+             "LANLMAA descriptor reached results with allocated updates");
     descriptorResultCursor = 0;
-    descriptorState = DescriptorState::ResultPending;
+    descriptorState = faceMinMaxDescriptor() ?
+        DescriptorState::CompletionPending : DescriptorState::ResultPending;
 }
 
 void
 LANLMAA::completeDescriptor()
 {
-    panic_if(descriptorResultCursor != operations.size(),
+    panic_if(
+        (!faceMinMaxDescriptor() &&
+         descriptorResultCursor != operations.size()) ||
+            (faceMinMaxDescriptor() && descriptorResultCursor != 0),
              "LANLMAA completed a descriptor before every result write");
     panic_if(rejectedPacket || waitingForRetry || descriptorPacket ||
                  addressVectorPacket || resultPacket || completionPacket,
@@ -1252,7 +1434,20 @@ LANLMAA::tick()
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
-    if (updateMode) {
+    if (faceMinMaxDescriptor()) {
+        if (!descriptorFaceUpdatePhase) {
+            attachReadyOperations();
+            issueLines();
+            if (faceGatheringComplete()) {
+                beginFaceUpdatePhase();
+            }
+        }
+        if (descriptorFaceUpdatePhase) {
+            attachReadyUpdates();
+            scheduleUpdateDrains();
+            issueUpdates();
+        }
+    } else if (updateMode) {
         attachReadyUpdates();
         scheduleUpdateDrains();
         issueUpdates();
@@ -1261,7 +1456,13 @@ LANLMAA::tick()
         issueLines();
     }
     if (nextRetirement == operations.size()) {
-        if (!updateMode) {
+        if (faceMinMaxDescriptor()) {
+            if (allUpdateEntriesFree()) {
+                beginDescriptorResults();
+                scheduleTick();
+                return;
+            }
+        } else if (!updateMode) {
             if (descriptorMode) {
                 beginDescriptorResults();
                 scheduleTick();
@@ -1312,15 +1513,21 @@ LANLMAA::admitOperations()
             return;
         }
 
-        if (activeDependentMode() &&
-            activeContexts == continuationEntries) {
+        auto &operation = operations[nextAdmission];
+        const bool needsContext = activeDependentMode() ||
+            (faceMinMaxDescriptor() && operation.faceActive);
+        if (needsContext && activeContexts == continuationEntries) {
             ++stats.contextWouldBlockCycles;
             return;
         }
 
-        auto &operation = operations[nextAdmission];
-        operation.state = OperationState::AddressReady;
-        if (activeDependentMode()) {
+        if (faceMinMaxDescriptor() && !operation.faceActive) {
+            operation.state = OperationState::FaceGatherComplete;
+            ++stats.descriptorPredicatesSkipped;
+        } else {
+            operation.state = OperationState::AddressReady;
+        }
+        if (needsContext) {
             operation.ownsContext = true;
             ++activeContexts;
             if (activeContexts > stats.activeContextHighWaterMark.value()) {
@@ -1379,12 +1586,17 @@ LANLMAA::attachReadyUpdates()
     for (size_t index = nextRetirement;
          index < nextAdmission && attached < logicalAdmissionWidth; ++index) {
         auto &operation = operations[index];
-        if (operation.state != OperationState::AddressReady) {
+        const OperationState readyState = faceMinMaxDescriptor() ?
+            OperationState::FaceUpdateReady : OperationState::AddressReady;
+        if (operation.state != readyState) {
             continue;
         }
 
+        const UpdateKind kind = operationUpdateKind(operation);
         UpdateEntry *entry = matchingUpdate(operation.address);
-        if (entry && strictFloatingUpdate()) {
+        panic_if(entry && entry->kind != kind,
+                 "LANLMAA matched one address with incompatible updates");
+        if (entry && strictFloatingUpdate(kind)) {
             if (entry->state == UpdateState::Accumulating) {
                 entry->state = UpdateState::AtomicPending;
                 ++stats.updateDrains;
@@ -1411,29 +1623,40 @@ LANLMAA::attachReadyUpdates()
             entry->state = UpdateState::Accumulating;
             entry->address = operation.address;
             entry->contribution = operation.value;
+            entry->kind = kind;
         } else {
             ++stats.updateCombinerHits;
-            switch (updateOperation) {
-              case enums::uint64_add:
+            switch (kind) {
+              case UpdateKind::Uint64Add:
                 entry->contribution += operation.value;
                 break;
-              case enums::uint64_min:
+              case UpdateKind::Uint64Min:
                 entry->contribution =
                     std::min(entry->contribution, operation.value);
                 break;
-              case enums::uint64_max:
+              case UpdateKind::Uint64Max:
                 entry->contribution =
                     std::max(entry->contribution, operation.value);
                 break;
-              case enums::fp64_add_relaxed:
+              case UpdateKind::Fp64AddRelaxed:
                 entry->contribution = encodeDouble(
                     decodeDouble(entry->contribution) +
                     decodeDouble(operation.value));
                 break;
-              case enums::fp64_add_strict:
+              case UpdateKind::Fp64AddStrict:
                 panic("LANLMAA strict FP64 update was combined");
+              case UpdateKind::Fp64Min:
+                entry->contribution = encodeDouble(std::fmin(
+                    decodeDouble(entry->contribution),
+                    decodeDouble(operation.value)));
+                break;
+              case UpdateKind::Fp64Max:
+                entry->contribution = encodeDouble(std::fmax(
+                    decodeDouble(entry->contribution),
+                    decodeDouble(operation.value)));
+                break;
               default:
-                panic("LANLMAA update operation became invalid");
+                panic("LANLMAA update kind became invalid");
             }
         }
         entry->waiters.push_back(index);
@@ -1452,12 +1675,14 @@ LANLMAA::attachReadyUpdates()
 void
 LANLMAA::scheduleUpdateDrains()
 {
+    const OperationState readyState = faceMinMaxDescriptor() ?
+        OperationState::FaceUpdateReady : OperationState::AddressReady;
     const bool descriptorAttached = nextAdmission == operations.size() &&
         std::none_of(
             operations.begin() + nextRetirement,
             operations.begin() + nextAdmission,
-            [](const Operation &operation) {
-                return operation.state == OperationState::AddressReady;
+            [readyState](const Operation &operation) {
+                return operation.state == readyState;
             });
     const bool windowMustDrain =
         nextAdmission < operations.size() &&
@@ -1544,30 +1769,40 @@ LANLMAA::issueUpdates()
                 entry.address, sizeof(uint64_t),
                 Request::ATOMIC_RETURN_OP,
                 requestorId);
-            switch (updateOperation) {
-              case enums::uint64_add:
+            switch (entry.kind) {
+              case UpdateKind::Uint64Add:
                 request->setAtomicOpFunctor(
                     std::make_unique<AtomicOpAdd<uint64_t>>(
                         entry.contribution));
                 break;
-              case enums::uint64_min:
+              case UpdateKind::Uint64Min:
                 request->setAtomicOpFunctor(
                     std::make_unique<AtomicOpMin<uint64_t>>(
                         entry.contribution));
                 break;
-              case enums::uint64_max:
+              case UpdateKind::Uint64Max:
                 request->setAtomicOpFunctor(
                     std::make_unique<AtomicOpMax<uint64_t>>(
                         entry.contribution));
                 break;
-              case enums::fp64_add_relaxed:
-              case enums::fp64_add_strict:
+              case UpdateKind::Fp64AddRelaxed:
+              case UpdateKind::Fp64AddStrict:
                 request->setAtomicOpFunctor(
                     std::make_unique<AtomicOpAdd<double>>(
                         decodeDouble(entry.contribution)));
                 break;
+              case UpdateKind::Fp64Min:
+                request->setAtomicOpFunctor(
+                    std::make_unique<AtomicOpMin<double>>(
+                        decodeDouble(entry.contribution)));
+                break;
+              case UpdateKind::Fp64Max:
+                request->setAtomicOpFunctor(
+                    std::make_unique<AtomicOpMax<double>>(
+                        decodeDouble(entry.contribution)));
+                break;
               default:
-                panic("LANLMAA update operation became invalid");
+                panic("LANLMAA update kind became invalid");
             }
             entry.packet = new Packet(request, MemCmd::SwapReq);
             entry.packet->allocate();
@@ -1591,22 +1826,28 @@ LANLMAA::issueUpdates()
         }
         entry.state = UpdateState::AtomicInFlight;
         ++stats.physicalAtomicUpdates;
-        switch (updateOperation) {
-          case enums::uint64_add:
+        switch (entry.kind) {
+          case UpdateKind::Uint64Add:
             ++stats.atomicAddUpdates;
             break;
-          case enums::uint64_min:
+          case UpdateKind::Uint64Min:
             ++stats.atomicMinUpdates;
             break;
-          case enums::uint64_max:
+          case UpdateKind::Uint64Max:
             ++stats.atomicMaxUpdates;
             break;
-          case enums::fp64_add_relaxed:
-          case enums::fp64_add_strict:
+          case UpdateKind::Fp64AddRelaxed:
+          case UpdateKind::Fp64AddStrict:
             ++stats.atomicFp64AddUpdates;
             break;
+          case UpdateKind::Fp64Min:
+            ++stats.atomicFp64MinUpdates;
+            break;
+          case UpdateKind::Fp64Max:
+            ++stats.atomicFp64MaxUpdates;
+            break;
           default:
-            panic("LANLMAA update operation became invalid");
+            panic("LANLMAA update kind became invalid");
         }
         ++issued;
     }
@@ -1836,6 +2077,53 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                     operation.state = OperationState::AddressReady;
                 }
             }
+        } else if (faceMinMaxDescriptor()) {
+            panic_if(!operation.faceActive ||
+                         operation.faceGatherStage >= 4,
+                     "LANLMAA face response lost its gather stage");
+            uint64_t bits = 0;
+            std::memcpy(&bits, data + offset, sizeof(bits));
+            const double field = decodeDouble(bits);
+            if (!std::isfinite(field)) {
+                ++stats.responses;
+                delete packet;
+                line->clear();
+                beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
+                return true;
+            }
+            if (operation.faceGatherStage < operation.faceValues.size()) {
+                operation.faceValues[operation.faceGatherStage] = bits;
+            }
+            ++operation.faceGatherStage;
+            if (operation.faceGatherStage < 4) {
+                operation.address = faceGatherAddress(operation);
+                operation.state = OperationState::AddressReady;
+            } else {
+                const double highHalfLow =
+                    decodeDouble(operation.faceValues[0]);
+                const double lowHalfHigh =
+                    decodeDouble(operation.faceValues[1]);
+                const double lowValueHigh =
+                    decodeDouble(operation.faceValues[2]);
+                const double highValueLow = field;
+                const double denominator = highHalfLow + lowHalfHigh;
+                const double faceValue =
+                    (highHalfLow * lowValueHigh +
+                     lowHalfHigh * highValueLow) /
+                    denominator;
+                if (!std::isfinite(denominator) || denominator == 0.0 ||
+                    !std::isfinite(faceValue)) {
+                    ++stats.responses;
+                    delete packet;
+                    line->clear();
+                    beginDescriptorErrorDrain(
+                        DescriptorError::BadRecordValue);
+                    return true;
+                }
+                operation.value = encodeDouble(faceValue);
+                operation.state = OperationState::FaceGatherComplete;
+                ++stats.descriptorFaceValuesComputed;
+            }
         } else {
             std::memcpy(
                 &operation.value, data + offset, sizeof(operation.value));
@@ -1877,7 +2165,7 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
              "LANLMAA response is not for an in-flight atomic update");
     panic_if(packet->cmd != MemCmd::SwapResp || !packet->isAtomicOp(),
              "LANLMAA update did not receive an atomic swap response");
-    if (floatingUpdate()) {
+    if (floatingUpdate(entry.kind)) {
         double oldValue = 0.0;
         std::memcpy(
             &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
@@ -1900,7 +2188,23 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
         auto &operation = operations[operationIndex];
         panic_if(operation.state != OperationState::UpdatePending,
                  "LANLMAA acknowledged update waiter is not pending");
-        operation.state = OperationState::RetireReady;
+        if (faceMinMaxDescriptor()) {
+            ++operation.faceUpdateOrdinal;
+            ++descriptorFaceUpdatesAcknowledged;
+            ++stats.descriptorFaceUpdatesAcknowledged;
+            if (operation.faceUpdateOrdinal < FaceMinMaxOutputArrays) {
+                operation.address = faceUpdateAddress(operation);
+                operation.state = OperationState::FaceUpdateReady;
+            } else {
+                panic_if(!operation.ownsContext || activeContexts == 0,
+                         "LANLMAA face update lost its retained context");
+                operation.ownsContext = false;
+                --activeContexts;
+                operation.state = OperationState::RetireReady;
+            }
+        } else {
+            operation.state = OperationState::RetireReady;
+        }
         ++stats.updateOperationsAcknowledged;
     }
     ++stats.atomicAcknowledgements;

@@ -19,7 +19,8 @@ enum class DescriptorOpcode : uint8_t
 {
     DirectGather = 1,
     IndexedCellWalk = 2,
-    PackedDirectionalCellWalk = 3
+    PackedDirectionalCellWalk = 3,
+    FaceMinMax = 4
 };
 
 enum class DescriptorError : uint8_t
@@ -55,6 +56,13 @@ constexpr uint64_t PackedDirectionalStartReservedMask =
 constexpr uint64_t PackedDirectionalRecordReservedMask =
     ~((uint64_t{1} << 48) - 1);
 constexpr uint64_t PackedDirectionalMaximumCells = uint64_t{1} << 24;
+constexpr uint64_t FaceMinMaxCellMask = (uint64_t{1} << 31) - 1;
+constexpr size_t FaceMinMaxHighCellShift = 31;
+constexpr uint64_t FaceMinMaxActiveBit = uint64_t{1} << 62;
+constexpr uint64_t FaceMinMaxReservedMask = uint64_t{1} << 63;
+constexpr uint64_t FaceMinMaxMaximumCells = uint64_t{1} << 31;
+constexpr uint64_t FaceMinMaxCellRecordBytes = 4 * sizeof(uint64_t);
+constexpr uint64_t FaceMinMaxOutputArrays = 4;
 
 struct Descriptor
 {
@@ -136,11 +144,23 @@ descriptorIsRecordWalk(DescriptorOpcode opcode)
            opcode == DescriptorOpcode::PackedDirectionalCellWalk;
 }
 
+inline bool
+descriptorHasRecordRange(DescriptorOpcode opcode)
+{
+    return descriptorIsRecordWalk(opcode) ||
+           opcode == DescriptorOpcode::FaceMinMax;
+}
+
 inline uint64_t
 descriptorRecordBytes(DescriptorOpcode opcode)
 {
-    return opcode == DescriptorOpcode::IndexedCellWalk ?
-        2 * sizeof(uint64_t) : sizeof(uint64_t);
+    if (opcode == DescriptorOpcode::IndexedCellWalk) {
+        return 2 * sizeof(uint64_t);
+    }
+    if (opcode == DescriptorOpcode::PackedDirectionalCellWalk) {
+        return sizeof(uint64_t);
+    }
+    return FaceMinMaxCellRecordBytes;
 }
 
 inline DescriptorDecodeResult
@@ -161,7 +181,8 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
         rawOpcode !=
             static_cast<uint8_t>(DescriptorOpcode::IndexedCellWalk) &&
         rawOpcode != static_cast<uint8_t>(
-            DescriptorOpcode::PackedDirectionalCellWalk)) {
+            DescriptorOpcode::PackedDirectionalCellWalk) &&
+        rawOpcode != static_cast<uint8_t>(DescriptorOpcode::FaceMinMax)) {
         result.error = DescriptorError::BadOpcode;
         return result;
     }
@@ -192,7 +213,7 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
             result.error = DescriptorError::ReservedNonzero;
             return result;
         }
-    } else {
+    } else if (descriptorIsRecordWalk(result.descriptor.opcode)) {
         result.descriptor.recordBase = descriptorReadLe64(bytes.data() + 40);
         result.descriptor.recordCount = descriptorReadLe32(bytes.data() + 48);
         result.descriptor.maxSteps = descriptorReadLe32(bytes.data() + 52);
@@ -220,6 +241,20 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
                 return result;
             }
         }
+    } else {
+        result.descriptor.recordBase = descriptorReadLe64(bytes.data() + 40);
+        result.descriptor.recordCount = descriptorReadLe32(bytes.data() + 48);
+        result.descriptor.maxSteps = descriptorReadLe32(bytes.data() + 52);
+        result.descriptor.terminalIndex =
+            descriptorReadLe64(bytes.data() + 56);
+        if (result.descriptor.recordBase % sizeof(uint64_t) != 0 ||
+            result.descriptor.recordCount == 0 ||
+            result.descriptor.recordCount > FaceMinMaxMaximumCells ||
+            result.descriptor.maxSteps != 0 ||
+            result.descriptor.terminalIndex != 0) {
+            result.error = DescriptorError::BadRecordGeometry;
+            return result;
+        }
     }
 
     result.descriptor.addressVector = descriptorReadLe64(bytes.data() + 16);
@@ -233,6 +268,12 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
         return result;
     }
 
+    if (result.descriptor.opcode == DescriptorOpcode::FaceMinMax &&
+        result.descriptor.resultVector % FaceMinMaxCellRecordBytes != 0) {
+        result.error = DescriptorError::MisalignedVector;
+        return result;
+    }
+
     uint64_t addressEnd = 0;
     uint64_t resultEnd = 0;
     uint64_t completionEnd = 0;
@@ -240,14 +281,22 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
     if (!descriptorRange(result.descriptor.addressVector,
                          result.descriptor.itemCount, sizeof(uint64_t),
                          addressEnd) ||
-        !descriptorRange(result.descriptor.resultVector,
-                         result.descriptor.itemCount, sizeof(uint64_t),
-                         resultEnd) ||
+        !descriptorRange(
+            result.descriptor.resultVector,
+            result.descriptor.opcode == DescriptorOpcode::FaceMinMax ?
+                result.descriptor.recordCount : result.descriptor.itemCount,
+            result.descriptor.opcode == DescriptorOpcode::FaceMinMax ?
+                FaceMinMaxCellRecordBytes : sizeof(uint64_t),
+            resultEnd) ||
         !descriptorRange(result.descriptor.completionRecord, 1, 32,
                          completionEnd) ||
-        (descriptorIsRecordWalk(result.descriptor.opcode) &&
+        (descriptorHasRecordRange(result.descriptor.opcode) &&
          !descriptorRange(result.descriptor.recordBase,
-                          result.descriptor.recordCount,
+                          result.descriptor.opcode ==
+                                  DescriptorOpcode::FaceMinMax ?
+                              result.descriptor.recordCount *
+                                  FaceMinMaxOutputArrays :
+                              result.descriptor.recordCount,
                           descriptorRecordBytes(result.descriptor.opcode),
                           recordEnd))) {
         result.error = DescriptorError::RangeOverflow;
@@ -265,7 +314,7 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
         result.error = DescriptorError::OverlappingOutput;
         return result;
     }
-    if (descriptorIsRecordWalk(result.descriptor.opcode) &&
+    if (descriptorHasRecordRange(result.descriptor.opcode) &&
         (descriptorRangesOverlap(
              result.descriptor.addressVector, addressEnd,
              result.descriptor.recordBase, recordEnd) ||

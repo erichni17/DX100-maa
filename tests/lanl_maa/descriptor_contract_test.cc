@@ -67,6 +67,18 @@ validPackedDirectionalDescriptor()
     return bytes;
 }
 
+std::array<uint8_t, DescriptorBytes>
+validFaceMinMaxDescriptor()
+{
+    auto bytes = validDescriptor();
+    writeLe(
+        bytes, 6, static_cast<uint8_t>(DescriptorOpcode::FaceMinMax), 1);
+    writeLe(bytes, 24, 0x800, 8);
+    writeLe(bytes, 40, 0x1000, 8);
+    writeLe(bytes, 48, 16, 4);
+    return bytes;
+}
+
 } // anonymous namespace
 
 int
@@ -97,6 +109,14 @@ main()
     assert(packed.descriptor.maxSteps == 8);
     assert(packed.descriptor.terminalIndex == 0);
 
+    const auto face = decodeDescriptor(validFaceMinMaxDescriptor(), 8);
+    assert(face);
+    assert(face.descriptor.opcode == DescriptorOpcode::FaceMinMax);
+    assert(face.descriptor.addressVector == 0x400);
+    assert(face.descriptor.resultVector == 0x800);
+    assert(face.descriptor.recordBase == 0x1000);
+    assert(face.descriptor.recordCount == 16);
+
     auto bytes = validDescriptor();
     writeLe(bytes, 0, 0, 4);
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadMagic);
@@ -106,7 +126,7 @@ main()
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadVersion);
 
     bytes = validDescriptor();
-    writeLe(bytes, 6, 4, 1);
+    writeLe(bytes, 6, 5, 1);
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadOpcode);
 
     bytes = validDescriptor();
@@ -194,6 +214,45 @@ main()
     writeLe(bytes, 40, 0x500, 8);
     assert(decodeDescriptor(bytes, 8).error ==
            DescriptorError::OverlappingInput);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 24, 0x808, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::MisalignedVector);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 40, 0x1004, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 48, 0, 4);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 48, (uint64_t{1} << 31) + 1, 4);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 52, 1, 4);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 56, 1, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 40, 0x800, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::OverlappingInput);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 40, std::numeric_limits<uint64_t>::max() - 7, 8);
+    assert(decodeDescriptor(bytes, 8).error == DescriptorError::RangeOverflow);
 
     return 0;
 }

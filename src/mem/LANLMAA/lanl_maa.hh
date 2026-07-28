@@ -35,8 +35,21 @@ class LANLMAA : public ClockedObject
         Unadmitted,
         AddressReady,
         DataPending,
+        FaceGatherComplete,
+        FaceUpdateReady,
         UpdatePending,
         RetireReady
+    };
+
+    enum class UpdateKind
+    {
+        Uint64Add,
+        Uint64Min,
+        Uint64Max,
+        Fp64AddRelaxed,
+        Fp64AddStrict,
+        Fp64Min,
+        Fp64Max
     };
 
     enum class UpdateState
@@ -83,11 +96,17 @@ class LANLMAA : public ClockedObject
         Addr address = 0;
         uint64_t expected = 0;
         uint64_t value = 0;
+        std::array<uint64_t, 3> faceValues{};
         size_t continuationSteps = 0;
         uint32_t remainingSteps = 0;
+        uint32_t faceLow = 0;
+        uint32_t faceHigh = 0;
+        uint8_t faceGatherStage = 0;
+        uint8_t faceUpdateOrdinal = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
+        bool faceActive = false;
     };
 
     struct LineEntry
@@ -105,6 +124,7 @@ class LANLMAA : public ClockedObject
         UpdateState state = UpdateState::Free;
         Addr address = 0;
         uint64_t contribution = 0;
+        UpdateKind kind = UpdateKind::Uint64Add;
         PacketPtr packet = nullptr;
         std::vector<size_t> waiters;
 
@@ -166,6 +186,8 @@ class LANLMAA : public ClockedObject
         statistics::Scalar atomicMinUpdates;
         statistics::Scalar atomicMaxUpdates;
         statistics::Scalar atomicFp64AddUpdates;
+        statistics::Scalar atomicFp64MinUpdates;
+        statistics::Scalar atomicFp64MaxUpdates;
         statistics::Scalar strictFp64Serializations;
         statistics::Scalar atomicAcknowledgements;
         statistics::Scalar atomicOldValuesReturned;
@@ -180,6 +202,9 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorResultWrites;
         statistics::Scalar descriptorCompletionWrites;
         statistics::Scalar descriptorErrors;
+        statistics::Scalar descriptorPredicatesSkipped;
+        statistics::Scalar descriptorFaceValuesComputed;
+        statistics::Scalar descriptorFaceUpdatesAcknowledged;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -247,6 +272,8 @@ class LANLMAA : public ClockedObject
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
     size_t descriptorResultCursor = 0;
+    uint64_t descriptorFaceUpdatesAcknowledged = 0;
+    bool descriptorFaceUpdatePhase = false;
     PacketPtr descriptorPacket = nullptr;
     PacketPtr addressVectorPacket = nullptr;
     PacketPtr resultPacket = nullptr;
@@ -262,8 +289,17 @@ class LANLMAA : public ClockedObject
     UpdateEntry *updateForPacket(PacketPtr packet);
     bool allUpdateEntriesFree() const;
     bool activeDependentMode() const;
+    bool faceMinMaxDescriptor() const;
+    UpdateKind configuredUpdateKind() const;
     bool floatingUpdate() const;
     bool strictFloatingUpdate() const;
+    static bool floatingUpdate(UpdateKind kind);
+    static bool strictFloatingUpdate(UpdateKind kind);
+    UpdateKind operationUpdateKind(const Operation &operation) const;
+    Addr faceGatherAddress(const Operation &operation) const;
+    Addr faceUpdateAddress(const Operation &operation) const;
+    bool faceGatheringComplete() const;
+    void beginFaceUpdatePhase();
     static uint64_t encodeDouble(double value);
     static double decodeDouble(uint64_t bits);
     void tagRequest(
