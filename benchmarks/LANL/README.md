@@ -183,6 +183,23 @@ descriptor submission itself is terminal-status driven. The requester is not
 a CPU instruction stream, and no interrupt, application runtime, full trace,
 or XRAGE performance claim follows.
 
+`tests/lanl_maa/run_xrage_descriptor_stream_smoke.py` extends the same
+protocol to 32 sequential descriptors, the maximum whole descriptor count
+that leaves the fixed control-status registers unobstructed. The default case
+covers the first 2,048 pinned XRAGE indices as 32 exact 64-item chunks:
+
+```sh
+python3 tests/lanl_maa/run_xrage_descriptor_stream_smoke.py \
+    --gem5 build/X86/gem5.opt \
+    --trace /data1/nier/DX100/experiments/inputs/xrage_gather0_full.json \
+    --chunks 32
+```
+
+Each chunk has a memory-resident descriptor and completion record; the
+accelerator still admits only one descriptor and contains no descriptor
+queue. This is a bounded stream microbenchmark, not full-trace execution or
+an XRAGE application/performance result.
+
 ## `spatter_trace_replay`
 
 This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.
