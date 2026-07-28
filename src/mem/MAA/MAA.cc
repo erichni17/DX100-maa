@@ -68,6 +68,7 @@ MAA::MAA(const MAAParams &p)
       virtual_combine_slots(p.virtual_combine_slots),
       virtual_combine_words(p.virtual_combine_words),
       virtual_combine_ways(p.virtual_combine_ways),
+      virtual_combine_victim_policy(p.virtual_combine_victim_policy),
       virtual_combine_banks(p.virtual_combine_banks),
       virtual_response_slots(p.virtual_response_slots),
       virtual_response_words(p.virtual_response_words),
@@ -76,6 +77,7 @@ MAA::MAA(const MAAParams &p)
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
+      virtual_grow_order(p.virtual_grow_order),
       num_request_table_addresses(p.num_request_table_addresses),
       num_request_table_entries_per_address(p.num_request_table_entries_per_address),
       num_memory_channels(p.num_memory_channels),
@@ -101,6 +103,13 @@ MAA::MAA(const MAAParams &p)
     panic_if(physical_tile_elements > num_tile_elements,
              "Physical tile capacity %u exceeds logical capacity %u\n",
              physical_tile_elements, num_tile_elements);
+    const unsigned int max_virtual_pages =
+        (num_tile_elements + physical_tile_elements - 1) /
+        physical_tile_elements;
+    panic_if(max_virtual_pages > MaxVirtualPages,
+             "Logical/physical tile ratio needs %u virtual pages, "
+             "exceeding token limit %d\n",
+             max_virtual_pages, MaxVirtualPages);
     virtualPageReady.resize(num_tiles);
     for (auto &pages : virtualPageReady)
         pages.fill(false);
@@ -358,6 +367,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_combine_slots,
                                         virtual_combine_words,
                                         virtual_combine_ways,
+                                        virtual_combine_victim_policy,
                                         virtual_combine_banks,
                                         virtual_response_slots,
                                         virtual_response_words,

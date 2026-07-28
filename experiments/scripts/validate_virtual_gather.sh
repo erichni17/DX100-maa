@@ -48,6 +48,15 @@ physical_tile_elements=${MAA_PHYSICAL_TILE_ELEMENTS:-0}
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be a non-negative integer" >&2
     exit 2
 }
+virtual_grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
+[[ $virtual_grow_order == 0 || $virtual_grow_order == 1 ]] || {
+    echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
+    exit 2
+}
+grow_order_args=()
+if [[ $virtual_grow_order == 1 ]]; then
+    grow_order_args+=(--maa_virtual_grow_order)
+fi
 retirement_cache_response_latency=${MAA_RETIREMENT_CACHE_RESPONSE_LATENCY:-1}
 [[ $retirement_cache_response_latency =~ ^[1-9][0-9]*$ ]] || {
     echo "MAA_RETIREMENT_CACHE_RESPONSE_LATENCY must be a positive integer" >&2
@@ -117,6 +126,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_response_word_pool="$response_word_pool" \
     --maa_virtual_words_per_cycle="$words_per_cycle" \
     --maa_virtual_max_outstanding_writes="$write_credits" \
+    "${grow_order_args[@]}" \
     "${masked_args[@]}" \
     --cmd "$binary" \
     --options "$n $pattern" >"$outdir/restore.log" 2>&1

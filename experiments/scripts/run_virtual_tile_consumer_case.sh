@@ -13,6 +13,41 @@ case_name=$3
 out=$(realpath -m "$4")
 overlap=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
+grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
+row_slices=${MAA_ROW_TABLE_SLICES:-16}
+response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-96}
+response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
+combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
+combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
+combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
+combine_victim_policy=${MAA_VIRTUAL_COMBINE_VICTIM_POLICY:-0}
+combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
+[[ $grow_order == 0 || $grow_order == 1 ]] || {
+    echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
+    exit 2
+}
+[[ $row_slices -gt 0 ]] || {
+    echo "MAA_ROW_TABLE_SLICES must be positive" >&2
+    exit 2
+}
+[[ $response_slots -gt 0 && $response_word_pool -gt 0 ]] || {
+    echo "virtual response capacities must be positive" >&2
+    exit 2
+}
+[[ $combine_slots -gt 0 && $combine_words -gt 0 && $combine_ways -ge 0 &&
+   $combine_victim_policy -ge 0 && $combine_victim_policy -le 2 &&
+   $combine_banks -ge 0 ]] || {
+    echo "virtual combiner capacities must be positive and geometry nonnegative" >&2
+    exit 2
+}
+[[ $combine_ways -eq 0 || $((combine_slots % combine_ways)) -eq 0 ]] || {
+    echo "virtual combiner slots must divide evenly into ways" >&2
+    exit 2
+}
+grow_order_args=()
+if [[ $grow_order == 1 ]]; then
+    grow_order_args+=(--maa_virtual_grow_order)
+fi
 
 case "$case_name" in
 native_16k)
@@ -29,6 +64,14 @@ native_4k)
     physical=4096
     virtual=0
     direct=0
+    reload_only=0
+    ;;
+native_direct_16k)
+    mode=native_direct
+    page=16384
+    physical=16384
+    virtual=0
+    direct=1
     reload_only=0
     ;;
 paged_16k)
@@ -100,6 +143,15 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'logical_tile_elements=16384\n'
     printf 'page_elements=%s\n' "$page"
     printf 'physical_tile_elements=%s\n' "$physical"
+    printf 'row_table_slices=%s\n' "$row_slices"
+    printf 'virtual_grow_order=%s\n' "$grow_order"
+    printf 'virtual_response_slots=%s\n' "$response_slots"
+    printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
+    printf 'virtual_combine_slots=%s\n' "$combine_slots"
+    printf 'virtual_combine_words=%s\n' "$combine_words"
+    printf 'virtual_combine_ways=%s\n' "$combine_ways"
+    printf 'virtual_combine_victim_policy=%s\n' "$combine_victim_policy"
+    printf 'virtual_combine_banks=%s\n' "$combine_banks"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -151,10 +203,15 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --mem-type Ramulator2 --ramulator-config "$ramulator" --mem-channels=1 \
     --maa --maa_num_tile_elements=16384 \
     --maa_physical_tile_elements="$physical" \
-    --maa_num_initial_row_table_slices=16 \
-    --maa_virtual_combine_slots=384 --maa_virtual_combine_words=4096 \
-    --maa_virtual_combine_ways=4 --maa_virtual_combine_banks=0 \
-    --maa_virtual_response_slots=96 --maa_virtual_response_word_pool=480 \
+    --maa_num_initial_row_table_slices="$row_slices" \
+    "${grow_order_args[@]}" \
+    --maa_virtual_combine_slots="$combine_slots" \
+    --maa_virtual_combine_words="$combine_words" \
+    --maa_virtual_combine_ways="$combine_ways" \
+    --maa_virtual_combine_victim_policy="$combine_victim_policy" \
+    --maa_virtual_combine_banks="$combine_banks" \
+    --maa_virtual_response_slots="$response_slots" \
+    --maa_virtual_response_word_pool="$response_word_pool" \
     --maa_virtual_words_per_cycle=4 \
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
     --maa_virtual_index_buffer_lines=4 \
@@ -183,17 +240,21 @@ output_hash=$(sed -nE \
     "s/^VIRTUAL_TILE_CONSUMER_RESULT mode=${mode} page_elements=${page} hash=([0-9]+) errors=0$/\\1/p" \
     "$out/restore.log")
 
-read -r ticks insts index_words index_hwm write_issues write_completions \
+read -r ticks insts index_line_reads index_words index_hwm \
+    write_issues write_completions \
     pages_ready pages_ready_early first_page_cycles all_page_cycles \
     page_span_cycles \
     indirect_spd_reads stream_spd_reads stream_writes alu_compute \
     page_ready_signals page_wait_reads page_wait_deferrals \
     page_wait_responses \
-    l3_read_hits l3_read_misses memory_bytes_read cpu_cycles < <(
+    l3_read_hits l3_read_misses memory_bytes_read cpu_cycles \
+    rt_cache_lines source_reads response_slot_hwm response_word_hwm \
+    response_pool_stalls < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 == "simTicks" { ticks = $2 }
         section == 1 && $1 == "simInsts" { insts = $2 }
+        section == 1 && $1 ~ /IND_VirtIndexLineReads$/ { il += $2 }
         section == 1 && $1 ~ /IND_VirtIndexWords$/ { iw += $2 }
         section == 1 && $1 ~ /IND_VirtIndexWordHighWater$/ { hw += $2 }
         section == 1 && $1 ~ /IND_VirtWriteIssues$/ { wi += $2 }
@@ -215,18 +276,45 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
         section == 1 && $1 == "system.l3.ReadReq_T.misses::maa" { lm = $2 }
         section == 1 && $1 == "system.mem_ctrls.bytesRead::maa" { mb = $2 }
         section == 1 && $1 == "system.switch_cpus0.numCycles" { cc = $2 }
+        section == 1 && $1 ~ /IND_NumCacheLineInserted$/ { rc += $2 }
+        section == 1 && $1 ~ /IND_LoadsCacheHitResponding$/ { lc += $2 }
+        section == 1 && $1 ~ /IND_LoadsCacheHitAccessing$/ { la += $2 }
+        section == 1 && $1 ~ /IND_LoadsMemAccessing$/ { lmema += $2 }
+        section == 1 && $1 ~ /IND_VirtResponseSlotHighWater$/ { rsh += $2 }
+        section == 1 && $1 ~ /IND_VirtResponseWordHighWater$/ { rwh += $2 }
+        section == 1 && $1 ~ /IND_VirtResponseWordPoolStalls$/ { rps += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
-            print ticks + 0, insts + 0, iw + 0, hw + 0,
+            print ticks + 0, insts + 0, il + 0, iw + 0, hw + 0,
                   wi + 0, wc + 0, pr + 0, pe + 0, pf + 0, pa + 0,
                   ps + 0, ir + 0, sr + 0, sw + 0, ac + 0,
                   prs + 0, pwr + 0, pwd + 0, pws + 0,
-                  lh + 0, lm + 0, mb + 0, cc + 0
+                  lh + 0, lm + 0, mb + 0, cc + 0, rc + 0,
+                  lc + la + lmema - il, rsh + 0, rwh + 0, rps + 0
             exit
         }
     ' "$out/run/stats.txt"
 )
+read -r rt_full build_rounds < <(
+    awk '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 ~ /IND_NumRTFull$/ { rf += $2 }
+        section == 1 && $1 ~ /IND_VirtBuildRounds$/ { br += $2 }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            print rf + 0, br + 0
+            exit
+        }
+    ' "$out/run/stats.txt"
+)
+read -r dram_reads dram_acts dram_pres < <(
+    awk '
+        $1 == "CH0_num_RD_commands_T:" { rd = $2 }
+        $1 == "CH0_num_ACT_commands_T:" { act = $2 }
+        $1 == "CH0_num_PRE_commands_T:" { pre = $2 }
+        END { print rd + 0, act + 0, pre + 0 }
+    ' "$out/restore.log"
+)
 [[ $ticks -gt 0 && $insts -gt 0 && $stream_spd_reads -gt 0 && \
-   $stream_writes -gt 0 && $alu_compute -gt 0 ]] || {
+   $stream_writes -gt 0 && $alu_compute -gt 0 && $dram_reads -gt 0 ]] || {
     echo "missing first-ROI performance or consumer activity" >&2
     exit 1
 }
@@ -290,8 +378,20 @@ elif [[ $virtual -eq 1 ]]; then
         }
     fi
 else
-    [[ $index_words -eq 0 && $write_issues -eq 0 && \
-       $write_completions -eq 0 && $pages_ready -eq 0 ]] || {
+    if [[ $direct -eq 1 ]]; then
+        [[ $index_words -eq 16384 && $index_hwm -gt 0 && \
+           $index_hwm -le 64 && $indirect_spd_reads -eq 0 ]] || {
+            echo "invalid native direct-index evidence: words=$index_words hwm=$index_hwm spd=$indirect_spd_reads" >&2
+            exit 1
+        }
+    else
+        [[ $index_words -eq 0 ]] || {
+            echo "native staged case activated direct-index machinery" >&2
+            exit 1
+        }
+    fi
+    [[ $write_issues -eq 0 && $write_completions -eq 0 && \
+       $pages_ready -eq 0 ]] || {
         echo "native case activated virtual machinery" >&2
         exit 1
     }
@@ -312,28 +412,36 @@ else
     }
 fi
 
+headers=(case output_hash simTicks simInsts index_line_reads index_words
+    index_hwm write_issues write_completions indirect_spd_reads pages_ready
+    pages_ready_before_source_drain first_page_ready_cycles
+    all_pages_ready_cycles page_ready_span_cycles stream_spd_reads
+    stream_writes alu_compute_cycles page_ready_signals page_wait_reads
+    page_wait_deferrals page_wait_responses l3_read_hits_maa
+    l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
+    virtual_grow_order response_slots response_word_pool
+    row_table_cache_lines source_reads response_slot_hwm response_word_hwm
+    response_pool_stalls row_table_full_events virtual_build_rounds dram_reads
+    dram_activates dram_precharges)
+values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
+    "$index_words" "$index_hwm" "$write_issues" "$write_completions"
+    "$indirect_spd_reads" "$pages_ready" "$pages_ready_early"
+    "$first_page_cycles" "$all_page_cycles" "$page_span_cycles"
+    "$stream_spd_reads" "$stream_writes" "$alu_compute"
+    "$page_ready_signals" "$page_wait_reads" "$page_wait_deferrals"
+    "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
+    "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$grow_order"
+    "$response_slots" "$response_word_pool" "$rt_cache_lines"
+    "$source_reads" "$response_slot_hwm" "$response_word_hwm"
+    "$response_pool_stalls" "$rt_full" "$build_rounds" "$dram_reads"
+    "$dram_acts" "$dram_pres")
+[[ ${#headers[@]} -eq ${#values[@]} ]] || {
+    echo "result schema/value length mismatch" >&2
+    exit 1
+}
 {
-    printf 'case\toutput_hash\tsimTicks\tsimInsts\tindex_words\tindex_hwm'
-    printf '\twrite_issues\twrite_completions\tindirect_spd_reads'
-    printf '\tpages_ready\tpages_ready_before_source_drain'
-    printf '\tfirst_page_ready_cycles\tall_pages_ready_cycles'
-    printf '\tpage_ready_span_cycles'
-    printf '\tstream_spd_reads\tstream_writes\talu_compute_cycles'
-    printf '\tpage_ready_signals\tpage_wait_reads'
-    printf '\tpage_wait_deferrals\tpage_wait_responses'
-    printf '\tl3_read_hits_maa\tl3_read_misses_maa\tmemory_bytes_read_maa'
-    printf '\tcpu_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$case_name" "$output_hash" "$ticks" "$insts" \
-        "$index_words" "$index_hwm" "$write_issues" \
-        "$write_completions" "$indirect_spd_reads" "$pages_ready" \
-        "$pages_ready_early" "$first_page_cycles" "$all_page_cycles" \
-        "$page_span_cycles" \
-        "$stream_spd_reads" "$stream_writes" "$alu_compute" \
-        "$page_ready_signals" "$page_wait_reads" \
-        "$page_wait_deferrals" "$page_wait_responses" \
-        "$l3_read_hits" "$l3_read_misses" "$memory_bytes_read" \
-        "$cpu_cycles"
+    (IFS=$'\t'; echo "${headers[*]}")
+    (IFS=$'\t'; echo "${values[*]}")
 } > "$out/result.tsv"
 touch "$out/virtual_tile_consumer_case.pass"
 cat "$out/result.tsv"

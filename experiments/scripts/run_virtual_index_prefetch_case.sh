@@ -18,10 +18,19 @@ rt_rows=${VIRTUAL_RT_ROWS_PER_SLICE:-64}
 rt_entries=${VIRTUAL_RT_ENTRIES_PER_SUBSLICE_ROW:-8}
 response_slots=${VIRTUAL_RESPONSE_SLOTS:-96}
 response_word_pool=${VIRTUAL_RESPONSE_WORD_POOL:-480}
+grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 debug_flags=${VIRTUAL_DEBUG_FLAGS:-}
 debug_args=()
 if [[ -n $debug_flags ]]; then
     debug_args=("--debug-flags=$debug_flags" "--debug-file=virtual-debug.log")
+fi
+[[ $grow_order == 0 || $grow_order == 1 ]] || {
+    echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
+    exit 2
+}
+grow_order_args=()
+if [[ $grow_order == 1 ]]; then
+    grow_order_args+=(--maa_virtual_grow_order)
 fi
 
 [[ $n =~ ^[1-9][0-9]*$ && $n -le 16384 ]] || {
@@ -67,6 +76,7 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'row_table_entries_per_subslice_row=%s\n' "$rt_entries"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
+    printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'index_payload_capacity_bytes=%s\n' "$((buffer_lines * 64))"
     printf 'timeout=none\n'
@@ -133,6 +143,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_words_per_cycle=4 \
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
     --maa_virtual_index_buffer_lines="$buffer_lines" \
+    "${grow_order_args[@]}" \
     --cmd "$binary" --options "$n $pattern" > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e

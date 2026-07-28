@@ -38,10 +38,12 @@ main(int argc, char **argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "native";
     const int page_elements = argc > 2 ? std::atoi(argv[2]) : total_elements;
-    if (mode != "native" && mode != "paged" && mode != "paged_overlap" &&
+    if (mode != "native" && mode != "native_direct" &&
+        mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_reload_warm" &&
         mode != "paged_reload_cold") {
-        std::cerr << "mode must be native, paged, paged_overlap, "
+        std::cerr << "mode must be native, native_direct, paged, "
+                     "paged_overlap, "
                      "paged_staged, or "
                      "paged_reload_warm/paged_reload_cold"
                   << std::endl;
@@ -108,20 +110,27 @@ main(int argc, char **argv)
         m5_work_begin(0, 0);
         m5_reset_stats(0, 0);
     }
-    if (mode == "native") {
+    if (mode == "native" || mode == "native_direct") {
         const int idx_tile = get_new_tile<uint32_t>();
         const int gathered_tile = get_new_tile<double>();
         for (int offset = 0; offset < total_elements;
              offset += page_elements) {
             const int count = std::min(page_elements,
                                        total_elements - offset);
-            wait_ready(idx_tile);
             maa_const(0, min_reg);
             maa_const(count, max_reg);
-            maa_stream_load<uint32_t>(
-                indices.data() + offset, min_reg, max_reg, stride_reg,
-                idx_tile);
-            maa_indirect_load<double>(source.data(), idx_tile, gathered_tile);
+            if (mode == "native") {
+                wait_ready(idx_tile);
+                maa_stream_load<uint32_t>(
+                    indices.data() + offset, min_reg, max_reg, stride_reg,
+                    idx_tile);
+                maa_indirect_load<double>(source.data(), idx_tile,
+                                          gathered_tile);
+            } else {
+                maa_indirect_load_index<double>(
+                    source.data(), indices.data() + offset, gathered_tile,
+                    min_reg, max_reg, stride_reg);
+            }
             maa_alu_scalar<double>(gathered_tile, scale_reg, output_tile,
                                    Operation_t::MUL_OP);
             maa_stream_store<double>(destination + offset, min_reg, max_reg,
@@ -204,7 +213,8 @@ main(int argc, char **argv)
                       << destination[i] << ", expected " << expected
                       << std::endl;
         }
-        if (mode != "native" && backing[i] != gathered && errors++ < 10) {
+        if (mode != "native" && mode != "native_direct" &&
+            backing[i] != gathered && errors++ < 10) {
             std::cerr << "backing mismatch[" << i << "]: got "
                       << backing[i] << ", expected " << gathered << std::endl;
         }

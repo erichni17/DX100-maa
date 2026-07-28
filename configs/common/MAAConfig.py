@@ -75,6 +75,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_combine_ways"
         )
 
+    if hasattr(options, "maa_virtual_combine_victim_policy"):
+        opts["virtual_combine_victim_policy"] = getattr(
+            options, "maa_virtual_combine_victim_policy"
+        )
+
     if hasattr(options, "maa_virtual_combine_banks"):
         opts["virtual_combine_banks"] = getattr(
             options, "maa_virtual_combine_banks"
@@ -113,6 +118,11 @@ def _get_maa_opts(options):
     if hasattr(options, "maa_virtual_index_buffer_lines"):
         opts["virtual_index_buffer_lines"] = getattr(
             options, "maa_virtual_index_buffer_lines"
+        )
+
+    if hasattr(options, "maa_virtual_grow_order"):
+        opts["virtual_grow_order"] = getattr(
+            options, "maa_virtual_grow_order"
         )
 
     if hasattr(options, "maa_num_request_table_addresses"):

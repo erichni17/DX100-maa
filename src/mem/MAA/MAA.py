@@ -30,12 +30,18 @@ class MAA(ClockedObject):
     virtual_combine_slots = Param.Unsigned(16, "Tagged cache-line slots used by virtual gather retirement")
     virtual_combine_words = Param.Unsigned(0, "Resident virtual gather data words (0 reserves every line slot fully)")
     virtual_combine_ways = Param.Unsigned(0, "Virtual destination-combiner associativity (0 is fully associative)")
+    virtual_combine_victim_policy = Param.Unsigned(
+        0, "Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words"
+    )
     virtual_response_slots = Param.Unsigned(8, "Retained source responses used by virtual gather retirement")
     virtual_response_words = Param.Unsigned(0, "Packed useful words per retained response (0 stores the full source line)")
     virtual_response_word_pool = Param.Unsigned(0, "Total useful words retained across packed source responses")
     virtual_max_outstanding_writes = Param.Unsigned(32, "Acknowledged virtual retirement writes allowed in flight")
     virtual_masked_writes = Param.Bool(False, "Retire partial virtual lines as masked cache-line writes")
     virtual_index_buffer_lines = Param.Unsigned(1, "Cache lines buffered or in flight for direct virtual-index ingestion")
+    virtual_grow_order = Param.Bool(
+        False, "Group virtual source claims by DRAM grow address"
+    )
     spd_read_latency = Param.Cycles(1, "SPD read latency")
     spd_write_latency = Param.Cycles(1, "SPD write latency")
     num_spd_read_ports_per_maa = Param.Unsigned(4, "Number of SPD read ports per DX100 instance")

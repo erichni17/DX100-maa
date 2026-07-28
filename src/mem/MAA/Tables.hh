@@ -112,11 +112,11 @@ public:
                   MAA *_maa,
                   bool _is_stream = false);
     bool insert(Addr addr, int itr, int wid);
-    bool find_addr(Addr addr);
+    bool find_addr(Addr addr) const;
     void reset();
     void check_reset();
     bool get_entry_send(Addr &addr);
-    bool claim_entry_send(Addr &addr, int &head, int &words);
+    bool claim_entry_send(Addr &addr, int &head, int &words, bool commit);
     std::vector<OffsetTableEntry> get_entry_recv(Addr addr);
     int get_entry_recv_head(Addr addr);
     int count_entry_words(Addr addr) const;
@@ -159,7 +159,9 @@ public:
                   bool _is_stream = false);
     bool insert(Addr grow_addr, Addr addr, int itr, int wid, bool &first_CL_access);
     bool get_entry_send(Addr &addr, bool drain);
-    bool claim_entry_send(Addr &addr, int &head, int &words, bool drain);
+    bool claim_entry_send(Addr &addr, int &head, int &words, bool drain,
+                          bool group_by_grow, bool commit);
+    void reset_virtual_claim_group();
     bool find_next_grow_addr();
     bool is_full();
     void get_send_grow_rowid();
@@ -182,6 +184,8 @@ public:
     Addr last_sent_grow_addr;
     int last_sent_rowid;
     int last_sent_grow_rowid;
+    Addr virtual_claim_grow_addr;
+    bool virtual_claim_grow_valid;
     MAA *maa;
     int my_unit_id, my_table_id;
     bool is_stream;

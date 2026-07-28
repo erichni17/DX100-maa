@@ -174,6 +174,9 @@ def main() -> int:
             "gem5_sha256": sha256(gem5),
             "test_binary": str(binary),
             "test_binary_sha256": sha256(binary),
+            "virtual_grow_order": os.environ.get(
+                "MAA_VIRTUAL_GROW_ORDER", "0"
+            ),
             "cases": [asdict(case) for case in selected],
         }
         write_json(output / "manifest.json", manifest)

@@ -93,6 +93,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
+        case OpcodeType::INDIR_LD_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
@@ -131,6 +132,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
+        case OpcodeType::INDIR_LD_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
         case OpcodeType::INDIR_ST_VECTOR:
         case OpcodeType::INDIR_ST_SCALAR:
@@ -232,6 +234,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
     case Instruction::OpcodeType::INDIR_LD:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX:
+    case Instruction::OpcodeType::INDIR_LD_INDEX:
     case Instruction::OpcodeType::INDIR_ST_VECTOR:
     case Instruction::OpcodeType::INDIR_ST_SCALAR:
     case Instruction::OpcodeType::INDIR_RMW_VECTOR:

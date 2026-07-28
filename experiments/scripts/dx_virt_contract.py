@@ -65,6 +65,7 @@ INTEGER_DEFAULTS = {
     "virtual_combine_slots": 16,
     "virtual_combine_words": 0,
     "virtual_combine_ways": 0,
+    "virtual_combine_victim_policy": 0,
     "virtual_combine_banks": 0,
     "virtual_response_slots": 8,
     "virtual_response_words": 0,
@@ -75,6 +76,7 @@ INTEGER_DEFAULTS = {
 }
 BOOL_DEFAULTS = {
     "virtual_masked_writes": False,
+    "virtual_grow_order": False,
     "no_reorder": False,
     "reconfigure_row_table": False,
 }
@@ -250,6 +252,8 @@ def validate(case: dict, values: dict) -> None:
         raise ContractError("banked combiner requires finite associativity")
     if banks > sets:
         raise ContractError("virtual_combine_banks exceeds combiner sets")
+    if values["virtual_combine_victim_policy"] not in {0, 1, 2}:
+        raise ContractError("virtual_combine_victim_policy must be 0, 1, or 2")
     if case["mode"] != "native" and values["no_reorder"]:
         raise ContractError("virtual reorder claim is invalid with no_reorder=true")
 
@@ -334,6 +338,25 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             values["num_initial_row_table_slices"]
             * values["num_row_table_rows_per_slice"]
             * effective_entries
+        )
+
+    if mode == "native":
+        issue_order = "native_row_table"
+        reorder_claim = (
+            "native Row-Table issue order over the configured logical "
+            "descriptor window until capacity forces a drain"
+        )
+    elif values["virtual_grow_order"]:
+        issue_order = "bounded_grow_grouping"
+        reorder_claim = (
+            "experimental grow-address grouping within each bounded Build "
+            "epoch; not equivalent to native issue across refill epochs"
+        )
+    else:
+        issue_order = "bounded_row_id_scan"
+        reorder_claim = (
+            "bounded row-ID claim order over the logical descriptor window; "
+            "does not preserve native cross-row grow-address issue order"
         )
 
     resolved_input = {
@@ -422,14 +445,13 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             "configured_entries_per_subslice_row": values[
                 "num_row_table_entries_per_subslice_row"
             ],
+            "issue_order": issue_order,
+            "virtual_grow_order": values["virtual_grow_order"],
             "effective_reorder_window": (
                 "bounded by logical iterations, unique-line capacity, and "
                 "address distribution"
             ),
-            "claim": (
-                "native-equivalent Row/Offset-Table scheduling until "
-                "capacity forces a drain"
-            ),
+            "claim": reorder_claim,
         },
         "unsupported_scope": [
             "transparent producer/consumer paging",

@@ -408,6 +408,7 @@ public:
     unsigned int virtual_combine_slots;
     unsigned int virtual_combine_words;
     unsigned int virtual_combine_ways;
+    unsigned int virtual_combine_victim_policy;
     unsigned int virtual_combine_banks;
     unsigned int virtual_response_slots;
     unsigned int virtual_response_words;
@@ -416,6 +417,7 @@ public:
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     unsigned int virtual_index_buffer_lines;
+    bool virtual_grow_order;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;
     unsigned int num_memory_channels;
@@ -437,6 +439,8 @@ public:
     int getAddrRegion(Addr addr);
 
 public:
+    static constexpr int MaxVirtualPages = 16;
+
     /** System we are currently operating in. */
     System *system;
 
@@ -476,7 +480,6 @@ protected:
     std::vector<RegisterPtr> my_registers;
     std::vector<PacketPtr> my_register_pkts;
     std::vector<int> my_ready_tile_ids;
-    static constexpr int MaxVirtualPages = 16;
     std::vector<std::array<bool, MaxVirtualPages>> virtualPageReady;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);

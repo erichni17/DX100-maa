@@ -236,7 +236,7 @@ void RowTableEntry::allocate(int _my_unit_id,
         entries_valid[i] = false;
     }
 }
-bool RowTableEntry::find_addr(Addr addr) {
+bool RowTableEntry::find_addr(Addr addr) const {
     for (int i = 0; i < num_RT_entries_per_row; i++) {
         if (entries_valid[i] == true && entries[i].addr == addr) {
             return true;
@@ -300,7 +300,8 @@ bool RowTableEntry::get_entry_send(Addr &addr) {
     }
     return false;
 }
-bool RowTableEntry::claim_entry_send(Addr &addr, int &head, int &words) {
+bool RowTableEntry::claim_entry_send(Addr &addr, int &head, int &words,
+                                     bool commit) {
     // Virtual claims free their slot immediately, so refill may reuse an
     // earlier slot before this row is drained. The native monotonic send
     // cursor would skip that newly inserted work.
@@ -313,7 +314,8 @@ bool RowTableEntry::claim_entry_send(Addr &addr, int &head, int &words) {
         panic_if(words <= 0,
                  "ROT[%d] ROW[%d] cannot claim empty entry[%d]\n",
                  my_table_id, my_table_row_id, entry_id);
-        entries_valid[entry_id] = false;
+        if (commit)
+            entries_valid[entry_id] = false;
         DPRINTF(MAARowTable,
                 "ROT[%d] ROW[%d] %s: claimed entry[%d] addr[0x%lx] "
                 "head[%d] words[%d]!\n",
@@ -386,6 +388,8 @@ void RowTableSlice::allocate(int _my_unit_id,
     last_sent_grow_addr = 0;
     last_sent_rowid = 0;
     last_sent_grow_rowid = 0;
+    virtual_claim_grow_addr = 0;
+    virtual_claim_grow_valid = false;
     for (int i = 0; i < num_RT_rows_per_slice; i++) {
         entries[i].allocate(my_unit_id,
                             my_table_id,
@@ -463,6 +467,12 @@ void RowTableSlice::check_reset() {
         panic_if(entries_valid[i], "Row[%d] is valid: grow_addr(0x%lx)!\n", i, entries[i].grow_addr);
     }
     panic_if(last_sent_rowid != 0, "Last sent row id is not 0: %d!\n", last_sent_rowid);
+    panic_if(virtual_claim_grow_valid,
+             "Virtual grow claim 0x%lx is still active!\n",
+             virtual_claim_grow_addr);
+    panic_if(virtual_claim_grow_addr != 0,
+             "Inactive virtual grow claim retained address 0x%lx!\n",
+             virtual_claim_grow_addr);
 }
 void RowTableSlice::reset() {
     for (int i = 0; i < num_RT_rows_per_slice; i++) {
@@ -473,6 +483,8 @@ void RowTableSlice::reset() {
     last_sent_rowid = 0;
     last_sent_grow_rowid = 0;
     last_sent_grow_addr = 0;
+    virtual_claim_grow_addr = 0;
+    virtual_claim_grow_valid = false;
 }
 bool RowTableSlice::find_next_grow_addr() {
     for (; last_sent_rowid < num_RT_rows_per_slice; last_sent_rowid++) {
@@ -514,17 +526,17 @@ bool RowTableSlice::get_entry_send(Addr &addr, bool drain) {
     return false;
 }
 bool RowTableSlice::claim_entry_send(Addr &addr, int &head, int &words,
-                                     bool drain) {
+                                     bool drain, bool group_by_grow,
+                                     bool commit) {
     // Claimed virtual rows are immediately reusable. Scan the bounded row
     // array directly so refill cannot insert work behind native send cursors.
-    for (int row_id = 0; row_id < num_RT_rows_per_slice; row_id++) {
-        if (!entries_valid[row_id] || entries_sent[row_id])
-            continue;
-        if (entries[row_id].claim_entry_send(addr, head, words)) {
+    auto claim_row = [&](int row_id) {
+        if (entries[row_id].claim_entry_send(addr, head, words, commit)) {
             DPRINTF(MAARowTable,
-                    "ROT[%d] %s: ROW[%d] claimed!\n",
-                    my_table_id, __func__, row_id);
-            if (entries[row_id].all_entries_received()) {
+                    "ROT[%d] %s: ROW[%d] grow[0x%lx] claimed!\n",
+                    my_table_id, __func__, row_id,
+                    entries[row_id].grow_addr);
+            if (commit && entries[row_id].all_entries_received()) {
                 entries_valid[row_id] = false;
                 entries_sent[row_id] = false;
                 entries[row_id].check_reset();
@@ -534,14 +546,52 @@ bool RowTableSlice::claim_entry_send(Addr &addr, int &head, int &words,
         DPRINTF(MAARowTable,
                 "ROT[%d] %s: ROW[%d] finished!\n",
                 my_table_id, __func__, row_id);
-        panic_if(!entries[row_id].all_entries_received(),
-                 "ROT[%d] ROW[%d] still owns entries after claim drain\n",
-                 my_table_id, row_id);
-        entries_valid[row_id] = false;
-        entries_sent[row_id] = false;
-        entries[row_id].check_reset();
+        panic("ROT[%d] ROW[%d] is valid but has no claimable entries\n",
+              my_table_id, row_id);
+    };
+
+    if (group_by_grow) {
+        while (true) {
+            if (!virtual_claim_grow_valid) {
+                for (int row_id = 0; row_id < num_RT_rows_per_slice;
+                     ++row_id) {
+                    if (!entries_valid[row_id] || entries_sent[row_id])
+                        continue;
+                    virtual_claim_grow_addr = entries[row_id].grow_addr;
+                    virtual_claim_grow_valid = true;
+                    break;
+                }
+                if (!virtual_claim_grow_valid)
+                    return false;
+            }
+
+            for (int row_id = 0; row_id < num_RT_rows_per_slice;
+                 ++row_id) {
+                if (!entries_valid[row_id] || entries_sent[row_id] ||
+                    entries[row_id].grow_addr != virtual_claim_grow_addr)
+                    continue;
+                if (claim_row(row_id))
+                    return true;
+            }
+            virtual_claim_grow_addr = 0;
+            virtual_claim_grow_valid = false;
+        }
+    }
+
+    panic_if(virtual_claim_grow_valid,
+             "Legacy virtual claim saw an active grow group 0x%lx\n",
+             virtual_claim_grow_addr);
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; row_id++) {
+        if (!entries_valid[row_id] || entries_sent[row_id])
+            continue;
+        if (claim_row(row_id))
+            return true;
     }
     return false;
+}
+void RowTableSlice::reset_virtual_claim_group() {
+    virtual_claim_grow_addr = 0;
+    virtual_claim_grow_valid = false;
 }
 std::vector<OffsetTableEntry> RowTableSlice::get_entry_recv(Addr grow_addr, Addr addr, bool check_sent) {
     std::vector<OffsetTableEntry> results;

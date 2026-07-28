@@ -90,6 +90,14 @@ class ContractTests(unittest.TestCase):
             8192,
         )
         self.assertEqual(
+            contract["reorder_resources"]["issue_order"],
+            "bounded_row_id_scan",
+        )
+        self.assertIn(
+            "does not preserve native",
+            contract["reorder_resources"]["claim"],
+        )
+        self.assertEqual(
             contract["simulator_allocation"]["retirement_cache_data_bytes"],
             4096,
         )
@@ -105,6 +113,28 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(hardware["virtual_combine_words"], 0)
         self.assertEqual(hardware["virtual_response_word_pool"], 0)
         self.assertEqual(hardware["virtual_words_per_cycle"], 0)
+
+    def test_grow_order_is_qualified(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            contract = self.build(
+                Path(temporary),
+                "direct_index_virtual",
+                {"virtual_grow_order": True},
+            )
+        self.assertEqual(
+            contract["reorder_resources"]["issue_order"],
+            "bounded_grow_grouping",
+        )
+        self.assertIn("not equivalent", contract["reorder_resources"]["claim"])
+
+    def test_invalid_victim_policy_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(MODULE.ContractError, "victim_policy"):
+                self.build(
+                    Path(temporary),
+                    "direct_index_virtual",
+                    {"virtual_combine_victim_policy": 3},
+                )
 
     def test_per_unit_structures_are_multiplied(self):
         with tempfile.TemporaryDirectory() as temporary:

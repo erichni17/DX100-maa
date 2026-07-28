@@ -110,6 +110,7 @@ protected:
     std::vector<VirtualCombineSlot> virtual_combine_slots;
     int virtual_combine_words_configured = 0;
     int virtual_combine_ways = 0;
+    int virtual_combine_victim_policy = 0;
     int virtual_combine_banks = 0;
     std::vector<int> virtual_combine_set_victims;
     std::vector<bool> virtual_combine_bank_used;
@@ -123,9 +124,12 @@ protected:
     std::set<Addr> virtual_outstanding_write_lines;
     std::map<Addr, std::vector<std::pair<int, int>>>
         virtual_retirement_write_pages;
+    std::vector<int> virtual_page_logical_words;
+    std::vector<int> virtual_page_scanned_words;
     std::vector<int> virtual_page_expected_words;
     std::vector<int> virtual_page_issued_words;
     std::vector<int> virtual_page_completed_words;
+    std::vector<bool> virtual_page_ready;
     int virtual_pages_ready = 0;
     int virtual_pages_ready_before_source_drain = 0;
     Tick virtual_first_page_ready_tick = 0;
@@ -179,6 +183,7 @@ public:
                   int _virtual_combine_slots,
                   int _virtual_combine_words,
                   int _virtual_combine_ways,
+                  int _virtual_combine_victim_policy,
                   int _virtual_combine_banks,
                   int _virtual_response_slots,
                   int _virtual_response_words,
@@ -265,6 +270,7 @@ protected:
                          unsigned size = 64);
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
+    bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
@@ -276,6 +282,8 @@ protected:
     Addr backingWordAddr(int itr) const;
     void validateRetirementWriteRange(Addr vaddr, unsigned size) const;
     void initializeVirtualPageTracking();
+    void trackVirtualIteration(int itr, bool write_expected);
+    void markVirtualPageReadyIfComplete(int page);
     void trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
                                      unsigned size, uint16_t valid_words);
     void completeVirtualRetirementWrite(Addr write_key);
@@ -287,7 +295,7 @@ protected:
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;
-    bool virtualRetirementComplete() const;
+    bool boundedRetirementComplete() const;
     VirtualRequestReason classifyVirtualRequestReason() const;
     void accountVirtualRequestInterval();
     void startVirtualRequestInterval();

@@ -235,6 +235,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_INDEX ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_SPD_STREAM ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD) {
@@ -294,6 +296,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_INDEX ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_SPD_STREAM)
                     break;
                 my_instruction_recvs[instruction_id] = true;
@@ -341,10 +345,13 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(instruction_id == -1,
                          "Received index address before instruction "
                          "header!\n");
-                panic_if(current_instruction->opcode !=
-                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX,
+                panic_if(
+                    current_instruction->opcode !=
+                            Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::INDIR_LD_INDEX,
                          "Index address is only valid for direct-index "
-                         "virtual loads!\n");
+                         "loads!\n");
                 current_instruction->indexAddr = data;
                 current_instruction->indexAddrRangeID = getAddrRegion(data);
                 panic_if(current_instruction->indexAddrRangeID < 0,
