@@ -200,6 +200,24 @@ accelerator still admits only one descriptor and contains no descriptor
 queue. This is a bounded stream microbenchmark, not full-trace execution or
 an XRAGE application/performance result.
 
+`tests/lanl_maa/run_xrage_cpu_descriptor_smoke.py` replaces the test
+requester with a real X86 timing CPU. A generated static program receives
+explicit identity mappings for a RAM data window and an uncacheable MMIO
+window. It initializes the pinned XRAGE head window, writes a direct-gather
+descriptor, fences, rings slot zero, polls `ControlStatus`, validates
+`ControlCompletedSlot`, and checks all 64 result values plus the four-word
+completion record before exiting zero.
+
+```sh
+python3 tests/lanl_maa/run_xrage_cpu_descriptor_smoke.py \
+    --gem5 build/X86/gem5.opt \
+    --trace /data1/nier/DX100/experiments/inputs/xrage_gather0_full.json
+```
+
+This establishes an instruction-driven software/MMIO path without a cache
+hierarchy or application runtime. It is still a generated microbenchmark,
+not an XRAGE executable, full trace, or performance result.
+
 ## `spatter_trace_replay`
 
 This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.
