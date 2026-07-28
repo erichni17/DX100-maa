@@ -1,0 +1,267 @@
+#include <stdint.h>
+
+#define DATA_VADDR UINT64_C(0x1000000000)
+#define DATA_PADDR UINT64_C(0x02000000)
+#define CONTROL_VADDR UINT64_C(0x1000200000)
+#define DESCRIPTOR_OFFSET UINT64_C(0x0000)
+#define INDEX_OFFSET UINT64_C(0x1000)
+#define CONTRIBUTION_OFFSET UINT64_C(0x2000)
+#define TALLY_OFFSET UINT64_C(0x4000)
+#define COMPLETION_OFFSET UINT64_C(0x8000)
+#define ITEMS UINT32_C(64)
+#define CELLS UINT32_C(16)
+#define CHANNELS UINT32_C(6)
+#define LOGICAL_UPDATES (ITEMS * CHANNELS)
+
+#ifndef SPARTA_TALLY_MODE
+#define SPARTA_TALLY_MODE 0
+#endif
+
+#if SPARTA_TALLY_MODE < 0 || SPARTA_TALLY_MODE > 2
+#error "SPARTA_TALLY_MODE must be 0 (full), 1 (sorted), or 2 (shuffled)"
+#endif
+
+static void
+fence(void)
+{
+    __asm__ volatile("mfence" ::: "memory");
+}
+
+static void __attribute__((noreturn))
+finish(uint64_t code)
+{
+    __asm__ volatile(
+        "syscall"
+        :
+        : "a"(UINT64_C(60)), "D"(code)
+        : "rcx", "r11", "memory");
+    __builtin_unreachable();
+}
+
+static uint64_t
+double_to_bits(double value)
+{
+    union
+    {
+        double floating;
+        uint64_t integer;
+    } converted = {.floating = value};
+    return converted.integer;
+}
+
+static double
+contribution_value(uint32_t item, uint32_t channel)
+{
+    const int32_t integer = (int32_t)(item % 9) - 4;
+    return (double)integer + (double)(channel + 1) * 0.125;
+}
+
+static uint64_t
+wait_terminal(volatile uint64_t *control)
+{
+    for (uint64_t spin = 0; spin < UINT64_C(2000000); ++spin) {
+        const uint64_t status = control[UINT64_C(0x110) / 8];
+        if (status == UINT64_C(4) || status == UINT64_C(8)) {
+            return status;
+        }
+        if (status != UINT64_C(1) && status != UINT64_C(2)) {
+            finish(UINT64_C(10));
+        }
+    }
+    finish(UINT64_C(11));
+}
+
+static void
+clear_completion(volatile uint64_t *completion)
+{
+    for (uint32_t word = 0; word < 4; ++word) {
+        completion[word] = 0;
+    }
+}
+
+static void
+prepare_descriptor(volatile uint64_t *descriptor)
+{
+    descriptor[0] = UINT64_C(0x0006000131414d4c);
+    descriptor[1] = ITEMS;
+    descriptor[2] = DATA_PADDR + INDEX_OFFSET;
+    descriptor[3] = DATA_PADDR + TALLY_OFFSET;
+    descriptor[4] = DATA_PADDR + COMPLETION_OFFSET;
+    descriptor[5] = DATA_PADDR + CONTRIBUTION_OFFSET;
+    descriptor[6] = CELLS | ((uint64_t)CHANNELS << 32);
+    descriptor[7] = 0;
+}
+
+static void
+prepare_case(
+    volatile uint32_t *indices, volatile double *contributions,
+    volatile double *tallies, uint64_t *expected, int shuffled)
+{
+    for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
+        tallies[element] = 0.0;
+        expected[element] = double_to_bits(0.0);
+    }
+    for (uint32_t item = 0; item < ITEMS; ++item) {
+        const uint32_t cell = shuffled ? (item * 13 + 7) % CELLS :
+                                         item / (ITEMS / CELLS);
+        indices[item] = cell;
+        for (uint32_t channel = 0; channel < CHANNELS; ++channel) {
+            const double value = contribution_value(item, channel);
+            contributions[item * CHANNELS + channel] = value;
+            const uint32_t destination = cell * CHANNELS + channel;
+            union
+            {
+                uint64_t integer;
+                double floating;
+            } accumulator = {.integer = expected[destination]};
+            accumulator.floating += value;
+            expected[destination] = accumulator.integer;
+        }
+    }
+}
+
+static void
+verify_success(
+    const volatile double *tallies, const uint64_t *expected,
+    const volatile uint64_t *completion, uint64_t code)
+{
+    for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
+        if (double_to_bits(tallies[element]) != expected[element]) {
+            finish(code);
+        }
+    }
+    if (completion[0] != UINT64_C(0x0006000143414d4c) ||
+        completion[1] != 0 || completion[2] != ITEMS ||
+        completion[3] != LOGICAL_UPDATES) {
+        finish(code + 1);
+    }
+}
+
+#if SPARTA_TALLY_MODE == 0
+static void
+prepare_sentinel(volatile double *tallies, uint64_t *expected)
+{
+    for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
+        const double value = (double)(element + 1) * 0.25;
+        tallies[element] = value;
+        expected[element] = double_to_bits(value);
+    }
+}
+
+static void
+verify_unchanged(
+    const volatile double *tallies, const uint64_t *expected,
+    const volatile uint64_t *completion, uint64_t code)
+{
+    for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
+        if (double_to_bits(tallies[element]) != expected[element]) {
+            finish(code);
+        }
+    }
+    for (uint32_t word = 0; word < 4; ++word) {
+        if (completion[word] != 0) {
+            finish(code + 1);
+        }
+    }
+}
+#endif
+
+void __attribute__((noreturn))
+_start(void)
+{
+    volatile uint64_t *descriptor = (volatile uint64_t *)(uintptr_t)(
+        DATA_VADDR + DESCRIPTOR_OFFSET);
+    volatile uint32_t *indices = (volatile uint32_t *)(uintptr_t)(
+        DATA_VADDR + INDEX_OFFSET);
+    volatile double *contributions = (volatile double *)(uintptr_t)(
+        DATA_VADDR + CONTRIBUTION_OFFSET);
+    volatile double *tallies = (volatile double *)(uintptr_t)(
+        DATA_VADDR + TALLY_OFFSET);
+    volatile uint64_t *completion = (volatile uint64_t *)(uintptr_t)(
+        DATA_VADDR + COMPLETION_OFFSET);
+    volatile uint64_t *control = (volatile uint64_t *)(uintptr_t)(
+        CONTROL_VADDR);
+    uint64_t expected[CELLS * CHANNELS];
+
+    if ((control[UINT64_C(0x128) / 8] & (UINT64_C(1) << 6)) == 0 ||
+        (control[UINT64_C(0x108) / 8] >> 32) != ITEMS) {
+        finish(UINT64_C(12));
+    }
+    prepare_descriptor(descriptor);
+
+#if SPARTA_TALLY_MODE == 1
+    prepare_case(indices, contributions, tallies, expected, 0);
+    clear_completion(completion);
+    fence();
+    control[0] = 0;
+    fence();
+    if (wait_terminal(control) != UINT64_C(4)) {
+        finish(UINT64_C(20));
+    }
+    fence();
+    verify_success(tallies, expected, completion, UINT64_C(21));
+    finish(0);
+#elif SPARTA_TALLY_MODE == 2
+    prepare_case(indices, contributions, tallies, expected, 1);
+    clear_completion(completion);
+    fence();
+    control[0] = 0;
+    fence();
+    if (wait_terminal(control) != UINT64_C(4)) {
+        finish(UINT64_C(20));
+    }
+    fence();
+    verify_success(tallies, expected, completion, UINT64_C(21));
+    finish(0);
+#else
+    prepare_case(indices, contributions, tallies, expected, 0);
+    clear_completion(completion);
+    fence();
+    control[0] = 0;
+    fence();
+    if (wait_terminal(control) != UINT64_C(4)) {
+        finish(UINT64_C(20));
+    }
+    fence();
+    verify_success(tallies, expected, completion, UINT64_C(21));
+
+    prepare_sentinel(tallies, expected);
+    clear_completion(completion);
+    ((volatile uint64_t *)(uintptr_t)contributions)
+        [LOGICAL_UPDATES - 1] = UINT64_C(0x7ff8000000000000);
+    fence();
+    control[0] = 0;
+    fence();
+    if (wait_terminal(control) != UINT64_C(8) ||
+        control[UINT64_C(0x120) / 8] != UINT64_C(18)) {
+        finish(UINT64_C(30));
+    }
+    fence();
+    verify_unchanged(tallies, expected, completion, UINT64_C(31));
+
+    prepare_case(indices, contributions, tallies, expected, 1);
+    clear_completion(completion);
+    fence();
+    control[0] = 0;
+    fence();
+    if (wait_terminal(control) != UINT64_C(4)) {
+        finish(UINT64_C(40));
+    }
+    fence();
+    verify_success(tallies, expected, completion, UINT64_C(41));
+
+    prepare_sentinel(tallies, expected);
+    clear_completion(completion);
+    indices[ITEMS - 1] = CELLS;
+    fence();
+    control[0] = 0;
+    fence();
+    if (wait_terminal(control) != UINT64_C(8) ||
+        control[UINT64_C(0x120) / 8] != UINT64_C(17)) {
+        finish(UINT64_C(50));
+    }
+    fence();
+    verify_unchanged(tallies, expected, completion, UINT64_C(51));
+    finish(0);
+#endif
+}

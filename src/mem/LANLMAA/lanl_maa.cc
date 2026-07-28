@@ -274,6 +274,18 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(activeBransonEventComputeHighWaterMark,
                statistics::units::Count::get(),
                "Maximum simultaneous in-flight Branson event computations"),
+      ADD_STAT(descriptorSpartaItemsLoaded,
+               statistics::units::Count::get(),
+               "Validated SPARTA cell indices loaded"),
+      ADD_STAT(descriptorSpartaContributionsValidated,
+               statistics::units::Count::get(),
+               "Finite SPARTA tally contributions validated"),
+      ADD_STAT(descriptorSpartaContributionsReplayed,
+               statistics::units::Count::get(),
+               "SPARTA tally contributions replayed for update"),
+      ADD_STAT(descriptorSpartaUpdatesAcknowledged,
+               statistics::units::Count::get(),
+               "SPARTA logical FP64 tally updates acknowledged"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -632,7 +644,8 @@ LANLMAA::controlAccess(PacketPtr packet)
                  DescriptorOpcode::PackedDirectionalCellWalk)) |
             (uint64_t{1} <<
              static_cast<uint8_t>(DescriptorOpcode::FaceMinMax)) |
-            (uint64_t{1} << BransonEventReplayOpcode);
+            (uint64_t{1} << BransonEventReplayOpcode) |
+            (uint64_t{1} << SpartaTallyOpcode);
         break;
       default:
         packet->setBadAddress();
@@ -667,6 +680,8 @@ LANLMAA::rearmDescriptorEngine()
     descriptor = Descriptor{};
     bransonDescriptor = BransonEventDescriptor{};
     bransonPhase = BransonPhase::Inactive;
+    spartaDescriptor = SpartaTallyDescriptor{};
+    spartaTallyPhase = SpartaTallyPhase::Inactive;
     descriptorError = DescriptorError::None;
     descriptorAddressCursor = 0;
     descriptorResultCursor = 0;
@@ -674,6 +689,9 @@ LANLMAA::rearmDescriptorEngine()
     bransonEventsValidated = 0;
     bransonEventsReplayed = 0;
     bransonUpdatesAcknowledged = 0;
+    spartaContributionsValidated = 0;
+    spartaContributionsReplayed = 0;
+    spartaUpdatesAcknowledged = 0;
     descriptorFaceUpdatePhase = false;
     nextAdmission = 0;
     nextRetirement = 0;
@@ -876,10 +894,13 @@ void
 LANLMAA::issueAddressVectorFetch()
 {
     if (!addressVectorPacket) {
-        const uint64_t itemBytes = bransonEventDescriptor() ?
-            BransonRootRecordBytes : sizeof(uint64_t);
+        const uint64_t itemBytes = spartaTallyDescriptor() ?
+            SpartaTallyCellIndexBytes :
+            bransonEventDescriptor() ? BransonRootRecordBytes :
+                                       sizeof(uint64_t);
         const Addr itemAddress =
-            (bransonEventDescriptor() ? bransonDescriptor.rootBase :
+            (spartaTallyDescriptor() ? spartaDescriptor.cellIndexBase :
+             bransonEventDescriptor() ? bransonDescriptor.rootBase :
                                         descriptor.addressVector) +
             descriptorAddressCursor * itemBytes;
         if (!rangeIsMemory(lineAddress(itemAddress), lineBytes) ||
@@ -929,6 +950,7 @@ LANLMAA::issueCompletionWrite()
 {
     if (!completionPacket) {
         RequestPtr request = std::make_shared<Request>(
+            spartaTallyDescriptor() ? spartaDescriptor.completionRecord :
             bransonEventDescriptor() ? bransonDescriptor.completionRecord :
                                        descriptor.completionRecord,
             32, Request::Flags(), requestorId);
@@ -940,6 +962,7 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 4, DescriptorVersion, 2);
         writeLe(
             data, 6,
+            spartaTallyDescriptor() ? SpartaTallyOpcode :
             bransonEventDescriptor() ? BransonEventReplayOpcode :
                                        static_cast<uint8_t>(descriptor.opcode),
             1);
@@ -948,6 +971,7 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 16, operations.size(), 8);
         writeLe(
             data, 24,
+            spartaTallyDescriptor() ? spartaUpdatesAcknowledged :
             bransonEventDescriptor() ? bransonEventsReplayed :
                 faceMinMaxDescriptor() ? descriptorFaceUpdatesAcknowledged :
                                          descriptorResultCursor,
@@ -1089,6 +1113,13 @@ LANLMAA::bransonEventDescriptor() const
 }
 
 bool
+LANLMAA::spartaTallyDescriptor() const
+{
+    return descriptorMode &&
+        spartaTallyPhase != SpartaTallyPhase::Inactive;
+}
+
+bool
 LANLMAA::bransonTerminalKind(uint8_t kind)
 {
     return kind == static_cast<uint8_t>(BransonEventKind::Census) ||
@@ -1210,6 +1241,98 @@ LANLMAA::beginBransonUpdatePhase()
     bransonContextScheduler->reset();
 }
 
+Addr
+LANLMAA::spartaContributionAddress(const Operation &operation) const
+{
+    panic_if(!spartaTallyDescriptor() ||
+                 operation.spartaItem >= spartaDescriptor.itemCount ||
+                 operation.spartaChannel >= SpartaTallyChannels,
+             "LANLMAA formed an invalid SPARTA contribution address");
+    const uint64_t element =
+        static_cast<uint64_t>(operation.spartaItem) *
+            SpartaTallyChannels +
+        operation.spartaChannel;
+    const uint64_t raw = spartaDescriptor.contributionBase +
+        element * sizeof(uint64_t);
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA SPARTA contribution address overflowed Addr");
+    return address;
+}
+
+Addr
+LANLMAA::spartaTallyAddress(const Operation &operation) const
+{
+    panic_if(!spartaTallyDescriptor() ||
+                 operation.spartaCell >= spartaDescriptor.cellCount ||
+                 operation.spartaChannel >= SpartaTallyChannels,
+             "LANLMAA formed an invalid SPARTA tally address");
+    const uint64_t element =
+        static_cast<uint64_t>(operation.spartaCell) *
+            SpartaTallyChannels +
+        operation.spartaChannel;
+    const uint64_t raw = spartaDescriptor.tallyBase +
+        element * sizeof(uint64_t);
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA SPARTA tally address overflowed Addr");
+    return address;
+}
+
+void
+LANLMAA::resetSpartaOperation(Operation &operation)
+{
+    operation.spartaChannel = 0;
+    operation.address = spartaContributionAddress(operation);
+    operation.value = 0;
+    operation.ownsContext = false;
+    operation.state = OperationState::Unadmitted;
+}
+
+void
+LANLMAA::advanceSpartaContribution(Operation &operation)
+{
+    panic_if(operation.spartaChannel >= SpartaTallyChannels,
+             "LANLMAA advanced an exhausted SPARTA item");
+    if (spartaTallyPhase == SpartaTallyPhase::Validate) {
+        ++spartaContributionsValidated;
+        ++stats.descriptorSpartaContributionsValidated;
+    } else {
+        panic_if(spartaTallyPhase != SpartaTallyPhase::Update,
+                 "LANLMAA advanced a SPARTA item in an invalid phase");
+    }
+    ++operation.spartaChannel;
+    if (operation.spartaChannel == SpartaTallyChannels) {
+        operation.state = OperationState::RetireReady;
+    } else {
+        operation.address = spartaContributionAddress(operation);
+        operation.state = OperationState::AddressReady;
+    }
+}
+
+void
+LANLMAA::beginSpartaUpdatePhase()
+{
+    const uint64_t expected =
+        static_cast<uint64_t>(operations.size()) * SpartaTallyChannels;
+    panic_if(spartaTallyPhase != SpartaTallyPhase::Validate ||
+                 nextAdmission != operations.size() ||
+                 nextRetirement != operations.size() ||
+                 activeOperations != 0 ||
+                 spartaContributionsValidated != expected ||
+                 !allUpdateEntriesFree() ||
+                 std::any_of(
+                     lines.begin(), lines.end(), [](const LineEntry &line) {
+                         return line.state != LineState::Free;
+                     }),
+             "LANLMAA began SPARTA updates before validation quiesced");
+    spartaTallyPhase = SpartaTallyPhase::Update;
+    for (auto &operation : operations) {
+        resetSpartaOperation(operation);
+    }
+    beginDescriptorExecution();
+}
+
 void
 LANLMAA::completeBransonEvent(Operation &operation)
 {
@@ -1321,7 +1444,7 @@ LANLMAA::strictFloatingUpdate(UpdateKind kind)
 LANLMAA::UpdateKind
 LANLMAA::operationUpdateKind(const Operation &operation) const
 {
-    if (bransonEventDescriptor()) {
+    if (bransonEventDescriptor() || spartaTallyDescriptor()) {
         return UpdateKind::Fp64AddRelaxed;
     }
     if (!faceMinMaxDescriptor()) {
@@ -1652,6 +1775,65 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     delete packet;
     descriptorPacket = nullptr;
 
+    if (bytes[6] == SpartaTallyOpcode) {
+        const auto decoded = decodeSpartaTallyDescriptor(
+            bytes, static_cast<uint32_t>(maxDescriptorItems));
+        if (!decoded) {
+            rejectDescriptor(decoded.error);
+            return true;
+        }
+        spartaDescriptor = decoded.descriptor;
+        spartaTallyPhase = SpartaTallyPhase::Validate;
+
+        uint64_t cellIndexEnd = 0;
+        uint64_t tallyEnd = 0;
+        uint64_t completionEnd = 0;
+        uint64_t contributionEnd = 0;
+        const bool rangesValid = descriptorRange(
+            spartaDescriptor.cellIndexBase, spartaDescriptor.itemCount,
+            SpartaTallyCellIndexBytes, cellIndexEnd) && descriptorRange(
+            spartaDescriptor.tallyBase,
+            static_cast<uint64_t>(spartaDescriptor.cellCount) *
+                SpartaTallyChannels,
+            sizeof(uint64_t), tallyEnd) && descriptorRange(
+            spartaDescriptor.completionRecord, 1, 32, completionEnd) &&
+            descriptorRange(
+                spartaDescriptor.contributionBase,
+                spartaDescriptor.itemCount,
+                SpartaTallyContributionRecordBytes, contributionEnd);
+        panic_if(!rangesValid,
+                 "LANLMAA decoded SPARTA descriptor lost its range invariant");
+
+        const uint64_t descriptorTableEnd = descriptorTableBase +
+            descriptorSlots * DescriptorBytes;
+        const auto unsafeRange = [this, descriptorTableEnd](
+                                     uint64_t begin, uint64_t end) {
+            return !rangeIsMemory(begin, end - begin) ||
+                rangeOverlapsControl(begin, end - begin) ||
+                descriptorRangesOverlap(
+                    begin, end, descriptorTableBase, descriptorTableEnd);
+        };
+        if (unsafeRange(spartaDescriptor.cellIndexBase, cellIndexEnd) ||
+            unsafeRange(spartaDescriptor.tallyBase, tallyEnd) ||
+            unsafeRange(
+                spartaDescriptor.completionRecord, completionEnd) ||
+            unsafeRange(
+                spartaDescriptor.contributionBase, contributionEnd)) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return true;
+        }
+
+        operations.assign(spartaDescriptor.itemCount, Operation{});
+        descriptorAddressCursor = 0;
+        descriptorResultCursor = 0;
+        spartaContributionsValidated = 0;
+        spartaContributionsReplayed = 0;
+        spartaUpdatesAcknowledged = 0;
+        descriptorState = DescriptorState::AddressPending;
+        scheduleTick();
+        return true;
+    }
+
     if (bytes[6] == BransonEventReplayOpcode) {
         const auto decoded = decodeBransonEventDescriptor(
             bytes, static_cast<uint32_t>(maxDescriptorItems));
@@ -1792,6 +1974,49 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
              "LANLMAA address-vector response changed packet ownership");
     panic_if(!packet->isResponse() || !packet->isRead(),
              "LANLMAA address-vector fetch was not a read response");
+    if (spartaTallyDescriptor()) {
+        const Addr itemAddress = spartaDescriptor.cellIndexBase +
+            descriptorAddressCursor * SpartaTallyCellIndexBytes;
+        const Addr itemLine = lineAddress(itemAddress);
+        panic_if(packet->getAddr() != itemLine,
+                 "LANLMAA SPARTA index response changed line address");
+        const uint8_t *data = packet->getConstPtr<uint8_t>();
+        DescriptorError itemError = DescriptorError::None;
+        while (descriptorAddressCursor < operations.size()) {
+            const Addr address = spartaDescriptor.cellIndexBase +
+                descriptorAddressCursor * SpartaTallyCellIndexBytes;
+            if (lineAddress(address) != itemLine) {
+                break;
+            }
+            const size_t offset = address - itemLine;
+            const uint32_t cell = descriptorReadLe32(data + offset);
+            if (cell >= spartaDescriptor.cellCount) {
+                itemError = DescriptorError::BadStartState;
+                break;
+            }
+            auto &operation = operations[descriptorAddressCursor];
+            operation.spartaItem =
+                static_cast<uint32_t>(descriptorAddressCursor);
+            operation.spartaCell = cell;
+            resetSpartaOperation(operation);
+            ++descriptorAddressCursor;
+            ++stats.descriptorAddressesLoaded;
+            ++stats.descriptorSpartaItemsLoaded;
+        }
+        delete packet;
+        addressVectorPacket = nullptr;
+        if (itemError != DescriptorError::None) {
+            rejectDescriptor(itemError);
+            return true;
+        }
+        if (descriptorAddressCursor == operations.size()) {
+            beginDescriptorExecution();
+        } else {
+            descriptorState = DescriptorState::AddressPending;
+        }
+        scheduleTick();
+        return true;
+    }
     if (bransonEventDescriptor()) {
         const Addr rootAddress = bransonDescriptor.rootBase +
             descriptorAddressCursor * BransonRootRecordBytes;
@@ -2049,8 +2274,11 @@ LANLMAA::beginDescriptorResults()
     panic_if(!allUpdateEntriesFree(),
              "LANLMAA descriptor reached results with allocated updates");
     descriptorResultCursor = 0;
-    descriptorState = (faceMinMaxDescriptor() || bransonEventDescriptor()) ?
-        DescriptorState::CompletionPending : DescriptorState::ResultPending;
+    descriptorState =
+        (faceMinMaxDescriptor() || bransonEventDescriptor() ||
+         spartaTallyDescriptor()) ?
+            DescriptorState::CompletionPending :
+            DescriptorState::ResultPending;
 }
 
 void
@@ -2058,8 +2286,10 @@ LANLMAA::completeDescriptor()
 {
     panic_if(
         (!faceMinMaxDescriptor() && !bransonEventDescriptor() &&
+         !spartaTallyDescriptor() &&
          descriptorResultCursor != operations.size()) ||
-            ((faceMinMaxDescriptor() || bransonEventDescriptor()) &&
+            ((faceMinMaxDescriptor() || bransonEventDescriptor() ||
+              spartaTallyDescriptor()) &&
              descriptorResultCursor != 0),
              "LANLMAA completed a descriptor before every result write");
     panic_if(rejectedPacket || waitingForRetry || descriptorPacket ||
@@ -2079,6 +2309,15 @@ LANLMAA::completeDescriptor()
                      bransonUpdatesAcknowledged !=
                          BransonTallyArrays * expectedEvents,
                  "LANLMAA completed with incomplete Branson accounting");
+    }
+    if (spartaTallyDescriptor()) {
+        const uint64_t expected =
+            static_cast<uint64_t>(operations.size()) *
+            SpartaTallyChannels;
+        panic_if(spartaContributionsValidated != expected ||
+                     spartaContributionsReplayed != expected ||
+                     spartaUpdatesAcknowledged != expected,
+                 "LANLMAA completed with incomplete SPARTA accounting");
     }
     descriptorState = DescriptorState::Completed;
     finished = true;
@@ -2124,7 +2363,15 @@ LANLMAA::tick()
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
-    if (bransonEventDescriptor()) {
+    if (spartaTallyDescriptor()) {
+        attachReadyOperations();
+        issueLines();
+        if (spartaTallyPhase == SpartaTallyPhase::Update) {
+            attachReadyUpdates();
+            scheduleUpdateDrains();
+            issueUpdates();
+        }
+    } else if (bransonEventDescriptor()) {
         completeBransonEventComputations();
         issueBransonEventComputations();
         attachReadyOperations();
@@ -2158,7 +2405,18 @@ LANLMAA::tick()
         issueLines();
     }
     if (nextRetirement == operations.size()) {
-        if (bransonEventDescriptor()) {
+        if (spartaTallyDescriptor()) {
+            if (spartaTallyPhase == SpartaTallyPhase::Validate) {
+                beginSpartaUpdatePhase();
+                scheduleTick();
+                return;
+            }
+            if (allUpdateEntriesFree()) {
+                beginDescriptorResults();
+                scheduleTick();
+                return;
+            }
+        } else if (bransonEventDescriptor()) {
             if (bransonPhase == BransonPhase::Validate) {
                 beginBransonUpdatePhase();
                 scheduleTick();
@@ -2355,7 +2613,9 @@ LANLMAA::attachReadyUpdates()
     for (size_t index = nextRetirement;
          index < nextAdmission && attached < logicalAdmissionWidth; ++index) {
         auto &operation = operations[index];
-        const OperationState readyState = bransonEventDescriptor() ?
+        const OperationState readyState = spartaTallyDescriptor() ?
+            OperationState::SpartaUpdateReady :
+            bransonEventDescriptor() ?
             OperationState::BransonUpdateReady :
             faceMinMaxDescriptor() ? OperationState::FaceUpdateReady :
                                      OperationState::AddressReady;
@@ -2446,7 +2706,9 @@ LANLMAA::attachReadyUpdates()
 void
 LANLMAA::scheduleUpdateDrains()
 {
-    const OperationState readyState = bransonEventDescriptor() ?
+    const OperationState readyState = spartaTallyDescriptor() ?
+        OperationState::SpartaUpdateReady :
+        bransonEventDescriptor() ?
         OperationState::BransonUpdateReady :
         faceMinMaxDescriptor() ? OperationState::FaceUpdateReady :
                                  OperationState::AddressReady;
@@ -2713,7 +2975,36 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
         panic_if(operation.state != OperationState::DataPending,
                  "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
-        if (bransonEventDescriptor()) {
+        if (spartaTallyDescriptor()) {
+            panic_if(operation.spartaChannel >= SpartaTallyChannels,
+                     "LANLMAA SPARTA response reached an exhausted item");
+            const uint64_t contribution =
+                descriptorReadLe64(data + offset);
+            const bool finite =
+                std::isfinite(decodeDouble(contribution));
+            if (!finite &&
+                spartaTallyPhase == SpartaTallyPhase::Validate) {
+                ++stats.responses;
+                delete packet;
+                line->clear();
+                beginDescriptorErrorDrain(
+                    DescriptorError::BadRecordValue);
+                return true;
+            }
+            panic_if(!finite,
+                     "LANLMAA SPARTA input mutated after validation");
+            if (spartaTallyPhase == SpartaTallyPhase::Validate) {
+                advanceSpartaContribution(operation);
+            } else {
+                panic_if(spartaTallyPhase != SpartaTallyPhase::Update,
+                         "LANLMAA read SPARTA input in an invalid phase");
+                operation.value = contribution;
+                operation.address = spartaTallyAddress(operation);
+                operation.state = OperationState::SpartaUpdateReady;
+                ++spartaContributionsReplayed;
+                ++stats.descriptorSpartaContributionsReplayed;
+            }
+        } else if (bransonEventDescriptor()) {
             panic_if(operation.bransonEventsRemaining == 0,
                      "LANLMAA Branson response reached an exhausted context");
             const uint32_t sourceCell = descriptorReadLe32(data + offset);
@@ -3127,7 +3418,11 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
         auto &operation = operations[operationIndex];
         panic_if(operation.state != OperationState::UpdatePending,
                  "LANLMAA acknowledged update waiter is not pending");
-        if (bransonEventDescriptor()) {
+        if (spartaTallyDescriptor()) {
+            ++spartaUpdatesAcknowledged;
+            ++stats.descriptorSpartaUpdatesAcknowledged;
+            advanceSpartaContribution(operation);
+        } else if (bransonEventDescriptor()) {
             ++operation.bransonUpdateOrdinal;
             ++bransonUpdatesAcknowledged;
             ++stats.descriptorBransonUpdatesAcknowledged;

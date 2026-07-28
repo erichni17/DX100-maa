@@ -1,0 +1,15 @@
+{
+  "data_vaddr": 68719476736,
+  "data_paddr": 33554432,
+  "data_bytes": 1048576,
+  "control_vaddr": 68721573888,
+  "control_paddr": 67108864,
+  "control_bytes": 4096,
+  "descriptor_paddr": 33554432,
+  "items": 64,
+  "cells": 16,
+  "channels": 6,
+  "submissions": 4,
+  "successful_submissions": 2,
+  "error_submissions": 2
+}

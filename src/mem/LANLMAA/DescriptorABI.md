@@ -171,12 +171,12 @@ Successful descriptors write a 32-byte completion record:
 | 8 | 4 | Completed slot |
 | 12 | 4 | Reserved zero |
 | 16 | 8 | Item count |
-| 24 | 8 | Acknowledged result writes; logical updates for opcode 4; replayed events for opcode 5 |
+| 24 | 8 | Acknowledged result writes; logical updates for opcodes 4 and 6; replayed events for opcode 5 |
 
 The control aperture exposes device/version at `0x100`, slot and item limits
 at `0x108`, state at `0x110`, completed slot at `0x118`, error code at `0x120`,
 and an opcode bitmap at `0x128`. Bitmap bit `n` advertises opcode `n`; bits
-1--5 are currently set.
+1--6 are currently set.
 
 ### Branson event-replay contract (opcode 5)
 
@@ -248,6 +248,46 @@ transparent bit mapping, not synthesis, port, timing, energy, or area evidence.
 The 32-byte root record does add 16 external bytes per root relative to the
 earlier 16-byte reference-replay staging record, and two-pass validation reads
 every event twice on a successful uncached replay.
+
+### SPARTA six-tally contract (opcode 6)
+
+`SpartaSixTally` accelerates the exact six-channel cell accumulation shape
+verified in pinned SPARTA `compute_thermal_grid_kokkos.cpp`: count, mass,
+three momentum components, and kinetic-energy contribution. The CPU or
+application framework forms the contributions; this contract covers their
+indexed scatter-add, not particle physics or native application integration.
+The descriptor has zero flags and reserved fields:
+
+| Offset | Size | Meaning |
+| ---: | ---: | --- |
+| 8 | 4 | Item count |
+| 16 | 8 | Base of one little-endian `uint32_t` cell index per item |
+| 24 | 8 | Base of cell-major `double[cell_count][6]` tallies |
+| 32 | 8 | 32-byte completion record |
+| 40 | 8 | Base of item-major `double[item_count][6]` contributions |
+| 48 | 4 | Cell count |
+| 52 | 4 | Channel count, exactly 6 |
+| 56 | 8 | Reserved, zero |
+
+All four ranges must be aligned, mapped, pairwise disjoint, outside MMIO, and
+outside the descriptor table. Every cell index is loaded and range-checked
+before execution. Execution then uses two passes over immutable contribution
+storage. The first pass checks that every FP64 contribution is finite and
+issues no updates. Only after all first-pass traffic and operations quiesce
+does the second pass reread contributions and issue relaxed FP64 adds to
+`tally[cell][channel]`. Completion is published only after exactly
+`item_count * 6` logical update acknowledgements. A validation failure drains
+accepted reads and publishes neither a tally update nor completion. Software
+must not mutate the cell-index or contribution arrays until terminal status;
+a nonfinite value observed after validation is treated as an ownership
+violation.
+
+The retained item index, cell index, and three-bit channel ordinal overlay
+existing opcode-specific operation-entry fields. Contributions stream through
+the existing scalar value word and FP64 update combiner, so this mapping adds
+no new rounded array payload. That is a structural mapping only: it does not
+price ports or arbitration, establish synthesis timing/area/energy, provide a
+native SPARTA ABI, or demonstrate application speedup.
 
 `Completed` and `Error` remain visible until the next doorbell. A terminal
 rearm clears the previous error and per-descriptor cursors only after all

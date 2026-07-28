@@ -14,6 +14,7 @@
 #include "mem/LANLMAA/BransonEventTiming.hh"
 #include "mem/LANLMAA/Descriptor.hh"
 #include "mem/LANLMAA/FaceComputeTiming.hh"
+#include "mem/LANLMAA/SpartaTallyDescriptor.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
 #include "params/LANLMAA.hh"
@@ -43,6 +44,7 @@ class LANLMAA : public ClockedObject
         BransonEventComputeReady,
         BransonEventComputePending,
         BransonUpdateReady,
+        SpartaUpdateReady,
         FaceComputeReady,
         FaceComputePending,
         FaceGatherComplete,
@@ -95,6 +97,13 @@ class LANLMAA : public ClockedObject
         Update
     };
 
+    enum class SpartaTallyPhase
+    {
+        Inactive,
+        Validate,
+        Update
+    };
+
     enum class TrafficKind
     {
         Descriptor,
@@ -135,6 +144,9 @@ class LANLMAA : public ClockedObject
         uint32_t bransonNextEvent = BransonTerminalEvent;
         uint8_t bransonExpectedTerminalKind = 0;
         uint8_t bransonUpdateOrdinal = 0;
+        uint32_t spartaItem = 0;
+        uint32_t spartaCell = 0;
+        uint8_t spartaChannel = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
@@ -260,6 +272,10 @@ class LANLMAA : public ClockedObject
         statistics::Scalar bransonEventComputeWouldBlockCycles;
         statistics::Scalar bransonEventComputeActiveCycles;
         statistics::Scalar activeBransonEventComputeHighWaterMark;
+        statistics::Scalar descriptorSpartaItemsLoaded;
+        statistics::Scalar descriptorSpartaContributionsValidated;
+        statistics::Scalar descriptorSpartaContributionsReplayed;
+        statistics::Scalar descriptorSpartaUpdatesAcknowledged;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -338,6 +354,8 @@ class LANLMAA : public ClockedObject
     Descriptor descriptor;
     BransonEventDescriptor bransonDescriptor;
     BransonPhase bransonPhase = BransonPhase::Inactive;
+    SpartaTallyDescriptor spartaDescriptor;
+    SpartaTallyPhase spartaTallyPhase = SpartaTallyPhase::Inactive;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
@@ -346,6 +364,9 @@ class LANLMAA : public ClockedObject
     uint64_t bransonEventsValidated = 0;
     uint64_t bransonEventsReplayed = 0;
     uint64_t bransonUpdatesAcknowledged = 0;
+    uint64_t spartaContributionsValidated = 0;
+    uint64_t spartaContributionsReplayed = 0;
+    uint64_t spartaUpdatesAcknowledged = 0;
     bool descriptorFaceUpdatePhase = false;
     PacketPtr descriptorPacket = nullptr;
     PacketPtr addressVectorPacket = nullptr;
@@ -363,6 +384,7 @@ class LANLMAA : public ClockedObject
     bool allUpdateEntriesFree() const;
     bool activeDependentMode() const;
     bool bransonEventDescriptor() const;
+    bool spartaTallyDescriptor() const;
     static bool bransonTerminalKind(uint8_t kind);
     Addr bransonEventAddress(uint32_t event) const;
     Addr bransonTallyAddress(const Operation &operation) const;
@@ -373,6 +395,11 @@ class LANLMAA : public ClockedObject
     void issueBransonEventComputations();
     void beginBransonUpdatePhase();
     bool bransonValidationComplete() const;
+    Addr spartaContributionAddress(const Operation &operation) const;
+    Addr spartaTallyAddress(const Operation &operation) const;
+    void resetSpartaOperation(Operation &operation);
+    void advanceSpartaContribution(Operation &operation);
+    void beginSpartaUpdatePhase();
     bool faceMinMaxDescriptor() const;
     UpdateKind configuredUpdateKind() const;
     bool floatingUpdate() const;
