@@ -30,9 +30,9 @@ RESULT_VECTOR_OFFSET = 0x2000
 COMPLETION_OFFSET = 0x3000
 TARGET_OFFSET = 0x4000
 WINDOW_SHA256 = (
-    "6929711f4f49fbbde674fa80d5b8f5cd"
-    "05f2140b75f1e747ea7467995cb1aa7b"
+    "6929711f4f49fbbde674fa80d5b8f5cd" "05f2140b75f1e747ea7467995cb1aa7b"
 )
+MAX_STREAM_DESCRIPTORS = 32
 
 
 def read_scalar(path, name):
@@ -46,37 +46,62 @@ def read_scalar(path, name):
 def validate(
     stats,
     committed_instructions,
+    chunks=1,
+    minimum_physical_line_reads=10,
     coherence_stats=None,
     expect_reference_coherence=False,
 ):
     errors = []
     accelerator = stats.get("lanl_maa", {})
+    logical_items = chunks * DESCRIPTOR_ITEMS
     expected = {
-        "logicalItems": 64,
-        "logicalMemoryAccesses": 64,
-        "physicalLineReads": 10,
-        "lineMergeHits": 54,
+        "logicalItems": logical_items,
+        "logicalMemoryAccesses": logical_items,
         "lineWouldBlockCycles": 0,
-        "responses": 10,
-        "responsesFannedOut": 64,
-        "completionsRetired": 64,
+        "responsesFannedOut": logical_items,
+        "completionsRetired": logical_items,
         "verificationFailures": 0,
-        "descriptorDoorbells": 1,
+        "descriptorDoorbells": chunks,
         "descriptorBusyRejections": 0,
-        "descriptorRearms": 0,
-        "descriptorFetches": 1,
-        "descriptorAddressLineReads": 8,
-        "descriptorAddressesLoaded": 64,
-        "descriptorResultWrites": 64,
-        "descriptorCompletionWrites": 1,
+        "descriptorRearms": chunks - 1,
+        "descriptorFetches": chunks,
+        "descriptorAddressLineReads": chunks * 8,
+        "descriptorAddressesLoaded": logical_items,
+        "descriptorResultWrites": logical_items,
+        "descriptorCompletionWrites": chunks,
         "descriptorErrors": 0,
     }
     for name, value in expected.items():
         check_equal(errors, accelerator, name, value)
-    if accelerator.get("physicalLineReads", 0) + accelerator.get(
-        "lineMergeHits", 0
-    ) != accelerator.get("logicalMemoryAccesses"):
+    physical_line_reads = accelerator.get("physicalLineReads")
+    line_merge_hits = accelerator.get("lineMergeHits")
+    if chunks == 1 and physical_line_reads != minimum_physical_line_reads:
+        errors.append(
+            "single-window physical reads differ: "
+            f"expected {minimum_physical_line_reads}, "
+            f"got {physical_line_reads}"
+        )
+    if (
+        physical_line_reads is None
+        or physical_line_reads < minimum_physical_line_reads
+        or physical_line_reads > logical_items
+    ):
+        errors.append(
+            "physical reads violate unique-line lower bound: "
+            f"minimum={minimum_physical_line_reads}, "
+            f"logical={logical_items}, actual={physical_line_reads}"
+        )
+    if (
+        physical_line_reads is None
+        or line_merge_hits is None
+        or physical_line_reads + line_merge_hits
+        != accelerator.get("logicalMemoryAccesses")
+    ):
         errors.append("CPU descriptor line accounting did not close")
+    if accelerator.get("responses") != physical_line_reads:
+        errors.append(
+            "CPU descriptor request/response accounting did not close"
+        )
     failures = accelerator.get("portSendFailures")
     notifications = accelerator.get("portRetryNotifications")
     resubmissions = accelerator.get("retryPacketResubmissions")
@@ -123,7 +148,9 @@ def validate(
         )
 
 
-def generate_source(path, indices):
+def generate_source(path, indices, chunks):
+    if len(indices) != chunks * DESCRIPTOR_ITEMS:
+        raise RuntimeError("XRAGE CPU stream item count does not close")
     minimum = min(indices)
     if minimum % 8 != 0:
         raise RuntimeError("XRAGE CPU window minimum is not line aligned")
@@ -144,8 +171,10 @@ def generate_source(path, indices):
 #define TARGET_OFFSET UINT64_C(0x{TARGET_OFFSET:x})
 #define MINIMUM_INDEX UINT64_C({minimum})
 #define ITEMS UINT64_C({DESCRIPTOR_ITEMS})
+#define CHUNKS UINT64_C({chunks})
+#define TOTAL_ITEMS (ITEMS * CHUNKS)
 
-static const uint64_t indices[ITEMS] = {{
+static const uint64_t indices[TOTAL_ITEMS] = {{
 {index_lines}
 }};
 
@@ -191,14 +220,9 @@ _start(void)
     volatile uint64_t *control = (volatile uint64_t *)(uintptr_t)(
         CONTROL_VADDR);
 
-    for (uint64_t item = 0; item < ITEMS; ++item) {{
+    for (uint64_t item = 0; item < TOTAL_ITEMS; ++item) {{
         const uint64_t delta = indices[item] - MINIMUM_INDEX;
         targets[delta] = splitmix64(indices[item]);
-        addresses[item] = DATA_PADDR + TARGET_OFFSET + delta * 8;
-        results[item] = 0;
-    }}
-    for (uint64_t word = 0; word < 4; ++word) {{
-        completion[word] = 0;
     }}
     descriptor[0] = UINT64_C(0x0001000131414d4c);
     descriptor[1] = ITEMS;
@@ -210,38 +234,52 @@ _start(void)
     descriptor[7] = 0;
     fence();
 
-    control[0] = 0;
-    fence();
-    uint64_t status = 0;
-    for (uint64_t spin = 0; spin < UINT64_C(1000000); ++spin) {{
-        status = control[UINT64_C(0x110) / 8];
-        if (status == UINT64_C(4)) {{
-            break;
+    for (uint64_t chunk = 0; chunk < CHUNKS; ++chunk) {{
+        for (uint64_t item = 0; item < ITEMS; ++item) {{
+            const uint64_t index = indices[chunk * ITEMS + item];
+            const uint64_t delta = index - MINIMUM_INDEX;
+            addresses[item] = DATA_PADDR + TARGET_OFFSET + delta * 8;
+            results[item] = 0;
         }}
-        if (status == UINT64_C(8)) {{
-            finish(UINT64_C(20) + control[UINT64_C(0x120) / 8]);
+        for (uint64_t word = 0; word < 4; ++word) {{
+            completion[word] = 0;
         }}
-        if (status != UINT64_C(1) && status != UINT64_C(2)) {{
-            finish(UINT64_C(12));
-        }}
-    }}
-    if (status != UINT64_C(4)) {{
-        finish(UINT64_C(13));
-    }}
-    if (control[UINT64_C(0x118) / 8] != 0) {{
-        finish(UINT64_C(14));
-    }}
-    fence();
+        fence();
 
-    for (uint64_t item = 0; item < ITEMS; ++item) {{
-        if (results[item] != splitmix64(indices[item])) {{
-            finish(UINT64_C(40));
+        control[0] = 0;
+        fence();
+        uint64_t status = 0;
+        for (uint64_t spin = 0; spin < UINT64_C(1000000); ++spin) {{
+            status = control[UINT64_C(0x110) / 8];
+            if (status == UINT64_C(4)) {{
+                break;
+            }}
+            if (status == UINT64_C(8)) {{
+                finish(UINT64_C(20) + control[UINT64_C(0x120) / 8]);
+            }}
+            if (status != UINT64_C(1) && status != UINT64_C(2)) {{
+                finish(UINT64_C(12));
+            }}
         }}
-    }}
-    if (completion[0] != UINT64_C(0x0001000143414d4c) ||
-        completion[1] != 0 || completion[2] != ITEMS ||
-        completion[3] != ITEMS) {{
-        finish(UINT64_C(41));
+        if (status != UINT64_C(4)) {{
+            finish(UINT64_C(13));
+        }}
+        if (control[UINT64_C(0x118) / 8] != 0) {{
+            finish(UINT64_C(14));
+        }}
+        fence();
+
+        for (uint64_t item = 0; item < ITEMS; ++item) {{
+            const uint64_t index = indices[chunk * ITEMS + item];
+            if (results[item] != splitmix64(index)) {{
+                finish(UINT64_C(40));
+            }}
+        }}
+        if (completion[0] != UINT64_C(0x0001000143414d4c) ||
+            completion[1] != 0 || completion[2] != ITEMS ||
+            completion[3] != ITEMS) {{
+            finish(UINT64_C(41));
+        }}
     }}
     finish(0);
 }}
@@ -249,13 +287,13 @@ _start(void)
     path.write_text(source.lstrip(), encoding="utf-8")
 
 
-def build_program(root, indices):
+def build_program(root, indices, chunks):
     compiler = shutil.which("cc")
     if not compiler:
         raise RuntimeError("XRAGE CPU descriptor smoke requires cc")
     source = root / "xrage_cpu_descriptor.c"
     binary = root / "xrage_cpu_descriptor.elf"
-    generate_source(source, indices)
+    generate_source(source, indices, chunks)
     subprocess.run(
         [
             compiler,
@@ -283,19 +321,56 @@ def run_smoke(args, root):
     if file_sha256(trace) != TRACE_SHA256:
         raise RuntimeError("XRAGE CPU trace SHA-256 changed")
     pattern = read_trace(trace)
-    indices = pattern[:DESCRIPTOR_ITEMS]
-    packed = struct.pack("<64Q", *indices)
-    if hashlib.sha256(packed).hexdigest() != WINDOW_SHA256:
+    if args.chunks < 1 or args.chunks > MAX_STREAM_DESCRIPTORS:
+        raise RuntimeError(f"chunks must be in [1, {MAX_STREAM_DESCRIPTORS}]")
+    total_items = args.chunks * DESCRIPTOR_ITEMS
+    indices = pattern[:total_items]
+    if len(indices) != total_items:
+        raise RuntimeError("XRAGE trace ended before the requested CPU stream")
+    packed = struct.pack(f"<{total_items}Q", *indices)
+    stream_sha256 = hashlib.sha256(packed).hexdigest()
+    if args.chunks == 1 and stream_sha256 != WINDOW_SHA256:
         raise RuntimeError("XRAGE CPU descriptor window changed")
-    source, binary = build_program(root, indices)
+    windows = []
+    for chunk in range(args.chunks):
+        begin = chunk * DESCRIPTOR_ITEMS
+        window = indices[begin : begin + DESCRIPTOR_ITEMS]
+        window_packed = struct.pack("<64Q", *window)
+        windows.append(
+            {
+                "chunk": chunk,
+                "trace_offset": begin,
+                "window_u64le_sha256": hashlib.sha256(
+                    window_packed
+                ).hexdigest(),
+                "unique_target_lines": len({index // 8 for index in window}),
+            }
+        )
+    source, binary = build_program(root, indices, args.chunks)
+    minimum_physical_line_reads = sum(
+        window["unique_target_lines"] for window in windows
+    )
+    stream_unique_target_lines = len({index // 8 for index in indices})
     metadata = {
         "schema_version": 1,
-        "mapping": "CPU-submitted direct gather over pinned XRAGE head window",
+        "mapping": (
+            "CPU-submitted direct gather over pinned XRAGE head window"
+            if args.chunks == 1
+            else "CPU-submitted status-driven direct-gather stream over "
+            "pinned XRAGE head windows"
+        ),
         "trace_path": str(trace),
         "trace_sha256": TRACE_SHA256,
-        "window_u64le_sha256": WINDOW_SHA256,
+        "stream_u64le_sha256": stream_sha256,
+        "windows": windows,
+        "chunks": args.chunks,
         "items": DESCRIPTOR_ITEMS,
-        "unique_target_lines": len({index // 8 for index in indices}),
+        "total_items": total_items,
+        "sum_window_unique_target_lines": minimum_physical_line_reads,
+        "stream_unique_target_lines": stream_unique_target_lines,
+        "cross_descriptor_reused_target_lines": (
+            minimum_physical_line_reads - stream_unique_target_lines
+        ),
         "minimum_index": min(indices),
         "maximum_index": max(indices),
         "data_vaddr": DATA_VADDR,
@@ -321,6 +396,9 @@ def run_smoke(args, root):
         "binary_sha256": file_sha256(binary),
         "value_oracle": "SplitMix64(index), modulo 2^64",
     }
+    if args.chunks == 1:
+        metadata["window_u64le_sha256"] = stream_sha256
+        metadata["unique_target_lines"] = windows[0]["unique_target_lines"]
     metadata_path = root / "metadata.json"
     metadata_path.write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
@@ -370,9 +448,7 @@ def run_smoke(args, root):
             "maa_cache_write_accesses": read_scalar(
                 stats_path, "system.maa_cache.WriteReq_T.accesses::total"
             ),
-            "membus_snoops": read_scalar(
-                stats_path, "system.membus.snoops"
-            ),
+            "membus_snoops": read_scalar(stats_path, "system.membus.snoops"),
             "snoop_filter_single_holder_hits": read_scalar(
                 stats_path,
                 "system.membus.snoop_filter.hitSingleRequests",
@@ -381,8 +457,11 @@ def run_smoke(args, root):
     validate(
         read_stats(stats_path),
         read_scalar(stats_path, "system.cpu.commitStats0.numInsts"),
+        args.chunks,
+        minimum_physical_line_reads,
         coherence_stats,
-        args.l1_caches
+        args.chunks == 1
+        and args.l1_caches
         and args.maa_cache_size == "2KiB"
         and args.maa_cache_assoc == 4
         and args.maa_cache_mshrs == 32
@@ -395,6 +474,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
     parser.add_argument("--trace", required=True, type=pathlib.Path)
+    parser.add_argument("--chunks", default=1, type=int)
     parser.add_argument("--l1-caches", action="store_true")
     parser.add_argument("--maa-cache-size", default="2KiB")
     parser.add_argument("--maa-cache-assoc", type=int, default=4)
@@ -423,7 +503,10 @@ def main():
         ) as root:
             run_smoke(args, pathlib.Path(root))
     mode = " with L1 caches" if args.l1_caches else ""
-    print(f"LANLMAA XRAGE CPU descriptor smoke{mode}: PASS")
+    print(
+        f"LANLMAA XRAGE CPU descriptor smoke{mode}, "
+        f"chunks={args.chunks}: PASS"
+    )
 
 
 if __name__ == "__main__":
