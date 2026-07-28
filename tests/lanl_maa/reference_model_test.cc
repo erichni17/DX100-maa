@@ -48,6 +48,7 @@ testLineMergeAndOrderedRetirement()
     configuration.lineEntries = 2;
     configuration.continuationContexts = 1;
     configuration.combinerEntries = 2;
+    configuration.combinerBanks = 1;
     configuration.acknowledgementCredits = 1;
     ReadContinuationModel model(configuration);
 
@@ -91,6 +92,7 @@ testBackpressureDoesNotDropWork()
     configuration.lineEntries = 1;
     configuration.continuationContexts = 1;
     configuration.combinerEntries = 1;
+    configuration.combinerBanks = 1;
     configuration.acknowledgementCredits = 1;
     ReadContinuationModel model(configuration);
 
@@ -119,6 +121,7 @@ testExplicitContinuationAndContextPressure()
     configuration.lineEntries = 2;
     configuration.continuationContexts = 1;
     configuration.combinerEntries = 1;
+    configuration.combinerBanks = 1;
     configuration.acknowledgementCredits = 1;
     ReadContinuationModel model(configuration);
 
@@ -165,6 +168,7 @@ testRelaxedCombineAndExplicitAcknowledgement()
     configuration.lineEntries = 2;
     configuration.continuationContexts = 1;
     configuration.combinerEntries = 2;
+    configuration.combinerBanks = 1;
     configuration.acknowledgementCredits = 1;
     UpdateCombinerModel model(configuration);
 
@@ -206,6 +210,7 @@ testDataTypesMinMaxAndOverflow()
     configuration.lineEntries = 2;
     configuration.continuationContexts = 1;
     configuration.combinerEntries = 4;
+    configuration.combinerBanks = 1;
     configuration.acknowledgementCredits = 2;
     UpdateCombinerModel model(configuration);
 
@@ -266,6 +271,52 @@ testInvalidUpdateEnumsAndOverwriteOrderingFailClosed()
     assert(model.counters().invalidAdmissions == 3);
 }
 
+void
+testBankCapacityPressureDoesNotBorrowAnotherBank()
+{
+    Configuration configuration;
+    configuration.operationEntries = 4;
+    configuration.lineEntries = 2;
+    configuration.continuationContexts = 1;
+    configuration.combinerEntries = 4;
+    configuration.combinerBanks = 2;
+    configuration.acknowledgementCredits = 4;
+    UpdateCombinerModel model(configuration);
+
+    assert(model.admitUpdate(
+               1, 0x100, 1, DataType::Uint64, UpdateOperation::Add,
+               Ordering::Relaxed) == Admission::Accepted);
+    assert(model.admitUpdate(
+               2, 0x110, 2, DataType::Uint64, UpdateOperation::Add,
+               Ordering::Relaxed) == Admission::Accepted);
+    assert(model.admitUpdate(
+               3, 0x120, 3, DataType::Uint64, UpdateOperation::Add,
+               Ordering::Relaxed) == Admission::WouldBlock);
+    assert(model.outstandingEntries() == 2);
+    assert(model.counters().combinerWouldBlock == 1);
+    assert(model.counters().combinerBankWouldBlock == 1);
+
+    auto drain = model.drainNext();
+    assert(drain && drain->address == 0x100);
+    assert(model.acknowledge(drain->drainId));
+    assert(model.admitUpdate(
+               3, 0x120, 3, DataType::Uint64, UpdateOperation::Add,
+               Ordering::Relaxed) == Admission::Accepted);
+}
+
+void
+testInvalidBankGeometryFailsClosed()
+{
+    Configuration configuration;
+    configuration.combinerEntries = 8;
+    configuration.combinerBanks = 3;
+    UpdateCombinerModel model(configuration);
+    assert(!model.valid());
+    assert(model.admitUpdate(
+               1, 0x100, 1, DataType::Uint64, UpdateOperation::Add,
+               Ordering::Relaxed) == Admission::Invalid);
+}
+
 } // anonymous namespace
 
 int
@@ -278,5 +329,7 @@ main()
     testRelaxedCombineAndExplicitAcknowledgement();
     testDataTypesMinMaxAndOverflow();
     testInvalidUpdateEnumsAndOverwriteOrderingFailClosed();
+    testBankCapacityPressureDoesNotBorrowAnotherBank();
+    testInvalidBankGeometryFailsClosed();
     return 0;
 }

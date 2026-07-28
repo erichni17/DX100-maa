@@ -66,6 +66,10 @@ struct Options
     size_t faces = 65536;
     size_t cells = 4096;
     size_t window = 64;
+    size_t lineEntries = 0;
+    size_t continuationContexts = 0;
+    size_t combinerEntries = 0;
+    size_t combinerBanks = 4;
     uint64_t seed = 0x4c414e4c;
 };
 
@@ -114,13 +118,19 @@ fromBits(uint64_t bits)
 }
 
 Configuration
-configurationFor(size_t window)
+configurationFor(const Options &options)
 {
     Configuration configuration;
-    configuration.operationEntries = window;
-    configuration.lineEntries = std::max<size_t>(4, window / 2);
-    configuration.continuationContexts = std::max<size_t>(1, window / 4);
-    configuration.combinerEntries = std::max<size_t>(4, window / 2);
+    configuration.operationEntries = options.window;
+    configuration.lineEntries = options.lineEntries == 0
+        ? std::max<size_t>(4, options.window / 2) : options.lineEntries;
+    configuration.continuationContexts = options.continuationContexts == 0
+        ? std::max<size_t>(1, options.window / 4)
+        : options.continuationContexts;
+    configuration.combinerEntries = options.combinerEntries == 0
+        ? std::max<size_t>(4, options.window / 2)
+        : options.combinerEntries;
+    configuration.combinerBanks = options.combinerBanks;
     configuration.acknowledgementCredits = configuration.combinerEntries;
     return configuration;
 }
@@ -360,9 +370,8 @@ drainUpdates(
 }
 
 ModelResult
-runModel(const Dataset &data, size_t window)
+runModel(const Dataset &data, const Configuration &configuration)
 {
-    const Configuration configuration = configurationFor(window);
     if (!configuration.valid()) {
         throw std::invalid_argument("invalid window configuration");
     }
@@ -496,7 +505,9 @@ parseOptions(int argc, char **argv)
         const std::string option = argv[argument];
         if (option == "--help") {
             std::cout << "usage: eap_face_minmax [--faces N] [--cells N] "
-                         "[--window N] [--seed N]\n";
+                         "[--window N] [--line-entries N] [--contexts N] "
+                         "[--combiner-entries N] [--combiner-banks N] "
+                         "[--seed N]\n";
             std::exit(0);
         }
         if (argument + 1 == argc) {
@@ -509,6 +520,14 @@ parseOptions(int argc, char **argv)
             options.cells = parseSize(value, option);
         } else if (option == "--window") {
             options.window = parseSize(value, option);
+        } else if (option == "--line-entries") {
+            options.lineEntries = parseSize(value, option);
+        } else if (option == "--contexts") {
+            options.continuationContexts = parseSize(value, option);
+        } else if (option == "--combiner-entries") {
+            options.combinerEntries = parseSize(value, option);
+        } else if (option == "--combiner-banks") {
+            options.combinerBanks = parseSize(value, option);
         } else if (option == "--seed") {
             options.seed = std::stoull(value, nullptr, 0);
         } else {
@@ -525,9 +544,10 @@ main(int argc, char **argv)
 {
     try {
         const Options options = parseOptions(argc, argv);
+        const Configuration configuration = configurationFor(options);
         const Dataset data = makeDataset(options);
         const Result scalar = runScalar(data);
-        const ModelResult model = runModel(data, options.window);
+        const ModelResult model = runModel(data, configuration);
         const bool correct = equalResults(scalar, model.values);
         const size_t active = std::count_if(
             data.faces.begin(), data.faces.end(),
@@ -538,6 +558,13 @@ main(int argc, char **argv)
         std::cout << "active_faces=" << active << '\n';
         std::cout << "cells=" << options.cells << '\n';
         std::cout << "window=" << options.window << '\n';
+        std::cout << "line_entries=" << configuration.lineEntries << '\n';
+        std::cout << "continuation_contexts="
+                  << configuration.continuationContexts << '\n';
+        std::cout << "combiner_entries="
+                  << configuration.combinerEntries << '\n';
+        std::cout << "combiner_banks="
+                  << configuration.combinerBanks << '\n';
         std::cout << "read_logical_accesses="
                   << model.reads.logicalMemoryAccesses << '\n';
         std::cout << "read_physical_lines="
@@ -555,6 +582,10 @@ main(int argc, char **argv)
                   << model.updates.combinerHits << '\n';
         std::cout << "update_conflicts="
                   << model.updates.updateConflicts << '\n';
+        std::cout << "update_combiner_would_block="
+                  << model.updates.combinerWouldBlock << '\n';
+        std::cout << "update_bank_would_block="
+                  << model.updates.combinerBankWouldBlock << '\n';
         std::cout << std::setprecision(17)
                   << "checksum=" << checksum(model.values) << '\n';
         return correct ? 0 : 2;

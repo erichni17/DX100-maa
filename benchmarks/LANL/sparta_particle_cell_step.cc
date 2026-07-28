@@ -80,6 +80,7 @@ struct Options
     size_t lineEntries = 0;
     size_t continuationContexts = 0;
     size_t combinerEntries = 0;
+    size_t combinerBanks = 4;
     uint64_t seed = 0x535041525441ULL;
     bool sorted = true;
 };
@@ -141,6 +142,7 @@ configurationFor(const Options &options)
     configuration.combinerEntries = options.combinerEntries == 0
         ? std::max<size_t>(4, options.window / 2)
         : options.combinerEntries;
+    configuration.combinerBanks = options.combinerBanks;
     configuration.acknowledgementCredits = configuration.combinerEntries;
     return configuration;
 }
@@ -526,7 +528,8 @@ parseOptions(int argc, char **argv)
             std::cout << "usage: sparta_particle_cell_step [--particles N] "
                          "[--cells N] [--visits N] [--window N] "
                          "[--line-entries N] [--contexts N] "
-                         "[--combiner-entries N] [--seed N] "
+                         "[--combiner-entries N] [--combiner-banks N] "
+                         "[--seed N] "
                          "[--order sorted|shuffled]\n";
             std::exit(0);
         }
@@ -548,6 +551,8 @@ parseOptions(int argc, char **argv)
             options.continuationContexts = parseSize(value, option);
         } else if (option == "--combiner-entries") {
             options.combinerEntries = parseSize(value, option);
+        } else if (option == "--combiner-banks") {
+            options.combinerBanks = parseSize(value, option);
         } else if (option == "--seed") {
             options.seed = std::stoull(value, nullptr, 0);
         } else if (option == "--order") {
@@ -596,6 +601,8 @@ main(int argc, char **argv)
                   << configuration.continuationContexts << '\n';
         std::cout << "combiner_entries="
                   << configuration.combinerEntries << '\n';
+        std::cout << "combiner_banks="
+                  << configuration.combinerBanks << '\n';
         std::cout << "read_logical_accesses="
                   << model.reads.logicalMemoryAccesses << '\n';
         std::cout << "read_physical_lines="
@@ -617,6 +624,10 @@ main(int argc, char **argv)
                   << model.updates.combinerHits << '\n';
         std::cout << "update_conflicts="
                   << model.updates.updateConflicts << '\n';
+        std::cout << "update_combiner_would_block="
+                  << model.updates.combinerWouldBlock << '\n';
+        std::cout << "update_bank_would_block="
+                  << model.updates.combinerBankWouldBlock << '\n';
         std::cout << std::setprecision(17)
                   << "checksum=" << checksum(model.values) << '\n';
         return correct ? 0 : 2;

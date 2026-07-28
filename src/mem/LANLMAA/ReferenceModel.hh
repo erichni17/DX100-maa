@@ -30,6 +30,7 @@ struct Configuration
     size_t lineEntries = 32;
     size_t continuationContexts = 16;
     size_t combinerEntries = 32;
+    size_t combinerBanks = 1;
     size_t acknowledgementCredits = 32;
     size_t lineBytes = 64;
 
@@ -37,6 +38,9 @@ struct Configuration
     {
         return operationEntries > 0 && lineEntries > 0 &&
                continuationContexts > 0 && combinerEntries > 0 &&
+               combinerBanks > 0 && combinerBanks <= combinerEntries &&
+               (combinerBanks & (combinerBanks - 1)) == 0 &&
+               combinerEntries % combinerBanks == 0 &&
                acknowledgementCredits > 0 && lineBytes == 64;
     }
 };
@@ -428,6 +432,7 @@ struct UpdateCounters
     uint64_t combinerHits = 0;
     uint64_t strictOrderSerializations = 0;
     uint64_t combinerWouldBlock = 0;
+    uint64_t combinerBankWouldBlock = 0;
     uint64_t acknowledgementWouldBlock = 0;
     uint64_t drains = 0;
     uint64_t acknowledgements = 0;
@@ -618,6 +623,22 @@ class UpdateCombinerModel
         return false;
     }
 
+    size_t bankFor(uint64_t address) const
+    {
+        const uint64_t wordAddress = address >> 3;
+        return wordAddress & (configuration.combinerBanks - 1);
+    }
+
+    size_t firstEntryInBank(size_t bank) const
+    {
+        return bank * (entries.size() / configuration.combinerBanks);
+    }
+
+    size_t pastLastEntryInBank(size_t bank) const
+    {
+        return firstEntryInBank(bank + 1);
+    }
+
   public:
     explicit UpdateCombinerModel(const Configuration &config = {})
         : configuration(config), entries(config.combinerEntries)
@@ -651,8 +672,13 @@ class UpdateCombinerModel
             return Admission::Invalid;
         }
 
+        const size_t bank = bankFor(address);
+        const size_t first = firstEntryInBank(bank);
+        const size_t pastLast = pastLastEntryInBank(bank);
+
         bool conflict = false;
-        for (const auto &entry : entries) {
+        for (size_t index = first; index < pastLast; ++index) {
+            const auto &entry = entries[index];
             if (entry.state != EntryState::Free &&
                 entry.drain.address == address) {
                 conflict = true;
@@ -665,7 +691,8 @@ class UpdateCombinerModel
 
         if (ordering == Ordering::Relaxed &&
             operation != UpdateOperation::Overwrite) {
-            for (auto &entry : entries) {
+            for (size_t index = first; index < pastLast; ++index) {
+                auto &entry = entries[index];
                 auto &drain = entry.drain;
                 if (entry.state != EntryState::Accumulating ||
                     drain.address != address || drain.dataType != dataType ||
@@ -688,7 +715,8 @@ class UpdateCombinerModel
             }
         }
 
-        for (auto &entry : entries) {
+        for (size_t index = first; index < pastLast; ++index) {
+            auto &entry = entries[index];
             if (entry.state == EntryState::Free) {
                 entry.state = EntryState::Accumulating;
                 entry.drain = UpdateDrain{
@@ -704,6 +732,13 @@ class UpdateCombinerModel
         }
 
         ++counterValues.combinerWouldBlock;
+        const bool freeOutsideBank = std::any_of(
+            entries.begin(), entries.end(), [](const Entry &entry) {
+                return entry.state == EntryState::Free;
+            });
+        if (freeOutsideBank) {
+            ++counterValues.combinerBankWouldBlock;
+        }
         return Admission::WouldBlock;
     }
 
