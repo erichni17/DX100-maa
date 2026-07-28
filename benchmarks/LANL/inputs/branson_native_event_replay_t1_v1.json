@@ -1,0 +1,36 @@
+{
+  "claim_boundary": "Complete native trace chains and exact FP64 deltas; event physics is replayed, not recomputed.",
+  "format": {
+    "event_record_bytes": 32,
+    "header_bytes": 64,
+    "magic": "BNERPLY1",
+    "root_record_bytes": 16,
+    "version": 1
+  },
+  "oracle": {
+    "absorbed_tally_offset": 277808,
+    "finite": true,
+    "track_tally_offset": 325808
+  },
+  "output_filename": "branson_native_event_replay_t1_v1.bin",
+  "output_sha256": "aed88bb47b46f5a304d9a103f3d7a436a9f68cb96a9e217e02e8bcfee1f8c446",
+  "schema_version": 1,
+  "selection": {
+    "cell_count": 6000,
+    "complete_photon_calls": 961,
+    "event_counts": {
+      "boundary": 872,
+      "census": 441,
+      "exit": 20,
+      "killed": 500,
+      "reflect": 68,
+      "scatter": 6298
+    },
+    "event_records": 8199,
+    "target_events": 8192,
+    "timestep": 1
+  },
+  "source_events": "/data1/nier/dx100-runs/2026-07-28-lanl-maa-branson-native/trace-final-run1/raw/events_rank0.csv",
+  "source_events_sha256": "ba48ea95806f1ce1000f61e286ca5382b6e3e9bae75fa45c9af98f522199936b",
+  "status": "native-branson-event-replay-extracted"
+}

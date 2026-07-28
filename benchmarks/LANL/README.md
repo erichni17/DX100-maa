@@ -65,6 +65,17 @@ This kernel maps the pinned Branson `src/transport_photon.h` loop: a photon sele
 
 The microbenchmark removes Monte Carlo physics while preserving the memory/control contract. Packed cell records mix clustered, shuffled, and hotspot links. Photons mix those starting distributions. The scalar path executes photons sequentially; the model path interleaves explicit continuation contexts and uses relaxed floating ADD combining for two per-cell tallies. Final photon state must be bit-identical, while tally arrays use a `1e-12` relative/absolute tolerance because the permitted relaxed reduction changes addition order.
 
+`branson_native_event_replay.cc` is a stricter native-derived successor to that
+generated topology. Its committed input contains 961 complete transport-call
+chains and 8,199 events extracted from timestep one of the official Branson
+`simple_input.xml` trace. Each 32-byte record preserves the observed source and
+destination cell, event kind, and exact FP64 absorbed/track deltas. A bounded
+round-robin model checks dependent source-cell continuity, event-line and
+hot-cell residency, and relaxed two-field FP64 combining against both a scalar
+replay and embedded per-cell tallies. It does not recompute RNG, log/exp,
+geometry, or event physics, so it is staging/correctness evidence rather than a
+native Branson performance claim.
+
 ```sh
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
     benchmarks/LANL/branson_photon_cell_walk.cc \
