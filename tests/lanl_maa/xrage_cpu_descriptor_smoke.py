@@ -21,11 +21,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--binary", required=True)
 parser.add_argument("--metadata", required=True)
 parser.add_argument("--l1-caches", action="store_true")
-parser.add_argument("--maa-cache-size", default="2KiB")
+parser.add_argument("--maa-cache-size", default="4KiB")
 parser.add_argument("--maa-cache-assoc", type=int, default=4)
-parser.add_argument("--maa-cache-mshrs", type=int, default=32)
-parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=20)
-parser.add_argument("--maa-cache-write-buffers", type=int, default=8)
+parser.add_argument("--maa-cache-mshrs", type=int, default=8)
+parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=2)
+parser.add_argument("--maa-cache-write-buffers", type=int, default=2)
 args = parser.parse_args()
 
 
@@ -47,8 +47,8 @@ class L1DCache(L1Cache):
 
 
 class MAACoherenceCache(L1Cache):
-    # Match the accelerator's 32 physical line entries. This is an explicit
-    # 2 KiB hardware cost, not an assumed free system cache.
+    # Selected for the XRAGE/SPARTA-derived/Branson-derived microbenchmark
+    # envelope; this is explicit accelerator hardware, not a free system cache.
     pass
 
 
