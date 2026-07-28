@@ -25,6 +25,9 @@ parser.add_argument("--context-quantum", type=int, default=4)
 parser.add_argument("--event-compute-latency", type=int, default=4)
 parser.add_argument("--event-compute-initiation-interval", type=int, default=1)
 parser.add_argument("--event-compute-units", type=int, default=1)
+parser.add_argument("--line-entries", type=int, default=8)
+parser.add_argument("--update-entries", type=int, default=16)
+parser.add_argument("--update-banks", type=int, default=2)
 args = parser.parse_args()
 
 
@@ -59,6 +62,11 @@ class MAACoherenceCache(Cache):
 with open(args.metadata, encoding="utf-8") as stream:
     metadata = json.load(stream)
 
+maximum_descriptor_items = metadata.get(
+    "max_descriptor_items", metadata["roots"]
+)
+operation_entries = metadata.get("operation_entries", metadata["roots"])
+
 system = System(
     cache_line_size=64,
     mem_mode="timing",
@@ -87,14 +95,14 @@ system.lanl_maa = LANLMAA(
     descriptor_mode=True,
     descriptor_table_base=metadata["descriptor_paddr"],
     descriptor_slots=1,
-    max_descriptor_items=metadata["roots"],
+    max_descriptor_items=maximum_descriptor_items,
     control_addr=metadata["control_paddr"],
     control_size=metadata["control_bytes"],
-    operation_entries=metadata["roots"],
+    operation_entries=operation_entries,
     continuation_entries=args.contexts,
-    line_entries=8,
-    update_entries=16,
-    update_banks=2,
+    line_entries=args.line_entries,
+    update_entries=args.update_entries,
+    update_banks=args.update_banks,
     update_issue_width=1,
     branson_event_compute_latency=args.event_compute_latency,
     branson_event_compute_initiation_interval=(
@@ -134,6 +142,9 @@ process.map(
 )
 event = m5.simulate()
 m5.stats.dump()
+print(
+    f"LANLMAA_SIM_TERMINAL code={event.getCode()} " f"cause={event.getCause()}"
+)
 
 if event.getCode() != 0:
     raise RuntimeError(

@@ -270,6 +270,8 @@ def main():
                 + result.stdout
                 + result.stderr
             )
+        if "LANLMAA_SIM_TERMINAL code=0 " not in result.stdout:
+            raise RuntimeError("gem5 emitted no successful terminal marker")
         if not stats.is_file() or stats.stat().st_size == 0:
             raise RuntimeError("gem5 produced no nonempty final stats.txt")
         provenance["metrics"] = validate(

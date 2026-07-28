@@ -76,6 +76,28 @@ replay and embedded per-cell tallies. It does not recompute RNG, log/exp,
 geometry, or event physics, so it is staging/correctness evidence rather than a
 native Branson performance claim.
 
+`branson_native_event_descriptor_cpu.c` sends that same frozen replay through
+live opcode 5 from a real X86 timing CPU. It stages the 16-byte extracted roots
+into the explicit 32-byte live ABI, preserves the 32-byte event records, and
+submits sixteen independent descriptors of at most 64 roots. This keeps the
+logical operation table fixed at 64 entries while covering all 961 roots and
+8,199 events. Every batch checks its completion record, and the process checks
+all 12,000 final FP64 tally values against the embedded native-derived oracle
+with the documented `1e-12` relative/absolute criterion.
+
+```sh
+python3 tests/lanl_maa/run_branson_native_event_descriptor_cpu.py \
+    --gem5 build/X86/gem5.opt --outdir /tmp/branson-native-live
+```
+
+The default runner uses the selected 64-operation, 32-line, 64-context, and
+64-entry/eight-bank update structures. Each descriptor is fail-closed, but the
+sixteen-descriptor workload is not one transactional unit: a later malformed
+batch cannot roll back earlier completed batches. The staged records replay
+outcomes already calculated by Branson; they do not recompute event physics or
+establish native-application integration, CPU speedup, or physical datapath
+cost.
+
 ```sh
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
     benchmarks/LANL/branson_photon_cell_walk.cc \

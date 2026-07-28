@@ -1,0 +1,18 @@
+{
+  "data_vaddr": 68719476736,
+  "data_paddr": 33554432,
+  "data_bytes": 1048576,
+  "control_vaddr": 68721573888,
+  "control_paddr": 67108864,
+  "control_bytes": 4096,
+  "descriptor_paddr": 33554432,
+  "roots": 961,
+  "events": 8199,
+  "cells": 6000,
+  "maximum_events_per_root": 22,
+  "max_descriptor_items": 64,
+  "operation_entries": 64,
+  "descriptor_batches": 16,
+  "input_bytes": 373808,
+  "input_sha256": "aed88bb47b46f5a304d9a103f3d7a436a9f68cb96a9e217e02e8bcfee1f8c446"
+}
