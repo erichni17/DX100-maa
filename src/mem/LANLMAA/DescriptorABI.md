@@ -177,6 +177,36 @@ The control aperture exposes device/version at `0x100`, slot and item limits
 at `0x108`, state at `0x110`, completed slot at `0x118`, error code at `0x120`,
 and an opcode bitmap at `0x128`. Bitmap bit `n` advertises opcode `n`; bits
 1--4 are currently set.
+
+### Branson event-replay contract (reserved opcode 5)
+
+`BransonEventReplay` has a separately tested decoder in
+`BransonEventDescriptor.hh`, but opcode 5 is deliberately absent from the live
+engine bitmap until its timing path is complete. The 64-byte descriptor uses
+the common magic and version and requires zero flags and reserved fields:
+
+| Offset | Size | Meaning |
+| ---: | ---: | --- |
+| 8 | 4 | Root count |
+| 16 | 8 | 16-byte-aligned root-record base |
+| 24 | 8 | Base of two FP64 tally arrays |
+| 32 | 8 | 32-byte completion record |
+| 40 | 8 | 32-byte-aligned event-record base |
+| 48 | 4 | Event-record count |
+| 52 | 4 | Maximum events per root |
+| 56 | 4 | Cell/tally count |
+
+Each root is `{first_event, event_count, final_cell, terminal_kind}` as four
+little-endian 32-bit words. Each 32-byte event is `{source_cell,
+destination_cell, next_event, kind, absorbed_delta_bits, track_delta_bits}`;
+the one-byte kind follows three reserved zero bytes, and each delta is finite
+FP64. `next_event == 0xffffffff` is terminal. The two tally arrays are
+absorbed then track, each with `cell_count` FP64 elements. The decoder rejects
+empty or excessive root counts, zero event/cell/step bounds, misalignment,
+range overflow, reserved bits, and every pairwise overlap among roots, events,
+tallies, and completion. Runtime cell/chain/nonfinite checks and all-or-nothing
+error draining remain gates for live-engine integration.
+
 `Completed` and `Error` remain visible until the next doorbell. A terminal
 rearm clears the previous error and per-descriptor cursors only after all
 retained packets, operation contexts, line entries, and update entries are
