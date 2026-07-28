@@ -88,6 +88,12 @@ def validate_stats(stats, metadata, mode):
         "update_address_busy_cycles": read_scalar(
             stats, "updateAddressBusyCycles"
         ),
+        "pending_generations_allocated": read_scalar(
+            stats, "descriptorSpartaPendingGenerationsAllocated"
+        ),
+        "pending_generation_drain_deferrals": read_scalar(
+            stats, "spartaPendingGenerationDrainDeferrals"
+        ),
         "engine_cycles": read_scalar(stats, "engineCycles"),
         "descriptor_cycles": read_scalar(stats, "descriptorCycles"),
     }
@@ -120,6 +126,7 @@ def main():
     parser.add_argument(
         "--mode", choices=("full", "sorted", "shuffled"), default="full"
     )
+    parser.add_argument("--sparta-pending-generation", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=180)
     args = parser.parse_args()
 
@@ -167,10 +174,13 @@ def main():
         f"--update-entries={args.update_entries}",
         f"--update-banks={args.update_banks}",
     ]
+    if args.sparta_pending_generation:
+        command.append("--sparta-pending-generation")
     report = {
         "schema": "lanl-maa-sparta-six-tally-live-v1",
         "status": "running",
         "mode": args.mode,
+        "sparta_pending_generation": args.sparta_pending_generation,
         "claim_boundary": (
             "SPARTA-derived six-channel scatter-add contract only; not a "
             "native SPARTA ABI, application speedup, or synthesized cost."

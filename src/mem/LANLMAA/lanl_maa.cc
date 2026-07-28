@@ -286,6 +286,12 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorSpartaUpdatesAcknowledged,
                statistics::units::Count::get(),
                "SPARTA logical FP64 tally updates acknowledged"),
+      ADD_STAT(descriptorSpartaPendingGenerationsAllocated,
+               statistics::units::Count::get(),
+               "SPARTA accumulating generations allocated behind a drain"),
+      ADD_STAT(spartaPendingGenerationDrainDeferrals,
+               statistics::units::Count::get(),
+               "SPARTA pending-generation drains held behind an older drain"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -320,6 +326,7 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       updateEntryCount(params.update_entries),
       updateBanks(params.update_banks),
       updateIssueWidth(params.update_issue_width),
+      spartaPendingGeneration(params.sparta_pending_generation),
       faceComputeLatency(params.face_compute_latency),
       faceComputeInitiationInterval(
           params.face_compute_initiation_interval),
@@ -1053,6 +1060,20 @@ LANLMAA::matchingUpdate(Addr address)
 }
 
 LANLMAA::UpdateEntry *
+LANLMAA::accumulatingUpdate(Addr address)
+{
+    const size_t ways = updateEntryCount / updateBanks;
+    const size_t begin = updateBank(address) * ways;
+    for (size_t index = begin; index < begin + ways; ++index) {
+        if (updates[index].state == UpdateState::Accumulating &&
+            updates[index].address == address) {
+            return &updates[index];
+        }
+    }
+    return nullptr;
+}
+
+LANLMAA::UpdateEntry *
 LANLMAA::freeUpdate(Addr address)
 {
     const size_t ways = updateEntryCount / updateBanks;
@@ -1095,6 +1116,37 @@ LANLMAA::allUpdateEntriesFree() const
     return std::all_of(
         updates.begin(), updates.end(), [](const UpdateEntry &entry) {
             return entry.state == UpdateState::Free;
+        });
+}
+
+size_t
+LANLMAA::updateGenerationCount(Addr address) const
+{
+    const size_t ways = updateEntryCount / updateBanks;
+    const size_t begin = updateBank(address) * ways;
+    return std::count_if(
+        updates.begin() + begin, updates.begin() + begin + ways,
+        [address](const UpdateEntry &entry) {
+            return entry.state != UpdateState::Free &&
+                entry.address == address;
+        });
+}
+
+bool
+LANLMAA::updateGenerationDrainBlocked(const UpdateEntry &entry) const
+{
+    if (!spartaTallyDescriptor() || !spartaPendingGeneration ||
+        entry.state != UpdateState::Accumulating) {
+        return false;
+    }
+    const size_t ways = updateEntryCount / updateBanks;
+    const size_t begin = updateBank(entry.address) * ways;
+    return std::any_of(
+        updates.begin() + begin, updates.begin() + begin + ways,
+        [&entry](const UpdateEntry &other) {
+            return &other != &entry && other.address == entry.address &&
+                other.state != UpdateState::Free &&
+                other.state != UpdateState::Accumulating;
         });
 }
 
@@ -2624,9 +2676,15 @@ LANLMAA::attachReadyUpdates()
         }
 
         const UpdateKind kind = operationUpdateKind(operation);
-        UpdateEntry *entry = matchingUpdate(operation.address);
-        panic_if(entry && entry->kind != kind,
+        UpdateEntry *existing = matchingUpdate(operation.address);
+        panic_if(existing && existing->kind != kind,
                  "LANLMAA matched one address with incompatible updates");
+        const bool pendingGeneration = spartaTallyDescriptor() &&
+            spartaPendingGeneration && kind == UpdateKind::Fp64AddRelaxed;
+        UpdateEntry *entry = pendingGeneration ?
+            accumulatingUpdate(operation.address) : existing;
+        panic_if(entry && entry->kind != kind,
+                 "LANLMAA accumulating generation changed update kind");
         if (entry && strictFloatingUpdate(kind)) {
             if (entry->state == UpdateState::Accumulating) {
                 entry->state = UpdateState::AtomicPending;
@@ -2641,6 +2699,12 @@ LANLMAA::attachReadyUpdates()
             continue;
         }
         if (!entry) {
+            const bool allocatePending = pendingGeneration && existing;
+            if (allocatePending &&
+                updateGenerationCount(operation.address) != 1) {
+                addressBusy = true;
+                continue;
+            }
             entry = freeUpdate(operation.address);
             if (!entry) {
                 tableBlocked = true;
@@ -2655,6 +2719,9 @@ LANLMAA::attachReadyUpdates()
             entry->address = operation.address;
             entry->contribution = operation.value;
             entry->kind = kind;
+            if (allocatePending) {
+                ++stats.descriptorSpartaPendingGenerationsAllocated;
+            }
         } else {
             ++stats.updateCombinerHits;
             switch (kind) {
@@ -2732,6 +2799,10 @@ LANLMAA::scheduleUpdateDrains()
 
     for (auto &entry : updates) {
         if (entry.state == UpdateState::Accumulating) {
+            if (updateGenerationDrainBlocked(entry)) {
+                ++stats.spartaPendingGenerationDrainDeferrals;
+                continue;
+            }
             entry.state = UpdateState::AtomicPending;
             ++stats.updateDrains;
         }

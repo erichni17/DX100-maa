@@ -276,6 +276,8 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorSpartaContributionsValidated;
         statistics::Scalar descriptorSpartaContributionsReplayed;
         statistics::Scalar descriptorSpartaUpdatesAcknowledged;
+        statistics::Scalar descriptorSpartaPendingGenerationsAllocated;
+        statistics::Scalar spartaPendingGenerationDrainDeferrals;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -307,6 +309,7 @@ class LANLMAA : public ClockedObject
     const size_t updateEntryCount;
     const size_t updateBanks;
     const size_t updateIssueWidth;
+    const bool spartaPendingGeneration;
     const Cycles faceComputeLatency;
     const Cycles faceComputeInitiationInterval;
     const size_t faceComputeUnits;
@@ -378,10 +381,13 @@ class LANLMAA : public ClockedObject
     LineEntry *freeLine();
     size_t updateBank(Addr address) const;
     UpdateEntry *matchingUpdate(Addr address);
+    UpdateEntry *accumulatingUpdate(Addr address);
     UpdateEntry *freeUpdate(Addr address);
     UpdateEntry *drainableUpdate(Addr address);
     UpdateEntry *updateForPacket(PacketPtr packet);
     bool allUpdateEntriesFree() const;
+    size_t updateGenerationCount(Addr address) const;
+    bool updateGenerationDrainBlocked(const UpdateEntry &entry) const;
     bool activeDependentMode() const;
     bool bransonEventDescriptor() const;
     bool spartaTallyDescriptor() const;

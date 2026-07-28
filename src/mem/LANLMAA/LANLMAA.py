@@ -91,6 +91,10 @@ class LANLMAA(ClockedObject):
     update_issue_width = Param.Unsigned(
         1, "Maximum combined timing atomic requests issued per cycle"
     )
+    sparta_pending_generation = Param.Bool(
+        False,
+        "Allow one accumulating opcode-6 update behind a draining address",
+    )
     face_compute_latency = Param.Cycles(
         0,
         "Final live internal-face interpolation issue-to-result latency; "
