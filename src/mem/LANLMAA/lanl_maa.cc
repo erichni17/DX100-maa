@@ -326,7 +326,6 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       updateEntryCount(params.update_entries),
       updateBanks(params.update_banks),
       updateIssueWidth(params.update_issue_width),
-      spartaPendingGeneration(params.sparta_pending_generation),
       faceComputeLatency(params.face_compute_latency),
       faceComputeInitiationInterval(
           params.face_compute_initiation_interval),
@@ -1135,7 +1134,7 @@ LANLMAA::updateGenerationCount(Addr address) const
 bool
 LANLMAA::updateGenerationDrainBlocked(const UpdateEntry &entry) const
 {
-    if (!spartaTallyDescriptor() || !spartaPendingGeneration ||
+    if (!spartaTallyDescriptor() || !spartaDescriptor.pendingGeneration ||
         entry.state != UpdateState::Accumulating) {
         return false;
     }
@@ -2680,7 +2679,8 @@ LANLMAA::attachReadyUpdates()
         panic_if(existing && existing->kind != kind,
                  "LANLMAA matched one address with incompatible updates");
         const bool pendingGeneration = spartaTallyDescriptor() &&
-            spartaPendingGeneration && kind == UpdateKind::Fp64AddRelaxed;
+            spartaDescriptor.pendingGeneration &&
+            kind == UpdateKind::Fp64AddRelaxed;
         UpdateEntry *entry = pendingGeneration ?
             accumulatingUpdate(operation.address) : existing;
         panic_if(entry && entry->kind != kind,

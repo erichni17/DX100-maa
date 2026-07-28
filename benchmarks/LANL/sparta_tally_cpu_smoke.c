@@ -18,8 +18,16 @@
 #define SPARTA_TALLY_MODE 0
 #endif
 
+#ifndef SPARTA_TALLY_PENDING_GENERATION
+#define SPARTA_TALLY_PENDING_GENERATION 0
+#endif
+
 #if SPARTA_TALLY_MODE < 0 || SPARTA_TALLY_MODE > 2
 #error "SPARTA_TALLY_MODE must be 0 (full), 1 (sorted), or 2 (shuffled)"
+#endif
+
+#if SPARTA_TALLY_PENDING_GENERATION < 0 || SPARTA_TALLY_PENDING_GENERATION > 1
+#error "SPARTA_TALLY_PENDING_GENERATION must be 0 or 1"
 #endif
 
 static void
@@ -109,7 +117,8 @@ clear_completion(volatile uint64_t *completion)
 static void
 prepare_descriptor(volatile uint64_t *descriptor)
 {
-    descriptor[0] = UINT64_C(0x0006000131414d4c);
+    descriptor[0] = UINT64_C(0x0006000131414d4c) |
+        ((uint64_t)SPARTA_TALLY_PENDING_GENERATION << 56);
     descriptor[1] = ITEMS;
     descriptor[2] = DATA_PADDR + INDEX_OFFSET;
     descriptor[3] = DATA_PADDR + TALLY_OFFSET;

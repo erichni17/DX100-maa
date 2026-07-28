@@ -158,10 +158,10 @@ def main():
         "-Wl,--build-id=none",
         "-Wl,-e,_start",
         f"-DSPARTA_TALLY_MODE={mode_number}",
-        str(source),
-        "-o",
-        str(binary),
     ]
+    if args.sparta_pending_generation:
+        compile_command.append("-DSPARTA_TALLY_PENDING_GENERATION=1")
+    compile_command.extend([str(source), "-o", str(binary)])
     subprocess.run(compile_command, check=True)
     m5out = outdir / "m5out"
     command = [
@@ -174,8 +174,6 @@ def main():
         f"--update-entries={args.update_entries}",
         f"--update-banks={args.update_banks}",
     ]
-    if args.sparta_pending_generation:
-        command.append("--sparta-pending-generation")
     report = {
         "schema": "lanl-maa-sparta-six-tally-live-v1",
         "status": "running",

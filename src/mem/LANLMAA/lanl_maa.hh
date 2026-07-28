@@ -309,7 +309,6 @@ class LANLMAA : public ClockedObject
     const size_t updateEntryCount;
     const size_t updateBanks;
     const size_t updateIssueWidth;
-    const bool spartaPendingGeneration;
     const Cycles faceComputeLatency;
     const Cycles faceComputeInitiationInterval;
     const size_t faceComputeUnits;

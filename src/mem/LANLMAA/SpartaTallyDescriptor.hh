@@ -13,6 +13,8 @@ namespace lanlmaa
 {
 
 constexpr uint8_t SpartaTallyOpcode = 6;
+constexpr uint8_t SpartaTallyPendingGenerationFlag = 1U << 0;
+constexpr uint8_t SpartaTallyAllowedFlags = SpartaTallyPendingGenerationFlag;
 constexpr uint32_t SpartaTallyChannels = 6;
 constexpr uint64_t SpartaTallyCellIndexBytes = sizeof(uint32_t);
 constexpr uint64_t SpartaTallyContributionRecordBytes =
@@ -26,6 +28,7 @@ struct SpartaTallyDescriptor
     uint64_t completionRecord = 0;
     uint64_t contributionBase = 0;
     uint32_t cellCount = 0;
+    bool pendingGeneration = false;
 };
 
 struct SpartaTallyDescriptorDecodeResult
@@ -57,12 +60,15 @@ decodeSpartaTallyDescriptor(
         result.error = DescriptorError::BadOpcode;
         return result;
     }
-    if (bytes[7] != 0) {
+    const uint8_t flags = bytes[7];
+    if (flags & ~SpartaTallyAllowedFlags) {
         result.error = DescriptorError::UnsupportedFlags;
         return result;
     }
 
     auto &descriptor = result.descriptor;
+    descriptor.pendingGeneration =
+        flags & SpartaTallyPendingGenerationFlag;
     descriptor.itemCount = descriptorReadLe32(bytes.data() + 8);
     if (descriptor.itemCount == 0) {
         result.error = DescriptorError::Empty;

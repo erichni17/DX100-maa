@@ -23,7 +23,6 @@ parser.add_argument("--metadata", required=True)
 parser.add_argument("--line-entries", type=int, default=16)
 parser.add_argument("--update-entries", type=int, default=64)
 parser.add_argument("--update-banks", type=int, default=8)
-parser.add_argument("--sparta-pending-generation", action="store_true")
 args = parser.parse_args()
 
 
@@ -87,7 +86,6 @@ system.lanl_maa = LANLMAA(
     update_entries=args.update_entries,
     update_banks=args.update_banks,
     update_issue_width=1,
-    sparta_pending_generation=args.sparta_pending_generation,
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,
