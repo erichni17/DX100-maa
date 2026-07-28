@@ -84,7 +84,8 @@ def validate(stats, metadata):
         or not 0 <= acceptances <= resubmissions
     ):
         errors.append(
-            f"invalid retry acceptances={acceptances}, resubmissions={resubmissions}"
+            f"invalid retry acceptances={acceptances}, "
+            f"resubmissions={resubmissions}"
         )
 
     verifier = stats["final_verifier"]
@@ -102,7 +103,9 @@ def validate(stats, metadata):
         )
 
 
-def build_staging(root):
+def build_staging(root, descriptor_items=8):
+    if descriptor_items < 1 or descriptor_items > 32:
+        raise RuntimeError("Branson descriptor items must be in [1, 32]")
     compiler = shutil.which("g++")
     assembler = shutil.which("cc")
     linker = shutil.which("ld")
@@ -151,7 +154,7 @@ def build_staging(root):
             "--combiner-banks",
             "4",
             "--descriptor-items",
-            "8",
+            str(descriptor_items),
             "--seed",
             "0x4252414e534f4e",
             "--emit-descriptor-assembly",

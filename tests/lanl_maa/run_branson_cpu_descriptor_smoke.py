@@ -300,7 +300,9 @@ def build_program(root, metadata):
 
 
 def run_smoke(args, root):
-    _, staging_metadata_path, staging_metadata = build_staging(root)
+    _, staging_metadata_path, staging_metadata = build_staging(
+        root, args.descriptor_items
+    )
     source, binary = build_program(root, staging_metadata)
     metadata = dict(staging_metadata)
     metadata.update(
@@ -398,6 +400,7 @@ def run_smoke(args, root):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
+    parser.add_argument("--descriptor-items", default=8, type=int)
     parser.add_argument("--l1-caches", action="store_true")
     parser.add_argument("--maa-cache-size", default="4KiB")
     parser.add_argument("--maa-cache-assoc", type=int, default=4)
