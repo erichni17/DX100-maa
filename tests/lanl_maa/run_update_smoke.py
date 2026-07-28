@@ -172,7 +172,12 @@ def run_invalid_config(args, root, image):
         (root / f"{name}.stdout").write_text(result.stdout, encoding="utf-8")
         (root / f"{name}.stderr").write_text(result.stderr, encoding="utf-8")
     expected = "update entries must divide evenly into nonzero banks"
-    if result.returncode == 0 or expected not in result.stdout + result.stderr:
+    output = result.stdout + result.stderr
+    if (
+        result.returncode == 0
+        or expected not in output
+        or "<extra arg>" in output
+    ):
         raise RuntimeError(
             "LANLMAA invalid-bank configuration did not fail closed:\n"
             + result.stdout

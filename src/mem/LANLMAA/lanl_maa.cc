@@ -182,7 +182,9 @@ LANLMAA::validateConfiguration() const
              "LANLMAA verification oracle requires update mode");
     fatal_if(updateEntryCount == 0,
              "LANLMAA update_entries must be nonzero");
-    fatal_if(updateBanks == 0 || updateEntryCount % updateBanks != 0,
+    const bool invalidUpdateBankGeometry = updateBanks == 0 ||
+        (updateBanks != 0 && updateEntryCount % updateBanks != 0);
+    fatal_if(invalidUpdateBankGeometry,
              "LANLMAA update entries must divide evenly into nonzero banks");
     fatal_if(updateIssueWidth == 0,
              "LANLMAA update_issue_width must be nonzero");
