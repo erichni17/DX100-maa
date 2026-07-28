@@ -165,6 +165,24 @@ The controller remains a test-only timing requester. The pass establishes
 terminal reusability and recovery, not a hardware queue, CPU polling loop,
 full-trace execution, or XRAGE application correctness or performance.
 
+`tests/lanl_maa/run_xrage_descriptor_polling_smoke.py` replaces the fixed
+successor-doorbell delay with a test-only timing requester that follows the
+documented software protocol. It submits one slot, polls `ControlStatus` until
+`Completed` or `Error`, validates `ControlCompletedSlot` or `ControlError`, and
+only then submits the next slot. Every timing-port rejection retains and later
+resubmits the same requester-owned packet.
+
+```sh
+python3 tests/lanl_maa/run_xrage_descriptor_polling_smoke.py \
+    --gem5 build/X86/gem5.opt \
+    --trace /data1/nier/DX100/experiments/inputs/xrage_gather0_full.json
+```
+
+The final exact-value verifier still starts after a conservative fixed bound;
+descriptor submission itself is terminal-status driven. The requester is not
+a CPU instruction stream, and no interrupt, application runtime, full trace,
+or XRAGE performance claim follows.
+
 ## `spatter_trace_replay`
 
 This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.

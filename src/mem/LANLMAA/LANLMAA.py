@@ -123,3 +123,22 @@ class LANLMAAControlTester(ClockedObject):
     doorbell_slot = Param.Unsigned("Descriptor slot encoded by the address")
     writes = Param.Unsigned(1, "Doorbell writes to issue")
     start_cycle = Param.Cycles(1, "First doorbell issue cycle")
+
+
+class LANLMAAControlSequencer(ClockedObject):
+    type = "LANLMAAControlSequencer"
+    cxx_header = "mem/LANLMAA/control_sequencer.hh"
+    cxx_class = "gem5::lanlmaa::LANLMAAControlSequencer"
+
+    port = RequestPort(
+        "Test-only timing port for status-driven descriptor submission"
+    )
+    system = Param.System(Parent.any, "System that owns the requestor ID")
+    control_addr = Param.Addr("LANL-MAA control aperture base")
+    doorbell_slots = VectorParam.UInt64("Ordered descriptor slots to submit")
+    expected_terminal_errors = VectorParam.UInt64(
+        [],
+        "Expected error per slot; zero requires Completed",
+    )
+    start_cycle = Param.Cycles(1, "First doorbell issue cycle")
+    poll_interval = Param.Cycles(2, "Cycles between status polls")
