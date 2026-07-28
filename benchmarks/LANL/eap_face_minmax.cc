@@ -30,11 +30,34 @@ using gem5::lanlmaa::UpdateCounters;
 using gem5::lanlmaa::UpdateDrain;
 using gem5::lanlmaa::UpdateOperation;
 
+enum class FaceKind
+{
+    Inactive,
+    Internal,
+    LowBoundary,
+    HighBoundary,
+};
+
+enum class InternalMode
+{
+    Normal,
+    DensityGuarded,
+    PressureWeighted,
+};
+
+enum class BoundarySource
+{
+    None,
+    Cell,
+    FaceValue,
+};
+
 struct Face
 {
     uint32_t low = 0;
     uint32_t high = 0;
-    bool active = false;
+    uint32_t faceValueOrdinal = 0;
+    FaceKind kind = FaceKind::Inactive;
 };
 
 struct Dataset
@@ -44,6 +67,8 @@ struct Dataset
     std::vector<double> cellHalfHigh;
     std::vector<double> cellValueLow;
     std::vector<double> cellValueHigh;
+    std::vector<double> cellRho;
+    std::vector<double> faceValues;
 };
 
 struct Result
@@ -61,6 +86,18 @@ struct ModelResult
     UpdateCounters updates;
 };
 
+struct WorkloadCounts
+{
+    size_t inactive = 0;
+    size_t internal = 0;
+    size_t lowBoundary = 0;
+    size_t highBoundary = 0;
+    size_t vacuumInternal = 0;
+    size_t pressureWeightedInternal = 0;
+    uint64_t logicalReads = 0;
+    uint64_t logicalUpdates = 0;
+};
+
 struct Options
 {
     size_t faces = 65536;
@@ -71,6 +108,8 @@ struct Options
     size_t combinerEntries = 0;
     size_t combinerBanks = 4;
     uint64_t seed = 0x4c414e4c;
+    InternalMode internalMode = InternalMode::Normal;
+    BoundarySource boundarySource = BoundarySource::None;
 };
 
 struct PackedMemory
@@ -80,6 +119,15 @@ struct PackedMemory
     uint64_t halfHighBase = 0;
     uint64_t valueLowBase = 0;
     uint64_t valueHighBase = 0;
+    uint64_t rhoBase = 0;
+    uint64_t faceValueBase = 0;
+};
+
+struct FacePlan
+{
+    size_t ordinal = 0;
+    size_t gatherBegin = 0;
+    size_t gatherCount = 0;
 };
 
 struct UpdateEvent
@@ -141,6 +189,11 @@ makeDataset(const Options &options)
     if (options.faces == 0 || options.cells < 2) {
         throw std::invalid_argument("faces must be positive and cells >= 2");
     }
+    constexpr uint64_t MaxPackedIndex = (1ULL << 31) - 1;
+    if (options.faces > MaxPackedIndex || options.cells > MaxPackedIndex) {
+        throw std::invalid_argument(
+            "faces and cells must fit the 31-bit descriptor payload");
+    }
 
     Dataset data;
     data.faces.resize(options.faces);
@@ -148,6 +201,8 @@ makeDataset(const Options &options)
     data.cellHalfHigh.resize(options.cells);
     data.cellValueLow.resize(options.cells);
     data.cellValueHigh.resize(options.cells);
+    data.cellRho.resize(options.cells);
+    data.faceValues.resize(options.faces);
 
     std::mt19937_64 generator(options.seed);
     std::uniform_real_distribution<double> halfDistance(0.25, 2.0);
@@ -177,10 +232,85 @@ makeDataset(const Options &options)
             face.high = static_cast<uint32_t>(generator() % hotCells);
             break;
         }
-        face.active = generator() % 20 != 0;
+        face.faceValueOrdinal = static_cast<uint32_t>(ordinal);
+        face.kind = generator() % 20 != 0
+            ? FaceKind::Internal : FaceKind::Inactive;
         data.faces[ordinal] = face;
     }
+
+    // Keep all random draws above stable so the default normal/internal
+    // dataset remains byte-for-byte reproducible.  The branch inputs are
+    // generated afterward and are consumed only by the requested modes.
+    std::uniform_real_distribution<double> density(0.25, 3.0);
+    for (size_t cell = 0; cell < options.cells; ++cell) {
+        data.cellRho[cell] = cell % 4 == 0 ? 0.0 : density(generator);
+    }
+    for (size_t ordinal = 0; ordinal < options.faces; ++ordinal) {
+        data.faceValues[ordinal] = value(generator);
+    }
+
+    if (options.boundarySource != BoundarySource::None) {
+        for (size_t ordinal = 0; ordinal < options.faces; ++ordinal) {
+            auto &face = data.faces[ordinal];
+            if (face.kind != FaceKind::Internal) {
+                continue;
+            }
+            if (ordinal % 11 == 3) {
+                face.kind = FaceKind::LowBoundary;
+            } else if (ordinal % 11 == 7) {
+                face.kind = FaceKind::HighBoundary;
+            }
+        }
+    }
     return data;
+}
+
+WorkloadCounts
+countWorkload(const Dataset &data, const Options &options)
+{
+    WorkloadCounts counts;
+    for (const auto &face : data.faces) {
+        switch (face.kind) {
+          case FaceKind::Inactive:
+            ++counts.inactive;
+            continue;
+          case FaceKind::LowBoundary:
+            ++counts.lowBoundary;
+            counts.logicalReads += 1;
+            counts.logicalUpdates += 2;
+            continue;
+          case FaceKind::HighBoundary:
+            ++counts.highBoundary;
+            counts.logicalReads += 1;
+            counts.logicalUpdates += 2;
+            continue;
+          case FaceKind::Internal:
+            ++counts.internal;
+            counts.logicalUpdates += 4;
+            break;
+        }
+
+        if (options.internalMode == InternalMode::Normal) {
+            counts.logicalReads += 4;
+            continue;
+        }
+        if (data.cellRho[face.low] <= 0.0 &&
+            data.cellRho[face.high] <= 0.0) {
+            ++counts.vacuumInternal;
+            counts.logicalReads += 2;
+            continue;
+        }
+        if (options.internalMode == InternalMode::DensityGuarded) {
+            counts.logicalReads += 6;
+            continue;
+        }
+        counts.logicalReads += 8;
+        if (data.cellValueLow[face.low] *
+            data.cellValueHigh[face.high] <= 0.0) {
+            ++counts.pressureWeightedInternal;
+        }
+    }
+    return counts;
 }
 
 Result
@@ -204,25 +334,88 @@ faceValue(
            (highHalfLow + lowHalfHigh);
 }
 
-Result
-runScalar(const Dataset &data)
+double
+pressureFaceValue(
+    double highHalfLow, double highRho, double lowValueHigh,
+    double lowHalfHigh, double lowRho, double highValueLow)
 {
-    Result result = emptyResult(data.cellHalfLow.size());
-    for (const auto &face : data.faces) {
-        if (!face.active) {
-            continue;
+    return (highHalfLow * highRho * lowValueHigh +
+            lowHalfHigh * lowRho * highValueLow) /
+           (highHalfLow * highRho + lowHalfHigh * lowRho);
+}
+
+double
+scalarFaceValue(
+    const Dataset &data, const Face &face, InternalMode internalMode,
+    BoundarySource boundarySource)
+{
+    switch (face.kind) {
+      case FaceKind::Internal: {
+        if (internalMode != InternalMode::Normal &&
+            data.cellRho[face.low] <= 0.0 &&
+            data.cellRho[face.high] <= 0.0) {
+            return 0.0;
         }
-        const double value = faceValue(
+        if (internalMode == InternalMode::PressureWeighted &&
+            data.cellValueLow[face.low] *
+                data.cellValueHigh[face.high] <= 0.0) {
+            return pressureFaceValue(
+                data.cellHalfLow[face.high], data.cellRho[face.high],
+                data.cellValueHigh[face.low],
+                data.cellHalfHigh[face.low], data.cellRho[face.low],
+                data.cellValueLow[face.high]);
+        }
+        return faceValue(
             data.cellHalfLow[face.high], data.cellValueHigh[face.low],
             data.cellHalfHigh[face.low], data.cellValueLow[face.high]);
+      }
+      case FaceKind::LowBoundary:
+        return boundarySource == BoundarySource::FaceValue
+            ? data.faceValues[face.faceValueOrdinal]
+            : data.cellValueHigh[face.low];
+      case FaceKind::HighBoundary:
+        return boundarySource == BoundarySource::FaceValue
+            ? data.faceValues[face.faceValueOrdinal]
+            : data.cellValueLow[face.high];
+      case FaceKind::Inactive:
+        break;
+    }
+    throw std::runtime_error("inactive face has no value");
+}
+
+void
+applyFaceValue(Result &result, const Face &face, double value)
+{
+    if (face.kind == FaceKind::Internal ||
+        face.kind == FaceKind::HighBoundary) {
         result.highMinimum[face.high] =
             std::fmin(result.highMinimum[face.high], value);
         result.highMaximum[face.high] =
             std::fmax(result.highMaximum[face.high], value);
+    }
+    if (face.kind == FaceKind::Internal ||
+        face.kind == FaceKind::LowBoundary) {
         result.lowMinimum[face.low] =
             std::fmin(result.lowMinimum[face.low], value);
         result.lowMaximum[face.low] =
             std::fmax(result.lowMaximum[face.low], value);
+    }
+}
+
+Result
+runScalar(const Dataset &data, const Options &options)
+{
+    Result result = emptyResult(data.cellHalfLow.size());
+    for (const auto &face : data.faces) {
+        if (face.kind == FaceKind::Inactive) {
+            continue;
+        }
+        const double value = scalarFaceValue(
+            data, face, options.internalMode, options.boundarySource);
+        if (!std::isfinite(value)) {
+            throw std::runtime_error("generated nonfinite scalar face value");
+        }
+        applyFaceValue(result, face, value);
     }
     return result;
 }
@@ -237,7 +430,11 @@ packMemory(const Dataset &data)
     memory.halfHighBase = stride;
     memory.valueLowBase = 2 * stride;
     memory.valueHighBase = 3 * stride;
-    memory.bytes.resize(4 * stride + 64, 0);
+    memory.rhoBase = 4 * stride;
+    memory.faceValueBase = 5 * stride;
+    const size_t faceValueBytes = data.faceValues.size() * sizeof(double);
+    memory.bytes.resize(
+        memory.faceValueBase + roundUp(faceValueBytes, 64) + 64, 0);
 
     std::memcpy(
         memory.bytes.data() + memory.halfLowBase,
@@ -251,6 +448,12 @@ packMemory(const Dataset &data)
     std::memcpy(
         memory.bytes.data() + memory.valueHighBase,
         data.cellValueHigh.data(), arrayBytes);
+    std::memcpy(
+        memory.bytes.data() + memory.rhoBase,
+        data.cellRho.data(), arrayBytes);
+    std::memcpy(
+        memory.bytes.data() + memory.faceValueBase,
+        data.faceValues.data(), faceValueBytes);
     return memory;
 }
 
@@ -370,26 +573,66 @@ drainUpdates(
 }
 
 ModelResult
-runModel(const Dataset &data, const Configuration &configuration)
+runModel(
+    const Dataset &data, const Options &options,
+    const Configuration &configuration)
 {
     if (!configuration.valid()) {
         throw std::invalid_argument("invalid window configuration");
     }
     const PackedMemory memory = packMemory(data);
     std::vector<uint64_t> addresses;
-    addresses.reserve(data.faces.size() * 4);
-    for (const auto &face : data.faces) {
-        if (!face.active) {
+    std::vector<FacePlan> plans;
+    addresses.reserve(data.faces.size() * 8);
+    plans.reserve(data.faces.size());
+    for (size_t ordinal = 0; ordinal < data.faces.size(); ++ordinal) {
+        const auto &face = data.faces[ordinal];
+        if (face.kind == FaceKind::Inactive) {
             continue;
         }
-        addresses.push_back(
-            memory.halfLowBase + face.high * sizeof(double));
-        addresses.push_back(
-            memory.valueHighBase + face.low * sizeof(double));
-        addresses.push_back(
-            memory.halfHighBase + face.low * sizeof(double));
-        addresses.push_back(
-            memory.valueLowBase + face.high * sizeof(double));
+        FacePlan plan;
+        plan.ordinal = ordinal;
+        plan.gatherBegin = addresses.size();
+        if (face.kind == FaceKind::Internal) {
+            if (options.internalMode != InternalMode::Normal) {
+                addresses.push_back(
+                    memory.rhoBase + face.low * sizeof(double));
+                addresses.push_back(
+                    memory.rhoBase + face.high * sizeof(double));
+            }
+            const bool live = options.internalMode == InternalMode::Normal ||
+                data.cellRho[face.low] > 0.0 ||
+                data.cellRho[face.high] > 0.0;
+            if (live &&
+                options.internalMode == InternalMode::PressureWeighted) {
+                addresses.push_back(
+                    memory.valueLowBase + face.low * sizeof(double));
+                addresses.push_back(
+                    memory.valueHighBase + face.high * sizeof(double));
+            }
+            if (live) {
+                addresses.push_back(
+                    memory.halfLowBase + face.high * sizeof(double));
+                addresses.push_back(
+                    memory.valueHighBase + face.low * sizeof(double));
+                addresses.push_back(
+                    memory.halfHighBase + face.low * sizeof(double));
+                addresses.push_back(
+                    memory.valueLowBase + face.high * sizeof(double));
+            }
+        } else if (options.boundarySource == BoundarySource::FaceValue) {
+            addresses.push_back(
+                memory.faceValueBase +
+                face.faceValueOrdinal * sizeof(double));
+        } else if (face.kind == FaceKind::LowBoundary) {
+            addresses.push_back(
+                memory.valueHighBase + face.low * sizeof(double));
+        } else {
+            addresses.push_back(
+                memory.valueLowBase + face.high * sizeof(double));
+        }
+        plan.gatherCount = addresses.size() - plan.gatherBegin;
+        plans.push_back(plan);
     }
 
     ModelResult output;
@@ -398,26 +641,81 @@ runModel(const Dataset &data, const Configuration &configuration)
         addresses, memory, configuration, output.reads);
 
     std::vector<UpdateEvent> updates;
-    updates.reserve(addresses.size());
-    size_t gather = 0;
+    updates.reserve(data.faces.size() * 4);
     const size_t cells = data.cellHalfLow.size();
-    for (const auto &face : data.faces) {
-        if (!face.active) {
-            continue;
+    for (const auto &plan : plans) {
+        const auto &face = data.faces[plan.ordinal];
+        const size_t gather = plan.gatherBegin;
+        double value = 0.0;
+        if (face.kind == FaceKind::Internal &&
+            options.internalMode == InternalMode::Normal) {
+            if (plan.gatherCount != 4) {
+                throw std::runtime_error("invalid normal gather plan");
+            }
+            value = faceValue(
+                gathered[gather], gathered[gather + 1],
+                gathered[gather + 2], gathered[gather + 3]);
+        } else if (face.kind == FaceKind::Internal) {
+            const double lowRho = gathered[gather];
+            const double highRho = gathered[gather + 1];
+            if (lowRho <= 0.0 && highRho <= 0.0) {
+                if (plan.gatherCount != 2) {
+                    throw std::runtime_error("invalid vacuum gather plan");
+                }
+                value = 0.0;
+            } else if (options.internalMode ==
+                       InternalMode::DensityGuarded) {
+                if (plan.gatherCount != 6) {
+                    throw std::runtime_error("invalid guarded gather plan");
+                }
+                value = faceValue(
+                    gathered[gather + 2], gathered[gather + 3],
+                    gathered[gather + 4], gathered[gather + 5]);
+            } else {
+                if (plan.gatherCount != 8) {
+                    throw std::runtime_error("invalid pressure gather plan");
+                }
+                const bool weighted =
+                    gathered[gather + 2] * gathered[gather + 3] <= 0.0;
+                if (weighted) {
+                    value = pressureFaceValue(
+                        gathered[gather + 4], highRho,
+                        gathered[gather + 5], gathered[gather + 6],
+                        lowRho, gathered[gather + 7]);
+                } else {
+                    value = faceValue(
+                        gathered[gather + 4], gathered[gather + 5],
+                        gathered[gather + 6], gathered[gather + 7]);
+                }
+            }
+        } else {
+            if (plan.gatherCount != 1) {
+                throw std::runtime_error("invalid boundary gather plan");
+            }
+            value = gathered[gather];
         }
-        const double value = faceValue(
-            gathered[gather], gathered[gather + 1],
-            gathered[gather + 2], gathered[gather + 3]);
-        gather += 4;
+        if (!std::isfinite(value)) {
+            throw std::runtime_error("generated nonfinite model face value");
+        }
         const uint64_t bits = toBits(value);
-        updates.push_back(UpdateEvent{
-            updateAddress(0, face.high, cells), bits, UpdateOperation::Min});
-        updates.push_back(UpdateEvent{
-            updateAddress(1, face.high, cells), bits, UpdateOperation::Max});
-        updates.push_back(UpdateEvent{
-            updateAddress(2, face.low, cells), bits, UpdateOperation::Min});
-        updates.push_back(UpdateEvent{
-            updateAddress(3, face.low, cells), bits, UpdateOperation::Max});
+        if (face.kind == FaceKind::Internal ||
+            face.kind == FaceKind::HighBoundary) {
+            updates.push_back(UpdateEvent{
+                updateAddress(0, face.high, cells), bits,
+                UpdateOperation::Min});
+            updates.push_back(UpdateEvent{
+                updateAddress(1, face.high, cells), bits,
+                UpdateOperation::Max});
+        }
+        if (face.kind == FaceKind::Internal ||
+            face.kind == FaceKind::LowBoundary) {
+            updates.push_back(UpdateEvent{
+                updateAddress(2, face.low, cells), bits,
+                UpdateOperation::Min});
+            updates.push_back(UpdateEvent{
+                updateAddress(3, face.low, cells), bits,
+                UpdateOperation::Max});
+        }
     }
 
     UpdateCombinerModel updateModel(configuration);
@@ -497,6 +795,64 @@ parseSize(const std::string &value, const std::string &option)
     return parsed;
 }
 
+InternalMode
+parseInternalMode(const std::string &value)
+{
+    if (value == "normal") {
+        return InternalMode::Normal;
+    }
+    if (value == "rho-guard") {
+        return InternalMode::DensityGuarded;
+    }
+    if (value == "pressure") {
+        return InternalMode::PressureWeighted;
+    }
+    throw std::invalid_argument("invalid value for --internal-mode");
+}
+
+const char *
+internalModeName(InternalMode mode)
+{
+    switch (mode) {
+      case InternalMode::Normal:
+        return "normal";
+      case InternalMode::DensityGuarded:
+        return "rho-guard";
+      case InternalMode::PressureWeighted:
+        return "pressure";
+    }
+    throw std::runtime_error("invalid internal mode");
+}
+
+BoundarySource
+parseBoundarySource(const std::string &value)
+{
+    if (value == "none") {
+        return BoundarySource::None;
+    }
+    if (value == "cell") {
+        return BoundarySource::Cell;
+    }
+    if (value == "faceval") {
+        return BoundarySource::FaceValue;
+    }
+    throw std::invalid_argument("invalid value for --boundaries");
+}
+
+const char *
+boundarySourceName(BoundarySource source)
+{
+    switch (source) {
+      case BoundarySource::None:
+        return "none";
+      case BoundarySource::Cell:
+        return "cell";
+      case BoundarySource::FaceValue:
+        return "faceval";
+    }
+    throw std::runtime_error("invalid boundary source");
+}
+
 Options
 parseOptions(int argc, char **argv)
 {
@@ -507,7 +863,8 @@ parseOptions(int argc, char **argv)
             std::cout << "usage: eap_face_minmax [--faces N] [--cells N] "
                          "[--window N] [--line-entries N] [--contexts N] "
                          "[--combiner-entries N] [--combiner-banks N] "
-                         "[--seed N]\n";
+                         "[--internal-mode normal|rho-guard|pressure] "
+                         "[--boundaries none|cell|faceval] [--seed N]\n";
             std::exit(0);
         }
         if (argument + 1 == argc) {
@@ -528,6 +885,10 @@ parseOptions(int argc, char **argv)
             options.combinerEntries = parseSize(value, option);
         } else if (option == "--combiner-banks") {
             options.combinerBanks = parseSize(value, option);
+        } else if (option == "--internal-mode") {
+            options.internalMode = parseInternalMode(value);
+        } else if (option == "--boundaries") {
+            options.boundarySource = parseBoundarySource(value);
         } else if (option == "--seed") {
             options.seed = std::stoull(value, nullptr, 0);
         } else {
@@ -546,16 +907,29 @@ main(int argc, char **argv)
         const Options options = parseOptions(argc, argv);
         const Configuration configuration = configurationFor(options);
         const Dataset data = makeDataset(options);
-        const Result scalar = runScalar(data);
-        const ModelResult model = runModel(data, configuration);
-        const bool correct = equalResults(scalar, model.values);
-        const size_t active = std::count_if(
-            data.faces.begin(), data.faces.end(),
-            [](const Face &face) { return face.active; });
+        const Result scalar = runScalar(data, options);
+        const ModelResult model = runModel(data, options, configuration);
+        const WorkloadCounts counts = countWorkload(data, options);
+        const bool correct = equalResults(scalar, model.values) &&
+            model.reads.logicalMemoryAccesses == counts.logicalReads &&
+            model.updates.logicalUpdatesAdmitted == counts.logicalUpdates;
+        const size_t active = data.faces.size() - counts.inactive;
 
         std::cout << "verification=" << (correct ? "PASS" : "FAIL") << '\n';
         std::cout << "faces=" << options.faces << '\n';
         std::cout << "active_faces=" << active << '\n';
+        std::cout << "internal_faces=" << counts.internal << '\n';
+        std::cout << "low_boundary_faces=" << counts.lowBoundary << '\n';
+        std::cout << "high_boundary_faces=" << counts.highBoundary << '\n';
+        std::cout << "inactive_faces=" << counts.inactive << '\n';
+        std::cout << "vacuum_internal_faces="
+                  << counts.vacuumInternal << '\n';
+        std::cout << "pressure_weighted_internal_faces="
+                  << counts.pressureWeightedInternal << '\n';
+        std::cout << "internal_mode="
+                  << internalModeName(options.internalMode) << '\n';
+        std::cout << "boundary_source="
+                  << boundarySourceName(options.boundarySource) << '\n';
         std::cout << "cells=" << options.cells << '\n';
         std::cout << "window=" << options.window << '\n';
         std::cout << "line_entries=" << configuration.lineEntries << '\n';
@@ -567,6 +941,8 @@ main(int argc, char **argv)
                   << configuration.combinerBanks << '\n';
         std::cout << "read_logical_accesses="
                   << model.reads.logicalMemoryAccesses << '\n';
+        std::cout << "expected_read_logical_accesses="
+                  << counts.logicalReads << '\n';
         std::cout << "read_physical_lines="
                   << model.reads.physicalLineReads << '\n';
         std::cout << "read_line_merge_hits="
@@ -577,6 +953,8 @@ main(int argc, char **argv)
                   << model.reads.lineWouldBlock << '\n';
         std::cout << "update_logical="
                   << model.updates.logicalUpdatesAdmitted << '\n';
+        std::cout << "expected_update_logical="
+                  << counts.logicalUpdates << '\n';
         std::cout << "update_drains=" << model.updates.drains << '\n';
         std::cout << "update_combiner_hits="
                   << model.updates.combinerHits << '\n';

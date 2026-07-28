@@ -8,15 +8,34 @@ The kernel is derived from the pinned LANL EAP Patterns face loop in `src/deriva
 
 The generated topology deliberately mixes clustered neighbors, full-range shuffled neighbors, a 32-cell hotspot, and inactive predicates. The executable runs the scalar and standalone-model paths on identical data and requires bit-identical finite/Infinity outputs. It reports logical accesses, physical line requests, line/duplicate merges, update conflicts, combiner hits, drains, and would-block events.
 
+The optional branch modes cover the other memory paths in the same pinned
+`inside_com3b` loop. `rho-guard` first gathers the low/high densities and
+publishes zero when both are nonpositive. `pressure` additionally gathers the
+two sign-test fields and applies density-weighted interpolation on the
+Fortran `<= 0` branch. `--boundaries cell` creates both low and high boundary
+faces using the corresponding cell field; `--boundaries faceval` gathers the
+external face-value vector instead. Inactive faces remain poison-safe. The
+driver derives the expected logical gather/update count from the generated
+face kinds and branch inputs and includes that count in its pass condition.
+
 Build and run a lightweight check from the simulator worktree:
 
 ```sh
 g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
     benchmarks/LANL/eap_face_minmax.cc -o /tmp/eap_face_minmax
 /tmp/eap_face_minmax --faces 4096 --cells 512 --window 64 --seed 0x4c414e4c
+/tmp/eap_face_minmax --faces 4096 --cells 512 --window 64 \
+    --internal-mode rho-guard --boundaries cell --seed 0x4c414e4c
+/tmp/eap_face_minmax --faces 4096 --cells 512 --window 64 \
+    --internal-mode pressure --boundaries faceval --seed 0x4c414e4c
+python3 tests/lanl_maa/run_eap_face_reference_smoke.py
 ```
 
-Passing this executable establishes reference-model semantics only. It is not a gem5 timing result or an EAP/FLAG application speedup claim.
+The generated face kinds, compact arrays, and random values are a
+source-grounded memory/control projection, not EAP's native mesh ABI or
+physics state. Passing this executable establishes reference-model semantics
+and exact logical-access accounting only. It is not a gem5 timing result,
+native EAP/FLAG correctness result, or application speedup claim.
 
 ## `branson_photon_cell_walk`
 
