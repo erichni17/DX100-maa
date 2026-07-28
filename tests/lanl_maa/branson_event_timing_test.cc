@@ -29,26 +29,33 @@ main()
 
     BransonContextScheduler scheduler(4, 2);
     std::vector<bool> ready{true, true, true, true};
-    assert(scheduler.select(ready) == 0);
+    std::vector<bool> active{true, true, true, true};
+    assert(scheduler.select(ready, active) == 0);
     scheduler.issued(0);
-    assert(scheduler.select(ready) == 0);
+    assert(scheduler.select(ready, active) == 0);
     scheduler.issued(0);
     assert(scheduler.preferredContext() == 1);
     assert(scheduler.issuesInQuantum() == 0);
 
     ready = {true, false, true, false};
-    assert(scheduler.select(ready) == 2);
+    assert(scheduler.select(ready, active) == 2);
     scheduler.issued(2);
     assert(scheduler.preferredContext() == 1);
     ready[1] = true;
-    assert(scheduler.select(ready) == 1);
+    assert(scheduler.select(ready, active) == 1);
     scheduler.issued(1);
     assert(scheduler.issuesInQuantum() == 1);
     scheduler.issued(1);
     assert(scheduler.preferredContext() == 2);
 
     ready = {false, false, false, false};
-    assert(!scheduler.select(ready));
+    assert(!scheduler.select(ready, active));
+    active = {false, false, true, true};
+    ready[2] = true;
+    assert(scheduler.select(ready, active) == 2);
+    assert(scheduler.preferredContext() == 2);
+    active = {false, false, false, false};
+    assert(!scheduler.select(ready, active));
     scheduler.reset();
     assert(scheduler.preferredContext() == 0);
 

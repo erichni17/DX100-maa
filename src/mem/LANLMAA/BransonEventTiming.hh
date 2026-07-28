@@ -91,15 +91,32 @@ class BransonContextScheduler
     }
 
     std::optional<size_t>
-    select(const std::vector<bool> &ready)
+    select(const std::vector<bool> &ready, const std::vector<bool> &active)
     {
         assert(ready.size() == contextCount);
+        assert(active.size() == contextCount);
+        if (!active[preferred]) {
+            bool found = false;
+            for (size_t offset = 1; offset < contextCount; ++offset) {
+                const size_t candidate =
+                    (preferred + offset) % contextCount;
+                if (active[candidate]) {
+                    preferred = candidate;
+                    preferredIssues = 0;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return std::nullopt;
+            }
+        }
         if (ready[preferred]) {
             return preferred;
         }
         for (size_t offset = 1; offset < contextCount; ++offset) {
             const size_t candidate = (preferred + offset) % contextCount;
-            if (ready[candidate]) {
+            if (active[candidate] && ready[candidate]) {
                 return candidate;
             }
         }
