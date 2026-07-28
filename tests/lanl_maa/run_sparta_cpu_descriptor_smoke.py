@@ -320,7 +320,7 @@ def main():
         "--order", choices=("sorted", "shuffled"), default="sorted"
     )
     parser.add_argument("--maa-cache-size", default="4KiB")
-    parser.add_argument("--maa-cache-assoc", type=int, default=4)
+    parser.add_argument("--maa-cache-assoc", type=int, default=2)
     parser.add_argument("--maa-cache-mshrs", type=int, default=8)
     parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=2)
     parser.add_argument("--maa-cache-write-buffers", type=int, default=2)

@@ -417,7 +417,7 @@ def main():
     parser.add_argument("--descriptor-items", default=8, type=int)
     parser.add_argument("--l1-caches", action="store_true")
     parser.add_argument("--maa-cache-size", default="4KiB")
-    parser.add_argument("--maa-cache-assoc", type=int, default=4)
+    parser.add_argument("--maa-cache-assoc", type=int, default=2)
     parser.add_argument("--maa-cache-mshrs", type=int, default=8)
     parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=2)
     parser.add_argument("--maa-cache-write-buffers", type=int, default=2)
