@@ -114,6 +114,14 @@ main()
     writeLe(bytes, 40, 0x4010, 8);
     expectError(bytes, DescriptorError::MisalignedVector);
 
+    bytes = validDescriptor();
+    writeLe(bytes, 24, 0x2004, 8);
+    expectError(bytes, DescriptorError::MisalignedVector);
+
+    bytes = validDescriptor();
+    writeLe(bytes, 32, 0x3004, 8);
+    expectError(bytes, DescriptorError::MisalignedVector);
+
     for (const size_t offset : {48UL, 52UL, 56UL}) {
         bytes = validDescriptor();
         writeLe(bytes, offset, 0, 4);
@@ -125,6 +133,18 @@ main()
     expectError(bytes, DescriptorError::RangeOverflow);
 
     bytes = validDescriptor();
+    writeLe(bytes, 16, std::numeric_limits<uint64_t>::max() - 15, 8);
+    expectError(bytes, DescriptorError::RangeOverflow);
+
+    bytes = validDescriptor();
+    writeLe(bytes, 24, std::numeric_limits<uint64_t>::max() - 7, 8);
+    expectError(bytes, DescriptorError::RangeOverflow);
+
+    bytes = validDescriptor();
+    writeLe(bytes, 32, std::numeric_limits<uint64_t>::max() - 7, 8);
+    expectError(bytes, DescriptorError::RangeOverflow);
+
+    bytes = validDescriptor();
     writeLe(bytes, 24, 0x1080, 8);
     expectError(bytes, DescriptorError::OverlappingInput);
 
@@ -133,7 +153,19 @@ main()
     expectError(bytes, DescriptorError::OverlappingInput);
 
     bytes = validDescriptor();
+    writeLe(bytes, 32, 0x1080, 8);
+    expectError(bytes, DescriptorError::OverlappingInput);
+
+    bytes = validDescriptor();
+    writeLe(bytes, 40, 0x1000, 8);
+    expectError(bytes, DescriptorError::OverlappingInput);
+
+    bytes = validDescriptor();
     writeLe(bytes, 40, 0x2080, 8);
+    expectError(bytes, DescriptorError::OverlappingInput);
+
+    bytes = validDescriptor();
+    writeLe(bytes, 32, 0x4000, 8);
     expectError(bytes, DescriptorError::OverlappingInput);
 
     return 0;
