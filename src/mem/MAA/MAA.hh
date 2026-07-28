@@ -417,6 +417,7 @@ public:
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     unsigned int virtual_index_buffer_lines;
+    unsigned int virtual_index_partitions;
     bool virtual_grow_order;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;

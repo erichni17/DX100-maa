@@ -103,6 +103,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
                                   int _virtual_index_buffer_lines,
+                                  int _virtual_index_partitions,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -161,6 +162,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] direct-index buffer lines (%d) must be in [1,64]\n",
              my_indirect_id, _virtual_index_buffer_lines);
     direct_index_buffer_lines = _virtual_index_buffer_lines;
+    panic_if(_virtual_index_partitions <= 0 ||
+                 _virtual_index_partitions > 64,
+             "I[%d] direct-index partitions (%d) must be in [1,64]\n",
+             my_indirect_id, _virtual_index_partitions);
+    direct_index_partitions = _virtual_index_partitions;
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -788,6 +794,25 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
     checkTileReady();
     while (true) {
         if (my_max != -1 && my_i >= my_max) {
+            if (isVirtualLoad() && isDirectIndexLoad() &&
+                direct_index_partition + 1 < direct_index_partitions) {
+                panic_if(!direct_index_pending_lines.empty() ||
+                             !direct_index_ready_lines.empty() ||
+                             !direct_index_words.empty(),
+                         "I[%d] direct-index partition %d ended with buffered "
+                         "index data\n",
+                         my_indirect_id, direct_index_partition);
+                direct_index_partition++;
+                my_i = 0;
+                direct_index_next_prefetch_itr = 0;
+                direct_index_partition_barrier = true;
+                needDrain = true;
+                DPRINTF(MAAVirtualTrace,
+                        "event=index_partition unit=%d next=%d total=%d\n",
+                        my_indirect_id, direct_index_partition,
+                        direct_index_partitions);
+                break;
+            }
             if (my_dst_tile != -1) {
                 panic_if(my_max != -1 && my_i != my_max, "I[%d] %s: my_i(%d) != my_max(%d)!\n", my_indirect_id, __func__, my_i, my_max);
                 if (isVirtualLoad())
@@ -815,6 +840,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
         const bool condition_taken =
             my_cond_tile == -1 ||
             maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0;
+        bool virtual_iteration_selected = condition_taken;
         if (condition_taken) {
             uint32_t idx = isDirectIndexLoad()
                 ? peekDirectIndex(my_i)
@@ -832,24 +858,52 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             std::vector<int> addr_vec = maa->map_addr(block_paddr);
             my_RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
             Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
-            DPRINTF(MAAIndirect, "I[%d] %s: inserting vaddr(0x%lx), paddr(0x%lx), MAP(RO: %d, BA: %d, BG: %d, RA: %d, CO: %d, CH: %d), grow(0x%lx), itr(%d), idx(%d), wid(%d) to T[%d]\n", my_indirect_id, __func__, block_vaddr, block_paddr, addr_vec[ADDR_ROW_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_COLUMN_LEVEL], addr_vec[ADDR_CHANNEL_LEVEL], grow_addr, my_i, idx, wid, my_RT_idx);
-            bool first_CL_access;
-            bool inserted = RT[my_RT_config][my_RT_idx].insert(grow_addr, block_paddr, my_i, wid, first_CL_access);
-            num_rowtable_accesses++;
-            if (inserted == false) {
-                needDrain = true;
-                (*maa->stats.IND_NumRTFull[my_indirect_id])++;
-                break;
-            } else {
-                if (usesBoundedSourceResponses())
-                    my_RT_req_sent[my_RT_config][my_RT_idx] = false;
-                my_unique_WORD_addrs.insert(vaddr);
-                my_unique_CL_addrs.insert(block_paddr);
-                my_unique_ROW_addrs.insert(grow_addr + my_RT_idx * num_RT_possible_grows[my_RT_config]);
-                if (reorder_RT == false && first_CL_access == true) {
-                    DPRINTF(MAAIndirect, "I[%d] %s: Creating packet for bank[%d], addr[0x%lx]!\n", my_indirect_id, __func__, my_RT_idx, block_paddr);
-                    my_expected_responses++;
-                    createReadPacket(block_paddr, getCeiling(num_rowtable_accesses, total_num_RT_subslices) * rowtable_latency);
+            virtual_iteration_selected =
+                !isVirtualLoad() || !isDirectIndexLoad() ||
+                direct_index_partitions == 1 ||
+                static_cast<int>(grow_addr % direct_index_partitions) ==
+                    direct_index_partition;
+            if (virtual_iteration_selected) {
+                DPRINTF(MAAIndirect,
+                        "I[%d] %s: inserting vaddr(0x%lx), paddr(0x%lx), "
+                        "MAP(RO: %d, BA: %d, BG: %d, RA: %d, CO: %d, "
+                        "CH: %d), grow(0x%lx), itr(%d), idx(%d), wid(%d) "
+                        "to T[%d]\n",
+                        my_indirect_id, __func__, block_vaddr, block_paddr,
+                        addr_vec[ADDR_ROW_LEVEL], addr_vec[ADDR_BANK_LEVEL],
+                        addr_vec[ADDR_BANKGROUP_LEVEL],
+                        addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_COLUMN_LEVEL],
+                        addr_vec[ADDR_CHANNEL_LEVEL],
+                        grow_addr, my_i, idx, wid, my_RT_idx);
+                bool first_CL_access;
+                bool inserted = RT[my_RT_config][my_RT_idx].insert(
+                    grow_addr, block_paddr, my_i, wid, first_CL_access);
+                num_rowtable_accesses++;
+                if (!inserted) {
+                    needDrain = true;
+                    (*maa->stats.IND_NumRTFull[my_indirect_id])++;
+                    break;
+                } else {
+                    if (usesBoundedSourceResponses())
+                        my_RT_req_sent[my_RT_config][my_RT_idx] = false;
+                    my_unique_WORD_addrs.insert(vaddr);
+                    my_unique_CL_addrs.insert(block_paddr);
+                    my_unique_ROW_addrs.insert(
+                        grow_addr +
+                        my_RT_idx * num_RT_possible_grows[my_RT_config]);
+                    if (!reorder_RT && first_CL_access) {
+                        DPRINTF(MAAIndirect,
+                                "I[%d] %s: Creating packet for bank[%d], "
+                                "addr[0x%lx]!\n",
+                                my_indirect_id, __func__, my_RT_idx,
+                                block_paddr);
+                        my_expected_responses++;
+                        createReadPacket(
+                            block_paddr,
+                            getCeiling(num_rowtable_accesses,
+                                       total_num_RT_subslices) *
+                                rowtable_latency);
+                    }
                 }
             }
         } else if (my_dst_tile != -1 && !isVirtualLoad()) {
@@ -858,7 +912,7 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                     my_indirect_id, __func__, my_dst_tile, my_i, 0);
             maa->spd->setFakeData(my_dst_tile, my_i, my_word_size);
         }
-        if (isVirtualLoad())
+        if (isVirtualLoad() && virtual_iteration_selected)
             trackVirtualIteration(my_i, condition_taken);
         if (isDirectIndexLoad())
             consumeDirectIndex(my_i);
@@ -1024,12 +1078,18 @@ void IndirectAccessUnit::executeInstruction() {
         my_index_min = 0;
         my_index_stride = 1;
         direct_index_next_prefetch_itr = 0;
+        direct_index_partition = 0;
+        direct_index_partition_barrier = false;
         direct_index_pending_lines.clear();
         direct_index_ready_lines.clear();
         direct_index_words.clear();
         direct_index_max_lines = 0;
         direct_index_max_words = 0;
         if (isDirectIndexLoad()) {
+            panic_if(direct_index_partitions != 1 && !isVirtualLoad(),
+                     "I[%d] direct-index partitioning is only supported by "
+                     "virtual loads\n",
+                     my_indirect_id);
             panic_if(my_cond_tile != -1,
                      "I[%d] direct-index load does not yet support "
                      "condition tiles\n",
@@ -1432,6 +1492,9 @@ void IndirectAccessUnit::executeInstruction() {
             virtual_final_flush = true;
             drainVirtualCombiner(true);
         }
+        if (isVirtualLoad() && direct_index_partition_barrier &&
+            !virtual_build_incomplete && virtual_sources_drained)
+            drainVirtualCombiner(true);
         const bool responses_complete = usesBoundedSourceResponses()
             ? (virtual_build_incomplete ? virtual_sources_drained
                                         : boundedRetirementComplete())
@@ -1445,6 +1508,9 @@ void IndirectAccessUnit::executeInstruction() {
             if (virtual_build_incomplete) {
                 state = Status::Build;
                 virtual_build_incomplete = false;
+            } else if (direct_index_partition_barrier) {
+                state = Status::Fill;
+                direct_index_partition_barrier = false;
             } else if (my_fill_finished) {
                 state = Status::Response;
                 my_fill_finished = false;
@@ -1462,7 +1528,8 @@ void IndirectAccessUnit::executeInstruction() {
             scheduleNextExecution(true);
             break;
         }
-        if (my_fill_finished == false) {
+        if (!my_fill_finished &&
+            !direct_index_partition_barrier) {
             bool finished, waitForFinish, waitForElement, needDrain;
             int num_spd_read_condidx_accesses, num_rowtable_accesses;
             const int fill_start_itr = my_i;
@@ -1478,6 +1545,7 @@ void IndirectAccessUnit::executeInstruction() {
                             "finished=%d need_drain=%d incomplete=%d\n",
                             my_indirect_id, fill_start_itr, my_i, finished,
                             needDrain, virtual_build_incomplete);
+                    scheduleNextExecution(true);
                 }
             }
             // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
@@ -2857,7 +2925,7 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
     completeVirtualRetirementWrite(addr);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     const bool response_throttled = drainVirtualResponses();
-    if (virtual_final_flush)
+    if (virtual_final_flush || direct_index_partition_barrier)
         drainVirtualCombiner(true);
     accountVirtualRequestInterval();
     if (response_throttled)

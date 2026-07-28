@@ -16,11 +16,14 @@ MATCHED_MANIFEST_KEYS = (
     "timeout",
 )
 OPTIONAL_MATCHED_MANIFEST_KEYS = (
+    "row_table_rows_per_slice",
+    "row_table_entries_per_subslice_row",
     "virtual_combine_slots",
     "virtual_combine_words",
     "virtual_combine_ways",
     "virtual_combine_victim_policy",
     "virtual_combine_banks",
+    "virtual_index_partitions",
 )
 MATCHED_RESULT_KEYS = (
     "output_hash",

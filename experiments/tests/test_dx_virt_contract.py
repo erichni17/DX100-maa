@@ -82,12 +82,17 @@ class ContractTests(unittest.TestCase):
                     "virtual_response_word_pool": 480,
                     "virtual_max_outstanding_writes": 64,
                     "virtual_index_buffer_lines": 4,
+                    "virtual_index_partitions": 4,
                 },
             )
         self.assertEqual(contract["configured_hardware"]["total_tiles"], 32)
         self.assertEqual(
             contract["reorder_resources"]["row_table_unique_line_capacity"],
             8192,
+        )
+        self.assertEqual(
+            contract["reorder_resources"]["index_scan_policy"],
+            "dram_grow_modulo",
         )
         self.assertEqual(
             contract["reorder_resources"]["issue_order"],

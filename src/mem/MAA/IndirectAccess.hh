@@ -192,6 +192,7 @@ public:
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
                   int _virtual_index_buffer_lines,
+                  int _virtual_index_partitions,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
@@ -231,6 +232,9 @@ protected:
         Addr line_addr = 0;
     };
     int direct_index_buffer_lines = 1;
+    int direct_index_partitions = 1;
+    int direct_index_partition = 0;
+    bool direct_index_partition_barrier = false;
     int direct_index_next_prefetch_itr = 0;
     std::map<Addr, std::vector<std::pair<int, uint16_t>>>
         direct_index_pending_lines;

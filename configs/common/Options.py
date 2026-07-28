@@ -238,6 +238,7 @@ def addNoISAOptions(parser):
     parser.add_argument("--maa_virtual_max_outstanding_writes", type=int, default=32, help="Maximum acknowledged writes in flight for virtual gather retirement")
     parser.add_argument("--maa_virtual_masked_writes", action="store_true", help="Retire partial virtual lines as masked cache-line writes")
     parser.add_argument("--maa_virtual_index_buffer_lines", type=int, default=1, help="Cache lines buffered or in flight for direct virtual-index ingestion")
+    parser.add_argument("--maa_virtual_index_partitions", type=int, default=1, help="Modulo DRAM-grow partitions scanned by a direct virtual-index load")
     parser.add_argument("--maa_virtual_grow_order", action="store_true", help="Group virtual source claims by DRAM grow address")
     parser.add_argument("--maa_retirement_cache_size", default="1kB", help="Per-address-bank coherent virtual-retirement cache size")
     parser.add_argument("--maa_retirement_cache_assoc", type=int, default=4, help="Per-address-bank coherent virtual-retirement cache associativity")

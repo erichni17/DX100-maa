@@ -39,6 +39,9 @@ class MAA(ClockedObject):
     virtual_max_outstanding_writes = Param.Unsigned(32, "Acknowledged virtual retirement writes allowed in flight")
     virtual_masked_writes = Param.Bool(False, "Retire partial virtual lines as masked cache-line writes")
     virtual_index_buffer_lines = Param.Unsigned(1, "Cache lines buffered or in flight for direct virtual-index ingestion")
+    virtual_index_partitions = Param.Unsigned(
+        1, "Modulo DRAM-grow partitions scanned by a direct virtual-index load"
+    )
     virtual_grow_order = Param.Bool(
         False, "Group virtual source claims by DRAM grow address"
     )

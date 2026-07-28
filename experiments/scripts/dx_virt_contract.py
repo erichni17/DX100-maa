@@ -73,6 +73,7 @@ INTEGER_DEFAULTS = {
     "virtual_words_per_cycle": 0,
     "virtual_max_outstanding_writes": 32,
     "virtual_index_buffer_lines": 1,
+    "virtual_index_partitions": 1,
 }
 BOOL_DEFAULTS = {
     "virtual_masked_writes": False,
@@ -229,6 +230,7 @@ def validate(case: dict, values: dict) -> None:
         "virtual_response_slots",
         "virtual_max_outstanding_writes",
         "virtual_index_buffer_lines",
+        "virtual_index_partitions",
     }
     for key in positive:
         if values[key] <= 0:
@@ -242,6 +244,12 @@ def validate(case: dict, values: dict) -> None:
         raise ContractError("physical_tile_elements exceeds num_tile_elements")
     if not 1 <= values["virtual_index_buffer_lines"] <= 64:
         raise ContractError("virtual_index_buffer_lines must be in [1,64]")
+    if not 1 <= values["virtual_index_partitions"] <= 64:
+        raise ContractError("virtual_index_partitions must be in [1,64]")
+    if case["mode"] != "direct_index_virtual" and values["virtual_index_partitions"] != 1:
+        raise ContractError(
+            "virtual_index_partitions requires direct_index_virtual mode"
+        )
     ways = values["virtual_combine_ways"]
     slots = values["virtual_combine_slots"]
     if ways and slots % ways:
@@ -447,6 +455,12 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             ],
             "issue_order": issue_order,
             "virtual_grow_order": values["virtual_grow_order"],
+            "direct_index_partitions": values["virtual_index_partitions"],
+            "index_scan_policy": (
+                "dram_grow_modulo"
+                if values["virtual_index_partitions"] > 1
+                else "single_pass"
+            ),
             "effective_reorder_window": (
                 "bounded by logical iterations, unique-line capacity, and "
                 "address distribution"

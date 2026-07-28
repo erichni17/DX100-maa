@@ -15,6 +15,8 @@ overlap=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
+row_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
+row_entries=${MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW:-8}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-96}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
@@ -22,12 +24,17 @@ combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
 combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
 combine_victim_policy=${MAA_VIRTUAL_COMBINE_VICTIM_POLICY:-0}
 combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
+index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 [[ $grow_order == 0 || $grow_order == 1 ]] || {
     echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
     exit 2
 }
-[[ $row_slices -gt 0 ]] || {
-    echo "MAA_ROW_TABLE_SLICES must be positive" >&2
+[[ $row_slices -gt 0 && $row_rows -gt 0 && $row_entries -gt 0 ]] || {
+    echo "row-table dimensions must be positive" >&2
+    exit 2
+}
+[[ $index_partitions -gt 0 && $index_partitions -le 64 ]] || {
+    echo "virtual index partitions must be in [1,64]" >&2
     exit 2
 }
 [[ $response_slots -gt 0 && $response_word_pool -gt 0 ]] || {
@@ -129,6 +136,12 @@ paged_reload_cold_4k)
     ;;
 esac
 
+if [[ $index_partitions -ne 1 &&
+      ( $virtual -ne 1 || $direct -ne 1 || $reload_only -eq 1 ) ]]; then
+    echo "index partitioning requires an active direct virtual gather" >&2
+    exit 2
+fi
+
 if [[ -e $out ]]; then
     echo "refusing to overwrite existing output path: $out" >&2
     exit 2
@@ -144,6 +157,8 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'page_elements=%s\n' "$page"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'row_table_slices=%s\n' "$row_slices"
+    printf 'row_table_rows_per_slice=%s\n' "$row_rows"
+    printf 'row_table_entries_per_subslice_row=%s\n' "$row_entries"
     printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
@@ -152,6 +167,7 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'virtual_combine_ways=%s\n' "$combine_ways"
     printf 'virtual_combine_victim_policy=%s\n' "$combine_victim_policy"
     printf 'virtual_combine_banks=%s\n' "$combine_banks"
+    printf 'virtual_index_partitions=%s\n' "$index_partitions"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -204,6 +220,8 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa --maa_num_tile_elements=16384 \
     --maa_physical_tile_elements="$physical" \
     --maa_num_initial_row_table_slices="$row_slices" \
+    --maa_num_row_table_rows_per_slice="$row_rows" \
+    --maa_num_row_table_entries_per_subslice_row="$row_entries" \
     "${grow_order_args[@]}" \
     --maa_virtual_combine_slots="$combine_slots" \
     --maa_virtual_combine_words="$combine_words" \
@@ -215,6 +233,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_words_per_cycle=4 \
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
     --maa_virtual_index_buffer_lines=4 \
+    --maa_virtual_index_partitions="$index_partitions" \
     --cmd "$binary" --options "$mode $page" > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e
@@ -223,6 +242,19 @@ printf '%s\n' "$restore_rc" > "$out/restore.exit"
     echo "restore failed with rc=$restore_rc" >&2
     exit 1
 }
+
+config_ini="$out/run/config.ini"
+for expected in \
+    "num_initial_row_table_slices=$row_slices" \
+    "num_row_table_rows_per_slice=$row_rows" \
+    "num_row_table_entries_per_subslice_row=$row_entries" \
+    "virtual_index_partitions=$index_partitions" \
+    "reconfigure_row_table=false"; do
+    grep -Fqx "$expected" "$config_ini" || {
+        echo "missing resolved row-table treatment: $expected" >&2
+        exit 1
+    }
+done
 
 result_count=$(grep -Ec \
     "^VIRTUAL_TILE_CONSUMER_RESULT mode=${mode} page_elements=${page} hash=[0-9]+ errors=0$" \
@@ -248,7 +280,8 @@ read -r ticks insts index_line_reads index_words index_hwm \
     page_ready_signals page_wait_reads page_wait_deferrals \
     page_wait_responses \
     l3_read_hits l3_read_misses memory_bytes_read cpu_cycles \
-    rt_cache_lines source_reads response_slot_hwm response_word_hwm \
+    rt_cache_lines rt_rows rt_unique_cache_lines rt_unique_rows \
+    source_reads response_slot_hwm response_word_hwm \
     response_pool_stalls < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
@@ -277,6 +310,9 @@ read -r ticks insts index_line_reads index_words index_hwm \
         section == 1 && $1 == "system.mem_ctrls.bytesRead::maa" { mb = $2 }
         section == 1 && $1 == "system.switch_cpus0.numCycles" { cc = $2 }
         section == 1 && $1 ~ /IND_NumCacheLineInserted$/ { rc += $2 }
+        section == 1 && $1 ~ /IND_NumRowsInserted$/ { rr += $2 }
+        section == 1 && $1 ~ /IND_NumUniqueCacheLineInserted$/ { ruc += $2 }
+        section == 1 && $1 ~ /IND_NumUniqueRowsInserted$/ { rur += $2 }
         section == 1 && $1 ~ /IND_LoadsCacheHitResponding$/ { lc += $2 }
         section == 1 && $1 ~ /IND_LoadsCacheHitAccessing$/ { la += $2 }
         section == 1 && $1 ~ /IND_LoadsMemAccessing$/ { lmema += $2 }
@@ -289,6 +325,7 @@ read -r ticks insts index_line_reads index_words index_hwm \
                   ps + 0, ir + 0, sr + 0, sw + 0, ac + 0,
                   prs + 0, pwr + 0, pwd + 0, pws + 0,
                   lh + 0, lm + 0, mb + 0, cc + 0, rc + 0,
+                  rr + 0, ruc + 0, rur + 0,
                   lc + la + lmema - il, rsh + 0, rwh + 0, rps + 0
             exit
         }
@@ -363,7 +400,8 @@ elif [[ $virtual -eq 1 ]]; then
         ' OFS='\t' "$trace"
     } > "$out/page_readiness.tsv"
     if [[ $direct -eq 1 ]]; then
-        [[ $index_words -eq 16384 && $index_hwm -gt 0 && $index_hwm -le 64 ]] || {
+        expected_index_words=$((16384 * index_partitions))
+        [[ $index_words -eq $expected_index_words && $index_hwm -gt 0 && $index_hwm -le 64 ]] || {
             echo "invalid bounded index evidence: $index_words/$index_hwm" >&2
             exit 1
         }
@@ -419,8 +457,10 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     stream_writes alu_compute_cycles page_ready_signals page_wait_reads
     page_wait_deferrals page_wait_responses l3_read_hits_maa
     l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
-    virtual_grow_order response_slots response_word_pool
-    row_table_cache_lines source_reads response_slot_hwm response_word_hwm
+    row_table_rows_per_slice row_table_entries_per_subslice_row
+    virtual_grow_order virtual_index_partitions response_slots response_word_pool row_table_cache_lines
+    row_table_rows_inserted row_table_unique_cache_lines
+    row_table_unique_rows source_reads response_slot_hwm response_word_hwm
     response_pool_stalls row_table_full_events virtual_build_rounds dram_reads
     dram_activates dram_precharges)
 values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
@@ -430,8 +470,9 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$stream_spd_reads" "$stream_writes" "$alu_compute"
     "$page_ready_signals" "$page_wait_reads" "$page_wait_deferrals"
     "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
-    "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$grow_order"
-    "$response_slots" "$response_word_pool" "$rt_cache_lines"
+    "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
+    "$row_entries" "$grow_order" "$index_partitions" "$response_slots" "$response_word_pool"
+    "$rt_cache_lines" "$rt_rows" "$rt_unique_cache_lines" "$rt_unique_rows"
     "$source_reads" "$response_slot_hwm" "$response_word_hwm"
     "$response_pool_stalls" "$rt_full" "$build_rounds" "$dram_reads"
     "$dram_acts" "$dram_pres")
