@@ -12,6 +12,7 @@
 #define CELLS UINT32_C(16)
 #define CHANNELS UINT32_C(6)
 #define LOGICAL_UPDATES (ITEMS * CHANNELS)
+#define CANDIDATE_PARTICLES UINT32_C(128)
 
 #ifndef SPARTA_TALLY_MODE
 #define SPARTA_TALLY_MODE 0
@@ -49,11 +50,37 @@ double_to_bits(double value)
     return converted.integer;
 }
 
-static double
-contribution_value(uint32_t item, uint32_t channel)
+static int
+selected_particle(uint32_t candidate)
 {
-    const int32_t integer = (int32_t)(item % 9) - 4;
-    return (double)integer + (double)(channel + 1) * 0.125;
+    const uint32_t eligibility = candidate % 4;
+    return eligibility == 1 || eligibility == 2;
+}
+
+static double
+particle_contribution(uint32_t candidate, uint32_t channel)
+{
+    static const double masses[3] = {1.0, 1.5, 2.25};
+    const double mass = masses[candidate % 3];
+    const double vx = ((int32_t)(candidate % 7) - 3) * 0.5;
+    const double vy = ((int32_t)(candidate % 5) - 2) * 0.25;
+    const double vz = ((int32_t)(candidate % 9) - 4) * 0.125;
+    switch (channel) {
+      case 0:
+        return 1.0;
+      case 1:
+        return mass;
+      case 2:
+        return mass * vx;
+      case 3:
+        return mass * vy;
+      case 4:
+        return mass * vz;
+      case 5:
+        return mass * (vx * vx + vy * vy + vz * vz);
+      default:
+        finish(UINT64_C(9));
+    }
 }
 
 static uint64_t
@@ -98,15 +125,22 @@ prepare_case(
     volatile double *tallies, uint64_t *expected, int shuffled)
 {
     for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
-        tallies[element] = 0.0;
-        expected[element] = double_to_bits(0.0);
+        const double initial = (double)(element % 11 + 1) * 0.125;
+        tallies[element] = initial;
+        expected[element] = double_to_bits(initial);
     }
-    for (uint32_t item = 0; item < ITEMS; ++item) {
+    uint32_t item = 0;
+    for (uint32_t candidate = 0; candidate < CANDIDATE_PARTICLES;
+         ++candidate) {
+        if (!selected_particle(candidate)) {
+            continue;
+        }
         const uint32_t cell = shuffled ? (item * 13 + 7) % CELLS :
                                          item / (ITEMS / CELLS);
         indices[item] = cell;
         for (uint32_t channel = 0; channel < CHANNELS; ++channel) {
-            const double value = contribution_value(item, channel);
+            const double value =
+                particle_contribution(candidate, channel);
             contributions[item * CHANNELS + channel] = value;
             const uint32_t destination = cell * CHANNELS + channel;
             union
@@ -117,6 +151,10 @@ prepare_case(
             accumulator.floating += value;
             expected[destination] = accumulator.integer;
         }
+        ++item;
+    }
+    if (item != ITEMS) {
+        finish(UINT64_C(8));
     }
 }
 
