@@ -59,14 +59,38 @@ constexpr uint64_t PackedDirectionalMaximumCells = uint64_t{1} << 24;
 constexpr uint64_t FaceMinMaxCellMask = (uint64_t{1} << 31) - 1;
 constexpr size_t FaceMinMaxHighCellShift = 31;
 constexpr uint64_t FaceMinMaxActiveBit = uint64_t{1} << 62;
-constexpr uint64_t FaceMinMaxReservedMask = uint64_t{1} << 63;
+constexpr size_t FaceMinMaxKindShift = 62;
+constexpr uint64_t FaceMinMaxKindMask = uint64_t{3} << FaceMinMaxKindShift;
 constexpr uint64_t FaceMinMaxMaximumCells = uint64_t{1} << 31;
-constexpr uint64_t FaceMinMaxCellRecordBytes = 4 * sizeof(uint64_t);
+constexpr uint64_t FaceMinMaxNormalCellRecordBytes = 4 * sizeof(uint64_t);
+constexpr uint64_t FaceMinMaxSpecialCellRecordBytes = 5 * sizeof(uint64_t);
+constexpr uint64_t FaceMinMaxCellRecordBytes =
+    FaceMinMaxNormalCellRecordBytes;
 constexpr uint64_t FaceMinMaxOutputArrays = 4;
+constexpr uint8_t FaceMinMaxInternalModeMask = 0x3;
+constexpr uint8_t FaceMinMaxBoundaryFaceValueFlag = 0x4;
+constexpr uint8_t FaceMinMaxSupportedFlags = 0x7;
+
+enum class FaceMinMaxKind : uint8_t
+{
+    Inactive = 0,
+    Internal = 1,
+    LowBoundary = 2,
+    HighBoundary = 3
+};
+
+enum class FaceMinMaxInternalMode : uint8_t
+{
+    Normal = 0,
+    DensityGuarded = 1,
+    PressureWeighted = 2,
+    Reserved = 3
+};
 
 struct Descriptor
 {
     DescriptorOpcode opcode = DescriptorOpcode::DirectGather;
+    uint8_t flags = 0;
     uint32_t itemCount = 0;
     uint64_t addressVector = 0;
     uint64_t resultVector = 0;
@@ -75,6 +99,8 @@ struct Descriptor
     uint32_t recordCount = 0;
     uint32_t maxSteps = 0;
     uint64_t terminalIndex = 0;
+    uint32_t faceValueCount = 0;
+    uint64_t faceValueBase = 0;
 };
 
 struct DescriptorDecodeResult
@@ -163,6 +189,27 @@ descriptorRecordBytes(DescriptorOpcode opcode)
     return FaceMinMaxCellRecordBytes;
 }
 
+inline FaceMinMaxInternalMode
+faceMinMaxInternalMode(const Descriptor &descriptor)
+{
+    return static_cast<FaceMinMaxInternalMode>(
+        descriptor.flags & FaceMinMaxInternalModeMask);
+}
+
+inline bool
+faceMinMaxUsesFaceValues(const Descriptor &descriptor)
+{
+    return (descriptor.flags & FaceMinMaxBoundaryFaceValueFlag) != 0;
+}
+
+inline uint64_t
+faceMinMaxCellRecordBytes(const Descriptor &descriptor)
+{
+    return faceMinMaxInternalMode(descriptor) ==
+            FaceMinMaxInternalMode::Normal ?
+        FaceMinMaxNormalCellRecordBytes : FaceMinMaxSpecialCellRecordBytes;
+}
+
 inline DescriptorDecodeResult
 decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
                  uint32_t maxItems)
@@ -186,12 +233,19 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
         result.error = DescriptorError::BadOpcode;
         return result;
     }
-    if (bytes[7] != 0) {
+    result.descriptor.opcode = static_cast<DescriptorOpcode>(rawOpcode);
+    result.descriptor.flags = bytes[7];
+    if (result.descriptor.opcode == DescriptorOpcode::FaceMinMax) {
+        if ((result.descriptor.flags & ~FaceMinMaxSupportedFlags) != 0 ||
+            faceMinMaxInternalMode(result.descriptor) ==
+                FaceMinMaxInternalMode::Reserved) {
+            result.error = DescriptorError::UnsupportedFlags;
+            return result;
+        }
+    } else if (result.descriptor.flags != 0) {
         result.error = DescriptorError::UnsupportedFlags;
         return result;
     }
-
-    result.descriptor.opcode = static_cast<DescriptorOpcode>(rawOpcode);
     result.descriptor.itemCount = descriptorReadLe32(bytes.data() + 8);
     if (result.descriptor.itemCount == 0) {
         result.error = DescriptorError::Empty;
@@ -244,14 +298,22 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
     } else {
         result.descriptor.recordBase = descriptorReadLe64(bytes.data() + 40);
         result.descriptor.recordCount = descriptorReadLe32(bytes.data() + 48);
-        result.descriptor.maxSteps = descriptorReadLe32(bytes.data() + 52);
-        result.descriptor.terminalIndex =
+        result.descriptor.faceValueCount =
+            descriptorReadLe32(bytes.data() + 52);
+        result.descriptor.faceValueBase =
             descriptorReadLe64(bytes.data() + 56);
+        const bool usesFaceValues = faceMinMaxUsesFaceValues(
+            result.descriptor);
         if (result.descriptor.recordBase % sizeof(uint64_t) != 0 ||
             result.descriptor.recordCount == 0 ||
             result.descriptor.recordCount > FaceMinMaxMaximumCells ||
-            result.descriptor.maxSteps != 0 ||
-            result.descriptor.terminalIndex != 0) {
+            (usesFaceValues &&
+             (result.descriptor.faceValueCount == 0 ||
+              result.descriptor.faceValueCount > FaceMinMaxMaximumCells ||
+              result.descriptor.faceValueBase % sizeof(uint64_t) != 0)) ||
+            (!usesFaceValues &&
+             (result.descriptor.faceValueCount != 0 ||
+              result.descriptor.faceValueBase != 0))) {
             result.error = DescriptorError::BadRecordGeometry;
             return result;
         }
@@ -269,7 +331,8 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
     }
 
     if (result.descriptor.opcode == DescriptorOpcode::FaceMinMax &&
-        result.descriptor.resultVector % FaceMinMaxCellRecordBytes != 0) {
+        result.descriptor.resultVector %
+            faceMinMaxCellRecordBytes(result.descriptor) != 0) {
         result.error = DescriptorError::MisalignedVector;
         return result;
     }
@@ -278,6 +341,7 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
     uint64_t resultEnd = 0;
     uint64_t completionEnd = 0;
     uint64_t recordEnd = 0;
+    uint64_t faceValueEnd = 0;
     if (!descriptorRange(result.descriptor.addressVector,
                          result.descriptor.itemCount, sizeof(uint64_t),
                          addressEnd) ||
@@ -286,7 +350,8 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
             result.descriptor.opcode == DescriptorOpcode::FaceMinMax ?
                 result.descriptor.recordCount : result.descriptor.itemCount,
             result.descriptor.opcode == DescriptorOpcode::FaceMinMax ?
-                FaceMinMaxCellRecordBytes : sizeof(uint64_t),
+                faceMinMaxCellRecordBytes(result.descriptor) :
+                sizeof(uint64_t),
             resultEnd) ||
         !descriptorRange(result.descriptor.completionRecord, 1, 32,
                          completionEnd) ||
@@ -297,8 +362,18 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
                               result.descriptor.recordCount *
                                   FaceMinMaxOutputArrays :
                               result.descriptor.recordCount,
-                          descriptorRecordBytes(result.descriptor.opcode),
-                          recordEnd))) {
+                          result.descriptor.opcode ==
+                                  DescriptorOpcode::FaceMinMax ?
+                              sizeof(uint64_t) :
+                              descriptorRecordBytes(
+                                  result.descriptor.opcode),
+                          recordEnd)) ||
+        (result.descriptor.opcode == DescriptorOpcode::FaceMinMax &&
+         faceMinMaxUsesFaceValues(result.descriptor) &&
+         !descriptorRange(
+             result.descriptor.faceValueBase,
+             result.descriptor.faceValueCount, sizeof(uint64_t),
+             faceValueEnd))) {
         result.error = DescriptorError::RangeOverflow;
         return result;
     }
@@ -323,6 +398,23 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
              result.descriptor.recordBase, recordEnd) ||
          descriptorRangesOverlap(
              result.descriptor.completionRecord, completionEnd,
+             result.descriptor.recordBase, recordEnd))) {
+        result.error = DescriptorError::OverlappingInput;
+        return result;
+    }
+    if (result.descriptor.opcode == DescriptorOpcode::FaceMinMax &&
+        faceMinMaxUsesFaceValues(result.descriptor) &&
+        (descriptorRangesOverlap(
+             result.descriptor.faceValueBase, faceValueEnd,
+             result.descriptor.addressVector, addressEnd) ||
+         descriptorRangesOverlap(
+             result.descriptor.faceValueBase, faceValueEnd,
+             result.descriptor.resultVector, resultEnd) ||
+         descriptorRangesOverlap(
+             result.descriptor.faceValueBase, faceValueEnd,
+             result.descriptor.completionRecord, completionEnd) ||
+         descriptorRangesOverlap(
+             result.descriptor.faceValueBase, faceValueEnd,
              result.descriptor.recordBase, recordEnd))) {
         result.error = DescriptorError::OverlappingInput;
         return result;

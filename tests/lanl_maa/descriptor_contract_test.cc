@@ -14,7 +14,12 @@ using gem5::lanlmaa::DescriptorError;
 using gem5::lanlmaa::DescriptorMagic;
 using gem5::lanlmaa::DescriptorOpcode;
 using gem5::lanlmaa::DescriptorVersion;
+using gem5::lanlmaa::FaceMinMaxBoundaryFaceValueFlag;
+using gem5::lanlmaa::FaceMinMaxInternalMode;
 using gem5::lanlmaa::decodeDescriptor;
+using gem5::lanlmaa::faceMinMaxCellRecordBytes;
+using gem5::lanlmaa::faceMinMaxInternalMode;
+using gem5::lanlmaa::faceMinMaxUsesFaceValues;
 
 void
 writeLe(std::array<uint8_t, DescriptorBytes> &bytes, size_t offset,
@@ -68,14 +73,19 @@ validPackedDirectionalDescriptor()
 }
 
 std::array<uint8_t, DescriptorBytes>
-validFaceMinMaxDescriptor()
+validFaceMinMaxDescriptor(uint8_t flags = 0)
 {
     auto bytes = validDescriptor();
     writeLe(
         bytes, 6, static_cast<uint8_t>(DescriptorOpcode::FaceMinMax), 1);
-    writeLe(bytes, 24, 0x800, 8);
+    writeLe(bytes, 7, flags, 1);
+    writeLe(bytes, 24, (flags & 0x3) == 0 ? 0x800 : 0x820, 8);
     writeLe(bytes, 40, 0x1000, 8);
     writeLe(bytes, 48, 16, 4);
+    if ((flags & FaceMinMaxBoundaryFaceValueFlag) != 0) {
+        writeLe(bytes, 52, 16, 4);
+        writeLe(bytes, 56, 0x1400, 8);
+    }
     return bytes;
 }
 
@@ -116,6 +126,33 @@ main()
     assert(face.descriptor.resultVector == 0x800);
     assert(face.descriptor.recordBase == 0x1000);
     assert(face.descriptor.recordCount == 16);
+    assert(faceMinMaxInternalMode(face.descriptor) ==
+           FaceMinMaxInternalMode::Normal);
+    assert(faceMinMaxCellRecordBytes(face.descriptor) == 32);
+    assert(!faceMinMaxUsesFaceValues(face.descriptor));
+
+    const auto guarded = decodeDescriptor(validFaceMinMaxDescriptor(1), 8);
+    assert(guarded);
+    assert(faceMinMaxInternalMode(guarded.descriptor) ==
+           FaceMinMaxInternalMode::DensityGuarded);
+    assert(faceMinMaxCellRecordBytes(guarded.descriptor) == 40);
+
+    const auto pressureFaceValue = decodeDescriptor(
+        validFaceMinMaxDescriptor(
+            2 | FaceMinMaxBoundaryFaceValueFlag),
+        8);
+    assert(pressureFaceValue);
+    assert(faceMinMaxInternalMode(pressureFaceValue.descriptor) ==
+           FaceMinMaxInternalMode::PressureWeighted);
+    assert(faceMinMaxUsesFaceValues(pressureFaceValue.descriptor));
+    assert(pressureFaceValue.descriptor.faceValueCount == 16);
+    assert(pressureFaceValue.descriptor.faceValueBase == 0x1400);
+
+    auto adjacentFaceRanges = validFaceMinMaxDescriptor(
+        2 | FaceMinMaxBoundaryFaceValueFlag);
+    writeLe(adjacentFaceRanges, 40, 0xaa0, 8);
+    writeLe(adjacentFaceRanges, 56, 0xca0, 8);
+    assert(decodeDescriptor(adjacentFaceRanges, 8));
 
     auto bytes = validDescriptor();
     writeLe(bytes, 0, 0, 4);
@@ -244,6 +281,45 @@ main()
     writeLe(bytes, 56, 1, 8);
     assert(decodeDescriptor(bytes, 8).error ==
            DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 7, 3, 1);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::UnsupportedFlags);
+
+    bytes = validFaceMinMaxDescriptor();
+    writeLe(bytes, 7, 8, 1);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::UnsupportedFlags);
+
+    bytes = validFaceMinMaxDescriptor(1);
+    writeLe(bytes, 24, 0x800, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::MisalignedVector);
+
+    bytes = validFaceMinMaxDescriptor(
+        2 | FaceMinMaxBoundaryFaceValueFlag);
+    writeLe(bytes, 52, 0, 4);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor(
+        2 | FaceMinMaxBoundaryFaceValueFlag);
+    writeLe(bytes, 56, 0x1404, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validFaceMinMaxDescriptor(
+        2 | FaceMinMaxBoundaryFaceValueFlag);
+    writeLe(bytes, 56, 0x820, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::OverlappingInput);
+
+    bytes = validFaceMinMaxDescriptor(
+        2 | FaceMinMaxBoundaryFaceValueFlag);
+    writeLe(bytes, 56, std::numeric_limits<uint64_t>::max() - 7, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::RangeOverflow);
 
     bytes = validFaceMinMaxDescriptor();
     writeLe(bytes, 40, 0x800, 8);

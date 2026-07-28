@@ -106,7 +106,8 @@ class LANLMAA : public ClockedObject
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
-        bool faceActive = false;
+        bool facePressureWeighted = false;
+        FaceMinMaxKind faceKind = FaceMinMaxKind::Inactive;
     };
 
     struct LineEntry
@@ -204,6 +205,9 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorErrors;
         statistics::Scalar descriptorPredicatesSkipped;
         statistics::Scalar descriptorFaceValuesComputed;
+        statistics::Scalar descriptorFaceVacuumValues;
+        statistics::Scalar descriptorFacePressureWeightedValues;
+        statistics::Scalar descriptorFaceBoundaryValues;
         statistics::Scalar descriptorFaceUpdatesAcknowledged;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
@@ -296,6 +300,10 @@ class LANLMAA : public ClockedObject
     static bool floatingUpdate(UpdateKind kind);
     static bool strictFloatingUpdate(UpdateKind kind);
     UpdateKind operationUpdateKind(const Operation &operation) const;
+    bool faceOperationActive(const Operation &operation) const;
+    size_t faceGatherCount(const Operation &operation) const;
+    size_t faceUpdateCount(const Operation &operation) const;
+    uint8_t faceOutputOrdinal(const Operation &operation) const;
     Addr faceGatherAddress(const Operation &operation) const;
     Addr faceUpdateAddress(const Operation &operation) const;
     bool faceGatheringComplete() const;

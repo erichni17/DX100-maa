@@ -203,6 +203,14 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Descriptor items retired without memory for false predicate"),
       ADD_STAT(descriptorFaceValuesComputed, statistics::units::Count::get(),
                "Finite EAP-derived weighted face values computed"),
+      ADD_STAT(descriptorFaceVacuumValues, statistics::units::Count::get(),
+               "EAP density-guarded faces resolved to zero"),
+      ADD_STAT(descriptorFacePressureWeightedValues,
+               statistics::units::Count::get(),
+               "EAP faces using density-weighted pressure interpolation"),
+      ADD_STAT(descriptorFaceBoundaryValues,
+               statistics::units::Count::get(),
+               "EAP low/high boundary face values gathered"),
       ADD_STAT(descriptorFaceUpdatesAcknowledged,
                statistics::units::Count::get(),
                "EAP-derived logical MIN/MAX updates acknowledged"),
@@ -977,10 +985,60 @@ LANLMAA::operationUpdateKind(const Operation &operation) const
     if (!faceMinMaxDescriptor()) {
         return configuredUpdateKind();
     }
-    panic_if(operation.faceUpdateOrdinal >= FaceMinMaxOutputArrays,
-             "LANLMAA face update ordinal is out of range");
-    return operation.faceUpdateOrdinal % 2 == 0 ?
+    const uint8_t outputOrdinal = faceOutputOrdinal(operation);
+    return outputOrdinal % 2 == 0 ?
         UpdateKind::Fp64Min : UpdateKind::Fp64Max;
+}
+
+bool
+LANLMAA::faceOperationActive(const Operation &operation) const
+{
+    return operation.faceKind != FaceMinMaxKind::Inactive;
+}
+
+size_t
+LANLMAA::faceGatherCount(const Operation &operation) const
+{
+    if (!faceOperationActive(operation)) {
+        return 0;
+    }
+    if (operation.faceKind != FaceMinMaxKind::Internal) {
+        return 1;
+    }
+    switch (faceMinMaxInternalMode(descriptor)) {
+      case FaceMinMaxInternalMode::Normal:
+        return 4;
+      case FaceMinMaxInternalMode::DensityGuarded:
+        return 6;
+      case FaceMinMaxInternalMode::PressureWeighted:
+        return 8;
+      case FaceMinMaxInternalMode::Reserved:
+        break;
+    }
+    panic("LANLMAA face descriptor retained a reserved internal mode");
+}
+
+size_t
+LANLMAA::faceUpdateCount(const Operation &operation) const
+{
+    if (operation.faceKind == FaceMinMaxKind::Internal) {
+        return 4;
+    }
+    if (faceOperationActive(operation)) {
+        return 2;
+    }
+    return 0;
+}
+
+uint8_t
+LANLMAA::faceOutputOrdinal(const Operation &operation) const
+{
+    panic_if(operation.faceUpdateOrdinal >= faceUpdateCount(operation),
+             "LANLMAA face update ordinal is out of range");
+    if (operation.faceKind == FaceMinMaxKind::LowBoundary) {
+        return operation.faceUpdateOrdinal + 2;
+    }
+    return operation.faceUpdateOrdinal;
 }
 
 bool
@@ -1016,18 +1074,64 @@ LANLMAA::decodeDouble(uint64_t bits)
 Addr
 LANLMAA::faceGatherAddress(const Operation &operation) const
 {
-    panic_if(!faceMinMaxDescriptor() || !operation.faceActive ||
-                 operation.faceGatherStage >= 4,
+    panic_if(!faceMinMaxDescriptor() || !faceOperationActive(operation) ||
+                 operation.faceGatherStage >= faceGatherCount(operation),
              "LANLMAA requested an invalid face gather address");
-    const uint64_t cell =
-        operation.faceGatherStage == 0 || operation.faceGatherStage == 3 ?
-            operation.faceHigh : operation.faceLow;
-    constexpr std::array<uint64_t, 4> offsets = {
-        0, sizeof(uint64_t), 3 * sizeof(uint64_t),
-        2 * sizeof(uint64_t)};
+    if (operation.faceKind != FaceMinMaxKind::Internal &&
+        faceMinMaxUsesFaceValues(descriptor)) {
+        const uint64_t source =
+            operation.faceKind == FaceMinMaxKind::LowBoundary ?
+                operation.faceHigh : operation.faceLow;
+        const uint64_t raw = descriptor.faceValueBase +
+            source * sizeof(uint64_t);
+        const Addr address = static_cast<Addr>(raw);
+        panic_if(static_cast<uint64_t>(address) != raw,
+                 "LANLMAA face-value address overflowed Addr");
+        return address;
+    }
+
+    uint64_t cell = 0;
+    uint64_t offset = 0;
+    if (operation.faceKind == FaceMinMaxKind::LowBoundary) {
+        cell = operation.faceLow;
+        offset = 3 * sizeof(uint64_t);
+    } else if (operation.faceKind == FaceMinMaxKind::HighBoundary) {
+        cell = operation.faceHigh;
+        offset = 2 * sizeof(uint64_t);
+    } else {
+        const auto mode = faceMinMaxInternalMode(descriptor);
+        const uint8_t stage = operation.faceGatherStage;
+        if (mode == FaceMinMaxInternalMode::Normal) {
+            constexpr std::array<uint8_t, 4> useHigh = {1, 0, 0, 1};
+            constexpr std::array<uint64_t, 4> offsets = {
+                0, sizeof(uint64_t), 3 * sizeof(uint64_t),
+                2 * sizeof(uint64_t)};
+            cell = useHigh[stage] ? operation.faceHigh : operation.faceLow;
+            offset = offsets[stage];
+        } else if (mode == FaceMinMaxInternalMode::DensityGuarded) {
+            constexpr std::array<uint8_t, 6> useHigh = {0, 1, 1, 0, 0, 1};
+            constexpr std::array<uint64_t, 6> offsets = {
+                4 * sizeof(uint64_t), 4 * sizeof(uint64_t), 0,
+                sizeof(uint64_t), 3 * sizeof(uint64_t),
+                2 * sizeof(uint64_t)};
+            cell = useHigh[stage] ? operation.faceHigh : operation.faceLow;
+            offset = offsets[stage];
+        } else {
+            panic_if(mode != FaceMinMaxInternalMode::PressureWeighted,
+                     "LANLMAA face descriptor retained a reserved mode");
+            constexpr std::array<uint8_t, 8> useHigh = {
+                0, 1, 0, 1, 1, 0, 0, 1};
+            constexpr std::array<uint64_t, 8> offsets = {
+                4 * sizeof(uint64_t), 4 * sizeof(uint64_t),
+                2 * sizeof(uint64_t), 3 * sizeof(uint64_t), 0,
+                sizeof(uint64_t), 3 * sizeof(uint64_t),
+                2 * sizeof(uint64_t)};
+            cell = useHigh[stage] ? operation.faceHigh : operation.faceLow;
+            offset = offsets[stage];
+        }
+    }
     const uint64_t raw = descriptor.resultVector +
-        cell * FaceMinMaxCellRecordBytes +
-        offsets[operation.faceGatherStage];
+        cell * faceMinMaxCellRecordBytes(descriptor) + offset;
     const Addr address = static_cast<Addr>(raw);
     panic_if(static_cast<uint64_t>(address) != raw,
              "LANLMAA face gather address overflowed Addr");
@@ -1037,13 +1141,13 @@ LANLMAA::faceGatherAddress(const Operation &operation) const
 Addr
 LANLMAA::faceUpdateAddress(const Operation &operation) const
 {
-    panic_if(!faceMinMaxDescriptor() || !operation.faceActive ||
-                 operation.faceUpdateOrdinal >= FaceMinMaxOutputArrays,
+    panic_if(!faceMinMaxDescriptor() || !faceOperationActive(operation),
              "LANLMAA requested an invalid face update address");
-    const uint64_t cell = operation.faceUpdateOrdinal < 2 ?
+    const uint8_t outputOrdinal = faceOutputOrdinal(operation);
+    const uint64_t cell = outputOrdinal < 2 ?
         operation.faceHigh : operation.faceLow;
     const uint64_t raw = descriptor.recordBase +
-        (operation.faceUpdateOrdinal * descriptor.recordCount + cell) *
+        (outputOrdinal * descriptor.recordCount + cell) *
             sizeof(uint64_t);
     const Addr address = static_cast<Addr>(raw);
     panic_if(static_cast<uint64_t>(address) != raw,
@@ -1072,7 +1176,7 @@ LANLMAA::beginFaceUpdatePhase()
              "LANLMAA began face updates before gathers completed");
     descriptorFaceUpdatePhase = true;
     for (auto &operation : operations) {
-        if (operation.faceActive) {
+        if (faceOperationActive(operation)) {
             operation.faceUpdateOrdinal = 0;
             operation.address = faceUpdateAddress(operation);
             operation.state = OperationState::FaceUpdateReady;
@@ -1152,13 +1256,14 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     uint64_t resultEnd = 0;
     uint64_t completionEnd = 0;
     uint64_t recordEnd = 0;
+    uint64_t faceValueEnd = 0;
     const bool rangesValid = descriptorRange(
         descriptor.addressVector, descriptor.itemCount, sizeof(uint64_t),
         addressEnd) && descriptorRange(
         descriptor.resultVector,
         faceMinMaxDescriptor() ? descriptor.recordCount :
                                  descriptor.itemCount,
-        faceMinMaxDescriptor() ? FaceMinMaxCellRecordBytes :
+        faceMinMaxDescriptor() ? faceMinMaxCellRecordBytes(descriptor) :
                                  sizeof(uint64_t),
         resultEnd) && descriptorRange(
         descriptor.completionRecord, 1, 32, completionEnd) &&
@@ -1168,7 +1273,14 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
              faceMinMaxDescriptor() ?
                  descriptor.recordCount * FaceMinMaxOutputArrays :
                  descriptor.recordCount,
-             descriptorRecordBytes(descriptor.opcode), recordEnd));
+             faceMinMaxDescriptor() ? sizeof(uint64_t) :
+                 descriptorRecordBytes(descriptor.opcode),
+             recordEnd)) &&
+        (!faceMinMaxDescriptor() ||
+         !faceMinMaxUsesFaceValues(descriptor) ||
+         descriptorRange(
+             descriptor.faceValueBase, descriptor.faceValueCount,
+             sizeof(uint64_t), faceValueEnd));
     panic_if(!rangesValid,
              "LANLMAA decoded descriptor lost its range invariant");
 
@@ -1185,7 +1297,10 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         unsafeRange(descriptor.resultVector, resultEnd) ||
         unsafeRange(descriptor.completionRecord, completionEnd) ||
         (descriptorHasRecordRange(descriptor.opcode) &&
-         unsafeRange(descriptor.recordBase, recordEnd))) {
+         unsafeRange(descriptor.recordBase, recordEnd)) ||
+        (faceMinMaxDescriptor() &&
+         faceMinMaxUsesFaceValues(descriptor) &&
+         unsafeRange(descriptor.faceValueBase, faceValueEnd))) {
         rejectDescriptor(DescriptorError::UnsafeAddressRange);
         return true;
     }
@@ -1260,24 +1375,42 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
             operation.positiveDirection =
                 (rawAddress & PackedDirectionalDirectionBit) != 0;
         } else if (descriptor.opcode == DescriptorOpcode::FaceMinMax) {
-            const uint64_t low = rawAddress & FaceMinMaxCellMask;
-            const uint64_t high =
+            const uint64_t payload0 = rawAddress & FaceMinMaxCellMask;
+            const uint64_t payload1 =
                 (rawAddress >> FaceMinMaxHighCellShift) &
                 FaceMinMaxCellMask;
-            const bool active = (rawAddress & FaceMinMaxActiveBit) != 0;
-            if ((rawAddress & FaceMinMaxReservedMask) != 0 ||
-                (active &&
-                 (low >= descriptor.recordCount ||
-                  high >= descriptor.recordCount))) {
+            const auto kind = static_cast<FaceMinMaxKind>(
+                (rawAddress & FaceMinMaxKindMask) >>
+                FaceMinMaxKindShift);
+            bool valid = true;
+            if (kind == FaceMinMaxKind::Internal) {
+                valid = payload0 < descriptor.recordCount &&
+                    payload1 < descriptor.recordCount;
+            } else if (kind != FaceMinMaxKind::Inactive) {
+                valid = payload0 < descriptor.recordCount &&
+                    (faceMinMaxUsesFaceValues(descriptor) ?
+                         payload1 < descriptor.faceValueCount :
+                         payload1 == 0);
+            }
+            if (!valid) {
                 vectorError = DescriptorError::BadStartState;
                 break;
             }
             auto &operation = operations[descriptorAddressCursor];
-            operation.faceLow = static_cast<uint32_t>(low);
-            operation.faceHigh = static_cast<uint32_t>(high);
-            operation.faceActive = active;
+            operation.faceKind = kind;
+            if (kind == FaceMinMaxKind::Internal) {
+                operation.faceLow = static_cast<uint32_t>(payload0);
+                operation.faceHigh = static_cast<uint32_t>(payload1);
+            } else if (kind == FaceMinMaxKind::LowBoundary) {
+                operation.faceLow = static_cast<uint32_t>(payload0);
+                operation.faceHigh = static_cast<uint32_t>(payload1);
+            } else if (kind == FaceMinMaxKind::HighBoundary) {
+                operation.faceHigh = static_cast<uint32_t>(payload0);
+                operation.faceLow = static_cast<uint32_t>(payload1);
+            }
             operation.faceGatherStage = 0;
-            target = active ? faceGatherAddress(operation) : 0;
+            target = faceOperationActive(operation) ?
+                faceGatherAddress(operation) : 0;
         } else {
             target = static_cast<Addr>(rawAddress);
             if (static_cast<uint64_t>(target) != rawAddress ||
@@ -1515,13 +1648,13 @@ LANLMAA::admitOperations()
 
         auto &operation = operations[nextAdmission];
         const bool needsContext = activeDependentMode() ||
-            (faceMinMaxDescriptor() && operation.faceActive);
+            (faceMinMaxDescriptor() && faceOperationActive(operation));
         if (needsContext && activeContexts == continuationEntries) {
             ++stats.contextWouldBlockCycles;
             return;
         }
 
-        if (faceMinMaxDescriptor() && !operation.faceActive) {
+        if (faceMinMaxDescriptor() && !faceOperationActive(operation)) {
             operation.state = OperationState::FaceGatherComplete;
             ++stats.descriptorPredicatesSkipped;
         } else {
@@ -2078,8 +2211,9 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                 }
             }
         } else if (faceMinMaxDescriptor()) {
-            panic_if(!operation.faceActive ||
-                         operation.faceGatherStage >= 4,
+            panic_if(!faceOperationActive(operation) ||
+                         operation.faceGatherStage >=
+                             faceGatherCount(operation),
                      "LANLMAA face response lost its gather stage");
             uint64_t bits = 0;
             std::memcpy(&bits, data + offset, sizeof(bits));
@@ -2091,27 +2225,128 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                 beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
                 return true;
             }
-            if (operation.faceGatherStage < operation.faceValues.size()) {
-                operation.faceValues[operation.faceGatherStage] = bits;
-            }
-            ++operation.faceGatherStage;
-            if (operation.faceGatherStage < 4) {
-                operation.address = faceGatherAddress(operation);
-                operation.state = OperationState::AddressReady;
+            const uint8_t stage = operation.faceGatherStage;
+            bool valueComplete = false;
+            bool denominatorRequired = false;
+            double faceValue = 0.0;
+            double denominator = 1.0;
+            if (operation.faceKind != FaceMinMaxKind::Internal) {
+                faceValue = field;
+                valueComplete = true;
+                ++stats.descriptorFaceBoundaryValues;
             } else {
-                const double highHalfLow =
-                    decodeDouble(operation.faceValues[0]);
-                const double lowHalfHigh =
-                    decodeDouble(operation.faceValues[1]);
-                const double lowValueHigh =
-                    decodeDouble(operation.faceValues[2]);
-                const double highValueLow = field;
-                const double denominator = highHalfLow + lowHalfHigh;
-                const double faceValue =
-                    (highHalfLow * lowValueHigh +
-                     lowHalfHigh * highValueLow) /
-                    denominator;
-                if (!std::isfinite(denominator) || denominator == 0.0 ||
+                const auto mode = faceMinMaxInternalMode(descriptor);
+                if (mode == FaceMinMaxInternalMode::Normal) {
+                    if (stage < operation.faceValues.size()) {
+                        operation.faceValues[stage] = bits;
+                    } else {
+                        const double highHalfLow =
+                            decodeDouble(operation.faceValues[0]);
+                        const double lowHalfHigh =
+                            decodeDouble(operation.faceValues[1]);
+                        const double lowValueHigh =
+                            decodeDouble(operation.faceValues[2]);
+                        denominator = highHalfLow + lowHalfHigh;
+                        denominatorRequired = true;
+                        faceValue =
+                            (highHalfLow * lowValueHigh +
+                             lowHalfHigh * field) /
+                            denominator;
+                        valueComplete = true;
+                    }
+                } else if (mode ==
+                           FaceMinMaxInternalMode::DensityGuarded) {
+                    if (stage == 0) {
+                        operation.faceValues[0] = bits;
+                    } else if (stage == 1) {
+                        const double lowRho =
+                            decodeDouble(operation.faceValues[0]);
+                        if (lowRho <= 0.0 && field <= 0.0) {
+                            faceValue = 0.0;
+                            valueComplete = true;
+                            ++stats.descriptorFaceVacuumValues;
+                        }
+                    } else if (stage < 5) {
+                        operation.faceValues[stage - 2] = bits;
+                    } else {
+                        const double highHalfLow =
+                            decodeDouble(operation.faceValues[0]);
+                        const double lowHalfHigh =
+                            decodeDouble(operation.faceValues[1]);
+                        const double lowValueHigh =
+                            decodeDouble(operation.faceValues[2]);
+                        denominator = highHalfLow + lowHalfHigh;
+                        denominatorRequired = true;
+                        faceValue =
+                            (highHalfLow * lowValueHigh +
+                             lowHalfHigh * field) /
+                            denominator;
+                        valueComplete = true;
+                    }
+                } else {
+                    panic_if(
+                        mode !=
+                            FaceMinMaxInternalMode::PressureWeighted,
+                        "LANLMAA face response retained a reserved mode");
+                    if (stage == 0) {
+                        operation.faceValues[0] = bits;
+                    } else if (stage == 1) {
+                        const double lowRho =
+                            decodeDouble(operation.faceValues[0]);
+                        operation.faceValues[1] = bits;
+                        if (lowRho <= 0.0 && field <= 0.0) {
+                            faceValue = 0.0;
+                            valueComplete = true;
+                            ++stats.descriptorFaceVacuumValues;
+                        }
+                    } else if (stage == 2) {
+                        operation.faceValues[2] = bits;
+                    } else if (stage == 3) {
+                        operation.facePressureWeighted =
+                            decodeDouble(operation.faceValues[2]) * field <=
+                            0.0;
+                    } else if (stage == 4) {
+                        operation.faceValues[2] = bits;
+                    } else if (stage == 5) {
+                        const double lowRho =
+                            decodeDouble(operation.faceValues[0]);
+                        const double highRho =
+                            decodeDouble(operation.faceValues[1]);
+                        const double highHalfLow =
+                            decodeDouble(operation.faceValues[2]);
+                        const double highCoefficient = highHalfLow *
+                            (operation.facePressureWeighted ? highRho : 1.0);
+                        const double lowCoefficient = field *
+                            (operation.facePressureWeighted ? lowRho : 1.0);
+                        operation.faceValues[0] =
+                            encodeDouble(highCoefficient);
+                        operation.faceValues[1] =
+                            encodeDouble(lowCoefficient);
+                    } else if (stage == 6) {
+                        const double highCoefficient =
+                            decodeDouble(operation.faceValues[0]);
+                        operation.faceValues[2] =
+                            encodeDouble(highCoefficient * field);
+                    } else {
+                        const double highCoefficient =
+                            decodeDouble(operation.faceValues[0]);
+                        const double lowCoefficient =
+                            decodeDouble(operation.faceValues[1]);
+                        const double highTerm =
+                            decodeDouble(operation.faceValues[2]);
+                        denominator = highCoefficient + lowCoefficient;
+                        denominatorRequired = true;
+                        faceValue =
+                            (highTerm + lowCoefficient * field) /
+                            denominator;
+                        valueComplete = true;
+                    }
+                }
+            }
+
+            if (valueComplete) {
+                if ((denominatorRequired &&
+                     (!std::isfinite(denominator) || denominator == 0.0)) ||
                     !std::isfinite(faceValue)) {
                     ++stats.responses;
                     delete packet;
@@ -2123,6 +2358,14 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                 operation.value = encodeDouble(faceValue);
                 operation.state = OperationState::FaceGatherComplete;
                 ++stats.descriptorFaceValuesComputed;
+                if (operation.faceKind == FaceMinMaxKind::Internal &&
+                    operation.facePressureWeighted) {
+                    ++stats.descriptorFacePressureWeightedValues;
+                }
+            } else {
+                ++operation.faceGatherStage;
+                operation.address = faceGatherAddress(operation);
+                operation.state = OperationState::AddressReady;
             }
         } else {
             std::memcpy(
@@ -2192,7 +2435,7 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
             ++operation.faceUpdateOrdinal;
             ++descriptorFaceUpdatesAcknowledged;
             ++stats.descriptorFaceUpdatesAcknowledged;
-            if (operation.faceUpdateOrdinal < FaceMinMaxOutputArrays) {
+            if (operation.faceUpdateOrdinal < faceUpdateCount(operation)) {
                 operation.address = faceUpdateAddress(operation);
                 operation.state = OperationState::FaceUpdateReady;
             } else {

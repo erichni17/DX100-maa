@@ -37,6 +37,28 @@ physics state. Passing this executable establishes reference-model semantics
 and exact logical-access accounting only. It is not a gem5 timing result,
 native EAP/FLAG correctness result, or application speedup claim.
 
+The CPU-visible opcode-4 branch smoke executes two descriptors in one gem5
+process: density guarding with cell-sourced low/high boundaries, followed by
+pressure weighting with faceval-sourced boundaries after a terminal rearm.
+It checks every FP64 output bit, both completion records, exact logical
+gather/update counts, branch counters, retries, acknowledgements, and cache
+coherence. The negative mode rearms after an out-of-range faceval ordinal and
+then rejects a pressure-weighted zero denominator after real input reads;
+neither case may publish an atomic or completion.
+
+```sh
+python3 tests/lanl_maa/run_eap_face_branch_cpu_descriptor_smoke.py \
+    --gem5 build/X86/gem5.opt \
+    --outdir /tmp/eap-face-branches
+python3 tests/lanl_maa/run_eap_face_branch_cpu_descriptor_smoke.py \
+    --gem5 build/X86/gem5.opt --negative \
+    --outdir /tmp/eap-face-branches-negative
+```
+
+These remain generated compact-ABI microbenchmarks. They do not establish a
+native EAP/FLAG submission path, application correctness, synthesized FP
+datapath cost, or application performance.
+
 ## `branson_photon_cell_walk`
 
 This kernel maps the pinned Branson `src/transport_photon.h` loop: a photon selects a cell, reads cell-dependent event data, accumulates absorbed and track energy into cell tallies, follows a next-cell link, and repeats until an explicit event or step bound terminates it. The pinned Branson revision is `f6b678a528fd24839c476a846466c594756337a5`; the source file SHA-256 is `0704d9e8534d94a7f8e4ace9815c3127c9bb8ea9ac21974c2262baa445ce0208`.

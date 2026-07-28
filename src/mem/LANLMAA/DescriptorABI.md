@@ -17,7 +17,7 @@ submitting the next descriptor.
 | 0 | 4 | Magic `LMA1` (`0x31414d4c`) |
 | 4 | 2 | Version `1` |
 | 6 | 1 | Opcode |
-| 7 | 1 | Flags, must be zero |
+| 7 | 1 | Opcode flags; zero except for opcode 4 |
 | 8 | 4 | Item count, nonzero and no larger than `max_descriptor_items` |
 | 12 | 4 | Reserved, must be zero |
 | 16 | 8 | Address or start-index vector |
@@ -92,37 +92,71 @@ the common fields as follows:
 | 32 | 8 | 32-byte completion record |
 | 40 | 8 | 8-byte-aligned base of four FP64 output arrays |
 | 48 | 4 | Cell count, nonzero and at most `2^31` |
-| 52 | 4 | Reserved, must be zero |
-| 56 | 8 | Reserved, must be zero |
+| 52 | 4 | Face-value element count |
+| 56 | 8 | 8-byte-aligned face-value vector base |
 
-A face word stores a 31-bit low-cell index in bits 0--30, a 31-bit high-cell
-index in bits 31--61, the active predicate in bit 62, and a reserved zero in
-bit 63. A false predicate retires without checking its indices and without
-issuing cell reads or updates. This deliberate behavior allows inactive
-boundary lanes to carry poison indices while still testing actual predicate
-suppression. An active face fails before execution if either index is outside
-the descriptor cell count. Opcode 4 also requires `item_count` not to exceed
-the configured continuation-context count because the gather-before-update
-barrier retains one context for each potentially active face.
+Flags bits 0--1 select the internal-face mode: zero is normal interpolation,
+one is density guarded, two is pressure weighted, and three is reserved.
+Flag bit 2 selects the external face-value vector for boundary faces. Bits
+3--7 are reserved. When bit 2 is clear, offsets 52--63 must be zero. When it is
+set, the face-value count must be nonzero and at most `2^31`, and the complete
+range must be mapped, non-overlapping, outside MMIO, and outside the descriptor
+table.
 
-Each cell record is the fixed little-endian FP64 tuple `{half_low,
-half_high, value_low, value_high}`. For an active `(low, high)` face the engine
-computes
+A face word stores two 31-bit payloads in bits 0--30 and 31--61, and a two-bit
+kind in bits 62--63:
+
+| Kind | Meaning | Payload 0 | Payload 1 |
+| ---: | --- | --- | --- |
+| 0 | Inactive | Ignored/poison-safe | Ignored/poison-safe |
+| 1 | Internal (`face_id > 2`) | Low-cell index | High-cell index |
+| 2 | Low boundary (`face_id == 2`) | Low-cell index | Face-value ordinal, or canonical zero |
+| 3 | High boundary (`face_id == 1`) | High-cell index | Face-value ordinal, or canonical zero |
+
+This is backward compatible with the original encoding: kind zero is the
+false predicate and kind one is the old bit-62 active face. An inactive face
+retires without checking either poison payload and without cell reads or
+updates. Every required cell index and face-value ordinal is checked before
+its derived request. Opcode 4 also requires `item_count` not to exceed the
+configured continuation-context count because the gather-before-update
+barrier retains one context for every potentially active face.
+
+Normal mode uses a 32-byte, 32-byte-aligned little-endian FP64 cell record
+`{half_low, half_high, value_low, value_high}`. Density-guarded and pressure
+modes use a 40-byte, 40-byte-aligned record that appends `rho`. For an internal
+`(low, high)` face, normal mode computes
 
 `(half_low[high] * value_high[low] + half_high[low] * value_low[high]) /
  (half_low[high] + half_high[low])`.
 
-All four inputs, the denominator, and the result must be finite, and the
-denominator must be nonzero. Every active face completes and validates its
-four gathers before any output update is permitted. Each retained context
-uses the already-modeled current value plus two scalar registers to hold at
-most three FP64 intermediates; opcode 4 does not add a fourth scalar field to
-the operation window. The four contiguous
+Density-guarded mode first gathers `rho[low]` and `rho[high]`. If both are
+nonpositive, the face value is zero after two gathers; otherwise it performs
+the four normal gathers. Pressure mode uses the same guard, then gathers
+`value_low[low]` and `value_high[high]`. When their product is nonpositive it
+weights the two interpolation coefficients by `rho[high]` and `rho[low]`,
+respectively; otherwise it uses the normal coefficients. A live pressure face
+therefore performs eight gathers. The controller reduces the sign test and
+then the two coefficients while streaming, so it retains at most three FP64
+scalars: the already-modeled operation value plus the two continuation scalar
+registers. It does not add accelerator array payload.
+
+A low boundary gathers either `value_high[low]` or its face-value ordinal and
+updates only `low_min/low_max`. A high boundary gathers either
+`value_low[high]` or its face-value ordinal and updates only
+`high_min/high_max`. Internal faces update all four arrays. The four contiguous
 `cell_count`-element output arrays are `high_min`, `high_max`, `low_min`, and
 `low_max`; the engine issues coherent FP64 MIN/MAX atomics to the corresponding
-high or low cell. This is the directly verified arithmetic and indexing shape
-of EAP Patterns `inside_com3b`, not a native EAP mesh ABI or a claim that the
-application's pressure/special branches are covered.
+high or low cell.
+
+Every gathered field, required denominator, coefficient result, and final
+face value must be finite, and every required denominator must be nonzero.
+Every active face completes and validates all of its gathers before any
+output atomic is permitted. A failure drains accepted reads and publishes no
+output atomic or completion; every successful context remains allocated until
+all of its exact atomic acknowledgements return. This is the directly verified
+arithmetic and indexing shape of EAP Patterns `inside_com3b`, not a native EAP
+mesh ABI, application-correctness result, physical FP datapath cost, or
+application-speedup claim.
 
 ## Completion and control records
 
