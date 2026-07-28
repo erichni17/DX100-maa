@@ -21,6 +21,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--binary", required=True)
 parser.add_argument("--metadata", required=True)
 parser.add_argument("--l1-caches", action="store_true")
+parser.add_argument("--maa-cache-size", default="2KiB")
+parser.add_argument("--maa-cache-assoc", type=int, default=4)
+parser.add_argument("--maa-cache-mshrs", type=int, default=32)
+parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=20)
+parser.add_argument("--maa-cache-write-buffers", type=int, default=8)
 args = parser.parse_args()
 
 
@@ -44,10 +49,7 @@ class L1DCache(L1Cache):
 class MAACoherenceCache(L1Cache):
     # Match the accelerator's 32 physical line entries. This is an explicit
     # 2 KiB hardware cost, not an assumed free system cache.
-    size = "2KiB"
-    assoc = 4
-    mshrs = 32
-    write_buffers = 8
+    pass
 
 
 with open(args.metadata, encoding="utf-8") as stream:
@@ -97,7 +99,13 @@ system.lanl_maa = LANLMAA(
     exit_on_completion=False,
 )
 if args.l1_caches:
-    system.maa_cache = MAACoherenceCache()
+    system.maa_cache = MAACoherenceCache(
+        size=args.maa_cache_size,
+        assoc=args.maa_cache_assoc,
+        mshrs=args.maa_cache_mshrs,
+        tgts_per_mshr=args.maa_cache_targets_per_mshr,
+        write_buffers=args.maa_cache_write_buffers,
+    )
     system.lanl_maa.mem_side = system.maa_cache.cpu_sides
     system.maa_cache.mem_sides = system.membus.cpu_side_ports
 else:

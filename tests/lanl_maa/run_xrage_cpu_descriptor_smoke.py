@@ -43,7 +43,12 @@ def read_scalar(path, name):
     return None
 
 
-def validate(stats, committed_instructions, coherence_stats=None):
+def validate(
+    stats,
+    committed_instructions,
+    coherence_stats=None,
+    expect_reference_coherence=False,
+):
     errors = []
     accelerator = stats.get("lanl_maa", {})
     expected = {
@@ -83,7 +88,7 @@ def validate(stats, committed_instructions, coherence_stats=None):
         )
     if committed_instructions is None or committed_instructions <= 0:
         errors.append("CPU retired no instructions")
-    if coherence_stats is not None:
+    if expect_reference_coherence:
         expected_coherence = {
             "maa_cache_accesses": 84,
             "maa_cache_misses": 28,
@@ -98,6 +103,20 @@ def validate(stats, committed_instructions, coherence_stats=None):
                 errors.append(
                     f"{name}: expected {expected_value}, got {actual}"
                 )
+    elif coherence_stats is not None:
+        if coherence_stats["maa_cache_accesses"] != (
+            coherence_stats["maa_cache_read_accesses"]
+            + coherence_stats["maa_cache_write_accesses"]
+        ):
+            errors.append("MAA cache read/write accesses do not close")
+        for name in (
+            "maa_cache_accesses",
+            "maa_cache_misses",
+            "membus_snoops",
+            "snoop_filter_single_holder_hits",
+        ):
+            if coherence_stats[name] is None or coherence_stats[name] <= 0:
+                errors.append(f"{name} did not exercise coherence")
     if errors:
         raise RuntimeError(
             "XRAGE CPU descriptor smoke failed:\n  " + "\n  ".join(errors)
@@ -288,7 +307,13 @@ def run_smoke(args, root):
         "descriptor_paddr": DATA_PADDR + DESCRIPTOR_OFFSET,
         "l1_caches": args.l1_caches,
         "maa_coherence_cache": (
-            {"size_bytes": 2048, "associativity": 4}
+            {
+                "size": args.maa_cache_size,
+                "associativity": args.maa_cache_assoc,
+                "mshrs": args.maa_cache_mshrs,
+                "targets_per_mshr": args.maa_cache_targets_per_mshr,
+                "write_buffers": args.maa_cache_write_buffers,
+            }
             if args.l1_caches
             else None
         ),
@@ -310,6 +335,16 @@ def run_smoke(args, root):
     ]
     if args.l1_caches:
         command.append("--l1-caches")
+        command.extend(
+            [
+                f"--maa-cache-size={args.maa_cache_size}",
+                f"--maa-cache-assoc={args.maa_cache_assoc}",
+                f"--maa-cache-mshrs={args.maa_cache_mshrs}",
+                "--maa-cache-targets-per-mshr="
+                f"{args.maa_cache_targets_per_mshr}",
+                f"--maa-cache-write-buffers={args.maa_cache_write_buffers}",
+            ]
+        )
     result = subprocess.run(command, text=True, capture_output=True)
     (root / "gem5.stdout").write_text(result.stdout, encoding="utf-8")
     (root / "gem5.stderr").write_text(result.stderr, encoding="utf-8")
@@ -347,6 +382,12 @@ def run_smoke(args, root):
         read_stats(stats_path),
         read_scalar(stats_path, "system.cpu.commitStats0.numInsts"),
         coherence_stats,
+        args.l1_caches
+        and args.maa_cache_size == "2KiB"
+        and args.maa_cache_assoc == 4
+        and args.maa_cache_mshrs == 32
+        and args.maa_cache_targets_per_mshr == 20
+        and args.maa_cache_write_buffers == 8,
     )
 
 
@@ -355,6 +396,11 @@ def main():
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
     parser.add_argument("--trace", required=True, type=pathlib.Path)
     parser.add_argument("--l1-caches", action="store_true")
+    parser.add_argument("--maa-cache-size", default="2KiB")
+    parser.add_argument("--maa-cache-assoc", type=int, default=4)
+    parser.add_argument("--maa-cache-mshrs", type=int, default=32)
+    parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=20)
+    parser.add_argument("--maa-cache-write-buffers", type=int, default=8)
     parser.add_argument(
         "--config",
         default=pathlib.Path(__file__).with_name(
