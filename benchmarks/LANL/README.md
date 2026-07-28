@@ -140,6 +140,31 @@ Spatter capture contains indices, not application data. Therefore a pass
 establishes exact trace-derived descriptor addressing and returned-value
 verification, not XRAGE application correctness or performance.
 
+## XRAGE reusable descriptor protocol
+
+`tests/lanl_maa/run_xrage_descriptor_rearm_smoke.py` validates the bounded
+software-driven protocol needed to execute more than one window. A doorbell
+while a descriptor is active remains a busy rejection. After `Completed` or a
+drained `Error`, a later doorbell rearms the same operation, line, and context
+structures only after checking that all packet and entry state is quiescent.
+There is no hidden descriptor queue.
+
+The positive case executes two distinct 64-index XRAGE windows through slots
+zero and one, checks both exact nonzero result vectors and completion records,
+and exercises one active-state busy rejection. The recovery case submits a
+bad-magic descriptor, observes fail-closed error termination with no output,
+then rearms slot one and verifies its exact results and completion.
+
+```sh
+python3 tests/lanl_maa/run_xrage_descriptor_rearm_smoke.py \
+    --gem5 build/X86/gem5.opt \
+    --trace /data1/nier/DX100/experiments/inputs/xrage_gather0_full.json
+```
+
+The controller remains a test-only timing requester. The pass establishes
+terminal reusability and recovery, not a hardware queue, CPU polling loop,
+full-trace execution, or XRAGE application correctness or performance.
+
 ## `spatter_trace_replay`
 
 This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.

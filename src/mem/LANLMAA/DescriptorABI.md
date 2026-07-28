@@ -2,8 +2,13 @@
 
 The optional CPU-visible mode accepts one 64-byte little-endian descriptor
 from a fixed physical slot table. A 64-bit write to doorbell offset `8 * slot`
-submits that slot. The engine is one-shot in this prototype: another doorbell
-while it is busy or terminal is acknowledged but counted as a busy rejection.
+submits that slot. One descriptor executes at a time. A doorbell while any
+descriptor traffic or execution is active is acknowledged but counted as a
+busy rejection. After a descriptor reaches `Completed` or drained `Error`, a
+later doorbell explicitly rearms the existing operation, line, and
+continuation structures and submits its slot. There is no hidden descriptor
+queue: software must observe the completion record or terminal status before
+submitting the next descriptor.
 
 ## Common descriptor fields
 
@@ -95,3 +100,7 @@ Successful descriptors write a 32-byte completion record:
 The control aperture exposes device/version at `0x100`, slot and item limits
 at `0x108`, state at `0x110`, completed slot at `0x118`, error code at `0x120`,
 and an opcode bitmap at `0x128`. Bitmap bit `n` advertises opcode `n`.
+`Completed` and `Error` remain visible until the next doorbell. A terminal
+rearm clears the previous error and per-descriptor cursors only after all
+retained packets, operation contexts, line entries, and update entries are
+quiescent. The completion record remains the durable per-submission result.

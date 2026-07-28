@@ -160,6 +160,7 @@ class LANLMAA : public ClockedObject
         statistics::Scalar verificationReads;
         statistics::Scalar descriptorDoorbells;
         statistics::Scalar descriptorBusyRejections;
+        statistics::Scalar descriptorRearms;
         statistics::Scalar descriptorFetches;
         statistics::Scalar descriptorAddressLineReads;
         statistics::Scalar descriptorAddressesLoaded;
@@ -256,6 +257,8 @@ class LANLMAA : public ClockedObject
     void scheduleTick();
     AddrRangeList controlRanges() const;
     Tick controlAccess(PacketPtr packet);
+    bool descriptorTerminal() const;
+    void rearmDescriptorEngine();
     void ringDoorbell(uint32_t slot);
     void rejectDescriptor(DescriptorError error);
     void beginDescriptorErrorDrain(DescriptorError error);

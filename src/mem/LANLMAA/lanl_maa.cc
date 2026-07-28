@@ -168,7 +168,9 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorDoorbells, statistics::units::Count::get(),
                "CPU-visible descriptor doorbells accepted"),
       ADD_STAT(descriptorBusyRejections, statistics::units::Count::get(),
-               "Doorbells rejected while the one-shot engine was not idle"),
+               "Doorbells rejected while a descriptor was active"),
+      ADD_STAT(descriptorRearms, statistics::units::Count::get(),
+               "Terminal descriptor engines rearmed by a later doorbell"),
       ADD_STAT(descriptorFetches, statistics::units::Count::get(),
                "Descriptor-slot reads accepted by the memory port"),
       ADD_STAT(descriptorAddressLineReads, statistics::units::Count::get(),
@@ -509,10 +511,55 @@ LANLMAA::controlAccess(PacketPtr packet)
 }
 
 void
+LANLMAA::rearmDescriptorEngine()
+{
+    panic_if(!descriptorTerminal(),
+             "LANLMAA rearmed a nonterminal descriptor engine");
+    panic_if(descriptorPacket || addressVectorPacket || resultPacket ||
+                 completionPacket || verificationPacket || rejectedPacket ||
+                 waitingForRetry,
+             "LANLMAA rearmed a descriptor with retained traffic");
+    panic_if(activeOperations != 0 || activeContexts != 0,
+             "LANLMAA rearmed a descriptor with active operations");
+    panic_if(std::any_of(
+                 lines.begin(), lines.end(), [](const LineEntry &line) {
+                     return line.state != LineState::Free;
+                 }),
+             "LANLMAA rearmed a descriptor with allocated lines");
+    panic_if(!allUpdateEntriesFree(),
+             "LANLMAA rearmed a descriptor with allocated updates");
+
+    operations.clear();
+    descriptor = Descriptor{};
+    descriptorError = DescriptorError::None;
+    descriptorAddressCursor = 0;
+    descriptorResultCursor = 0;
+    nextAdmission = 0;
+    nextRetirement = 0;
+    nextVerification = 0;
+    activeOperations = 0;
+    activeContexts = 0;
+    verificationInFlight = false;
+    finished = false;
+    descriptorState = DescriptorState::Idle;
+    ++stats.descriptorRearms;
+}
+
+bool
+LANLMAA::descriptorTerminal() const
+{
+    return descriptorState == DescriptorState::Completed ||
+           descriptorState == DescriptorState::Error;
+}
+
+void
 LANLMAA::ringDoorbell(uint32_t slot)
 {
     panic_if(slot >= descriptorSlots,
              "LANLMAA accepted an out-of-range descriptor slot");
+    if (descriptorTerminal()) {
+        rearmDescriptorEngine();
+    }
     if (descriptorState != DescriptorState::Idle) {
         ++stats.descriptorBusyRejections;
         return;
