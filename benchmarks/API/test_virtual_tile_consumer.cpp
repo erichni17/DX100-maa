@@ -20,6 +20,7 @@ namespace {
 constexpr int total_elements = 16384;
 constexpr int guard_elements = 32;
 constexpr double scale = 3.0;
+constexpr size_t cache_pollution_bytes = 32 * 1024 * 1024;
 
 uint64_t
 hashValue(uint64_t hash, double value)
@@ -37,8 +38,12 @@ main(int argc, char **argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "native";
     const int page_elements = argc > 2 ? std::atoi(argv[2]) : total_elements;
-    if (mode != "native" && mode != "paged") {
-        std::cerr << "mode must be native or paged" << std::endl;
+    if (mode != "native" && mode != "paged" &&
+        mode != "paged_staged" && mode != "paged_reload_warm" &&
+        mode != "paged_reload_cold") {
+        std::cerr << "mode must be native, paged, paged_staged, or "
+                     "paged_reload_warm/paged_reload_cold"
+                  << std::endl;
         return 2;
     }
     if ((page_elements != 4096 && page_elements != total_elements) ||
@@ -58,6 +63,13 @@ main(int argc, char **argv)
     std::vector<double> destination_storage(
         total_elements + 2 * guard_elements, -1.0);
     std::vector<double> fence_storage(1, 0.0);
+    const bool reload_only = mode == "paged_reload_warm" ||
+                             mode == "paged_reload_cold";
+    std::vector<uint64_t> cache_pollution(
+        mode == "paged_reload_cold"
+            ? cache_pollution_bytes / sizeof(uint64_t)
+            : 1,
+        1);
     double *backing = backing_storage.data() + guard_elements;
     double *destination = destination_storage.data() + guard_elements;
 
@@ -91,8 +103,10 @@ main(int argc, char **argv)
     const int scale_reg = get_new_reg<double>(scale);
     const int output_tile = get_new_tile<double>();
 
-    m5_work_begin(0, 0);
-    m5_reset_stats(0, 0);
+    if (!reload_only) {
+        m5_work_begin(0, 0);
+        m5_reset_stats(0, 0);
+    }
     if (mode == "native") {
         const int idx_tile = get_new_tile<uint32_t>();
         const int gathered_tile = get_new_tile<double>();
@@ -118,10 +132,33 @@ main(int argc, char **argv)
 
         maa_const(0, min_reg);
         maa_const(total_elements, max_reg);
-        maa_indirect_load_virtual_index<double>(
-            source.data(), indices.data(), completion_tile, backing,
-            min_reg, max_reg, stride_reg);
+        if (mode == "paged_staged") {
+            const int idx_tile = get_new_tile<uint32_t>();
+            maa_stream_load<uint32_t>(indices.data(), min_reg, max_reg,
+                                      stride_reg, idx_tile);
+            maa_indirect_load_virtual<double>(source.data(), idx_tile,
+                                              completion_tile, backing);
+        } else {
+            maa_indirect_load_virtual_index<double>(
+                source.data(), indices.data(), completion_tile, backing,
+                min_reg, max_reg, stride_reg);
+        }
         wait_ready(completion_tile);
+
+        if (mode == "paged_reload_cold") {
+            volatile uint64_t sink = 0;
+            constexpr size_t words_per_cache_line = 64 / sizeof(uint64_t);
+            for (size_t i = 0; i < cache_pollution.size();
+                 i += words_per_cache_line)
+                sink += cache_pollution[i];
+            asm volatile("" : : "r"(sink) : "memory");
+            std::cout << "VIRTUAL_TILE_CONSUMER_POLLUTION bytes="
+                      << cache_pollution_bytes << std::endl;
+        }
+        if (reload_only) {
+            m5_work_begin(0, 0);
+            m5_reset_stats(0, 0);
+        }
 
         for (int offset = 0; offset < total_elements;
              offset += page_elements) {
@@ -159,7 +196,7 @@ main(int argc, char **argv)
                       << destination[i] << ", expected " << expected
                       << std::endl;
         }
-        if (mode == "paged" && backing[i] != gathered && errors++ < 10) {
+        if (mode != "native" && backing[i] != gathered && errors++ < 10) {
             std::cerr << "backing mismatch[" << i << "]: got "
                       << backing[i] << ", expected " << gathered << std::endl;
         }

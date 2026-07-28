@@ -17,21 +17,57 @@ native_16k)
     mode=native
     page=16384
     physical=16384
+    virtual=0
+    direct=0
+    reload_only=0
     ;;
 native_4k)
     mode=native
     page=4096
     physical=4096
+    virtual=0
+    direct=0
+    reload_only=0
     ;;
 paged_16k)
     mode=paged
     page=16384
     physical=16384
+    virtual=1
+    direct=1
+    reload_only=0
     ;;
 paged_4k)
     mode=paged
     page=4096
     physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    ;;
+paged_staged_16k)
+    mode=paged_staged
+    page=16384
+    physical=16384
+    virtual=1
+    direct=0
+    reload_only=0
+    ;;
+paged_reload_warm_4k)
+    mode=paged_reload_warm
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=1
+    ;;
+paged_reload_cold_4k)
+    mode=paged_reload_cold
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=1
     ;;
 *)
     echo "unknown consumer case: $case_name" >&2
@@ -136,7 +172,8 @@ output_hash=$(sed -nE \
     "$out/restore.log")
 
 read -r ticks insts index_words index_hwm write_issues write_completions \
-    indirect_spd_reads stream_spd_reads stream_writes alu_compute < <(
+    indirect_spd_reads stream_spd_reads stream_writes alu_compute \
+    l3_read_hits l3_read_misses memory_bytes_read cpu_cycles < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 == "simTicks" { ticks = $2 }
@@ -149,9 +186,14 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
         section == 1 && $1 ~ /STR_CyclesSPDReadAccess$/ { sr += $2 }
         section == 1 && $1 == "system.maa.numInst_STRWR" { sw += $2 }
         section == 1 && $1 ~ /ALU_CyclesCompute$/ { ac += $2 }
+        section == 1 && $1 == "system.l3.ReadReq_T.hits::maa" { lh = $2 }
+        section == 1 && $1 == "system.l3.ReadReq_T.misses::maa" { lm = $2 }
+        section == 1 && $1 == "system.mem_ctrls.bytesRead::maa" { mb = $2 }
+        section == 1 && $1 == "system.switch_cpus0.numCycles" { cc = $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
             print ticks + 0, insts + 0, iw + 0, hw + 0,
-                  wi + 0, wc + 0, ir + 0, sr + 0, sw + 0, ac + 0
+                  wi + 0, wc + 0, ir + 0, sr + 0, sw + 0, ac + 0,
+                  lh + 0, lm + 0, mb + 0, cc + 0
             exit
         }
     ' "$out/run/stats.txt"
@@ -161,19 +203,32 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
     echo "missing first-ROI performance or consumer activity" >&2
     exit 1
 }
-if [[ $mode == paged ]]; then
-    [[ $index_words -eq 16384 && $index_hwm -gt 0 && $index_hwm -le 64 ]] || {
-        echo "invalid bounded index evidence: $index_words/$index_hwm" >&2
+if [[ $reload_only -eq 1 ]]; then
+    [[ $index_words -eq 0 && $write_issues -eq 0 && \
+       $write_completions -eq 0 && $indirect_spd_reads -eq 0 ]] || {
+        echo "reload-only window includes gather activity" >&2
         exit 1
     }
+elif [[ $virtual -eq 1 ]]; then
     [[ $write_issues -gt 0 && $write_issues -eq $write_completions ]] || {
         echo "unbalanced virtual retirement: $write_issues/$write_completions" >&2
         exit 1
     }
-    [[ $indirect_spd_reads -eq 0 ]] || {
-        echo "direct-index gather used $indirect_spd_reads SPD read cycles" >&2
-        exit 1
-    }
+    if [[ $direct -eq 1 ]]; then
+        [[ $index_words -eq 16384 && $index_hwm -gt 0 && $index_hwm -le 64 ]] || {
+            echo "invalid bounded index evidence: $index_words/$index_hwm" >&2
+            exit 1
+        }
+        [[ $indirect_spd_reads -eq 0 ]] || {
+            echo "direct-index gather used $indirect_spd_reads SPD read cycles" >&2
+            exit 1
+        }
+    else
+        [[ $index_words -eq 0 && $indirect_spd_reads -gt 0 ]] || {
+            echo "staged-index gather did not use the expected SPD path" >&2
+            exit 1
+        }
+    fi
 else
     [[ $index_words -eq 0 && $write_issues -eq 0 && \
        $write_completions -eq 0 ]] || {
@@ -185,12 +240,16 @@ fi
 {
     printf 'case\toutput_hash\tsimTicks\tsimInsts\tindex_words\tindex_hwm'
     printf '\twrite_issues\twrite_completions\tindirect_spd_reads'
-    printf '\tstream_spd_reads\tstream_writes\talu_compute_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tstream_spd_reads\tstream_writes\talu_compute_cycles'
+    printf '\tl3_read_hits_maa\tl3_read_misses_maa\tmemory_bytes_read_maa'
+    printf '\tcpu_cycles\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$case_name" "$output_hash" "$ticks" "$insts" \
         "$index_words" "$index_hwm" "$write_issues" \
         "$write_completions" "$indirect_spd_reads" \
-        "$stream_spd_reads" "$stream_writes" "$alu_compute"
+        "$stream_spd_reads" "$stream_writes" "$alu_compute" \
+        "$l3_read_hits" "$l3_read_misses" "$memory_bytes_read" \
+        "$cpu_cycles"
 } > "$out/result.tsv"
 touch "$out/virtual_tile_consumer_case.pass"
 cat "$out/result.tsv"
