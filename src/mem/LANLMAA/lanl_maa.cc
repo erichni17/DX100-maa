@@ -10,6 +10,7 @@
 #include "base/logging.hh"
 #include "debug/LANLMAA.hh"
 #include "mem/packet.hh"
+#include "mem/packet_access.hh"
 #include "mem/request.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
@@ -18,6 +19,26 @@ namespace gem5
 {
 namespace lanlmaa
 {
+
+namespace
+{
+
+constexpr Addr ControlDeviceId = 0x100;
+constexpr Addr ControlCapabilities = 0x108;
+constexpr Addr ControlStatus = 0x110;
+constexpr Addr ControlCompletedSlot = 0x118;
+constexpr Addr ControlError = 0x120;
+constexpr uint32_t CompletionMagic = 0x43414d4c; // "LMAC" little-endian.
+
+void
+writeLe(uint8_t *bytes, size_t offset, uint64_t value, size_t width)
+{
+    for (size_t index = 0; index < width; ++index) {
+        bytes[offset + index] = (value >> (index * 8)) & 0xff;
+    }
+}
+
+} // anonymous namespace
 
 void
 LANLMAA::LineEntry::clear()
@@ -53,6 +74,27 @@ void
 LANLMAA::MemoryPort::recvReqRetry()
 {
     owner.receiveRequestRetry();
+}
+
+LANLMAA::ControlPort::ControlPort(
+    const std::string &name, LANLMAA &owner)
+    : SimpleTimingPort(name, &owner), owner(owner)
+{
+}
+
+Tick
+LANLMAA::ControlPort::recvAtomic(PacketPtr packet)
+{
+    const Tick receiveDelay = packet->headerDelay + packet->payloadDelay;
+    packet->headerDelay = 0;
+    packet->payloadDelay = 0;
+    return owner.controlAccess(packet) + receiveDelay;
+}
+
+AddrRangeList
+LANLMAA::ControlPort::getAddrRanges() const
+{
+    return owner.controlRanges();
 }
 
 LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
@@ -122,6 +164,24 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Logical updates released by atomic acknowledgement"),
       ADD_STAT(verificationReads, statistics::units::Count::get(),
                "Post-drain oracle reads accepted"),
+      ADD_STAT(descriptorDoorbells, statistics::units::Count::get(),
+               "CPU-visible descriptor doorbells accepted"),
+      ADD_STAT(descriptorBusyRejections, statistics::units::Count::get(),
+               "Doorbells rejected while the one-shot engine was not idle"),
+      ADD_STAT(descriptorFetches, statistics::units::Count::get(),
+               "Descriptor-slot reads accepted by the memory port"),
+      ADD_STAT(descriptorAddressLineReads, statistics::units::Count::get(),
+               "Address-vector cache-line reads accepted"),
+      ADD_STAT(descriptorAddressesLoaded, statistics::units::Count::get(),
+               "Descriptor target addresses loaded before execution"),
+      ADD_STAT(descriptorResultWrites, statistics::units::Count::get(),
+               "Result-vector writes acknowledged"),
+      ADD_STAT(descriptorCompletionWrites, statistics::units::Count::get(),
+               "Completion-record writes acknowledged"),
+      ADD_STAT(descriptorErrors, statistics::units::Count::get(),
+               "Descriptors rejected before target traffic"),
+      ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
+               "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
                "Active engine cycles through descriptor completion")
 {
@@ -131,6 +191,13 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
     : ClockedObject(params),
       addresses(params.addresses),
       expectedValues(params.expected_values),
+      descriptorMode(params.descriptor_mode),
+      descriptorTableBase(params.descriptor_table_base),
+      descriptorSlots(params.descriptor_slots),
+      maxDescriptorItems(params.max_descriptor_items),
+      controlAddr(params.control_addr),
+      controlSize(params.control_size),
+      controlLatency(params.control_latency),
       dependentMode(params.dependent_mode),
       continuationEntries(params.continuation_entries),
       maxContinuationSteps(params.max_continuation_steps),
@@ -155,8 +222,10 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       lineBytes(params.line_bytes),
       startCycle(params.start_cycle),
       exitOnCompletion(params.exit_on_completion),
-      requestorId(params.system->getRequestorId(this)),
+      system(params.system),
+      requestorId(system->getRequestorId(this)),
       memoryPort(name() + ".mem_side", *this),
+      controlPort(name() + ".control", *this),
       tickEvent([this] { tick(); }, name() + ".tick"),
       stats(this),
       operations(addresses.size()),
@@ -164,6 +233,8 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       updates(updateEntryCount)
 {
     validateConfiguration();
+    descriptorState = descriptorMode ? DescriptorState::Idle :
+                                       DescriptorState::Disabled;
     for (size_t index = 0; index < addresses.size(); ++index) {
         operations[index].address = addresses[index];
         if (updateMode) {
@@ -179,7 +250,45 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
 void
 LANLMAA::validateConfiguration() const
 {
-    fatal_if(addresses.empty(), "LANLMAA requires at least one address");
+    fatal_if(!descriptorMode && addresses.empty(),
+             "LANLMAA synthetic mode requires at least one address");
+    fatal_if(descriptorMode &&
+                 (!addresses.empty() || !expectedValues.empty() ||
+                  dependentMode || updateMode || !updateValues.empty() ||
+                  !updateFpValues.empty() || !verificationAddresses.empty() ||
+                  !verificationValues.empty() ||
+                  !verificationFpValues.empty()),
+             "LANLMAA descriptor mode rejects synthetic descriptor vectors");
+    fatal_if(descriptorMode && descriptorSlots == 0,
+             "LANLMAA descriptor mode requires at least one slot");
+    fatal_if(descriptorMode && maxDescriptorItems == 0,
+             "LANLMAA descriptor mode requires a nonzero item bound");
+    fatal_if(descriptorMode && maxDescriptorItems > operationEntries,
+             "LANLMAA v1 descriptor items must fit the operation window");
+    fatal_if(descriptorMode &&
+                 maxDescriptorItems > std::numeric_limits<uint32_t>::max(),
+             "LANLMAA descriptor item bound must fit the v1 field");
+    fatal_if(descriptorMode && descriptorTableBase % DescriptorBytes != 0,
+             "LANLMAA descriptor table must be 64-byte aligned");
+    fatal_if(descriptorMode && controlAddr % sizeof(uint64_t) != 0,
+             "LANLMAA control base must be 64-bit aligned");
+    fatal_if(descriptorMode && controlSize < 0x128,
+             "LANLMAA control aperture is too small for v1 registers");
+    fatal_if(descriptorMode &&
+                 descriptorSlots > ControlDeviceId / sizeof(uint64_t),
+             "LANLMAA descriptor slots overlap the status registers");
+    fatal_if(descriptorMode &&
+                 controlAddr > std::numeric_limits<Addr>::max() - controlSize,
+             "LANLMAA control aperture overflows the address space");
+    fatal_if(descriptorMode &&
+                 descriptorSlots >
+                     (std::numeric_limits<Addr>::max() - descriptorTableBase) /
+                         DescriptorBytes,
+             "LANLMAA descriptor table overflows the address space");
+    fatal_if(descriptorMode &&
+                 rangeOverlapsControl(
+                     descriptorTableBase, descriptorSlots * DescriptorBytes),
+             "LANLMAA descriptor table overlaps its control aperture");
     fatal_if(
         !expectedValues.empty() && expectedValues.size() != addresses.size(),
         "LANLMAA expected_values must be empty or match addresses");
@@ -290,13 +399,20 @@ LANLMAA::init()
 {
     ClockedObject::init();
     fatal_if(!memoryPort.isConnected(), "LANLMAA mem_side is not connected");
+    fatal_if(descriptorMode && !controlPort.isConnected(),
+             "LANLMAA descriptor mode requires the control port");
+    if (controlPort.isConnected()) {
+        controlPort.sendRangeChange();
+    }
 }
 
 void
 LANLMAA::startup()
 {
     ClockedObject::startup();
-    schedule(tickEvent, clockEdge(startCycle));
+    if (!descriptorMode) {
+        schedule(tickEvent, clockEdge(startCycle));
+    }
 }
 
 Port &
@@ -305,7 +421,277 @@ LANLMAA::getPort(const std::string &ifName, PortID index)
     if (ifName == "mem_side") {
         return memoryPort;
     }
+    if (ifName == "control") {
+        return controlPort;
+    }
     return ClockedObject::getPort(ifName, index);
+}
+
+AddrRangeList
+LANLMAA::controlRanges() const
+{
+    if (!descriptorMode) {
+        return {};
+    }
+    return {RangeSize(controlAddr, controlSize)};
+}
+
+Tick
+LANLMAA::controlAccess(PacketPtr packet)
+{
+    packet->makeAtomicResponse();
+    if (!descriptorMode || packet->getSize() != sizeof(uint64_t) ||
+        packet->getAddr() < controlAddr ||
+        packet->getAddr() >= controlAddr + controlSize ||
+        (packet->getAddr() - controlAddr) % sizeof(uint64_t) != 0) {
+        packet->setBadAddress();
+        return controlLatency;
+    }
+
+    const Addr offset = packet->getAddr() - controlAddr;
+    if (packet->isWrite()) {
+        if (offset < descriptorSlots * sizeof(uint64_t)) {
+            ringDoorbell(offset / sizeof(uint64_t));
+        } else {
+            packet->setBadAddress();
+        }
+        return controlLatency;
+    }
+    if (!packet->isRead()) {
+        packet->setBadAddress();
+        return controlLatency;
+    }
+
+    uint64_t value = 0;
+    switch (offset) {
+      case ControlDeviceId:
+        value = static_cast<uint64_t>(DescriptorVersion) << 32 |
+                DescriptorMagic;
+        break;
+      case ControlCapabilities:
+        value = static_cast<uint64_t>(maxDescriptorItems) << 32 |
+                descriptorSlots;
+        break;
+      case ControlStatus:
+        if (descriptorState == DescriptorState::Idle) {
+            value = 1U << 0;
+        } else if (descriptorState == DescriptorState::Completed) {
+            value = 1U << 2;
+        } else if (descriptorState == DescriptorState::Error) {
+            value = 1U << 3;
+        } else {
+            value = 1U << 1;
+        }
+        break;
+      case ControlCompletedSlot:
+        value = descriptorSlot;
+        break;
+      case ControlError:
+        value = static_cast<uint8_t>(descriptorError);
+        break;
+      default:
+        packet->setBadAddress();
+        return controlLatency;
+    }
+    packet->setLE<uint64_t>(value);
+    return controlLatency;
+}
+
+void
+LANLMAA::ringDoorbell(uint32_t slot)
+{
+    panic_if(slot >= descriptorSlots,
+             "LANLMAA accepted an out-of-range descriptor slot");
+    if (descriptorState != DescriptorState::Idle) {
+        ++stats.descriptorBusyRejections;
+        return;
+    }
+    descriptorSlot = slot;
+    descriptorError = DescriptorError::None;
+    descriptorState = DescriptorState::DescriptorPending;
+    ++stats.descriptorDoorbells;
+    scheduleTick();
+}
+
+void
+LANLMAA::rejectDescriptor(DescriptorError error)
+{
+    panic_if(error == DescriptorError::None,
+             "LANLMAA rejected a descriptor without an error");
+    panic_if(descriptorPacket || addressVectorPacket || resultPacket ||
+                 completionPacket || rejectedPacket || waitingForRetry,
+             "LANLMAA rejected a descriptor with retained traffic");
+    descriptorError = error;
+    descriptorState = DescriptorState::Error;
+    finished = true;
+    ++stats.descriptorErrors;
+    DPRINTF(LANLMAA, "rejected descriptor slot=%u error=%u\n",
+            descriptorSlot, static_cast<unsigned>(error));
+    if (exitOnCompletion) {
+        exitSimLoop("LANLMAA descriptor rejected", 2);
+    }
+}
+
+bool
+LANLMAA::rangeOverlapsControl(uint64_t begin, uint64_t bytes) const
+{
+    if (bytes == 0 || begin > std::numeric_limits<uint64_t>::max() - bytes) {
+        return bytes != 0;
+    }
+    return descriptorRangesOverlap(
+        begin, begin + bytes, controlAddr, controlAddr + controlSize);
+}
+
+bool
+LANLMAA::rangeIsMemory(uint64_t begin, uint64_t bytes) const
+{
+    if (bytes == 0 ||
+        begin > std::numeric_limits<Addr>::max() - (bytes - 1)) {
+        return false;
+    }
+    for (uint64_t offset = 0; offset < bytes; ++offset) {
+        if (!system->isMemAddr(static_cast<Addr>(begin + offset))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
+LANLMAA::sendDescriptorPacket(PacketPtr packet)
+{
+    if (waitingForRetry) {
+        return false;
+    }
+    panic_if(rejectedPacket && rejectedPacket != packet,
+             "LANLMAA descriptor traffic would replace a rejected packet");
+    const bool retryAttempt = rejectedPacket == packet;
+    if (retryAttempt) {
+        ++stats.retryPacketResubmissions;
+    }
+    if (!memoryPort.sendTimingReq(packet)) {
+        if (!rejectedPacket) {
+            rejectedPacket = packet;
+        }
+        waitingForRetry = true;
+        ++stats.portSendFailures;
+        return false;
+    }
+    if (retryAttempt) {
+        rejectedPacket = nullptr;
+        ++stats.retryPacketAcceptances;
+    }
+    return true;
+}
+
+void
+LANLMAA::issueDescriptorFetch()
+{
+    if (!descriptorPacket) {
+        const Addr address = descriptorTableBase +
+            descriptorSlot * DescriptorBytes;
+        if (!rangeIsMemory(address, DescriptorBytes)) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return;
+        }
+        RequestPtr request = std::make_shared<Request>(
+            address, DescriptorBytes, Request::Flags(), requestorId);
+        descriptorPacket = new Packet(request, MemCmd::ReadReq);
+        descriptorPacket->allocate();
+    }
+    if (sendDescriptorPacket(descriptorPacket)) {
+        descriptorState = DescriptorState::DescriptorInFlight;
+        ++stats.descriptorFetches;
+    }
+}
+
+void
+LANLMAA::issueAddressVectorFetch()
+{
+    if (!addressVectorPacket) {
+        const Addr itemAddress = descriptor.addressVector +
+            descriptorAddressCursor * sizeof(uint64_t);
+        if (!rangeIsMemory(lineAddress(itemAddress), lineBytes) ||
+            rangeOverlapsControl(lineAddress(itemAddress), lineBytes)) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return;
+        }
+        RequestPtr request = std::make_shared<Request>(
+            lineAddress(itemAddress), lineBytes,
+            Request::Flags(), requestorId);
+        addressVectorPacket = new Packet(request, MemCmd::ReadReq);
+        addressVectorPacket->allocate();
+    }
+    if (sendDescriptorPacket(addressVectorPacket)) {
+        descriptorState = DescriptorState::AddressInFlight;
+        ++stats.descriptorAddressLineReads;
+    }
+}
+
+void
+LANLMAA::issueResultWrite()
+{
+    if (descriptorResultCursor == operations.size()) {
+        descriptorState = DescriptorState::CompletionPending;
+        return;
+    }
+    if (!resultPacket) {
+        const Addr address = descriptor.resultVector +
+            descriptorResultCursor * sizeof(uint64_t);
+        RequestPtr request = std::make_shared<Request>(
+            address, sizeof(uint64_t), Request::Flags(), requestorId);
+        resultPacket = new Packet(request, MemCmd::WriteReq);
+        resultPacket->allocate();
+        resultPacket->setLE<uint64_t>(
+            operations[descriptorResultCursor].value);
+    }
+    if (sendDescriptorPacket(resultPacket)) {
+        descriptorState = DescriptorState::ResultInFlight;
+    }
+}
+
+void
+LANLMAA::issueCompletionWrite()
+{
+    if (!completionPacket) {
+        RequestPtr request = std::make_shared<Request>(
+            descriptor.completionRecord, 32, Request::Flags(), requestorId);
+        completionPacket = new Packet(request, MemCmd::WriteReq);
+        completionPacket->allocate();
+        uint8_t *data = completionPacket->getPtr<uint8_t>();
+        std::memset(data, 0, 32);
+        writeLe(data, 0, CompletionMagic, 4);
+        writeLe(data, 4, DescriptorVersion, 2);
+        writeLe(data, 6, 1, 1);
+        writeLe(data, 7, 0, 1);
+        writeLe(data, 8, descriptorSlot, 4);
+        writeLe(data, 16, operations.size(), 8);
+        writeLe(data, 24, descriptorResultCursor, 8);
+    }
+    if (sendDescriptorPacket(completionPacket)) {
+        descriptorState = DescriptorState::CompletionInFlight;
+    }
+}
+
+void
+LANLMAA::issueDescriptorTraffic()
+{
+    switch (descriptorState) {
+      case DescriptorState::DescriptorPending:
+        issueDescriptorFetch();
+        break;
+      case DescriptorState::AddressPending:
+        issueAddressVectorFetch();
+        break;
+      case DescriptorState::ResultPending:
+        issueResultWrite();
+        break;
+      case DescriptorState::CompletionPending:
+        issueCompletionWrite();
+        break;
+      default:
+        break;
+    }
 }
 
 Addr
@@ -432,6 +818,195 @@ LANLMAA::decodeDouble(uint64_t bits)
     return value;
 }
 
+bool
+LANLMAA::receiveDescriptorResponse(PacketPtr packet)
+{
+    panic_if(packet != descriptorPacket ||
+                 descriptorState != DescriptorState::DescriptorInFlight,
+             "LANLMAA descriptor response changed packet ownership");
+    panic_if(!packet->isResponse() || !packet->isRead(),
+             "LANLMAA descriptor fetch did not receive a read response");
+    std::array<uint8_t, DescriptorBytes> bytes{};
+    std::memcpy(bytes.data(), packet->getConstPtr<uint8_t>(), bytes.size());
+    delete packet;
+    descriptorPacket = nullptr;
+
+    const auto decoded = decodeDescriptor(
+        bytes, static_cast<uint32_t>(maxDescriptorItems));
+    if (!decoded) {
+        rejectDescriptor(decoded.error);
+        return true;
+    }
+    descriptor = decoded.descriptor;
+
+    uint64_t addressEnd = 0;
+    uint64_t resultEnd = 0;
+    uint64_t completionEnd = 0;
+    const bool rangesValid = descriptorRange(
+        descriptor.addressVector, descriptor.itemCount, sizeof(uint64_t),
+        addressEnd) && descriptorRange(
+        descriptor.resultVector, descriptor.itemCount, sizeof(uint64_t),
+        resultEnd) && descriptorRange(
+        descriptor.completionRecord, 1, 32, completionEnd);
+    panic_if(!rangesValid,
+             "LANLMAA decoded descriptor lost its range invariant");
+
+    const uint64_t descriptorTableEnd = descriptorTableBase +
+        descriptorSlots * DescriptorBytes;
+    const auto unsafeRange = [this, descriptorTableEnd](
+                                 uint64_t begin, uint64_t end) {
+        return !rangeIsMemory(begin, end - begin) ||
+            rangeOverlapsControl(begin, end - begin) ||
+            descriptorRangesOverlap(
+                begin, end, descriptorTableBase, descriptorTableEnd);
+    };
+    if (unsafeRange(descriptor.addressVector, addressEnd) ||
+        unsafeRange(descriptor.resultVector, resultEnd) ||
+        unsafeRange(descriptor.completionRecord, completionEnd)) {
+        rejectDescriptor(DescriptorError::UnsafeAddressRange);
+        return true;
+    }
+
+    operations.assign(descriptor.itemCount, Operation{});
+    descriptorAddressCursor = 0;
+    descriptorResultCursor = 0;
+    descriptorState = DescriptorState::AddressPending;
+    scheduleTick();
+    return true;
+}
+
+bool
+LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
+{
+    panic_if(packet != addressVectorPacket ||
+                 descriptorState != DescriptorState::AddressInFlight,
+             "LANLMAA address-vector response changed packet ownership");
+    panic_if(!packet->isResponse() || !packet->isRead(),
+             "LANLMAA address-vector fetch was not a read response");
+    const Addr vectorAddress = descriptor.addressVector +
+        descriptorAddressCursor * sizeof(uint64_t);
+    const Addr vectorLine = lineAddress(vectorAddress);
+    panic_if(packet->getAddr() != vectorLine,
+             "LANLMAA address-vector response changed line address");
+
+    const uint8_t *data = packet->getConstPtr<uint8_t>();
+    bool badTarget = false;
+    while (descriptorAddressCursor < operations.size()) {
+        const Addr itemAddress = descriptor.addressVector +
+            descriptorAddressCursor * sizeof(uint64_t);
+        if (lineAddress(itemAddress) != vectorLine) {
+            break;
+        }
+        const size_t offset = itemAddress - vectorLine;
+        const uint64_t rawAddress = descriptorReadLe64(data + offset);
+        const Addr target = static_cast<Addr>(rawAddress);
+        if (static_cast<uint64_t>(target) != rawAddress ||
+            target % sizeof(uint64_t) != 0 ||
+            target > std::numeric_limits<Addr>::max() - sizeof(uint64_t) ||
+            target + sizeof(uint64_t) > lineAddress(target) + lineBytes ||
+            !rangeIsMemory(lineAddress(target), lineBytes) ||
+            rangeOverlapsControl(lineAddress(target), lineBytes)) {
+            badTarget = true;
+            break;
+        }
+        operations[descriptorAddressCursor].address = target;
+        ++descriptorAddressCursor;
+        ++stats.descriptorAddressesLoaded;
+    }
+    delete packet;
+    addressVectorPacket = nullptr;
+
+    if (badTarget) {
+        rejectDescriptor(DescriptorError::BadTargetAddress);
+        return true;
+    }
+    if (descriptorAddressCursor == operations.size()) {
+        beginDescriptorExecution();
+    } else {
+        descriptorState = DescriptorState::AddressPending;
+    }
+    scheduleTick();
+    return true;
+}
+
+bool
+LANLMAA::receiveResultResponse(PacketPtr packet)
+{
+    panic_if(packet != resultPacket ||
+                 descriptorState != DescriptorState::ResultInFlight,
+             "LANLMAA result response changed packet ownership");
+    panic_if(!packet->isResponse() || !packet->isWrite(),
+             "LANLMAA result write did not receive a write response");
+    delete packet;
+    resultPacket = nullptr;
+    ++descriptorResultCursor;
+    ++stats.descriptorResultWrites;
+    descriptorState = DescriptorState::ResultPending;
+    scheduleTick();
+    return true;
+}
+
+bool
+LANLMAA::receiveCompletionResponse(PacketPtr packet)
+{
+    panic_if(packet != completionPacket ||
+                 descriptorState != DescriptorState::CompletionInFlight,
+             "LANLMAA completion response changed packet ownership");
+    panic_if(!packet->isResponse() || !packet->isWrite(),
+             "LANLMAA completion write did not receive a write response");
+    delete packet;
+    completionPacket = nullptr;
+    ++stats.descriptorCompletionWrites;
+    completeDescriptor();
+    return true;
+}
+
+void
+LANLMAA::beginDescriptorExecution()
+{
+    panic_if(descriptorAddressCursor != operations.size(),
+             "LANLMAA began a descriptor before loading all addresses");
+    nextAdmission = 0;
+    nextRetirement = 0;
+    nextVerification = 0;
+    activeOperations = 0;
+    activeContexts = 0;
+    descriptorState = DescriptorState::Executing;
+}
+
+void
+LANLMAA::beginDescriptorResults()
+{
+    panic_if(activeOperations != 0 || nextAdmission != operations.size() ||
+                 nextRetirement != operations.size(),
+             "LANLMAA descriptor reached results before engine quiescence");
+    panic_if(std::any_of(
+                 lines.begin(), lines.end(), [](const LineEntry &line) {
+                     return line.state != LineState::Free;
+                 }),
+             "LANLMAA descriptor reached results with allocated lines");
+    descriptorResultCursor = 0;
+    descriptorState = DescriptorState::ResultPending;
+}
+
+void
+LANLMAA::completeDescriptor()
+{
+    panic_if(descriptorResultCursor != operations.size(),
+             "LANLMAA completed a descriptor before every result write");
+    panic_if(rejectedPacket || waitingForRetry || descriptorPacket ||
+                 addressVectorPacket || resultPacket || completionPacket,
+             "LANLMAA completed a descriptor with retained traffic");
+    descriptorState = DescriptorState::Completed;
+    finished = true;
+    DPRINTF(LANLMAA,
+            "completed CPU-visible descriptor slot=%u items=%zu\n",
+            descriptorSlot, operations.size());
+    if (exitOnCompletion) {
+        exitSimLoop("LANLMAA descriptor complete", 0);
+    }
+}
+
 void
 LANLMAA::scheduleTick()
 {
@@ -443,6 +1018,17 @@ LANLMAA::scheduleTick()
 void
 LANLMAA::tick()
 {
+    if (descriptorMode) {
+        ++stats.descriptorCycles;
+        if (descriptorState != DescriptorState::Executing) {
+            issueDescriptorTraffic();
+            if (descriptorState != DescriptorState::Completed &&
+                descriptorState != DescriptorState::Error) {
+                scheduleTick();
+            }
+            return;
+        }
+    }
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
@@ -456,6 +1042,11 @@ LANLMAA::tick()
     }
     if (nextRetirement == operations.size()) {
         if (!updateMode) {
+            if (descriptorMode) {
+                beginDescriptorResults();
+                scheduleTick();
+                return;
+            }
             finish();
             return;
         }
@@ -840,6 +1431,18 @@ LANLMAA::issueVerification()
 bool
 LANLMAA::receiveTimingResponse(PacketPtr packet)
 {
+    if (packet == descriptorPacket) {
+        return receiveDescriptorResponse(packet);
+    }
+    if (packet == addressVectorPacket) {
+        return receiveAddressVectorResponse(packet);
+    }
+    if (packet == resultPacket) {
+        return receiveResultResponse(packet);
+    }
+    if (packet == completionPacket) {
+        return receiveCompletionResponse(packet);
+    }
     if (updateMode) {
         if (packet == verificationPacket) {
             return receiveVerificationResponse(packet);

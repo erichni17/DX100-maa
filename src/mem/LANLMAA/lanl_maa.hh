@@ -1,13 +1,16 @@
 #ifndef __MEM_LANLMAA_LANL_MAA_HH__
 #define __MEM_LANLMAA_LANL_MAA_HH__
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
 #include "base/statistics.hh"
 #include "enums/LANLMAAUpdateOperation.hh"
+#include "mem/LANLMAA/Descriptor.hh"
 #include "mem/port.hh"
+#include "mem/tport.hh"
 #include "params/LANLMAA.hh"
 #include "sim/clocked_object.hh"
 #include "sim/eventq.hh"
@@ -42,6 +45,23 @@ class LANLMAA : public ClockedObject
         Accumulating,
         AtomicPending,
         AtomicInFlight
+    };
+
+    enum class DescriptorState
+    {
+        Disabled,
+        Idle,
+        DescriptorPending,
+        DescriptorInFlight,
+        AddressPending,
+        AddressInFlight,
+        Executing,
+        ResultPending,
+        ResultInFlight,
+        CompletionPending,
+        CompletionInFlight,
+        Completed,
+        Error
     };
 
     struct Operation
@@ -88,6 +108,19 @@ class LANLMAA : public ClockedObject
         LANLMAA &owner;
     };
 
+    class ControlPort : public SimpleTimingPort
+    {
+      public:
+        ControlPort(const std::string &name, LANLMAA &owner);
+
+      protected:
+        Tick recvAtomic(PacketPtr packet) override;
+        AddrRangeList getAddrRanges() const override;
+
+      private:
+        LANLMAA &owner;
+    };
+
     struct LANLMAAStats : public statistics::Group
     {
         statistics::Scalar logicalItems;
@@ -122,6 +155,15 @@ class LANLMAA : public ClockedObject
         statistics::Scalar atomicOldValuesReturned;
         statistics::Scalar updateOperationsAcknowledged;
         statistics::Scalar verificationReads;
+        statistics::Scalar descriptorDoorbells;
+        statistics::Scalar descriptorBusyRejections;
+        statistics::Scalar descriptorFetches;
+        statistics::Scalar descriptorAddressLineReads;
+        statistics::Scalar descriptorAddressesLoaded;
+        statistics::Scalar descriptorResultWrites;
+        statistics::Scalar descriptorCompletionWrites;
+        statistics::Scalar descriptorErrors;
+        statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
         explicit LANLMAAStats(statistics::Group *parent);
@@ -129,6 +171,13 @@ class LANLMAA : public ClockedObject
 
     const std::vector<Addr> addresses;
     const std::vector<uint64_t> expectedValues;
+    const bool descriptorMode;
+    const Addr descriptorTableBase;
+    const size_t descriptorSlots;
+    const size_t maxDescriptorItems;
+    const Addr controlAddr;
+    const Addr controlSize;
+    const Tick controlLatency;
     const bool dependentMode;
     const size_t continuationEntries;
     const size_t maxContinuationSteps;
@@ -153,9 +202,11 @@ class LANLMAA : public ClockedObject
     const size_t lineBytes;
     const Cycles startCycle;
     const bool exitOnCompletion;
+    System *const system;
     const RequestorID requestorId;
 
     MemoryPort memoryPort;
+    ControlPort controlPort;
     EventFunctionWrapper tickEvent;
     LANLMAAStats stats;
 
@@ -173,6 +224,17 @@ class LANLMAA : public ClockedObject
     bool waitingForRetry = false;
     bool finished = false;
 
+    DescriptorState descriptorState = DescriptorState::Disabled;
+    Descriptor descriptor;
+    DescriptorError descriptorError = DescriptorError::None;
+    uint32_t descriptorSlot = 0;
+    size_t descriptorAddressCursor = 0;
+    size_t descriptorResultCursor = 0;
+    PacketPtr descriptorPacket = nullptr;
+    PacketPtr addressVectorPacket = nullptr;
+    PacketPtr resultPacket = nullptr;
+    PacketPtr completionPacket = nullptr;
+
     Addr lineAddress(Addr address) const;
     LineEntry *matchingLine(Addr address);
     LineEntry *freeLine();
@@ -188,6 +250,25 @@ class LANLMAA : public ClockedObject
     static double decodeDouble(uint64_t bits);
     void validateConfiguration() const;
     void scheduleTick();
+    AddrRangeList controlRanges() const;
+    Tick controlAccess(PacketPtr packet);
+    void ringDoorbell(uint32_t slot);
+    void rejectDescriptor(DescriptorError error);
+    bool rangeOverlapsControl(uint64_t begin, uint64_t bytes) const;
+    bool rangeIsMemory(uint64_t begin, uint64_t bytes) const;
+    void issueDescriptorTraffic();
+    void issueDescriptorFetch();
+    void issueAddressVectorFetch();
+    void issueResultWrite();
+    void issueCompletionWrite();
+    bool sendDescriptorPacket(PacketPtr packet);
+    bool receiveDescriptorResponse(PacketPtr packet);
+    bool receiveAddressVectorResponse(PacketPtr packet);
+    bool receiveResultResponse(PacketPtr packet);
+    bool receiveCompletionResponse(PacketPtr packet);
+    void beginDescriptorExecution();
+    void beginDescriptorResults();
+    void completeDescriptor();
     void tick();
     void retireOperations();
     void admitOperations();

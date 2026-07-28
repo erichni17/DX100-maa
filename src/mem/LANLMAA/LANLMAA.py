@@ -19,7 +19,29 @@ class LANLMAA(ClockedObject):
     cxx_class = "gem5::lanlmaa::LANLMAA"
 
     mem_side = RequestPort("Coherent request port for accelerator traffic")
+    control = ResponsePort(
+        "Optional CPU-visible descriptor doorbell and status"
+    )
     system = Param.System(Parent.any, "System that owns the requestor ID")
+
+    descriptor_mode = Param.Bool(
+        False, "Wait for a CPU-visible doorbell and fetch a bounded descriptor"
+    )
+    descriptor_table_base = Param.Addr(
+        0, "Physical base of the 64-byte descriptor slot table"
+    )
+    descriptor_slots = Param.Unsigned(8, "Number of fixed descriptor slots")
+    max_descriptor_items = Param.Unsigned(
+        64,
+        "Maximum v1 items; must fit the configured operation window",
+    )
+    control_addr = Param.Addr(
+        0x100000, "Physical base of the CPU-visible control register page"
+    )
+    control_size = Param.Addr(0x1000, "Control register aperture size")
+    control_latency = Param.Latency(
+        "10ns", "CPU-visible control access latency"
+    )
 
     addresses = VectorParam.Addr([], "Ordered 64-bit direct-gather addresses")
     expected_values = VectorParam.UInt64(
@@ -88,3 +110,16 @@ class LANLMAA(ClockedObject):
     exit_on_completion = Param.Bool(
         True, "Exit the simulation when the descriptor completes"
     )
+
+
+class LANLMAAControlTester(ClockedObject):
+    type = "LANLMAAControlTester"
+    cxx_header = "mem/LANLMAA/control_tester.hh"
+    cxx_class = "gem5::lanlmaa::LANLMAAControlTester"
+
+    port = RequestPort("Test-only upstream timing port for MMIO doorbells")
+    system = Param.System(Parent.any, "System that owns the requestor ID")
+    control_addr = Param.Addr("LANL-MAA control aperture base")
+    doorbell_slot = Param.Unsigned("Descriptor slot encoded by the address")
+    writes = Param.Unsigned(1, "Doorbell writes to issue")
+    start_cycle = Param.Cycles(1, "First doorbell issue cycle")
