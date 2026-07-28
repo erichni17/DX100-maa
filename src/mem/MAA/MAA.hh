@@ -611,6 +611,11 @@ public:
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;
+        std::vector<statistics::Scalar *> IND_VirtPagesReady;
+        std::vector<statistics::Scalar *> IND_VirtPagesReadyBeforeSourceDrain;
+        std::vector<statistics::Scalar *> IND_VirtFirstPageReadyCycles;
+        std::vector<statistics::Scalar *> IND_VirtAllPagesReadyCycles;
+        std::vector<statistics::Scalar *> IND_VirtPageReadySpanCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexLineReads;
         std::vector<statistics::Scalar *> IND_VirtIndexLineHighWater;
         std::vector<statistics::Scalar *> IND_VirtIndexWords;

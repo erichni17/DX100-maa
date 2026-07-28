@@ -124,7 +124,8 @@ grep -Eq "VIRTUAL_TILE_CONSUMER_LAYOUT mode=${mode} page_elements=${page} logica
 set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
 /usr/bin/time -f 'restore_wall=%e restore_rss_kb=%M' \
-    "$gem5" --listener-mode=off --outdir="$out/run" "$config" \
+    "$gem5" --listener-mode=off --outdir="$out/run" \
+    --debug-flags=MAAVirtualTrace --debug-file=virtual_trace.log "$config" \
     --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB \
     --checkpoint-dir="$out/checkpoint" \
     --sys-clock 3.2GHz --cpu-clock 3.2GHz \
@@ -172,6 +173,8 @@ output_hash=$(sed -nE \
     "$out/restore.log")
 
 read -r ticks insts index_words index_hwm write_issues write_completions \
+    pages_ready pages_ready_early first_page_cycles all_page_cycles \
+    page_span_cycles \
     indirect_spd_reads stream_spd_reads stream_writes alu_compute \
     l3_read_hits l3_read_misses memory_bytes_read cpu_cycles < <(
     awk '
@@ -182,6 +185,11 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
         section == 1 && $1 ~ /IND_VirtIndexWordHighWater$/ { hw += $2 }
         section == 1 && $1 ~ /IND_VirtWriteIssues$/ { wi += $2 }
         section == 1 && $1 ~ /IND_VirtWriteCompletions$/ { wc += $2 }
+        section == 1 && $1 ~ /IND_VirtPagesReady$/ { pr += $2 }
+        section == 1 && $1 ~ /IND_VirtPagesReadyBeforeSourceDrain$/ { pe += $2 }
+        section == 1 && $1 ~ /IND_VirtFirstPageReadyCycles$/ { pf += $2 }
+        section == 1 && $1 ~ /IND_VirtAllPagesReadyCycles$/ { pa += $2 }
+        section == 1 && $1 ~ /IND_VirtPageReadySpanCycles$/ { ps += $2 }
         section == 1 && $1 ~ /IND_CyclesSPDReadAccess$/ { ir += $2 }
         section == 1 && $1 ~ /STR_CyclesSPDReadAccess$/ { sr += $2 }
         section == 1 && $1 == "system.maa.numInst_STRWR" { sw += $2 }
@@ -192,7 +200,8 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
         section == 1 && $1 == "system.switch_cpus0.numCycles" { cc = $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
             print ticks + 0, insts + 0, iw + 0, hw + 0,
-                  wi + 0, wc + 0, ir + 0, sr + 0, sw + 0, ac + 0,
+                  wi + 0, wc + 0, pr + 0, pe + 0, pf + 0, pa + 0,
+                  ps + 0, ir + 0, sr + 0, sw + 0, ac + 0,
                   lh + 0, lm + 0, mb + 0, cc + 0
             exit
         }
@@ -214,6 +223,38 @@ elif [[ $virtual -eq 1 ]]; then
         echo "unbalanced virtual retirement: $write_issues/$write_completions" >&2
         exit 1
     }
+    expected_pages=$((16384 / physical))
+    [[ $pages_ready -eq $expected_pages && $first_page_cycles -gt 0 && \
+       $all_page_cycles -ge $first_page_cycles && \
+       $page_span_cycles -eq $((all_page_cycles - first_page_cycles)) ]] || {
+        echo "invalid virtual page readiness: pages=$pages_ready/$expected_pages first=$first_page_cycles all=$all_page_cycles span=$page_span_cycles" >&2
+        exit 1
+    }
+    trace="$out/run/virtual_trace.log"
+    trace_pages=$(grep -c 'event=page_ready' "$trace" || true)
+    [[ $trace_pages -eq $expected_pages ]] || {
+        echo "invalid virtual page trace count: $trace_pages/$expected_pages" >&2
+        exit 1
+    }
+    {
+        printf 'tick\tunit\tpage\tready_count\ttotal_pages'
+        printf '\tissued_words\tcompleted_words\tsources_drained\n'
+        awk '
+            /event=page_ready/ {
+                sub(/:$/, "", $1)
+                for (i = 3; i <= NF; ++i) {
+                    split($i, kv, "=")
+                    value[kv[1]] = kv[2]
+                }
+                split(value["pages"], pages, "/")
+                print $1, value["unit"], value["page"], pages[1], pages[2],
+                      value["issued"], value["completed"],
+                      value["sources_drained"]
+                delete value
+                delete pages
+            }
+        ' OFS='\t' "$trace"
+    } > "$out/page_readiness.tsv"
     if [[ $direct -eq 1 ]]; then
         [[ $index_words -eq 16384 && $index_hwm -gt 0 && $index_hwm -le 64 ]] || {
             echo "invalid bounded index evidence: $index_words/$index_hwm" >&2
@@ -231,7 +272,7 @@ elif [[ $virtual -eq 1 ]]; then
     fi
 else
     [[ $index_words -eq 0 && $write_issues -eq 0 && \
-       $write_completions -eq 0 ]] || {
+       $write_completions -eq 0 && $pages_ready -eq 0 ]] || {
         echo "native case activated virtual machinery" >&2
         exit 1
     }
@@ -240,13 +281,18 @@ fi
 {
     printf 'case\toutput_hash\tsimTicks\tsimInsts\tindex_words\tindex_hwm'
     printf '\twrite_issues\twrite_completions\tindirect_spd_reads'
+    printf '\tpages_ready\tpages_ready_before_source_drain'
+    printf '\tfirst_page_ready_cycles\tall_pages_ready_cycles'
+    printf '\tpage_ready_span_cycles'
     printf '\tstream_spd_reads\tstream_writes\talu_compute_cycles'
     printf '\tl3_read_hits_maa\tl3_read_misses_maa\tmemory_bytes_read_maa'
     printf '\tcpu_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$case_name" "$output_hash" "$ticks" "$insts" \
         "$index_words" "$index_hwm" "$write_issues" \
-        "$write_completions" "$indirect_spd_reads" \
+        "$write_completions" "$indirect_spd_reads" "$pages_ready" \
+        "$pages_ready_early" "$first_page_cycles" "$all_page_cycles" \
+        "$page_span_cycles" \
         "$stream_spd_reads" "$stream_writes" "$alu_compute" \
         "$l3_read_hits" "$l3_read_misses" "$memory_bytes_read" \
         "$cpu_cycles"

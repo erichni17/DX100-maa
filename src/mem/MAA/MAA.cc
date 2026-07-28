@@ -1040,15 +1040,67 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_VirtWriteIssues.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteIssues"), statistics::units::Count::get(), "number of virtual retirement writes issued"));
         IND_VirtWriteCompletions.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteCompletions"), statistics::units::Count::get(), "number of virtual retirement writes completed"));
         IND_VirtWriteAddressConflicts.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteAddressConflicts"), statistics::units::Count::get(), "virtual retirement write attempts deferred by an exact-address MAA transaction conflict"));
-        IND_CyclesRTAccess.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_CyclesRTAccess"), statistics::units::Count::get(), "number of cycles spent on row table access"));
-        IND_CyclesSPDReadAccess.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_CyclesSPDReadAccess"), statistics::units::Count::get(), "number of cycles spent on SPD read access"));
-        IND_CyclesSPDWriteAccess.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_CyclesSPDWriteAccess"), statistics::units::Count::get(), "number of cycles spent on SPD write access"));
-        IND_AvgCyclesFillPerInst.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesFillPerInst"), statistics::units::Count::get(), "average number of cycles in the FILL stage per indirect instruction"));
-        IND_AvgCyclesBuildPerInst.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesBuildPerInst"), statistics::units::Count::get(), "average number of cycles in the BUILD stage per indirect instruction"));
-        IND_AvgCyclesRequestPerInst.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesRequestPerInst"), statistics::units::Count::get(), "average number of cycles in the REQUEST stage per indirect instruction"));
-        IND_AvgCyclesRTAccessPerInst.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesRTAccessPerInst"), statistics::units::Count::get(), "average number of cycles spent on row table access per indirect instruction"));
-        IND_AvgCyclesSPDReadAccessPerInst.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesSPDReadAccessPerInst"), statistics::units::Count::get(), "average number of cycles spent on SPD read access per indirect instruction"));
-        IND_AvgCyclesSPDWriteAccessPerInst.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesSPDWriteAccessPerInst"), statistics::units::Count::get(), "average number of cycles spent on SPD write access per indirect instruction"));
+        IND_VirtPagesReady.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReady"),
+            statistics::units::Count::get(),
+            "virtual output pages whose retirement writes all completed"));
+        IND_VirtPagesReadyBeforeSourceDrain.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReadyBeforeSourceDrain"),
+            statistics::units::Count::get(),
+            "virtual output pages ready before all source responses drained"));
+        IND_VirtFirstPageReadyCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtFirstPageReadyCycles"),
+            statistics::units::Count::get(),
+            "cycles from virtual instruction decode to first output page "
+            "ready"));
+        IND_VirtAllPagesReadyCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtAllPagesReadyCycles"),
+            statistics::units::Count::get(),
+            "cycles from virtual instruction decode to all output pages "
+            "ready"));
+        IND_VirtPageReadySpanCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtPageReadySpanCycles"),
+            statistics::units::Count::get(),
+            "cycles between first and last virtual output page becoming "
+            "ready"));
+        IND_CyclesRTAccess.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_CyclesRTAccess"),
+            statistics::units::Count::get(),
+            "number of cycles spent on row table access"));
+        IND_CyclesSPDReadAccess.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_CyclesSPDReadAccess"),
+            statistics::units::Count::get(),
+            "number of cycles spent on SPD read access"));
+        IND_CyclesSPDWriteAccess.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_CyclesSPDWriteAccess"),
+            statistics::units::Count::get(),
+            "number of cycles spent on SPD write access"));
+        IND_AvgCyclesFillPerInst.push_back(new statistics::Formula(
+            this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesFillPerInst"),
+            statistics::units::Count::get(),
+            "average FILL-stage cycles per indirect instruction"));
+        IND_AvgCyclesBuildPerInst.push_back(new statistics::Formula(
+            this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesBuildPerInst"),
+            statistics::units::Count::get(),
+            "average BUILD-stage cycles per indirect instruction"));
+        IND_AvgCyclesRequestPerInst.push_back(new statistics::Formula(
+            this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesRequestPerInst"),
+            statistics::units::Count::get(),
+            "average REQUEST-stage cycles per indirect instruction"));
+        IND_AvgCyclesRTAccessPerInst.push_back(new statistics::Formula(
+            this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesRTAccessPerInst"),
+            statistics::units::Count::get(),
+            "average row-table access cycles per indirect instruction"));
+        IND_AvgCyclesSPDReadAccessPerInst.push_back(new statistics::Formula(
+            this, MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesSPDReadAccessPerInst"),
+            statistics::units::Count::get(),
+            "average SPD read-access cycles per indirect instruction"));
+        IND_AvgCyclesSPDWriteAccessPerInst.push_back(new statistics::Formula(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_AvgCyclesSPDWriteAccessPerInst"),
+            statistics::units::Count::get(),
+            "average SPD write-access cycles per indirect instruction"));
         IND_LoadsCacheHitResponding.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_LoadsCacheHitResponding"), statistics::units::Count::get(), "number of loads hit in cache in the M/O state, responding back"));
         IND_LoadsCacheHitAccessing.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_LoadsCacheHitAccessing"), statistics::units::Count::get(), "number of loads hit in cache in the E/S state, reaccessed cache"));
         IND_LoadsMemAccessing.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_LoadsMemAccessing"), statistics::units::Count::get(), "number of loads miss in cache, accessed from memory"));

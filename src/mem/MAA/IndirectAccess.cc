@@ -933,6 +933,14 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_pending_source_words = 0;
         virtual_source_reservations.clear();
         virtual_outstanding_writes = 0;
+        virtual_retirement_write_pages.clear();
+        virtual_page_expected_words.clear();
+        virtual_page_issued_words.clear();
+        virtual_page_completed_words.clear();
+        virtual_pages_ready = 0;
+        virtual_pages_ready_before_source_drain = 0;
+        virtual_first_page_ready_tick = 0;
+        virtual_all_pages_ready_tick = 0;
         virtual_source_expected = 0;
         virtual_source_received = 0;
         virtual_combine_victim = 0;
@@ -1426,6 +1434,49 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_full_line_writes;
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
+            initializeVirtualPageTracking();
+            panic_if(!virtual_retirement_write_pages.empty(),
+                     "I[%d] virtual retirement metadata remains at response\n",
+                     my_indirect_id);
+            panic_if(virtual_pages_ready !=
+                         static_cast<int>(virtual_page_expected_words.size()),
+                     "I[%d] only %d/%zu virtual pages became ready\n",
+                     my_indirect_id, virtual_pages_ready,
+                     virtual_page_expected_words.size());
+            for (size_t page = 0; page < virtual_page_expected_words.size();
+                 ++page) {
+                panic_if(virtual_page_issued_words[page] !=
+                             virtual_page_expected_words[page] ||
+                             virtual_page_completed_words[page] !=
+                             virtual_page_expected_words[page],
+                         "I[%d] virtual page %zu word accounting "
+                         "expected=%d issued=%d completed=%d\n",
+                         my_indirect_id, page,
+                         virtual_page_expected_words[page],
+                         virtual_page_issued_words[page],
+                         virtual_page_completed_words[page]);
+            }
+            panic_if(!virtual_page_expected_words.empty() &&
+                         (virtual_first_page_ready_tick == 0 ||
+                          virtual_all_pages_ready_tick == 0),
+                     "I[%d] virtual page-ready timestamps are incomplete\n",
+                     my_indirect_id);
+            (*maa->stats.IND_VirtPagesReady[my_indirect_id]) +=
+                virtual_pages_ready;
+            (*maa->stats
+                   .IND_VirtPagesReadyBeforeSourceDrain[my_indirect_id]) +=
+                virtual_pages_ready_before_source_drain;
+            if (!virtual_page_expected_words.empty()) {
+                (*maa->stats.IND_VirtFirstPageReadyCycles[my_indirect_id]) +=
+                    maa->getTicksToCycles(virtual_first_page_ready_tick -
+                                          my_decode_start_tick);
+                (*maa->stats.IND_VirtAllPagesReadyCycles[my_indirect_id]) +=
+                    maa->getTicksToCycles(virtual_all_pages_ready_tick -
+                                          my_decode_start_tick);
+                (*maa->stats.IND_VirtPageReadySpanCycles[my_indirect_id]) +=
+                    maa->getTicksToCycles(virtual_all_pages_ready_tick -
+                                          virtual_first_page_ready_tick);
+            }
         }
         if (isDirectIndexLoad()) {
             (*maa->stats.IND_VirtIndexLineHighWater[my_indirect_id]) +=
@@ -1964,6 +2015,109 @@ void IndirectAccessUnit::validateRetirementWriteRange(Addr vaddr,
              my_backing_max_addr);
 }
 
+void IndirectAccessUnit::initializeVirtualPageTracking() {
+    if (!virtual_page_expected_words.empty() || my_max == 0)
+        return;
+    panic_if(!isVirtualLoad() || my_max < 0,
+             "I[%d] cannot initialize virtual page tracking with max=%d\n",
+             my_indirect_id, my_max);
+    const int page_elements = maa->physical_tile_elements;
+    panic_if(page_elements <= 0,
+             "I[%d] invalid physical page size %d\n", my_indirect_id,
+             page_elements);
+    const int pages = (my_max + page_elements - 1) / page_elements;
+    virtual_page_expected_words.resize(pages);
+    virtual_page_issued_words.assign(pages, 0);
+    virtual_page_completed_words.assign(pages, 0);
+    for (int page = 0; page < pages; ++page) {
+        virtual_page_expected_words[page] =
+            std::min(page_elements, my_max - page * page_elements);
+    }
+}
+
+void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
+                                                      Addr vaddr,
+                                                      unsigned size,
+                                                      uint16_t valid_words) {
+    initializeVirtualPageTracking();
+    panic_if(size % my_word_size != 0,
+             "I[%d] virtual write size %u is not word aligned\n",
+             my_indirect_id, size);
+    panic_if(virtual_retirement_write_pages.count(write_key) != 0,
+             "I[%d] duplicate virtual write metadata for 0x%lx\n",
+             my_indirect_id, write_key);
+
+    std::map<int, int> page_words;
+    const unsigned words = size / my_word_size;
+    for (unsigned word = 0; word < words; ++word) {
+        if (valid_words != 0 && (valid_words & (1U << word)) == 0)
+            continue;
+        const Addr word_vaddr = vaddr + word * my_word_size;
+        panic_if(word_vaddr < my_backing_addr ||
+                     (word_vaddr - my_backing_addr) % my_word_size != 0,
+                 "I[%d] virtual write word 0x%lx does not map to backing "
+                 "base 0x%lx\n",
+                 my_indirect_id, word_vaddr, my_backing_addr);
+        const int itr = (word_vaddr - my_backing_addr) / my_word_size;
+        panic_if(itr < 0 || itr >= my_max,
+                 "I[%d] virtual write iteration %d exceeds [0, %d)\n",
+                 my_indirect_id, itr, my_max);
+        const int page = itr / maa->physical_tile_elements;
+        page_words[page]++;
+        virtual_page_issued_words[page]++;
+        panic_if(virtual_page_issued_words[page] >
+                     virtual_page_expected_words[page],
+                 "I[%d] virtual page %d issued too many words: %d/%d\n",
+                 my_indirect_id, page, virtual_page_issued_words[page],
+                 virtual_page_expected_words[page]);
+    }
+    panic_if(page_words.empty(),
+             "I[%d] virtual retirement write 0x%lx has no valid words\n",
+             my_indirect_id, write_key);
+    auto &metadata = virtual_retirement_write_pages[write_key];
+    metadata.assign(page_words.begin(), page_words.end());
+}
+
+void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
+    auto metadata = virtual_retirement_write_pages.find(write_key);
+    panic_if(metadata == virtual_retirement_write_pages.end(),
+             "I[%d] completed virtual write 0x%lx has no page metadata\n",
+             my_indirect_id, write_key);
+    for (const auto &[page, words] : metadata->second) {
+        virtual_page_completed_words[page] += words;
+        panic_if(virtual_page_completed_words[page] >
+                     virtual_page_expected_words[page],
+                 "I[%d] virtual page %d completed too many words: %d/%d\n",
+                 my_indirect_id, page, virtual_page_completed_words[page],
+                 virtual_page_expected_words[page]);
+        if (virtual_page_completed_words[page] !=
+            virtual_page_expected_words[page])
+            continue;
+
+        virtual_pages_ready++;
+        if (virtual_first_page_ready_tick == 0)
+            virtual_first_page_ready_tick = curTick();
+        if (virtual_pages_ready ==
+            static_cast<int>(virtual_page_expected_words.size()))
+            virtual_all_pages_ready_tick = curTick();
+        const bool sources_drained =
+            my_fill_finished && !virtual_build_incomplete &&
+            my_i >= my_max &&
+            virtual_source_received == virtual_source_expected &&
+            virtual_reserved_responses == 0;
+        if (!sources_drained)
+            virtual_pages_ready_before_source_drain++;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_ready unit=%d page=%d pages=%d/%d "
+                "issued=%d completed=%d sources_drained=%d\n",
+                my_indirect_id, page, virtual_pages_ready,
+                static_cast<int>(virtual_page_expected_words.size()),
+                virtual_page_issued_words[page],
+                virtual_page_completed_words[page], sources_drained);
+    }
+    virtual_retirement_write_pages.erase(metadata);
+}
+
 bool IndirectAccessUnit::createRetirementWrite(int itr, const uint8_t *data) {
     const Addr vaddr = backingWordAddr(itr);
     return createRetirementWrite(vaddr, my_word_size, data);
@@ -2008,6 +2162,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     my_expected_responses++;
     virtual_outstanding_writes++;
     virtual_outstanding_write_lines.insert(write_key);
+    trackVirtualRetirementWrite(write_key, vaddr, size, valid_words);
     (*maa->stats.IND_VirtWriteIssues[my_indirect_id])++;
     virtual_max_outstanding_writes = std::max(
         virtual_max_outstanding_writes, virtual_outstanding_writes);
@@ -2495,6 +2650,7 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
     panic_if(virtual_outstanding_write_lines.erase(addr) != 1,
              "I[%d] %s: completed address 0x%lx was not outstanding\n",
              my_indirect_id, __func__, addr);
+    completeVirtualRetirementWrite(addr);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     const bool response_throttled = drainVirtualResponses();
     if (virtual_final_flush)

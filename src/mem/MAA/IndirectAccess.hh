@@ -121,6 +121,15 @@ protected:
     int virtual_max_outstanding_writes_limit = 0;
     bool virtual_masked_writes = false;
     std::set<Addr> virtual_outstanding_write_lines;
+    std::map<Addr, std::vector<std::pair<int, int>>>
+        virtual_retirement_write_pages;
+    std::vector<int> virtual_page_expected_words;
+    std::vector<int> virtual_page_issued_words;
+    std::vector<int> virtual_page_completed_words;
+    int virtual_pages_ready = 0;
+    int virtual_pages_ready_before_source_drain = 0;
+    Tick virtual_first_page_ready_tick = 0;
+    Tick virtual_all_pages_ready_tick = 0;
     int virtual_reserved_responses = 0;
     int virtual_outstanding_writes = 0;
     int virtual_source_expected = 0;
@@ -266,6 +275,10 @@ protected:
     void accountReadResponse(Addr addr, bool is_block_cached);
     Addr backingWordAddr(int itr) const;
     void validateRetirementWriteRange(Addr vaddr, unsigned size) const;
+    void initializeVirtualPageTracking();
+    void trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
+                                     unsigned size, uint16_t valid_words);
+    void completeVirtualRetirementWrite(Addr write_key);
     bool createRetirementWrite(int itr, const uint8_t *data);
     bool createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data,
                                uint16_t valid_words = 0);
