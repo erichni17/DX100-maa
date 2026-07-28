@@ -1,6 +1,7 @@
 #ifndef __MEM_MAA_MAA_HH__
 #define __MEM_MAA_MAA_HH__
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -453,6 +454,9 @@ public:
 
     const AddrRangeList &getAddrRanges(int core_id) const { return cpuPortAddrRanges[core_id]; }
     void setTileReady(int tileID, int wordSize);
+    void resetVirtualPageReady(int tokenTileID);
+    void setVirtualPageReady(int tokenTileID, int pageID);
+    bool getVirtualPageReady(int tokenTileID, int pageID) const;
     void finishInstructionCompute(InstructionPtr instruction);
     void finishInstructionInvalidate(InstructionPtr instruction, int tileID);
     bool sentMemSidePacket(PacketPtr pkt);
@@ -472,6 +476,8 @@ protected:
     std::vector<RegisterPtr> my_registers;
     std::vector<PacketPtr> my_register_pkts;
     std::vector<int> my_ready_tile_ids;
+    static constexpr int MaxVirtualPages = 16;
+    std::vector<std::array<bool, MaxVirtualPages>> virtualPageReady;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();
@@ -551,6 +557,10 @@ public:
         statistics::Scalar cpu_spd_data_read_retry_signals;
         statistics::Scalar cpu_spd_data_read_retry_attempts;
         statistics::Scalar cpu_spd_data_read_retry_acceptances;
+        statistics::Scalar virtual_page_ready_signals;
+        statistics::Scalar virtual_page_wait_reads;
+        statistics::Scalar virtual_page_wait_deferrals;
+        statistics::Scalar virtual_page_wait_responses;
         statistics::Scalar virtual_retirement_native_deferrals;
         statistics::Scalar virtual_retirement_queue_deferrals;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect

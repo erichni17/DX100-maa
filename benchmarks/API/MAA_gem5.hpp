@@ -31,8 +31,12 @@
 #endif
 #define SPD_DATA_SIZE (NUM_TILES * TILE_SIZE * sizeof(uint32_t)) // 128KB = 32 tiles x 1K elements x 4B each element (uint32_t, int32_t, float)
 #define SPD_SIZE_SIZE (NUM_TILES * sizeof(uint16_t))             // 64B = 32 tiles x 2B each tile (uint16_t)
-#define SPD_READY_SIZE (NUM_TILES * sizeof(uint16_t))            // 64B = 32 tiles x 2B each tile (uint16_t)
-#define REG_SIZE (NUM_SCALAR_REGS * sizeof(uint32_t))            // 128B = 32 registers x 4B each register (uint32_t, int32_t, float)
+#define MAX_VIRTUAL_PAGES 16
+#define SPD_READY_SIZE (NUM_TILES * sizeof(uint16_t))
+#define VIRTUAL_PAGE_READY_SIZE \
+    (NUM_TILES * MAX_VIRTUAL_PAGES * sizeof(uint16_t))
+#define INSTRUCTION_FILE_SIZE 64
+#define REG_SIZE (NUM_SCALAR_REGS * sizeof(uint32_t))
 
 enum OpcodeType : uint8_t {
     STREAM_LD = 0,
@@ -65,6 +69,7 @@ volatile uint64_t *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc;
 volatile uint64_t *INSTR_baseaddr;
 volatile uint64_t *INSTR_backingaddr;
 volatile uint64_t *INSTR_indexaddr;
+volatile uint16_t *VIRTUAL_PAGE_READY_noncacheable;
 uint64_t MAA_end_addr;
 int8_t region_count;
 
@@ -79,8 +84,11 @@ void clear_mem_region() {
     m5_add_mem_region((void *)SPD_size_noncacheable, (void *)SPD_ready_noncacheable, 2);
     m5_add_mem_region((void *)SPD_ready_noncacheable, (void *)REG_noncacheable, 3);
     m5_add_mem_region((void *)REG_noncacheable, (void *)INSTR_opcode_datatype_optype_tdst1_tdst2, 4);
-    m5_add_mem_region((void *)INSTR_opcode_datatype_optype_tdst1_tdst2, (void *)MAA_end_addr, 5);
-    region_count = 6;
+    m5_add_mem_region((void *)INSTR_opcode_datatype_optype_tdst1_tdst2,
+                      (void *)VIRTUAL_PAGE_READY_noncacheable, 5);
+    m5_add_mem_region((void *)VIRTUAL_PAGE_READY_noncacheable,
+                      (void *)MAA_end_addr, 6);
+    region_count = 7;
 }
 
 void alloc_MAA() {
@@ -105,6 +113,9 @@ void alloc_MAA() {
     current_addr += 8;
     INSTR_indexaddr = (volatile uint64_t *)(current_addr);
     current_addr += 8;
+    current_addr += INSTRUCTION_FILE_SIZE - 5 * sizeof(uint64_t);
+    VIRTUAL_PAGE_READY_noncacheable = (volatile uint16_t *)(current_addr);
+    current_addr += VIRTUAL_PAGE_READY_SIZE;
     MAA_end_addr = current_addr;
     clear_mem_region();
 }
@@ -116,6 +127,12 @@ inline void init_MAA() {
 }
 void wait_ready(int SPD_id) {
     volatile uint16_t ready __attribute__((unused)) = SPD_ready_noncacheable[SPD_id];
+    __asm__ __volatile__("mfence;");
+}
+void wait_virtual_page(int completion_tile, int page) {
+    const int ready_id = completion_tile * MAX_VIRTUAL_PAGES + page;
+    volatile uint16_t ready __attribute__((unused)) =
+        VIRTUAL_PAGE_READY_noncacheable[ready_id];
     __asm__ __volatile__("mfence;");
 }
 inline volatile uint16_t get_tile_size(int SPD_id) {

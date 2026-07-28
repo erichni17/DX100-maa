@@ -2095,6 +2095,7 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
             continue;
 
         virtual_pages_ready++;
+        maa->setVirtualPageReady(my_dst_tile, page);
         if (virtual_first_page_ready_tick == 0)
             virtual_first_page_ready_tick = curTick();
         if (virtual_pages_ready ==

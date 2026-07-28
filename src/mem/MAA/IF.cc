@@ -569,12 +569,13 @@ std::string AddressRangeType::print() const {
     ccprintf(str, "%s: 0x%lx + 0x%lx", address_range_names[rangeID], base, offset);
     return str.str();
 }
-const char *const AddressRangeType::address_range_names[7] = {
+const char *const AddressRangeType::address_range_names[8] = {
     "SPD_DATA_CACHEABLE_RANGE",
     "SPD_DATA_NONCACHEABLE_RANGE",
     "SPD_SIZE_RANGE",
     "SPD_READY_RANGE",
     "SCALAR_RANGE",
     "INSTRUCTION_RANGE",
+    "VIRTUAL_PAGE_READY_RANGE",
     "MAX"};
 } // namespace gem5

@@ -38,10 +38,11 @@ main(int argc, char **argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "native";
     const int page_elements = argc > 2 ? std::atoi(argv[2]) : total_elements;
-    if (mode != "native" && mode != "paged" &&
+    if (mode != "native" && mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_reload_warm" &&
         mode != "paged_reload_cold") {
-        std::cerr << "mode must be native, paged, paged_staged, or "
+        std::cerr << "mode must be native, paged, paged_overlap, "
+                     "paged_staged, or "
                      "paged_reload_warm/paged_reload_cold"
                   << std::endl;
         return 2;
@@ -143,7 +144,9 @@ main(int argc, char **argv)
                 source.data(), indices.data(), completion_tile, backing,
                 min_reg, max_reg, stride_reg);
         }
-        wait_ready(completion_tile);
+        const bool overlap_pages = mode == "paged_overlap";
+        if (!overlap_pages)
+            wait_ready(completion_tile);
 
         if (mode == "paged_reload_cold") {
             volatile uint64_t sink = 0;
@@ -164,6 +167,9 @@ main(int argc, char **argv)
              offset += page_elements) {
             const int count = std::min(page_elements,
                                        total_elements - offset);
+            if (overlap_pages)
+                wait_virtual_page(completion_tile,
+                                  offset / page_elements);
             wait_ready(page_tile);
             maa_const(0, min_reg);
             maa_const(count, max_reg);
@@ -174,6 +180,8 @@ main(int argc, char **argv)
             maa_stream_store<double>(destination + offset, min_reg, max_reg,
                                      stride_reg, output_tile);
         }
+        if (overlap_pages)
+            wait_ready(completion_tile);
     }
 
     // A source tile becomes ready before its stream store finishes. Reusing it

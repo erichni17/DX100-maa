@@ -1,22 +1,23 @@
-#include "mem/MAA/ALU.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/IndirectAccess.hh"
-#include "mem/MAA/Invalidator.hh"
-#include "mem/MAA/RangeFuser.hh"
-#include "mem/MAA/SPD.hh"
-#include "mem/MAA/StreamAccess.hh"
-#include "mem/MAA/MAA.hh"
+#include <cassert>
+#include <cstdint>
+#include <limits>
 
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
+#include "debug/MAAController.hh"
+#include "debug/MAACpuPort.hh"
+#include "debug/MAAVirtualTrace.hh"
+#include "mem/MAA/ALU.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/IndirectAccess.hh"
+#include "mem/MAA/Invalidator.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/RangeFuser.hh"
+#include "mem/MAA/SPD.hh"
+#include "mem/MAA/StreamAccess.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
-#include "debug/MAACpuPort.hh"
-#include "debug/MAAController.hh"
-#include <cassert>
-#include <cstdint>
-#include <limits>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -428,6 +429,45 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 // We need to respond to this packet later
                 my_ready_pkts.push_back(pkt);
                 my_ready_tile_ids.push_back(ready_tile_id);
+            }
+            break;
+        }
+        case AddressRangeType::Type::VIRTUAL_PAGE_READY_RANGE: {
+            panic_if(core_id != 0,
+                     "Virtual-page ready range is only for core 0\n");
+            panic_if(pkt->getSize() != sizeof(uint16_t),
+                     "%s: invalid virtual-page ready read size %d\n",
+                     __func__, pkt->getSize());
+            const Addr offset = address_range.getOffset();
+            panic_if(offset % sizeof(uint16_t) != 0,
+                     "unaligned virtual-page ready offset 0x%lx\n", offset);
+            const int virtualID = offset / sizeof(uint16_t);
+            const int tokenTileID = virtualID / MAA::MaxVirtualPages;
+            const int pageID = virtualID % MAA::MaxVirtualPages;
+            const int readyID =
+                num_tiles + tokenTileID * MAA::MaxVirtualPages + pageID;
+            const uint16_t one = 1;
+            pkt->setData((const uint8_t *)&one);
+            assert(pkt->needsResponse());
+            stats.virtual_page_wait_reads++;
+            if (getVirtualPageReady(tokenTileID, pageID)) {
+                DPRINTF(MAAVirtualTrace,
+                        "event=page_wait_immediate token=%d page=%d\n",
+                        tokenTileID, pageID);
+                pkt->makeTimingResponse();
+                Tick oldHeaderDelay = pkt->headerDelay;
+                pkt->headerDelay = pkt->payloadDelay = 0;
+                cpuSidePorts[core_id]->schedTimingResp(
+                    pkt, getClockEdge(Cycles(1)) + oldHeaderDelay);
+                stats.virtual_page_wait_responses++;
+            } else {
+                DPRINTF(MAAVirtualTrace,
+                        "event=page_wait_deferred token=%d page=%d "
+                        "ready_id=%d\n",
+                        tokenTileID, pageID, readyID);
+                my_ready_pkts.push_back(pkt);
+                my_ready_tile_ids.push_back(readyID);
+                stats.virtual_page_wait_deferrals++;
             }
             break;
         }

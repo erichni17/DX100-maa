@@ -1,3 +1,19 @@
+#include "mem/MAA/MAA.hh"
+
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <string>
+
+#include "base/addr_range.hh"
+#include "base/logging.hh"
+#include "base/trace.hh"
+#include "debug/MAA.hh"
+#include "debug/MAACachePort.hh"
+#include "debug/MAAController.hh"
+#include "debug/MAACpuPort.hh"
+#include "debug/MAAMemPort.hh"
+#include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/ALU.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/IndirectAccess.hh"
@@ -5,22 +21,9 @@
 #include "mem/MAA/RangeFuser.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/StreamAccess.hh"
-#include "mem/MAA/MAA.hh"
-
-#include "base/addr_range.hh"
-#include "base/logging.hh"
-#include "base/trace.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
-#include "debug/MAA.hh"
-#include "debug/MAACpuPort.hh"
-#include "debug/MAACachePort.hh"
-#include "debug/MAAMemPort.hh"
-#include "debug/MAAController.hh"
 #include "sim/cur_tick.hh"
-#include <cassert>
-#include <cstdint>
-#include <string>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -98,6 +101,9 @@ MAA::MAA(const MAAParams &p)
     panic_if(physical_tile_elements > num_tile_elements,
              "Physical tile capacity %u exceeds logical capacity %u\n",
              physical_tile_elements, num_tile_elements);
+    virtualPageReady.resize(num_tiles);
+    for (auto &pages : virtualPageReady)
+        pages.fill(false);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
     spd = new SPD(this, num_tiles, num_tile_elements,
@@ -641,6 +647,12 @@ void MAA::dispatchInstruction() {
                     spd->setTileIdle(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
                     spd->setTileNotReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
                 }
+                if (instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
+                    instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX) {
+                    resetVirtualPageReady(instruction->dst1SpdID);
+                }
                 if (instruction->dst2SpdID != -1) {
                     assert(instruction->dst2SpdID != instruction->src1SpdID);
                     assert(instruction->dst2SpdID != instruction->src2SpdID);
@@ -741,8 +753,9 @@ void MAA::setTileReady(int tileID, int wordSize) {
     auto tile_id_it = my_ready_tile_ids.begin();
     while (pkt_it != my_ready_pkts.end() &&
            tile_id_it != my_ready_tile_ids.end()) {
-        const bool affected = *tile_id_it == tileID ||
-            (wordSize == 8 && *tile_id_it == tileID + 1);
+        const bool affected = *tile_id_it < num_tiles &&
+            (*tile_id_it == tileID ||
+             (wordSize == 8 && *tile_id_it == tileID + 1));
         if (affected && spd->getTileReady(*tile_id_it)) {
             PacketPtr pkt = *pkt_it;
             DPRINTF(MAAController,
@@ -760,6 +773,57 @@ void MAA::setTileReady(int tileID, int wordSize) {
     }
     for (auto *port : cpuSidePorts) {
         port->retryTileRequest();
+    }
+}
+void MAA::resetVirtualPageReady(int tokenTileID) {
+    panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
+             "invalid virtual completion token tile %d\n", tokenTileID);
+    const int firstReadyID = num_tiles + tokenTileID * MaxVirtualPages;
+    const int lastReadyID = firstReadyID + MaxVirtualPages;
+    panic_if(std::any_of(
+                 my_ready_tile_ids.begin(), my_ready_tile_ids.end(),
+                 [firstReadyID, lastReadyID](int readyID) {
+                     return readyID >= firstReadyID && readyID < lastReadyID;
+                 }),
+             "token tile %d reused with an outstanding virtual-page wait\n",
+             tokenTileID);
+    virtualPageReady[tokenTileID].fill(false);
+}
+bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
+    panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || pageID < 0 ||
+                 pageID >= MaxVirtualPages,
+             "invalid virtual page token=%d page=%d\n", tokenTileID,
+             pageID);
+    return virtualPageReady[tokenTileID][pageID];
+}
+void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
+    panic_if(getVirtualPageReady(tokenTileID, pageID),
+             "virtual page token=%d page=%d became ready twice\n",
+             tokenTileID, pageID);
+    virtualPageReady[tokenTileID][pageID] = true;
+    stats.virtual_page_ready_signals++;
+
+    const int readyID =
+        num_tiles + tokenTileID * MaxVirtualPages + pageID;
+    assert(my_ready_pkts.size() == my_ready_tile_ids.size());
+    auto pktIt = my_ready_pkts.begin();
+    auto readyIt = my_ready_tile_ids.begin();
+    while (pktIt != my_ready_pkts.end()) {
+        if (*readyIt != readyID) {
+            ++pktIt;
+            ++readyIt;
+            continue;
+        }
+        PacketPtr pkt = *pktIt;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_wait_wakeup token=%d page=%d ready_id=%d\n",
+                tokenTileID, pageID, readyID);
+        pkt->makeTimingResponse();
+        pkt->headerDelay = pkt->payloadDelay = 0;
+        cpuSidePorts[0]->schedTimingResp(pkt, getClockEdge(Cycles(1)));
+        pktIt = my_ready_pkts.erase(pktIt);
+        readyIt = my_ready_tile_ids.erase(readyIt);
+        stats.virtual_page_wait_responses++;
     }
 }
 void MAA::finishInstructionInvalidate(Instruction *instruction, int tileID) {
@@ -902,6 +966,18 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(cpu_spd_data_read_retry_acceptances,
                statistics::units::Count::get(),
                "requests accepted after cacheable SPD read retry signals"),
+      ADD_STAT(virtual_page_ready_signals,
+               statistics::units::Count::get(),
+               "virtual output pages marked ready"),
+      ADD_STAT(virtual_page_wait_reads,
+               statistics::units::Count::get(),
+               "CPU virtual-page readiness reads"),
+      ADD_STAT(virtual_page_wait_deferrals,
+               statistics::units::Count::get(),
+               "CPU virtual-page readiness reads deferred until page ready"),
+      ADD_STAT(virtual_page_wait_responses,
+               statistics::units::Count::get(),
+               "CPU virtual-page readiness responses returned"),
       ADD_STAT(virtual_retirement_native_deferrals,
                statistics::units::Count::get(),
                "MAA packets deferred by virtual-retirement exact-address "

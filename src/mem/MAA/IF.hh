@@ -243,15 +243,17 @@ protected:
     bool valid;
 
 public:
-    static const char *const address_range_names[7];
-    enum class Type : uint8_t {
+    static const char *const address_range_names[8];
+    enum class Type : uint8_t
+    {
         SPD_DATA_CACHEABLE_RANGE = 0,
         SPD_DATA_NONCACHEABLE_RANGE = 1,
         SPD_SIZE_RANGE = 2,
         SPD_READY_RANGE = 3,
         SCALAR_RANGE = 4,
         INSTRUCTION_RANGE = 5,
-        MAX = 6
+        VIRTUAL_PAGE_READY_RANGE = 6,
+        MAX = 7
     };
     AddressRangeType(Addr _addr, AddrRangeList addrRanges);
     std::string print() const;

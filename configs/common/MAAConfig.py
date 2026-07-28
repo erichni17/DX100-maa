@@ -25,37 +25,55 @@ def _get_maa_opts(options):
         opts["num_regs_per_core"] = getattr(options, "maa_num_regs_per_core")
 
     if hasattr(options, "maa_num_instructions_per_core"):
-        opts["num_instructions_per_core"] = getattr(options, "maa_num_instructions_per_core")
+        opts["num_instructions_per_core"] = getattr(
+            options, "maa_num_instructions_per_core"
+        )
 
     if hasattr(options, "maa_num_row_table_rows_per_slice"):
-        opts["num_row_table_rows_per_slice"] = getattr(options, "maa_num_row_table_rows_per_slice")
+        opts["num_row_table_rows_per_slice"] = getattr(
+            options, "maa_num_row_table_rows_per_slice"
+        )
 
     if hasattr(options, "maa_num_row_table_entries_per_subslice_row"):
-        opts["num_row_table_entries_per_subslice_row"] = getattr(options, "maa_num_row_table_entries_per_subslice_row")
+        opts["num_row_table_entries_per_subslice_row"] = getattr(
+            options, "maa_num_row_table_entries_per_subslice_row"
+        )
 
     if hasattr(options, "maa_num_row_table_config_cache_entries"):
-        opts["num_row_table_config_cache_entries"] = getattr(options, "maa_num_row_table_config_cache_entries")
+        opts["num_row_table_config_cache_entries"] = getattr(
+            options, "maa_num_row_table_config_cache_entries"
+        )
 
-    if(hasattr(options, "maa_reconfigure_row_table")):
-        opts["reconfigure_row_table"] = getattr(options, "maa_reconfigure_row_table")
+    if hasattr(options, "maa_reconfigure_row_table"):
+        opts["reconfigure_row_table"] = getattr(
+            options, "maa_reconfigure_row_table"
+        )
 
-    if(hasattr(options, "maa_no_reorder")):
+    if hasattr(options, "maa_no_reorder"):
         opts["no_reorder"] = getattr(options, "maa_no_reorder")
 
-    if(hasattr(options, "maa_force_cache_access")):
+    if hasattr(options, "maa_force_cache_access"):
         opts["force_cache_access"] = getattr(options, "maa_force_cache_access")
 
-    if(hasattr(options, "maa_num_initial_row_table_slices")):
-        opts["num_initial_row_table_slices"] = getattr(options, "maa_num_initial_row_table_slices")
+    if hasattr(options, "maa_num_initial_row_table_slices"):
+        opts["num_initial_row_table_slices"] = getattr(
+            options, "maa_num_initial_row_table_slices"
+        )
 
     if hasattr(options, "maa_virtual_combine_slots"):
-        opts["virtual_combine_slots"] = getattr(options, "maa_virtual_combine_slots")
+        opts["virtual_combine_slots"] = getattr(
+            options, "maa_virtual_combine_slots"
+        )
 
     if hasattr(options, "maa_virtual_combine_words"):
-        opts["virtual_combine_words"] = getattr(options, "maa_virtual_combine_words")
+        opts["virtual_combine_words"] = getattr(
+            options, "maa_virtual_combine_words"
+        )
 
     if hasattr(options, "maa_virtual_combine_ways"):
-        opts["virtual_combine_ways"] = getattr(options, "maa_virtual_combine_ways")
+        opts["virtual_combine_ways"] = getattr(
+            options, "maa_virtual_combine_ways"
+        )
 
     if hasattr(options, "maa_virtual_combine_banks"):
         opts["virtual_combine_banks"] = getattr(
@@ -63,31 +81,49 @@ def _get_maa_opts(options):
         )
 
     if hasattr(options, "maa_virtual_response_slots"):
-        opts["virtual_response_slots"] = getattr(options, "maa_virtual_response_slots")
+        opts["virtual_response_slots"] = getattr(
+            options, "maa_virtual_response_slots"
+        )
 
     if hasattr(options, "maa_virtual_response_words"):
-        opts["virtual_response_words"] = getattr(options, "maa_virtual_response_words")
+        opts["virtual_response_words"] = getattr(
+            options, "maa_virtual_response_words"
+        )
 
     if hasattr(options, "maa_virtual_response_word_pool"):
-        opts["virtual_response_word_pool"] = getattr(options, "maa_virtual_response_word_pool")
+        opts["virtual_response_word_pool"] = getattr(
+            options, "maa_virtual_response_word_pool"
+        )
 
     if hasattr(options, "maa_virtual_words_per_cycle"):
-        opts["virtual_words_per_cycle"] = getattr(options, "maa_virtual_words_per_cycle")
+        opts["virtual_words_per_cycle"] = getattr(
+            options, "maa_virtual_words_per_cycle"
+        )
 
     if hasattr(options, "maa_virtual_max_outstanding_writes"):
-        opts["virtual_max_outstanding_writes"] = getattr(options, "maa_virtual_max_outstanding_writes")
+        opts["virtual_max_outstanding_writes"] = getattr(
+            options, "maa_virtual_max_outstanding_writes"
+        )
 
     if hasattr(options, "maa_virtual_masked_writes"):
-        opts["virtual_masked_writes"] = getattr(options, "maa_virtual_masked_writes")
+        opts["virtual_masked_writes"] = getattr(
+            options, "maa_virtual_masked_writes"
+        )
 
     if hasattr(options, "maa_virtual_index_buffer_lines"):
-        opts["virtual_index_buffer_lines"] = getattr(options, "maa_virtual_index_buffer_lines")
+        opts["virtual_index_buffer_lines"] = getattr(
+            options, "maa_virtual_index_buffer_lines"
+        )
 
-    if(hasattr(options, "maa_num_request_table_addresses")):
-        opts["num_request_table_addresses"] = getattr(options, "maa_num_request_table_addresses")
+    if hasattr(options, "maa_num_request_table_addresses"):
+        opts["num_request_table_addresses"] = getattr(
+            options, "maa_num_request_table_addresses"
+        )
 
     if hasattr(options, "maa_num_request_table_entries_per_address"):
-        opts["num_request_table_entries_per_address"] = getattr(options, "maa_num_request_table_entries_per_address")
+        opts["num_request_table_entries_per_address"] = getattr(
+            options, "maa_num_request_table_entries_per_address"
+        )
 
     if hasattr(options, "maa_spd_read_latency"):
         opts["spd_read_latency"] = getattr(options, "maa_spd_read_latency")
@@ -96,10 +132,14 @@ def _get_maa_opts(options):
         opts["spd_write_latency"] = getattr(options, "maa_spd_write_latency")
 
     if hasattr(options, "maa_num_spd_read_ports_per_maa"):
-        opts["num_spd_read_ports_per_maa"] = getattr(options, "maa_num_spd_read_ports_per_maa")
+        opts["num_spd_read_ports_per_maa"] = getattr(
+            options, "maa_num_spd_read_ports_per_maa"
+        )
 
     if hasattr(options, "maa_num_spd_write_ports_per_maa"):
-        opts["num_spd_write_ports_per_maa"] = getattr(options, "maa_num_spd_write_ports_per_maa")
+        opts["num_spd_write_ports_per_maa"] = getattr(
+            options, "maa_num_spd_write_ports_per_maa"
+        )
 
     if hasattr(options, "maa_rowtable_latency"):
         opts["rowtable_latency"] = getattr(options, "maa_rowtable_latency")
@@ -114,7 +154,9 @@ def _get_maa_opts(options):
         opts["num_maas"] = getattr(options, "maa_num_maas")
 
     if hasattr(options, "maa_num_indirect_units_per_maa"):
-        opts["num_indirect_units_per_maa"] = getattr(options, "maa_num_indirect_units_per_maa")
+        opts["num_indirect_units_per_maa"] = getattr(
+            options, "maa_num_indirect_units_per_maa"
+        )
 
     opts["num_memory_channels"] = options.mem_channels
     opts["num_cores"] = options.num_cpus
@@ -122,7 +164,12 @@ def _get_maa_opts(options):
     addr_ranges = []
     start = options.mem_size
 
-    SPD_data_size = opts["num_tiles_per_core"] * opts["num_cores"] * opts["num_tile_elements"] * 4
+    SPD_data_size = (
+        opts["num_tiles_per_core"]
+        * opts["num_cores"]
+        * opts["num_tile_elements"]
+        * 4
+    )
 
     # scratchpad data (cacheable) (4 bytes each)
     addr_ranges.append(AddrRange(start=start, size=SPD_data_size))
@@ -152,9 +199,17 @@ def _get_maa_opts(options):
     addr_ranges.append(AddrRange(start=start, size=instruction_file_size))
     start = addr_ranges[-1].end
 
+    # Per-completion-token readiness for up to sixteen virtual pages.
+    virtual_page_ready_size = (
+        opts["num_tiles_per_core"] * opts["num_cores"] * 16 * 2
+    )
+    addr_ranges.append(AddrRange(start=start, size=virtual_page_ready_size))
+    start = addr_ranges[-1].end
+
     opts["addr_ranges"] = addr_ranges
 
     return opts
+
 
 def _get_cache_opts(level, options):
     opts = {}
@@ -165,6 +220,7 @@ def _get_cache_opts(level, options):
 
     return opts
 
+
 def get_maa_address(options):
     opts = _get_maa_opts(options)
     start_cacheable_addr = opts["addr_ranges"][0].start
@@ -173,11 +229,19 @@ def get_maa_address(options):
     end_noncacheable_addr = Addr(opts["addr_ranges"][-1].end)
     size_cacheable_addr = end_cacheable_addr - start_cacheable_addr
     size_noncacheable_addr = end_noncacheable_addr - start_noncacheable_addr
-    print(f"MAA Address: cacheable ({start_cacheable_addr}-{end_cacheable_addr} : {size_cacheable_addr}), noncacheable ({start_noncacheable_addr}-{end_noncacheable_addr} : {size_noncacheable_addr})")
-    return start_cacheable_addr, size_cacheable_addr, start_noncacheable_addr, size_noncacheable_addr
+    print(
+        f"MAA Address: cacheable ({start_cacheable_addr}-{end_cacheable_addr} : {size_cacheable_addr}), noncacheable ({start_noncacheable_addr}-{end_noncacheable_addr} : {size_noncacheable_addr})"
+    )
+    return (
+        start_cacheable_addr,
+        size_cacheable_addr,
+        start_noncacheable_addr,
+        size_noncacheable_addr,
+    )
+
 
 def config_maa(options, system):
-    assert(options.l3cache)
+    assert options.l3cache
     opts = _get_maa_opts(options)
     # Backward-compat: a config script can be newer than the compiled gem5 binary
     # (e.g. an A/B baseline built before a param like num_indirect_units_per_maa
@@ -188,7 +252,9 @@ def config_maa(options, system):
     for _k in _dropped:
         del opts[_k]
     if _dropped:
-        print(f"warn: MAAConfig dropping opts not in this binary's SharedMAA: {_dropped}")
+        print(
+            f"warn: MAAConfig dropping opts not in this binary's SharedMAA: {_dropped}"
+        )
     system.maa = SharedMAA(clk_domain=system.cpu_clk_domain, **opts)
 
     has_retirement_ports = "retirement_sides" in SharedMAA._ports
@@ -212,17 +278,15 @@ def config_maa(options, system):
             options, "maa_retirement_cache_write_buffers", 16
         )
         retirement_cache_positive_options = {
-            "maa_retirement_cache_response_latency":
-                retirement_cache_response_latency,
+            "maa_retirement_cache_response_latency": retirement_cache_response_latency,
             "maa_retirement_cache_mshrs": retirement_cache_mshrs,
-            "maa_retirement_cache_targets_per_mshr":
-                retirement_cache_targets_per_mshr,
-            "maa_retirement_cache_write_buffers":
-                retirement_cache_write_buffers,
+            "maa_retirement_cache_targets_per_mshr": retirement_cache_targets_per_mshr,
+            "maa_retirement_cache_write_buffers": retirement_cache_write_buffers,
         }
-        for option_name, option_value in (
-            retirement_cache_positive_options.items()
-        ):
+        for (
+            option_name,
+            option_value,
+        ) in retirement_cache_positive_options.items():
             if option_value <= 0:
                 raise ValueError(f"{option_name} must be positive")
         system.maa_retirement_caches = [
@@ -275,18 +339,33 @@ def config_maa(options, system):
 
     # Increasing snoop filter size to accommodate all LLC and MAA's SPD cachelines
     max_capacity = MemorySize("0")
-    max_capacity.value += int(opts["addr_ranges"][-1].end) - int(opts["addr_ranges"][0].start)
-    max_capacity.value += MemorySize(_get_cache_opts("l3", options)["size"]).value
-    max_capacity.value += MemorySize(_get_cache_opts("l2", options)["size"]).value * options.num_cpus
-    max_capacity.value += MemorySize(_get_cache_opts("l1i", options)["size"]).value * options.num_cpus
-    max_capacity.value += MemorySize(_get_cache_opts("l1d", options)["size"]).value * options.num_cpus
+    max_capacity.value += int(opts["addr_ranges"][-1].end) - int(
+        opts["addr_ranges"][0].start
+    )
+    max_capacity.value += MemorySize(
+        _get_cache_opts("l3", options)["size"]
+    ).value
+    max_capacity.value += (
+        MemorySize(_get_cache_opts("l2", options)["size"]).value
+        * options.num_cpus
+    )
+    max_capacity.value += (
+        MemorySize(_get_cache_opts("l1i", options)["size"]).value
+        * options.num_cpus
+    )
+    max_capacity.value += (
+        MemorySize(_get_cache_opts("l1d", options)["size"]).value
+        * options.num_cpus
+    )
     if has_retirement_ports:
         max_capacity.value += (
             MemorySize(retirement_cache_size).value * options.num_cpus
         )
     system.membus.snoop_filter.max_capacity = max_capacity
     system.tol3bus.snoop_filter.max_capacity = max_capacity
-    print(f"MAA max snoop filter capacity: {system.tol3bus.snoop_filter.max_capacity}/{system.membus.snoop_filter.max_capacity}")
+    print(
+        f"MAA max snoop filter capacity: {system.tol3bus.snoop_filter.max_capacity}/{system.membus.snoop_filter.max_capacity}"
+    )
 
     for _ in range(options.num_cpus):
         system.maa.cpu_sides = system.membus.mem_side_ports

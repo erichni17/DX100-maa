@@ -11,6 +11,8 @@ gem5=$(realpath "$1")
 binary=$(realpath "$2")
 case_name=$3
 out=$(realpath -m "$4")
+overlap=0
+debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 
 case "$case_name" in
 native_16k)
@@ -44,6 +46,15 @@ paged_4k)
     virtual=1
     direct=1
     reload_only=0
+    ;;
+paged_overlap_4k)
+    mode=paged_overlap
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    overlap=1
     ;;
 paged_staged_16k)
     mode=paged_staged
@@ -125,7 +136,7 @@ set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
 /usr/bin/time -f 'restore_wall=%e restore_rss_kb=%M' \
     "$gem5" --listener-mode=off --outdir="$out/run" \
-    --debug-flags=MAAVirtualTrace --debug-file=virtual_trace.log "$config" \
+    --debug-flags="$debug_flags" --debug-file=virtual_trace.log "$config" \
     --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB \
     --checkpoint-dir="$out/checkpoint" \
     --sys-clock 3.2GHz --cpu-clock 3.2GHz \
@@ -176,6 +187,8 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
     pages_ready pages_ready_early first_page_cycles all_page_cycles \
     page_span_cycles \
     indirect_spd_reads stream_spd_reads stream_writes alu_compute \
+    page_ready_signals page_wait_reads page_wait_deferrals \
+    page_wait_responses \
     l3_read_hits l3_read_misses memory_bytes_read cpu_cycles < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
@@ -194,6 +207,10 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
         section == 1 && $1 ~ /STR_CyclesSPDReadAccess$/ { sr += $2 }
         section == 1 && $1 == "system.maa.numInst_STRWR" { sw += $2 }
         section == 1 && $1 ~ /ALU_CyclesCompute$/ { ac += $2 }
+        section == 1 && $1 == "system.maa.virtual_page_ready_signals" { prs = $2 }
+        section == 1 && $1 == "system.maa.virtual_page_wait_reads" { pwr = $2 }
+        section == 1 && $1 == "system.maa.virtual_page_wait_deferrals" { pwd = $2 }
+        section == 1 && $1 == "system.maa.virtual_page_wait_responses" { pws = $2 }
         section == 1 && $1 == "system.l3.ReadReq_T.hits::maa" { lh = $2 }
         section == 1 && $1 == "system.l3.ReadReq_T.misses::maa" { lm = $2 }
         section == 1 && $1 == "system.mem_ctrls.bytesRead::maa" { mb = $2 }
@@ -202,6 +219,7 @@ read -r ticks insts index_words index_hwm write_issues write_completions \
             print ticks + 0, insts + 0, iw + 0, hw + 0,
                   wi + 0, wc + 0, pr + 0, pe + 0, pf + 0, pa + 0,
                   ps + 0, ir + 0, sr + 0, sw + 0, ac + 0,
+                  prs + 0, pwr + 0, pwd + 0, pws + 0,
                   lh + 0, lm + 0, mb + 0, cc + 0
             exit
         }
@@ -226,7 +244,8 @@ elif [[ $virtual -eq 1 ]]; then
     expected_pages=$((16384 / physical))
     [[ $pages_ready -eq $expected_pages && $first_page_cycles -gt 0 && \
        $all_page_cycles -ge $first_page_cycles && \
-       $page_span_cycles -eq $((all_page_cycles - first_page_cycles)) ]] || {
+       $page_span_cycles -eq $((all_page_cycles - first_page_cycles)) && \
+       $page_ready_signals -eq $expected_pages ]] || {
         echo "invalid virtual page readiness: pages=$pages_ready/$expected_pages first=$first_page_cycles all=$all_page_cycles span=$page_span_cycles" >&2
         exit 1
     }
@@ -278,6 +297,21 @@ else
     }
 fi
 
+if [[ $overlap -eq 1 ]]; then
+    [[ $page_wait_reads -eq $pages_ready && \
+       $page_wait_responses -eq $pages_ready && \
+       $page_wait_deferrals -gt 0 ]] || {
+        echo "invalid virtual page waits: reads=$page_wait_reads deferrals=$page_wait_deferrals responses=$page_wait_responses pages=$pages_ready" >&2
+        exit 1
+    }
+else
+    [[ $page_wait_reads -eq 0 && $page_wait_deferrals -eq 0 && \
+       $page_wait_responses -eq 0 ]] || {
+        echo "unexpected virtual page waits in non-overlap case" >&2
+        exit 1
+    }
+fi
+
 {
     printf 'case\toutput_hash\tsimTicks\tsimInsts\tindex_words\tindex_hwm'
     printf '\twrite_issues\twrite_completions\tindirect_spd_reads'
@@ -285,15 +319,19 @@ fi
     printf '\tfirst_page_ready_cycles\tall_pages_ready_cycles'
     printf '\tpage_ready_span_cycles'
     printf '\tstream_spd_reads\tstream_writes\talu_compute_cycles'
+    printf '\tpage_ready_signals\tpage_wait_reads'
+    printf '\tpage_wait_deferrals\tpage_wait_responses'
     printf '\tl3_read_hits_maa\tl3_read_misses_maa\tmemory_bytes_read_maa'
     printf '\tcpu_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$case_name" "$output_hash" "$ticks" "$insts" \
         "$index_words" "$index_hwm" "$write_issues" \
         "$write_completions" "$indirect_spd_reads" "$pages_ready" \
         "$pages_ready_early" "$first_page_cycles" "$all_page_cycles" \
         "$page_span_cycles" \
         "$stream_spd_reads" "$stream_writes" "$alu_compute" \
+        "$page_ready_signals" "$page_wait_reads" \
+        "$page_wait_deferrals" "$page_wait_responses" \
         "$l3_read_hits" "$l3_read_misses" "$memory_bytes_read" \
         "$cpu_cycles"
 } > "$out/result.tsv"
