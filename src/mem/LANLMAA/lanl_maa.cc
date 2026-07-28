@@ -79,7 +79,7 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(retryPacketAcceptances, statistics::units::Count::get(),
                "Previously rejected packets accepted without replacement"),
       ADD_STAT(responses, statistics::units::Count::get(),
-               "Coherent read or write responses accepted"),
+               "Coherent read, write, or atomic responses accepted"),
       ADD_STAT(responsesFannedOut, statistics::units::Count::get(),
                "Logical values supplied by line responses"),
       ADD_STAT(completionsRetired, statistics::units::Count::get(),
@@ -102,13 +102,19 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Update entries promoted to atomic drain"),
       ADD_STAT(physicalAtomicUpdates, statistics::units::Count::get(),
                "Combined timing atomic requests accepted"),
+      ADD_STAT(atomicAddUpdates, statistics::units::Count::get(),
+               "Accepted unsigned 64-bit atomic ADD requests"),
+      ADD_STAT(atomicMinUpdates, statistics::units::Count::get(),
+               "Accepted unsigned 64-bit atomic MIN requests"),
+      ADD_STAT(atomicMaxUpdates, statistics::units::Count::get(),
+               "Accepted unsigned 64-bit atomic MAX requests"),
       ADD_STAT(atomicAcknowledgements, statistics::units::Count::get(),
                "Combined timing atomic responses accepted"),
       ADD_STAT(atomicOldValuesReturned, statistics::units::Count::get(),
                "Atomic responses carrying the pre-update value"),
       ADD_STAT(updateOperationsAcknowledged,
                statistics::units::Count::get(),
-               "Logical updates released by write acknowledgement"),
+               "Logical updates released by atomic acknowledgement"),
       ADD_STAT(verificationReads, statistics::units::Count::get(),
                "Post-drain oracle reads accepted"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -126,6 +132,7 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       terminalAddress(params.terminal_address),
       updateMode(params.update_mode),
       updateValues(params.update_values),
+      updateOperation(params.update_operation),
       verificationAddresses(params.verification_addresses),
       verificationValues(params.verification_values),
       updateEntryCount(params.update_entries),
@@ -174,6 +181,14 @@ LANLMAA::validateConfiguration() const
              "LANLMAA update_values must match update addresses");
     fatal_if(!updateMode && !updateValues.empty(),
              "LANLMAA update_values require update mode");
+    switch (updateOperation) {
+      case enums::uint64_add:
+      case enums::uint64_min:
+      case enums::uint64_max:
+        break;
+      default:
+        fatal("LANLMAA update operation is invalid");
+    }
     fatal_if(
         verificationAddresses.size() != verificationValues.size(),
         "LANLMAA verification addresses and values must match");
@@ -493,11 +508,25 @@ LANLMAA::attachReadyUpdates()
             }
             entry->state = UpdateState::Accumulating;
             entry->address = operation.address;
+            entry->contribution = operation.value;
         } else {
             ++stats.updateCombinerHits;
+            switch (updateOperation) {
+              case enums::uint64_add:
+                entry->contribution += operation.value;
+                break;
+              case enums::uint64_min:
+                entry->contribution =
+                    std::min(entry->contribution, operation.value);
+                break;
+              case enums::uint64_max:
+                entry->contribution =
+                    std::max(entry->contribution, operation.value);
+                break;
+              default:
+                panic("LANLMAA update operation became invalid");
+            }
         }
-
-        entry->contribution += operation.value;
         entry->waiters.push_back(index);
         operation.state = OperationState::UpdatePending;
         ++stats.logicalMemoryAccesses;
@@ -605,9 +634,25 @@ LANLMAA::issueUpdates()
                 entry.address, sizeof(uint64_t),
                 Request::ATOMIC_RETURN_OP,
                 requestorId);
-            request->setAtomicOpFunctor(
-                std::make_unique<AtomicOpAdd<uint64_t>>(
-                    entry.contribution));
+            switch (updateOperation) {
+              case enums::uint64_add:
+                request->setAtomicOpFunctor(
+                    std::make_unique<AtomicOpAdd<uint64_t>>(
+                        entry.contribution));
+                break;
+              case enums::uint64_min:
+                request->setAtomicOpFunctor(
+                    std::make_unique<AtomicOpMin<uint64_t>>(
+                        entry.contribution));
+                break;
+              case enums::uint64_max:
+                request->setAtomicOpFunctor(
+                    std::make_unique<AtomicOpMax<uint64_t>>(
+                        entry.contribution));
+                break;
+              default:
+                panic("LANLMAA update operation became invalid");
+            }
             entry.packet = new Packet(request, MemCmd::SwapReq);
             entry.packet->allocate();
         }
@@ -629,6 +674,19 @@ LANLMAA::issueUpdates()
         }
         entry.state = UpdateState::AtomicInFlight;
         ++stats.physicalAtomicUpdates;
+        switch (updateOperation) {
+          case enums::uint64_add:
+            ++stats.atomicAddUpdates;
+            break;
+          case enums::uint64_min:
+            ++stats.atomicMinUpdates;
+            break;
+          case enums::uint64_max:
+            ++stats.atomicMaxUpdates;
+            break;
+          default:
+            panic("LANLMAA update operation became invalid");
+        }
         ++issued;
     }
 }

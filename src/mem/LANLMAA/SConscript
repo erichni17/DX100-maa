@@ -1,6 +1,10 @@
 Import('*')
 
-SimObject('LANLMAA.py', sim_objects=['LANLMAA'])
+SimObject(
+    'LANLMAA.py',
+    sim_objects=['LANLMAA'],
+    enums=['LANLMAAUpdateOperation'],
+)
 Source('lanl_maa.cc')
 
 DebugFlag('LANLMAA')

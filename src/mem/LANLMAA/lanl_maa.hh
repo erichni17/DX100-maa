@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "base/statistics.hh"
+#include "enums/LANLMAAUpdateOperation.hh"
 #include "mem/port.hh"
 #include "params/LANLMAA.hh"
 #include "sim/clocked_object.hh"
@@ -112,6 +113,9 @@ class LANLMAA : public ClockedObject
         statistics::Scalar updateAddressBusyCycles;
         statistics::Scalar updateDrains;
         statistics::Scalar physicalAtomicUpdates;
+        statistics::Scalar atomicAddUpdates;
+        statistics::Scalar atomicMinUpdates;
+        statistics::Scalar atomicMaxUpdates;
         statistics::Scalar atomicAcknowledgements;
         statistics::Scalar atomicOldValuesReturned;
         statistics::Scalar updateOperationsAcknowledged;
@@ -129,6 +133,7 @@ class LANLMAA : public ClockedObject
     const uint64_t terminalAddress;
     const bool updateMode;
     const std::vector<uint64_t> updateValues;
+    const enums::LANLMAAUpdateOperation updateOperation;
     const std::vector<Addr> verificationAddresses;
     const std::vector<uint64_t> verificationValues;
     const size_t updateEntryCount;

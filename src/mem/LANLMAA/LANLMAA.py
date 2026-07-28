@@ -3,6 +3,10 @@ from m5.params import *
 from m5.proxy import *
 
 
+class LANLMAAUpdateOperation(Enum):
+    vals = ["uint64_add", "uint64_min", "uint64_max"]
+
+
 class LANLMAA(ClockedObject):
     type = "LANLMAA"
     cxx_header = "mem/LANLMAA/lanl_maa.hh"
@@ -28,10 +32,13 @@ class LANLMAA(ClockedObject):
         0xFFFFFFFFFFFFFFFF, "Next-address value that terminates a cell walk"
     )
     update_mode = Param.Bool(
-        False, "Interpret addresses and update_values as unsigned ADD updates"
+        False, "Interpret addresses and update_values as unsigned updates"
     )
     update_values = VectorParam.UInt64(
-        [], "Unsigned modulo-add contribution for every update address"
+        [], "Unsigned 64-bit operand for every update address"
+    )
+    update_operation = Param.LANLMAAUpdateOperation(
+        "uint64_add", "Unsigned 64-bit atomic update operation"
     )
     verification_addresses = VectorParam.Addr(
         [], "Addresses read after acknowledged update drains"
