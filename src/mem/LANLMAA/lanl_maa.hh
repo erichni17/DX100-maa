@@ -9,6 +9,8 @@
 
 #include "base/statistics.hh"
 #include "enums/LANLMAAUpdateOperation.hh"
+#include "mem/LANLMAA/BransonEventDescriptor.hh"
+#include "mem/LANLMAA/BransonEventTiming.hh"
 #include "mem/LANLMAA/Descriptor.hh"
 #include "mem/LANLMAA/FaceComputeTiming.hh"
 #include "mem/port.hh"
@@ -37,6 +39,9 @@ class LANLMAA : public ClockedObject
         Unadmitted,
         AddressReady,
         DataPending,
+        BransonEventComputeReady,
+        BransonEventComputePending,
+        BransonUpdateReady,
         FaceComputeReady,
         FaceComputePending,
         FaceGatherComplete,
@@ -82,6 +87,13 @@ class LANLMAA : public ClockedObject
         Error
     };
 
+    enum class BransonPhase
+    {
+        Inactive,
+        Validate,
+        Update
+    };
+
     enum class TrafficKind
     {
         Descriptor,
@@ -108,6 +120,20 @@ class LANLMAA : public ClockedObject
         uint8_t faceGatherStage = 0;
         uint8_t faceUpdateOrdinal = 0;
         uint64_t faceComputeReadyCycle = 0;
+        uint64_t bransonComputeReadyCycle = 0;
+        uint64_t bransonAbsorbedDelta = 0;
+        uint64_t bransonTrackDelta = 0;
+        uint32_t bransonFirstEvent = 0;
+        uint32_t bransonEvent = 0;
+        uint32_t bransonExpectedEvents = 0;
+        uint32_t bransonEventsRemaining = 0;
+        uint32_t bransonExpectedInitialCell = 0;
+        uint32_t bransonExpectedFinalCell = 0;
+        uint32_t bransonCurrentCell = 0;
+        uint32_t bransonDestinationCell = 0;
+        uint32_t bransonNextEvent = BransonTerminalEvent;
+        uint8_t bransonExpectedTerminalKind = 0;
+        uint8_t bransonUpdateOrdinal = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
@@ -220,6 +246,18 @@ class LANLMAA : public ClockedObject
         statistics::Scalar faceComputeWouldBlockCycles;
         statistics::Scalar faceComputeActiveCycles;
         statistics::Scalar activeFaceComputeHighWaterMark;
+        statistics::Scalar descriptorBransonRootsLoaded;
+        statistics::Scalar descriptorBransonEventsValidated;
+        statistics::Scalar descriptorBransonEventsReplayed;
+        statistics::Scalar descriptorBransonUpdatesAcknowledged;
+        statistics::Scalar descriptorBransonEventComputesQueued;
+        statistics::Scalar descriptorBransonEventComputesIssued;
+        statistics::Scalar descriptorBransonEventComputesCompleted;
+        statistics::Scalar descriptorBransonEventComputesCancelled;
+        statistics::Scalar descriptorBransonEventComputesCancelledInFlight;
+        statistics::Scalar bransonEventComputeWouldBlockCycles;
+        statistics::Scalar bransonEventComputeActiveCycles;
+        statistics::Scalar activeBransonEventComputeHighWaterMark;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -254,6 +292,10 @@ class LANLMAA : public ClockedObject
     const Cycles faceComputeLatency;
     const Cycles faceComputeInitiationInterval;
     const size_t faceComputeUnits;
+    const Cycles bransonEventComputeLatency;
+    const Cycles bransonEventComputeInitiationInterval;
+    const size_t bransonEventComputeUnits;
+    const size_t bransonContextQuantum;
     const size_t operationEntries;
     const size_t lineEntries;
     const size_t logicalAdmissionWidth;
@@ -270,6 +312,8 @@ class LANLMAA : public ClockedObject
     EventFunctionWrapper tickEvent;
     LANLMAAStats stats;
     std::unique_ptr<FaceComputeTiming> faceComputeTiming;
+    std::unique_ptr<BransonEventTiming> bransonEventTiming;
+    std::unique_ptr<BransonContextScheduler> bransonContextScheduler;
 
     std::vector<Operation> operations;
     std::vector<LineEntry> lines;
@@ -280,6 +324,7 @@ class LANLMAA : public ClockedObject
     size_t activeOperations = 0;
     size_t activeContexts = 0;
     size_t activeFaceComputations = 0;
+    size_t activeBransonEventComputations = 0;
     PacketPtr verificationPacket = nullptr;
     PacketPtr rejectedPacket = nullptr;
     bool verificationInFlight = false;
@@ -288,11 +333,16 @@ class LANLMAA : public ClockedObject
 
     DescriptorState descriptorState = DescriptorState::Disabled;
     Descriptor descriptor;
+    BransonEventDescriptor bransonDescriptor;
+    BransonPhase bransonPhase = BransonPhase::Inactive;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
     size_t descriptorResultCursor = 0;
     uint64_t descriptorFaceUpdatesAcknowledged = 0;
+    uint64_t bransonEventsValidated = 0;
+    uint64_t bransonEventsReplayed = 0;
+    uint64_t bransonUpdatesAcknowledged = 0;
     bool descriptorFaceUpdatePhase = false;
     PacketPtr descriptorPacket = nullptr;
     PacketPtr addressVectorPacket = nullptr;
@@ -309,6 +359,17 @@ class LANLMAA : public ClockedObject
     UpdateEntry *updateForPacket(PacketPtr packet);
     bool allUpdateEntriesFree() const;
     bool activeDependentMode() const;
+    bool bransonEventDescriptor() const;
+    static bool bransonTerminalKind(uint8_t kind);
+    Addr bransonEventAddress(uint32_t event) const;
+    Addr bransonTallyAddress(const Operation &operation) const;
+    void resetBransonOperation(Operation &operation);
+    void advanceBransonEvent(Operation &operation);
+    void completeBransonEvent(Operation &operation);
+    void completeBransonEventComputations();
+    void issueBransonEventComputations();
+    void beginBransonUpdatePhase();
+    bool bransonValidationComplete() const;
     bool faceMinMaxDescriptor() const;
     UpdateKind configuredUpdateKind() const;
     bool floatingUpdate() const;

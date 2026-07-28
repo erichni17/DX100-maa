@@ -102,6 +102,20 @@ class LANLMAA(ClockedObject):
     face_compute_units = Param.Unsigned(
         1, "Replicated abstract face-interpolation pipelines"
     )
+    branson_event_compute_latency = Param.Cycles(
+        4,
+        "Staged Branson event decode/control issue-to-result latency; this "
+        "does not represent native RNG, log/exp, or geometry",
+    )
+    branson_event_compute_initiation_interval = Param.Cycles(
+        1, "Minimum cycles between issues to one Branson event unit"
+    )
+    branson_event_compute_units = Param.Unsigned(
+        1, "Replicated staged Branson event decode/control pipelines"
+    )
+    branson_context_quantum = Param.Unsigned(
+        4, "Preferred consecutive events before rotating continuation context"
+    )
 
     operation_entries = Param.Unsigned(64, "Logical operation-window entries")
     line_entries = Param.Unsigned(32, "Coherent line-merge entries")

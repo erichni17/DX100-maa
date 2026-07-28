@@ -171,24 +171,27 @@ Successful descriptors write a 32-byte completion record:
 | 8 | 4 | Completed slot |
 | 12 | 4 | Reserved zero |
 | 16 | 8 | Item count |
-| 24 | 8 | Acknowledged result-write count, or logical update count for opcode 4 |
+| 24 | 8 | Acknowledged result writes; logical updates for opcode 4; replayed events for opcode 5 |
 
 The control aperture exposes device/version at `0x100`, slot and item limits
 at `0x108`, state at `0x110`, completed slot at `0x118`, error code at `0x120`,
 and an opcode bitmap at `0x128`. Bitmap bit `n` advertises opcode `n`; bits
-1--4 are currently set.
+1--5 are currently set.
 
-### Branson event-replay contract (reserved opcode 5)
+### Branson event-replay contract (opcode 5)
 
-`BransonEventReplay` has a separately tested decoder in
-`BransonEventDescriptor.hh`, but opcode 5 is deliberately absent from the live
-engine bitmap until its timing path is complete. The 64-byte descriptor uses
-the common magic and version and requires zero flags and reserved fields:
+`BransonEventReplay` has an independently tested decoder in
+`BransonEventDescriptor.hh` and a live two-pass engine path. The first pass
+validates every root and event chain without issuing tally updates. Only after
+that traffic is quiescent does the second pass replay the same immutable event
+records through the timed event-control units and acknowledged FP64 tally
+atomics. The 64-byte descriptor uses the common magic and version and requires
+zero flags and reserved fields:
 
 | Offset | Size | Meaning |
 | ---: | ---: | --- |
 | 8 | 4 | Root count |
-| 16 | 8 | 16-byte-aligned root-record base |
+| 16 | 8 | 32-byte-aligned root-record base |
 | 24 | 8 | Base of two FP64 tally arrays |
 | 32 | 8 | 32-byte completion record |
 | 40 | 8 | 32-byte-aligned event-record base |
@@ -196,16 +199,45 @@ the common magic and version and requires zero flags and reserved fields:
 | 52 | 4 | Maximum events per root |
 | 56 | 4 | Cell/tally count |
 
-Each root is `{first_event, event_count, final_cell, terminal_kind}` as four
-little-endian 32-bit words. Each 32-byte event is `{source_cell,
+Each 32-byte root is `{first_event, event_count, initial_cell, final_cell,
+terminal_kind, reserved[3]}` as eight little-endian 32-bit words. The explicit
+initial cell makes a corrupted first-event source detectable. Each 32-byte
+event is `{source_cell,
 destination_cell, next_event, kind, absorbed_delta_bits, track_delta_bits}`;
-the one-byte kind follows three reserved zero bytes, and each delta is finite
-FP64. `next_event == 0xffffffff` is terminal. The two tally arrays are
+the one-byte kind is followed by three reserved zero bytes, and each delta is
+finite FP64. `next_event == 0xffffffff` is terminal. The two tally arrays are
 absorbed then track, each with `cell_count` FP64 elements. The decoder rejects
 empty or excessive root counts, zero event/cell/step bounds, misalignment,
 range overflow, reserved bits, and every pairwise overlap among roots, events,
-tallies, and completion. Runtime cell/chain/nonfinite checks and all-or-nothing
-error draining remain gates for live-engine integration.
+tallies, and completion. Runtime validation checks every source/destination,
+chain link, terminal record, and FP64 delta. A descriptor-owned validation
+failure drains accepted reads and publishes neither tally updates nor a
+completion record. Timed event-control work already queued or issued by other
+contexts has no external effect and is explicitly counted as cancelled, so
+queued and issued work remain auditable across that drain.
+
+Software owns a submitted descriptor's roots and events exclusively until the
+terminal status is visible: those buffers must not be mutated concurrently.
+The staged timing parameters model event decode/control latency, initiation
+interval, replicated units, and continuation-context quantum. They do not
+model Branson RNG, logarithm/exponential evaluation, geometry, or native
+application integration, so this opcode alone is not an application-speedup
+claim.
+
+The physical-state mapping overlays each retained root's
+`{first_event,event_count}` and `{initial_cell,final_cell}` pairs onto the
+existing operation-entry value and index words, with terminal kind in existing
+flags. An active event uses the existing continuation address and index plus
+three scalar words: packed `{destination_cell,next_event}` and the two FP64
+deltas. At 64 operation entries, default latency four, one unit, and quantum
+four, the additional nominal timing/scheduler state is four valid plus six-bit
+context tags and an eight-bit preferred-context/quantum cursor (36 bits total),
+apart from global phase and statistics counters. Thus the mapping adds no large
+event buffer to the existing rounded array-payload budget. This is a
+transparent bit mapping, not synthesis, port, timing, energy, or area evidence.
+The 32-byte root record does add 16 external bytes per root relative to the
+earlier 16-byte reference-replay staging record, and two-pass validation reads
+every event twice on a successful uncached replay.
 
 `Completed` and `Error` remain visible until the next doorbell. A terminal
 rearm clears the previous error and per-descriptor cursors only after all

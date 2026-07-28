@@ -14,7 +14,7 @@ namespace lanlmaa
 
 constexpr uint8_t BransonEventReplayOpcode = 5;
 constexpr uint64_t BransonEventRecordBytes = 32;
-constexpr uint64_t BransonRootRecordBytes = 16;
+constexpr uint64_t BransonRootRecordBytes = 32;
 constexpr uint64_t BransonTallyArrays = 2;
 constexpr uint32_t BransonTerminalEvent = 0xffffffffU;
 

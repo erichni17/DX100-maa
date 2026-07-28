@@ -133,7 +133,7 @@ main()
     expectError(bytes, DescriptorError::RangeOverflow);
 
     bytes = validDescriptor();
-    writeLe(bytes, 16, std::numeric_limits<uint64_t>::max() - 15, 8);
+    writeLe(bytes, 16, std::numeric_limits<uint64_t>::max() - 31, 8);
     expectError(bytes, DescriptorError::RangeOverflow);
 
     bytes = validDescriptor();

@@ -232,6 +232,45 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(activeFaceComputeHighWaterMark,
                statistics::units::Count::get(),
                "Maximum simultaneous in-flight face computations"),
+      ADD_STAT(descriptorBransonRootsLoaded,
+               statistics::units::Count::get(),
+               "Validated Branson event root records loaded"),
+      ADD_STAT(descriptorBransonEventsValidated,
+               statistics::units::Count::get(),
+               "Branson event records passing the no-update validation pass"),
+      ADD_STAT(descriptorBransonEventsReplayed,
+               statistics::units::Count::get(),
+               "Branson event records retired after both tally updates"),
+      ADD_STAT(descriptorBransonUpdatesAcknowledged,
+               statistics::units::Count::get(),
+               "Branson logical FP64 tally updates acknowledged"),
+      ADD_STAT(descriptorBransonEventComputesQueued,
+               statistics::units::Count::get(),
+               "Staged Branson events queued for timed decode/control"),
+      ADD_STAT(descriptorBransonEventComputesIssued,
+               statistics::units::Count::get(),
+               "Staged Branson events issued to decode/control units"),
+      ADD_STAT(descriptorBransonEventComputesCompleted,
+               statistics::units::Count::get(),
+               "Timed Branson event decode/control operations completed"),
+      ADD_STAT(descriptorBransonEventComputesCancelled,
+               statistics::units::Count::get(),
+               "Queued Branson event computations cancelled by a descriptor "
+               "validation error"),
+      ADD_STAT(descriptorBransonEventComputesCancelledInFlight,
+               statistics::units::Count::get(),
+               "Issued Branson event computations cancelled in flight by a "
+               "descriptor validation error"),
+      ADD_STAT(bransonEventComputeWouldBlockCycles,
+               statistics::units::Cycle::get(),
+               "Cycles with a ready Branson event blocked by compute "
+               "capacity"),
+      ADD_STAT(bransonEventComputeActiveCycles,
+               statistics::units::Cycle::get(),
+               "Cycles with queued or in-flight Branson event computation"),
+      ADD_STAT(activeBransonEventComputeHighWaterMark,
+               statistics::units::Count::get(),
+               "Maximum simultaneous in-flight Branson event computations"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -270,6 +309,11 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       faceComputeInitiationInterval(
           params.face_compute_initiation_interval),
       faceComputeUnits(params.face_compute_units),
+      bransonEventComputeLatency(params.branson_event_compute_latency),
+      bransonEventComputeInitiationInterval(
+          params.branson_event_compute_initiation_interval),
+      bransonEventComputeUnits(params.branson_event_compute_units),
+      bransonContextQuantum(params.branson_context_quantum),
       operationEntries(params.operation_entries),
       lineEntries(params.line_entries),
       logicalAdmissionWidth(params.logical_admission_width),
@@ -293,6 +337,12 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
         static_cast<uint64_t>(faceComputeLatency),
         static_cast<uint64_t>(faceComputeInitiationInterval),
         faceComputeUnits);
+    bransonEventTiming = std::make_unique<BransonEventTiming>(
+        static_cast<uint64_t>(bransonEventComputeLatency),
+        static_cast<uint64_t>(bransonEventComputeInitiationInterval),
+        bransonEventComputeUnits);
+    bransonContextScheduler = std::make_unique<BransonContextScheduler>(
+        operationEntries, bransonContextQuantum);
     descriptorState = descriptorMode ? DescriptorState::Idle :
                                        DescriptorState::Disabled;
     for (size_t index = 0; index < addresses.size(); ++index) {
@@ -428,6 +478,15 @@ LANLMAA::validateConfiguration() const
              "LANLMAA face compute initiation interval must be nonzero");
     fatal_if(faceComputeUnits == 0,
              "LANLMAA face compute units must be nonzero");
+    fatal_if(bransonEventComputeLatency == Cycles(0),
+             "LANLMAA Branson event compute latency must be nonzero");
+    fatal_if(bransonEventComputeInitiationInterval == Cycles(0),
+             "LANLMAA Branson event compute initiation interval must be "
+             "nonzero");
+    fatal_if(bransonEventComputeUnits == 0,
+             "LANLMAA Branson event compute units must be nonzero");
+    fatal_if(bransonContextQuantum == 0,
+             "LANLMAA Branson context quantum must be nonzero");
     fatal_if(operationEntries == 0,
              "LANLMAA operation_entries must be nonzero");
     fatal_if((dependentMode || descriptorMode) && continuationEntries == 0,
@@ -563,7 +622,8 @@ LANLMAA::controlAccess(PacketPtr packet)
             (uint64_t{1} << static_cast<uint8_t>(
                  DescriptorOpcode::PackedDirectionalCellWalk)) |
             (uint64_t{1} <<
-             static_cast<uint8_t>(DescriptorOpcode::FaceMinMax));
+             static_cast<uint8_t>(DescriptorOpcode::FaceMinMax)) |
+            (uint64_t{1} << BransonEventReplayOpcode);
         break;
       default:
         packet->setBadAddress();
@@ -583,7 +643,8 @@ LANLMAA::rearmDescriptorEngine()
                  waitingForRetry,
              "LANLMAA rearmed a descriptor with retained traffic");
     panic_if(activeOperations != 0 || activeContexts != 0 ||
-                 activeFaceComputations != 0,
+                 activeFaceComputations != 0 ||
+                 activeBransonEventComputations != 0,
              "LANLMAA rearmed a descriptor with active operations");
     panic_if(std::any_of(
                  lines.begin(), lines.end(), [](const LineEntry &line) {
@@ -595,10 +656,15 @@ LANLMAA::rearmDescriptorEngine()
 
     operations.clear();
     descriptor = Descriptor{};
+    bransonDescriptor = BransonEventDescriptor{};
+    bransonPhase = BransonPhase::Inactive;
     descriptorError = DescriptorError::None;
     descriptorAddressCursor = 0;
     descriptorResultCursor = 0;
     descriptorFaceUpdatesAcknowledged = 0;
+    bransonEventsValidated = 0;
+    bransonEventsReplayed = 0;
+    bransonUpdatesAcknowledged = 0;
     descriptorFaceUpdatePhase = false;
     nextAdmission = 0;
     nextRetirement = 0;
@@ -606,7 +672,10 @@ LANLMAA::rearmDescriptorEngine()
     activeOperations = 0;
     activeContexts = 0;
     activeFaceComputations = 0;
+    activeBransonEventComputations = 0;
     faceComputeTiming->reset();
+    bransonEventTiming->reset();
+    bransonContextScheduler->reset();
     verificationInFlight = false;
     finished = false;
     descriptorState = DescriptorState::Idle;
@@ -668,6 +737,25 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
                  descriptorState == DescriptorState::Error,
              "LANLMAA began a descriptor error drain in a terminal state");
 
+    size_t bransonComputationsCancelled = 0;
+    size_t bransonComputationsCancelledInFlight = 0;
+    for (const auto &operation : operations) {
+        if (operation.state == OperationState::BransonEventComputeReady ||
+            operation.state == OperationState::BransonEventComputePending) {
+            ++bransonComputationsCancelled;
+        }
+        if (operation.state == OperationState::BransonEventComputePending) {
+            ++bransonComputationsCancelledInFlight;
+        }
+    }
+    panic_if(bransonComputationsCancelledInFlight !=
+                 activeBransonEventComputations,
+             "LANLMAA Branson in-flight cancellation accounting diverged");
+    stats.descriptorBransonEventComputesCancelled +=
+        bransonComputationsCancelled;
+    stats.descriptorBransonEventComputesCancelledInFlight +=
+        bransonComputationsCancelledInFlight;
+
     descriptorError = error;
     descriptorState = DescriptorState::EngineErrorDraining;
     panic_if(!allUpdateEntriesFree(),
@@ -675,6 +763,7 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
     activeOperations = 0;
     activeContexts = 0;
     activeFaceComputations = 0;
+    activeBransonEventComputations = 0;
     for (auto &operation : operations) {
         operation.ownsContext = false;
     }
@@ -778,8 +867,12 @@ void
 LANLMAA::issueAddressVectorFetch()
 {
     if (!addressVectorPacket) {
-        const Addr itemAddress = descriptor.addressVector +
-            descriptorAddressCursor * sizeof(uint64_t);
+        const uint64_t itemBytes = bransonEventDescriptor() ?
+            BransonRootRecordBytes : sizeof(uint64_t);
+        const Addr itemAddress =
+            (bransonEventDescriptor() ? bransonDescriptor.rootBase :
+                                        descriptor.addressVector) +
+            descriptorAddressCursor * itemBytes;
         if (!rangeIsMemory(lineAddress(itemAddress), lineBytes) ||
             rangeOverlapsControl(lineAddress(itemAddress), lineBytes)) {
             rejectDescriptor(DescriptorError::UnsafeAddressRange);
@@ -827,21 +920,28 @@ LANLMAA::issueCompletionWrite()
 {
     if (!completionPacket) {
         RequestPtr request = std::make_shared<Request>(
-            descriptor.completionRecord, 32, Request::Flags(), requestorId);
+            bransonEventDescriptor() ? bransonDescriptor.completionRecord :
+                                       descriptor.completionRecord,
+            32, Request::Flags(), requestorId);
         completionPacket = new Packet(request, MemCmd::WriteReq);
         completionPacket->allocate();
         uint8_t *data = completionPacket->getPtr<uint8_t>();
         std::memset(data, 0, 32);
         writeLe(data, 0, CompletionMagic, 4);
         writeLe(data, 4, DescriptorVersion, 2);
-        writeLe(data, 6, static_cast<uint8_t>(descriptor.opcode), 1);
+        writeLe(
+            data, 6,
+            bransonEventDescriptor() ? BransonEventReplayOpcode :
+                                       static_cast<uint8_t>(descriptor.opcode),
+            1);
         writeLe(data, 7, 0, 1);
         writeLe(data, 8, descriptorSlot, 4);
         writeLe(data, 16, operations.size(), 8);
         writeLe(
             data, 24,
-            faceMinMaxDescriptor() ? descriptorFaceUpdatesAcknowledged :
-                                     descriptorResultCursor,
+            bransonEventDescriptor() ? bransonEventsReplayed :
+                faceMinMaxDescriptor() ? descriptorFaceUpdatesAcknowledged :
+                                         descriptorResultCursor,
             8);
         tagRequest(
             completionPacket, TrafficKind::Completion, &completionPacket);
@@ -968,9 +1068,205 @@ LANLMAA::allUpdateEntriesFree() const
 bool
 LANLMAA::activeDependentMode() const
 {
-    return dependentMode ||
+    return dependentMode || bransonEventDescriptor() ||
         (descriptorMode &&
          descriptorIsRecordWalk(descriptor.opcode));
+}
+
+bool
+LANLMAA::bransonEventDescriptor() const
+{
+    return descriptorMode && bransonPhase != BransonPhase::Inactive;
+}
+
+bool
+LANLMAA::bransonTerminalKind(uint8_t kind)
+{
+    return kind == static_cast<uint8_t>(BransonEventKind::Census) ||
+           kind == static_cast<uint8_t>(BransonEventKind::Exit) ||
+           kind == static_cast<uint8_t>(BransonEventKind::Killed) ||
+           kind == static_cast<uint8_t>(BransonEventKind::Pass);
+}
+
+Addr
+LANLMAA::bransonEventAddress(uint32_t event) const
+{
+    panic_if(
+        !bransonEventDescriptor() || event >= bransonDescriptor.eventCount,
+             "LANLMAA formed an invalid Branson event address");
+    const uint64_t raw = bransonDescriptor.eventBase +
+        static_cast<uint64_t>(event) * BransonEventRecordBytes;
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA Branson event address overflowed Addr");
+    return address;
+}
+
+Addr
+LANLMAA::bransonTallyAddress(const Operation &operation) const
+{
+    panic_if(!bransonEventDescriptor() || operation.bransonUpdateOrdinal > 1 ||
+                 operation.bransonCurrentCell >= bransonDescriptor.cellCount,
+             "LANLMAA formed an invalid Branson tally address");
+    const uint64_t element =
+        static_cast<uint64_t>(operation.bransonUpdateOrdinal) *
+            bransonDescriptor.cellCount +
+        operation.bransonCurrentCell;
+    const uint64_t raw = bransonDescriptor.tallyBase +
+        element * sizeof(uint64_t);
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA Branson tally address overflowed Addr");
+    return address;
+}
+
+void
+LANLMAA::resetBransonOperation(Operation &operation)
+{
+    operation.bransonEvent = operation.bransonFirstEvent;
+    operation.bransonEventsRemaining = operation.bransonExpectedEvents;
+    operation.bransonCurrentCell = operation.bransonExpectedInitialCell;
+    operation.bransonDestinationCell = 0;
+    operation.bransonNextEvent = BransonTerminalEvent;
+    operation.bransonUpdateOrdinal = 0;
+    operation.bransonComputeReadyCycle = 0;
+    operation.bransonAbsorbedDelta = 0;
+    operation.bransonTrackDelta = 0;
+    operation.continuationSteps = 0;
+    operation.address = bransonEventAddress(operation.bransonEvent);
+    operation.ownsContext = false;
+    operation.state = OperationState::Unadmitted;
+}
+
+void
+LANLMAA::advanceBransonEvent(Operation &operation)
+{
+    panic_if(operation.bransonEventsRemaining == 0,
+             "LANLMAA advanced an exhausted Branson context");
+    --operation.bransonEventsRemaining;
+    operation.bransonCurrentCell = operation.bransonDestinationCell;
+    if (bransonPhase == BransonPhase::Validate) {
+        ++bransonEventsValidated;
+        ++stats.descriptorBransonEventsValidated;
+    } else {
+        panic_if(bransonPhase != BransonPhase::Update,
+                 "LANLMAA advanced a Branson event in an invalid phase");
+        ++bransonEventsReplayed;
+        ++stats.descriptorBransonEventsReplayed;
+    }
+
+    if (operation.bransonEventsRemaining == 0) {
+        panic_if(!operation.ownsContext || activeContexts == 0,
+                 "LANLMAA terminal Branson event lost its context");
+        operation.ownsContext = false;
+        --activeContexts;
+        operation.state = OperationState::RetireReady;
+    } else {
+        operation.bransonEvent = operation.bransonNextEvent;
+        operation.address = bransonEventAddress(operation.bransonEvent);
+        operation.state = OperationState::AddressReady;
+    }
+}
+
+bool
+LANLMAA::bransonValidationComplete() const
+{
+    return bransonPhase == BransonPhase::Validate &&
+        nextAdmission == operations.size() &&
+        nextRetirement == operations.size() && activeOperations == 0 &&
+        activeContexts == 0 && activeBransonEventComputations == 0 &&
+        std::all_of(
+            lines.begin(), lines.end(), [](const LineEntry &line) {
+                return line.state == LineState::Free;
+            });
+}
+
+void
+LANLMAA::beginBransonUpdatePhase()
+{
+    panic_if(!bransonValidationComplete() || !allUpdateEntriesFree(),
+             "LANLMAA began Branson updates before validation quiesced");
+    panic_if(bransonEventsValidated == 0,
+             "LANLMAA validated no Branson events");
+    for (auto &operation : operations) {
+        resetBransonOperation(operation);
+    }
+    nextAdmission = 0;
+    nextRetirement = 0;
+    activeOperations = 0;
+    activeContexts = 0;
+    activeBransonEventComputations = 0;
+    bransonPhase = BransonPhase::Update;
+    bransonEventTiming->reset(static_cast<uint64_t>(curCycle()));
+    bransonContextScheduler->reset();
+}
+
+void
+LANLMAA::completeBransonEvent(Operation &operation)
+{
+    operation.bransonComputeReadyCycle = 0;
+    if (bransonPhase == BransonPhase::Validate) {
+        advanceBransonEvent(operation);
+        return;
+    }
+    panic_if(bransonPhase != BransonPhase::Update,
+             "LANLMAA completed a Branson event in an invalid phase");
+    operation.bransonUpdateOrdinal = 0;
+    operation.address = bransonTallyAddress(operation);
+    operation.value = operation.bransonAbsorbedDelta;
+    operation.state = OperationState::BransonUpdateReady;
+}
+
+void
+LANLMAA::completeBransonEventComputations()
+{
+    const uint64_t cycle = static_cast<uint64_t>(curCycle());
+    for (auto &operation : operations) {
+        if (operation.state != OperationState::BransonEventComputePending ||
+            operation.bransonComputeReadyCycle > cycle) {
+            continue;
+        }
+        panic_if(activeBransonEventComputations == 0,
+                 "LANLMAA Branson event compute completion underflowed");
+        --activeBransonEventComputations;
+        ++stats.descriptorBransonEventComputesCompleted;
+        completeBransonEvent(operation);
+    }
+}
+
+void
+LANLMAA::issueBransonEventComputations()
+{
+    const uint64_t cycle = static_cast<uint64_t>(curCycle());
+    for (auto &operation : operations) {
+        if (operation.state != OperationState::BransonEventComputeReady) {
+            continue;
+        }
+        const auto issue = bransonEventTiming->issue(cycle);
+        if (!issue) {
+            break;
+        }
+        operation.bransonComputeReadyCycle = issue->completionCycle;
+        operation.state = OperationState::BransonEventComputePending;
+        ++activeBransonEventComputations;
+        ++stats.descriptorBransonEventComputesIssued;
+        if (activeBransonEventComputations >
+            stats.activeBransonEventComputeHighWaterMark.value()) {
+            stats.activeBransonEventComputeHighWaterMark =
+                activeBransonEventComputations;
+        }
+    }
+    const bool ready = std::any_of(
+        operations.begin(), operations.end(), [](const Operation &operation) {
+            return operation.state ==
+                OperationState::BransonEventComputeReady;
+        });
+    if (ready) {
+        ++stats.bransonEventComputeWouldBlockCycles;
+    }
+    if (ready || activeBransonEventComputations != 0) {
+        ++stats.bransonEventComputeActiveCycles;
+    }
 }
 
 bool
@@ -1016,6 +1312,9 @@ LANLMAA::strictFloatingUpdate(UpdateKind kind)
 LANLMAA::UpdateKind
 LANLMAA::operationUpdateKind(const Operation &operation) const
 {
+    if (bransonEventDescriptor()) {
+        return UpdateKind::Fp64AddRelaxed;
+    }
     if (!faceMinMaxDescriptor()) {
         return configuredUpdateKind();
     }
@@ -1344,6 +1643,64 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     delete packet;
     descriptorPacket = nullptr;
 
+    if (bytes[6] == BransonEventReplayOpcode) {
+        const auto decoded = decodeBransonEventDescriptor(
+            bytes, static_cast<uint32_t>(maxDescriptorItems));
+        if (!decoded) {
+            rejectDescriptor(decoded.error);
+            return true;
+        }
+        bransonDescriptor = decoded.descriptor;
+        bransonPhase = BransonPhase::Validate;
+
+        uint64_t rootEnd = 0;
+        uint64_t tallyEnd = 0;
+        uint64_t completionEnd = 0;
+        uint64_t eventEnd = 0;
+        const bool rangesValid = descriptorRange(
+            bransonDescriptor.rootBase, bransonDescriptor.rootCount,
+            BransonRootRecordBytes, rootEnd) && descriptorRange(
+            bransonDescriptor.tallyBase,
+            static_cast<uint64_t>(bransonDescriptor.cellCount) *
+                BransonTallyArrays,
+            sizeof(uint64_t), tallyEnd) && descriptorRange(
+            bransonDescriptor.completionRecord, 1, 32, completionEnd) &&
+            descriptorRange(
+                bransonDescriptor.eventBase, bransonDescriptor.eventCount,
+                BransonEventRecordBytes, eventEnd);
+        panic_if(
+            !rangesValid,
+            "LANLMAA decoded Branson descriptor lost its range invariant");
+
+        const uint64_t descriptorTableEnd = descriptorTableBase +
+            descriptorSlots * DescriptorBytes;
+        const auto unsafeRange = [this, descriptorTableEnd](
+                                     uint64_t begin, uint64_t end) {
+            return !rangeIsMemory(begin, end - begin) ||
+                rangeOverlapsControl(begin, end - begin) ||
+                descriptorRangesOverlap(
+                    begin, end, descriptorTableBase, descriptorTableEnd);
+        };
+        if (unsafeRange(bransonDescriptor.rootBase, rootEnd) ||
+            unsafeRange(bransonDescriptor.tallyBase, tallyEnd) ||
+            unsafeRange(
+                bransonDescriptor.completionRecord, completionEnd) ||
+            unsafeRange(bransonDescriptor.eventBase, eventEnd)) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return true;
+        }
+
+        operations.assign(bransonDescriptor.rootCount, Operation{});
+        descriptorAddressCursor = 0;
+        descriptorResultCursor = 0;
+        bransonEventsValidated = 0;
+        bransonEventsReplayed = 0;
+        bransonUpdatesAcknowledged = 0;
+        descriptorState = DescriptorState::AddressPending;
+        scheduleTick();
+        return true;
+    }
+
     const auto decoded = decodeDescriptor(
         bytes, static_cast<uint32_t>(maxDescriptorItems));
     if (!decoded) {
@@ -1426,6 +1783,70 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
              "LANLMAA address-vector response changed packet ownership");
     panic_if(!packet->isResponse() || !packet->isRead(),
              "LANLMAA address-vector fetch was not a read response");
+    if (bransonEventDescriptor()) {
+        const Addr rootAddress = bransonDescriptor.rootBase +
+            descriptorAddressCursor * BransonRootRecordBytes;
+        const Addr rootLine = lineAddress(rootAddress);
+        panic_if(packet->getAddr() != rootLine,
+                 "LANLMAA Branson root response changed line address");
+        const uint8_t *data = packet->getConstPtr<uint8_t>();
+        DescriptorError rootError = DescriptorError::None;
+        while (descriptorAddressCursor < operations.size()) {
+            const Addr itemAddress = bransonDescriptor.rootBase +
+                descriptorAddressCursor * BransonRootRecordBytes;
+            if (lineAddress(itemAddress) != rootLine) {
+                break;
+            }
+            const size_t offset = itemAddress - rootLine;
+            const uint32_t firstEvent = descriptorReadLe32(data + offset);
+            const uint32_t eventCount =
+                descriptorReadLe32(data + offset + 4);
+            const uint32_t initialCell =
+                descriptorReadLe32(data + offset + 8);
+            const uint32_t finalCell =
+                descriptorReadLe32(data + offset + 12);
+            const uint32_t rawKind =
+                descriptorReadLe32(data + offset + 16);
+            if (firstEvent >= bransonDescriptor.eventCount ||
+                eventCount == 0 ||
+                eventCount > bransonDescriptor.maximumEventsPerRoot ||
+                eventCount > bransonDescriptor.eventCount ||
+                initialCell >= bransonDescriptor.cellCount ||
+                finalCell >= bransonDescriptor.cellCount || rawKind > 6 ||
+                descriptorReadLe32(data + offset + 20) != 0 ||
+                descriptorReadLe32(data + offset + 24) != 0 ||
+                descriptorReadLe32(data + offset + 28) != 0 ||
+                !bransonTerminalKind(static_cast<uint8_t>(rawKind))) {
+                rootError = DescriptorError::BadStartState;
+                break;
+            }
+            auto &operation = operations[descriptorAddressCursor];
+            operation.bransonFirstEvent = firstEvent;
+            operation.bransonExpectedEvents = eventCount;
+            operation.bransonExpectedInitialCell = initialCell;
+            operation.bransonExpectedFinalCell = finalCell;
+            operation.bransonExpectedTerminalKind =
+                static_cast<uint8_t>(rawKind);
+            resetBransonOperation(operation);
+            ++descriptorAddressCursor;
+            ++stats.descriptorAddressesLoaded;
+            ++stats.descriptorBransonRootsLoaded;
+        }
+        delete packet;
+        addressVectorPacket = nullptr;
+        if (rootError != DescriptorError::None) {
+            rejectDescriptor(rootError);
+            return true;
+        }
+        if (descriptorAddressCursor == operations.size()) {
+            beginDescriptorExecution();
+        } else {
+            descriptorState = DescriptorState::AddressPending;
+        }
+        scheduleTick();
+        return true;
+    }
+
     const Addr vectorAddress = descriptor.addressVector +
         descriptorAddressCursor * sizeof(uint64_t);
     const Addr vectorLine = lineAddress(vectorAddress);
@@ -1593,7 +2014,10 @@ LANLMAA::beginDescriptorExecution()
     activeOperations = 0;
     activeContexts = 0;
     activeFaceComputations = 0;
+    activeBransonEventComputations = 0;
     faceComputeTiming->reset(static_cast<uint64_t>(curCycle()));
+    bransonEventTiming->reset(static_cast<uint64_t>(curCycle()));
+    bransonContextScheduler->reset();
     descriptorFaceUpdatesAcknowledged = 0;
     descriptorFaceUpdatePhase = false;
     descriptorState = DescriptorState::Executing;
@@ -1605,7 +2029,8 @@ LANLMAA::beginDescriptorResults()
     panic_if(activeOperations != 0 || nextAdmission != operations.size() ||
                  nextRetirement != operations.size(),
              "LANLMAA descriptor reached results before engine quiescence");
-    panic_if(activeContexts != 0 || activeFaceComputations != 0,
+    panic_if(activeContexts != 0 || activeFaceComputations != 0 ||
+                 activeBransonEventComputations != 0,
              "LANLMAA descriptor reached results with retained contexts");
     panic_if(std::any_of(
                  lines.begin(), lines.end(), [](const LineEntry &line) {
@@ -1615,7 +2040,7 @@ LANLMAA::beginDescriptorResults()
     panic_if(!allUpdateEntriesFree(),
              "LANLMAA descriptor reached results with allocated updates");
     descriptorResultCursor = 0;
-    descriptorState = faceMinMaxDescriptor() ?
+    descriptorState = (faceMinMaxDescriptor() || bransonEventDescriptor()) ?
         DescriptorState::CompletionPending : DescriptorState::ResultPending;
 }
 
@@ -1623,15 +2048,29 @@ void
 LANLMAA::completeDescriptor()
 {
     panic_if(
-        (!faceMinMaxDescriptor() &&
+        (!faceMinMaxDescriptor() && !bransonEventDescriptor() &&
          descriptorResultCursor != operations.size()) ||
-            (faceMinMaxDescriptor() && descriptorResultCursor != 0),
+            ((faceMinMaxDescriptor() || bransonEventDescriptor()) &&
+             descriptorResultCursor != 0),
              "LANLMAA completed a descriptor before every result write");
     panic_if(rejectedPacket || waitingForRetry || descriptorPacket ||
                  addressVectorPacket || resultPacket || completionPacket,
              "LANLMAA completed a descriptor with retained traffic");
     panic_if(activeFaceComputations != 0,
              "LANLMAA completed with in-flight face computation");
+    panic_if(activeBransonEventComputations != 0,
+             "LANLMAA completed with in-flight Branson event computation");
+    if (bransonEventDescriptor()) {
+        uint64_t expectedEvents = 0;
+        for (const auto &operation : operations) {
+            expectedEvents += operation.bransonExpectedEvents;
+        }
+        panic_if(bransonEventsValidated != expectedEvents ||
+                     bransonEventsReplayed != expectedEvents ||
+                     bransonUpdatesAcknowledged !=
+                         BransonTallyArrays * expectedEvents,
+                 "LANLMAA completed with incomplete Branson accounting");
+    }
     descriptorState = DescriptorState::Completed;
     finished = true;
     DPRINTF(LANLMAA,
@@ -1676,7 +2115,17 @@ LANLMAA::tick()
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
-    if (faceMinMaxDescriptor()) {
+    if (bransonEventDescriptor()) {
+        completeBransonEventComputations();
+        issueBransonEventComputations();
+        attachReadyOperations();
+        issueLines();
+        if (bransonPhase == BransonPhase::Update) {
+            attachReadyUpdates();
+            scheduleUpdateDrains();
+            issueUpdates();
+        }
+    } else if (faceMinMaxDescriptor()) {
         if (!descriptorFaceUpdatePhase) {
             completeFaceComputations();
             issueFaceComputations();
@@ -1700,7 +2149,18 @@ LANLMAA::tick()
         issueLines();
     }
     if (nextRetirement == operations.size()) {
-        if (faceMinMaxDescriptor()) {
+        if (bransonEventDescriptor()) {
+            if (bransonPhase == BransonPhase::Validate) {
+                beginBransonUpdatePhase();
+                scheduleTick();
+                return;
+            }
+            if (allUpdateEntriesFree()) {
+                beginDescriptorResults();
+                scheduleTick();
+                return;
+            }
+        } else if (faceMinMaxDescriptor()) {
             if (allUpdateEntriesFree()) {
                 beginDescriptorResults();
                 scheduleTick();
@@ -1789,6 +2249,53 @@ LANLMAA::admitOperations()
 void
 LANLMAA::attachReadyOperations()
 {
+    if (bransonEventDescriptor()) {
+        std::vector<bool> ready(operationEntries, false);
+        std::vector<bool> active(operationEntries, false);
+        for (size_t index = nextRetirement; index < nextAdmission; ++index) {
+            ready[index] =
+                operations[index].state == OperationState::AddressReady;
+            active[index] =
+                operations[index].state != OperationState::Unadmitted &&
+                operations[index].state != OperationState::RetireReady;
+        }
+
+        bool lineBlocked = false;
+        for (size_t attached = 0; attached < logicalAdmissionWidth;
+             ++attached) {
+            const auto selected = bransonContextScheduler->select(
+                ready, active);
+            if (!selected) {
+                break;
+            }
+            const size_t index = *selected;
+            auto &operation = operations[index];
+            const Addr aligned = lineAddress(operation.address);
+            LineEntry *line = matchingLine(aligned);
+            if (line) {
+                ++stats.lineMergeHits;
+            } else {
+                line = freeLine();
+                if (!line) {
+                    lineBlocked = true;
+                    ready[index] = false;
+                    continue;
+                }
+                line->state = LineState::Allocated;
+                line->lineAddress = aligned;
+            }
+            line->waiters.push_back(index);
+            operation.state = OperationState::DataPending;
+            ++stats.logicalMemoryAccesses;
+            ready[index] = false;
+            bransonContextScheduler->issued(index);
+        }
+        if (lineBlocked) {
+            ++stats.lineWouldBlockCycles;
+        }
+        return;
+    }
+
     size_t attached = 0;
     bool lineBlocked = false;
     for (size_t index = nextRetirement;
@@ -1830,8 +2337,10 @@ LANLMAA::attachReadyUpdates()
     for (size_t index = nextRetirement;
          index < nextAdmission && attached < logicalAdmissionWidth; ++index) {
         auto &operation = operations[index];
-        const OperationState readyState = faceMinMaxDescriptor() ?
-            OperationState::FaceUpdateReady : OperationState::AddressReady;
+        const OperationState readyState = bransonEventDescriptor() ?
+            OperationState::BransonUpdateReady :
+            faceMinMaxDescriptor() ? OperationState::FaceUpdateReady :
+                                     OperationState::AddressReady;
         if (operation.state != readyState) {
             continue;
         }
@@ -1919,8 +2428,10 @@ LANLMAA::attachReadyUpdates()
 void
 LANLMAA::scheduleUpdateDrains()
 {
-    const OperationState readyState = faceMinMaxDescriptor() ?
-        OperationState::FaceUpdateReady : OperationState::AddressReady;
+    const OperationState readyState = bransonEventDescriptor() ?
+        OperationState::BransonUpdateReady :
+        faceMinMaxDescriptor() ? OperationState::FaceUpdateReady :
+                                 OperationState::AddressReady;
     const bool descriptorAttached = nextAdmission == operations.size() &&
         std::none_of(
             operations.begin() + nextRetirement,
@@ -1931,7 +2442,11 @@ LANLMAA::scheduleUpdateDrains()
     const bool windowMustDrain =
         nextAdmission < operations.size() &&
         activeOperations == operationEntries;
-    if (!descriptorAttached && !windowMustDrain) {
+    const bool bransonContextMustDrain = bransonEventDescriptor() &&
+        nextAdmission < operations.size() &&
+        activeContexts == continuationEntries;
+    if (!descriptorAttached && !windowMustDrain &&
+        !bransonContextMustDrain) {
         return;
     }
 
@@ -2180,7 +2695,55 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
         panic_if(operation.state != OperationState::DataPending,
                  "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
-        if (activeDependentMode()) {
+        if (bransonEventDescriptor()) {
+            panic_if(operation.bransonEventsRemaining == 0,
+                     "LANLMAA Branson response reached an exhausted context");
+            const uint32_t sourceCell = descriptorReadLe32(data + offset);
+            const uint32_t destinationCell =
+                descriptorReadLe32(data + offset + 4);
+            const uint32_t nextEvent =
+                descriptorReadLe32(data + offset + 8);
+            const uint32_t rawKind =
+                descriptorReadLe32(data + offset + 12);
+            const uint64_t absorbedDelta =
+                descriptorReadLe64(data + offset + 16);
+            const uint64_t trackDelta =
+                descriptorReadLe64(data + offset + 24);
+            const bool last = operation.bransonEventsRemaining == 1;
+            const bool terminalKind = rawKind <= 6 &&
+                bransonTerminalKind(static_cast<uint8_t>(rawKind));
+            const bool valid = sourceCell < bransonDescriptor.cellCount &&
+                destinationCell < bransonDescriptor.cellCount &&
+                sourceCell == operation.bransonCurrentCell &&
+                rawKind <= 6 &&
+                std::isfinite(decodeDouble(absorbedDelta)) &&
+                std::isfinite(decodeDouble(trackDelta)) &&
+                (last ?
+                     nextEvent == BransonTerminalEvent && terminalKind &&
+                         destinationCell ==
+                             operation.bransonExpectedFinalCell &&
+                         rawKind ==
+                             operation.bransonExpectedTerminalKind :
+                     nextEvent < bransonDescriptor.eventCount &&
+                         !terminalKind);
+            if (!valid && bransonPhase == BransonPhase::Validate) {
+                ++stats.responses;
+                delete packet;
+                line->clear();
+                beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
+                return true;
+            }
+            panic_if(!valid,
+                     "LANLMAA Branson input mutated after validation");
+            operation.bransonDestinationCell = destinationCell;
+            operation.bransonNextEvent = nextEvent;
+            operation.bransonAbsorbedDelta = absorbedDelta;
+            operation.bransonTrackDelta = trackDelta;
+            operation.state = OperationState::BransonEventComputeReady;
+            ++stats.descriptorBransonEventComputesQueued;
+            ++operation.continuationSteps;
+            ++stats.continuationSteps;
+        } else if (activeDependentMode()) {
             const bool indexedWalk = descriptorMode &&
                 descriptor.opcode == DescriptorOpcode::IndexedCellWalk;
             const bool packedDirectionalWalk = descriptorMode &&
@@ -2546,7 +3109,18 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
         auto &operation = operations[operationIndex];
         panic_if(operation.state != OperationState::UpdatePending,
                  "LANLMAA acknowledged update waiter is not pending");
-        if (faceMinMaxDescriptor()) {
+        if (bransonEventDescriptor()) {
+            ++operation.bransonUpdateOrdinal;
+            ++bransonUpdatesAcknowledged;
+            ++stats.descriptorBransonUpdatesAcknowledged;
+            if (operation.bransonUpdateOrdinal < BransonTallyArrays) {
+                operation.address = bransonTallyAddress(operation);
+                operation.value = operation.bransonTrackDelta;
+                operation.state = OperationState::BransonUpdateReady;
+            } else {
+                advanceBransonEvent(operation);
+            }
+        } else if (faceMinMaxDescriptor()) {
             ++operation.faceUpdateOrdinal;
             ++descriptorFaceUpdatesAcknowledged;
             ++stats.descriptorFaceUpdatesAcknowledged;
