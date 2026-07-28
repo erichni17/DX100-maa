@@ -17,3 +17,19 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
 ```
 
 Passing this executable establishes reference-model semantics only. It is not a gem5 timing result or an EAP/FLAG application speedup claim.
+
+## `branson_photon_cell_walk`
+
+This kernel maps the pinned Branson `src/transport_photon.h` loop: a photon selects a cell, reads cell-dependent event data, accumulates absorbed and track energy into cell tallies, follows a next-cell link, and repeats until an explicit event or step bound terminates it. The pinned Branson revision is `f6b678a528fd24839c476a846466c594756337a5`; the source file SHA-256 is `0704d9e8534d94a7f8e4ace9815c3127c9bb8ea9ac21974c2262baa445ce0208`.
+
+The microbenchmark removes Monte Carlo physics while preserving the memory/control contract. Packed cell records mix clustered, shuffled, and hotspot links. Photons mix those starting distributions. The scalar path executes photons sequentially; the model path interleaves explicit continuation contexts and uses relaxed floating ADD combining for two per-cell tallies. Final photon state must be bit-identical, while tally arrays use a `1e-12` relative/absolute tolerance because the permitted relaxed reduction changes addition order.
+
+```sh
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
+    benchmarks/LANL/branson_photon_cell_walk.cc \
+    -o /tmp/branson_photon_cell_walk
+/tmp/branson_photon_cell_walk --photons 2048 --cells 1024 \
+    --steps 12 --window 64 --seed 0x4252414e534f4e
+```
+
+The packed cell word and bounded step count are microbenchmark mechanisms, not claims about Branson's in-memory ABI or physics.
