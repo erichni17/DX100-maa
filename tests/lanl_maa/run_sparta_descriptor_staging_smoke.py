@@ -9,6 +9,20 @@ import subprocess
 import tempfile
 
 INSTANCES = ("lanl_maa", "final_verifier", "submitter")
+FIXED_METADATA = {
+    "native_cell_count": 64,
+    "state_expansion_factor": 16,
+    "record_count": 1024,
+    "record_bytes": 16384,
+    "native_packed_cell_bytes": 512,
+    "maximum_steps": 8,
+    "descriptor_items": 8,
+    "executed_record_visits": 41,
+    "start_indices": [896, 384, 256, 320, 896, 704, 257, 641],
+    "root_visits": [8, 4, 3, 3, 8, 6, 3, 6],
+    "final_cells": [20, 60, 62, 9, 20, 13, 30, 11],
+    "expected_results": [330, 189, 128, 13, 330, 51, 74, 137],
+}
 
 
 def read_stats(path):
@@ -29,7 +43,33 @@ def check_equal(errors, stats, name, expected):
         errors.append(f"{name}: expected {expected}, got {actual}")
 
 
-def validate(stats, metadata):
+def validate_metadata(metadata):
+    errors = []
+    for name, expected in FIXED_METADATA.items():
+        if metadata.get(name) != expected:
+            errors.append(
+                f"metadata {name}: expected {expected}, "
+                f"got {metadata.get(name)}"
+            )
+    native_bytes = metadata.get("native_packed_cell_bytes")
+    staging_bytes = metadata.get("record_bytes")
+    if (
+        not isinstance(native_bytes, int)
+        or not isinstance(staging_bytes, int)
+        or staging_bytes != 32 * native_bytes
+    ):
+        errors.append(
+            "expected state-expanded records to occupy exactly 32x "
+            f"native packed-cell bytes, got {staging_bytes}/{native_bytes}"
+        )
+    if errors:
+        raise RuntimeError(
+            "SPARTA descriptor staging metadata changed:\n  "
+            + "\n  ".join(errors)
+        )
+
+
+def validate_stats(stats, metadata):
     errors = []
     accelerator = stats["lanl_maa"]
     items = metadata["descriptor_items"]
@@ -84,7 +124,8 @@ def validate(stats, metadata):
         or not 0 <= acceptances <= resubmissions
     ):
         errors.append(
-            f"invalid retry acceptances={acceptances}, resubmissions={resubmissions}"
+            f"invalid retry acceptances={acceptances}, "
+            f"resubmissions={resubmissions}"
         )
 
     verifier = stats["final_verifier"]
@@ -97,7 +138,7 @@ def validate(stats, metadata):
     check_equal(errors, submitter, "responses", 2)
     if errors:
         raise RuntimeError(
-            "LANLMAA Branson descriptor staging smoke failed:\n  "
+            "LANLMAA SPARTA descriptor staging smoke failed:\n  "
             + "\n  ".join(errors)
         )
 
@@ -107,13 +148,13 @@ def build_staging(root):
     assembler = shutil.which("cc")
     linker = shutil.which("ld")
     if not compiler or not assembler or not linker:
-        raise RuntimeError("Branson staging smoke requires g++, cc, and ld")
+        raise RuntimeError("SPARTA staging smoke requires g++, cc, and ld")
     repo = pathlib.Path(__file__).resolve().parents[2]
-    benchmark = root / "branson_photon_cell_walk"
-    assembly = root / "branson_descriptor_image.S"
-    metadata_path = root / "branson_descriptor_metadata.json"
-    object_path = root / "branson_descriptor_image.o"
-    image = root / "branson_descriptor_image.elf"
+    benchmark = root / "sparta_particle_cell_step"
+    assembly = root / "sparta_descriptor_image.S"
+    metadata_path = root / "sparta_descriptor_metadata.json"
+    object_path = root / "sparta_descriptor_image.o"
+    image = root / "sparta_descriptor_image.elf"
 
     subprocess.run(
         [
@@ -125,7 +166,7 @@ def build_staging(root):
             "-Werror",
             "-I",
             repo / "src",
-            repo / "benchmarks/LANL/branson_photon_cell_walk.cc",
+            repo / "benchmarks/LANL/sparta_particle_cell_step.cc",
             "-o",
             benchmark,
         ],
@@ -134,12 +175,12 @@ def build_staging(root):
     benchmark_result = subprocess.run(
         [
             benchmark,
-            "--photons",
+            "--particles",
             "256",
             "--cells",
             "64",
-            "--steps",
-            "12",
+            "--visits",
+            "8",
             "--window",
             "16",
             "--line-entries",
@@ -153,7 +194,9 @@ def build_staging(root):
             "--descriptor-items",
             "8",
             "--seed",
-            "0x4252414e534f4e",
+            "0x535041525441",
+            "--order",
+            "sorted",
             "--emit-descriptor-assembly",
             assembly,
             "--emit-descriptor-metadata",
@@ -167,10 +210,10 @@ def build_staging(root):
         benchmark_result.stdout, encoding="utf-8"
     )
     if "verification=PASS" not in benchmark_result.stdout:
-        raise RuntimeError(
-            "Branson scalar/reference-model verification failed"
-        )
+        raise RuntimeError("SPARTA scalar/reference-model verification failed")
 
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    validate_metadata(metadata)
     subprocess.run([assembler, "-c", assembly, "-o", object_path], check=True)
     subprocess.run(
         [
@@ -183,7 +226,6 @@ def build_staging(root):
         ],
         check=True,
     )
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     return image, metadata_path, metadata
 
 
@@ -203,11 +245,11 @@ def run_smoke(args, root):
         (root / "gem5.stderr").write_text(result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(
-            "gem5 Branson descriptor staging smoke failed:\n"
+            "gem5 SPARTA descriptor staging smoke failed:\n"
             + result.stdout
             + result.stderr
         )
-    validate(read_stats(outdir / "stats.txt"), metadata)
+    validate_stats(read_stats(outdir / "stats.txt"), metadata)
 
 
 def main():
@@ -235,11 +277,11 @@ def main():
         run_smoke(args, root)
     else:
         with tempfile.TemporaryDirectory(
-            prefix="lanl-maa-branson-descriptor-staging-"
+            prefix="lanl-maa-sparta-descriptor-staging-"
         ) as root:
             run_smoke(args, pathlib.Path(root))
 
-    print("LANLMAA Branson descriptor staging smoke: PASS")
+    print("LANLMAA SPARTA descriptor staging smoke: PASS")
 
 
 if __name__ == "__main__":

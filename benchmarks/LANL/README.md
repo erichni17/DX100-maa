@@ -74,6 +74,30 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
 
 The comparison isolates the value of particle grouping for the modeled memory phase. It does not model SPARTA collision physics, surfaces, MPI migration, or the cost of sorting particles.
 
+The executable can also emit an exact opcode-2 descriptor staging view. Because
+the descriptor has one fixed `next_index` per record while SPARTA selects either
+the positive or negative neighbor and stops after a per-particle visit count,
+the staging index explicitly expands state to
+`(remaining_visits, direction, cell)`. With eight maximum visits this creates
+16 records per native cell; the 16-byte descriptor record is twice the size of
+the packed 8-byte native cell, so the emitted record image is 32 times larger
+than the modeled native cell array. That expansion is a measured staging cost,
+not a proposed native layout.
+
+```sh
+/tmp/sparta_particle_cell_step --particles 256 --cells 64 --visits 8 \
+    --window 16 --descriptor-items 8 --order sorted \
+    --emit-descriptor-assembly /tmp/sparta_descriptor.S \
+    --emit-descriptor-metadata /tmp/sparta_descriptor.json
+```
+
+`tests/lanl_maa/run_sparta_descriptor_staging_smoke.py` checks the scalar and
+reference-model result, the exact generated staging metadata, the CPU-visible
+descriptor results, retry accounting, completion record, and quiescence. It
+validates the direction-dependent cell-walk mechanism only. It does not
+establish a native SPARTA ABI, particle-memory integration, tally offload,
+collision or surface behavior, MPI behavior, or application speedup.
+
 ## `spatter_trace_replay`
 
 This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.

@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -81,13 +83,23 @@ struct Options
     size_t continuationContexts = 0;
     size_t combinerEntries = 0;
     size_t combinerBanks = 4;
+    size_t descriptorItems = 16;
     uint64_t seed = 0x535041525441ULL;
     bool sorted = true;
+    std::string descriptorAssembly;
+    std::string descriptorMetadata;
 };
 
 constexpr uint64_t CellMask = (uint64_t{1} << 24) - 1;
 constexpr uint64_t TallyBase = 0x300000000ULL;
 constexpr size_t TalliesPerCell = 6;
+constexpr uint64_t DescriptorAddress = 0x800;
+constexpr uint64_t DescriptorStartVector = 0x900;
+constexpr uint64_t DescriptorResultVector = 0xa00;
+constexpr uint64_t DescriptorCompletion = 0xb00;
+constexpr uint64_t DescriptorRecordBase = 0xc00;
+constexpr uint64_t DescriptorTerminal =
+    std::numeric_limits<uint64_t>::max();
 
 template <class T>
 uint64_t
@@ -274,6 +286,182 @@ runScalar(const Dataset &data)
         result.particles[particle.id] = ParticleResult{cellIndex, visits};
     }
     return result;
+}
+
+uint64_t
+stagingIndex(
+    size_t remainingVisits, bool positiveDirection, size_t cell,
+    size_t cells)
+{
+    if (remainingVisits == 0 || cell >= cells) {
+        throw std::invalid_argument("invalid SPARTA staging state");
+    }
+    const uint64_t visitLayer = remainingVisits - 1;
+    const uint64_t directionLayer = positiveDirection ? 1 : 0;
+    return (visitLayer * 2 + directionLayer) * cells + cell;
+}
+
+uint64_t
+stagingPayload(size_t cell)
+{
+    return cell + 1;
+}
+
+void
+emitDescriptorStaging(const Dataset &data, const Options &options)
+{
+    const bool emitAssembly = !options.descriptorAssembly.empty();
+    const bool emitMetadata = !options.descriptorMetadata.empty();
+    if (emitAssembly != emitMetadata) {
+        throw std::invalid_argument(
+            "descriptor assembly and metadata must be requested together");
+    }
+    if (!emitAssembly) {
+        return;
+    }
+    if (options.descriptorItems > data.particles.size()) {
+        throw std::invalid_argument(
+            "descriptor items exceed generated particle count");
+    }
+    const size_t cells = data.packedCells.size();
+    if (options.maximumVisits >
+            std::numeric_limits<uint64_t>::max() / 2 / cells ||
+        options.descriptorItems > std::numeric_limits<uint32_t>::max()) {
+        throw std::invalid_argument("SPARTA staging geometry overflows");
+    }
+    const uint64_t recordCount = options.maximumVisits * 2 * cells;
+    if (recordCount > std::numeric_limits<uint32_t>::max() ||
+        options.maximumVisits > std::numeric_limits<uint32_t>::max()) {
+        throw std::invalid_argument(
+            "SPARTA staging field exceeds descriptor v1 width");
+    }
+
+    std::vector<uint64_t> starts;
+    std::vector<uint32_t> rootVisits;
+    std::vector<uint64_t> expected;
+    std::vector<uint32_t> finalCells;
+    starts.reserve(options.descriptorItems);
+    rootVisits.reserve(options.descriptorItems);
+    expected.reserve(options.descriptorItems);
+    finalCells.reserve(options.descriptorItems);
+    uint64_t executedVisits = 0;
+    for (size_t index = 0; index < options.descriptorItems; ++index) {
+        const Particle &particle = data.particles[index];
+        const bool positive = particle.vx >= 0.0;
+        uint32_t cellIndex = particle.cell;
+        uint64_t sum = 0;
+        starts.push_back(stagingIndex(
+            particle.visits, positive, particle.cell, cells));
+        rootVisits.push_back(particle.visits);
+        for (size_t visit = 0; visit < particle.visits; ++visit) {
+            sum += stagingPayload(cellIndex);
+            if (visit + 1 != particle.visits) {
+                const Cell cell = unpackCell(data.packedCells[cellIndex]);
+                cellIndex = positive ? cell.positiveNeighbor :
+                                       cell.negativeNeighbor;
+            }
+        }
+        expected.push_back(sum);
+        finalCells.push_back(cellIndex);
+        executedVisits += particle.visits;
+    }
+
+    std::ofstream assembly(options.descriptorAssembly);
+    if (!assembly) {
+        throw std::runtime_error("cannot create SPARTA descriptor assembly");
+    }
+    assembly << "    .section .data\n"
+             << "    .balign 64\n"
+             << "    .org 0x" << std::hex << DescriptorAddress << "\n"
+             << "    .quad 0x0002000131414d4c\n"
+             << "    .quad " << std::dec << starts.size() << "\n"
+             << "    .quad 0x" << std::hex << DescriptorStartVector << "\n"
+             << "    .quad 0x" << DescriptorResultVector << "\n"
+             << "    .quad 0x" << DescriptorCompletion << "\n"
+             << "    .quad 0x" << DescriptorRecordBase << "\n"
+             << "    .long " << std::dec << recordCount << "\n"
+             << "    .long " << options.maximumVisits << "\n"
+             << "    .quad 0xffffffffffffffff\n"
+             << "    .org 0x" << std::hex << DescriptorStartVector << "\n";
+    for (const uint64_t start : starts) {
+        assembly << "    .quad " << std::dec << start << "\n";
+    }
+    assembly << "    .org 0x" << std::hex << DescriptorResultVector << "\n"
+             << "    .zero " << std::dec
+             << starts.size() * sizeof(uint64_t) << "\n"
+             << "    .org 0x" << std::hex << DescriptorCompletion << "\n"
+             << "    .zero 32\n"
+             << "    .org 0x" << DescriptorRecordBase << "\n";
+    for (size_t remaining = 1; remaining <= options.maximumVisits;
+         ++remaining) {
+        for (size_t direction = 0; direction < 2; ++direction) {
+            const bool positive = direction != 0;
+            for (size_t cellIndex = 0; cellIndex < cells; ++cellIndex) {
+                uint64_t next = DescriptorTerminal;
+                if (remaining != 1) {
+                    const Cell cell = unpackCell(
+                        data.packedCells[cellIndex]);
+                    const size_t nextCell = positive ?
+                        cell.positiveNeighbor : cell.negativeNeighbor;
+                    next = stagingIndex(
+                        remaining - 1, positive, nextCell, cells);
+                }
+                assembly << "    .quad " << std::dec << next << ", "
+                         << stagingPayload(cellIndex) << "\n";
+            }
+        }
+    }
+    assembly.close();
+    if (!assembly) {
+        throw std::runtime_error("failed to write SPARTA descriptor assembly");
+    }
+
+    std::ofstream metadata(options.descriptorMetadata);
+    if (!metadata) {
+        throw std::runtime_error("cannot create SPARTA descriptor metadata");
+    }
+    metadata << "{\n"
+             << "  \"schema_version\": 1,\n"
+             << "  \"mapping\": \"SPARTA state-expanded projection; "
+                "state is remaining_visits_direction_cell and payload is "
+                "cell_plus_one\",\n"
+             << "  \"descriptor_address\": " << DescriptorAddress << ",\n"
+             << "  \"start_vector\": " << DescriptorStartVector << ",\n"
+             << "  \"result_vector\": " << DescriptorResultVector << ",\n"
+             << "  \"completion_record\": " << DescriptorCompletion << ",\n"
+             << "  \"record_base\": " << DescriptorRecordBase << ",\n"
+             << "  \"native_cell_count\": " << cells << ",\n"
+             << "  \"state_expansion_factor\": "
+             << options.maximumVisits * 2 << ",\n"
+             << "  \"record_count\": " << recordCount << ",\n"
+             << "  \"record_bytes\": "
+             << recordCount * 2 * sizeof(uint64_t) << ",\n"
+             << "  \"native_packed_cell_bytes\": "
+             << cells * sizeof(uint64_t) << ",\n"
+             << "  \"maximum_steps\": " << options.maximumVisits << ",\n"
+             << "  \"descriptor_items\": " << starts.size() << ",\n"
+             << "  \"executed_record_visits\": " << executedVisits << ",\n"
+             << "  \"start_indices\": [";
+    for (size_t index = 0; index < starts.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << starts[index];
+    }
+    metadata << "],\n  \"root_visits\": [";
+    for (size_t index = 0; index < rootVisits.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << rootVisits[index];
+    }
+    metadata << "],\n  \"final_cells\": [";
+    for (size_t index = 0; index < finalCells.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << finalCells[index];
+    }
+    metadata << "],\n  \"expected_results\": [";
+    for (size_t index = 0; index < expected.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << expected[index];
+    }
+    metadata << "]\n}\n";
+    metadata.close();
+    if (!metadata) {
+        throw std::runtime_error("failed to write SPARTA descriptor metadata");
+    }
 }
 
 uint64_t
@@ -529,7 +717,9 @@ parseOptions(int argc, char **argv)
                          "[--cells N] [--visits N] [--window N] "
                          "[--line-entries N] [--contexts N] "
                          "[--combiner-entries N] [--combiner-banks N] "
-                         "[--seed N] "
+                         "[--descriptor-items N] [--seed N] "
+                         "[--emit-descriptor-assembly PATH] "
+                         "[--emit-descriptor-metadata PATH] "
                          "[--order sorted|shuffled]\n";
             std::exit(0);
         }
@@ -553,8 +743,14 @@ parseOptions(int argc, char **argv)
             options.combinerEntries = parseSize(value, option);
         } else if (option == "--combiner-banks") {
             options.combinerBanks = parseSize(value, option);
+        } else if (option == "--descriptor-items") {
+            options.descriptorItems = parseSize(value, option);
         } else if (option == "--seed") {
             options.seed = std::stoull(value, nullptr, 0);
+        } else if (option == "--emit-descriptor-assembly") {
+            options.descriptorAssembly = value;
+        } else if (option == "--emit-descriptor-metadata") {
+            options.descriptorMetadata = value;
         } else if (option == "--order") {
             if (value == "sorted") {
                 options.sorted = true;
@@ -579,6 +775,7 @@ main(int argc, char **argv)
         const Options options = parseOptions(argc, argv);
         const Configuration configuration = configurationFor(options);
         const Dataset data = makeDataset(options);
+        emitDescriptorStaging(data, options);
         const Result scalar = runScalar(data);
         const ModelResult model = runModel(data, configuration);
         const bool correct = equalResults(scalar, model.values);
