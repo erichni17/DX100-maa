@@ -405,6 +405,18 @@ emitDescriptorStaging(const Dataset &data, const Options &options)
     for (size_t index = 0; index < roots.size(); ++index) {
         metadata << (index == 0 ? "" : ", ") << roots[index].expected;
     }
+    metadata << "],\n  \"record_next\": [";
+    for (size_t index = 0; index < data.packedCells.size(); ++index) {
+        const Cell cell = unpackCell(data.packedCells[index]);
+        metadata << (index == 0 ? "" : ", ")
+                 << (cell.terminal ? DescriptorTerminal : cell.next);
+    }
+    metadata << "],\n  \"record_payload\": [";
+    for (size_t index = 0; index < data.packedCells.size(); ++index) {
+        const Cell cell = unpackCell(data.packedCells[index]);
+        metadata << (index == 0 ? "" : ", ")
+                 << descriptorPayload(cell);
+    }
     metadata << "]\n}\n";
     metadata.close();
     if (!metadata) {
