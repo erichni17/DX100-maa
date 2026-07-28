@@ -118,6 +118,28 @@ format is still the microbenchmark's packed ABI. Native SPARTA uses richer
 grid/particle structures and transition predicates, and its six floating
 tallies are not part of this descriptor.
 
+## XRAGE descriptor trace windows
+
+`tests/lanl_maa/run_xrage_descriptor_trace_smoke.py` validates three fixed
+64-index windows from the pinned `xrage_gather0_full.json` Spatter trace: the
+head, aligned midpoint, and tail. It verifies the complete source SHA-256 plus
+an exact little-endian index hash for each window before emitting a CPU-visible
+opcode-1 descriptor. Each referenced index receives a deterministic nonzero
+64-bit value, so the delayed verifier checks values and ordering rather than
+request accounting alone.
+
+```sh
+python3 tests/lanl_maa/run_xrage_descriptor_trace_smoke.py \
+    --gem5 build/X86/gem5.opt \
+    --trace /data1/nier/DX100/experiments/inputs/xrage_gather0_full.json
+```
+
+The three windows are temporal samples, not a replacement for the existing
+full 2,097,152-index reference replay. Synthetic values are used because the
+Spatter capture contains indices, not application data. Therefore a pass
+establishes exact trace-derived descriptor addressing and returned-value
+verification, not XRAGE application correctness or performance.
+
 ## `spatter_trace_replay`
 
 This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.
