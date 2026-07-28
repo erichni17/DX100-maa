@@ -44,27 +44,30 @@ def validate(
     committed_instructions,
     coherence_stats=None,
     workload="Branson",
+    submissions=1,
 ):
+    if submissions < 1:
+        raise ValueError("descriptor submission count must be positive")
     errors = []
     accelerator = stats["lanl_maa"]
     items = metadata["descriptor_items"]
     visits = metadata["executed_record_visits"]
     expected = {
-        "logicalItems": items,
-        "logicalMemoryAccesses": visits,
-        "responsesFannedOut": visits,
-        "completionsRetired": items,
+        "logicalItems": items * submissions,
+        "logicalMemoryAccesses": visits * submissions,
+        "responsesFannedOut": visits * submissions,
+        "completionsRetired": items * submissions,
         "verificationFailures": 0,
-        "continuationSteps": visits,
+        "continuationSteps": visits * submissions,
         "continuationExhaustions": 0,
-        "descriptorDoorbells": 1,
+        "descriptorDoorbells": submissions,
         "descriptorBusyRejections": 0,
-        "descriptorRearms": 0,
-        "descriptorFetches": 1,
-        "descriptorAddressLineReads": (items + 7) // 8,
-        "descriptorAddressesLoaded": items,
-        "descriptorResultWrites": items,
-        "descriptorCompletionWrites": 1,
+        "descriptorRearms": submissions - 1,
+        "descriptorFetches": submissions,
+        "descriptorAddressLineReads": ((items + 7) // 8) * submissions,
+        "descriptorAddressesLoaded": items * submissions,
+        "descriptorResultWrites": items * submissions,
+        "descriptorCompletionWrites": submissions,
         "descriptorErrors": 0,
     }
     for name, value in expected.items():
@@ -72,10 +75,15 @@ def validate(
 
     physical = accelerator.get("physicalLineReads")
     merges = accelerator.get("lineMergeHits")
-    if physical is None or merges is None or physical + merges != visits:
+    total_visits = visits * submissions
+    if (
+        physical is None
+        or merges is None
+        or physical + merges != total_visits
+    ):
         errors.append(
             "record accounting mismatch: "
-            f"physical={physical}, merges={merges}, visits={visits}"
+            f"physical={physical}, merges={merges}, visits={total_visits}"
         )
     if accelerator.get("responses") != physical:
         errors.append("record request/response accounting did not close")

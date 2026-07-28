@@ -68,7 +68,129 @@ def validate_metadata(metadata):
         )
 
 
-def build_staging(root):
+def validate_structural_metadata(
+    metadata, *, cells, maximum_visits, descriptor_items
+):
+    errors = []
+    expected_scalars = {
+        "descriptor_opcode": 3,
+        "native_cell_count": cells,
+        "state_records_per_native_cell": 1,
+        "record_count": cells,
+        "record_bytes": cells * 8,
+        "native_packed_cell_bytes": cells * 8,
+        "maximum_steps": maximum_visits,
+        "descriptor_items": descriptor_items,
+    }
+    for name, expected in expected_scalars.items():
+        if metadata.get(name) != expected:
+            errors.append(
+                f"metadata {name}: expected {expected}, "
+                f"got {metadata.get(name)}"
+            )
+
+    starts = metadata.get("start_states", [])
+    root_visits = metadata.get("root_visits", [])
+    final_cells = metadata.get("final_cells", [])
+    expected_results = metadata.get("expected_results", [])
+    record_words = metadata.get("record_words", [])
+    for name, values, expected_length in (
+        ("start_states", starts, descriptor_items),
+        ("root_visits", root_visits, descriptor_items),
+        ("final_cells", final_cells, descriptor_items),
+        ("expected_results", expected_results, descriptor_items),
+        ("record_words", record_words, cells),
+    ):
+        if len(values) != expected_length:
+            errors.append(
+                f"metadata {name}: expected {expected_length} values, "
+                f"got {len(values)}"
+            )
+
+    cell_mask = (1 << 24) - 1
+    for index, word in enumerate(record_words):
+        positive = word & cell_mask
+        negative = (word >> 24) & cell_mask
+        reserved = word >> 48
+        if reserved or positive >= cells or negative >= cells:
+            errors.append(
+                f"invalid packed record {index}: positive={positive}, "
+                f"negative={negative}, reserved={reserved}"
+            )
+
+    recomputed_visits = 0
+    referenced_cells = set()
+    referenced_lines = set()
+    if len(record_words) == cells:
+        for index, state in enumerate(starts):
+            cell = state & cell_mask
+            direction = (state >> 24) & 1
+            visits = (state >> 25) & 0xFFFFFFFF
+            reserved = state >> 57
+            if (
+                reserved
+                or cell >= cells
+                or visits == 0
+                or visits > maximum_visits
+            ):
+                errors.append(
+                    f"invalid start state {index}: cell={cell}, "
+                    f"visits={visits}, reserved={reserved}"
+                )
+                continue
+            result = 0
+            for visit in range(visits):
+                referenced_cells.add(cell)
+                referenced_lines.add(cell // 8)
+                result += cell + 1
+                if visit + 1 != visits:
+                    word = record_words[cell]
+                    next_cell = (
+                        word & cell_mask
+                        if direction
+                        else (word >> 24) & cell_mask
+                    )
+                    if next_cell >= cells:
+                        errors.append(
+                            f"out-of-range neighbor at item {index}, "
+                            f"visit {visit}: {next_cell}"
+                        )
+                        break
+                    cell = next_cell
+            recomputed_visits += visits
+            if index < len(root_visits) and root_visits[index] != visits:
+                errors.append(f"root visit mismatch at item {index}")
+            if index < len(final_cells) and final_cells[index] != cell:
+                errors.append(f"final cell mismatch at item {index}")
+            if (
+                index < len(expected_results)
+                and expected_results[index] != result
+            ):
+                errors.append(f"exact result mismatch at item {index}")
+    if metadata.get("executed_record_visits") != recomputed_visits:
+        errors.append(
+            "executed record visits do not match independently decoded roots"
+        )
+    if errors:
+        raise RuntimeError(
+            "SPARTA compact descriptor structure changed:\n  "
+            + "\n  ".join(errors)
+        )
+    return {
+        "descriptor_unique_record_words": len(referenced_cells),
+        "descriptor_unique_record_lines": len(referenced_lines),
+    }
+
+
+def build_staging(
+    root,
+    *,
+    particles=256,
+    cells=64,
+    maximum_visits=8,
+    descriptor_items=8,
+    order="sorted",
+):
     compiler = shutil.which("g++")
     assembler = shutil.which("cc")
     linker = shutil.which("ld")
@@ -103,11 +225,11 @@ def build_staging(root):
         [
             benchmark,
             "--particles",
-            "256",
+            str(particles),
             "--cells",
-            "64",
+            str(cells),
             "--visits",
-            "8",
+            str(maximum_visits),
             "--window",
             "16",
             "--line-entries",
@@ -119,11 +241,11 @@ def build_staging(root):
             "--combiner-banks",
             "4",
             "--descriptor-items",
-            "8",
+            str(descriptor_items),
             "--seed",
             "0x535041525441",
             "--order",
-            "sorted",
+            order,
             "--emit-compact-descriptor-assembly",
             assembly,
             "--emit-compact-descriptor-metadata",
@@ -140,7 +262,22 @@ def build_staging(root):
         raise RuntimeError("SPARTA scalar/reference-model verification failed")
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    validate_metadata(metadata)
+    metadata.update(
+        validate_structural_metadata(
+            metadata,
+            cells=cells,
+            maximum_visits=maximum_visits,
+            descriptor_items=descriptor_items,
+        )
+    )
+    if (
+        particles == 256
+        and cells == 64
+        and maximum_visits == 8
+        and descriptor_items == 8
+        and order == "sorted"
+    ):
+        validate_metadata(metadata)
     subprocess.run([assembler, "-c", assembly, "-o", object_path], check=True)
     subprocess.run(
         [

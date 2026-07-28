@@ -25,6 +25,7 @@ from run_sparta_descriptor_staging_smoke import read_stats
 def generate_source(path, metadata):
     items = metadata["descriptor_items"]
     records = metadata["record_count"]
+    submissions = metadata["submissions"]
     if len(metadata["start_states"]) != items:
         raise RuntimeError("SPARTA start-state count does not close")
     if len(metadata["expected_results"]) != items:
@@ -55,6 +56,7 @@ def generate_source(path, metadata):
 #define ITEMS UINT64_C({items})
 #define RECORDS UINT64_C({records})
 #define MAXIMUM_STEPS UINT64_C({metadata['maximum_steps']})
+#define SUBMISSIONS UINT64_C({submissions})
 
 static const uint64_t start_states[ITEMS] = {{
 {starts}
@@ -106,10 +108,6 @@ _start(void)
     }}
     for (uint64_t item = 0; item < ITEMS; ++item) {{
         starts[item] = start_states[item];
-        results[item] = 0;
-    }}
-    for (uint64_t word = 0; word < 4; ++word) {{
-        completion[word] = 0;
     }}
     descriptor[0] = UINT64_C(0x0003000131414d4c);
     descriptor[1] = ITEMS;
@@ -121,38 +119,48 @@ _start(void)
     descriptor[7] = 0;
     fence();
 
-    control[0] = 0;
-    fence();
-    uint64_t status = 0;
-    for (uint64_t spin = 0; spin < UINT64_C(1000000); ++spin) {{
-        status = control[UINT64_C(0x110) / 8];
-        if (status == UINT64_C(4)) {{
-            break;
+    for (uint64_t submission = 0; submission < SUBMISSIONS; ++submission) {{
+        for (uint64_t item = 0; item < ITEMS; ++item) {{
+            results[item] = 0;
         }}
-        if (status == UINT64_C(8)) {{
-            finish(UINT64_C(20) + control[UINT64_C(0x120) / 8]);
+        for (uint64_t word = 0; word < 4; ++word) {{
+            completion[word] = 0;
         }}
-        if (status != UINT64_C(1) && status != UINT64_C(2)) {{
-            finish(UINT64_C(12));
-        }}
-    }}
-    if (status != UINT64_C(4)) {{
-        finish(UINT64_C(13));
-    }}
-    if (control[UINT64_C(0x118) / 8] != 0) {{
-        finish(UINT64_C(14));
-    }}
-    fence();
+        fence();
 
-    for (uint64_t item = 0; item < ITEMS; ++item) {{
-        if (results[item] != expected_results[item]) {{
-            finish(UINT64_C(40));
+        control[0] = 0;
+        fence();
+        uint64_t status = 0;
+        for (uint64_t spin = 0; spin < UINT64_C(1000000); ++spin) {{
+            status = control[UINT64_C(0x110) / 8];
+            if (status == UINT64_C(4)) {{
+                break;
+            }}
+            if (status == UINT64_C(8)) {{
+                finish(UINT64_C(20) + control[UINT64_C(0x120) / 8]);
+            }}
+            if (status != UINT64_C(1) && status != UINT64_C(2)) {{
+                finish(UINT64_C(12));
+            }}
         }}
-    }}
-    if (completion[0] != UINT64_C(0x0003000143414d4c) ||
-        completion[1] != 0 || completion[2] != ITEMS ||
-        completion[3] != ITEMS) {{
-        finish(UINT64_C(41));
+        if (status != UINT64_C(4)) {{
+            finish(UINT64_C(13));
+        }}
+        if (control[UINT64_C(0x118) / 8] != 0) {{
+            finish(UINT64_C(14));
+        }}
+        fence();
+
+        for (uint64_t item = 0; item < ITEMS; ++item) {{
+            if (results[item] != expected_results[item]) {{
+                finish(UINT64_C(40));
+            }}
+        }}
+        if (completion[0] != UINT64_C(0x0003000143414d4c) ||
+            completion[1] != 0 || completion[2] != ITEMS ||
+            completion[3] != ITEMS) {{
+            finish(UINT64_C(41));
+        }}
     }}
     finish(0);
 }}
@@ -190,7 +198,15 @@ def build_program(root, metadata):
 
 
 def run_smoke(args, root):
-    _, staging_metadata_path, staging_metadata = build_staging(root)
+    _, staging_metadata_path, staging_metadata = build_staging(
+        root,
+        particles=args.particles,
+        cells=args.cells,
+        maximum_visits=args.maximum_visits,
+        descriptor_items=args.descriptor_items,
+        order=args.order,
+    )
+    staging_metadata["submissions"] = args.submissions
     source, binary = build_program(root, staging_metadata)
     metadata = dict(staging_metadata)
     metadata.update(
@@ -209,6 +225,8 @@ def run_smoke(args, root):
             "program_source_sha256": file_sha256(source),
             "program_elf_sha256": file_sha256(binary),
             "l1_caches": args.l1_caches,
+            "particle_order": args.order,
+            "submissions": args.submissions,
             "maa_coherence_cache": (
                 {
                     "size": args.maa_cache_size,
@@ -285,6 +303,7 @@ def run_smoke(args, root):
         read_scalar(stats_path, "system.cpu.commitStats0.numInsts"),
         coherence_stats,
         workload="SPARTA",
+        submissions=args.submissions,
     )
 
 
@@ -292,6 +311,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
     parser.add_argument("--l1-caches", action="store_true")
+    parser.add_argument("--particles", type=int, default=256)
+    parser.add_argument("--cells", type=int, default=64)
+    parser.add_argument("--maximum-visits", type=int, default=8)
+    parser.add_argument("--descriptor-items", type=int, default=8)
+    parser.add_argument("--submissions", type=int, default=1)
+    parser.add_argument(
+        "--order", choices=("sorted", "shuffled"), default="sorted"
+    )
     parser.add_argument("--maa-cache-size", default="4KiB")
     parser.add_argument("--maa-cache-assoc", type=int, default=4)
     parser.add_argument("--maa-cache-mshrs", type=int, default=4)
@@ -306,6 +333,24 @@ def main():
     )
     parser.add_argument("--outdir", type=pathlib.Path)
     args = parser.parse_args()
+    for name in (
+        "particles",
+        "cells",
+        "maximum_visits",
+        "descriptor_items",
+        "submissions",
+    ):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.descriptor_items > 32:
+        parser.error(
+            "--descriptor-items must be at most 32 to keep the result "
+            "vector disjoint from the fixed completion record"
+        )
+    if args.descriptor_items > args.particles:
+        parser.error("--descriptor-items must not exceed --particles")
+    if 0xC00 + args.cells * 8 > DATA_BYTES:
+        parser.error("packed record arena exceeds the mapped data range")
 
     if args.outdir:
         root = args.outdir.resolve()
