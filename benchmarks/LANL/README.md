@@ -51,3 +51,18 @@ g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
 ```
 
 The comparison isolates the value of particle grouping for the modeled memory phase. It does not model SPARTA collision physics, surfaces, MPI migration, or the cost of sorting particles.
+
+## `spatter_trace_replay`
+
+This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.
+
+The replay enforces the v0 48-bit address assumption, explicit would-block/retry behavior, complete response fanout, ordered retirement, and a quiescent final state. Returned data are synthetic zeros because Spatter traces contain indices rather than captured values; therefore `PASS-accounting` validates request/completion accounting, not application values.
+
+Example after exporting a trace to `/tmp/trace.u64le`:
+
+```sh
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -I src \
+    benchmarks/LANL/spatter_trace_replay.cc -o /tmp/spatter_trace_replay
+/tmp/spatter_trace_replay --indices /tmp/trace.u64le \
+    --window 64 --element-bytes 8
+```
