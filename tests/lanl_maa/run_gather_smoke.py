@@ -19,6 +19,8 @@ EXPECTED_EXACT = {
     "continuationSteps": 0,
     "continuationExhaustions": 0,
     "activeContextHighWaterMark": 0,
+    "retryPacketResubmissions": 1,
+    "retryPacketAcceptances": 1,
 }
 
 

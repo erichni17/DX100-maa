@@ -27,6 +27,23 @@ class LANLMAA(ClockedObject):
     terminal_address = Param.UInt64(
         0xFFFFFFFFFFFFFFFF, "Next-address value that terminates a cell walk"
     )
+    update_mode = Param.Bool(
+        False, "Interpret addresses and update_values as unsigned ADD updates"
+    )
+    update_values = VectorParam.UInt64(
+        [], "Unsigned modulo-add contribution for every update address"
+    )
+    verification_addresses = VectorParam.Addr(
+        [], "Addresses read after acknowledged update drains"
+    )
+    verification_values = VectorParam.UInt64(
+        [], "Expected final value for every verification address"
+    )
+    update_entries = Param.Unsigned(64, "Banked update-combiner entries")
+    update_banks = Param.Unsigned(8, "Update-combiner banks")
+    update_issue_width = Param.Unsigned(
+        1, "Maximum update read or write requests issued per cycle"
+    )
 
     operation_entries = Param.Unsigned(64, "Logical operation-window entries")
     line_entries = Param.Unsigned(32, "Coherent line-merge entries")

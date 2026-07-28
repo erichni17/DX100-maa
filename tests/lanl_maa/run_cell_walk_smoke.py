@@ -16,6 +16,8 @@ EXPECTED_EXACT = {
     "continuationSteps": 11,
     "continuationExhaustions": 0,
     "activeContextHighWaterMark": 2,
+    "retryPacketResubmissions": 2,
+    "retryPacketAcceptances": 1,
 }
 
 
@@ -68,6 +70,8 @@ def validate_exhaustion(stats):
         "continuationSteps": 4,
         "continuationExhaustions": 4,
         "activeContextHighWaterMark": 2,
+        "retryPacketResubmissions": 0,
+        "retryPacketAcceptances": 0,
     }
     errors = [
         f"{name}: expected {value}, got {stats.get(name)}"

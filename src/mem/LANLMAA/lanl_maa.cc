@@ -26,6 +26,16 @@ LANLMAA::LineEntry::clear()
     waiters.clear();
 }
 
+void
+LANLMAA::UpdateEntry::clear()
+{
+    state = UpdateState::Free;
+    address = 0;
+    contribution = 0;
+    packet = nullptr;
+    waiters.clear();
+}
+
 LANLMAA::MemoryPort::MemoryPort(const std::string &name, LANLMAA &owner)
     : RequestPort(name), owner(owner)
 {
@@ -48,7 +58,7 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(logicalItems, statistics::units::Count::get(),
                "Logical operations admitted"),
       ADD_STAT(logicalMemoryAccesses, statistics::units::Count::get(),
-               "Logical record or gather accesses generated"),
+               "Logical record, gather, or update accesses generated"),
       ADD_STAT(physicalLineReads, statistics::units::Count::get(),
                "Coherent line reads accepted by the memory port"),
       ADD_STAT(lineMergeHits, statistics::units::Count::get(),
@@ -63,20 +73,43 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Timing sends refused by the downstream port"),
       ADD_STAT(portRetryNotifications, statistics::units::Count::get(),
                "Request-retry notifications received"),
+      ADD_STAT(retryPacketResubmissions, statistics::units::Count::get(),
+               "Exact rejected packets resubmitted after notification"),
+      ADD_STAT(retryPacketAcceptances, statistics::units::Count::get(),
+               "Previously rejected packets accepted without replacement"),
       ADD_STAT(responses, statistics::units::Count::get(),
-               "Coherent line responses accepted"),
+               "Coherent read or write responses accepted"),
       ADD_STAT(responsesFannedOut, statistics::units::Count::get(),
                "Logical values supplied by line responses"),
       ADD_STAT(completionsRetired, statistics::units::Count::get(),
                "Logical items retired in descriptor order"),
       ADD_STAT(verificationFailures, statistics::units::Count::get(),
-               "Retired values that differ from the supplied oracle"),
+               "Functional values that differ from the supplied oracle"),
       ADD_STAT(continuationSteps, statistics::units::Count::get(),
                "Dependent records consumed"),
       ADD_STAT(continuationExhaustions, statistics::units::Count::get(),
                "Cell walks terminated by the maximum-step bound"),
       ADD_STAT(activeContextHighWaterMark, statistics::units::Count::get(),
                "Maximum simultaneously allocated continuation contexts"),
+      ADD_STAT(updateCombinerHits, statistics::units::Count::get(),
+               "Logical updates merged into an accumulating entry"),
+      ADD_STAT(updateTableWouldBlockCycles, statistics::units::Cycle::get(),
+               "Cycles blocked by a full target update bank"),
+      ADD_STAT(updateAddressBusyCycles, statistics::units::Cycle::get(),
+               "Cycles blocked by an address already draining"),
+      ADD_STAT(updateDrains, statistics::units::Count::get(),
+               "Update entries promoted to acknowledged drain"),
+      ADD_STAT(physicalUpdateReads, statistics::units::Count::get(),
+               "Read-modify-write initialization reads accepted"),
+      ADD_STAT(physicalUpdateWrites, statistics::units::Count::get(),
+               "Combined writes accepted by the memory port"),
+      ADD_STAT(writeAcknowledgements, statistics::units::Count::get(),
+               "Combined write responses accepted"),
+      ADD_STAT(updateOperationsAcknowledged,
+               statistics::units::Count::get(),
+               "Logical updates released by write acknowledgement"),
+      ADD_STAT(verificationReads, statistics::units::Count::get(),
+               "Post-drain oracle reads accepted"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
                "Active engine cycles through descriptor completion")
 {
@@ -90,6 +123,13 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       continuationEntries(params.continuation_entries),
       maxContinuationSteps(params.max_continuation_steps),
       terminalAddress(params.terminal_address),
+      updateMode(params.update_mode),
+      updateValues(params.update_values),
+      verificationAddresses(params.verification_addresses),
+      verificationValues(params.verification_values),
+      updateEntryCount(params.update_entries),
+      updateBanks(params.update_banks),
+      updateIssueWidth(params.update_issue_width),
       operationEntries(params.operation_entries),
       lineEntries(params.line_entries),
       logicalAdmissionWidth(params.logical_admission_width),
@@ -103,11 +143,15 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       tickEvent([this] { tick(); }, name() + ".tick"),
       stats(this),
       operations(addresses.size()),
-      lines(lineEntries)
+      lines(lineEntries),
+      updates(updateEntryCount)
 {
     validateConfiguration();
     for (size_t index = 0; index < addresses.size(); ++index) {
         operations[index].address = addresses[index];
+        if (updateMode) {
+            operations[index].value = updateValues[index];
+        }
         if (!expectedValues.empty()) {
             operations[index].expected = expectedValues[index];
         }
@@ -121,6 +165,27 @@ LANLMAA::validateConfiguration() const
     fatal_if(
         !expectedValues.empty() && expectedValues.size() != addresses.size(),
         "LANLMAA expected_values must be empty or match addresses");
+    fatal_if(dependentMode && updateMode,
+             "LANLMAA dependent and update modes are mutually exclusive");
+    fatal_if(updateMode && !expectedValues.empty(),
+             "LANLMAA update mode uses the post-drain verification oracle");
+    fatal_if(updateMode && updateValues.size() != addresses.size(),
+             "LANLMAA update_values must match update addresses");
+    fatal_if(!updateMode && !updateValues.empty(),
+             "LANLMAA update_values require update mode");
+    fatal_if(
+        verificationAddresses.size() != verificationValues.size(),
+        "LANLMAA verification addresses and values must match");
+    fatal_if(updateMode && verificationAddresses.empty(),
+             "LANLMAA update mode requires a post-drain oracle");
+    fatal_if(!updateMode && !verificationAddresses.empty(),
+             "LANLMAA verification oracle requires update mode");
+    fatal_if(updateEntryCount == 0,
+             "LANLMAA update_entries must be nonzero");
+    fatal_if(updateBanks == 0 || updateEntryCount % updateBanks != 0,
+             "LANLMAA update entries must divide evenly into nonzero banks");
+    fatal_if(updateIssueWidth == 0,
+             "LANLMAA update_issue_width must be nonzero");
     fatal_if(operationEntries == 0,
              "LANLMAA operation_entries must be nonzero");
     fatal_if(dependentMode && continuationEntries == 0,
@@ -142,6 +207,13 @@ LANLMAA::validateConfiguration() const
                  "LANLMAA access address overflows");
         fatal_if(address + accessBytes > lineAddress(address) + lineBytes,
                  "LANLMAA access crosses a coherent line");
+    }
+    for (const Addr address : verificationAddresses) {
+        fatal_if(address % sizeof(uint64_t) != 0,
+                 "LANLMAA verification address must be 64-bit aligned");
+        fatal_if(address >
+                     std::numeric_limits<Addr>::max() - sizeof(uint64_t),
+                 "LANLMAA verification address overflows");
     }
 }
 
@@ -195,6 +267,72 @@ LANLMAA::freeLine()
     return line == lines.end() ? nullptr : &*line;
 }
 
+size_t
+LANLMAA::updateBank(Addr address) const
+{
+    return (address / sizeof(uint64_t)) % updateBanks;
+}
+
+LANLMAA::UpdateEntry *
+LANLMAA::matchingUpdate(Addr address)
+{
+    const size_t ways = updateEntryCount / updateBanks;
+    const size_t begin = updateBank(address) * ways;
+    for (size_t index = begin; index < begin + ways; ++index) {
+        if (updates[index].state != UpdateState::Free &&
+            updates[index].address == address) {
+            return &updates[index];
+        }
+    }
+    return nullptr;
+}
+
+LANLMAA::UpdateEntry *
+LANLMAA::freeUpdate(Addr address)
+{
+    const size_t ways = updateEntryCount / updateBanks;
+    const size_t begin = updateBank(address) * ways;
+    for (size_t index = begin; index < begin + ways; ++index) {
+        if (updates[index].state == UpdateState::Free) {
+            return &updates[index];
+        }
+    }
+    return nullptr;
+}
+
+LANLMAA::UpdateEntry *
+LANLMAA::drainableUpdate(Addr address)
+{
+    const size_t ways = updateEntryCount / updateBanks;
+    const size_t begin = updateBank(address) * ways;
+    for (size_t index = begin; index < begin + ways; ++index) {
+        if (updates[index].state == UpdateState::Accumulating) {
+            return &updates[index];
+        }
+    }
+    return nullptr;
+}
+
+LANLMAA::UpdateEntry *
+LANLMAA::updateForPacket(PacketPtr packet)
+{
+    auto entry = std::find_if(
+        updates.begin(), updates.end(), [packet](const UpdateEntry &update) {
+            return update.state != UpdateState::Free &&
+                   update.packet == packet;
+        });
+    return entry == updates.end() ? nullptr : &*entry;
+}
+
+bool
+LANLMAA::allUpdateEntriesFree() const
+{
+    return std::all_of(
+        updates.begin(), updates.end(), [](const UpdateEntry &entry) {
+            return entry.state == UpdateState::Free;
+        });
+}
+
 void
 LANLMAA::scheduleTick()
 {
@@ -209,11 +347,27 @@ LANLMAA::tick()
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
-    attachReadyOperations();
-    issueLines();
+    if (updateMode) {
+        attachReadyUpdates();
+        scheduleUpdateDrains();
+        issueUpdates();
+    } else {
+        attachReadyOperations();
+        issueLines();
+    }
     if (nextRetirement == operations.size()) {
-        finish();
-        return;
+        if (!updateMode) {
+            finish();
+            return;
+        }
+        if (allUpdateEntriesFree()) {
+            issueVerification();
+            if (nextVerification == verificationAddresses.size() &&
+                verificationPacket == nullptr) {
+                finish();
+                return;
+            }
+        }
     }
     scheduleTick();
 }
@@ -225,7 +379,7 @@ LANLMAA::retireOperations()
     while (retired < retirementWidth && nextRetirement < operations.size() &&
            operations[nextRetirement].state == OperationState::RetireReady) {
         auto &operation = operations[nextRetirement];
-        if (!expectedValues.empty() &&
+        if (!updateMode && !expectedValues.empty() &&
             operation.value != operation.expected) {
             ++stats.verificationFailures;
         }
@@ -306,6 +460,80 @@ LANLMAA::attachReadyOperations()
 }
 
 void
+LANLMAA::attachReadyUpdates()
+{
+    size_t attached = 0;
+    bool tableBlocked = false;
+    bool addressBusy = false;
+    for (size_t index = nextRetirement;
+         index < nextAdmission && attached < logicalAdmissionWidth; ++index) {
+        auto &operation = operations[index];
+        if (operation.state != OperationState::AddressReady) {
+            continue;
+        }
+
+        UpdateEntry *entry = matchingUpdate(operation.address);
+        if (entry && entry->state != UpdateState::Accumulating) {
+            addressBusy = true;
+            continue;
+        }
+        if (!entry) {
+            entry = freeUpdate(operation.address);
+            if (!entry) {
+                tableBlocked = true;
+                UpdateEntry *victim = drainableUpdate(operation.address);
+                if (victim) {
+                    victim->state = UpdateState::ReadPending;
+                    ++stats.updateDrains;
+                }
+                continue;
+            }
+            entry->state = UpdateState::Accumulating;
+            entry->address = operation.address;
+        } else {
+            ++stats.updateCombinerHits;
+        }
+
+        entry->contribution += operation.value;
+        entry->waiters.push_back(index);
+        operation.state = OperationState::UpdatePending;
+        ++stats.logicalMemoryAccesses;
+        ++attached;
+    }
+    if (tableBlocked) {
+        ++stats.updateTableWouldBlockCycles;
+    }
+    if (addressBusy) {
+        ++stats.updateAddressBusyCycles;
+    }
+}
+
+void
+LANLMAA::scheduleUpdateDrains()
+{
+    const bool descriptorAttached = nextAdmission == operations.size() &&
+        std::none_of(
+            operations.begin() + nextRetirement,
+            operations.begin() + nextAdmission,
+            [](const Operation &operation) {
+                return operation.state == OperationState::AddressReady;
+            });
+    const bool windowMustDrain =
+        nextAdmission < operations.size() &&
+        activeOperations == operationEntries;
+    if (!descriptorAttached && !windowMustDrain) {
+        return;
+    }
+
+    for (auto &entry : updates) {
+        if (entry.state == UpdateState::Accumulating) {
+            entry.state = UpdateState::ReadPending;
+            ++stats.updateDrains;
+        }
+    }
+}
+
+void
 LANLMAA::issueLines()
 {
     if (waitingForRetry) {
@@ -320,16 +548,30 @@ LANLMAA::issueLines()
         if (line.state != LineState::Allocated) {
             continue;
         }
+        if (rejectedPacket && line.packet != rejectedPacket) {
+            continue;
+        }
         if (!line.packet) {
             RequestPtr request = std::make_shared<Request>(
                 line.lineAddress, lineBytes, Request::Flags(), requestorId);
             line.packet = new Packet(request, MemCmd::ReadReq);
             line.packet->allocate();
         }
+        const bool retryAttempt = rejectedPacket == line.packet;
+        if (retryAttempt) {
+            ++stats.retryPacketResubmissions;
+        }
         if (!memoryPort.sendTimingReq(line.packet)) {
+            if (!rejectedPacket) {
+                rejectedPacket = line.packet;
+            }
             waitingForRetry = true;
             ++stats.portSendFailures;
             return;
+        }
+        if (retryAttempt) {
+            rejectedPacket = nullptr;
+            ++stats.retryPacketAcceptances;
         }
         line.state = LineState::InFlight;
         ++stats.physicalLineReads;
@@ -337,9 +579,114 @@ LANLMAA::issueLines()
     }
 }
 
+void
+LANLMAA::issueUpdates()
+{
+    if (waitingForRetry) {
+        return;
+    }
+
+    size_t issued = 0;
+    for (auto &entry : updates) {
+        if (issued == updateIssueWidth) {
+            return;
+        }
+        const bool read = entry.state == UpdateState::ReadPending;
+        const bool write = entry.state == UpdateState::WritePending;
+        if (!read && !write) {
+            continue;
+        }
+        if (rejectedPacket && entry.packet != rejectedPacket) {
+            continue;
+        }
+        if (!entry.packet) {
+            panic_if(write,
+                     "LANLMAA write-pending update has no retained packet");
+            RequestPtr request = std::make_shared<Request>(
+                entry.address, sizeof(uint64_t), Request::Flags(),
+                requestorId);
+            entry.packet = new Packet(request, MemCmd::ReadReq);
+            entry.packet->allocate();
+        }
+        const bool retryAttempt = rejectedPacket == entry.packet;
+        if (retryAttempt) {
+            ++stats.retryPacketResubmissions;
+        }
+        if (!memoryPort.sendTimingReq(entry.packet)) {
+            if (!rejectedPacket) {
+                rejectedPacket = entry.packet;
+            }
+            waitingForRetry = true;
+            ++stats.portSendFailures;
+            return;
+        }
+        if (retryAttempt) {
+            rejectedPacket = nullptr;
+            ++stats.retryPacketAcceptances;
+        }
+        if (read) {
+            entry.state = UpdateState::ReadInFlight;
+            ++stats.physicalUpdateReads;
+        } else {
+            entry.state = UpdateState::WriteInFlight;
+            ++stats.physicalUpdateWrites;
+        }
+        ++issued;
+    }
+}
+
+void
+LANLMAA::issueVerification()
+{
+    if (verificationInFlight ||
+        nextVerification == verificationAddresses.size()) {
+        return;
+    }
+    if (!verificationPacket) {
+        RequestPtr request = std::make_shared<Request>(
+            verificationAddresses[nextVerification], sizeof(uint64_t),
+            Request::Flags(), requestorId);
+        verificationPacket = new Packet(request, MemCmd::ReadReq);
+        verificationPacket->allocate();
+    }
+    if (waitingForRetry) {
+        return;
+    }
+    panic_if(rejectedPacket && rejectedPacket != verificationPacket,
+             "LANLMAA verification would replace a rejected packet");
+    const bool retryAttempt = rejectedPacket == verificationPacket;
+    if (retryAttempt) {
+        ++stats.retryPacketResubmissions;
+    }
+    if (!memoryPort.sendTimingReq(verificationPacket)) {
+        if (!rejectedPacket) {
+            rejectedPacket = verificationPacket;
+        }
+        waitingForRetry = true;
+        ++stats.portSendFailures;
+        return;
+    }
+    if (retryAttempt) {
+        rejectedPacket = nullptr;
+        ++stats.retryPacketAcceptances;
+    }
+    verificationInFlight = true;
+    ++stats.verificationReads;
+}
+
 bool
 LANLMAA::receiveTimingResponse(PacketPtr packet)
 {
+    if (updateMode) {
+        if (packet == verificationPacket) {
+            return receiveVerificationResponse(packet);
+        }
+        UpdateEntry *entry = updateForPacket(packet);
+        panic_if(!entry,
+                 "LANLMAA update response has no retained obligation");
+        return receiveUpdateResponse(*entry, packet);
+    }
+
     panic_if(!packet->isResponse() || !packet->isRead(),
              "LANLMAA received a non-read response");
     LineEntry *line = matchingLine(packet->getAddr());
@@ -407,11 +754,80 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
     return true;
 }
 
+bool
+LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
+{
+    panic_if(!packet->isResponse(),
+             "LANLMAA received a non-response update packet");
+    panic_if(entry.packet != packet,
+             "LANLMAA update response changed packet ownership");
+
+    if (entry.state == UpdateState::ReadInFlight) {
+        panic_if(!packet->isRead(),
+                 "LANLMAA update read received a non-read response");
+        uint64_t oldValue = 0;
+        std::memcpy(
+            &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
+        const uint64_t combined = oldValue + entry.contribution;
+        delete packet;
+
+        RequestPtr request = std::make_shared<Request>(
+            entry.address, sizeof(uint64_t), Request::Flags(), requestorId);
+        entry.packet = new Packet(request, MemCmd::WriteReq);
+        entry.packet->allocate();
+        std::memcpy(
+            entry.packet->getPtr<uint8_t>(), &combined, sizeof(combined));
+        entry.state = UpdateState::WritePending;
+        ++stats.responses;
+        scheduleTick();
+        return true;
+    }
+
+    panic_if(entry.state != UpdateState::WriteInFlight,
+             "LANLMAA update response is not for an in-flight request");
+    panic_if(!packet->isWrite(),
+             "LANLMAA update write received a non-write response");
+    for (const size_t operationIndex : entry.waiters) {
+        auto &operation = operations[operationIndex];
+        panic_if(operation.state != OperationState::UpdatePending,
+                 "LANLMAA acknowledged update waiter is not pending");
+        operation.state = OperationState::RetireReady;
+        ++stats.updateOperationsAcknowledged;
+    }
+    ++stats.writeAcknowledgements;
+    ++stats.responses;
+    delete packet;
+    entry.clear();
+    scheduleTick();
+    return true;
+}
+
+bool
+LANLMAA::receiveVerificationResponse(PacketPtr packet)
+{
+    panic_if(!verificationInFlight || verificationPacket != packet,
+             "LANLMAA verification response changed packet ownership");
+    panic_if(!packet->isResponse() || !packet->isRead(),
+             "LANLMAA verification received a non-read response");
+    uint64_t value = 0;
+    std::memcpy(&value, packet->getConstPtr<uint8_t>(), sizeof(value));
+    if (value != verificationValues[nextVerification]) {
+        ++stats.verificationFailures;
+    }
+    ++stats.responses;
+    delete packet;
+    verificationPacket = nullptr;
+    verificationInFlight = false;
+    ++nextVerification;
+    scheduleTick();
+    return true;
+}
+
 void
 LANLMAA::receiveRequestRetry()
 {
-    panic_if(!waitingForRetry,
-             "LANLMAA received an unrequested request retry");
+    panic_if(!waitingForRetry || !rejectedPacket,
+             "LANLMAA received retry without a retained rejected packet");
     waitingForRetry = false;
     ++stats.portRetryNotifications;
     scheduleTick();
@@ -424,6 +840,14 @@ LANLMAA::finish()
     panic_if(activeContexts != 0, "LANLMAA finished with active contexts");
     panic_if(nextAdmission != operations.size(),
              "LANLMAA finished before admitting every item");
+    panic_if(!allUpdateEntriesFree(),
+             "LANLMAA finished with allocated update state");
+    panic_if(verificationPacket != nullptr || verificationInFlight,
+             "LANLMAA finished with a verification request");
+    panic_if(rejectedPacket != nullptr || waitingForRetry,
+             "LANLMAA finished with an undischarged retry obligation");
+    panic_if(updateMode && nextVerification != verificationAddresses.size(),
+             "LANLMAA finished before its update oracle");
     panic_if(
         std::any_of(lines.begin(), lines.end(), [](const LineEntry &line) {
             return line.state != LineState::Free;
@@ -431,18 +855,18 @@ LANLMAA::finish()
              "LANLMAA finished with allocated line state");
     finished = true;
     DPRINTF(LANLMAA,
-            "completed %zu items using %llu physical lines in %llu cycles\n",
-            operations.size(), static_cast<unsigned long long>(
-                stats.physicalLineReads.value()),
+            "completed %zu items in %llu cycles\n", operations.size(),
             static_cast<unsigned long long>(stats.engineCycles.value()));
     if (exitOnCompletion) {
         const bool correct = stats.verificationFailures.value() == 0 &&
                              stats.continuationExhaustions.value() == 0;
-        const char *successCause = dependentMode ?
-            "LANLMAA cell walk complete" : "LANLMAA gather complete";
-        const char *failureCause = dependentMode ?
-            "LANLMAA cell walk verification failed" :
-            "LANLMAA gather verification failed";
+        const char *successCause = updateMode ? "LANLMAA update complete" :
+            dependentMode ? "LANLMAA cell walk complete" :
+                            "LANLMAA gather complete";
+        const char *failureCause = updateMode ?
+            "LANLMAA update verification failed" :
+            dependentMode ? "LANLMAA cell walk verification failed" :
+                            "LANLMAA gather verification failed";
         exitSimLoop(correct ? successCause : failureCause, correct ? 0 : 2);
     }
 }
