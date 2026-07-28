@@ -42,7 +42,7 @@ class LANLMAA(ClockedObject):
     update_entries = Param.Unsigned(64, "Banked update-combiner entries")
     update_banks = Param.Unsigned(8, "Update-combiner banks")
     update_issue_width = Param.Unsigned(
-        1, "Maximum update read or write requests issued per cycle"
+        1, "Maximum combined timing atomic requests issued per cycle"
     )
 
     operation_entries = Param.Unsigned(64, "Logical operation-window entries")

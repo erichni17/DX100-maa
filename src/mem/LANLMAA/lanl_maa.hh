@@ -39,10 +39,8 @@ class LANLMAA : public ClockedObject
     {
         Free,
         Accumulating,
-        ReadPending,
-        ReadInFlight,
-        WritePending,
-        WriteInFlight
+        AtomicPending,
+        AtomicInFlight
     };
 
     struct Operation
@@ -113,9 +111,9 @@ class LANLMAA : public ClockedObject
         statistics::Scalar updateTableWouldBlockCycles;
         statistics::Scalar updateAddressBusyCycles;
         statistics::Scalar updateDrains;
-        statistics::Scalar physicalUpdateReads;
-        statistics::Scalar physicalUpdateWrites;
-        statistics::Scalar writeAcknowledgements;
+        statistics::Scalar physicalAtomicUpdates;
+        statistics::Scalar atomicAcknowledgements;
+        statistics::Scalar atomicOldValuesReturned;
         statistics::Scalar updateOperationsAcknowledged;
         statistics::Scalar verificationReads;
         statistics::Scalar engineCycles;

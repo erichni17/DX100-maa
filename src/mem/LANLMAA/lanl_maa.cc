@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 
+#include "base/amo.hh"
 #include "base/logging.hh"
 #include "debug/LANLMAA.hh"
 #include "mem/packet.hh"
@@ -98,13 +99,13 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(updateAddressBusyCycles, statistics::units::Cycle::get(),
                "Cycles blocked by an address already draining"),
       ADD_STAT(updateDrains, statistics::units::Count::get(),
-               "Update entries promoted to acknowledged drain"),
-      ADD_STAT(physicalUpdateReads, statistics::units::Count::get(),
-               "Read-modify-write initialization reads accepted"),
-      ADD_STAT(physicalUpdateWrites, statistics::units::Count::get(),
-               "Combined writes accepted by the memory port"),
-      ADD_STAT(writeAcknowledgements, statistics::units::Count::get(),
-               "Combined write responses accepted"),
+               "Update entries promoted to atomic drain"),
+      ADD_STAT(physicalAtomicUpdates, statistics::units::Count::get(),
+               "Combined timing atomic requests accepted"),
+      ADD_STAT(atomicAcknowledgements, statistics::units::Count::get(),
+               "Combined timing atomic responses accepted"),
+      ADD_STAT(atomicOldValuesReturned, statistics::units::Count::get(),
+               "Atomic responses carrying the pre-update value"),
       ADD_STAT(updateOperationsAcknowledged,
                statistics::units::Count::get(),
                "Logical updates released by write acknowledgement"),
@@ -485,7 +486,7 @@ LANLMAA::attachReadyUpdates()
                 tableBlocked = true;
                 UpdateEntry *victim = drainableUpdate(operation.address);
                 if (victim) {
-                    victim->state = UpdateState::ReadPending;
+                    victim->state = UpdateState::AtomicPending;
                     ++stats.updateDrains;
                 }
                 continue;
@@ -529,7 +530,7 @@ LANLMAA::scheduleUpdateDrains()
 
     for (auto &entry : updates) {
         if (entry.state == UpdateState::Accumulating) {
-            entry.state = UpdateState::ReadPending;
+            entry.state = UpdateState::AtomicPending;
             ++stats.updateDrains;
         }
     }
@@ -593,21 +594,21 @@ LANLMAA::issueUpdates()
         if (issued == updateIssueWidth) {
             return;
         }
-        const bool read = entry.state == UpdateState::ReadPending;
-        const bool write = entry.state == UpdateState::WritePending;
-        if (!read && !write) {
+        if (entry.state != UpdateState::AtomicPending) {
             continue;
         }
         if (rejectedPacket && entry.packet != rejectedPacket) {
             continue;
         }
         if (!entry.packet) {
-            panic_if(write,
-                     "LANLMAA write-pending update has no retained packet");
             RequestPtr request = std::make_shared<Request>(
-                entry.address, sizeof(uint64_t), Request::Flags(),
+                entry.address, sizeof(uint64_t),
+                Request::ATOMIC_RETURN_OP,
                 requestorId);
-            entry.packet = new Packet(request, MemCmd::ReadReq);
+            request->setAtomicOpFunctor(
+                std::make_unique<AtomicOpAdd<uint64_t>>(
+                    entry.contribution));
+            entry.packet = new Packet(request, MemCmd::SwapReq);
             entry.packet->allocate();
         }
         const bool retryAttempt = rejectedPacket == entry.packet;
@@ -626,13 +627,8 @@ LANLMAA::issueUpdates()
             rejectedPacket = nullptr;
             ++stats.retryPacketAcceptances;
         }
-        if (read) {
-            entry.state = UpdateState::ReadInFlight;
-            ++stats.physicalUpdateReads;
-        } else {
-            entry.state = UpdateState::WriteInFlight;
-            ++stats.physicalUpdateWrites;
-        }
+        entry.state = UpdateState::AtomicInFlight;
+        ++stats.physicalAtomicUpdates;
         ++issued;
     }
 }
@@ -763,32 +759,19 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
              "LANLMAA received a non-response update packet");
     panic_if(entry.packet != packet,
              "LANLMAA update response changed packet ownership");
-
-    if (entry.state == UpdateState::ReadInFlight) {
-        panic_if(!packet->isRead(),
-                 "LANLMAA update read received a non-read response");
-        uint64_t oldValue = 0;
-        std::memcpy(
-            &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
-        const uint64_t combined = oldValue + entry.contribution;
-        delete packet;
-
-        RequestPtr request = std::make_shared<Request>(
-            entry.address, sizeof(uint64_t), Request::Flags(), requestorId);
-        entry.packet = new Packet(request, MemCmd::WriteReq);
-        entry.packet->allocate();
-        std::memcpy(
-            entry.packet->getPtr<uint8_t>(), &combined, sizeof(combined));
-        entry.state = UpdateState::WritePending;
-        ++stats.responses;
-        scheduleTick();
-        return true;
-    }
-
-    panic_if(entry.state != UpdateState::WriteInFlight,
-             "LANLMAA update response is not for an in-flight request");
-    panic_if(!packet->isWrite(),
-             "LANLMAA update write received a non-write response");
+    panic_if(entry.state != UpdateState::AtomicInFlight,
+             "LANLMAA response is not for an in-flight atomic update");
+    panic_if(packet->cmd != MemCmd::SwapResp || !packet->isAtomicOp(),
+             "LANLMAA update did not receive an atomic swap response");
+    uint64_t oldValue = 0;
+    std::memcpy(
+        &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
+    DPRINTF(LANLMAA,
+            "atomic update address=%#llx old=%llu contribution=%llu\n",
+            static_cast<unsigned long long>(entry.address),
+            static_cast<unsigned long long>(oldValue),
+            static_cast<unsigned long long>(entry.contribution));
+    ++stats.atomicOldValuesReturned;
     for (const size_t operationIndex : entry.waiters) {
         auto &operation = operations[operationIndex];
         panic_if(operation.state != OperationState::UpdatePending,
@@ -796,7 +779,7 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
         operation.state = OperationState::RetireReady;
         ++stats.updateOperationsAcknowledged;
     }
-    ++stats.writeAcknowledgements;
+    ++stats.atomicAcknowledgements;
     ++stats.responses;
     delete packet;
     entry.clear();

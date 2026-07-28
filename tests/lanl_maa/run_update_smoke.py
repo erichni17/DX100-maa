@@ -33,19 +33,20 @@ def validate(stats):
         if stats.get(name) != value
     ]
 
-    reads = stats.get("physicalUpdateReads")
-    writes = stats.get("physicalUpdateWrites")
-    acknowledgements = stats.get("writeAcknowledgements")
+    atomics = stats.get("physicalAtomicUpdates")
+    acknowledgements = stats.get("atomicAcknowledgements")
+    old_values = stats.get("atomicOldValuesReturned")
     drains = stats.get("updateDrains")
     hits = stats.get("updateCombinerHits")
-    if not reads or reads != writes or writes != acknowledgements:
+    if not atomics or atomics != acknowledgements or atomics != old_values:
         errors.append(
-            "read/write/ack imbalance: "
-            f"reads={reads}, writes={writes}, acknowledgements={acknowledgements}"
+            "atomic response imbalance: "
+            f"atomics={atomics}, acknowledgements={acknowledgements}, "
+            f"old_values={old_values}"
         )
-    if drains != writes:
+    if drains != atomics:
         errors.append(
-            f"drain/write imbalance: drains={drains}, writes={writes}"
+            f"drain/atomic imbalance: drains={drains}, atomics={atomics}"
         )
     if drains is None or hits is None or drains + hits != 13:
         errors.append(
@@ -69,7 +70,7 @@ def validate(stats):
             f"acceptances={acceptances}, resubmissions={resubmissions}"
         )
     responses = stats.get("responses")
-    if responses != 2 * drains + 7:
+    if responses != drains + 7:
         errors.append(
             f"response conservation failed: responses={responses}, drains={drains}"
         )
@@ -96,9 +97,9 @@ def validate_bad_oracle(stats, positive):
     for name in (
         "updateCombinerHits",
         "updateDrains",
-        "physicalUpdateReads",
-        "physicalUpdateWrites",
-        "writeAcknowledgements",
+        "physicalAtomicUpdates",
+        "atomicAcknowledgements",
+        "atomicOldValuesReturned",
     ):
         if stats.get(name) != positive.get(name):
             errors.append(
