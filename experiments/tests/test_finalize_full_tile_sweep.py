@@ -535,6 +535,7 @@ def test_sssp_tiles_use_live_surge_workflows(tmp_path):
         "recovery_gapbs_repair6",
         "recovery_gapbs_repair7",
         "final_gapbs_recovery",
+        "final_gapbs_sssp2_surge",
     ]
     assert sssp_spec["roi_anchor_tile"] == 8192
     bfs_spec = next(

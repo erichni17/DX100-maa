@@ -1470,6 +1470,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 "recovery_gapbs_repair6",
                 "recovery_gapbs_repair7",
                 "final_gapbs_recovery",
+                "final_gapbs_sssp2_surge",
             ],
             "compare_oracle": True,
             "roi_anchor_tile": 8192,
@@ -2264,6 +2265,9 @@ def main():
     final_gapbs_state_path = state_root / (
         "workflows/dx100-full-tile-final-gapbs-recovery-v3-20260726.json"
     )
+    final_sssp2_surge_state_path = state_root / (
+        "workflows/dx100-full-tile-final-sssp2-surge-v1-20260727.json"
+    )
     final_is_state_path = state_root / (
         "workflows/dx100-full-tile-final-is-recovery-v3-20260726.json"
     )
@@ -2300,6 +2304,12 @@ def main():
     if (run_root / "repair8-bfs1-reconcile-workflow.json").is_file():
         states["recovery_gapbs_repair8"] = read_json(gapbs_repair8_state_path)
     final_gapbs_workflow = run_root / "final-gapbs-recovery-workflow-v3.json"
+    final_sssp2_surge_workflow = (
+        run_root / "final-sssp2-surge-workflow-v1.json"
+    )
+    final_sssp2_surge_manifest = (
+        run_root / "final-sssp2-surge-manifest-v1.json"
+    )
     final_is_workflow = run_root / "final-is-recovery-workflow-v3.json"
     final_recovery_plan = run_root / "final-recovery-plan-v3.json"
     final_recovery_supersession = (
@@ -2307,6 +2317,10 @@ def main():
     )
     if final_gapbs_workflow.is_file():
         states["final_gapbs_recovery"] = read_json(final_gapbs_state_path)
+    if final_sssp2_surge_workflow.is_file():
+        states["final_gapbs_sssp2_surge"] = read_json(
+            final_sssp2_surge_state_path
+        )
     if final_is_workflow.is_file():
         states["final_is_recovery"] = read_json(final_is_state_path)
     if is_memory_admission_state_path.is_file():
@@ -2433,6 +2447,10 @@ def main():
         not final_gapbs_workflow.is_file()
         or workflow_terminal(states.get("final_gapbs_recovery"))
     )
+    final_sssp2_surge_terminal = (
+        not final_sssp2_surge_workflow.is_file()
+        or workflow_terminal(states.get("final_gapbs_sssp2_surge"))
+    )
     final_is_terminal = not final_is_workflow.is_file() or workflow_terminal(
         states.get("final_is_recovery")
     )
@@ -2463,6 +2481,7 @@ def main():
         and gapbs_repair7_terminal
         and gapbs_repair8_terminal
         and final_gapbs_terminal
+        and final_sssp2_surge_terminal
         and final_is_terminal
         and is_memory_admission_terminal
         and parent_tasks_complete
@@ -2504,6 +2523,7 @@ def main():
         run_root / "repair7-gapbs-node1-final-cgroup.tsv",
         run_root / "repair8-bfs1-reconcile-cgroup.tsv",
         run_root / "final-gapbs-recovery-cgroup.tsv",
+        run_root / "final-sssp2-surge-cgroup.tsv",
         run_root / "final-is-recovery-cgroup.tsv",
         run_root / "recovery2-full-cgroup.tsv",
         run_root / "recovery5-app-slice-cgroup.tsv",
@@ -2557,6 +2577,8 @@ def main():
         required_cgroups.add("repair8-bfs1-reconcile-cgroup.tsv")
     if states.get("final_gapbs_recovery"):
         required_cgroups.add("final-gapbs-recovery-cgroup.tsv")
+    if states.get("final_gapbs_sssp2_surge"):
+        required_cgroups.add("final-sssp2-surge-cgroup.tsv")
     if states.get("final_is_recovery"):
         required_cgroups.add("final-is-recovery-cgroup.tsv")
     for tile, task in (
@@ -2646,6 +2668,8 @@ def main():
         gapbs_repair5_manifest,
         gapbs_repair5_workflow,
         final_gapbs_workflow,
+        final_sssp2_surge_workflow,
+        final_sssp2_surge_manifest,
         final_is_workflow,
         is_memory_admission_manifest_path,
         final_recovery_plan,
@@ -2666,6 +2690,7 @@ def main():
         xrage64_state_path,
         gapbs_repair5_state_path,
         final_gapbs_state_path,
+        final_sssp2_surge_state_path,
         final_is_state_path,
         is_memory_admission_state_path,
         prior_gapbs,

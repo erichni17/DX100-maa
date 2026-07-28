@@ -194,6 +194,13 @@ def test_completion_watcher_tracks_numa_safe_is_recovery4_workflows():
     }.issubset(completion_watcher.WORKFLOWS)
 
 
+def test_completion_watcher_tracks_final_sssp2_surge():
+    assert (
+        "dx100-full-tile-final-sssp2-surge-v1-20260727"
+        in completion_watcher.WORKFLOWS
+    )
+
+
 def test_tile_runners_do_not_depend_on_codex_rg_path():
     root = Path(__file__).resolve().parents[2]
     for relative in TILE_RUNNERS:
@@ -203,8 +210,18 @@ def test_tile_runners_do_not_depend_on_codex_rg_path():
 def test_recovery_disables_frequency_typed_progress_event(tmp_path):
     original = {
         "id": "gapbs-bfs-t1024",
-        "command": ["old-runner", "gem5.opt", "bfs", "1024", "22", "1",
-                    "2GB", "0", "0", "10000000"],
+        "command": [
+            "old-runner",
+            "gem5.opt",
+            "bfs",
+            "1024",
+            "22",
+            "1",
+            "2GB",
+            "0",
+            "0",
+            "10000000",
+        ],
         "env": {},
     }
     repaired = recovery.repair_task(
@@ -223,7 +240,7 @@ def test_non_is_tile_runners_omit_zero_progress_frequency():
         "benchmarks/hashjoin/run_hashjoin_tile_smoke.sh",
     ):
         runner = (root / relative).read_text()
-        assert 'PROGRESS_ARGS=()' in runner
+        assert "PROGRESS_ARGS=()" in runner
         assert '"${PROGRESS_ARGS[@]}"' in runner
         assert '"$PROG_INTERVAL" != 10000000' in runner
 
