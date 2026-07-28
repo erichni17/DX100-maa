@@ -60,6 +60,7 @@ class LANLMAA : public ClockedObject
         ResultInFlight,
         CompletionPending,
         CompletionInFlight,
+        EngineErrorDraining,
         Completed,
         Error
     };
@@ -244,6 +245,7 @@ class LANLMAA : public ClockedObject
     UpdateEntry *drainableUpdate(Addr address);
     UpdateEntry *updateForPacket(PacketPtr packet);
     bool allUpdateEntriesFree() const;
+    bool activeDependentMode() const;
     bool floatingUpdate() const;
     bool strictFloatingUpdate() const;
     static uint64_t encodeDouble(double value);
@@ -254,6 +256,8 @@ class LANLMAA : public ClockedObject
     Tick controlAccess(PacketPtr packet);
     void ringDoorbell(uint32_t slot);
     void rejectDescriptor(DescriptorError error);
+    void beginDescriptorErrorDrain(DescriptorError error);
+    bool descriptorErrorDrainComplete() const;
     bool rangeOverlapsControl(uint64_t begin, uint64_t bytes) const;
     bool rangeIsMemory(uint64_t begin, uint64_t bytes) const;
     void issueDescriptorTraffic();
@@ -266,6 +270,7 @@ class LANLMAA : public ClockedObject
     bool receiveAddressVectorResponse(PacketPtr packet);
     bool receiveResultResponse(PacketPtr packet);
     bool receiveCompletionResponse(PacketPtr packet);
+    bool receiveDrainingLineResponse(PacketPtr packet);
     void beginDescriptorExecution();
     void beginDescriptorResults();
     void completeDescriptor();

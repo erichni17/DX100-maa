@@ -12,6 +12,7 @@ namespace
 using gem5::lanlmaa::DescriptorBytes;
 using gem5::lanlmaa::DescriptorError;
 using gem5::lanlmaa::DescriptorMagic;
+using gem5::lanlmaa::DescriptorOpcode;
 using gem5::lanlmaa::DescriptorVersion;
 using gem5::lanlmaa::decodeDescriptor;
 
@@ -38,6 +39,19 @@ validDescriptor()
     return bytes;
 }
 
+std::array<uint8_t, DescriptorBytes>
+validCellWalkDescriptor()
+{
+    auto bytes = validDescriptor();
+    writeLe(
+        bytes, 6, static_cast<uint8_t>(DescriptorOpcode::IndexedCellWalk), 1);
+    writeLe(bytes, 40, 0x700, 8);
+    writeLe(bytes, 48, 16, 4);
+    writeLe(bytes, 52, 8, 4);
+    writeLe(bytes, 56, 0xffffffffffffffff, 8);
+    return bytes;
+}
+
 } // anonymous namespace
 
 int
@@ -50,6 +64,14 @@ main()
     assert(valid.descriptor.resultVector == 0x500);
     assert(valid.descriptor.completionRecord == 0x600);
 
+    const auto cellWalk = decodeDescriptor(validCellWalkDescriptor(), 8);
+    assert(cellWalk);
+    assert(cellWalk.descriptor.opcode == DescriptorOpcode::IndexedCellWalk);
+    assert(cellWalk.descriptor.recordBase == 0x700);
+    assert(cellWalk.descriptor.recordCount == 16);
+    assert(cellWalk.descriptor.maxSteps == 8);
+    assert(cellWalk.descriptor.terminalIndex == 0xffffffffffffffff);
+
     auto bytes = validDescriptor();
     writeLe(bytes, 0, 0, 4);
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadMagic);
@@ -59,7 +81,7 @@ main()
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadVersion);
 
     bytes = validDescriptor();
-    writeLe(bytes, 6, 2, 1);
+    writeLe(bytes, 6, 3, 1);
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadOpcode);
 
     bytes = validDescriptor();
@@ -98,6 +120,35 @@ main()
     writeLe(bytes, 32, 0x518, 8);
     assert(decodeDescriptor(bytes, 8).error ==
            DescriptorError::OverlappingOutput);
+
+    bytes = validCellWalkDescriptor();
+    writeLe(bytes, 40, 0x708, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validCellWalkDescriptor();
+    writeLe(bytes, 48, 0, 4);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validCellWalkDescriptor();
+    writeLe(bytes, 52, 0, 4);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validCellWalkDescriptor();
+    writeLe(bytes, 56, 15, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadTerminalIndex);
+
+    bytes = validCellWalkDescriptor();
+    writeLe(bytes, 40, 0x500, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::OverlappingInput);
+
+    bytes = validCellWalkDescriptor();
+    writeLe(bytes, 40, std::numeric_limits<uint64_t>::max() - 15, 8);
+    assert(decodeDescriptor(bytes, 8).error == DescriptorError::RangeOverflow);
 
     return 0;
 }
