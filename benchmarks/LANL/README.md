@@ -98,6 +98,26 @@ validates the direction-dependent cell-walk mechanism only. It does not
 establish a native SPARTA ABI, particle-memory integration, tally offload,
 collision or surface behavior, MPI behavior, or application speedup.
 
+The compact opcode-3 comparison retains direction and remaining visits in the
+per-root start state and continuation context. It reads the packed 8-byte
+two-neighbor cell directly and derives the checksum payload as
+`current_cell + 1`, so the generated record image is 512 bytes for 64 cells:
+the same size as the packed microbenchmark cell array and 32 times smaller
+than the opcode-2 state-expanded baseline.
+
+```sh
+/tmp/sparta_particle_cell_step --particles 256 --cells 64 --visits 8 \
+    --window 16 --descriptor-items 8 --order sorted \
+    --emit-compact-descriptor-assembly /tmp/sparta_compact.S \
+    --emit-compact-descriptor-metadata /tmp/sparta_compact.json
+```
+
+`tests/lanl_maa/run_sparta_compact_descriptor_smoke.py` applies the same exact
+root, visit, final-cell, checksum, retry, and completion checks. The compact
+format is still the microbenchmark's packed ABI. Native SPARTA uses richer
+grid/particle structures and transition predicates, and its six floating
+tallies are not part of this descriptor.
+
 ## `spatter_trace_replay`
 
 This driver replays an exact Spatter index stream through the same standalone 64-byte line table used by the application-derived microbenchmarks. The companion research tool `analysis/scripts/export_spatter_indices.py` validates one JSON configuration and writes portable little-endian uint64 indices plus hash-bound metadata.

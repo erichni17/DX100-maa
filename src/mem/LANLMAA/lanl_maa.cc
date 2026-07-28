@@ -496,7 +496,9 @@ LANLMAA::controlAccess(PacketPtr packet)
             (uint64_t{1} <<
              static_cast<uint8_t>(DescriptorOpcode::DirectGather)) |
             (uint64_t{1} <<
-             static_cast<uint8_t>(DescriptorOpcode::IndexedCellWalk));
+             static_cast<uint8_t>(DescriptorOpcode::IndexedCellWalk)) |
+            (uint64_t{1} << static_cast<uint8_t>(
+                 DescriptorOpcode::PackedDirectionalCellWalk));
         break;
       default:
         packet->setBadAddress();
@@ -839,7 +841,7 @@ LANLMAA::activeDependentMode() const
 {
     return dependentMode ||
         (descriptorMode &&
-         descriptor.opcode == DescriptorOpcode::IndexedCellWalk);
+         descriptorIsRecordWalk(descriptor.opcode));
 }
 
 bool
@@ -904,9 +906,9 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         descriptor.resultVector, descriptor.itemCount, sizeof(uint64_t),
         resultEnd) && descriptorRange(
         descriptor.completionRecord, 1, 32, completionEnd) &&
-        (descriptor.opcode != DescriptorOpcode::IndexedCellWalk ||
+        (!descriptorIsRecordWalk(descriptor.opcode) ||
          descriptorRange(descriptor.recordBase, descriptor.recordCount,
-                         2 * sizeof(uint64_t), recordEnd));
+                         descriptorRecordBytes(descriptor.opcode), recordEnd));
     panic_if(!rangesValid,
              "LANLMAA decoded descriptor lost its range invariant");
 
@@ -922,7 +924,7 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     if (unsafeRange(descriptor.addressVector, addressEnd) ||
         unsafeRange(descriptor.resultVector, resultEnd) ||
         unsafeRange(descriptor.completionRecord, completionEnd) ||
-        (descriptor.opcode == DescriptorOpcode::IndexedCellWalk &&
+        (descriptorIsRecordWalk(descriptor.opcode) &&
          unsafeRange(descriptor.recordBase, recordEnd))) {
         rejectDescriptor(DescriptorError::UnsafeAddressRange);
         return true;
@@ -951,7 +953,7 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
              "LANLMAA address-vector response changed line address");
 
     const uint8_t *data = packet->getConstPtr<uint8_t>();
-    bool badTarget = false;
+    DescriptorError vectorError = DescriptorError::None;
     while (descriptorAddressCursor < operations.size()) {
         const Addr itemAddress = descriptor.addressVector +
             descriptorAddressCursor * sizeof(uint64_t);
@@ -963,16 +965,40 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
         Addr target = 0;
         if (descriptor.opcode == DescriptorOpcode::IndexedCellWalk) {
             if (rawAddress >= descriptor.recordCount) {
-                badTarget = true;
+                vectorError = DescriptorError::BadTargetAddress;
                 break;
             }
             const uint64_t rawTarget = descriptor.recordBase +
                 rawAddress * (2 * sizeof(uint64_t));
             target = static_cast<Addr>(rawTarget);
             if (static_cast<uint64_t>(target) != rawTarget) {
-                badTarget = true;
+                vectorError = DescriptorError::BadTargetAddress;
                 break;
             }
+        } else if (descriptor.opcode ==
+                   DescriptorOpcode::PackedDirectionalCellWalk) {
+            const uint64_t startIndex =
+                rawAddress & PackedDirectionalCellMask;
+            const uint64_t remaining =
+                (rawAddress & PackedDirectionalRemainingMask) >>
+                PackedDirectionalRemainingShift;
+            if ((rawAddress & PackedDirectionalStartReservedMask) != 0 ||
+                startIndex >= descriptor.recordCount || remaining == 0 ||
+                remaining > descriptor.maxSteps) {
+                vectorError = DescriptorError::BadStartState;
+                break;
+            }
+            const uint64_t rawTarget = descriptor.recordBase +
+                startIndex * sizeof(uint64_t);
+            target = static_cast<Addr>(rawTarget);
+            if (static_cast<uint64_t>(target) != rawTarget) {
+                vectorError = DescriptorError::BadTargetAddress;
+                break;
+            }
+            auto &operation = operations[descriptorAddressCursor];
+            operation.remainingSteps = static_cast<uint32_t>(remaining);
+            operation.positiveDirection =
+                (rawAddress & PackedDirectionalDirectionBit) != 0;
         } else {
             target = static_cast<Addr>(rawAddress);
             if (static_cast<uint64_t>(target) != rawAddress ||
@@ -983,7 +1009,7 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
                     lineAddress(target) + lineBytes ||
                 !rangeIsMemory(lineAddress(target), lineBytes) ||
                 rangeOverlapsControl(lineAddress(target), lineBytes)) {
-                badTarget = true;
+                vectorError = DescriptorError::BadTargetAddress;
                 break;
             }
         }
@@ -994,8 +1020,8 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
     delete packet;
     addressVectorPacket = nullptr;
 
-    if (badTarget) {
-        rejectDescriptor(DescriptorError::BadTargetAddress);
+    if (vectorError != DescriptorError::None) {
+        rejectDescriptor(vectorError);
         return true;
     }
     if (descriptorAddressCursor == operations.size()) {
@@ -1561,77 +1587,145 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                  "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
         if (activeDependentMode()) {
+            const bool indexedWalk = descriptorMode &&
+                descriptor.opcode == DescriptorOpcode::IndexedCellWalk;
+            const bool packedDirectionalWalk = descriptorMode &&
+                descriptor.opcode ==
+                    DescriptorOpcode::PackedDirectionalCellWalk;
             uint64_t nextAddress = 0;
             uint64_t payload = 0;
-            std::memcpy(&nextAddress, data + offset, sizeof(nextAddress));
-            std::memcpy(
-                &payload, data + offset + sizeof(nextAddress),
-                sizeof(payload));
+            if (packedDirectionalWalk) {
+                const uint64_t packedCell =
+                    descriptorReadLe64(data + offset);
+                if ((packedCell & PackedDirectionalRecordReservedMask) != 0) {
+                    ++stats.responses;
+                    delete packet;
+                    line->clear();
+                    beginDescriptorErrorDrain(
+                        DescriptorError::BadRecordValue);
+                    return true;
+                }
+                const uint64_t currentIndex =
+                    (operation.address - descriptor.recordBase) /
+                    sizeof(uint64_t);
+                panic_if(currentIndex >= descriptor.recordCount,
+                         "LANLMAA packed walk lost its index bound");
+                payload = currentIndex + 1;
+                nextAddress = operation.positiveDirection ?
+                    packedCell & PackedDirectionalCellMask :
+                    (packedCell >> 24) & PackedDirectionalCellMask;
+            } else {
+                std::memcpy(
+                    &nextAddress, data + offset, sizeof(nextAddress));
+                std::memcpy(
+                    &payload, data + offset + sizeof(nextAddress),
+                    sizeof(payload));
+            }
             operation.value += payload;
             ++operation.continuationSteps;
             ++stats.continuationSteps;
 
-            const bool indexedWalk = descriptorMode &&
-                descriptor.opcode == DescriptorOpcode::IndexedCellWalk;
-            const uint64_t activeTerminal = indexedWalk ?
-                descriptor.terminalIndex : terminalAddress;
-            const size_t activeStepLimit = indexedWalk ?
-                descriptor.maxSteps : maxContinuationSteps;
-
-            if (nextAddress == activeTerminal) {
-                panic_if(!operation.ownsContext,
-                         "LANLMAA terminal operation has no context");
-                operation.state = OperationState::RetireReady;
-                operation.ownsContext = false;
-                --activeContexts;
-            } else if (operation.continuationSteps >= activeStepLimit) {
-                panic_if(!operation.ownsContext,
-                         "LANLMAA exhausted operation has no context");
-                ++stats.continuationExhaustions;
-                if (indexedWalk) {
+            if (packedDirectionalWalk) {
+                panic_if(operation.remainingSteps == 0,
+                         "LANLMAA packed walk consumed zero remaining steps");
+                --operation.remainingSteps;
+                if (operation.remainingSteps == 0) {
+                    panic_if(!operation.ownsContext,
+                             "LANLMAA terminal operation has no context");
+                    operation.state = OperationState::RetireReady;
+                    operation.ownsContext = false;
+                    --activeContexts;
+                } else if (
+                    operation.continuationSteps >= descriptor.maxSteps) {
+                    panic_if(!operation.ownsContext,
+                             "LANLMAA exhausted operation has no context");
+                    ++stats.continuationExhaustions;
                     ++stats.responses;
                     delete packet;
                     line->clear();
                     beginDescriptorErrorDrain(
                         DescriptorError::ContinuationExhausted);
                     return true;
+                } else if (nextAddress >= descriptor.recordCount) {
+                    ++stats.responses;
+                    delete packet;
+                    line->clear();
+                    beginDescriptorErrorDrain(
+                        DescriptorError::BadTargetAddress);
+                    return true;
+                } else {
+                    const uint64_t rawNext = descriptor.recordBase +
+                        nextAddress * sizeof(uint64_t);
+                    const Addr next = static_cast<Addr>(rawNext);
+                    panic_if(static_cast<uint64_t>(next) != rawNext,
+                             "decoded packed cell walk overflowed Addr");
+                    operation.address = next;
+                    operation.state = OperationState::AddressReady;
                 }
-                operation.state = OperationState::RetireReady;
-                operation.ownsContext = false;
-                --activeContexts;
             } else {
-                constexpr size_t recordBytes = 2 * sizeof(uint64_t);
-                Addr next = 0;
-                if (indexedWalk) {
-                    if (nextAddress >= descriptor.recordCount) {
+                const uint64_t activeTerminal = indexedWalk ?
+                    descriptor.terminalIndex : terminalAddress;
+                const size_t activeStepLimit = indexedWalk ?
+                    descriptor.maxSteps : maxContinuationSteps;
+
+                if (nextAddress == activeTerminal) {
+                    panic_if(!operation.ownsContext,
+                             "LANLMAA terminal operation has no context");
+                    operation.state = OperationState::RetireReady;
+                    operation.ownsContext = false;
+                    --activeContexts;
+                } else if (operation.continuationSteps >= activeStepLimit) {
+                    panic_if(!operation.ownsContext,
+                             "LANLMAA exhausted operation has no context");
+                    ++stats.continuationExhaustions;
+                    if (indexedWalk) {
                         ++stats.responses;
                         delete packet;
                         line->clear();
                         beginDescriptorErrorDrain(
-                            DescriptorError::BadTargetAddress);
+                            DescriptorError::ContinuationExhausted);
                         return true;
                     }
-                    const uint64_t rawNext = descriptor.recordBase +
-                        nextAddress * recordBytes;
-                    next = static_cast<Addr>(rawNext);
-                    panic_if(static_cast<uint64_t>(next) != rawNext,
-                             "decoded indexed cell walk overflowed Addr");
+                    operation.state = OperationState::RetireReady;
+                    operation.ownsContext = false;
+                    --activeContexts;
                 } else {
-                    next = static_cast<Addr>(nextAddress);
-                    panic_if(nextAddress != next,
-                             "LANLMAA continuation address does not fit Addr");
-                    panic_if(next % recordBytes != 0,
-                             "LANLMAA continuation address is misaligned");
-                    panic_if(
-                        next >
-                            std::numeric_limits<Addr>::max() - recordBytes,
-                        "LANLMAA continuation address overflows");
-                    panic_if(
-                        next + recordBytes > lineAddress(next) + lineBytes,
-                        "LANLMAA continuation record crosses a line");
+                    constexpr size_t recordBytes = 2 * sizeof(uint64_t);
+                    Addr next = 0;
+                    if (indexedWalk) {
+                        if (nextAddress >= descriptor.recordCount) {
+                            ++stats.responses;
+                            delete packet;
+                            line->clear();
+                            beginDescriptorErrorDrain(
+                                DescriptorError::BadTargetAddress);
+                            return true;
+                        }
+                        const uint64_t rawNext = descriptor.recordBase +
+                            nextAddress * recordBytes;
+                        next = static_cast<Addr>(rawNext);
+                        panic_if(static_cast<uint64_t>(next) != rawNext,
+                                 "decoded indexed cell walk overflowed Addr");
+                    } else {
+                        next = static_cast<Addr>(nextAddress);
+                        panic_if(nextAddress != next,
+                                 "LANLMAA continuation address does not fit "
+                                 "Addr");
+                        panic_if(
+                            next % recordBytes != 0,
+                            "LANLMAA continuation address is misaligned");
+                        panic_if(
+                            next > std::numeric_limits<Addr>::max() -
+                                recordBytes,
+                            "LANLMAA continuation address overflows");
+                        panic_if(
+                            next + recordBytes >
+                                lineAddress(next) + lineBytes,
+                            "LANLMAA continuation record crosses a line");
+                    }
+                    operation.address = next;
+                    operation.state = OperationState::AddressReady;
                 }
-                operation.address = next;
-                operation.state = OperationState::AddressReady;
             }
         } else {
             std::memcpy(

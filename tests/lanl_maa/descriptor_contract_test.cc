@@ -52,6 +52,21 @@ validCellWalkDescriptor()
     return bytes;
 }
 
+std::array<uint8_t, DescriptorBytes>
+validPackedDirectionalDescriptor()
+{
+    auto bytes = validDescriptor();
+    writeLe(
+        bytes, 6,
+        static_cast<uint8_t>(
+            DescriptorOpcode::PackedDirectionalCellWalk),
+        1);
+    writeLe(bytes, 40, 0x700, 8);
+    writeLe(bytes, 48, 16, 4);
+    writeLe(bytes, 52, 8, 4);
+    return bytes;
+}
+
 } // anonymous namespace
 
 int
@@ -72,6 +87,16 @@ main()
     assert(cellWalk.descriptor.maxSteps == 8);
     assert(cellWalk.descriptor.terminalIndex == 0xffffffffffffffff);
 
+    const auto packed = decodeDescriptor(
+        validPackedDirectionalDescriptor(), 8);
+    assert(packed);
+    assert(packed.descriptor.opcode ==
+           DescriptorOpcode::PackedDirectionalCellWalk);
+    assert(packed.descriptor.recordBase == 0x700);
+    assert(packed.descriptor.recordCount == 16);
+    assert(packed.descriptor.maxSteps == 8);
+    assert(packed.descriptor.terminalIndex == 0);
+
     auto bytes = validDescriptor();
     writeLe(bytes, 0, 0, 4);
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadMagic);
@@ -81,7 +106,7 @@ main()
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadVersion);
 
     bytes = validDescriptor();
-    writeLe(bytes, 6, 3, 1);
+    writeLe(bytes, 6, 4, 1);
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::BadOpcode);
 
     bytes = validDescriptor();
@@ -149,6 +174,26 @@ main()
     bytes = validCellWalkDescriptor();
     writeLe(bytes, 40, std::numeric_limits<uint64_t>::max() - 15, 8);
     assert(decodeDescriptor(bytes, 8).error == DescriptorError::RangeOverflow);
+
+    bytes = validPackedDirectionalDescriptor();
+    writeLe(bytes, 40, 0x704, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validPackedDirectionalDescriptor();
+    writeLe(bytes, 48, (uint64_t{1} << 24) + 1, 4);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validPackedDirectionalDescriptor();
+    writeLe(bytes, 56, 1, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::BadRecordGeometry);
+
+    bytes = validPackedDirectionalDescriptor();
+    writeLe(bytes, 40, 0x500, 8);
+    assert(decodeDescriptor(bytes, 8).error ==
+           DescriptorError::OverlappingInput);
 
     return 0;
 }

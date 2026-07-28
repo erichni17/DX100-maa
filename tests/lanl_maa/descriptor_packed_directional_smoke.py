@@ -1,5 +1,4 @@
 import argparse
-import json
 
 import m5
 from m5.objects import (
@@ -16,15 +15,19 @@ from m5.objects import (
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--image", required=True)
-parser.add_argument("--metadata", required=True)
+parser.add_argument(
+    "--case",
+    choices=("reserved-start", "over-max", "bad-neighbor", "bad-record"),
+    required=True,
+)
 args = parser.parse_args()
 
-with open(args.metadata, encoding="utf-8") as stream:
-    metadata = json.load(stream)
-
-items = metadata["descriptor_items"]
-result_base = metadata["result_vector"]
-completion = metadata["completion_record"]
+slots = {
+    "reserved-start": 0,
+    "over-max": 1,
+    "bad-neighbor": 2,
+    "bad-record": 3,
+}
 control_addr = 0x100000
 
 system = System(
@@ -42,44 +45,26 @@ system.memory = SimpleMemory(
 )
 system.lanl_maa = LANLMAA(
     descriptor_mode=True,
-    descriptor_table_base=metadata["descriptor_address"],
-    descriptor_slots=1,
-    max_descriptor_items=items,
+    descriptor_table_base=0x800,
+    descriptor_slots=4,
+    max_descriptor_items=8,
     control_addr=control_addr,
     control_size=0x1000,
-    operation_entries=items,
-    continuation_entries=4,
-    line_entries=4,
+    operation_entries=8,
+    continuation_entries=2,
+    line_entries=2,
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,
-    exit_on_completion=False,
+    exit_on_completion=True,
 )
 system.submitter = LANLMAAControlTester(
     control_addr=control_addr,
-    doorbell_slot=0,
-    writes=2,
+    doorbell_slot=slots[args.case],
+    writes=1,
     start_cycle=1,
 )
 
-expected = metadata["expected_results"]
-completion_header = (
-    metadata["descriptor_opcode"] << 48 | 0x0000000143414D4C
-)
-completion_values = [completion_header, 0, items, items]
-system.final_verifier = LANLMAA(
-    addresses=[result_base + index * 8 for index in range(items)]
-    + [completion + index * 8 for index in range(4)],
-    expected_values=expected + completion_values,
-    operation_entries=items + 4,
-    line_entries=4,
-    logical_admission_width=2,
-    line_issue_width=1,
-    retirement_width=2,
-    start_cycle=5000,
-)
-
-system.final_verifier.mem_side = system.membus.cpu_side_ports
 system.lanl_maa.mem_side = system.membus.cpu_side_ports
 system.lanl_maa.control = system.membus.mem_side_ports
 system.submitter.port = system.membus.cpu_side_ports
@@ -91,7 +76,7 @@ m5.instantiate()
 event = m5.simulate()
 m5.stats.dump()
 
-if event.getCause() != "LANLMAA gather complete" or event.getCode() != 0:
+if event.getCause() != "LANLMAA descriptor rejected" or event.getCode() != 2:
     raise RuntimeError(
         f"unexpected exit: cause={event.getCause()} code={event.getCode()}"
     )

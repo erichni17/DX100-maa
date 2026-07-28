@@ -71,8 +71,10 @@ class LANLMAA : public ClockedObject
         uint64_t expected = 0;
         uint64_t value = 0;
         size_t continuationSteps = 0;
+        uint32_t remainingSteps = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
+        bool positiveDirection = false;
     };
 
     struct LineEntry

@@ -88,6 +88,8 @@ struct Options
     bool sorted = true;
     std::string descriptorAssembly;
     std::string descriptorMetadata;
+    std::string compactDescriptorAssembly;
+    std::string compactDescriptorMetadata;
 };
 
 constexpr uint64_t CellMask = (uint64_t{1} << 24) - 1;
@@ -422,6 +424,7 @@ emitDescriptorStaging(const Dataset &data, const Options &options)
     }
     metadata << "{\n"
              << "  \"schema_version\": 1,\n"
+             << "  \"descriptor_opcode\": 2,\n"
              << "  \"mapping\": \"SPARTA state-expanded projection; "
                 "state is remaining_visits_direction_cell and payload is "
                 "cell_plus_one\",\n"
@@ -461,6 +464,157 @@ emitDescriptorStaging(const Dataset &data, const Options &options)
     metadata.close();
     if (!metadata) {
         throw std::runtime_error("failed to write SPARTA descriptor metadata");
+    }
+}
+
+uint64_t
+compactStartState(const Particle &particle)
+{
+    if (particle.cell > CellMask || particle.visits == 0) {
+        throw std::invalid_argument("invalid SPARTA compact start state");
+    }
+    const uint64_t direction = particle.vx >= 0.0 ? uint64_t{1} << 24 : 0;
+    return particle.cell | direction |
+           (static_cast<uint64_t>(particle.visits) << 25);
+}
+
+void
+emitCompactDescriptorStaging(const Dataset &data, const Options &options)
+{
+    const bool emitAssembly = !options.compactDescriptorAssembly.empty();
+    const bool emitMetadata = !options.compactDescriptorMetadata.empty();
+    if (emitAssembly != emitMetadata) {
+        throw std::invalid_argument(
+            "compact descriptor assembly and metadata must be requested "
+            "together");
+    }
+    if (!emitAssembly) {
+        return;
+    }
+    if (options.descriptorItems > data.particles.size()) {
+        throw std::invalid_argument(
+            "descriptor items exceed generated particle count");
+    }
+    const size_t cells = data.packedCells.size();
+    if (cells > uint64_t{1} << 24 ||
+        options.maximumVisits > std::numeric_limits<uint32_t>::max() ||
+        options.descriptorItems > std::numeric_limits<uint32_t>::max()) {
+        throw std::invalid_argument(
+            "SPARTA compact staging field exceeds descriptor v1 width");
+    }
+
+    std::vector<uint64_t> starts;
+    std::vector<uint32_t> rootVisits;
+    std::vector<uint64_t> expected;
+    std::vector<uint32_t> finalCells;
+    starts.reserve(options.descriptorItems);
+    rootVisits.reserve(options.descriptorItems);
+    expected.reserve(options.descriptorItems);
+    finalCells.reserve(options.descriptorItems);
+    uint64_t executedVisits = 0;
+    for (size_t index = 0; index < options.descriptorItems; ++index) {
+        const Particle &particle = data.particles[index];
+        const bool positive = particle.vx >= 0.0;
+        uint32_t cellIndex = particle.cell;
+        uint64_t sum = 0;
+        starts.push_back(compactStartState(particle));
+        rootVisits.push_back(particle.visits);
+        for (size_t visit = 0; visit < particle.visits; ++visit) {
+            sum += stagingPayload(cellIndex);
+            if (visit + 1 != particle.visits) {
+                const Cell cell = unpackCell(data.packedCells[cellIndex]);
+                cellIndex = positive ? cell.positiveNeighbor :
+                                       cell.negativeNeighbor;
+            }
+        }
+        expected.push_back(sum);
+        finalCells.push_back(cellIndex);
+        executedVisits += particle.visits;
+    }
+
+    std::ofstream assembly(options.compactDescriptorAssembly);
+    if (!assembly) {
+        throw std::runtime_error(
+            "cannot create SPARTA compact descriptor assembly");
+    }
+    assembly << "    .section .data\n"
+             << "    .balign 64\n"
+             << "    .org 0x" << std::hex << DescriptorAddress << "\n"
+             << "    .quad 0x0003000131414d4c\n"
+             << "    .quad " << std::dec << starts.size() << "\n"
+             << "    .quad 0x" << std::hex << DescriptorStartVector << "\n"
+             << "    .quad 0x" << DescriptorResultVector << "\n"
+             << "    .quad 0x" << DescriptorCompletion << "\n"
+             << "    .quad 0x" << DescriptorRecordBase << "\n"
+             << "    .long " << std::dec << cells << "\n"
+             << "    .long " << options.maximumVisits << "\n"
+             << "    .quad 0\n"
+             << "    .org 0x" << std::hex << DescriptorStartVector << "\n";
+    for (const uint64_t start : starts) {
+        assembly << "    .quad " << std::dec << start << "\n";
+    }
+    assembly << "    .org 0x" << std::hex << DescriptorResultVector << "\n"
+             << "    .zero " << std::dec
+             << starts.size() * sizeof(uint64_t) << "\n"
+             << "    .org 0x" << std::hex << DescriptorCompletion << "\n"
+             << "    .zero 32\n"
+             << "    .org 0x" << std::hex << DescriptorRecordBase << "\n";
+    for (const uint64_t packedCell : data.packedCells) {
+        assembly << "    .quad " << std::dec << packedCell << "\n";
+    }
+    assembly.close();
+    if (!assembly) {
+        throw std::runtime_error(
+            "failed to write SPARTA compact descriptor assembly");
+    }
+
+    std::ofstream metadata(options.compactDescriptorMetadata);
+    if (!metadata) {
+        throw std::runtime_error(
+            "cannot create SPARTA compact descriptor metadata");
+    }
+    metadata << "{\n"
+             << "  \"schema_version\": 1,\n"
+             << "  \"descriptor_opcode\": 3,\n"
+             << "  \"mapping\": \"SPARTA compact projection; start state "
+                "is remaining_visits_direction_cell, record stores two "
+                "24-bit neighbors, and payload is derived cell_plus_one\",\n"
+             << "  \"descriptor_address\": " << DescriptorAddress << ",\n"
+             << "  \"start_vector\": " << DescriptorStartVector << ",\n"
+             << "  \"result_vector\": " << DescriptorResultVector << ",\n"
+             << "  \"completion_record\": " << DescriptorCompletion << ",\n"
+             << "  \"record_base\": " << DescriptorRecordBase << ",\n"
+             << "  \"native_cell_count\": " << cells << ",\n"
+             << "  \"state_records_per_native_cell\": 1,\n"
+             << "  \"record_count\": " << cells << ",\n"
+             << "  \"record_bytes\": "
+             << cells * sizeof(uint64_t) << ",\n"
+             << "  \"native_packed_cell_bytes\": "
+             << cells * sizeof(uint64_t) << ",\n"
+             << "  \"maximum_steps\": " << options.maximumVisits << ",\n"
+             << "  \"descriptor_items\": " << starts.size() << ",\n"
+             << "  \"executed_record_visits\": " << executedVisits << ",\n"
+             << "  \"start_states\": [";
+    for (size_t index = 0; index < starts.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << starts[index];
+    }
+    metadata << "],\n  \"root_visits\": [";
+    for (size_t index = 0; index < rootVisits.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << rootVisits[index];
+    }
+    metadata << "],\n  \"final_cells\": [";
+    for (size_t index = 0; index < finalCells.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << finalCells[index];
+    }
+    metadata << "],\n  \"expected_results\": [";
+    for (size_t index = 0; index < expected.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ") << expected[index];
+    }
+    metadata << "]\n}\n";
+    metadata.close();
+    if (!metadata) {
+        throw std::runtime_error(
+            "failed to write SPARTA compact descriptor metadata");
     }
 }
 
@@ -720,6 +874,8 @@ parseOptions(int argc, char **argv)
                          "[--descriptor-items N] [--seed N] "
                          "[--emit-descriptor-assembly PATH] "
                          "[--emit-descriptor-metadata PATH] "
+                         "[--emit-compact-descriptor-assembly PATH] "
+                         "[--emit-compact-descriptor-metadata PATH] "
                          "[--order sorted|shuffled]\n";
             std::exit(0);
         }
@@ -751,6 +907,10 @@ parseOptions(int argc, char **argv)
             options.descriptorAssembly = value;
         } else if (option == "--emit-descriptor-metadata") {
             options.descriptorMetadata = value;
+        } else if (option == "--emit-compact-descriptor-assembly") {
+            options.compactDescriptorAssembly = value;
+        } else if (option == "--emit-compact-descriptor-metadata") {
+            options.compactDescriptorMetadata = value;
         } else if (option == "--order") {
             if (value == "sorted") {
                 options.sorted = true;
@@ -776,6 +936,7 @@ main(int argc, char **argv)
         const Configuration configuration = configurationFor(options);
         const Dataset data = makeDataset(options);
         emitDescriptorStaging(data, options);
+        emitCompactDescriptorStaging(data, options);
         const Result scalar = runScalar(data);
         const ModelResult model = runModel(data, configuration);
         const bool correct = equalResults(scalar, model.values);

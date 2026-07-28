@@ -18,7 +18,8 @@ constexpr uint16_t DescriptorVersion = 1;
 enum class DescriptorOpcode : uint8_t
 {
     DirectGather = 1,
-    IndexedCellWalk = 2
+    IndexedCellWalk = 2,
+    PackedDirectionalCellWalk = 3
 };
 
 enum class DescriptorError : uint8_t
@@ -39,8 +40,21 @@ enum class DescriptorError : uint8_t
     BadRecordGeometry = 13,
     BadTerminalIndex = 14,
     OverlappingInput = 15,
-    ContinuationExhausted = 16
+    ContinuationExhausted = 16,
+    BadStartState = 17,
+    BadRecordValue = 18
 };
+
+constexpr uint64_t PackedDirectionalCellMask = (uint64_t{1} << 24) - 1;
+constexpr uint64_t PackedDirectionalDirectionBit = uint64_t{1} << 24;
+constexpr size_t PackedDirectionalRemainingShift = 25;
+constexpr uint64_t PackedDirectionalRemainingMask =
+    ((uint64_t{1} << 32) - 1) << PackedDirectionalRemainingShift;
+constexpr uint64_t PackedDirectionalStartReservedMask =
+    ~((uint64_t{1} << 57) - 1);
+constexpr uint64_t PackedDirectionalRecordReservedMask =
+    ~((uint64_t{1} << 48) - 1);
+constexpr uint64_t PackedDirectionalMaximumCells = uint64_t{1} << 24;
 
 struct Descriptor
 {
@@ -115,6 +129,20 @@ descriptorRangesOverlap(uint64_t firstBegin, uint64_t firstEnd,
     return firstBegin < secondEnd && secondBegin < firstEnd;
 }
 
+inline bool
+descriptorIsRecordWalk(DescriptorOpcode opcode)
+{
+    return opcode == DescriptorOpcode::IndexedCellWalk ||
+           opcode == DescriptorOpcode::PackedDirectionalCellWalk;
+}
+
+inline uint64_t
+descriptorRecordBytes(DescriptorOpcode opcode)
+{
+    return opcode == DescriptorOpcode::IndexedCellWalk ?
+        2 * sizeof(uint64_t) : sizeof(uint64_t);
+}
+
 inline DescriptorDecodeResult
 decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
                  uint32_t maxItems)
@@ -131,7 +159,9 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
     const auto rawOpcode = bytes[6];
     if (rawOpcode != static_cast<uint8_t>(DescriptorOpcode::DirectGather) &&
         rawOpcode !=
-            static_cast<uint8_t>(DescriptorOpcode::IndexedCellWalk)) {
+            static_cast<uint8_t>(DescriptorOpcode::IndexedCellWalk) &&
+        rawOpcode != static_cast<uint8_t>(
+            DescriptorOpcode::PackedDirectionalCellWalk)) {
         result.error = DescriptorError::BadOpcode;
         return result;
     }
@@ -168,16 +198,27 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
         result.descriptor.maxSteps = descriptorReadLe32(bytes.data() + 52);
         result.descriptor.terminalIndex =
             descriptorReadLe64(bytes.data() + 56);
-        if (result.descriptor.recordBase % (2 * sizeof(uint64_t)) != 0 ||
+        const uint64_t recordBytes = descriptorRecordBytes(
+            result.descriptor.opcode);
+        if (result.descriptor.recordBase % recordBytes != 0 ||
             result.descriptor.recordCount == 0 ||
             result.descriptor.maxSteps == 0) {
             result.error = DescriptorError::BadRecordGeometry;
             return result;
         }
-        if (result.descriptor.terminalIndex <
-            result.descriptor.recordCount) {
-            result.error = DescriptorError::BadTerminalIndex;
-            return result;
+        if (result.descriptor.opcode == DescriptorOpcode::IndexedCellWalk) {
+            if (result.descriptor.terminalIndex <
+                result.descriptor.recordCount) {
+                result.error = DescriptorError::BadTerminalIndex;
+                return result;
+            }
+        } else {
+            if (result.descriptor.recordCount >
+                    PackedDirectionalMaximumCells ||
+                result.descriptor.terminalIndex != 0) {
+                result.error = DescriptorError::BadRecordGeometry;
+                return result;
+            }
         }
     }
 
@@ -204,10 +245,11 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
                          resultEnd) ||
         !descriptorRange(result.descriptor.completionRecord, 1, 32,
                          completionEnd) ||
-        (result.descriptor.opcode == DescriptorOpcode::IndexedCellWalk &&
+        (descriptorIsRecordWalk(result.descriptor.opcode) &&
          !descriptorRange(result.descriptor.recordBase,
                           result.descriptor.recordCount,
-                          2 * sizeof(uint64_t), recordEnd))) {
+                          descriptorRecordBytes(result.descriptor.opcode),
+                          recordEnd))) {
         result.error = DescriptorError::RangeOverflow;
         return result;
     }
@@ -223,7 +265,7 @@ decodeDescriptor(const std::array<uint8_t, DescriptorBytes> &bytes,
         result.error = DescriptorError::OverlappingOutput;
         return result;
     }
-    if (result.descriptor.opcode == DescriptorOpcode::IndexedCellWalk &&
+    if (descriptorIsRecordWalk(result.descriptor.opcode) &&
         (descriptorRangesOverlap(
              result.descriptor.addressVector, addressEnd,
              result.descriptor.recordBase, recordEnd) ||

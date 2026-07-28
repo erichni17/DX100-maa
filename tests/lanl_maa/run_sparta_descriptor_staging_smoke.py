@@ -10,6 +10,7 @@ import tempfile
 
 INSTANCES = ("lanl_maa", "final_verifier", "submitter")
 FIXED_METADATA = {
+    "descriptor_opcode": 2,
     "native_cell_count": 64,
     "state_expansion_factor": 16,
     "record_count": 1024,

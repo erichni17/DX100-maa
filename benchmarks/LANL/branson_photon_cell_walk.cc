@@ -381,6 +381,7 @@ emitDescriptorStaging(const Dataset &data, const Options &options)
     }
     metadata << "{\n"
              << "  \"schema_version\": 1,\n"
+             << "  \"descriptor_opcode\": 2,\n"
              << "  \"mapping\": \"Branson packed-cell continuation "
                 "projection; payload is absorption_plus_track_scale\",\n"
              << "  \"descriptor_address\": " << DescriptorAddress << ",\n"
