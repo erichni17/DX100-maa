@@ -1,156 +1,45 @@
 #!/usr/bin/env python3
 
 import argparse
-import hashlib
 import json
 import pathlib
 import shutil
 import subprocess
 import tempfile
 
-from run_branson_descriptor_staging_smoke import (
-    build_staging,
-    check_equal,
-    read_stats,
+from run_branson_cpu_descriptor_smoke import (
+    CONTROL_BYTES,
+    CONTROL_PADDR,
+    CONTROL_VADDR,
+    DATA_BYTES,
+    DATA_PADDR,
+    DATA_VADDR,
+    file_sha256,
+    read_scalar,
+    validate,
 )
-
-DATA_VADDR = 0x1000000000
-DATA_PADDR = 0x02000000
-DATA_BYTES = 0x100000
-CONTROL_VADDR = 0x1000200000
-CONTROL_PADDR = 0x04000000
-CONTROL_BYTES = 0x1000
-
-
-def file_sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def read_scalar(path, name):
-    prefix = name + " "
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith(prefix):
-            return int(line.split()[1])
-    return None
-
-
-def validate(
-    stats,
-    metadata,
-    committed_instructions,
-    coherence_stats=None,
-    workload="Branson",
-):
-    errors = []
-    accelerator = stats["lanl_maa"]
-    items = metadata["descriptor_items"]
-    visits = metadata["executed_record_visits"]
-    expected = {
-        "logicalItems": items,
-        "logicalMemoryAccesses": visits,
-        "responsesFannedOut": visits,
-        "completionsRetired": items,
-        "verificationFailures": 0,
-        "continuationSteps": visits,
-        "continuationExhaustions": 0,
-        "descriptorDoorbells": 1,
-        "descriptorBusyRejections": 0,
-        "descriptorRearms": 0,
-        "descriptorFetches": 1,
-        "descriptorAddressLineReads": (items + 7) // 8,
-        "descriptorAddressesLoaded": items,
-        "descriptorResultWrites": items,
-        "descriptorCompletionWrites": 1,
-        "descriptorErrors": 0,
-    }
-    for name, value in expected.items():
-        check_equal(errors, accelerator, name, value)
-
-    physical = accelerator.get("physicalLineReads")
-    merges = accelerator.get("lineMergeHits")
-    if physical is None or merges is None or physical + merges != visits:
-        errors.append(
-            "record accounting mismatch: "
-            f"physical={physical}, merges={merges}, visits={visits}"
-        )
-    if accelerator.get("responses") != physical:
-        errors.append("record request/response accounting did not close")
-    active_contexts = accelerator.get("activeContextHighWaterMark")
-    if active_contexts is None or not 0 < active_contexts <= 4:
-        errors.append(
-            f"invalid active context high-water mark {active_contexts}"
-        )
-
-    failures = accelerator.get("portSendFailures")
-    notifications = accelerator.get("portRetryNotifications")
-    resubmissions = accelerator.get("retryPacketResubmissions")
-    acceptances = accelerator.get("retryPacketAcceptances")
-    if failures != notifications or notifications != resubmissions:
-        errors.append(
-            "retry obligation mismatch: "
-            f"failures={failures}, notifications={notifications}, "
-            f"resubmissions={resubmissions}"
-        )
-    if (
-        acceptances is None
-        or resubmissions is None
-        or not 0 <= acceptances <= resubmissions
-    ):
-        errors.append(
-            f"invalid retry acceptances={acceptances}, "
-            f"resubmissions={resubmissions}"
-        )
-    if committed_instructions is None or committed_instructions <= 0:
-        errors.append("CPU retired no instructions")
-
-    if coherence_stats is not None:
-        if coherence_stats["maa_cache_accesses"] != (
-            coherence_stats["maa_cache_read_accesses"]
-            + coherence_stats["maa_cache_write_accesses"]
-        ):
-            errors.append("MAA cache read/write accesses do not close")
-        for name in (
-            "maa_cache_accesses",
-            "maa_cache_misses",
-            "membus_snoops",
-            "snoop_filter_single_holder_hits",
-        ):
-            if coherence_stats[name] is None or coherence_stats[name] <= 0:
-                errors.append(f"{name} did not exercise coherence")
-    if errors:
-        raise RuntimeError(
-            f"LANLMAA {workload} CPU descriptor smoke failed:\n  "
-            + "\n  ".join(errors)
-        )
+from run_sparta_compact_descriptor_smoke import build_staging
+from run_sparta_descriptor_staging_smoke import read_stats
 
 
 def generate_source(path, metadata):
     items = metadata["descriptor_items"]
     records = metadata["record_count"]
-    if len(metadata["start_indices"]) != items:
-        raise RuntimeError("Branson start-index count does not close")
+    if len(metadata["start_states"]) != items:
+        raise RuntimeError("SPARTA start-state count does not close")
     if len(metadata["expected_results"]) != items:
-        raise RuntimeError("Branson expected-result count does not close")
-    if len(metadata["record_next"]) != records:
-        raise RuntimeError("Branson record-next count does not close")
-    if len(metadata["record_payload"]) != records:
-        raise RuntimeError("Branson record-payload count does not close")
+        raise RuntimeError("SPARTA expected-result count does not close")
+    if len(metadata["record_words"]) != records:
+        raise RuntimeError("SPARTA compact-record count does not close")
 
     starts = ",\n".join(
-        f"    UINT64_C({value})" for value in metadata["start_indices"]
+        f"    UINT64_C({value})" for value in metadata["start_states"]
     )
     expected = ",\n".join(
         f"    UINT64_C({value})" for value in metadata["expected_results"]
     )
-    record_next = ",\n".join(
-        f"    UINT64_C({value})" for value in metadata["record_next"]
-    )
-    record_payload = ",\n".join(
-        f"    UINT64_C({value})" for value in metadata["record_payload"]
+    record_words = ",\n".join(
+        f"    UINT64_C({value})" for value in metadata["record_words"]
     )
     source = f"""
 #include <stdint.h>
@@ -167,7 +56,7 @@ def generate_source(path, metadata):
 #define RECORDS UINT64_C({records})
 #define MAXIMUM_STEPS UINT64_C({metadata['maximum_steps']})
 
-static const uint64_t start_indices[ITEMS] = {{
+static const uint64_t start_states[ITEMS] = {{
 {starts}
 }};
 
@@ -175,12 +64,8 @@ static const uint64_t expected_results[ITEMS] = {{
 {expected}
 }};
 
-static const uint64_t record_next[RECORDS] = {{
-{record_next}
-}};
-
-static const uint64_t record_payload[RECORDS] = {{
-{record_payload}
+static const uint64_t record_values[RECORDS] = {{
+{record_words}
 }};
 
 static void
@@ -211,30 +96,29 @@ _start(void)
         DATA_VADDR + RESULT_OFFSET);
     volatile uint64_t *completion = (volatile uint64_t *)(uintptr_t)(
         DATA_VADDR + COMPLETION_OFFSET);
-    volatile uint64_t *record_words = (volatile uint64_t *)(uintptr_t)(
+    volatile uint64_t *records = (volatile uint64_t *)(uintptr_t)(
         DATA_VADDR + RECORD_OFFSET);
     volatile uint64_t *control = (volatile uint64_t *)(uintptr_t)(
         CONTROL_VADDR);
 
     for (uint64_t index = 0; index < RECORDS; ++index) {{
-        record_words[index * 2] = record_next[index];
-        record_words[index * 2 + 1] = record_payload[index];
+        records[index] = record_values[index];
     }}
     for (uint64_t item = 0; item < ITEMS; ++item) {{
-        starts[item] = start_indices[item];
+        starts[item] = start_states[item];
         results[item] = 0;
     }}
     for (uint64_t word = 0; word < 4; ++word) {{
         completion[word] = 0;
     }}
-    descriptor[0] = UINT64_C(0x0002000131414d4c);
+    descriptor[0] = UINT64_C(0x0003000131414d4c);
     descriptor[1] = ITEMS;
     descriptor[2] = DATA_PADDR + START_OFFSET;
     descriptor[3] = DATA_PADDR + RESULT_OFFSET;
     descriptor[4] = DATA_PADDR + COMPLETION_OFFSET;
     descriptor[5] = DATA_PADDR + RECORD_OFFSET;
     descriptor[6] = RECORDS | (MAXIMUM_STEPS << 32);
-    descriptor[7] = UINT64_MAX;
+    descriptor[7] = 0;
     fence();
 
     control[0] = 0;
@@ -265,7 +149,7 @@ _start(void)
             finish(UINT64_C(40));
         }}
     }}
-    if (completion[0] != UINT64_C(0x0002000143414d4c) ||
+    if (completion[0] != UINT64_C(0x0003000143414d4c) ||
         completion[1] != 0 || completion[2] != ITEMS ||
         completion[3] != ITEMS) {{
         finish(UINT64_C(41));
@@ -279,9 +163,9 @@ _start(void)
 def build_program(root, metadata):
     compiler = shutil.which("cc")
     if not compiler:
-        raise RuntimeError("Branson CPU descriptor smoke requires cc")
-    source = root / "branson_cpu_descriptor.c"
-    binary = root / "branson_cpu_descriptor.elf"
+        raise RuntimeError("SPARTA CPU descriptor smoke requires cc")
+    source = root / "sparta_cpu_descriptor.c"
+    binary = root / "sparta_cpu_descriptor.elf"
     generate_source(source, metadata)
     subprocess.run(
         [
@@ -306,15 +190,13 @@ def build_program(root, metadata):
 
 
 def run_smoke(args, root):
-    _, staging_metadata_path, staging_metadata = build_staging(
-        root, args.descriptor_items
-    )
+    _, staging_metadata_path, staging_metadata = build_staging(root)
     source, binary = build_program(root, staging_metadata)
     metadata = dict(staging_metadata)
     metadata.update(
         {
-            "cpu_mapping": "real-X86 cache-coherent Branson-derived "
-            "indexed-cell-walk descriptor",
+            "cpu_mapping": "real-X86 cache-coherent SPARTA-derived "
+            "packed-directional cell-walk descriptor",
             "data_vaddr": DATA_VADDR,
             "data_paddr": DATA_PADDR,
             "data_bytes": DATA_BYTES,
@@ -340,7 +222,7 @@ def run_smoke(args, root):
             ),
         }
     )
-    metadata_path = root / "branson_cpu_descriptor_metadata.json"
+    metadata_path = root / "sparta_cpu_descriptor_metadata.json"
     metadata_path.write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
@@ -369,7 +251,7 @@ def run_smoke(args, root):
     (root / "gem5.stderr").write_text(result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(
-            "gem5 Branson CPU descriptor failed:\n"
+            "gem5 SPARTA CPU descriptor failed:\n"
             + result.stdout
             + result.stderr
         )
@@ -389,7 +271,9 @@ def run_smoke(args, root):
             "maa_cache_write_accesses": read_scalar(
                 stats_path, "system.maa_cache.WriteReq_T.accesses::total"
             ),
-            "membus_snoops": read_scalar(stats_path, "system.membus.snoops"),
+            "membus_snoops": read_scalar(
+                stats_path, "system.membus.snoops"
+            ),
             "snoop_filter_single_holder_hits": read_scalar(
                 stats_path,
                 "system.membus.snoop_filter.hitSingleRequests",
@@ -400,13 +284,13 @@ def run_smoke(args, root):
         metadata,
         read_scalar(stats_path, "system.cpu.commitStats0.numInsts"),
         coherence_stats,
+        workload="SPARTA",
     )
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
-    parser.add_argument("--descriptor-items", default=8, type=int)
     parser.add_argument("--l1-caches", action="store_true")
     parser.add_argument("--maa-cache-size", default="4KiB")
     parser.add_argument("--maa-cache-assoc", type=int, default=4)
@@ -431,11 +315,11 @@ def main():
         run_smoke(args, root)
     else:
         with tempfile.TemporaryDirectory(
-            prefix="lanl-maa-branson-cpu-descriptor-"
+            prefix="lanl-maa-sparta-cpu-descriptor-"
         ) as root:
             run_smoke(args, pathlib.Path(root))
     mode = " with L1 caches" if args.l1_caches else ""
-    print(f"LANLMAA Branson CPU descriptor smoke{mode}: PASS")
+    print(f"LANLMAA SPARTA CPU descriptor smoke{mode}: PASS")
 
 
 if __name__ == "__main__":

@@ -610,6 +610,11 @@ emitCompactDescriptorStaging(const Dataset &data, const Options &options)
     for (size_t index = 0; index < expected.size(); ++index) {
         metadata << (index == 0 ? "" : ", ") << expected[index];
     }
+    metadata << "],\n  \"record_words\": [";
+    for (size_t index = 0; index < data.packedCells.size(); ++index) {
+        metadata << (index == 0 ? "" : ", ")
+                 << data.packedCells[index];
+    }
     metadata << "]\n}\n";
     metadata.close();
     if (!metadata) {
