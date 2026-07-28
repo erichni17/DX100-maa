@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <memory>
 
 #include "base/logging.hh"
@@ -45,7 +46,9 @@ LANLMAA::MemoryPort::recvReqRetry()
 LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
     : statistics::Group(parent),
       ADD_STAT(logicalItems, statistics::units::Count::get(),
-               "Logical gather items admitted"),
+               "Logical operations admitted"),
+      ADD_STAT(logicalMemoryAccesses, statistics::units::Count::get(),
+               "Logical record or gather accesses generated"),
       ADD_STAT(physicalLineReads, statistics::units::Count::get(),
                "Coherent line reads accepted by the memory port"),
       ADD_STAT(lineMergeHits, statistics::units::Count::get(),
@@ -54,6 +57,8 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Cycles blocked by a full operation window"),
       ADD_STAT(lineWouldBlockCycles, statistics::units::Cycle::get(),
                "Cycles blocked by a full line table"),
+      ADD_STAT(contextWouldBlockCycles, statistics::units::Cycle::get(),
+               "Cycles blocked by a full continuation table"),
       ADD_STAT(portSendFailures, statistics::units::Count::get(),
                "Timing sends refused by the downstream port"),
       ADD_STAT(portRetryNotifications, statistics::units::Count::get(),
@@ -65,7 +70,13 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(completionsRetired, statistics::units::Count::get(),
                "Logical items retired in descriptor order"),
       ADD_STAT(verificationFailures, statistics::units::Count::get(),
-               "Gather values that differ from the supplied oracle"),
+               "Retired values that differ from the supplied oracle"),
+      ADD_STAT(continuationSteps, statistics::units::Count::get(),
+               "Dependent records consumed"),
+      ADD_STAT(continuationExhaustions, statistics::units::Count::get(),
+               "Cell walks terminated by the maximum-step bound"),
+      ADD_STAT(activeContextHighWaterMark, statistics::units::Count::get(),
+               "Maximum simultaneously allocated continuation contexts"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
                "Active engine cycles through descriptor completion")
 {
@@ -75,6 +86,10 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
     : ClockedObject(params),
       addresses(params.addresses),
       expectedValues(params.expected_values),
+      dependentMode(params.dependent_mode),
+      continuationEntries(params.continuation_entries),
+      maxContinuationSteps(params.max_continuation_steps),
+      terminalAddress(params.terminal_address),
       operationEntries(params.operation_entries),
       lineEntries(params.line_entries),
       logicalAdmissionWidth(params.logical_admission_width),
@@ -108,6 +123,10 @@ LANLMAA::validateConfiguration() const
         "LANLMAA expected_values must be empty or match addresses");
     fatal_if(operationEntries == 0,
              "LANLMAA operation_entries must be nonzero");
+    fatal_if(dependentMode && continuationEntries == 0,
+             "LANLMAA dependent mode requires continuation entries");
+    fatal_if(dependentMode && maxContinuationSteps == 0,
+             "LANLMAA dependent mode requires a nonzero step bound");
     fatal_if(lineEntries == 0, "LANLMAA line_entries must be nonzero");
     fatal_if(logicalAdmissionWidth == 0,
              "LANLMAA logical_admission_width must be nonzero");
@@ -115,10 +134,14 @@ LANLMAA::validateConfiguration() const
     fatal_if(retirementWidth == 0, "LANLMAA retirement_width must be nonzero");
     fatal_if(lineBytes != 64, "LANLMAA v0 requires 64-byte lines");
     for (const Addr address : addresses) {
-        fatal_if(address % sizeof(uint64_t) != 0,
-                 "LANLMAA v0 requires aligned 64-bit gathers");
-        fatal_if(address + sizeof(uint64_t) > lineAddress(address) + lineBytes,
-                 "LANLMAA gather crosses a coherent line");
+        const size_t accessBytes = dependentMode ? 2 * sizeof(uint64_t) :
+                                                   sizeof(uint64_t);
+        fatal_if(address % accessBytes != 0,
+                 "LANLMAA address does not meet its access alignment");
+        fatal_if(address > std::numeric_limits<Addr>::max() - accessBytes,
+                 "LANLMAA access address overflows");
+        fatal_if(address + accessBytes > lineAddress(address) + lineBytes,
+                 "LANLMAA access crosses a coherent line");
     }
 }
 
@@ -186,6 +209,7 @@ LANLMAA::tick()
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
+    attachReadyOperations();
     issueLines();
     if (nextRetirement == operations.size()) {
         finish();
@@ -199,13 +223,14 @@ LANLMAA::retireOperations()
 {
     size_t retired = 0;
     while (retired < retirementWidth && nextRetirement < operations.size() &&
-           operations[nextRetirement].ready) {
-        const auto &operation = operations[nextRetirement];
+           operations[nextRetirement].state == OperationState::RetireReady) {
+        auto &operation = operations[nextRetirement];
         if (!expectedValues.empty() &&
             operation.value != operation.expected) {
             ++stats.verificationFailures;
         }
         ++stats.completionsRetired;
+        operation.state = OperationState::Unadmitted;
         ++nextRetirement;
         --activeOperations;
         ++retired;
@@ -223,27 +248,60 @@ LANLMAA::admitOperations()
             return;
         }
 
-        const Addr address = operations[nextAdmission].address;
-        const Addr aligned = lineAddress(address);
-        LineEntry *line = matchingLine(aligned);
-        if (line) {
-            line->waiters.push_back(nextAdmission);
-            ++stats.lineMergeHits;
-        } else {
-            line = freeLine();
-            if (!line) {
-                ++stats.lineWouldBlockCycles;
-                return;
+        if (dependentMode && activeContexts == continuationEntries) {
+            ++stats.contextWouldBlockCycles;
+            return;
+        }
+
+        auto &operation = operations[nextAdmission];
+        operation.state = OperationState::AddressReady;
+        if (dependentMode) {
+            operation.ownsContext = true;
+            ++activeContexts;
+            if (activeContexts > stats.activeContextHighWaterMark.value()) {
+                stats.activeContextHighWaterMark = activeContexts;
             }
-            line->state = LineState::Allocated;
-            line->lineAddress = aligned;
-            line->waiters.push_back(nextAdmission);
         }
 
         ++stats.logicalItems;
         ++activeOperations;
         ++nextAdmission;
         ++admitted;
+    }
+}
+
+void
+LANLMAA::attachReadyOperations()
+{
+    size_t attached = 0;
+    bool lineBlocked = false;
+    for (size_t index = nextRetirement;
+         index < nextAdmission && attached < logicalAdmissionWidth; ++index) {
+        auto &operation = operations[index];
+        if (operation.state != OperationState::AddressReady) {
+            continue;
+        }
+
+        const Addr aligned = lineAddress(operation.address);
+        LineEntry *line = matchingLine(aligned);
+        if (line) {
+            ++stats.lineMergeHits;
+        } else {
+            line = freeLine();
+            if (!line) {
+                lineBlocked = true;
+                continue;
+            }
+            line->state = LineState::Allocated;
+            line->lineAddress = aligned;
+        }
+        line->waiters.push_back(index);
+        operation.state = OperationState::DataPending;
+        ++stats.logicalMemoryAccesses;
+        ++attached;
+    }
+    if (lineBlocked) {
+        ++stats.lineWouldBlockCycles;
     }
 }
 
@@ -293,9 +351,53 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
     const uint8_t *data = packet->getConstPtr<uint8_t>();
     for (const size_t operationIndex : line->waiters) {
         auto &operation = operations[operationIndex];
+        panic_if(operation.state != OperationState::DataPending,
+                 "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
-        std::memcpy(&operation.value, data + offset, sizeof(operation.value));
-        operation.ready = true;
+        if (dependentMode) {
+            uint64_t nextAddress = 0;
+            uint64_t payload = 0;
+            std::memcpy(&nextAddress, data + offset, sizeof(nextAddress));
+            std::memcpy(
+                &payload, data + offset + sizeof(nextAddress),
+                sizeof(payload));
+            operation.value += payload;
+            ++operation.continuationSteps;
+            ++stats.continuationSteps;
+
+            if (nextAddress == terminalAddress) {
+                panic_if(!operation.ownsContext,
+                         "LANLMAA terminal operation has no context");
+                operation.state = OperationState::RetireReady;
+                operation.ownsContext = false;
+                --activeContexts;
+            } else if (operation.continuationSteps >=
+                       maxContinuationSteps) {
+                panic_if(!operation.ownsContext,
+                         "LANLMAA exhausted operation has no context");
+                ++stats.continuationExhaustions;
+                operation.state = OperationState::RetireReady;
+                operation.ownsContext = false;
+                --activeContexts;
+            } else {
+                const Addr next = static_cast<Addr>(nextAddress);
+                constexpr size_t recordBytes = 2 * sizeof(uint64_t);
+                panic_if(nextAddress != next,
+                         "LANLMAA continuation address does not fit Addr");
+                panic_if(next % recordBytes != 0,
+                         "LANLMAA continuation address is misaligned");
+                panic_if(next > std::numeric_limits<Addr>::max() - recordBytes,
+                         "LANLMAA continuation address overflows");
+                panic_if(next + recordBytes > lineAddress(next) + lineBytes,
+                         "LANLMAA continuation record crosses a line");
+                operation.address = next;
+                operation.state = OperationState::AddressReady;
+            }
+        } else {
+            std::memcpy(
+                &operation.value, data + offset, sizeof(operation.value));
+            operation.state = OperationState::RetireReady;
+        }
         ++stats.responsesFannedOut;
     }
     ++stats.responses;
@@ -319,6 +421,7 @@ void
 LANLMAA::finish()
 {
     panic_if(activeOperations != 0, "LANLMAA finished with active operations");
+    panic_if(activeContexts != 0, "LANLMAA finished with active contexts");
     panic_if(nextAdmission != operations.size(),
              "LANLMAA finished before admitting every item");
     panic_if(
@@ -333,10 +436,14 @@ LANLMAA::finish()
                 stats.physicalLineReads.value()),
             static_cast<unsigned long long>(stats.engineCycles.value()));
     if (exitOnCompletion) {
-        const bool correct = stats.verificationFailures.value() == 0;
-        exitSimLoop(correct ? "LANLMAA gather complete"
-                            : "LANLMAA gather verification failed",
-                    correct ? 0 : 2);
+        const bool correct = stats.verificationFailures.value() == 0 &&
+                             stats.continuationExhaustions.value() == 0;
+        const char *successCause = dependentMode ?
+            "LANLMAA cell walk complete" : "LANLMAA gather complete";
+        const char *failureCause = dependentMode ?
+            "LANLMAA cell walk verification failed" :
+            "LANLMAA gather verification failed";
+        exitSimLoop(correct ? successCause : failureCause, correct ? 0 : 2);
     }
 }
 

@@ -9,12 +9,16 @@ import tempfile
 
 EXPECTED_EXACT = {
     "logicalItems": 12,
+    "logicalMemoryAccesses": 12,
     "physicalLineReads": 3,
     "lineMergeHits": 9,
     "responses": 3,
     "responsesFannedOut": 12,
     "completionsRetired": 12,
     "verificationFailures": 0,
+    "continuationSteps": 0,
+    "continuationExhaustions": 0,
+    "activeContextHighWaterMark": 0,
 }
 
 

@@ -15,6 +15,18 @@ class LANLMAA(ClockedObject):
     expected_values = VectorParam.UInt64(
         [], "Optional expected value for every gather item"
     )
+    dependent_mode = Param.Bool(
+        False, "Interpret each address as a next-address/payload record"
+    )
+    continuation_entries = Param.Unsigned(
+        64, "Maximum dependent operations with retained continuation state"
+    )
+    max_continuation_steps = Param.Unsigned(
+        8, "Maximum records visited by one dependent operation"
+    )
+    terminal_address = Param.UInt64(
+        0xFFFFFFFFFFFFFFFF, "Next-address value that terminates a cell walk"
+    )
 
     operation_entries = Param.Unsigned(64, "Logical operation-window entries")
     line_entries = Param.Unsigned(32, "Coherent line-merge entries")
