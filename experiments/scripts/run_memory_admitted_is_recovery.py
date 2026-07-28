@@ -172,7 +172,7 @@ def systemctl_show(unit, systemctl="systemctl"):
 
     def integer(name, default=0):
         value = properties.get(name, str(default))
-        if value in {"", "infinity", "max"}:
+        if value in {"", "[not set]", "infinity", "max"}:
             return None
         try:
             return int(value)

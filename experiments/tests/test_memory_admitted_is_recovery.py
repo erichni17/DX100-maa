@@ -12,6 +12,27 @@ import run_memory_admitted_is_recovery as admission  # noqa: E402
 
 
 class MemoryAdmittedISRecoveryTests(unittest.TestCase):
+    def test_collected_inactive_unit_accepts_not_set_memory_fields(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "ActiveState=inactive\n"
+                "ControlGroup=\n"
+                "MemoryCurrent=[not set]\n"
+                "MemoryPeak=[not set]\n"
+                "MemoryMax=[not set]\n"
+                "MemorySwapCurrent=[not set]\n"
+            ),
+            stderr="",
+        )
+        with patch.object(admission.subprocess, "run", return_value=completed):
+            unit = admission.systemctl_show("collected.service")
+        self.assertFalse(unit["active"])
+        self.assertIsNone(unit["memory_current_bytes"])
+        self.assertIsNone(unit["memory_peak_bytes"])
+        self.assertIsNone(unit["memory_max_bytes"])
+        self.assertIsNone(unit["memory_swap_current_bytes"])
+
     def test_live_owned_task_overrides_concurrent_completed_artifact(self):
         task = {
             "state": "running",
