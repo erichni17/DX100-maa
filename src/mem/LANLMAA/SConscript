@@ -1,0 +1,6 @@
+Import('*')
+
+SimObject('LANLMAA.py', sim_objects=['LANLMAA'])
+Source('lanl_maa.cc')
+
+DebugFlag('LANLMAA')

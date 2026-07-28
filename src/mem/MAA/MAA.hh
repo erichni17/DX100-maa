@@ -9,18 +9,21 @@
 #include <string>
 #include <unordered_map>
 
+#include "arch/generic/mmu.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
+#include "config/have_ramulator2.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
 #include "mem/qport.hh"
 #include "mem/request.hh"
+#if HAVE_RAMULATOR2
 #include "mem/ramulator2.hh"
+#endif
 #include "sim/clocked_object.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
 
 #define ADDR_CHANNEL_LEVEL   0
 #define ADDR_RANK_LEVEL      1
@@ -290,7 +293,9 @@ public:
     int channel_addr(Addr addr);
     int core_addr(Addr addr);
     Addr calc_Grow_addr(std::vector<int> addr_vec);
+#if HAVE_RAMULATOR2
     void addRamulator(memory::Ramulator2 *_ramulator2);
+#endif
     bool sendPacketMem(PacketPtr pkt);
     bool sendPacketCache(PacketPtr pkt);
     void sendSnoopPacketCpu(PacketPtr pkt);

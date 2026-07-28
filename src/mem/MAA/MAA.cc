@@ -263,6 +263,7 @@ int MAA::inRange(Addr addr) const {
     }
     return r_id;
 }
+#if HAVE_RAMULATOR2
 void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
     _ramulator2->getAddrMapData(m_org,
                                 m_addr_bits,
@@ -323,6 +324,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
     my_outstanding_stream_mem_write_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_cores];
     my_outstanding_stream_mem_read_pkts = new std::multiset<OutstandingPacket, CompareByTick>[num_cores];
 }
+#endif
 // RoBaRaCoCh address mapping taking from the Ramulator2
 int slice_lower_bits(uint64_t &addr, int bits) {
     int lbits = addr & ((1 << bits) - 1);

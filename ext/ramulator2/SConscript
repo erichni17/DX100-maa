@@ -2,12 +2,21 @@ import os
 
 Import('env')
 
-if not os.path.exists(Dir('.').srcnode().abspath + '/ramulator2'):
-  env['HAVE_RAMULATOR2'] = False
+ramulator2_path = os.path.join(Dir('#').abspath, 'ext/ramulator2/ramulator2')
+required_artifacts = [
+    os.path.join(ramulator2_path, 'ext/spdlog/include/spdlog/spdlog.h'),
+    os.path.join(ramulator2_path, 'ext/yaml-cpp/include/yaml-cpp/yaml.h'),
+    os.path.join(ramulator2_path, 'libramulator.so'),
+]
+
+env['HAVE_RAMULATOR2'] = all(
+    os.path.exists(path) for path in required_artifacts
+)
+env['CONF']['HAVE_RAMULATOR2'] = env['HAVE_RAMULATOR2']
+
+if not env['HAVE_RAMULATOR2']:
   Return()
 
-env['HAVE_RAMULATOR2'] = True
-ramulator2_path = os.path.join(Dir('#').abspath, 'ext/ramulator2/ramulator2/')
 env.Prepend(CPPPATH=Dir('.').srcnode())
 env.Append(
   LIBS=['ramulator'],
