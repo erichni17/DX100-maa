@@ -43,7 +43,7 @@ def read_scalar(path, name):
     return None
 
 
-def validate(stats, committed_instructions):
+def validate(stats, committed_instructions, coherence_stats=None):
     errors = []
     accelerator = stats.get("lanl_maa", {})
     expected = {
@@ -83,6 +83,21 @@ def validate(stats, committed_instructions):
         )
     if committed_instructions is None or committed_instructions <= 0:
         errors.append("CPU retired no instructions")
+    if coherence_stats is not None:
+        expected_coherence = {
+            "maa_cache_accesses": 84,
+            "maa_cache_misses": 28,
+            "maa_cache_read_accesses": 19,
+            "maa_cache_write_accesses": 65,
+            "membus_snoops": 37,
+            "snoop_filter_single_holder_hits": 37,
+        }
+        for name, expected_value in expected_coherence.items():
+            actual = coherence_stats.get(name)
+            if actual != expected_value:
+                errors.append(
+                    f"{name}: expected {expected_value}, got {actual}"
+                )
     if errors:
         raise RuntimeError(
             "XRAGE CPU descriptor smoke failed:\n  " + "\n  ".join(errors)
@@ -271,6 +286,12 @@ def run_smoke(args, root):
         "control_paddr": CONTROL_PADDR,
         "control_bytes": CONTROL_BYTES,
         "descriptor_paddr": DATA_PADDR + DESCRIPTOR_OFFSET,
+        "l1_caches": args.l1_caches,
+        "maa_coherence_cache": (
+            {"size_bytes": 2048, "associativity": 4}
+            if args.l1_caches
+            else None
+        ),
         "source_sha256": file_sha256(source),
         "binary_sha256": file_sha256(binary),
         "value_oracle": "SplitMix64(index), modulo 2^64",
@@ -287,6 +308,8 @@ def run_smoke(args, root):
         f"--binary={binary}",
         f"--metadata={metadata_path}",
     ]
+    if args.l1_caches:
+        command.append("--l1-caches")
     result = subprocess.run(command, text=True, capture_output=True)
     (root / "gem5.stdout").write_text(result.stdout, encoding="utf-8")
     (root / "gem5.stderr").write_text(result.stderr, encoding="utf-8")
@@ -297,9 +320,33 @@ def run_smoke(args, root):
             + result.stderr
         )
     stats_path = outdir / "stats.txt"
+    coherence_stats = None
+    if args.l1_caches:
+        coherence_stats = {
+            "maa_cache_accesses": read_scalar(
+                stats_path, "system.maa_cache.overallAccesses_T::total"
+            ),
+            "maa_cache_misses": read_scalar(
+                stats_path, "system.maa_cache.overallMisses_T::total"
+            ),
+            "maa_cache_read_accesses": read_scalar(
+                stats_path, "system.maa_cache.ReadReq_T.accesses::total"
+            ),
+            "maa_cache_write_accesses": read_scalar(
+                stats_path, "system.maa_cache.WriteReq_T.accesses::total"
+            ),
+            "membus_snoops": read_scalar(
+                stats_path, "system.membus.snoops"
+            ),
+            "snoop_filter_single_holder_hits": read_scalar(
+                stats_path,
+                "system.membus.snoop_filter.hitSingleRequests",
+            ),
+        }
     validate(
         read_stats(stats_path),
         read_scalar(stats_path, "system.cpu.commitStats0.numInsts"),
+        coherence_stats,
     )
 
 
@@ -307,6 +354,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
     parser.add_argument("--trace", required=True, type=pathlib.Path)
+    parser.add_argument("--l1-caches", action="store_true")
     parser.add_argument(
         "--config",
         default=pathlib.Path(__file__).with_name(
@@ -328,7 +376,8 @@ def main():
             prefix="lanl-maa-xrage-cpu-descriptor-"
         ) as root:
             run_smoke(args, pathlib.Path(root))
-    print("LANLMAA XRAGE CPU descriptor smoke: PASS")
+    mode = " with L1 caches" if args.l1_caches else ""
+    print(f"LANLMAA XRAGE CPU descriptor smoke{mode}: PASS")
 
 
 if __name__ == "__main__":

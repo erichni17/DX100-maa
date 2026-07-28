@@ -5,6 +5,7 @@ import m5
 from m5.objects import (
     LANLMAA,
     AddrRange,
+    Cache,
     Process,
     Root,
     SEWorkload,
@@ -19,7 +20,35 @@ from m5.objects import (
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", required=True)
 parser.add_argument("--metadata", required=True)
+parser.add_argument("--l1-caches", action="store_true")
 args = parser.parse_args()
+
+
+class L1Cache(Cache):
+    assoc = 8
+    tag_latency = 2
+    data_latency = 2
+    response_latency = 2
+    mshrs = 8
+    tgts_per_mshr = 20
+
+
+class L1ICache(L1Cache):
+    size = "32KiB"
+
+
+class L1DCache(L1Cache):
+    size = "32KiB"
+
+
+class MAACoherenceCache(L1Cache):
+    # Match the accelerator's 32 physical line entries. This is an explicit
+    # 2 KiB hardware cost, not an assumed free system cache.
+    size = "2KiB"
+    assoc = 4
+    mshrs = 32
+    write_buffers = 8
+
 
 with open(args.metadata, encoding="utf-8") as stream:
     metadata = json.load(stream)
@@ -35,8 +64,16 @@ system.clk_domain = SrcClockDomain(
 )
 system.cpu = X86TimingSimpleCPU()
 system.membus = SystemXBar()
-system.cpu.icache_port = system.membus.cpu_side_ports
-system.cpu.dcache_port = system.membus.cpu_side_ports
+if args.l1_caches:
+    system.icache = L1ICache()
+    system.dcache = L1DCache()
+    system.cpu.icache_port = system.icache.cpu_sides
+    system.cpu.dcache_port = system.dcache.cpu_sides
+    system.icache.mem_sides = system.membus.cpu_side_ports
+    system.dcache.mem_sides = system.membus.cpu_side_ports
+else:
+    system.cpu.icache_port = system.membus.cpu_side_ports
+    system.cpu.dcache_port = system.membus.cpu_side_ports
 system.cpu.createInterruptController()
 system.cpu.interrupts[0].pio = system.membus.mem_side_ports
 system.cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
@@ -59,7 +96,12 @@ system.lanl_maa = LANLMAA(
     retirement_width=2,
     exit_on_completion=False,
 )
-system.lanl_maa.mem_side = system.membus.cpu_side_ports
+if args.l1_caches:
+    system.maa_cache = MAACoherenceCache()
+    system.lanl_maa.mem_side = system.maa_cache.cpu_sides
+    system.maa_cache.mem_sides = system.membus.cpu_side_ports
+else:
+    system.lanl_maa.mem_side = system.membus.cpu_side_ports
 system.lanl_maa.control = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 

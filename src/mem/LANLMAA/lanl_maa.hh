@@ -65,6 +65,19 @@ class LANLMAA : public ClockedObject
         Error
     };
 
+    enum class TrafficKind
+    {
+        Descriptor,
+        AddressVector,
+        Result,
+        Completion,
+        Line,
+        Update,
+        Verification
+    };
+
+    struct RequestSenderState;
+
     struct Operation
     {
         Addr address = 0;
@@ -253,6 +266,10 @@ class LANLMAA : public ClockedObject
     bool strictFloatingUpdate() const;
     static uint64_t encodeDouble(double value);
     static double decodeDouble(uint64_t bits);
+    void tagRequest(
+        PacketPtr packet, TrafficKind kind, PacketPtr *retainedPacket);
+    TrafficKind acceptResponse(PacketPtr packet);
+    void discardUnsentRequest(PacketPtr &packet);
     void validateConfiguration() const;
     void scheduleTick();
     AddrRangeList controlRanges() const;

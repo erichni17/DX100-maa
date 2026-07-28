@@ -20,6 +20,17 @@ namespace gem5
 namespace lanlmaa
 {
 
+struct LANLMAA::RequestSenderState : public Packet::SenderState
+{
+    TrafficKind kind;
+    PacketPtr *retainedPacket;
+
+    RequestSenderState(TrafficKind kind, PacketPtr *retained_packet)
+        : kind(kind), retainedPacket(retained_packet)
+    {
+    }
+};
+
 namespace
 {
 
@@ -612,7 +623,7 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
             line.packet == rejectedPacket) {
             continue;
         }
-        delete line.packet;
+        discardUnsentRequest(line.packet);
         line.clear();
     }
     scheduleTick();
@@ -694,6 +705,8 @@ LANLMAA::issueDescriptorFetch()
             address, DescriptorBytes, Request::Flags(), requestorId);
         descriptorPacket = new Packet(request, MemCmd::ReadReq);
         descriptorPacket->allocate();
+        tagRequest(
+            descriptorPacket, TrafficKind::Descriptor, &descriptorPacket);
     }
     if (sendDescriptorPacket(descriptorPacket)) {
         descriptorState = DescriptorState::DescriptorInFlight;
@@ -717,6 +730,8 @@ LANLMAA::issueAddressVectorFetch()
             Request::Flags(), requestorId);
         addressVectorPacket = new Packet(request, MemCmd::ReadReq);
         addressVectorPacket->allocate();
+        tagRequest(addressVectorPacket, TrafficKind::AddressVector,
+                   &addressVectorPacket);
     }
     if (sendDescriptorPacket(addressVectorPacket)) {
         descriptorState = DescriptorState::AddressInFlight;
@@ -740,6 +755,7 @@ LANLMAA::issueResultWrite()
         resultPacket->allocate();
         resultPacket->setLE<uint64_t>(
             operations[descriptorResultCursor].value);
+        tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
     }
     if (sendDescriptorPacket(resultPacket)) {
         descriptorState = DescriptorState::ResultInFlight;
@@ -763,6 +779,8 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 8, descriptorSlot, 4);
         writeLe(data, 16, operations.size(), 8);
         writeLe(data, 24, descriptorResultCursor, 8);
+        tagRequest(
+            completionPacket, TrafficKind::Completion, &completionPacket);
     }
     if (sendDescriptorPacket(completionPacket)) {
         descriptorState = DescriptorState::CompletionInFlight;
@@ -920,6 +938,46 @@ LANLMAA::decodeDouble(uint64_t bits)
     static_assert(sizeof(bits) == sizeof(value));
     std::memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+void
+LANLMAA::tagRequest(
+    PacketPtr packet, TrafficKind kind, PacketPtr *retainedPacket)
+{
+    panic_if(!packet || !retainedPacket || *retainedPacket != packet,
+             "LANLMAA tagged an invalid retained request");
+    packet->pushSenderState(new RequestSenderState(kind, retainedPacket));
+}
+
+LANLMAA::TrafficKind
+LANLMAA::acceptResponse(PacketPtr packet)
+{
+    auto *state = dynamic_cast<RequestSenderState *>(packet->senderState);
+    panic_if(!state,
+             "LANLMAA response has no accelerator sender state");
+    panic_if(!state->retainedPacket || !*state->retainedPacket,
+             "LANLMAA response has no retained request obligation");
+    panic_if(packet->popSenderState() != state,
+             "LANLMAA response sender-state stack changed ownership");
+
+    const TrafficKind kind = state->kind;
+    *state->retainedPacket = packet;
+    delete state;
+    return kind;
+}
+
+void
+LANLMAA::discardUnsentRequest(PacketPtr &packet)
+{
+    panic_if(!packet, "LANLMAA discarded a null request");
+    auto *state = dynamic_cast<RequestSenderState *>(packet->senderState);
+    panic_if(!state || state->retainedPacket != &packet,
+             "LANLMAA discarded a request with invalid sender state");
+    panic_if(packet->popSenderState() != state,
+             "LANLMAA discarded a request with changed sender-state stack");
+    delete state;
+    delete packet;
+    packet = nullptr;
 }
 
 bool
@@ -1439,6 +1497,7 @@ LANLMAA::issueLines()
                 line.lineAddress, lineBytes, Request::Flags(), requestorId);
             line.packet = new Packet(request, MemCmd::ReadReq);
             line.packet->allocate();
+            tagRequest(line.packet, TrafficKind::Line, &line.packet);
         }
         const bool retryAttempt = rejectedPacket == line.packet;
         if (retryAttempt) {
@@ -1512,6 +1571,7 @@ LANLMAA::issueUpdates()
             }
             entry.packet = new Packet(request, MemCmd::SwapReq);
             entry.packet->allocate();
+            tagRequest(entry.packet, TrafficKind::Update, &entry.packet);
         }
         const bool retryAttempt = rejectedPacket == entry.packet;
         if (retryAttempt) {
@@ -1565,6 +1625,8 @@ LANLMAA::issueVerification()
             Request::Flags(), requestorId);
         verificationPacket = new Packet(request, MemCmd::ReadReq);
         verificationPacket->allocate();
+        tagRequest(verificationPacket, TrafficKind::Verification,
+                   &verificationPacket);
     }
     if (waitingForRetry) {
         return;
@@ -1594,29 +1656,29 @@ LANLMAA::issueVerification()
 bool
 LANLMAA::receiveTimingResponse(PacketPtr packet)
 {
-    if (packet == descriptorPacket) {
+    const TrafficKind kind = acceptResponse(packet);
+    switch (kind) {
+      case TrafficKind::Descriptor:
         return receiveDescriptorResponse(packet);
-    }
-    if (packet == addressVectorPacket) {
+      case TrafficKind::AddressVector:
         return receiveAddressVectorResponse(packet);
-    }
-    if (packet == resultPacket) {
+      case TrafficKind::Result:
         return receiveResultResponse(packet);
-    }
-    if (packet == completionPacket) {
+      case TrafficKind::Completion:
         return receiveCompletionResponse(packet);
-    }
-    if (descriptorState == DescriptorState::EngineErrorDraining) {
-        return receiveDrainingLineResponse(packet);
-    }
-    if (updateMode) {
-        if (packet == verificationPacket) {
-            return receiveVerificationResponse(packet);
+      case TrafficKind::Line:
+        if (descriptorState == DescriptorState::EngineErrorDraining) {
+            return receiveDrainingLineResponse(packet);
         }
+        break;
+      case TrafficKind::Update: {
         UpdateEntry *entry = updateForPacket(packet);
         panic_if(!entry,
                  "LANLMAA update response has no retained obligation");
         return receiveUpdateResponse(*entry, packet);
+      }
+      case TrafficKind::Verification:
+        return receiveVerificationResponse(packet);
     }
 
     panic_if(!packet->isResponse() || !packet->isRead(),
