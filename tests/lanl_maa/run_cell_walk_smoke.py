@@ -78,7 +78,8 @@ def validate_exhaustion(stats):
     merges = stats.get("lineMergeHits")
     if physical is None or merges is None or physical + merges != 4:
         errors.append(
-            f"exhaustion conservation failed: physical={physical}, merges={merges}"
+            "exhaustion conservation failed: "
+            f"physical={physical}, merges={merges}"
         )
     if stats.get("contextWouldBlockCycles", 0) == 0:
         errors.append("exhaustion case did not exercise context pressure")
