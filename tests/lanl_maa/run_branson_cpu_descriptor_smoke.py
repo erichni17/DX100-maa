@@ -55,7 +55,7 @@ def validate(stats, metadata, committed_instructions, coherence_stats=None):
         "descriptorBusyRejections": 0,
         "descriptorRearms": 0,
         "descriptorFetches": 1,
-        "descriptorAddressLineReads": 1,
+        "descriptorAddressLineReads": (items + 7) // 8,
         "descriptorAddressesLoaded": items,
         "descriptorResultWrites": items,
         "descriptorCompletionWrites": 1,
