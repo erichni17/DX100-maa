@@ -4,11 +4,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "base/statistics.hh"
 #include "enums/LANLMAAUpdateOperation.hh"
 #include "mem/LANLMAA/Descriptor.hh"
+#include "mem/LANLMAA/FaceComputeTiming.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
 #include "params/LANLMAA.hh"
@@ -35,6 +37,8 @@ class LANLMAA : public ClockedObject
         Unadmitted,
         AddressReady,
         DataPending,
+        FaceComputeReady,
+        FaceComputePending,
         FaceGatherComplete,
         FaceUpdateReady,
         UpdatePending,
@@ -103,6 +107,7 @@ class LANLMAA : public ClockedObject
         uint32_t faceHigh = 0;
         uint8_t faceGatherStage = 0;
         uint8_t faceUpdateOrdinal = 0;
+        uint64_t faceComputeReadyCycle = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
@@ -209,6 +214,12 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorFacePressureWeightedValues;
         statistics::Scalar descriptorFaceBoundaryValues;
         statistics::Scalar descriptorFaceUpdatesAcknowledged;
+        statistics::Scalar descriptorFaceComputesQueued;
+        statistics::Scalar descriptorFaceComputesIssued;
+        statistics::Scalar descriptorFaceComputesCompleted;
+        statistics::Scalar faceComputeWouldBlockCycles;
+        statistics::Scalar faceComputeActiveCycles;
+        statistics::Scalar activeFaceComputeHighWaterMark;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -240,6 +251,9 @@ class LANLMAA : public ClockedObject
     const size_t updateEntryCount;
     const size_t updateBanks;
     const size_t updateIssueWidth;
+    const Cycles faceComputeLatency;
+    const Cycles faceComputeInitiationInterval;
+    const size_t faceComputeUnits;
     const size_t operationEntries;
     const size_t lineEntries;
     const size_t logicalAdmissionWidth;
@@ -255,6 +269,7 @@ class LANLMAA : public ClockedObject
     ControlPort controlPort;
     EventFunctionWrapper tickEvent;
     LANLMAAStats stats;
+    std::unique_ptr<FaceComputeTiming> faceComputeTiming;
 
     std::vector<Operation> operations;
     std::vector<LineEntry> lines;
@@ -264,6 +279,7 @@ class LANLMAA : public ClockedObject
     size_t nextVerification = 0;
     size_t activeOperations = 0;
     size_t activeContexts = 0;
+    size_t activeFaceComputations = 0;
     PacketPtr verificationPacket = nullptr;
     PacketPtr rejectedPacket = nullptr;
     bool verificationInFlight = false;
@@ -307,6 +323,9 @@ class LANLMAA : public ClockedObject
     Addr faceGatherAddress(const Operation &operation) const;
     Addr faceUpdateAddress(const Operation &operation) const;
     bool faceGatheringComplete() const;
+    void completeFaceValue(Operation &operation);
+    void completeFaceComputations();
+    void issueFaceComputations();
     void beginFaceUpdatePhase();
     static uint64_t encodeDouble(double value);
     static double decodeDouble(uint64_t bits);

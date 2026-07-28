@@ -26,6 +26,9 @@ parser.add_argument("--maa-cache-assoc", type=int, default=2)
 parser.add_argument("--maa-cache-mshrs", type=int, default=8)
 parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=2)
 parser.add_argument("--maa-cache-write-buffers", type=int, default=2)
+parser.add_argument("--face-compute-latency", type=int, default=0)
+parser.add_argument("--face-compute-initiation-interval", type=int, default=1)
+parser.add_argument("--face-compute-units", type=int, default=1)
 args = parser.parse_args()
 
 
@@ -96,6 +99,9 @@ system.lanl_maa = LANLMAA(
     update_entries=64,
     update_banks=8,
     update_issue_width=1,
+    face_compute_latency=args.face_compute_latency,
+    face_compute_initiation_interval=(args.face_compute_initiation_interval),
+    face_compute_units=args.face_compute_units,
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,

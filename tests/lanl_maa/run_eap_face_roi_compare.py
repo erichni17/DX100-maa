@@ -157,6 +157,7 @@ def workload_counts(cells, faces):
         "boundary": 0,
         "vacuum": 0,
         "pressure_weighted": 0,
+        "computes": 0,
         "gathers": 0,
         "updates": 0,
     }
@@ -178,6 +179,7 @@ def workload_counts(cells, faces):
             counts["gathers"] += 2
         else:
             counts["gathers"] += 8
+            counts["computes"] += 1
             if low_cell[2] * high_cell[3] <= 0.0:
                 counts["pressure_weighted"] += 1
     return counts
@@ -522,6 +524,10 @@ def validate_maa(stats, metadata):
     errors = []
     accelerator = stats["lanl_maa"]
     counts = metadata["counts"]
+    compute_timing = metadata["face_compute_timing"]
+    timed_computes = (
+        counts["computes"] if compute_timing["latency_cycles"] > 0 else 0
+    )
     expected = {
         "logicalItems": metadata["faces"],
         "logicalMemoryAccesses": counts["gathers"] + counts["updates"],
@@ -544,6 +550,9 @@ def validate_maa(stats, metadata):
         "descriptorFacePressureWeightedValues": counts["pressure_weighted"],
         "descriptorFaceBoundaryValues": counts["boundary"],
         "descriptorFaceUpdatesAcknowledged": counts["updates"],
+        "descriptorFaceComputesQueued": timed_computes,
+        "descriptorFaceComputesIssued": timed_computes,
+        "descriptorFaceComputesCompleted": timed_computes,
     }
     for name, value in expected.items():
         check_equal(errors, accelerator, name, value)
@@ -579,6 +588,21 @@ def validate_maa(stats, metadata):
         or not 0 <= acceptances <= resubmissions
     ):
         errors.append("retry acceptance accounting is invalid")
+    compute_active_cycles = accelerator.get("faceComputeActiveCycles")
+    compute_high_water = accelerator.get("activeFaceComputeHighWaterMark")
+    if timed_computes > 0:
+        if compute_active_cycles is None or compute_active_cycles <= 0:
+            errors.append("timed face compute resource was never active")
+        if compute_high_water is None or compute_high_water <= 0:
+            errors.append("timed face compute resource had no in-flight work")
+    elif (
+        compute_active_cycles != 0
+        or compute_high_water != 0
+        or accelerator.get("faceComputeWouldBlockCycles") != 0
+    ):
+        errors.append(
+            "disabled face compute resource accumulated timing state"
+        )
     if errors:
         raise RuntimeError(
             "EAP face MAA ROI validation failed:\n  " + "\n  ".join(errors)
@@ -671,6 +695,24 @@ def extract_metrics(stats, stats_path, variant):
         "update_combiner_hits": accelerator.get("updateCombinerHits"),
         "descriptor_cycles": accelerator.get("descriptorCycles"),
         "engine_cycles": accelerator.get("engineCycles"),
+        "face_computes_queued": accelerator.get(
+            "descriptorFaceComputesQueued"
+        ),
+        "face_computes_issued": accelerator.get(
+            "descriptorFaceComputesIssued"
+        ),
+        "face_computes_completed": accelerator.get(
+            "descriptorFaceComputesCompleted"
+        ),
+        "face_compute_would_block_cycles": accelerator.get(
+            "faceComputeWouldBlockCycles"
+        ),
+        "face_compute_active_cycles": accelerator.get(
+            "faceComputeActiveCycles"
+        ),
+        "active_face_compute_high_water_mark": accelerator.get(
+            "activeFaceComputeHighWaterMark"
+        ),
     }
     if metrics["roi_ticks"] <= 0 or metrics["cpu_cycles"] <= 0:
         raise RuntimeError(f"{variant} produced an empty ROI")
@@ -694,6 +736,10 @@ def run_variant(args, case_root, variant, binary, base_metadata):
         str(args.config.resolve()),
         f"--binary={binary}",
         f"--metadata={metadata_path}",
+        f"--face-compute-latency={args.face_compute_latency}",
+        "--face-compute-initiation-interval="
+        f"{args.face_compute_initiation_interval}",
+        f"--face-compute-units={args.face_compute_units}",
     ]
     result = subprocess.run(command, text=True, capture_output=True)
     (variant_root / "gem5.stdout").write_text(result.stdout, encoding="utf-8")
@@ -749,6 +795,13 @@ def run_case(args, repo, root, name, dimensions):
         "faces": dimensions["faces"],
         "cells": dimensions["cells"],
         "counts": counts,
+        "face_compute_timing": {
+            "latency_cycles": args.face_compute_latency,
+            "initiation_interval_cycles": (
+                args.face_compute_initiation_interval
+            ),
+            "units": args.face_compute_units,
+        },
         "descriptor_opcode": 4,
         "descriptor_flags": 6,
         "exact_output_words_checked": 4 * dimensions["cells"],
@@ -802,11 +855,10 @@ def run_case(args, repo, root, name, dimensions):
 
 
 def classify(cases):
-    anchor = cases["representative_anchor"]["maa_faster_by_roi_ticks"]
-    lightweight = cases["lightweight_equivalence"]["maa_faster_by_roi_ticks"]
-    if anchor != lightweight:
+    directions = {case["maa_faster_by_roi_ticks"] for case in cases.values()}
+    if len(directions) != 1:
         return "inconclusive_size_sensitivity"
-    if anchor:
+    if directions == {True}:
         return "positive_bounded_microbenchmark_screen"
     return "negative_bounded_microbenchmark_screen"
 
@@ -823,9 +875,19 @@ def run_comparison(args, root):
         "gem5_binary_sha256": file_sha256(args.gem5.resolve()),
         "config": str(args.config.resolve()),
         "config_source_sha256": file_sha256(args.config.resolve()),
+        "face_compute_timing": {
+            "latency_cycles": args.face_compute_latency,
+            "initiation_interval_cycles": (
+                args.face_compute_initiation_interval
+            ),
+            "units": args.face_compute_units,
+        },
         "cases": {},
     }
-    for name, dimensions in CASES.items():
+    selected_cases = (
+        {args.only_case: CASES[args.only_case]} if args.only_case else CASES
+    )
+    for name, dimensions in selected_cases.items():
         report["cases"][name] = run_case(args, repo, root, name, dimensions)
     report["classification"] = classify(report["cases"])
     report["limitations"] = [
@@ -850,7 +912,23 @@ def main():
         type=pathlib.Path,
     )
     parser.add_argument("--outdir", type=pathlib.Path)
+    parser.add_argument(
+        "--only-case",
+        choices=tuple(CASES),
+        help="Run only one frozen size for lightweight sensitivity",
+    )
+    parser.add_argument("--face-compute-latency", type=int, default=0)
+    parser.add_argument(
+        "--face-compute-initiation-interval", type=int, default=1
+    )
+    parser.add_argument("--face-compute-units", type=int, default=1)
     args = parser.parse_args()
+    if args.face_compute_latency < 0:
+        parser.error("--face-compute-latency must be nonnegative")
+    if args.face_compute_initiation_interval <= 0:
+        parser.error("--face-compute-initiation-interval must be positive")
+    if args.face_compute_units <= 0:
+        parser.error("--face-compute-units must be positive")
     if args.outdir:
         root = args.outdir.resolve()
         if root.exists():
@@ -862,13 +940,18 @@ def main():
             prefix="lanl-maa-eap-face-roi-"
         ) as temporary:
             report = run_comparison(args, pathlib.Path(temporary))
-    anchor_ratio = report["cases"]["representative_anchor"]["ratios"][
+    displayed_case = (
+        "representative_anchor"
+        if "representative_anchor" in report["cases"]
+        else next(iter(report["cases"]))
+    )
+    displayed_ratio = report["cases"][displayed_case]["ratios"][
         "scalar_over_maa_roi_ticks"
     ]
     print(
         "LANLMAA EAP face ROI comparison: PASS; "
         f"classification={report['classification']}; "
-        f"anchor_scalar_over_maa={anchor_ratio:.6f}"
+        f"{displayed_case}_scalar_over_maa={displayed_ratio:.6f}"
     )
 
 

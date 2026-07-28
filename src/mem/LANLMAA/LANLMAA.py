@@ -91,6 +91,17 @@ class LANLMAA(ClockedObject):
     update_issue_width = Param.Unsigned(
         1, "Maximum combined timing atomic requests issued per cycle"
     )
+    face_compute_latency = Param.Cycles(
+        0,
+        "Final live internal-face interpolation issue-to-result latency; "
+        "zero preserves untimed behavior",
+    )
+    face_compute_initiation_interval = Param.Cycles(
+        1, "Minimum cycles between issues to one face-compute unit"
+    )
+    face_compute_units = Param.Unsigned(
+        1, "Replicated abstract face-interpolation pipelines"
+    )
 
     operation_entries = Param.Unsigned(64, "Logical operation-window entries")
     line_entries = Param.Unsigned(32, "Coherent line-merge entries")

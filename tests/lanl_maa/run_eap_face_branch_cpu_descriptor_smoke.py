@@ -145,12 +145,8 @@ def expected_outputs(cells, faces, face_values, mode, faceval):
             output[high] = min(output[high], value)
             output[CELLS + high] = max(output[CELLS + high], value)
         if kind in (INTERNAL, LOW_BOUNDARY):
-            output[2 * CELLS + low] = min(
-                output[2 * CELLS + low], value
-            )
-            output[3 * CELLS + low] = max(
-                output[3 * CELLS + low], value
-            )
+            output[2 * CELLS + low] = min(output[2 * CELLS + low], value)
+            output[3 * CELLS + low] = max(output[3 * CELLS + low], value)
     return [double_bits(value) for value in output]
 
 
@@ -372,16 +368,32 @@ _start(void)
     path.write_text(source.lstrip(), encoding="utf-8")
 
 
-def generate_negative_source(path, cells, faces, face_values):
+def generate_negative_source(
+    path, cells, faces, face_values, late_compute_error=False
+):
     cell_words = [double_bits(value) for record in cells for value in record]
     cell_words[4] = double_bits(-1.875)
     bad_ordinal_words = packed_faces(faces, True)
-    bad_ordinal_words[1] = (
-        faces[1][1] | (FACES << 31) | (LOW_BOUNDARY << 62)
-    )
+    bad_ordinal_words[1] = faces[1][1] | (FACES << 31) | (LOW_BOUNDARY << 62)
     poison = (1 << 62) - 1
     denominator_words = [poison] * FACES
-    denominator_words[0] = 0 | (1 << 31) | (INTERNAL << 62)
+    bad_denominator = 0 | (1 << 31) | (INTERNAL << 62)
+    if late_compute_error:
+        live_pairs = (
+            (1, 2),
+            (2, 3),
+            (3, 5),
+            (5, 6),
+            (6, 7),
+            (7, 9),
+            (9, 10),
+            (10, 11),
+        )
+        for ordinal, (low, high) in enumerate(live_pairs):
+            denominator_words[ordinal] = low | (high << 31) | (INTERNAL << 62)
+        denominator_words[len(live_pairs)] = bad_denominator
+    else:
+        denominator_words[0] = bad_denominator
     source = f"""
 #include <stdint.h>
 
@@ -548,7 +560,9 @@ _start(void)
     path.write_text(source.lstrip(), encoding="utf-8")
 
 
-def build_program(root, cells, faces, face_values, negative=False):
+def build_program(
+    root, cells, faces, face_values, negative=False, late_compute_error=False
+):
     compiler = shutil.which("cc")
     if compiler is None:
         raise RuntimeError("EAP face branch CPU smoke requires cc")
@@ -556,7 +570,9 @@ def build_program(root, cells, faces, face_values, negative=False):
     source = root / f"eap_face_branch_cpu_descriptor{suffix}.c"
     binary = root / f"eap_face_branch_cpu_descriptor{suffix}.elf"
     if negative:
-        generate_negative_source(source, cells, faces, face_values)
+        generate_negative_source(
+            source, cells, faces, face_values, late_compute_error
+        )
     else:
         generate_source(source, cells, faces, face_values)
     subprocess.run(
@@ -607,11 +623,8 @@ def validate(stats, metadata, stats_path):
         "descriptorErrors": 0,
         "descriptorPredicatesSkipped": 2 * guarded["inactive"],
         "descriptorFaceValuesComputed": 2 * guarded["active"],
-        "descriptorFaceVacuumValues": guarded["vacuum"]
-        + pressure["vacuum"],
-        "descriptorFacePressureWeightedValues": pressure[
-            "pressure_weighted"
-        ],
+        "descriptorFaceVacuumValues": guarded["vacuum"] + pressure["vacuum"],
+        "descriptorFacePressureWeightedValues": pressure["pressure_weighted"],
         "descriptorFaceBoundaryValues": guarded["boundary"]
         + pressure["boundary"],
         "descriptorFaceUpdatesAcknowledged": total_updates,
@@ -679,13 +692,10 @@ def validate(stats, metadata, stats_path):
         )
 
 
-def validate_negative(stats, stats_path):
+def validate_negative(stats, stats_path, late_compute_error=False):
     errors = []
     accelerator = stats["lanl_maa"]
     expected = {
-        "logicalMemoryAccesses": 8,
-        "responsesFannedOut": 7,
-        "activeContextHighWaterMark": 1,
         "physicalAtomicUpdates": 0,
         "atomicAcknowledgements": 0,
         "updateOperationsAcknowledged": 0,
@@ -702,11 +712,28 @@ def validate_negative(stats, stats_path):
         "descriptorFacePressureWeightedValues": 0,
         "descriptorFaceUpdatesAcknowledged": 0,
     }
+    if not late_compute_error:
+        expected.update(
+            {
+                "logicalMemoryAccesses": 8,
+                "responsesFannedOut": 7,
+                "activeContextHighWaterMark": 1,
+                "descriptorFaceComputesQueued": 0,
+                "descriptorFaceComputesIssued": 0,
+                "descriptorFaceComputesCompleted": 0,
+            }
+        )
     for name, value in expected.items():
         check_equal(errors, accelerator, name, value)
     reads = accelerator.get("physicalLineReads")
     merges = accelerator.get("lineMergeHits")
-    if reads is None or merges is None or reads + merges != 8:
+    logical = accelerator.get("logicalMemoryAccesses")
+    if (
+        reads is None
+        or merges is None
+        or logical is None
+        or reads + merges != logical
+    ):
         errors.append("negative gather accounting did not close")
     if reads is not None:
         check_equal(errors, accelerator, "responses", reads)
@@ -718,6 +745,27 @@ def validate_negative(stats, stats_path):
     cpu_insts = read_scalar(stats_path, "system.cpu.commitStats0.numInsts")
     if cpu_insts is None or cpu_insts <= 0:
         errors.append("negative CPU program retired no instructions")
+    if late_compute_error:
+        queued = accelerator.get("descriptorFaceComputesQueued")
+        issued = accelerator.get("descriptorFaceComputesIssued")
+        completed = accelerator.get("descriptorFaceComputesCompleted")
+        active_cycles = accelerator.get("faceComputeActiveCycles")
+        high_water = accelerator.get("activeFaceComputeHighWaterMark")
+        context_high_water = accelerator.get("activeContextHighWaterMark")
+        if queued is None or queued <= 0:
+            errors.append("late error queued no face computations")
+        if issued is None or issued <= 0 or issued > queued:
+            errors.append(
+                "late error face compute issue accounting is invalid"
+            )
+        if completed != 0:
+            errors.append("late error completed a canceled face computation")
+        if active_cycles is None or active_cycles <= 0:
+            errors.append("late error never activated the compute resource")
+        if high_water is None or high_water <= 0:
+            errors.append("late error had no in-flight compute token")
+        if context_high_water is None or context_high_water <= 1:
+            errors.append("late error did not overlap active face contexts")
     if errors:
         raise RuntimeError(
             "LANLMAA EAP branch fail-closed smoke failed:\n  "
@@ -728,7 +776,12 @@ def validate_negative(stats, stats_path):
 def run_smoke(args, root):
     cells, faces, face_values = dataset()
     source, binary = build_program(
-        root, cells, faces, face_values, args.negative
+        root,
+        cells,
+        faces,
+        face_values,
+        args.negative,
+        args.late_compute_error,
     )
     guarded = workload_counts(cells, faces, "rho-guard")
     pressure = workload_counts(cells, faces, "pressure")
@@ -772,6 +825,14 @@ def run_smoke(args, root):
         "exact_completion_words_checked_per_submission": 4,
         "inactive_poison_indices": True,
         "negative": args.negative,
+        "late_compute_error": args.late_compute_error,
+        "face_compute_timing": {
+            "latency_cycles": args.face_compute_latency,
+            "initiation_interval_cycles": (
+                args.face_compute_initiation_interval
+            ),
+            "units": args.face_compute_units,
+        },
         "l1_caches": True,
         "maa_coherence_cache": {
             "size": args.maa_cache_size,
@@ -783,7 +844,9 @@ def run_smoke(args, root):
         "claim_boundary": (
             "Generated real-X86 fail-closed checks for an out-of-range "
             "faceval ordinal and pressure-weighted zero denominator; no "
-            "native EAP/FLAG or performance claim."
+            "native EAP/FLAG or performance claim. The optional late-error "
+            "variant places valid live faces before the bad denominator to "
+            "exercise cancellation of abstract compute tokens."
             if args.negative
             else "Generated real-X86 microbenchmark over an EAP-derived "
             "compact ABI; not native EAP/FLAG application submission, "
@@ -807,9 +870,12 @@ def run_smoke(args, root):
         f"--maa-cache-size={args.maa_cache_size}",
         f"--maa-cache-assoc={args.maa_cache_assoc}",
         f"--maa-cache-mshrs={args.maa_cache_mshrs}",
-        "--maa-cache-targets-per-mshr="
-        f"{args.maa_cache_targets_per_mshr}",
+        "--maa-cache-targets-per-mshr=" f"{args.maa_cache_targets_per_mshr}",
         f"--maa-cache-write-buffers={args.maa_cache_write_buffers}",
+        f"--face-compute-latency={args.face_compute_latency}",
+        "--face-compute-initiation-interval="
+        f"{args.face_compute_initiation_interval}",
+        f"--face-compute-units={args.face_compute_units}",
     ]
     result = subprocess.run(command, text=True, capture_output=True)
     (root / "gem5.stdout").write_text(result.stdout, encoding="utf-8")
@@ -823,7 +889,7 @@ def run_smoke(args, root):
     stats_path = outdir / "stats.txt"
     stats = read_stats(stats_path)
     if args.negative:
-        validate_negative(stats, stats_path)
+        validate_negative(stats, stats_path, args.late_compute_error)
     else:
         validate(stats, metadata, stats_path)
 
@@ -837,6 +903,12 @@ def main():
     parser.add_argument("--maa-cache-targets-per-mshr", type=int, default=2)
     parser.add_argument("--maa-cache-write-buffers", type=int, default=2)
     parser.add_argument("--negative", action="store_true")
+    parser.add_argument("--late-compute-error", action="store_true")
+    parser.add_argument("--face-compute-latency", type=int, default=0)
+    parser.add_argument(
+        "--face-compute-initiation-interval", type=int, default=1
+    )
+    parser.add_argument("--face-compute-units", type=int, default=1)
     parser.add_argument(
         "--config",
         default=pathlib.Path(__file__).with_name(
@@ -846,6 +918,19 @@ def main():
     )
     parser.add_argument("--outdir", type=pathlib.Path)
     args = parser.parse_args()
+
+    if args.face_compute_latency < 0:
+        parser.error("--face-compute-latency must be nonnegative")
+    if args.face_compute_initiation_interval <= 0:
+        parser.error("--face-compute-initiation-interval must be positive")
+    if args.face_compute_units <= 0:
+        parser.error("--face-compute-units must be positive")
+    if args.late_compute_error and not args.negative:
+        parser.error("--late-compute-error requires --negative")
+    if args.late_compute_error and args.face_compute_latency == 0:
+        parser.error(
+            "--late-compute-error requires positive face compute latency"
+        )
 
     if args.outdir:
         root = args.outdir.resolve()
@@ -860,8 +945,7 @@ def main():
             run_smoke(args, pathlib.Path(root))
     mode = " fail-closed" if args.negative else ""
     print(
-        f"LANLMAA EAP face branch CPU descriptor{mode} "
-        "with L1 caches: PASS"
+        f"LANLMAA EAP face branch CPU descriptor{mode} " "with L1 caches: PASS"
     )
 
 

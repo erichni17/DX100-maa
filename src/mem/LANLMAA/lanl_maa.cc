@@ -214,6 +214,24 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorFaceUpdatesAcknowledged,
                statistics::units::Count::get(),
                "EAP-derived logical MIN/MAX updates acknowledged"),
+      ADD_STAT(descriptorFaceComputesQueued,
+               statistics::units::Count::get(),
+               "Live internal-face values queued for timed computation"),
+      ADD_STAT(descriptorFaceComputesIssued,
+               statistics::units::Count::get(),
+               "Live internal-face values issued to compute units"),
+      ADD_STAT(descriptorFaceComputesCompleted,
+               statistics::units::Count::get(),
+               "Timed internal-face values released for updates"),
+      ADD_STAT(faceComputeWouldBlockCycles,
+               statistics::units::Cycle::get(),
+               "Cycles with a ready face value blocked by compute capacity"),
+      ADD_STAT(faceComputeActiveCycles,
+               statistics::units::Cycle::get(),
+               "Cycles with queued or in-flight timed face computation"),
+      ADD_STAT(activeFaceComputeHighWaterMark,
+               statistics::units::Count::get(),
+               "Maximum simultaneous in-flight face computations"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -248,6 +266,10 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       updateEntryCount(params.update_entries),
       updateBanks(params.update_banks),
       updateIssueWidth(params.update_issue_width),
+      faceComputeLatency(params.face_compute_latency),
+      faceComputeInitiationInterval(
+          params.face_compute_initiation_interval),
+      faceComputeUnits(params.face_compute_units),
       operationEntries(params.operation_entries),
       lineEntries(params.line_entries),
       logicalAdmissionWidth(params.logical_admission_width),
@@ -267,6 +289,10 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       updates(updateEntryCount)
 {
     validateConfiguration();
+    faceComputeTiming = std::make_unique<FaceComputeTiming>(
+        static_cast<uint64_t>(faceComputeLatency),
+        static_cast<uint64_t>(faceComputeInitiationInterval),
+        faceComputeUnits);
     descriptorState = descriptorMode ? DescriptorState::Idle :
                                        DescriptorState::Disabled;
     for (size_t index = 0; index < addresses.size(); ++index) {
@@ -398,6 +424,10 @@ LANLMAA::validateConfiguration() const
              "LANLMAA update entries must divide evenly into nonzero banks");
     fatal_if(updateIssueWidth == 0,
              "LANLMAA update_issue_width must be nonzero");
+    fatal_if(faceComputeInitiationInterval == Cycles(0),
+             "LANLMAA face compute initiation interval must be nonzero");
+    fatal_if(faceComputeUnits == 0,
+             "LANLMAA face compute units must be nonzero");
     fatal_if(operationEntries == 0,
              "LANLMAA operation_entries must be nonzero");
     fatal_if((dependentMode || descriptorMode) && continuationEntries == 0,
@@ -552,7 +582,8 @@ LANLMAA::rearmDescriptorEngine()
                  completionPacket || verificationPacket || rejectedPacket ||
                  waitingForRetry,
              "LANLMAA rearmed a descriptor with retained traffic");
-    panic_if(activeOperations != 0 || activeContexts != 0,
+    panic_if(activeOperations != 0 || activeContexts != 0 ||
+                 activeFaceComputations != 0,
              "LANLMAA rearmed a descriptor with active operations");
     panic_if(std::any_of(
                  lines.begin(), lines.end(), [](const LineEntry &line) {
@@ -574,6 +605,8 @@ LANLMAA::rearmDescriptorEngine()
     nextVerification = 0;
     activeOperations = 0;
     activeContexts = 0;
+    activeFaceComputations = 0;
+    faceComputeTiming->reset();
     verificationInFlight = false;
     finished = false;
     descriptorState = DescriptorState::Idle;
@@ -641,6 +674,7 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
              "LANLMAA descriptor error drain cannot roll back updates");
     activeOperations = 0;
     activeContexts = 0;
+    activeFaceComputations = 0;
     for (auto &operation : operations) {
         operation.ownsContext = false;
     }
@@ -1170,6 +1204,77 @@ LANLMAA::faceGatheringComplete() const
 }
 
 void
+LANLMAA::completeFaceValue(Operation &operation)
+{
+    panic_if(!faceMinMaxDescriptor() ||
+                 !faceOperationActive(operation),
+             "LANLMAA completed an invalid face value");
+    operation.faceComputeReadyCycle = 0;
+    operation.state = OperationState::FaceGatherComplete;
+    ++stats.descriptorFaceValuesComputed;
+    if (operation.faceKind == FaceMinMaxKind::Internal &&
+        operation.facePressureWeighted) {
+        ++stats.descriptorFacePressureWeightedValues;
+    }
+}
+
+void
+LANLMAA::completeFaceComputations()
+{
+    if (!faceComputeTiming->enabled()) {
+        return;
+    }
+    const uint64_t cycle = static_cast<uint64_t>(curCycle());
+    for (auto &operation : operations) {
+        if (operation.state != OperationState::FaceComputePending ||
+            operation.faceComputeReadyCycle > cycle) {
+            continue;
+        }
+        panic_if(activeFaceComputations == 0,
+                 "LANLMAA face compute completion underflowed");
+        --activeFaceComputations;
+        ++stats.descriptorFaceComputesCompleted;
+        completeFaceValue(operation);
+    }
+}
+
+void
+LANLMAA::issueFaceComputations()
+{
+    if (!faceComputeTiming->enabled()) {
+        return;
+    }
+    const uint64_t cycle = static_cast<uint64_t>(curCycle());
+    for (auto &operation : operations) {
+        if (operation.state != OperationState::FaceComputeReady) {
+            continue;
+        }
+        const auto issue = faceComputeTiming->issue(cycle);
+        if (!issue) {
+            break;
+        }
+        operation.faceComputeReadyCycle = issue->completionCycle;
+        operation.state = OperationState::FaceComputePending;
+        ++activeFaceComputations;
+        ++stats.descriptorFaceComputesIssued;
+        if (activeFaceComputations >
+            stats.activeFaceComputeHighWaterMark.value()) {
+            stats.activeFaceComputeHighWaterMark = activeFaceComputations;
+        }
+    }
+    const bool ready = std::any_of(
+        operations.begin(), operations.end(), [](const Operation &operation) {
+            return operation.state == OperationState::FaceComputeReady;
+        });
+    if (ready) {
+        ++stats.faceComputeWouldBlockCycles;
+    }
+    if (ready || activeFaceComputations != 0) {
+        ++stats.faceComputeActiveCycles;
+    }
+}
+
+void
 LANLMAA::beginFaceUpdatePhase()
 {
     panic_if(!faceGatheringComplete(),
@@ -1487,6 +1592,8 @@ LANLMAA::beginDescriptorExecution()
     nextVerification = 0;
     activeOperations = 0;
     activeContexts = 0;
+    activeFaceComputations = 0;
+    faceComputeTiming->reset(static_cast<uint64_t>(curCycle()));
     descriptorFaceUpdatesAcknowledged = 0;
     descriptorFaceUpdatePhase = false;
     descriptorState = DescriptorState::Executing;
@@ -1498,7 +1605,7 @@ LANLMAA::beginDescriptorResults()
     panic_if(activeOperations != 0 || nextAdmission != operations.size() ||
                  nextRetirement != operations.size(),
              "LANLMAA descriptor reached results before engine quiescence");
-    panic_if(activeContexts != 0,
+    panic_if(activeContexts != 0 || activeFaceComputations != 0,
              "LANLMAA descriptor reached results with retained contexts");
     panic_if(std::any_of(
                  lines.begin(), lines.end(), [](const LineEntry &line) {
@@ -1523,6 +1630,8 @@ LANLMAA::completeDescriptor()
     panic_if(rejectedPacket || waitingForRetry || descriptorPacket ||
                  addressVectorPacket || resultPacket || completionPacket,
              "LANLMAA completed a descriptor with retained traffic");
+    panic_if(activeFaceComputations != 0,
+             "LANLMAA completed with in-flight face computation");
     descriptorState = DescriptorState::Completed;
     finished = true;
     DPRINTF(LANLMAA,
@@ -1569,6 +1678,8 @@ LANLMAA::tick()
     admitOperations();
     if (faceMinMaxDescriptor()) {
         if (!descriptorFaceUpdatePhase) {
+            completeFaceComputations();
+            issueFaceComputations();
             attachReadyOperations();
             issueLines();
             if (faceGatheringComplete()) {
@@ -2227,6 +2338,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
             }
             const uint8_t stage = operation.faceGatherStage;
             bool valueComplete = false;
+            bool computeRequired = false;
             bool denominatorRequired = false;
             double faceValue = 0.0;
             double denominator = 1.0;
@@ -2253,6 +2365,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                              lowHalfHigh * field) /
                             denominator;
                         valueComplete = true;
+                        computeRequired = true;
                     }
                 } else if (mode ==
                            FaceMinMaxInternalMode::DensityGuarded) {
@@ -2282,6 +2395,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                              lowHalfHigh * field) /
                             denominator;
                         valueComplete = true;
+                        computeRequired = true;
                     }
                 } else {
                     panic_if(
@@ -2340,6 +2454,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                             (highTerm + lowCoefficient * field) /
                             denominator;
                         valueComplete = true;
+                        computeRequired = true;
                     }
                 }
             }
@@ -2356,11 +2471,11 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                     return true;
                 }
                 operation.value = encodeDouble(faceValue);
-                operation.state = OperationState::FaceGatherComplete;
-                ++stats.descriptorFaceValuesComputed;
-                if (operation.faceKind == FaceMinMaxKind::Internal &&
-                    operation.facePressureWeighted) {
-                    ++stats.descriptorFacePressureWeightedValues;
+                if (computeRequired && faceComputeTiming->enabled()) {
+                    operation.state = OperationState::FaceComputeReady;
+                    ++stats.descriptorFaceComputesQueued;
+                } else {
+                    completeFaceValue(operation);
                 }
             } else {
                 ++operation.faceGatherStage;
@@ -2506,6 +2621,8 @@ LANLMAA::finish()
 {
     panic_if(activeOperations != 0, "LANLMAA finished with active operations");
     panic_if(activeContexts != 0, "LANLMAA finished with active contexts");
+    panic_if(activeFaceComputations != 0,
+             "LANLMAA finished with active face computations");
     panic_if(nextAdmission != operations.size(),
              "LANLMAA finished before admitting every item");
     panic_if(!allUpdateEntriesFree(),
