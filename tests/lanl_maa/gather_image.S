@@ -1,0 +1,29 @@
+.section .data
+.global _lanl_maa_image_start
+_lanl_maa_image_start:
+    .quad 0x0123456789abcdef
+    .quad 0xfedcba9876543210
+    .quad 0x1122334455667788
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+
+    .quad 0x8877665544332211
+    .quad 0xa5a5a5a55a5a5a5a
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+
+    .quad 0xdeadbeefcafebabe
+    .quad 0x0f1e2d3c4b5a6978
+    .quad 0x13579bdf2468ace0
+    .quad 0x55aa55aaaa55aa55
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000
+    .quad 0x0000000000000000

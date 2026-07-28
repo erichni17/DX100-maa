@@ -3,6 +3,7 @@
 import argparse
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -53,6 +54,53 @@ def validate(stats):
         )
 
 
+def build_image(root):
+    compiler = shutil.which("cc")
+    linker = shutil.which("ld")
+    if not compiler or not linker:
+        raise RuntimeError("LANLMAA gather smoke requires cc and ld")
+
+    source_dir = pathlib.Path(__file__).resolve().parent
+    object_path = root / "gather_image.o"
+    image_path = root / "gather_image.elf"
+    subprocess.run(
+        [compiler, "-c", source_dir / "gather_image.S", "-o", object_path],
+        check=True,
+    )
+    subprocess.run(
+        [
+            linker,
+            "-T",
+            source_dir / "gather_image.ld",
+            "-o",
+            image_path,
+            object_path,
+        ],
+        check=True,
+    )
+    return image_path
+
+
+def run_smoke(args, root):
+    image = build_image(root)
+    outdir = root / "m5out"
+    command = [
+        str(args.gem5.resolve()),
+        f"--outdir={outdir}",
+        str(args.config.resolve()),
+        f"--image={image}",
+    ]
+    result = subprocess.run(command, text=True, capture_output=True)
+    if args.outdir:
+        (root / "gem5.stdout").write_text(result.stdout, encoding="utf-8")
+        (root / "gem5.stderr").write_text(result.stderr, encoding="utf-8")
+    if result.returncode != 0:
+        raise RuntimeError(
+            "gem5 gather smoke failed:\n" + result.stdout + result.stderr
+        )
+    validate(read_stats(outdir / "stats.txt"))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
@@ -61,20 +109,22 @@ def main():
         default=pathlib.Path(__file__).with_name("gather_smoke.py"),
         type=pathlib.Path,
     )
+    parser.add_argument(
+        "--outdir",
+        type=pathlib.Path,
+        help="Preserve the generated image, logs, and m5out evidence",
+    )
     args = parser.parse_args()
 
-    with tempfile.TemporaryDirectory(prefix="lanl-maa-gather-") as outdir:
-        command = [
-            str(args.gem5.resolve()),
-            f"--outdir={outdir}",
-            str(args.config.resolve()),
-        ]
-        result = subprocess.run(command, text=True, capture_output=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                "gem5 gather smoke failed:\n" + result.stdout + result.stderr
-            )
-        validate(read_stats(pathlib.Path(outdir) / "stats.txt"))
+    if args.outdir:
+        root = args.outdir.resolve()
+        if root.exists():
+            raise RuntimeError(f"refusing to reuse evidence directory: {root}")
+        root.mkdir(parents=True)
+        run_smoke(args, root)
+    else:
+        with tempfile.TemporaryDirectory(prefix="lanl-maa-gather-") as root:
+            run_smoke(args, pathlib.Path(root))
 
     print("LANLMAA gather smoke: PASS")
 

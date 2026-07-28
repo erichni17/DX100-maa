@@ -1,3 +1,5 @@
+import argparse
+
 import m5
 from m5.objects import (
     LANLMAA,
@@ -10,6 +12,10 @@ from m5.objects import (
     VoltageDomain,
 )
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--image", required=True)
+args = parser.parse_args()
+
 system = System(
     cache_line_size=64,
     mem_mode="timing",
@@ -20,7 +26,9 @@ system.clk_domain = SrcClockDomain(
     clock="1GHz", voltage_domain=system.voltage_domain
 )
 system.membus = SystemXBar()
-system.memory = SimpleMemory(range=system.mem_ranges[0], latency="20ns")
+system.memory = SimpleMemory(
+    range=system.mem_ranges[0], latency="20ns", image_file=args.image
+)
 
 addresses = [
     0x000,
@@ -38,7 +46,20 @@ addresses = [
 ]
 system.lanl_maa = LANLMAA(
     addresses=addresses,
-    expected_values=[0] * len(addresses),
+    expected_values=[
+        0x0123456789ABCDEF,
+        0xFEDCBA9876543210,
+        0x1122334455667788,
+        0xFEDCBA9876543210,
+        0x8877665544332211,
+        0xA5A5A5A55A5A5A5A,
+        0x0123456789ABCDEF,
+        0xDEADBEEFCAFEBABE,
+        0x0F1E2D3C4B5A6978,
+        0x13579BDF2468ACE0,
+        0x55AA55AAAA55AA55,
+        0xDEADBEEFCAFEBABE,
+    ],
     operation_entries=8,
     line_entries=2,
     logical_admission_width=2,
