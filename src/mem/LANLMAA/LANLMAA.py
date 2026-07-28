@@ -4,7 +4,13 @@ from m5.proxy import *
 
 
 class LANLMAAUpdateOperation(Enum):
-    vals = ["uint64_add", "uint64_min", "uint64_max"]
+    vals = [
+        "uint64_add",
+        "uint64_min",
+        "uint64_max",
+        "fp64_add_relaxed",
+        "fp64_add_strict",
+    ]
 
 
 class LANLMAA(ClockedObject):
@@ -37,6 +43,9 @@ class LANLMAA(ClockedObject):
     update_values = VectorParam.UInt64(
         [], "Unsigned 64-bit operand for every update address"
     )
+    update_fp_values = VectorParam.Float(
+        [], "Finite FP64 operand for every floating update address"
+    )
     update_operation = Param.LANLMAAUpdateOperation(
         "uint64_add", "Unsigned 64-bit atomic update operation"
     )
@@ -45,6 +54,15 @@ class LANLMAA(ClockedObject):
     )
     verification_values = VectorParam.UInt64(
         [], "Expected final value for every verification address"
+    )
+    verification_fp_values = VectorParam.Float(
+        [], "Expected finite FP64 value for every verification address"
+    )
+    verification_abs_tolerance = Param.Float(
+        0.0, "Absolute tolerance for FP64 post-drain verification"
+    )
+    verification_rel_tolerance = Param.Float(
+        0.0, "Relative tolerance for FP64 post-drain verification"
     )
     update_entries = Param.Unsigned(64, "Banked update-combiner entries")
     update_banks = Param.Unsigned(8, "Update-combiner banks")

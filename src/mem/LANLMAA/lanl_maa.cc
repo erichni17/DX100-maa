@@ -1,6 +1,7 @@
 #include "mem/LANLMAA/lanl_maa.hh"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -108,6 +109,10 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Accepted unsigned 64-bit atomic MIN requests"),
       ADD_STAT(atomicMaxUpdates, statistics::units::Count::get(),
                "Accepted unsigned 64-bit atomic MAX requests"),
+      ADD_STAT(atomicFp64AddUpdates, statistics::units::Count::get(),
+               "Accepted FP64 atomic ADD requests"),
+      ADD_STAT(strictFp64Serializations, statistics::units::Count::get(),
+               "FP64 updates serialized to preserve per-address order"),
       ADD_STAT(atomicAcknowledgements, statistics::units::Count::get(),
                "Combined timing atomic responses accepted"),
       ADD_STAT(atomicOldValuesReturned, statistics::units::Count::get(),
@@ -132,9 +137,13 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       terminalAddress(params.terminal_address),
       updateMode(params.update_mode),
       updateValues(params.update_values),
+      updateFpValues(params.update_fp_values),
       updateOperation(params.update_operation),
       verificationAddresses(params.verification_addresses),
       verificationValues(params.verification_values),
+      verificationFpValues(params.verification_fp_values),
+      verificationAbsTolerance(params.verification_abs_tolerance),
+      verificationRelTolerance(params.verification_rel_tolerance),
       updateEntryCount(params.update_entries),
       updateBanks(params.update_banks),
       updateIssueWidth(params.update_issue_width),
@@ -158,7 +167,8 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
     for (size_t index = 0; index < addresses.size(); ++index) {
         operations[index].address = addresses[index];
         if (updateMode) {
-            operations[index].value = updateValues[index];
+            operations[index].value = floatingUpdate() ?
+                encodeDouble(updateFpValues[index]) : updateValues[index];
         }
         if (!expectedValues.empty()) {
             operations[index].expected = expectedValues[index];
@@ -177,25 +187,65 @@ LANLMAA::validateConfiguration() const
              "LANLMAA dependent and update modes are mutually exclusive");
     fatal_if(updateMode && !expectedValues.empty(),
              "LANLMAA update mode uses the post-drain verification oracle");
-    fatal_if(updateMode && updateValues.size() != addresses.size(),
-             "LANLMAA update_values must match update addresses");
-    fatal_if(!updateMode && !updateValues.empty(),
-             "LANLMAA update_values require update mode");
+    const bool fpUpdate = floatingUpdate();
+    fatal_if(updateMode && !fpUpdate &&
+                 updateValues.size() != addresses.size(),
+             "LANLMAA integer update_values must match update addresses");
+    fatal_if(updateMode && fpUpdate &&
+                 updateFpValues.size() != addresses.size(),
+             "LANLMAA FP64 update values must match update addresses");
+    fatal_if(fpUpdate && !updateValues.empty(),
+             "LANLMAA FP64 update mode rejects integer update values");
+    fatal_if(!fpUpdate && !updateFpValues.empty(),
+             "LANLMAA integer update mode rejects FP64 update values");
+    fatal_if(!updateMode && (!updateValues.empty() ||
+                            !updateFpValues.empty()),
+             "LANLMAA update values require update mode");
+    fatal_if(!updateMode && updateOperation != enums::uint64_add,
+             "LANLMAA non-default update operation requires update mode");
     switch (updateOperation) {
       case enums::uint64_add:
       case enums::uint64_min:
       case enums::uint64_max:
+      case enums::fp64_add_relaxed:
+      case enums::fp64_add_strict:
         break;
       default:
         fatal("LANLMAA update operation is invalid");
     }
-    fatal_if(
-        verificationAddresses.size() != verificationValues.size(),
-        "LANLMAA verification addresses and values must match");
+    fatal_if(!fpUpdate &&
+                 verificationAddresses.size() != verificationValues.size(),
+             "LANLMAA integer verification addresses and values must match");
+    fatal_if(fpUpdate &&
+                 verificationAddresses.size() != verificationFpValues.size(),
+             "LANLMAA FP64 verification addresses and values must match");
+    fatal_if(fpUpdate && !verificationValues.empty(),
+             "LANLMAA FP64 update rejects integer verification values");
+    fatal_if(!fpUpdate && !verificationFpValues.empty(),
+             "LANLMAA integer update rejects FP64 verification values");
     fatal_if(updateMode && verificationAddresses.empty(),
              "LANLMAA update mode requires a post-drain oracle");
-    fatal_if(!updateMode && !verificationAddresses.empty(),
+    fatal_if(!updateMode && (!verificationAddresses.empty() ||
+                            !verificationValues.empty() ||
+                            !verificationFpValues.empty()),
              "LANLMAA verification oracle requires update mode");
+    fatal_if(!std::isfinite(verificationAbsTolerance) ||
+                 verificationAbsTolerance < 0.0,
+             "LANLMAA FP64 absolute tolerance must be finite and nonnegative");
+    fatal_if(!std::isfinite(verificationRelTolerance) ||
+                 verificationRelTolerance < 0.0,
+             "LANLMAA FP64 relative tolerance must be finite and nonnegative");
+    fatal_if(!fpUpdate && (verificationAbsTolerance != 0.0 ||
+                           verificationRelTolerance != 0.0),
+             "LANLMAA integer update rejects FP64 tolerances");
+    for (const double value : updateFpValues) {
+        fatal_if(!std::isfinite(value),
+                 "LANLMAA FP64 update operands must be finite");
+    }
+    for (const double value : verificationFpValues) {
+        fatal_if(!std::isfinite(value),
+                 "LANLMAA FP64 verification values must be finite");
+    }
     fatal_if(updateEntryCount == 0,
              "LANLMAA update_entries must be nonzero");
     const bool invalidUpdateBankGeometry = updateBanks == 0 ||
@@ -351,6 +401,37 @@ LANLMAA::allUpdateEntriesFree() const
         });
 }
 
+bool
+LANLMAA::floatingUpdate() const
+{
+    return updateOperation == enums::fp64_add_relaxed ||
+           updateOperation == enums::fp64_add_strict;
+}
+
+bool
+LANLMAA::strictFloatingUpdate() const
+{
+    return updateOperation == enums::fp64_add_strict;
+}
+
+uint64_t
+LANLMAA::encodeDouble(double value)
+{
+    uint64_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+double
+LANLMAA::decodeDouble(uint64_t bits)
+{
+    double value = 0.0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 void
 LANLMAA::scheduleTick()
 {
@@ -491,6 +572,15 @@ LANLMAA::attachReadyUpdates()
         }
 
         UpdateEntry *entry = matchingUpdate(operation.address);
+        if (entry && strictFloatingUpdate()) {
+            if (entry->state == UpdateState::Accumulating) {
+                entry->state = UpdateState::AtomicPending;
+                ++stats.updateDrains;
+                ++stats.strictFp64Serializations;
+            }
+            addressBusy = true;
+            continue;
+        }
         if (entry && entry->state != UpdateState::Accumulating) {
             addressBusy = true;
             continue;
@@ -523,6 +613,13 @@ LANLMAA::attachReadyUpdates()
                 entry->contribution =
                     std::max(entry->contribution, operation.value);
                 break;
+              case enums::fp64_add_relaxed:
+                entry->contribution = encodeDouble(
+                    decodeDouble(entry->contribution) +
+                    decodeDouble(operation.value));
+                break;
+              case enums::fp64_add_strict:
+                panic("LANLMAA strict FP64 update was combined");
               default:
                 panic("LANLMAA update operation became invalid");
             }
@@ -650,6 +747,12 @@ LANLMAA::issueUpdates()
                     std::make_unique<AtomicOpMax<uint64_t>>(
                         entry.contribution));
                 break;
+              case enums::fp64_add_relaxed:
+              case enums::fp64_add_strict:
+                request->setAtomicOpFunctor(
+                    std::make_unique<AtomicOpAdd<double>>(
+                        decodeDouble(entry.contribution)));
+                break;
               default:
                 panic("LANLMAA update operation became invalid");
             }
@@ -683,6 +786,10 @@ LANLMAA::issueUpdates()
             break;
           case enums::uint64_max:
             ++stats.atomicMaxUpdates;
+            break;
+          case enums::fp64_add_relaxed:
+          case enums::fp64_add_strict:
+            ++stats.atomicFp64AddUpdates;
             break;
           default:
             panic("LANLMAA update operation became invalid");
@@ -821,14 +928,24 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
              "LANLMAA response is not for an in-flight atomic update");
     panic_if(packet->cmd != MemCmd::SwapResp || !packet->isAtomicOp(),
              "LANLMAA update did not receive an atomic swap response");
-    uint64_t oldValue = 0;
-    std::memcpy(
-        &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
-    DPRINTF(LANLMAA,
-            "atomic update address=%#llx old=%llu contribution=%llu\n",
-            static_cast<unsigned long long>(entry.address),
-            static_cast<unsigned long long>(oldValue),
-            static_cast<unsigned long long>(entry.contribution));
+    if (floatingUpdate()) {
+        double oldValue = 0.0;
+        std::memcpy(
+            &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
+        DPRINTF(LANLMAA,
+                "FP64 atomic update address=%#llx old=%g operand=%g\n",
+                static_cast<unsigned long long>(entry.address), oldValue,
+                decodeDouble(entry.contribution));
+    } else {
+        uint64_t oldValue = 0;
+        std::memcpy(
+            &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
+        DPRINTF(LANLMAA,
+                "integer atomic update address=%#llx old=%llu operand=%llu\n",
+                static_cast<unsigned long long>(entry.address),
+                static_cast<unsigned long long>(oldValue),
+                static_cast<unsigned long long>(entry.contribution));
+    }
     ++stats.atomicOldValuesReturned;
     for (const size_t operationIndex : entry.waiters) {
         auto &operation = operations[operationIndex];
@@ -852,10 +969,22 @@ LANLMAA::receiveVerificationResponse(PacketPtr packet)
              "LANLMAA verification response changed packet ownership");
     panic_if(!packet->isResponse() || !packet->isRead(),
              "LANLMAA verification received a non-read response");
-    uint64_t value = 0;
-    std::memcpy(&value, packet->getConstPtr<uint8_t>(), sizeof(value));
-    if (value != verificationValues[nextVerification]) {
-        ++stats.verificationFailures;
+    if (floatingUpdate()) {
+        double value = 0.0;
+        std::memcpy(&value, packet->getConstPtr<uint8_t>(), sizeof(value));
+        const double expected = verificationFpValues[nextVerification];
+        const double tolerance = verificationAbsTolerance +
+            verificationRelTolerance * std::fabs(expected);
+        if (!std::isfinite(value) ||
+            std::fabs(value - expected) > tolerance) {
+            ++stats.verificationFailures;
+        }
+    } else {
+        uint64_t value = 0;
+        std::memcpy(&value, packet->getConstPtr<uint8_t>(), sizeof(value));
+        if (value != verificationValues[nextVerification]) {
+            ++stats.verificationFailures;
+        }
     }
     ++stats.responses;
     delete packet;

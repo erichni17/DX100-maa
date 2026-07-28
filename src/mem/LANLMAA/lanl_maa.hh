@@ -116,6 +116,8 @@ class LANLMAA : public ClockedObject
         statistics::Scalar atomicAddUpdates;
         statistics::Scalar atomicMinUpdates;
         statistics::Scalar atomicMaxUpdates;
+        statistics::Scalar atomicFp64AddUpdates;
+        statistics::Scalar strictFp64Serializations;
         statistics::Scalar atomicAcknowledgements;
         statistics::Scalar atomicOldValuesReturned;
         statistics::Scalar updateOperationsAcknowledged;
@@ -133,9 +135,13 @@ class LANLMAA : public ClockedObject
     const uint64_t terminalAddress;
     const bool updateMode;
     const std::vector<uint64_t> updateValues;
+    const std::vector<double> updateFpValues;
     const enums::LANLMAAUpdateOperation updateOperation;
     const std::vector<Addr> verificationAddresses;
     const std::vector<uint64_t> verificationValues;
+    const std::vector<double> verificationFpValues;
+    const double verificationAbsTolerance;
+    const double verificationRelTolerance;
     const size_t updateEntryCount;
     const size_t updateBanks;
     const size_t updateIssueWidth;
@@ -176,6 +182,10 @@ class LANLMAA : public ClockedObject
     UpdateEntry *drainableUpdate(Addr address);
     UpdateEntry *updateForPacket(PacketPtr packet);
     bool allUpdateEntriesFree() const;
+    bool floatingUpdate() const;
+    bool strictFloatingUpdate() const;
+    static uint64_t encodeDouble(double value);
+    static double decodeDouble(uint64_t bits);
     void validateConfiguration() const;
     void scheduleTick();
     void tick();
