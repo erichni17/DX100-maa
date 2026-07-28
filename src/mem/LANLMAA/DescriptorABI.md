@@ -224,6 +224,16 @@ model Branson RNG, logarithm/exponential evaluation, geometry, or native
 application integration, so this opcode alone is not an application-speedup
 claim.
 
+`branson_active_context_limit` optionally limits opcode-5 admission below the
+physical continuation-table capacity; zero selects the physical capacity. The
+limit reuses the existing active-context count and forces the same update-drain
+path as a physically full table, so pending roots cannot deadlock behind
+undrained atomics. Other opcodes continue to use all physical continuation
+entries. `bransonContextThrottleCycles` counts only cycles blocked by this
+logical Branson limit below physical capacity. The limit is a workload-specific
+control/comparator contract, not a claim that the physical continuation SRAM
+has been reduced or that its area, timing, or energy has been synthesized.
+
 The physical-state mapping overlays each retained root's
 `{first_event,event_count}` and `{initial_cell,final_cell}` pairs onto the
 existing operation-entry value and index words, with terminal kind in existing

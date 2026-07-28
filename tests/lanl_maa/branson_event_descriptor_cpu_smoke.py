@@ -25,6 +25,7 @@ parser.add_argument("--context-quantum", type=int, default=4)
 parser.add_argument("--event-compute-latency", type=int, default=4)
 parser.add_argument("--event-compute-initiation-interval", type=int, default=1)
 parser.add_argument("--event-compute-units", type=int, default=1)
+parser.add_argument("--branson-active-context-limit", type=int, default=0)
 parser.add_argument("--line-entries", type=int, default=8)
 parser.add_argument("--update-entries", type=int, default=16)
 parser.add_argument("--update-banks", type=int, default=2)
@@ -110,6 +111,7 @@ system.lanl_maa = LANLMAA(
     ),
     branson_event_compute_units=args.event_compute_units,
     branson_context_quantum=args.context_quantum,
+    branson_active_context_limit=args.branson_active_context_limit,
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,

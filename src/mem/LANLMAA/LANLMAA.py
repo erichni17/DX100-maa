@@ -116,6 +116,11 @@ class LANLMAA(ClockedObject):
     branson_context_quantum = Param.Unsigned(
         4, "Preferred consecutive events before rotating continuation context"
     )
+    branson_active_context_limit = Param.Unsigned(
+        0,
+        "Maximum contexts active for opcode 5; zero uses every physical "
+        "continuation entry",
+    )
 
     operation_entries = Param.Unsigned(64, "Logical operation-window entries")
     line_entries = Param.Unsigned(32, "Coherent line-merge entries")

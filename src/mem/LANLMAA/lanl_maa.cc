@@ -125,7 +125,10 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(lineWouldBlockCycles, statistics::units::Cycle::get(),
                "Cycles blocked by a full line table"),
       ADD_STAT(contextWouldBlockCycles, statistics::units::Cycle::get(),
-               "Cycles blocked by a full continuation table"),
+               "Cycles blocked by active continuation-context capacity"),
+      ADD_STAT(bransonContextThrottleCycles,
+               statistics::units::Cycle::get(),
+               "Branson context-blocked cycles below physical capacity"),
       ADD_STAT(portSendFailures, statistics::units::Count::get(),
                "Timing sends refused by the downstream port"),
       ADD_STAT(portRetryNotifications, statistics::units::Count::get(),
@@ -314,6 +317,9 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
           params.branson_event_compute_initiation_interval),
       bransonEventComputeUnits(params.branson_event_compute_units),
       bransonContextQuantum(params.branson_context_quantum),
+      bransonContextLimit(
+          params.continuation_entries,
+          params.branson_active_context_limit),
       operationEntries(params.operation_entries),
       lineEntries(params.line_entries),
       logicalAdmissionWidth(params.logical_admission_width),
@@ -487,6 +493,9 @@ LANLMAA::validateConfiguration() const
              "LANLMAA Branson event compute units must be nonzero");
     fatal_if(bransonContextQuantum == 0,
              "LANLMAA Branson context quantum must be nonzero");
+    fatal_if(descriptorMode && !bransonContextLimit.valid(),
+             "LANLMAA Branson active-context limit must be nonzero and fit "
+             "the physical continuation table");
     fatal_if(operationEntries == 0,
              "LANLMAA operation_entries must be nonzero");
     fatal_if((dependentMode || descriptorMode) && continuationEntries == 0,
@@ -2220,8 +2229,17 @@ LANLMAA::admitOperations()
         auto &operation = operations[nextAdmission];
         const bool needsContext = activeDependentMode() ||
             (faceMinMaxDescriptor() && faceOperationActive(operation));
-        if (needsContext && activeContexts == continuationEntries) {
+        const bool bransonContextBlocked = bransonEventDescriptor() &&
+            bransonContextLimit.wouldBlock(activeContexts);
+        const bool physicalContextBlocked = !bransonEventDescriptor() &&
+            activeContexts >= continuationEntries;
+        if (needsContext &&
+            (bransonContextBlocked || physicalContextBlocked)) {
             ++stats.contextWouldBlockCycles;
+            if (bransonContextBlocked &&
+                bransonContextLimit.throttleWouldBlock(activeContexts)) {
+                ++stats.bransonContextThrottleCycles;
+            }
             return;
         }
 
@@ -2443,8 +2461,8 @@ LANLMAA::scheduleUpdateDrains()
         nextAdmission < operations.size() &&
         activeOperations == operationEntries;
     const bool bransonContextMustDrain = bransonEventDescriptor() &&
-        nextAdmission < operations.size() &&
-        activeContexts == continuationEntries;
+        bransonContextLimit.requiresDrain(
+            nextAdmission < operations.size(), activeContexts);
     if (!descriptorAttached && !windowMustDrain &&
         !bransonContextMustDrain) {
         return;

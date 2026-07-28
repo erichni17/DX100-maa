@@ -64,11 +64,12 @@ def validate_input(path, metadata):
         raise RuntimeError("native-derived maximum root length changed")
 
 
-def validate_stats(stats, metadata):
+def validate_stats(stats, metadata, physical_contexts, active_context_limit):
     roots = metadata["roots"]
     events = metadata["events"]
     batches = metadata["descriptor_batches"]
     logical_updates = 2 * events
+    effective_context_limit = active_context_limit or physical_contexts
     errors = []
     expected = {
         "descriptorDoorbells": batches,
@@ -144,6 +145,7 @@ def validate_stats(stats, metadata):
         "operationWouldBlockCycles",
         "lineWouldBlockCycles",
         "contextWouldBlockCycles",
+        "bransonContextThrottleCycles",
         "descriptorCycles",
         "engineCycles",
         "bransonEventComputeWouldBlockCycles",
@@ -167,6 +169,23 @@ def validate_stats(stats, metadata):
     missing = [name for name, value in mechanism.items() if value is None]
     if missing:
         raise RuntimeError(f"missing mechanism counters: {missing}")
+    if mechanism["activeContextHighWaterMark"] != effective_context_limit:
+        raise RuntimeError(
+            "Branson active-context high-water mark did not reach the "
+            f"configured limit: expected={effective_context_limit}, "
+            f"observed={mechanism['activeContextHighWaterMark']}"
+        )
+    expected_throttle = (
+        mechanism["contextWouldBlockCycles"]
+        if effective_context_limit < physical_contexts
+        else 0
+    )
+    if mechanism["bransonContextThrottleCycles"] != expected_throttle:
+        raise RuntimeError(
+            "Branson throttle accounting did not match context blockage: "
+            f"expected={expected_throttle}, observed="
+            f"{mechanism['bransonContextThrottleCycles']}"
+        )
     if not (
         mechanism["portSendFailures"]
         == mechanism["portRetryNotifications"]
@@ -248,6 +267,7 @@ def main():
         "--event-compute-initiation-interval", type=int, default=1
     )
     parser.add_argument("--event-compute-units", type=int, default=1)
+    parser.add_argument("--branson-active-context-limit", type=int, default=0)
     parser.add_argument("--line-entries", type=int, default=32)
     parser.add_argument("--update-entries", type=int, default=64)
     parser.add_argument("--update-banks", type=int, default=8)
@@ -270,6 +290,13 @@ def main():
     validate_input(replay_input, metadata)
     if args.contexts <= 0 or args.contexts > metadata["operation_entries"]:
         raise RuntimeError("contexts must fit the fixed operation window")
+    effective_context_limit = (
+        args.branson_active_context_limit or args.contexts
+    )
+    if effective_context_limit <= 0 or effective_context_limit > args.contexts:
+        raise RuntimeError(
+            "Branson active-context limit must fit physical contexts"
+        )
     if (
         args.line_entries <= 0
         or args.update_entries <= 0
@@ -317,6 +344,8 @@ def main():
         "--event-compute-initiation-interval="
         f"{args.event_compute_initiation_interval}",
         f"--event-compute-units={args.event_compute_units}",
+        "--branson-active-context-limit="
+        f"{args.branson_active_context_limit}",
         f"--line-entries={args.line_entries}",
         f"--update-entries={args.update_entries}",
         f"--update-banks={args.update_banks}",
@@ -338,6 +367,10 @@ def main():
         "window_contract": {
             "operation_entries": metadata["operation_entries"],
             "continuation_contexts": args.contexts,
+            "branson_active_context_limit": effective_context_limit,
+            "branson_context_throttle_enabled": (
+                effective_context_limit < args.contexts
+            ),
             "maximum_roots_per_descriptor": metadata["max_descriptor_items"],
             "coherent_line_entries": args.line_entries,
             "update_combiner_entries": args.update_entries,
@@ -392,7 +425,12 @@ def main():
             raise RuntimeError("gem5 emitted no successful terminal marker")
         if not stats.is_file() or stats.stat().st_size == 0:
             raise RuntimeError("gem5 produced no nonempty final stats.txt")
-        report_data["metrics"] = validate_stats(stats, metadata)
+        report_data["metrics"] = validate_stats(
+            stats,
+            metadata,
+            physical_contexts=args.contexts,
+            active_context_limit=args.branson_active_context_limit,
+        )
         report_data["status"] = "passed"
     except Exception as error:
         report_data["status"] = "failed"

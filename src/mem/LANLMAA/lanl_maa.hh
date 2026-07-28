@@ -9,6 +9,7 @@
 
 #include "base/statistics.hh"
 #include "enums/LANLMAAUpdateOperation.hh"
+#include "mem/LANLMAA/BransonContextLimit.hh"
 #include "mem/LANLMAA/BransonEventDescriptor.hh"
 #include "mem/LANLMAA/BransonEventTiming.hh"
 #include "mem/LANLMAA/Descriptor.hh"
@@ -198,6 +199,7 @@ class LANLMAA : public ClockedObject
         statistics::Scalar operationWouldBlockCycles;
         statistics::Scalar lineWouldBlockCycles;
         statistics::Scalar contextWouldBlockCycles;
+        statistics::Scalar bransonContextThrottleCycles;
         statistics::Scalar portSendFailures;
         statistics::Scalar portRetryNotifications;
         statistics::Scalar retryPacketResubmissions;
@@ -296,6 +298,7 @@ class LANLMAA : public ClockedObject
     const Cycles bransonEventComputeInitiationInterval;
     const size_t bransonEventComputeUnits;
     const size_t bransonContextQuantum;
+    const BransonContextLimit bransonContextLimit;
     const size_t operationEntries;
     const size_t lineEntries;
     const size_t logicalAdmissionWidth;
