@@ -61,6 +61,7 @@ if [[ $max_parallel -eq 1 ]]; then
     run_arm compact spatter_maa_virtual_verify_16K 16384
     run_arm direct_index_16k spatter_maa_virtual_index_verify_16K 16384
     run_arm direct_index_4k spatter_maa_virtual_index_verify_16K 4096
+    run_arm fused_4k spatter_maa_fused_verify_4K 4096
 else
     run_arm native spatter_maa_verify_16K 16384 &
     native_pid=$!
@@ -74,7 +75,11 @@ else
     direct_16k_pid=$!
     wait_pair "$compact_pid" "$direct_16k_pid"
 
-    run_arm direct_index_4k spatter_maa_virtual_index_verify_16K 4096
+    run_arm direct_index_4k spatter_maa_virtual_index_verify_16K 4096 &
+    direct_4k_pid=$!
+    run_arm fused_4k spatter_maa_fused_verify_4K 4096 &
+    fused_4k_pid=$!
+    wait_pair "$direct_4k_pid" "$fused_4k_pid"
 fi
 
 python3 "$validator" "$out"

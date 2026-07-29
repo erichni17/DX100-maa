@@ -19,7 +19,7 @@ arm=${XRAGE_ARM:-direct_index_4k}
     exit 2
 }
 case "$arm" in
-    native|fused|compact|direct_index_16k|direct_index_4k) ;;
+    native|fused|fused_4k|compact|direct_index_16k|direct_index_4k) ;;
     *)
         echo "unsupported XRAGE_ARM: $arm" >&2
         exit 2

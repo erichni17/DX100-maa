@@ -55,6 +55,8 @@ if(BUILD_GEM5)
     target_include_directories(spatter_maa_fused_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_fused_verify_16K main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_fused_verify_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
+    add_executable(spatter_maa_fused_verify_4K main.cc $<TARGET_OBJECTS:m5op>)
+    target_include_directories(spatter_maa_fused_verify_4K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_virtual_16K main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_virtual_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_virtual_verify_16K main.cc $<TARGET_OBJECTS:m5op>)
@@ -95,6 +97,8 @@ else()
     target_include_directories(spatter_maa_fused_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_fused_verify_16K main.cc)
     target_include_directories(spatter_maa_fused_verify_16K PRIVATE ${MAA_HOME})
+    add_executable(spatter_maa_fused_verify_4K main.cc)
+    target_include_directories(spatter_maa_fused_verify_4K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_virtual_16K main.cc)
     target_include_directories(spatter_maa_virtual_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_virtual_verify_16K main.cc)
@@ -184,6 +188,14 @@ set_target_properties(spatter_maa_fused_16K PROPERTIES
 target_link_libraries(spatter_maa_fused_verify_16K ${COMMON_LINK_LIBRARIES} Spatter_MAA_Fused_Verify_16K)
 target_compile_definitions(spatter_maa_fused_verify_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_FUSED_SPD_GATHER MAA_VERIFY_GATHER NUM_CORES=4 TILE_SIZE=16384)
 set_target_properties(spatter_maa_fused_verify_16K PROPERTIES
+    COMPILE_OPTIONS "${WARNING_FLAGS}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+)
+
+target_link_libraries(spatter_maa_fused_verify_4K ${COMMON_LINK_LIBRARIES} Spatter_MAA_Fused_Verify_4K)
+target_compile_definitions(spatter_maa_fused_verify_4K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_FUSED_SPD_GATHER MAA_VERIFY_GATHER NUM_CORES=4 TILE_SIZE=4096)
+set_target_properties(spatter_maa_fused_verify_4K PROPERTIES
     COMPILE_OPTIONS "${WARNING_FLAGS}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"

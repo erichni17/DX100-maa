@@ -14,6 +14,7 @@ ARMS = {
     "compact": 16384,
     "direct_index_16k": 16384,
     "direct_index_4k": 4096,
+    "fused_4k": 4096,
 }
 RESULT_FIELDS = [
     "output_hash",
@@ -101,7 +102,7 @@ def require_mechanism(arm, row):
     spd_reads = values["indirect_spd_read_cycles"]
     if writes != completions:
         fail(f"{arm} has {writes} write issues but {completions} completions")
-    if arm in ("native", "fused"):
+    if arm in ("native", "fused", "fused_4k"):
         if writes != 0 or pages != 0 or index_words != 0:
             fail(f"{arm} unexpectedly activated virtual machinery")
     elif arm == "compact":
