@@ -1,0 +1,4 @@
+arm	roi_simTicks	output_hash	retirement_writes	direct_index_words	outstanding_merges	latency_change_vs_direct4_pct
+direct4	36662629	17529267342572166465	3995	31923	0	0.000000
+direct4fusedprefetch	36444155	17529267342572166465	3995	31923	216	-0.595904
+compact16	35124860	17529267342572166465	3995	0	0	-4.194373
