@@ -220,7 +220,6 @@ def main():
     outdir = arguments.outdir.resolve()
     if outdir.exists():
         raise RuntimeError(f"refusing to reuse evidence directory: {outdir}")
-    outdir.mkdir(parents=True)
     gem5 = arguments.gem5.resolve(strict=True)
     config = arguments.config.resolve(strict=True)
     source_binary = arguments.binary.resolve(strict=True)
@@ -251,6 +250,7 @@ def main():
             "simulator tracked worktree must be clean before evidence"
         )
 
+    outdir.mkdir(parents=True)
     binary = outdir / "BRANSON"
     input_path = outdir / source_input.name
     shutil.copy2(source_binary, binary)
