@@ -133,6 +133,8 @@ sha256sum --status -c "$checkpoint_artifacts" || {
 }
 
 mkdir -p "$out"
+runner_snapshot="$out/recover_xrage_checkpoint.sh"
+cp "$0" "$runner_snapshot"
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 options="-f $input"
@@ -160,7 +162,8 @@ fi
 } > "$out/manifest.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
-sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" "$0" \
+sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" \
+    "$runner_snapshot" \
     "$checkpoint_manifest" "$checkpoint_artifacts" \
     "$checkpoint_run/checkpoint.command" \
     > "$out/artifact_sha256.txt"

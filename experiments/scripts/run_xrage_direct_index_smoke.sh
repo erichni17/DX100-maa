@@ -88,6 +88,8 @@ fi
 }
 
 mkdir -p "$out"
+runner_snapshot="$out/run_xrage_direct_index_smoke.sh"
+cp "$0" "$runner_snapshot"
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 options="-f $input"
@@ -113,6 +115,7 @@ fi
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
 sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" \
+    "$runner_snapshot" \
     > "$out/artifact_sha256.txt"
 
 checkpoint_cmd=(
