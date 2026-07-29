@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare 16K and 4K Offset storage at a matched 4K scheduling epoch."""
+"""Separate FLAG Offset scheduling-epoch and storage-capacity effects."""
 
 import argparse
 import csv
@@ -36,6 +36,7 @@ def main() -> int:
     parser.add_argument("campaign", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--epoch16-runner-commit", required=True)
     parser.add_argument("--cap16-runner-commit", required=True)
     parser.add_argument("--cap4-runner-commit", required=True)
     parser.add_argument("--simulator-sha256", required=True)
@@ -57,8 +58,17 @@ def main() -> int:
             "4096",
         )
     ]
+    expected_schedule_diff = [
+        (
+            "system.maa",
+            "num_offset_table_epoch_entries",
+            "16384",
+            "4096",
+        )
+    ]
     rows: list[dict[str, object]] = []
     for case_dir in case_dirs:
+        epoch16_path = case_dir / "epoch16"
         cap16_path = case_dir / "cap16"
         cap4_path = case_dir / "cap4"
         cap16_result_path = cap16_path / "result.tsv"
@@ -66,6 +76,14 @@ def main() -> int:
         output_hash = cap16_result.get("output_hash")
         if not output_hash:
             fail(f"missing output hash in {cap16_result_path}")
+        epoch16 = epoch.validate_case(
+            "epoch16_cap16",
+            epoch16_path,
+            args.source_commit,
+            args.epoch16_runner_commit,
+            args.simulator_sha256,
+            output_hash,
+        )
         cap16 = epoch.validate_case(
             "epoch4_cap16",
             cap16_path,
@@ -87,9 +105,17 @@ def main() -> int:
         )
         if differences != expected_diff:
             fail(f"unexpected treatment for {case_dir.name}: {differences}")
+        schedule_differences = epoch.config_differences(
+            epoch16_path / "run/config.ini", cap16_path / "run/config.ini"
+        )
+        if schedule_differences != expected_schedule_diff:
+            fail(
+                f"unexpected scheduling treatment for {case_dir.name}: "
+                f"{schedule_differences}"
+            )
         identities = {
             (record["input_hash"], record["guest_hash"], record["simulator_hash"])
-            for record in (cap16, cap4)
+            for record in (epoch16, cap16, cap4)
         }
         if len(identities) != 1:
             fail(f"artifact identity differs for {case_dir.name}")
@@ -98,11 +124,22 @@ def main() -> int:
             {
                 "id": case_dir.name,
                 "output_hash": output_hash,
+                "epoch16_ticks": epoch16["ticks"],
                 "cap16_ticks": cap16["ticks"],
                 "cap4_ticks": cap4["ticks"],
+                "schedule_latency_ratio": (
+                    cap16["ticks"] / epoch16["ticks"]
+                ),
                 "latency_ratio": cap4["ticks"] / cap16["ticks"],
+                "combined_latency_ratio": (
+                    cap4["ticks"] / epoch16["ticks"]
+                ),
+                "epoch16_writes": epoch16["write_issues"],
                 "cap16_writes": cap16["write_issues"],
                 "cap4_writes": cap4["write_issues"],
+                "schedule_write_ratio": (
+                    cap16["write_issues"] / epoch16["write_issues"]
+                ),
                 "write_ratio": cap4["write_issues"] / cap16["write_issues"],
                 "cap16_epoch_drains": cap16["epoch_drains"],
                 "cap4_epoch_drains": cap4["epoch_drains"],
@@ -127,7 +164,16 @@ def main() -> int:
         )
 
     latency_ratios = [float(row["latency_ratio"]) for row in rows]
+    schedule_latency_ratios = [
+        float(row["schedule_latency_ratio"]) for row in rows
+    ]
+    combined_latency_ratios = [
+        float(row["combined_latency_ratio"]) for row in rows
+    ]
     write_ratios = [float(row["write_ratio"]) for row in rows]
+    schedule_write_ratios = [
+        float(row["schedule_write_ratio"]) for row in rows
+    ]
     exact_behavior_cases = sum(
         bool(row["issue_digest_identical"])
         and bool(row["dram_reads_identical"])
@@ -139,10 +185,19 @@ def main() -> int:
     )
     summary = {
         "cases": len(rows),
+        "schedule_latency_geomean_ratio": geometric_mean(
+            schedule_latency_ratios
+        ),
         "latency_geomean_ratio": geometric_mean(latency_ratios),
         "latency_minimum_ratio": min(latency_ratios),
         "latency_maximum_ratio": max(latency_ratios),
         "write_geomean_ratio": geometric_mean(write_ratios),
+        "schedule_write_geomean_ratio": geometric_mean(
+            schedule_write_ratios
+        ),
+        "combined_latency_geomean_ratio": geometric_mean(
+            combined_latency_ratios
+        ),
         "exact_behavior_cases": exact_behavior_cases,
     }
     report = {
@@ -154,11 +209,15 @@ def main() -> int:
         ),
         "simulator_source_commit": args.source_commit,
         "runner_source_commits": {
+            "epoch16": args.epoch16_runner_commit,
             "cap16": args.cap16_runner_commit,
             "cap4": args.cap4_runner_commit,
         },
         "simulator_sha256": args.simulator_sha256,
-        "config_treatment": expected_diff,
+        "config_treatments": {
+            "schedule_epoch": expected_schedule_diff,
+            "storage_capacity": expected_diff,
+        },
         "configurations": rows,
         "summary": summary,
     }
@@ -174,16 +233,19 @@ def main() -> int:
     lines = [
         "# FLAG Matched-Epoch Offset Capacity",
         "",
-        "Both arms use a 4K scheduling epoch. Only Offset storage changes "
-        "from 16K to 4K entries. Positive deltas mean the 4K-capacity arm "
-        "is slower or issues more writes.",
+        "The schedule comparison changes only the Offset epoch from 16K to "
+        "4K at 16K storage. The storage comparison then changes only Offset "
+        "capacity from 16K to 4K at a fixed 4K epoch. Positive deltas mean "
+        "the treatment is slower or issues more writes.",
         "",
-        "| Configuration | ROI tick delta | Write delta | Digest identical |",
-        "|---|---:|---:|---:|",
+        "| Configuration | 4K-epoch tick delta | 4K-capacity tick delta | "
+        "4K-capacity write delta | Matched digest |",
+        "|---|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
             f"| {row['id']} | "
+            f"{100 * (float(row['schedule_latency_ratio']) - 1):+.3f}% | "
             f"{100 * (float(row['latency_ratio']) - 1):+.3f}% | "
             f"{100 * (float(row['write_ratio']) - 1):+.3f}% | "
             f"{row['issue_digest_identical']} |"
@@ -195,8 +257,14 @@ def main() -> int:
             "",
             "- Equal-weight latency geometric-mean delta: "
             f"{100 * (summary['latency_geomean_ratio'] - 1):+.3f}%",
+            "- 4K scheduling-epoch latency geometric-mean delta: "
+            f"{100 * (summary['schedule_latency_geomean_ratio'] - 1):+.3f}%",
+            "- Combined epoch + storage latency geometric-mean delta: "
+            f"{100 * (summary['combined_latency_geomean_ratio'] - 1):+.3f}%",
             "- Equal-weight write geometric-mean delta: "
             f"{100 * (summary['write_geomean_ratio'] - 1):+.3f}%",
+            "- 4K scheduling-epoch write geometric-mean delta: "
+            f"{100 * (summary['schedule_write_geomean_ratio'] - 1):+.3f}%",
             "- Exact behavior matches: "
             f"{summary['exact_behavior_cases']} / {summary['cases']}",
             "",
