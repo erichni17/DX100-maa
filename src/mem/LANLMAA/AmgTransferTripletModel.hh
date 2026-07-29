@@ -12,7 +12,7 @@ namespace lanlmaa
 {
 
 constexpr uint32_t AmgTransferMaximumSelectedRows = 16;
-constexpr uint64_t AmgTransferMaximumNonzeros = 2048;
+constexpr uint32_t AmgTransferMaximumNonzeros = 2048;
 constexpr uint64_t AmgTransferOperationWindowEntries = 64;
 
 struct AmgTransferTripletDescriptor
@@ -21,16 +21,16 @@ struct AmgTransferTripletDescriptor
     uint32_t coarseVectorElements = 0;
     uint32_t firstFineRow = 0;
     uint32_t selectedRows = 0;
-    uint64_t operatorNonzeros = 0;
-    uint64_t interpolationNonzeros = 0;
+    uint32_t operatorNonzeros = 0;
+    uint32_t interpolationNonzeros = 0;
 };
 
 struct AmgTransferTripletInput
 {
-    std::vector<uint64_t> operatorRowOffsets;
+    std::vector<int32_t> operatorRowOffsets;
     std::vector<int32_t> operatorColumns;
     std::vector<double> operatorValues;
-    std::vector<uint64_t> interpolationRowOffsets;
+    std::vector<int32_t> interpolationRowOffsets;
     std::vector<int32_t> interpolationColumns;
     std::vector<double> interpolationValues;
     std::vector<double> fineRhs;
@@ -107,16 +107,17 @@ class AmgTransferTripletModel
     }
 
     static bool
-    validOffsets(const std::vector<uint64_t> &offsets,
-                 uint32_t rows, uint64_t nonzeros)
+    validOffsets(const std::vector<int32_t> &offsets,
+                 uint32_t rows, uint32_t nonzeros)
     {
         if (offsets.size() != static_cast<size_t>(rows) + 1 ||
-            offsets.front() != 0 || offsets.back() != nonzeros) {
+            offsets.front() != 0 || offsets.back() < 0 ||
+            static_cast<uint32_t>(offsets.back()) != nonzeros) {
             return false;
         }
         for (uint32_t row = 0; row < rows; ++row) {
-            if (offsets[row + 1] < offsets[row] ||
-                offsets[row + 1] > nonzeros) {
+            if (offsets[row] < 0 || offsets[row + 1] < offsets[row] ||
+                static_cast<uint32_t>(offsets[row + 1]) > nonzeros) {
                 return false;
             }
         }
@@ -201,7 +202,7 @@ class AmgTransferTripletModel
                 return result;
             }
         }
-        for (uint64_t nonzero = 0;
+        for (uint32_t nonzero = 0;
              nonzero < descriptor.operatorNonzeros; ++nonzero) {
             const int32_t column = input.operatorColumns[nonzero];
             ++result.counters.operatorColumnIndexReads;
@@ -218,7 +219,7 @@ class AmgTransferTripletModel
                 return result;
             }
         }
-        for (uint64_t nonzero = 0;
+        for (uint32_t nonzero = 0;
              nonzero < descriptor.interpolationNonzeros; ++nonzero) {
             const int32_t column = input.interpolationColumns[nonzero];
             ++result.counters.interpolationColumnIndexReads;
@@ -253,8 +254,10 @@ class AmgTransferTripletModel
         for (uint32_t row = 0; row < descriptor.selectedRows; ++row) {
             const uint32_t fineRow = descriptor.firstFineRow + row;
             double product = 0.0;
-            for (uint64_t nonzero = input.operatorRowOffsets[row];
-                 nonzero < input.operatorRowOffsets[row + 1]; ++nonzero) {
+            for (uint32_t nonzero = static_cast<uint32_t>(
+                     input.operatorRowOffsets[row]);
+                 nonzero < static_cast<uint32_t>(
+                     input.operatorRowOffsets[row + 1]); ++nonzero) {
                 const uint32_t column = static_cast<uint32_t>(
                     input.operatorColumns[nonzero]);
                 product = std::fma(input.operatorValues[nonzero],
@@ -277,8 +280,10 @@ class AmgTransferTripletModel
 
         for (uint32_t row = 0; row < descriptor.selectedRows; ++row) {
             const uint32_t fineRow = descriptor.firstFineRow + row;
-            for (uint64_t nonzero = input.interpolationRowOffsets[row];
-                 nonzero < input.interpolationRowOffsets[row + 1];
+            for (uint32_t nonzero = static_cast<uint32_t>(
+                     input.interpolationRowOffsets[row]);
+                 nonzero < static_cast<uint32_t>(
+                     input.interpolationRowOffsets[row + 1]);
                  ++nonzero) {
                 const uint32_t column = static_cast<uint32_t>(
                     input.interpolationColumns[nonzero]);
@@ -299,8 +304,10 @@ class AmgTransferTripletModel
         for (uint32_t row = 0; row < descriptor.selectedRows; ++row) {
             const uint32_t fineRow = descriptor.firstFineRow + row;
             double correction = 0.0;
-            for (uint64_t nonzero = input.interpolationRowOffsets[row];
-                 nonzero < input.interpolationRowOffsets[row + 1];
+            for (uint32_t nonzero = static_cast<uint32_t>(
+                     input.interpolationRowOffsets[row]);
+                 nonzero < static_cast<uint32_t>(
+                     input.interpolationRowOffsets[row + 1]);
                  ++nonzero) {
                 const uint32_t column = static_cast<uint32_t>(
                     input.interpolationColumns[nonzero]);
