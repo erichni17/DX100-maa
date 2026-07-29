@@ -17,6 +17,7 @@ using gem5::lanlmaa::SpartaTallyChannels;
 using gem5::lanlmaa::SpartaTallyDescriptorDecodeResult;
 using gem5::lanlmaa::SpartaTallyOpcode;
 using gem5::lanlmaa::SpartaTallyPendingGenerationFlag;
+using gem5::lanlmaa::SpartaTallyCellGroupFlag;
 using gem5::lanlmaa::decodeDescriptor;
 using gem5::lanlmaa::decodeSpartaTallyDescriptor;
 
@@ -71,6 +72,7 @@ main()
     assert(valid.descriptor.contributionBase == 0x4000);
     assert(valid.descriptor.cellCount == 64);
     assert(!valid.descriptor.pendingGeneration);
+    assert(!valid.descriptor.cellGroup);
     assert(decodeDescriptor(validDescriptor(), 16).error ==
            DescriptorError::BadOpcode);
 
@@ -79,6 +81,20 @@ main()
     const auto pending = decodeSpartaTallyDescriptor(pendingBytes, 16);
     assert(pending);
     assert(pending.descriptor.pendingGeneration);
+    assert(!pending.descriptor.cellGroup);
+
+    auto groupBytes = validDescriptor();
+    writeLe(groupBytes, 7, SpartaTallyCellGroupFlag, 1);
+    const auto group = decodeSpartaTallyDescriptor(groupBytes, 16);
+    assert(group);
+    assert(!group.descriptor.pendingGeneration);
+    assert(group.descriptor.cellGroup);
+
+    auto exclusiveBytes = validDescriptor();
+    writeLe(
+        exclusiveBytes, 7,
+        SpartaTallyPendingGenerationFlag | SpartaTallyCellGroupFlag, 1);
+    expectError(exclusiveBytes, DescriptorError::UnsupportedFlags);
 
     auto bytes = validDescriptor();
     writeLe(bytes, 0, 0, 4);
@@ -93,7 +109,7 @@ main()
     expectError(bytes, DescriptorError::BadOpcode);
 
     bytes = validDescriptor();
-    writeLe(bytes, 7, 2, 1);
+    writeLe(bytes, 7, 4, 1);
     expectError(bytes, DescriptorError::UnsupportedFlags);
 
     bytes = validDescriptor();

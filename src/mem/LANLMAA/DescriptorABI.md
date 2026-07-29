@@ -17,7 +17,7 @@ submitting the next descriptor.
 | 0 | 4 | Magic `LMA1` (`0x31414d4c`) |
 | 4 | 2 | Version `1` |
 | 6 | 1 | Opcode |
-| 7 | 1 | Opcode flags; zero except for opcode 4 |
+| 7 | 1 | Opcode flags; zero except for opcodes 4 and 6 |
 | 8 | 4 | Item count, nonzero and no larger than `max_descriptor_items` |
 | 12 | 4 | Reserved, must be zero |
 | 16 | 8 | Address or start-index vector |
@@ -256,7 +256,17 @@ verified in pinned SPARTA `compute_thermal_grid_kokkos.cpp`: count, mass,
 three momentum components, and kinetic-energy contribution. The CPU or
 application framework forms the contributions; this contract covers their
 indexed scatter-add, not particle physics or native application integration.
-The descriptor has zero flags and reserved fields:
+The descriptor reserves byte 7 for two mutually exclusive, opt-in policies:
+
+- bit 0 permits one bounded younger accumulating generation behind a draining
+  same-address update;
+- bit 1 requires nondecreasing cell indices and holds each cell/channel update
+  until a fixed group of at most four contiguous staged particles has joined.
+
+Software may assert either bit only after materializing the selected indices
+and contributions in cell-major order. Bits 0 and 1 together, any other flag
+bit, or a decreasing cell index under bit 1 fail closed. Flag zero retains the
+baseline policy. The remaining reserved fields are zero:
 
 | Offset | Size | Meaning |
 | ---: | ---: | --- |
@@ -285,9 +295,12 @@ violation.
 The retained item index, cell index, and three-bit channel ordinal overlay
 existing opcode-specific operation-entry fields. Contributions stream through
 the existing scalar value word and FP64 update combiner, so this mapping adds
-no new rounded array payload. That is a structural mapping only: it does not
-price ports or arbitration, establish synthesis timing/area/energy, provide a
-native SPARTA ABI, or demonstrate application speedup.
+no second accumulator or update table. Cell-group mode reuses one descriptor
+wire bit but adds a group-boundary cursor and a 1--4 group cardinality per
+operation (three logical bits each); these fields must be charged even if a
+physical array has enough rounding slack. That is a structural mapping only:
+it does not price ports or arbitration, establish synthesis timing/area/energy,
+provide a native SPARTA ABI, or demonstrate application speedup.
 
 `Completed` and `Error` remain visible until the next doorbell. A terminal
 rearm clears the previous error and per-descriptor cursors only after all

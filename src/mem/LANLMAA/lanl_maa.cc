@@ -292,6 +292,15 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(spartaPendingGenerationDrainDeferrals,
                statistics::units::Count::get(),
                "SPARTA pending-generation drains held behind an older drain"),
+      ADD_STAT(descriptorSpartaCellGroupCompleteDrains,
+               statistics::units::Count::get(),
+               "SPARTA complete cell/channel groups drained"),
+      ADD_STAT(descriptorSpartaCellGroupDrainDeferrals,
+               statistics::units::Count::get(),
+               "SPARTA partial cell/channel group drains deferred"),
+      ADD_STAT(descriptorSpartaCellGroupForcedDrains,
+               statistics::units::Count::get(),
+               "SPARTA partial cell/channel groups forced to drain"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -1132,6 +1141,21 @@ LANLMAA::updateGenerationCount(Addr address) const
 }
 
 bool
+LANLMAA::spartaCellGroupComplete(const UpdateEntry &entry) const
+{
+    if (!spartaTallyDescriptor() || !spartaDescriptor.cellGroup ||
+        entry.state != UpdateState::Accumulating || entry.waiters.empty()) {
+        return false;
+    }
+    const size_t first = entry.waiters.front();
+    panic_if(first >= operations.size() ||
+                 operations[first].spartaGroupSize == 0 ||
+                 entry.waiters.size() > operations[first].spartaGroupSize,
+             "LANLMAA SPARTA cell group retained invalid waiters");
+    return entry.waiters.size() == operations[first].spartaGroupSize;
+}
+
+bool
 LANLMAA::updateGenerationDrainBlocked(const UpdateEntry &entry) const
 {
     if (!spartaTallyDescriptor() || !spartaDescriptor.pendingGeneration ||
@@ -1338,6 +1362,28 @@ LANLMAA::resetSpartaOperation(Operation &operation)
     operation.value = 0;
     operation.ownsContext = false;
     operation.state = OperationState::Unadmitted;
+}
+
+void
+LANLMAA::finishSpartaCellGroup(size_t end)
+{
+    panic_if(!spartaDescriptor.cellGroup || spartaGroupStart >= end ||
+                 end > operations.size(),
+             "LANLMAA finalized an invalid SPARTA cell group");
+    for (size_t chunk = spartaGroupStart; chunk < end;
+         chunk += SpartaTallyCellGroupChunk) {
+        const size_t chunkEnd =
+            std::min(end, chunk + SpartaTallyCellGroupChunk);
+        const uint8_t size = static_cast<uint8_t>(chunkEnd - chunk);
+        for (size_t index = chunk; index < chunkEnd; ++index) {
+            panic_if(index != spartaGroupStart &&
+                         operations[index].spartaCell !=
+                             operations[spartaGroupStart].spartaCell,
+                     "LANLMAA SPARTA cell group changed cell");
+            operations[index].spartaGroupSize = size;
+        }
+    }
+    spartaGroupStart = end;
 }
 
 void
@@ -1880,6 +1926,7 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         spartaContributionsValidated = 0;
         spartaContributionsReplayed = 0;
         spartaUpdatesAcknowledged = 0;
+        spartaGroupStart = 0;
         descriptorState = DescriptorState::AddressPending;
         scheduleTick();
         return true;
@@ -2045,6 +2092,17 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
                 itemError = DescriptorError::BadStartState;
                 break;
             }
+            if (spartaDescriptor.cellGroup && descriptorAddressCursor != 0) {
+                const uint32_t previous =
+                    operations[descriptorAddressCursor - 1].spartaCell;
+                if (cell < previous) {
+                    itemError = DescriptorError::BadStartState;
+                    break;
+                }
+                if (cell != previous) {
+                    finishSpartaCellGroup(descriptorAddressCursor);
+                }
+            }
             auto &operation = operations[descriptorAddressCursor];
             operation.spartaItem =
                 static_cast<uint32_t>(descriptorAddressCursor);
@@ -2061,6 +2119,9 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
             return true;
         }
         if (descriptorAddressCursor == operations.size()) {
+            if (spartaDescriptor.cellGroup) {
+                finishSpartaCellGroup(descriptorAddressCursor);
+            }
             beginDescriptorExecution();
         } else {
             descriptorState = DescriptorState::AddressPending;
@@ -2759,6 +2820,16 @@ LANLMAA::attachReadyUpdates()
         }
         entry->waiters.push_back(index);
         operation.state = OperationState::UpdatePending;
+        if (spartaTallyDescriptor() && spartaDescriptor.cellGroup) {
+            panic_if(operation.spartaGroupSize == 0 ||
+                         entry->waiters.size() > operation.spartaGroupSize,
+                     "LANLMAA SPARTA cell group update count overflowed");
+            if (entry->waiters.size() == operation.spartaGroupSize) {
+                entry->state = UpdateState::AtomicPending;
+                ++stats.updateDrains;
+                ++stats.descriptorSpartaCellGroupCompleteDrains;
+            }
+        }
         ++stats.logicalMemoryAccesses;
         ++attached;
     }
@@ -2799,12 +2870,26 @@ LANLMAA::scheduleUpdateDrains()
 
     for (auto &entry : updates) {
         if (entry.state == UpdateState::Accumulating) {
+            const bool cellGroupComplete =
+                spartaCellGroupComplete(entry);
+            if (spartaTallyDescriptor() && spartaDescriptor.cellGroup &&
+                !cellGroupComplete && !windowMustDrain) {
+                ++stats.descriptorSpartaCellGroupDrainDeferrals;
+                continue;
+            }
+            if (spartaTallyDescriptor() && spartaDescriptor.cellGroup &&
+                !cellGroupComplete && windowMustDrain) {
+                ++stats.descriptorSpartaCellGroupForcedDrains;
+            }
             if (updateGenerationDrainBlocked(entry)) {
                 ++stats.spartaPendingGenerationDrainDeferrals;
                 continue;
             }
             entry.state = UpdateState::AtomicPending;
             ++stats.updateDrains;
+            if (cellGroupComplete) {
+                ++stats.descriptorSpartaCellGroupCompleteDrains;
+            }
         }
     }
 }

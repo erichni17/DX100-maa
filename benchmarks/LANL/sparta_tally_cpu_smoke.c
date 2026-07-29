@@ -9,7 +9,6 @@
 #define TALLY_OFFSET UINT64_C(0x4000)
 #define COMPLETION_OFFSET UINT64_C(0x8000)
 #define ITEMS UINT32_C(64)
-#define CELLS UINT32_C(16)
 #define CHANNELS UINT32_C(6)
 #define LOGICAL_UPDATES (ITEMS * CHANNELS)
 #define CANDIDATE_PARTICLES UINT32_C(128)
@@ -18,16 +17,39 @@
 #define SPARTA_TALLY_MODE 0
 #endif
 
+#ifndef SPARTA_TALLY_CELLS
+#define SPARTA_TALLY_CELLS 16
+#endif
+
+#define CELLS SPARTA_TALLY_CELLS
+
 #ifndef SPARTA_TALLY_PENDING_GENERATION
 #define SPARTA_TALLY_PENDING_GENERATION 0
 #endif
 
-#if SPARTA_TALLY_MODE < 0 || SPARTA_TALLY_MODE > 2
-#error "SPARTA_TALLY_MODE must be 0 (full), 1 (sorted), or 2 (shuffled)"
+#ifndef SPARTA_TALLY_CELL_GROUP
+#define SPARTA_TALLY_CELL_GROUP 0
+#endif
+
+#if SPARTA_TALLY_MODE < 0 || SPARTA_TALLY_MODE > 3
+#error "SPARTA_TALLY_MODE must be 0, 1, 2, or 3"
 #endif
 
 #if SPARTA_TALLY_PENDING_GENERATION < 0 || SPARTA_TALLY_PENDING_GENERATION > 1
 #error "SPARTA_TALLY_PENDING_GENERATION must be 0 or 1"
+#endif
+
+#if SPARTA_TALLY_CELL_GROUP < 0 || SPARTA_TALLY_CELL_GROUP > 1
+#error "SPARTA_TALLY_CELL_GROUP must be 0 or 1"
+#endif
+
+#if SPARTA_TALLY_CELLS < 1 || SPARTA_TALLY_CELLS > 64 || \
+    (64 % SPARTA_TALLY_CELLS) != 0
+#error "SPARTA_TALLY_CELLS must be a positive divisor of 64"
+#endif
+
+#if SPARTA_TALLY_PENDING_GENERATION && SPARTA_TALLY_CELL_GROUP
+#error "SPARTA tally pending-generation and cell-group policies are exclusive"
 #endif
 
 static void
@@ -118,7 +140,8 @@ static void
 prepare_descriptor(volatile uint64_t *descriptor)
 {
     descriptor[0] = UINT64_C(0x0006000131414d4c) |
-        ((uint64_t)SPARTA_TALLY_PENDING_GENERATION << 56);
+        ((uint64_t)SPARTA_TALLY_PENDING_GENERATION << 56) |
+        ((uint64_t)SPARTA_TALLY_CELL_GROUP << 57);
     descriptor[1] = ITEMS;
     descriptor[2] = DATA_PADDR + INDEX_OFFSET;
     descriptor[3] = DATA_PADDR + TALLY_OFFSET;
@@ -167,6 +190,7 @@ prepare_case(
     }
 }
 
+#if SPARTA_TALLY_MODE != 3
 static void
 verify_success(
     const volatile double *tallies, const uint64_t *expected,
@@ -183,8 +207,9 @@ verify_success(
         finish(code + 1);
     }
 }
+#endif
 
-#if SPARTA_TALLY_MODE == 0
+#if SPARTA_TALLY_MODE == 0 || SPARTA_TALLY_MODE == 3
 static void
 prepare_sentinel(volatile double *tallies, uint64_t *expected)
 {
@@ -260,6 +285,23 @@ _start(void)
     fence();
     verify_success(tallies, expected, completion, UINT64_C(21));
     finish(0);
+#elif SPARTA_TALLY_MODE == 3
+#if !SPARTA_TALLY_CELL_GROUP
+#error "SPARTA_TALLY_MODE=3 requires SPARTA_TALLY_CELL_GROUP=1"
+#endif
+    prepare_case(indices, contributions, tallies, expected, 1);
+    prepare_sentinel(tallies, expected);
+    clear_completion(completion);
+    fence();
+    control[0] = 0;
+    fence();
+    if (wait_terminal(control) != UINT64_C(8) ||
+        control[UINT64_C(0x120) / 8] != UINT64_C(17)) {
+        finish(UINT64_C(20));
+    }
+    fence();
+    verify_unchanged(tallies, expected, completion, UINT64_C(21));
+    finish(0);
 #else
     prepare_case(indices, contributions, tallies, expected, 0);
     clear_completion(completion);
@@ -286,7 +328,9 @@ _start(void)
     fence();
     verify_unchanged(tallies, expected, completion, UINT64_C(31));
 
-    prepare_case(indices, contributions, tallies, expected, 1);
+    prepare_case(
+        indices, contributions, tallies, expected,
+        SPARTA_TALLY_CELL_GROUP ? 0 : 1);
     clear_completion(completion);
     fence();
     control[0] = 0;
