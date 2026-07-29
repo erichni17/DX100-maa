@@ -260,8 +260,9 @@ The descriptor reserves byte 7 for two mutually exclusive, opt-in policies:
 
 - bit 0 permits one bounded younger accumulating generation behind a draining
   same-address update;
-- bit 1 requires nondecreasing cell indices and holds each cell/channel update
-  until a fixed group of at most four contiguous staged particles has joined.
+- bit 1 requires nondecreasing cell indices, partitions staging into fixed
+  four-item blocks, and holds each same-cell/channel subgroup until every
+  member of that block has joined.
 
 Software may assert either bit only after materializing the selected indices
 and contributions in cell-major order. Bits 0 and 1 together, any other flag
@@ -296,11 +297,14 @@ The retained item index, cell index, and three-bit channel ordinal overlay
 existing opcode-specific operation-entry fields. Contributions stream through
 the existing scalar value word and FP64 update combiner, so this mapping adds
 no second accumulator or update table. Cell-group mode reuses one descriptor
-wire bit but adds a group-boundary cursor and a 1--4 group cardinality per
-operation (three logical bits each); these fields must be charged even if a
-physical array has enough rounding slack. That is a structural mapping only:
-it does not price ports or arbitration, establish synthesis timing/area/energy,
-provide a native SPARTA ABI, or demonstrate application speedup.
+wire bit and derives the group from the retained item ordinal, but adds a group
+identity to each update entry so out-of-order contribution returns cannot mix
+adjacent staging blocks. For 64 operation and update entries, the minimum tag
+is four bits per update entry, or 256 logical bits total; this state must be
+charged even if a physical array has enough rounding slack. That is a
+structural mapping only: it does not price ports or arbitration, establish
+synthesis timing/area/energy, provide a native SPARTA ABI, or demonstrate
+application speedup.
 
 `Completed` and `Error` remain visible until the next doorbell. A terminal
 rearm clears the previous error and per-descriptor cursors only after all

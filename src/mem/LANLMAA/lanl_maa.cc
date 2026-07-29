@@ -68,6 +68,7 @@ LANLMAA::UpdateEntry::clear()
     address = 0;
     contribution = 0;
     kind = UpdateKind::Uint64Add;
+    spartaGroup = 0;
     packet = nullptr;
     waiters.clear();
 }
@@ -1140,6 +1141,28 @@ LANLMAA::updateGenerationCount(Addr address) const
         });
 }
 
+uint8_t
+LANLMAA::spartaCellGroupSize(size_t operationIndex) const
+{
+    panic_if(!spartaTallyDescriptor() || !spartaDescriptor.cellGroup ||
+                 operationIndex >= operations.size(),
+             "LANLMAA queried an invalid SPARTA cell group");
+    const auto &operation = operations[operationIndex];
+    const size_t begin =
+        (operation.spartaItem / SpartaTallyCellGroupChunk) *
+        SpartaTallyCellGroupChunk;
+    const size_t end =
+        std::min(operations.size(), begin + SpartaTallyCellGroupChunk);
+    const size_t size = std::count_if(
+        operations.begin() + begin, operations.begin() + end,
+        [&operation](const Operation &candidate) {
+            return candidate.spartaCell == operation.spartaCell;
+        });
+    panic_if(size == 0 || size > SpartaTallyCellGroupChunk,
+             "LANLMAA derived an invalid SPARTA cell group size");
+    return static_cast<uint8_t>(size);
+}
+
 bool
 LANLMAA::spartaCellGroupComplete(const UpdateEntry &entry) const
 {
@@ -1149,10 +1172,21 @@ LANLMAA::spartaCellGroupComplete(const UpdateEntry &entry) const
     }
     const size_t first = entry.waiters.front();
     panic_if(first >= operations.size() ||
-                 operations[first].spartaGroupSize == 0 ||
-                 entry.waiters.size() > operations[first].spartaGroupSize,
+                 entry.spartaGroup !=
+                     operations[first].spartaItem /
+                         SpartaTallyCellGroupChunk,
              "LANLMAA SPARTA cell group retained invalid waiters");
-    return entry.waiters.size() == operations[first].spartaGroupSize;
+    const uint8_t groupSize = spartaCellGroupSize(first);
+    for (const size_t waiter : entry.waiters) {
+        panic_if(waiter >= operations.size() ||
+                     operations[waiter].spartaItem /
+                             SpartaTallyCellGroupChunk !=
+                         entry.spartaGroup,
+                 "LANLMAA SPARTA update mixed staging groups");
+    }
+    panic_if(entry.waiters.size() > groupSize,
+             "LANLMAA SPARTA cell group retained too many waiters");
+    return entry.waiters.size() == groupSize;
 }
 
 bool
@@ -1362,28 +1396,6 @@ LANLMAA::resetSpartaOperation(Operation &operation)
     operation.value = 0;
     operation.ownsContext = false;
     operation.state = OperationState::Unadmitted;
-}
-
-void
-LANLMAA::finishSpartaCellGroup(size_t end)
-{
-    panic_if(!spartaDescriptor.cellGroup || spartaGroupStart >= end ||
-                 end > operations.size(),
-             "LANLMAA finalized an invalid SPARTA cell group");
-    for (size_t chunk = spartaGroupStart; chunk < end;
-         chunk += SpartaTallyCellGroupChunk) {
-        const size_t chunkEnd =
-            std::min(end, chunk + SpartaTallyCellGroupChunk);
-        const uint8_t size = static_cast<uint8_t>(chunkEnd - chunk);
-        for (size_t index = chunk; index < chunkEnd; ++index) {
-            panic_if(index != spartaGroupStart &&
-                         operations[index].spartaCell !=
-                             operations[spartaGroupStart].spartaCell,
-                     "LANLMAA SPARTA cell group changed cell");
-            operations[index].spartaGroupSize = size;
-        }
-    }
-    spartaGroupStart = end;
 }
 
 void
@@ -1926,7 +1938,6 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         spartaContributionsValidated = 0;
         spartaContributionsReplayed = 0;
         spartaUpdatesAcknowledged = 0;
-        spartaGroupStart = 0;
         descriptorState = DescriptorState::AddressPending;
         scheduleTick();
         return true;
@@ -2099,9 +2110,6 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
                     itemError = DescriptorError::BadStartState;
                     break;
                 }
-                if (cell != previous) {
-                    finishSpartaCellGroup(descriptorAddressCursor);
-                }
             }
             auto &operation = operations[descriptorAddressCursor];
             operation.spartaItem =
@@ -2119,9 +2127,6 @@ LANLMAA::receiveAddressVectorResponse(PacketPtr packet)
             return true;
         }
         if (descriptorAddressCursor == operations.size()) {
-            if (spartaDescriptor.cellGroup) {
-                finishSpartaCellGroup(descriptorAddressCursor);
-            }
             beginDescriptorExecution();
         } else {
             descriptorState = DescriptorState::AddressPending;
@@ -2739,6 +2744,15 @@ LANLMAA::attachReadyUpdates()
         UpdateEntry *existing = matchingUpdate(operation.address);
         panic_if(existing && existing->kind != kind,
                  "LANLMAA matched one address with incompatible updates");
+        const bool cellGroup = spartaTallyDescriptor() &&
+            spartaDescriptor.cellGroup;
+        const uint32_t spartaGroup =
+            operation.spartaItem / SpartaTallyCellGroupChunk;
+        if (cellGroup && existing &&
+            existing->spartaGroup != spartaGroup) {
+            addressBusy = true;
+            continue;
+        }
         const bool pendingGeneration = spartaTallyDescriptor() &&
             spartaDescriptor.pendingGeneration &&
             kind == UpdateKind::Fp64AddRelaxed;
@@ -2780,6 +2794,7 @@ LANLMAA::attachReadyUpdates()
             entry->address = operation.address;
             entry->contribution = operation.value;
             entry->kind = kind;
+            entry->spartaGroup = cellGroup ? spartaGroup : 0;
             if (allocatePending) {
                 ++stats.descriptorSpartaPendingGenerationsAllocated;
             }
@@ -2820,11 +2835,12 @@ LANLMAA::attachReadyUpdates()
         }
         entry->waiters.push_back(index);
         operation.state = OperationState::UpdatePending;
-        if (spartaTallyDescriptor() && spartaDescriptor.cellGroup) {
-            panic_if(operation.spartaGroupSize == 0 ||
-                         entry->waiters.size() > operation.spartaGroupSize,
+        if (cellGroup) {
+            const uint8_t groupSize = spartaCellGroupSize(index);
+            panic_if(entry->spartaGroup != spartaGroup ||
+                         entry->waiters.size() > groupSize,
                      "LANLMAA SPARTA cell group update count overflowed");
-            if (entry->waiters.size() == operation.spartaGroupSize) {
+            if (entry->waiters.size() == groupSize) {
                 entry->state = UpdateState::AtomicPending;
                 ++stats.updateDrains;
                 ++stats.descriptorSpartaCellGroupCompleteDrains;

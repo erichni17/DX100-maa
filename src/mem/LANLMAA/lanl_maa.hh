@@ -146,7 +146,6 @@ class LANLMAA : public ClockedObject
         uint8_t bransonUpdateOrdinal = 0;
         uint32_t spartaItem = 0;
         uint32_t spartaCell = 0;
-        uint8_t spartaGroupSize = 0;
         uint8_t spartaChannel = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
@@ -171,6 +170,7 @@ class LANLMAA : public ClockedObject
         Addr address = 0;
         uint64_t contribution = 0;
         UpdateKind kind = UpdateKind::Uint64Add;
+        uint32_t spartaGroup = 0;
         PacketPtr packet = nullptr;
         std::vector<size_t> waiters;
 
@@ -373,7 +373,6 @@ class LANLMAA : public ClockedObject
     uint64_t spartaContributionsValidated = 0;
     uint64_t spartaContributionsReplayed = 0;
     uint64_t spartaUpdatesAcknowledged = 0;
-    size_t spartaGroupStart = 0;
     bool descriptorFaceUpdatePhase = false;
     PacketPtr descriptorPacket = nullptr;
     PacketPtr addressVectorPacket = nullptr;
@@ -391,6 +390,7 @@ class LANLMAA : public ClockedObject
     UpdateEntry *updateForPacket(PacketPtr packet);
     bool allUpdateEntriesFree() const;
     size_t updateGenerationCount(Addr address) const;
+    uint8_t spartaCellGroupSize(size_t operationIndex) const;
     bool spartaCellGroupComplete(const UpdateEntry &entry) const;
     bool updateGenerationDrainBlocked(const UpdateEntry &entry) const;
     bool activeDependentMode() const;
@@ -409,7 +409,6 @@ class LANLMAA : public ClockedObject
     Addr spartaContributionAddress(const Operation &operation) const;
     Addr spartaTallyAddress(const Operation &operation) const;
     void resetSpartaOperation(Operation &operation);
-    void finishSpartaCellGroup(size_t end);
     void advanceSpartaContribution(Operation &operation);
     void beginSpartaUpdatePhase();
     bool faceMinMaxDescriptor() const;
