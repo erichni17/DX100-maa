@@ -310,3 +310,51 @@ application speedup.
 rearm clears the previous error and per-descriptor cursors only after all
 retained packets, operation contexts, line entries, and update entries are
 quiescent. The completion record remains the durable per-submission result.
+
+### Native SPARTA fused-cell contract (opcode 7, not advertised)
+
+Opcode 7 is a version-2, 128-byte contract that consumes two adjacent
+version-1 descriptor slots. The live gem5 decoder and opcode bitmap still stop
+at opcode 6; `SpartaFusedCellModel.hh` is a simulator-independent decoder and
+reference scheduler only.
+
+Byte 7 must equal one. The bit promises that the six target tally channels are
+zero and CPU-exclusive until completion. The two-slot fields are:
+
+| Offset | Size | Meaning |
+| ---: | ---: | --- |
+| 8 | 4 | Cell count, 1-64 |
+| 12 | 4 | Particle count, 1-64 |
+| 16 | 8 | Native CPU `ChildInfo` base |
+| 24 | 8 | Native signed 32-bit `next` base |
+| 32 | 8 | Native CPU `OnePart` base |
+| 40 | 8 | Native CPU `Species` base |
+| 48 | 8 | Native signed 32-bit `species2group` base |
+| 56 | 8 | Target tally base |
+| 64 | 8 | 32-byte completion record |
+| 72 | 8 | CPU-layout fingerprint `0xa34d454519758371` |
+| 80 | 4 | Nonzero cell group bit |
+| 84 | 4 | Nonnegative target mixture group |
+| 88 | 4 | Positive species count |
+| 92 | 4 | Tally cell stride, aligned and at least 48 bytes |
+| 96 | 32 | Reserved, zero |
+
+The pinned layout is 104-byte `OnePart` with `ispecies`, `icell`, and `v` at
+offsets 4, 8, and 40; 192-byte `Species` with `mass` at 24; and 64-byte
+`ChildInfo` with `count`, `first`, and `mask` at 0, 4, and 8. The reference
+decoder rejects a changed fingerprint, misalignment, 48-bit range overflow,
+and any pairwise range overlap.
+
+The scheduler admits at most eight cells, follows every declared list in
+order, and uses a 64-bit particle-visit bitmap to reject duplicates, cycles,
+early/late terminals, wrong-cell records, and incomplete coverage. Eligible
+records produce six finite FP64 contributions and update a retained per-cell
+summary. No external tally write occurs until the entire descriptor validates.
+Success writes six sums for every cell with an eligible particle and requires
+matching acknowledgements before completion. A pre-drain failure discards all
+summaries, leaving the promised-zero tally safe for scalar fallback.
+
+The reference model proves bounded state-machine and arithmetic semantics, not
+timed memory traffic, native process submission, RTL FP cost, or application
+speedup. The transparent research ledger charges 4,048 payload bytes and a
+21-KiB provisioned array budget before physical synthesis.
