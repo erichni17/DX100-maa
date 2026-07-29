@@ -16,6 +16,7 @@ arm=${XRAGE_ARM:-direct_index_4k}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 direct_index_force_cache=${MAA_DIRECT_INDEX_FORCE_CACHE:-0}
 reuse_checkpoint_dir=${XRAGE_REUSE_CHECKPOINT_DIR:-}
+reuse_checkpoint_run=${XRAGE_REUSE_CHECKPOINT_RUN:-}
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
@@ -49,6 +50,14 @@ if [[ -n $reuse_checkpoint_dir && ! -d $reuse_checkpoint_dir ]]; then
     echo "XRAGE_REUSE_CHECKPOINT_DIR does not name a directory" >&2
     exit 2
 fi
+if [[ -n $reuse_checkpoint_run && ! -d $reuse_checkpoint_run ]]; then
+    echo "XRAGE_REUSE_CHECKPOINT_RUN does not name a directory" >&2
+    exit 2
+fi
+if [[ -n $reuse_checkpoint_dir && -n $reuse_checkpoint_run ]]; then
+    echo "specify only one XRAGE checkpoint reuse source" >&2
+    exit 2
+fi
 [[ ! -e $out ]] || {
     echo "refusing to overwrite existing output: $out" >&2
     exit 2
@@ -66,6 +75,7 @@ options="-f $input"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'direct_index_force_cache=%s\n' "$direct_index_force_cache"
     printf 'reuse_checkpoint_dir=%s\n' "$reuse_checkpoint_dir"
+    printf 'reuse_checkpoint_run=%s\n' "$reuse_checkpoint_run"
     printf 'maa_logical_tile_elements=16384\n'
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
     printf 'input=%s\n' "$input"
@@ -74,10 +84,43 @@ options="-f $input"
 } > "$out/manifest.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
-sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" \
+sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" "$0" \
     > "$out/artifact_sha256.txt"
 
-if [[ -n $reuse_checkpoint_dir ]]; then
+if [[ -n $reuse_checkpoint_run ]]; then
+    checkpoint_run=$(realpath "$reuse_checkpoint_run")
+    checkpoint_dir="$checkpoint_run/checkpoint"
+    checkpoint_manifest="$checkpoint_run/manifest.txt"
+    checkpoint_artifacts="$checkpoint_run/artifact_sha256.txt"
+    checkpoint_attestation="$checkpoint_run/checkpoint_recovery_attestation.tsv"
+    [[ -f $checkpoint_manifest && -f $checkpoint_artifacts ]] || {
+        echo "reused XRAGE checkpoint lacks provenance manifests" >&2
+        exit 1
+    }
+    [[ -f $checkpoint_attestation ]] &&
+        grep -Fqx $'status\tpass' "$checkpoint_attestation" || {
+        echo "reused XRAGE checkpoint lacks a pass attestation" >&2
+        exit 1
+    }
+    sha256sum --status -c "$checkpoint_artifacts" || {
+        echo "reused XRAGE checkpoint artifact verification failed" >&2
+        exit 1
+    }
+    checkpoint_input=$(sed -n 's/^input=//p' "$checkpoint_manifest")
+    [[ $checkpoint_input == "$input" ]] || {
+        echo "reused XRAGE checkpoint input does not match" >&2
+        exit 1
+    }
+    binary_sha256=$(sha256sum "$binary" | awk '{print $1}')
+    grep -q "^$binary_sha256  " "$checkpoint_artifacts" || {
+        echo "reused XRAGE checkpoint used a different benchmark binary" >&2
+        exit 1
+    }
+    printf 'reused %s\n' "$checkpoint_dir" > "$out/checkpoint.command"
+    printf 'reused-attested\n' > "$out/checkpoint.exit"
+    sha256sum "$checkpoint_manifest" "$checkpoint_artifacts" \
+        "$checkpoint_attestation" >> "$out/artifact_sha256.txt"
+elif [[ -n $reuse_checkpoint_dir ]]; then
     checkpoint_dir=$(realpath "$reuse_checkpoint_dir")
     printf 'reused %s\n' "$checkpoint_dir" > "$out/checkpoint.command"
     printf 'reused\n' > "$out/checkpoint.exit"
@@ -106,6 +149,9 @@ ls "$checkpoint_dir"/cpt.* >/dev/null 2>&1 || {
     echo "XRAGE checkpoint missing" >&2
     exit 1
 }
+find "$checkpoint_dir" -maxdepth 2 -type f \
+    \( -name m5.cpt -o -name '*.pmem' -o -name config.ini \) -print0 |
+    sort -z | xargs -0 sha256sum > "$out/checkpoint_sha256.txt"
 
 restore_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/run"
