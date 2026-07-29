@@ -29,6 +29,8 @@ debug_args=()
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 checkpoint_manifest="$checkpoint_run/manifest.txt"
 checkpoint_artifacts="$checkpoint_run/artifact_sha256.txt"
+checkpoint_attestation="$checkpoint_run/checkpoint_recovery_attestation.tsv"
+attestation_verifier="$root/experiments/scripts/verify_xrage_checkpoint_attestation.py"
 [[ -f $checkpoint_manifest && -f $checkpoint_artifacts ]] || {
     echo "source checkpoint is missing provenance files" >&2
     exit 1
@@ -135,7 +137,6 @@ fi
     exit 2
 }
 checkpoint_exit=$(cat "$checkpoint_run/checkpoint.exit" 2>/dev/null || true)
-checkpoint_attestation="$checkpoint_run/checkpoint_recovery_attestation.tsv"
 if [[ $checkpoint_exit != 0 ]]; then
     [[ -f $checkpoint_attestation ]] &&
         grep -Fqx $'status\tpass' "$checkpoint_attestation" || {
@@ -167,10 +168,14 @@ checkpoint_input=$(sed -n 's/^input=//p' "$checkpoint_manifest")
     echo "recovery guest arm does not match checkpoint manifest" >&2
     exit 1
 }
-sha256sum --status -c "$checkpoint_artifacts" || {
-    echo "source checkpoint artifact verification failed" >&2
-    exit 1
-}
+checkpoint_provenance=direct
+if ! sha256sum --status -c "$checkpoint_artifacts"; then
+    python3 "$attestation_verifier" "$checkpoint_run" || {
+        echo "source checkpoint artifact and attestation verification failed" >&2
+        exit 1
+    }
+    checkpoint_provenance=attested
+fi
 
 mkdir -p "$out"
 runner_snapshot="$out/recover_xrage_checkpoint.sh"
@@ -188,6 +193,7 @@ fi
     printf 'checkpoint_run=%s\n' "$checkpoint_run"
     printf 'checkpoint_manifest_sha256=%s\n' \
         "$(sha256sum "$checkpoint_manifest" | awk '{print $1}')"
+    printf 'checkpoint_provenance=%s\n' "$checkpoint_provenance"
     printf 'arm=%s\n' "$arm"
     printf 'guest_arm=%s\n' "$guest_arm"
     printf 'physical_tile_elements=%s\n' "$physical"
@@ -211,6 +217,7 @@ git -C "$root" diff --binary > "$out/source.diff"
 sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" \
     "$runner_snapshot" \
     "$checkpoint_manifest" "$checkpoint_artifacts" \
+    "$attestation_verifier" \
     "$checkpoint_run/checkpoint.command" \
     > "$out/artifact_sha256.txt"
 if [[ -f $checkpoint_attestation ]]; then
