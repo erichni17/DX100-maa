@@ -2,9 +2,12 @@
 """Validate and summarize a fixed-resource Row-Table metadata matrix."""
 
 import argparse
-import csv
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from validate_virtual_case import validate_case as validate_case_evidence
 
 POINT_RE = re.compile(r"^r(?P<rows>[1-9][0-9]*)_e(?P<entries>[1-9][0-9]*)$")
 BASELINE = "r64_e8"
@@ -39,37 +42,6 @@ MATCHED_RESULT_KEYS = (
 )
 
 
-def read_key_values(path: Path) -> dict[str, str]:
-    values = {}
-    for line in path.read_text().splitlines():
-        key, separator, value = line.partition("=")
-        if not separator or key in values:
-            raise ValueError(f"invalid key/value line in {path}: {line!r}")
-        values[key] = value
-    return values
-
-
-def read_result(path: Path) -> dict[str, str]:
-    with path.open(newline="") as stream:
-        rows = list(csv.DictReader(stream, delimiter="\t"))
-    if len(rows) != 1:
-        raise ValueError(
-            f"expected one result row in {path}, found {len(rows)}"
-        )
-    return rows[0]
-
-
-def read_hashes(path: Path) -> dict[str, str]:
-    values = {}
-    for line in path.read_text().splitlines():
-        digest, artifact = line.split(maxsplit=1)
-        name = Path(artifact).name
-        if name in values:
-            raise ValueError(f"duplicate artifact basename {name!r} in {path}")
-        values[name] = digest
-    return values
-
-
 def require_equal(
     reference: dict[str, str],
     candidate: dict[str, str],
@@ -92,11 +64,10 @@ def collect(root: Path) -> list[dict[str, str]]:
         match = POINT_RE.match(child.name)
         if not child.is_dir() or match is None:
             continue
-        if not (child / "virtual_tile_consumer_case.pass").is_file():
-            raise ValueError(f"missing pass marker for {child.name}")
-        manifest = read_key_values(child / "manifest.txt")
-        result = read_result(child / "result.tsv")
-        hashes = read_hashes(child / "artifact_sha256.txt")
+        evidence = validate_case_evidence(child)
+        manifest = evidence["manifest"]
+        result = evidence["result"]
+        hashes = evidence["hashes"]
         rows = int(match.group("rows"))
         entries = int(match.group("entries"))
         if manifest.get("row_table_rows_per_slice") != str(rows):

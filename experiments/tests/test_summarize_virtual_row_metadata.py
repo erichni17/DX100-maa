@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from experiments.tests.virtual_case_fixture import write_evidence
+
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "experiments/scripts/summarize_virtual_row_metadata.py"
 SPEC = importlib.util.spec_from_file_location(
@@ -30,6 +32,7 @@ MANIFEST_BASE = {
     "virtual_combine_banks": "0",
     "source_commit": "deadbeef",
     "timeout": "none",
+    "virtual_index_partitions": "1",
 }
 
 RESULT_BASE = {
@@ -37,6 +40,9 @@ RESULT_BASE = {
     "output_hash": "1234",
     "index_line_reads": "1025",
     "index_words": "16384",
+    "index_hwm": "16",
+    "simInsts": "100",
+    "pages_ready": "0",
     "row_table_slices": "16",
     "row_table_unique_cache_lines": "9523",
     "row_table_unique_rows": "129",
@@ -48,6 +54,7 @@ RESULT_BASE = {
     "row_table_rows_inserted": "1425",
     "source_reads": "9841",
     "write_issues": "5102",
+    "write_completions": "5102",
     "dram_reads": "27202",
     "dram_activates": "5776",
     "dram_precharges": "4733",
@@ -71,10 +78,7 @@ def write_point(root, label, rows, entries, ticks, artifact="a" * 64):
         writer = csv.DictWriter(stream, fieldnames=result, delimiter="\t")
         writer.writeheader()
         writer.writerow(result)
-    (point / "artifact_sha256.txt").write_text(
-        f"{artifact}  /tmp/gem5.opt\n{'b' * 64}  /tmp/test.bin\n"
-    )
-    (point / "virtual_tile_consumer_case.pass").touch()
+    write_evidence(point, manifest, result, artifact)
 
 
 class RowMetadataSummaryTest(unittest.TestCase):
@@ -107,7 +111,7 @@ class RowMetadataSummaryTest(unittest.TestCase):
             result = root / "r32_e8/result.tsv"
             result.write_text(result.read_text().replace("1234", "4321"))
             with self.assertRaisesRegex(
-                ValueError, "mismatched result output_hash"
+                ValueError, "exact-success result marker"
             ):
                 MODULE.collect(root)
 

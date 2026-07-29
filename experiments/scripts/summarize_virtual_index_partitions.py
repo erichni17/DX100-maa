@@ -2,10 +2,12 @@
 """Fail closed while comparing virtual index-partition treatments."""
 
 import argparse
-import csv
 import re
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from validate_virtual_case import validate_case as validate_case_evidence
 
 LABEL_RE = re.compile(
     r"^r(?P<rows>[1-9][0-9]*)_e(?P<entries>[1-9][0-9]*)_"
@@ -32,43 +34,13 @@ MATCHED_MANIFEST_KEYS = (
 )
 
 
-def read_key_values(path: Path) -> dict[str, str]:
-    values = {}
-    for line in path.read_text().splitlines():
-        key, separator, value = line.partition("=")
-        if not separator or key in values:
-            raise ValueError(f"invalid key/value line in {path}: {line!r}")
-        values[key] = value
-    return values
-
-
-def read_result(path: Path) -> dict[str, str]:
-    with path.open(newline="") as stream:
-        rows = list(csv.DictReader(stream, delimiter="\t"))
-    if len(rows) != 1:
-        raise ValueError(f"expected one result row in {path}, found {len(rows)}")
-    return rows[0]
-
-
-def read_hashes(path: Path) -> dict[str, str]:
-    values = {}
-    for line in path.read_text().splitlines():
-        digest, artifact = line.split(maxsplit=1)
-        name = Path(artifact).name
-        if name in values:
-            raise ValueError(f"duplicate artifact basename {name!r} in {path}")
-        values[name] = digest
-    return values
-
-
 def load_case(path: Path) -> dict:
     match = LABEL_RE.match(path.name)
     if not path.is_dir() or match is None:
         raise ValueError(f"invalid treatment directory label: {path}")
-    if not (path / "virtual_tile_consumer_case.pass").is_file():
-        raise ValueError(f"missing pass marker for {path.name}")
-    manifest = read_key_values(path / "manifest.txt")
-    result = read_result(path / "result.tsv")
+    evidence = validate_case_evidence(path)
+    manifest = evidence["manifest"]
+    result = evidence["result"]
     dimensions = match.groupdict()
     expected = {
         "row_table_rows_per_slice": dimensions["rows"],
@@ -91,12 +63,14 @@ def load_case(path: Path) -> dict:
         "label": path.name,
         "manifest": manifest,
         "result": result,
-        "hashes": read_hashes(path / "artifact_sha256.txt"),
+        "hashes": evidence["hashes"],
         **dimensions,
     }
 
 
-def require_same(reference: dict, candidate: dict, keys: tuple[str, ...]) -> None:
+def require_same(
+    reference: dict, candidate: dict, keys: tuple[str, ...]
+) -> None:
     for key in keys:
         if reference.get(key) != candidate.get(key):
             raise ValueError(
@@ -105,26 +79,43 @@ def require_same(reference: dict, candidate: dict, keys: tuple[str, ...]) -> Non
             )
 
 
-def collect(full_path: Path, constrained_path: Path, treatments: list[Path]) -> list[dict]:
-    points = [load_case(path) for path in [full_path, constrained_path, *treatments]]
+def collect(
+    full_path: Path, constrained_path: Path, treatments: list[Path]
+) -> list[dict]:
+    points = [
+        load_case(path) for path in [full_path, constrained_path, *treatments]
+    ]
     full, constrained = points[:2]
     if int(full["rows"]) <= int(constrained["rows"]):
-        raise ValueError("full baseline must have more Row-Table rows than constrained")
+        raise ValueError(
+            "full baseline must have more Row-Table rows than constrained"
+        )
     if full["partitions"] != "1" or constrained["partitions"] != "1":
         raise ValueError("both baselines must be single-pass")
     for point in points[1:]:
-        require_same(full["manifest"], point["manifest"], MATCHED_MANIFEST_KEYS)
+        require_same(
+            full["manifest"], point["manifest"], MATCHED_MANIFEST_KEYS
+        )
         if full["hashes"] != point["hashes"]:
             raise ValueError(f"artifact hashes differ for {point['label']}")
         if full["result"]["output_hash"] != point["result"]["output_hash"]:
             raise ValueError(f"output hash differs for {point['label']}")
-        if full["result"]["row_table_unique_cache_lines"] != point["result"]["row_table_unique_cache_lines"]:
-            raise ValueError(f"unique source-line oracle differs for {point['label']}")
+        if (
+            full["result"]["row_table_unique_cache_lines"]
+            != point["result"]["row_table_unique_cache_lines"]
+        ):
+            raise ValueError(
+                f"unique source-line oracle differs for {point['label']}"
+            )
     for point in points[2:]:
         if point["rows"] != constrained["rows"]:
-            raise ValueError(f"{point['label']}: treatment rows differ from constrained")
+            raise ValueError(
+                f"{point['label']}: treatment rows differ from constrained"
+            )
         if point["entries"] != constrained["entries"]:
-            raise ValueError(f"{point['label']}: treatment entries differ from constrained")
+            raise ValueError(
+                f"{point['label']}: treatment entries differ from constrained"
+            )
         if int(point["partitions"]) <= 1:
             raise ValueError(f"{point['label']}: treatment is not partitioned")
     return points
@@ -201,7 +192,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--full", type=Path, required=True)
     parser.add_argument("--constrained", type=Path, required=True)
-    parser.add_argument("--treatment", type=Path, action="append", required=True)
+    parser.add_argument(
+        "--treatment", type=Path, action="append", required=True
+    )
     parser.add_argument("--tsv", type=Path)
     parser.add_argument("--markdown", type=Path)
     args = parser.parse_args()

@@ -114,6 +114,14 @@ paged_staged_16k)
     direct=0
     reload_only=0
     ;;
+paged_staged_conditional_16k)
+    mode=paged_staged_conditional
+    page=16384
+    physical=16384
+    virtual=1
+    direct=0
+    reload_only=0
+    ;;
 paged_reload_warm_4k)
     mode=paged_reload_warm
     page=4096
@@ -174,10 +182,20 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 } > "$out/manifest.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
-sha256sum "$gem5" "$binary" "$config" "$ramulator" "$0" \
-    "$root/benchmarks/API/test_virtual_tile_consumer.cpp" \
-    "$root/src/mem/MAA/IndirectAccess.cc" \
-    "$root/src/mem/MAA/IndirectAccess.hh" \
+snapshot="$out/source_snapshot"
+mkdir -p "$snapshot"
+cp -- "$config" "$snapshot/se.py"
+cp -- "$ramulator" "$snapshot/ramulator.yaml"
+cp -- "$(realpath "$0")" "$snapshot/run_virtual_tile_consumer_case.sh"
+cp -- "$root/benchmarks/API/test_virtual_tile_consumer.cpp" \
+    "$snapshot/test_virtual_tile_consumer.cpp"
+cp -- "$root/src/mem/MAA/IndirectAccess.cc" "$snapshot/IndirectAccess.cc"
+cp -- "$root/src/mem/MAA/IndirectAccess.hh" "$snapshot/IndirectAccess.hh"
+sha256sum "$gem5" "$binary" "$snapshot/se.py" \
+    "$snapshot/ramulator.yaml" \
+    "$snapshot/run_virtual_tile_consumer_case.sh" \
+    "$snapshot/test_virtual_tile_consumer.cpp" \
+    "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
     "$out/source.diff" "$out/source_status.txt" \
     > "$out/artifact_sha256.txt"
 

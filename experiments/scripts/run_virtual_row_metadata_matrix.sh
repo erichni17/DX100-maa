@@ -21,7 +21,7 @@ mkdir -p "$out"
 printf '%s\n' $points > "$out/points.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
-sha256sum "$gem5" "$binary" "$0" \
+sha256sum "$gem5" "$binary" "$(realpath "$0")" \
     "$root/experiments/scripts/run_virtual_tile_consumer_case.sh" \
     "$root/experiments/scripts/summarize_virtual_row_metadata.py" \
     "$out/points.txt" "$out/source.diff" "$out/source_status.txt" \

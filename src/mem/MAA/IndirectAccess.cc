@@ -912,7 +912,14 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
                     my_indirect_id, __func__, my_dst_tile, my_i, 0);
             maa->spd->setFakeData(my_dst_tile, my_i, my_word_size);
         }
-        if (isVirtualLoad() && virtual_iteration_selected)
+        // False predicates have no source address to partition.
+        // Count them once in partition zero; selected true iterations
+        // remain exact-once.
+        const bool track_virtual_iteration =
+            virtual_iteration_selected ||
+            (!condition_taken &&
+             (!isDirectIndexLoad() || direct_index_partition == 0));
+        if (isVirtualLoad() && track_virtual_iteration)
             trackVirtualIteration(my_i, condition_taken);
         if (isDirectIndexLoad())
             consumeDirectIndex(my_i);

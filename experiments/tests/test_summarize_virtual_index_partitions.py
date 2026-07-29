@@ -4,9 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from experiments.tests.virtual_case_fixture import write_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = ROOT / "experiments/scripts/summarize_virtual_index_partitions.py"
+MODULE_PATH = (
+    ROOT / "experiments/scripts/summarize_virtual_index_partitions.py"
+)
 SPEC = importlib.util.spec_from_file_location("partition_summary", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -38,8 +41,14 @@ RESULT_BASE = {
     "row_table_entries_per_subslice_row": "8",
     "virtual_grow_order": "0",
     "row_table_unique_cache_lines": "100",
+    "row_table_unique_rows": "10",
+    "row_table_cache_lines": "110",
+    "row_table_rows_inserted": "20",
     "write_issues": "10",
     "write_completions": "10",
+    "pages_ready": "0",
+    "simInsts": "100",
+    "index_hwm": "16",
     "source_reads": "110",
     "row_table_full_events": "1",
     "virtual_build_rounds": "10",
@@ -49,7 +58,9 @@ RESULT_BASE = {
 }
 
 
-def write_case(root: Path, label: str, ticks: int, output_hash="1234", artifact="a" * 64):
+def write_case(
+    root: Path, label: str, ticks: int, output_hash="1234", artifact="a" * 64
+):
     match = MODULE.LABEL_RE.match(label)
     assert match
     dimensions = match.groupdict()
@@ -76,10 +87,7 @@ def write_case(root: Path, label: str, ticks: int, output_hash="1234", artifact=
         writer = csv.DictWriter(stream, fieldnames=result, delimiter="\t")
         writer.writeheader()
         writer.writerow(result)
-    (path / "artifact_sha256.txt").write_text(
-        f"{artifact}  /tmp/gem5.opt\n{'b' * 64}  /tmp/source.diff\n"
-    )
-    (path / "virtual_tile_consumer_case.pass").touch()
+    write_evidence(path, manifest, result, artifact)
     return path
 
 
@@ -90,9 +98,13 @@ class PartitionSummaryTest(unittest.TestCase):
             full = write_case(root, "r64_e8_g0_p1", 1000)
             constrained = write_case(root, "r32_e8_g0_p1", 1300)
             treatment = write_case(root, "r32_e8_g0_p2", 1100)
-            rows = MODULE.summarize(MODULE.collect(full, constrained, [treatment]))
+            rows = MODULE.summarize(
+                MODULE.collect(full, constrained, [treatment])
+            )
             self.assertEqual(rows[2]["delta_vs_full_percent"], "10.000000")
-            self.assertEqual(rows[2]["delta_vs_constrained_percent"], "-15.384615")
+            self.assertEqual(
+                rows[2]["delta_vs_constrained_percent"], "-15.384615"
+            )
             self.assertEqual(rows[2]["descriptor_slots"], "4096")
 
     def test_rejects_mixed_artifacts(self):
@@ -100,7 +112,9 @@ class PartitionSummaryTest(unittest.TestCase):
             root = Path(directory)
             full = write_case(root, "r64_e8_g0_p1", 1000)
             constrained = write_case(root, "r32_e8_g0_p1", 1300)
-            treatment = write_case(root, "r32_e8_g0_p2", 1100, artifact="c" * 64)
+            treatment = write_case(
+                root, "r32_e8_g0_p2", 1100, artifact="c" * 64
+            )
             with self.assertRaisesRegex(ValueError, "artifact hashes differ"):
                 MODULE.collect(full, constrained, [treatment])
 
@@ -109,7 +123,9 @@ class PartitionSummaryTest(unittest.TestCase):
             root = Path(directory)
             full = write_case(root, "r64_e8_g0_p1", 1000)
             constrained = write_case(root, "r32_e8_g0_p1", 1300)
-            treatment = write_case(root, "r32_e8_g0_p2", 1100, output_hash="4321")
+            treatment = write_case(
+                root, "r32_e8_g0_p2", 1100, output_hash="4321"
+            )
             with self.assertRaisesRegex(ValueError, "output hash differs"):
                 MODULE.collect(full, constrained, [treatment])
 
@@ -119,7 +135,9 @@ class PartitionSummaryTest(unittest.TestCase):
             treatment = write_case(root, "r32_e8_g0_p2", 1100)
             result = treatment / "result.tsv"
             result.write_text(result.read_text().replace("32768", "16384"))
-            with self.assertRaisesRegex(ValueError, "do not prove 2 scans"):
+            with self.assertRaisesRegex(
+                ValueError, "does not match raw evidence"
+            ):
                 MODULE.load_case(treatment)
 
 

@@ -40,11 +40,12 @@ main(int argc, char **argv)
     const int page_elements = argc > 2 ? std::atoi(argv[2]) : total_elements;
     if (mode != "native" && mode != "native_direct" &&
         mode != "paged" && mode != "paged_overlap" &&
-        mode != "paged_staged" && mode != "paged_reload_warm" &&
+        mode != "paged_staged" && mode != "paged_staged_conditional" &&
+        mode != "paged_reload_warm" &&
         mode != "paged_reload_cold") {
         std::cerr << "mode must be native, native_direct, paged, "
                      "paged_overlap, "
-                     "paged_staged, or "
+                     "paged_staged, paged_staged_conditional, or "
                      "paged_reload_warm/paged_reload_cold"
                   << std::endl;
         return 2;
@@ -73,6 +74,10 @@ main(int argc, char **argv)
             ? cache_pollution_bytes / sizeof(uint64_t)
             : 1,
         1);
+    const bool conditional_staged = mode == "paged_staged_conditional";
+    std::vector<uint32_t> conditions;
+    if (conditional_staged)
+        conditions.resize(total_elements);
     double *backing = backing_storage.data() + guard_elements;
     double *destination = destination_storage.data() + guard_elements;
 
@@ -80,6 +85,10 @@ main(int argc, char **argv)
         source[i] = static_cast<double>(i * 17 + 3);
     for (int i = 0; i < total_elements; ++i)
         indices[i] = (i * 97 + 13) % source.size();
+    if (conditional_staged) {
+        for (int i = 0; i < total_elements; ++i)
+            conditions[i] = i % 5 != 0;
+    }
 
     std::cout << "VIRTUAL_TILE_CONSUMER_LAYOUT mode=" << mode
               << " page_elements=" << page_elements
@@ -93,6 +102,9 @@ main(int argc, char **argv)
     clear_mem_region();
     add_mem_region(source.data(), source.data() + source.size());
     add_mem_region(indices.data(), indices.data() + indices.size());
+    if (conditional_staged)
+        add_mem_region(conditions.data(),
+                       conditions.data() + conditions.size());
     add_mem_region(backing_storage.data(),
                    backing_storage.data() + backing_storage.size());
     add_mem_region(destination_storage.data(),
@@ -142,12 +154,20 @@ main(int argc, char **argv)
 
         maa_const(0, min_reg);
         maa_const(total_elements, max_reg);
-        if (mode == "paged_staged") {
+        if (mode == "paged_staged" ||
+            mode == "paged_staged_conditional") {
             const int idx_tile = get_new_tile<uint32_t>();
+            const int cond_tile = conditional_staged
+                                      ? get_new_tile<uint32_t>()
+                                      : -1;
             maa_stream_load<uint32_t>(indices.data(), min_reg, max_reg,
                                       stride_reg, idx_tile);
+            if (cond_tile != -1)
+                maa_stream_load<uint32_t>(conditions.data(), min_reg,
+                                          max_reg, stride_reg, cond_tile);
             maa_indirect_load_virtual<double>(source.data(), idx_tile,
-                                              completion_tile, backing);
+                                              completion_tile, backing,
+                                              cond_tile);
         } else {
             maa_indirect_load_virtual_index<double>(
                 source.data(), indices.data(), completion_tile, backing,
@@ -207,16 +227,19 @@ main(int argc, char **argv)
     uint64_t hash = 1469598103934665603ULL;
     for (int i = 0; i < total_elements; ++i) {
         const double gathered = source[indices[i]];
-        const double expected = gathered * scale;
+        const bool selected = !conditional_staged || conditions[i] != 0;
+        const double expected_backing = selected ? gathered : -1.0;
+        const double expected = expected_backing * scale;
         if (destination[i] != expected && errors++ < 10) {
             std::cerr << "destination mismatch[" << i << "]: got "
                       << destination[i] << ", expected " << expected
                       << std::endl;
         }
         if (mode != "native" && mode != "native_direct" &&
-            backing[i] != gathered && errors++ < 10) {
+            backing[i] != expected_backing && errors++ < 10) {
             std::cerr << "backing mismatch[" << i << "]: got "
-                      << backing[i] << ", expected " << gathered << std::endl;
+                      << backing[i] << ", expected " << expected_backing
+                      << std::endl;
         }
         hash = hashValue(hash, destination[i]);
     }
