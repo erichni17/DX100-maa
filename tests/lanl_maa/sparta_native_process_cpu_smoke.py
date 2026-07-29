@@ -104,6 +104,11 @@ process.env = [
     "LANG=C",
     "LC_ALL=C",
     "OMP_NUM_THREADS=1",
+    "LD_HWCAP_MASK=0",
+    (
+        "GLIBC_TUNABLES=glibc.cpu.hwcaps="
+        "-SSE4_2,-AVX,-AVX2,-AVX512F,-AVX512VL"
+    ),
     "SPARTA_LANL_MAA_SUBMIT=1",
     "SPARTA_LANL_MAA_SUBMIT_TIMESTEP=1",
     "SPARTA_LANL_MAA_MAPPING_COOKIE=sparta-lanl-maa-opcode7-mapped-v1",
