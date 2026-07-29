@@ -55,6 +55,12 @@ def main() -> int:
     )
     parser.add_argument("--word-bytes", type=int, choices=(4, 8), default=8)
     parser.add_argument(
+        "--address-bits",
+        type=int,
+        default=64,
+        help="conservative address/tag width used by the control-state ledger",
+    )
+    parser.add_argument(
         "--dram-subslices",
         type=int,
         required=True,
@@ -87,6 +93,7 @@ def main() -> int:
     response_words = integer(maa, "virtual_response_words")
     response_pool = integer(maa, "virtual_response_word_pool")
     index_lines = integer(maa, "virtual_index_buffer_lines")
+    outstanding_writes = integer(maa, "virtual_max_outstanding_writes")
     native_issue_order = maa.getboolean("virtual_native_issue_order")
 
     positive = {
@@ -100,6 +107,7 @@ def main() -> int:
         "num_row_table_rows_per_slice": rows_per_slice,
         "num_row_table_entries_per_subslice_row": entries_per_subslice_row,
         "dram_subslices": args.dram_subslices,
+        "address_bits": args.address_bits,
     }
     for name, value in positive.items():
         if value <= 0:
@@ -132,15 +140,120 @@ def main() -> int:
     entries_per_row = entries_per_subslice_row * (
         args.dram_subslices // initial_slices
     )
+    active_rows = initial_slices * rows_per_slice
     active_row_entries = initial_slices * rows_per_slice * entries_per_row
     row_entry_lower_bits = 64 + 2 * iteration_bits + 1
     row_lower_bytes_per_unit = math.ceil(
         active_row_entries * row_entry_lower_bits / 8
     )
+    row_header_lower_bits_per_unit = active_rows * (args.address_bits + 2)
+    row_header_lower_bytes_per_unit = math.ceil(
+        row_header_lower_bits_per_unit / 8
+    )
+    invalidator_lower_bytes = math.ceil(invalidator_entries / 8)
+    native_element_ready_lower_bytes = math.ceil(tiles * logical / 8)
+    physical_element_ready_lower_bytes = math.ceil(tiles * physical / 8)
+    retained_descriptor_lower_bytes = (
+        indirect_units
+        * (
+            offset_lower_bytes_per_unit
+            + row_lower_bytes_per_unit
+            + row_header_lower_bytes_per_unit
+        )
+        + invalidator_lower_bytes
+    )
     native_claim_bits_per_unit = (
         active_row_entries if native_issue_order else 0
     )
     native_claim_bytes_per_unit = math.ceil(native_claim_bits_per_unit / 8)
+
+    # Hardware lower bounds for the bounded virtual structures. These count
+    # tags and essential control, but not SRAM periphery, ports, or wiring.
+    words_per_line = 64 // args.word_bytes
+    index_words_per_line = 64 // 4
+    row_slice_bits = bits_for_values(initial_slices)
+    row_id_bits = bits_for_values(rows_per_slice)
+    row_entry_bits = bits_for_values(entries_per_row)
+    response_count_bits = bits_for_values(words_per_line + 1)
+    response_pool_words = response_pool or (
+        response_slots * (response_words or words_per_line)
+    )
+    response_pool_pointer_bits = bits_for_values(response_pool_words + 1)
+
+    index_metadata_bits_per_unit = index_lines * (
+        args.address_bits
+        + iteration_bits
+        + index_words_per_line
+        + 2  # empty, pending, or ready
+    )
+    response_metadata_bits_per_unit = response_slots * (
+        1  # valid
+        + args.address_bits  # source-line tag
+        + iteration_bits  # linked Offset-Table head
+        + response_count_bits  # words retained in this response
+        + response_count_bits  # next word to retire
+        + response_pool_pointer_bits
+        + row_slice_bits
+        + row_id_bits
+        + row_entry_bits
+        + args.address_bits  # claimed DRAM grow
+        + iteration_bits  # claimed chain head
+    )
+    combine_metadata_bits_per_unit = combine_slots * (
+        1 + args.address_bits + words_per_line
+    )
+    combine_sets = 1 if integer(maa, "virtual_combine_ways") == 0 else (
+        combine_slots // integer(maa, "virtual_combine_ways")
+    )
+    combine_ways = integer(maa, "virtual_combine_ways") or combine_slots
+    combine_replacement_bits_per_unit = combine_sets * bits_for_values(
+        combine_ways
+    )
+    outstanding_write_bits_per_unit = outstanding_writes * (
+        1 + args.address_bits
+    )
+    page_counter_bits_per_unit = virtual_pages_used * (
+        5 * iteration_bits + 1
+    )
+    completion_increment_bits = tiles * max(0, virtual_pages_used - 1)
+
+    if args.mechanism == "native":
+        active_index_metadata_bits = 0
+        active_response_metadata_bits = 0
+        active_combine_metadata_bits = 0
+        active_write_metadata_bits = 0
+        active_page_counter_bits = 0
+        active_claim_bits = 0
+        active_completion_increment_bits = 0
+    else:
+        active_index_metadata_bits = (
+            index_metadata_bits_per_unit
+            if args.mechanism == "direct-index"
+            else 0
+        )
+        active_response_metadata_bits = response_metadata_bits_per_unit
+        active_combine_metadata_bits = (
+            combine_metadata_bits_per_unit
+            + combine_replacement_bits_per_unit
+        )
+        active_write_metadata_bits = outstanding_write_bits_per_unit
+        active_page_counter_bits = page_counter_bits_per_unit
+        active_claim_bits = native_claim_bits_per_unit
+        active_completion_increment_bits = completion_increment_bits
+    virtual_control_bits_per_unit = (
+        active_index_metadata_bits
+        + active_response_metadata_bits
+        + active_combine_metadata_bits
+        + active_write_metadata_bits
+        + active_page_counter_bits
+        + active_claim_bits
+    )
+    virtual_control_bytes_per_unit = math.ceil(
+        virtual_control_bits_per_unit / 8
+    )
+    completion_increment_bytes = math.ceil(
+        active_completion_increment_bits / 8
+    )
 
     combine_payload_per_unit = combine_slots * 64
     if response_pool:
@@ -176,6 +289,21 @@ def main() -> int:
         active_virtual_payload_per_unit * indirect_units
     )
     counted_payload = physical_spd_bytes + active_virtual_payload_total
+    bounded_state_total = (
+        counted_payload
+        + virtual_control_bytes_per_unit * indirect_units
+        + completion_increment_bytes
+    )
+    native_comparable_storage = (
+        native_spd_bytes
+        + native_element_ready_lower_bytes
+        + retained_descriptor_lower_bytes
+    )
+    comparable_storage = (
+        bounded_state_total
+        + physical_element_ready_lower_bytes
+        + retained_descriptor_lower_bytes
+    )
 
     report = {
         "provenance": {
@@ -184,6 +312,7 @@ def main() -> int:
             "mechanism": args.mechanism,
             "word_bytes": args.word_bytes,
             "dram_subslices": args.dram_subslices,
+            "address_bits": args.address_bits,
         },
         "configuration": {
             "cores": cores,
@@ -211,6 +340,9 @@ def main() -> int:
         "retained_logical_metadata": {
             "invalidator_cache_line_entries": invalidator_entries,
             "invalidator_model_bytes": invalidator_entries,
+            "invalidator_encoding_lower_bound_bytes": (
+                invalidator_lower_bytes
+            ),
             "completion_flags_used": tiles * virtual_pages_used,
             "completion_cpp_model_bytes_fixed_16_pages": tiles * 16,
             "offset_entries_per_indirect_unit": logical,
@@ -223,8 +355,15 @@ def main() -> int:
             "configured_row_entry_capacity_per_indirect_unit": (
                 active_row_entries
             ),
+            "configured_row_count_per_indirect_unit": active_rows,
             "row_encoding_lower_bound_bytes_per_indirect_unit": (
                 row_lower_bytes_per_unit
+            ),
+            "row_header_encoding_lower_bound_bytes_per_indirect_unit": (
+                row_header_lower_bytes_per_unit
+            ),
+            "shared_descriptor_lower_bound_bytes": (
+                retained_descriptor_lower_bytes
             ),
             "native_order_claim_bits_per_indirect_unit": (
                 native_claim_bits_per_unit
@@ -265,6 +404,30 @@ def main() -> int:
                 active_virtual_payload_total
             ),
         },
+        "incremental_virtual_control_lower_bound": {
+            "index_feeder_metadata_bits_per_indirect_unit": (
+                active_index_metadata_bits
+            ),
+            "source_response_metadata_bits_per_indirect_unit": (
+                active_response_metadata_bits
+            ),
+            "destination_combiner_metadata_bits_per_indirect_unit": (
+                active_combine_metadata_bits
+            ),
+            "outstanding_write_metadata_bits_per_indirect_unit": (
+                active_write_metadata_bits
+            ),
+            "page_counter_bits_per_indirect_unit": (
+                active_page_counter_bits
+            ),
+            "native_order_claim_bits_per_indirect_unit": active_claim_bits,
+            "metadata_bytes_per_indirect_unit": virtual_control_bytes_per_unit,
+            "metadata_bytes_all_indirect_units": (
+                virtual_control_bytes_per_unit * indirect_units
+            ),
+            "incremental_completion_bytes": completion_increment_bytes,
+            "assumes_unified_request_response_slots": True,
+        },
         "counted_payload": {
             "physical_spd_plus_virtual_buffers_bytes": counted_payload,
             "reduction_vs_native_spd_pct": (
@@ -272,10 +435,33 @@ def main() -> int:
             )
             * 100,
         },
+        "bounded_state_lower_bound": {
+            "physical_spd_virtual_payload_and_control_bytes": (
+                bounded_state_total
+            ),
+            "reduction_vs_native_spd_pct": (
+                1 - bounded_state_total / native_spd_bytes
+            )
+            * 100,
+        },
+        "comparable_storage_lower_bound": {
+            "native_element_ready_bytes": native_element_ready_lower_bytes,
+            "physical_element_ready_bytes": (
+                physical_element_ready_lower_bytes
+            ),
+            "retained_shared_descriptor_bytes": (
+                retained_descriptor_lower_bytes
+            ),
+            "native_total_bytes": native_comparable_storage,
+            "configured_total_bytes": comparable_storage,
+            "reduction_vs_native_pct": (
+                1 - comparable_storage / native_comparable_storage
+            )
+            * 100,
+        },
         "excluded_from_counted_payload": [
-            "Row/Offset metadata (reported separately and retained at logical size)",
-            "tags, masks, valid bits other than the claimed-entry bitmap, "
-            "queues, maps, and arbitration",
+            "Row/Offset metadata (included only in comparable lower bound)",
+            "unbounded/general queues, arbitration, and non-capacity control",
             "cache tags, MSHRs, routing state, and outstanding packet payload",
             "ports, wiring, control, and synthesized memory periphery",
         ],
@@ -301,7 +487,23 @@ def main() -> int:
         f"| Active direct-index B feeder | {format_bytes(active_index_payload)} / indirect unit |",
         f"| Active source-response payload | {format_bytes(active_response_payload)} / indirect unit |",
         f"| Active destination-combiner payload | {format_bytes(active_combine_payload)} / indirect unit |",
+        "| Incremental virtual tags/control (lower bound) | "
+        f"{format_bytes(virtual_control_bytes_per_unit)} / indirect unit |",
+        "| Incremental completion state | "
+        f"{format_bytes(completion_increment_bytes)} |",
         f"| Physical SPD + bounded virtual payload | {format_bytes(counted_payload)} |",
+        "| Physical SPD + bounded payload/control lower bound | "
+        f"{format_bytes(bounded_state_total)} |",
+        "| Retained Row/Offset/invalidator lower bound | "
+        f"{format_bytes(retained_descriptor_lower_bytes)} |",
+        "| Native readiness lower bound | "
+        f"{format_bytes(native_element_ready_lower_bytes)} |",
+        "| Configured physical readiness lower bound | "
+        f"{format_bytes(physical_element_ready_lower_bytes)} |",
+        "| Native comparable storage lower bound | "
+        f"{format_bytes(native_comparable_storage)} |",
+        "| Configured comparable storage lower bound | "
+        f"{format_bytes(comparable_storage)} |",
         f"| Logical Offset entries retained | {logical:,} / indirect unit |",
         f"| Configured Row-Table entry capacity | {active_row_entries:,} / indirect unit |",
         "| Native-order claimed-entry bitmap | "
@@ -310,11 +512,17 @@ def main() -> int:
         f"| Unbacked logical SPD tail | {format_bytes(unbacked_aperture_tail_bytes)} / address aperture |",
         "",
         f"Counted payload reduction versus native SPD: **{report['counted_payload']['reduction_vs_native_spd_pct']:.3f}%**.",
+        "Bounded-state lower-bound reduction versus native SPD: "
+        f"**{report['bounded_state_lower_bound']['reduction_vs_native_spd_pct']:.3f}%**.",
+        "Comparable lower-bound reduction with retained descriptors and readiness: "
+        f"**{report['comparable_storage_lower_bound']['reduction_vs_native_pct']:.3f}%**.",
         "",
-        "This is a capacity ledger, not an area estimate. Row/Offset metadata remains",
-        "logical-sized, but this does not prove native-equivalent descriptor lifetime or",
-        "issue order. Tags, queues, ports, control, wiring, and memory periphery are",
-        "excluded from the counted payload.",
+        "This is a capacity ledger, not an area estimate. The comparable lower bound",
+        "includes retained logical-sized Row/Offset/invalidator state and bit-packed",
+        "readiness, but this does not prove native-equivalent descriptor lifetime or",
+        "issue order. Essential tags and bounded control arrays are included as a",
+        "bit-count lower bound; ports, arbitration, wiring, and memory periphery are",
+        "still excluded.",
     ]
     (output / "maa_storage.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
