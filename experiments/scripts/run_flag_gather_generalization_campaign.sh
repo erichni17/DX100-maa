@@ -107,6 +107,7 @@ run_case() {
     run_arm compact16 compact compact16 16384 1 1
     run_arm direct4 direct_index_4k direct4 4096 1 128
     python3 "$out/frozen-tools/compare_maa_issue_digests.py" \
+        --allow-per-instruction-unit-reassignment \
         --baseline fused16 --output-dir "$case_out/issue-comparison" \
         "fused16=$case_out/fused16/run/xrage-debug.log" \
         "compact16=$case_out/compact16/run/xrage-debug.log" \

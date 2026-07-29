@@ -42,9 +42,14 @@ class FlagGatherGeneralizationTest(unittest.TestCase):
                 for marker in (
                     case / "flag_gather_case.pass",
                     case / "comparison/xrage_comparison.pass",
-                    case / "issue-comparison/maa_issue_digest_comparison.pass",
                 ):
                     marker.touch()
+                digest_marker = (
+                    "maa_issue_digest_per_instruction.pass"
+                    if index == 0
+                    else "maa_issue_digest_comparison.pass"
+                )
+                (case / "issue-comparison" / digest_marker).touch()
                 with (case / "comparison/xrage_comparison.tsv").open(
                     "w", encoding="utf-8", newline=""
                 ) as stream:
@@ -104,7 +109,7 @@ class FlagGatherGeneralizationTest(unittest.TestCase):
 
             (
                 campaign
-                / "cases/gather-00/issue-comparison/maa_issue_digest_comparison.pass"
+                / "cases/gather-00/issue-comparison/maa_issue_digest_per_instruction.pass"
             ).unlink()
             rejected = subprocess.run(
                 [
@@ -118,7 +123,7 @@ class FlagGatherGeneralizationTest(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("missing validation marker", rejected.stderr)
+            self.assertIn("missing issue-digest validation marker", rejected.stderr)
 
 
 if __name__ == "__main__":

@@ -103,12 +103,40 @@ class IssueDigestComparisonTest(unittest.TestCase):
             )
             comparison = report["comparisons"][0]
             self.assertFalse(comparison["match"])
-            self.assertTrue(comparison["logical_sequence_match"])
+            self.assertTrue(comparison["instruction_multiset_match"])
             self.assertEqual(comparison["logical_source_requests"], 7)
             self.assertTrue(
                 (root / "comparison/maa_issue_digest_per_instruction.pass")
                 .is_file()
             )
+
+    def test_accepts_independent_instruction_completion_reordering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = (
+                "MAAIssueDigest: unit=0 instruction_tick=100 count=3 "
+                "fnv=0x1111111111111111 mix=0x2222222222222222\n"
+            )
+            second = (
+                "MAAIssueDigest: unit=0 instruction_tick=200 count=4 "
+                "fnv=0x3333333333333333 mix=0x4444444444444444\n"
+            )
+            result = self.run_comparison(
+                root,
+                first + second,
+                second.replace("instruction_tick=200", "instruction_tick=90")
+                + first.replace("instruction_tick=100", "instruction_tick=210"),
+                allow_unit_reassignment=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(
+                (root / "comparison" / "maa_issue_digest_comparison.json")
+                .read_text(encoding="utf-8")
+            )
+            comparison = report["comparisons"][0]
+            self.assertFalse(comparison["match"])
+            self.assertTrue(comparison["instruction_multiset_match"])
+            self.assertEqual(comparison["logical_source_requests"], 7)
 
 
 if __name__ == "__main__":

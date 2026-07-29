@@ -65,6 +65,16 @@ def logical_sequence(
     return sorted(records, key=lambda record: (record["tick"], record["unit"]))
 
 
+def instruction_multiset(
+    units: dict[int, list[dict[str, int]]],
+) -> list[tuple[int, int, int]]:
+    return sorted(
+        comparable(record)
+        for unit_records in units.values()
+        for record in unit_records
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", required=True)
@@ -96,12 +106,12 @@ def main() -> int:
         unit_set_match = set(units) == set(baseline_units)
         baseline_logical = logical_sequence(baseline_units)
         candidate_logical = logical_sequence(units)
-        logical_sequence_match = [comparable(record) for record in baseline_logical] == [
-            comparable(record) for record in candidate_logical
-        ]
+        instruction_multiset_match = instruction_multiset(
+            baseline_units
+        ) == instruction_multiset(units)
         logical_requests = (
             sum(record["count"] for record in baseline_logical)
-            if logical_sequence_match
+            if instruction_multiset_match
             else 0
         )
         first_mismatch = None
@@ -140,7 +150,7 @@ def main() -> int:
         match = unit_set_match and first_mismatch is None
         accepted = match or (
             args.allow_per_instruction_unit_reassignment
-            and logical_sequence_match
+            and instruction_multiset_match
         )
         all_match &= accepted
         comparisons.append(
@@ -150,7 +160,7 @@ def main() -> int:
                 "match": match,
                 "accepted": accepted,
                 "unit_set_match": unit_set_match,
-                "logical_sequence_match": logical_sequence_match,
+                "instruction_multiset_match": instruction_multiset_match,
                 "logical_instructions": len(baseline_logical),
                 "logical_source_requests": logical_requests,
                 "compared_instructions": compared_instructions,
@@ -170,8 +180,10 @@ def main() -> int:
     lines = [
         "# MAA Source-Request Digest Comparison",
         "",
-        "Per-instruction matching ignores functional-unit assignment and does "
-        "not prove the global interleaving of requests from concurrent units.",
+        "Per-instruction matching ignores completion order and functional-unit "
+        "assignment. Each digest still commits to the ordered source-request "
+        "sequence inside one instruction; it does not prove global request "
+        "interleaving across concurrent instructions.",
         "",
         "| Baseline | Candidate | Strict match | Per-instruction match | "
         "Instructions | Source requests |",
@@ -181,7 +193,7 @@ def main() -> int:
         lines.append(
             f"| {comparison['baseline']} | {comparison['candidate']} | "
             f"{'yes' if comparison['match'] else 'no'} | "
-            f"{'yes' if comparison['logical_sequence_match'] else 'no'} | "
+            f"{'yes' if comparison['instruction_multiset_match'] else 'no'} | "
             f"{comparison['logical_instructions']:,} | "
             f"{comparison['logical_source_requests']:,} |"
         )

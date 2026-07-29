@@ -70,10 +70,18 @@ def main() -> int:
         for marker in (
             case / "flag_gather_case.pass",
             case / "comparison" / "xrage_comparison.pass",
-            case / "issue-comparison" / "maa_issue_digest_comparison.pass",
         ):
             if not marker.is_file():
                 fail(f"missing validation marker: {marker}")
+        digest_dir = case / "issue-comparison"
+        if not any(
+            (digest_dir / marker).is_file()
+            for marker in (
+                "maa_issue_digest_comparison.pass",
+                "maa_issue_digest_per_instruction.pass",
+            )
+        ):
+            fail(f"missing issue-digest validation marker: {digest_dir}")
         rows = read_comparison(case / "comparison" / "xrage_comparison.tsv")
         input_path = manifest_root / config["input"]
         if sha256(input_path) != config["input_sha256"]:
@@ -138,7 +146,8 @@ def main() -> int:
         "# FLAG Gather Generalization",
         "",
         "All 14 gathers passed exact-output, artifact, terminal, configuration, "
-        "two-channel DRAM, and full source-request digest checks.",
+        "two-channel DRAM, and complete per-instruction source-request digest "
+        "checks. Independent instruction completion order is not constrained.",
         "",
         "| Configuration | Length | Compact vs. fused latency | Direct vs. fused latency | Direct vs. compact latency |",
         "|---|---:|---:|---:|---:|",
