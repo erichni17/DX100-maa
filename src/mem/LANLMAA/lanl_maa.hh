@@ -14,6 +14,7 @@
 #include "mem/LANLMAA/BransonEventTiming.hh"
 #include "mem/LANLMAA/Descriptor.hh"
 #include "mem/LANLMAA/FaceComputeTiming.hh"
+#include "mem/LANLMAA/SharedOverlayModeBarrier.hh"
 #include "mem/LANLMAA/SpartaFusedCellModel.hh"
 #include "mem/LANLMAA/SpartaTallyDescriptor.hh"
 #include "mem/LANLMAA/UmeGradzatpDescriptor.hh"
@@ -296,6 +297,12 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorResultWrites;
         statistics::Scalar descriptorCompletionWrites;
         statistics::Scalar descriptorErrors;
+        statistics::Scalar sharedOverlayModeAcquisitions;
+        statistics::Scalar sharedOverlayReservationRejections;
+        statistics::Scalar sharedOverlayTrafficAccepted;
+        statistics::Scalar sharedOverlayTrafficAcknowledged;
+        statistics::Scalar sharedOverlayDrains;
+        statistics::Scalar sharedOverlayReleases;
         statistics::Scalar descriptorPredicatesSkipped;
         statistics::Scalar descriptorFaceValuesComputed;
         statistics::Scalar descriptorFaceVacuumValues;
@@ -401,6 +408,8 @@ class LANLMAA : public ClockedObject
     std::unique_ptr<FaceComputeTiming> faceComputeTiming;
     std::unique_ptr<BransonEventTiming> bransonEventTiming;
     std::unique_ptr<BransonContextScheduler> bransonContextScheduler;
+    SharedOverlayModeBarrier sharedOverlayBarrier;
+    bool descriptorOwnsSharedOverlay = false;
 
     std::vector<Operation> operations;
     std::vector<LineEntry> lines;
@@ -532,6 +541,14 @@ class LANLMAA : public ClockedObject
         PacketPtr packet, TrafficKind kind, PacketPtr *retainedPacket);
     TrafficKind acceptResponse(PacketPtr packet);
     void discardUnsentRequest(PacketPtr &packet);
+    DescriptorError acquireSharedOverlay(
+        const SharedOverlayReservation &reservation);
+    static bool sharedOverlayTrafficKind(
+        TrafficKind kind, SharedOverlayTrafficKind &overlayKind);
+    void recordSharedOverlayTraffic(TrafficKind kind);
+    void acknowledgeSharedOverlayTraffic(TrafficKind kind);
+    void beginSharedOverlayDrain();
+    void releaseSharedOverlay();
     void validateConfiguration() const;
     void scheduleTick();
     AddrRangeList controlRanges() const;

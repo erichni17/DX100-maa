@@ -50,6 +50,13 @@ writeLe(uint8_t *bytes, size_t offset, uint64_t value, size_t width)
     }
 }
 
+uint32_t
+boundedOverlayEntries(size_t capacity, uint32_t logicalItems)
+{
+    return static_cast<uint32_t>(
+        std::min(capacity, static_cast<size_t>(logicalItems)));
+}
+
 } // anonymous namespace
 
 void
@@ -205,6 +212,22 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Completion-record writes acknowledged"),
       ADD_STAT(descriptorErrors, statistics::units::Count::get(),
                "Descriptors rejected before completion publication"),
+      ADD_STAT(sharedOverlayModeAcquisitions,
+               statistics::units::Count::get(),
+               "Decoded descriptors acquiring shared overlay ownership"),
+      ADD_STAT(sharedOverlayReservationRejections,
+               statistics::units::Count::get(),
+               "Decoded descriptors rejected by shared overlay capacity"),
+      ADD_STAT(sharedOverlayTrafficAccepted,
+               statistics::units::Count::get(),
+               "Post-decode requests accepted under overlay ownership"),
+      ADD_STAT(sharedOverlayTrafficAcknowledged,
+               statistics::units::Count::get(),
+               "Post-decode overlay request responses acknowledged"),
+      ADD_STAT(sharedOverlayDrains, statistics::units::Count::get(),
+               "Shared overlay owners entering terminal drain"),
+      ADD_STAT(sharedOverlayReleases, statistics::units::Count::get(),
+               "Quiescent shared overlay owners released"),
       ADD_STAT(descriptorPredicatesSkipped, statistics::units::Count::get(),
                "Descriptor items retired without memory for false predicate"),
       ADD_STAT(descriptorFaceValuesComputed, statistics::units::Count::get(),
@@ -740,6 +763,10 @@ LANLMAA::rearmDescriptorEngine()
              "LANLMAA rearmed a descriptor with allocated lines");
     panic_if(!allUpdateEntriesFree(),
              "LANLMAA rearmed a descriptor with allocated updates");
+    panic_if(descriptorOwnsSharedOverlay ||
+                 sharedOverlayBarrier.state() !=
+                     SharedOverlayBarrierState::Idle,
+             "LANLMAA rearmed a descriptor with retained overlay ownership");
 
     operations.clear();
     descriptor = Descriptor{};
@@ -826,6 +853,22 @@ LANLMAA::rejectDescriptor(DescriptorError error)
     panic_if(descriptorPacket || addressVectorPacket || resultPacket ||
                  completionPacket || rejectedPacket || waitingForRetry,
              "LANLMAA rejected a descriptor with retained traffic");
+    if (descriptorOwnsSharedOverlay) {
+        if (sharedOverlayBarrier.state() ==
+            SharedOverlayBarrierState::Active) {
+            beginSharedOverlayDrain();
+        }
+        panic_if(
+            sharedOverlayBarrier.state() !=
+                    SharedOverlayBarrierState::Draining ||
+                sharedOverlayBarrier.outstanding() != 0,
+            "LANLMAA rejected a descriptor before overlay drain completed");
+        releaseSharedOverlay();
+    } else {
+        panic_if(sharedOverlayBarrier.state() !=
+                     SharedOverlayBarrierState::Idle,
+                 "LANLMAA rejected an unowned non-idle overlay");
+    }
     descriptorError = error;
     descriptorState = DescriptorState::Error;
     finished = true;
@@ -943,6 +986,9 @@ LANLMAA::sendDescriptorPacket(PacketPtr packet)
         ++stats.portSendFailures;
         return false;
     }
+    auto *state = dynamic_cast<RequestSenderState *>(packet->senderState);
+    panic_if(!state, "LANLMAA accepted untagged descriptor traffic");
+    recordSharedOverlayTraffic(state->kind);
     if (retryAttempt) {
         rejectedPacket = nullptr;
         ++stats.retryPacketAcceptances;
@@ -2427,6 +2473,129 @@ LANLMAA::beginFaceUpdatePhase()
     }
 }
 
+DescriptorError
+LANLMAA::acquireSharedOverlay(
+    const SharedOverlayReservation &reservation)
+{
+    panic_if(!descriptorMode || descriptorOwnsSharedOverlay,
+             "LANLMAA acquired invalid shared overlay ownership");
+    const SharedOverlayResult result = sharedOverlayBarrier.acquire(
+        reservation);
+    if (result == SharedOverlayResult::Accepted) {
+        descriptorOwnsSharedOverlay = true;
+        ++stats.sharedOverlayModeAcquisitions;
+        return DescriptorError::None;
+    }
+
+    ++stats.sharedOverlayReservationRejections;
+    switch (result) {
+      case SharedOverlayResult::CapacityExceeded:
+        return DescriptorError::TooManyItems;
+      case SharedOverlayResult::InvalidMode:
+      case SharedOverlayResult::InvalidReservation:
+        return DescriptorError::BadRecordGeometry;
+      case SharedOverlayResult::Busy:
+      case SharedOverlayResult::LeaseConflict:
+        return DescriptorError::BadStartState;
+      case SharedOverlayResult::Accepted:
+      case SharedOverlayResult::InvalidState:
+      case SharedOverlayResult::InvalidTraffic:
+      case SharedOverlayResult::CounterOverflow:
+      case SharedOverlayResult::CounterUnderflow:
+      case SharedOverlayResult::OutstandingObligations:
+        break;
+    }
+    panic("LANLMAA shared overlay acquisition returned an invalid result");
+}
+
+bool
+LANLMAA::sharedOverlayTrafficKind(
+    TrafficKind kind, SharedOverlayTrafficKind &overlayKind)
+{
+    switch (kind) {
+      case TrafficKind::Descriptor:
+        return false;
+      case TrafficKind::AddressVector:
+      case TrafficKind::Line:
+      case TrafficKind::Verification:
+        overlayKind = SharedOverlayTrafficKind::Read;
+        return true;
+      case TrafficKind::Result:
+        overlayKind = SharedOverlayTrafficKind::Write;
+        return true;
+      case TrafficKind::Update:
+        overlayKind = SharedOverlayTrafficKind::Atomic;
+        return true;
+      case TrafficKind::Completion:
+        overlayKind = SharedOverlayTrafficKind::Completion;
+        return true;
+    }
+    return false;
+}
+
+void
+LANLMAA::recordSharedOverlayTraffic(TrafficKind kind)
+{
+    if (!descriptorMode) {
+        return;
+    }
+    SharedOverlayTrafficKind overlayKind;
+    if (!sharedOverlayTrafficKind(kind, overlayKind)) {
+        return;
+    }
+    panic_if(!descriptorOwnsSharedOverlay,
+             "LANLMAA accepted post-decode traffic without overlay ownership");
+    panic_if(
+        sharedOverlayBarrier.acceptTraffic(overlayKind) !=
+            SharedOverlayResult::Accepted,
+        "LANLMAA failed to record accepted shared overlay traffic");
+    ++stats.sharedOverlayTrafficAccepted;
+}
+
+void
+LANLMAA::acknowledgeSharedOverlayTraffic(TrafficKind kind)
+{
+    if (!descriptorMode) {
+        return;
+    }
+    SharedOverlayTrafficKind overlayKind;
+    if (!sharedOverlayTrafficKind(kind, overlayKind)) {
+        return;
+    }
+    panic_if(!descriptorOwnsSharedOverlay,
+             "LANLMAA acknowledged traffic without overlay ownership");
+    panic_if(
+        sharedOverlayBarrier.acknowledgeTraffic(overlayKind) !=
+            SharedOverlayResult::Accepted,
+        "LANLMAA failed to acknowledge shared overlay traffic");
+    ++stats.sharedOverlayTrafficAcknowledged;
+}
+
+void
+LANLMAA::beginSharedOverlayDrain()
+{
+    panic_if(!descriptorMode || !descriptorOwnsSharedOverlay,
+             "LANLMAA drained an unowned shared overlay");
+    panic_if(
+        sharedOverlayBarrier.beginDrain() != SharedOverlayResult::Accepted,
+        "LANLMAA failed to begin shared overlay drain");
+    ++stats.sharedOverlayDrains;
+}
+
+void
+LANLMAA::releaseSharedOverlay()
+{
+    panic_if(!descriptorMode || !descriptorOwnsSharedOverlay,
+             "LANLMAA released an unowned shared overlay");
+    panic_if(sharedOverlayBarrier.outstanding() != 0,
+             "LANLMAA released shared overlay with outstanding traffic");
+    panic_if(
+        sharedOverlayBarrier.release(false) != SharedOverlayResult::Accepted,
+        "LANLMAA failed to release a drained shared overlay");
+    descriptorOwnsSharedOverlay = false;
+    ++stats.sharedOverlayReleases;
+}
+
 void
 LANLMAA::tagRequest(
     PacketPtr packet, TrafficKind kind, PacketPtr *retainedPacket)
@@ -2450,6 +2619,7 @@ LANLMAA::acceptResponse(PacketPtr packet)
     const TrafficKind kind = state->kind;
     *state->retainedPacket = packet;
     delete state;
+    acknowledgeSharedOverlayTraffic(kind);
     return kind;
 }
 
@@ -2552,6 +2722,17 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
                 return true;
             }
 
+            SharedOverlayReservation reservation;
+            reservation.mode = SharedOverlayMode::Supplemental;
+            reservation.operationOnlyEntries = boundedOverlayEntries(
+                operationEntries, umeGradzatp.cornerCount);
+            const DescriptorError overlayError =
+                acquireSharedOverlay(reservation);
+            if (overlayError != DescriptorError::None) {
+                rejectDescriptor(overlayError);
+                return true;
+            }
+
             operations.assign(umeGradzatp.cornerCount, Operation{});
             for (size_t corner = 0; corner < operations.size(); ++corner) {
                 auto &operation = operations[corner];
@@ -2623,6 +2804,16 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
             return true;
         }
 
+        SharedOverlayReservation reservation;
+        reservation.mode = SharedOverlayMode::SpartaFusedCell;
+        reservation.pairedEntries = spartaFusedDescriptor.cellCount;
+        const DescriptorError overlayError =
+            acquireSharedOverlay(reservation);
+        if (overlayError != DescriptorError::None) {
+            rejectDescriptor(overlayError);
+            return true;
+        }
+
         operations.assign(spartaFusedDescriptor.cellCount, Operation{});
         for (size_t cell = 0; cell < operations.size(); ++cell) {
             auto &operation = operations[cell];
@@ -2691,6 +2882,17 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
             return true;
         }
 
+        SharedOverlayReservation reservation;
+        reservation.mode = SharedOverlayMode::Supplemental;
+        reservation.operationOnlyEntries = boundedOverlayEntries(
+            operationEntries, spartaDescriptor.itemCount);
+        const DescriptorError overlayError =
+            acquireSharedOverlay(reservation);
+        if (overlayError != DescriptorError::None) {
+            rejectDescriptor(overlayError);
+            return true;
+        }
+
         operations.assign(spartaDescriptor.itemCount, Operation{});
         descriptorAddressCursor = 0;
         descriptorResultCursor = 0;
@@ -2746,6 +2948,18 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
                 bransonDescriptor.completionRecord, completionEnd) ||
             unsafeRange(bransonDescriptor.eventBase, eventEnd)) {
             rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return true;
+        }
+
+        SharedOverlayReservation reservation;
+        reservation.mode = SharedOverlayMode::BransonEventTally;
+        reservation.pairedEntries = boundedOverlayEntries(
+            std::min(operationEntries, bransonContextLimit.capacity()),
+            bransonDescriptor.rootCount);
+        const DescriptorError overlayError =
+            acquireSharedOverlay(reservation);
+        if (overlayError != DescriptorError::None) {
+            rejectDescriptor(overlayError);
             return true;
         }
 
@@ -2823,6 +3037,26 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
          faceMinMaxUsesFaceValues(descriptor) &&
          unsafeRange(descriptor.faceValueBase, faceValueEnd))) {
         rejectDescriptor(DescriptorError::UnsafeAddressRange);
+        return true;
+    }
+
+    SharedOverlayReservation reservation;
+    reservation.mode = faceMinMaxDescriptor() ?
+        SharedOverlayMode::Supplemental : SharedOverlayMode::XrageStream;
+    if (descriptorIsRecordWalk(descriptor.opcode)) {
+        reservation.pairedEntries = boundedOverlayEntries(
+            std::min(operationEntries, continuationEntries),
+            descriptor.itemCount);
+    } else if (faceMinMaxDescriptor()) {
+        reservation.pairedEntries = boundedOverlayEntries(
+            operationEntries, descriptor.itemCount);
+    } else {
+        reservation.operationOnlyEntries = boundedOverlayEntries(
+            operationEntries, descriptor.itemCount);
+    }
+    const DescriptorError overlayError = acquireSharedOverlay(reservation);
+    if (overlayError != DescriptorError::None) {
+        rejectDescriptor(overlayError);
         return true;
     }
 
@@ -3227,6 +3461,8 @@ LANLMAA::completeDescriptor()
                 umeUpdatesAcknowledged != 2 * umeActiveCorners,
             "LANLMAA completed with incomplete UME gradzatp accounting");
     }
+    beginSharedOverlayDrain();
+    releaseSharedOverlay();
     descriptorState = DescriptorState::Completed;
     finished = true;
     DPRINTF(LANLMAA,
@@ -3847,6 +4083,7 @@ LANLMAA::issueLines()
             rejectedPacket = nullptr;
             ++stats.retryPacketAcceptances;
         }
+        recordSharedOverlayTraffic(TrafficKind::Line);
         line.state = LineState::InFlight;
         ++stats.physicalLineReads;
         ++issued;
@@ -3937,6 +4174,7 @@ LANLMAA::issueUpdates()
             rejectedPacket = nullptr;
             ++stats.retryPacketAcceptances;
         }
+        recordSharedOverlayTraffic(TrafficKind::Update);
         entry.state = UpdateState::AtomicInFlight;
         ++stats.physicalAtomicUpdates;
         switch (entry.kind) {
@@ -4006,6 +4244,7 @@ LANLMAA::issueVerification()
         rejectedPacket = nullptr;
         ++stats.retryPacketAcceptances;
     }
+    recordSharedOverlayTraffic(TrafficKind::Verification);
     verificationInFlight = true;
     ++stats.verificationReads;
 }
