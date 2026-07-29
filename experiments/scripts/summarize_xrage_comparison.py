@@ -219,6 +219,7 @@ def read_run(
     physical = require_integer(manifest, "physical_tile_elements", label)
     chunk = require_integer(manifest, "workload_chunk_elements", label)
     index_lines = int(manifest.get("virtual_index_buffer_lines", "1"))
+    row_table_slices = int(manifest.get("initial_row_table_slices", "32"))
     grow_order = int(manifest.get("virtual_grow_order", "0"))
     native_issue_order = int(manifest.get("virtual_native_issue_order", "0"))
     if grow_order not in {0, 1} or native_issue_order not in {0, 1}:
@@ -231,6 +232,8 @@ def read_run(
         fail(f"{label} config and manifest disagree on physical tile size")
     if int(maa["virtual_index_buffer_lines"]) != index_lines:
         fail(f"{label} config and manifest disagree on index-buffer depth")
+    if int(maa["num_initial_row_table_slices"]) != row_table_slices:
+        fail(f"{label} config and manifest disagree on row-table slices")
     if int(maa.getboolean("virtual_grow_order", fallback=False)) != grow_order:
         fail(f"{label} config and manifest disagree on virtual grow order")
     if (
@@ -268,6 +271,7 @@ def read_run(
         "physical_tile_elements": physical,
         "workload_chunk_elements": chunk,
         "index_buffer_lines": index_lines,
+        "initial_row_table_slices": row_table_slices,
         "virtual_grow_order": grow_order,
         "virtual_native_issue_order": native_issue_order,
         "roi_simTicks": ticks[0],
