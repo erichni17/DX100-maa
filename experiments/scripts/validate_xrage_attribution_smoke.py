@@ -51,11 +51,26 @@ DIAGNOSTIC_STATS = {
     "memory_read_packets": "system.maa.port_mem_RD_packets",
     "indirect_fill_cycles": "system.maa.I0_IND_CyclesFill",
     "indirect_request_cycles": "system.maa.I0_IND_CyclesRequest",
+    "source_words": "system.maa.I0_IND_NumWordsInserted",
     "source_cache_lines": "system.maa.I0_IND_NumCacheLineInserted",
+    "source_rows": "system.maa.I0_IND_NumRowsInserted",
+    "unique_source_words": "system.maa.I0_IND_NumUniqueWordsInserted",
+    "unique_source_cache_lines": "system.maa.I0_IND_NumUniqueCacheLineInserted",
+    "unique_source_rows": "system.maa.I0_IND_NumUniqueRowsInserted",
+    "row_table_full_events": "system.maa.I0_IND_NumRTFull",
     "indirect_memory_reads": "system.maa.I0_IND_LoadsMemAccessing",
     "direct_index_line_reads": "system.maa.I0_IND_VirtIndexLineReads",
     "virtual_build_rounds": "system.maa.I0_IND_VirtBuildRounds",
 }
+REORDER_DIAGNOSTICS = (
+    "source_words",
+    "source_cache_lines",
+    "source_rows",
+    "unique_source_words",
+    "unique_source_cache_lines",
+    "unique_source_rows",
+    "row_table_full_events",
+)
 COMPARISONS = [
     ("fusion", "native", "fused"),
     ("compact_bypass", "fused", "compact"),
@@ -237,6 +252,22 @@ def main():
             fail(f"{arm} config has wrong physical tile size")
         verify_artifacts(arm_root / "artifact_sha256.txt", digest_cache)
         rows.append({"arm": arm, **result})
+
+    diagnostics_by_arm = {row["arm"]: row for row in diagnostics}
+    for baseline, treatment in (
+        ("native", "fused"),
+        ("native", "direct_index_16k"),
+        ("direct_index_16k", "direct_index_4k"),
+    ):
+        for field in REORDER_DIAGNOSTICS:
+            baseline_value = diagnostics_by_arm[baseline][field]
+            treatment_value = diagnostics_by_arm[treatment][field]
+            if treatment_value != baseline_value:
+                fail(
+                    f"{treatment} {field}={treatment_value} differs from "
+                    f"{baseline} {baseline_value}; source reorder accounting "
+                    "is not matched"
+                )
 
     fields = ["arm", *RESULT_FIELDS]
     with (root / "results.tsv").open("w", newline="") as stream:
