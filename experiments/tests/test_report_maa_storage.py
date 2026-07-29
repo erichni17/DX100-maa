@@ -158,6 +158,7 @@ class StorageReportTest(unittest.TestCase):
             parser.read(config)
             parser["system.maa"]["num_row_table_rows_per_slice"] = "16"
             parser["system.maa"]["num_offset_table_entries"] = "4096"
+            parser["system.maa"]["num_offset_table_epoch_entries"] = "2048"
             with config.open("w", encoding="utf-8") as stream:
                 parser.write(stream)
             result, output = self.run_report(root, config, "direct-index")
@@ -166,6 +167,13 @@ class StorageReportTest(unittest.TestCase):
             metadata = report["retained_logical_metadata"]
             self.assertEqual(
                 metadata["offset_entry_capacity_per_indirect_unit"], 4096
+            )
+            self.assertEqual(
+                metadata["logical_iteration_domain_per_indirect_unit"],
+                16384,
+            )
+            self.assertEqual(
+                metadata["offset_epoch_capacity_per_indirect_unit"], 2048
             )
             self.assertLess(
                 metadata["shared_descriptor_lower_bound_bytes"], 95872

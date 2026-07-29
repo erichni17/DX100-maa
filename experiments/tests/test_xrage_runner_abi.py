@@ -92,9 +92,13 @@ class XrageRunnerAbiTest(unittest.TestCase):
         for runner in (RUNNER, RECOVERY):
             script = runner.read_text(encoding="utf-8")
             self.assertIn("MAA_NUM_OFFSET_TABLE_ENTRIES", script)
+            self.assertIn("MAA_NUM_OFFSET_TABLE_EPOCH_ENTRIES", script)
             self.assertIn("offset_table_entries=%s", script)
+            self.assertIn("offset_table_epoch_entries=%s", script)
             self.assertIn("--maa_num_offset_table_entries", script)
+            self.assertIn("--maa_num_offset_table_epoch_entries", script)
             self.assertIn("offset_table_full_events", script)
+            self.assertIn("offset_table_epoch_drains", script)
 
     def test_retirement_cache_capacity_is_explicit_and_recorded(self):
         for runner in (RUNNER, RECOVERY):

@@ -931,10 +931,13 @@ void IndirectAccessUnit::fillRowTable(
                 static_cast<int>(grow_addr % direct_index_partitions) ==
                     direct_index_partition;
             if (virtual_iteration_selected) {
-                if (offset_table->is_full()) {
+                if (offset_table->occupancy() >=
+                    maa->num_offset_table_epoch_entries) {
                     offset_table_drain = true;
                     needDrain = true;
-                    (*maa->stats.IND_NumOTFull[my_indirect_id])++;
+                    (*maa->stats.IND_NumOTEpochDrain[my_indirect_id])++;
+                    if (offset_table->is_full())
+                        (*maa->stats.IND_NumOTFull[my_indirect_id])++;
                     break;
                 }
                 DPRINTF(MAAIndirect,

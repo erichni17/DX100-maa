@@ -191,6 +191,7 @@ class ContractTests(unittest.TestCase):
                 {
                     "physical_tile_elements": 4096,
                     "num_offset_table_entries": 4096,
+                    "num_offset_table_epoch_entries": 2048,
                     "virtual_native_issue_order": True,
                 },
             )
@@ -201,6 +202,10 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(
             contract["reorder_resources"]["offset_iteration_capacity_per_unit"],
             4096,
+        )
+        self.assertEqual(
+            contract["reorder_resources"]["offset_epoch_capacity_per_unit"],
+            2048,
         )
         self.assertIn("drain epoch", contract["reorder_resources"]["claim"])
 

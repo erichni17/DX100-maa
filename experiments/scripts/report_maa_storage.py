@@ -91,6 +91,13 @@ def main() -> int:
         offset_entries = int(maa.get("num_offset_table_entries", "0")) or logical
     except ValueError:
         fail("invalid system.maa value for num_offset_table_entries")
+    try:
+        offset_epoch_entries = (
+            int(maa.get("num_offset_table_epoch_entries", "0"))
+            or offset_entries
+        )
+    except ValueError:
+        fail("invalid system.maa value for num_offset_table_epoch_entries")
     maas = integer(maa, "num_maas")
     indirect_per_maa = integer(maa, "num_indirect_units_per_maa")
     memory_channels = integer(maa, "num_memory_channels")
@@ -113,6 +120,7 @@ def main() -> int:
         "num_tile_elements": logical,
         "physical_tile_elements": physical,
         "num_offset_table_entries": offset_entries,
+        "num_offset_table_epoch_entries": offset_epoch_entries,
         "num_maas": maas,
         "num_indirect_units_per_maa": indirect_per_maa,
         "num_memory_channels": memory_channels,
@@ -132,6 +140,8 @@ def main() -> int:
         )
     if not 1 <= offset_entries <= logical:
         fail("Offset-Table capacity must be within the logical tile capacity")
+    if not 1 <= offset_epoch_entries <= offset_entries:
+        fail("Offset-Table epoch capacity must be within table capacity")
     if args.dram_subslices % initial_slices:
         fail(
             "DRAM subslices must divide evenly across initial Row-Table slices"
@@ -440,8 +450,9 @@ def main() -> int:
             ),
             "completion_flags_used": tiles * virtual_pages_used,
             "completion_cpp_model_bytes_fixed_16_pages": tiles * 16,
-            "offset_entries_per_indirect_unit": logical,
+            "logical_iteration_domain_per_indirect_unit": logical,
             "offset_entry_capacity_per_indirect_unit": offset_entries,
+            "offset_epoch_capacity_per_indirect_unit": offset_epoch_entries,
             "offset_cpp_model_bytes_per_indirect_unit": (
                 offset_model_bytes_per_unit
             ),
@@ -676,7 +687,9 @@ def main() -> int:
         f"{format_bytes(native_comparable_storage)} |",
         "| Configured comparable storage lower bound | "
         f"{format_bytes(comparable_storage)} |",
-        f"| Logical Offset entries retained | {logical:,} / indirect unit |",
+        f"| Logical iteration domain | {logical:,} / indirect unit |",
+        f"| Configured Offset-Table entry capacity | {offset_entries:,} / indirect unit |",
+        f"| Configured Offset-Table epoch capacity | {offset_epoch_entries:,} / indirect unit |",
         f"| Configured Row-Table entry capacity | {active_row_entries:,} / indirect unit |",
         "| Allocated Row-Table entry capacity | "
         f"{allocated_row_entries:,} / indirect unit |",

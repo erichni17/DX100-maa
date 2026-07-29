@@ -256,6 +256,12 @@ def addNoISAOptions(parser):
         help="Live Offset-Table entries per indirect unit (0 matches logical tile)",
     )
     parser.add_argument(
+        "--maa_num_offset_table_epoch_entries",
+        type=int,
+        default=0,
+        help="Offset entries per drain epoch (0 matches Offset-Table capacity)",
+    )
+    parser.add_argument(
         "--maa_num_row_table_entries_per_subslice_row",
         type=int,
         default=8,

@@ -33,6 +33,7 @@ combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 offset_table_entries=${MAA_NUM_OFFSET_TABLE_ENTRIES:-0}
+offset_table_epoch_entries=${MAA_NUM_OFFSET_TABLE_EPOCH_ENTRIES:-0}
 indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
@@ -112,6 +113,16 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
 }
 [[ $offset_table_entries -ge 0 && $offset_table_entries -le 16384 ]] || {
     echo "MAA_NUM_OFFSET_TABLE_ENTRIES must be in [0,16384]" >&2
+    exit 2
+}
+[[ $offset_table_epoch_entries -ge 0 &&
+   $offset_table_epoch_entries -le 16384 ]] || {
+    echo "MAA_NUM_OFFSET_TABLE_EPOCH_ENTRIES must be in [0,16384]" >&2
+    exit 2
+}
+[[ $offset_table_entries -eq 0 || $offset_table_epoch_entries -eq 0 ||
+   $offset_table_epoch_entries -le $offset_table_entries ]] || {
+    echo "Offset-Table epoch capacity exceeds table capacity" >&2
     exit 2
 }
 [[ $indirect_units -gt 0 && $indirect_units -le 4 ]] || {
@@ -309,6 +320,7 @@ fi
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'offset_table_entries=%s\n' "$offset_table_entries"
+    printf 'offset_table_epoch_entries=%s\n' "$offset_table_epoch_entries"
     printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
@@ -356,6 +368,7 @@ restore_cmd=(
     --maa_num_initial_row_table_slices="$row_table_slices"
     --maa_num_row_table_rows_per_slice="$row_table_rows"
     --maa_num_offset_table_entries="$offset_table_entries"
+    --maa_num_offset_table_epoch_entries="$offset_table_epoch_entries"
     --maa_virtual_combine_slots="$combine_slots"
     --maa_virtual_combine_words="$combine_words"
     --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
@@ -465,6 +478,7 @@ index_filter_wait_events=$(sum_indirect_stat IND_VirtIndexFilterWaitEvents)
 index_filter_wait_cycles=$(sum_indirect_stat IND_VirtIndexFilterWaitCycles)
 row_table_full_events=$(sum_indirect_stat IND_NumRTFull)
 offset_table_full_events=$(sum_indirect_stat IND_NumOTFull)
+offset_table_epoch_drains=$(sum_indirect_stat IND_NumOTEpochDrain)
 virtual_build_rounds=$(sum_indirect_stat IND_VirtBuildRounds)
 fill_cycles=$(sum_indirect_stat IND_CyclesFill)
 all_pages_ready_cycles=$(sum_indirect_stat IND_VirtAllPagesReadyCycles)
@@ -477,6 +491,7 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
     "$row_table_full_events" "$offset_table_full_events" \
+    "$offset_table_epoch_drains" \
     "$virtual_build_rounds" "$fill_cycles" \
     "$all_pages_ready_cycles" "$index_outstanding_merges" \
     "$index_outstanding_wait_cycles" "$indirect_spd_reads"; do
@@ -492,7 +507,7 @@ if [[ $index_partitions -eq 1 ]]; then
         exit 1
     }
 else
-    expected_filter_words=$((index_words + row_table_full_events + offset_table_full_events))
+    expected_filter_words=$((index_words + row_table_full_events + offset_table_epoch_drains))
     [[ $index_words -gt 0 &&
        $index_filter_words -eq $expected_filter_words &&
        $((index_words % index_partitions)) -eq 0 ]] || {
@@ -519,17 +534,19 @@ fi
     printf '\tindex_filter_cycles\tindex_filter_wait_events'
     printf '\tindex_filter_wait_cycles\trow_table_full_events'
     printf '\toffset_table_full_events'
+    printf '\toffset_table_epoch_drains'
     printf '\tvirtual_build_rounds\tfill_cycles\tall_pages_ready_cycles'
     printf '\tdirect_index_outstanding_merges'
     printf '\tdirect_index_outstanding_wait_cycles'
     printf '\tindirect_spd_read_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
         "$index_words" "$index_partitions" "$index_filter_words" \
         "$index_filter_cycles" "$index_filter_wait_events" \
         "$index_filter_wait_cycles" "$row_table_full_events" \
         "$offset_table_full_events" \
+        "$offset_table_epoch_drains" \
         "$virtual_build_rounds" "$fill_cycles" "$all_pages_ready_cycles" \
         "$index_outstanding_merges" \
         "$index_outstanding_wait_cycles" "$indirect_spd_reads"
