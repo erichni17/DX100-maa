@@ -23,7 +23,11 @@ parser.add_argument("--input", required=True)
 parser.add_argument("--cwd", required=True)
 parser.add_argument("--metadata", required=True)
 parser.add_argument("--submission-report", required=True)
+parser.add_argument("--submission-timestep", type=int, default=1)
 arguments = parser.parse_args()
+
+if arguments.submission_timestep < 0:
+    raise ValueError("submission timestep must be nonnegative")
 
 
 class L1Cache(Cache):
@@ -110,7 +114,7 @@ process.env = [
         "-SSE4_2,-AVX,-AVX2,-AVX512F,-AVX512VL"
     ),
     "SPARTA_LANL_MAA_SUBMIT=1",
-    "SPARTA_LANL_MAA_SUBMIT_TIMESTEP=1",
+    f"SPARTA_LANL_MAA_SUBMIT_TIMESTEP={arguments.submission_timestep}",
     "SPARTA_LANL_MAA_MAPPING_COOKIE=sparta-lanl-maa-opcode7-mapped-v1",
     f"SPARTA_LANL_MAA_SUBMIT_REPORT={arguments.submission_report}",
 ]
@@ -135,8 +139,7 @@ process.map(
 event = m5.simulate()
 m5.stats.dump()
 print(
-    f"LANLMAA_SIM_TERMINAL code={event.getCode()} "
-    f"cause={event.getCause()}"
+    f"LANLMAA_SIM_TERMINAL code={event.getCode()} " f"cause={event.getCause()}"
 )
 if event.getCode() != 0:
     raise RuntimeError(

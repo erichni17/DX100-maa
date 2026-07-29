@@ -25,10 +25,10 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
-def validate_submission(document):
+def validate_submission(document, expected_timestep=1):
     required = {
         "schema": "sparta-lanl-maa-submission-v1",
-        "timestep": 1,
+        "timestep": expected_timestep,
         "rank": 0,
         "cell_count": 27,
         "particle_count": 64,
@@ -55,9 +55,8 @@ def validate_submission(document):
         raise ValueError("completion does not acknowledge every fused write")
     scalar = document.get("scalar_fingerprint")
     accelerator = document.get("accelerator_fingerprint")
-    if (
-        not isinstance(scalar, str)
-        or not FINGERPRINT_PATTERN.fullmatch(scalar)
+    if not isinstance(scalar, str) or not FINGERPRINT_PATTERN.fullmatch(
+        scalar
     ):
         raise ValueError(f"invalid scalar fingerprint: {scalar}")
     if scalar != accelerator:
@@ -125,8 +124,12 @@ def main():
     parser.add_argument("--sparta-root", required=True, type=pathlib.Path)
     parser.add_argument("--sparta-commit", required=True)
     parser.add_argument("--outdir", required=True, type=pathlib.Path)
+    parser.add_argument("--submission-timestep", type=int, default=1)
     parser.add_argument("--timeout-seconds", type=int, default=600)
     arguments = parser.parse_args()
+
+    if arguments.submission_timestep < 0:
+        raise ValueError("submission timestep must be nonnegative")
 
     outdir = arguments.outdir.resolve()
     if outdir.exists():
@@ -164,6 +167,7 @@ def main():
         f"--cwd={input_path.parent}",
         f"--metadata={metadata}",
         f"--submission-report={submission_path}",
+        f"--submission-timestep={arguments.submission_timestep}",
     ]
     report = {
         "schema": "lanl-maa-sparta-native-process-smoke-v1",
@@ -182,6 +186,7 @@ def main():
             for path in dependencies
         ],
         "metadata_sha256": file_sha256(metadata),
+        "requested_submission_timestep": arguments.submission_timestep,
         "command": command,
         "claim_boundary": (
             "One real SPARTA process copies bounded native CPU records into "
@@ -214,9 +219,13 @@ def main():
         if "panic:" in stderr_text or "fatal:" in stderr_text:
             raise ValueError("gem5 stderr contains a panic or fatal marker")
         submission = json.loads(submission_path.read_text(encoding="utf-8"))
-        expected_writes, fingerprint = validate_submission(submission)
+        expected_writes, fingerprint = validate_submission(
+            submission, arguments.submission_timestep
+        )
         marker = (
-            "LANL_MAA_NATIVE_SUBMISSION timestep=1 cells=27 particles=64 "
+            "LANL_MAA_NATIVE_SUBMISSION "
+            f"timestep={arguments.submission_timestep} "
+            "cells=27 particles=64 "
             f"writes={expected_writes} fingerprint={fingerprint} exact=1"
         )
         if marker not in stdout_text:
