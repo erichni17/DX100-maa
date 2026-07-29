@@ -48,6 +48,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("config", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--mechanism",
+        required=True,
+        choices=("native", "compact", "direct-index", "generic-virtual"),
+    )
     parser.add_argument("--word-bytes", type=int, choices=(4, 8), default=8)
     parser.add_argument(
         "--dram-subslices",
@@ -141,18 +146,36 @@ def main() -> int:
     else:
         response_payload_per_unit = response_slots * 64
     index_payload_per_unit = index_lines * 64
-    virtual_payload_per_unit = (
+    configured_virtual_payload_per_unit = (
         combine_payload_per_unit
         + response_payload_per_unit
         + index_payload_per_unit
     )
-    virtual_payload_total = virtual_payload_per_unit * indirect_units
-    counted_payload = physical_spd_bytes + virtual_payload_total
+    if args.mechanism == "native":
+        active_index_payload = 0
+        active_response_payload = 0
+        active_combine_payload = 0
+    elif args.mechanism == "direct-index":
+        active_index_payload = index_payload_per_unit
+        active_response_payload = response_payload_per_unit
+        active_combine_payload = combine_payload_per_unit
+    else:
+        active_index_payload = 0
+        active_response_payload = response_payload_per_unit
+        active_combine_payload = combine_payload_per_unit
+    active_virtual_payload_per_unit = (
+        active_index_payload + active_response_payload + active_combine_payload
+    )
+    active_virtual_payload_total = (
+        active_virtual_payload_per_unit * indirect_units
+    )
+    counted_payload = physical_spd_bytes + active_virtual_payload_total
 
     report = {
         "provenance": {
             "config": str(config_path),
             "config_sha256": sha256(config_path),
+            "mechanism": args.mechanism,
             "word_bytes": args.word_bytes,
             "dram_subslices": args.dram_subslices,
         },
@@ -195,15 +218,33 @@ def main() -> int:
             ),
         },
         "virtual_data_buffers": {
-            "index_feeder_bytes_per_indirect_unit": index_payload_per_unit,
-            "source_response_bytes_per_indirect_unit": (
+            "configured_index_feeder_bytes_per_indirect_unit": (
+                index_payload_per_unit
+            ),
+            "configured_source_response_bytes_per_indirect_unit": (
                 response_payload_per_unit
             ),
-            "destination_combiner_bytes_per_indirect_unit": (
+            "configured_destination_combiner_bytes_per_indirect_unit": (
                 combine_payload_per_unit
             ),
-            "total_bytes_per_indirect_unit": virtual_payload_per_unit,
-            "total_bytes_all_indirect_units": virtual_payload_total,
+            "configured_total_bytes_per_indirect_unit": (
+                configured_virtual_payload_per_unit
+            ),
+            "active_index_feeder_bytes_per_indirect_unit": (
+                active_index_payload
+            ),
+            "active_source_response_bytes_per_indirect_unit": (
+                active_response_payload
+            ),
+            "active_destination_combiner_bytes_per_indirect_unit": (
+                active_combine_payload
+            ),
+            "active_total_bytes_per_indirect_unit": (
+                active_virtual_payload_per_unit
+            ),
+            "active_total_bytes_all_indirect_units": (
+                active_virtual_payload_total
+            ),
         },
         "counted_payload": {
             "physical_spd_plus_virtual_buffers_bytes": counted_payload,
@@ -231,14 +272,15 @@ def main() -> int:
         "# MAA Storage Ledger",
         "",
         f"Config SHA-256: `{report['provenance']['config_sha256']}`",
+        f"Mechanism: `{args.mechanism}`",
         "",
         "| Item | Capacity |",
         "|---|---:|",
         f"| Native SPD payload | {format_bytes(native_spd_bytes)} |",
         f"| Configured physical SPD payload | {format_bytes(physical_spd_bytes)} |",
-        f"| Direct-index B feeder | {format_bytes(index_payload_per_unit)} / indirect unit |",
-        f"| Source-response payload | {format_bytes(response_payload_per_unit)} / indirect unit |",
-        f"| Destination-combiner payload | {format_bytes(combine_payload_per_unit)} / indirect unit |",
+        f"| Active direct-index B feeder | {format_bytes(active_index_payload)} / indirect unit |",
+        f"| Active source-response payload | {format_bytes(active_response_payload)} / indirect unit |",
+        f"| Active destination-combiner payload | {format_bytes(active_combine_payload)} / indirect unit |",
         f"| Physical SPD + bounded virtual payload | {format_bytes(counted_payload)} |",
         f"| Logical Offset entries retained | {logical:,} / indirect unit |",
         f"| Active Row-Table entries retained | {active_row_entries:,} / indirect unit |",
