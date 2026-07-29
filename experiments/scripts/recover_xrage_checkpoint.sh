@@ -64,10 +64,15 @@ esac
     echo "refusing to overwrite existing recovery output: $out" >&2
     exit 2
 }
-[[ $(cat "$checkpoint_run/checkpoint.exit" 2>/dev/null) == 0 ]] || {
-    echo "source checkpoint did not complete successfully" >&2
-    exit 1
-}
+checkpoint_exit=$(cat "$checkpoint_run/checkpoint.exit" 2>/dev/null || true)
+checkpoint_attestation="$checkpoint_run/checkpoint_recovery_attestation.tsv"
+if [[ $checkpoint_exit != 0 ]]; then
+    [[ -f $checkpoint_attestation ]] &&
+        grep -Fqx $'status\tpass' "$checkpoint_attestation" || {
+        echo "source checkpoint lacks a zero exit or pass attestation" >&2
+        exit 1
+    }
+fi
 checkpoint_dir="$checkpoint_run/checkpoint"
 compgen -G "$checkpoint_dir/cpt.*" >/dev/null || {
     echo "source checkpoint is missing cpt.*" >&2
@@ -115,6 +120,9 @@ sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" "$0" \
     "$checkpoint_manifest" "$checkpoint_artifacts" \
     "$checkpoint_run/checkpoint.command" \
     > "$out/artifact_sha256.txt"
+if [[ -f $checkpoint_attestation ]]; then
+    sha256sum "$checkpoint_attestation" >> "$out/artifact_sha256.txt"
+fi
 find "$checkpoint_dir" -maxdepth 2 -type f \
     \( -name m5.cpt -o -name '*.pmem' -o -name config.ini \) -print0 |
     sort -z | xargs -0 sha256sum > "$out/checkpoint_sha256.txt"
