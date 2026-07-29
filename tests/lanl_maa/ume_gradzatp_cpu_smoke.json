@@ -1,0 +1,18 @@
+{
+  "schema": "lanl-maa-ume-gradzatp-cpu-smoke-v1",
+  "data_vaddr": 68719476736,
+  "data_paddr": 33554432,
+  "data_bytes": 131072,
+  "control_vaddr": 68721573888,
+  "control_paddr": 67108864,
+  "control_bytes": 4096,
+  "descriptor_paddr": 33554432,
+  "descriptor_slots": 2,
+  "corners": 8,
+  "active_corners": 5,
+  "points": 4,
+  "zones": 3,
+  "successful_submissions": 2,
+  "rejected_submissions": 1,
+  "logical_fp32_updates": 20
+}

@@ -1,8 +1,8 @@
 # LANLMAA descriptor ABI
 
 The optional CPU-visible mode accepts a 64-byte little-endian version-1
-descriptor from a fixed physical slot table. Opcode 7 is the sole version-2
-format and consumes the submitted slot plus its immediately following slot.
+descriptor from a fixed physical slot table. Opcodes 7 and 8 are version-2
+formats and consume the submitted slot plus its immediately following slot.
 A 64-bit write to doorbell offset `8 * slot` submits that slot. One descriptor
 executes at a time. A doorbell while any descriptor traffic or execution is
 active is acknowledged but counted as a busy rejection. After a descriptor
@@ -172,12 +172,12 @@ Successful descriptors write a 32-byte completion record:
 | 8 | 4 | Completed slot |
 | 12 | 4 | Reserved zero |
 | 16 | 8 | Item count |
-| 24 | 8 | Acknowledged result writes; logical updates for opcodes 4 and 6; replayed events for opcode 5; direct tally writes for opcode 7 |
+| 24 | 8 | Acknowledged result writes; logical updates for opcodes 4, 6, and 8; replayed events for opcode 5; direct tally writes for opcode 7 |
 
 The control aperture exposes device/version at `0x100`, slot and item limits
 at `0x108`, state at `0x110`, completed slot at `0x118`, error code at `0x120`,
 and an opcode bitmap at `0x128`. Bitmap bit `n` advertises opcode `n`; bits
-1--7 are currently set.
+1--8 are currently set.
 
 ### Branson event-replay contract (opcode 5)
 
@@ -372,3 +372,48 @@ state-machine, coherent traffic, fail-close/rearm, and arithmetic semantics.
 They do not prove native SPARTA process submission, application timing or
 speedup, or RTL FP/control cost. The transparent research ledger charges 4,048
 payload bytes and a 21-KiB provisioned array budget before physical synthesis.
+
+### UME gradzatp contract (opcode 8)
+
+Opcode 8 is a version-2, 128-byte UME/FLAG-proxy contract. Flags and reserved
+bytes must be zero. It accelerates the active-corner portion of `gradzatp`:
+predicate classification, two corner-index reads, two FP32 corner fields, one
+indexed FP32 zone-field gather, one FP32 multiply, and relaxed FP32 ADDs into
+point volume and point gradient. Point normalization and boundary projection
+remain on the CPU.
+
+| Offset | Size | Meaning |
+| ---: | ---: | --- |
+| 8 | 4 | Corner count, 1-64 |
+| 12 | 4 | Positive point count |
+| 16 | 4 | Positive zone count |
+| 24 | 8 | Signed 32-bit corner predicate base |
+| 32 | 8 | Signed 32-bit corner-to-zone base |
+| 40 | 8 | Signed 32-bit corner-to-point base |
+| 48 | 8 | FP32 corner-volume base |
+| 56 | 8 | FP32 corner-surface base |
+| 64 | 8 | FP32 zone-field base |
+| 72 | 8 | Promised-zero FP32 point-volume base |
+| 80 | 8 | Promised-zero FP32 point-gradient base |
+| 88 | 8 | 32-byte completion record |
+| 96 | 8 | ABI fingerprint `0x2ea3d5c8f3d18aec` |
+| 104 | 24 | Reserved, zero |
+
+Inactive corners retire after the predicate read; their remaining indices and
+FP32 fields are poison-safe. Active indices must be in range, every consumed
+FP32 value must be finite, and both targeted outputs must compare equal to
+zero. All corners complete this validation pass before the first update. The
+engine also bounds every retained contribution by `FLT_MAX / active_corners`
+before entering the update phase. A validation failure drains reads and emits
+neither updates nor completion.
+
+The update phase uses the existing banked combiner and acknowledged atomic
+path with a four-byte FP32 ADD request. Same-address ordering is intentionally
+relaxed, matching the source OpenMP atomic reduction's nondeterministic order.
+The retained point index, zone index, two inputs, product, predicate, stage,
+and update ordinal overlay mutually exclusive existing operation fields. This
+prototype therefore adds no operation-array payload and no update-kind bit,
+but the FP32 multiplier, atomic implementation, decoder/control, ports,
+arbitration, timing closure, energy, and area remain uncosted. The live smoke
+is synthetic functional evidence, not native UME/FLAG integration or an
+application-speedup claim.

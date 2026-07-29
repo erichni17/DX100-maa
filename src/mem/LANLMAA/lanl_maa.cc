@@ -174,6 +174,8 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Accepted FP64 atomic MIN requests"),
       ADD_STAT(atomicFp64MaxUpdates, statistics::units::Count::get(),
                "Accepted FP64 atomic MAX requests"),
+      ADD_STAT(atomicFp32AddUpdates, statistics::units::Count::get(),
+               "Accepted relaxed FP32 atomic ADD requests"),
       ADD_STAT(strictFp64Serializations, statistics::units::Count::get(),
                "FP64 updates serialized to preserve per-address order"),
       ADD_STAT(atomicAcknowledgements, statistics::units::Count::get(),
@@ -323,6 +325,30 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorSpartaFusedWritesAcknowledged,
                statistics::units::Count::get(),
                "Native SPARTA fused direct writes acknowledged"),
+      ADD_STAT(descriptorUmeCornersClassified,
+               statistics::units::Count::get(),
+               "UME gradzatp corner predicates classified"),
+      ADD_STAT(descriptorUmeActiveCorners,
+               statistics::units::Count::get(),
+               "UME gradzatp active corners classified"),
+      ADD_STAT(descriptorUmeInactiveCorners,
+               statistics::units::Count::get(),
+               "UME gradzatp inactive corners classified"),
+      ADD_STAT(descriptorUmeCornersValidated,
+               statistics::units::Count::get(),
+               "UME gradzatp active corners fully validated"),
+      ADD_STAT(descriptorUmeZoneFieldGathers,
+               statistics::units::Count::get(),
+               "UME gradzatp indexed zone-field gathers"),
+      ADD_STAT(descriptorUmeOutputZeroReads,
+               statistics::units::Count::get(),
+               "UME gradzatp promised-zero output reads"),
+      ADD_STAT(descriptorUmeFp32Multiplies,
+               statistics::units::Count::get(),
+               "UME gradzatp FP32 surface-field multiplies"),
+      ADD_STAT(descriptorUmeUpdatesAcknowledged,
+               statistics::units::Count::get(),
+               "UME gradzatp logical FP32 updates acknowledged"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -683,7 +709,8 @@ LANLMAA::controlAccess(PacketPtr packet)
              static_cast<uint8_t>(DescriptorOpcode::FaceMinMax)) |
             (uint64_t{1} << BransonEventReplayOpcode) |
             (uint64_t{1} << SpartaTallyOpcode) |
-            (uint64_t{1} << SpartaFusedOpcode);
+            (uint64_t{1} << SpartaFusedOpcode) |
+            (uint64_t{1} << UmeGradzatpOpcode);
         break;
       default:
         packet->setBadAddress();
@@ -722,6 +749,8 @@ LANLMAA::rearmDescriptorEngine()
     spartaTallyPhase = SpartaTallyPhase::Inactive;
     spartaFusedDescriptor = SpartaFusedDescriptor{};
     spartaFusedPhase = SpartaFusedPhase::Inactive;
+    umeGradzatp = UmeGradzatpDescriptor{};
+    umeGradzatpPhase = UmeGradzatpPhase::Inactive;
     descriptorError = DescriptorError::None;
     descriptorAddressCursor = 0;
     descriptorResultCursor = 0;
@@ -736,6 +765,10 @@ LANLMAA::rearmDescriptorEngine()
     spartaFusedVisitedCount = 0;
     spartaFusedTallyZeroReads = 0;
     spartaFusedWritesAcknowledged = 0;
+    umeCornersClassified = 0;
+    umeActiveCorners = 0;
+    umeCornersValidated = 0;
+    umeUpdatesAcknowledged = 0;
     spartaFusedIssueCursor = 0;
     spartaFusedWriteChannel = 0;
     descriptorFetchOffset = 0;
@@ -1026,6 +1059,7 @@ LANLMAA::issueCompletionWrite()
 {
     if (!completionPacket) {
         RequestPtr request = std::make_shared<Request>(
+            umeGradzatpDescriptor() ? umeGradzatp.completionRecord :
             spartaFusedCellDescriptor() ?
                 spartaFusedDescriptor.completionRecord :
             spartaTallyDescriptor() ? spartaDescriptor.completionRecord :
@@ -1037,9 +1071,14 @@ LANLMAA::issueCompletionWrite()
         uint8_t *data = completionPacket->getPtr<uint8_t>();
         std::memset(data, 0, 32);
         writeLe(data, 0, CompletionMagic, 4);
-        writeLe(data, 4, DescriptorVersion, 2);
+        writeLe(
+            data, 4,
+            umeGradzatpDescriptor() ? UmeGradzatpDescriptorVersion :
+                                      DescriptorVersion,
+            2);
         writeLe(
             data, 6,
+            umeGradzatpDescriptor() ? UmeGradzatpOpcode :
             spartaFusedCellDescriptor() ? SpartaFusedOpcode :
             spartaTallyDescriptor() ? SpartaTallyOpcode :
             bransonEventDescriptor() ? BransonEventReplayOpcode :
@@ -1050,6 +1089,7 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 16, operations.size(), 8);
         writeLe(
             data, 24,
+            umeGradzatpDescriptor() ? umeUpdatesAcknowledged :
             spartaFusedCellDescriptor() ?
                 spartaFusedWritesAcknowledged :
             spartaTallyDescriptor() ? spartaUpdatesAcknowledged :
@@ -1300,6 +1340,13 @@ LANLMAA::spartaFusedCellDescriptor() const
 {
     return descriptorMode &&
         spartaFusedPhase != SpartaFusedPhase::Inactive;
+}
+
+bool
+LANLMAA::umeGradzatpDescriptor() const
+{
+    return descriptorMode &&
+        umeGradzatpPhase != UmeGradzatpPhase::Inactive;
 }
 
 bool
@@ -1854,6 +1901,115 @@ LANLMAA::expectedSpartaFusedWrites() const
         });
 }
 
+Addr
+LANLMAA::umeGradzatpReadAddress(const Operation &operation) const
+{
+    panic_if(!umeGradzatpDescriptor() ||
+                 umeGradzatpPhase != UmeGradzatpPhase::Validate ||
+                 operation.spartaItem >= umeGradzatp.cornerCount ||
+                 operation.faceGatherStage > 7,
+             "LANLMAA formed an invalid UME gradzatp read address");
+    uint64_t base = 0;
+    uint64_t index = operation.spartaItem;
+    switch (operation.faceGatherStage) {
+      case 0:
+        base = umeGradzatp.cornerTypeBase;
+        break;
+      case 1:
+        base = umeGradzatp.cornerToZoneBase;
+        break;
+      case 2:
+        base = umeGradzatp.cornerToPointBase;
+        break;
+      case 3:
+        base = umeGradzatp.cornerVolumeBase;
+        break;
+      case 4:
+        base = umeGradzatp.cornerSurfaceBase;
+        break;
+      case 5:
+        base = umeGradzatp.zoneFieldBase;
+        index = operation.faceHigh;
+        break;
+      case 6:
+        base = umeGradzatp.pointVolumeBase;
+        index = operation.faceLow;
+        break;
+      case 7:
+        base = umeGradzatp.pointGradientBase;
+        index = operation.faceLow;
+        break;
+      default:
+        panic("LANLMAA UME gradzatp read stage became invalid");
+    }
+    const uint64_t raw = base + index * sizeof(uint32_t);
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA UME gradzatp read address overflowed Addr");
+    return address;
+}
+
+Addr
+LANLMAA::umeGradzatpUpdateAddress(const Operation &operation) const
+{
+    panic_if(!umeGradzatpDescriptor() ||
+                 umeGradzatpPhase != UmeGradzatpPhase::Update ||
+                 !operation.positiveDirection || operation.faceLow >=
+                     umeGradzatp.pointCount ||
+                 operation.faceUpdateOrdinal > 1,
+             "LANLMAA formed an invalid UME gradzatp update address");
+    const uint64_t base = operation.faceUpdateOrdinal == 0 ?
+        umeGradzatp.pointVolumeBase : umeGradzatp.pointGradientBase;
+    const uint64_t raw =
+        base + static_cast<uint64_t>(operation.faceLow) * sizeof(uint32_t);
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA UME gradzatp update address overflowed Addr");
+    return address;
+}
+
+void
+LANLMAA::beginUmeGradzatpUpdatePhase()
+{
+    panic_if(!umeGradzatpDescriptor() ||
+                 umeGradzatpPhase != UmeGradzatpPhase::Validate ||
+                 nextAdmission != operations.size() ||
+                 nextRetirement != operations.size() ||
+                 activeOperations != 0 || !allUpdateEntriesFree() ||
+                 std::any_of(
+                     lines.begin(), lines.end(), [](const LineEntry &line) {
+                         return line.state != LineState::Free;
+                     }) ||
+                 umeCornersClassified != operations.size() ||
+                 umeCornersValidated != umeActiveCorners,
+             "LANLMAA began UME gradzatp updates before validation quiesced");
+    if (umeActiveCorners != 0) {
+        const float safeMagnitude = std::numeric_limits<float>::max() /
+            static_cast<float>(umeActiveCorners);
+        const bool unsafe = std::any_of(
+            operations.begin(), operations.end(),
+            [safeMagnitude](const Operation &operation) {
+                return operation.positiveDirection &&
+                    (std::fabs(decodeFloat(operation.value)) > safeMagnitude ||
+                     std::fabs(decodeFloat(operation.expected)) >
+                         safeMagnitude);
+            });
+        if (unsafe) {
+            beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
+            return;
+        }
+    }
+    umeGradzatpPhase = UmeGradzatpPhase::Update;
+    for (auto &operation : operations) {
+        operation.faceUpdateOrdinal = 0;
+        operation.state = OperationState::Unadmitted;
+        if (operation.positiveDirection) {
+            operation.address = umeGradzatpUpdateAddress(operation);
+        }
+    }
+    beginDescriptorExecution();
+}
+
 void
 LANLMAA::completeBransonEvent(Operation &operation)
 {
@@ -1957,6 +2113,12 @@ LANLMAA::floatingUpdate(UpdateKind kind)
 }
 
 bool
+LANLMAA::fp32Update(UpdateKind kind)
+{
+    return kind == UpdateKind::Fp32AddRelaxed;
+}
+
+bool
 LANLMAA::strictFloatingUpdate(UpdateKind kind)
 {
     return kind == UpdateKind::Fp64AddStrict;
@@ -1965,6 +2127,9 @@ LANLMAA::strictFloatingUpdate(UpdateKind kind)
 LANLMAA::UpdateKind
 LANLMAA::operationUpdateKind(const Operation &operation) const
 {
+    if (umeGradzatpDescriptor()) {
+        return UpdateKind::Fp32AddRelaxed;
+    }
     if (bransonEventDescriptor() || spartaTallyDescriptor()) {
         return UpdateKind::Fp64AddRelaxed;
     }
@@ -2054,6 +2219,25 @@ LANLMAA::decodeDouble(uint64_t bits)
     double value = 0.0;
     static_assert(sizeof(bits) == sizeof(value));
     std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+uint64_t
+LANLMAA::encodeFloat(float value)
+{
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+float
+LANLMAA::decodeFloat(uint64_t bits)
+{
+    const uint32_t low = static_cast<uint32_t>(bits);
+    float value = 0.0F;
+    static_assert(sizeof(low) == sizeof(value));
+    std::memcpy(&value, &low, sizeof(value));
     return value;
 }
 
@@ -2296,7 +2480,8 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     delete packet;
     descriptorPacket = nullptr;
 
-    if (descriptorFetchOffset == 0 && bytes[6] == SpartaFusedOpcode) {
+    if (descriptorFetchOffset == 0 &&
+        (bytes[6] == SpartaFusedOpcode || bytes[6] == UmeGradzatpOpcode)) {
         if (descriptorSlot + 1 >= descriptorSlots) {
             rejectDescriptor(DescriptorError::UnsafeAddressRange);
             return true;
@@ -2314,6 +2499,76 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
             bytes.begin(), bytes.end(),
             descriptorFetchBuffer.begin() + DescriptorBytes);
         descriptorFetchOffset = 0;
+        if (descriptorFetchBuffer[6] == UmeGradzatpOpcode) {
+            const auto decoded =
+                decodeUmeGradzatpDescriptor(descriptorFetchBuffer);
+            if (!decoded) {
+                rejectDescriptor(decoded.error);
+                return true;
+            }
+            if (decoded.descriptor.cornerCount > maxDescriptorItems) {
+                rejectDescriptor(DescriptorError::TooManyItems);
+                return true;
+            }
+            umeGradzatp = decoded.descriptor;
+            umeGradzatpPhase = UmeGradzatpPhase::Validate;
+
+            std::array<UmeGradzatpRange, 9> ranges;
+            const bool rangesValid = umeGradzatpRange(
+                umeGradzatp.cornerTypeBase, umeGradzatp.cornerCount,
+                sizeof(uint32_t), ranges[0]) && umeGradzatpRange(
+                umeGradzatp.cornerToZoneBase, umeGradzatp.cornerCount,
+                sizeof(uint32_t), ranges[1]) && umeGradzatpRange(
+                umeGradzatp.cornerToPointBase, umeGradzatp.cornerCount,
+                sizeof(uint32_t), ranges[2]) && umeGradzatpRange(
+                umeGradzatp.cornerVolumeBase, umeGradzatp.cornerCount,
+                sizeof(uint32_t), ranges[3]) && umeGradzatpRange(
+                umeGradzatp.cornerSurfaceBase, umeGradzatp.cornerCount,
+                sizeof(uint32_t), ranges[4]) && umeGradzatpRange(
+                umeGradzatp.zoneFieldBase, umeGradzatp.zoneCount,
+                sizeof(uint32_t), ranges[5]) && umeGradzatpRange(
+                umeGradzatp.pointVolumeBase, umeGradzatp.pointCount,
+                sizeof(uint32_t), ranges[6]) && umeGradzatpRange(
+                umeGradzatp.pointGradientBase, umeGradzatp.pointCount,
+                sizeof(uint32_t), ranges[7]) && umeGradzatpRange(
+                umeGradzatp.completionRecord, 32, 1, ranges[8]);
+            panic_if(
+                !rangesValid,
+                "LANLMAA decoded UME descriptor lost its range invariant");
+
+            const uint64_t descriptorTableEnd = descriptorTableBase +
+                descriptorSlots * DescriptorBytes;
+            const auto unsafeRange = [this, descriptorTableEnd](
+                                         const UmeGradzatpRange &range) {
+                return !rangeIsMemory(range.begin, range.end - range.begin) ||
+                    rangeOverlapsControl(
+                        range.begin, range.end - range.begin) ||
+                    descriptorRangesOverlap(
+                        range.begin, range.end, descriptorTableBase,
+                        descriptorTableEnd);
+            };
+            if (std::any_of(ranges.begin(), ranges.end(), unsafeRange)) {
+                rejectDescriptor(DescriptorError::UnsafeAddressRange);
+                return true;
+            }
+
+            operations.assign(umeGradzatp.cornerCount, Operation{});
+            for (size_t corner = 0; corner < operations.size(); ++corner) {
+                auto &operation = operations[corner];
+                operation.spartaItem = static_cast<uint32_t>(corner);
+                operation.faceGatherStage = 0;
+                operation.address = umeGradzatpReadAddress(operation);
+            }
+            descriptorAddressCursor = operations.size();
+            descriptorResultCursor = 0;
+            umeCornersClassified = 0;
+            umeActiveCorners = 0;
+            umeCornersValidated = 0;
+            umeUpdatesAcknowledged = 0;
+            beginDescriptorExecution();
+            scheduleTick();
+            return true;
+        }
         const auto decoded =
             decodeSpartaFusedDescriptor(descriptorFetchBuffer);
         if (!decoded) {
@@ -2909,7 +3164,7 @@ LANLMAA::beginDescriptorResults()
     descriptorState = spartaFusedCellDescriptor() ?
         DescriptorState::ResultPending :
         (faceMinMaxDescriptor() || bransonEventDescriptor() ||
-         spartaTallyDescriptor()) ?
+         spartaTallyDescriptor() || umeGradzatpDescriptor()) ?
             DescriptorState::CompletionPending :
             DescriptorState::ResultPending;
 }
@@ -2920,9 +3175,10 @@ LANLMAA::completeDescriptor()
     panic_if(
         (!faceMinMaxDescriptor() && !bransonEventDescriptor() &&
          !spartaTallyDescriptor() && !spartaFusedCellDescriptor() &&
+         !umeGradzatpDescriptor() &&
          descriptorResultCursor != operations.size()) ||
             ((faceMinMaxDescriptor() || bransonEventDescriptor() ||
-              spartaTallyDescriptor()) &&
+              spartaTallyDescriptor() || umeGradzatpDescriptor()) &&
              descriptorResultCursor != 0),
              "LANLMAA completed a descriptor before every result write");
     panic_if(rejectedPacket || waitingForRetry || descriptorPacket ||
@@ -2962,6 +3218,14 @@ LANLMAA::completeDescriptor()
                      spartaFusedWritesAcknowledged !=
                          expectedSpartaFusedWrites(),
                  "LANLMAA completed with incomplete fused-cell accounting");
+    }
+    if (umeGradzatpDescriptor()) {
+        panic_if(
+            umeGradzatpPhase != UmeGradzatpPhase::Update ||
+                umeCornersClassified != operations.size() ||
+                umeCornersValidated != umeActiveCorners ||
+                umeUpdatesAcknowledged != 2 * umeActiveCorners,
+            "LANLMAA completed with incomplete UME gradzatp accounting");
     }
     descriptorState = DescriptorState::Completed;
     finished = true;
@@ -3007,7 +3271,18 @@ LANLMAA::tick()
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
-    if (spartaFusedCellDescriptor()) {
+    if (umeGradzatpDescriptor()) {
+        if (umeGradzatpPhase == UmeGradzatpPhase::Validate) {
+            attachReadyOperations();
+            issueLines();
+        } else {
+            panic_if(umeGradzatpPhase != UmeGradzatpPhase::Update,
+                     "LANLMAA UME gradzatp descriptor reached invalid phase");
+            attachReadyUpdates();
+            scheduleUpdateDrains();
+            issueUpdates();
+        }
+    } else if (spartaFusedCellDescriptor()) {
         attachReadyOperations();
         issueLines();
     } else if (spartaTallyDescriptor()) {
@@ -3052,7 +3327,18 @@ LANLMAA::tick()
         issueLines();
     }
     if (nextRetirement == operations.size()) {
-        if (spartaFusedCellDescriptor()) {
+        if (umeGradzatpDescriptor()) {
+            if (umeGradzatpPhase == UmeGradzatpPhase::Validate) {
+                beginUmeGradzatpUpdatePhase();
+                scheduleTick();
+                return;
+            }
+            if (allUpdateEntriesFree()) {
+                beginDescriptorResults();
+                scheduleTick();
+                return;
+            }
+        } else if (spartaFusedCellDescriptor()) {
             if (spartaFusedPhase == SpartaFusedPhase::Traverse) {
                 beginSpartaFusedTallyValidation();
                 scheduleTick();
@@ -3166,7 +3452,12 @@ LANLMAA::admitOperations()
             return;
         }
 
-        if (faceMinMaxDescriptor() && !faceOperationActive(operation)) {
+        if (umeGradzatpDescriptor() &&
+            umeGradzatpPhase == UmeGradzatpPhase::Update) {
+            operation.state = operation.positiveDirection ?
+                OperationState::UmeUpdateReady : OperationState::RetireReady;
+        } else if (faceMinMaxDescriptor() &&
+                   !faceOperationActive(operation)) {
             operation.state = OperationState::FaceGatherComplete;
             ++stats.descriptorPredicatesSkipped;
         } else {
@@ -3326,7 +3617,9 @@ LANLMAA::attachReadyUpdates()
     for (size_t index = nextRetirement;
          index < nextAdmission && attached < logicalAdmissionWidth; ++index) {
         auto &operation = operations[index];
-        const OperationState readyState = spartaTallyDescriptor() ?
+        const OperationState readyState = umeGradzatpDescriptor() ?
+            OperationState::UmeUpdateReady :
+            spartaTallyDescriptor() ?
             OperationState::SpartaUpdateReady :
             bransonEventDescriptor() ?
             OperationState::BransonUpdateReady :
@@ -3425,6 +3718,11 @@ LANLMAA::attachReadyUpdates()
                     decodeDouble(entry->contribution),
                     decodeDouble(operation.value)));
                 break;
+              case UpdateKind::Fp32AddRelaxed:
+                entry->contribution = encodeFloat(
+                    decodeFloat(entry->contribution) +
+                    decodeFloat(operation.value));
+                break;
               default:
                 panic("LANLMAA update kind became invalid");
             }
@@ -3456,7 +3754,9 @@ LANLMAA::attachReadyUpdates()
 void
 LANLMAA::scheduleUpdateDrains()
 {
-    const OperationState readyState = spartaTallyDescriptor() ?
+    const OperationState readyState = umeGradzatpDescriptor() ?
+        OperationState::UmeUpdateReady :
+        spartaTallyDescriptor() ?
         OperationState::SpartaUpdateReady :
         bransonEventDescriptor() ?
         OperationState::BransonUpdateReady :
@@ -3573,7 +3873,8 @@ LANLMAA::issueUpdates()
         }
         if (!entry.packet) {
             RequestPtr request = std::make_shared<Request>(
-                entry.address, sizeof(uint64_t),
+                entry.address,
+                fp32Update(entry.kind) ? sizeof(uint32_t) : sizeof(uint64_t),
                 Request::ATOMIC_RETURN_OP,
                 requestorId);
             switch (entry.kind) {
@@ -3607,6 +3908,11 @@ LANLMAA::issueUpdates()
                 request->setAtomicOpFunctor(
                     std::make_unique<AtomicOpMax<double>>(
                         decodeDouble(entry.contribution)));
+                break;
+              case UpdateKind::Fp32AddRelaxed:
+                request->setAtomicOpFunctor(
+                    std::make_unique<AtomicOpAdd<float>>(
+                        decodeFloat(entry.contribution)));
                 break;
               default:
                 panic("LANLMAA update kind became invalid");
@@ -3652,6 +3958,9 @@ LANLMAA::issueUpdates()
             break;
           case UpdateKind::Fp64Max:
             ++stats.atomicFp64MaxUpdates;
+            break;
+          case UpdateKind::Fp32AddRelaxed:
+            ++stats.atomicFp32AddUpdates;
             break;
           default:
             panic("LANLMAA update kind became invalid");
@@ -3743,7 +4052,109 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
         panic_if(operation.state != OperationState::DataPending,
                  "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
-        if (spartaFusedCellDescriptor()) {
+        if (umeGradzatpDescriptor()) {
+            panic_if(umeGradzatpPhase != UmeGradzatpPhase::Validate,
+                     "LANLMAA read UME gradzatp input outside validation");
+            const uint32_t raw = descriptorReadLe32(data + offset);
+            DescriptorError error = DescriptorError::None;
+            switch (operation.faceGatherStage) {
+              case 0: {
+                int32_t predicate = 0;
+                std::memcpy(&predicate, &raw, sizeof(predicate));
+                operation.positiveDirection = predicate >= 1;
+                ++umeCornersClassified;
+                ++stats.descriptorUmeCornersClassified;
+                if (operation.positiveDirection) {
+                    ++umeActiveCorners;
+                    ++stats.descriptorUmeActiveCorners;
+                } else {
+                    ++stats.descriptorUmeInactiveCorners;
+                    ++stats.descriptorPredicatesSkipped;
+                    operation.state = OperationState::RetireReady;
+                }
+                break;
+              }
+              case 1: {
+                int32_t zone = 0;
+                std::memcpy(&zone, &raw, sizeof(zone));
+                if (zone < 0 || static_cast<uint32_t>(zone) >=
+                        umeGradzatp.zoneCount) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    operation.faceHigh = static_cast<uint32_t>(zone);
+                }
+                break;
+              }
+              case 2: {
+                int32_t point = 0;
+                std::memcpy(&point, &raw, sizeof(point));
+                if (point < 0 || static_cast<uint32_t>(point) >=
+                        umeGradzatp.pointCount) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    operation.faceLow = static_cast<uint32_t>(point);
+                }
+                break;
+              }
+              case 3:
+                if (!std::isfinite(decodeFloat(raw))) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    operation.value = raw;
+                }
+                break;
+              case 4:
+                if (!std::isfinite(decodeFloat(raw))) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    operation.faceValues[0] = raw;
+                }
+                break;
+              case 5: {
+                const float field = decodeFloat(raw);
+                const float contribution =
+                    decodeFloat(operation.faceValues[0]) * field;
+                if (!std::isfinite(field) ||
+                    !std::isfinite(contribution)) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    operation.expected = encodeFloat(contribution);
+                    ++stats.descriptorUmeZoneFieldGathers;
+                    ++stats.descriptorUmeFp32Multiplies;
+                }
+                break;
+              }
+              case 6:
+              case 7: {
+                const float output = decodeFloat(raw);
+                if (!std::isfinite(output) || output != 0.0F) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    ++stats.descriptorUmeOutputZeroReads;
+                    if (operation.faceGatherStage == 7) {
+                        ++umeCornersValidated;
+                        ++stats.descriptorUmeCornersValidated;
+                        operation.state = OperationState::RetireReady;
+                    }
+                }
+                break;
+              }
+              default:
+                panic("LANLMAA UME gradzatp validation stage became invalid");
+            }
+            if (error != DescriptorError::None) {
+                ++stats.responses;
+                delete packet;
+                line->clear();
+                beginDescriptorErrorDrain(error);
+                return true;
+            }
+            if (operation.state != OperationState::RetireReady) {
+                ++operation.faceGatherStage;
+                operation.address = umeGradzatpReadAddress(operation);
+                operation.state = OperationState::AddressReady;
+            }
+        } else if (spartaFusedCellDescriptor()) {
             const DescriptorError error = consumeSpartaFusedResponse(
                 operation, data, offset);
             if (error != DescriptorError::None) {
@@ -4173,7 +4584,15 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
              "LANLMAA response is not for an in-flight atomic update");
     panic_if(packet->cmd != MemCmd::SwapResp || !packet->isAtomicOp(),
              "LANLMAA update did not receive an atomic swap response");
-    if (floatingUpdate(entry.kind)) {
+    if (fp32Update(entry.kind)) {
+        float oldValue = 0.0F;
+        std::memcpy(
+            &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
+        DPRINTF(LANLMAA,
+                "FP32 atomic update address=%#llx old=%g operand=%g\n",
+                static_cast<unsigned long long>(entry.address), oldValue,
+                decodeFloat(entry.contribution));
+    } else if (floatingUpdate(entry.kind)) {
         double oldValue = 0.0;
         std::memcpy(
             &oldValue, packet->getConstPtr<uint8_t>(), sizeof(oldValue));
@@ -4196,7 +4615,22 @@ LANLMAA::receiveUpdateResponse(UpdateEntry &entry, PacketPtr packet)
         auto &operation = operations[operationIndex];
         panic_if(operation.state != OperationState::UpdatePending,
                  "LANLMAA acknowledged update waiter is not pending");
-        if (spartaTallyDescriptor()) {
+        if (umeGradzatpDescriptor()) {
+            panic_if(umeGradzatpPhase != UmeGradzatpPhase::Update ||
+                         !operation.positiveDirection ||
+                         operation.faceUpdateOrdinal > 1,
+                     "LANLMAA acknowledged an invalid UME gradzatp update");
+            ++operation.faceUpdateOrdinal;
+            ++umeUpdatesAcknowledged;
+            ++stats.descriptorUmeUpdatesAcknowledged;
+            if (operation.faceUpdateOrdinal == 1) {
+                operation.address = umeGradzatpUpdateAddress(operation);
+                operation.value = operation.expected;
+                operation.state = OperationState::UmeUpdateReady;
+            } else {
+                operation.state = OperationState::RetireReady;
+            }
+        } else if (spartaTallyDescriptor()) {
             ++spartaUpdatesAcknowledged;
             ++stats.descriptorSpartaUpdatesAcknowledged;
             advanceSpartaContribution(operation);

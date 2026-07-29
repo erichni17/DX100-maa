@@ -16,6 +16,7 @@
 #include "mem/LANLMAA/FaceComputeTiming.hh"
 #include "mem/LANLMAA/SpartaFusedCellModel.hh"
 #include "mem/LANLMAA/SpartaTallyDescriptor.hh"
+#include "mem/LANLMAA/UmeGradzatpDescriptor.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
 #include "params/LANLMAA.hh"
@@ -46,6 +47,7 @@ class LANLMAA : public ClockedObject
         BransonEventComputePending,
         BransonUpdateReady,
         SpartaUpdateReady,
+        UmeUpdateReady,
         FaceComputeReady,
         FaceComputePending,
         FaceGatherComplete,
@@ -62,7 +64,8 @@ class LANLMAA : public ClockedObject
         Fp64AddRelaxed,
         Fp64AddStrict,
         Fp64Min,
-        Fp64Max
+        Fp64Max,
+        Fp32AddRelaxed
     };
 
     enum class UpdateState
@@ -110,6 +113,13 @@ class LANLMAA : public ClockedObject
         Inactive,
         Traverse,
         ValidateTallies
+    };
+
+    enum class UmeGradzatpPhase
+    {
+        Inactive,
+        Validate,
+        Update
     };
 
     enum class SpartaFusedStage : uint8_t
@@ -271,6 +281,7 @@ class LANLMAA : public ClockedObject
         statistics::Scalar atomicFp64AddUpdates;
         statistics::Scalar atomicFp64MinUpdates;
         statistics::Scalar atomicFp64MaxUpdates;
+        statistics::Scalar atomicFp32AddUpdates;
         statistics::Scalar strictFp64Serializations;
         statistics::Scalar atomicAcknowledgements;
         statistics::Scalar atomicOldValuesReturned;
@@ -325,6 +336,14 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorSpartaFusedFp64Adds;
         statistics::Scalar descriptorSpartaFusedTallyZeroReads;
         statistics::Scalar descriptorSpartaFusedWritesAcknowledged;
+        statistics::Scalar descriptorUmeCornersClassified;
+        statistics::Scalar descriptorUmeActiveCorners;
+        statistics::Scalar descriptorUmeInactiveCorners;
+        statistics::Scalar descriptorUmeCornersValidated;
+        statistics::Scalar descriptorUmeZoneFieldGathers;
+        statistics::Scalar descriptorUmeOutputZeroReads;
+        statistics::Scalar descriptorUmeFp32Multiplies;
+        statistics::Scalar descriptorUmeUpdatesAcknowledged;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -407,6 +426,8 @@ class LANLMAA : public ClockedObject
     SpartaTallyPhase spartaTallyPhase = SpartaTallyPhase::Inactive;
     SpartaFusedDescriptor spartaFusedDescriptor;
     SpartaFusedPhase spartaFusedPhase = SpartaFusedPhase::Inactive;
+    UmeGradzatpDescriptor umeGradzatp;
+    UmeGradzatpPhase umeGradzatpPhase = UmeGradzatpPhase::Inactive;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
@@ -422,6 +443,10 @@ class LANLMAA : public ClockedObject
     uint32_t spartaFusedVisitedCount = 0;
     uint64_t spartaFusedTallyZeroReads = 0;
     uint64_t spartaFusedWritesAcknowledged = 0;
+    uint64_t umeCornersClassified = 0;
+    uint64_t umeActiveCorners = 0;
+    uint64_t umeCornersValidated = 0;
+    uint64_t umeUpdatesAcknowledged = 0;
     size_t spartaFusedIssueCursor = 0;
     uint8_t spartaFusedWriteChannel = 0;
     size_t descriptorFetchOffset = 0;
@@ -450,6 +475,7 @@ class LANLMAA : public ClockedObject
     bool bransonEventDescriptor() const;
     bool spartaTallyDescriptor() const;
     bool spartaFusedCellDescriptor() const;
+    bool umeGradzatpDescriptor() const;
     static bool bransonTerminalKind(uint8_t kind);
     Addr bransonEventAddress(uint32_t event) const;
     Addr bransonTallyAddress(const Operation &operation) const;
@@ -476,11 +502,15 @@ class LANLMAA : public ClockedObject
         Operation &operation, const uint8_t *data, size_t offset);
     void beginSpartaFusedTallyValidation();
     uint64_t expectedSpartaFusedWrites() const;
+    Addr umeGradzatpReadAddress(const Operation &operation) const;
+    Addr umeGradzatpUpdateAddress(const Operation &operation) const;
+    void beginUmeGradzatpUpdatePhase();
     bool faceMinMaxDescriptor() const;
     UpdateKind configuredUpdateKind() const;
     bool floatingUpdate() const;
     bool strictFloatingUpdate() const;
     static bool floatingUpdate(UpdateKind kind);
+    static bool fp32Update(UpdateKind kind);
     static bool strictFloatingUpdate(UpdateKind kind);
     UpdateKind operationUpdateKind(const Operation &operation) const;
     bool faceOperationActive(const Operation &operation) const;
@@ -496,6 +526,8 @@ class LANLMAA : public ClockedObject
     void beginFaceUpdatePhase();
     static uint64_t encodeDouble(double value);
     static double decodeDouble(uint64_t bits);
+    static uint64_t encodeFloat(float value);
+    static float decodeFloat(uint64_t bits);
     void tagRequest(
         PacketPtr packet, TrafficKind kind, PacketPtr *retainedPacket);
     TrafficKind acceptResponse(PacketPtr packet);
