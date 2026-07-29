@@ -20,9 +20,11 @@ arm=${XRAGE_ARM:-direct_index_4k}
 }
 case "$arm" in
     native|fused|compact|direct_index_16k|direct_index_4k)
+        maa_logical_tile_elements=16384
         workload_chunk_elements=16384
         ;;
     fused_4k)
+        maa_logical_tile_elements=4096
         workload_chunk_elements=4096
         ;;
     *)
@@ -48,7 +50,7 @@ options="-f $input"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'arm=%s\n' "$arm"
     printf 'physical_tile_elements=%s\n' "$physical"
-    printf 'maa_logical_tile_elements=16384\n'
+    printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
     printf 'input=%s\n' "$input"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -97,7 +99,8 @@ restore_cmd=(
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=2 --maa_ncbus_width=32
-    --maa --maa_num_maas=1 --maa_num_tile_elements=16384
+    --maa --maa_num_maas=1
+    --maa_num_tile_elements="$maa_logical_tile_elements"
     --maa_physical_tile_elements="$physical"
     --maa_l2_uncacheable --maa_l3_uncacheable
     --maa_num_initial_row_table_slices=32

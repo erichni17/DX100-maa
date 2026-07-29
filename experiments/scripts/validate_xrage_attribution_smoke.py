@@ -9,12 +9,12 @@ import sys
 from pathlib import Path
 
 ARMS = {
-    "native": (16384, 16384),
-    "fused": (16384, 16384),
-    "compact": (16384, 16384),
-    "direct_index_16k": (16384, 16384),
-    "direct_index_4k": (4096, 16384),
-    "fused_4k": (4096, 4096),
+    "native": (16384, 16384, 16384),
+    "fused": (16384, 16384, 16384),
+    "compact": (16384, 16384, 16384),
+    "direct_index_16k": (16384, 16384, 16384),
+    "direct_index_4k": (4096, 16384, 16384),
+    "fused_4k": (4096, 4096, 4096),
 }
 RESULT_FIELDS = [
     "output_hash",
@@ -135,15 +135,15 @@ def main():
     expected_hash = None
     expected_commit = None
 
-    for arm, (physical, workload_chunk) in ARMS.items():
+    for arm, (physical, maa_logical, workload_chunk) in ARMS.items():
         arm_root = root / arm
         manifest = read_kv(arm_root / "manifest.txt")
         if manifest.get("arm") != arm:
             fail(f"{arm} manifest identifies {manifest.get('arm')!r}")
         if int(manifest.get("physical_tile_elements", -1)) != physical:
             fail(f"{arm} physical tile does not equal {physical}")
-        if int(manifest.get("maa_logical_tile_elements", -1)) != 16384:
-            fail(f"{arm} MAA logical capacity does not equal 16384")
+        if int(manifest.get("maa_logical_tile_elements", -1)) != maa_logical:
+            fail(f"{arm} MAA logical capacity does not equal {maa_logical}")
         if int(manifest.get("workload_chunk_elements", -1)) != workload_chunk:
             fail(f"{arm} workload chunk does not equal {workload_chunk}")
         commit = manifest.get("source_commit")
@@ -196,7 +196,7 @@ def main():
         config = configparser.RawConfigParser(strict=False)
         config.read(arm_root / "run" / "config.ini")
         maa = config["system.maa"]
-        if int(maa["num_tile_elements"]) != 16384:
+        if int(maa["num_tile_elements"]) != maa_logical:
             fail(f"{arm} config has wrong logical tile size")
         if int(maa["physical_tile_elements"]) != physical:
             fail(f"{arm} config has wrong physical tile size")
