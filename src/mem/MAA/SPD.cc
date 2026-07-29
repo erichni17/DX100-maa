@@ -210,6 +210,15 @@ int SPD::getSize(int tile_id) {
              tile_id);
     return static_cast<int>(tiles_size[tile_id]);
 }
+int SPD::getSizeForReadyElement(int tile_id, int element_id, int word_size) {
+    check_tile_element_id(tile_id, element_id, word_size);
+    const int tile_element_id =
+        tile_id * physical_tile_elements + element_id * word_size / 4;
+    panic_if(!element_finished[tile_element_id],
+             "Tile %d element %d is not ready to publish its size\n",
+             tile_id, element_id);
+    return static_cast<int>(tiles_size[tile_id]);
+}
 void SPD::setSize(int tile_id, int size) {
     assert((0 <= tile_id) && (tile_id < num_tiles));
     panic_if(size < 0 || size > static_cast<int>(physical_tile_elements),

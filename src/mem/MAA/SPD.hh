@@ -106,6 +106,7 @@ public:
     void setTileNotReady(int tile_id, int word_size);
     bool getTileReady(int tile_id);
     int getSize(int tile_id);
+    int getSizeForReadyElement(int tile_id, int element_id, int word_size);
     void setSize(int tile_id, int size);
     void setVirtualSize(int tile_id, int size);
 

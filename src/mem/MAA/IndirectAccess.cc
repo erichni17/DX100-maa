@@ -861,6 +861,13 @@ void IndirectAccessUnit::fillRowTable(
             waitForElement = true;
             break;
         }
+        if (isVirtualLoad() && !isDirectIndexLoad() && my_max == -1) {
+            my_max = maa->spd->getSizeForReadyElement(
+                my_idx_tile, my_i, sizeof(uint32_t));
+            DPRINTF(MAAIndirect,
+                    "I[%d] %s: my_max = pipelined idx size (%d)!\n",
+                    my_indirect_id, __func__, my_max);
+        }
         if (my_cond_tile != -1) {
             num_spd_read_condidx_accesses++;
         }

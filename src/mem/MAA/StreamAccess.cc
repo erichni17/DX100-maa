@@ -143,8 +143,15 @@ void StreamAccessUnit::executeInstruction() {
         my_min = maa->rf->getData<int>(my_instruction->src1RegID);
         my_max = maa->rf->getData<int>(my_instruction->src2RegID);
         my_stride = maa->rf->getData<int>(my_instruction->src3RegID);
-        my_size = (my_max == my_min) ? 0 : std::min((int)(maa->num_tile_elements), ((int)((my_max - my_min - 1) / my_stride)) + 1);
-        DPRINTF(MAAStream, "S[%d] %s: min: %d, max: %d, stride: %d, size: %d!\n", my_stream_id, __func__, my_min, my_max, my_stride, my_size);
+        my_size = (my_max == my_min)
+            ? 0
+            : std::min((int)(maa->num_tile_elements),
+                       ((int)((my_max - my_min - 1) / my_stride)) + 1);
+        if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD)
+            maa->spd->setSize(my_dst_tile, my_size);
+        DPRINTF(MAAStream,
+                "S[%d] %s: min: %d, max: %d, stride: %d, size: %d!\n",
+                my_stream_id, __func__, my_min, my_max, my_stride, my_size);
         if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
             my_word_size = my_instruction->getWordSize(my_dst_tile);
         } else if (my_instruction->opcode == Instruction::OpcodeType::STREAM_ST) {
