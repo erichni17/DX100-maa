@@ -26,6 +26,7 @@ combine_victim_policy=${MAA_VIRTUAL_COMBINE_VICTIM_POLICY:-0}
 combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
+require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
 [[ $grow_order == 0 || $grow_order == 1 ]] || {
     echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
     exit 2
@@ -40,6 +41,10 @@ index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
 }
 [[ $index_filter_words_per_cycle -ge 0 ]] || {
     echo "virtual index filter words per cycle must be nonnegative" >&2
+    exit 2
+}
+[[ $require_index_filter_wait == 0 || $require_index_filter_wait == 1 ]] || {
+    echo "MAA_REQUIRE_INDEX_FILTER_WAIT must be 0 or 1" >&2
     exit 2
 }
 [[ $response_slots -gt 0 && $response_word_pool -gt 0 ]] || {
@@ -183,6 +188,7 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
     printf 'virtual_index_filter_words_per_cycle=%s\n' \
         "$index_filter_words_per_cycle"
+    printf 'require_index_filter_wait=%s\n' "$require_index_filter_wait"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -300,7 +306,8 @@ output_hash=$(sed -nE \
     "$out/restore.log")
 
 read -r ticks insts index_line_reads index_words index_hwm \
-    index_filter_words index_filter_cycles \
+    index_filter_words index_filter_cycles index_filter_wait_events \
+    index_filter_wait_cycles \
     write_issues write_completions \
     pages_ready pages_ready_early first_page_cycles all_page_cycles \
     page_span_cycles \
@@ -320,6 +327,8 @@ read -r ticks insts index_line_reads index_words index_hwm \
         section == 1 && $1 ~ /IND_VirtIndexWordHighWater$/ { hw += $2 }
         section == 1 && $1 ~ /IND_VirtIndexFilterWords$/ { ifw += $2 }
         section == 1 && $1 ~ /IND_VirtIndexFilterCycles$/ { ifc += $2 }
+        section == 1 && $1 ~ /IND_VirtIndexFilterWaitEvents$/ { ife += $2 }
+        section == 1 && $1 ~ /IND_VirtIndexFilterWaitCycles$/ { ifx += $2 }
         section == 1 && $1 ~ /IND_VirtWriteIssues$/ { wi += $2 }
         section == 1 && $1 ~ /IND_VirtWriteCompletions$/ { wc += $2 }
         section == 1 && $1 ~ /IND_VirtPagesReady$/ { pr += $2 }
@@ -351,7 +360,7 @@ read -r ticks insts index_line_reads index_words index_hwm \
         section == 1 && $1 ~ /IND_VirtResponseWordPoolStalls$/ { rps += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
             print ticks + 0, insts + 0, il + 0, iw + 0, hw + 0,
-                  ifw + 0, ifc + 0,
+                  ifw + 0, ifc + 0, ife + 0, ifx + 0,
                   wi + 0, wc + 0, pr + 0, pe + 0, pf + 0, pa + 0,
                   ps + 0, ir + 0, sr + 0, sw + 0, ac + 0,
                   prs + 0, pwr + 0, pwd + 0, pws + 0,
@@ -451,14 +460,25 @@ elif [[ $virtual -eq 1 ]]; then
                     echo "partition filter was configured but charged no cycles" >&2
                     exit 1
                 }
+                if [[ $require_index_filter_wait -eq 1 ]]; then
+                    [[ $index_filter_wait_events -gt 0 && \
+                       $index_filter_wait_cycles -gt 0 ]] || {
+                        echo "partition filter did not produce a required scheduler wait" >&2
+                        exit 1
+                    }
+                fi
             else
-                [[ $index_filter_cycles -eq 0 ]] || {
+                [[ $index_filter_cycles -eq 0 && \
+                   $index_filter_wait_events -eq 0 && \
+                   $index_filter_wait_cycles -eq 0 ]] || {
                     echo "unlimited partition filter charged cycles" >&2
                     exit 1
                 }
             fi
         else
-            [[ $index_filter_words -eq 0 && $index_filter_cycles -eq 0 ]] || {
+            [[ $index_filter_words -eq 0 && $index_filter_cycles -eq 0 && \
+               $index_filter_wait_events -eq 0 && \
+               $index_filter_wait_cycles -eq 0 ]] || {
                 echo "single-pass case activated partition filter" >&2
                 exit 1
             }
@@ -505,7 +525,8 @@ else
 fi
 
 headers=(case output_hash simTicks simInsts index_line_reads index_words
-    index_hwm index_filter_words index_filter_cycles write_issues
+    index_hwm index_filter_words index_filter_cycles index_filter_wait_events
+    index_filter_wait_cycles write_issues
     write_completions indirect_spd_reads pages_ready
     pages_ready_before_source_drain first_page_ready_cycles
     all_pages_ready_cycles page_ready_span_cycles stream_spd_reads
@@ -514,7 +535,8 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
     row_table_rows_per_slice row_table_entries_per_subslice_row
     virtual_grow_order virtual_index_partitions
-    virtual_index_filter_words_per_cycle response_slots response_word_pool
+    virtual_index_filter_words_per_cycle require_index_filter_wait
+    response_slots response_word_pool
     row_table_cache_lines
     row_table_rows_inserted row_table_unique_cache_lines
     row_table_unique_rows source_reads response_slot_hwm response_word_hwm
@@ -522,6 +544,7 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     dram_activates dram_precharges)
 values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$index_words" "$index_hwm" "$index_filter_words" "$index_filter_cycles"
+    "$index_filter_wait_events" "$index_filter_wait_cycles"
     "$write_issues" "$write_completions"
     "$indirect_spd_reads" "$pages_ready" "$pages_ready_early"
     "$first_page_cycles" "$all_page_cycles" "$page_span_cycles"
@@ -530,7 +553,8 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
     "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
     "$row_entries" "$grow_order" "$index_partitions"
-    "$index_filter_words_per_cycle" "$response_slots" "$response_word_pool"
+    "$index_filter_words_per_cycle" "$require_index_filter_wait"
+    "$response_slots" "$response_word_pool"
     "$rt_cache_lines" "$rt_rows" "$rt_unique_cache_lines" "$rt_unique_rows"
     "$source_reads" "$response_slot_hwm" "$response_word_hwm"
     "$response_pool_stalls" "$rt_full" "$build_rounds" "$dram_reads"

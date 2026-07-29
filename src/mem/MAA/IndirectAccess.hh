@@ -265,6 +265,7 @@ protected:
     Tick my_RT_read_access_finish_tick;
     Tick my_RT_write_access_finish_tick;
     Tick my_direct_index_filter_finish_tick;
+    Tick my_direct_index_filter_accounted_tick;
     Tick my_decode_start_tick;
     Tick my_fill_start_tick;
     Tick my_build_start_tick;

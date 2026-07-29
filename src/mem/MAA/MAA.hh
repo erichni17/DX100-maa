@@ -637,6 +637,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtIndexWordHighWater;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterWords;
         std::vector<statistics::Scalar *> IND_VirtIndexFilterCycles;
+        std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitEvents;
+        std::vector<statistics::Scalar *> IND_VirtIndexFilterWaitCycles;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;

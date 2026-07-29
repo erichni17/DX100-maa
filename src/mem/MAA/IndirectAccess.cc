@@ -486,20 +486,38 @@ Cycles IndirectAccessUnit::updateLatency(int num_spd_read_data_accesses, int num
     return maa->getTicksToCycles(finish_tick - curTick());
 }
 bool IndirectAccessUnit::scheduleNextExecution(bool force) {
-    Tick finish_tick = std::max(my_RT_write_access_finish_tick,
-                                my_direct_index_filter_finish_tick);
+    Tick other_finish_tick = my_RT_write_access_finish_tick;
     if (state == Status::Response ||
         (state == Status::Request && usesBoundedSourceResponses() &&
          !isVirtualLoad())) {
-        finish_tick = std::max(
+        other_finish_tick =
             std::max(std::max(my_SPD_read_finish_tick,
                               my_SPD_write_finish_tick),
-                     my_RT_read_access_finish_tick),
-            std::max(my_RT_write_access_finish_tick,
-                     my_direct_index_filter_finish_tick));
+                     std::max(my_RT_read_access_finish_tick,
+                              my_RT_write_access_finish_tick));
     }
+    const Tick finish_tick =
+        std::max(other_finish_tick, my_direct_index_filter_finish_tick);
     if (curTick() < finish_tick) {
-        scheduleExecuteInstructionEvent(maa->getTicksToCycles(finish_tick - curTick()));
+        const Tick exposed_start =
+            std::max(std::max(curTick(), other_finish_tick),
+                     my_direct_index_filter_accounted_tick);
+        if (my_direct_index_filter_finish_tick > exposed_start) {
+            const Cycles exposed = maa->getTicksToCycles(
+                my_direct_index_filter_finish_tick - exposed_start);
+            (*maa->stats
+                  .IND_VirtIndexFilterWaitEvents[my_indirect_id])++;
+            (*maa->stats
+                  .IND_VirtIndexFilterWaitCycles[my_indirect_id]) += exposed;
+            my_direct_index_filter_accounted_tick =
+                my_direct_index_filter_finish_tick;
+            DPRINTF(MAAVirtualTrace,
+                    "event=index_filter_wait unit=%d cycles=%lu until=%lu\n",
+                    my_indirect_id, static_cast<uint64_t>(exposed),
+                    my_direct_index_filter_finish_tick);
+        }
+        scheduleExecuteInstructionEvent(
+            maa->getTicksToCycles(finish_tick - curTick()));
         return true;
     } else if (force) {
         scheduleExecuteInstructionEvent(Cycles(0));
@@ -849,6 +867,9 @@ void IndirectAccessUnit::fillRowTable(
         const bool condition_taken =
             my_cond_tile == -1 ||
             maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0;
+        if (isVirtualLoad() && isDirectIndexLoad() &&
+            direct_index_partitions > 1)
+            num_direct_index_filter_words++;
         bool virtual_iteration_selected = condition_taken;
         if (condition_taken) {
             uint32_t idx = isDirectIndexLoad()
@@ -867,9 +888,6 @@ void IndirectAccessUnit::fillRowTable(
             std::vector<int> addr_vec = maa->map_addr(block_paddr);
             my_RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
             Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
-            if (isVirtualLoad() && isDirectIndexLoad() &&
-                direct_index_partitions > 1)
-                num_direct_index_filter_words++;
             virtual_iteration_selected =
                 !isVirtualLoad() || !isDirectIndexLoad() ||
                 direct_index_partitions == 1 ||
@@ -1155,6 +1173,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_RT_read_access_finish_tick = curTick();
         my_RT_write_access_finish_tick = curTick();
         my_direct_index_filter_finish_tick = curTick();
+        my_direct_index_filter_accounted_tick = curTick();
         my_decode_start_tick = curTick();
         my_fill_start_tick = 0;
         my_build_start_tick = 0;

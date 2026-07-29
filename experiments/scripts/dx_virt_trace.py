@@ -17,6 +17,8 @@ COUNTERS = {
     "index_word_high_water": "IND_VirtIndexWordHighWater",
     "index_filter_words": "IND_VirtIndexFilterWords",
     "index_filter_cycles": "IND_VirtIndexFilterCycles",
+    "index_filter_wait_events": "IND_VirtIndexFilterWaitEvents",
+    "index_filter_wait_cycles": "IND_VirtIndexFilterWaitCycles",
     "response_slot_high_water": "IND_VirtResponseSlotHighWater",
     "response_word_high_water": "IND_VirtResponseWordHighWater",
     "response_word_pool_stalls": "IND_VirtResponseWordPoolStalls",

@@ -97,6 +97,12 @@ def write_evidence(
         stats["system.maa.I0_IND_VirtIndexFilterCycles"] = result[
             "index_filter_cycles"
         ]
+        stats["system.maa.I0_IND_VirtIndexFilterWaitEvents"] = result[
+            "index_filter_wait_events"
+        ]
+        stats["system.maa.I0_IND_VirtIndexFilterWaitCycles"] = result[
+            "index_filter_wait_cycles"
+        ]
     (run / "stats.txt").write_text(
         "---------- Begin Simulation Statistics ----------\n"
         + "".join(f"{key} {value}\n" for key, value in stats.items())

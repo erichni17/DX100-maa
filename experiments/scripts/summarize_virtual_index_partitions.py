@@ -150,6 +150,12 @@ def summarize(points: list[dict]) -> list[dict[str, str]]:
                 "index_line_reads": result["index_line_reads"],
                 "index_filter_words": result.get("index_filter_words", "0"),
                 "index_filter_cycles": result.get("index_filter_cycles", "0"),
+                "index_filter_wait_events": result.get(
+                    "index_filter_wait_events", "0"
+                ),
+                "index_filter_wait_cycles": result.get(
+                    "index_filter_wait_cycles", "0"
+                ),
                 "source_reads": str(source_reads),
                 "source_read_amplification": f"{source_reads / unique_lines:.6f}",
                 "row_table_full_events": result["row_table_full_events"],
@@ -177,16 +183,27 @@ def render_markdown(rows: list[dict[str, str]]) -> str:
         "",
         "All points use identical artifacts and produce exact matching output.",
         "",
-        "| Point | Descriptors | B scans | Filter words | Filter cycles | Ticks | vs full | vs constrained | A reads | A amplification | RT full | Build rounds |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        (
+            "| Point | Descriptors | B scans | Filter words | Charged cycles | "
+            "Wait events | Exposed cycles | Ticks | vs full | vs constrained | "
+            "A reads | A amplification | RT full | Build rounds |"
+        ),
+        (
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+            "---:|---:|---:|"
+        ),
     ]
     for row in rows:
         lines.append(
             f"| {row['point']} | {row['descriptor_slots']} | {row['index_scans']} | "
             f"{row['index_filter_words']} | {row['index_filter_cycles']} | "
-            f"{row['simTicks']} | {float(row['delta_vs_full_percent']):+.3f}% | "
+            f"{row['index_filter_wait_events']} | "
+            f"{row['index_filter_wait_cycles']} | "
+            f"{row['simTicks']} | "
+            f"{float(row['delta_vs_full_percent']):+.3f}% | "
             f"{float(row['delta_vs_constrained_percent']):+.3f}% | "
-            f"{row['source_reads']} | {float(row['source_read_amplification']):.3f}x | "
+            f"{row['source_reads']} | "
+            f"{float(row['source_read_amplification']):.3f}x | "
             f"{row['row_table_full_events']} | {row['virtual_build_rounds']} |"
         )
     return "\n".join(lines) + "\n"

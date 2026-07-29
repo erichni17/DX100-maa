@@ -1302,6 +1302,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterCycles"),
             statistics::units::Cycle::get(),
             "service cycles charged to multi-pass DRAM-grow filtering"));
+        IND_VirtIndexFilterWaitEvents.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWaitEvents"),
+            statistics::units::Count::get(),
+            "scheduler waits whose critical path includes index filtering"));
+        IND_VirtIndexFilterWaitCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWaitCycles"),
+            statistics::units::Cycle::get(),
+            "non-overlapped scheduler cycles caused by index filtering"));
         IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
             statistics::units::Count::get(),

@@ -34,6 +34,7 @@ MANIFEST = {
     "virtual_combine_banks": "0",
     "virtual_index_partitions": "2",
     "virtual_index_filter_words_per_cycle": "4",
+    "require_index_filter_wait": "1",
     "source_commit": "deadbeef",
 }
 RESULT = {
@@ -46,6 +47,8 @@ RESULT = {
     "index_hwm": "16",
     "index_filter_words": "32768",
     "index_filter_cycles": "8192",
+    "index_filter_wait_events": "2",
+    "index_filter_wait_cycles": "128",
     "write_issues": "30",
     "write_completions": "30",
     "pages_ready": "0",
@@ -134,6 +137,35 @@ class ValidateVirtualCaseTest(unittest.TestCase):
                 writer.writeheader()
                 writer.writerows(rows)
             with self.assertRaisesRegex(ValueError, "throughput lower bound"):
+                MODULE.validate_case(path)
+
+    def test_rejects_missing_required_partition_filter_wait(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = make_case(Path(directory))
+            stats = path / "run/stats.txt"
+            stats.write_text(
+                stats.read_text()
+                .replace(
+                    "I0_IND_VirtIndexFilterWaitEvents 2",
+                    "I0_IND_VirtIndexFilterWaitEvents 0",
+                )
+                .replace(
+                    "I0_IND_VirtIndexFilterWaitCycles 128",
+                    "I0_IND_VirtIndexFilterWaitCycles 0",
+                )
+            )
+            result_path = path / "result.tsv"
+            with result_path.open(newline="") as stream:
+                rows = list(csv.DictReader(stream, delimiter="\t"))
+            rows[0]["index_filter_wait_events"] = "0"
+            rows[0]["index_filter_wait_cycles"] = "0"
+            with result_path.open("w", newline="") as stream:
+                writer = csv.DictWriter(
+                    stream, fieldnames=rows[0], delimiter="\t"
+                )
+                writer.writeheader()
+                writer.writerows(rows)
+            with self.assertRaisesRegex(ValueError, "never delayed"):
                 MODULE.validate_case(path)
 
     def test_rejects_mutated_artifact(self):

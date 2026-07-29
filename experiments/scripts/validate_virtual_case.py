@@ -237,6 +237,12 @@ def validate_stats(
                 "index_filter_cycles": sum_suffix(
                     stats, "IND_VirtIndexFilterCycles"
                 ),
+                "index_filter_wait_events": sum_suffix(
+                    stats, "IND_VirtIndexFilterWaitEvents"
+                ),
+                "index_filter_wait_cycles": sum_suffix(
+                    stats, "IND_VirtIndexFilterWaitCycles"
+                ),
             }
         )
     source_reads = (
@@ -253,8 +259,10 @@ def validate_stats(
         throughput = int(manifest["virtual_index_filter_words_per_cycle"])
         filter_words = direct["index_filter_words"]
         filter_cycles = direct["index_filter_cycles"]
+        wait_events = direct["index_filter_wait_events"]
+        wait_cycles = direct["index_filter_wait_cycles"]
         if partitions == 1:
-            if filter_words != 0 or filter_cycles != 0:
+            if any((filter_words, filter_cycles, wait_events, wait_cycles)):
                 raise ValueError("single-pass case activated partition filter")
         else:
             expected = direct["index_words"] + direct["row_table_full_events"]
@@ -264,7 +272,7 @@ def validate_stats(
                     f"index scans plus retries {expected}"
                 )
             if throughput == 0:
-                if filter_cycles != 0:
+                if filter_cycles != 0 or wait_events != 0 or wait_cycles != 0:
                     raise ValueError(
                         "unlimited partition filter charged cycles"
                     )
@@ -272,6 +280,12 @@ def validate_stats(
                 raise ValueError(
                     "partition-filter cycles are below the configured "
                     "throughput lower bound"
+                )
+            elif int(manifest.get("require_index_filter_wait", "0")) and (
+                wait_events == 0 or wait_cycles == 0
+            ):
+                raise ValueError(
+                    "finite partition filter never delayed the scheduler"
                 )
 
 
