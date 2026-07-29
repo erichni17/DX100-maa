@@ -156,6 +156,7 @@ def main():
     parser.add_argument(
         "--cells", type=int, choices=(1, 2, 4, 8, 16, 32, 64), default=16
     )
+    parser.add_argument("--first-cell-items", type=int)
     parser.add_argument(
         "--mode",
         choices=("full", "sorted", "shuffled", "unsorted-error"),
@@ -167,6 +168,11 @@ def main():
     args = parser.parse_args()
     if args.sparta_pending_generation and args.sparta_cell_group:
         parser.error("SPARTA pending-generation and cell-group are exclusive")
+    if args.first_cell_items is not None:
+        if args.mode != "sorted" or args.cells != 2:
+            parser.error("--first-cell-items requires --mode sorted --cells 2")
+        if args.first_cell_items < 1 or args.first_cell_items >= 64:
+            parser.error("--first-cell-items must be in [1, 63]")
 
     outdir = args.outdir.resolve()
     if outdir.exists():
@@ -209,6 +215,10 @@ def main():
         compile_command.append("-DSPARTA_TALLY_PENDING_GENERATION=1")
     if args.sparta_cell_group:
         compile_command.append("-DSPARTA_TALLY_CELL_GROUP=1")
+    if args.first_cell_items is not None:
+        compile_command.append(
+            f"-DSPARTA_TALLY_FIRST_CELL_ITEMS={args.first_cell_items}"
+        )
     compile_command.extend([str(source), "-o", str(binary)])
     subprocess.run(compile_command, check=True)
     m5out = outdir / "m5out"
@@ -227,6 +237,7 @@ def main():
         "status": "running",
         "mode": args.mode,
         "cells": args.cells,
+        "first_cell_items": args.first_cell_items,
         "sparta_pending_generation": args.sparta_pending_generation,
         "sparta_cell_group": args.sparta_cell_group,
         "claim_boundary": (

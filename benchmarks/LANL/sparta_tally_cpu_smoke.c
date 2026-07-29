@@ -31,6 +31,10 @@
 #define SPARTA_TALLY_CELL_GROUP 0
 #endif
 
+#ifndef SPARTA_TALLY_FIRST_CELL_ITEMS
+#define SPARTA_TALLY_FIRST_CELL_ITEMS 0
+#endif
+
 #if SPARTA_TALLY_MODE < 0 || SPARTA_TALLY_MODE > 3
 #error "SPARTA_TALLY_MODE must be 0, 1, 2, or 3"
 #endif
@@ -50,6 +54,14 @@
 
 #if SPARTA_TALLY_PENDING_GENERATION && SPARTA_TALLY_CELL_GROUP
 #error "SPARTA tally pending-generation and cell-group policies are exclusive"
+#endif
+
+#if SPARTA_TALLY_FIRST_CELL_ITEMS < 0 || SPARTA_TALLY_FIRST_CELL_ITEMS >= 64
+#error "SPARTA_TALLY_FIRST_CELL_ITEMS must be in [0, 63]"
+#endif
+
+#if SPARTA_TALLY_FIRST_CELL_ITEMS && SPARTA_TALLY_CELLS != 2
+#error "SPARTA_TALLY_FIRST_CELL_ITEMS requires two cells"
 #endif
 
 static void
@@ -167,8 +179,14 @@ prepare_case(
         if (!selected_particle(candidate)) {
             continue;
         }
-        const uint32_t cell = shuffled ? (item * 13 + 7) % CELLS :
-                                         item / (ITEMS / CELLS);
+        uint32_t cell;
+        if (shuffled) {
+            cell = (item * 13 + 7) % CELLS;
+        } else if (SPARTA_TALLY_FIRST_CELL_ITEMS) {
+            cell = item < SPARTA_TALLY_FIRST_CELL_ITEMS ? 0 : 1;
+        } else {
+            cell = item / (ITEMS / CELLS);
+        }
         indices[item] = cell;
         for (uint32_t channel = 0; channel < CHANNELS; ++channel) {
             const double value =
