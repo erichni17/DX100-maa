@@ -1477,6 +1477,12 @@ void IndirectAccessUnit::executeInstruction() {
                                 virtual_pending_source_addr = addr;
                                 virtual_pending_source_head = virtual_head;
                                 virtual_pending_source_words = virtual_words;
+                                if (native_order_claim) {
+                                    last_RT_sent++;
+                                    if (last_RT_sent ==
+                                        num_RT_slices[my_RT_config])
+                                        last_RT_sent = 0;
+                                }
                                 virtual_response_word_pool_stalls++;
                                 num_rowtable_accesses++;
                                 virtual_capacity_full = true;

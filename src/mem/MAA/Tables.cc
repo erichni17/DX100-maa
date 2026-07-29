@@ -633,16 +633,15 @@ bool RowTableSlice::claim_entry_send_native_order(Addr &addr, int &head,
                     "ROT[%d] %s: ROW[%d] grow[0x%lx] claimed!\n",
                     my_table_id, __func__, last_sent_grow_rowid,
                     entries[last_sent_grow_rowid].grow_addr);
-            if (entries[last_sent_grow_rowid].all_entries_received()) {
-                const int completed_row = last_sent_grow_rowid;
-                entries_valid[completed_row] = false;
-                entries_sent[completed_row] = false;
-                entries[completed_row].check_reset();
-                get_send_grow_rowid();
-            }
             return true;
         }
-        entries_sent[last_sent_grow_rowid] = true;
+        const int completed_row = last_sent_grow_rowid;
+        panic_if(!entries[completed_row].all_entries_received(),
+                 "ROT[%d] native claim exhausted nonempty row[%d]\n",
+                 my_table_id, completed_row);
+        entries_valid[completed_row] = false;
+        entries_sent[completed_row] = false;
+        entries[completed_row].check_reset();
         get_send_grow_rowid();
     }
 }
