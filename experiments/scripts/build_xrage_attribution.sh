@@ -14,6 +14,7 @@ build_dir="$out/build"
 targets=(
     spatter_maa_verify_16K
     spatter_maa_fused_verify_16K
+    spatter_maa_fused_4K
     spatter_maa_fused_verify_4K
     spatter_maa_virtual_verify_16K
     spatter_maa_virtual_index_verify_16K
