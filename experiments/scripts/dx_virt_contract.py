@@ -78,6 +78,7 @@ INTEGER_DEFAULTS = {
 BOOL_DEFAULTS = {
     "virtual_masked_writes": False,
     "virtual_grow_order": False,
+    "virtual_native_issue_order": False,
     "no_reorder": False,
     "reconfigure_row_table": False,
 }
@@ -272,6 +273,18 @@ def validate(case: dict, values: dict) -> None:
         raise ContractError(
             "virtual reorder claim is invalid with no_reorder=true"
         )
+    if values["virtual_grow_order"] and values["virtual_native_issue_order"]:
+        raise ContractError(
+            "virtual_grow_order and virtual_native_issue_order are mutually "
+            "exclusive"
+        )
+    if (
+        case["mode"] != "direct_index_virtual"
+        and values["virtual_native_issue_order"]
+    ):
+        raise ContractError(
+            "virtual_native_issue_order requires direct_index_virtual mode"
+        )
 
 
 def response_storage(values: dict, element_bytes: int) -> tuple[int, int, str]:
@@ -365,6 +378,13 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
         reorder_claim = (
             "native Row-Table issue order over the configured logical "
             "descriptor window until capacity forces a drain"
+        )
+    elif values["virtual_native_issue_order"]:
+        issue_order = "native_claim_scan"
+        reorder_claim = (
+            "logical 16K descriptors remain live and are claimed in the "
+            "native Row-Table scan order; equivalence still requires an "
+            "instruction-level issue digest"
         )
     elif values["virtual_grow_order"]:
         issue_order = "bounded_grow_grouping"
@@ -469,6 +489,9 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             ],
             "issue_order": issue_order,
             "virtual_grow_order": values["virtual_grow_order"],
+            "virtual_native_issue_order": values[
+                "virtual_native_issue_order"
+            ],
             "direct_index_partitions": values["virtual_index_partitions"],
             "direct_index_filter_words_per_cycle": values[
                 "virtual_index_filter_words_per_cycle"
@@ -481,6 +504,13 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             "effective_reorder_window": (
                 "bounded by logical iterations, unique-line capacity, and "
                 "address distribution"
+            ),
+            "physical_spd_payload_window": physical,
+            "logical_descriptor_window": logical,
+            "direct_index_spd_role": (
+                "completion_token_only"
+                if mode == "direct_index_virtual"
+                else "payload"
             ),
             "claim": reorder_claim,
         },

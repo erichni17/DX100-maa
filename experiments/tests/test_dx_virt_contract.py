@@ -162,6 +162,23 @@ class ContractTests(unittest.TestCase):
         )
         self.assertIn("not equivalent", contract["reorder_resources"]["claim"])
 
+    def test_native_issue_order_records_logical_descriptor_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            contract = self.build(
+                Path(temporary),
+                "direct_index_virtual",
+                {
+                    "physical_tile_elements": 4096,
+                    "virtual_native_issue_order": True,
+                },
+            )
+        reorder = contract["reorder_resources"]
+        self.assertEqual(reorder["issue_order"], "native_claim_scan")
+        self.assertEqual(reorder["physical_spd_payload_window"], 4096)
+        self.assertEqual(reorder["logical_descriptor_window"], 16384)
+        self.assertEqual(reorder["direct_index_spd_role"], "completion_token_only")
+        self.assertIn("issue digest", reorder["claim"])
+
     def test_invalid_victim_policy_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(MODULE.ContractError, "victim_policy"):
