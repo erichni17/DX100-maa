@@ -29,6 +29,7 @@ MATCHED_MANIFEST_KEYS = (
     "virtual_combine_ways",
     "virtual_combine_victim_policy",
     "virtual_combine_banks",
+    "virtual_index_filter_words_per_cycle",
     "source_commit",
     "timeout",
 )
@@ -147,6 +148,8 @@ def summarize(points: list[dict]) -> list[dict[str, str]]:
                 "delta_vs_full_percent": f"{percent_delta(ticks, full_ticks):.6f}",
                 "delta_vs_constrained_percent": f"{percent_delta(ticks, constrained_ticks):.6f}",
                 "index_line_reads": result["index_line_reads"],
+                "index_filter_words": result.get("index_filter_words", "0"),
+                "index_filter_cycles": result.get("index_filter_cycles", "0"),
                 "source_reads": str(source_reads),
                 "source_read_amplification": f"{source_reads / unique_lines:.6f}",
                 "row_table_full_events": result["row_table_full_events"],
@@ -174,12 +177,13 @@ def render_markdown(rows: list[dict[str, str]]) -> str:
         "",
         "All points use identical artifacts and produce exact matching output.",
         "",
-        "| Point | Descriptors | B scans | Ticks | vs full | vs constrained | A reads | A amplification | RT full | Build rounds |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Point | Descriptors | B scans | Filter words | Filter cycles | Ticks | vs full | vs constrained | A reads | A amplification | RT full | Build rounds |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
             f"| {row['point']} | {row['descriptor_slots']} | {row['index_scans']} | "
+            f"{row['index_filter_words']} | {row['index_filter_cycles']} | "
             f"{row['simTicks']} | {float(row['delta_vs_full_percent']):+.3f}% | "
             f"{float(row['delta_vs_constrained_percent']):+.3f}% | "
             f"{row['source_reads']} | {float(row['source_read_amplification']):.3f}x | "

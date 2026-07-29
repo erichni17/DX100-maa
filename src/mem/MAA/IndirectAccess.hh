@@ -193,6 +193,7 @@ public:
                   bool _virtual_masked_writes,
                   int _virtual_index_buffer_lines,
                   int _virtual_index_partitions,
+                  int _virtual_index_filter_words_per_cycle,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
@@ -233,6 +234,7 @@ protected:
     };
     int direct_index_buffer_lines = 1;
     int direct_index_partitions = 1;
+    int direct_index_filter_words_per_cycle = 0;
     int direct_index_partition = 0;
     bool direct_index_partition_barrier = false;
     int direct_index_next_prefetch_itr = 0;
@@ -262,6 +264,7 @@ protected:
     Tick my_SPD_write_finish_tick;
     Tick my_RT_read_access_finish_tick;
     Tick my_RT_write_access_finish_tick;
+    Tick my_direct_index_filter_finish_tick;
     Tick my_decode_start_tick;
     Tick my_fill_start_tick;
     Tick my_build_start_tick;
@@ -312,7 +315,12 @@ protected:
     void checkTileReady();
     bool checkElementReady();
     bool checkReadyForFinish();
-    void fillRowTable(bool &finished, bool &waitForFinish, bool &waitForElement, bool &needDrain, int &num_spd_read_condidx_accesses, int &num_rowtable_accesses);
+    void fillRowTable(bool &finished, bool &waitForFinish,
+                      bool &waitForElement, bool &needDrain,
+                      int &num_spd_read_condidx_accesses,
+                      int &num_rowtable_accesses,
+                      int &num_direct_index_filter_words);
+    void chargeDirectIndexFilterLatency(int words);
     void executeInstruction();
     EventFunctionWrapper executeInstructionEvent;
     void check_reset();

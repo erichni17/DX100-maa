@@ -8,8 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dx_virt_contract.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[1] / "scripts" / "dx_virt_contract.py"
+)
 SPEC = importlib.util.spec_from_file_location("dx_virt_contract", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
@@ -83,6 +84,7 @@ class ContractTests(unittest.TestCase):
                     "virtual_max_outstanding_writes": 64,
                     "virtual_index_buffer_lines": 4,
                     "virtual_index_partitions": 4,
+                    "virtual_index_filter_words_per_cycle": 4,
                 },
             )
         self.assertEqual(contract["configured_hardware"]["total_tiles"], 32)
@@ -93,6 +95,12 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(
             contract["reorder_resources"]["index_scan_policy"],
             "dram_grow_modulo",
+        )
+        self.assertEqual(
+            contract["reorder_resources"][
+                "direct_index_filter_words_per_cycle"
+            ],
+            4,
         )
         self.assertEqual(
             contract["reorder_resources"]["issue_order"],
@@ -118,6 +126,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(hardware["virtual_combine_words"], 0)
         self.assertEqual(hardware["virtual_response_word_pool"], 0)
         self.assertEqual(hardware["virtual_words_per_cycle"], 0)
+        self.assertEqual(hardware["virtual_index_filter_words_per_cycle"], 0)
 
     def test_grow_order_is_qualified(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -146,10 +155,17 @@ class ContractTests(unittest.TestCase):
             root = Path(temporary)
             single = self.build(root, "direct_index_virtual", units=(1, 1))
             multi = self.build(root, "direct_index_virtual", units=(2, 3))
-        self.assertEqual(multi["configured_hardware"]["total_indirect_units"], 6)
         self.assertEqual(
-            multi["target_hardware_budget"]["all_indirect_units_minimum_bytes"],
-            6 * single["target_hardware_budget"]["all_indirect_units_minimum_bytes"],
+            multi["configured_hardware"]["total_indirect_units"], 6
+        )
+        self.assertEqual(
+            multi["target_hardware_budget"][
+                "all_indirect_units_minimum_bytes"
+            ],
+            6
+            * single["target_hardware_budget"][
+                "all_indirect_units_minimum_bytes"
+            ],
         )
 
     def test_mode_mismatch_fails_closed(self):
@@ -171,8 +187,14 @@ class ContractTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(case("direct_index_virtual")))
             output = root / "contract.json"
             completed = subprocess.run(
-                [sys.executable, str(SCRIPT), "--case", str(manifest_path),
-                 "--json", str(output)],
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--case",
+                    str(manifest_path),
+                    "--json",
+                    str(output),
+                ],
                 text=True,
                 capture_output=True,
                 check=False,

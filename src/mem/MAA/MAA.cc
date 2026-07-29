@@ -78,6 +78,8 @@ MAA::MAA(const MAAParams &p)
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
       virtual_index_partitions(p.virtual_index_partitions),
+      virtual_index_filter_words_per_cycle(
+          p.virtual_index_filter_words_per_cycle),
       virtual_grow_order(p.virtual_grow_order),
       num_request_table_addresses(p.num_request_table_addresses),
       num_request_table_entries_per_address(p.num_request_table_entries_per_address),
@@ -378,6 +380,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_masked_writes,
                                         virtual_index_buffer_lines,
                                         virtual_index_partitions,
+                                        virtual_index_filter_words_per_cycle,
                                         rowtable_latency,
                                         num_channels,
                                         num_cores,
@@ -1291,6 +1294,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexWordHighWater"),
             statistics::units::Count::get(),
             "sum of per-instruction peak buffered direct-index words"));
+        IND_VirtIndexFilterWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWords"),
+            statistics::units::Count::get(),
+            "index words examined by multi-pass DRAM-grow filtering"));
+        IND_VirtIndexFilterCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterCycles"),
+            statistics::units::Cycle::get(),
+            "service cycles charged to multi-pass DRAM-grow filtering"));
         IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
             statistics::units::Count::get(),

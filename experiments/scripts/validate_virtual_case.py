@@ -200,7 +200,10 @@ def require_int(result: dict[str, str], key: str, actual: int) -> None:
 
 
 def validate_stats(
-    result: dict[str, str], stats: dict[str, int], log: str
+    manifest: dict[str, str],
+    result: dict[str, str],
+    stats: dict[str, int],
+    log: str,
 ) -> None:
     direct = {
         "simTicks": stat(stats, "simTicks"),
@@ -225,6 +228,17 @@ def validate_stats(
         "dram_activates": parse_dram(log, "CH0_num_ACT_commands_T"),
         "dram_precharges": parse_dram(log, "CH0_num_PRE_commands_T"),
     }
+    if "virtual_index_filter_words_per_cycle" in manifest:
+        direct.update(
+            {
+                "index_filter_words": sum_suffix(
+                    stats, "IND_VirtIndexFilterWords"
+                ),
+                "index_filter_cycles": sum_suffix(
+                    stats, "IND_VirtIndexFilterCycles"
+                ),
+            }
+        )
     source_reads = (
         sum_suffix(stats, "IND_LoadsCacheHitResponding", required=False)
         + sum_suffix(stats, "IND_LoadsCacheHitAccessing", required=False)
@@ -234,6 +248,31 @@ def validate_stats(
     direct["source_reads"] = source_reads
     for key, value in direct.items():
         require_int(result, key, value)
+    if "virtual_index_filter_words_per_cycle" in manifest:
+        partitions = int(manifest["virtual_index_partitions"])
+        throughput = int(manifest["virtual_index_filter_words_per_cycle"])
+        filter_words = direct["index_filter_words"]
+        filter_cycles = direct["index_filter_cycles"]
+        if partitions == 1:
+            if filter_words != 0 or filter_cycles != 0:
+                raise ValueError("single-pass case activated partition filter")
+        else:
+            expected = direct["index_words"] + direct["row_table_full_events"]
+            if filter_words != expected:
+                raise ValueError(
+                    f"partition-filter words {filter_words} do not match "
+                    f"index scans plus retries {expected}"
+                )
+            if throughput == 0:
+                if filter_cycles != 0:
+                    raise ValueError(
+                        "unlimited partition filter charged cycles"
+                    )
+            elif filter_cycles < (filter_words + throughput - 1) // throughput:
+                raise ValueError(
+                    "partition-filter cycles are below the configured "
+                    "throughput lower bound"
+                )
 
 
 def validate_config(manifest: dict[str, str], path: Path) -> None:
@@ -268,6 +307,10 @@ def validate_config(manifest: dict[str, str], path: Path) -> None:
         "virtual_combine_banks": "virtual_combine_banks",
         "virtual_index_partitions": "virtual_index_partitions",
     }
+    if "virtual_index_filter_words_per_cycle" in manifest:
+        integer_keys[
+            "virtual_index_filter_words_per_cycle"
+        ] = "virtual_index_filter_words_per_cycle"
     for manifest_key, config_key in integer_keys.items():
         if manifest_key not in manifest:
             raise ValueError(f"manifest is missing {manifest_key!r}")
@@ -374,7 +417,7 @@ def validate_case(path: Path) -> dict:
         )
 
     validate_config(manifest, path / "run/config.ini")
-    validate_stats(result, read_stats(path / "run/stats.txt"), log)
+    validate_stats(manifest, result, read_stats(path / "run/stats.txt"), log)
     validate_pages(path, result)
     hashes = verify_hashes(
         path / "artifact_sha256.txt",

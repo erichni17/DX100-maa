@@ -104,6 +104,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   bool _virtual_masked_writes,
                                   int _virtual_index_buffer_lines,
                                   int _virtual_index_partitions,
+                                  int _virtual_index_filter_words_per_cycle,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -167,6 +168,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] direct-index partitions (%d) must be in [1,64]\n",
              my_indirect_id, _virtual_index_partitions);
     direct_index_partitions = _virtual_index_partitions;
+    direct_index_filter_words_per_cycle =
+        _virtual_index_filter_words_per_cycle;
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -483,7 +486,8 @@ Cycles IndirectAccessUnit::updateLatency(int num_spd_read_data_accesses, int num
     return maa->getTicksToCycles(finish_tick - curTick());
 }
 bool IndirectAccessUnit::scheduleNextExecution(bool force) {
-    Tick finish_tick = my_RT_write_access_finish_tick;
+    Tick finish_tick = std::max(my_RT_write_access_finish_tick,
+                                my_direct_index_filter_finish_tick);
     if (state == Status::Response ||
         (state == Status::Request && usesBoundedSourceResponses() &&
          !isVirtualLoad())) {
@@ -491,7 +495,8 @@ bool IndirectAccessUnit::scheduleNextExecution(bool force) {
             std::max(std::max(my_SPD_read_finish_tick,
                               my_SPD_write_finish_tick),
                      my_RT_read_access_finish_tick),
-            my_RT_write_access_finish_tick);
+            std::max(my_RT_write_access_finish_tick,
+                     my_direct_index_filter_finish_tick));
     }
     if (curTick() < finish_tick) {
         scheduleExecuteInstructionEvent(maa->getTicksToCycles(finish_tick - curTick()));
@@ -784,13 +789,17 @@ bool IndirectAccessUnit::checkReadyForFinish() {
     }
     return true;
 }
-void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool &waitForElement, bool &needDrain, int &num_spd_read_condidx_accesses, int &num_rowtable_accesses) {
+void IndirectAccessUnit::fillRowTable(
+    bool &finished, bool &waitForFinish, bool &waitForElement,
+    bool &needDrain, int &num_spd_read_condidx_accesses,
+    int &num_rowtable_accesses, int &num_direct_index_filter_words) {
     finished = false;
     waitForFinish = false;
     waitForElement = false;
     needDrain = false;
     num_spd_read_condidx_accesses = 0;
     num_rowtable_accesses = 0;
+    num_direct_index_filter_words = 0;
     checkTileReady();
     while (true) {
         if (my_max != -1 && my_i >= my_max) {
@@ -858,6 +867,9 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             std::vector<int> addr_vec = maa->map_addr(block_paddr);
             my_RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
             Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+            if (isVirtualLoad() && isDirectIndexLoad() &&
+                direct_index_partitions > 1)
+                num_direct_index_filter_words++;
             virtual_iteration_selected =
                 !isVirtualLoad() || !isDirectIndexLoad() ||
                 direct_index_partitions == 1 ||
@@ -925,6 +937,24 @@ void IndirectAccessUnit::fillRowTable(bool &finished, bool &waitForFinish, bool 
             consumeDirectIndex(my_i);
         my_i++;
     }
+}
+void IndirectAccessUnit::chargeDirectIndexFilterLatency(int words) {
+    if (words == 0)
+        return;
+    panic_if(words < 0 || direct_index_partitions <= 1,
+             "I[%d] invalid direct-index filter charge: words=%d "
+             "partitions=%d\n",
+             my_indirect_id, words, direct_index_partitions);
+    (*maa->stats.IND_VirtIndexFilterWords[my_indirect_id]) += words;
+    if (direct_index_filter_words_per_cycle == 0)
+        return;
+    const Cycles latency(
+        getCeiling(words, direct_index_filter_words_per_cycle));
+    if (my_direct_index_filter_finish_tick < curTick())
+        my_direct_index_filter_finish_tick = maa->getClockEdge(latency);
+    else
+        my_direct_index_filter_finish_tick += maa->getCyclesToTicks(latency);
+    (*maa->stats.IND_VirtIndexFilterCycles[my_indirect_id]) += latency;
 }
 void IndirectAccessUnit::executeInstruction() {
     switch (state) {
@@ -1124,6 +1154,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_SPD_write_finish_tick = curTick();
         my_RT_read_access_finish_tick = curTick();
         my_RT_write_access_finish_tick = curTick();
+        my_direct_index_filter_finish_tick = curTick();
         my_decode_start_tick = curTick();
         my_fill_start_tick = 0;
         my_build_start_tick = 0;
@@ -1185,7 +1216,10 @@ void IndirectAccessUnit::executeInstruction() {
         }
         bool finished, waitForFinish, waitForElement, needDrain;
         int num_spd_read_condidx_accesses, num_rowtable_accesses;
-        fillRowTable(finished, waitForFinish, waitForElement, needDrain, num_spd_read_condidx_accesses, num_rowtable_accesses);
+        int num_direct_index_filter_words;
+        fillRowTable(finished, waitForFinish, waitForElement, needDrain,
+                     num_spd_read_condidx_accesses, num_rowtable_accesses,
+                     num_direct_index_filter_words);
         bool buildReady = false;
         if (waitForFinish) {
             DPRINTF(MAAIndirect, "I[%d] %s: waiting for fill finish %s!\n", my_indirect_id, __func__, my_instruction->print());
@@ -1210,6 +1244,7 @@ void IndirectAccessUnit::executeInstruction() {
         }
         // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
         updateLatency(0, num_spd_read_condidx_accesses, 0, 0, num_rowtable_accesses, total_num_RT_subslices);
+        chargeDirectIndexFilterLatency(num_direct_index_filter_words);
         if (buildReady) {
             if (reorder_RT) {
                 DPRINTF(MAAIndirect, "I[%d] %s: state set to Build for %s!\n", my_indirect_id, __func__, my_instruction->print());
@@ -1539,8 +1574,12 @@ void IndirectAccessUnit::executeInstruction() {
             !direct_index_partition_barrier) {
             bool finished, waitForFinish, waitForElement, needDrain;
             int num_spd_read_condidx_accesses, num_rowtable_accesses;
+            int num_direct_index_filter_words;
             const int fill_start_itr = my_i;
-            fillRowTable(finished, waitForFinish, waitForElement, needDrain, num_spd_read_condidx_accesses, num_rowtable_accesses);
+            fillRowTable(finished, waitForFinish, waitForElement, needDrain,
+                         num_spd_read_condidx_accesses,
+                         num_rowtable_accesses,
+                         num_direct_index_filter_words);
             if (usesBoundedSourceResponses()) {
                 if (finished)
                     my_fill_finished = true;
@@ -1557,6 +1596,7 @@ void IndirectAccessUnit::executeInstruction() {
             }
             // Row table parallelism = total #sub-banks. Each bank can be inserted once at a cycle
             updateLatency(0, num_spd_read_condidx_accesses, 0, 0, num_rowtable_accesses, total_num_RT_subslices);
+            chargeDirectIndexFilterLatency(num_direct_index_filter_words);
         }
         if (virtual_write_address_blocked)
             scheduleExecuteInstructionEvent(1);

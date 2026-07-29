@@ -33,6 +33,7 @@ MANIFEST = {
     "virtual_combine_victim_policy": "0",
     "virtual_combine_banks": "0",
     "virtual_index_partitions": "2",
+    "virtual_index_filter_words_per_cycle": "4",
     "source_commit": "deadbeef",
 }
 RESULT = {
@@ -43,6 +44,8 @@ RESULT = {
     "index_line_reads": "20",
     "index_words": "32768",
     "index_hwm": "16",
+    "index_filter_words": "32768",
+    "index_filter_cycles": "8192",
     "write_issues": "30",
     "write_completions": "30",
     "pages_ready": "0",
@@ -108,6 +111,29 @@ class ValidateVirtualCaseTest(unittest.TestCase):
                 )
             )
             with self.assertRaisesRegex(ValueError, "resolved config"):
+                MODULE.validate_case(path)
+
+    def test_rejects_undercharged_partition_filter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = make_case(Path(directory))
+            stats = path / "run/stats.txt"
+            stats.write_text(
+                stats.read_text().replace(
+                    "I0_IND_VirtIndexFilterCycles 8192",
+                    "I0_IND_VirtIndexFilterCycles 8191",
+                )
+            )
+            result_path = path / "result.tsv"
+            with result_path.open(newline="") as stream:
+                rows = list(csv.DictReader(stream, delimiter="\t"))
+            rows[0]["index_filter_cycles"] = "8191"
+            with result_path.open("w", newline="") as stream:
+                writer = csv.DictWriter(
+                    stream, fieldnames=rows[0], delimiter="\t"
+                )
+                writer.writeheader()
+                writer.writerows(rows)
+            with self.assertRaisesRegex(ValueError, "throughput lower bound"):
                 MODULE.validate_case(path)
 
     def test_rejects_mutated_artifact(self):

@@ -8,7 +8,6 @@ import csv
 import json
 from pathlib import Path
 
-
 COUNTERS = {
     "rt_full": "IND_NumRTFull",
     "build_rounds": "IND_VirtBuildRounds",
@@ -16,6 +15,8 @@ COUNTERS = {
     "index_line_high_water": "IND_VirtIndexLineHighWater",
     "index_words": "IND_VirtIndexWords",
     "index_word_high_water": "IND_VirtIndexWordHighWater",
+    "index_filter_words": "IND_VirtIndexFilterWords",
+    "index_filter_cycles": "IND_VirtIndexFilterCycles",
     "response_slot_high_water": "IND_VirtResponseSlotHighWater",
     "response_word_high_water": "IND_VirtResponseWordHighWater",
     "response_word_pool_stalls": "IND_VirtResponseWordPoolStalls",
@@ -64,7 +65,9 @@ def parse_result(path: Path) -> dict[str, str]:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     if len(rows) != 1:
-        raise TraceError(f"expected one result row in {path}, found {len(rows)}")
+        raise TraceError(
+            f"expected one result row in {path}, found {len(rows)}"
+        )
     return rows[0]
 
 
@@ -77,7 +80,9 @@ def parse_first_stats(path: Path) -> tuple[dict[str, int], int, int]:
     reads = 0
     sim_ticks = 0
     sim_insts = 0
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in path.read_text(
+        encoding="utf-8", errors="replace"
+    ).splitlines():
         if line.startswith("---------- Begin Simulation Statistics"):
             if active:
                 raise TraceError("nested statistics sections")

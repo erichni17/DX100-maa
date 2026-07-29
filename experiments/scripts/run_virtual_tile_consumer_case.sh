@@ -25,6 +25,7 @@ combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
 combine_victim_policy=${MAA_VIRTUAL_COMBINE_VICTIM_POLICY:-0}
 combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
+index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
 [[ $grow_order == 0 || $grow_order == 1 ]] || {
     echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
     exit 2
@@ -35,6 +36,10 @@ index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 }
 [[ $index_partitions -gt 0 && $index_partitions -le 64 ]] || {
     echo "virtual index partitions must be in [1,64]" >&2
+    exit 2
+}
+[[ $index_filter_words_per_cycle -ge 0 ]] || {
+    echo "virtual index filter words per cycle must be nonnegative" >&2
     exit 2
 }
 [[ $response_slots -gt 0 && $response_word_pool -gt 0 ]] || {
@@ -176,6 +181,8 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'virtual_combine_victim_policy=%s\n' "$combine_victim_policy"
     printf 'virtual_combine_banks=%s\n' "$combine_banks"
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
+    printf 'virtual_index_filter_words_per_cycle=%s\n' \
+        "$index_filter_words_per_cycle"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -252,6 +259,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
     --maa_virtual_index_buffer_lines=4 \
     --maa_virtual_index_partitions="$index_partitions" \
+    --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle" \
     --cmd "$binary" --options "$mode $page" > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e
@@ -267,6 +275,7 @@ for expected in \
     "num_row_table_rows_per_slice=$row_rows" \
     "num_row_table_entries_per_subslice_row=$row_entries" \
     "virtual_index_partitions=$index_partitions" \
+    "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
     "reconfigure_row_table=false"; do
     grep -Fqx "$expected" "$config_ini" || {
         echo "missing resolved row-table treatment: $expected" >&2
@@ -291,6 +300,7 @@ output_hash=$(sed -nE \
     "$out/restore.log")
 
 read -r ticks insts index_line_reads index_words index_hwm \
+    index_filter_words index_filter_cycles \
     write_issues write_completions \
     pages_ready pages_ready_early first_page_cycles all_page_cycles \
     page_span_cycles \
@@ -308,6 +318,8 @@ read -r ticks insts index_line_reads index_words index_hwm \
         section == 1 && $1 ~ /IND_VirtIndexLineReads$/ { il += $2 }
         section == 1 && $1 ~ /IND_VirtIndexWords$/ { iw += $2 }
         section == 1 && $1 ~ /IND_VirtIndexWordHighWater$/ { hw += $2 }
+        section == 1 && $1 ~ /IND_VirtIndexFilterWords$/ { ifw += $2 }
+        section == 1 && $1 ~ /IND_VirtIndexFilterCycles$/ { ifc += $2 }
         section == 1 && $1 ~ /IND_VirtWriteIssues$/ { wi += $2 }
         section == 1 && $1 ~ /IND_VirtWriteCompletions$/ { wc += $2 }
         section == 1 && $1 ~ /IND_VirtPagesReady$/ { pr += $2 }
@@ -339,6 +351,7 @@ read -r ticks insts index_line_reads index_words index_hwm \
         section == 1 && $1 ~ /IND_VirtResponseWordPoolStalls$/ { rps += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
             print ticks + 0, insts + 0, il + 0, iw + 0, hw + 0,
+                  ifw + 0, ifc + 0,
                   wi + 0, wc + 0, pr + 0, pe + 0, pf + 0, pa + 0,
                   ps + 0, ir + 0, sr + 0, sw + 0, ac + 0,
                   prs + 0, pwr + 0, pwd + 0, pws + 0,
@@ -427,6 +440,29 @@ elif [[ $virtual -eq 1 ]]; then
             echo "direct-index gather used $indirect_spd_reads SPD read cycles" >&2
             exit 1
         }
+        if [[ $index_partitions -gt 1 ]]; then
+            expected_filter_words=$((expected_index_words + rt_full))
+            [[ $index_filter_words -eq $expected_filter_words ]] || {
+                echo "invalid partition-filter inspections: $index_filter_words/$expected_filter_words" >&2
+                exit 1
+            }
+            if [[ $index_filter_words_per_cycle -gt 0 ]]; then
+                [[ $index_filter_cycles -gt 0 ]] || {
+                    echo "partition filter was configured but charged no cycles" >&2
+                    exit 1
+                }
+            else
+                [[ $index_filter_cycles -eq 0 ]] || {
+                    echo "unlimited partition filter charged cycles" >&2
+                    exit 1
+                }
+            fi
+        else
+            [[ $index_filter_words -eq 0 && $index_filter_cycles -eq 0 ]] || {
+                echo "single-pass case activated partition filter" >&2
+                exit 1
+            }
+        fi
     else
         [[ $index_words -eq 0 && $indirect_spd_reads -gt 0 ]] || {
             echo "staged-index gather did not use the expected SPD path" >&2
@@ -469,27 +505,32 @@ else
 fi
 
 headers=(case output_hash simTicks simInsts index_line_reads index_words
-    index_hwm write_issues write_completions indirect_spd_reads pages_ready
+    index_hwm index_filter_words index_filter_cycles write_issues
+    write_completions indirect_spd_reads pages_ready
     pages_ready_before_source_drain first_page_ready_cycles
     all_pages_ready_cycles page_ready_span_cycles stream_spd_reads
     stream_writes alu_compute_cycles page_ready_signals page_wait_reads
     page_wait_deferrals page_wait_responses l3_read_hits_maa
     l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
     row_table_rows_per_slice row_table_entries_per_subslice_row
-    virtual_grow_order virtual_index_partitions response_slots response_word_pool row_table_cache_lines
+    virtual_grow_order virtual_index_partitions
+    virtual_index_filter_words_per_cycle response_slots response_word_pool
+    row_table_cache_lines
     row_table_rows_inserted row_table_unique_cache_lines
     row_table_unique_rows source_reads response_slot_hwm response_word_hwm
     response_pool_stalls row_table_full_events virtual_build_rounds dram_reads
     dram_activates dram_precharges)
 values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
-    "$index_words" "$index_hwm" "$write_issues" "$write_completions"
+    "$index_words" "$index_hwm" "$index_filter_words" "$index_filter_cycles"
+    "$write_issues" "$write_completions"
     "$indirect_spd_reads" "$pages_ready" "$pages_ready_early"
     "$first_page_cycles" "$all_page_cycles" "$page_span_cycles"
     "$stream_spd_reads" "$stream_writes" "$alu_compute"
     "$page_ready_signals" "$page_wait_reads" "$page_wait_deferrals"
     "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
     "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
-    "$row_entries" "$grow_order" "$index_partitions" "$response_slots" "$response_word_pool"
+    "$row_entries" "$grow_order" "$index_partitions"
+    "$index_filter_words_per_cycle" "$response_slots" "$response_word_pool"
     "$rt_cache_lines" "$rt_rows" "$rt_unique_cache_lines" "$rt_unique_rows"
     "$source_reads" "$response_slot_hwm" "$response_word_hwm"
     "$response_pool_stalls" "$rt_full" "$build_rounds" "$dram_reads"

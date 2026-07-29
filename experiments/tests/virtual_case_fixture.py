@@ -56,6 +56,10 @@ def write_evidence(
             "true" if manifest["virtual_grow_order"] == "1" else "false"
         ),
     }
+    if "virtual_index_filter_words_per_cycle" in manifest:
+        config_values["virtual_index_filter_words_per_cycle"] = manifest[
+            "virtual_index_filter_words_per_cycle"
+        ]
     (run / "config.ini").write_text(
         "[system.maa]\n"
         + "".join(f"{key}={value}\n" for key, value in config_values.items())
@@ -86,6 +90,13 @@ def write_evidence(
             int(result["source_reads"]) + int(result["index_line_reads"])
         ),
     }
+    if "index_filter_words" in result:
+        stats["system.maa.I0_IND_VirtIndexFilterWords"] = result[
+            "index_filter_words"
+        ]
+        stats["system.maa.I0_IND_VirtIndexFilterCycles"] = result[
+            "index_filter_cycles"
+        ]
     (run / "stats.txt").write_text(
         "---------- Begin Simulation Statistics ----------\n"
         + "".join(f"{key} {value}\n" for key, value in stats.items())

@@ -147,10 +147,7 @@ def addNoISAOptions(parser):
         help="ramulator configuration file",
     )
     parser.add_argument(
-        "--mem-channels",
-        type=int,
-        default=1,
-        help="number of memory channels"
+        "--mem-channels", type=int, default=1, help="number of memory channels"
     )
     parser.add_argument(
         "--mem-ranks",
@@ -216,50 +213,256 @@ def addNoISAOptions(parser):
     parser.add_argument("--cacheline_size", type=int, default=64)
 
     parser.add_argument("--maa", action="store_true")
-    parser.add_argument("--maa_num_tiles_per_core", type=int, default=8, help="Number of SPD tiles per core attached to the DX100 instance")
-    parser.add_argument("--maa_num_tile_elements", type=int, default=16384, help="Number of elements in each tile")
-    parser.add_argument("--maa_physical_tile_elements", type=int, default=0, help="Physical elements allocated per SPD tile (0 matches logical size)")
-    parser.add_argument("--maa_num_regs_per_core", type=int, default=8, help="Number of 32-bit scalar registers per core attached to the DX100 instance")
-    parser.add_argument("--maa_num_instructions_per_core", type=int, default=8, help="Number of instructions in the instruction file per core attached to the DX100 instance")
-    parser.add_argument("--maa_num_row_table_rows_per_slice", type=int, default=64, help="Number of rows in each row table slice")
-    parser.add_argument("--maa_num_row_table_entries_per_subslice_row", type=int, default=8, help="Number of row table entries (bursts) per each sub-slice of row table")
-    parser.add_argument("--maa_num_row_table_config_cache_entries", type=int, default=16, help="Number of row table entry history in the configuration cache")
-    parser.add_argument("--maa_reconfigure_row_table", action="store_true", help="Reconfigure row table")
-    parser.add_argument("--maa_no_reorder", default=False, action="store_true", help="Do not reorder using row table")
-    parser.add_argument("--maa_force_cache_access", default=False, action="store_true", help="Force cache access instead of direct memory access for the indirect access unit")
-    parser.add_argument("--maa_num_initial_row_table_slices", type=int, default=32, help="Number of initial row table slices if row table is not reconfigurable")
-    parser.add_argument("--maa_virtual_combine_slots", type=int, default=16, help="Number of tagged cache-line slots used by virtual gather retirement")
-    parser.add_argument("--maa_virtual_combine_words", type=int, default=0, help="Resident virtual gather data words (0 reserves every line slot fully)")
-    parser.add_argument("--maa_virtual_combine_ways", type=int, default=0, help="Virtual destination-combiner associativity (0 is fully associative)")
-    parser.add_argument("--maa_virtual_combine_victim_policy", type=int, default=0, choices=(0, 1, 2), help="Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words")
-    parser.add_argument("--maa_virtual_response_slots", type=int, default=8, help="Number of retained source responses used by virtual gather retirement")
-    parser.add_argument("--maa_virtual_response_words", type=int, default=0, help="Packed useful words per retained response (0 stores the full source line)")
-    parser.add_argument("--maa_virtual_response_word_pool", type=int, default=0, help="Total useful words retained across packed source responses")
-    parser.add_argument("--maa_virtual_max_outstanding_writes", type=int, default=32, help="Maximum acknowledged writes in flight for virtual gather retirement")
-    parser.add_argument("--maa_virtual_masked_writes", action="store_true", help="Retire partial virtual lines as masked cache-line writes")
-    parser.add_argument("--maa_virtual_index_buffer_lines", type=int, default=1, help="Cache lines buffered or in flight for direct virtual-index ingestion")
-    parser.add_argument("--maa_virtual_index_partitions", type=int, default=1, help="Modulo DRAM-grow partitions scanned by a direct virtual-index load")
-    parser.add_argument("--maa_virtual_grow_order", action="store_true", help="Group virtual source claims by DRAM grow address")
-    parser.add_argument("--maa_retirement_cache_size", default="1kB", help="Per-address-bank coherent virtual-retirement cache size")
-    parser.add_argument("--maa_retirement_cache_assoc", type=int, default=4, help="Per-address-bank coherent virtual-retirement cache associativity")
-    parser.add_argument("--maa_retirement_cache_response_latency", type=int, default=1, help="Coherent virtual-retirement cache response latency in cycles")
-    parser.add_argument("--maa_retirement_cache_mshrs", type=int, default=16, help="MSHRs per coherent virtual-retirement cache bank")
-    parser.add_argument("--maa_retirement_cache_targets_per_mshr", type=int, default=16, help="Targets per MSHR in each coherent virtual-retirement cache bank")
-    parser.add_argument("--maa_retirement_cache_write_buffers", type=int, default=16, help="Write buffers per coherent virtual-retirement cache bank")
-    parser.add_argument("--maa_num_request_table_addresses", type=int, default=128, help="Number of addresses in the request table")
-    parser.add_argument("--maa_num_request_table_entries_per_address", type=int, default=16, help="Number of entries in the request table per address")
-    parser.add_argument("--maa_spd_read_latency", type=int, default=1, help="SPD read latency")
-    parser.add_argument("--maa_spd_write_latency", type=int, default=1, help="SPD write latency")
-    parser.add_argument("--maa_num_spd_read_ports_per_maa", type=int, default=4, help="Number of SPD read ports per DX100 instance")
-    parser.add_argument("--maa_num_spd_write_ports_per_maa", type=int, default=4, help="Number of SPD write ports per DX100 instance")
-    parser.add_argument("--maa_rowtable_latency", type=int, default=1, help="Row table latency")
-    parser.add_argument("--maa_ALU_lane_latency", type=int, default=1, help="ALU lane latency")
-    parser.add_argument("--maa_num_ALU_lanes", type=int, default=16, help="Number of ALU lanes")
-    parser.add_argument("--maa_l2_uncacheable", action="store_true", help="Enable uncacheable L2 cache for MAA")
-    parser.add_argument("--maa_l3_uncacheable", action="store_true", help="Enable uncacheable L3 cache for MAA")
-    parser.add_argument("--maa_num_maas", type=int, default=1, help="Number of MAA instances")
-    parser.add_argument("--maa_num_indirect_units_per_maa", type=int, default=1, help="Number of indirect access units per MAA instance")
-    parser.add_argument("--maa_ncbus_width", type=int, default=32, help="Width of the Non-Coherent Bus")
+    parser.add_argument(
+        "--maa_num_tiles_per_core",
+        type=int,
+        default=8,
+        help="Number of SPD tiles per core attached to the DX100 instance",
+    )
+    parser.add_argument(
+        "--maa_num_tile_elements",
+        type=int,
+        default=16384,
+        help="Number of elements in each tile",
+    )
+    parser.add_argument(
+        "--maa_physical_tile_elements",
+        type=int,
+        default=0,
+        help="Physical elements allocated per SPD tile (0 matches logical size)",
+    )
+    parser.add_argument(
+        "--maa_num_regs_per_core",
+        type=int,
+        default=8,
+        help="Number of 32-bit scalar registers per core attached to the DX100 instance",
+    )
+    parser.add_argument(
+        "--maa_num_instructions_per_core",
+        type=int,
+        default=8,
+        help="Number of instructions in the instruction file per core attached to the DX100 instance",
+    )
+    parser.add_argument(
+        "--maa_num_row_table_rows_per_slice",
+        type=int,
+        default=64,
+        help="Number of rows in each row table slice",
+    )
+    parser.add_argument(
+        "--maa_num_row_table_entries_per_subslice_row",
+        type=int,
+        default=8,
+        help="Number of row table entries (bursts) per each sub-slice of row table",
+    )
+    parser.add_argument(
+        "--maa_num_row_table_config_cache_entries",
+        type=int,
+        default=16,
+        help="Number of row table entry history in the configuration cache",
+    )
+    parser.add_argument(
+        "--maa_reconfigure_row_table",
+        action="store_true",
+        help="Reconfigure row table",
+    )
+    parser.add_argument(
+        "--maa_no_reorder",
+        default=False,
+        action="store_true",
+        help="Do not reorder using row table",
+    )
+    parser.add_argument(
+        "--maa_force_cache_access",
+        default=False,
+        action="store_true",
+        help="Force cache access instead of direct memory access for the indirect access unit",
+    )
+    parser.add_argument(
+        "--maa_num_initial_row_table_slices",
+        type=int,
+        default=32,
+        help="Number of initial row table slices if row table is not reconfigurable",
+    )
+    parser.add_argument(
+        "--maa_virtual_combine_slots",
+        type=int,
+        default=16,
+        help="Number of tagged cache-line slots used by virtual gather retirement",
+    )
+    parser.add_argument(
+        "--maa_virtual_combine_words",
+        type=int,
+        default=0,
+        help="Resident virtual gather data words (0 reserves every line slot fully)",
+    )
+    parser.add_argument(
+        "--maa_virtual_combine_ways",
+        type=int,
+        default=0,
+        help="Virtual destination-combiner associativity (0 is fully associative)",
+    )
+    parser.add_argument(
+        "--maa_virtual_combine_victim_policy",
+        type=int,
+        default=0,
+        choices=(0, 1, 2),
+        help="Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words",
+    )
+    parser.add_argument(
+        "--maa_virtual_response_slots",
+        type=int,
+        default=8,
+        help="Number of retained source responses used by virtual gather retirement",
+    )
+    parser.add_argument(
+        "--maa_virtual_response_words",
+        type=int,
+        default=0,
+        help="Packed useful words per retained response (0 stores the full source line)",
+    )
+    parser.add_argument(
+        "--maa_virtual_response_word_pool",
+        type=int,
+        default=0,
+        help="Total useful words retained across packed source responses",
+    )
+    parser.add_argument(
+        "--maa_virtual_max_outstanding_writes",
+        type=int,
+        default=32,
+        help="Maximum acknowledged writes in flight for virtual gather retirement",
+    )
+    parser.add_argument(
+        "--maa_virtual_masked_writes",
+        action="store_true",
+        help="Retire partial virtual lines as masked cache-line writes",
+    )
+    parser.add_argument(
+        "--maa_virtual_index_buffer_lines",
+        type=int,
+        default=1,
+        help="Cache lines buffered or in flight for direct virtual-index ingestion",
+    )
+    parser.add_argument(
+        "--maa_virtual_index_partitions",
+        type=int,
+        default=1,
+        help="Modulo DRAM-grow partitions scanned by a direct virtual-index load",
+    )
+    parser.add_argument(
+        "--maa_virtual_index_filter_words_per_cycle",
+        type=int,
+        default=0,
+        help="Partition-filter index words examined per cycle (0 is unlimited)",
+    )
+    parser.add_argument(
+        "--maa_virtual_grow_order",
+        action="store_true",
+        help="Group virtual source claims by DRAM grow address",
+    )
+    parser.add_argument(
+        "--maa_retirement_cache_size",
+        default="1kB",
+        help="Per-address-bank coherent virtual-retirement cache size",
+    )
+    parser.add_argument(
+        "--maa_retirement_cache_assoc",
+        type=int,
+        default=4,
+        help="Per-address-bank coherent virtual-retirement cache associativity",
+    )
+    parser.add_argument(
+        "--maa_retirement_cache_response_latency",
+        type=int,
+        default=1,
+        help="Coherent virtual-retirement cache response latency in cycles",
+    )
+    parser.add_argument(
+        "--maa_retirement_cache_mshrs",
+        type=int,
+        default=16,
+        help="MSHRs per coherent virtual-retirement cache bank",
+    )
+    parser.add_argument(
+        "--maa_retirement_cache_targets_per_mshr",
+        type=int,
+        default=16,
+        help="Targets per MSHR in each coherent virtual-retirement cache bank",
+    )
+    parser.add_argument(
+        "--maa_retirement_cache_write_buffers",
+        type=int,
+        default=16,
+        help="Write buffers per coherent virtual-retirement cache bank",
+    )
+    parser.add_argument(
+        "--maa_num_request_table_addresses",
+        type=int,
+        default=128,
+        help="Number of addresses in the request table",
+    )
+    parser.add_argument(
+        "--maa_num_request_table_entries_per_address",
+        type=int,
+        default=16,
+        help="Number of entries in the request table per address",
+    )
+    parser.add_argument(
+        "--maa_spd_read_latency", type=int, default=1, help="SPD read latency"
+    )
+    parser.add_argument(
+        "--maa_spd_write_latency",
+        type=int,
+        default=1,
+        help="SPD write latency",
+    )
+    parser.add_argument(
+        "--maa_num_spd_read_ports_per_maa",
+        type=int,
+        default=4,
+        help="Number of SPD read ports per DX100 instance",
+    )
+    parser.add_argument(
+        "--maa_num_spd_write_ports_per_maa",
+        type=int,
+        default=4,
+        help="Number of SPD write ports per DX100 instance",
+    )
+    parser.add_argument(
+        "--maa_rowtable_latency", type=int, default=1, help="Row table latency"
+    )
+    parser.add_argument(
+        "--maa_ALU_lane_latency", type=int, default=1, help="ALU lane latency"
+    )
+    parser.add_argument(
+        "--maa_num_ALU_lanes", type=int, default=16, help="Number of ALU lanes"
+    )
+    parser.add_argument(
+        "--maa_l2_uncacheable",
+        action="store_true",
+        help="Enable uncacheable L2 cache for MAA",
+    )
+    parser.add_argument(
+        "--maa_l3_uncacheable",
+        action="store_true",
+        help="Enable uncacheable L3 cache for MAA",
+    )
+    parser.add_argument(
+        "--maa_num_maas", type=int, default=1, help="Number of MAA instances"
+    )
+    parser.add_argument(
+        "--maa_num_indirect_units_per_maa",
+        type=int,
+        default=1,
+        help="Number of indirect access units per MAA instance",
+    )
+    parser.add_argument(
+        "--maa_ncbus_width",
+        type=int,
+        default=32,
+        help="Width of the Non-Coherent Bus",
+    )
     parser.add_argument(
         "--maa_virtual_combine_banks",
         type=int,
@@ -272,27 +475,36 @@ def addNoISAOptions(parser):
         default=0,
         help="Response-word combiner attempts per cycle (0 is unlimited)",
     )
-    parser.add_argument("--l1d_repl_policy",  default="LRURP",
-                    choices=ObjectList.rp_list.get_names(),
-                    help="""
+    parser.add_argument(
+        "--l1d_repl_policy",
+        default="LRURP",
+        choices=ObjectList.rp_list.get_names(),
+        help="""
                     type of replacement policy to use with the L1
                     data cache.
                     (if not set, use the default repl_policy of
-                    the selected cache)""")
-    parser.add_argument("--l2_repl_policy",  default="LRURP",
-                    choices=ObjectList.rp_list.get_names(),
-                    help="""
+                    the selected cache)""",
+    )
+    parser.add_argument(
+        "--l2_repl_policy",
+        default="LRURP",
+        choices=ObjectList.rp_list.get_names(),
+        help="""
                     type of replacement policy to use with the L2
                     data cache.
                     (if not set, use the default repl_policy of
-                    the selected cache)""")
-    parser.add_argument("--l2_tag_store",  default="BaseSetAssoc",
-                    choices=ObjectList.tag_list.get_names(),
-                    help="""
+                    the selected cache)""",
+    )
+    parser.add_argument(
+        "--l2_tag_store",
+        default="BaseSetAssoc",
+        choices=ObjectList.tag_list.get_names(),
+        help="""
                     type of tag store to use with the L2
                     data cache.
                     (if not set, use the default tag store of
-                    the selected cache)""")
+                    the selected cache)""",
+    )
 
     # Enable Ruby
     parser.add_argument("--ruby", action="store_true")
@@ -365,19 +577,19 @@ def addCommonOptions(parser, default_isa: Optional[ISA] = None):
         "--cpu-buffer-enlarge-factor",
         type=int,
         default=1,
-        help="CPU enlarging factor for all buffers"
+        help="CPU enlarging factor for all buffers",
     )
     parser.add_argument(
         "--cpu-register-enlarge-factor",
         type=int,
         default=1,
-        help="CPU enlarging factor for all registers"
+        help="CPU enlarging factor for all registers",
     )
     parser.add_argument(
         "--cpu-width-enlarge-factor",
         type=int,
         default=1,
-        help="CPU enlarging factor for the width of the operations"
+        help="CPU enlarging factor for the width of the operations",
     )
     parser.add_argument(
         "--list-bp-types",
@@ -482,7 +694,7 @@ def addCommonOptions(parser, default_isa: Optional[ISA] = None):
         default=None,
         action="store",
         type=str,
-        help="DMP is notified by which cache"
+        help="DMP is notified by which cache",
     )
     parser.add_argument("--checker", action="store_true")
     parser.add_argument(

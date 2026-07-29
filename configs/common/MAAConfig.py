@@ -125,10 +125,13 @@ def _get_maa_opts(options):
             options, "maa_virtual_index_partitions"
         )
 
-    if hasattr(options, "maa_virtual_grow_order"):
-        opts["virtual_grow_order"] = getattr(
-            options, "maa_virtual_grow_order"
+    if hasattr(options, "maa_virtual_index_filter_words_per_cycle"):
+        opts["virtual_index_filter_words_per_cycle"] = getattr(
+            options, "maa_virtual_index_filter_words_per_cycle"
         )
+
+    if hasattr(options, "maa_virtual_grow_order"):
+        opts["virtual_grow_order"] = getattr(options, "maa_virtual_grow_order")
 
     if hasattr(options, "maa_num_request_table_addresses"):
         opts["num_request_table_addresses"] = getattr(

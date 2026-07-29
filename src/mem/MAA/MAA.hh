@@ -418,6 +418,7 @@ public:
     bool virtual_masked_writes;
     unsigned int virtual_index_buffer_lines;
     unsigned int virtual_index_partitions;
+    unsigned int virtual_index_filter_words_per_cycle;
     bool virtual_grow_order;
     unsigned int num_request_table_addresses;
     unsigned int num_request_table_entries_per_address;
@@ -634,6 +635,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtIndexLineHighWater;
         std::vector<statistics::Scalar *> IND_VirtIndexWords;
         std::vector<statistics::Scalar *> IND_VirtIndexWordHighWater;
+        std::vector<statistics::Scalar *> IND_VirtIndexFilterWords;
+        std::vector<statistics::Scalar *> IND_VirtIndexFilterCycles;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;

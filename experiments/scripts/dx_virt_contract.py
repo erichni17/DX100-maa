@@ -11,7 +11,6 @@ import os
 import tempfile
 from pathlib import Path
 
-
 SCHEMA_VERSION = 2
 LINE_BYTES = 64
 SPD_WORD_BYTES = 4
@@ -74,6 +73,7 @@ INTEGER_DEFAULTS = {
     "virtual_max_outstanding_writes": 32,
     "virtual_index_buffer_lines": 1,
     "virtual_index_partitions": 1,
+    "virtual_index_filter_words_per_cycle": 0,
 }
 BOOL_DEFAULTS = {
     "virtual_masked_writes": False,
@@ -91,7 +91,9 @@ def parse_int(value: str, key: str) -> int:
     try:
         return int(value, 0)
     except ValueError as exc:
-        raise ContractError(f"{key} must be an integer, got {value!r}") from exc
+        raise ContractError(
+            f"{key} must be an integer, got {value!r}"
+        ) from exc
 
 
 def parse_bool(value: str, key: str) -> bool:
@@ -116,7 +118,8 @@ def find_maa_section(parser: configparser.ConfigParser) -> str:
     ]
     if len(matches) != 1:
         raise ContractError(
-            "config must contain exactly one MAA section; found " + repr(matches)
+            "config must contain exactly one MAA section; found "
+            + repr(matches)
         )
     return matches[0]
 
@@ -246,7 +249,10 @@ def validate(case: dict, values: dict) -> None:
         raise ContractError("virtual_index_buffer_lines must be in [1,64]")
     if not 1 <= values["virtual_index_partitions"] <= 64:
         raise ContractError("virtual_index_partitions must be in [1,64]")
-    if case["mode"] != "direct_index_virtual" and values["virtual_index_partitions"] != 1:
+    if (
+        case["mode"] != "direct_index_virtual"
+        and values["virtual_index_partitions"] != 1
+    ):
         raise ContractError(
             "virtual_index_partitions requires direct_index_virtual mode"
         )
@@ -263,7 +269,9 @@ def validate(case: dict, values: dict) -> None:
     if values["virtual_combine_victim_policy"] not in {0, 1, 2}:
         raise ContractError("virtual_combine_victim_policy must be 0, 1, or 2")
     if case["mode"] != "native" and values["no_reorder"]:
-        raise ContractError("virtual reorder claim is invalid with no_reorder=true")
+        raise ContractError(
+            "virtual reorder claim is invalid with no_reorder=true"
+        )
 
 
 def response_storage(values: dict, element_bytes: int) -> tuple[int, int, str]:
@@ -320,7 +328,9 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
         if mode == "direct_index_virtual"
         else 0
     )
-    cache_data = source["retirement_cache_data_bytes"] if mode != "native" else 0
+    cache_data = (
+        source["retirement_cache_data_bytes"] if mode != "native" else 0
+    )
     native_reference = native_spd + native_completion_target
     if mode == "native":
         target_lower = native_reference
@@ -341,7 +351,9 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
     unique_line_capacity = None
     if effective_entries is not None:
         if not isinstance(effective_entries, int) or effective_entries <= 0:
-            raise ContractError("effective Row-Table entries/row must be positive")
+            raise ContractError(
+                "effective Row-Table entries/row must be positive"
+            )
         unique_line_capacity = (
             values["num_initial_row_table_slices"]
             * values["num_row_table_rows_per_slice"]
@@ -373,7 +385,9 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
         "configured_hardware": values,
     }
     resolved_sha = sha256_bytes(
-        json.dumps(resolved_input, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            resolved_input, sort_keys=True, separators=(",", ":")
+        ).encode()
     )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -456,6 +470,9 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             "issue_order": issue_order,
             "virtual_grow_order": values["virtual_grow_order"],
             "direct_index_partitions": values["virtual_index_partitions"],
+            "direct_index_filter_words_per_cycle": values[
+                "virtual_index_filter_words_per_cycle"
+            ],
             "index_scan_policy": (
                 "dram_grow_modulo"
                 if values["virtual_index_partitions"] > 1
@@ -499,9 +516,10 @@ def markdown(contract: dict) -> str:
         "## Active Dataflow",
         "",
     ]
-    lines.extend(f"{index}. {step}." for index, step in enumerate(
-        contract["active_dataflow"], 1
-    ))
+    lines.extend(
+        f"{index}. {step}."
+        for index, step in enumerate(contract["active_dataflow"], 1)
+    )
     lines.extend(
         [
             "",
@@ -524,7 +542,9 @@ def markdown(contract: dict) -> str:
 
 def atomic_write(path: Path, data: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(data)
