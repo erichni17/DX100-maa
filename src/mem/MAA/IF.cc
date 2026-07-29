@@ -149,6 +149,7 @@ int Instruction::getWordSize(int tile_id) {
         }
     } else if (tile_id == dst2SpdID) {
         switch (opcode) {
+        case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::RANGE_LOOP: {
             return 4;
         }
@@ -179,6 +180,59 @@ int Instruction::WordSize() {
 }
 bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                          int ignored_hazard_slot) {
+    if (_instruction.opcode ==
+            Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+        _instruction.dst2SpdID != -1) {
+        const int maa_id = _instruction.maa_id;
+        const int prefetch_token = _instruction.dst2SpdID;
+        const bool old_completion =
+            completion_only_tiles[maa_id][_instruction.dst1SpdID];
+        const bool old_prefetch =
+            completion_only_tiles[maa_id][prefetch_token];
+
+        Instruction stream = _instruction;
+        stream.opcode = Instruction::OpcodeType::STREAM_PREFETCH;
+        stream.datatype = Instruction::DataType::INT32_TYPE;
+        stream.accessType = Instruction::AccessType::READ;
+        stream.baseAddr = _instruction.indexAddr;
+        stream.minAddr = _instruction.indexMinAddr;
+        stream.maxAddr = _instruction.indexMaxAddr;
+        stream.addrRangeID = _instruction.indexAddrRangeID;
+        stream.dst1SpdID = prefetch_token;
+        stream.dst1Status = _instruction.dst2Status;
+        stream.dst2SpdID = -1;
+        stream.src1SpdID = stream.src2SpdID = stream.condSpdID = -1;
+        stream.backingAddr = stream.indexAddr = 0xFFFFFFFFFFFFFFFF;
+        stream.backingAddrRangeID = stream.indexAddrRangeID = -1;
+
+        Instruction load = _instruction;
+        load.dst2SpdID = -1;
+        load.src1SpdID = prefetch_token;
+        load.src1Status = Instruction::TileStatus::WaitForService;
+        load.src1MustBeFinished = false;
+
+        int stream_slot = -1;
+        int load_slot = -1;
+        if (!pushInstruction(stream, &stream_slot))
+            return false;
+        if (!pushInstruction(load, &load_slot)) {
+            panic_if(stream_slot < 0,
+                     "Fused virtual-index prefetch did not report its slot\n");
+            DPRINTF(MAAController,
+                    "%s: rolled back fused virtual-index prefetch slot %d\n",
+                    __func__, stream_slot);
+            valids[maa_id][stream_slot] = false;
+            instructions[maa_id][stream_slot] = Instruction();
+            completion_only_tiles[maa_id][_instruction.dst1SpdID] =
+                old_completion;
+            completion_only_tiles[maa_id][prefetch_token] = old_prefetch;
+            return false;
+        }
+        if (inserted_slot)
+            *inserted_slot = load_slot;
+        return true;
+    }
+
     if (_instruction.opcode ==
         Instruction::OpcodeType::INDIR_LD_SPD_STREAM) {
         Instruction load = _instruction;

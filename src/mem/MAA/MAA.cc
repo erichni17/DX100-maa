@@ -693,6 +693,13 @@ void MAA::dispatchInstruction() {
                         instruction->dst1SpdID,
                         instruction->getWordSize(instruction->dst1SpdID));
                 }
+                if (instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+                    instruction->dst2SpdID != -1) {
+                    // The fused prefetch token is produced by the stream
+                    // micro-op and consumed by the indirect micro-op.
+                    spd->setTileNotReady(instruction->dst2SpdID, 4);
+                }
                 pkt->makeTimingResponse();
                 pkt->headerDelay = pkt->payloadDelay = 0;
                 cpuSidePorts[0]->schedTimingResp(pkt, getClockEdge(Cycles(1)));

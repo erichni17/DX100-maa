@@ -223,6 +223,10 @@ public:
     void cacheWritePacketSent(Addr addr);
     void cacheReadPacketSent(Addr addr);
     void retirementWriteComplete(Addr addr);
+    bool hasPendingDirectIndexLine(Addr addr) const {
+        return direct_index_pending_lines.find(addr) !=
+               direct_index_pending_lines.end();
+    }
 
     bool recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached);
 

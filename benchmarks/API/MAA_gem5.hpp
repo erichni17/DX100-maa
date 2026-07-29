@@ -392,6 +392,29 @@ inline void maa_indirect_load_virtual_index(
     __asm__ __volatile__("mfence;");
 }
 template <class T1>
+inline void maa_indirect_load_virtual_index_prefetch(
+    T1 *data, uint32_t *indices, int completion_tile, int prefetch_token,
+    T1 *backing, int min_reg, int max_reg, int stride_reg) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_LD_VIRTUAL_INDEX << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)completion_tile << 8) | (uint64_t)prefetch_token;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) |
+        ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)backing;
+    *INSTR_indexaddr = (uint64_t)indices;
+    __asm__ __volatile__("mfence;");
+}
+template <class T1>
 inline void maa_indirect_load_index(
     T1 *data, uint32_t *indices, int dst_tile,
     int min_reg, int max_reg, int stride_reg) {

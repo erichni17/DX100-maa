@@ -115,8 +115,29 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
             panic_if(my_outstanding_pkt_map[paddr].cmd != pkt->cmd, "%s Outstanding command %s from packet %s does not match with command %s from packet %s\n", __func__, my_outstanding_pkt_map[paddr].cmd.toString(), my_outstanding_pkt_map[paddr].packet->print(), pkt->cmdString(), pkt->print());
             panic_if(pkt->isWrite(), "%s cannot have duplicated writes %s and %s\n", __func__, my_outstanding_pkt_map[paddr].packet->print(), pkt->print());
             panic_if(pkt->isRead() == false, "%s: packet %s is not read!\n", __func__, pkt->print());
-            for (int i = 0; i < my_outstanding_pkt_map[paddr].maaIDs.size(); i++) {
-                panic_if(my_outstanding_pkt_map[paddr].maaIDs[i] == maaID && my_outstanding_pkt_map[paddr].funcUnits[i] == funcUnit, "%s: maaID %d and funcUnit %s already in the outstanding packet %s\n", __func__, maaID, func_unit_names[(uint8_t)funcUnit], pkt->print());
+            if (funcUnit == FuncUnitType::STREAM) {
+                for (size_t i = 0;
+                     i < my_outstanding_pkt_map[paddr].maaIDs.size(); ++i) {
+                    if (my_outstanding_pkt_map[paddr].funcUnits[i] !=
+                        FuncUnitType::INDIRECT)
+                        continue;
+                    const int indirect_id =
+                        my_outstanding_pkt_map[paddr].maaIDs[i];
+                    if (indirectAccessUnits[indirect_id]
+                            .hasPendingDirectIndexLine(paddr)) {
+                        (*stats.IND_VirtIndexOutstandingMerges[indirect_id])++;
+                    }
+                }
+            }
+            for (int i = 0;
+                 i < my_outstanding_pkt_map[paddr].maaIDs.size(); i++) {
+                panic_if(
+                    my_outstanding_pkt_map[paddr].maaIDs[i] == maaID &&
+                        my_outstanding_pkt_map[paddr].funcUnits[i] == funcUnit,
+                    "%s: maaID %d and funcUnit %s already in the "
+                    "outstanding packet %s\n",
+                    __func__, maaID, func_unit_names[(uint8_t)funcUnit],
+                    pkt->print());
             }
             my_outstanding_pkt_map[paddr].maaIDs.push_back(maaID);
             my_outstanding_pkt_map[paddr].funcUnits.push_back(funcUnit);

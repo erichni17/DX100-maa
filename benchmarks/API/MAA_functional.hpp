@@ -647,6 +647,15 @@ inline void maa_indirect_load_virtual_index(
     set_tile_ready(completion_tile, 1);
 }
 template <class T1>
+inline void maa_indirect_load_virtual_index_prefetch(
+    T1 *data, uint32_t *indices, int completion_tile, int prefetch_token,
+    T1 *backing, int min_reg, int max_reg, int stride_reg) {
+    maa_stream_prefetch<uint32_t>(indices, min_reg, max_reg, stride_reg,
+                                  prefetch_token);
+    maa_indirect_load_virtual_index(data, indices, completion_tile, backing,
+                                    min_reg, max_reg, stride_reg);
+}
+template <class T1>
 inline void maa_indirect_load_spd_stream(
     T1 *data, int idx_tile, int dst_tile, T1 *stream_base,
     int min_reg, int max_reg, int stride_reg) {

@@ -563,7 +563,12 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             const int chunk_end =
                 std::min(j + maa_tile_size, pattern_length);
             maa_const(chunk_end, reg2);
-            if (maa_arm == "direct4prefetch") {
+            if (maa_arm == "direct4fusedprefetch") {
+                maa_indirect_load_virtual_index_prefetch<double>(
+                    sparse.data(),
+                    reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
+                    tile1, dense.data() + j, reg1, reg2, reg3);
+            } else if (maa_arm == "direct4prefetch") {
                 maa_stream_prefetch<int>(pattern_int.data(), reg1, reg2,
                                          reg3, tile1);
                 maa_indirect_load_virtual_index<double>(

@@ -78,6 +78,17 @@ class XrageRunnerAbiTest(unittest.TestCase):
                 "direct4prefetch", runner.read_text(encoding="utf-8")
             )
 
+    def test_fused_stream_prefetch_is_an_explicit_guest_arm(self):
+        source = (
+            ROOT / "benchmarks/spatter/src/Spatter/Configuration.cc"
+        ).read_text(encoding="utf-8")
+        runner = (
+            ROOT / "experiments/scripts/run_xrage_direct_index_smoke.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("direct4fusedprefetch", source)
+        self.assertIn("maa_indirect_load_virtual_index_prefetch", source)
+        self.assertIn("direct4fusedprefetch", runner)
+
 
 if __name__ == "__main__":
     unittest.main()

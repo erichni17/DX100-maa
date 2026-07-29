@@ -81,9 +81,11 @@ int main(int argc, char **argv) {
     if (cl.maa_arm != "native16" && cl.maa_arm != "fused16" &&
         cl.maa_arm != "fused4" &&
         cl.maa_arm != "compact16" && cl.maa_arm != "direct4" &&
-        cl.maa_arm != "direct4warm" && cl.maa_arm != "direct4prefetch") {
+        cl.maa_arm != "direct4warm" && cl.maa_arm != "direct4prefetch" &&
+        cl.maa_arm != "direct4fusedprefetch") {
         std::cerr << "Runtime XRAGE arm must be native16, fused16, fused4, "
-                     "compact16, direct4, direct4warm, or direct4prefetch"
+                     "compact16, direct4, direct4warm, direct4prefetch, or "
+                     "direct4fusedprefetch"
                   << std::endl;
         return -1;
     }
