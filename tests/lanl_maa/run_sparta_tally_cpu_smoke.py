@@ -82,9 +82,12 @@ def load_native_batch(path):
         raise ValueError("native batch schema mismatch")
     if document["source_revision"] != NATIVE_BATCH_SOURCE_REVISION:
         raise ValueError("native batch source revision mismatch")
-    for name in ("rank", "timestep", "target_mixture_group"):
+    for name in ("rank", "target_mixture_group"):
         if _require_int(document[name], name) != 0:
             raise ValueError(f"native batch {name} must be zero")
+    timestep = _require_int(document["timestep"], "timestep")
+    if timestep < 0:
+        raise ValueError("native batch timestep must be nonnegative")
     for name in (
         "native_particle_count",
         "eligible_particle_count",
@@ -182,6 +185,7 @@ def load_native_batch(path):
         "contribution_bits": contributions,
         "expected_bits": expected_bits,
         "source_revision": document["source_revision"],
+        "timestep": timestep,
     }
 
 
@@ -587,6 +591,7 @@ def main():
         report["native_batch_source_revision"] = native_batch[
             "source_revision"
         ]
+        report["native_batch_timestep"] = native_batch["timestep"]
         report["native_header_sha256"] = file_sha256(native_header)
         report["native_tally_acceptance"] = {
             "comparison": "exact-zero-and-relative-nonzero",

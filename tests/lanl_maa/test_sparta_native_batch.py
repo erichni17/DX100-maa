@@ -109,6 +109,14 @@ class NativeBatchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "top-level shape"):
             self.load(shape)
 
+    def test_accepts_nonzero_timestep_and_rejects_negative(self):
+        document = valid_document()
+        document["timestep"] = 64
+        self.assertEqual(self.load(document)["timestep"], 64)
+        document["timestep"] = -1
+        with self.assertRaisesRegex(ValueError, "nonnegative"):
+            self.load(document)
+
     def test_reads_bounded_tally_diagnostics(self):
         line = (
             "LANL_MAA_TALLY_MISMATCH element=0x00000008 "
