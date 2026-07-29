@@ -18,6 +18,7 @@ grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 native_issue_order=${MAA_VIRTUAL_NATIVE_ISSUE_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
+row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
@@ -44,8 +45,12 @@ debug_args=()
     echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,64]" >&2
     exit 2
 }
-[[ $row_table_slices -gt 0 && $row_table_slices -le 64 ]] || {
-    echo "MAA_NUM_INITIAL_ROW_TABLE_SLICES must be in [1,64]" >&2
+[[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
+    echo "MAA_NUM_INITIAL_ROW_TABLE_SLICES must be 4, 8, 16, or 32" >&2
+    exit 2
+}
+[[ $row_table_rows -gt 0 && $row_table_rows -le 64 ]] || {
+    echo "MAA_ROW_TABLE_ROWS_PER_SLICE must be in [1,64]" >&2
     exit 2
 }
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
@@ -129,6 +134,7 @@ fi
     printf 'virtual_native_issue_order=%s\n' "$native_issue_order"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
+    printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -183,6 +189,7 @@ restore_cmd=(
     --maa_physical_tile_elements="$physical"
     --maa_l2_uncacheable --maa_l3_uncacheable
     --maa_num_initial_row_table_slices="$row_table_slices"
+    --maa_num_row_table_rows_per_slice="$row_table_rows"
     --maa_virtual_combine_slots=384 --maa_virtual_combine_words=4096
     --maa_virtual_combine_ways=4 --maa_virtual_combine_banks=0
     --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480

@@ -279,7 +279,12 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     }
     if (reconfigure_RT)
         initial_RT_config = num_RT_configs - 1;
-    DPRINTF(MAAIndirect, "I[%d] %s: initial_RT_config(%d)!\n", my_indirect_id, __func__, initial_RT_config);
+    else
+        panic_if(initial_RT_config == -1,
+                 "I[%d] unsupported initial Row-Table slice count %d\n",
+                 my_indirect_id, num_initial_RT_slices);
+    DPRINTF(MAAIndirect, "I[%d] %s: initial_RT_config(%d)!\n",
+            my_indirect_id, __func__, initial_RT_config);
 }
 int IndirectAccessUnit::getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank) {
     int RT_index = 0;
