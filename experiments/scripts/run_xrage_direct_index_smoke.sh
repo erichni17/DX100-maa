@@ -138,7 +138,7 @@ fi
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
     printf 'guest_environment=empty\n'
-    printf 'data_seed=runtime_binary_default_1\n'
+    printf 'data_seed=gem5_fixed_epoch_time\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
 } > "$out/manifest.txt"

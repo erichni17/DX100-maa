@@ -246,11 +246,7 @@ int read_ul_arg(std::string cl, size_t &arg, const std::string &err_msg) {
 }
 
 int parse_input(const int argc, char **argv, ClArgs &cl) {
-#ifdef SPATTER_DEFAULT_DATA_SEED
-  size_t data_seed = static_cast<size_t>(SPATTER_DEFAULT_DATA_SEED);
-#else
   size_t data_seed = static_cast<size_t>(time(nullptr));
-#endif
   if (const char *value = std::getenv("SPATTER_DATA_SEED")) {
     if (read_ul_arg(value, data_seed,
             "Parsing Error: Invalid SPATTER_DATA_SEED") == -1)
@@ -262,9 +258,6 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
     }
   }
   srand(static_cast<unsigned int>(data_seed));
-#ifdef SPATTER_DEFAULT_DATA_SEED
-  std::cout << "Spatter data seed: " << data_seed << std::endl;
-#endif
 
   cl.sparse_size = 0;
   cl.sparse_gather_size = 0;
