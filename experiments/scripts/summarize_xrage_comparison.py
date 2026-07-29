@@ -44,6 +44,13 @@ STAT_FIELDS = {
     "index_word_high_water": "system.maa.I0_IND_VirtIndexWordHighWater",
     "row_table_full_events": "system.maa.I0_IND_NumRTFull",
 }
+SUM_STAT_FIELDS = {
+    "stream_instructions": r"system\.maa\.S\d+_STR_NumInsts",
+    "stream_request_cycles": r"system\.maa\.S\d+_STR_CyclesRequest",
+    "stream_rt_cycles": r"system\.maa\.S\d+_STR_CyclesRTAccess",
+    "stream_spd_write_cycles": r"system\.maa\.S\d+_STR_CyclesSPDWriteAccess",
+    "memory_controller_reads": r"system\.mem_ctrls\d+\.numReads::maa",
+}
 
 
 def fail(message: str) -> None:
@@ -102,6 +109,14 @@ def verify_artifacts(path: Path, cache: dict[tuple, str]) -> dict[Path, str]:
 def first_stat(stats: str, name: str) -> int:
     match = re.search(rf"^{re.escape(name)}\s+(\d+)\s+", stats, re.MULTILINE)
     return int(match.group(1)) if match else 0
+
+
+def sum_first_block_stats(stats: str, name_pattern: str) -> int:
+    first_block = stats.split("---------- End Simulation Statistics", 1)[0]
+    matches = re.findall(
+        rf"^{name_pattern}\s+(\d+)\s+", first_block, re.MULTILINE
+    )
+    return sum(int(value) for value in matches)
 
 
 def require_integer(row: dict[str, str], field: str, label: str) -> int:
@@ -295,6 +310,10 @@ def read_run(
             field: first_stat(stats, name)
             for field, name in STAT_FIELDS.items()
         },
+        **{
+            field: sum_first_block_stats(stats, pattern)
+            for field, pattern in SUM_STAT_FIELDS.items()
+        },
         "dram_reads": dram_totals["RD"],
         "dram_activates": dram_totals["ACT"],
         "dram_precharges": dram_totals["PRE"],
@@ -419,6 +438,10 @@ def main() -> int:
                     int(candidate["dram_precharges"])
                     - int(reference["dram_precharges"])
                 ),
+                "roi_memory_reads_delta": (
+                    int(candidate["memory_controller_reads"])
+                    - int(reference["memory_controller_reads"])
+                ),
             }
         )
 
@@ -440,10 +463,17 @@ def main() -> int:
         "# XRAGE Comparison",
         "",
         f"Baseline: `{args.baseline}`. All rows passed exact-output, artifact, "
-        "terminal-exit, configuration, and two-channel DRAM validation.",
+        "terminal-exit, configuration, and two-channel Ramulator artifact "
+        "validation.",
+        "",
+        "`Memory-controller reads` below come from the first ROI statistics "
+        "block. Ramulator RD/ACT/PRE totals are emitted at process exit and "
+        "include the post-ROI exact verifier, so they are full-run diagnostics "
+        "rather than ROI attribution counters.",
         "",
         "| Run | Arm | Logical | Physical | B lines | Native order | First-ROI ticks | "
-        "Latency vs. baseline | Throughput vs. baseline | DRAM RD/ACT/PRE |",
+        "Latency vs. baseline | Throughput vs. baseline | Full-run Ramulator "
+        "RD/ACT/PRE |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
@@ -457,6 +487,28 @@ def main() -> int:
             f"{row['dram_reads']}/{row['dram_activates']}/"
             f"{row['dram_precharges']} |"
         )
+    markdown.extend(
+        [
+            "",
+            "## Pipeline Attribution Counters",
+            "",
+            "These stage counters can overlap and must not be added as wall-clock "
+            "latency.",
+            "",
+            "| Run | Stream insts | B-stream request cycles | B-stream SPD-write "
+            "cycles | Direct B lines | Indirect fill cycles | Indirect request "
+            "cycles | Memory-controller reads |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in rows:
+        markdown.append(
+            f"| {row['label']} | {row['stream_instructions']} | "
+            f"{row['stream_request_cycles']} | "
+            f"{row['stream_spd_write_cycles']} | "
+            f"{row['index_line_reads']} | {row['fill_cycles']} | "
+            f"{row['request_cycles']} | {row['memory_controller_reads']} |"
+        )
     if pair_rows:
         markdown.extend(
             [
@@ -464,8 +516,9 @@ def main() -> int:
                 "## Pairwise Comparisons",
                 "",
                 "| Pair | Reference | Candidate | Latency delta | "
-                "Throughput delta | DRAM RD/ACT/PRE delta |",
-                "|---|---|---|---:|---:|---:|",
+                "Throughput delta | First-ROI memory-read delta | Full-run "
+                "Ramulator RD/ACT/PRE delta |",
+                "|---|---|---|---:|---:|---:|---:|",
             ]
         )
         for pair in pair_rows:
@@ -473,6 +526,7 @@ def main() -> int:
                 f"| {pair['pair']} | {pair['reference']} | "
                 f"{pair['candidate']} | {pair['latency_delta_pct']}% | "
                 f"{pair['throughput_delta_pct']}% | "
+                f"{pair['roi_memory_reads_delta']:+d} | "
                 f"{pair['dram_reads_delta']:+d}/"
                 f"{pair['dram_activates_delta']:+d}/"
                 f"{pair['dram_precharges_delta']:+d} |"
