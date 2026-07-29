@@ -18,7 +18,9 @@ def file_sha256(path):
 
 
 def read_scalar(path, name):
-    prefix = "system.lanl_maa." + name + " "
+    prefix = (
+        name if name.startswith("system.") else "system.lanl_maa." + name
+    ) + " "
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith(prefix):
             return int(float(line.split()[1]))
