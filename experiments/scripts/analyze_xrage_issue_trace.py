@@ -86,11 +86,17 @@ def main() -> None:
         same_positions = 0
         total_positions = 0
         common_prefix = 0
+        same_instruction_order = 0
+        same_instruction_multiset = 0
         if comparable:
             for actual, reference in zip(groups, baseline):
                 total_positions += len(reference)
                 same_positions += sum(
                     left == right for left, right in zip(actual, reference)
+                )
+                same_instruction_order += actual == reference
+                same_instruction_multiset += sorted(actual) == sorted(
+                    reference
                 )
                 for left, right in zip(actual, reference):
                     if left != right:
@@ -111,6 +117,17 @@ def main() -> None:
                     else ""
                 ),
                 "common_prefix_requests": common_prefix if comparable else "",
+                "same_order_instructions": (
+                    same_instruction_order if comparable else ""
+                ),
+                "same_multiset_instructions": (
+                    same_instruction_multiset if comparable else ""
+                ),
+                "all_instruction_multisets_match": (
+                    int(same_instruction_multiset == len(baseline))
+                    if comparable
+                    else 0
+                ),
             }
         )
 
