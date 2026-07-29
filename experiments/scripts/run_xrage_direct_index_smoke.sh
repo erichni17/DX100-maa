@@ -351,7 +351,9 @@ if [[ $index_partitions -eq 1 ]]; then
         exit 1
     }
 else
-    [[ $index_words -gt 0 && $index_words -eq $index_filter_words &&
+    expected_filter_words=$((index_words + row_table_full_events))
+    [[ $index_words -gt 0 &&
+       $index_filter_words -eq $expected_filter_words &&
        $((index_words % index_partitions)) -eq 0 ]] || {
         echo "multi-pass XRAGE partition work is incomplete" >&2
         exit 1

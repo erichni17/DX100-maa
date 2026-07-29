@@ -86,6 +86,7 @@ class XrageRunnerAbiTest(unittest.TestCase):
             self.assertIn("virtual_index_partitions=%s", script)
             self.assertIn("index_filter_words", script)
             self.assertIn("row_table_full_events", script)
+            self.assertIn("index_words + row_table_full_events", script)
 
     def test_cache_warm_upper_bound_is_an_explicit_guest_arm(self):
         for runner in (RUNNER, RECOVERY):
