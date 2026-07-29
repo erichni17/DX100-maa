@@ -124,6 +124,10 @@ def validate_stats(stats, metadata, mode):
         "cell_group_forced_drains": read_scalar(
             stats, "descriptorSpartaCellGroupForcedDrains"
         ),
+        "cpu_cycles": read_scalar(stats, "system.cpu.numCycles"),
+        "cpu_committed_instructions": read_scalar(
+            stats, "system.cpu.commitStats0.numInsts"
+        ),
         "engine_cycles": read_scalar(stats, "engineCycles"),
         "descriptor_cycles": read_scalar(stats, "descriptorCycles"),
     }
@@ -164,6 +168,7 @@ def main():
     )
     parser.add_argument("--sparta-pending-generation", action="store_true")
     parser.add_argument("--sparta-cell-group", action="store_true")
+    parser.add_argument("--sparta-cell-list-staging", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=180)
     args = parser.parse_args()
     if args.sparta_pending_generation and args.sparta_cell_group:
@@ -173,6 +178,8 @@ def main():
             parser.error("--first-cell-items requires --mode sorted --cells 2")
         if args.first_cell_items < 1 or args.first_cell_items >= 64:
             parser.error("--first-cell-items must be in [1, 63]")
+    if args.sparta_cell_list_staging and args.mode != "sorted":
+        parser.error("--sparta-cell-list-staging requires --mode sorted")
 
     outdir = args.outdir.resolve()
     if outdir.exists():
@@ -219,6 +226,8 @@ def main():
         compile_command.append(
             f"-DSPARTA_TALLY_FIRST_CELL_ITEMS={args.first_cell_items}"
         )
+    if args.sparta_cell_list_staging:
+        compile_command.append("-DSPARTA_TALLY_CELL_LIST_STAGING=1")
     compile_command.extend([str(source), "-o", str(binary)])
     subprocess.run(compile_command, check=True)
     m5out = outdir / "m5out"
@@ -240,6 +249,7 @@ def main():
         "first_cell_items": args.first_cell_items,
         "sparta_pending_generation": args.sparta_pending_generation,
         "sparta_cell_group": args.sparta_cell_group,
+        "sparta_cell_list_staging": args.sparta_cell_list_staging,
         "claim_boundary": (
             "SPARTA-derived six-channel scatter-add contract only; not a "
             "native SPARTA ABI, application speedup, or synthesized cost."

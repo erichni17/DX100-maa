@@ -35,6 +35,10 @@
 #define SPARTA_TALLY_FIRST_CELL_ITEMS 0
 #endif
 
+#ifndef SPARTA_TALLY_CELL_LIST_STAGING
+#define SPARTA_TALLY_CELL_LIST_STAGING 0
+#endif
+
 #if SPARTA_TALLY_MODE < 0 || SPARTA_TALLY_MODE > 3
 #error "SPARTA_TALLY_MODE must be 0, 1, 2, or 3"
 #endif
@@ -62,6 +66,14 @@
 
 #if SPARTA_TALLY_FIRST_CELL_ITEMS && SPARTA_TALLY_CELLS != 2
 #error "SPARTA_TALLY_FIRST_CELL_ITEMS requires two cells"
+#endif
+
+#if SPARTA_TALLY_CELL_LIST_STAGING < 0 || SPARTA_TALLY_CELL_LIST_STAGING > 1
+#error "SPARTA_TALLY_CELL_LIST_STAGING must be 0 or 1"
+#endif
+
+#if SPARTA_TALLY_CELL_LIST_STAGING && SPARTA_TALLY_MODE != 1
+#error "SPARTA_TALLY_CELL_LIST_STAGING requires sorted-only mode"
 #endif
 
 static void
@@ -163,6 +175,7 @@ prepare_descriptor(volatile uint64_t *descriptor)
     descriptor[7] = 0;
 }
 
+#if !SPARTA_TALLY_CELL_LIST_STAGING
 static void
 prepare_case(
     volatile uint32_t *indices, volatile double *contributions,
@@ -209,6 +222,97 @@ prepare_case(
         finish(UINT64_C(8));
     }
 }
+#endif
+
+#if SPARTA_TALLY_CELL_LIST_STAGING
+static void
+prepare_cell_list_case(
+    volatile uint32_t *indices, volatile double *contributions,
+    volatile double *tallies, uint64_t *expected)
+{
+    int32_t first[CELLS];
+    uint32_t count[CELLS];
+    int32_t next[ITEMS];
+    uint32_t candidates[ITEMS];
+    uint32_t particle_cells[ITEMS];
+
+    for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
+        const double initial = (double)(element % 11 + 1) * 0.125;
+        tallies[element] = initial;
+        expected[element] = double_to_bits(initial);
+    }
+    for (uint32_t cell = 0; cell < CELLS; ++cell) {
+        first[cell] = -1;
+        count[cell] = 0;
+    }
+
+    uint32_t item = 0;
+    for (uint32_t candidate = 0; candidate < CANDIDATE_PARTICLES;
+         ++candidate) {
+        if (!selected_particle(candidate)) {
+            continue;
+        }
+        const uint32_t rank = (item * 13 + 7) % ITEMS;
+#if SPARTA_TALLY_FIRST_CELL_ITEMS
+        const uint32_t cell =
+            rank < SPARTA_TALLY_FIRST_CELL_ITEMS ? 0 : 1;
+#else
+        const uint32_t cell = rank % CELLS;
+#endif
+        candidates[item] = candidate;
+        particle_cells[item] = cell;
+        ++item;
+    }
+    if (item != ITEMS) {
+        finish(UINT64_C(8));
+    }
+
+    for (int32_t particle = (int32_t)ITEMS - 1; particle >= 0;
+         --particle) {
+        const uint32_t cell = particle_cells[particle];
+        next[particle] = first[cell];
+        first[cell] = particle;
+        ++count[cell];
+    }
+
+    uint32_t staged = 0;
+    for (uint32_t cell = 0; cell < CELLS; ++cell) {
+        uint32_t visited = 0;
+        int32_t particle = first[cell];
+        while (particle >= 0) {
+            if ((uint32_t)particle >= ITEMS ||
+                particle_cells[particle] != cell ||
+                visited >= count[cell]) {
+                finish(UINT64_C(9));
+            }
+            indices[staged] = cell;
+            const uint32_t candidate = candidates[particle];
+            for (uint32_t channel = 0; channel < CHANNELS; ++channel) {
+                const double value =
+                    particle_contribution(candidate, channel);
+                contributions[staged * CHANNELS + channel] = value;
+                const uint32_t destination = cell * CHANNELS + channel;
+                union
+                {
+                    uint64_t integer;
+                    double floating;
+                } accumulator = {.integer = expected[destination]};
+                accumulator.floating += value;
+                expected[destination] = accumulator.integer;
+            }
+            ++staged;
+            ++visited;
+            particle = next[particle];
+        }
+        if (visited != count[cell]) {
+            finish(UINT64_C(10));
+        }
+    }
+    if (staged != ITEMS) {
+        finish(UINT64_C(11));
+    }
+}
+#endif
 
 #if SPARTA_TALLY_MODE != 3
 static void
@@ -282,7 +386,11 @@ _start(void)
     prepare_descriptor(descriptor);
 
 #if SPARTA_TALLY_MODE == 1
+#if SPARTA_TALLY_CELL_LIST_STAGING
+    prepare_cell_list_case(indices, contributions, tallies, expected);
+#else
     prepare_case(indices, contributions, tallies, expected, 0);
+#endif
     clear_completion(completion);
     fence();
     control[0] = 0;
