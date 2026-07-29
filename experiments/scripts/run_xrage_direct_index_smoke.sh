@@ -24,6 +24,7 @@ index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-0}
+retirement_cache_size=${MAA_RETIREMENT_CACHE_SIZE:-1kB}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
@@ -64,6 +65,10 @@ debug_args=()
 }
 [[ $index_filter_words_per_cycle -ge 0 ]] || {
     echo "MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE must be non-negative" >&2
+    exit 2
+}
+[[ $retirement_cache_size =~ ^[1-9][0-9]*(B|kB|MB)$ ]] || {
+    echo "MAA_RETIREMENT_CACHE_SIZE must be a positive B, kB, or MB size" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
@@ -183,6 +188,7 @@ fi
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
     printf 'virtual_index_filter_words_per_cycle=%s\n' \
         "$index_filter_words_per_cycle"
+    printf 'retirement_cache_size=%s\n' "$retirement_cache_size"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
@@ -251,6 +257,7 @@ restore_cmd=(
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
     --maa_virtual_index_partitions="$index_partitions"
     --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle"
+    --maa_retirement_cache_size="$retirement_cache_size"
     --maa_virtual_masked_writes --cmd "$binary" --options "$options"
 )
 if [[ $grow_order == 1 ]]; then
@@ -292,6 +299,26 @@ if grep -Eqi 'panic|fatal|segmentation fault|MAA_GATHER_VERIFY_FAIL' "$log"; the
 fi
 [[ -s $stats ]] || {
     echo "XRAGE restore produced no final stats" >&2
+    exit 1
+}
+case "$retirement_cache_size" in
+    *MB) retirement_cache_bytes=$((${retirement_cache_size%MB} * 1024 * 1024)) ;;
+    *kB) retirement_cache_bytes=$((${retirement_cache_size%kB} * 1024)) ;;
+    *B) retirement_cache_bytes=${retirement_cache_size%B} ;;
+esac
+read -r retirement_cache_count retirement_cache_matches < <(
+    awk -F= -v expected="$retirement_cache_bytes" '
+        /^\[system\.maa_retirement_caches[0-9]+\]$/ { active = 1; next }
+        /^\[/ { active = 0 }
+        active && $1 == "size" {
+            count++
+            if ($2 == expected) matches++
+        }
+        END { print count + 0, matches + 0 }
+    ' "$out/run/config.ini"
+)
+[[ $retirement_cache_count -eq 4 && $retirement_cache_matches -eq 4 ]] || {
+    echo "resolved retirement-cache size does not match the manifest" >&2
     exit 1
 }
 
