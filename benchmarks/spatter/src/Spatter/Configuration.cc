@@ -470,8 +470,15 @@ Configuration<Spatter::Serial>::Configuration(const size_t id,
 #ifdef MAA
 void setup_MAA() {
     init_MAA();
-#pragma omp parallel
+#pragma omp parallel num_threads(NUM_CORES)
     {
+        if (omp_get_num_threads() != NUM_CORES) {
+#pragma omp critical
+            std::cerr << "MAA setup requires exactly " << NUM_CORES
+                      << " OpenMP threads, got " << omp_get_num_threads()
+                      << std::endl;
+            std::abort();
+        }
 #pragma omp critical
         {
             int tid = omp_get_thread_num();

@@ -117,6 +117,12 @@ runner_snapshot="$out/run_xrage_direct_index_smoke.sh"
 cp "$0" "$runner_snapshot"
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
+guest_env="$out/guest.env"
+cat > "$guest_env" <<EOF
+OMP_NUM_THREADS=4
+OMP_PROC_BIND=false
+SPATTER_DATA_SEED=${SPATTER_DATA_SEED:-1}
+EOF
 options="-f $input"
 if [[ -n $guest_arm ]]; then
     options+=" --maa-arm $guest_arm"
@@ -137,19 +143,22 @@ fi
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
+    printf 'guest_environment=%s\n' "$guest_env"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
 sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" \
+    "$guest_env" \
     "$runner_snapshot" \
     > "$out/artifact_sha256.txt"
 
 checkpoint_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint"
     "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB
-    --max-checkpoints=1 --cmd "$binary" --options "$options"
+    --max-checkpoints=1 --env "$guest_env" --cmd "$binary"
+    --options "$options"
 )
 printf '%q ' "${checkpoint_cmd[@]}" > "$out/checkpoint.command"
 printf '\n' >> "$out/checkpoint.command"
@@ -195,7 +204,8 @@ restore_cmd=(
     --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
-    --maa_virtual_masked_writes --cmd "$binary" --options "$options"
+    --maa_virtual_masked_writes --env "$guest_env" --cmd "$binary"
+    --options "$options"
 )
 if [[ $grow_order == 1 ]]; then
     restore_cmd+=(--maa_virtual_grow_order)
