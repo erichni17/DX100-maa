@@ -26,6 +26,9 @@ index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-0}
 retirement_cache_size=${MAA_RETIREMENT_CACHE_SIZE:-1kB}
+combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
+combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
+combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
@@ -82,6 +85,11 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
 }
 [[ $retirement_cache_size =~ ^[1-9][0-9]*(B|kB|MB)$ ]] || {
     echo "MAA_RETIREMENT_CACHE_SIZE must be a positive B, kB, or MB size" >&2
+    exit 2
+}
+[[ $combine_slots -gt 0 && $combine_words -gt 0 && $combine_ways -gt 0 &&
+   $((combine_slots % combine_ways)) -eq 0 ]] || {
+    echo "virtual combiner capacity must be positive and slots must be divisible by ways" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
@@ -279,6 +287,9 @@ fi
     printf 'virtual_index_filter_words_per_cycle=%s\n' \
         "$index_filter_words_per_cycle"
     printf 'retirement_cache_size=%s\n' "$retirement_cache_size"
+    printf 'virtual_combine_slots=%s\n' "$combine_slots"
+    printf 'virtual_combine_words=%s\n' "$combine_words"
+    printf 'virtual_combine_ways=%s\n' "$combine_ways"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
@@ -327,8 +338,9 @@ restore_cmd=(
     --maa_l2_uncacheable --maa_l3_uncacheable
     --maa_num_initial_row_table_slices="$row_table_slices"
     --maa_num_row_table_rows_per_slice="$row_table_rows"
-    --maa_virtual_combine_slots=384 --maa_virtual_combine_words=4096
-    --maa_virtual_combine_ways=4 --maa_virtual_combine_banks=0
+    --maa_virtual_combine_slots="$combine_slots"
+    --maa_virtual_combine_words="$combine_words"
+    --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
     --maa_virtual_response_slots="$response_slots"
     --maa_virtual_response_word_pool="$response_word_pool"
     --maa_virtual_words_per_cycle="$words_per_cycle"
