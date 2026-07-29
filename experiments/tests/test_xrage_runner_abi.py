@@ -78,6 +78,15 @@ class XrageRunnerAbiTest(unittest.TestCase):
             (ROOT / "src/mem/MAA/MAA.py").read_text(encoding="utf-8"),
         )
 
+    def test_direct_index_partition_work_is_explicit_and_recorded(self):
+        for runner in (RUNNER, RECOVERY):
+            script = runner.read_text(encoding="utf-8")
+            self.assertIn("MAA_VIRTUAL_INDEX_PARTITIONS", script)
+            self.assertIn("MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE", script)
+            self.assertIn("virtual_index_partitions=%s", script)
+            self.assertIn("index_filter_words", script)
+            self.assertIn("row_table_full_events", script)
+
     def test_cache_warm_upper_bound_is_an_explicit_guest_arm(self):
         for runner in (RUNNER, RECOVERY):
             self.assertIn("direct4warm", runner.read_text(encoding="utf-8"))

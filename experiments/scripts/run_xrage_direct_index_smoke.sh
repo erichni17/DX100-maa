@@ -22,6 +22,8 @@ grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 native_issue_order=${MAA_VIRTUAL_NATIVE_ISSUE_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
+index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
+index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-0}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
@@ -56,6 +58,14 @@ debug_args=()
     echo "MAA_VIRTUAL_INDEX_FORCE_CACHE must be 0 or 1" >&2
     exit 2
 }
+[[ $index_partitions -gt 0 && $index_partitions -le 64 ]] || {
+    echo "MAA_VIRTUAL_INDEX_PARTITIONS must be in [1,64]" >&2
+    exit 2
+}
+[[ $index_filter_words_per_cycle -ge 0 ]] || {
+    echo "MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE must be non-negative" >&2
+    exit 2
+}
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
     echo "MAA_NUM_INITIAL_ROW_TABLE_SLICES must be 4, 8, 16, or 32" >&2
     exit 2
@@ -86,6 +96,15 @@ case "$arm" in
         exit 2
         ;;
 esac
+if [[ $index_partitions -ne 1 &&
+      $arm != direct_index_16k && $arm != direct_index_4k ]]; then
+    echo "virtual index partitions require a direct-index XRAGE arm" >&2
+    exit 2
+fi
+if [[ $index_partitions -eq 1 && $index_filter_words_per_cycle -ne 0 ]]; then
+    echo "virtual index filter throughput requires multiple partitions" >&2
+    exit 2
+fi
 if [[ $native_issue_order == 1 &&
       $arm != compact && $arm != direct_index_16k &&
       $arm != direct_index_4k ]]; then
@@ -161,6 +180,9 @@ fi
     printf 'virtual_native_issue_order=%s\n' "$native_issue_order"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
+    printf 'virtual_index_partitions=%s\n' "$index_partitions"
+    printf 'virtual_index_filter_words_per_cycle=%s\n' \
+        "$index_filter_words_per_cycle"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
@@ -227,6 +249,8 @@ restore_cmd=(
     --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
+    --maa_virtual_index_partitions="$index_partitions"
+    --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle"
     --maa_virtual_masked_writes --cmd "$binary" --options "$options"
 )
 if [[ $grow_order == 1 ]]; then
@@ -296,30 +320,73 @@ write_issues=$(sum_indirect_stat IND_VirtWriteIssues)
 write_completions=$(sum_indirect_stat IND_VirtWriteCompletions)
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
+index_filter_words=$(sum_indirect_stat IND_VirtIndexFilterWords)
+index_filter_cycles=$(sum_indirect_stat IND_VirtIndexFilterCycles)
+index_filter_wait_events=$(sum_indirect_stat IND_VirtIndexFilterWaitEvents)
+index_filter_wait_cycles=$(sum_indirect_stat IND_VirtIndexFilterWaitCycles)
+row_table_full_events=$(sum_indirect_stat IND_NumRTFull)
+virtual_build_rounds=$(sum_indirect_stat IND_VirtBuildRounds)
+fill_cycles=$(sum_indirect_stat IND_CyclesFill)
+all_pages_ready_cycles=$(sum_indirect_stat IND_VirtAllPagesReadyCycles)
 index_outstanding_merges=$(sum_indirect_stat IND_VirtIndexOutstandingMerges)
 index_outstanding_wait_cycles=$(
     sum_indirect_stat IND_VirtIndexOutstandingWaitCycles
 )
 indirect_spd_reads=$(sum_indirect_stat IND_CyclesSPDReadAccess)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
-    "$index_words" "$index_outstanding_merges" \
+    "$index_words" "$index_filter_words" "$index_filter_cycles" \
+    "$index_filter_wait_events" "$index_filter_wait_cycles" \
+    "$row_table_full_events" "$virtual_build_rounds" "$fill_cycles" \
+    "$all_pages_ready_cycles" "$index_outstanding_merges" \
     "$index_outstanding_wait_cycles" "$indirect_spd_reads"; do
     [[ -n $value ]] || {
         echo "XRAGE mechanism-counter extraction failed" >&2
         exit 1
     }
 done
+if [[ $index_partitions -eq 1 ]]; then
+    [[ $index_filter_words -eq 0 && $index_filter_cycles -eq 0 &&
+       $index_filter_wait_events -eq 0 && $index_filter_wait_cycles -eq 0 ]] || {
+        echo "single-pass XRAGE unexpectedly activated partition filtering" >&2
+        exit 1
+    }
+else
+    [[ $index_words -gt 0 && $index_words -eq $index_filter_words &&
+       $((index_words % index_partitions)) -eq 0 ]] || {
+        echo "multi-pass XRAGE partition work is incomplete" >&2
+        exit 1
+    }
+    if [[ $index_filter_words_per_cycle -eq 0 ]]; then
+        [[ $index_filter_cycles -eq 0 && $index_filter_wait_cycles -eq 0 ]] || {
+            echo "unlimited partition filter unexpectedly charged latency" >&2
+            exit 1
+        }
+    else
+        [[ $index_filter_cycles -gt 0 ]] || {
+            echo "finite partition filter charged no latency" >&2
+            exit 1
+        }
+    fi
+fi
 {
     printf 'output_hash\troi_simTicks\tfinal_simTicks\tstats_blocks'
     printf '\tvirtual_write_issues\tvirtual_write_completions'
     printf '\tvirtual_pages_ready\tdirect_index_words'
+    printf '\tvirtual_index_partitions\tindex_filter_words'
+    printf '\tindex_filter_cycles\tindex_filter_wait_events'
+    printf '\tindex_filter_wait_cycles\trow_table_full_events'
+    printf '\tvirtual_build_rounds\tfill_cycles\tall_pages_ready_cycles'
     printf '\tdirect_index_outstanding_merges'
     printf '\tdirect_index_outstanding_wait_cycles'
     printf '\tindirect_spd_read_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
-        "$index_words" "$index_outstanding_merges" \
+        "$index_words" "$index_partitions" "$index_filter_words" \
+        "$index_filter_cycles" "$index_filter_wait_events" \
+        "$index_filter_wait_cycles" "$row_table_full_events" \
+        "$virtual_build_rounds" "$fill_cycles" "$all_pages_ready_cycles" \
+        "$index_outstanding_merges" \
         "$index_outstanding_wait_cycles" "$indirect_spd_reads"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
