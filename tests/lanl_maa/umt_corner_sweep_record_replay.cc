@@ -84,6 +84,8 @@ main(int argc, char **argv)
     std::cout << std::setprecision(17)
               << "{\"status\":\"PASS\",\"groups\":"
               << parsed.record.descriptor.groupCount
+              << ",\"native_groups\":"
+              << parsed.record.nativeGroupCount
               << ",\"exact_bit_groups\":" << exact
               << ",\"maximum_absolute_error\":"
               << maximumAbsoluteError

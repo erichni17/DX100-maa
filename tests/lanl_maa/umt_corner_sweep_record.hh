@@ -32,6 +32,7 @@ struct UmtCornerSweepRecord
     uint32_t setId = 0;
     uint32_t angle = 0;
     uint32_t nativeZone = 0;
+    uint32_t nativeGroupCount = 0;
     UmtCornerSweepDescriptor descriptor;
     UmtCornerSweepInput input;
     std::vector<double> nativeExpected;
@@ -165,6 +166,8 @@ class UmtCornerSweepRecordParser
         if (!namedUnsigned("set_id", record.setId) ||
             !namedUnsigned("angle", record.angle) ||
             !namedUnsigned("native_zone", record.nativeZone) ||
+            !namedUnsigned("native_group_count",
+                           record.nativeGroupCount) ||
             !namedUnsigned("corner_count", record.descriptor.cornerCount) ||
             !namedUnsigned("zone_count", record.descriptor.zoneCount) ||
             !namedUnsigned("flux_point_count",
@@ -184,8 +187,10 @@ class UmtCornerSweepRecordParser
                 record.descriptor.cornerCount ||
             record.descriptor.fluxPointCount >
                 UmtSweepRecordMaximumFluxPoints ||
+            record.nativeGroupCount == 0 ||
             record.descriptor.totalGroups == 0 ||
             record.descriptor.totalGroups > UmtSweepMaximumGroups ||
+            record.descriptor.totalGroups > record.nativeGroupCount ||
             record.descriptor.selectedCornerCount != 1 ||
             record.descriptor.firstGroup != 0 ||
             record.descriptor.groupCount !=
