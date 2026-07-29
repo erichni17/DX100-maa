@@ -117,6 +117,12 @@ def load_native_batch(path):
     particle_ids = set()
     previous_cell = -1
     contributions = []
+    particle_cells = [None] * 64
+    particle_contributions = [None] * (64 * 6)
+    cell_first = [-1] * cells
+    cell_counts = [0] * cells
+    particle_next = [-1] * 64
+    cell_previous = [-1] * cells
     sums = [[0.0] * 6 for _ in range(cells)]
     indices = []
     for item_number, item in enumerate(items):
@@ -154,7 +160,23 @@ def load_native_batch(path):
         previous_cell = cell
         indices.append(cell)
         contributions.extend(bits)
+        particle_cells[particle_index] = cell
+        contribution_start = particle_index * 6
+        particle_contributions[
+            contribution_start : contribution_start + 6
+        ] = bits
+        if cell_first[cell] < 0:
+            cell_first[cell] = particle_index
+        else:
+            particle_next[cell_previous[cell]] = particle_index
+        cell_previous[cell] = particle_index
+        cell_counts[cell] += 1
         sums[cell] = [left + right for left, right in zip(sums[cell], values)]
+
+    if any(value is None for value in particle_cells) or any(
+        value is None for value in particle_contributions
+    ):
+        raise ValueError("native particle index coverage is incomplete")
 
     tallies = document["nonzero_cell_tallies"]
     populated_cells = sorted(set(indices))
@@ -183,6 +205,11 @@ def load_native_batch(path):
         "cell_count": cells,
         "indices": indices,
         "contribution_bits": contributions,
+        "particle_cells": particle_cells,
+        "particle_contribution_bits": particle_contributions,
+        "cell_first": cell_first,
+        "cell_counts": cell_counts,
+        "particle_next": particle_next,
         "expected_bits": expected_bits,
         "source_revision": document["source_revision"],
         "timestep": timestep,
@@ -202,6 +229,16 @@ def write_native_header(path, batch):
     contributions = [
         f"UINT64_C(0x{value})" for value in batch["contribution_bits"]
     ]
+    particle_cells = [
+        f"UINT32_C({value})" for value in batch["particle_cells"]
+    ]
+    particle_contributions = [
+        f"UINT64_C(0x{value})"
+        for value in batch["particle_contribution_bits"]
+    ]
+    cell_first = [str(value) for value in batch["cell_first"]]
+    cell_counts = [f"UINT32_C({value})" for value in batch["cell_counts"]]
+    particle_next = [str(value) for value in batch["particle_next"]]
     expected = [f"UINT64_C(0x{value})" for value in batch["expected_bits"]]
     text = "\n".join(
         (
@@ -210,11 +247,31 @@ def write_native_header(path, batch):
             "",
             "#include <stdint.h>",
             "",
+            "#if !SPARTA_TALLY_NATIVE_LIST_STAGING",
             array("sparta_native_indices", "uint32_t", indices, 8),
             "",
             array(
                 "sparta_native_contribution_bits", "uint64_t", contributions, 4
             ),
+            "#else",
+            "",
+            array(
+                "sparta_native_particle_cells", "uint32_t", particle_cells, 8
+            ),
+            "",
+            array(
+                "sparta_native_particle_contribution_bits",
+                "uint64_t",
+                particle_contributions,
+                4,
+            ),
+            "",
+            array("sparta_native_cell_first", "int32_t", cell_first, 8),
+            "",
+            array("sparta_native_cell_count", "uint32_t", cell_counts, 8),
+            "",
+            array("sparta_native_particle_next", "int32_t", particle_next, 8),
+            "#endif",
             "",
             array("sparta_native_expected_bits", "uint64_t", expected, 4),
             "",
@@ -447,12 +504,15 @@ def main():
     parser.add_argument("--sparta-pending-generation", action="store_true")
     parser.add_argument("--sparta-cell-group", action="store_true")
     parser.add_argument("--sparta-cell-list-staging", action="store_true")
+    parser.add_argument("--sparta-native-list-staging", action="store_true")
     parser.add_argument("--sparta-native-batch", type=pathlib.Path)
     parser.add_argument("--native-timing-clean", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=180)
     args = parser.parse_args()
     if args.sparta_pending_generation and args.sparta_cell_group:
         parser.error("SPARTA pending-generation and cell-group are exclusive")
+    if args.sparta_cell_list_staging and args.sparta_native_list_staging:
+        parser.error("synthetic and native list staging are exclusive")
     native_path = None
     native_batch = None
     if args.sparta_native_batch is not None:
@@ -471,6 +531,10 @@ def main():
             parser.error("--cells disagrees with the native batch")
         cells = native_batch["cell_count"]
     else:
+        if args.sparta_native_list_staging:
+            parser.error(
+                "--sparta-native-list-staging requires --sparta-native-batch"
+            )
         if args.native_timing_clean:
             parser.error(
                 "--native-timing-clean requires --sparta-native-batch"
@@ -533,6 +597,8 @@ def main():
         )
     if args.sparta_cell_list_staging:
         compile_command.append("-DSPARTA_TALLY_CELL_LIST_STAGING=1")
+    if args.sparta_native_list_staging:
+        compile_command.append("-DSPARTA_TALLY_NATIVE_LIST_STAGING=1")
     native_header = None
     if native_batch is not None:
         native_header = outdir / "sparta_native_batch.h"
@@ -557,9 +623,13 @@ def main():
     ]
     report = {
         "schema": (
-            "lanl-maa-sparta-native-batch-live-v1"
-            if native_batch is not None
-            else "lanl-maa-sparta-six-tally-live-v1"
+            "lanl-maa-sparta-native-list-staging-v1"
+            if args.sparta_native_list_staging
+            else (
+                "lanl-maa-sparta-native-batch-live-v1"
+                if native_batch is not None
+                else "lanl-maa-sparta-six-tally-live-v1"
+            )
         ),
         "status": "running",
         "mode": args.mode,
@@ -568,12 +638,18 @@ def main():
         "sparta_pending_generation": args.sparta_pending_generation,
         "sparta_cell_group": args.sparta_cell_group,
         "sparta_cell_list_staging": args.sparta_cell_list_staging,
+        "sparta_native_list_staging": args.sparta_native_list_staging,
         "sparta_native_batch": native_batch is not None,
         "native_timing_clean": args.native_timing_clean,
         "claim_boundary": (
             "Exact 64-particle batch exported by pinned native SPARTA; "
-            "lightweight descriptor timing only, not application speedup or "
-            "synthesized cost."
+            + (
+                "reuses exported first/count/next membership before staging; "
+                if args.sparta_native_list_staging
+                else "consumes already cell-major staging; "
+            )
+            + "lightweight descriptor timing only, not application speedup "
+            "or synthesized cost."
             if native_batch is not None
             else "SPARTA-derived six-channel scatter-add contract only; not "
             "a native SPARTA ABI, application speedup, or synthesized cost."

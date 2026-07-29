@@ -28,7 +28,7 @@ def valid_document():
     for item in range(64):
         items.append(
             {
-                "particle_index": item,
+                "particle_index": (item * 13 + 7) % 64,
                 "particle_id": 1000 + item,
                 "cell": item // 32,
                 "contribution_bits": [bits(value) for value in values],
@@ -72,6 +72,11 @@ class NativeBatchTest(unittest.TestCase):
         self.assertEqual(batch["cell_count"], 2)
         self.assertEqual(len(batch["indices"]), 64)
         self.assertEqual(len(batch["contribution_bits"]), 384)
+        self.assertEqual(len(batch["particle_cells"]), 64)
+        self.assertEqual(len(batch["particle_contribution_bits"]), 384)
+        self.assertEqual(batch["cell_counts"], [32, 32])
+        self.assertEqual(len(batch["cell_first"]), 2)
+        self.assertEqual(len(batch["particle_next"]), 64)
         self.assertEqual(len(batch["expected_bits"]), 12)
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "batch.h"
@@ -79,7 +84,29 @@ class NativeBatchTest(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("sparta_native_indices[64]", text)
             self.assertIn("sparta_native_contribution_bits[384]", text)
+            self.assertIn("sparta_native_particle_cells[64]", text)
+            self.assertIn(
+                "sparta_native_particle_contribution_bits[384]", text
+            )
+            self.assertIn("sparta_native_cell_first[2]", text)
+            self.assertIn("sparta_native_cell_count[2]", text)
+            self.assertIn("sparta_native_particle_next[64]", text)
             self.assertIn("sparta_native_expected_bits[12]", text)
+
+    def test_native_membership_reconstructs_export_order(self):
+        batch = self.load(valid_document())
+        staged_particles = []
+        for cell in range(batch["cell_count"]):
+            particle = batch["cell_first"][cell]
+            visited = 0
+            while particle >= 0:
+                self.assertEqual(batch["particle_cells"][particle], cell)
+                staged_particles.append(particle)
+                particle = batch["particle_next"][particle]
+                visited += 1
+            self.assertEqual(visited, batch["cell_counts"][cell])
+        expected = [(item * 13 + 7) % 64 for item in range(64)]
+        self.assertEqual(staged_particles, expected)
 
     def test_rejects_unsorted_cells(self):
         document = valid_document()

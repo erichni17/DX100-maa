@@ -43,6 +43,10 @@
 #define SPARTA_TALLY_NATIVE_BATCH 0
 #endif
 
+#ifndef SPARTA_TALLY_NATIVE_LIST_STAGING
+#define SPARTA_TALLY_NATIVE_LIST_STAGING 0
+#endif
+
 #ifndef SPARTA_TALLY_REPORT_MISMATCHES
 #define SPARTA_TALLY_REPORT_MISMATCHES 1
 #endif
@@ -90,6 +94,15 @@
 
 #if SPARTA_TALLY_NATIVE_BATCH && SPARTA_TALLY_CELL_LIST_STAGING
 #error "native batch is already staged in SPARTA cell-list order"
+#endif
+
+#if SPARTA_TALLY_NATIVE_LIST_STAGING < 0 || \
+    SPARTA_TALLY_NATIVE_LIST_STAGING > 1
+#error "SPARTA_TALLY_NATIVE_LIST_STAGING must be 0 or 1"
+#endif
+
+#if SPARTA_TALLY_NATIVE_LIST_STAGING && !SPARTA_TALLY_NATIVE_BATCH
+#error "native list staging requires a native batch"
 #endif
 
 #if SPARTA_TALLY_REPORT_MISMATCHES < 0 || \
@@ -261,6 +274,7 @@ prepare_case(
 #endif
 
 #if SPARTA_TALLY_NATIVE_BATCH
+#if !SPARTA_TALLY_NATIVE_LIST_STAGING
 static void
 prepare_native_case(
     volatile uint32_t *indices, volatile double *contributions,
@@ -278,6 +292,47 @@ prepare_native_case(
         }
     }
 }
+#else
+
+static void
+prepare_native_list_case(
+    volatile uint32_t *indices, volatile double *contributions,
+    volatile double *tallies, uint64_t *expected)
+{
+    for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
+        tallies[element] = 0.0;
+        expected[element] = sparta_native_expected_bits[element];
+    }
+
+    uint32_t staged = 0;
+    for (uint32_t cell = 0; cell < CELLS; ++cell) {
+        uint32_t visited = 0;
+        int32_t particle = sparta_native_cell_first[cell];
+        while (particle >= 0) {
+            if ((uint32_t)particle >= ITEMS ||
+                sparta_native_particle_cells[particle] != cell ||
+                visited >= sparta_native_cell_count[cell]) {
+                finish(UINT64_C(13));
+            }
+            indices[staged] = cell;
+            for (uint32_t channel = 0; channel < CHANNELS; ++channel) {
+                contributions[staged * CHANNELS + channel] = bits_to_double(
+                    sparta_native_particle_contribution_bits[
+                        (uint32_t)particle * CHANNELS + channel]);
+            }
+            ++staged;
+            ++visited;
+            particle = sparta_native_particle_next[particle];
+        }
+        if (visited != sparta_native_cell_count[cell]) {
+            finish(UINT64_C(14));
+        }
+    }
+    if (staged != ITEMS) {
+        finish(UINT64_C(15));
+    }
+}
+#endif
 #endif
 
 #if SPARTA_TALLY_CELL_LIST_STAGING
@@ -520,7 +575,11 @@ _start(void)
 
 #if SPARTA_TALLY_MODE == 1
 #if SPARTA_TALLY_NATIVE_BATCH
+#if SPARTA_TALLY_NATIVE_LIST_STAGING
+    prepare_native_list_case(indices, contributions, tallies, expected);
+#else
     prepare_native_case(indices, contributions, tallies, expected);
+#endif
 #elif SPARTA_TALLY_CELL_LIST_STAGING
     prepare_cell_list_case(indices, contributions, tallies, expected);
 #else
