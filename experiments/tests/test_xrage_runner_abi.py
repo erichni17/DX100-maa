@@ -66,6 +66,12 @@ class XrageRunnerAbiTest(unittest.TestCase):
             self.assertIn("sum_indirect_stat", script)
             self.assertIn("I[0-9]+_", script)
 
+    def test_cache_warm_upper_bound_is_an_explicit_guest_arm(self):
+        for runner in (RUNNER, RECOVERY):
+            self.assertIn(
+                "direct4warm", runner.read_text(encoding="utf-8")
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

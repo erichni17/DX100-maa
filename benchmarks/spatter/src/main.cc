@@ -80,9 +80,10 @@ int main(int argc, char **argv) {
 #ifdef MAA_XRAGE_RUNTIME_ARMS
     if (cl.maa_arm != "native16" && cl.maa_arm != "fused16" &&
         cl.maa_arm != "fused4" &&
-        cl.maa_arm != "compact16" && cl.maa_arm != "direct4") {
+        cl.maa_arm != "compact16" && cl.maa_arm != "direct4" &&
+        cl.maa_arm != "direct4warm") {
         std::cerr << "Runtime XRAGE arm must be native16, fused16, fused4, "
-                     "compact16, or direct4"
+                     "compact16, direct4, or direct4warm"
                   << std::endl;
         return -1;
     }

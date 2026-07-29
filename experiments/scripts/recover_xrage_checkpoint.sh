@@ -125,7 +125,7 @@ if [[ -n $logical_override ]]; then
 fi
 if [[ -n $guest_arm ]]; then
     case "$guest_arm" in
-        native16|fused16|fused4|compact16|direct4) ;;
+        native16|fused16|fused4|compact16|direct4|direct4warm) ;;
         *)
             echo "unsupported XRAGE_GUEST_ARM: $guest_arm" >&2
             exit 2

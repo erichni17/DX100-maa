@@ -525,6 +525,17 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
     std::cout << "MAA gather execution " << pattern_length << "/"
               << maa_tile_size << std::endl;
 #endif
+#if defined(MAA_XRAGE_RUNTIME_ARMS) && defined(GEM5)
+    if (maa_arm == "direct4warm") {
+        volatile uint64_t warm_checksum = 0;
+        for (int j = 0; j < pattern_length; ++j)
+            warm_checksum ^= static_cast<uint32_t>(pattern_int[j]);
+        std::cout << "MAA index warm upper bound checksum " << warm_checksum
+                  << std::endl;
+        // Exclude the intentionally optimistic cache warmup from ROI stats.
+        m5_reset_stats(0, 0);
+    }
+#endif
     if (timed)
         timer.start();
 #ifdef MAA
@@ -552,7 +563,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             const int chunk_end =
                 std::min(j + maa_tile_size, pattern_length);
             maa_const(chunk_end, reg2);
-            if (maa_arm == "direct4") {
+            if (maa_arm == "direct4" || maa_arm == "direct4warm") {
                 maa_indirect_load_virtual_index<double>(
                     sparse.data(),
                     reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
