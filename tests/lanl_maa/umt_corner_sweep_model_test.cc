@@ -156,6 +156,38 @@ twoZoneFixture()
     return value;
 }
 
+Fixture
+fourFaceFixture()
+{
+    Fixture value;
+    value.descriptor.cornerCount = 5;
+    value.descriptor.zoneCount = 1;
+    value.descriptor.fluxPointCount = 9;
+    value.descriptor.totalGroups = 1;
+    value.descriptor.selectedCornerCount = 1;
+    value.descriptor.groupCount = 1;
+    value.descriptor.tau = 0.25;
+    value.input.cornerOrder = {0};
+    value.input.corners = {
+        {0, 0, 4, 2.0, 3.0},
+        {0, 4, 4, 1.0, 2.0},
+        {0, 8, 4, 1.25, 2.25},
+        {0, 12, 4, 1.5, 2.5},
+        {0, 16, 4, 1.75, 2.75},
+    };
+    value.input.faces.resize(20);
+    value.input.faces[0] = {5, 1, -1.0, 0.5};
+    value.input.faces[1] = {6, 2, -2.0, 0.75};
+    value.input.faces[2] = {7, 3, -3.0, 1.0};
+    value.input.faces[3] = {8, 4, -4.0, 1.25};
+    value.input.totalSource = {0.75, 1.0, 1.25, 1.5, 1.75};
+    value.input.oldPsi = {-0.25, -0.125, 0.0, 0.125, 0.25};
+    value.input.totalCrossSection = {1.5};
+    value.input.psi1 = {99.0, 0.0, 0.0, 0.0, 0.0,
+                        1.0, 1.25, 1.5, 1.75};
+    return value;
+}
+
 double
 source(const Fixture &value, uint32_t corner, uint32_t group)
 {
@@ -171,10 +203,14 @@ expected(const Fixture &value, uint32_t group)
     const double sigma = value.input.totalCrossSection[group];
     const double q0 = source(value, 0, group);
     double ss = corner.volume * q0;
-    ss -= value.input.faces[0].fpNorm *
-        value.input.psi1[valueIndex(value, 4, group)];
-    ss -= value.input.faces[2].fpNorm *
-        value.input.psi1[valueIndex(value, 6, group)];
+    for (uint32_t localFace = 0; localFace < corner.faceCount;
+         ++localFace) {
+        const auto &face = value.input.faces[localFace];
+        if (face.fpNorm < 0.0) {
+            ss -= face.fpNorm * value.input.psi1[
+                valueIndex(value, face.fluxPoint, group)];
+        }
+    }
 
     for (uint32_t localFace = 0; localFace < corner.faceCount;
          ++localFace) {
@@ -203,21 +239,33 @@ expected(const Fixture &value, uint32_t group)
             source(value, face.ezCorner, group) : q0;
         double areaOpposite = 0.0;
         double psiOpposite = 0.0;
-        for (uint32_t candidate = 0;
-             candidate < first.faceCount - 2; ++candidate) {
+        if (first.faceCount == 3) {
             const auto &opposite = value.input.faces[
-                first.faceOffset +
-                (oppositeStart + candidate) % first.faceCount];
+                first.faceOffset + oppositeStart];
             if (opposite.fpNorm < 0.0) {
-                areaOpposite -= opposite.fpNorm;
-                psiOpposite -= opposite.fpNorm * value.input.psi1[
+                areaOpposite = -opposite.fpNorm;
+                psiOpposite = value.input.psi1[
                     valueIndex(value, opposite.fluxPoint, group)];
+            }
+        } else {
+            for (uint32_t candidate = 0;
+                 candidate < first.faceCount - 2; ++candidate) {
+                const auto &opposite = value.input.faces[
+                    first.faceOffset +
+                    (oppositeStart + candidate) % first.faceCount];
+                if (opposite.fpNorm < 0.0) {
+                    areaOpposite -= opposite.fpNorm;
+                    psiOpposite -= opposite.fpNorm * value.input.psi1[
+                        valueIndex(value, opposite.fluxPoint, group)];
+                }
             }
         }
 
         double sez = 0.0;
         if (areaOpposite > 0.0) {
-            psiOpposite /= areaOpposite;
+            if (first.faceCount > 3) {
+                psiOpposite /= areaOpposite;
+            }
             const double sigv = sigma * first.volume;
             const double sigv2 = sigv * sigv;
             const double aez2 = aez * aez;
@@ -292,10 +340,36 @@ main()
         assert(result.counters.crossSectionReads == 2);
         assert(result.counters.fluxReads == 10);
         assert(result.counters.uniqueFluxCacheLines == 3);
+        assert(result.counters.directThreeFaceOppositeCopies == 4);
+        assert(result.counters.weightedOppositeFluxTerms == 0);
+        assert(result.counters.weightedOppositeNormalizations == 0);
         assert(result.counters.specialOppositeFaceUpdates == 4);
         assert(result.counters.fallbackFaceUpdates == 2);
+        assert(result.counters.fp64AddSubOperations == 60);
+        assert(result.counters.fp64MultiplyOperations == 116);
+        assert(result.counters.fp64DivideOperations == 8);
         assert(result.counters.operationWindowFills == 1);
         assert(result.counters.outputWrites == 2);
+    }
+    {
+        const auto value = fourFaceFixture();
+        const auto result = UmtCornerSweepModel::execute(
+            value.descriptor, value.input);
+        assert(result);
+        assert(result.psi1[valueIndex(value, 0, 0)] == expected(value, 0));
+        assertOnlySelectedChanged(value, result);
+        assert(result.counters.cornersValidated == 5);
+        assert(result.counters.cornerGroupsProcessed == 1);
+        assert(result.counters.oppositeFaceVisits == 8);
+        assert(result.counters.directThreeFaceOppositeCopies == 0);
+        assert(result.counters.weightedOppositeFluxTerms == 8);
+        assert(result.counters.weightedOppositeNormalizations == 4);
+        assert(result.counters.specialOppositeFaceUpdates == 4);
+        assert(result.counters.fallbackFaceUpdates == 0);
+        assert(result.counters.fp64AddSubOperations == 66);
+        assert(result.counters.fp64MultiplyOperations == 111);
+        assert(result.counters.fp64DivideOperations == 9);
+        assert(result.counters.outputWrites == 1);
     }
     {
         const auto value = twoZoneFixture();

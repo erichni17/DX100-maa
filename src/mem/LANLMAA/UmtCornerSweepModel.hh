@@ -97,8 +97,16 @@ struct UmtCornerSweepCounters
     uint64_t crossSectionReads = 0;
     uint64_t fluxReads = 0;
     uint64_t uniqueFluxCacheLines = 0;
+    uint64_t directThreeFaceOppositeCopies = 0;
+    uint64_t weightedOppositeFluxTerms = 0;
+    uint64_t weightedOppositeNormalizations = 0;
     uint64_t specialOppositeFaceUpdates = 0;
     uint64_t fallbackFaceUpdates = 0;
+    // Conceptual source-order binary operations executed by this model.
+    // Multiply/add pairs are separate; assignments and unary signs are free.
+    uint64_t fp64AddSubOperations = 0;
+    uint64_t fp64MultiplyOperations = 0;
+    uint64_t fp64DivideOperations = 0;
     uint64_t operationWindowFills = 0;
     uint64_t outputWrites = 0;
 };
@@ -324,6 +332,8 @@ class UmtCornerSweepModel
                 }
                 const double source = totalSource + descriptor.tau * oldPsi;
                 double ss = corner.volume * source;
+                ++result.counters.fp64AddSubOperations;
+                result.counters.fp64MultiplyOperations += 2;
                 if (!finite(source) || !finite(ss)) {
                     result.error = UmtCornerSweepError::NonfiniteResult;
                     return result;
@@ -346,6 +356,8 @@ class UmtCornerSweepModel
                             return result;
                         }
                         ss -= face.fpNorm * flux;
+                        ++result.counters.fp64AddSubOperations;
+                        ++result.counters.fp64MultiplyOperations;
                         if (!finite(ss)) {
                             result.error =
                                 UmtCornerSweepError::NonfiniteResult;
@@ -383,6 +395,8 @@ class UmtCornerSweepModel
                             return result;
                         }
                         ss -= face.ezNorm * flux;
+                        ++result.counters.fp64AddSubOperations;
+                        ++result.counters.fp64MultiplyOperations;
                         if (!finite(ss)) {
                             result.error =
                                 UmtCornerSweepError::NonfiniteResult;
@@ -420,6 +434,8 @@ class UmtCornerSweepModel
                         input.totalSource[neighborValue] +
                         descriptor.tau * input.oldPsi[neighborValue];
                     result.counters.sourceReads += 2;
+                    ++result.counters.fp64AddSubOperations;
+                    ++result.counters.fp64MultiplyOperations;
                     if (!finite(input.totalSource[neighborValue]) ||
                         !finite(input.oldPsi[neighborValue])) {
                         result.error = UmtCornerSweepError::NonfiniteInput;
@@ -435,8 +451,8 @@ class UmtCornerSweepModel
                     double areaOpposite = 0.0;
                     double psiOpposite = 0.0;
                     const uint32_t oppositeCount = first.faceCount - 2;
-                    for (uint32_t candidate = 0;
-                         candidate < oppositeCount; ++candidate) {
+                    for (uint32_t candidate = 0; candidate < oppositeCount;
+                         ++candidate) {
                         ++result.counters.oppositeFaceVisits;
                         const uint32_t opposite =
                             (oppositeStart + candidate) % first.faceCount;
@@ -466,14 +482,30 @@ class UmtCornerSweepModel
                                     UmtCornerSweepError::NonfiniteInput;
                                 return result;
                             }
-                            areaOpposite -= oppositeFace.fpNorm;
-                            psiOpposite -= oppositeFace.fpNorm * flux;
+                            if (first.faceCount == 3) {
+                                areaOpposite = -oppositeFace.fpNorm;
+                                psiOpposite = flux;
+                                ++result.counters
+                                      .directThreeFaceOppositeCopies;
+                            } else {
+                                areaOpposite -= oppositeFace.fpNorm;
+                                psiOpposite -= oppositeFace.fpNorm * flux;
+                                ++result.counters
+                                      .weightedOppositeFluxTerms;
+                                result.counters.fp64AddSubOperations += 2;
+                                ++result.counters.fp64MultiplyOperations;
+                            }
                         }
                     }
 
                     double sez = 0.0;
                     if (areaOpposite > 0.0) {
-                        psiOpposite /= areaOpposite;
+                        if (first.faceCount > 3) {
+                            psiOpposite /= areaOpposite;
+                            ++result.counters
+                                  .weightedOppositeNormalizations;
+                            ++result.counters.fp64DivideOperations;
+                        }
                         const double sigv = sigma * first.volume;
                         const double sigv2 = sigv * sigv;
                         const double aez2 = aez * aez;
@@ -489,12 +521,20 @@ class UmtCornerSweepModel
                                (sigma * psiOpposite - qq) +
                                0.5 * aez * gden * (qq - qez)) /
                             (gnum + gden * sigma);
+                        result.counters.fp64AddSubOperations += 9;
+                        result.counters.fp64MultiplyOperations += 22;
+                        ++result.counters.fp64DivideOperations;
                         ++result.counters.specialOppositeFaceUpdates;
                     } else {
                         sez = 0.5 * aez * (qq - qez) / sigma;
+                        ++result.counters.fp64AddSubOperations;
+                        result.counters.fp64MultiplyOperations += 2;
+                        ++result.counters.fp64DivideOperations;
                         ++result.counters.fallbackFaceUpdates;
                     }
                     ss += multiplier * sez;
+                    ++result.counters.fp64AddSubOperations;
+                    ++result.counters.fp64MultiplyOperations;
                     if (!finite(areaOpposite) || !finite(psiOpposite) ||
                         !finite(sez) || !finite(ss)) {
                         result.error = UmtCornerSweepError::NonfiniteResult;
@@ -505,6 +545,9 @@ class UmtCornerSweepModel
                 const double denominator =
                     corner.normSum + sigma * corner.volume;
                 const double value = ss / denominator;
+                ++result.counters.fp64AddSubOperations;
+                ++result.counters.fp64MultiplyOperations;
+                ++result.counters.fp64DivideOperations;
                 if (!finite(denominator) || denominator <= 0.0 ||
                     !finite(value)) {
                     result.error = UmtCornerSweepError::NonfiniteResult;

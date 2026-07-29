@@ -106,10 +106,22 @@ main(int argc, char **argv)
               << ",\"flux_reads\":" << result.counters.fluxReads
               << ",\"unique_64_byte_flux_lines\":"
               << result.counters.uniqueFluxCacheLines
+              << ",\"direct_three_face_opposite_copies\":"
+              << result.counters.directThreeFaceOppositeCopies
+              << ",\"weighted_opposite_flux_terms\":"
+              << result.counters.weightedOppositeFluxTerms
+              << ",\"weighted_opposite_normalizations\":"
+              << result.counters.weightedOppositeNormalizations
               << ",\"special_updates\":"
               << result.counters.specialOppositeFaceUpdates
               << ",\"fallback_updates\":"
               << result.counters.fallbackFaceUpdates
+              << ",\"fp64_add_sub_operations\":"
+              << result.counters.fp64AddSubOperations
+              << ",\"fp64_multiply_operations\":"
+              << result.counters.fp64MultiplyOperations
+              << ",\"fp64_divide_operations\":"
+              << result.counters.fp64DivideOperations
               << ",\"output_writes\":"
               << result.counters.outputWrites << "}\n";
     return 0;
