@@ -20,6 +20,9 @@ native_issue_order=${MAA_VIRTUAL_NATIVE_ISSUE_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
+response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
+response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
+words_per_cycle=${MAA_VIRTUAL_WORDS_PER_CYCLE:-4}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
 debug_args=()
@@ -59,6 +62,18 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
 }
 [[ $row_table_rows -gt 0 && $row_table_rows -le 64 ]] || {
     echo "MAA_ROW_TABLE_ROWS_PER_SLICE must be in [1,64]" >&2
+    exit 2
+}
+[[ $response_slots -gt 0 ]] || {
+    echo "MAA_VIRTUAL_RESPONSE_SLOTS must be greater than zero" >&2
+    exit 2
+}
+[[ $response_word_pool -ge 0 ]] || {
+    echo "MAA_VIRTUAL_RESPONSE_WORD_POOL must be non-negative" >&2
+    exit 2
+}
+[[ $words_per_cycle -ge 0 ]] || {
+    echo "MAA_VIRTUAL_WORDS_PER_CYCLE must be non-negative" >&2
     exit 2
 }
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
@@ -183,6 +198,9 @@ fi
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
+    printf 'virtual_response_slots=%s\n' "$response_slots"
+    printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
+    printf 'virtual_words_per_cycle=%s\n' "$words_per_cycle"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -225,8 +243,10 @@ restore_cmd=(
     --maa_num_row_table_rows_per_slice="$row_table_rows"
     --maa_virtual_combine_slots=384 --maa_virtual_combine_words=4096
     --maa_virtual_combine_ways=4 --maa_virtual_combine_banks=0
-    --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
-    --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
+    --maa_virtual_response_slots="$response_slots"
+    --maa_virtual_response_word_pool="$response_word_pool"
+    --maa_virtual_words_per_cycle="$words_per_cycle"
+    --maa_virtual_max_outstanding_writes=64
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
     --maa_virtual_masked_writes --cmd "$binary" --options "$options"
 )
