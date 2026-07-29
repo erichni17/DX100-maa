@@ -256,8 +256,10 @@ def main() -> int:
     combine_metadata_bits_per_unit = combine_slots * (
         1 + args.address_bits + words_per_line
     )
-    combine_sets = 1 if integer(maa, "virtual_combine_ways") == 0 else (
-        combine_slots // integer(maa, "virtual_combine_ways")
+    combine_sets = (
+        1
+        if integer(maa, "virtual_combine_ways") == 0
+        else (combine_slots // integer(maa, "virtual_combine_ways"))
     )
     combine_ways = integer(maa, "virtual_combine_ways") or combine_slots
     combine_replacement_bits_per_unit = combine_sets * bits_for_values(
@@ -266,9 +268,7 @@ def main() -> int:
     outstanding_write_bits_per_unit = outstanding_writes * (
         1 + args.address_bits
     )
-    page_counter_bits_per_unit = virtual_pages_used * (
-        5 * iteration_bits + 1
-    )
+    page_counter_bits_per_unit = virtual_pages_used * (5 * iteration_bits + 1)
     completion_increment_bits = tiles * max(0, virtual_pages_used - 1)
 
     if args.mechanism == "native":
@@ -287,8 +287,7 @@ def main() -> int:
         )
         active_response_metadata_bits = response_metadata_bits_per_unit
         active_combine_metadata_bits = (
-            combine_metadata_bits_per_unit
-            + combine_replacement_bits_per_unit
+            combine_metadata_bits_per_unit + combine_replacement_bits_per_unit
         )
         active_write_metadata_bits = outstanding_write_bits_per_unit
         active_page_counter_bits = page_counter_bits_per_unit
@@ -342,6 +341,19 @@ def main() -> int:
     active_virtual_payload_total = (
         active_virtual_payload_per_unit * indirect_units
     )
+    # The simulator keeps the legacy full-line array in every response slot
+    # even when packed responses use the bounded word pool instead. A
+    # specialized hardware implementation can union or remove this inactive
+    # array, so keep it outside the active lower bound and expose it as a
+    # separate conservative implementation view.
+    inactive_cpp_response_line_bytes_per_unit = (
+        response_slots * 64
+        if args.mechanism != "native" and (response_pool or response_words)
+        else 0
+    )
+    inactive_cpp_response_line_bytes_total = (
+        inactive_cpp_response_line_bytes_per_unit * indirect_units
+    )
     counted_payload = physical_spd_bytes + active_virtual_payload_total
     bounded_state_total = (
         counted_payload
@@ -368,6 +380,15 @@ def main() -> int:
         - native_claim_bytes_per_unit * indirect_units
         + physical_element_ready_lower_bytes
         + allocated_descriptor_lower_bytes
+    )
+    conservative_cpp_static_bounded_state = (
+        bounded_state_total + inactive_cpp_response_line_bytes_total
+    )
+    conservative_cpp_static_comparable_storage = (
+        comparable_storage + inactive_cpp_response_line_bytes_total
+    )
+    conservative_cpp_static_allocated_storage = (
+        allocated_comparable_storage + inactive_cpp_response_line_bytes_total
     )
 
     report = {
@@ -489,6 +510,17 @@ def main() -> int:
             "active_total_bytes_all_indirect_units": (
                 active_virtual_payload_total
             ),
+            "inactive_cpp_response_line_bytes_per_indirect_unit": (
+                inactive_cpp_response_line_bytes_per_unit
+            ),
+            "inactive_cpp_response_line_bytes_all_indirect_units": (
+                inactive_cpp_response_line_bytes_total
+            ),
+            "inactive_cpp_response_line_note": (
+                "Legacy 64-byte arrays remain allocated in each C++ response "
+                "slot while packed responses use the bounded word pool. They "
+                "are not required by the selected hardware mode."
+            ),
         },
         "incremental_virtual_control_lower_bound": {
             "index_feeder_metadata_bits_per_indirect_unit": (
@@ -503,9 +535,7 @@ def main() -> int:
             "outstanding_write_metadata_bits_per_indirect_unit": (
                 active_write_metadata_bits
             ),
-            "page_counter_bits_per_indirect_unit": (
-                active_page_counter_bits
-            ),
+            "page_counter_bits_per_indirect_unit": (active_page_counter_bits),
             "native_order_claim_bits_per_indirect_unit": active_claim_bits,
             "metadata_bytes_per_indirect_unit": virtual_control_bytes_per_unit,
             "metadata_bytes_all_indirect_units": (
@@ -560,11 +590,40 @@ def main() -> int:
             )
             * 100,
         },
+        "conservative_cpp_static_storage_view": {
+            "scope": (
+                "candidate-only addition of inactive fixed response-line "
+                "arrays; still excludes STL/container and allocator overhead"
+            ),
+            "inactive_fixed_response_line_bytes": (
+                inactive_cpp_response_line_bytes_total
+            ),
+            "bounded_state_bytes": conservative_cpp_static_bounded_state,
+            "comparable_configured_bytes": (
+                conservative_cpp_static_comparable_storage
+            ),
+            "comparable_allocated_bytes": (
+                conservative_cpp_static_allocated_storage
+            ),
+            "comparable_reduction_vs_native_pct": (
+                1
+                - conservative_cpp_static_comparable_storage
+                / native_comparable_storage
+            )
+            * 100,
+            "allocated_reduction_vs_native_pct": (
+                1
+                - conservative_cpp_static_allocated_storage
+                / native_allocated_comparable_storage
+            )
+            * 100,
+        },
         "excluded_from_counted_payload": [
             "Row/Offset metadata (included only in comparable lower bound)",
             "unbounded/general queues, arbitration, and non-capacity control",
             "cache tags, MSHRs, routing state, and outstanding packet payload",
             "ports, wiring, control, and synthesized memory periphery",
+            "C++ STL node/vector objects and allocator overhead",
         ],
     }
 
@@ -587,6 +646,8 @@ def main() -> int:
         f"| Configured physical SPD payload | {format_bytes(physical_spd_bytes)} |",
         f"| Active direct-index B feeder | {format_bytes(active_index_payload)} / indirect unit |",
         f"| Active source-response payload | {format_bytes(active_response_payload)} / indirect unit |",
+        "| Inactive fixed C++ response-line arrays | "
+        f"{format_bytes(inactive_cpp_response_line_bytes_per_unit)} / indirect unit |",
         f"| Active destination-combiner payload | {format_bytes(active_combine_payload)} / indirect unit |",
         "| Incremental virtual tags/control (lower bound) | "
         f"{format_bytes(virtual_control_bytes_per_unit)} / indirect unit |",
@@ -626,13 +687,19 @@ def main() -> int:
         "**"
         f"{report['allocated_model_storage_lower_bound']['reduction_vs_native_pct']:.3f}%"
         "**.",
+        "Conservative candidate-only reduction after also counting inactive "
+        "fixed C++ response-line arrays: "
+        "**"
+        f"{report['conservative_cpp_static_storage_view']['comparable_reduction_vs_native_pct']:.3f}%"
+        "**.",
         "",
         "This is a capacity ledger, not an area estimate. The comparable lower bound",
         "includes retained logical-sized Row/Offset/invalidator state and bit-packed",
         "readiness, but this does not prove native-equivalent descriptor lifetime or",
         "issue order. Essential tags and bounded control arrays are included as a",
         "bit-count lower bound; ports, arbitration, wiring, and memory periphery are",
-        "still excluded.",
+        "still excluded. The conservative C++ view additionally counts the inactive",
+        "fixed response-line arrays, but still does not estimate STL/allocator overhead.",
     ]
     (output / "maa_storage.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"

@@ -12,7 +12,9 @@ SCRIPT = ROOT / "experiments" / "scripts" / "report_maa_storage.py"
 
 
 class StorageReportTest(unittest.TestCase):
-    def write_config(self, root: Path, physical: int, native_order: bool) -> Path:
+    def write_config(
+        self, root: Path, physical: int, native_order: bool
+    ) -> Path:
         values = {
             "num_cores": "4",
             "num_tiles_per_core": "8",
@@ -85,6 +87,19 @@ class StorageReportTest(unittest.TestCase):
             )
             self.assertEqual(comparable["native_total_bytes"], 2417152)
             self.assertEqual(comparable["configured_total_bytes"], 833347)
+            buffers = report["virtual_data_buffers"]
+            self.assertEqual(
+                buffers["inactive_cpp_response_line_bytes_per_indirect_unit"],
+                8192,
+            )
+            conservative = report["conservative_cpp_static_storage_view"]
+            self.assertEqual(
+                conservative["inactive_fixed_response_line_bytes"], 8192
+            )
+            self.assertEqual(conservative["bounded_state_bytes"], 570691)
+            self.assertEqual(
+                conservative["comparable_configured_bytes"], 841539
+            )
             allocated = report["allocated_model_storage_lower_bound"]
             self.assertEqual(
                 allocated["retained_shared_descriptor_bytes"], 861120
@@ -110,6 +125,12 @@ class StorageReportTest(unittest.TestCase):
             report = json.loads((output / "maa_storage.json").read_text())
             control = report["incremental_virtual_control_lower_bound"]
             self.assertEqual(control["metadata_bytes_per_indirect_unit"], 0)
+            self.assertEqual(
+                report["conservative_cpp_static_storage_view"][
+                    "inactive_fixed_response_line_bytes"
+                ],
+                0,
+            )
             self.assertEqual(
                 report["bounded_state_lower_bound"][
                     "reduction_vs_native_spd_pct"
