@@ -79,6 +79,10 @@ COMPARISONS = [
     ("logical_reorder_16k_to_4k", "fused", "fused_4k"),
     ("direct_4k_vs_native_4k", "fused_4k", "direct_index_4k"),
 ]
+CACHE_LINE_BYTES = 64
+XRAGE_WORD_BYTES = 8
+VIRTUAL_ARMS = {"compact", "direct_index_16k", "direct_index_4k"}
+DIRECT_INDEX_ARMS = {"direct_index_16k", "direct_index_4k"}
 
 
 def fail(message):
@@ -166,6 +170,60 @@ def read_first_stat(stats, name):
     return int(match.group(1)) if match else 0
 
 
+def configured_payload_storage(arm, maa):
+    logical = int(maa["num_tile_elements"])
+    physical = int(maa["physical_tile_elements"])
+    spd_banks = int(maa["num_tiles_per_core"]) * int(maa["num_cores"])
+    spd_bytes = spd_banks * physical * 4
+    virtual_active = arm in VIRTUAL_ARMS
+
+    combine_slots = int(maa["virtual_combine_slots"])
+    combine_words = int(maa["virtual_combine_words"])
+    combine_bytes = combine_slots * CACHE_LINE_BYTES
+    if combine_words:
+        combine_bytes = min(combine_bytes, combine_words * XRAGE_WORD_BYTES)
+
+    response_slots = int(maa["virtual_response_slots"])
+    response_words = int(maa["virtual_response_words"])
+    response_pool = int(maa["virtual_response_word_pool"])
+    if response_pool:
+        response_bytes = min(
+            response_slots * CACHE_LINE_BYTES,
+            response_pool * XRAGE_WORD_BYTES,
+        )
+    elif response_words:
+        response_bytes = min(
+            response_slots * CACHE_LINE_BYTES,
+            response_slots * response_words * XRAGE_WORD_BYTES,
+        )
+    else:
+        response_bytes = response_slots * CACHE_LINE_BYTES
+
+    index_bytes = (
+        int(maa["virtual_index_buffer_lines"]) * CACHE_LINE_BYTES
+        if arm in DIRECT_INDEX_ARMS
+        else 0
+    )
+    active_combine_bytes = combine_bytes if virtual_active else 0
+    active_response_bytes = response_bytes if virtual_active else 0
+    active_virtual_bytes = (
+        active_combine_bytes + active_response_bytes + index_bytes
+    )
+    return {
+        "arm": arm,
+        "logical_elements": logical,
+        "physical_elements": physical,
+        "total_spd_banks": spd_banks,
+        "spd_payload_bytes": spd_bytes,
+        "active_virtual_combiner_payload_bytes": active_combine_bytes,
+        "active_virtual_response_payload_bytes": active_response_bytes,
+        "active_virtual_index_payload_bytes": index_bytes,
+        "active_virtual_payload_bytes": active_virtual_bytes,
+        "modeled_active_data_payload_bytes": spd_bytes + active_virtual_bytes,
+        "reorder_entries_per_indirect_unit": logical,
+    }
+
+
 def main():
     if len(sys.argv) != 2:
         fail("usage: validate_xrage_attribution_smoke.py RESULT_ROOT")
@@ -173,6 +231,7 @@ def main():
     digest_cache = {}
     rows = []
     diagnostics = []
+    storage = []
     expected_hash = None
     expected_commit = None
 
@@ -250,6 +309,7 @@ def main():
             fail(f"{arm} config has wrong logical tile size")
         if int(maa["physical_tile_elements"]) != physical:
             fail(f"{arm} config has wrong physical tile size")
+        storage.append(configured_payload_storage(arm, maa))
         verify_artifacts(arm_root / "artifact_sha256.txt", digest_cache)
         rows.append({"arm": arm, **result})
 
@@ -279,6 +339,30 @@ def main():
         writer = csv.DictWriter(stream, diagnostic_fields, delimiter="\t")
         writer.writeheader()
         writer.writerows(diagnostics)
+    native_spd_bytes = next(
+        row["spd_payload_bytes"] for row in storage if row["arm"] == "native"
+    )
+    for row in storage:
+        saved = native_spd_bytes - row["modeled_active_data_payload_bytes"]
+        row["modeled_payload_savings_vs_native_spd_bytes"] = saved
+        row[
+            "modeled_payload_savings_vs_native_spd_pct"
+        ] = f"{100 * saved / native_spd_bytes:+.6f}"
+    storage_fields = list(storage[0])
+    with (root / "storage.tsv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, storage_fields, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(storage)
+    (root / "storage_notes.txt").write_text(
+        "Payload accounting only; this is not a synthesized area estimate.\n"
+        "SPD payload is 4 bytes per configured bank element. XRAGE virtual "
+        "payload assumes 8-byte values and applies configured slot/word "
+        "limits.\n"
+        "Excluded: tags, masks, queue/control bits, row-table storage, offset-"
+        "table storage, ports, ALUs, wiring, and technology-dependent area.\n"
+        "The offset/reorder table remains sized to logical_elements in every "
+        "arm, even when the SPD payload is physically smaller.\n"
+    )
     ticks_by_arm = {row["arm"]: int(row["roi_simTicks"]) for row in rows}
     comparison_fields = [
         "comparison",
