@@ -15,6 +15,8 @@ physical=${MAA_PHYSICAL_TILE_ELEMENTS:-4096}
 arm=${XRAGE_ARM:-direct_index_4k}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
+runner_source_commit=$(git -C "$root" rev-parse HEAD)
+simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
@@ -26,6 +28,10 @@ index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 }
 [[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 64 ]] || {
     echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,64]" >&2
+    exit 2
+}
+[[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
+    echo "XRAGE_SIMULATOR_SOURCE_COMMIT must be a full Git commit" >&2
     exit 2
 }
 case "$arm" in
@@ -57,7 +63,8 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 options="-f $input"
 
 {
-    printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'source_commit=%s\n' "$simulator_source_commit"
+    printf 'runner_source_commit=%s\n' "$runner_source_commit"
     printf 'arm=%s\n' "$arm"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
