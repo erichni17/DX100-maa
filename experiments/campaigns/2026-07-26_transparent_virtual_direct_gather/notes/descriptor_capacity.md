@@ -26,11 +26,10 @@ intrinsically improves performance.
 
 ## What is and is not bounded
 
-The Row Table can now retain 4,096 active source descriptors and dynamically
-drains when it fills. It no longer preserves one monolithic 16K reorder window.
-The 16K logical Offset Table is still allocated because its entries are indexed
-by logical gather iteration. Therefore this result is a 4K Row-Table design,
-not yet a fully 4K descriptor design.
+This historical treatment lets the Row Table retain 4,096 active source
+descriptors and dynamically drain when it fills. It does not preserve one
+monolithic 16K reorder window. The treatment still allocates a 16K Offset Table,
+so it is a 4K-Row/16K-Offset design rather than the current fully bounded point.
 
 The storage model reports:
 
@@ -45,6 +44,19 @@ The 4K-Row design is 19.010% smaller than the full-descriptor direct-index
 design in this model and 71.772% smaller than the original 2,417,152-byte
 native-16K comparable lower bound. These are capacity lower bounds, not
 synthesized area estimates.
+
+## Fully bounded follow-up
+
+The Offset Table was subsequently made reusable between drain epochs and
+reduced to 4K entries. Across all 14 FLAG gathers, reducing Offset capacity from
+16K to 4K at a fixed 4K epoch changed no simulated behavior: ROI ticks, writes,
+DRAM commands, and MAA issue traces matched exactly. Changing the epoch from
+16K to 4K at fixed 16K storage changed geometric-mean latency by -1.051%.
+
+The current mechanism therefore uses bounded 4K reorder epochs; it does not
+retain or reconstruct the full 16K reorder opportunity. See
+`offset_capacity_epoch.md` for the three-arm attribution and updated storage
+ledger.
 
 ## Professor's subset proposal
 

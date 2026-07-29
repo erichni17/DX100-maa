@@ -20,8 +20,9 @@ The 71.565441% to 8.263473% change is not a paging optimization. Both arms are
 the same backing-memory retirement mechanism. The improvement comes from
 coalescing many per-word C retirement writes into cache-line writes and allowing
 more bounded source responses in flight. This microbenchmark result is also
-separate from the later direct-index mechanism, which reads B through a bounded
-line feeder and retains a full 16K Row/Offset reorder window.
+separate from the first direct-index mechanism, which read B through a bounded
+line feeder while retaining a full 16K Row/Offset reorder window. The current
+fully bounded successor uses 4K descriptor epochs instead.
 
 A five-point cost sweep found a knee near 23,808 modeled bytes: this point had
 10.111206% overhead, while 32,768 bytes had 9.067579% overhead. Both issued 255
@@ -43,9 +44,20 @@ observations. The A-request order and output were unchanged; cache routing made
 B fill 167 MAA cycles slower instead of removing the direct-versus-compact
 critical-path gap.
 
-Reducing active Row-Table capacity from 16K to 4K entries was then validated on
+As an intermediate step, reducing active Row-Table capacity from 16K to 4K
+entries was validated on
 all 14 FLAG gathers. It added only 1.127% geometric-mean latency, with a -0.626%
 to +3.165% range, while exact output and treatment-only configuration checks
 passed. The Offset Table remains 16K, so this is a 4K-Row/16K-Offset result, not
 yet a fully bounded 4K descriptor subsystem. The modeled comparable lower bound
 falls from 842,482 to 682,322 bytes. See `descriptor_capacity.md`.
+
+The Offset Table was subsequently made reusable and bounded to 4K entries. A
+three-arm same-binary experiment separated its storage capacity from its drain
+epoch across all 14 FLAG gathers. At a fixed 4K epoch, 16K and 4K Offset
+capacity produced identical ROI ticks, writes, DRAM commands, and MAA issue
+traces in every case. Changing only the epoch from 16K to 4K changed geometric-
+mean latency by -1.051% and writes by -4.867%. The prior surprising gains are
+therefore caused by schedule-dependent C write coalescing, not by the storage
+shrink or by intrinsically faster virtualization. The fully bounded comparable
+storage lower bound is 653,138 bytes. See `offset_capacity_epoch.md`.

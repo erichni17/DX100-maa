@@ -22,28 +22,36 @@ C-line combining buffers. Its full-XRAGE gain was therefore fusion, destination
 SPD bypass, and retirement overlap. It was not evidence that a smaller physical
 tile was faster.
 
-## Current direct-index 4K path
+## Current fully bounded direct-index 4K path
 
 `INDIR_LD_VIRTUAL_INDEX` receives the A base, B base, C backing base, logical
 range, and a completion token. It operates as follows:
 
 1. Read sequential B lines into a bounded 128-line (8 KiB) feeder.
-2. Consume B words into the baseline 16K Offset and Row tables. A B line can be
+2. Consume B words into 4K-capacity Offset and Row tables. A B line can be
    released once all useful words from that line have been inserted.
-3. After the full logical window is described, select A cache lines using the
-   baseline native issue order across all 16K iterations.
+3. Drain and issue A cache lines after each 4K descriptor epoch, then continue
+   the 16K logical instruction with the next epoch.
 4. Keep only bounded live A responses: 128 response slots sharing a 480-word
    64-bit pool.
 5. Place returned A words into a 384-line C write combiner and retire them to
    dense C memory. The nominal destination tile is completion state, not A
    payload storage.
 
-The physical SPD is globally configured at 4K words per tile ID, but this
-specialized instruction does not page four independent 4K A/B chunks through
-it. It preserves the 16K reorder opportunity by retaining 16K descriptors while
-bounding live payload. This is why a single-digit overhead is plausible; it is
-not comparable to OS virtual-memory paging with page-table walks and arbitrary
-page faults.
+The first direct-index version bounded live B/A/C payload but retained 16K Row
+and Offset descriptors, and therefore preserved the full 16K source reorder
+opportunity. A later Row-only version used 4K Row capacity but retained a 16K
+Offset array. The current version bounds both structures at 4K. It does not
+preserve one 16K reorder window and does not page four complete SPD payloads;
+instead, it executes four bounded descriptor epochs and retires C directly.
+
+A same-binary, three-arm experiment separates storage from scheduling. At a
+fixed 4K epoch, 16K and 4K Offset arrays produced identical timing, writes,
+DRAM commands, and MAA issue traces across all 14 FLAG gathers. Changing the
+epoch itself produced a -1.051% geometric-mean latency change because it altered
+when A responses reached the fixed C combiner. Thus the occasional speedup is a
+schedule/coalescing effect, not a claim that virtualization is intrinsically
+faster. See `offset_capacity_epoch.md`.
 
 The limitation is equally important: this implementation handles a gather whose
 result can retire directly to memory. It has not shown transparent paging for an
@@ -53,7 +61,7 @@ arbitrary later MAA instruction that expects the entire destination tile in SPD.
 
 Keeping a selected subset of B descriptors in DX100 and rescanning cached B for
 other subsets is a way to recover a larger reorder window when descriptor
-capacity is limited. A newer experiment reduced active Row-Table capacity to 4K
+capacity is limited. An intermediate experiment reduced active Row-Table capacity to 4K
 while retaining the 16K Offset Table. One-pass dynamic drain was only 1.127%
 slower geometrically across all 14 FLAG gathers, so repeated scans are not the
 default. On FLAG00, cached two- and three-partition policies with C-combiner

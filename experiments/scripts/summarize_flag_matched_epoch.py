@@ -26,7 +26,12 @@ def geometric_mean(values: list[float]) -> float:
 
 def write_tsv(path: Path, rows: list[dict[str, object]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=rows[0], delimiter="\t")
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=rows[0],
+            delimiter="\t",
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
 
