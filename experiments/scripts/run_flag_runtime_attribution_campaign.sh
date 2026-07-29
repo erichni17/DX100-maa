@@ -100,7 +100,9 @@ fi
 # instruction registers and make the guest/simulator memory maps disagree.
 run_arm fused4 fused_4k fused4 4096 0 1 16384
 run_arm compact16 compact compact16 16384 1 1 16384
-run_arm direct4 direct_index_4k direct4 4096 1 8 16384
+# The 128-line feeder is the measured knee on FLAG; 256 lines has identical
+# first-ROI timing while 64 lines is slower.
+run_arm direct4 direct_index_4k direct4 4096 1 128 16384
 fused4_dir="$out/fused4"
 compact16_dir="$out/compact16"
 direct4_dir="$out/direct4"

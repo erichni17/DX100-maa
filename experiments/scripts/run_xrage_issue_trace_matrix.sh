@@ -67,7 +67,7 @@ for label in "${labels[@]}"; do
     case "$label" in
         fused16) args=(fused fused16 16384 1) ;;
         compact16) args=(compact compact16 16384 1) ;;
-        direct4) args=(direct_index_4k direct4 4096 8) ;;
+        direct4) args=(direct_index_4k direct4 4096 128) ;;
     esac
     run_arm "$label" "${args[@]}" &
     pids+=("$!")
