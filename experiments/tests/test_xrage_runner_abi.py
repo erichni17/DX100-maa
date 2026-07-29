@@ -58,6 +58,14 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn("checkpoint_retargeted=%s", script)
         self.assertIn("checkpoint_original_physical=%s", script)
 
+    def test_multi_indirect_unit_runs_are_explicit_and_aggregated(self):
+        for runner in (RUNNER, RECOVERY):
+            script = runner.read_text(encoding="utf-8")
+            self.assertIn("MAA_NUM_INDIRECT_UNITS_PER_MAA", script)
+            self.assertIn("--maa_num_indirect_units_per_maa", script)
+            self.assertIn("sum_indirect_stat", script)
+            self.assertIn("I[0-9]+_", script)
+
 
 if __name__ == "__main__":
     unittest.main()

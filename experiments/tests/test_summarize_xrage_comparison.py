@@ -20,6 +20,8 @@ class SummarizeXrageComparisonTest(unittest.TestCase):
 ---------- Begin Simulation Statistics ----------
 system.maa.S0_STR_CyclesRequest 11 # first stream
 system.maa.S2_STR_CyclesRequest 13 # second stream
+system.maa.I0_IND_CyclesFill 23 # first indirect unit
+system.maa.I1_IND_CyclesFill 29 # second indirect unit
 system.mem_ctrls0.numReads::maa 17 # channel zero
 system.mem_ctrls1.numReads::maa 19 # channel one
 ---------- End Simulation Statistics   ----------
@@ -39,6 +41,12 @@ system.mem_ctrls0.numReads::maa 103 # post-ROI
                 stats, MODULE.SUM_STAT_FIELDS["memory_controller_reads"]
             ),
             36,
+        )
+        self.assertEqual(
+            MODULE.sum_first_block_stats(
+                stats, MODULE.SUM_STAT_FIELDS["fill_cycles"]
+            ),
+            52,
         )
 
     def test_sum_stats_returns_zero_when_absent(self):

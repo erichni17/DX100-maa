@@ -35,16 +35,16 @@ REQUIRED_RESULT_FIELDS = {
     "indirect_spd_read_cycles",
 }
 STAT_FIELDS = {
-    "fill_cycles": "system.maa.I0_IND_CyclesFill",
-    "request_cycles": "system.maa.I0_IND_CyclesRequest",
     "cache_read_packets": "system.maa.port_cache_RD_packets",
     "memory_read_packets": "system.maa.port_mem_RD_packets",
-    "index_line_reads": "system.maa.I0_IND_VirtIndexLineReads",
-    "index_line_high_water": "system.maa.I0_IND_VirtIndexLineHighWater",
-    "index_word_high_water": "system.maa.I0_IND_VirtIndexWordHighWater",
-    "row_table_full_events": "system.maa.I0_IND_NumRTFull",
 }
 SUM_STAT_FIELDS = {
+    "fill_cycles": r"system\.maa\.I\d+_IND_CyclesFill",
+    "request_cycles": r"system\.maa\.I\d+_IND_CyclesRequest",
+    "index_line_reads": r"system\.maa\.I\d+_IND_VirtIndexLineReads",
+    "index_line_high_water": r"system\.maa\.I\d+_IND_VirtIndexLineHighWater",
+    "index_word_high_water": r"system\.maa\.I\d+_IND_VirtIndexWordHighWater",
+    "row_table_full_events": r"system\.maa\.I\d+_IND_NumRTFull",
     "stream_instructions": r"system\.maa\.S\d+_STR_NumInsts",
     "stream_request_cycles": r"system\.maa\.S\d+_STR_CyclesRequest",
     "stream_rt_cycles": r"system\.maa\.S\d+_STR_CyclesRTAccess",
@@ -238,6 +238,7 @@ def read_run(
     index_lines = int(manifest.get("virtual_index_buffer_lines", "1"))
     row_table_slices = int(manifest.get("initial_row_table_slices", "32"))
     row_table_rows = int(manifest.get("row_table_rows_per_slice", "64"))
+    indirect_units = int(manifest.get("num_indirect_units_per_maa", "1"))
     grow_order = int(manifest.get("virtual_grow_order", "0"))
     native_issue_order = int(manifest.get("virtual_native_issue_order", "0"))
     if grow_order not in {0, 1} or native_issue_order not in {0, 1}:
@@ -254,6 +255,8 @@ def read_run(
         fail(f"{label} config and manifest disagree on row-table slices")
     if int(maa["num_row_table_rows_per_slice"]) != row_table_rows:
         fail(f"{label} config and manifest disagree on row-table rows")
+    if int(maa["num_indirect_units_per_maa"]) != indirect_units:
+        fail(f"{label} config and manifest disagree on indirect-unit count")
     if int(maa.getboolean("virtual_grow_order", fallback=False)) != grow_order:
         fail(f"{label} config and manifest disagree on virtual grow order")
     if (
@@ -293,6 +296,7 @@ def read_run(
         "index_buffer_lines": index_lines,
         "initial_row_table_slices": row_table_slices,
         "row_table_rows_per_slice": row_table_rows,
+        "num_indirect_units_per_maa": indirect_units,
         "virtual_grow_order": grow_order,
         "virtual_native_issue_order": native_issue_order,
         "roi_simTicks": ticks[0],

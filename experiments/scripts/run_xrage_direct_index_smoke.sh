@@ -23,6 +23,7 @@ native_issue_order=${MAA_VIRTUAL_NATIVE_ISSUE_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
+indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
@@ -56,6 +57,10 @@ debug_args=()
 }
 [[ $row_table_rows -gt 0 && $row_table_rows -le 64 ]] || {
     echo "MAA_ROW_TABLE_ROWS_PER_SLICE must be in [1,64]" >&2
+    exit 2
+}
+[[ $indirect_units -gt 0 && $indirect_units -le 4 ]] || {
+    echo "MAA_NUM_INDIRECT_UNITS_PER_MAA must be in [1,4]" >&2
     exit 2
 }
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
@@ -152,6 +157,7 @@ fi
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
+    printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
     printf 'guest_environment=empty\n'
@@ -204,6 +210,7 @@ restore_cmd=(
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=2 --maa_ncbus_width=32
     --maa --maa_num_maas=1
+    --maa_num_indirect_units_per_maa="$indirect_units"
     --maa_num_tile_elements="$maa_logical_tile_elements"
     --maa_physical_tile_elements="$physical"
     --maa_l2_uncacheable --maa_l3_uncacheable
@@ -265,21 +272,22 @@ final_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
     echo "XRAGE result extraction failed" >&2
     exit 1
 }
-first_stat() {
-    awk -v key="$1" '$1 == key { print $2; exit }' "$stats"
+sum_indirect_stat() {
+    awk -v suffix="$1" '
+        /^---------- Begin Simulation Statistics/ { active = 1; next }
+        /^---------- End Simulation Statistics/ && active { exit }
+        active && $1 ~ ("^system\\.maa\\.I[0-9]+_" suffix "$") {
+            sum += $2
+            found = 1
+        }
+        END { print found ? sum : 0 }
+    ' "$stats"
 }
-first_stat_or_zero() {
-    awk -v key="$1" \
-        '$1 == key { print $2; found=1; exit } END { if (!found) print 0 }' \
-        "$stats"
-}
-write_issues=$(first_stat system.maa.I0_IND_VirtWriteIssues)
-write_completions=$(first_stat system.maa.I0_IND_VirtWriteCompletions)
-pages_ready=$(first_stat system.maa.I0_IND_VirtPagesReady)
-index_words=$(first_stat system.maa.I0_IND_VirtIndexWords)
-indirect_spd_reads=$(
-    first_stat_or_zero system.maa.I0_IND_CyclesSPDReadAccess
-)
+write_issues=$(sum_indirect_stat IND_VirtWriteIssues)
+write_completions=$(sum_indirect_stat IND_VirtWriteCompletions)
+pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
+index_words=$(sum_indirect_stat IND_VirtIndexWords)
+indirect_spd_reads=$(sum_indirect_stat IND_CyclesSPDReadAccess)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$index_words" "$indirect_spd_reads"; do
     [[ -n $value ]] || {
