@@ -39,6 +39,9 @@ def expected_metrics(batch):
         "descriptorSpartaFusedFp64Adds": 16 * eligible,
         "descriptorSpartaFusedWritesAcknowledged": expected_writes,
         "descriptorResultWrites": expected_writes,
+        "descriptorSpartaFusedPairBankAccesses": (
+            8 * eligible + expected_writes // 6
+        ),
     }
 
 
@@ -71,6 +74,13 @@ def read_stats(path, batch):
             f"unexpected activeContextHighWaterMark: {high_water}"
         )
     required["activeContextHighWaterMark"] = high_water
+
+    conflict_cycles = stats.get("descriptorSpartaFusedPairBankConflictCycles")
+    if conflict_cycles is None or conflict_cycles <= 0:
+        raise ValueError(
+            "expected the shared summary-pair bank conflict path to be active"
+        )
+    required["descriptorSpartaFusedPairBankConflictCycles"] = conflict_cycles
 
     retry_names = (
         "portSendFailures",

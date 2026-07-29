@@ -42,6 +42,7 @@ class SpartaFusedCellCpuBatchSmokeTest(unittest.TestCase):
         metrics = RUNNER.expected_metrics(batch)
         metrics["descriptorSpartaFusedTallyZeroReads"] = 162
         metrics["activeContextHighWaterMark"] = 8
+        metrics["descriptorSpartaFusedPairBankConflictCycles"] = 1
         metrics.update(
             {
                 "portSendFailures": 3,

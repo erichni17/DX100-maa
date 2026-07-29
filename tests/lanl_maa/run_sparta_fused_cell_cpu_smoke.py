@@ -161,6 +161,7 @@ def read_stats(path):
         "descriptorSpartaFusedWritesAcknowledged": 156,
         "descriptorResultWrites": 156,
         "activeContextHighWaterMark": 8,
+        "descriptorSpartaFusedPairBankAccesses": 538,
     }
     for name, expected in required.items():
         if stats.get(name) != expected:
@@ -174,6 +175,12 @@ def read_stats(path):
             f"{zero_reads} is outside [162, 324)"
         )
     required["descriptorSpartaFusedTallyZeroReads"] = zero_reads
+    conflict_cycles = stats.get("descriptorSpartaFusedPairBankConflictCycles")
+    if conflict_cycles is None or conflict_cycles <= 0:
+        raise ValueError(
+            "expected the shared summary-pair bank conflict path to be active"
+        )
+    required["descriptorSpartaFusedPairBankConflictCycles"] = conflict_cycles
     return {name: stats[name] for name in required}
 
 
