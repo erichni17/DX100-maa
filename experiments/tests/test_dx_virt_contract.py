@@ -118,6 +118,10 @@ class ContractTests(unittest.TestCase):
             contract["target_hardware_budget"]["native_reference_bytes"],
             2162688,
         )
+        self.assertIn(
+            "excludes shared Row/Offset",
+            contract["target_hardware_budget"]["comparison_scope"],
+        )
 
     def test_zero_semantics_match_gem5_defaults(self):
         with tempfile.TemporaryDirectory() as temporary:

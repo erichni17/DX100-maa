@@ -440,7 +440,15 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             ],
         },
         "target_hardware_budget": {
-            "scope": "capacity_bounds_not_area_power_or_frequency",
+            "scope": (
+                "partial_payload_control_capacity_bounds_not_area_power_or_"
+                "frequency"
+            ),
+            "comparison_scope": (
+                "SPD, completion, bounded virtual payload/control, and "
+                "retirement-cache data; excludes shared Row/Offset and "
+                "invalidator descriptor state"
+            ),
             "native_reference_bytes": native_reference,
             "physical_spd_payload_bytes": (
                 native_spd if mode == "native" else physical_spd
@@ -472,6 +480,8 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
                 / native_reference
             ),
             "excludes": [
+                "Row/Offset and invalidator descriptor state shared with the "
+                "native design",
                 "cache tags, MSHR payload, and cache control",
                 "ports, interconnect, arbitration, and routing",
                 "physical design, area, power, energy, and timing closure",
@@ -556,15 +566,17 @@ def markdown(contract: dict) -> str:
             "## Target Hardware Budget",
             "",
             f"- Native reference: {target['native_reference_bytes']:,} bytes.",
-            "- Counted structural lower bound: "
+            "- Partial counted payload/control lower bound: "
             f"{target['counted_lower_bound_bytes']:,} bytes.",
-            "- Conservative count with in-flight write payload: "
+            "- Partial conservative count with in-flight write payload: "
             f"{target['conservative_counted_bytes']:,} bytes.",
-            "- Conservative reduction versus native: "
+            "- Reduction within that partial comparison scope: "
             f"{target['conservative_reduction_vs_native_percent']:.2f}%.",
             "",
-            "This is a capacity ledger with explicit bounds, not an area, "
-            "power, or timing result.",
+            "This partial contract ledger excludes shared Row/Offset and "
+            "invalidator descriptor state. Use the full storage reporter for "
+            "a comparable capacity total. Neither report is an area, power, "
+            "or timing result.",
         ]
     )
     return "\n".join(lines) + "\n"
