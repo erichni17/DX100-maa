@@ -37,8 +37,8 @@ configuration mismatch rather than a claim that virtualization itself is
 intrinsically faster.
 
 Routing the direct-index B feeder through the cache was also tested and
-rejected. It reduced total DRAM reads by 6.540%, activates by 10.604%, and
-precharges by 14.825%, but made FLAG00 0.156% slower in two exact deterministic
+rejected. It reduced total DRAM reads by 6.540%, activates by 10.872%, and
+precharges by 14.764%, but made FLAG00 0.110% slower in two exact deterministic
 observations. The A-request order and output were unchanged; cache routing made
-B fill 178 MAA cycles slower instead of removing the direct-versus-compact
+B fill 167 MAA cycles slower instead of removing the direct-versus-compact
 critical-path gap.
