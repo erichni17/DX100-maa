@@ -17,7 +17,14 @@ arm=${XRAGE_ARM:-direct_index_4k}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
-simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
+checkpoint_manifest="$checkpoint_run/manifest.txt"
+checkpoint_artifacts="$checkpoint_run/artifact_sha256.txt"
+[[ -f $checkpoint_manifest && -f $checkpoint_artifacts ]] || {
+    echo "source checkpoint is missing provenance files" >&2
+    exit 1
+}
+checkpoint_source_commit=$(sed -n 's/^source_commit=//p' "$checkpoint_manifest")
+simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_commit}
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
@@ -66,6 +73,20 @@ compgen -G "$checkpoint_dir/cpt.*" >/dev/null || {
     echo "source checkpoint is missing cpt.*" >&2
     exit 1
 }
+checkpoint_arm=$(sed -n 's/^arm=//p' "$checkpoint_manifest")
+checkpoint_physical=$(
+    sed -n 's/^physical_tile_elements=//p' "$checkpoint_manifest"
+)
+checkpoint_input=$(sed -n 's/^input=//p' "$checkpoint_manifest")
+[[ $checkpoint_arm == "$arm" && $checkpoint_physical == "$physical" &&
+   $checkpoint_input == "$input" ]] || {
+    echo "recovery configuration does not match checkpoint manifest" >&2
+    exit 1
+}
+sha256sum --status -c "$checkpoint_artifacts" || {
+    echo "source checkpoint artifact verification failed" >&2
+    exit 1
+}
 
 mkdir -p "$out"
 config="$root/configs/deprecated/example/se.py"
@@ -77,7 +98,7 @@ options="-f $input"
     printf 'runner_source_commit=%s\n' "$runner_source_commit"
     printf 'checkpoint_run=%s\n' "$checkpoint_run"
     printf 'checkpoint_manifest_sha256=%s\n' \
-        "$(sha256sum "$checkpoint_run/manifest.txt" | awk '{print $1}')"
+        "$(sha256sum "$checkpoint_manifest" | awk '{print $1}')"
     printf 'arm=%s\n' "$arm"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
@@ -91,7 +112,8 @@ options="-f $input"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
 sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" "$0" \
-    "$checkpoint_run/manifest.txt" "$checkpoint_run/checkpoint.command" \
+    "$checkpoint_manifest" "$checkpoint_artifacts" \
+    "$checkpoint_run/checkpoint.command" \
     > "$out/artifact_sha256.txt"
 find "$checkpoint_dir" -maxdepth 2 -type f \
     \( -name m5.cpt -o -name '*.pmem' -o -name config.ini \) -print0 |
