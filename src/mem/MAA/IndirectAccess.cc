@@ -415,6 +415,9 @@ void IndirectAccessUnit::check_reset() {
                  !virtual_source_reservations.empty(),
              "I[%d] packed source reservation state is not empty\n",
              my_indirect_id);
+    panic_if(virtual_native_slice_cursor != 0,
+             "I[%d] native slice cursor is not reset: %d\n",
+             my_indirect_id, virtual_native_slice_cursor);
     panic_if(!virtual_outstanding_write_lines.empty(),
              "I[%d] virtual write-line scoreboard is not empty\n",
              my_indirect_id);
@@ -1123,6 +1126,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_response_word_pool_stalls = 0;
         virtual_max_outstanding_writes = 0;
         virtual_build_incomplete = false;
+        virtual_native_slice_cursor = 0;
         virtual_write_address_blocked = false;
         virtual_request_reason = VirtualRequestReason::None;
         virtual_request_reason_tick = 0;
@@ -1316,7 +1320,11 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_CyclesFill[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_fill_start_tick);
             my_fill_start_tick = 0;
         }
-        int last_RT_sent = 0;
+        const bool native_order_claim =
+            usesBoundedSourceResponses() && maa->virtual_native_issue_order;
+        int last_RT_sent = native_order_claim
+            ? virtual_native_slice_cursor
+            : 0;
         int num_rowtable_accesses = 0;
         Addr addr;
         if (my_force_cache_determined == false) {
@@ -1380,8 +1388,6 @@ void IndirectAccessUnit::executeInstruction() {
             createReadPacket(source_addr, latency);
         };
 
-        const bool native_order_claim =
-            usesBoundedSourceResponses() && maa->virtual_native_issue_order;
         panic_if(native_order_claim && !my_fill_finished,
                  "I[%d] native-order attribution cannot interleave "
                  "Row-Table refill\n",
@@ -1526,6 +1532,10 @@ void IndirectAccessUnit::executeInstruction() {
                  ++RT_idx)
                 RT[my_RT_config][RT_idx].reset_virtual_claim_group();
         }
+        if (native_order_claim)
+            virtual_native_slice_cursor = virtual_capacity_full
+                ? last_RT_sent
+                : 0;
         virtual_build_incomplete = virtual_capacity_full;
         DPRINTF(MAAVirtualTrace,
                 "event=build_end unit=%d itr=%d incomplete=%d pending=%d "
