@@ -156,7 +156,8 @@ void StreamAccessUnit::executeInstruction() {
             my_instruction->opcode ==
                 Instruction::OpcodeType::STREAM_PREFETCH) {
             my_word_size = my_instruction->getWordSize(my_dst_tile);
-        } else if (my_instruction->opcode == Instruction::OpcodeType::STREAM_ST) {
+        } else if (my_instruction->opcode ==
+                   Instruction::OpcodeType::STREAM_ST) {
             my_word_size = my_instruction->getWordSize(my_src_tile);
         } else {
             assert(false);

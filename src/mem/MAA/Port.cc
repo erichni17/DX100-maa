@@ -26,9 +26,30 @@
 #define TRACING_ON 1
 #endif
 namespace gem5 {
-void MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
-                     bool force_cache, bool force_retirement_cache,
-                     bool bypass_deferred_queue) {
+bool
+MAA::canCoalesceOutstandingRead(Addr paddr, FuncUnitType func_unit,
+                                int maa_id) const
+{
+    const auto outstanding = my_outstanding_pkt_map.find(paddr);
+    if (outstanding == my_outstanding_pkt_map.end() ||
+        outstanding->second.virtualRetirement ||
+        outstanding->second.cmd != MemCmd::ReadReq)
+        return false;
+
+    for (size_t i = 0; i < outstanding->second.maaIDs.size(); ++i) {
+        if (outstanding->second.maaIDs[i] == maa_id &&
+            outstanding->second.funcUnits[i] == func_unit)
+            return false;
+    }
+    const auto deferred = my_deferred_pkt_map.find(paddr);
+    return deferred == my_deferred_pkt_map.end() || deferred->second.empty();
+}
+
+void
+MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
+                bool force_cache, bool force_retirement_cache,
+                bool bypass_deferred_queue)
+{
     Addr paddr = pkt->req->getPaddr();
     panic_if(force_retirement_cache && !force_cache,
              "%s: retirement-cache routing requires force_cache\n", __func__);

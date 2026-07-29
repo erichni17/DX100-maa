@@ -1286,6 +1286,15 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineReads"),
             statistics::units::Count::get(),
             "cache-line reads issued by direct virtual-index ingestion"));
+        IND_VirtIndexOutstandingMerges.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexOutstandingMerges"),
+            statistics::units::Count::get(),
+            "direct-index reads attached to an outstanding read"));
+        IND_VirtIndexOutstandingWaitCycles.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtIndexOutstandingWaitCycles"),
+            statistics::units::Cycle::get(),
+            "cycles direct-index ingestion waited on a non-mergeable packet"));
         IND_VirtIndexLineHighWater.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineHighWater"),
             statistics::units::Count::get(),

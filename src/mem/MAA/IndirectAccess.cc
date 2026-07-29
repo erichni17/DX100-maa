@@ -612,7 +612,14 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
         const Addr block_vaddr = addrBlockAligner(first_vaddr, block_size);
         const Addr block_paddr =
             addrBlockAligner(translatePacket(block_vaddr), block_size);
-        if (maa->hasOutstandingPacket(block_paddr)) {
+        const bool has_outstanding = maa->hasOutstandingPacket(block_paddr);
+        const bool merge_outstanding =
+            has_outstanding && maa->canCoalesceOutstandingRead(
+                                   block_paddr, FuncUnitType::INDIRECT,
+                                   my_indirect_id);
+        if (has_outstanding && !merge_outstanding) {
+            (*maa->stats.IND_VirtIndexOutstandingWaitCycles
+                  [my_indirect_id])++;
             scheduleExecuteInstructionEvent(1);
             return;
         }
@@ -654,6 +661,8 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             direct_index_max_lines,
             static_cast<int>(direct_index_pending_lines.size() +
                              direct_index_ready_lines.size()));
+        if (merge_outstanding)
+            (*maa->stats.IND_VirtIndexOutstandingMerges[my_indirect_id])++;
         createDirectIndexReadPacket(block_paddr, rowtable_latency);
     }
 }

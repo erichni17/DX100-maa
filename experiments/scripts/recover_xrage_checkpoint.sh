@@ -366,9 +366,14 @@ write_issues=$(sum_indirect_stat IND_VirtWriteIssues)
 write_completions=$(sum_indirect_stat IND_VirtWriteCompletions)
 pages_ready=$(sum_indirect_stat IND_VirtPagesReady)
 index_words=$(sum_indirect_stat IND_VirtIndexWords)
+index_outstanding_merges=$(sum_indirect_stat IND_VirtIndexOutstandingMerges)
+index_outstanding_wait_cycles=$(
+    sum_indirect_stat IND_VirtIndexOutstandingWaitCycles
+)
 indirect_spd_reads=$(sum_indirect_stat IND_CyclesSPDReadAccess)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
-    "$index_words" "$indirect_spd_reads"; do
+    "$index_words" "$index_outstanding_merges" \
+    "$index_outstanding_wait_cycles" "$indirect_spd_reads"; do
     [[ -n $value ]] || {
         echo "XRAGE mechanism-counter extraction failed" >&2
         exit 1
@@ -378,11 +383,14 @@ done
     printf 'output_hash\troi_simTicks\tfinal_simTicks\tstats_blocks'
     printf '\tvirtual_write_issues\tvirtual_write_completions'
     printf '\tvirtual_pages_ready\tdirect_index_words'
+    printf '\tdirect_index_outstanding_merges'
+    printf '\tdirect_index_outstanding_wait_cycles'
     printf '\tindirect_spd_read_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
-        "$index_words" "$indirect_spd_reads"
+        "$index_words" "$index_outstanding_merges" \
+        "$index_outstanding_wait_cycles" "$indirect_spd_reads"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '

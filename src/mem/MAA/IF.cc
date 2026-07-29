@@ -265,7 +265,12 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                  "%s: tile %d is a virtual completion token, not SPD data\n",
                  __func__, tile_id);
     };
-    reject_completion_source(_instruction.src1SpdID);
+    const bool completion_dependency =
+        _instruction.opcode ==
+            Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+        _instruction.src1SpdID != -1;
+    if (!completion_dependency)
+        reject_completion_source(_instruction.src1SpdID);
     reject_completion_source(_instruction.src2SpdID);
     reject_completion_source(_instruction.condSpdID);
     for (int i = 0; i < num_instructions_per_maa; i++) {
@@ -329,7 +334,8 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         completion_only_tiles[maa_id][_instruction.dst1SpdID] =
             _instruction.opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
             _instruction.opcode ==
-                Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX;
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
+            _instruction.opcode == Instruction::OpcodeType::STREAM_PREFETCH;
     }
     if (_instruction.dst2SpdID != -1)
         completion_only_tiles[maa_id][_instruction.dst2SpdID] = false;

@@ -12,6 +12,8 @@ COUNTERS = {
     "rt_full": "IND_NumRTFull",
     "build_rounds": "IND_VirtBuildRounds",
     "index_line_reads": "IND_VirtIndexLineReads",
+    "index_outstanding_merges": "IND_VirtIndexOutstandingMerges",
+    "index_outstanding_wait_cycles": "IND_VirtIndexOutstandingWaitCycles",
     "index_line_high_water": "IND_VirtIndexLineHighWater",
     "index_words": "IND_VirtIndexWords",
     "index_word_high_water": "IND_VirtIndexWordHighWater",

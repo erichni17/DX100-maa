@@ -633,6 +633,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtAllPagesReadyCycles;
         std::vector<statistics::Scalar *> IND_VirtPageReadySpanCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexLineReads;
+        std::vector<statistics::Scalar *> IND_VirtIndexOutstandingMerges;
+        std::vector<statistics::Scalar *> IND_VirtIndexOutstandingWaitCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexLineHighWater;
         std::vector<statistics::Scalar *> IND_VirtIndexWords;
         std::vector<statistics::Scalar *> IND_VirtIndexWordHighWater;
@@ -824,6 +826,8 @@ public:
         return my_outstanding_pkt_map.find(paddr) !=
                my_outstanding_pkt_map.end();
     }
+    bool canCoalesceOutstandingRead(Addr paddr, FuncUnitType func_unit,
+                                    int maa_id) const;
     bool allIndirectPacketsSent(int maaID);
     bool allStreamPacketsSent(int maaID);
 };

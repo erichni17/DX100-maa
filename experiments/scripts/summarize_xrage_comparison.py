@@ -42,6 +42,12 @@ SUM_STAT_FIELDS = {
     "fill_cycles": r"system\.maa\.I\d+_IND_CyclesFill",
     "request_cycles": r"system\.maa\.I\d+_IND_CyclesRequest",
     "index_line_reads": r"system\.maa\.I\d+_IND_VirtIndexLineReads",
+    "index_outstanding_merges": (
+        r"system\.maa\.I\d+_IND_VirtIndexOutstandingMerges"
+    ),
+    "index_outstanding_wait_cycles": (
+        r"system\.maa\.I\d+_IND_VirtIndexOutstandingWaitCycles"
+    ),
     "index_line_high_water": r"system\.maa\.I\d+_IND_VirtIndexLineHighWater",
     "index_word_high_water": r"system\.maa\.I\d+_IND_VirtIndexWordHighWater",
     "row_table_full_events": r"system\.maa\.I\d+_IND_NumRTFull",

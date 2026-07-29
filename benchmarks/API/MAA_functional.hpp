@@ -550,7 +550,22 @@ inline void maa_stream_load(T1 *data, int min_reg, int max_reg, int stride_reg, 
     set_tile_ready(dst_tile, 1);
 }
 template <class T1>
-inline void maa_stream_store(T1 *data, int min_reg, int max_reg, int stride_reg, int src_tile, int cond_tile = -1) {
+inline void maa_stream_prefetch(T1 *data, int min_reg, int max_reg,
+                                int stride_reg, int token_tile) {
+    const int min = get_reg<int>(min_reg);
+    const int max = get_reg<int>(max_reg);
+    const int stride = get_reg<int>(stride_reg);
+    const int8_t region = get_region(data);
+    int count = 0;
+    for (int i = min; i < max && count < TILE_SIZE; i += stride, ++count)
+        assert(check_region(region, data + i));
+    set_tile_size(token_tile, count);
+    set_tile_ready(token_tile, 1);
+}
+template <class T1>
+inline void maa_stream_store(T1 *data, int min_reg, int max_reg,
+                             int stride_reg, int src_tile,
+                             int cond_tile = -1) {
     T1 *src = get_cacheable_tile_pointer<T1>(src_tile);
     uint32_t *cond_array = nullptr;
     if (cond_tile != -1)
@@ -612,7 +627,8 @@ inline void maa_indirect_load_virtual(T1 *data, int idx_tile,
 template <class T1>
 inline void maa_indirect_load_virtual_index(
     T1 *data, uint32_t *indices, int completion_tile, T1 *backing,
-    int min_reg, int max_reg, int stride_reg) {
+    int min_reg, int max_reg, int stride_reg, int prefetch_token = -1) {
+    (void)prefetch_token;
     const int min = get_reg<int>(min_reg);
     const int max = get_reg<int>(max_reg);
     const int stride = get_reg<int>(stride_reg);
