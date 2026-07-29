@@ -118,6 +118,7 @@ process.env = [
     ),
     "OMPI_MCA_btl=self",
     "OMPI_MCA_pml=ob1",
+    "OMPI_MCA_shmem=mmap",
     "BRANSON_LANL_MAA_SUBMIT=1",
     "BRANSON_LANL_MAA_REPLACE_TALLIES=1",
     "BRANSON_LANL_MAA_SUBMIT_TIMESTEP=1",
