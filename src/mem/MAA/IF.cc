@@ -129,6 +129,7 @@ int Instruction::getWordSize(int tile_id) {
             }
         }
         case OpcodeType::STREAM_LD:
+        case OpcodeType::STREAM_PREFETCH:
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
@@ -227,6 +228,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
 
     switch (_instruction.opcode) {
     case Instruction::OpcodeType::STREAM_LD:
+    case Instruction::OpcodeType::STREAM_PREFETCH:
     case Instruction::OpcodeType::STREAM_ST: {
         _instruction.funcUniType = FuncUnitType::STREAM;
         break;
@@ -274,6 +276,16 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         } else {
             if (i == ignored_hazard_slot)
                 continue;
+            if (_instruction.opcode ==
+                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+                _instruction.src1SpdID != -1 &&
+                instructions[maa_id][i].opcode ==
+                    Instruction::OpcodeType::STREAM_PREFETCH &&
+                instructions[maa_id][i].dst1SpdID ==
+                    _instruction.src1SpdID) {
+                _instruction.src1Status =
+                    Instruction::TileStatus::WaitForService;
+            }
             if (_instruction.dst1SpdID != -1) {
                 if ((instructions[maa_id][i].dst1SpdID != -1 && _instruction.dst1SpdID == instructions[maa_id][i].dst1SpdID) ||
                     (instructions[maa_id][i].dst2SpdID != -1 && _instruction.dst1SpdID == instructions[maa_id][i].dst2SpdID) ||

@@ -231,6 +231,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::STREAM_LD ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::STREAM_PREFETCH ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||

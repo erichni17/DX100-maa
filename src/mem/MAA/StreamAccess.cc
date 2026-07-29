@@ -152,7 +152,9 @@ void StreamAccessUnit::executeInstruction() {
         DPRINTF(MAAStream,
                 "S[%d] %s: min: %d, max: %d, stride: %d, size: %d!\n",
                 my_stream_id, __func__, my_min, my_max, my_stride, my_size);
-        if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
+        if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD ||
+            my_instruction->opcode ==
+                Instruction::OpcodeType::STREAM_PREFETCH) {
             my_word_size = my_instruction->getWordSize(my_dst_tile);
         } else if (my_instruction->opcode == Instruction::OpcodeType::STREAM_ST) {
             my_word_size = my_instruction->getWordSize(my_src_tile);
@@ -162,7 +164,9 @@ void StreamAccessUnit::executeInstruction() {
         my_words_per_cl = block_size / my_word_size;
         my_words_per_page = page_size / my_word_size;
         (*maa->stats.STR_NumInsts[my_stream_id])++;
-        if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
+        if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD ||
+            my_instruction->opcode ==
+                Instruction::OpcodeType::STREAM_PREFETCH) {
             my_is_load = true;
             maa->stats.numInst_STRRD++;
         } else if (my_instruction->opcode == Instruction::OpcodeType::STREAM_ST) {
@@ -360,14 +364,21 @@ void StreamAccessUnit::createReadPacket(Addr addr, int latency) {
     RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
     real_req->setRegion(my_addr_range_id);
     PacketPtr my_pkt;
-    if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
+    if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD ||
+        my_instruction->opcode ==
+            Instruction::OpcodeType::STREAM_PREFETCH) {
         my_pkt = new Packet(real_req, MemCmd::ReadReq);
     } else {
         my_pkt = new Packet(real_req, MemCmd::ReadExReq);
     }
     my_pkt->allocate();
-    maa->sendPacket(FuncUnitType::STREAM, my_stream_id, my_pkt, maa->getClockEdge(Cycles(latency)));
-    DPRINTF(MAAStream, "S[%d] %s: created %s to send in %d cycles\n", my_stream_id, __func__, my_pkt->print(), latency);
+    maa->sendPacket(
+        FuncUnitType::STREAM, my_stream_id, my_pkt,
+        maa->getClockEdge(Cycles(latency)),
+        my_instruction->opcode == Instruction::OpcodeType::STREAM_PREFETCH);
+    DPRINTF(MAAStream,
+            "S[%d] %s: created %s to send in %d cycles\n",
+            my_stream_id, __func__, my_pkt->print(), latency);
     (*maa->stats.STR_LoadsCacheAccessing[my_stream_id])++;
 }
 void StreamAccessUnit::readPacketSent(Addr addr) {
@@ -409,6 +420,8 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
             }
             break;
         }
+        case Instruction::OpcodeType::STREAM_PREFETCH:
+            break;
         case Instruction::OpcodeType::STREAM_ST: {
             if (my_word_size == 4) {
                 ((uint32_t *)new_data)[wid] = maa->spd->getData<uint32_t>(my_src_tile, itr);
@@ -425,14 +438,28 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
     }
 
     Cycles total_latency = Cycles(0);
-    if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
+    if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD ||
+        my_instruction->opcode ==
+            Instruction::OpcodeType::STREAM_PREFETCH) {
         my_received_responses++;
-        updateLatency(0, 0, entries.size(), 1);
-        if (maa->allStreamPacketsSent(my_stream_id) && my_received_responses == my_sent_requests) {
-            DPRINTF(MAAStream, "S[%d] %s: all responses received, calling execution again in state %s!\n", my_stream_id, __func__, status_names[(int)state]);
+        updateLatency(
+            0, 0,
+            my_instruction->opcode == Instruction::OpcodeType::STREAM_LD
+                ? entries.size()
+                : 0,
+            1);
+        if (maa->allStreamPacketsSent(my_stream_id) &&
+            my_received_responses == my_sent_requests) {
+            DPRINTF(MAAStream,
+                    "S[%d] %s: all responses received, calling execution "
+                    "again in state %s!\n",
+                    my_stream_id, __func__, status_names[(int)state]);
             scheduleNextExecution(true);
         } else {
-            DPRINTF(MAAStream, "S[%d] %s: expected: %d, received: %d!\n", my_stream_id, __func__, my_received_responses, my_received_responses);
+            DPRINTF(MAAStream,
+                    "S[%d] %s: expected: %d, received: %d!\n",
+                    my_stream_id, __func__, my_received_responses,
+                    my_received_responses);
         }
     } else {
         total_latency = updateLatency(0, entries.size(), 0, 1);

@@ -47,9 +47,10 @@ public:
         INDIR_LD_SPD_STREAM = 12,
         INDIR_LD_VIRTUAL_INDEX = 13,
         INDIR_LD_INDEX = 14,
+        STREAM_PREFETCH = 15,
         MAX
     };
-    std::string opcode_names[15] = {
+    std::string opcode_names[16] = {
         "STREAM_LD",
         "STREAM_ST",
         "INDIR_LD",
@@ -64,7 +65,8 @@ public:
         "INDIR_LD_VIRTUAL",
         "INDIR_LD_SPD_STREAM",
         "INDIR_LD_VIRTUAL_INDEX",
-        "INDIR_LD_INDEX"
+        "INDIR_LD_INDEX",
+        "STREAM_PREFETCH"
     };
     enum class OPType : uint8_t
     {

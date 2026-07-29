@@ -72,6 +72,12 @@ class XrageRunnerAbiTest(unittest.TestCase):
                 "direct4warm", runner.read_text(encoding="utf-8")
             )
 
+    def test_stream_prefetch_is_an_explicit_guest_arm(self):
+        for runner in (RUNNER, RECOVERY):
+            self.assertIn(
+                "direct4prefetch", runner.read_text(encoding="utf-8")
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

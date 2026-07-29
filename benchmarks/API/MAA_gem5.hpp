@@ -53,7 +53,8 @@ enum OpcodeType : uint8_t {
     INDIR_LD_VIRTUAL = 11,
     INDIR_LD_SPD_STREAM = 12,
     INDIR_LD_VIRTUAL_INDEX = 13,
-    INDIR_LD_INDEX = 14
+    INDIR_LD_INDEX = 14,
+    STREAM_PREFETCH = 15
 };
 enum class DataType : uint8_t {
     UINT32_TYPE = 0,
@@ -285,7 +286,29 @@ inline void maa_stream_load(T1 *data, int min_reg, int max_reg, int stride_reg, 
     __asm__ __volatile__("mfence;");
 }
 template <class T1>
-inline void maa_stream_store(T1 *data, int min_reg, int max_reg, int stride_reg, int src_tile, int cond_tile = -1) {
+inline void maa_stream_prefetch(T1 *data, int min_reg, int max_reg,
+                                int stride_reg, int token_tile) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::STREAM_PREFETCH << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)token_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) |
+        ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    __asm__ __volatile__("mfence;");
+}
+template <class T1>
+inline void maa_stream_store(T1 *data, int min_reg, int max_reg,
+                             int stride_reg, int src_tile,
+                             int cond_tile = -1) {
     DataType data_type = get_data_type<T1>();
     *INSTR_opcode_datatype_optype_tdst1_tdst2 = ((uint64_t)OpcodeType::STREAM_ST << 32) |                       // opcode
                                                 ((uint64_t)data_type << 24) |                                   // datatype
@@ -347,7 +370,7 @@ inline void maa_indirect_load_virtual(T1 *data, int idx_tile, int completion_til
 template <class T1>
 inline void maa_indirect_load_virtual_index(
     T1 *data, uint32_t *indices, int completion_tile, T1 *backing,
-    int min_reg, int max_reg, int stride_reg) {
+    int min_reg, int max_reg, int stride_reg, int prefetch_token = -1) {
     DataType data_type = get_data_type<T1>();
     *INSTR_opcode_datatype_optype_tdst1_tdst2 =
         ((uint64_t)OpcodeType::INDIR_LD_VIRTUAL_INDEX << 32) |
@@ -355,7 +378,7 @@ inline void maa_indirect_load_virtual_index(
         ((uint64_t)NA_UINT8 << 16) |
         ((uint64_t)completion_tile << 8) | (uint64_t)NA_UINT8;
     *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
-        ((uint64_t)NA_UINT8 << 56) |
+        ((uint64_t)(prefetch_token == -1 ? NA_UINT8 : prefetch_token) << 56) |
         ((uint64_t)NA_UINT8 << 48) |
         ((uint64_t)NA_UINT8 << 40) |
         ((uint64_t)NA_UINT8 << 32) |
