@@ -87,6 +87,7 @@ def main() -> int:
     response_words = integer(maa, "virtual_response_words")
     response_pool = integer(maa, "virtual_response_word_pool")
     index_lines = integer(maa, "virtual_index_buffer_lines")
+    native_issue_order = maa.getboolean("virtual_native_issue_order")
 
     positive = {
         "num_cores": cores,
@@ -136,6 +137,10 @@ def main() -> int:
     row_lower_bytes_per_unit = math.ceil(
         active_row_entries * row_entry_lower_bits / 8
     )
+    native_claim_bits_per_unit = (
+        active_row_entries if native_issue_order else 0
+    )
+    native_claim_bytes_per_unit = math.ceil(native_claim_bits_per_unit / 8)
 
     combine_payload_per_unit = combine_slots * 64
     if response_pool:
@@ -221,6 +226,15 @@ def main() -> int:
             "row_encoding_lower_bound_bytes_per_indirect_unit": (
                 row_lower_bytes_per_unit
             ),
+            "native_order_claim_bits_per_indirect_unit": (
+                native_claim_bits_per_unit
+            ),
+            "native_order_claim_bytes_per_indirect_unit": (
+                native_claim_bytes_per_unit
+            ),
+            "native_order_claim_bytes_all_indirect_units": (
+                native_claim_bytes_per_unit * indirect_units
+            ),
         },
         "virtual_data_buffers": {
             "configured_index_feeder_bytes_per_indirect_unit": (
@@ -260,7 +274,8 @@ def main() -> int:
         },
         "excluded_from_counted_payload": [
             "Row/Offset metadata (reported separately and retained at logical size)",
-            "tags, masks, valid bits, queues, maps, and arbitration",
+            "tags, masks, valid bits other than the claimed-entry bitmap, "
+            "queues, maps, and arbitration",
             "cache tags, MSHRs, routing state, and outstanding packet payload",
             "ports, wiring, control, and synthesized memory periphery",
         ],
@@ -289,6 +304,8 @@ def main() -> int:
         f"| Physical SPD + bounded virtual payload | {format_bytes(counted_payload)} |",
         f"| Logical Offset entries retained | {logical:,} / indirect unit |",
         f"| Configured Row-Table entry capacity | {active_row_entries:,} / indirect unit |",
+        "| Native-order claimed-entry bitmap | "
+        f"{format_bytes(native_claim_bytes_per_unit)} / indirect unit |",
         f"| Logical invalidator entries retained | {invalidator_entries:,} |",
         f"| Unbacked logical SPD tail | {format_bytes(unbacked_aperture_tail_bytes)} / address aperture |",
         "",
