@@ -169,6 +169,7 @@ def read_run(
             "fused": "fused16",
             "fused_4k": "fused4",
             "compact": "compact16",
+            "direct_index_16k": "direct4",
             "direct_index_4k": "direct4",
         }.get(manifest.get("arm", ""))
         if guest_arm != expected_guest_arm:
