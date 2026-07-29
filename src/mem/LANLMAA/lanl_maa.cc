@@ -348,6 +348,12 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorSpartaFusedWritesAcknowledged,
                statistics::units::Count::get(),
                "Native SPARTA fused direct writes acknowledged"),
+      ADD_STAT(descriptorSpartaFusedPairBankAccesses,
+               statistics::units::Count::get(),
+               "SPARTA fused accesses to repacked summary pairs"),
+      ADD_STAT(descriptorSpartaFusedPairBankConflictCycles,
+               statistics::units::Count::get(),
+               "SPARTA fused cycles blocked by a summary-pair bank conflict"),
       ADD_STAT(descriptorUmeCornersClassified,
                statistics::units::Count::get(),
                "UME gradzatp corner predicates classified"),
@@ -767,8 +773,16 @@ LANLMAA::rearmDescriptorEngine()
                  sharedOverlayBarrier.state() !=
                      SharedOverlayBarrierState::Idle,
              "LANLMAA rearmed a descriptor with retained overlay ownership");
+    panic_if(std::any_of(
+                 spartaFusedContextSlots.begin(),
+                 spartaFusedContextSlots.end(), [](bool occupied) {
+                     return occupied;
+                 }),
+             "LANLMAA rearmed with a retained SPARTA active context");
 
     operations.clear();
+    spartaFusedSummaries.clear();
+    spartaFusedContextSlots.fill(false);
     descriptor = Descriptor{};
     bransonDescriptor = BransonEventDescriptor{};
     bransonPhase = BransonPhase::Inactive;
@@ -917,8 +931,10 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
     activeContexts = 0;
     activeFaceComputations = 0;
     activeBransonEventComputations = 0;
+    spartaFusedContextSlots.fill(false);
     for (auto &operation : operations) {
         operation.ownsContext = false;
+        operation.spartaFusedContext = SpartaFusedActiveContexts;
     }
     for (auto &line : lines) {
         if (line.state != LineState::Allocated ||
@@ -1056,7 +1072,8 @@ LANLMAA::issueResultWrite()
 {
     if (spartaFusedCellDescriptor()) {
         while (descriptorResultCursor < operations.size() &&
-               operations[descriptorResultCursor].spartaFusedEligible == 0) {
+               spartaFusedSummary(
+                   operations[descriptorResultCursor]).eligible == 0) {
             ++descriptorResultCursor;
         }
         if (descriptorResultCursor == operations.size()) {
@@ -1065,6 +1082,14 @@ LANLMAA::issueResultWrite()
         }
         if (!resultPacket) {
             auto &operation = operations[descriptorResultCursor];
+            const auto &summary = spartaFusedSummary(operation);
+            if (spartaFusedWriteChannel == 0) {
+                panic_if(
+                    !spartaFusedSummaries.reserveAccess(
+                        operation.spartaFusedCell),
+                    "LANLMAA could not read a SPARTA summary-pair bank");
+                ++stats.descriptorSpartaFusedPairBankAccesses;
+            }
             operation.spartaFusedChannel = spartaFusedWriteChannel;
             const Addr address = spartaFusedTallyAddress(operation);
             RequestPtr request = std::make_shared<Request>(
@@ -1072,7 +1097,7 @@ LANLMAA::issueResultWrite()
             resultPacket = new Packet(request, MemCmd::WriteReq);
             resultPacket->allocate();
             resultPacket->setLE<uint64_t>(
-                operation.spartaFusedSums[spartaFusedWriteChannel]);
+                summary.sums[spartaFusedWriteChannel]);
             tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
         }
         if (sendDescriptorPacket(resultPacket)) {
@@ -1609,6 +1634,82 @@ LANLMAA::beginSpartaUpdatePhase()
     beginDescriptorExecution();
 }
 
+SpartaPairedSummaryStore::Entry &
+LANLMAA::spartaFusedSummary(Operation &operation)
+{
+    auto *summary = spartaFusedSummaries.get(operation.spartaFusedCell);
+    panic_if(!spartaFusedCellDescriptor() || !summary,
+             "LANLMAA accessed an unreserved SPARTA summary pair");
+    return *summary;
+}
+
+const SpartaPairedSummaryStore::Entry &
+LANLMAA::spartaFusedSummary(const Operation &operation) const
+{
+    const auto *summary =
+        spartaFusedSummaries.get(operation.spartaFusedCell);
+    panic_if(!spartaFusedCellDescriptor() || !summary,
+             "LANLMAA accessed an unreserved SPARTA summary pair");
+    return *summary;
+}
+
+bool
+LANLMAA::spartaFusedSummaryAccess(const Operation &operation)
+{
+    switch (operation.spartaFusedStage) {
+      case SpartaFusedStage::SpeciesMass:
+      case SpartaFusedStage::VelocityX:
+      case SpartaFusedStage::VelocityY:
+      case SpartaFusedStage::VelocityZ:
+        return true;
+      case SpartaFusedStage::CellCount:
+      case SpartaFusedStage::CellFirst:
+      case SpartaFusedStage::CellMask:
+      case SpartaFusedStage::ParticleSpecies:
+      case SpartaFusedStage::ParticleCell:
+      case SpartaFusedStage::ParticleNext:
+      case SpartaFusedStage::SpeciesGroup:
+      case SpartaFusedStage::Tally:
+        return false;
+    }
+    panic("LANLMAA SPARTA fused stage became invalid");
+}
+
+void
+LANLMAA::allocateSpartaFusedContext(Operation &operation)
+{
+    panic_if(
+        !spartaFusedCellDescriptor() ||
+            spartaFusedPhase != SpartaFusedPhase::Traverse ||
+            operation.spartaFusedContext != SpartaFusedActiveContexts,
+        "LANLMAA allocated an invalid SPARTA active context");
+    const size_t contextLimit = std::min(
+        continuationEntries,
+        static_cast<size_t>(SpartaFusedActiveContexts));
+    const auto available = std::find(
+        spartaFusedContextSlots.begin(),
+        spartaFusedContextSlots.begin() + contextLimit, false);
+    panic_if(available ==
+                 spartaFusedContextSlots.begin() + contextLimit,
+             "LANLMAA SPARTA active-context slots overflowed");
+    const size_t slot = available - spartaFusedContextSlots.begin();
+    *available = true;
+    operation.spartaFusedContext = static_cast<uint8_t>(slot);
+}
+
+void
+LANLMAA::releaseSpartaFusedContext(Operation &operation)
+{
+    const size_t slot = operation.spartaFusedContext;
+    panic_if(
+        !spartaFusedCellDescriptor() ||
+            slot >= spartaFusedContextSlots.size() ||
+            !spartaFusedContextSlots[slot],
+        "LANLMAA released an invalid SPARTA active context");
+    spartaFusedContextSlots[slot] = false;
+    operation.spartaFusedContext = SpartaFusedActiveContexts;
+}
+
 Addr
 LANLMAA::spartaFusedChildAddress(
     const Operation &operation, uint64_t fieldOffset) const
@@ -1693,6 +1794,7 @@ LANLMAA::finishSpartaFusedParticle(Operation &operation)
     if (operation.spartaFusedRemaining == 0) {
         panic_if(!operation.ownsContext || activeContexts == 0,
                  "LANLMAA fused-cell list lost its context");
+        releaseSpartaFusedContext(operation);
         operation.ownsContext = false;
         --activeContexts;
         operation.state = OperationState::RetireReady;
@@ -1710,16 +1812,16 @@ DescriptorError
 LANLMAA::consumeSpartaFusedResponse(
     Operation &operation, const uint8_t *data, size_t offset)
 {
+    auto &summary = spartaFusedSummary(operation);
     const auto readSigned32 = [data, offset]() {
         return static_cast<int32_t>(descriptorReadLe32(data + offset));
     };
-    const auto accumulate = [&operation](size_t channel, double value) {
-        const double sum = decodeDouble(operation.spartaFusedSums[channel]) +
-            value;
+    const auto accumulate = [&summary](size_t channel, double value) {
+        const double sum = decodeDouble(summary.sums[channel]) + value;
         if (!std::isfinite(sum)) {
             return false;
         }
-        operation.spartaFusedSums[channel] = encodeDouble(sum);
+        summary.sums[channel] = encodeDouble(sum);
         return true;
     };
 
@@ -1760,6 +1862,7 @@ LANLMAA::consumeSpartaFusedResponse(
         if (operation.spartaFusedRemaining == 0) {
             panic_if(!operation.ownsContext || activeContexts == 0,
                      "LANLMAA empty fused cell lost its context");
+            releaseSpartaFusedContext(operation);
             operation.ownsContext = false;
             --activeContexts;
             operation.state = OperationState::RetireReady;
@@ -1889,7 +1992,7 @@ LANLMAA::consumeSpartaFusedResponse(
             !accumulate(4, momentum) || !accumulate(5, energy)) {
             return DescriptorError::BadRecordValue;
         }
-        ++operation.spartaFusedEligible;
+        ++summary.eligible;
         ++stats.descriptorSpartaFusedEligibleParticles;
         stats.descriptorSpartaFusedFp64Multiplies += 7;
         stats.descriptorSpartaFusedFp64Adds += 8;
@@ -1919,6 +2022,20 @@ LANLMAA::consumeSpartaFusedResponse(
 void
 LANLMAA::beginSpartaFusedTallyValidation()
 {
+    panic_if(
+        activeContexts != 0 ||
+            std::any_of(
+                spartaFusedContextSlots.begin(),
+                spartaFusedContextSlots.end(), [](bool occupied) {
+                    return occupied;
+                }) ||
+            std::any_of(
+                operations.begin(), operations.end(),
+                [](const Operation &operation) {
+                    return operation.spartaFusedContext !=
+                        SpartaFusedActiveContexts;
+                }),
+        "LANLMAA began fused tally validation with active contexts");
     const uint64_t expected = spartaFusedDescriptor.particleCount == 64 ?
         std::numeric_limits<uint64_t>::max() :
         (uint64_t{1} << spartaFusedDescriptor.particleCount) - 1;
@@ -1941,10 +2058,11 @@ LANLMAA::beginSpartaFusedTallyValidation()
 uint64_t
 LANLMAA::expectedSpartaFusedWrites() const
 {
-    return SpartaFusedChannels * std::count_if(
-        operations.begin(), operations.end(), [](const Operation &operation) {
-            return operation.spartaFusedEligible != 0;
+    const uint64_t populated = std::count_if(
+        operations.begin(), operations.end(), [this](const Operation &op) {
+            return spartaFusedSummary(op).eligible != 0;
         });
+    return SpartaFusedChannels * populated;
 }
 
 Addr
@@ -2814,6 +2932,10 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
             return true;
         }
 
+        panic_if(
+            !spartaFusedSummaries.configure(
+                spartaFusedDescriptor.cellCount),
+            "LANLMAA could not configure the reserved SPARTA summary pairs");
         operations.assign(spartaFusedDescriptor.cellCount, Operation{});
         for (size_t cell = 0; cell < operations.size(); ++cell) {
             auto &operation = operations[cell];
@@ -3362,6 +3484,14 @@ LANLMAA::beginDescriptorExecution()
 {
     panic_if(descriptorAddressCursor != operations.size(),
              "LANLMAA began a descriptor before loading all addresses");
+    panic_if(
+        spartaFusedCellDescriptor() &&
+            std::any_of(
+                spartaFusedContextSlots.begin(),
+                spartaFusedContextSlots.end(), [](bool occupied) {
+                    return occupied;
+                }),
+        "LANLMAA began fused execution with retained active contexts");
     nextAdmission = 0;
     nextRetirement = 0;
     nextVerification = 0;
@@ -3386,6 +3516,14 @@ LANLMAA::beginDescriptorResults()
     panic_if(activeContexts != 0 || activeFaceComputations != 0 ||
                  activeBransonEventComputations != 0,
              "LANLMAA descriptor reached results with retained contexts");
+    panic_if(
+        spartaFusedCellDescriptor() &&
+            std::any_of(
+                spartaFusedContextSlots.begin(),
+                spartaFusedContextSlots.end(), [](bool occupied) {
+                    return occupied;
+                }),
+        "LANLMAA fused descriptor reached results with occupied slots");
     panic_if(std::any_of(
                  lines.begin(), lines.end(), [](const LineEntry &line) {
                      return line.state != LineState::Free;
@@ -3443,7 +3581,8 @@ LANLMAA::completeDescriptor()
                  "LANLMAA completed with incomplete SPARTA accounting");
     }
     if (spartaFusedCellDescriptor()) {
-        panic_if(descriptorResultCursor != operations.size() ||
+        panic_if(spartaFusedSummaries.size() != operations.size() ||
+                     descriptorResultCursor != operations.size() ||
                      spartaFusedVisitedCount !=
                          spartaFusedDescriptor.particleCount ||
                      spartaFusedTallyZeroReads !=
@@ -3484,6 +3623,9 @@ LANLMAA::scheduleTick()
 void
 LANLMAA::tick()
 {
+    if (spartaFusedCellDescriptor()) {
+        spartaFusedSummaries.beginCycle();
+    }
     if (descriptorMode) {
         ++stats.descriptorCycles;
         if (descriptorState == DescriptorState::EngineErrorDraining) {
@@ -3700,6 +3842,10 @@ LANLMAA::admitOperations()
             operation.state = OperationState::AddressReady;
         }
         if (needsContext) {
+            if (spartaFusedCellDescriptor() &&
+                spartaFusedPhase == SpartaFusedPhase::Traverse) {
+                allocateSpartaFusedContext(operation);
+            }
             operation.ownsContext = true;
             ++activeContexts;
             if (activeContexts > stats.activeContextHighWaterMark.value()) {
@@ -3726,6 +3872,7 @@ LANLMAA::attachReadyOperations()
         }
         size_t attached = 0;
         bool lineBlocked = false;
+        bool pairBankBlocked = false;
         while (attached < logicalAdmissionWidth) {
             size_t selected = operations.size();
             for (size_t probe = 0; probe < operations.size(); ++probe) {
@@ -3742,6 +3889,15 @@ LANLMAA::attachReadyOperations()
             ready[selected] = false;
             spartaFusedIssueCursor = (selected + 1) % operations.size();
             auto &operation = operations[selected];
+            const bool pairAccess = spartaFusedSummaryAccess(operation);
+            if (pairAccess) {
+                (void)spartaFusedSummary(operation);
+                if (!spartaFusedSummaries.bankAvailable(
+                        operation.spartaFusedCell)) {
+                    pairBankBlocked = true;
+                    continue;
+                }
+            }
             const Addr aligned = lineAddress(operation.address);
             LineEntry *line = matchingLine(aligned);
             if (line) {
@@ -3755,6 +3911,13 @@ LANLMAA::attachReadyOperations()
                 line->state = LineState::Allocated;
                 line->lineAddress = aligned;
             }
+            panic_if(
+                pairAccess && !spartaFusedSummaries.reserveAccess(
+                                  operation.spartaFusedCell),
+                "LANLMAA lost a reserved SPARTA summary-pair bank");
+            if (pairAccess) {
+                ++stats.descriptorSpartaFusedPairBankAccesses;
+            }
             line->waiters.push_back(selected);
             operation.state = OperationState::DataPending;
             ++stats.logicalMemoryAccesses;
@@ -3762,6 +3925,9 @@ LANLMAA::attachReadyOperations()
         }
         if (lineBlocked) {
             ++stats.lineWouldBlockCycles;
+        }
+        if (pairBankBlocked) {
+            ++stats.descriptorSpartaFusedPairBankConflictCycles;
         }
         return;
     }

@@ -16,6 +16,7 @@
 #include "mem/LANLMAA/FaceComputeTiming.hh"
 #include "mem/LANLMAA/SharedOverlayModeBarrier.hh"
 #include "mem/LANLMAA/SpartaFusedCellModel.hh"
+#include "mem/LANLMAA/SpartaPairedSummaryStore.hh"
 #include "mem/LANLMAA/SpartaTallyDescriptor.hh"
 #include "mem/LANLMAA/UmeGradzatpDescriptor.hh"
 #include "mem/port.hh"
@@ -182,18 +183,19 @@ class LANLMAA : public ClockedObject
         uint32_t spartaItem = 0;
         uint32_t spartaCell = 0;
         uint8_t spartaChannel = 0;
-        std::array<uint64_t, SpartaFusedChannels> spartaFusedSums{};
+        // These traversal fields are live only while one of the separately
+        // modeled eight active-context slots is owned.
         uint64_t spartaFusedMass = 0;
         uint64_t spartaFusedVelocitySquared = 0;
         uint32_t spartaFusedCell = 0;
         uint32_t spartaFusedParticle = 0;
         uint32_t spartaFusedRemaining = 0;
         uint32_t spartaFusedMask = 0;
-        uint32_t spartaFusedEligible = 0;
         int32_t spartaFusedNext = -1;
         int32_t spartaFusedSpecies = -1;
         SpartaFusedStage spartaFusedStage = SpartaFusedStage::CellCount;
         uint8_t spartaFusedChannel = 0;
+        uint8_t spartaFusedContext = SpartaFusedActiveContexts;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
@@ -343,6 +345,8 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorSpartaFusedFp64Adds;
         statistics::Scalar descriptorSpartaFusedTallyZeroReads;
         statistics::Scalar descriptorSpartaFusedWritesAcknowledged;
+        statistics::Scalar descriptorSpartaFusedPairBankAccesses;
+        statistics::Scalar descriptorSpartaFusedPairBankConflictCycles;
         statistics::Scalar descriptorUmeCornersClassified;
         statistics::Scalar descriptorUmeActiveCorners;
         statistics::Scalar descriptorUmeInactiveCorners;
@@ -412,6 +416,8 @@ class LANLMAA : public ClockedObject
     bool descriptorOwnsSharedOverlay = false;
 
     std::vector<Operation> operations;
+    SpartaPairedSummaryStore spartaFusedSummaries;
+    std::array<bool, SpartaFusedActiveContexts> spartaFusedContextSlots{};
     std::vector<LineEntry> lines;
     std::vector<UpdateEntry> updates;
     size_t nextAdmission = 0;
@@ -505,6 +511,13 @@ class LANLMAA : public ClockedObject
     Addr spartaFusedParticleAddress(
         const Operation &operation, uint64_t fieldOffset) const;
     Addr spartaFusedTallyAddress(const Operation &operation) const;
+    SpartaPairedSummaryStore::Entry &
+    spartaFusedSummary(Operation &operation);
+    const SpartaPairedSummaryStore::Entry &
+    spartaFusedSummary(const Operation &operation) const;
+    static bool spartaFusedSummaryAccess(const Operation &operation);
+    void allocateSpartaFusedContext(Operation &operation);
+    void releaseSpartaFusedContext(Operation &operation);
     DescriptorError beginSpartaFusedParticle(Operation &operation);
     DescriptorError finishSpartaFusedParticle(Operation &operation);
     DescriptorError consumeSpartaFusedResponse(

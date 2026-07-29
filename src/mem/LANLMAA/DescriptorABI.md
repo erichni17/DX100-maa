@@ -361,17 +361,23 @@ completion. A pre-write failure discards all summaries, leaving the
 promised-zero tally safe for scalar fallback.
 
 The simulator's 64 operation objects are not a physical-structure claim. The
-six sums plus eligible/valid state map to the separately charged 64-entry,
-448-bit summary array. Particle, remaining-count, mask, species, next, mass,
-partial-velocity-square, and stage fields are live only for the eight admitted
-operations and map to the separately charged eight 448-bit contexts. Inactive
-C++ object fields do not imply 64 physical context entries.
+six sums plus eligible/valid state live in an explicit 64-entry paired-summary
+store that reuses one 256-bit operation entry and one 384-bit continuation
+entry per cell. Its four shared pair banks accept at most one summary access
+per bank per cycle; a conflicting traversal remains ready and records a stall
+cycle. Particle, remaining-count, mask, species, next, mass,
+partial-velocity-square, and stage fields are live only while one of eight
+explicit active-context slots is owned. Those slots map to the separately
+charged eight 448-bit contexts. Inactive C++ object fields do not imply 64
+physical context entries.
 
 The reference model and one real-X86 native-record smoke prove bounded
 state-machine, coherent traffic, fail-close/rearm, and arithmetic semantics.
 They do not prove native SPARTA process submission, application timing or
-speedup, or RTL FP/control cost. The transparent research ledger charges 4,048
-payload bytes and a 21-KiB provisioned array budget before physical synthesis.
+speedup, or RTL FP/control cost. The shared-state research ledger charges only
+the eight active contexts and descriptor control as a 464-byte overlay. The
+base plus overlay provisions to 16 KiB under the declared ECC/control-margin
+model before physical synthesis.
 
 ### UME gradzatp contract (opcode 8)
 

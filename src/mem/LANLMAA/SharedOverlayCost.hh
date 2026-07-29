@@ -42,6 +42,7 @@ constexpr uint64_t SharedBasePayloadBytes =
 constexpr uint32_t SharedPairBits =
     SharedOperationStore.roundedBitsPerEntry +
     SharedContinuationStore.roundedBitsPerEntry;
+constexpr uint32_t SharedPairBanks = 4;
 
 constexpr uint32_t SpartaSummaryBits = 448;
 constexpr SharedStateArray SpartaActiveContextStore{8, 448};
@@ -86,6 +87,8 @@ provisionedStateBits(uint64_t payloadBytes)
 
 static_assert(SharedBasePayloadBytes == 11008);
 static_assert(SharedPairBits == 640);
+static_assert(SharedOperationStore.entries % SharedPairBanks == 0);
+static_assert(SharedContinuationStore.entries % SharedPairBanks == 0);
 static_assert(SpartaSummaryBits <= SharedPairBits);
 static_assert(SpartaOverlayPayloadBytes == 464);
 static_assert(SharedSpartaPayloadBytes == 11472);
