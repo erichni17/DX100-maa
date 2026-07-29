@@ -182,10 +182,12 @@ prepare_case(
         uint32_t cell;
         if (shuffled) {
             cell = (item * 13 + 7) % CELLS;
-        } else if (SPARTA_TALLY_FIRST_CELL_ITEMS) {
-            cell = item < SPARTA_TALLY_FIRST_CELL_ITEMS ? 0 : 1;
         } else {
+#if SPARTA_TALLY_FIRST_CELL_ITEMS
+            cell = item < SPARTA_TALLY_FIRST_CELL_ITEMS ? 0 : 1;
+#else
             cell = item / (ITEMS / CELLS);
+#endif
         }
         indices[item] = cell;
         for (uint32_t channel = 0; channel < CHANNELS; ++channel) {
