@@ -54,10 +54,24 @@ def comparable(record: dict[str, int]) -> tuple[int, int, int]:
     return record["count"], record["fnv"], record["mix"]
 
 
+def logical_sequence(
+    units: dict[int, list[dict[str, int]]],
+) -> list[dict[str, int]]:
+    records = [
+        {**record, "unit": unit}
+        for unit, unit_records in units.items()
+        for record in unit_records
+    ]
+    return sorted(records, key=lambda record: (record["tick"], record["unit"]))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--allow-per-instruction-unit-reassignment", action="store_true"
+    )
     parser.add_argument("arms", nargs="+", metavar="LABEL=LOG")
     args = parser.parse_args()
 
@@ -80,6 +94,16 @@ def main() -> int:
         units = arm["units"]
         assert isinstance(units, dict)
         unit_set_match = set(units) == set(baseline_units)
+        baseline_logical = logical_sequence(baseline_units)
+        candidate_logical = logical_sequence(units)
+        logical_sequence_match = [comparable(record) for record in baseline_logical] == [
+            comparable(record) for record in candidate_logical
+        ]
+        logical_requests = (
+            sum(record["count"] for record in baseline_logical)
+            if logical_sequence_match
+            else 0
+        )
         first_mismatch = None
         compared_instructions = 0
         total_requests = 0
@@ -114,13 +138,21 @@ def main() -> int:
                     }
                     break
         match = unit_set_match and first_mismatch is None
-        all_match &= match
+        accepted = match or (
+            args.allow_per_instruction_unit_reassignment
+            and logical_sequence_match
+        )
+        all_match &= accepted
         comparisons.append(
             {
                 "baseline": args.baseline,
                 "candidate": label,
                 "match": match,
+                "accepted": accepted,
                 "unit_set_match": unit_set_match,
+                "logical_sequence_match": logical_sequence_match,
+                "logical_instructions": len(baseline_logical),
+                "logical_source_requests": logical_requests,
                 "compared_instructions": compared_instructions,
                 "matched_source_requests": total_requests,
                 "first_mismatch": first_mismatch,
@@ -138,22 +170,30 @@ def main() -> int:
     lines = [
         "# MAA Source-Request Digest Comparison",
         "",
-        "| Baseline | Candidate | Match | Instructions | Source requests |",
-        "|---|---|---:|---:|---:|",
+        "Per-instruction matching ignores functional-unit assignment and does "
+        "not prove the global interleaving of requests from concurrent units.",
+        "",
+        "| Baseline | Candidate | Strict match | Per-instruction match | "
+        "Instructions | Source requests |",
+        "|---|---|---:|---:|---:|---:|",
     ]
     for comparison in comparisons:
         lines.append(
             f"| {comparison['baseline']} | {comparison['candidate']} | "
             f"{'yes' if comparison['match'] else 'no'} | "
-            f"{comparison['compared_instructions']:,} | "
-            f"{comparison['matched_source_requests']:,} |"
+            f"{'yes' if comparison['logical_sequence_match'] else 'no'} | "
+            f"{comparison['logical_instructions']:,} | "
+            f"{comparison['logical_source_requests']:,} |"
         )
     (output / "maa_issue_digest_comparison.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
     if not all_match:
         fail("one or more source-request digest streams differ")
-    (output / "maa_issue_digest_comparison.pass").touch()
+    if all(comparison["match"] for comparison in comparisons):
+        (output / "maa_issue_digest_comparison.pass").touch()
+    else:
+        (output / "maa_issue_digest_per_instruction.pass").touch()
     print(f"PASS MAA source-request digest comparison: {output}")
     return 0
 
