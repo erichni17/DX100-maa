@@ -309,6 +309,14 @@ def main():
             fail(f"{arm} config has wrong logical tile size")
         if int(maa["physical_tile_elements"]) != physical:
             fail(f"{arm} config has wrong physical tile size")
+        manifest_grow_order = int(manifest.get("virtual_grow_order", "0"))
+        if int(maa.getboolean("virtual_grow_order")) != manifest_grow_order:
+            fail(f"{arm} config and manifest disagree on virtual grow order")
+        manifest_index_lines = int(
+            manifest.get("virtual_index_buffer_lines", "1")
+        )
+        if int(maa["virtual_index_buffer_lines"]) != manifest_index_lines:
+            fail(f"{arm} config and manifest disagree on index buffer lines")
         storage.append(configured_payload_storage(arm, maa))
         verify_artifacts(arm_root / "artifact_sha256.txt", digest_cache)
         rows.append({"arm": arm, **result})

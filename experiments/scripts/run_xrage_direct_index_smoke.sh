@@ -13,9 +13,19 @@ input=$(realpath "$3")
 out=$(realpath -m "$4")
 physical=${MAA_PHYSICAL_TILE_ELEMENTS:-4096}
 arm=${XRAGE_ARM:-direct_index_4k}
+grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
+index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
+    exit 2
+}
+[[ $grow_order == 0 || $grow_order == 1 ]] || {
+    echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
+    exit 2
+}
+[[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 64 ]] || {
+    echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,64]" >&2
     exit 2
 }
 case "$arm" in
@@ -52,6 +62,8 @@ options="-f $input"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
+    printf 'virtual_grow_order=%s\n' "$grow_order"
+    printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'input=%s\n' "$input"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -108,8 +120,12 @@ restore_cmd=(
     --maa_virtual_combine_ways=4 --maa_virtual_combine_banks=0
     --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
+    --maa_virtual_index_buffer_lines="$index_buffer_lines"
     --maa_virtual_masked_writes --cmd "$binary" --options "$options"
 )
+if [[ $grow_order == 1 ]]; then
+    restore_cmd+=(--maa_virtual_grow_order)
+fi
 printf '%q ' "${restore_cmd[@]}" > "$out/restore.command"
 printf '\n' >> "$out/restore.command"
 set +e
