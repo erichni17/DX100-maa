@@ -147,11 +147,18 @@ final_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
 first_stat() {
     awk -v key="$1" '$1 == key { print $2; exit }' "$stats"
 }
+first_stat_or_zero() {
+    awk -v key="$1" \
+        '$1 == key { print $2; found=1; exit } END { if (!found) print 0 }' \
+        "$stats"
+}
 write_issues=$(first_stat system.maa.I0_IND_VirtWriteIssues)
 write_completions=$(first_stat system.maa.I0_IND_VirtWriteCompletions)
 pages_ready=$(first_stat system.maa.I0_IND_VirtPagesReady)
 index_words=$(first_stat system.maa.I0_IND_VirtIndexWords)
-indirect_spd_reads=$(first_stat system.maa.I0_IND_CyclesSPDReadAccess)
+indirect_spd_reads=$(
+    first_stat_or_zero system.maa.I0_IND_CyclesSPDReadAccess
+)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$index_words" "$indirect_spd_reads"; do
     [[ -n $value ]] || {

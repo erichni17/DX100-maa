@@ -36,6 +36,13 @@ EXIT_RE = re.compile(
     r"Exiting @ tick \d+ because m5_exit instruction encountered"
 )
 STAT_RE = re.compile(r"^simTicks\s+(\d+)\s+", re.MULTILINE)
+MECHANISM_STATS = {
+    "virtual_write_issues": "system.maa.I0_IND_VirtWriteIssues",
+    "virtual_write_completions": "system.maa.I0_IND_VirtWriteCompletions",
+    "virtual_pages_ready": "system.maa.I0_IND_VirtPagesReady",
+    "direct_index_words": "system.maa.I0_IND_VirtIndexWords",
+    "indirect_spd_read_cycles": "system.maa.I0_IND_CyclesSPDReadAccess",
+}
 
 
 def fail(message):
@@ -105,6 +112,19 @@ def require_mechanism(arm, row):
             fail(f"{arm} did not use direct-index virtual retirement")
 
 
+def require_raw_mechanism(stats, arm, row):
+    for result_field, stat_name in MECHANISM_STATS.items():
+        match = re.search(
+            rf"^{re.escape(stat_name)}\s+(\d+)\s+", stats, re.MULTILINE
+        )
+        raw_value = int(match.group(1)) if match else 0
+        if int(row[result_field]) != raw_value:
+            fail(
+                f"{arm} {result_field}={row[result_field]} "
+                f"does not match raw {raw_value}"
+            )
+
+
 def main():
     if len(sys.argv) != 2:
         fail("usage: validate_xrage_attribution_smoke.py RESULT_ROOT")
@@ -165,6 +185,7 @@ def main():
             or int(result["stats_blocks"]) != 2
         ):
             fail(f"{arm} result.tsv does not match raw evidence")
+        require_raw_mechanism(stats, arm, result)
         require_mechanism(arm, result)
 
         config = configparser.RawConfigParser(strict=False)
