@@ -91,10 +91,26 @@ main(int argc, char **argv)
               << maximumAbsoluteError
               << ",\"maximum_relative_error\":"
               << maximumRelativeError
+              << ",\"corner_groups_processed\":"
+              << result.counters.cornerGroupsProcessed
+              << ",\"geometry_face_visits\":"
+              << result.counters.geometryFaceVisits
+              << ",\"external_face_visits\":"
+              << result.counters.externalFaceVisits
+              << ",\"interior_face_visits\":"
+              << result.counters.interiorFaceVisits
+              << ",\"reverse_face_search_visits\":"
+              << result.counters.reverseFaceSearchVisits
+              << ",\"opposite_face_visits\":"
+              << result.counters.oppositeFaceVisits
               << ",\"flux_reads\":" << result.counters.fluxReads
+              << ",\"unique_64_byte_flux_lines\":"
+              << result.counters.uniqueFluxCacheLines
               << ",\"special_updates\":"
               << result.counters.specialOppositeFaceUpdates
               << ",\"fallback_updates\":"
-              << result.counters.fallbackFaceUpdates << "}\n";
+              << result.counters.fallbackFaceUpdates
+              << ",\"output_writes\":"
+              << result.counters.outputWrites << "}\n";
     return 0;
 }
