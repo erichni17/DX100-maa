@@ -117,6 +117,7 @@ public:
     void check_reset();
     bool get_entry_send(Addr &addr);
     bool claim_entry_send(Addr &addr, int &head, int &words, bool commit);
+    bool claim_entry_send_native_order(Addr &addr, int &head, int &words);
     std::vector<OffsetTableEntry> get_entry_recv(Addr addr);
     int get_entry_recv_head(Addr addr);
     int count_entry_words(Addr addr) const;
@@ -161,6 +162,8 @@ public:
     bool get_entry_send(Addr &addr, bool drain);
     bool claim_entry_send(Addr &addr, int &head, int &words, bool drain,
                           bool group_by_grow, bool commit);
+    bool claim_entry_send_native_order(Addr &addr, int &head, int &words,
+                                       bool drain);
     void reset_virtual_claim_group();
     bool find_next_grow_addr();
     bool is_full();

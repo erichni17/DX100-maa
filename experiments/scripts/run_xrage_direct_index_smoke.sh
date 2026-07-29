@@ -15,6 +15,7 @@ physical=${MAA_PHYSICAL_TILE_ELEMENTS:-4096}
 arm=${XRAGE_ARM:-direct_index_4k}
 guest_arm=${XRAGE_GUEST_ARM:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
+native_issue_order=${MAA_VIRTUAL_NATIVE_ISSUE_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
@@ -28,6 +29,14 @@ debug_args=()
 }
 [[ $grow_order == 0 || $grow_order == 1 ]] || {
     echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
+    exit 2
+}
+[[ $native_issue_order == 0 || $native_issue_order == 1 ]] || {
+    echo "MAA_VIRTUAL_NATIVE_ISSUE_ORDER must be 0 or 1" >&2
+    exit 2
+}
+[[ $grow_order == 0 || $native_issue_order == 0 ]] || {
+    echo "virtual grow and native issue order are mutually exclusive" >&2
     exit 2
 }
 [[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 64 ]] || {
@@ -52,6 +61,12 @@ case "$arm" in
         exit 2
         ;;
 esac
+if [[ $native_issue_order == 1 &&
+      $arm != compact && $arm != direct_index_16k &&
+      $arm != direct_index_4k ]]; then
+    echo "native issue order requires a bounded virtual XRAGE arm" >&2
+    exit 2
+fi
 if [[ -n $logical_override ]]; then
     [[ $logical_override -gt 0 && $logical_override -le 16384 ]] || {
         echo "MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE must be in [1,16384]" >&2
@@ -106,6 +121,7 @@ fi
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
     printf 'virtual_grow_order=%s\n' "$grow_order"
+    printf 'virtual_native_issue_order=%s\n' "$native_issue_order"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
@@ -170,6 +186,9 @@ restore_cmd=(
 )
 if [[ $grow_order == 1 ]]; then
     restore_cmd+=(--maa_virtual_grow_order)
+fi
+if [[ $native_issue_order == 1 ]]; then
+    restore_cmd+=(--maa_virtual_native_issue_order)
 fi
 printf '%q ' "${restore_cmd[@]}" > "$out/restore.command"
 printf '\n' >> "$out/restore.command"

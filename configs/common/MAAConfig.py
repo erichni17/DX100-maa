@@ -133,6 +133,11 @@ def _get_maa_opts(options):
     if hasattr(options, "maa_virtual_grow_order"):
         opts["virtual_grow_order"] = getattr(options, "maa_virtual_grow_order")
 
+    if hasattr(options, "maa_virtual_native_issue_order"):
+        opts["virtual_native_issue_order"] = getattr(
+            options, "maa_virtual_native_issue_order"
+        )
+
     if hasattr(options, "maa_num_request_table_addresses"):
         opts["num_request_table_addresses"] = getattr(
             options, "maa_num_request_table_addresses"

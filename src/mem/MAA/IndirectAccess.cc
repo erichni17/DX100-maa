@@ -1375,6 +1375,12 @@ void IndirectAccessUnit::executeInstruction() {
             createReadPacket(source_addr, latency);
         };
 
+        const bool native_order_claim =
+            usesBoundedSourceResponses() && maa->virtual_native_issue_order;
+        panic_if(native_order_claim && !my_fill_finished,
+                 "I[%d] native-order attribution cannot interleave "
+                 "Row-Table refill\n",
+                 my_indirect_id);
         bool virtual_capacity_full = false;
         if (usesBoundedSourceResponses() && virtual_pending_source) {
             issueVirtualSource(virtual_pending_source_addr,
@@ -1401,13 +1407,23 @@ void IndirectAccessUnit::executeInstruction() {
                 if (my_RT_req_sent[my_RT_config][RT_idx] == false) {
                     int virtual_head = -1;
                     int virtual_words = 0;
-                    const bool entry_ready = usesBoundedSourceResponses()
-                        ? RT[my_RT_config][RT_idx].claim_entry_send(
-                              addr, virtual_head, virtual_words,
-                              my_fill_finished, maa->virtual_grow_order,
-                              false)
-                        : RT[my_RT_config][RT_idx].get_entry_send(
-                              addr, my_fill_finished);
+                    bool entry_ready;
+                    if (native_order_claim) {
+                        entry_ready = RT[my_RT_config][RT_idx]
+                                          .claim_entry_send_native_order(
+                                              addr, virtual_head,
+                                              virtual_words,
+                                              my_fill_finished);
+                    } else if (usesBoundedSourceResponses()) {
+                        entry_ready =
+                            RT[my_RT_config][RT_idx].claim_entry_send(
+                                addr, virtual_head, virtual_words,
+                                my_fill_finished, maa->virtual_grow_order,
+                                false);
+                    } else {
+                        entry_ready = RT[my_RT_config][RT_idx].get_entry_send(
+                            addr, my_fill_finished);
+                    }
                     if (entry_ready) {
                         DPRINTF(MAAIndirect, "I[%d] %s: Creating packet for bank[%d], addr[0x%lx]!\n", my_indirect_id, __func__, RT_idx, addr);
                         if (usesBoundedSourceResponses()) {
@@ -1424,6 +1440,38 @@ void IndirectAccessUnit::executeInstruction() {
                                 virtual_reserved_response_words +
                                         virtual_words >
                                     virtual_response_word_pool_limit) {
+                                if (!native_order_claim) {
+                                    Addr committed_addr = 0;
+                                    int committed_head = -1;
+                                    int committed_words = 0;
+                                    const bool committed =
+                                        RT[my_RT_config][RT_idx]
+                                            .claim_entry_send(
+                                                committed_addr,
+                                                committed_head,
+                                                committed_words,
+                                                my_fill_finished,
+                                                maa->virtual_grow_order,
+                                                true);
+                                    panic_if(
+                                        !committed ||
+                                            committed_addr != addr ||
+                                            committed_head != virtual_head ||
+                                            committed_words != virtual_words,
+                                        "I[%d] virtual deferred claim "
+                                        "changed between peek and commit\n",
+                                        my_indirect_id);
+                                }
+                                virtual_pending_source = true;
+                                virtual_pending_source_addr = addr;
+                                virtual_pending_source_head = virtual_head;
+                                virtual_pending_source_words = virtual_words;
+                                virtual_response_word_pool_stalls++;
+                                num_rowtable_accesses++;
+                                virtual_capacity_full = true;
+                                break;
+                            }
+                            if (!native_order_claim) {
                                 Addr committed_addr = 0;
                                 int committed_head = -1;
                                 int committed_words = 0;
@@ -1436,32 +1484,10 @@ void IndirectAccessUnit::executeInstruction() {
                                              committed_addr != addr ||
                                              committed_head != virtual_head ||
                                              committed_words != virtual_words,
-                                         "I[%d] virtual deferred claim "
-                                         "changed between peek and commit\n",
+                                         "I[%d] virtual source claim changed "
+                                         "between peek and commit\n",
                                          my_indirect_id);
-                                virtual_pending_source = true;
-                                virtual_pending_source_addr = addr;
-                                virtual_pending_source_head = virtual_head;
-                                virtual_pending_source_words = virtual_words;
-                                virtual_response_word_pool_stalls++;
-                                num_rowtable_accesses++;
-                                virtual_capacity_full = true;
-                                break;
                             }
-                            Addr committed_addr = 0;
-                            int committed_head = -1;
-                            int committed_words = 0;
-                            const bool committed =
-                                RT[my_RT_config][RT_idx].claim_entry_send(
-                                    committed_addr, committed_head,
-                                    committed_words, my_fill_finished,
-                                    maa->virtual_grow_order, true);
-                            panic_if(!committed || committed_addr != addr ||
-                                         committed_head != virtual_head ||
-                                         committed_words != virtual_words,
-                                     "I[%d] virtual source claim changed "
-                                     "between peek and commit\n",
-                                     my_indirect_id);
                         }
                         if (usesBoundedSourceResponses()) {
                             issueVirtualSource(

@@ -332,6 +332,21 @@ def main():
         manifest_grow_order = int(manifest.get("virtual_grow_order", "0"))
         if int(maa.getboolean("virtual_grow_order")) != manifest_grow_order:
             fail(f"{arm} config and manifest disagree on virtual grow order")
+        manifest_native_order = int(
+            manifest.get("virtual_native_issue_order", "0")
+        )
+        if manifest_grow_order not in {0, 1} or manifest_native_order not in {
+            0,
+            1,
+        }:
+            fail(f"{arm} has a non-boolean virtual issue-order mode")
+        if manifest_grow_order and manifest_native_order:
+            fail(f"{arm} enables mutually exclusive virtual issue-order modes")
+        if (
+            int(maa.getboolean("virtual_native_issue_order", fallback=False))
+            != manifest_native_order
+        ):
+            fail(f"{arm} config and manifest disagree on native issue order")
         manifest_index_lines = int(
             manifest.get("virtual_index_buffer_lines", "1")
         )

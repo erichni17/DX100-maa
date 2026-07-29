@@ -99,6 +99,10 @@ class MAA(ClockedObject):
     virtual_grow_order = Param.Bool(
         False, "Group virtual source claims by DRAM grow address"
     )
+    virtual_native_issue_order = Param.Bool(
+        False,
+        "Attribution-only bounded claims following native row-table order",
+    )
     spd_read_latency = Param.Cycles(1, "SPD read latency")
     spd_write_latency = Param.Cycles(1, "SPD write latency")
     num_spd_read_ports_per_maa = Param.Unsigned(

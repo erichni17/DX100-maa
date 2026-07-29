@@ -81,6 +81,7 @@ MAA::MAA(const MAAParams &p)
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
       virtual_grow_order(p.virtual_grow_order),
+      virtual_native_issue_order(p.virtual_native_issue_order),
       num_request_table_addresses(p.num_request_table_addresses),
       num_request_table_entries_per_address(p.num_request_table_entries_per_address),
       num_memory_channels(p.num_memory_channels),
@@ -106,6 +107,9 @@ MAA::MAA(const MAAParams &p)
     panic_if(physical_tile_elements > num_tile_elements,
              "Physical tile capacity %u exceeds logical capacity %u\n",
              physical_tile_elements, num_tile_elements);
+    panic_if(virtual_grow_order && virtual_native_issue_order,
+             "Virtual grow grouping and native issue-order attribution "
+             "cannot both be enabled\n");
     const unsigned int max_virtual_pages =
         (num_tile_elements + physical_tile_elements - 1) /
         physical_tile_elements;

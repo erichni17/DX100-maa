@@ -219,12 +219,25 @@ def read_run(
     physical = require_integer(manifest, "physical_tile_elements", label)
     chunk = require_integer(manifest, "workload_chunk_elements", label)
     index_lines = int(manifest.get("virtual_index_buffer_lines", "1"))
+    grow_order = int(manifest.get("virtual_grow_order", "0"))
+    native_issue_order = int(manifest.get("virtual_native_issue_order", "0"))
+    if grow_order not in {0, 1} or native_issue_order not in {0, 1}:
+        fail(f"{label} has a non-boolean virtual issue-order mode")
+    if grow_order and native_issue_order:
+        fail(f"{label} enables mutually exclusive virtual issue-order modes")
     if int(maa["num_tile_elements"]) != logical:
         fail(f"{label} config and manifest disagree on logical tile size")
     if int(maa["physical_tile_elements"]) != physical:
         fail(f"{label} config and manifest disagree on physical tile size")
     if int(maa["virtual_index_buffer_lines"]) != index_lines:
         fail(f"{label} config and manifest disagree on index-buffer depth")
+    if int(maa.getboolean("virtual_grow_order", fallback=False)) != grow_order:
+        fail(f"{label} config and manifest disagree on virtual grow order")
+    if (
+        int(maa.getboolean("virtual_native_issue_order", fallback=False))
+        != native_issue_order
+    ):
+        fail(f"{label} config and manifest disagree on native issue order")
     if f"MAA gather execution {output_length}/{chunk}" not in log:
         fail(f"{label} log does not attest its workload chunk size")
 
@@ -255,6 +268,8 @@ def read_run(
         "physical_tile_elements": physical,
         "workload_chunk_elements": chunk,
         "index_buffer_lines": index_lines,
+        "virtual_grow_order": grow_order,
+        "virtual_native_issue_order": native_issue_order,
         "roi_simTicks": ticks[0],
         "final_simTicks": ticks[1],
         "virtual_write_issues": writes,
@@ -351,15 +366,16 @@ def main() -> int:
         f"Baseline: `{args.baseline}`. All rows passed exact-output, artifact, "
         "terminal-exit, configuration, and two-channel DRAM validation.",
         "",
-        "| Run | Arm | Logical | Physical | B lines | First-ROI ticks | "
+        "| Run | Arm | Logical | Physical | B lines | Native order | First-ROI ticks | "
         "Latency vs. baseline | Throughput vs. baseline | DRAM RD/ACT/PRE |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         markdown.append(
             f"| {row['label']} | {row['arm']} | "
             f"{row['logical_tile_elements']} | {row['physical_tile_elements']} | "
-            f"{row['index_buffer_lines']} | {row['roi_simTicks']} | "
+            f"{row['index_buffer_lines']} | "
+            f"{row['virtual_native_issue_order']} | {row['roi_simTicks']} | "
             f"{row['latency_delta_vs_baseline_pct']}% | "
             f"{row['throughput_delta_vs_baseline_pct']}% | "
             f"{row['dram_reads']}/{row['dram_activates']}/"

@@ -362,6 +362,11 @@ def addNoISAOptions(parser):
         help="Group virtual source claims by DRAM grow address",
     )
     parser.add_argument(
+        "--maa_virtual_native_issue_order",
+        action="store_true",
+        help="Use native row-table traversal for bounded attribution claims",
+    )
+    parser.add_argument(
         "--maa_retirement_cache_size",
         default="1kB",
         help="Per-address-bank coherent virtual-retirement cache size",
