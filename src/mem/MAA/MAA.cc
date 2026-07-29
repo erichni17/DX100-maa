@@ -868,6 +868,10 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                statistics::units::Count::get(),
                "request attempts accepted while a cacheable SPD tile-read "
                "retry signal was outstanding"),
+      ADD_STAT(cpu_spd_boundary_prefetch_rejections,
+               statistics::units::Count::get(),
+               "hardware prefetch reads rejected after crossing from the "
+               "cacheable SPD alias into its write-only alias"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "

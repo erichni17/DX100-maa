@@ -545,6 +545,7 @@ public:
         statistics::Scalar cpu_spd_data_read_deferrals;
         statistics::Scalar cpu_spd_data_read_retry_signals;
         statistics::Scalar cpu_spd_data_read_retry_acceptances;
+        statistics::Scalar cpu_spd_boundary_prefetch_rejections;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.

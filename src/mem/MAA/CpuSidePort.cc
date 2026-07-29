@@ -477,6 +477,31 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             cpuSidePorts[core_id]->schedTimingResp(pkt, getClockEdge(Cycles(1)) + old_header_delay);
             break;
         }
+        case AddressRangeType::Type::SPD_DATA_NONCACHEABLE_RANGE: {
+            // A hardware cache prefetch keeps the Request::PREFETCH flag when
+            // caches turn its HardPFReq into a downstream ReadSharedReq (or
+            // ReadExReq).  A stride near the exclusive end of the cacheable
+            // SPD alias can therefore speculate into the adjacent write-only
+            // noncacheable alias.  Reject that speculation with an error
+            // response so caches drop the fill.  A real program read remains
+            // illegal and must still panic below.
+            panic_if(!pkt->req->isPrefetch(),
+                     "%s: Error: demand read to write-only Range(%s) with "
+                     "cmd(%s) is illegal. Packet: %s\n",
+                     __func__, address_range.print(), pkt->cmdString(),
+                     pkt->print());
+            stats.cpu_spd_boundary_prefetch_rejections++;
+            DPRINTF(MAACpuPort,
+                    "%s: rejecting speculative SPD alias-boundary read: %s\n",
+                    __func__, pkt->print());
+            assert(pkt->needsResponse());
+            pkt->setBadAddress();
+            Tick old_header_delay = pkt->headerDelay;
+            pkt->headerDelay = pkt->payloadDelay = 0;
+            cpuSidePorts[core_id]->schedTimingResp(
+                pkt, getClockEdge(Cycles(1)) + old_header_delay);
+            break;
+        }
         default:
             panic_if(true, "%s: Error: Range(%s) and cmd(%s) is illegal. Packet: %s\n", __func__, address_range.print(), pkt->cmdString(), pkt->print());
             assert(false);
