@@ -18,6 +18,8 @@ guest_arm=${XRAGE_GUEST_ARM:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
+debug_flags=${XRAGE_DEBUG_FLAGS:-}
+debug_args=()
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 checkpoint_manifest="$checkpoint_run/manifest.txt"
 checkpoint_artifacts="$checkpoint_run/artifact_sha256.txt"
@@ -73,6 +75,16 @@ if [[ -n $guest_arm ]]; then
             exit 2
             ;;
     esac
+fi
+if [[ -n $debug_flags ]]; then
+    [[ $debug_flags =~ ^[A-Za-z0-9_,]+$ ]] || {
+        echo "XRAGE_DEBUG_FLAGS contains unsupported characters" >&2
+        exit 2
+    }
+    debug_args=(
+        "--debug-flags=$debug_flags"
+        "--debug-file=xrage-debug.log"
+    )
 fi
 [[ -x $gem5 && -x $binary && -f $input ]] || {
     echo "missing gem5, XRAGE binary, or input" >&2
@@ -141,6 +153,7 @@ fi
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
     printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
+    printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -159,7 +172,7 @@ find "$checkpoint_dir" -maxdepth 2 -type f \
     sort -z | xargs -0 sha256sum > "$out/checkpoint_sha256.txt"
 
 restore_cmd=(
-    "$gem5" --listener-mode=off --outdir="$out/run"
+    "$gem5" "${debug_args[@]}" --listener-mode=off --outdir="$out/run"
     "$config" --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB
     --checkpoint-dir="$checkpoint_dir"
     --sys-clock 3.2GHz --cpu-clock 3.2GHz
