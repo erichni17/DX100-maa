@@ -1,0 +1,19 @@
+{
+  "schema": "lanl-maa-branson-native-process-v1",
+  "data_vaddr": 68719476736,
+  "data_paddr": 33554432,
+  "data_bytes": 1048576,
+  "control_vaddr": 68721573888,
+  "control_paddr": 67108864,
+  "control_bytes": 4096,
+  "descriptor_paddr": 33554432,
+  "roots": 12000,
+  "events": 117584,
+  "cells": 6000,
+  "maximum_events_per_root": 27,
+  "maximum_events_per_batch": 786,
+  "max_descriptor_items": 64,
+  "operation_entries": 64,
+  "descriptor_batches": 188,
+  "logical_fp64_updates": 235168
+}
