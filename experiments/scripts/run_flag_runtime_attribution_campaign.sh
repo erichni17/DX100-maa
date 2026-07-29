@@ -6,7 +6,11 @@ if [[ $# -ne 4 ]]; then
     exit 2
 fi
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+if [[ -n ${DX100_ROOT_OVERRIDE:-} ]]; then
+    root=$(realpath "$DX100_ROOT_OVERRIDE")
+else
+    root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+fi
 gem5=$(realpath "$1")
 binary=$(realpath "$2")
 input=$(realpath "$3")
