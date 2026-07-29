@@ -29,6 +29,7 @@ response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 words_per_cycle=${MAA_VIRTUAL_WORDS_PER_CYCLE:-4}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
+allow_pre_maa_retarget=${XRAGE_ALLOW_PRE_MAA_RETARGET:-0}
 debug_args=()
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 checkpoint_manifest="$checkpoint_run/manifest.txt"
@@ -80,6 +81,10 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
 }
 [[ $words_per_cycle -ge 0 ]] || {
     echo "MAA_VIRTUAL_WORDS_PER_CYCLE must be non-negative" >&2
+    exit 2
+}
+[[ $allow_pre_maa_retarget == 0 || $allow_pre_maa_retarget == 1 ]] || {
+    echo "XRAGE_ALLOW_PRE_MAA_RETARGET must be 0 or 1" >&2
     exit 2
 }
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
@@ -162,16 +167,42 @@ checkpoint_logical=$(
     sed -n 's/^maa_logical_tile_elements=//p' "$checkpoint_manifest"
 )
 checkpoint_input=$(sed -n 's/^input=//p' "$checkpoint_manifest")
-[[ $checkpoint_arm == "$arm" && $checkpoint_physical == "$physical" &&
-   $checkpoint_logical == "$maa_logical_tile_elements" &&
-   $checkpoint_input == "$input" ]] || {
-    echo "recovery configuration does not match checkpoint manifest" >&2
-    exit 1
-}
 [[ $checkpoint_guest_arm == "$guest_arm" ]] || {
     echo "recovery guest arm does not match checkpoint manifest" >&2
     exit 1
 }
+checkpoint_retargeted=0
+if [[ $checkpoint_arm != "$arm" ||
+      $checkpoint_physical != "$physical" ||
+      $checkpoint_logical != "$maa_logical_tile_elements" ||
+      $checkpoint_input != "$input" ]]; then
+    [[ $allow_pre_maa_retarget == 1 ]] || {
+        echo "recovery configuration does not match checkpoint manifest" >&2
+        exit 1
+    }
+    checkpoint_command="$checkpoint_run/checkpoint.command"
+    [[ -f $checkpoint_command &&
+       $checkpoint_logical == "$maa_logical_tile_elements" &&
+       $checkpoint_input == "$input" &&
+       $checkpoint_guest_arm == direct4 && $guest_arm == direct4 &&
+       $checkpoint_arm =~ ^direct_index_(4k|16k)$ &&
+       $arm =~ ^direct_index_(4k|16k)$ ]] || {
+        echo "pre-MAA retarget requires matched direct-index guest state" >&2
+        exit 1
+    }
+    checkpoint_command_text=$(<"$checkpoint_command")
+    [[ $checkpoint_command_text == *"--cpu-type AtomicSimpleCPU"* ]] || {
+        echo "pre-MAA retarget requires an AtomicSimpleCPU checkpoint" >&2
+        exit 1
+    }
+    if [[ $checkpoint_command_text =~ (^|[[:space:]])--maa($|[[:space:]]) ||
+          $checkpoint_command_text == *"--maa_num_"* ||
+          $checkpoint_command_text == *"--maa_physical_"* ]]; then
+        echo "pre-MAA retarget checkpoint already configures MAA" >&2
+        exit 1
+    fi
+    checkpoint_retargeted=1
+fi
 checkpoint_provenance=direct
 if ! sha256sum --status -c "$checkpoint_artifacts"; then
     python3 "$attestation_verifier" "$checkpoint_run" || {
@@ -198,6 +229,9 @@ fi
     printf 'checkpoint_manifest_sha256=%s\n' \
         "$(sha256sum "$checkpoint_manifest" | awk '{print $1}')"
     printf 'checkpoint_provenance=%s\n' "$checkpoint_provenance"
+    printf 'checkpoint_retargeted=%s\n' "$checkpoint_retargeted"
+    printf 'checkpoint_original_arm=%s\n' "$checkpoint_arm"
+    printf 'checkpoint_original_physical=%s\n' "$checkpoint_physical"
     printf 'arm=%s\n' "$arm"
     printf 'guest_arm=%s\n' "$guest_arm"
     printf 'physical_tile_elements=%s\n' "$physical"

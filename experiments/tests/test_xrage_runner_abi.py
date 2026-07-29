@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "experiments/scripts/run_xrage_direct_index_smoke.sh"
+RECOVERY = ROOT / "experiments/scripts/recover_xrage_checkpoint.sh"
 
 
 class XrageRunnerAbiTest(unittest.TestCase):
@@ -48,6 +49,14 @@ class XrageRunnerAbiTest(unittest.TestCase):
                 "must equal the gem5 logical aperture", result.stderr
             )
             self.assertFalse(output.exists())
+
+    def test_checkpoint_retarget_is_explicit_and_pre_maa_only(self):
+        script = RECOVERY.read_text(encoding="utf-8")
+        self.assertIn("XRAGE_ALLOW_PRE_MAA_RETARGET", script)
+        self.assertIn("--cpu-type AtomicSimpleCPU", script)
+        self.assertIn("checkpoint already configures MAA", script)
+        self.assertIn("checkpoint_retargeted=%s", script)
+        self.assertIn("checkpoint_original_physical=%s", script)
 
 
 if __name__ == "__main__":
