@@ -144,6 +144,13 @@ def read_run(
     }
     if len(simulators) != 1:
         fail(f"{label} has {len(simulators)} distinct gem5 artifact hashes")
+    binaries = {
+        digest
+        for path, digest in artifacts.items()
+        if path.name.startswith("spatter_maa")
+    }
+    if len(binaries) != 1:
+        fail(f"{label} has {len(binaries)} distinct XRAGE binary hashes")
     manifest = read_manifest(root / "manifest.txt")
     result = read_result(root / "result.tsv")
     log = (root / "restore.log").read_text(encoding="utf-8", errors="replace")
@@ -155,6 +162,25 @@ def read_run(
     if FATAL_RE.search(log) or not EXIT_RE.search(log):
         fail(f"{label} has a fatal marker or lacks terminal m5_exit")
     output_length, output_hash = passes[0]
+    guest_arm = manifest.get("guest_arm", "")
+    if guest_arm:
+        expected_guest_arm = {
+            "fused": "fused16",
+            "fused_4k": "fused4",
+            "compact": "compact16",
+            "direct_index_4k": "direct4",
+        }.get(manifest.get("arm", ""))
+        if guest_arm != expected_guest_arm:
+            fail(
+                f"{label} arm/guest-arm mismatch: "
+                f"{manifest.get('arm', '')}/{guest_arm}"
+            )
+        if f"MAA XRAGE arm {guest_arm}" not in log:
+            fail(f"{label} did not execute guest arm {guest_arm}")
+        roi_position = log.find("ROI End!!!")
+        exact_position = log.find("MAA_GATHER_VERIFY_PASS length=")
+        if roi_position < 0 or exact_position <= roi_position:
+            fail(f"{label} exact verification was not post-ROI")
     ticks = [int(value) for value in SIM_TICKS_RE.findall(stats)]
     if len(ticks) != 2 or ticks[0] <= 0 or ticks[1] < ticks[0]:
         fail(f"{label} has invalid first/final simTicks blocks: {ticks}")
@@ -220,6 +246,7 @@ def read_run(
         "arm": arm,
         "source_commit": manifest.get("source_commit", ""),
         "gem5_sha256": simulators.pop(),
+        "binary_sha256": binaries.pop(),
         "input": str(input_path.resolve()),
         "input_sha256": sha256(input_path),
         "output_length": int(output_length),
@@ -266,6 +293,7 @@ def main() -> int:
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--expected-channels", type=int, default=2)
+    parser.add_argument("--require-shared-binary", action="store_true")
     parser.add_argument("runs", nargs="+", type=parse_run)
     args = parser.parse_args()
     if args.expected_channels <= 0:
@@ -282,13 +310,16 @@ def main() -> int:
         for label, root in args.runs
     ]
     expected = rows[0]
+    shared_fields = [
+        "gem5_sha256",
+        "input_sha256",
+        "output_length",
+        "output_hash",
+    ]
+    if args.require_shared_binary:
+        shared_fields.append("binary_sha256")
     for row in rows[1:]:
-        for field in (
-            "gem5_sha256",
-            "input_sha256",
-            "output_length",
-            "output_hash",
-        ):
+        for field in shared_fields:
             if row[field] != expected[field]:
                 fail(
                     f"{row['label']} {field}={row[field]} differs from "

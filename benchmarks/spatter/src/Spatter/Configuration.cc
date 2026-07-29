@@ -499,7 +499,14 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 
     assert(count == 1 && "MAA Evaluation only supports count = 1");
 #ifdef MAA
-    std::cout << "MAA gather execution " << pattern_length << "/" << TILE_SIZE << std::endl;
+    int maa_tile_size = TILE_SIZE;
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+    if (maa_arm == "fused4")
+        maa_tile_size = 4096;
+    std::cout << "MAA XRAGE arm " << maa_arm << std::endl;
+#endif
+    std::cout << "MAA gather execution " << pattern_length << "/"
+              << maa_tile_size << std::endl;
 #endif
     if (timed)
         timer.start();
@@ -517,9 +524,30 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         reg3 = reg3s[tid];
         maa_const(pattern_length, reg2);
 #pragma omp for
-        for (int j = 0; j < pattern_length; j += TILE_SIZE) {
+        for (int j = 0; j < pattern_length; j += maa_tile_size) {
             maa_const(j, reg1);
-#ifdef MAA_VIRTUAL_INDEX_GATHER
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+            const int chunk_end =
+                std::min(j + maa_tile_size, pattern_length);
+            maa_const(chunk_end, reg2);
+            if (maa_arm == "direct4") {
+                maa_indirect_load_virtual_index<double>(
+                    sparse.data(),
+                    reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
+                    dense.data() + j, reg1, reg2, reg3);
+            } else {
+                maa_stream_load<int>(pattern_int.data(), reg1, reg2, reg3,
+                                     tile1);
+                if (maa_arm == "compact16") {
+                    maa_indirect_load_virtual<double>(
+                        sparse.data(), tile1, tile2, dense.data() + j);
+                } else {
+                    maa_indirect_load_spd_stream<double>(
+                        sparse.data(), tile1, tile2, dense.data(), reg1,
+                        reg2, reg3);
+                }
+            }
+#elif defined(MAA_VIRTUAL_INDEX_GATHER)
             const int chunk_end = std::min(j + TILE_SIZE, pattern_length);
             maa_const(chunk_end, reg2);
             maa_indirect_load_virtual_index<double>(
@@ -557,6 +585,13 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         }
 #endif
     }
+
+#if defined(GEM5) && defined(MAA_VERIFY_GATHER_POST_ROI)
+    // Keep exact checking out of the first stats block used for performance.
+    m5_dump_stats(0, 0);
+    m5_work_end(0, 0);
+    std::cout << "ROI End!!!" << std::endl;
+#endif
 
 #ifdef MAA_VERIFY_GATHER
     uint64_t hash = 1469598103934665603ULL;

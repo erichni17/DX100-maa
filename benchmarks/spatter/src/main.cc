@@ -75,6 +75,26 @@ int main(int argc, char **argv) {
     if (Spatter::parse_input(argc, argv, cl) != 0)
         return -1;
 
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+    if (cl.maa_arm != "fused16" && cl.maa_arm != "fused4" &&
+        cl.maa_arm != "compact16" && cl.maa_arm != "direct4") {
+        std::cerr << "Runtime XRAGE arm must be fused16, fused4, compact16, "
+                     "or direct4"
+                  << std::endl;
+        return -1;
+    }
+    for (auto &config : cl.configs)
+        config->maa_arm = cl.maa_arm;
+#endif
+
+#ifdef MAA_VERIFY_GATHER_POST_ROI
+    if (cl.configs.size() != 1) {
+        std::cerr << "Post-ROI gather verification requires one configuration"
+                  << std::endl;
+        return -1;
+    }
+#endif
+
 #ifdef USE_MPI
     if (rank == 0) {
 #endif
@@ -120,9 +140,11 @@ int main(int argc, char **argv) {
     }
 
 #ifdef GEM5
+#ifndef MAA_VERIFY_GATHER_POST_ROI
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
     std::cout << "ROI End!!!" << std::endl;
+#endif
     m5_exit(0);
 #endif
 

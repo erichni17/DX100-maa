@@ -99,6 +99,7 @@ public:
     const std::string name;
 
     std::string kernel;
+    std::string maa_arm;
     const aligned_vector<size_t> pattern;
     const aligned_vector<size_t> pattern_gather;
     const aligned_vector<size_t> pattern_scatter;

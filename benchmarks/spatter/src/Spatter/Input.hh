@@ -47,6 +47,7 @@ const option longargs[] = {{"aggregate", no_argument, nullptr, 'a'},
     {"random", optional_argument, nullptr, 's'},
     {"omp-threads", required_argument, nullptr, 't'},
     {"pattern-scatter", required_argument, nullptr, 'u'},
+    {"maa-arm", required_argument, nullptr, 0},
     {"verbosity", required_argument, nullptr, 'v'},
     {"wrap", required_argument, nullptr, 'w'},
     {"delta-gather", required_argument, nullptr, 'x'},
@@ -71,6 +72,7 @@ struct ClArgs {
   bool aggregate;
   bool atomic;
   bool compress;
+  std::string maa_arm;
   unsigned long verbosity;
 
   void report_header() {
@@ -150,6 +152,9 @@ void help(char *progname) {
   std::cout << std::left << std::setw(10) << "-m (--shared-memory)"
             << std::setw(40)
             << "Set Amount of Dummy Shared Memory to Allocate on GPUs"
+            << std::left << "\n";
+  std::cout << std::left << std::setw(10) << "   (--maa-arm)"
+            << std::setw(40) << "Select the runtime XRAGE MAA arm"
             << std::left << "\n";
   std::cout << std::left << std::setw(10) << "-n (--name)" << std::setw(40)
             << "Specify the Configuration Name" << std::left << "\n";
@@ -249,6 +254,7 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
   cl.aggregate = false;
   cl.atomic = false;
   cl.compress = false;
+  cl.maa_arm = "";
   cl.verbosity = 1;
 
   // In flag alphabetical order
@@ -256,6 +262,7 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
   bool atomic = cl.atomic;
   std::string backend = cl.backend;
   bool compress = cl.compress;
+  std::string maa_arm = cl.maa_arm;
   size_t delta = 8;
   size_t boundary = 0;
 
@@ -308,6 +315,8 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
                 "Parsing Error: Invalid Atomic Write") == -1)
           return -1;
         atomic = (atomic_val > 0) ? true : false;
+      } else if (strcmp(longargs[option_index].name, "maa-arm") == 0) {
+        maa_arm = optarg;
       }
       break;
 
@@ -497,6 +506,7 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
   cl.backend = backend;
   cl.aggregate = aggregate;
   cl.compress = compress;
+  cl.maa_arm = maa_arm;
   cl.verbosity = verbosity;
 
 #ifdef USE_OPENMP

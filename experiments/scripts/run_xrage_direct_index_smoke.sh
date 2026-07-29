@@ -13,10 +13,12 @@ input=$(realpath "$3")
 out=$(realpath -m "$4")
 physical=${MAA_PHYSICAL_TILE_ELEMENTS:-4096}
 arm=${XRAGE_ARM:-direct_index_4k}
+guest_arm=${XRAGE_GUEST_ARM:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
+logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
@@ -48,6 +50,22 @@ case "$arm" in
         exit 2
         ;;
 esac
+if [[ -n $logical_override ]]; then
+    [[ $logical_override -gt 0 && $logical_override -le 16384 ]] || {
+        echo "MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE must be in [1,16384]" >&2
+        exit 2
+    }
+    maa_logical_tile_elements=$logical_override
+fi
+if [[ -n $guest_arm ]]; then
+    case "$guest_arm" in
+        fused16|fused4|compact16|direct4) ;;
+        *)
+            echo "unsupported XRAGE_GUEST_ARM: $guest_arm" >&2
+            exit 2
+            ;;
+    esac
+fi
 [[ -x $gem5 && -x $binary && -f $input ]] || {
     echo "missing gem5, XRAGE binary, or input" >&2
     exit 2
@@ -61,11 +79,15 @@ mkdir -p "$out"
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 options="-f $input"
+if [[ -n $guest_arm ]]; then
+    options+=" --maa-arm $guest_arm"
+fi
 
 {
     printf 'source_commit=%s\n' "$simulator_source_commit"
     printf 'runner_source_commit=%s\n' "$runner_source_commit"
     printf 'arm=%s\n' "$arm"
+    printf 'guest_arm=%s\n' "$guest_arm"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
