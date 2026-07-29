@@ -420,6 +420,7 @@ public:
     bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
     unsigned int virtual_index_filter_words_per_cycle;
+    bool virtual_partition_keep_combiner;
     bool virtual_grow_order;
     bool virtual_native_issue_order;
     unsigned int num_request_table_addresses;

@@ -100,6 +100,10 @@ class MAA(ClockedObject):
         0,
         "Partition-filter index words examined per cycle (0 is unlimited)",
     )
+    virtual_partition_keep_combiner = Param.Bool(
+        False,
+        "Retain partial destination-combiner lines across index partitions",
+    )
     virtual_grow_order = Param.Bool(
         False, "Group virtual source claims by DRAM grow address"
     )

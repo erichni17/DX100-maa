@@ -362,6 +362,11 @@ def addNoISAOptions(parser):
         help="Partition-filter index words examined per cycle (0 is unlimited)",
     )
     parser.add_argument(
+        "--maa_virtual_partition_keep_combiner",
+        action="store_true",
+        help="Retain partial destination-combiner lines across index partitions",
+    )
+    parser.add_argument(
         "--maa_virtual_grow_order",
         action="store_true",
         help="Group virtual source claims by DRAM grow address",

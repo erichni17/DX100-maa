@@ -1673,13 +1673,24 @@ void IndirectAccessUnit::executeInstruction() {
             drainVirtualCombiner(true);
         }
         if (isVirtualLoad() && direct_index_partition_barrier &&
-            !virtual_build_incomplete && virtual_sources_drained)
+            !virtual_build_incomplete && virtual_sources_drained &&
+            !maa->virtual_partition_keep_combiner)
             drainVirtualCombiner(true);
-        const bool responses_complete = usesBoundedSourceResponses()
-            ? (virtual_build_incomplete ? virtual_sources_drained
-                                        : boundedRetirementComplete())
-            : (maa->allIndirectPacketsSent(my_indirect_id) &&
-               my_received_responses == my_expected_responses);
+        const bool retain_partition_combiner =
+            isVirtualLoad() && direct_index_partition_barrier &&
+            maa->virtual_partition_keep_combiner;
+        bool responses_complete;
+        if (!usesBoundedSourceResponses()) {
+            responses_complete =
+                maa->allIndirectPacketsSent(my_indirect_id) &&
+                my_received_responses == my_expected_responses;
+        } else if (virtual_build_incomplete) {
+            responses_complete = virtual_sources_drained;
+        } else if (retain_partition_combiner) {
+            responses_complete = boundedSourceResponsesComplete();
+        } else {
+            responses_complete = boundedRetirementComplete();
+        }
         if (responses_complete) {
             if (scheduleNextExecution()) {
                 DPRINTF(MAAIndirect, "I[%d] %s: requesting is still not ready, returning!\n", my_indirect_id, __func__);
@@ -3219,7 +3230,9 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
     completeVirtualRetirementWrite(addr);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     const bool response_throttled = drainVirtualResponses();
-    if (virtual_final_flush || direct_index_partition_barrier)
+    if (virtual_final_flush ||
+        (direct_index_partition_barrier &&
+         !maa->virtual_partition_keep_combiner))
         drainVirtualCombiner(true);
     accountVirtualRequestInterval();
     if (response_throttled)

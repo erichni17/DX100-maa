@@ -81,6 +81,7 @@ MAA::MAA(const MAAParams &p)
       virtual_index_partitions(p.virtual_index_partitions),
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
+      virtual_partition_keep_combiner(p.virtual_partition_keep_combiner),
       virtual_grow_order(p.virtual_grow_order),
       virtual_native_issue_order(p.virtual_native_issue_order),
       num_request_table_addresses(p.num_request_table_addresses),

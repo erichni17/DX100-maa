@@ -25,6 +25,7 @@ index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-0}
+partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
 retirement_cache_size=${MAA_RETIREMENT_CACHE_SIZE:-1kB}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
 combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
@@ -81,6 +82,14 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
 }
 [[ $index_filter_words_per_cycle -ge 0 ]] || {
     echo "MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE must be non-negative" >&2
+    exit 2
+}
+[[ $partition_keep_combiner == 0 || $partition_keep_combiner == 1 ]] || {
+    echo "MAA_VIRTUAL_PARTITION_KEEP_COMBINER must be 0 or 1" >&2
+    exit 2
+}
+[[ $index_partitions -gt 1 || $partition_keep_combiner == 0 ]] || {
+    echo "partition combiner retention requires multiple index partitions" >&2
     exit 2
 }
 [[ $retirement_cache_size =~ ^[1-9][0-9]*(B|kB|MB)$ ]] || {
@@ -286,6 +295,8 @@ fi
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
     printf 'virtual_index_filter_words_per_cycle=%s\n' \
         "$index_filter_words_per_cycle"
+    printf 'virtual_partition_keep_combiner=%s\n' \
+        "$partition_keep_combiner"
     printf 'retirement_cache_size=%s\n' "$retirement_cache_size"
     printf 'virtual_combine_slots=%s\n' "$combine_slots"
     printf 'virtual_combine_words=%s\n' "$combine_words"
@@ -359,6 +370,9 @@ if [[ $native_issue_order == 1 ]]; then
 fi
 if [[ $index_force_cache == 1 ]]; then
     restore_cmd+=(--maa_virtual_index_force_cache)
+fi
+if [[ $partition_keep_combiner == 1 ]]; then
+    restore_cmd+=(--maa_virtual_partition_keep_combiner)
 fi
 printf '%q ' "${restore_cmd[@]}" > "$out/restore.command"
 printf '\n' >> "$out/restore.command"
