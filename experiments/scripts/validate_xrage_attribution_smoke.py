@@ -9,12 +9,12 @@ import sys
 from pathlib import Path
 
 ARMS = {
-    "native": 16384,
-    "fused": 16384,
-    "compact": 16384,
-    "direct_index_16k": 16384,
-    "direct_index_4k": 4096,
-    "fused_4k": 4096,
+    "native": (16384, 16384),
+    "fused": (16384, 16384),
+    "compact": (16384, 16384),
+    "direct_index_16k": (16384, 16384),
+    "direct_index_4k": (4096, 16384),
+    "fused_4k": (4096, 4096),
 }
 RESULT_FIELDS = [
     "output_hash",
@@ -135,15 +135,17 @@ def main():
     expected_hash = None
     expected_commit = None
 
-    for arm, physical in ARMS.items():
+    for arm, (physical, workload_chunk) in ARMS.items():
         arm_root = root / arm
         manifest = read_kv(arm_root / "manifest.txt")
         if manifest.get("arm") != arm:
             fail(f"{arm} manifest identifies {manifest.get('arm')!r}")
         if int(manifest.get("physical_tile_elements", -1)) != physical:
             fail(f"{arm} physical tile does not equal {physical}")
-        if int(manifest.get("logical_tile_elements", -1)) != 16384:
-            fail(f"{arm} logical tile does not equal 16384")
+        if int(manifest.get("maa_logical_tile_elements", -1)) != 16384:
+            fail(f"{arm} MAA logical capacity does not equal 16384")
+        if int(manifest.get("workload_chunk_elements", -1)) != workload_chunk:
+            fail(f"{arm} workload chunk does not equal {workload_chunk}")
         commit = manifest.get("source_commit")
         if not commit:
             fail(f"{arm} has no source commit")
@@ -164,6 +166,8 @@ def main():
             fail(f"{arm} has invalid exact-verifier evidence")
         if FATAL_RE.search(log) or not EXIT_RE.search(log):
             fail(f"{arm} has a fatal marker or lacks terminal m5_exit")
+        if f"MAA gather execution 20000/{workload_chunk}" not in log:
+            fail(f"{arm} did not execute {workload_chunk}-element chunks")
         output_hash = passes[0][1]
         if expected_hash is None:
             expected_hash = output_hash

@@ -19,7 +19,12 @@ arm=${XRAGE_ARM:-direct_index_4k}
     exit 2
 }
 case "$arm" in
-    native|fused|fused_4k|compact|direct_index_16k|direct_index_4k) ;;
+    native|fused|compact|direct_index_16k|direct_index_4k)
+        workload_chunk_elements=16384
+        ;;
+    fused_4k)
+        workload_chunk_elements=4096
+        ;;
     *)
         echo "unsupported XRAGE_ARM: $arm" >&2
         exit 2
@@ -43,7 +48,8 @@ options="-f $input"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'arm=%s\n' "$arm"
     printf 'physical_tile_elements=%s\n' "$physical"
-    printf 'logical_tile_elements=16384\n'
+    printf 'maa_logical_tile_elements=16384\n'
+    printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
     printf 'input=%s\n' "$input"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
