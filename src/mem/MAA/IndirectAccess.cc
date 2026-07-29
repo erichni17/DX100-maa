@@ -7,6 +7,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "debug/MAAIndirect.hh"
+#include "debug/MAAIssueDigest.hh"
 #include "debug/MAAIssueTrace.hh"
 #include "debug/MAATrace.hh"
 #include "debug/MAAVirtualTrace.hh"
@@ -1085,6 +1086,8 @@ void IndirectAccessUnit::executeInstruction() {
         my_virtual_addr = 0;
         my_received_responses = my_expected_responses = 0;
         source_issue_sequence = 0;
+        source_issue_digest = 1469598103934665603ULL;
+        source_issue_digest_secondary = 0x9e3779b97f4a7c15ULL;
         virtual_reserved_responses = 0;
         virtual_reserved_response_words = 0;
         virtual_word_budget_tick = curTick();
@@ -1823,6 +1826,12 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_VirtIndexWordHighWater[my_indirect_id]) +=
                 direct_index_max_words;
         }
+        DPRINTF(MAAIssueDigest,
+                "unit=%d instruction_tick=%lu count=%lu "
+                "fnv=0x%016lx mix=0x%016lx\n",
+                my_indirect_id, my_decode_start_tick,
+                source_issue_sequence, source_issue_digest,
+                source_issue_digest_secondary);
         panic_if(scheduleNextExecution(),
                  "I[%d] %s: Execution is not completed!\n",
                  my_indirect_id, __func__);
@@ -1901,11 +1910,28 @@ bool IndirectAccessUnit::checkAndResetAllRowTablesSent() {
     return true;
 }
 void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
+    const uint64_t sequence = source_issue_sequence++;
+    for (int byte = 0; byte < 8; ++byte) {
+        source_issue_digest ^=
+            (static_cast<uint64_t>(addr) >> (byte * 8)) & 0xff;
+        source_issue_digest *= 1099511628211ULL;
+    }
+    uint64_t mixed = static_cast<uint64_t>(addr) ^
+        (sequence * 0x9e3779b97f4a7c15ULL);
+    mixed ^= mixed >> 30;
+    mixed *= 0xbf58476d1ce4e5b9ULL;
+    mixed ^= mixed >> 27;
+    mixed *= 0x94d049bb133111ebULL;
+    mixed ^= mixed >> 31;
+    source_issue_digest_secondary ^=
+        mixed + 0x9e3779b97f4a7c15ULL +
+        (source_issue_digest_secondary << 6) +
+        (source_issue_digest_secondary >> 2);
     DPRINTF(MAAIssueTrace,
             "unit=%d instruction_tick=%lu sequence=%d addr=0x%lx "
             "bounded=%d virtual=%d direct_index=%d\n",
             my_indirect_id, my_decode_start_tick,
-            source_issue_sequence++, addr, usesBoundedSourceResponses(),
+            sequence, addr, usesBoundedSourceResponses(),
             isVirtualLoad(), isDirectIndexLoad());
     /**** Packet generation ****/
     RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);

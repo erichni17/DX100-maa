@@ -266,6 +266,8 @@ protected:
     int my_expected_responses;
     int my_received_responses;
     uint64_t source_issue_sequence = 0;
+    uint64_t source_issue_digest = 1469598103934665603ULL;
+    uint64_t source_issue_digest_secondary = 0x9e3779b97f4a7c15ULL;
     std::vector<int> my_sorted_indices;
     bool **my_RT_req_sent;
     std::vector<int> *my_RT_slice_order;
