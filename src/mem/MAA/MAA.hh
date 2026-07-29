@@ -417,6 +417,7 @@ public:
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     unsigned int virtual_index_buffer_lines;
+    bool direct_index_force_cache;
     unsigned int virtual_index_partitions;
     unsigned int virtual_index_filter_words_per_cycle;
     bool virtual_grow_order;
@@ -632,6 +633,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtAllPagesReadyCycles;
         std::vector<statistics::Scalar *> IND_VirtPageReadySpanCycles;
         std::vector<statistics::Scalar *> IND_VirtIndexLineReads;
+        std::vector<statistics::Scalar *> IND_VirtIndexCacheResponses;
+        std::vector<statistics::Scalar *> IND_VirtIndexMemResponses;
         std::vector<statistics::Scalar *> IND_VirtIndexLineHighWater;
         std::vector<statistics::Scalar *> IND_VirtIndexWords;
         std::vector<statistics::Scalar *> IND_VirtIndexWordHighWater;

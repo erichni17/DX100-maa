@@ -192,6 +192,7 @@ public:
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
                   int _virtual_index_buffer_lines,
+                  bool _direct_index_force_cache,
                   int _virtual_index_partitions,
                   int _virtual_index_filter_words_per_cycle,
                   Cycles _rowtable_latency,
@@ -233,6 +234,7 @@ protected:
         Addr line_addr = 0;
     };
     int direct_index_buffer_lines = 1;
+    bool direct_index_force_cache = false;
     int direct_index_partitions = 1;
     int direct_index_filter_words_per_cycle = 0;
     int direct_index_partition = 0;

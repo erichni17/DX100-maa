@@ -77,6 +77,7 @@ MAA::MAA(const MAAParams &p)
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
+      direct_index_force_cache(p.direct_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
@@ -379,6 +380,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
                                         virtual_index_buffer_lines,
+                                        direct_index_force_cache,
                                         virtual_index_partitions,
                                         virtual_index_filter_words_per_cycle,
                                         rowtable_latency,
@@ -1282,6 +1284,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineReads"),
             statistics::units::Count::get(),
             "cache-line reads issued by direct virtual-index ingestion"));
+        IND_VirtIndexCacheResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexCacheResponses"),
+            statistics::units::Count::get(),
+            "direct virtual-index lines returned through the cache side"));
+        IND_VirtIndexMemResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexMemResponses"),
+            statistics::units::Count::get(),
+            "direct virtual-index lines returned through the memory side"));
         IND_VirtIndexLineHighWater.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexLineHighWater"),
             statistics::units::Count::get(),

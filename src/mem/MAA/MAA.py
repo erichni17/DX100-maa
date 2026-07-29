@@ -89,6 +89,9 @@ class MAA(ClockedObject):
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",
     )
+    direct_index_force_cache = Param.Bool(
+        False, "Route direct virtual-index lines through the cache side"
+    )
     virtual_index_partitions = Param.Unsigned(
         1, "Modulo DRAM-grow partitions scanned by a direct virtual-index load"
     )

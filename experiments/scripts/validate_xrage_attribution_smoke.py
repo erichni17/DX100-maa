@@ -25,6 +25,8 @@ RESULT_FIELDS = [
     "virtual_write_completions",
     "virtual_pages_ready",
     "direct_index_words",
+    "direct_index_cache_responses",
+    "direct_index_mem_responses",
     "indirect_spd_read_cycles",
 ]
 FATAL_RE = re.compile(
@@ -42,6 +44,8 @@ MECHANISM_STATS = {
     "virtual_write_completions": "system.maa.I0_IND_VirtWriteCompletions",
     "virtual_pages_ready": "system.maa.I0_IND_VirtPagesReady",
     "direct_index_words": "system.maa.I0_IND_VirtIndexWords",
+    "direct_index_cache_responses": "system.maa.I0_IND_VirtIndexCacheResponses",
+    "direct_index_mem_responses": "system.maa.I0_IND_VirtIndexMemResponses",
     "indirect_spd_read_cycles": "system.maa.I0_IND_CyclesSPDReadAccess",
 }
 
@@ -93,23 +97,47 @@ def verify_artifacts(path, digest_cache):
             fail(f"checksum mismatch for {artifact}")
 
 
-def require_mechanism(arm, row):
+def require_mechanism(arm, row, direct_index_force_cache):
     values = {key: int(row[key]) for key in RESULT_FIELDS[1:]}
     writes = values["virtual_write_issues"]
     completions = values["virtual_write_completions"]
     pages = values["virtual_pages_ready"]
     index_words = values["direct_index_words"]
+    index_cache_responses = values["direct_index_cache_responses"]
+    index_mem_responses = values["direct_index_mem_responses"]
     spd_reads = values["indirect_spd_read_cycles"]
     if writes != completions:
         fail(f"{arm} has {writes} write issues but {completions} completions")
     if arm in ("native", "fused", "fused_4k"):
-        if writes != 0 or pages != 0 or index_words != 0:
+        if (
+            writes != 0
+            or pages != 0
+            or index_words != 0
+            or index_cache_responses != 0
+            or index_mem_responses != 0
+        ):
             fail(f"{arm} unexpectedly activated virtual machinery")
     elif arm == "compact":
-        if writes <= 0 or pages <= 0 or index_words != 0 or spd_reads <= 0:
+        if (
+            writes <= 0
+            or pages <= 0
+            or index_words != 0
+            or spd_reads <= 0
+            or index_cache_responses != 0
+            or index_mem_responses != 0
+        ):
             fail("compact arm did not use staged-index virtual retirement")
     else:
-        if writes <= 0 or pages <= 0 or index_words != 20000 or spd_reads != 0:
+        expected_cache = 20000 // 16 if direct_index_force_cache else 0
+        expected_mem = 0 if direct_index_force_cache else 20000 // 16
+        if (
+            writes <= 0
+            or pages <= 0
+            or index_words != 20000
+            or index_cache_responses != expected_cache
+            or index_mem_responses != expected_mem
+            or spd_reads != 0
+        ):
             fail(f"{arm} did not use direct-index virtual retirement")
 
 
@@ -146,6 +174,11 @@ def main():
             fail(f"{arm} MAA logical capacity does not equal 16384")
         if int(manifest.get("workload_chunk_elements", -1)) != workload_chunk:
             fail(f"{arm} workload chunk does not equal {workload_chunk}")
+        direct_index_force_cache = manifest.get(
+            "direct_index_force_cache", "0"
+        )
+        if direct_index_force_cache not in ("0", "1"):
+            fail(f"{arm} has invalid direct-index route selector")
         commit = manifest.get("source_commit")
         if not commit:
             fail(f"{arm} has no source commit")
@@ -191,7 +224,7 @@ def main():
         ):
             fail(f"{arm} result.tsv does not match raw evidence")
         require_raw_mechanism(stats, arm, result)
-        require_mechanism(arm, result)
+        require_mechanism(arm, result, direct_index_force_cache == "1")
 
         config = configparser.RawConfigParser(strict=False)
         config.read(arm_root / "run" / "config.ini")
