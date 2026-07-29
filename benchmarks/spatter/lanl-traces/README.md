@@ -67,9 +67,9 @@ cmake --build benchmarks/spatter/build_lanl_func -j4 \
 benchmarks/spatter/run_lanl_runtime_arm_functional_smoke.sh
 ```
 
-This is a functional-equivalence gate only. It verifies that `fused16`,
-`fused4`, `compact16`, and `direct4` produce the same exact result; it does not
-predict their gem5 performance.
+This is a functional-equivalence gate only. It verifies that `native16`,
+`fused16`, `fused4`, `compact16`, and `direct4` produce the same exact result;
+it does not predict their gem5 performance.
 
 A gem5 result additionally requires a matching
 baseline, native DX100, fused DX100, and virtual DX100 configuration, terminal

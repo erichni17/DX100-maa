@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BINARY=${1:-$ROOT/build_lanl_func/spatter_maa_xrage_runtime_verify_16K}
 DATA_ROOT=${2:-$ROOT/tests/test-data/lanl}
 MANIFEST=$DATA_ROOT/manifest.json
-ARMS=(fused16 fused4 compact16 direct4)
+ARMS=(native16 fused16 fused4 compact16 direct4)
 
 [[ -x "$BINARY" ]] || { echo "missing runtime MAA binary: $BINARY" >&2; exit 2; }
 [[ -f "$MANIFEST" ]] || { echo "missing trace manifest: $MANIFEST" >&2; exit 2; }

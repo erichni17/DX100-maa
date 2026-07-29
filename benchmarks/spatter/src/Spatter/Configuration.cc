@@ -545,10 +545,14 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
                 if (maa_arm == "compact16") {
                     maa_indirect_load_virtual<double>(
                         sparse.data(), tile1, tile2, dense.data() + j);
-                } else {
+                } else if (maa_arm == "fused16" || maa_arm == "fused4") {
                     maa_indirect_load_spd_stream<double>(
                         sparse.data(), tile1, tile2, dense.data(), reg1,
                         reg2, reg3);
+                } else {
+                    maa_indirect_load<double>(sparse.data(), tile1, tile2);
+                    maa_stream_store<double>(dense.data(), reg1, reg2, reg3,
+                                             tile2);
                 }
             }
 #elif defined(MAA_VIRTUAL_INDEX_GATHER)
