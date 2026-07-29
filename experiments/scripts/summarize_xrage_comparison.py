@@ -79,7 +79,8 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_artifacts(path: Path, cache: dict[tuple, str]) -> None:
+def verify_artifacts(path: Path, cache: dict[tuple, str]) -> dict[Path, str]:
+    verified: dict[Path, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         expected, separator, filename = line.partition("  ")
         if not separator or not re.fullmatch(r"[0-9a-f]{64}", expected):
@@ -94,6 +95,8 @@ def verify_artifacts(path: Path, cache: dict[tuple, str]) -> None:
             cache[key] = actual
         if actual != expected:
             fail(f"checksum mismatch for {artifact}")
+        verified[artifact] = actual
+    return verified
 
 
 def first_stat(stats: str, name: str) -> int:
@@ -133,7 +136,14 @@ def read_run(
     if (root / "restore.exit").read_text(encoding="utf-8").strip() != "0":
         fail(f"{label} restore did not exit zero")
 
-    verify_artifacts(root / "artifact_sha256.txt", digest_cache)
+    artifacts = verify_artifacts(root / "artifact_sha256.txt", digest_cache)
+    simulators = {
+        digest
+        for path, digest in artifacts.items()
+        if path.name.startswith("gem5")
+    }
+    if len(simulators) != 1:
+        fail(f"{label} has {len(simulators)} distinct gem5 artifact hashes")
     manifest = read_manifest(root / "manifest.txt")
     result = read_result(root / "result.tsv")
     log = (root / "restore.log").read_text(encoding="utf-8", errors="replace")
@@ -209,6 +219,7 @@ def read_run(
         "label": label,
         "arm": arm,
         "source_commit": manifest.get("source_commit", ""),
+        "gem5_sha256": simulators.pop(),
         "input": str(input_path.resolve()),
         "input_sha256": sha256(input_path),
         "output_length": int(output_length),
@@ -272,7 +283,12 @@ def main() -> int:
     ]
     expected = rows[0]
     for row in rows[1:]:
-        for field in ("input_sha256", "output_length", "output_hash"):
+        for field in (
+            "gem5_sha256",
+            "input_sha256",
+            "output_length",
+            "output_hash",
+        ):
             if row[field] != expected[field]:
                 fail(
                     f"{row['label']} {field}={row[field]} differs from "
