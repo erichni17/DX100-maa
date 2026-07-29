@@ -12,11 +12,19 @@ binary=$(realpath "$2")
 input=$(realpath "$3")
 out=$(realpath -m "$4")
 physical=${MAA_PHYSICAL_TILE_ELEMENTS:-4096}
+arm=${XRAGE_ARM:-direct_index_4k}
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
     exit 2
 }
+case "$arm" in
+    native|fused|compact|direct_index_16k|direct_index_4k) ;;
+    *)
+        echo "unsupported XRAGE_ARM: $arm" >&2
+        exit 2
+        ;;
+esac
 [[ -x $gem5 && -x $binary && -f $input ]] || {
     echo "missing gem5, XRAGE binary, or input" >&2
     exit 2
@@ -33,6 +41,7 @@ options="-f $input"
 
 {
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'arm=%s\n' "$arm"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'logical_tile_elements=16384\n'
     printf 'input=%s\n' "$input"
@@ -133,5 +142,5 @@ ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
 }
 printf 'output_hash\tsimTicks\n%s\t%s\n' "$hash" "$ticks" \
     > "$out/result.tsv"
-touch "$out/xrage_direct_index_smoke.pass"
-echo "PASS XRAGE direct-index: hash=$hash simTicks=$ticks"
+touch "$out/xrage_attribution_smoke.pass"
+echo "PASS XRAGE $arm: hash=$hash simTicks=$ticks"
