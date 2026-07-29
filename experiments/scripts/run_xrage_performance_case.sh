@@ -37,8 +37,8 @@ esac
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
     exit 2
 }
-[[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 64 ]] || {
-    echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,64]" >&2
+[[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 1024 ]] || {
+    echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,1024]" >&2
     exit 2
 }
 [[ $replicas -ge 1 && $replicas -le 10 ]] || {

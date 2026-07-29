@@ -46,8 +46,8 @@ debug_args=()
     echo "virtual grow and native issue order are mutually exclusive" >&2
     exit 2
 }
-[[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 64 ]] || {
-    echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,64]" >&2
+[[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 1024 ]] || {
+    echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,1024]" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {

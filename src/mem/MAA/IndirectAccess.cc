@@ -160,8 +160,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     virtual_masked_writes = _virtual_masked_writes;
     panic_if(_virtual_index_buffer_lines <= 0 ||
-                 _virtual_index_buffer_lines > 64,
-             "I[%d] direct-index buffer lines (%d) must be in [1,64]\n",
+                 _virtual_index_buffer_lines > 1024,
+             "I[%d] direct-index buffer lines (%d) must be in [1,1024]\n",
              my_indirect_id, _virtual_index_buffer_lines);
     direct_index_buffer_lines = _virtual_index_buffer_lines;
     panic_if(_virtual_index_partitions <= 0 ||

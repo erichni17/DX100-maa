@@ -7,8 +7,8 @@ if [[ $# -ne 4 ]]; then
 fi
 
 index_lines=${VIRTUAL_INDEX_BUFFER_LINES:-4}
-if [[ ! $index_lines =~ ^[1-9][0-9]*$ || $index_lines -gt 64 ]]; then
-    echo "VIRTUAL_INDEX_BUFFER_LINES must be in [1, 64]" >&2
+if [[ ! $index_lines =~ ^[1-9][0-9]*$ || $index_lines -gt 1024 ]]; then
+    echo "VIRTUAL_INDEX_BUFFER_LINES must be in [1, 1024]" >&2
     exit 2
 fi
 

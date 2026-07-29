@@ -245,8 +245,8 @@ def validate(case: dict, values: dict) -> None:
     physical = values["physical_tile_elements"] or logical
     if physical > logical:
         raise ContractError("physical_tile_elements exceeds num_tile_elements")
-    if not 1 <= values["virtual_index_buffer_lines"] <= 64:
-        raise ContractError("virtual_index_buffer_lines must be in [1,64]")
+    if not 1 <= values["virtual_index_buffer_lines"] <= 1024:
+        raise ContractError("virtual_index_buffer_lines must be in [1,1024]")
     if not 1 <= values["virtual_index_partitions"] <= 64:
         raise ContractError("virtual_index_partitions must be in [1,64]")
     if (

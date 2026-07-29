@@ -37,8 +37,8 @@ fi
     echo "N must be in [1,16384]" >&2
     exit 2
 }
-[[ $buffer_lines =~ ^[1-9][0-9]*$ && $buffer_lines -le 64 ]] || {
-    echo "BUFFER_LINES must be in [1,64]" >&2
+[[ $buffer_lines =~ ^[1-9][0-9]*$ && $buffer_lines -le 1024 ]] || {
+    echo "BUFFER_LINES must be in [1,1024]" >&2
     exit 2
 }
 case "$pattern" in

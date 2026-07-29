@@ -128,6 +128,27 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(hardware["virtual_words_per_cycle"], 0)
         self.assertEqual(hardware["virtual_index_filter_words_per_cycle"], 0)
 
+    def test_full_logical_index_line_budget_is_bounded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = self.build(
+                root,
+                "direct_index_virtual",
+                {"virtual_index_buffer_lines": 1024},
+            )
+            self.assertEqual(
+                contract["configured_hardware"]["virtual_index_buffer_lines"],
+                1024,
+            )
+            with self.assertRaisesRegex(
+                MODULE.ContractError, "virtual_index_buffer_lines"
+            ):
+                self.build(
+                    root,
+                    "direct_index_virtual",
+                    {"virtual_index_buffer_lines": 1025},
+                )
+
     def test_grow_order_is_qualified(self):
         with tempfile.TemporaryDirectory() as temporary:
             contract = self.build(
