@@ -92,6 +92,17 @@ def verify_hash_list(path: Path) -> dict[Path, str]:
     return verified
 
 
+def gem5_hash(artifacts: dict[Path, str], label: str) -> str:
+    hashes = {
+        digest
+        for path, digest in artifacts.items()
+        if path.name.startswith("gem5")
+    }
+    if len(hashes) != 1:
+        fail(f"{label} has ambiguous gem5 artifacts")
+    return hashes.pop()
+
+
 def first_stat(stats: str, name: str) -> int:
     match = re.search(
         rf"^{re.escape(name)}\s+([0-9]+)\s+", stats, re.MULTILINE
@@ -101,7 +112,7 @@ def first_stat(stats: str, name: str) -> int:
 
 def read_exact_reference(
     root: Path, expected_input_sha: str
-) -> tuple[int, str]:
+) -> tuple[int, str, str, str, int, int, int]:
     required = [
         root / "manifest.txt",
         root / "artifact_sha256.txt",
@@ -115,7 +126,7 @@ def read_exact_reference(
         or (root / "xrage_checkpoint_recovery.pass").is_file()
     ):
         fail(f"exact reference has no pass marker: {root}")
-    verify_hash_list(root / "artifact_sha256.txt")
+    artifacts = verify_hash_list(root / "artifact_sha256.txt")
     manifest = read_kv(root / "manifest.txt")
     exact_input = Path(manifest.get("input", ""))
     if not exact_input.is_file() or sha256(exact_input) != expected_input_sha:
@@ -124,7 +135,23 @@ def read_exact_reference(
     matches = EXACT_RE.findall(log)
     if len(matches) != 1 or EXACT_FATAL_RE.search(log):
         fail(f"invalid exact-output evidence: {root}")
-    return int(matches[0][0]), matches[0][1]
+    try:
+        exact_config = (
+            manifest["arm"],
+            int(manifest["maa_logical_tile_elements"]),
+            int(manifest["physical_tile_elements"]),
+            int(manifest["virtual_index_buffer_lines"]),
+        )
+    except (KeyError, ValueError) as error:
+        fail(
+            f"exact reference has incomplete mechanism metadata: {root}: {error}"
+        )
+    return (
+        int(matches[0][0]),
+        matches[0][1],
+        gem5_hash(artifacts, f"exact reference {root}"),
+        *exact_config,
+    )
 
 
 def read_run(label: str, root: Path, channels: int) -> dict[str, object]:
@@ -151,14 +178,38 @@ def read_run(label: str, root: Path, channels: int) -> dict[str, object]:
     if not input_path.is_file():
         fail(f"{label} input is missing")
     input_sha = sha256(input_path)
-    exact_length, exact_hash = read_exact_reference(
-        Path(manifest["exact_reference"]), input_sha
-    )
+    arm = manifest["arm"]
+    (
+        exact_length,
+        exact_hash,
+        exact_gem5_sha,
+        exact_arm,
+        exact_logical,
+        exact_physical,
+        exact_index_lines,
+    ) = read_exact_reference(Path(manifest["exact_reference"]), input_sha)
     if (
         int(manifest["exact_length"]) != exact_length
         or manifest["exact_hash"] != exact_hash
     ):
         fail(f"{label} manifest does not match its exact reference")
+    mechanism = (
+        arm,
+        int(manifest["maa_logical_tile_elements"]),
+        int(manifest["physical_tile_elements"]),
+        int(manifest["virtual_index_buffer_lines"]),
+    )
+    exact_mechanism = (
+        exact_arm,
+        exact_logical,
+        exact_physical,
+        exact_index_lines,
+    )
+    if mechanism != exact_mechanism:
+        fail(
+            f"{label} mechanism differs from exact reference: "
+            f"performance={mechanism}, exact={exact_mechanism}"
+        )
 
     with (root / "results.tsv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream, delimiter="\t"))
@@ -253,7 +304,6 @@ def read_run(label: str, root: Path, channels: int) -> dict[str, object]:
         if len({int(row[field]) for row in replica_data}) != 1:
             fail(f"{label} replicas disagree on {field}")
 
-    arm = manifest["arm"]
     first = replica_data[0]
     if arm in {"native", "fused", "fused_4k"}:
         if first["virtual_write_issues"] or first["direct_index_words"]:
@@ -275,18 +325,14 @@ def read_run(label: str, root: Path, channels: int) -> dict[str, object]:
     else:
         fail(f"{label} has unsupported arm {arm}")
 
-    gem5_hashes = {
-        digest
-        for path, digest in artifacts.items()
-        if path.name.startswith("gem5")
-    }
-    if len(gem5_hashes) != 1:
-        fail(f"{label} has ambiguous gem5 artifacts")
+    performance_gem5_sha = gem5_hash(artifacts, label)
+    if performance_gem5_sha != exact_gem5_sha:
+        fail(f"{label} gem5 differs from its exact reference")
     return {
         "label": label,
         "arm": arm,
         "source_commit": manifest["source_commit"],
-        "gem5_sha256": gem5_hashes.pop(),
+        "gem5_sha256": performance_gem5_sha,
         "binary_sha256": next(
             digest
             for path, digest in artifacts.items()
