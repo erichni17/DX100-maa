@@ -24,6 +24,9 @@ run:
     virtual_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-random-107afd6/run
     optimized_virtual_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-n4096-cg-geometry-107afd6/run
     cost_sweep_output: /data1/nier/dx100-runs/2026-07-26-transparent-virtual/direct-gather-cost-sweep-107afd6
+    descriptor_capacity_baseline: /data1/nier/dx100-runs/2026-07-29-flag-gather-generalization-recovery3-670a072
+    descriptor_capacity_candidate: /data1/nier/dx100-runs/2026-07-29-flag-quarter-descriptors-05f390c
+    descriptor_capacity_comparison: /data1/nier/dx100-runs/2026-07-29-flag-quarter-descriptors-05f390c/comparison
     gem5_memory: 2GB
     cgroup_memory_max: 16G
     cgroup_swap_max: '0'
@@ -32,5 +35,7 @@ run:
 outputs:
     table: tables/paired.tsv
     cost_table: tables/cost_sweep.tsv
+    descriptor_capacity_table: tables/descriptor_capacity.tsv
     notes_file: notes/summary.md
     storage_model: notes/storage_model.md
+    descriptor_capacity: notes/descriptor_capacity.md

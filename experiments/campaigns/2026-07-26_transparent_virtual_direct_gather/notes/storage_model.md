@@ -31,6 +31,13 @@ ordering across the full logical window even though only 8 KiB of B payload is
 live in the feeder. The native and direct columns include the same lower-bound
 descriptor state because the baseline already has those structures.
 
+A later treatment reduced active Row-Table capacity to 4,096 entries while
+retaining the 16,384-entry logical Offset Table. Its comparable lower bound is
+682,322 bytes: 19.010% below the full-descriptor direct-index design and 71.772%
+below this table's original native-16K lower bound. This is not yet a fully 4K
+descriptor design because the Offset Table remains logical-iteration indexed.
+See `descriptor_capacity.md`.
+
 The physical SPD plus active bounded payload/control is 571,634 bytes, a
 72.742% reduction versus the native SPD payload alone. That narrower number is
 not the apples-to-apples headline because it omits metadata retained by both

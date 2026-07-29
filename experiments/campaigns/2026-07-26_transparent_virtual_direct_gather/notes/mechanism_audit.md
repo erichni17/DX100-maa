@@ -51,13 +51,15 @@ arbitrary later MAA instruction that expects the entire destination tile in SPD.
 
 ## Professor's subset proposal
 
-Keeping a selected subset of B descriptors in DX100 and spilling other subsets
-to LLC is a way to recover a larger reorder window when descriptor capacity is
-also limited to 4K. The current design does not need that policy for its present
-one-unit configuration because it retains the baseline 16K descriptor capacity.
-The proposal becomes relevant if the research target requires shrinking both
-payload and Row/Offset metadata, or if synthesis shows that retained descriptor
-storage dominates the cost.
+Keeping a selected subset of B descriptors in DX100 and rescanning cached B for
+other subsets is a way to recover a larger reorder window when descriptor
+capacity is limited. A newer experiment reduced active Row-Table capacity to 4K
+while retaining the 16K Offset Table. One-pass dynamic drain was only 1.127%
+slower geometrically across all 14 FLAG gathers, so repeated scans are not the
+default. On FLAG00, cached two- and three-partition policies with C-combiner
+retention were 4.639% and 4.582% slower than full descriptors; one pass was only
+3.013% slower. See `descriptor_capacity.md` for the complete distinction and
+evidence.
 
 ## Meaning of pure virtualization
 

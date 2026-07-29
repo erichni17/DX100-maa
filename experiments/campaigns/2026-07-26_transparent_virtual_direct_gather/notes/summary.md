@@ -42,3 +42,10 @@ precharges by 14.764%, but made FLAG00 0.110% slower in two exact deterministic
 observations. The A-request order and output were unchanged; cache routing made
 B fill 167 MAA cycles slower instead of removing the direct-versus-compact
 critical-path gap.
+
+Reducing active Row-Table capacity from 16K to 4K entries was then validated on
+all 14 FLAG gathers. It added only 1.127% geometric-mean latency, with a -0.626%
+to +3.165% range, while exact output and treatment-only configuration checks
+passed. The Offset Table remains 16K, so this is a 4K-Row/16K-Offset result, not
+yet a fully bounded 4K descriptor subsystem. The modeled comparable lower bound
+falls from 842,482 to 682,322 bytes. See `descriptor_capacity.md`.
