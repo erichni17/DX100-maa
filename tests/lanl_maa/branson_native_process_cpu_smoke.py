@@ -116,9 +116,6 @@ process.env = [
         "GLIBC_TUNABLES=glibc.cpu.hwcaps="
         "-SSE4_2,-AVX,-AVX2,-AVX512F,-AVX512VL"
     ),
-    "OMPI_MCA_btl=self",
-    "OMPI_MCA_pml=ob1",
-    "OMPI_MCA_shmem=mmap",
     "BRANSON_LANL_MAA_SUBMIT=1",
     "BRANSON_LANL_MAA_REPLACE_TALLIES=1",
     "BRANSON_LANL_MAA_SUBMIT_TIMESTEP=1",

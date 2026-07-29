@@ -35,6 +35,22 @@ def git_text(root, *arguments):
     ).stdout.strip()
 
 
+def dynamic_dependencies(binary):
+    readelf = shutil.which("readelf")
+    if readelf is None:
+        raise RuntimeError("readelf is required to bind Branson dependencies")
+    output = subprocess.run(
+        [readelf, "-d", str(binary)],
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+    dependencies = re.findall(r"Shared library: \[([^]]+)\]", output)
+    if any(name.startswith("libmpi") for name in dependencies):
+        raise ValueError("native process binary still links an MPI runtime")
+    return dependencies
+
+
 def read_scalar(lines, name):
     prefix = name + " "
     for line in lines:
@@ -53,6 +69,7 @@ def validate_submission(document, metadata):
         "maximum_events_per_root": metadata["maximum_events_per_root"],
         "tolerance": 1.0e-12,
         "tolerance_match": True,
+        "single_rank_mpi_shim": True,
         "scalar_tally_updates_replaced": True,
     }
     for name, expected in required.items():
@@ -238,6 +255,7 @@ def main():
     input_path = outdir / source_input.name
     shutil.copy2(source_binary, binary)
     shutil.copy2(source_input, input_path)
+    needed_libraries = dynamic_dependencies(binary)
     submission_path = outdir / "branson_submission.json"
     m5out = outdir / "m5out"
     command = [
@@ -258,6 +276,8 @@ def main():
         "simulator_commit": simulator_commit,
         "simulator_tracked_worktree_clean": True,
         "branson_binary_sha256": file_sha256(binary),
+        "branson_needed_libraries": needed_libraries,
+        "mpi_mode": metadata["mpi_mode"],
         "input_sha256": file_sha256(input_path),
         "gem5_sha256": file_sha256(gem5),
         "engine_sha256": file_sha256(ENGINE),
@@ -270,8 +290,8 @@ def main():
         ],
         "command": command,
         "claim_boundary": (
-            "One real one-rank Branson process executes native photon "
-            "physics, "
+            "One real one-rank Branson process uses a fail-closed one-rank "
+            "MPI shim and executes native photon physics, "
             "streams every captured event through opcode 5, replaces only its "
             "two scalar cell-tally updates, verifies returned tallies, and "
             "continues into native conservation checks. This is not photon-"

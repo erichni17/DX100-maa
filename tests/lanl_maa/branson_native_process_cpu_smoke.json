@@ -1,5 +1,6 @@
 {
   "schema": "lanl-maa-branson-native-process-v1",
+  "mpi_mode": "fail-closed-single-rank-shim",
   "data_vaddr": 68719476736,
   "data_paddr": 33554432,
   "data_bytes": 1048576,

@@ -5,6 +5,7 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 RUNNER_PATH = HERE / "run_branson_native_process_cpu_smoke.py"
@@ -25,6 +26,15 @@ METADATA = {
 
 
 class BransonNativeProcessCpuSmokeTest(unittest.TestCase):
+    def test_binary_must_not_link_an_mpi_runtime(self):
+        completed = mock.Mock(stdout="Shared library: [libmpi.so.40]\n")
+        with mock.patch.object(RUNNER.shutil, "which", return_value="readelf"):
+            with mock.patch.object(
+                RUNNER.subprocess, "run", return_value=completed
+            ):
+                with self.assertRaisesRegex(ValueError, "MPI runtime"):
+                    RUNNER.dynamic_dependencies(pathlib.Path("BRANSON"))
+
     def test_submission_requires_full_native_timestep(self):
         document = {
             "schema": "branson-lanl-maa-submission-v1",
@@ -41,6 +51,7 @@ class BransonNativeProcessCpuSmokeTest(unittest.TestCase):
             "maximum_track_difference": 0.0,
             "tolerance": 1.0e-12,
             "tolerance_match": True,
+            "single_rank_mpi_shim": True,
             "scalar_tally_updates_replaced": True,
         }
         RUNNER.validate_submission(document, METADATA)
