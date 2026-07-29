@@ -15,6 +15,21 @@ SPEC.loader.exec_module(MODULE)
 
 
 class SummarizeXrageComparisonTest(unittest.TestCase):
+    def test_dirty_source_requires_matching_frozen_simulator(self):
+        trusted = ("a" * 40, "b" * 64)
+        MODULE.verify_source_provenance(
+            "candidate", True, trusted[0], trusted[1], trusted
+        )
+
+        with self.assertRaisesRegex(SystemExit, "dirty source worktree"):
+            MODULE.verify_source_provenance(
+                "candidate", True, trusted[0], trusted[1], None
+            )
+        with self.assertRaisesRegex(SystemExit, "gem5 hash differs"):
+            MODULE.verify_source_provenance(
+                "candidate", True, trusted[0], "c" * 64, trusted
+            )
+
     def test_sum_stats_uses_only_first_stats_block(self):
         stats = """\
 ---------- Begin Simulation Statistics ----------

@@ -14,6 +14,7 @@ out=$(realpath -m "$4")
 simulator_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-}
 max_parallel=${FLAG_MAX_PARALLEL:-2}
 reuse_campaign=${FLAG_REUSE_CAMPAIGN:-}
+simulator_provenance=${XRAGE_SIMULATOR_PROVENANCE:-$(dirname "$gem5")/manifest.txt}
 
 [[ $simulator_commit =~ ^[0-9a-f]{40}$ ]] || {
     echo "XRAGE_SIMULATOR_SOURCE_COMMIT must be a full Git commit" >&2
@@ -25,6 +26,11 @@ reuse_campaign=${FLAG_REUSE_CAMPAIGN:-}
 }
 [[ -x $gem5 && -x $binary && -f $manifest ]] || {
     echo "missing gem5, FLAG runtime binary, or imported manifest" >&2
+    exit 2
+}
+[[ -f $simulator_provenance &&
+   -f $(dirname "$simulator_provenance")/artifact_sha256.txt ]] || {
+    echo "missing frozen simulator provenance: $simulator_provenance" >&2
     exit 2
 }
 [[ ! -e $out ]] || {
@@ -96,12 +102,15 @@ chmod 755 "$out/frozen-tools/"*
     printf 'gather_configurations=%s\n' "${#gathers[@]}"
     printf 'max_parallel=%s\n' "$max_parallel"
     printf 'reuse_campaign=%s\n' "$reuse_campaign"
+    printf 'simulator_provenance=%s\n' "$simulator_provenance"
     printf 'arms=fused16,compact16,direct4\n'
     printf 'direct_index_buffer_lines=128\n'
     printf 'timeout=none\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out/campaign_manifest.txt"
-sha256sum "$gem5" "$binary" "$manifest" "$out/frozen-tools/"* \
+sha256sum "$gem5" "$binary" "$manifest" "$simulator_provenance" \
+    "$(dirname "$simulator_provenance")/artifact_sha256.txt" \
+    "$out/frozen-tools/"* \
     > "$out/artifact_sha256.txt"
 printf 'configuration\tarm\tsource\tresult_sha256\tmanifest_sha256\tdebug_sha256\n' \
     > "$out/reused_arms.tsv"
@@ -116,6 +125,7 @@ validate_case() {
         "direct4=$case_out/direct4/run/xrage-debug.log"
     python3 "$out/frozen-tools/summarize_xrage_comparison.py" \
         --require-shared-binary --baseline fused16 \
+        --simulator-provenance "$simulator_provenance" \
         --output-dir "$case_out/comparison" \
         --pair compact_bypass=fused16,compact16 \
         --pair direct_net=fused16,direct4 \

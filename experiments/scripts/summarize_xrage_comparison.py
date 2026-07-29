@@ -112,6 +112,53 @@ def verify_artifacts(path: Path, cache: dict[tuple, str]) -> dict[Path, str]:
     return verified
 
 
+def read_simulator_provenance(
+    path: Path, digest_cache: dict[tuple, str]
+) -> tuple[str, str]:
+    manifest = read_manifest(path)
+    source_commit = manifest.get("source_commit", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+        fail(
+            f"simulator provenance has invalid source_commit={source_commit!r}"
+        )
+    artifacts_path = path.parent / "artifact_sha256.txt"
+    if not artifacts_path.is_file():
+        fail(f"simulator provenance lacks {artifacts_path}")
+    artifacts = verify_artifacts(artifacts_path, digest_cache)
+    simulators = {
+        digest
+        for artifact, digest in artifacts.items()
+        if artifact.name.startswith("gem5")
+    }
+    if len(simulators) != 1:
+        fail(
+            "simulator provenance has "
+            f"{len(simulators)} distinct gem5 artifact hashes"
+        )
+    return source_commit, simulators.pop()
+
+
+def verify_source_provenance(
+    label: str,
+    dirty: bool,
+    source_commit: str,
+    simulator_hash: str,
+    trusted_simulator: tuple[str, str] | None,
+) -> None:
+    if trusted_simulator is not None:
+        trusted_commit, trusted_hash = trusted_simulator
+        if source_commit != trusted_commit:
+            fail(
+                f"{label} source commit {source_commit} differs from frozen "
+                f"simulator commit {trusted_commit}"
+            )
+        if simulator_hash != trusted_hash:
+            fail(f"{label} gem5 hash differs from frozen simulator provenance")
+        return
+    if dirty:
+        fail(f"{label} was produced from a dirty source worktree")
+
+
 def first_stat(stats: str, name: str) -> int:
     match = re.search(rf"^{re.escape(name)}\s+(\d+)\s+", stats, re.MULTILINE)
     return int(match.group(1)) if match else 0
@@ -138,6 +185,7 @@ def read_run(
     root: Path,
     expected_channels: int,
     digest_cache: dict[tuple, str],
+    trusted_simulator: tuple[str, str] | None,
 ) -> dict[str, object]:
     required = [
         root / "manifest.txt",
@@ -152,11 +200,10 @@ def read_run(
     for path in required:
         if not path.is_file():
             fail(f"{label} is missing {path}")
-    if (root / "source_status.txt").read_text(encoding="utf-8"):
-        fail(f"{label} was produced from a dirty source worktree")
     if (root / "restore.exit").read_text(encoding="utf-8").strip() != "0":
         fail(f"{label} restore did not exit zero")
 
+    manifest = read_manifest(root / "manifest.txt")
     artifacts = verify_artifacts(root / "artifact_sha256.txt", digest_cache)
     simulators = {
         digest
@@ -165,6 +212,17 @@ def read_run(
     }
     if len(simulators) != 1:
         fail(f"{label} has {len(simulators)} distinct gem5 artifact hashes")
+    simulator_hash = next(iter(simulators))
+    source_dirty = bool(
+        (root / "source_status.txt").read_text(encoding="utf-8")
+    )
+    verify_source_provenance(
+        label,
+        source_dirty,
+        manifest.get("source_commit", ""),
+        simulator_hash,
+        trusted_simulator,
+    )
     binaries = {
         digest
         for path, digest in artifacts.items()
@@ -172,7 +230,6 @@ def read_run(
     }
     if len(binaries) != 1:
         fail(f"{label} has {len(binaries)} distinct XRAGE binary hashes")
-    manifest = read_manifest(root / "manifest.txt")
     result = read_result(root / "result.tsv")
     log = (root / "restore.log").read_text(encoding="utf-8", errors="replace")
     stats = (root / "run" / "stats.txt").read_text(encoding="utf-8")
@@ -288,6 +345,7 @@ def read_run(
 
     return {
         "label": label,
+        "source_worktree_dirty": int(source_dirty),
         "arm": arm,
         "source_commit": manifest.get("source_commit", ""),
         "gem5_sha256": simulators.pop(),
@@ -364,6 +422,7 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--expected-channels", type=int, default=2)
     parser.add_argument("--require-shared-binary", action="store_true")
+    parser.add_argument("--simulator-provenance", type=Path)
     parser.add_argument("--pair", action="append", type=parse_pair, default=[])
     parser.add_argument("runs", nargs="+", type=parse_run)
     args = parser.parse_args()
@@ -385,8 +444,19 @@ def main() -> int:
             )
 
     digest_cache: dict[tuple, str] = {}
+    trusted_simulator = None
+    if args.simulator_provenance is not None:
+        trusted_simulator = read_simulator_provenance(
+            args.simulator_provenance.resolve(), digest_cache
+        )
     rows = [
-        read_run(label, root, args.expected_channels, digest_cache)
+        read_run(
+            label,
+            root,
+            args.expected_channels,
+            digest_cache,
+            trusted_simulator,
+        )
         for label, root in args.runs
     ]
     expected = rows[0]
