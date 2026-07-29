@@ -7,7 +7,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "experiments" / "scripts" / "report_maa_storage.py"
 
@@ -21,6 +20,7 @@ class StorageReportTest(unittest.TestCase):
             "physical_tile_elements": str(physical),
             "num_maas": "1",
             "num_indirect_units_per_maa": "1",
+            "num_memory_channels": "2",
             "num_initial_row_table_slices": "32",
             "num_row_table_rows_per_slice": "64",
             "num_row_table_entries_per_subslice_row": "8",
@@ -41,7 +41,7 @@ class StorageReportTest(unittest.TestCase):
         return path
 
     def run_report(
-        self, root: Path, config: Path, mechanism: str, subslices: int = 64
+        self, root: Path, config: Path, mechanism: str, subslices: int = 32
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         output = root / "report"
         result = subprocess.run(
@@ -72,19 +72,34 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads((output / "maa_storage.json").read_text())
             control = report["incremental_virtual_control_lower_bound"]
-            self.assertEqual(control["metadata_bytes_per_indirect_unit"], 11335)
+            self.assertEqual(control["metadata_bytes_per_indirect_unit"], 9271)
             self.assertEqual(
                 report["bounded_state_lower_bound"][
                     "physical_spd_virtual_payload_and_control_bytes"
                 ],
-                564563,
+                562499,
             )
             comparable = report["comparable_storage_lower_bound"]
             self.assertEqual(
-                comparable["retained_shared_descriptor_bytes"], 449024
+                comparable["retained_shared_descriptor_bytes"], 254464
             )
-            self.assertEqual(comparable["native_total_bytes"], 2611712)
-            self.assertEqual(comparable["configured_total_bytes"], 1029971)
+            self.assertEqual(comparable["native_total_bytes"], 2417152)
+            self.assertEqual(comparable["configured_total_bytes"], 833347)
+            allocated = report["allocated_model_storage_lower_bound"]
+            self.assertEqual(
+                allocated["retained_shared_descriptor_bytes"], 861120
+            )
+            self.assertEqual(allocated["native_total_bytes"], 3023808)
+            self.assertEqual(allocated["configured_total_bytes"], 1437955)
+            metadata = report["retained_logical_metadata"]
+            self.assertEqual(
+                metadata["allocated_row_entry_capacity_per_indirect_unit"],
+                65536,
+            )
+            self.assertEqual(
+                report["configuration"]["row_table_organizations_allocated"],
+                [4, 8, 16, 32],
+            )
 
     def test_native_has_no_incremental_virtual_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -107,6 +122,12 @@ class StorageReportTest(unittest.TestCase):
                 comparable["native_total_bytes"],
             )
             self.assertEqual(comparable["reduction_vs_native_pct"], 0)
+            allocated = report["allocated_model_storage_lower_bound"]
+            self.assertEqual(
+                allocated["configured_total_bytes"],
+                allocated["native_total_bytes"],
+            )
+            self.assertEqual(allocated["reduction_vs_native_pct"], 0)
 
     def test_rejects_nondivisible_dram_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

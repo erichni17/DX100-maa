@@ -66,6 +66,12 @@ def main() -> int:
         required=True,
         help="channel x rank x bank-group x bank count",
     )
+    parser.add_argument(
+        "--dram-ranks",
+        type=int,
+        default=1,
+        help="ranks per channel used to enumerate Row-Table organizations",
+    )
     args = parser.parse_args()
 
     config_path = args.config.resolve()
@@ -83,6 +89,7 @@ def main() -> int:
     physical = integer(maa, "physical_tile_elements") or logical
     maas = integer(maa, "num_maas")
     indirect_per_maa = integer(maa, "num_indirect_units_per_maa")
+    memory_channels = integer(maa, "num_memory_channels")
     initial_slices = integer(maa, "num_initial_row_table_slices")
     rows_per_slice = integer(maa, "num_row_table_rows_per_slice")
     entries_per_subslice_row = integer(
@@ -103,10 +110,12 @@ def main() -> int:
         "physical_tile_elements": physical,
         "num_maas": maas,
         "num_indirect_units_per_maa": indirect_per_maa,
+        "num_memory_channels": memory_channels,
         "num_initial_row_table_slices": initial_slices,
         "num_row_table_rows_per_slice": rows_per_slice,
         "num_row_table_entries_per_subslice_row": entries_per_subslice_row,
         "dram_subslices": args.dram_subslices,
+        "dram_ranks": args.dram_ranks,
         "address_bits": args.address_bits,
     }
     for name, value in positive.items():
@@ -120,6 +129,19 @@ def main() -> int:
         fail(
             "DRAM subslices must divide evenly across initial Row-Table slices"
         )
+    minimum_slices = memory_channels * args.dram_ranks * 2
+    if args.dram_subslices % minimum_slices:
+        fail("DRAM subslices must divide the minimum Row-Table slice count")
+    organization_ratio = args.dram_subslices // minimum_slices
+    if organization_ratio & (organization_ratio - 1):
+        fail("Row-Table organization ratio must be a power of two")
+    allocated_slices = []
+    slices = minimum_slices
+    while slices <= args.dram_subslices:
+        allocated_slices.append(slices)
+        slices *= 2
+    if initial_slices not in allocated_slices:
+        fail("initial Row-Table slices are not an allocated organization")
 
     tiles = cores * tiles_per_core
     indirect_units = maas * indirect_per_maa
@@ -150,6 +172,24 @@ def main() -> int:
     row_header_lower_bytes_per_unit = math.ceil(
         row_header_lower_bits_per_unit / 8
     )
+    allocated_row_entries = 0
+    allocated_rows = 0
+    allocated_row_lower_bytes_per_unit = 0
+    allocated_row_header_lower_bytes_per_unit = 0
+    for config_slices in allocated_slices:
+        config_entries_per_row = entries_per_subslice_row * (
+            args.dram_subslices // config_slices
+        )
+        config_rows = config_slices * rows_per_slice
+        config_entries = config_rows * config_entries_per_row
+        allocated_rows += config_rows
+        allocated_row_entries += config_entries
+        allocated_row_lower_bytes_per_unit += math.ceil(
+            config_entries * row_entry_lower_bits / 8
+        )
+        allocated_row_header_lower_bytes_per_unit += math.ceil(
+            config_rows * (args.address_bits + 2) / 8
+        )
     invalidator_lower_bytes = math.ceil(invalidator_entries / 8)
     native_element_ready_lower_bytes = math.ceil(tiles * logical / 8)
     physical_element_ready_lower_bytes = math.ceil(tiles * physical / 8)
@@ -159,6 +199,20 @@ def main() -> int:
             offset_lower_bytes_per_unit
             + row_lower_bytes_per_unit
             + row_header_lower_bytes_per_unit
+        )
+        + invalidator_lower_bytes
+    )
+    allocated_claim_bits_per_unit = allocated_row_entries
+    allocated_claim_bytes_per_unit = math.ceil(
+        allocated_claim_bits_per_unit / 8
+    )
+    allocated_descriptor_lower_bytes = (
+        indirect_units
+        * (
+            offset_lower_bytes_per_unit
+            + allocated_row_lower_bytes_per_unit
+            + allocated_row_header_lower_bytes_per_unit
+            + allocated_claim_bytes_per_unit
         )
         + invalidator_lower_bytes
     )
@@ -304,6 +358,17 @@ def main() -> int:
         + physical_element_ready_lower_bytes
         + retained_descriptor_lower_bytes
     )
+    native_allocated_comparable_storage = (
+        native_spd_bytes
+        + native_element_ready_lower_bytes
+        + allocated_descriptor_lower_bytes
+    )
+    allocated_comparable_storage = (
+        bounded_state_total
+        - native_claim_bytes_per_unit * indirect_units
+        + physical_element_ready_lower_bytes
+        + allocated_descriptor_lower_bytes
+    )
 
     report = {
         "provenance": {
@@ -312,6 +377,7 @@ def main() -> int:
             "mechanism": args.mechanism,
             "word_bytes": args.word_bytes,
             "dram_subslices": args.dram_subslices,
+            "dram_ranks": args.dram_ranks,
             "address_bits": args.address_bits,
         },
         "configuration": {
@@ -322,6 +388,7 @@ def main() -> int:
             "physical_elements_per_tile": physical,
             "virtual_pages_used": virtual_pages_used,
             "indirect_units": indirect_units,
+            "row_table_organizations_allocated": allocated_slices,
         },
         "scratchpad": {
             "native_logical_payload_bytes": native_spd_bytes,
@@ -356,14 +423,27 @@ def main() -> int:
                 active_row_entries
             ),
             "configured_row_count_per_indirect_unit": active_rows,
+            "allocated_row_entry_capacity_per_indirect_unit": (
+                allocated_row_entries
+            ),
+            "allocated_row_count_per_indirect_unit": allocated_rows,
             "row_encoding_lower_bound_bytes_per_indirect_unit": (
                 row_lower_bytes_per_unit
             ),
             "row_header_encoding_lower_bound_bytes_per_indirect_unit": (
                 row_header_lower_bytes_per_unit
             ),
+            "allocated_row_encoding_lower_bound_bytes_per_indirect_unit": (
+                allocated_row_lower_bytes_per_unit
+            ),
+            "allocated_row_header_encoding_lower_bound_bytes_per_indirect_unit": (
+                allocated_row_header_lower_bytes_per_unit
+            ),
             "shared_descriptor_lower_bound_bytes": (
                 retained_descriptor_lower_bytes
+            ),
+            "allocated_shared_descriptor_lower_bound_bytes": (
+                allocated_descriptor_lower_bytes
             ),
             "native_order_claim_bits_per_indirect_unit": (
                 native_claim_bits_per_unit
@@ -373,6 +453,12 @@ def main() -> int:
             ),
             "native_order_claim_bytes_all_indirect_units": (
                 native_claim_bytes_per_unit * indirect_units
+            ),
+            "allocated_claim_bitmap_bits_per_indirect_unit": (
+                allocated_claim_bits_per_unit
+            ),
+            "allocated_claim_bitmap_bytes_per_indirect_unit": (
+                allocated_claim_bytes_per_unit
             ),
         },
         "virtual_data_buffers": {
@@ -445,6 +531,7 @@ def main() -> int:
             * 100,
         },
         "comparable_storage_lower_bound": {
+            "scope": "fixed active Row-Table organization",
             "native_element_ready_bytes": native_element_ready_lower_bytes,
             "physical_element_ready_bytes": (
                 physical_element_ready_lower_bytes
@@ -456,6 +543,20 @@ def main() -> int:
             "configured_total_bytes": comparable_storage,
             "reduction_vs_native_pct": (
                 1 - comparable_storage / native_comparable_storage
+            )
+            * 100,
+        },
+        "allocated_model_storage_lower_bound": {
+            "scope": "all Row-Table organizations allocated by gem5",
+            "retained_shared_descriptor_bytes": (
+                allocated_descriptor_lower_bytes
+            ),
+            "native_total_bytes": native_allocated_comparable_storage,
+            "configured_total_bytes": allocated_comparable_storage,
+            "reduction_vs_native_pct": (
+                1
+                - allocated_comparable_storage
+                / native_allocated_comparable_storage
             )
             * 100,
         },
@@ -496,6 +597,8 @@ def main() -> int:
         f"{format_bytes(bounded_state_total)} |",
         "| Retained Row/Offset/invalidator lower bound | "
         f"{format_bytes(retained_descriptor_lower_bytes)} |",
+        "| Allocated gem5 Row/Offset/invalidator lower bound | "
+        f"{format_bytes(allocated_descriptor_lower_bytes)} |",
         "| Native readiness lower bound | "
         f"{format_bytes(native_element_ready_lower_bytes)} |",
         "| Configured physical readiness lower bound | "
@@ -506,6 +609,8 @@ def main() -> int:
         f"{format_bytes(comparable_storage)} |",
         f"| Logical Offset entries retained | {logical:,} / indirect unit |",
         f"| Configured Row-Table entry capacity | {active_row_entries:,} / indirect unit |",
+        "| Allocated Row-Table entry capacity | "
+        f"{allocated_row_entries:,} / indirect unit |",
         "| Native-order claimed-entry bitmap | "
         f"{format_bytes(native_claim_bytes_per_unit)} / indirect unit |",
         f"| Logical invalidator entries retained | {invalidator_entries:,} |",
@@ -516,6 +621,11 @@ def main() -> int:
         f"**{report['bounded_state_lower_bound']['reduction_vs_native_spd_pct']:.3f}%**.",
         "Comparable lower-bound reduction with retained descriptors and readiness: "
         f"**{report['comparable_storage_lower_bound']['reduction_vs_native_pct']:.3f}%**.",
+        "Current gem5 allocation lower-bound reduction with all Row-Table "
+        "organizations: "
+        "**"
+        f"{report['allocated_model_storage_lower_bound']['reduction_vs_native_pct']:.3f}%"
+        "**.",
         "",
         "This is a capacity ledger, not an area estimate. The comparable lower bound",
         "includes retained logical-sized Row/Offset/invalidator state and bit-packed",

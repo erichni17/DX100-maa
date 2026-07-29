@@ -117,7 +117,7 @@ python3 "$comparator" --require-shared-binary --baseline native16 \
     "fused4=$fused4_dir" "compact16=$compact16_dir" \
     "direct4=$direct4_dir"
 python3 "$storage_reporter" "$direct4_dir/run/config.ini" \
-    --mechanism direct-index --dram-subslices 64 \
+    --mechanism direct-index --dram-subslices 32 \
     --output-dir "$out/storage"
 touch "$out/flag_runtime_attribution_campaign.pass"
 echo "PASS FLAG runtime attribution campaign: $out"
