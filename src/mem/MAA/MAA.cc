@@ -59,6 +59,9 @@ MAA::MAA(const MAAParams &p)
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
+      num_offset_table_entries(p.num_offset_table_entries == 0
+                                   ? p.num_tile_elements
+                                   : p.num_offset_table_entries),
       num_row_table_entries_per_subslice_row(p.num_row_table_entries_per_subslice_row),
       num_row_table_config_cache_entries(p.num_row_table_config_cache_entries),
       reconfigure_row_table(p.reconfigure_row_table),
@@ -109,6 +112,10 @@ MAA::MAA(const MAAParams &p)
     panic_if(physical_tile_elements > num_tile_elements,
              "Physical tile capacity %u exceeds logical capacity %u\n",
              physical_tile_elements, num_tile_elements);
+    panic_if(num_offset_table_entries == 0 ||
+                 num_offset_table_entries > num_tile_elements,
+             "Offset Table capacity %u must be in [1,%u]\n",
+             num_offset_table_entries, num_tile_elements);
     panic_if(virtual_grow_order && virtual_native_issue_order,
              "Virtual grow grouping and native issue-order attribution "
              "cannot both be enabled\n");
@@ -367,7 +374,9 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
         memSidePorts[i]->allocate(i);
     }
     for (int i = 0; i < num_indirect_units_total; i++) {
-        indirectAccessUnits[i].allocate(i, num_tile_elements, num_row_table_rows_per_slice,
+        indirectAccessUnits[i].allocate(i, num_tile_elements,
+                                        num_offset_table_entries,
+                                        num_row_table_rows_per_slice,
                                         num_row_table_entries_per_subslice_row,
                                         num_row_table_config_cache_entries,
                                         reconfigure_row_table,
@@ -1123,6 +1132,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_NumUniqueCacheLineInserted.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_NumUniqueCacheLineInserted"), statistics::units::Count::get(), "number of unique cachelines inserted to the row table"));
         IND_NumUniqueRowsInserted.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_NumUniqueRowsInserted"), statistics::units::Count::get(), "number of unique rows inserted to the row table"));
         IND_NumRTFull.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_NumRTFull"), statistics::units::Count::get(), "number of row table full events"));
+        IND_NumOTFull.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_NumOTFull"), statistics::units::Count::get(), "number of offset table full events"));
         IND_AvgWordsPerCacheLine.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgWordsPerCacheLine"), statistics::units::Count::get(), "average number of words per cacheline"));
         IND_AvgCacheLinesPerRow.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgCacheLinesPerRow"), statistics::units::Count::get(), "average number of cachelines per row"));
         IND_AvgRowsPerInst.push_back(new statistics::Formula(this, MAKE_INDIRECT_STAT_NAME("IND_AvgRowsPerInst"), statistics::units::Count::get(), "average number of rows per indirect instruction"));
@@ -1231,6 +1241,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         (*IND_NumUniqueCacheLineInserted[indirect_id]).flags(statistics::nozero);
         (*IND_NumUniqueRowsInserted[indirect_id]).flags(statistics::nozero);
         (*IND_NumRTFull[indirect_id]).flags(statistics::nozero);
+        (*IND_NumOTFull[indirect_id]).flags(statistics::nozero);
         (*IND_CyclesFill[indirect_id]).flags(statistics::nozero);
         (*IND_CyclesBuild[indirect_id]).flags(statistics::nozero);
         (*IND_CyclesRequest[indirect_id]).flags(statistics::nozero);

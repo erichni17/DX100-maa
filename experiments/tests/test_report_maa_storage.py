@@ -150,6 +150,27 @@ class StorageReportTest(unittest.TestCase):
             )
             self.assertEqual(allocated["reduction_vs_native_pct"], 0)
 
+    def test_bounded_offset_capacity_reduces_retained_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.write_config(root, 4096, True)
+            parser = configparser.ConfigParser()
+            parser.read(config)
+            parser["system.maa"]["num_row_table_rows_per_slice"] = "16"
+            parser["system.maa"]["num_offset_table_entries"] = "4096"
+            with config.open("w", encoding="utf-8") as stream:
+                parser.write(stream)
+            result, output = self.run_report(root, config, "direct-index")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((output / "maa_storage.json").read_text())
+            metadata = report["retained_logical_metadata"]
+            self.assertEqual(
+                metadata["offset_entry_capacity_per_indirect_unit"], 4096
+            )
+            self.assertLess(
+                metadata["shared_descriptor_lower_bound_bytes"], 95872
+            )
+
     def test_rejects_nondivisible_dram_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -159,6 +180,19 @@ class StorageReportTest(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("must divide evenly", result.stderr)
+
+    def test_rejects_negative_offset_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.write_config(root, 4096, True)
+            parser = configparser.ConfigParser()
+            parser.read(config)
+            parser["system.maa"]["num_offset_table_entries"] = "-1"
+            with config.open("w", encoding="utf-8") as stream:
+                parser.write(stream)
+            result, _ = self.run_report(root, config, "direct-index")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be positive", result.stderr)
 
 
 if __name__ == "__main__":

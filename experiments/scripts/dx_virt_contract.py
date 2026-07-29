@@ -56,6 +56,7 @@ INTEGER_DEFAULTS = {
     "num_tiles_per_core": 8,
     "num_tile_elements": 16384,
     "physical_tile_elements": 0,
+    "num_offset_table_entries": 0,
     "num_initial_row_table_slices": 32,
     "num_row_table_rows_per_slice": 64,
     "num_row_table_entries_per_subslice_row": 8,
@@ -244,8 +245,11 @@ def validate(case: dict, values: dict) -> None:
             raise ContractError(f"{key} must be non-negative")
     logical = values["num_tile_elements"]
     physical = values["physical_tile_elements"] or logical
+    offset_capacity = values["num_offset_table_entries"] or logical
     if physical > logical:
         raise ContractError("physical_tile_elements exceeds num_tile_elements")
+    if offset_capacity > logical:
+        raise ContractError("num_offset_table_entries exceeds num_tile_elements")
     if not 1 <= values["virtual_index_buffer_lines"] <= 1024:
         raise ContractError("virtual_index_buffer_lines must be in [1,1024]")
     if not 1 <= values["virtual_index_partitions"] <= 64:
@@ -304,6 +308,7 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
     instruction = case["instruction"]
     logical = values["num_tile_elements"]
     physical = values["physical_tile_elements"] or logical
+    offset_capacity = values["num_offset_table_entries"] or logical
     tiles = values["num_cores"] * values["num_tiles_per_core"]
     units = values["num_maas"] * values["num_indirect_units_per_maa"]
     native_spd = tiles * logical * SPD_WORD_BYTES
@@ -382,9 +387,10 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
     elif values["virtual_native_issue_order"]:
         issue_order = "native_claim_scan"
         reorder_claim = (
-            "logical 16K descriptors remain live and are claimed in the "
-            "native Row-Table scan order; equivalence still requires an "
-            "instruction-level issue digest"
+            "live descriptors are claimed in native Row-Table scan order "
+            "within each drain epoch; bounded Row/Offset capacity can still "
+            "split the logical window, and equivalence requires an "
+            "instruction-level issue digest plus output validation"
         )
     elif values["virtual_grow_order"]:
         issue_order = "bounded_grow_grouping"
@@ -419,6 +425,7 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
         "configured_hardware": {
             **values,
             "resolved_physical_tile_elements": physical,
+            "resolved_offset_table_entries": offset_capacity,
             "total_tiles": tiles,
             "total_indirect_units": units,
         },
@@ -488,7 +495,7 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
             ],
         },
         "reorder_resources": {
-            "offset_iteration_capacity_per_unit": logical,
+            "offset_iteration_capacity_per_unit": offset_capacity,
             "row_table_rows": (
                 values["num_initial_row_table_slices"]
                 * values["num_row_table_rows_per_slice"]
@@ -512,8 +519,8 @@ def build_contract(case: dict, values: dict, source: dict) -> dict:
                 else "single_pass"
             ),
             "effective_reorder_window": (
-                "bounded by logical iterations, unique-line capacity, and "
-                "address distribution"
+                "bounded by Offset-Table capacity, unique-line capacity, "
+                "and address distribution"
             ),
             "physical_spd_payload_window": physical,
             "logical_descriptor_window": logical,

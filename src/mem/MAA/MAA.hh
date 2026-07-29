@@ -399,6 +399,7 @@ public:
     unsigned int num_instructions_per_maa;
     unsigned int num_instructions_total;
     unsigned int num_row_table_rows_per_slice;
+    unsigned int num_offset_table_entries;
     unsigned int num_row_table_entries_per_subslice_row;
     unsigned int num_row_table_config_cache_entries;
     bool reconfigure_row_table;
@@ -593,6 +594,7 @@ public:
         std::vector<statistics::Scalar *> IND_NumUniqueCacheLineInserted;
         std::vector<statistics::Scalar *> IND_NumUniqueRowsInserted;
         std::vector<statistics::Scalar *> IND_NumRTFull;
+        std::vector<statistics::Scalar *> IND_NumOTFull;
         std::vector<statistics::Formula *> IND_AvgWordsPerCacheLine;
         std::vector<statistics::Formula *> IND_AvgCacheLinesPerRow;
         std::vector<statistics::Formula *> IND_AvgRowsPerInst;

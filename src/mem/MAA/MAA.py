@@ -31,6 +31,9 @@ class MAA(ClockedObject):
     num_row_table_rows_per_slice = Param.Unsigned(
         64, "Number of rows in each row table slice"
     )
+    num_offset_table_entries = Param.Unsigned(
+        0, "Live Offset-Table entries per indirect unit (0 matches logical tile)"
+    )
     num_row_table_entries_per_subslice_row = Param.Unsigned(
         8,
         "Number of row table entries (bursts) per each sub-slice of row table",

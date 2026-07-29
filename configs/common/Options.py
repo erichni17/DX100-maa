@@ -250,6 +250,12 @@ def addNoISAOptions(parser):
         help="Number of rows in each row table slice",
     )
     parser.add_argument(
+        "--maa_num_offset_table_entries",
+        type=int,
+        default=0,
+        help="Live Offset-Table entries per indirect unit (0 matches logical tile)",
+    )
+    parser.add_argument(
         "--maa_num_row_table_entries_per_subslice_row",
         type=int,
         default=8,

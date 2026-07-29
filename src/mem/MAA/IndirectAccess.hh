@@ -190,6 +190,7 @@ public:
     ~IndirectAccessUnit();
     void allocate(int _my_indirect_id,
                   int _num_tile_elements,
+                  int _num_offset_table_entries,
                   int _num_row_table_rows_per_slice,
                   int _num_row_table_entries_per_subslice_row,
                   int _num_row_table_config_cache_entries,
@@ -279,6 +280,7 @@ protected:
     std::vector<int> *my_RT_slice_order;
     int my_i, my_RT_idx;
     bool my_fill_finished;
+    bool offset_table_drain = false;
     bool my_force_cache_determined;
     bool my_force_cache;
 

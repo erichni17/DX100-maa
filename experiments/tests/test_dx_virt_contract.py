@@ -183,6 +183,27 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(reorder["direct_index_spd_role"], "completion_token_only")
         self.assertIn("issue digest", reorder["claim"])
 
+    def test_bounded_offset_capacity_is_recorded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            contract = self.build(
+                Path(temporary),
+                "direct_index_virtual",
+                {
+                    "physical_tile_elements": 4096,
+                    "num_offset_table_entries": 4096,
+                    "virtual_native_issue_order": True,
+                },
+            )
+        self.assertEqual(
+            contract["configured_hardware"]["resolved_offset_table_entries"],
+            4096,
+        )
+        self.assertEqual(
+            contract["reorder_resources"]["offset_iteration_capacity_per_unit"],
+            4096,
+        )
+        self.assertIn("drain epoch", contract["reorder_resources"]["claim"])
+
     def test_invalid_victim_policy_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(MODULE.ContractError, "victim_policy"):

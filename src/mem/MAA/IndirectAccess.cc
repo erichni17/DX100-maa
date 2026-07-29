@@ -87,6 +87,7 @@ IndirectAccessUnit::~IndirectAccessUnit() {
 }
 void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _num_tile_elements,
+                                  int _num_offset_table_entries,
                                   int _num_row_table_rows_per_slice,
                                   int _num_row_table_entries_per_subslice_row,
                                   int _num_row_table_config_cache_entries,
@@ -182,7 +183,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     my_instruction = nullptr;
     dst_tile_id = -1;
     offset_table = new OffsetTable();
-    offset_table->allocate(my_indirect_id, num_tile_elements, maa, false);
+    offset_table->allocate(my_indirect_id, _num_offset_table_entries, maa,
+                           false);
 
     // Row Table initialization
     int min_num_RT_slices = maa->m_org[ADDR_CHANNEL_LEVEL] * maa->m_org[ADDR_RANK_LEVEL] * 2;
@@ -839,6 +841,13 @@ void IndirectAccessUnit::fillRowTable(
     num_spd_read_condidx_accesses = 0;
     num_rowtable_accesses = 0;
     num_direct_index_filter_words = 0;
+    if (offset_table_drain) {
+        if (offset_table->occupancy() != 0) {
+            needDrain = true;
+            return;
+        }
+        offset_table_drain = false;
+    }
     checkTileReady();
     while (true) {
         if (my_max != -1 && my_i >= my_max) {
@@ -922,6 +931,12 @@ void IndirectAccessUnit::fillRowTable(
                 static_cast<int>(grow_addr % direct_index_partitions) ==
                     direct_index_partition;
             if (virtual_iteration_selected) {
+                if (offset_table->is_full()) {
+                    offset_table_drain = true;
+                    needDrain = true;
+                    (*maa->stats.IND_NumOTFull[my_indirect_id])++;
+                    break;
+                }
                 DPRINTF(MAAIndirect,
                         "I[%d] %s: inserting vaddr(0x%lx), paddr(0x%lx), "
                         "MAP(RO: %d, BA: %d, BG: %d, RA: %d, CO: %d, "
@@ -1171,6 +1186,7 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_next_prefetch_itr = 0;
         direct_index_partition = 0;
         direct_index_partition_barrier = false;
+        offset_table_drain = false;
         direct_index_pending_lines.clear();
         direct_index_ready_lines.clear();
         direct_index_words.clear();

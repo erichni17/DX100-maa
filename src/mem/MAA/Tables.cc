@@ -121,34 +121,49 @@ bool RequestTable::is_full() {
 //
 ///////////////
 void OffsetTable::allocate(int _my_unit_id,
-                           int _num_tile_elements,
+                           int _num_entries,
                            MAA *_maa,
                            bool _is_stream) {
     my_unit_id = _my_unit_id;
-    num_tile_elements = _num_tile_elements;
+    num_entries = _num_entries;
     maa = _maa;
     is_stream = _is_stream;
-    entries = new OffsetTableEntry[num_tile_elements];
-    entries_valid = new bool[num_tile_elements];
-    for (int i = 0; i < num_tile_elements; i++) {
+    panic_if(num_entries <= 0, "Offset Table must have positive capacity\n");
+    entries = new OffsetTableEntry[num_entries];
+    entries_valid = new bool[num_entries];
+    free_entries.reserve(num_entries);
+    for (int i = num_entries - 1; i >= 0; i--) {
         entries_valid[i] = false;
         entries[i].next_itr = -1;
         entries[i].wid = -1;
-        entries[i].itr = i;
+        entries[i].itr = -1;
+        free_entries.push_back(i);
     }
 }
-void OffsetTable::insert(int itr, int wid, int last_itr) {
-    entries[itr].wid = wid;
-    entries[itr].next_itr = -1;
-    entries_valid[itr] = true;
-    if (last_itr != -1) {
-        entries[last_itr].next_itr = itr;
+int OffsetTable::insert(int itr, int wid, int last_entry) {
+    panic_if(free_entries.empty(),
+             "Offset Table is full while inserting logical iteration %d\n",
+             itr);
+    const int entry_id = free_entries.back();
+    free_entries.pop_back();
+    panic_if(entries_valid[entry_id],
+             "Offset Table free entry %d is still valid\n", entry_id);
+    entries[entry_id].itr = itr;
+    entries[entry_id].wid = wid;
+    entries[entry_id].next_itr = -1;
+    entries_valid[entry_id] = true;
+    if (last_entry != -1) {
+        panic_if(last_entry < 0 || last_entry >= num_entries ||
+                     !entries_valid[last_entry],
+                 "Offset Table tail %d is invalid\n", last_entry);
+        entries[last_entry].next_itr = entry_id;
     }
     if (is_stream) {
         (*maa->stats.STR_NumWordsInserted[my_unit_id])++;
     } else {
         (*maa->stats.IND_NumWordsInserted[my_unit_id])++;
     }
+    return entry_id;
 }
 std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
     std::vector<OffsetTableEntry> result;
@@ -156,36 +171,41 @@ std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
     int itr = first_itr;
     int prev_itr = itr;
     while (itr != -1) {
+        panic_if(itr < 0 || itr >= num_entries || !entries_valid[itr],
+                 "Entry %d is invalid!\n", itr);
         result.push_back(entries[itr]);
-        panic_if(entries_valid[itr] == false, "Entry %d is invalid!\n", itr);
         prev_itr = itr;
         itr = entries[itr].next_itr;
         // Invalidate the previous itr
         entries_valid[prev_itr] = false;
+        entries[prev_itr].itr = -1;
         entries[prev_itr].wid = -1;
         entries[prev_itr].next_itr = -1;
+        free_entries.push_back(prev_itr);
     }
     return result;
 }
 OffsetTableEntry OffsetTable::consume_entry(int &itr) {
-    panic_if(itr < 0 || itr >= num_tile_elements || entries_valid[itr] == false,
+    panic_if(itr < 0 || itr >= num_entries || entries_valid[itr] == false,
              "Entry %d is invalid!\n", itr);
     OffsetTableEntry result = entries[itr];
     entries_valid[itr] = false;
+    entries[itr].itr = -1;
     entries[itr].wid = -1;
     entries[itr].next_itr = -1;
+    free_entries.push_back(itr);
     itr = result.next_itr;
     return result;
 }
 OffsetTableEntry OffsetTable::peek_entry(int itr) const {
-    panic_if(itr < 0 || itr >= num_tile_elements || entries_valid[itr] == false,
+    panic_if(itr < 0 || itr >= num_entries || entries_valid[itr] == false,
              "Entry %d is invalid!\n", itr);
     return entries[itr];
 }
 int OffsetTable::count_entries(int itr) const {
     int count = 0;
     while (itr != -1) {
-        panic_if(itr < 0 || itr >= num_tile_elements || !entries_valid[itr],
+        panic_if(itr < 0 || itr >= num_entries || !entries_valid[itr],
                  "Entry %d is invalid while counting!\n", itr);
         count++;
         itr = entries[itr].next_itr;
@@ -193,20 +213,29 @@ int OffsetTable::count_entries(int itr) const {
     return count;
 }
 void OffsetTable::check_reset() {
-    for (int i = 0; i < num_tile_elements; i++) {
+    for (int i = 0; i < num_entries; i++) {
         panic_if(entries_valid[i], "Entry %d is valid: wid(%d) next_itr(%d)!\n",
                  i, entries[i].wid, entries[i].next_itr);
         panic_if(entries[i].next_itr != -1, "Entry %d has next_itr(%d) with wid(%d)!\n",
                  i, entries[i].next_itr, entries[i].wid);
         panic_if(entries[i].wid != -1, "Entry %d has wid(%d) with next_itr(%d)!\n",
                  i, entries[i].wid, entries[i].next_itr);
+        panic_if(entries[i].itr != -1,
+                 "Entry %d has logical iteration %d while free!\n",
+                 i, entries[i].itr);
     }
+    panic_if(static_cast<int>(free_entries.size()) != num_entries,
+             "Offset Table has %d/%d free entries at reset\n",
+             static_cast<int>(free_entries.size()), num_entries);
 }
 void OffsetTable::reset() {
-    for (int i = 0; i < num_tile_elements; i++) {
+    free_entries.clear();
+    for (int i = num_entries - 1; i >= 0; i--) {
         entries_valid[i] = false;
+        entries[i].itr = -1;
         entries[i].next_itr = -1;
         entries[i].wid = -1;
+        free_entries.push_back(i);
     }
 }
 
@@ -250,8 +279,8 @@ bool RowTableEntry::insert(Addr addr, int itr, int wid) {
     int free_entry_id = -1;
     for (int i = 0; i < num_RT_entries_per_row; i++) {
         if (entries_valid[i] == true && entries[i].addr == addr) {
-            offset_table->insert(itr, wid, entries[i].last_itr);
-            entries[i].last_itr = itr;
+            entries[i].last_itr =
+                offset_table->insert(itr, wid, entries[i].last_itr);
             DPRINTF(MAARowTable, "ROT[%d] ROW[%d] %s: entry[%d] inserted!\n",
                     my_table_id, my_table_row_id, __func__, i);
             return true;
@@ -263,10 +292,10 @@ bool RowTableEntry::insert(Addr addr, int itr, int wid) {
         return false;
     }
     entries[free_entry_id].addr = addr;
-    entries[free_entry_id].first_itr = itr;
-    entries[free_entry_id].last_itr = itr;
+    const int offset_entry = offset_table->insert(itr, wid, -1);
+    entries[free_entry_id].first_itr = offset_entry;
+    entries[free_entry_id].last_itr = offset_entry;
     entries_valid[free_entry_id] = true;
-    offset_table->insert(itr, wid, -1);
     DPRINTF(MAARowTable, "ROT[%d] ROW[%d] %s: new entry[%d] addr[0x%lx] inserted!\n",
             my_table_id, my_table_row_id, __func__, free_entry_id, addr);
     if (is_stream) {

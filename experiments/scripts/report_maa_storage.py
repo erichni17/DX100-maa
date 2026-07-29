@@ -87,6 +87,10 @@ def main() -> int:
     tiles_per_core = integer(maa, "num_tiles_per_core")
     logical = integer(maa, "num_tile_elements")
     physical = integer(maa, "physical_tile_elements") or logical
+    try:
+        offset_entries = int(maa.get("num_offset_table_entries", "0")) or logical
+    except ValueError:
+        fail("invalid system.maa value for num_offset_table_entries")
     maas = integer(maa, "num_maas")
     indirect_per_maa = integer(maa, "num_indirect_units_per_maa")
     memory_channels = integer(maa, "num_memory_channels")
@@ -108,6 +112,7 @@ def main() -> int:
         "num_tiles_per_core": tiles_per_core,
         "num_tile_elements": logical,
         "physical_tile_elements": physical,
+        "num_offset_table_entries": offset_entries,
         "num_maas": maas,
         "num_indirect_units_per_maa": indirect_per_maa,
         "num_memory_channels": memory_channels,
@@ -125,6 +130,8 @@ def main() -> int:
         fail(
             "physical tile capacity must divide and not exceed logical capacity"
         )
+    if not 1 <= offset_entries <= logical:
+        fail("Offset-Table capacity must be within the logical tile capacity")
     if args.dram_subslices % initial_slices:
         fail(
             "DRAM subslices must divide evenly across initial Row-Table slices"
@@ -153,10 +160,10 @@ def main() -> int:
     virtual_pages_used = logical // physical
 
     # C++ stores one 12-byte entry plus a byte-valid array entry per iteration.
-    offset_model_bytes_per_unit = logical * 13
+    offset_model_bytes_per_unit = offset_entries * 13
     iteration_bits = bits_for_values(logical + 1)
     word_id_bits = bits_for_values(64 // args.word_bytes)
-    offset_lower_bits = logical * (iteration_bits + word_id_bits + 1)
+    offset_lower_bits = offset_entries * (iteration_bits + word_id_bits + 1)
     offset_lower_bytes_per_unit = math.ceil(offset_lower_bits / 8)
 
     entries_per_row = entries_per_subslice_row * (
@@ -434,6 +441,7 @@ def main() -> int:
             "completion_flags_used": tiles * virtual_pages_used,
             "completion_cpp_model_bytes_fixed_16_pages": tiles * 16,
             "offset_entries_per_indirect_unit": logical,
+            "offset_entry_capacity_per_indirect_unit": offset_entries,
             "offset_cpp_model_bytes_per_indirect_unit": (
                 offset_model_bytes_per_unit
             ),

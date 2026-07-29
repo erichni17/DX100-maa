@@ -68,19 +68,25 @@ public:
         }
     }
     void allocate(int _my_unit_id,
-                  int _num_tile_elements,
+                  int _num_entries,
                   MAA *_maa,
                   bool _is_stream = false);
-    void insert(int itr, int wid, int last_itr);
+    int insert(int itr, int wid, int last_entry);
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
     OffsetTableEntry peek_entry(int itr) const;
     int count_entries(int itr) const;
     OffsetTableEntry consume_entry(int &itr);
+    bool is_full() const { return free_entries.empty(); }
+    int capacity() const { return num_entries; }
+    int occupancy() const {
+        return num_entries - static_cast<int>(free_entries.size());
+    }
     void reset();
     void check_reset();
     OffsetTableEntry *entries;
     bool *entries_valid;
-    int num_tile_elements;
+    int num_entries;
+    std::vector<int> free_entries;
     MAA *maa;
     int my_unit_id;
     bool is_stream;
