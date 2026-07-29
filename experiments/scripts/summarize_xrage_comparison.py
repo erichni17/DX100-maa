@@ -311,12 +311,29 @@ def parse_run(value: str) -> tuple[str, Path]:
     return label, Path(path).resolve()
 
 
+def parse_pair(value: str) -> tuple[str, str, str]:
+    name, separator, labels = value.partition("=")
+    reference, comma, candidate = labels.partition(",")
+    if (
+        not separator
+        or not comma
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", name)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", reference)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", candidate)
+    ):
+        raise argparse.ArgumentTypeError(
+            "pair must have the form NAME=REFERENCE,CANDIDATE"
+        )
+    return name, reference, candidate
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--expected-channels", type=int, default=2)
     parser.add_argument("--require-shared-binary", action="store_true")
+    parser.add_argument("--pair", action="append", type=parse_pair, default=[])
     parser.add_argument("runs", nargs="+", type=parse_run)
     args = parser.parse_args()
     if args.expected_channels <= 0:
@@ -326,6 +343,15 @@ def main() -> int:
         parser.error("run labels must be unique")
     if args.baseline not in labels:
         parser.error("--baseline must name one of the runs")
+    pair_names = [name for name, _, _ in args.pair]
+    if len(pair_names) != len(set(pair_names)):
+        parser.error("pair names must be unique")
+    for name, reference, candidate in args.pair:
+        if reference not in labels or candidate not in labels:
+            parser.error(
+                f"pair {name} refers to an unknown run: "
+                f"{reference},{candidate}"
+            )
 
     digest_cache: dict[tuple, str] = {}
     rows = [
@@ -360,6 +386,40 @@ def main() -> int:
             "throughput_delta_vs_baseline_pct"
         ] = f"{100.0 * (baseline_ticks / ticks - 1.0):+.6f}"
 
+    rows_by_label = {str(row["label"]): row for row in rows}
+    pair_rows = []
+    for name, reference_label, candidate_label in args.pair:
+        reference = rows_by_label[reference_label]
+        candidate = rows_by_label[candidate_label]
+        reference_ticks = int(reference["roi_simTicks"])
+        candidate_ticks = int(candidate["roi_simTicks"])
+        pair_rows.append(
+            {
+                "pair": name,
+                "reference": reference_label,
+                "candidate": candidate_label,
+                "reference_ticks": reference_ticks,
+                "candidate_ticks": candidate_ticks,
+                "latency_delta_pct": (
+                    f"{100.0 * (candidate_ticks / reference_ticks - 1.0):+.6f}"
+                ),
+                "throughput_delta_pct": (
+                    f"{100.0 * (reference_ticks / candidate_ticks - 1.0):+.6f}"
+                ),
+                "dram_reads_delta": (
+                    int(candidate["dram_reads"]) - int(reference["dram_reads"])
+                ),
+                "dram_activates_delta": (
+                    int(candidate["dram_activates"])
+                    - int(reference["dram_activates"])
+                ),
+                "dram_precharges_delta": (
+                    int(candidate["dram_precharges"])
+                    - int(reference["dram_precharges"])
+                ),
+            }
+        )
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     fields = list(rows[0])
     tsv = args.output_dir / "xrage_comparison.tsv"
@@ -367,6 +427,12 @@ def main() -> int:
         writer = csv.DictWriter(stream, fields, delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
+    if pair_rows:
+        pair_tsv = args.output_dir / "xrage_pairwise.tsv"
+        with pair_tsv.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, list(pair_rows[0]), delimiter="\t")
+            writer.writeheader()
+            writer.writerows(pair_rows)
 
     markdown = [
         "# XRAGE Comparison",
@@ -389,6 +455,26 @@ def main() -> int:
             f"{row['dram_reads']}/{row['dram_activates']}/"
             f"{row['dram_precharges']} |"
         )
+    if pair_rows:
+        markdown.extend(
+            [
+                "",
+                "## Pairwise Comparisons",
+                "",
+                "| Pair | Reference | Candidate | Latency delta | "
+                "Throughput delta | DRAM RD/ACT/PRE delta |",
+                "|---|---|---|---:|---:|---:|",
+            ]
+        )
+        for pair in pair_rows:
+            markdown.append(
+                f"| {pair['pair']} | {pair['reference']} | "
+                f"{pair['candidate']} | {pair['latency_delta_pct']}% | "
+                f"{pair['throughput_delta_pct']}% | "
+                f"{pair['dram_reads_delta']:+d}/"
+                f"{pair['dram_activates_delta']:+d}/"
+                f"{pair['dram_precharges_delta']:+d} |"
+            )
     (args.output_dir / "xrage_comparison.md").write_text(
         "\n".join(markdown) + "\n", encoding="utf-8"
     )
