@@ -62,6 +62,11 @@ DIAGNOSTIC_STATS = {
     "direct_index_line_reads": "system.maa.I0_IND_VirtIndexLineReads",
     "virtual_build_rounds": "system.maa.I0_IND_VirtBuildRounds",
 }
+DIAGNOSTIC_LOG_COUNTERS = {
+    "dram_reads": "CH0_num_RD_commands_T",
+    "dram_activates": "CH0_num_ACT_commands_T",
+    "dram_precharges": "CH0_num_PRE_commands_T",
+}
 REORDER_DIAGNOSTICS = (
     "source_words",
     "source_cache_lines",
@@ -168,6 +173,17 @@ def require_raw_mechanism(stats, arm, row):
 def read_first_stat(stats, name):
     match = re.search(rf"^{re.escape(name)}\s+(\d+)\s+", stats, re.MULTILINE)
     return int(match.group(1)) if match else 0
+
+
+def read_final_log_counter(log, name):
+    matches = re.findall(
+        rf"^\s*{re.escape(name)}:\s+([0-9]+)(?:\s+#.*)?$",
+        log,
+        re.MULTILINE,
+    )
+    if not matches:
+        fail(f"restore log has no {name} counter")
+    return int(matches[-1])
 
 
 def configured_payload_storage(arm, maa):
@@ -299,6 +315,10 @@ def main():
                     field: read_first_stat(stats, stat_name)
                     for field, stat_name in DIAGNOSTIC_STATS.items()
                 },
+                **{
+                    field: read_final_log_counter(log, counter_name)
+                    for field, counter_name in DIAGNOSTIC_LOG_COUNTERS.items()
+                },
             }
         )
 
@@ -342,7 +362,7 @@ def main():
         writer = csv.DictWriter(stream, fields, delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
-    diagnostic_fields = ["arm", *DIAGNOSTIC_STATS]
+    diagnostic_fields = ["arm", *DIAGNOSTIC_STATS, *DIAGNOSTIC_LOG_COUNTERS]
     with (root / "mechanism.tsv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, diagnostic_fields, delimiter="\t")
         writer.writeheader()

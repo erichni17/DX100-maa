@@ -208,5 +208,22 @@ done
         "$write_issues" "$write_completions" "$pages_ready" \
         "$index_words" "$indirect_spd_reads"
 } > "$out/result.tsv"
+read -r dram_reads dram_activates dram_precharges < <(
+    awk '
+        $1 == "CH0_num_RD_commands_T:" { rd = $2 }
+        $1 == "CH0_num_ACT_commands_T:" { act = $2 }
+        $1 == "CH0_num_PRE_commands_T:" { pre = $2 }
+        END { print rd + 0, act + 0, pre + 0 }
+    ' "$log"
+)
+[[ $dram_reads -gt 0 && $dram_activates -gt 0 && $dram_precharges -gt 0 ]] || {
+    echo "XRAGE DRAM command extraction failed" >&2
+    exit 1
+}
+{
+    printf 'dram_reads\tdram_activates\tdram_precharges\n'
+    printf '%s\t%s\t%s\n' \
+        "$dram_reads" "$dram_activates" "$dram_precharges"
+} > "$out/dram_commands.tsv"
 touch "$out/xrage_attribution_smoke.pass"
 echo "PASS XRAGE $arm: hash=$hash roi_simTicks=$roi_ticks"
