@@ -468,17 +468,23 @@ Configuration<Spatter::Serial>::Configuration(const size_t id,
 }
 
 #ifdef MAA
+namespace {
+void require_maa_team(const char *phase) {
+    if (omp_get_num_threads() == NUM_CORES)
+        return;
+#pragma omp critical
+    std::cerr << "MAA " << phase << " requires exactly " << NUM_CORES
+              << " OpenMP threads, got " << omp_get_num_threads()
+              << std::endl;
+    std::abort();
+}
+} // namespace
+
 void setup_MAA() {
     init_MAA();
 #pragma omp parallel num_threads(NUM_CORES)
     {
-        if (omp_get_num_threads() != NUM_CORES) {
-#pragma omp critical
-            std::cerr << "MAA setup requires exactly " << NUM_CORES
-                      << " OpenMP threads, got " << omp_get_num_threads()
-                      << std::endl;
-            std::abort();
-        }
+        require_maa_team("setup");
 #pragma omp critical
         {
             int tid = omp_get_thread_num();
@@ -521,9 +527,14 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 #endif
     if (timed)
         timer.start();
+#ifdef MAA
+#pragma omp parallel num_threads(NUM_CORES)
+#else
 #pragma omp parallel
+#endif
     {
 #ifdef MAA
+        require_maa_team("gather");
         int tile1, tile2, tile3;
         int reg1, reg2, reg3;
         int tid = omp_get_thread_num();
@@ -650,9 +661,14 @@ void Configuration<Spatter::Serial>::scatter(bool timed, unsigned long run_id) {
 #endif
     if (timed)
         timer.start();
+#ifdef MAA
+#pragma omp parallel num_threads(NUM_CORES)
+#else
 #pragma omp parallel
+#endif
     {
 #ifdef MAA
+        require_maa_team("scatter");
         int tile1, tile2, tile3;
         int reg1, reg2, reg3;
         int tid = omp_get_thread_num();

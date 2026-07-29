@@ -7,6 +7,9 @@ BINARY=${1:-$ROOT/build_lanl_func/spatter_maa_xrage_runtime_verify_16K}
 DATA_ROOT=${2:-$ROOT/tests/test-data/lanl}
 MANIFEST=$DATA_ROOT/manifest.json
 ARMS=(native16 fused16 fused4 compact16 direct4)
+# The MAA binary must enforce its four-thread guest contract itself. A larger
+# external default catches unpinned OpenMP regions before gem5 checkpointing.
+HOST_OMP_THREADS=${SPATTER_TEST_OMP_NUM_THREADS:-64}
 
 [[ -x "$BINARY" ]] || { echo "missing runtime MAA binary: $BINARY" >&2; exit 2; }
 [[ -f "$MANIFEST" ]] || { echo "missing trace manifest: $MANIFEST" >&2; exit 2; }
@@ -25,7 +28,8 @@ while IFS=$'\t' read -r config_id input expected_input_hash; do
     for arm in "${ARMS[@]}"; do
         output=$(mktemp)
         trap 'rm -f "$output"' EXIT
-        OMP_NUM_THREADS=4 SPATTER_DATA_SEED=${SPATTER_DATA_SEED:-1} \
+        OMP_NUM_THREADS=$HOST_OMP_THREADS \
+            SPATTER_DATA_SEED=${SPATTER_DATA_SEED:-1} \
             "$BINARY" -b serial -f "$path" --maa-arm "$arm" \
             >"$output" 2>&1
         [[ $(grep -c '^MAA_GATHER_VERIFY_PASS ' "$output" || true) -eq 1 ]] || {
