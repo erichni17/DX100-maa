@@ -249,6 +249,7 @@ protected:
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
     int my_expected_responses;
     int my_received_responses;
+    uint64_t source_issue_sequence = 0;
     std::vector<int> my_sorted_indices;
     bool **my_RT_req_sent;
     std::vector<int> *my_RT_slice_order;

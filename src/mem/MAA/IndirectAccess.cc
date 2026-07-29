@@ -7,6 +7,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "debug/MAAIndirect.hh"
+#include "debug/MAAIssueTrace.hh"
 #include "debug/MAATrace.hh"
 #include "debug/MAAVirtualTrace.hh"
 #include "mem/packet.hh"
@@ -1075,6 +1076,7 @@ void IndirectAccessUnit::executeInstruction() {
         // Initialization
         my_virtual_addr = 0;
         my_received_responses = my_expected_responses = 0;
+        source_issue_sequence = 0;
         virtual_reserved_responses = 0;
         virtual_reserved_response_words = 0;
         virtual_word_budget_tick = curTick();
@@ -1796,6 +1798,12 @@ bool IndirectAccessUnit::checkAndResetAllRowTablesSent() {
     return true;
 }
 void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
+    DPRINTF(MAAIssueTrace,
+            "unit=%d instruction_tick=%lu sequence=%d addr=0x%lx "
+            "bounded=%d virtual=%d direct_index=%d\n",
+            my_indirect_id, my_decode_start_tick,
+            source_issue_sequence++, addr, usesBoundedSourceResponses(),
+            isVirtualLoad(), isDirectIndexLoad());
     /**** Packet generation ****/
     RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
     real_req->setRegion(my_addr_range_id);
