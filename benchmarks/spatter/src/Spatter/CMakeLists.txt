@@ -447,6 +447,13 @@ target_include_directories(Spatter_MAA_FLAG_Verify_16K
     $<INSTALL_INTERFACE:include/Spatter>
 )
 
+target_include_directories(Spatter_MAA_XRAGE_Runtime_Verify_16K
+    PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../experiments>
+    $<INSTALL_INTERFACE:include/Spatter>
+)
+
 target_include_directories(Spatter_MAA_Virtual_16K
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
@@ -554,6 +561,11 @@ target_link_libraries(Spatter_MAA_FLAG_Verify_16K
     ${COMMON_LINK_LIBRARIES}
 )
 
+target_link_libraries(Spatter_MAA_XRAGE_Runtime_Verify_16K
+    PUBLIC
+    ${COMMON_LINK_LIBRARIES}
+)
+
 target_link_libraries(Spatter_MAA_Virtual_16K
     PUBLIC
     ${COMMON_LINK_LIBRARIES}
@@ -628,6 +640,10 @@ target_compile_options(Spatter_MAA_16K
 )
 
 target_compile_options(Spatter_MAA_FLAG_Verify_16K
+    PRIVATE ${WARNING_FLAGS}
+)
+
+target_compile_options(Spatter_MAA_XRAGE_Runtime_Verify_16K
     PRIVATE ${WARNING_FLAGS}
 )
 

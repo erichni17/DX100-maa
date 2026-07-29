@@ -589,6 +589,72 @@ inline void maa_indirect_load(T1 *data, int idx_tile, int dst_tile, int cond_til
     set_tile_ready(dst_tile, 1);
 }
 template <class T1>
+inline void maa_indirect_load_virtual(T1 *data, int idx_tile,
+                                      int completion_tile, T1 *backing,
+                                      int cond_tile = -1) {
+    int *indices = get_cacheable_tile_pointer<int>(idx_tile);
+    const int index_size = get_tile_size(idx_tile);
+    uint32_t *cond_array = nullptr;
+    if (cond_tile != -1)
+        cond_array = get_cacheable_tile_pointer<uint32_t>(cond_tile);
+    const int8_t source_region = get_region(data);
+    const int8_t backing_region = get_region(backing);
+    for (int idx = 0; idx < index_size; ++idx) {
+        if (cond_tile == -1 || cond_array[idx]) {
+            assert(check_region(source_region, data + indices[idx]));
+            assert(check_region(backing_region, backing + idx));
+            backing[idx] = data[indices[idx]];
+        }
+    }
+    set_tile_size(completion_tile, index_size);
+    set_tile_ready(completion_tile, 1);
+}
+template <class T1>
+inline void maa_indirect_load_virtual_index(
+    T1 *data, uint32_t *indices, int completion_tile, T1 *backing,
+    int min_reg, int max_reg, int stride_reg) {
+    const int min = get_reg<int>(min_reg);
+    const int max = get_reg<int>(max_reg);
+    const int stride = get_reg<int>(stride_reg);
+    const int8_t source_region = get_region(data);
+    const int8_t index_region = get_region(indices);
+    const int8_t backing_region = get_region(backing);
+    int dst = 0;
+    for (int src = min; src < max && dst < TILE_SIZE;
+         src += stride, ++dst) {
+        assert(check_region(index_region, indices + src));
+        assert(check_region(source_region, data + indices[src]));
+        assert(check_region(backing_region, backing + dst));
+        backing[dst] = data[indices[src]];
+    }
+    set_tile_size(completion_tile, dst);
+    set_tile_ready(completion_tile, 1);
+}
+template <class T1>
+inline void maa_indirect_load_spd_stream(
+    T1 *data, int idx_tile, int dst_tile, T1 *stream_base,
+    int min_reg, int max_reg, int stride_reg) {
+    T1 *dst = get_cacheable_tile_pointer<T1>(dst_tile);
+    int *indices = get_cacheable_tile_pointer<int>(idx_tile);
+    const int index_size = get_tile_size(idx_tile);
+    const int min = get_reg<int>(min_reg);
+    const int max = get_reg<int>(max_reg);
+    const int stride = get_reg<int>(stride_reg);
+    const int8_t source_region = get_region(data);
+    const int8_t stream_region = get_region(stream_base);
+    int idx = 0;
+    for (int stream_idx = min;
+         stream_idx < max && idx < index_size && idx < TILE_SIZE;
+         stream_idx += stride, ++idx) {
+        assert(check_region(source_region, data + indices[idx]));
+        assert(check_region(stream_region, stream_base + stream_idx));
+        dst[idx] = data[indices[idx]];
+        stream_base[stream_idx] = dst[idx];
+    }
+    set_tile_size(dst_tile, idx);
+    set_tile_ready(dst_tile, 1);
+}
+template <class T1>
 inline void maa_indirect_store_vector(T1 *data, int idx_tile, int src_tile, int cond_tile = -1, int dst_tile = -1) {
     volatile T1 *src = get_cacheable_tile_pointer<T1>(src_tile);
     int *indices = get_cacheable_tile_pointer<int>(idx_tile);

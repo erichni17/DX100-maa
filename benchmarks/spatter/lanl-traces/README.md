@@ -58,6 +58,19 @@ cmake --build benchmarks/spatter/build_lanl_func -j4 \
 benchmarks/spatter/run_lanl_trace_functional_smoke.sh
 ```
 
+The runtime-selectable gather implementation can then be checked across every
+imported FLAG gather and all four attribution arms:
+
+```bash
+cmake --build benchmarks/spatter/build_lanl_func -j4 \
+  --target spatter_maa_xrage_runtime_verify_16K
+benchmarks/spatter/run_lanl_runtime_arm_functional_smoke.sh
+```
+
+This is a functional-equivalence gate only. It verifies that `fused16`,
+`fused4`, `compact16`, and `direct4` produce the same exact result; it does not
+predict their gem5 performance.
+
 A gem5 result additionally requires a matching
 baseline, native DX100, fused DX100, and virtual DX100 configuration, terminal
 completion, output correctness, and simulated-time comparison.
