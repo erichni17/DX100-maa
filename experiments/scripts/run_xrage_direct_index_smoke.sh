@@ -26,6 +26,7 @@ row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
+guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
 debug_args=()
 
@@ -88,6 +89,17 @@ if [[ -n $logical_override ]]; then
     }
     maa_logical_tile_elements=$logical_override
 fi
+if [[ -n $guest_abi ]]; then
+    [[ $guest_abi -gt 0 && $guest_abi -le 16384 ]] || {
+        echo "MAA_GUEST_ABI_TILE_ELEMENTS must be in [1,16384]" >&2
+        exit 2
+    }
+    [[ $guest_abi -eq $maa_logical_tile_elements ]] || {
+        printf 'guest ABI tile elements (%s) must equal the gem5 logical aperture (%s)\n' \
+            "$guest_abi" "$maa_logical_tile_elements" >&2
+        exit 2
+    }
+fi
 if [[ -n $guest_arm ]]; then
     case "$guest_arm" in
         native16|fused16|fused4|compact16|direct4) ;;
@@ -134,6 +146,7 @@ fi
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
+    printf 'guest_abi_tile_elements=%s\n' "$guest_abi"
     printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'virtual_native_issue_order=%s\n' "$native_issue_order"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"

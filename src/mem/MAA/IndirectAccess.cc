@@ -2378,15 +2378,41 @@ Addr IndirectAccessUnit::backingWordAddr(int itr) const {
     return my_backing_addr + index * my_word_size;
 }
 
-void IndirectAccessUnit::validateRetirementWriteRange(Addr vaddr,
-                                                       unsigned size) const {
-    panic_if(size == 0 || vaddr < my_backing_min_addr ||
-                 vaddr >= my_backing_max_addr ||
-                 static_cast<Addr>(size) > my_backing_max_addr - vaddr,
-             "I[%d] virtual retirement write [0x%lx, 0x%lx) exceeds "
-             "backing range [0x%lx, 0x%lx)\n",
-             my_indirect_id, vaddr, vaddr + size, my_backing_min_addr,
-             my_backing_max_addr);
+void IndirectAccessUnit::validateRetirementWriteRange(
+    Addr vaddr, unsigned size, uint16_t valid_words) const {
+    if (valid_words == 0) {
+        panic_if(size == 0 || vaddr < my_backing_min_addr ||
+                     vaddr >= my_backing_max_addr ||
+                     static_cast<Addr>(size) > my_backing_max_addr - vaddr,
+                 "I[%d] virtual retirement write [0x%lx, 0x%lx) exceeds "
+                 "backing range [0x%lx, 0x%lx)\n",
+                 my_indirect_id, vaddr, vaddr + size, my_backing_min_addr,
+                 my_backing_max_addr);
+        return;
+    }
+
+    panic_if(size != block_size || my_word_size <= 0 ||
+                 size % my_word_size != 0,
+             "I[%d] invalid masked retirement write size=%u word_size=%d\n",
+             my_indirect_id, size, my_word_size);
+    const unsigned words = size / my_word_size;
+    panic_if(words > 16 || valid_words >> words,
+             "I[%d] masked retirement write has invalid word mask 0x%x "
+             "for %u words\n",
+             my_indirect_id, valid_words, words);
+    for (unsigned word = 0; word < words; ++word) {
+        if ((valid_words & (1U << word)) == 0)
+            continue;
+        const Addr word_vaddr = vaddr + word * my_word_size;
+        panic_if(word_vaddr < my_backing_min_addr ||
+                     word_vaddr >= my_backing_max_addr ||
+                     static_cast<Addr>(my_word_size) >
+                         my_backing_max_addr - word_vaddr,
+                 "I[%d] enabled virtual retirement word "
+                 "[0x%lx, 0x%lx) exceeds backing range [0x%lx, 0x%lx)\n",
+                 my_indirect_id, word_vaddr, word_vaddr + my_word_size,
+                 my_backing_min_addr, my_backing_max_addr);
+    }
 }
 
 void IndirectAccessUnit::initializeVirtualPageTracking() {
@@ -2537,7 +2563,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
                                                 const uint8_t *data,
                                                 uint16_t valid_words) {
     accountVirtualRequestInterval();
-    validateRetirementWriteRange(vaddr, size);
+    validateRetirementWriteRange(vaddr, size, valid_words);
     Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
     const Addr write_key = size == block_size
         ? paddr & ~(block_size - 1) : paddr;

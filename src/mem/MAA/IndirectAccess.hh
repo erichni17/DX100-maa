@@ -305,7 +305,8 @@ protected:
     void createDirectIndexReadPacket(Addr addr, int latency);
     void accountReadResponse(Addr addr, bool is_block_cached);
     Addr backingWordAddr(int itr) const;
-    void validateRetirementWriteRange(Addr vaddr, unsigned size) const;
+    void validateRetirementWriteRange(Addr vaddr, unsigned size,
+                                      uint16_t valid_words) const;
     void initializeVirtualPageTracking();
     void trackVirtualIteration(int itr, bool write_expected);
     void markVirtualPageReadyIfComplete(int page);

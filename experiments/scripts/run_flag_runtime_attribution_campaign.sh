@@ -77,6 +77,7 @@ run_arm() {
         XRAGE_ARM="$arm" XRAGE_GUEST_ARM="$guest_arm" \
         MAA_PHYSICAL_TILE_ELEMENTS="$physical" \
         MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE="$logical" \
+        MAA_GUEST_ABI_TILE_ELEMENTS="$logical" \
         MAA_VIRTUAL_NATIVE_ISSUE_ORDER="$native_order" \
         MAA_VIRTUAL_INDEX_BUFFER_LINES="$index_lines" \
         "$runner" "$gem5" "$binary" "$input" "$out/$label"

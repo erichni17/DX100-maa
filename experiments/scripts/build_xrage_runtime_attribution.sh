@@ -66,6 +66,7 @@ binary="$build/$target"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'target=%s\n' "$target"
+    printf 'maa_guest_abi_tile_elements=16384\n'
     printf 'cmake=%s\n' "$(cmake --version | head -1)"
     printf 'cxx=%s\n' "$("${CXX:-c++}" --version | head -1)"
     printf 'nlohmann_json_source=%s\n' "$json_source"
