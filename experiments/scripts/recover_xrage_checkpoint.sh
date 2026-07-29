@@ -22,6 +22,7 @@ guest_arm=${XRAGE_GUEST_ARM:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 native_issue_order=${MAA_VIRTUAL_NATIVE_ISSUE_ORDER:-0}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-1}
+index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
@@ -62,6 +63,10 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
 }
 [[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 1024 ]] || {
     echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,1024]" >&2
+    exit 2
+}
+[[ $index_force_cache == 0 || $index_force_cache == 1 ]] || {
+    echo "MAA_VIRTUAL_INDEX_FORCE_CACHE must be 0 or 1" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
@@ -245,6 +250,7 @@ fi
     printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'virtual_native_issue_order=%s\n' "$native_issue_order"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
+    printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
@@ -307,6 +313,9 @@ if [[ $grow_order == 1 ]]; then
 fi
 if [[ $native_issue_order == 1 ]]; then
     restore_cmd+=(--maa_virtual_native_issue_order)
+fi
+if [[ $index_force_cache == 1 ]]; then
+    restore_cmd+=(--maa_virtual_index_force_cache)
 fi
 printf '%q ' "${restore_cmd[@]}" > "$out/restore.command"
 printf '\n' >> "$out/restore.command"

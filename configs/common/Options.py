@@ -345,6 +345,11 @@ def addNoISAOptions(parser):
         help="Cache lines buffered or in flight for direct virtual-index ingestion",
     )
     parser.add_argument(
+        "--maa_virtual_index_force_cache",
+        action="store_true",
+        help="Route direct virtual-index feeder reads through the cache hierarchy",
+    )
+    parser.add_argument(
         "--maa_virtual_index_partitions",
         type=int,
         default=1,

@@ -77,6 +77,7 @@ MAA::MAA(const MAAParams &p)
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
+      virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
@@ -383,6 +384,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
                                         virtual_index_buffer_lines,
+                                        virtual_index_force_cache,
                                         virtual_index_partitions,
                                         virtual_index_filter_words_per_cycle,
                                         rowtable_latency,

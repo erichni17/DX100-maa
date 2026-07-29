@@ -66,11 +66,21 @@ class XrageRunnerAbiTest(unittest.TestCase):
             self.assertIn("sum_indirect_stat", script)
             self.assertIn("I[0-9]+_", script)
 
+    def test_direct_index_cache_routing_is_explicit_and_recorded(self):
+        for runner in (RUNNER, RECOVERY):
+            script = runner.read_text(encoding="utf-8")
+            self.assertIn("MAA_VIRTUAL_INDEX_FORCE_CACHE", script)
+            self.assertIn("virtual_index_force_cache=%s", script)
+            self.assertIn("--maa_virtual_index_force_cache", script)
+
+        self.assertIn(
+            "virtual_index_force_cache",
+            (ROOT / "src/mem/MAA/MAA.py").read_text(encoding="utf-8"),
+        )
+
     def test_cache_warm_upper_bound_is_an_explicit_guest_arm(self):
         for runner in (RUNNER, RECOVERY):
-            self.assertIn(
-                "direct4warm", runner.read_text(encoding="utf-8")
-            )
+            self.assertIn("direct4warm", runner.read_text(encoding="utf-8"))
 
     def test_stream_prefetch_is_an_explicit_guest_arm(self):
         for runner in (RUNNER, RECOVERY):

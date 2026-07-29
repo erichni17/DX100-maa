@@ -120,6 +120,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_index_buffer_lines"
         )
 
+    if hasattr(options, "maa_virtual_index_force_cache"):
+        opts["virtual_index_force_cache"] = getattr(
+            options, "maa_virtual_index_force_cache"
+        )
+
     if hasattr(options, "maa_virtual_index_partitions"):
         opts["virtual_index_partitions"] = getattr(
             options, "maa_virtual_index_partitions"

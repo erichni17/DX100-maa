@@ -105,6 +105,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
                                   int _virtual_index_buffer_lines,
+                                  bool _virtual_index_force_cache,
                                   int _virtual_index_partitions,
                                   int _virtual_index_filter_words_per_cycle,
                                   Cycles _rowtable_latency,
@@ -165,6 +166,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] direct-index buffer lines (%d) must be in [1,1024]\n",
              my_indirect_id, _virtual_index_buffer_lines);
     direct_index_buffer_lines = _virtual_index_buffer_lines;
+    direct_index_force_cache = _virtual_index_force_cache;
     panic_if(_virtual_index_partitions <= 0 ||
                  _virtual_index_partitions > 64,
              "I[%d] direct-index partitions (%d) must be in [1,64]\n",
@@ -1967,7 +1969,8 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
     read_pkt->headerDelay = read_pkt->payloadDelay = 0;
     read_pkt->allocate();
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, read_pkt,
-                    maa->getClockEdge(Cycles(latency)));
+                    maa->getClockEdge(Cycles(latency)),
+                    direct_index_force_cache);
     (*maa->stats.IND_VirtIndexLineReads[my_indirect_id])++;
     DPRINTF(MAAIndirect,
             "I[%d] %s: created direct-index read %s\n",

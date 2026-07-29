@@ -417,6 +417,7 @@ public:
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     unsigned int virtual_index_buffer_lines;
+    bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
     unsigned int virtual_index_filter_words_per_cycle;
     bool virtual_grow_order;
