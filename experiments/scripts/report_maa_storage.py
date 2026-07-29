@@ -57,8 +57,8 @@ def main() -> int:
     parser.add_argument(
         "--dram-subslices",
         type=int,
-        default=32,
-        help="channel x rank x bank-group x bank count (DX100 default: 32)",
+        required=True,
+        help="channel x rank x bank-group x bank count",
     )
     args = parser.parse_args()
 
@@ -117,6 +117,7 @@ def main() -> int:
     native_spd_bytes = tiles * logical * 4
     physical_spd_bytes = tiles * physical * 4
     logical_aperture_bytes = native_spd_bytes
+    unbacked_aperture_tail_bytes = tiles * (logical - physical) * 4
     invalidator_entries = logical_aperture_bytes // 64
     virtual_pages_used = logical // physical
 
@@ -197,14 +198,16 @@ def main() -> int:
             * 100,
             "single_logical_address_aperture_bytes": logical_aperture_bytes,
             "logical_address_apertures": 2,
-            "apertures_alias_one_physical_spd": True,
+            "backed_prefix_bytes_per_aperture": physical_spd_bytes,
+            "unbacked_tail_bytes_per_aperture": unbacked_aperture_tail_bytes,
+            "backed_offsets_share_one_physical_spd": True,
             "element_ready_model_bytes": tiles * physical,
         },
         "retained_logical_metadata": {
             "invalidator_cache_line_entries": invalidator_entries,
             "invalidator_model_bytes": invalidator_entries,
-            "completion_bits_used": tiles * virtual_pages_used,
-            "completion_model_bytes_fixed_16_pages": tiles * 16,
+            "completion_flags_used": tiles * virtual_pages_used,
+            "completion_cpp_model_bytes_fixed_16_pages": tiles * 16,
             "offset_entries_per_indirect_unit": logical,
             "offset_cpp_model_bytes_per_indirect_unit": (
                 offset_model_bytes_per_unit
@@ -212,7 +215,9 @@ def main() -> int:
             "offset_encoding_lower_bound_bytes_per_indirect_unit": (
                 offset_lower_bytes_per_unit
             ),
-            "active_row_entries_per_indirect_unit": active_row_entries,
+            "configured_row_entry_capacity_per_indirect_unit": (
+                active_row_entries
+            ),
             "row_encoding_lower_bound_bytes_per_indirect_unit": (
                 row_lower_bytes_per_unit
             ),
@@ -283,14 +288,16 @@ def main() -> int:
         f"| Active destination-combiner payload | {format_bytes(active_combine_payload)} / indirect unit |",
         f"| Physical SPD + bounded virtual payload | {format_bytes(counted_payload)} |",
         f"| Logical Offset entries retained | {logical:,} / indirect unit |",
-        f"| Active Row-Table entries retained | {active_row_entries:,} / indirect unit |",
+        f"| Configured Row-Table entry capacity | {active_row_entries:,} / indirect unit |",
         f"| Logical invalidator entries retained | {invalidator_entries:,} |",
+        f"| Unbacked logical SPD tail | {format_bytes(unbacked_aperture_tail_bytes)} / address aperture |",
         "",
         f"Counted payload reduction versus native SPD: **{report['counted_payload']['reduction_vs_native_spd_pct']:.3f}%**.",
         "",
         "This is a capacity ledger, not an area estimate. Row/Offset metadata remains",
-        "logical-sized and tags, queues, ports, control, wiring, and memory periphery",
-        "are excluded from the counted payload.",
+        "logical-sized, but this does not prove native-equivalent descriptor lifetime or",
+        "issue order. Tags, queues, ports, control, wiring, and memory periphery are",
+        "excluded from the counted payload.",
     ]
     (output / "maa_storage.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
