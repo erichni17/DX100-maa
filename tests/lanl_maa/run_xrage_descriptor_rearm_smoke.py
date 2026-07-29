@@ -124,6 +124,22 @@ def validate(stats, case_name, case):
         "descriptorResultWrites": case["result_writes"],
         "descriptorCompletionWrites": case["completion_writes"],
         "descriptorErrors": case["descriptor_errors"],
+        "sharedOverlayModeAcquisitions": case["completion_writes"],
+        "sharedOverlayReservationRejections": 0,
+        "sharedOverlayTrafficAccepted": (
+            case["address_line_reads"]
+            + case["physical_line_reads"]
+            + case["result_writes"]
+            + case["completion_writes"]
+        ),
+        "sharedOverlayTrafficAcknowledged": (
+            case["address_line_reads"]
+            + case["physical_line_reads"]
+            + case["result_writes"]
+            + case["completion_writes"]
+        ),
+        "sharedOverlayDrains": case["completion_writes"],
+        "sharedOverlayReleases": case["completion_writes"],
     }
     for name, value in expected.items():
         check_equal(errors, accelerator, name, value)

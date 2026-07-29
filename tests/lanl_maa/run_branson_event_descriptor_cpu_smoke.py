@@ -44,6 +44,10 @@ def validate(stats, adversarial_rearm):
         "physicalAtomicUpdates": 24,
         "atomicAcknowledgements": 24,
         "continuationExhaustions": 0,
+        "sharedOverlayModeAcquisitions": 3 if adversarial_rearm else 1,
+        "sharedOverlayReservationRejections": 0,
+        "sharedOverlayDrains": 3 if adversarial_rearm else 1,
+        "sharedOverlayReleases": 3 if adversarial_rearm else 1,
     }
     for name, value in expected.items():
         require_equal(errors, stats, name, value)
@@ -111,6 +115,23 @@ def validate(stats, adversarial_rearm):
     ticks = read_scalar(stats, "simTicks")
     if ticks is None or ticks <= 0:
         errors.append("simulation produced no positive simTicks")
+    overlay_accepted = read_scalar(
+        stats, "system.lanl_maa.sharedOverlayTrafficAccepted"
+    )
+    overlay_acknowledged = read_scalar(
+        stats, "system.lanl_maa.sharedOverlayTrafficAcknowledged"
+    )
+    if overlay_accepted is None or overlay_accepted <= 0:
+        errors.append(
+            "sharedOverlayTrafficAccepted: expected a positive count, "
+            f"observed {overlay_accepted}"
+        )
+    if overlay_acknowledged != overlay_accepted:
+        errors.append(
+            "shared-overlay traffic accounting did not close: "
+            f"accepted={overlay_accepted}, "
+            f"acknowledged={overlay_acknowledged}"
+        )
     if errors:
         raise RuntimeError(
             "Branson event descriptor evidence checks failed:\n  "
@@ -125,6 +146,12 @@ def validate(stats, adversarial_rearm):
         "bransonEventComputeWouldBlockCycles",
         "bransonEventComputeActiveCycles",
         "activeBransonEventComputeHighWaterMark",
+        "sharedOverlayModeAcquisitions",
+        "sharedOverlayReservationRejections",
+        "sharedOverlayTrafficAccepted",
+        "sharedOverlayTrafficAcknowledged",
+        "sharedOverlayDrains",
+        "sharedOverlayReleases",
     )
     mechanism = {
         name: read_scalar(stats, "system.lanl_maa." + name)
