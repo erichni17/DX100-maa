@@ -115,6 +115,7 @@ def read_exact_reference(
 ) -> tuple[int, str, str, str, int, int, int]:
     required = [
         root / "manifest.txt",
+        root / "source_status.txt",
         root / "artifact_sha256.txt",
         root / "restore.log",
         root / "result.tsv",
@@ -126,6 +127,8 @@ def read_exact_reference(
         or (root / "xrage_checkpoint_recovery.pass").is_file()
     ):
         fail(f"exact reference has no pass marker: {root}")
+    if (root / "source_status.txt").read_text(encoding="utf-8"):
+        fail(f"exact reference was produced from a dirty worktree: {root}")
     artifacts = verify_hash_list(root / "artifact_sha256.txt")
     manifest = read_kv(root / "manifest.txt")
     exact_input = Path(manifest.get("input", ""))
