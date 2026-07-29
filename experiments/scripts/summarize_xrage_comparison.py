@@ -165,6 +165,7 @@ def read_run(
     guest_arm = manifest.get("guest_arm", "")
     if guest_arm:
         expected_guest_arm = {
+            "native": "native16",
             "fused": "fused16",
             "fused_4k": "fused4",
             "compact": "compact16",
