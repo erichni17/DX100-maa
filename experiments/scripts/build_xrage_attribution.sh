@@ -42,6 +42,7 @@ configure_cmd=(
     -DBUILD_GEM5=ON
     -DBUILD_FUNC=OFF
     -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_CXX_FLAGS=-I$json_source/include
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     -DGEM5_HOME="$root"
     -DMAA_HOME="$root/benchmarks/API"
