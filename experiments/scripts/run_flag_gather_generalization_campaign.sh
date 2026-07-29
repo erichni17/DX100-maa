@@ -13,6 +13,7 @@ manifest=$(realpath "$3")
 out=$(realpath -m "$4")
 simulator_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-}
 max_parallel=${FLAG_MAX_PARALLEL:-2}
+reuse_campaign=${FLAG_REUSE_CAMPAIGN:-}
 
 [[ $simulator_commit =~ ^[0-9a-f]{40}$ ]] || {
     echo "XRAGE_SIMULATOR_SOURCE_COMMIT must be a full Git commit" >&2
@@ -30,6 +31,29 @@ max_parallel=${FLAG_MAX_PARALLEL:-2}
     echo "refusing to overwrite FLAG gather campaign: $out" >&2
     exit 2
 }
+if [[ -n $reuse_campaign ]]; then
+    reuse_campaign=$(realpath "$reuse_campaign")
+    [[ -f $reuse_campaign/campaign_manifest.txt &&
+       -f $reuse_campaign/artifact_sha256.txt &&
+       -d $reuse_campaign/cases ]] || {
+        echo "invalid FLAG reuse campaign: $reuse_campaign" >&2
+        exit 2
+    }
+    prior_commit=$(awk -F= '$1 == "simulator_source_commit" {print $2}' \
+        "$reuse_campaign/campaign_manifest.txt")
+    [[ $prior_commit == "$simulator_commit" ]] || {
+        echo "FLAG reuse simulator commit mismatch" >&2
+        exit 2
+    }
+    for artifact in "$gem5" "$binary" "$manifest"; do
+        artifact_hash=$(sha256sum "$artifact" | cut -d' ' -f1)
+        grep -q "^${artifact_hash}  ${artifact}$" \
+            "$reuse_campaign/artifact_sha256.txt" || {
+            echo "FLAG reuse artifact mismatch: $artifact" >&2
+            exit 2
+        }
+    done
+fi
 [[ -z $(git -C "$root" status --short) ]] || {
     echo "FLAG gather campaign requires a clean source worktree" >&2
     exit 2
@@ -71,6 +95,7 @@ chmod 755 "$out/frozen-tools/"*
     printf 'runner_source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'gather_configurations=%s\n' "${#gathers[@]}"
     printf 'max_parallel=%s\n' "$max_parallel"
+    printf 'reuse_campaign=%s\n' "$reuse_campaign"
     printf 'arms=fused16,compact16,direct4\n'
     printf 'direct_index_buffer_lines=128\n'
     printf 'timeout=none\n'
@@ -78,6 +103,66 @@ chmod 755 "$out/frozen-tools/"*
 } > "$out/campaign_manifest.txt"
 sha256sum "$gem5" "$binary" "$manifest" "$out/frozen-tools/"* \
     > "$out/artifact_sha256.txt"
+printf 'configuration\tarm\tsource\tresult_sha256\tmanifest_sha256\tdebug_sha256\n' \
+    > "$out/reused_arms.tsv"
+
+validate_case() {
+    local case_out=$1
+    python3 "$out/frozen-tools/compare_maa_issue_digests.py" \
+        --allow-per-instruction-unit-reassignment \
+        --baseline fused16 --output-dir "$case_out/issue-comparison" \
+        "fused16=$case_out/fused16/run/xrage-debug.log" \
+        "compact16=$case_out/compact16/run/xrage-debug.log" \
+        "direct4=$case_out/direct4/run/xrage-debug.log"
+    python3 "$out/frozen-tools/summarize_xrage_comparison.py" \
+        --require-shared-binary --baseline fused16 \
+        --output-dir "$case_out/comparison" \
+        --pair compact_bypass=fused16,compact16 \
+        --pair direct_net=fused16,direct4 \
+        --pair direct_vs_compact=compact16,direct4 \
+        "fused16=$case_out/fused16" \
+        "compact16=$case_out/compact16" \
+        "direct4=$case_out/direct4"
+    touch "$case_out/flag_gather_case.pass"
+}
+
+reuse_case() {
+    local config_id=$1 input=$2 expected_hash=$3
+    local prior_case="$reuse_campaign/cases/$config_id"
+    local case_out="$out/cases/$config_id"
+    [[ -d $prior_case ]] || return 1
+    for label in fused16 compact16 direct4; do
+        [[ -f $prior_case/$label/xrage_attribution_smoke.pass ]] || return 1
+    done
+
+    mkdir -p "$case_out"
+    for label in fused16 compact16 direct4; do
+        local arm="$prior_case/$label"
+        local source_commit arm_input input_hash
+        source_commit=$(awk -F= '$1 == "source_commit" {print $2}' \
+            "$arm/manifest.txt")
+        arm_input=$(awk -F= '$1 == "input" {print $2}' "$arm/manifest.txt")
+        input_hash=$(sha256sum "$arm/run/xrage-debug.log" | cut -d' ' -f1)
+        [[ $source_commit == "$simulator_commit" ]] || {
+            echo "reused FLAG arm source mismatch: $config_id/$label" >&2
+            return 2
+        }
+        [[ -f $arm_input &&
+           $(sha256sum "$input" | cut -d' ' -f1) == "$expected_hash" &&
+           $(sha256sum "$arm_input" | cut -d' ' -f1) == "$expected_hash" ]] || {
+            echo "reused FLAG input checksum mismatch: $config_id/$label" >&2
+            return 2
+        }
+        ln -s "$arm" "$case_out/$label"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$config_id" "$label" "$arm" \
+            "$(sha256sum "$arm/result.tsv" | cut -d' ' -f1)" \
+            "$(sha256sum "$arm/manifest.txt" | cut -d' ' -f1)" \
+            "$input_hash" >> "$out/reused_arms.tsv"
+    done
+    validate_case "$case_out"
+    echo "REUSED FLAG gather case: $config_id"
+}
 
 run_case() {
     local config_id=$1 input=$2 expected_hash=$3
@@ -106,22 +191,7 @@ run_case() {
     run_arm fused16 fused fused16 16384 0 1
     run_arm compact16 compact compact16 16384 1 1
     run_arm direct4 direct_index_4k direct4 4096 1 128
-    python3 "$out/frozen-tools/compare_maa_issue_digests.py" \
-        --allow-per-instruction-unit-reassignment \
-        --baseline fused16 --output-dir "$case_out/issue-comparison" \
-        "fused16=$case_out/fused16/run/xrage-debug.log" \
-        "compact16=$case_out/compact16/run/xrage-debug.log" \
-        "direct4=$case_out/direct4/run/xrage-debug.log"
-    python3 "$out/frozen-tools/summarize_xrage_comparison.py" \
-        --require-shared-binary --baseline fused16 \
-        --output-dir "$case_out/comparison" \
-        --pair compact_bypass=fused16,compact16 \
-        --pair direct_net=fused16,direct4 \
-        --pair direct_vs_compact=compact16,direct4 \
-        "fused16=$case_out/fused16" \
-        "compact16=$case_out/compact16" \
-        "direct4=$case_out/direct4"
-    touch "$case_out/flag_gather_case.pass"
+    validate_case "$case_out"
 }
 
 batch_pids=()
@@ -141,6 +211,14 @@ wait_batch() {
 
 for row in "${gathers[@]}"; do
     IFS=$'\t' read -r config_id input expected_hash <<< "$row"
+    if [[ -n $reuse_campaign ]]; then
+        if reuse_case "$config_id" "$input" "$expected_hash"; then
+            continue
+        else
+            reuse_rc=$?
+            [[ $reuse_rc -eq 1 ]] || exit "$reuse_rc"
+        fi
+    fi
     run_case "$config_id" "$input" "$expected_hash" &
     batch_pids+=("$!")
     batch_labels+=("$config_id")
