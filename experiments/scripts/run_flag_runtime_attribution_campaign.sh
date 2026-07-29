@@ -47,11 +47,13 @@ fi
 mkdir -p "$out/frozen-tools"
 runner="$out/frozen-tools/run_xrage_direct_index_smoke.sh"
 comparator="$out/frozen-tools/summarize_xrage_comparison.py"
+dram_parser="$out/frozen-tools/summarize_xrage_dram.py"
 storage_reporter="$out/frozen-tools/report_maa_storage.py"
 cp "$root/experiments/scripts/run_xrage_direct_index_smoke.sh" "$runner"
 cp "$root/experiments/scripts/summarize_xrage_comparison.py" "$comparator"
+cp "$root/experiments/scripts/summarize_xrage_dram.py" "$dram_parser"
 cp "$root/experiments/scripts/report_maa_storage.py" "$storage_reporter"
-chmod +x "$runner" "$comparator" "$storage_reporter"
+chmod +x "$runner" "$comparator" "$dram_parser" "$storage_reporter"
 
 {
     printf 'runner_source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
@@ -62,7 +64,8 @@ chmod +x "$runner" "$comparator" "$storage_reporter"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out/campaign_manifest.txt"
 sha256sum "$gem5" "$binary" "$input" "$runner" "$comparator" \
-    "$storage_reporter" > "$out/campaign_artifact_sha256.txt"
+    "$dram_parser" "$storage_reporter" \
+    > "$out/campaign_artifact_sha256.txt"
 
 run_arm() {
     local label=$1
