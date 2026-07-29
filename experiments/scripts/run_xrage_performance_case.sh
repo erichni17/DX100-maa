@@ -144,7 +144,7 @@ printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
     exit 1
 }
 mapfile -t checkpoint_dirs < <(find "$out/checkpoint" -mindepth 1 \
-    -maxdepth 1 -type d -name 'cpt.*' -print | sort)
+    -maxdepth 1 -type d -name 'cpt.[0-9]*' -print | sort)
 [[ ${#checkpoint_dirs[@]} -eq 1 ]] || {
     echo "expected exactly one XRAGE checkpoint" >&2
     exit 1
