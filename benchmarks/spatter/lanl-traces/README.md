@@ -30,8 +30,11 @@ Generated data is written under `tests/test-data/lanl`, which is ignored by
 Git. `manifest.json` in that directory records every derived input hash and
 pattern summary.
 
-The validation scripts set `SPATTER_DATA_SEED=1` so output hashes are stable
-across binaries. Normal Spatter behavior remains time-seeded when that
+The generic validation scripts set `SPATTER_DATA_SEED=1` so output hashes are
+stable across binaries. The runtime five-arm attribution target instead
+compiles the same default seed into every arm because gem5's AtomicSimpleCPU
+cannot execute the glibc path selected by a nonempty SE-mode guest environment.
+Normal Spatter behavior remains time-seeded outside that target when the
 environment variable is absent.
 
 ## Validation

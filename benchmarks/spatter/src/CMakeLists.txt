@@ -281,7 +281,7 @@ set_target_properties(spatter_maa_virtual_index_verify_16K PROPERTIES
 )
 
 target_link_libraries(spatter_maa_xrage_runtime_verify_16K ${COMMON_LINK_LIBRARIES} Spatter_MAA_XRAGE_Runtime_Verify_16K)
-target_compile_definitions(spatter_maa_xrage_runtime_verify_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_XRAGE_RUNTIME_ARMS MAA_VERIFY_GATHER MAA_VERIFY_GATHER_POST_ROI NUM_CORES=4 TILE_SIZE=16384)
+target_compile_definitions(spatter_maa_xrage_runtime_verify_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_XRAGE_RUNTIME_ARMS MAA_VERIFY_GATHER MAA_VERIFY_GATHER_POST_ROI SPATTER_DEFAULT_DATA_SEED=1 NUM_CORES=4 TILE_SIZE=16384)
 set_target_properties(spatter_maa_xrage_runtime_verify_16K PROPERTIES
     COMPILE_OPTIONS "${WARNING_FLAGS}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"

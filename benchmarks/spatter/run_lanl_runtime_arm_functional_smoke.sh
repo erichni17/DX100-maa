@@ -25,7 +25,7 @@ while IFS=$'\t' read -r config_id input expected_input_hash; do
     for arm in "${ARMS[@]}"; do
         output=$(mktemp)
         trap 'rm -f "$output"' EXIT
-        OMP_NUM_THREADS=4 SPATTER_DATA_SEED=${SPATTER_DATA_SEED:-1} \
+        OMP_NUM_THREADS=4 \
             "$BINARY" -b serial -f "$path" --maa-arm "$arm" \
             >"$output" 2>&1
         [[ $(grep -c '^MAA_GATHER_VERIFY_PASS ' "$output" || true) -eq 1 ]] || {
