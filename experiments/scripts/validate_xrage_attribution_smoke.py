@@ -3,6 +3,7 @@
 
 import configparser
 import csv
+import datetime
 import hashlib
 import re
 import sys
@@ -44,6 +45,25 @@ MECHANISM_STATS = {
     "direct_index_words": "system.maa.I0_IND_VirtIndexWords",
     "indirect_spd_read_cycles": "system.maa.I0_IND_CyclesSPDReadAccess",
 }
+DIAGNOSTIC_STATS = {
+    "cache_read_packets": "system.maa.port_cache_RD_packets",
+    "cache_write_packets": "system.maa.port_cache_WR_packets",
+    "memory_read_packets": "system.maa.port_mem_RD_packets",
+    "indirect_fill_cycles": "system.maa.I0_IND_CyclesFill",
+    "indirect_request_cycles": "system.maa.I0_IND_CyclesRequest",
+    "source_cache_lines": "system.maa.I0_IND_NumCacheLineInserted",
+    "indirect_memory_reads": "system.maa.I0_IND_LoadsMemAccessing",
+    "direct_index_line_reads": "system.maa.I0_IND_VirtIndexLineReads",
+    "virtual_build_rounds": "system.maa.I0_IND_VirtBuildRounds",
+}
+COMPARISONS = [
+    ("fusion", "native", "fused"),
+    ("compact_bypass", "fused", "compact"),
+    ("direct_index_delta", "compact", "direct_index_16k"),
+    ("physical_spd_16k_to_4k", "direct_index_16k", "direct_index_4k"),
+    ("logical_reorder_16k_to_4k", "fused", "fused_4k"),
+    ("direct_4k_vs_native_4k", "fused_4k", "direct_index_4k"),
+]
 
 
 def fail(message):
@@ -126,12 +146,18 @@ def require_raw_mechanism(stats, arm, row):
             )
 
 
+def read_first_stat(stats, name):
+    match = re.search(rf"^{re.escape(name)}\s+(\d+)\s+", stats, re.MULTILINE)
+    return int(match.group(1)) if match else 0
+
+
 def main():
     if len(sys.argv) != 2:
         fail("usage: validate_xrage_attribution_smoke.py RESULT_ROOT")
     root = Path(sys.argv[1]).resolve()
     digest_cache = {}
     rows = []
+    diagnostics = []
     expected_hash = None
     expected_commit = None
 
@@ -192,6 +218,15 @@ def main():
             fail(f"{arm} result.tsv does not match raw evidence")
         require_raw_mechanism(stats, arm, result)
         require_mechanism(arm, result)
+        diagnostics.append(
+            {
+                "arm": arm,
+                **{
+                    field: read_first_stat(stats, stat_name)
+                    for field, stat_name in DIAGNOSTIC_STATS.items()
+                },
+            }
+        )
 
         config = configparser.RawConfigParser(strict=False)
         config.read(arm_root / "run" / "config.ini")
@@ -208,6 +243,51 @@ def main():
         writer = csv.DictWriter(stream, fields, delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
+    diagnostic_fields = ["arm", *DIAGNOSTIC_STATS]
+    with (root / "mechanism.tsv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, diagnostic_fields, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(diagnostics)
+    ticks_by_arm = {row["arm"]: int(row["roi_simTicks"]) for row in rows}
+    comparison_fields = [
+        "comparison",
+        "baseline",
+        "treatment",
+        "baseline_simTicks",
+        "treatment_simTicks",
+        "latency_delta_pct",
+        "throughput_delta_pct",
+    ]
+    comparisons = []
+    for comparison, baseline, treatment in COMPARISONS:
+        baseline_ticks = ticks_by_arm[baseline]
+        treatment_ticks = ticks_by_arm[treatment]
+        comparisons.append(
+            {
+                "comparison": comparison,
+                "baseline": baseline,
+                "treatment": treatment,
+                "baseline_simTicks": baseline_ticks,
+                "treatment_simTicks": treatment_ticks,
+                "latency_delta_pct": (
+                    f"{100 * (treatment_ticks / baseline_ticks - 1):+.6f}"
+                ),
+                "throughput_delta_pct": (
+                    f"{100 * (baseline_ticks / treatment_ticks - 1):+.6f}"
+                ),
+            }
+        )
+    with (root / "attribution.tsv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, comparison_fields, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(comparisons)
+    validator_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    (root / "validation_manifest.txt").write_text(
+        f"source_commit={expected_commit}\n"
+        f"validator_sha256={validator_hash}\n"
+        "validated_utc="
+        f"{datetime.datetime.now(datetime.timezone.utc).isoformat()}\n"
+    )
     (root / "xrage_attribution_smoke_matrix.pass").touch()
     print(
         "PASS XRAGE attribution matrix: "
