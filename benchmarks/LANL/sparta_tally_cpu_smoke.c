@@ -39,6 +39,14 @@
 #define SPARTA_TALLY_CELL_LIST_STAGING 0
 #endif
 
+#ifndef SPARTA_TALLY_NATIVE_BATCH
+#define SPARTA_TALLY_NATIVE_BATCH 0
+#endif
+
+#ifndef SPARTA_TALLY_REPORT_MISMATCHES
+#define SPARTA_TALLY_REPORT_MISMATCHES 1
+#endif
+
 #if SPARTA_TALLY_MODE < 0 || SPARTA_TALLY_MODE > 3
 #error "SPARTA_TALLY_MODE must be 0, 1, 2, or 3"
 #endif
@@ -52,7 +60,7 @@
 #endif
 
 #if SPARTA_TALLY_CELLS < 1 || SPARTA_TALLY_CELLS > 64 || \
-    (64 % SPARTA_TALLY_CELLS) != 0
+    (!SPARTA_TALLY_NATIVE_BATCH && (64 % SPARTA_TALLY_CELLS) != 0)
 #error "SPARTA_TALLY_CELLS must be a positive divisor of 64"
 #endif
 
@@ -74,6 +82,19 @@
 
 #if SPARTA_TALLY_CELL_LIST_STAGING && SPARTA_TALLY_MODE != 1
 #error "SPARTA_TALLY_CELL_LIST_STAGING requires sorted-only mode"
+#endif
+
+#if SPARTA_TALLY_NATIVE_BATCH && SPARTA_TALLY_MODE != 1
+#error "SPARTA_TALLY_NATIVE_BATCH requires sorted-only mode"
+#endif
+
+#if SPARTA_TALLY_NATIVE_BATCH && SPARTA_TALLY_CELL_LIST_STAGING
+#error "native batch is already staged in SPARTA cell-list order"
+#endif
+
+#if SPARTA_TALLY_REPORT_MISMATCHES < 0 || \
+    SPARTA_TALLY_REPORT_MISMATCHES > 1
+#error "SPARTA_TALLY_REPORT_MISMATCHES must be 0 or 1"
 #endif
 
 static void
@@ -104,6 +125,20 @@ double_to_bits(double value)
     return converted.integer;
 }
 
+#if SPARTA_TALLY_NATIVE_BATCH
+static double
+bits_to_double(uint64_t value)
+{
+    union
+    {
+        uint64_t integer;
+        double floating;
+    } converted = {.integer = value};
+    return converted.floating;
+}
+#endif
+
+#if !SPARTA_TALLY_NATIVE_BATCH
 static int
 selected_particle(uint32_t candidate)
 {
@@ -136,6 +171,7 @@ particle_contribution(uint32_t candidate, uint32_t channel)
         finish(UINT64_C(9));
     }
 }
+#endif
 
 static uint64_t
 wait_terminal(volatile uint64_t *control)
@@ -175,7 +211,7 @@ prepare_descriptor(volatile uint64_t *descriptor)
     descriptor[7] = 0;
 }
 
-#if !SPARTA_TALLY_CELL_LIST_STAGING
+#if !SPARTA_TALLY_CELL_LIST_STAGING && !SPARTA_TALLY_NATIVE_BATCH
 static void
 prepare_case(
     volatile uint32_t *indices, volatile double *contributions,
@@ -220,6 +256,26 @@ prepare_case(
     }
     if (item != ITEMS) {
         finish(UINT64_C(8));
+    }
+}
+#endif
+
+#if SPARTA_TALLY_NATIVE_BATCH
+static void
+prepare_native_case(
+    volatile uint32_t *indices, volatile double *contributions,
+    volatile double *tallies, uint64_t *expected)
+{
+    for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
+        tallies[element] = 0.0;
+        expected[element] = sparta_native_expected_bits[element];
+    }
+    for (uint32_t item = 0; item < ITEMS; ++item) {
+        indices[item] = sparta_native_indices[item];
+        for (uint32_t channel = 0; channel < CHANNELS; ++channel) {
+            contributions[item * CHANNELS + channel] = bits_to_double(
+                sparta_native_contribution_bits[item * CHANNELS + channel]);
+        }
     }
 }
 #endif
@@ -315,15 +371,92 @@ prepare_cell_list_case(
 #endif
 
 #if SPARTA_TALLY_MODE != 3
+#if SPARTA_TALLY_REPORT_MISMATCHES
+static void
+append_hex(char *destination, uint64_t value, uint32_t digits)
+{
+    static const char hex[] = "0123456789abcdef";
+    for (uint32_t digit = 0; digit < digits; ++digit) {
+        const uint32_t shift = (digits - digit - 1) * 4;
+        destination[digit] = hex[(value >> shift) & UINT64_C(0xf)];
+    }
+}
+
+static void
+report_tally_mismatch(
+    uint32_t element, uint64_t observed, uint64_t expected)
+{
+    char message[96];
+    static const char element_prefix[] =
+        "LANL_MAA_TALLY_MISMATCH element=0x";
+    static const char observed_prefix[] = " observed=0x";
+    static const char expected_prefix[] = " expected=0x";
+    uint32_t position = 0;
+    for (uint32_t index = 0; index < sizeof(element_prefix) - 1; ++index) {
+        message[position++] = element_prefix[index];
+    }
+    append_hex(message + position, element, 8);
+    position += 8;
+    for (uint32_t index = 0; index < sizeof(observed_prefix) - 1; ++index) {
+        message[position++] = observed_prefix[index];
+    }
+    append_hex(message + position, observed, 16);
+    position += 16;
+    for (uint32_t index = 0; index < sizeof(expected_prefix) - 1; ++index) {
+        message[position++] = expected_prefix[index];
+    }
+    append_hex(message + position, expected, 16);
+    position += 16;
+    message[position++] = '\n';
+    uint64_t result;
+    __asm__ volatile(
+        "syscall"
+        : "=a"(result)
+        : "a"(UINT64_C(1)), "D"(UINT64_C(2)), "S"(message), "d"(position)
+        : "rcx", "r11", "memory");
+    (void)result;
+}
+#endif
+
 static void
 verify_success(
     const volatile double *tallies, const uint64_t *expected,
     const volatile uint64_t *completion, uint64_t code)
 {
+    uint32_t violations = 0;
     for (uint32_t element = 0; element < CELLS * CHANNELS; ++element) {
-        if (double_to_bits(tallies[element]) != expected[element]) {
-            finish(code);
+        const double observed_value = tallies[element];
+        const uint64_t observed = double_to_bits(observed_value);
+        const int mismatch = observed != expected[element];
+#if SPARTA_TALLY_REPORT_MISMATCHES
+        if (mismatch) {
+            report_tally_mismatch(element, observed, expected[element]);
         }
+#endif
+#if SPARTA_TALLY_NATIVE_BATCH
+        const double expected_value = bits_to_double(expected[element]);
+        double difference = observed_value - expected_value;
+        if (difference < 0.0) {
+            difference = -difference;
+        }
+        double scale = expected_value;
+        if (scale < 0.0) {
+            scale = -scale;
+        }
+        if ((observed & UINT64_C(0x7ff0000000000000)) ==
+                UINT64_C(0x7ff0000000000000) ||
+            (scale == 0.0 && mismatch) ||
+            (scale != 0.0 && difference / scale > 1.0e-12)) {
+            ++violations;
+        }
+#else
+        if (mismatch) {
+            ++violations;
+        }
+#endif
+    }
+    if (violations != 0) {
+        finish(code);
     }
     if (completion[0] != UINT64_C(0x0006000143414d4c) ||
         completion[1] != 0 || completion[2] != ITEMS ||
@@ -386,7 +519,9 @@ _start(void)
     prepare_descriptor(descriptor);
 
 #if SPARTA_TALLY_MODE == 1
-#if SPARTA_TALLY_CELL_LIST_STAGING
+#if SPARTA_TALLY_NATIVE_BATCH
+    prepare_native_case(indices, contributions, tallies, expected);
+#elif SPARTA_TALLY_CELL_LIST_STAGING
     prepare_cell_list_case(indices, contributions, tallies, expected);
 #else
     prepare_case(indices, contributions, tallies, expected, 0);
