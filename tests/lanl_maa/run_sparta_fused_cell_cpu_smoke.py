@@ -12,6 +12,7 @@ import subprocess
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+RUNNER = pathlib.Path(__file__).resolve()
 MODEL = ROOT / "src/mem/LANLMAA/SpartaFusedCellModel.hh"
 ENGINE = ROOT / "src/mem/LANLMAA/lanl_maa.cc"
 STAT_PATTERN = re.compile(r"^system\.lanl_maa\.([A-Za-z0-9_]+)\s+(\d+)")
@@ -245,6 +246,7 @@ def main():
         "gem5_sha256": file_sha256(gem5),
         "engine_sha256": file_sha256(ENGINE),
         "model_sha256": file_sha256(MODEL),
+        "runner_sha256": file_sha256(RUNNER),
         "source_sha256": file_sha256(source),
         "config_sha256": file_sha256(config),
         "metadata_sha256": file_sha256(metadata),
