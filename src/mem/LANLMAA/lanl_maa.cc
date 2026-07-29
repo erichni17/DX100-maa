@@ -302,6 +302,27 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorSpartaCellGroupForcedDrains,
                statistics::units::Count::get(),
                "SPARTA partial cell/channel groups forced to drain"),
+      ADD_STAT(descriptorSpartaFusedCellsLoaded,
+               statistics::units::Count::get(),
+               "Native SPARTA fused-cell records loaded"),
+      ADD_STAT(descriptorSpartaFusedParticlesVisited,
+               statistics::units::Count::get(),
+               "Native SPARTA particles visited exactly once"),
+      ADD_STAT(descriptorSpartaFusedEligibleParticles,
+               statistics::units::Count::get(),
+               "Native SPARTA particles included in fused summaries"),
+      ADD_STAT(descriptorSpartaFusedFp64Multiplies,
+               statistics::units::Count::get(),
+               "Native SPARTA fused-summary FP64 multiplies"),
+      ADD_STAT(descriptorSpartaFusedFp64Adds,
+               statistics::units::Count::get(),
+               "Native SPARTA fused-summary FP64 additions"),
+      ADD_STAT(descriptorSpartaFusedTallyZeroReads,
+               statistics::units::Count::get(),
+               "Promised-zero native SPARTA tally words validated"),
+      ADD_STAT(descriptorSpartaFusedWritesAcknowledged,
+               statistics::units::Count::get(),
+               "Native SPARTA fused direct writes acknowledged"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -661,7 +682,8 @@ LANLMAA::controlAccess(PacketPtr packet)
             (uint64_t{1} <<
              static_cast<uint8_t>(DescriptorOpcode::FaceMinMax)) |
             (uint64_t{1} << BransonEventReplayOpcode) |
-            (uint64_t{1} << SpartaTallyOpcode);
+            (uint64_t{1} << SpartaTallyOpcode) |
+            (uint64_t{1} << SpartaFusedOpcode);
         break;
       default:
         packet->setBadAddress();
@@ -698,6 +720,8 @@ LANLMAA::rearmDescriptorEngine()
     bransonPhase = BransonPhase::Inactive;
     spartaDescriptor = SpartaTallyDescriptor{};
     spartaTallyPhase = SpartaTallyPhase::Inactive;
+    spartaFusedDescriptor = SpartaFusedDescriptor{};
+    spartaFusedPhase = SpartaFusedPhase::Inactive;
     descriptorError = DescriptorError::None;
     descriptorAddressCursor = 0;
     descriptorResultCursor = 0;
@@ -708,6 +732,14 @@ LANLMAA::rearmDescriptorEngine()
     spartaContributionsValidated = 0;
     spartaContributionsReplayed = 0;
     spartaUpdatesAcknowledged = 0;
+    spartaFusedVisitedParticles = 0;
+    spartaFusedVisitedCount = 0;
+    spartaFusedTallyZeroReads = 0;
+    spartaFusedWritesAcknowledged = 0;
+    spartaFusedIssueCursor = 0;
+    spartaFusedWriteChannel = 0;
+    descriptorFetchOffset = 0;
+    descriptorFetchBuffer.fill(0);
     descriptorFaceUpdatePhase = false;
     nextAdmission = 0;
     nextRetirement = 0;
@@ -746,6 +778,8 @@ LANLMAA::ringDoorbell(uint32_t slot)
     }
     descriptorSlot = slot;
     descriptorError = DescriptorError::None;
+    descriptorFetchOffset = 0;
+    descriptorFetchBuffer.fill(0);
     descriptorState = DescriptorState::DescriptorPending;
     ++stats.descriptorDoorbells;
     scheduleTick();
@@ -888,7 +922,7 @@ LANLMAA::issueDescriptorFetch()
 {
     if (!descriptorPacket) {
         const Addr address = descriptorTableBase +
-            descriptorSlot * DescriptorBytes;
+            descriptorSlot * DescriptorBytes + descriptorFetchOffset;
         if (!rangeIsMemory(address, DescriptorBytes)) {
             rejectDescriptor(DescriptorError::UnsafeAddressRange);
             return;
@@ -941,6 +975,32 @@ LANLMAA::issueAddressVectorFetch()
 void
 LANLMAA::issueResultWrite()
 {
+    if (spartaFusedCellDescriptor()) {
+        while (descriptorResultCursor < operations.size() &&
+               operations[descriptorResultCursor].spartaFusedEligible == 0) {
+            ++descriptorResultCursor;
+        }
+        if (descriptorResultCursor == operations.size()) {
+            descriptorState = DescriptorState::CompletionPending;
+            return;
+        }
+        if (!resultPacket) {
+            auto &operation = operations[descriptorResultCursor];
+            operation.spartaFusedChannel = spartaFusedWriteChannel;
+            const Addr address = spartaFusedTallyAddress(operation);
+            RequestPtr request = std::make_shared<Request>(
+                address, sizeof(uint64_t), Request::Flags(), requestorId);
+            resultPacket = new Packet(request, MemCmd::WriteReq);
+            resultPacket->allocate();
+            resultPacket->setLE<uint64_t>(
+                operation.spartaFusedSums[spartaFusedWriteChannel]);
+            tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
+        }
+        if (sendDescriptorPacket(resultPacket)) {
+            descriptorState = DescriptorState::ResultInFlight;
+        }
+        return;
+    }
     if (descriptorResultCursor == operations.size()) {
         descriptorState = DescriptorState::CompletionPending;
         return;
@@ -966,6 +1026,8 @@ LANLMAA::issueCompletionWrite()
 {
     if (!completionPacket) {
         RequestPtr request = std::make_shared<Request>(
+            spartaFusedCellDescriptor() ?
+                spartaFusedDescriptor.completionRecord :
             spartaTallyDescriptor() ? spartaDescriptor.completionRecord :
             bransonEventDescriptor() ? bransonDescriptor.completionRecord :
                                        descriptor.completionRecord,
@@ -978,6 +1040,7 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 4, DescriptorVersion, 2);
         writeLe(
             data, 6,
+            spartaFusedCellDescriptor() ? SpartaFusedOpcode :
             spartaTallyDescriptor() ? SpartaTallyOpcode :
             bransonEventDescriptor() ? BransonEventReplayOpcode :
                                        static_cast<uint8_t>(descriptor.opcode),
@@ -987,6 +1050,8 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 16, operations.size(), 8);
         writeLe(
             data, 24,
+            spartaFusedCellDescriptor() ?
+                spartaFusedWritesAcknowledged :
             spartaTallyDescriptor() ? spartaUpdatesAcknowledged :
             bransonEventDescriptor() ? bransonEventsReplayed :
                 faceMinMaxDescriptor() ? descriptorFaceUpdatesAcknowledged :
@@ -1211,6 +1276,8 @@ bool
 LANLMAA::activeDependentMode() const
 {
     return dependentMode || bransonEventDescriptor() ||
+        (spartaFusedCellDescriptor() &&
+         spartaFusedPhase == SpartaFusedPhase::Traverse) ||
         (descriptorMode &&
          descriptorIsRecordWalk(descriptor.opcode));
 }
@@ -1226,6 +1293,13 @@ LANLMAA::spartaTallyDescriptor() const
 {
     return descriptorMode &&
         spartaTallyPhase != SpartaTallyPhase::Inactive;
+}
+
+bool
+LANLMAA::spartaFusedCellDescriptor() const
+{
+    return descriptorMode &&
+        spartaFusedPhase != SpartaFusedPhase::Inactive;
 }
 
 bool
@@ -1440,6 +1514,344 @@ LANLMAA::beginSpartaUpdatePhase()
         resetSpartaOperation(operation);
     }
     beginDescriptorExecution();
+}
+
+Addr
+LANLMAA::spartaFusedChildAddress(
+    const Operation &operation, uint64_t fieldOffset) const
+{
+    panic_if(!spartaFusedCellDescriptor() ||
+                 operation.spartaFusedCell >=
+                     spartaFusedDescriptor.cellCount,
+             "LANLMAA formed an invalid fused-cell child address");
+    const uint64_t raw = spartaFusedDescriptor.childInfoBase +
+        static_cast<uint64_t>(operation.spartaFusedCell) *
+            SpartaFusedChildInfoBytes +
+        fieldOffset;
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA fused-cell child address overflowed Addr");
+    return address;
+}
+
+Addr
+LANLMAA::spartaFusedParticleAddress(
+    const Operation &operation, uint64_t fieldOffset) const
+{
+    panic_if(!spartaFusedCellDescriptor() ||
+                 operation.spartaFusedParticle >=
+                     spartaFusedDescriptor.particleCount,
+             "LANLMAA formed an invalid fused-cell particle address");
+    const uint64_t raw = spartaFusedDescriptor.particleBase +
+        static_cast<uint64_t>(operation.spartaFusedParticle) *
+            SpartaFusedOnePartBytes +
+        fieldOffset;
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA fused-cell particle address overflowed Addr");
+    return address;
+}
+
+Addr
+LANLMAA::spartaFusedTallyAddress(const Operation &operation) const
+{
+    panic_if(!spartaFusedCellDescriptor() ||
+                 operation.spartaFusedCell >=
+                     spartaFusedDescriptor.cellCount ||
+                 operation.spartaFusedChannel >= SpartaFusedChannels,
+             "LANLMAA formed an invalid fused-cell tally address");
+    const uint64_t raw = spartaFusedDescriptor.tallyBase +
+        static_cast<uint64_t>(operation.spartaFusedCell) *
+            spartaFusedDescriptor.tallyCellStride +
+        static_cast<uint64_t>(operation.spartaFusedChannel) *
+            sizeof(uint64_t);
+    const Addr address = static_cast<Addr>(raw);
+    panic_if(static_cast<uint64_t>(address) != raw,
+             "LANLMAA fused-cell tally address overflowed Addr");
+    return address;
+}
+
+DescriptorError
+LANLMAA::beginSpartaFusedParticle(Operation &operation)
+{
+    if (operation.spartaFusedParticle >=
+        spartaFusedDescriptor.particleCount) {
+        return DescriptorError::BadRecordValue;
+    }
+    const uint64_t bit = uint64_t{1} << operation.spartaFusedParticle;
+    if (spartaFusedVisitedParticles & bit) {
+        return DescriptorError::BadRecordValue;
+    }
+    spartaFusedVisitedParticles |= bit;
+    ++spartaFusedVisitedCount;
+    ++stats.descriptorSpartaFusedParticlesVisited;
+    operation.spartaFusedStage = SpartaFusedStage::ParticleSpecies;
+    operation.address = spartaFusedParticleAddress(operation, 4);
+    operation.state = OperationState::AddressReady;
+    return DescriptorError::None;
+}
+
+DescriptorError
+LANLMAA::finishSpartaFusedParticle(Operation &operation)
+{
+    panic_if(operation.spartaFusedRemaining == 0,
+             "LANLMAA finished an exhausted fused-cell list");
+    --operation.spartaFusedRemaining;
+    if (operation.spartaFusedRemaining == 0) {
+        panic_if(!operation.ownsContext || activeContexts == 0,
+                 "LANLMAA fused-cell list lost its context");
+        operation.ownsContext = false;
+        --activeContexts;
+        operation.state = OperationState::RetireReady;
+        return DescriptorError::None;
+    }
+    if (operation.spartaFusedNext < 0) {
+        return DescriptorError::BadRecordValue;
+    }
+    operation.spartaFusedParticle =
+        static_cast<uint32_t>(operation.spartaFusedNext);
+    return beginSpartaFusedParticle(operation);
+}
+
+DescriptorError
+LANLMAA::consumeSpartaFusedResponse(
+    Operation &operation, const uint8_t *data, size_t offset)
+{
+    const auto readSigned32 = [data, offset]() {
+        return static_cast<int32_t>(descriptorReadLe32(data + offset));
+    };
+    const auto accumulate = [&operation](size_t channel, double value) {
+        const double sum = decodeDouble(operation.spartaFusedSums[channel]) +
+            value;
+        if (!std::isfinite(sum)) {
+            return false;
+        }
+        operation.spartaFusedSums[channel] = encodeDouble(sum);
+        return true;
+    };
+
+    switch (operation.spartaFusedStage) {
+      case SpartaFusedStage::CellCount: {
+        const int32_t count = readSigned32();
+        if (count < 0 ||
+            static_cast<uint32_t>(count) >
+                spartaFusedDescriptor.particleCount) {
+            return DescriptorError::BadRecordValue;
+        }
+        operation.spartaFusedRemaining = static_cast<uint32_t>(count);
+        operation.spartaFusedStage = SpartaFusedStage::CellFirst;
+        operation.address = spartaFusedChildAddress(operation, 4);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::CellFirst: {
+        const int32_t first = readSigned32();
+        if ((operation.spartaFusedRemaining == 0 && first != -1) ||
+            (operation.spartaFusedRemaining != 0 &&
+             (first < 0 ||
+              static_cast<uint32_t>(first) >=
+                  spartaFusedDescriptor.particleCount))) {
+            return DescriptorError::BadRecordValue;
+        }
+        if (first >= 0) {
+            operation.spartaFusedParticle = static_cast<uint32_t>(first);
+        }
+        operation.spartaFusedStage = SpartaFusedStage::CellMask;
+        operation.address = spartaFusedChildAddress(operation, 8);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::CellMask:
+        operation.spartaFusedMask = descriptorReadLe32(data + offset);
+        ++stats.descriptorSpartaFusedCellsLoaded;
+        if (operation.spartaFusedRemaining == 0) {
+            panic_if(!operation.ownsContext || activeContexts == 0,
+                     "LANLMAA empty fused cell lost its context");
+            operation.ownsContext = false;
+            --activeContexts;
+            operation.state = OperationState::RetireReady;
+            return DescriptorError::None;
+        }
+        return beginSpartaFusedParticle(operation);
+      case SpartaFusedStage::ParticleSpecies: {
+        const int32_t species = readSigned32();
+        if (species < 0 ||
+            static_cast<uint32_t>(species) >=
+                spartaFusedDescriptor.speciesCount) {
+            return DescriptorError::BadRecordValue;
+        }
+        operation.spartaFusedSpecies = species;
+        operation.spartaFusedStage = SpartaFusedStage::ParticleCell;
+        operation.address = spartaFusedParticleAddress(operation, 8);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::ParticleCell: {
+        const int32_t cell = readSigned32();
+        if (cell < 0 ||
+            static_cast<uint32_t>(cell) != operation.spartaFusedCell) {
+            return DescriptorError::BadRecordValue;
+        }
+        operation.spartaFusedStage = SpartaFusedStage::ParticleNext;
+        const uint64_t raw = spartaFusedDescriptor.nextBase +
+            static_cast<uint64_t>(operation.spartaFusedParticle) *
+                sizeof(uint32_t);
+        operation.address = static_cast<Addr>(raw);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::ParticleNext: {
+        const int32_t next = readSigned32();
+        const bool final = operation.spartaFusedRemaining == 1;
+        if ((final && next != -1) ||
+            (!final &&
+             (next < 0 ||
+              static_cast<uint32_t>(next) >=
+                  spartaFusedDescriptor.particleCount))) {
+            return DescriptorError::BadRecordValue;
+        }
+        operation.spartaFusedNext = next;
+        operation.spartaFusedStage = SpartaFusedStage::SpeciesGroup;
+        const uint64_t raw = spartaFusedDescriptor.speciesToGroupBase +
+            static_cast<uint64_t>(operation.spartaFusedSpecies) *
+                sizeof(uint32_t);
+        operation.address = static_cast<Addr>(raw);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::SpeciesGroup: {
+        const int32_t group = readSigned32();
+        if (group != spartaFusedDescriptor.targetGroup ||
+            !(operation.spartaFusedMask &
+              spartaFusedDescriptor.groupBit)) {
+            return finishSpartaFusedParticle(operation);
+        }
+        operation.spartaFusedStage = SpartaFusedStage::SpeciesMass;
+        const uint64_t raw = spartaFusedDescriptor.speciesBase +
+            static_cast<uint64_t>(operation.spartaFusedSpecies) *
+                SpartaFusedSpeciesBytes +
+            24;
+        operation.address = static_cast<Addr>(raw);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::SpeciesMass: {
+        const uint64_t bits = descriptorReadLe64(data + offset);
+        const double mass = decodeDouble(bits);
+        if (!std::isfinite(mass) || !accumulate(0, 1.0) ||
+            !accumulate(1, mass)) {
+            return DescriptorError::BadRecordValue;
+        }
+        operation.spartaFusedMass = bits;
+        operation.spartaFusedStage = SpartaFusedStage::VelocityX;
+        operation.address = spartaFusedParticleAddress(operation, 40);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::VelocityX: {
+        const double velocity =
+            decodeDouble(descriptorReadLe64(data + offset));
+        const double mass = decodeDouble(operation.spartaFusedMass);
+        const double momentum = mass * velocity;
+        const double squared = velocity * velocity;
+        if (!std::isfinite(velocity) || !std::isfinite(momentum) ||
+            !std::isfinite(squared) || !accumulate(2, momentum)) {
+            return DescriptorError::BadRecordValue;
+        }
+        operation.spartaFusedVelocitySquared = encodeDouble(squared);
+        operation.spartaFusedStage = SpartaFusedStage::VelocityY;
+        operation.address = spartaFusedParticleAddress(operation, 48);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::VelocityY: {
+        const double velocity =
+            decodeDouble(descriptorReadLe64(data + offset));
+        const double mass = decodeDouble(operation.spartaFusedMass);
+        const double momentum = mass * velocity;
+        const double squared =
+            decodeDouble(operation.spartaFusedVelocitySquared) +
+            velocity * velocity;
+        if (!std::isfinite(velocity) || !std::isfinite(momentum) ||
+            !std::isfinite(squared) || !accumulate(3, momentum)) {
+            return DescriptorError::BadRecordValue;
+        }
+        operation.spartaFusedVelocitySquared = encodeDouble(squared);
+        operation.spartaFusedStage = SpartaFusedStage::VelocityZ;
+        operation.address = spartaFusedParticleAddress(operation, 56);
+        operation.state = OperationState::AddressReady;
+        return DescriptorError::None;
+      }
+      case SpartaFusedStage::VelocityZ: {
+        const double velocity =
+            decodeDouble(descriptorReadLe64(data + offset));
+        const double mass = decodeDouble(operation.spartaFusedMass);
+        const double momentum = mass * velocity;
+        const double squared =
+            decodeDouble(operation.spartaFusedVelocitySquared) +
+            velocity * velocity;
+        const double energy = mass * squared;
+        if (!std::isfinite(velocity) || !std::isfinite(momentum) ||
+            !std::isfinite(squared) || !std::isfinite(energy) ||
+            !accumulate(4, momentum) || !accumulate(5, energy)) {
+            return DescriptorError::BadRecordValue;
+        }
+        ++operation.spartaFusedEligible;
+        ++stats.descriptorSpartaFusedEligibleParticles;
+        stats.descriptorSpartaFusedFp64Multiplies += 7;
+        stats.descriptorSpartaFusedFp64Adds += 8;
+        return finishSpartaFusedParticle(operation);
+      }
+      case SpartaFusedStage::Tally: {
+        const double value =
+            decodeDouble(descriptorReadLe64(data + offset));
+        if (value != 0.0) {
+            return DescriptorError::BadRecordValue;
+        }
+        ++spartaFusedTallyZeroReads;
+        ++stats.descriptorSpartaFusedTallyZeroReads;
+        ++operation.spartaFusedChannel;
+        if (operation.spartaFusedChannel == SpartaFusedChannels) {
+            operation.state = OperationState::RetireReady;
+        } else {
+            operation.address = spartaFusedTallyAddress(operation);
+            operation.state = OperationState::AddressReady;
+        }
+        return DescriptorError::None;
+      }
+    }
+    panic("LANLMAA fused-cell stage became invalid");
+}
+
+void
+LANLMAA::beginSpartaFusedTallyValidation()
+{
+    const uint64_t expected = spartaFusedDescriptor.particleCount == 64 ?
+        std::numeric_limits<uint64_t>::max() :
+        (uint64_t{1} << spartaFusedDescriptor.particleCount) - 1;
+    if (spartaFusedVisitedCount != spartaFusedDescriptor.particleCount ||
+        spartaFusedVisitedParticles != expected) {
+        beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
+        return;
+    }
+    spartaFusedPhase = SpartaFusedPhase::ValidateTallies;
+    for (auto &operation : operations) {
+        operation.spartaFusedStage = SpartaFusedStage::Tally;
+        operation.spartaFusedChannel = 0;
+        operation.address = spartaFusedTallyAddress(operation);
+        operation.ownsContext = false;
+        operation.state = OperationState::Unadmitted;
+    }
+    beginDescriptorExecution();
+}
+
+uint64_t
+LANLMAA::expectedSpartaFusedWrites() const
+{
+    return SpartaFusedChannels * std::count_if(
+        operations.begin(), operations.end(), [](const Operation &operation) {
+            return operation.spartaFusedEligible != 0;
+        });
 }
 
 void
@@ -1883,6 +2295,98 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     std::memcpy(bytes.data(), packet->getConstPtr<uint8_t>(), bytes.size());
     delete packet;
     descriptorPacket = nullptr;
+
+    if (descriptorFetchOffset == 0 && bytes[6] == SpartaFusedOpcode) {
+        if (descriptorSlot + 1 >= descriptorSlots) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return true;
+        }
+        std::copy(
+            bytes.begin(), bytes.end(), descriptorFetchBuffer.begin());
+        descriptorFetchOffset = DescriptorBytes;
+        descriptorState = DescriptorState::DescriptorPending;
+        scheduleTick();
+        return true;
+    }
+
+    if (descriptorFetchOffset == DescriptorBytes) {
+        std::copy(
+            bytes.begin(), bytes.end(),
+            descriptorFetchBuffer.begin() + DescriptorBytes);
+        descriptorFetchOffset = 0;
+        const auto decoded =
+            decodeSpartaFusedDescriptor(descriptorFetchBuffer);
+        if (!decoded) {
+            rejectDescriptor(decoded.error);
+            return true;
+        }
+        if (decoded.descriptor.cellCount > maxDescriptorItems) {
+            rejectDescriptor(DescriptorError::TooManyItems);
+            return true;
+        }
+        spartaFusedDescriptor = decoded.descriptor;
+        spartaFusedPhase = SpartaFusedPhase::Traverse;
+
+        std::array<SpartaFusedRange, 7> ranges;
+        const bool rangesValid = spartaFusedScaledRange(
+            spartaFusedDescriptor.childInfoBase,
+            spartaFusedDescriptor.cellCount, SpartaFusedChildInfoBytes, 12,
+            ranges[0]) && spartaFusedScaledRange(
+            spartaFusedDescriptor.nextBase,
+            spartaFusedDescriptor.particleCount, sizeof(uint32_t),
+            sizeof(uint32_t), ranges[1]) && spartaFusedScaledRange(
+            spartaFusedDescriptor.particleBase,
+            spartaFusedDescriptor.particleCount, SpartaFusedOnePartBytes, 64,
+            ranges[2]) && spartaFusedScaledRange(
+            spartaFusedDescriptor.speciesBase,
+            spartaFusedDescriptor.speciesCount, SpartaFusedSpeciesBytes, 32,
+            ranges[3]) && spartaFusedScaledRange(
+            spartaFusedDescriptor.speciesToGroupBase,
+            spartaFusedDescriptor.speciesCount, sizeof(uint32_t),
+            sizeof(uint32_t), ranges[4]) && spartaFusedScaledRange(
+            spartaFusedDescriptor.tallyBase,
+            spartaFusedDescriptor.cellCount,
+            spartaFusedDescriptor.tallyCellStride,
+            SpartaFusedChannels * sizeof(uint64_t), ranges[5]) &&
+            spartaFusedRange(
+                spartaFusedDescriptor.completionRecord, 32, ranges[6]);
+        panic_if(!rangesValid,
+                 "LANLMAA decoded fused descriptor lost its range invariant");
+
+        const uint64_t descriptorTableEnd = descriptorTableBase +
+            descriptorSlots * DescriptorBytes;
+        const auto unsafeRange = [this, descriptorTableEnd](
+                                     const SpartaFusedRange &range) {
+            return !rangeIsMemory(range.begin, range.end - range.begin) ||
+                rangeOverlapsControl(range.begin, range.end - range.begin) ||
+                descriptorRangesOverlap(
+                    range.begin, range.end, descriptorTableBase,
+                    descriptorTableEnd);
+        };
+        if (std::any_of(ranges.begin(), ranges.end(), unsafeRange)) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return true;
+        }
+
+        operations.assign(spartaFusedDescriptor.cellCount, Operation{});
+        for (size_t cell = 0; cell < operations.size(); ++cell) {
+            auto &operation = operations[cell];
+            operation.spartaFusedCell = static_cast<uint32_t>(cell);
+            operation.spartaFusedStage = SpartaFusedStage::CellCount;
+            operation.address = spartaFusedChildAddress(operation, 0);
+        }
+        descriptorAddressCursor = operations.size();
+        descriptorResultCursor = 0;
+        spartaFusedVisitedParticles = 0;
+        spartaFusedVisitedCount = 0;
+        spartaFusedTallyZeroReads = 0;
+        spartaFusedWritesAcknowledged = 0;
+        spartaFusedIssueCursor = 0;
+        spartaFusedWriteChannel = 0;
+        beginDescriptorExecution();
+        scheduleTick();
+        return true;
+    }
 
     if (bytes[6] == SpartaTallyOpcode) {
         const auto decoded = decodeSpartaTallyDescriptor(
@@ -2332,8 +2836,18 @@ LANLMAA::receiveResultResponse(PacketPtr packet)
              "LANLMAA result write did not receive a write response");
     delete packet;
     resultPacket = nullptr;
-    ++descriptorResultCursor;
     ++stats.descriptorResultWrites;
+    if (spartaFusedCellDescriptor()) {
+        ++spartaFusedWritesAcknowledged;
+        ++stats.descriptorSpartaFusedWritesAcknowledged;
+        ++spartaFusedWriteChannel;
+        if (spartaFusedWriteChannel == SpartaFusedChannels) {
+            spartaFusedWriteChannel = 0;
+            ++descriptorResultCursor;
+        }
+    } else {
+        ++descriptorResultCursor;
+    }
     descriptorState = DescriptorState::ResultPending;
     scheduleTick();
     return true;
@@ -2391,7 +2905,9 @@ LANLMAA::beginDescriptorResults()
     panic_if(!allUpdateEntriesFree(),
              "LANLMAA descriptor reached results with allocated updates");
     descriptorResultCursor = 0;
-    descriptorState =
+    spartaFusedWriteChannel = 0;
+    descriptorState = spartaFusedCellDescriptor() ?
+        DescriptorState::ResultPending :
         (faceMinMaxDescriptor() || bransonEventDescriptor() ||
          spartaTallyDescriptor()) ?
             DescriptorState::CompletionPending :
@@ -2403,7 +2919,7 @@ LANLMAA::completeDescriptor()
 {
     panic_if(
         (!faceMinMaxDescriptor() && !bransonEventDescriptor() &&
-         !spartaTallyDescriptor() &&
+         !spartaTallyDescriptor() && !spartaFusedCellDescriptor() &&
          descriptorResultCursor != operations.size()) ||
             ((faceMinMaxDescriptor() || bransonEventDescriptor() ||
               spartaTallyDescriptor()) &&
@@ -2435,6 +2951,17 @@ LANLMAA::completeDescriptor()
                      spartaContributionsReplayed != expected ||
                      spartaUpdatesAcknowledged != expected,
                  "LANLMAA completed with incomplete SPARTA accounting");
+    }
+    if (spartaFusedCellDescriptor()) {
+        panic_if(descriptorResultCursor != operations.size() ||
+                     spartaFusedVisitedCount !=
+                         spartaFusedDescriptor.particleCount ||
+                     spartaFusedTallyZeroReads !=
+                         static_cast<uint64_t>(operations.size()) *
+                             SpartaFusedChannels ||
+                     spartaFusedWritesAcknowledged !=
+                         expectedSpartaFusedWrites(),
+                 "LANLMAA completed with incomplete fused-cell accounting");
     }
     descriptorState = DescriptorState::Completed;
     finished = true;
@@ -2480,7 +3007,10 @@ LANLMAA::tick()
     ++stats.engineCycles;
     retireOperations();
     admitOperations();
-    if (spartaTallyDescriptor()) {
+    if (spartaFusedCellDescriptor()) {
+        attachReadyOperations();
+        issueLines();
+    } else if (spartaTallyDescriptor()) {
         attachReadyOperations();
         issueLines();
         if (spartaTallyPhase == SpartaTallyPhase::Update) {
@@ -2522,7 +3052,19 @@ LANLMAA::tick()
         issueLines();
     }
     if (nextRetirement == operations.size()) {
-        if (spartaTallyDescriptor()) {
+        if (spartaFusedCellDescriptor()) {
+            if (spartaFusedPhase == SpartaFusedPhase::Traverse) {
+                beginSpartaFusedTallyValidation();
+                scheduleTick();
+                return;
+            }
+            panic_if(
+                spartaFusedPhase != SpartaFusedPhase::ValidateTallies,
+                "LANLMAA fused-cell descriptor reached an invalid phase");
+            beginDescriptorResults();
+            scheduleTick();
+            return;
+        } else if (spartaTallyDescriptor()) {
             if (spartaTallyPhase == SpartaTallyPhase::Validate) {
                 beginSpartaUpdatePhase();
                 scheduleTick();
@@ -2606,8 +3148,14 @@ LANLMAA::admitOperations()
             (faceMinMaxDescriptor() && faceOperationActive(operation));
         const bool bransonContextBlocked = bransonEventDescriptor() &&
             bransonContextLimit.wouldBlock(activeContexts);
+        const size_t physicalContextLimit =
+            spartaFusedCellDescriptor() ?
+                std::min(
+                    continuationEntries,
+                    static_cast<size_t>(SpartaFusedActiveContexts)) :
+                continuationEntries;
         const bool physicalContextBlocked = !bransonEventDescriptor() &&
-            activeContexts >= continuationEntries;
+            activeContexts >= physicalContextLimit;
         if (needsContext &&
             (bransonContextBlocked || physicalContextBlocked)) {
             ++stats.contextWouldBlockCycles;
@@ -2642,6 +3190,54 @@ LANLMAA::admitOperations()
 void
 LANLMAA::attachReadyOperations()
 {
+    if (spartaFusedCellDescriptor() &&
+        spartaFusedPhase == SpartaFusedPhase::Traverse) {
+        std::vector<bool> ready(operations.size(), false);
+        for (size_t index = nextRetirement; index < nextAdmission; ++index) {
+            ready[index] =
+                operations[index].state == OperationState::AddressReady;
+        }
+        size_t attached = 0;
+        bool lineBlocked = false;
+        while (attached < logicalAdmissionWidth) {
+            size_t selected = operations.size();
+            for (size_t probe = 0; probe < operations.size(); ++probe) {
+                const size_t index =
+                    (spartaFusedIssueCursor + probe) % operations.size();
+                if (ready[index]) {
+                    selected = index;
+                    break;
+                }
+            }
+            if (selected == operations.size()) {
+                break;
+            }
+            ready[selected] = false;
+            spartaFusedIssueCursor = (selected + 1) % operations.size();
+            auto &operation = operations[selected];
+            const Addr aligned = lineAddress(operation.address);
+            LineEntry *line = matchingLine(aligned);
+            if (line) {
+                ++stats.lineMergeHits;
+            } else {
+                line = freeLine();
+                if (!line) {
+                    lineBlocked = true;
+                    continue;
+                }
+                line->state = LineState::Allocated;
+                line->lineAddress = aligned;
+            }
+            line->waiters.push_back(selected);
+            operation.state = OperationState::DataPending;
+            ++stats.logicalMemoryAccesses;
+            ++attached;
+        }
+        if (lineBlocked) {
+            ++stats.lineWouldBlockCycles;
+        }
+        return;
+    }
     if (bransonEventDescriptor()) {
         std::vector<bool> ready(operationEntries, false);
         std::vector<bool> active(operationEntries, false);
@@ -3147,7 +3743,17 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
         panic_if(operation.state != OperationState::DataPending,
                  "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
-        if (spartaTallyDescriptor()) {
+        if (spartaFusedCellDescriptor()) {
+            const DescriptorError error = consumeSpartaFusedResponse(
+                operation, data, offset);
+            if (error != DescriptorError::None) {
+                ++stats.responses;
+                delete packet;
+                line->clear();
+                beginDescriptorErrorDrain(error);
+                return true;
+            }
+        } else if (spartaTallyDescriptor()) {
             panic_if(operation.spartaChannel >= SpartaTallyChannels,
                      "LANLMAA SPARTA response reached an exhausted item");
             const uint64_t contribution =

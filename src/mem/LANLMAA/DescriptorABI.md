@@ -1,14 +1,15 @@
-# LANLMAA descriptor ABI v1
+# LANLMAA descriptor ABI
 
-The optional CPU-visible mode accepts one 64-byte little-endian descriptor
-from a fixed physical slot table. A 64-bit write to doorbell offset `8 * slot`
-submits that slot. One descriptor executes at a time. A doorbell while any
-descriptor traffic or execution is active is acknowledged but counted as a
-busy rejection. After a descriptor reaches `Completed` or drained `Error`, a
-later doorbell explicitly rearms the existing operation, line, and
-continuation structures and submits its slot. There is no hidden descriptor
-queue: software must observe the completion record or terminal status before
-submitting the next descriptor.
+The optional CPU-visible mode accepts a 64-byte little-endian version-1
+descriptor from a fixed physical slot table. Opcode 7 is the sole version-2
+format and consumes the submitted slot plus its immediately following slot.
+A 64-bit write to doorbell offset `8 * slot` submits that slot. One descriptor
+executes at a time. A doorbell while any descriptor traffic or execution is
+active is acknowledged but counted as a busy rejection. After a descriptor
+reaches `Completed` or drained `Error`, a later doorbell explicitly rearms the
+existing operation, line, and continuation structures and submits its slot.
+There is no hidden descriptor queue: software must observe the completion
+record or terminal status before submitting the next descriptor.
 
 ## Common descriptor fields
 
@@ -171,12 +172,12 @@ Successful descriptors write a 32-byte completion record:
 | 8 | 4 | Completed slot |
 | 12 | 4 | Reserved zero |
 | 16 | 8 | Item count |
-| 24 | 8 | Acknowledged result writes; logical updates for opcodes 4 and 6; replayed events for opcode 5 |
+| 24 | 8 | Acknowledged result writes; logical updates for opcodes 4 and 6; replayed events for opcode 5; direct tally writes for opcode 7 |
 
 The control aperture exposes device/version at `0x100`, slot and item limits
 at `0x108`, state at `0x110`, completed slot at `0x118`, error code at `0x120`,
 and an opcode bitmap at `0x128`. Bitmap bit `n` advertises opcode `n`; bits
-1--6 are currently set.
+1--7 are currently set.
 
 ### Branson event-replay contract (opcode 5)
 
@@ -311,12 +312,14 @@ rearm clears the previous error and per-descriptor cursors only after all
 retained packets, operation contexts, line entries, and update entries are
 quiescent. The completion record remains the durable per-submission result.
 
-### Native SPARTA fused-cell contract (opcode 7, not advertised)
+### Native SPARTA fused-cell contract (opcode 7)
 
 Opcode 7 is a version-2, 128-byte contract that consumes two adjacent
-version-1 descriptor slots. The live gem5 decoder and opcode bitmap still stop
-at opcode 6; `SpartaFusedCellModel.hh` is a simulator-independent decoder and
-reference scheduler only.
+version-1 descriptor slots. A submission from the final physical slot fails
+closed because it cannot own a successor slot. The opcode bitmap advertises
+bit 7, and the live decoder fetches and validates both slots before issuing
+source traffic. `SpartaFusedCellModel.hh` remains the independent decoder and
+functional oracle for the live path.
 
 Byte 7 must equal one. The bit promises that the six target tally channels are
 zero and CPU-exclusive until completion. The two-slot fields are:
@@ -345,16 +348,27 @@ offsets 4, 8, and 40; 192-byte `Species` with `mass` at 24; and 64-byte
 decoder rejects a changed fingerprint, misalignment, 48-bit range overflow,
 and any pairwise range overlap.
 
-The scheduler admits at most eight cells, follows every declared list in
-order, and uses a 64-bit particle-visit bitmap to reject duplicates, cycles,
-early/late terminals, wrong-cell records, and incomplete coverage. Eligible
-records produce six finite FP64 contributions and update a retained per-cell
-summary. No external tally write occurs until the entire descriptor validates.
-Success writes six sums for every cell with an eligible particle and requires
-matching acknowledgements before completion. A pre-drain failure discards all
-summaries, leaving the promised-zero tally safe for scalar fallback.
+The live scheduler admits at most eight cells, issues their field reads in
+round-robin order, follows every declared list in order, and uses a 64-bit
+particle-visit bitmap to reject duplicates, cycles, early/late terminals,
+wrong-cell records, and incomplete coverage. Eligible records produce six
+finite FP64 contributions and update a retained per-cell summary. After source
+validation, a separate pass reads all six target words for every cell and
+requires each to compare equal to zero. No external tally write occurs until
+both passes quiesce. Success directly writes six sums for every cell with an
+eligible particle and requires every coherent write acknowledgement before
+completion. A pre-write failure discards all summaries, leaving the
+promised-zero tally safe for scalar fallback.
 
-The reference model proves bounded state-machine and arithmetic semantics, not
-timed memory traffic, native process submission, RTL FP cost, or application
-speedup. The transparent research ledger charges 4,048 payload bytes and a
-21-KiB provisioned array budget before physical synthesis.
+The simulator's 64 operation objects are not a physical-structure claim. The
+six sums plus eligible/valid state map to the separately charged 64-entry,
+448-bit summary array. Particle, remaining-count, mask, species, next, mass,
+partial-velocity-square, and stage fields are live only for the eight admitted
+operations and map to the separately charged eight 448-bit contexts. Inactive
+C++ object fields do not imply 64 physical context entries.
+
+The reference model and one real-X86 native-record smoke prove bounded
+state-machine, coherent traffic, fail-close/rearm, and arithmetic semantics.
+They do not prove native SPARTA process submission, application timing or
+speedup, or RTL FP/control cost. The transparent research ledger charges 4,048
+payload bytes and a 21-KiB provisioned array budget before physical synthesis.

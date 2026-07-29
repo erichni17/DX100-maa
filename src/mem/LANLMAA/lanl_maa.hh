@@ -14,6 +14,7 @@
 #include "mem/LANLMAA/BransonEventTiming.hh"
 #include "mem/LANLMAA/Descriptor.hh"
 #include "mem/LANLMAA/FaceComputeTiming.hh"
+#include "mem/LANLMAA/SpartaFusedCellModel.hh"
 #include "mem/LANLMAA/SpartaTallyDescriptor.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
@@ -104,6 +105,29 @@ class LANLMAA : public ClockedObject
         Update
     };
 
+    enum class SpartaFusedPhase
+    {
+        Inactive,
+        Traverse,
+        ValidateTallies
+    };
+
+    enum class SpartaFusedStage : uint8_t
+    {
+        CellCount,
+        CellFirst,
+        CellMask,
+        ParticleSpecies,
+        ParticleCell,
+        ParticleNext,
+        SpeciesGroup,
+        SpeciesMass,
+        VelocityX,
+        VelocityY,
+        VelocityZ,
+        Tally
+    };
+
     enum class TrafficKind
     {
         Descriptor,
@@ -147,6 +171,18 @@ class LANLMAA : public ClockedObject
         uint32_t spartaItem = 0;
         uint32_t spartaCell = 0;
         uint8_t spartaChannel = 0;
+        std::array<uint64_t, SpartaFusedChannels> spartaFusedSums{};
+        uint64_t spartaFusedMass = 0;
+        uint64_t spartaFusedVelocitySquared = 0;
+        uint32_t spartaFusedCell = 0;
+        uint32_t spartaFusedParticle = 0;
+        uint32_t spartaFusedRemaining = 0;
+        uint32_t spartaFusedMask = 0;
+        uint32_t spartaFusedEligible = 0;
+        int32_t spartaFusedNext = -1;
+        int32_t spartaFusedSpecies = -1;
+        SpartaFusedStage spartaFusedStage = SpartaFusedStage::CellCount;
+        uint8_t spartaFusedChannel = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
@@ -282,6 +318,13 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorSpartaCellGroupCompleteDrains;
         statistics::Scalar descriptorSpartaCellGroupDrainDeferrals;
         statistics::Scalar descriptorSpartaCellGroupForcedDrains;
+        statistics::Scalar descriptorSpartaFusedCellsLoaded;
+        statistics::Scalar descriptorSpartaFusedParticlesVisited;
+        statistics::Scalar descriptorSpartaFusedEligibleParticles;
+        statistics::Scalar descriptorSpartaFusedFp64Multiplies;
+        statistics::Scalar descriptorSpartaFusedFp64Adds;
+        statistics::Scalar descriptorSpartaFusedTallyZeroReads;
+        statistics::Scalar descriptorSpartaFusedWritesAcknowledged;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -362,6 +405,8 @@ class LANLMAA : public ClockedObject
     BransonPhase bransonPhase = BransonPhase::Inactive;
     SpartaTallyDescriptor spartaDescriptor;
     SpartaTallyPhase spartaTallyPhase = SpartaTallyPhase::Inactive;
+    SpartaFusedDescriptor spartaFusedDescriptor;
+    SpartaFusedPhase spartaFusedPhase = SpartaFusedPhase::Inactive;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
@@ -373,6 +418,14 @@ class LANLMAA : public ClockedObject
     uint64_t spartaContributionsValidated = 0;
     uint64_t spartaContributionsReplayed = 0;
     uint64_t spartaUpdatesAcknowledged = 0;
+    uint64_t spartaFusedVisitedParticles = 0;
+    uint32_t spartaFusedVisitedCount = 0;
+    uint64_t spartaFusedTallyZeroReads = 0;
+    uint64_t spartaFusedWritesAcknowledged = 0;
+    size_t spartaFusedIssueCursor = 0;
+    uint8_t spartaFusedWriteChannel = 0;
+    size_t descriptorFetchOffset = 0;
+    std::array<uint8_t, SpartaFusedDescriptorBytes> descriptorFetchBuffer{};
     bool descriptorFaceUpdatePhase = false;
     PacketPtr descriptorPacket = nullptr;
     PacketPtr addressVectorPacket = nullptr;
@@ -396,6 +449,7 @@ class LANLMAA : public ClockedObject
     bool activeDependentMode() const;
     bool bransonEventDescriptor() const;
     bool spartaTallyDescriptor() const;
+    bool spartaFusedCellDescriptor() const;
     static bool bransonTerminalKind(uint8_t kind);
     Addr bransonEventAddress(uint32_t event) const;
     Addr bransonTallyAddress(const Operation &operation) const;
@@ -411,6 +465,17 @@ class LANLMAA : public ClockedObject
     void resetSpartaOperation(Operation &operation);
     void advanceSpartaContribution(Operation &operation);
     void beginSpartaUpdatePhase();
+    Addr spartaFusedChildAddress(
+        const Operation &operation, uint64_t fieldOffset) const;
+    Addr spartaFusedParticleAddress(
+        const Operation &operation, uint64_t fieldOffset) const;
+    Addr spartaFusedTallyAddress(const Operation &operation) const;
+    DescriptorError beginSpartaFusedParticle(Operation &operation);
+    DescriptorError finishSpartaFusedParticle(Operation &operation);
+    DescriptorError consumeSpartaFusedResponse(
+        Operation &operation, const uint8_t *data, size_t offset);
+    void beginSpartaFusedTallyValidation();
+    uint64_t expectedSpartaFusedWrites() const;
     bool faceMinMaxDescriptor() const;
     UpdateKind configuredUpdateKind() const;
     bool floatingUpdate() const;
