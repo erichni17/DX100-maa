@@ -135,12 +135,39 @@ fi
 }
 
 hash=$(sed -n 's/^MAA_GATHER_VERIFY_PASS .* hash=\([0-9]*\)$/\1/p' "$log" | tail -1)
-ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
-[[ -n $hash && -n $ticks ]] || {
+stats_blocks=$(awk '$1 == "simTicks" { count++ } END { print count + 0 }' \
+    "$stats")
+roi_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
+final_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
+[[ $stats_blocks -eq 2 && -n $hash && -n $roi_ticks &&
+   -n $final_ticks && $final_ticks -ge $roi_ticks ]] || {
     echo "XRAGE result extraction failed" >&2
     exit 1
 }
-printf 'output_hash\tsimTicks\n%s\t%s\n' "$hash" "$ticks" \
-    > "$out/result.tsv"
+first_stat() {
+    awk -v key="$1" '$1 == key { print $2; exit }' "$stats"
+}
+write_issues=$(first_stat system.maa.I0_IND_VirtWriteIssues)
+write_completions=$(first_stat system.maa.I0_IND_VirtWriteCompletions)
+pages_ready=$(first_stat system.maa.I0_IND_VirtPagesReady)
+index_words=$(first_stat system.maa.I0_IND_VirtIndexWords)
+indirect_spd_reads=$(first_stat system.maa.I0_IND_CyclesSPDReadAccess)
+for value in "$write_issues" "$write_completions" "$pages_ready" \
+    "$index_words" "$indirect_spd_reads"; do
+    [[ -n $value ]] || {
+        echo "XRAGE mechanism-counter extraction failed" >&2
+        exit 1
+    }
+done
+{
+    printf 'output_hash\troi_simTicks\tfinal_simTicks\tstats_blocks'
+    printf '\tvirtual_write_issues\tvirtual_write_completions'
+    printf '\tvirtual_pages_ready\tdirect_index_words'
+    printf '\tindirect_spd_read_cycles\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
+        "$write_issues" "$write_completions" "$pages_ready" \
+        "$index_words" "$indirect_spd_reads"
+} > "$out/result.tsv"
 touch "$out/xrage_attribution_smoke.pass"
-echo "PASS XRAGE $arm: hash=$hash simTicks=$ticks"
+echo "PASS XRAGE $arm: hash=$hash roi_simTicks=$roi_ticks"
