@@ -51,6 +51,8 @@ if(BUILD_GEM5)
     target_include_directories(spatter_maa_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_verify_16K main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_verify_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
+    add_executable(spatter_maa_flag_verify_16K main.cc $<TARGET_OBJECTS:m5op>)
+    target_include_directories(spatter_maa_flag_verify_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_fused_16K main.cc $<TARGET_OBJECTS:m5op>)
     target_include_directories(spatter_maa_fused_16K PRIVATE ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
     add_executable(spatter_maa_fused_4K main.cc $<TARGET_OBJECTS:m5op>)
@@ -97,6 +99,8 @@ else()
     target_include_directories(spatter_maa_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_verify_16K main.cc)
     target_include_directories(spatter_maa_verify_16K PRIVATE ${MAA_HOME})
+    add_executable(spatter_maa_flag_verify_16K main.cc)
+    target_include_directories(spatter_maa_flag_verify_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_fused_16K main.cc)
     target_include_directories(spatter_maa_fused_16K PRIVATE ${MAA_HOME})
     add_executable(spatter_maa_fused_4K main.cc)
@@ -180,6 +184,17 @@ set_target_properties(spatter_maa_16K PROPERTIES
 target_link_libraries(spatter_maa_verify_16K ${COMMON_LINK_LIBRARIES} Spatter_MAA_Verify_16K)
 target_compile_definitions(spatter_maa_verify_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_VERIFY_GATHER MAA_VERIFY_GATHER_POST_ROI NUM_CORES=4 TILE_SIZE=16384)
 set_target_properties(spatter_maa_verify_16K PROPERTIES
+    COMPILE_OPTIONS "${WARNING_FLAGS}"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+)
+
+# Dedicated functional verifier for imported FLAG traces.  Keep the existing
+# verifier targets gather-only/post-ROI so the XRAGE attribution matrix retains
+# its established semantics.
+target_link_libraries(spatter_maa_flag_verify_16K ${COMMON_LINK_LIBRARIES} Spatter_MAA_FLAG_Verify_16K)
+target_compile_definitions(spatter_maa_flag_verify_16K PRIVATE ${COMMON_COMPILE_DEFINITIONS} MAA MAA_VERIFY_GATHER MAA_VERIFY_SCATTER NUM_CORES=4 TILE_SIZE=16384)
+set_target_properties(spatter_maa_flag_verify_16K PROPERTIES
     COMPILE_OPTIONS "${WARNING_FLAGS}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"

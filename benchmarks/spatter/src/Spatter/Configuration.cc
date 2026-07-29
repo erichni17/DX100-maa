@@ -428,8 +428,10 @@ std::ostream &operator<<(std::ostream &out, const ConfigurationBase &config) {
     return out << config_output.str();
 }
 
+#ifdef MAA
 int tile1s[NUM_CORES], tile2s[NUM_CORES], tile3s[NUM_CORES];
 int reg1s[NUM_CORES], reg2s[NUM_CORES], reg3s[NUM_CORES];
+#endif
 #include <omp.h>
 
 Configuration<Spatter::Serial>::Configuration(const size_t id,
@@ -465,6 +467,7 @@ Configuration<Spatter::Serial>::Configuration(const size_t id,
 #endif
 }
 
+#ifdef MAA
 void setup_MAA() {
     init_MAA();
 #pragma omp parallel
@@ -481,6 +484,7 @@ void setup_MAA() {
         }
     }
 }
+#endif
 
 void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
     int pattern_length = std::min((int)pattern.size(), 2097152);
@@ -663,6 +667,36 @@ void Configuration<Spatter::Serial>::scatter(bool timed, unsigned long run_id) {
         }
 #endif
     }
+
+#ifdef MAA_VERIFY_SCATTER
+    std::vector<int> expected_writer(sparse.size(), -1);
+    for (int j = 0; j < pattern_length; ++j)
+        expected_writer[pattern_int[j]] = j;
+
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t sparse_index = 0; sparse_index < expected_writer.size();
+         ++sparse_index) {
+        const int writer = expected_writer[sparse_index];
+        if (writer < 0)
+            continue;
+        const double expected = dense[writer];
+        if (sparse[sparse_index] != expected) {
+            std::cerr << "MAA_SCATTER_VERIFY_FAIL sparse_index="
+                      << sparse_index << " writer=" << writer
+                      << " actual=" << sparse[sparse_index]
+                      << " expected=" << expected << std::endl;
+            std::abort();
+        }
+        uint64_t bits;
+        std::memcpy(&bits, &sparse[sparse_index], sizeof(bits));
+        hash ^= sparse_index;
+        hash *= 1099511628211ULL;
+        hash ^= bits;
+        hash *= 1099511628211ULL;
+    }
+    std::cout << "MAA_SCATTER_VERIFY_PASS length=" << pattern_length
+              << " hash=" << hash << std::endl;
+#endif
 
     if (timed) {
         timer.stop();

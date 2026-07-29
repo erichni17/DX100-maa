@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/lanl-spatter/datafiles",
+    "commit": "5d5e09f5240df41b72388d235604ac97200d0920"
+  },
+  "traces": [
+    {
+      "application": "flag",
+      "problem": "static_2d",
+      "archive": "001.fp.json.tar.gz",
+      "archive_sha256": "4b0be8e1e1bdc67d06b4a96dc9ef74817be8f76fa5bcec1b6bb9a15151845888",
+      "archive_size": 295707,
+      "member": "001.fp.json",
+      "content_sha256": "089f30314e629b98db7fcd83f51c19224cfee469d387eb78422661754bf223ed",
+      "configurations": 4,
+      "kernels": {
+        "gather": 4,
+        "scatter": 0
+      }
+    },
+    {
+      "application": "flag",
+      "problem": "static_2d",
+      "archive": "001.json.tar.gz",
+      "archive_sha256": "6e8bb89fc437bfb13fd255fb8e2ad5921fe6371bca442d824774a8c82555af5b",
+      "archive_size": 785862,
+      "member": "001.json",
+      "content_sha256": "8f38e861717ff8ba8c45419543aff7e1b8db03f34f2e95f12f9e56346fef4683",
+      "configurations": 8,
+      "kernels": {
+        "gather": 5,
+        "scatter": 3
+      }
+    },
+    {
+      "application": "flag",
+      "problem": "static_2d",
+      "archive": "001.nonfp.json.tar.gz",
+      "archive_sha256": "2f8ce6e70b3fa2c03a414a76e53817cdde999dcb6051c56bd988bc43190df233",
+      "archive_size": 779633,
+      "member": "001.nonfp.json",
+      "content_sha256": "5a16080b0f68deb014fa21c11af8417467010c62625e7ae02eb7a82e6f4ae488",
+      "configurations": 8,
+      "kernels": {
+        "gather": 5,
+        "scatter": 3
+      }
+    }
+  ]
+}

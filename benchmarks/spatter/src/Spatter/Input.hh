@@ -5,11 +5,14 @@
 #ifndef SPATTER_INPUT_HH
 #define SPATTER_INPUT_HH
 
+#include <getopt.h>
+
 #include <algorithm>
 #include <cctype>
-#include <getopt.h>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -243,7 +246,18 @@ int read_ul_arg(std::string cl, size_t &arg, const std::string &err_msg) {
 }
 
 int parse_input(const int argc, char **argv, ClArgs &cl) {
-  srand(static_cast<unsigned int>(time(nullptr)));
+  size_t data_seed = static_cast<size_t>(time(nullptr));
+  if (const char *value = std::getenv("SPATTER_DATA_SEED")) {
+    if (read_ul_arg(value, data_seed,
+            "Parsing Error: Invalid SPATTER_DATA_SEED") == -1)
+      return -1;
+    if (data_seed > std::numeric_limits<unsigned int>::max()) {
+      std::cerr << "Parsing Error: SPATTER_DATA_SEED is too large"
+                << std::endl;
+      return -1;
+    }
+  }
+  srand(static_cast<unsigned int>(data_seed));
 
   cl.sparse_size = 0;
   cl.sparse_gather_size = 0;

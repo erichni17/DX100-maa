@@ -54,7 +54,9 @@ void print_build_info(Spatter::ClArgs &cl) {
     std::cout << std::endl;
 }
 
+#if defined(FUNC) || defined(GEM5) || defined(GEM5_MAGIC)
 void alloc_MAA();
+#endif
 
 int main(int argc, char **argv) {
 
@@ -115,7 +117,9 @@ int main(int argc, char **argv) {
     std::cout << "Checkpoint ended" << std::endl;
 #endif
 
+#if defined(FUNC) || defined(GEM5) || defined(GEM5_MAGIC)
     alloc_MAA();
+#endif
 #ifdef MAA
     Spatter::setup_MAA();
 #endif
