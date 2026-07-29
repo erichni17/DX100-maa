@@ -84,6 +84,12 @@ protected:
         std::vector<std::array<uint8_t, 8>> packed_words;
         size_t next_packed_word = 0;
         int reserved_words = 0;
+        int claim_rt_idx = -1;
+        int claim_row_id = -1;
+        int claim_entry_id = -1;
+        Addr claim_grow_addr = 0;
+        Addr claim_addr = 0;
+        int claim_head = -1;
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
     int virtual_response_words = 0;
@@ -96,9 +102,18 @@ protected:
     Addr virtual_pending_source_addr = 0;
     int virtual_pending_source_head = -1;
     int virtual_pending_source_words = 0;
-    struct VirtualSourceReservation {
+    int virtual_pending_source_rt_idx = -1;
+    int virtual_pending_source_row_id = -1;
+    int virtual_pending_source_entry_id = -1;
+    Addr virtual_pending_source_grow_addr = 0;
+    struct VirtualSourceReservation
+    {
         int head = -1;
         int words = 0;
+        int rt_idx = -1;
+        int row_id = -1;
+        int entry_id = -1;
+        Addr grow_addr = 0;
     };
     std::map<Addr, VirtualSourceReservation> virtual_source_reservations;
     struct VirtualCombineSlot {
@@ -305,6 +320,7 @@ protected:
     bool insertVirtualCombineWord(int itr, const uint8_t *data);
     void drainVirtualCombiner(bool flush_partial);
     bool virtualCombinerEmpty() const;
+    bool boundedSourceResponsesComplete() const;
     bool boundedRetirementComplete() const;
     VirtualRequestReason classifyVirtualRequestReason() const;
     void accountVirtualRequestInterval();

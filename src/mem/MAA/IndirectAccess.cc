@@ -1097,6 +1097,10 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_pending_source_addr = 0;
         virtual_pending_source_head = -1;
         virtual_pending_source_words = 0;
+        virtual_pending_source_rt_idx = -1;
+        virtual_pending_source_row_id = -1;
+        virtual_pending_source_entry_id = -1;
+        virtual_pending_source_grow_addr = 0;
         virtual_source_reservations.clear();
         virtual_outstanding_writes = 0;
         virtual_retirement_write_pages.clear();
@@ -1338,7 +1342,9 @@ void IndirectAccessUnit::executeInstruction() {
             }
         }
         auto issueVirtualSource = [&](Addr source_addr, int source_head,
-                                      int source_words, int latency) {
+                                      int source_words, int source_rt_idx,
+                                      int source_row_id, int source_entry_id,
+                                      Addr source_grow_addr, int latency) {
             panic_if(source_head < 0 || source_words <= 0,
                      "I[%d] virtual source claim is empty\n",
                      my_indirect_id);
@@ -1369,7 +1375,11 @@ void IndirectAccessUnit::executeInstruction() {
             panic_if(!virtual_source_reservations
                           .emplace(source_addr,
                                    VirtualSourceReservation{source_head,
-                                                            source_words})
+                                                            source_words,
+                                                            source_rt_idx,
+                                                            source_row_id,
+                                                            source_entry_id,
+                                                            source_grow_addr})
                           .second,
                      "I[%d] duplicate source reservation for 0x%lx\n",
                      my_indirect_id, source_addr);
@@ -1388,19 +1398,23 @@ void IndirectAccessUnit::executeInstruction() {
             createReadPacket(source_addr, latency);
         };
 
-        panic_if(native_order_claim && !my_fill_finished,
-                 "I[%d] native-order attribution cannot interleave "
-                 "Row-Table refill\n",
-                 my_indirect_id);
         bool virtual_capacity_full = false;
         if (usesBoundedSourceResponses() && virtual_pending_source) {
             issueVirtualSource(virtual_pending_source_addr,
                                virtual_pending_source_head,
-                               virtual_pending_source_words, 0);
+                               virtual_pending_source_words,
+                               virtual_pending_source_rt_idx,
+                               virtual_pending_source_row_id,
+                               virtual_pending_source_entry_id,
+                               virtual_pending_source_grow_addr, 0);
             virtual_pending_source = false;
             virtual_pending_source_addr = 0;
             virtual_pending_source_head = -1;
             virtual_pending_source_words = 0;
+            virtual_pending_source_rt_idx = -1;
+            virtual_pending_source_row_id = -1;
+            virtual_pending_source_entry_id = -1;
+            virtual_pending_source_grow_addr = 0;
         }
         while (!virtual_capacity_full) {
             if (checkAndResetAllRowTablesSent())
@@ -1418,13 +1432,18 @@ void IndirectAccessUnit::executeInstruction() {
                 if (my_RT_req_sent[my_RT_config][RT_idx] == false) {
                     int virtual_head = -1;
                     int virtual_words = 0;
+                    int virtual_row_id = -1;
+                    int virtual_entry_id = -1;
+                    Addr virtual_grow_addr = 0;
                     bool entry_ready;
                     if (native_order_claim) {
                         entry_ready = RT[my_RT_config][RT_idx]
                                           .claim_entry_send_native_order(
                                               addr, virtual_head,
                                               virtual_words,
-                                              my_fill_finished);
+                                              my_fill_finished,
+                                              virtual_row_id,
+                                              virtual_entry_id);
                     } else if (usesBoundedSourceResponses()) {
                         entry_ready =
                             RT[my_RT_config][RT_idx].claim_entry_send(
@@ -1436,7 +1455,29 @@ void IndirectAccessUnit::executeInstruction() {
                             addr, my_fill_finished);
                     }
                     if (entry_ready) {
-                        DPRINTF(MAAIndirect, "I[%d] %s: Creating packet for bank[%d], addr[0x%lx]!\n", my_indirect_id, __func__, RT_idx, addr);
+                        if (native_order_claim) {
+                            const std::vector<int> addr_vec =
+                                maa->map_addr(addr);
+                            const int claim_rt_idx = getRowTableIdx(
+                                my_RT_config,
+                                addr_vec[ADDR_CHANNEL_LEVEL],
+                                addr_vec[ADDR_RANK_LEVEL],
+                                addr_vec[ADDR_BANKGROUP_LEVEL],
+                                addr_vec[ADDR_BANK_LEVEL]);
+                            panic_if(claim_rt_idx != RT_idx,
+                                     "I[%d] native claim moved from RT %d "
+                                     "to %d\n",
+                                     my_indirect_id, RT_idx, claim_rt_idx);
+                            virtual_grow_addr = getGrowAddr(
+                                my_RT_config,
+                                addr_vec[ADDR_BANKGROUP_LEVEL],
+                                addr_vec[ADDR_BANK_LEVEL],
+                                addr_vec[ADDR_ROW_LEVEL]);
+                        }
+                        DPRINTF(MAAIndirect,
+                                "I[%d] %s: Creating packet for bank[%d], "
+                                "addr[0x%lx]!\n",
+                                my_indirect_id, __func__, RT_idx, addr);
                         if (usesBoundedSourceResponses()) {
                             panic_if(virtual_head < 0 || virtual_words <= 0,
                                      "I[%d] virtual source claim is empty\n",
@@ -1477,6 +1518,12 @@ void IndirectAccessUnit::executeInstruction() {
                                 virtual_pending_source_addr = addr;
                                 virtual_pending_source_head = virtual_head;
                                 virtual_pending_source_words = virtual_words;
+                                virtual_pending_source_rt_idx = RT_idx;
+                                virtual_pending_source_row_id = virtual_row_id;
+                                virtual_pending_source_entry_id =
+                                    virtual_entry_id;
+                                virtual_pending_source_grow_addr =
+                                    virtual_grow_addr;
                                 if (native_order_claim) {
                                     last_RT_sent++;
                                     if (last_RT_sent ==
@@ -1509,6 +1556,8 @@ void IndirectAccessUnit::executeInstruction() {
                         if (usesBoundedSourceResponses()) {
                             issueVirtualSource(
                                 addr, virtual_head, virtual_words,
+                                RT_idx, virtual_row_id, virtual_entry_id,
+                                virtual_grow_addr,
                                 getCeiling(num_rowtable_accesses + 1,
                                            total_num_RT_subslices) *
                                     rowtable_latency);
@@ -1645,8 +1694,12 @@ void IndirectAccessUnit::executeInstruction() {
             scheduleNextExecution(true);
             break;
         }
-        if (!my_fill_finished &&
-            !direct_index_partition_barrier) {
+        const bool refill_allowed =
+            !maa->virtual_native_issue_order ||
+            (!virtual_build_incomplete &&
+             boundedSourceResponsesComplete());
+        if (!my_fill_finished && !direct_index_partition_barrier &&
+            refill_allowed) {
             bool finished, waitForFinish, waitForElement, needDrain;
             int num_spd_read_condidx_accesses, num_rowtable_accesses;
             int num_direct_index_filter_words;
@@ -1658,7 +1711,9 @@ void IndirectAccessUnit::executeInstruction() {
             if (usesBoundedSourceResponses()) {
                 if (finished)
                     my_fill_finished = true;
-                if (my_i != fill_start_itr || needDrain)
+                if (needDrain || finished ||
+                    (!maa->virtual_native_issue_order &&
+                     my_i != fill_start_itr))
                     virtual_build_incomplete = true;
                 if (finished || needDrain) {
                     DPRINTF(MAAVirtualTrace,
@@ -1840,7 +1895,8 @@ bool IndirectAccessUnit::checkAndResetAllRowTablesSent() {
         }
     }
     for (int i = 0; i < num_RT_slices[my_RT_config]; i++) {
-        my_RT_req_sent[my_RT_config][i] = false;
+        if (!maa->virtual_native_issue_order)
+            my_RT_req_sent[my_RT_config][i] = false;
     }
     return true;
 }
@@ -1924,6 +1980,10 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
     const bool bounded_response_load = usesBoundedSourceResponses();
     int virtual_head = -1;
     int virtual_reserved_words = 0;
+    int virtual_claim_rt_idx = -1;
+    int virtual_claim_row_id = -1;
+    int virtual_claim_entry_id = -1;
+    Addr virtual_claim_grow_addr = 0;
     std::vector<OffsetTableEntry> entries;
     if (bounded_response_load) {
         auto reservation = virtual_source_reservations.find(addr);
@@ -1931,6 +1991,18 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
             return false;
         virtual_head = reservation->second.head;
         virtual_reserved_words = reservation->second.words;
+        virtual_claim_rt_idx = reservation->second.rt_idx;
+        virtual_claim_row_id = reservation->second.row_id;
+        virtual_claim_entry_id = reservation->second.entry_id;
+        virtual_claim_grow_addr = reservation->second.grow_addr;
+        if (maa->virtual_native_issue_order) {
+            panic_if(virtual_claim_rt_idx != RT_idx ||
+                         virtual_claim_grow_addr != grow_addr,
+                     "I[%d] native response 0x%lx moved from RT/grow "
+                     "%d/0x%lx to %d/0x%lx\n",
+                     my_indirect_id, addr, virtual_claim_rt_idx,
+                     virtual_claim_grow_addr, RT_idx, grow_addr);
+        }
         virtual_source_reservations.erase(reservation);
     } else {
         entries = RT[my_RT_config][RT_idx].get_entry_recv(
@@ -1957,6 +2029,12 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
                  my_indirect_id, __func__);
         slot->valid = true;
         slot->next_itr = virtual_head;
+        slot->claim_rt_idx = virtual_claim_rt_idx;
+        slot->claim_row_id = virtual_claim_row_id;
+        slot->claim_entry_id = virtual_claim_entry_id;
+        slot->claim_grow_addr = virtual_claim_grow_addr;
+        slot->claim_addr = addr;
+        slot->claim_head = virtual_head;
         if (virtual_response_word_pool_limit != 0) {
             panic_if(virtual_reserved_words <= 0,
                      "I[%d] response 0x%lx has no packed-word reservation\n",
@@ -2517,6 +2595,25 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                           total_num_RT_subslices);
         return throttled;
     };
+    auto release_native_claim = [this](VirtualResponseSlot &slot) {
+        if (!maa->virtual_native_issue_order) {
+            panic_if(slot.claim_row_id != -1 || slot.claim_entry_id != -1,
+                     "I[%d] non-native response retained a claim token\n",
+                     my_indirect_id);
+            return;
+        }
+        panic_if(slot.claim_rt_idx < 0 || slot.claim_row_id < 0 ||
+                     slot.claim_entry_id < 0 || slot.claim_head < 0,
+                 "I[%d] native response has an incomplete claim token\n",
+                 my_indirect_id);
+        const bool released =
+            RT[my_RT_config][slot.claim_rt_idx].release_native_claim(
+                slot.claim_row_id, slot.claim_entry_id,
+                slot.claim_grow_addr, slot.claim_addr, slot.claim_head);
+        panic_if(!released,
+                 "I[%d] native response 0x%lx head %d has no claim\n",
+                 my_indirect_id, slot.claim_addr, slot.claim_head);
+    };
     if (virtual_word_budget_tick != curTick()) {
         virtual_word_budget_tick = curTick();
         virtual_word_attempts_this_cycle = 0;
@@ -2588,6 +2685,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                          "I[%d] packed response word accounting underflow\n",
                          my_indirect_id);
                 virtual_reserved_response_words -= slot.reserved_words;
+                release_native_claim(slot);
                 slot = VirtualResponseSlot();
                 virtual_reserved_responses--;
             }
@@ -2636,7 +2734,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                      "I[%d] virtual offset cursor changed while stalled\n",
                      my_indirect_id);
             if (slot.next_itr == -1) {
-                slot.valid = false;
+                release_native_claim(slot);
+                slot = VirtualResponseSlot();
                 virtual_reserved_responses--;
             }
         }
@@ -2853,17 +2952,20 @@ bool IndirectAccessUnit::virtualCombinerEmpty() const {
                        });
 }
 
-bool IndirectAccessUnit::boundedRetirementComplete() const {
+bool IndirectAccessUnit::boundedSourceResponsesComplete() const {
     const bool responses_empty = std::all_of(
         virtual_response_slots.begin(), virtual_response_slots.end(),
         [](const VirtualResponseSlot &slot) { return !slot.valid; });
-    const bool sources_complete =
-        virtual_source_received == virtual_source_expected &&
-        virtual_reserved_responses == 0 &&
-        virtual_reserved_response_words == 0 &&
-        virtual_source_reservations.empty() && !virtual_pending_source &&
-        responses_empty && maa->allIndirectPacketsSent(my_indirect_id) &&
-        my_received_responses == my_expected_responses;
+    return virtual_source_received == virtual_source_expected &&
+           virtual_reserved_responses == 0 &&
+           virtual_reserved_response_words == 0 &&
+           virtual_source_reservations.empty() && !virtual_pending_source &&
+           responses_empty && maa->allIndirectPacketsSent(my_indirect_id) &&
+           my_received_responses == my_expected_responses;
+}
+
+bool IndirectAccessUnit::boundedRetirementComplete() const {
+    const bool sources_complete = boundedSourceResponsesComplete();
     if (!sources_complete || !isVirtualLoad())
         return sources_complete;
     return virtualCombinerEmpty() && virtual_outstanding_writes == 0;

@@ -96,12 +96,15 @@ public:
     RowTableEntry() {
         entries = nullptr;
         entries_valid = nullptr;
+        entries_claimed = nullptr;
     }
     ~RowTableEntry() {
         if (entries != nullptr) {
             delete[] entries;
             assert(entries_valid != nullptr);
             delete[] entries_valid;
+            assert(entries_claimed != nullptr);
+            delete[] entries_claimed;
         }
     }
     void allocate(int _my_unit_id,
@@ -117,7 +120,10 @@ public:
     void check_reset();
     bool get_entry_send(Addr &addr);
     bool claim_entry_send(Addr &addr, int &head, int &words, bool commit);
-    bool claim_entry_send_native_order(Addr &addr, int &head, int &words);
+    bool claim_entry_send_native_order(Addr &addr, int &head, int &words,
+                                       int &entry_id);
+    bool release_native_claim(int entry_id, Addr addr, int head);
+    bool all_entries_claimed() const;
     std::vector<OffsetTableEntry> get_entry_recv(Addr addr);
     int get_entry_recv_head(Addr addr);
     int count_entry_words(Addr addr) const;
@@ -126,6 +132,7 @@ public:
     Addr grow_addr;
     Entry *entries;
     bool *entries_valid;
+    bool *entries_claimed;
     int num_RT_entries_per_row;
     int last_sent_entry_id;
     MAA *maa;
@@ -163,7 +170,10 @@ public:
     bool claim_entry_send(Addr &addr, int &head, int &words, bool drain,
                           bool group_by_grow, bool commit);
     bool claim_entry_send_native_order(Addr &addr, int &head, int &words,
-                                       bool drain);
+                                       bool drain, int &row_id,
+                                       int &entry_id);
+    bool release_native_claim(int row_id, int entry_id, Addr grow_addr,
+                              Addr addr, int head);
     void reset_virtual_claim_group();
     bool find_next_grow_addr();
     bool is_full();

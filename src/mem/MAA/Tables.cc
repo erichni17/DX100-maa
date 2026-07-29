@@ -231,9 +231,11 @@ void RowTableEntry::allocate(int _my_unit_id,
     num_RT_entries_per_row = _num_RT_entries_per_row;
     entries = new Entry[num_RT_entries_per_row];
     entries_valid = new bool[num_RT_entries_per_row];
+    entries_claimed = new bool[num_RT_entries_per_row];
     last_sent_entry_id = 0;
     for (int i = 0; i < num_RT_entries_per_row; i++) {
         entries_valid[i] = false;
+        entries_claimed[i] = false;
     }
 }
 bool RowTableEntry::find_addr(Addr addr) const {
@@ -277,12 +279,14 @@ bool RowTableEntry::insert(Addr addr, int itr, int wid) {
 void RowTableEntry::check_reset() {
     for (int i = 0; i < num_RT_entries_per_row; i++) {
         panic_if(entries_valid[i], "Entry %d is valid: addr(0x%lx)!\n", i, entries[i].addr);
+        panic_if(entries_claimed[i], "Entry %d remains claimed!\n", i);
     }
     panic_if(last_sent_entry_id != 0, "Last sent entry id is not 0: %d!\n", last_sent_entry_id);
 }
 void RowTableEntry::reset() {
     for (int i = 0; i < num_RT_entries_per_row; i++) {
         entries_valid[i] = false;
+        entries_claimed[i] = false;
     }
     last_sent_entry_id = 0;
 }
@@ -326,20 +330,25 @@ bool RowTableEntry::claim_entry_send(Addr &addr, int &head, int &words,
     return false;
 }
 bool RowTableEntry::claim_entry_send_native_order(Addr &addr, int &head,
-                                                   int &words) {
+                                                   int &words,
+                                                   int &claimed_entry_id) {
     assert(last_sent_entry_id <= num_RT_entries_per_row);
     for (; last_sent_entry_id < num_RT_entries_per_row;
          last_sent_entry_id++) {
         if (!entries_valid[last_sent_entry_id])
             continue;
         const int entry_id = last_sent_entry_id++;
+        panic_if(entries_claimed[entry_id],
+                 "ROT[%d] ROW[%d] entry[%d] was claimed twice\n",
+                 my_table_id, my_table_row_id, entry_id);
         addr = entries[entry_id].addr;
         head = entries[entry_id].first_itr;
         words = offset_table->count_entries(head);
         panic_if(words <= 0,
                  "ROT[%d] ROW[%d] cannot natively claim empty entry[%d]\n",
                  my_table_id, my_table_row_id, entry_id);
-        entries_valid[entry_id] = false;
+        entries_claimed[entry_id] = true;
+        claimed_entry_id = entry_id;
         DPRINTF(MAARowTable,
                 "ROT[%d] ROW[%d] %s: claimed entry[%d] addr[0x%lx] "
                 "head[%d] words[%d]!\n",
@@ -348,6 +357,28 @@ bool RowTableEntry::claim_entry_send_native_order(Addr &addr, int &head,
         return true;
     }
     return false;
+}
+bool RowTableEntry::release_native_claim(int entry_id, Addr addr, int head) {
+    panic_if(entry_id < 0 || entry_id >= num_RT_entries_per_row,
+             "ROT[%d] ROW[%d] native claim entry %d is out of range\n",
+             my_table_id, my_table_row_id, entry_id);
+    if (!entries_valid[entry_id] || !entries_claimed[entry_id] ||
+        entries[entry_id].addr != addr || entries[entry_id].first_itr != head)
+        return false;
+    entries_claimed[entry_id] = false;
+    entries_valid[entry_id] = false;
+    DPRINTF(MAARowTable,
+            "ROT[%d] ROW[%d] %s: released entry[%d] addr[0x%lx] "
+            "head[%d]!\n",
+            my_table_id, my_table_row_id, __func__, entry_id, addr, head);
+    return true;
+}
+bool RowTableEntry::all_entries_claimed() const {
+    for (int entry_id = 0; entry_id < num_RT_entries_per_row; entry_id++) {
+        if (entries_valid[entry_id] && !entries_claimed[entry_id])
+            return false;
+    }
+    return true;
 }
 std::vector<OffsetTableEntry> RowTableEntry::get_entry_recv(Addr addr) {
     for (int i = 0; i < num_RT_entries_per_row; i++) {
@@ -614,10 +645,9 @@ bool RowTableSlice::claim_entry_send(Addr &addr, int &head, int &words,
     return false;
 }
 bool RowTableSlice::claim_entry_send_native_order(Addr &addr, int &head,
-                                                  int &words, bool drain) {
-    panic_if(!drain,
-             "ROT[%d] native-order claims require a completed fill\n",
-             my_table_id);
+                                                  int &words, bool,
+                                                  int &claimed_row_id,
+                                                  int &claimed_entry_id) {
     while (true) {
         if (last_sent_grow_addr == 0 && !find_next_grow_addr())
             return false;
@@ -628,7 +658,8 @@ bool RowTableSlice::claim_entry_send_native_order(Addr &addr, int &head,
                  "ROT[%d] native claim row[%d] is already sent\n",
                  my_table_id, last_sent_grow_rowid);
         if (entries[last_sent_grow_rowid].claim_entry_send_native_order(
-                addr, head, words)) {
+                addr, head, words, claimed_entry_id)) {
+            claimed_row_id = last_sent_grow_rowid;
             DPRINTF(MAARowTable,
                     "ROT[%d] %s: ROW[%d] grow[0x%lx] claimed!\n",
                     my_table_id, __func__, last_sent_grow_rowid,
@@ -636,14 +667,34 @@ bool RowTableSlice::claim_entry_send_native_order(Addr &addr, int &head,
             return true;
         }
         const int completed_row = last_sent_grow_rowid;
-        panic_if(!entries[completed_row].all_entries_received(),
-                 "ROT[%d] native claim exhausted nonempty row[%d]\n",
+        panic_if(!entries[completed_row].all_entries_claimed(),
+                 "ROT[%d] native claim exhausted unclaimed row[%d]\n",
                  my_table_id, completed_row);
-        entries_valid[completed_row] = false;
-        entries_sent[completed_row] = false;
-        entries[completed_row].check_reset();
+        entries_sent[completed_row] = true;
+        if (entries[completed_row].all_entries_received()) {
+            entries_valid[completed_row] = false;
+            entries_sent[completed_row] = false;
+            entries[completed_row].check_reset();
+        }
         get_send_grow_rowid();
     }
+}
+bool RowTableSlice::release_native_claim(int row_id, int entry_id,
+                                         Addr grow_addr, Addr addr,
+                                         int head) {
+    panic_if(row_id < 0 || row_id >= num_RT_rows_per_slice,
+             "ROT[%d] native claim row %d is out of range\n",
+             my_table_id, row_id);
+    if (!entries_valid[row_id] ||
+        entries[row_id].grow_addr != grow_addr ||
+        !entries[row_id].release_native_claim(entry_id, addr, head))
+        return false;
+    if (entries_sent[row_id] && entries[row_id].all_entries_received()) {
+        entries_valid[row_id] = false;
+        entries_sent[row_id] = false;
+        entries[row_id].check_reset();
+    }
+    return true;
 }
 void RowTableSlice::reset_virtual_claim_group() {
     virtual_claim_grow_addr = 0;
