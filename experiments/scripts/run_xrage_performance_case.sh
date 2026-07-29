@@ -98,6 +98,11 @@ if grep -aFq 'MAA_GATHER_VERIFY_PASS length=' "$binary"; then
     exit 1
 fi
 
+"$root/experiments/scripts/validate_xrage_exact_reference.py" \
+    "$exact_run" --arm "$arm" --logical "$logical" \
+    --physical "$physical" --index-lines "$index_buffer_lines" \
+    --input "$input" --gem5 "$gem5"
+
 mkdir -p "$out"
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
