@@ -519,6 +519,14 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 #pragma omp for
         for (int j = 0; j < pattern_length; j += TILE_SIZE) {
             maa_const(j, reg1);
+#ifdef MAA_VIRTUAL_INDEX_GATHER
+            const int chunk_end = std::min(j + TILE_SIZE, pattern_length);
+            maa_const(chunk_end, reg2);
+            maa_indirect_load_virtual_index<double>(
+                sparse.data(),
+                reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
+                dense.data() + j, reg1, reg2, reg3);
+#else
             maa_stream_load<int>(pattern_int.data(), reg1, reg2, reg3, tile1);
 #ifdef MAA_FUSED_SPD_GATHER
             maa_indirect_load_spd_stream<double>(
@@ -533,6 +541,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 #else
             maa_indirect_load<double>(sparse.data(), tile1, tile2);
             maa_stream_store<double>(dense.data(), reg1, reg2, reg3, tile2);
+#endif
 #endif
             wait_ready(tile2);
 #ifdef MAA_VIRTUAL_BACKED_GATHER

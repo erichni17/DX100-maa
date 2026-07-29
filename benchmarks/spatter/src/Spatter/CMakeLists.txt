@@ -116,6 +116,24 @@ add_library(Spatter_MAA_Virtual_Backed_Verify_16K STATIC
     m5op.S
 )
 
+add_library(Spatter_MAA_Virtual_Index_16K STATIC
+    ${SPATTER_INCLUDE_FILES}
+    Configuration.cc
+    JSONParser.cc
+    PatternParser.cc
+    Timer.cc
+    m5op.S
+)
+
+add_library(Spatter_MAA_Virtual_Index_Verify_16K STATIC
+    ${SPATTER_INCLUDE_FILES}
+    Configuration.cc
+    JSONParser.cc
+    PatternParser.cc
+    Timer.cc
+    m5op.S
+)
+
 add_library(Spatter_MAA_32K STATIC
     ${SPATTER_INCLUDE_FILES}
     Configuration.cc
@@ -218,6 +236,18 @@ set_target_properties(Spatter_MAA_Virtual_Backed_Verify_16K PROPERTIES
     COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;MAA_VIRTUAL_BACKED_GATHER;MAA_VERIFY_GATHER;NUM_CORES=4;TILE_SIZE=16384"
     COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
     OUTPUT_NAME "Spatter_MAA_Virtual_Backed_Verify_16K"
+)
+
+set_target_properties(Spatter_MAA_Virtual_Index_16K PROPERTIES
+    COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;MAA_VIRTUAL_INDEX_GATHER;NUM_CORES=4;TILE_SIZE=16384"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+    OUTPUT_NAME "Spatter_MAA_Virtual_Index_16K"
+)
+
+set_target_properties(Spatter_MAA_Virtual_Index_Verify_16K PROPERTIES
+    COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS};MAA;MAA_VIRTUAL_INDEX_GATHER;MAA_VERIFY_GATHER;NUM_CORES=4;TILE_SIZE=16384"
+    COMPILE_OPTIONS "${COMMON_COMPILE_OPTIONS}"
+    OUTPUT_NAME "Spatter_MAA_Virtual_Index_Verify_16K"
 )
 
 set_target_properties(Spatter_MAA_32K PROPERTIES
