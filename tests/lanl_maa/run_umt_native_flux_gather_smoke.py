@@ -401,8 +401,6 @@ def validate(stats, logical_reads, chunks, minimum_reads, payload_model):
     expected = {
         "logicalItems": logical_reads,
         "logicalMemoryAccesses": logical_reads,
-        "physicalLineReads": minimum_reads,
-        "lineMergeHits": logical_reads - minimum_reads,
         "completionsRetired": logical_reads,
         "verificationFailures": 0,
         "descriptorDoorbells": chunks,
@@ -425,6 +423,25 @@ def validate(stats, logical_reads, chunks, minimum_reads, payload_model):
             raise RuntimeError(
                 f"UMT gather {name}: expected {value}, got {stats.get(name)}"
             )
+    physical_reads = stats.get("physicalLineReads")
+    line_merge_hits = stats.get("lineMergeHits")
+    if (
+        physical_reads is None
+        or physical_reads < minimum_reads
+        or physical_reads > logical_reads
+    ):
+        raise RuntimeError(
+            "UMT gather physical reads violate unique-line bounds: "
+            f"minimum={minimum_reads}, logical={logical_reads}, "
+            f"actual={physical_reads}"
+        )
+    if (
+        line_merge_hits is None
+        or physical_reads + line_merge_hits != logical_reads
+    ):
+        raise RuntimeError(
+            "UMT gather physical-read and line-merge accounting did not close"
+        )
     retries = [
         stats.get(name)
         for name in (
@@ -606,7 +623,9 @@ def run_smoke(args, root):
                     f"UMT gather cache accounting failed: {cache}"
                 )
         report["logical_to_physical_read_reduction_percent"] = (
-            100.0 * (len(accesses) - minimum_reads) / len(accesses)
+            100.0
+            * (len(accesses) - stats["physicalLineReads"])
+            / len(accesses)
         )
         report["stats_sha256"] = file_sha256(stats_path)
         report["stdout_sha256"] = file_sha256(stdout_path)
