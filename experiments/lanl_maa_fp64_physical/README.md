@@ -78,6 +78,23 @@ remain a test interface; returned-line steering and the selected line table
 are still separate. Its prepared physical target is
 `//lanl_fp64:fp64_split_retirement_64x4x2_final`.
 
+`LanlMaaOperationRetirementOverlay64x4x2` is the lower-cost successor. Once
+the FP64 back end accepts an operation, its source operands are dead, so the
+result and five exception flags reuse 69 bits of that operation's existing
+256-bit payload entry. The control exposes four 16-entry payload banks rather
+than instantiating a second result table. Each bank has one read/write port;
+a retirement read wins over a same-bank completion write, and a dedicated
+counter exposes those stalls. Allocation is a metadata commit only after the
+upstream payload initializer acknowledges its write. The paired payload model
+has no reset and exists only for directed RTL simulation. It is excluded from
+the control-only physical target
+`//lanl_fp64:retirement_overlay_control_64x4x2_final`; that target prices the
+state, selection, arbitration, and 69-bit bank steering to combine with the
+already-budgeted four-bank operation-window macro, not a complete accelerator.
+It uses 25% core utilization solely to provide legal die perimeter for 1,273
+exposed macro-boundary pins. Cell area is the useful cost metric; die area and
+boundary-dominated wire length are not a joint placement result.
+
 `activity/portfolio_activity_contract.json` and
 `scripts/generate_portfolio_saif.py` generate three top-input SAIF sensitivity
 profiles. UMT uses the conceptual 32-context source-order operation incidence

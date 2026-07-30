@@ -132,6 +132,23 @@ orfs_flow(
 )
 
 orfs_flow(
+    name = "retirement_overlay_control_64x4x2",
+    arguments = dict(
+        COMMON_ARGUMENTS,
+        CORE_UTILIZATION = "25",
+        HOLD_SLACK_MARGIN = "0.03",
+    ),
+    last_stage = "final",
+    pdk = "@orfs//flow:nangate45",
+    sources = {
+        "SDC_FILE": [":constraints.sdc"],
+    },
+    tags = ["manual"],
+    top = "LanlMaaOperationRetirementOverlay64x4x2",
+    verilog_files = ["rtl/LanlMaaOperationRetirementOverlay.v"],
+)
+
+orfs_flow(
     name = "line_table_32x4_linked_waiters",
     arguments = dict(COMMON_ARGUMENTS, HOLD_SLACK_MARGIN = "0.03"),
     last_stage = "final",
