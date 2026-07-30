@@ -136,6 +136,11 @@ class LANLMAA(ClockedObject):
     retirement_width = Param.Unsigned(
         2, "Maximum ordered logical completions retired per cycle"
     )
+    model_payload_overlay_ports = Param.Bool(
+        False,
+        "Model the selected 64-entry, four-bank, one-read/write payload "
+        "overlay with two held completion lanes and retirement-read priority",
+    )
     line_bytes = Param.Unsigned(64, "Coherent request and merge granularity")
     start_cycle = Param.Cycles(
         1, "Cycle at which the synthetic descriptor starts"

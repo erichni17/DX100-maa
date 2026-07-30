@@ -52,6 +52,7 @@ sanitizer_flags=(
 )
 sources=(
     tests/lanl_maa/line_table_geometry_test.cc
+    tests/lanl_maa/operation_payload_port_model_test.cc
     tests/lanl_maa/shared_overlay_cost_test.cc
     tests/lanl_maa/shared_overlay_mode_barrier_test.cc
 )

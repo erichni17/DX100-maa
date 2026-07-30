@@ -153,6 +153,24 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Logical values supplied by line responses"),
       ADD_STAT(completionsRetired, statistics::units::Count::get(),
                "Logical items retired in descriptor order"),
+      ADD_STAT(payloadOverlayCompletionWrites,
+               statistics::units::Count::get(),
+               "Result writes accepted by the operation-payload overlay"),
+      ADD_STAT(payloadOverlayRetirementReads,
+               statistics::units::Count::get(),
+               "Retirement reads accepted by the operation-payload overlay"),
+      ADD_STAT(payloadOverlayCompletionBankConflictCycles,
+               statistics::units::Cycle::get(),
+               "Cycles with two held completions targeting one payload bank"),
+      ADD_STAT(payloadOverlayCompletionReadConflictCycles,
+               statistics::units::Cycle::get(),
+               "Cycles with a completion held behind a retirement read"),
+      ADD_STAT(payloadOverlayCompletionWouldBlockCycles,
+               statistics::units::Cycle::get(),
+               "Cycles ending with queued payload completion writes"),
+      ADD_STAT(payloadOverlayCompletionQueueHighWaterMark,
+               statistics::units::Count::get(),
+               "Maximum queued payload completion writes"),
       ADD_STAT(verificationFailures, statistics::units::Count::get(),
                "Functional values that differ from the supplied oracle"),
       ADD_STAT(continuationSteps, statistics::units::Count::get(),
@@ -432,6 +450,7 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
       logicalAdmissionWidth(params.logical_admission_width),
       lineIssueWidth(params.line_issue_width),
       retirementWidth(params.retirement_width),
+      modelPayloadOverlayPorts(params.model_payload_overlay_ports),
       lineBytes(params.line_bytes),
       lineTableGeometry(lineEntries, lineBanks, lineBytes),
       startCycle(params.start_cycle),
@@ -457,6 +476,10 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
         bransonEventComputeUnits);
     bransonContextScheduler = std::make_unique<BransonContextScheduler>(
         operationEntries, bransonContextQuantum);
+    if (modelPayloadOverlayPorts) {
+        payloadPortModel = std::make_unique<OperationPayloadPortModel>(
+            operationEntries, 4, 2, retirementWidth);
+    }
     descriptorState = descriptorMode ? DescriptorState::Idle :
                                        DescriptorState::Disabled;
     for (size_t index = 0; index < addresses.size(); ++index) {
@@ -618,6 +641,10 @@ LANLMAA::validateConfiguration() const
              "LANLMAA logical_admission_width must be nonzero");
     fatal_if(lineIssueWidth == 0, "LANLMAA line_issue_width must be nonzero");
     fatal_if(retirementWidth == 0, "LANLMAA retirement_width must be nonzero");
+    fatal_if(modelPayloadOverlayPorts &&
+                 (operationEntries != 64 || retirementWidth != 2),
+             "LANLMAA selected payload-overlay timing requires exactly 64 "
+             "operation entries and retirement width two");
     fatal_if(lineBytes != 64, "LANLMAA v0 requires 64-byte lines");
     for (const Addr address : addresses) {
         const size_t accessBytes = dependentMode ? 2 * sizeof(uint64_t) :
@@ -832,6 +859,10 @@ LANLMAA::rearmDescriptorEngine()
     faceComputeTiming->reset();
     bransonEventTiming->reset();
     bransonContextScheduler->reset();
+    if (payloadPortModel) {
+        payloadPortModel->reset();
+    }
+    payloadRetirementGrants = 0;
     verificationInFlight = false;
     finished = false;
     descriptorState = DescriptorState::Idle;
@@ -938,6 +969,10 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
     activeContexts = 0;
     activeFaceComputations = 0;
     activeBransonEventComputations = 0;
+    if (payloadPortModel) {
+        payloadPortModel->reset();
+    }
+    payloadRetirementGrants = 0;
     spartaFusedContextSlots.fill(false);
     for (auto &operation : operations) {
         operation.ownsContext = false;
@@ -3515,6 +3550,10 @@ LANLMAA::beginDescriptorExecution()
     faceComputeTiming->reset(static_cast<uint64_t>(curCycle()));
     bransonEventTiming->reset(static_cast<uint64_t>(curCycle()));
     bransonContextScheduler->reset();
+    if (payloadPortModel) {
+        payloadPortModel->reset();
+    }
+    payloadRetirementGrants = 0;
     descriptorFaceUpdatesAcknowledged = 0;
     descriptorFaceUpdatePhase = false;
     descriptorState = DescriptorState::Executing;
@@ -3660,6 +3699,7 @@ LANLMAA::tick()
         }
     }
     ++stats.engineCycles;
+    servicePayloadOverlayPorts();
     retireOperations();
     admitOperations();
     if (umeGradzatpDescriptor()) {
@@ -3791,22 +3831,83 @@ LANLMAA::tick()
 }
 
 void
+LANLMAA::servicePayloadOverlayPorts()
+{
+    payloadRetirementGrants = 0;
+    if (!payloadPortModel) {
+        return;
+    }
+
+    for (size_t index = nextRetirement; index < nextAdmission; ++index) {
+        if (operations[index].state != OperationState::RetireReady ||
+            payloadPortModel->completed(index) ||
+            payloadPortModel->completionQueued(index)) {
+            continue;
+        }
+        panic_if(!payloadPortModel->allocated(index),
+                 "LANLMAA payload completion lost its allocated tag");
+        panic_if(!payloadPortModel->queueCompletion(index),
+                 "LANLMAA failed to retain a payload completion");
+    }
+
+    const size_t queuedBefore = payloadPortModel->pendingCompletions();
+    if (queuedBefore >
+        stats.payloadOverlayCompletionQueueHighWaterMark.value()) {
+        stats.payloadOverlayCompletionQueueHighWaterMark = queuedBefore;
+    }
+
+    std::vector<uint64_t> retirementTags;
+    for (size_t index = nextRetirement;
+         index < nextAdmission && retirementTags.size() < retirementWidth;
+         ++index) {
+        if (operations[index].state != OperationState::RetireReady ||
+            !payloadPortModel->completed(index)) {
+            break;
+        }
+        retirementTags.push_back(index);
+    }
+
+    const auto result = payloadPortModel->cycle(retirementTags);
+    panic_if(!result.valid,
+             "LANLMAA payload-overlay arbitration violated its contract");
+    payloadRetirementGrants = result.retirementReads;
+    stats.payloadOverlayRetirementReads += result.retirementReads;
+    stats.payloadOverlayCompletionWrites += result.completionWrites;
+    if (result.completionBankConflict) {
+        ++stats.payloadOverlayCompletionBankConflictCycles;
+    }
+    if (result.completionReadConflict) {
+        ++stats.payloadOverlayCompletionReadConflictCycles;
+    }
+    if (result.completionWouldBlock) {
+        ++stats.payloadOverlayCompletionWouldBlockCycles;
+    }
+}
+
+void
 LANLMAA::retireOperations()
 {
     size_t retired = 0;
     while (retired < retirementWidth && nextRetirement < operations.size() &&
-           operations[nextRetirement].state == OperationState::RetireReady) {
+           operations[nextRetirement].state == OperationState::RetireReady &&
+           (!payloadPortModel || retired < payloadRetirementGrants)) {
         auto &operation = operations[nextRetirement];
         if (!updateMode && !expectedValues.empty() &&
             operation.value != operation.expected) {
             ++stats.verificationFailures;
         }
+        panic_if(payloadPortModel &&
+                     !payloadPortModel->release(nextRetirement),
+                 "LANLMAA retired an uncommitted payload result");
         ++stats.completionsRetired;
         operation.state = OperationState::Unadmitted;
         ++nextRetirement;
         --activeOperations;
         ++retired;
     }
+    panic_if(payloadPortModel && retired != payloadRetirementGrants,
+             "LANLMAA did not consume every payload retirement grant");
+    payloadRetirementGrants = 0;
 }
 
 void
@@ -3842,6 +3943,10 @@ LANLMAA::admitOperations()
             }
             return;
         }
+
+        panic_if(payloadPortModel &&
+                     !payloadPortModel->allocate(nextAdmission),
+                 "LANLMAA operation allocation reused a live payload tag");
 
         if (umeGradzatpDescriptor() &&
             umeGradzatpPhase == UmeGradzatpPhase::Update) {

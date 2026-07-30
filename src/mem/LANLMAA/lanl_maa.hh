@@ -15,6 +15,7 @@
 #include "mem/LANLMAA/Descriptor.hh"
 #include "mem/LANLMAA/FaceComputeTiming.hh"
 #include "mem/LANLMAA/LineTableGeometry.hh"
+#include "mem/LANLMAA/OperationPayloadPortModel.hh"
 #include "mem/LANLMAA/SharedOverlayModeBarrier.hh"
 #include "mem/LANLMAA/SpartaFusedCellModel.hh"
 #include "mem/LANLMAA/SpartaPairedSummaryStore.hh"
@@ -271,6 +272,12 @@ class LANLMAA : public ClockedObject
         statistics::Scalar responses;
         statistics::Scalar responsesFannedOut;
         statistics::Scalar completionsRetired;
+        statistics::Scalar payloadOverlayCompletionWrites;
+        statistics::Scalar payloadOverlayRetirementReads;
+        statistics::Scalar payloadOverlayCompletionBankConflictCycles;
+        statistics::Scalar payloadOverlayCompletionReadConflictCycles;
+        statistics::Scalar payloadOverlayCompletionWouldBlockCycles;
+        statistics::Scalar payloadOverlayCompletionQueueHighWaterMark;
         statistics::Scalar verificationFailures;
         statistics::Scalar continuationSteps;
         statistics::Scalar continuationExhaustions;
@@ -402,6 +409,7 @@ class LANLMAA : public ClockedObject
     const size_t logicalAdmissionWidth;
     const size_t lineIssueWidth;
     const size_t retirementWidth;
+    const bool modelPayloadOverlayPorts;
     const size_t lineBytes;
     LineTableGeometry lineTableGeometry;
     const Cycles startCycle;
@@ -416,6 +424,7 @@ class LANLMAA : public ClockedObject
     std::unique_ptr<FaceComputeTiming> faceComputeTiming;
     std::unique_ptr<BransonEventTiming> bransonEventTiming;
     std::unique_ptr<BransonContextScheduler> bransonContextScheduler;
+    std::unique_ptr<OperationPayloadPortModel> payloadPortModel;
     SharedOverlayModeBarrier sharedOverlayBarrier;
     bool descriptorOwnsSharedOverlay = false;
 
@@ -431,6 +440,7 @@ class LANLMAA : public ClockedObject
     size_t activeContexts = 0;
     size_t activeFaceComputations = 0;
     size_t activeBransonEventComputations = 0;
+    size_t payloadRetirementGrants = 0;
     PacketPtr verificationPacket = nullptr;
     PacketPtr rejectedPacket = nullptr;
     bool verificationInFlight = false;
@@ -593,6 +603,7 @@ class LANLMAA : public ClockedObject
     void beginDescriptorResults();
     void completeDescriptor();
     void tick();
+    void servicePayloadOverlayPorts();
     void retireOperations();
     void admitOperations();
     void attachReadyOperations();

@@ -66,7 +66,9 @@ def validate_submission(document, expected_timestep=1):
     return writes, scalar
 
 
-def read_stats(path, expected_writes):
+def read_stats(
+    path, expected_writes, model_payload_overlay_ports=False
+):
     stats = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         match = STAT_PATTERN.match(line)
@@ -91,6 +93,29 @@ def read_stats(path, expected_writes):
             raise ValueError(
                 f"unexpected {name}: {stats.get(name)} != {expected}"
             )
+    if model_payload_overlay_ports:
+        logical_items = stats.get("logicalItems")
+        if logical_items is None or logical_items <= 0:
+            raise ValueError("payload-overlay run admitted no logical items")
+        for name in (
+            "payloadOverlayCompletionWrites",
+            "payloadOverlayRetirementReads",
+        ):
+            if stats.get(name) != logical_items:
+                raise ValueError(
+                    f"unexpected {name}: {stats.get(name)} "
+                    f"!= {logical_items}"
+                )
+        for name in (
+            "logicalItems",
+            "payloadOverlayCompletionWrites",
+            "payloadOverlayRetirementReads",
+            "payloadOverlayCompletionBankConflictCycles",
+            "payloadOverlayCompletionReadConflictCycles",
+            "payloadOverlayCompletionWouldBlockCycles",
+            "payloadOverlayCompletionQueueHighWaterMark",
+        ):
+            required[name] = stats.get(name)
     retry_names = (
         "portSendFailures",
         "portRetryNotifications",
@@ -126,6 +151,7 @@ def main():
     parser.add_argument("--outdir", required=True, type=pathlib.Path)
     parser.add_argument("--submission-timestep", type=int, default=1)
     parser.add_argument("--timeout-seconds", type=int, default=600)
+    parser.add_argument("--model-payload-overlay-ports", action="store_true")
     arguments = parser.parse_args()
 
     if arguments.submission_timestep < 0:
@@ -169,6 +195,8 @@ def main():
         f"--submission-report={submission_path}",
         f"--submission-timestep={arguments.submission_timestep}",
     ]
+    if arguments.model_payload_overlay_ports:
+        command.append("--model-payload-overlay-ports")
     report = {
         "schema": "lanl-maa-sparta-native-process-smoke-v1",
         "status": "running",
@@ -187,6 +215,9 @@ def main():
         ],
         "metadata_sha256": file_sha256(metadata),
         "requested_submission_timestep": arguments.submission_timestep,
+        "model_payload_overlay_ports": (
+            arguments.model_payload_overlay_ports
+        ),
         "command": command,
         "claim_boundary": (
             "One real SPARTA process copies bounded native CPU records into "
@@ -232,7 +263,11 @@ def main():
             raise ValueError("missing exact native SPARTA submission marker")
         report["submission_sha256"] = file_sha256(submission_path)
         report["submission"] = submission
-        report["metrics"] = read_stats(m5out / "stats.txt", expected_writes)
+        report["metrics"] = read_stats(
+            m5out / "stats.txt",
+            expected_writes,
+            arguments.model_payload_overlay_ports,
+        )
         report["status"] = "validated"
     except Exception as error:
         report["status"] = "failed"

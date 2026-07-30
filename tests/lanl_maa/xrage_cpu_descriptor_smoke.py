@@ -20,6 +20,7 @@ from m5.objects import (
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", required=True)
 parser.add_argument("--metadata", required=True)
+parser.add_argument("--model-payload-overlay-ports", action="store_true")
 parser.add_argument("--l1-caches", action="store_true")
 parser.add_argument("--maa-cache-size", default="4KiB")
 parser.add_argument("--maa-cache-assoc", type=int, default=2)
@@ -96,6 +97,7 @@ system.lanl_maa = LANLMAA(
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,
+    model_payload_overlay_ports=args.model_payload_overlay_ports,
     exit_on_completion=False,
 )
 if args.l1_caches:

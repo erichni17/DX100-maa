@@ -94,7 +94,7 @@ def validate_submission(document, metadata):
             raise ValueError(f"invalid {name}: {value}")
 
 
-def read_stats(path, metadata):
+def read_stats(path, metadata, model_payload_overlay_ports=False):
     lines = path.read_text(encoding="utf-8").splitlines()
     stats = {}
     for line in lines:
@@ -129,6 +129,19 @@ def read_stats(path, metadata):
             raise ValueError(
                 f"unexpected {name}: {stats.get(name)} != {value}"
             )
+    if model_payload_overlay_ports:
+        logical_items = stats.get("logicalItems")
+        if logical_items is None or logical_items <= 0:
+            raise ValueError("payload-overlay run admitted no logical items")
+        for name in (
+            "payloadOverlayCompletionWrites",
+            "payloadOverlayRetirementReads",
+        ):
+            if stats.get(name) != logical_items:
+                raise ValueError(
+                    f"unexpected {name}: {stats.get(name)} "
+                    f"!= {logical_items}"
+                )
     line_records = stats.get("physicalLineReads", 0) + stats.get(
         "lineMergeHits", 0
     )
@@ -172,6 +185,25 @@ def read_stats(path, metadata):
         "portRetries": retries[0],
         "cpuCommittedInstructions": committed,
         "simTicks": ticks,
+        "logicalItems": stats.get("logicalItems"),
+        "payloadOverlayCompletionWrites": stats.get(
+            "payloadOverlayCompletionWrites"
+        ),
+        "payloadOverlayRetirementReads": stats.get(
+            "payloadOverlayRetirementReads"
+        ),
+        "payloadOverlayCompletionBankConflictCycles": stats.get(
+            "payloadOverlayCompletionBankConflictCycles"
+        ),
+        "payloadOverlayCompletionReadConflictCycles": stats.get(
+            "payloadOverlayCompletionReadConflictCycles"
+        ),
+        "payloadOverlayCompletionWouldBlockCycles": stats.get(
+            "payloadOverlayCompletionWouldBlockCycles"
+        ),
+        "payloadOverlayCompletionQueueHighWaterMark": stats.get(
+            "payloadOverlayCompletionQueueHighWaterMark"
+        ),
     }
 
 
@@ -205,6 +237,7 @@ def main():
     parser.add_argument("--dependency", action="append", type=pathlib.Path)
     parser.add_argument("--outdir", required=True, type=pathlib.Path)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument("--model-payload-overlay-ports", action="store_true")
     parser.add_argument(
         "--config",
         type=pathlib.Path,
@@ -268,6 +301,8 @@ def main():
         f"--metadata={metadata_path}",
         f"--submission-report={submission_path}",
     ]
+    if arguments.model_payload_overlay_ports:
+        command.append("--model-payload-overlay-ports")
     report = {
         "schema": "lanl-maa-branson-native-process-smoke-v1",
         "status": "running",
@@ -275,6 +310,9 @@ def main():
         "branson_tracked_worktree_clean": True,
         "simulator_commit": simulator_commit,
         "simulator_tracked_worktree_clean": True,
+        "model_payload_overlay_ports": (
+            arguments.model_payload_overlay_ports
+        ),
         "branson_binary_sha256": file_sha256(binary),
         "branson_needed_libraries": needed_libraries,
         "mpi_mode": metadata["mpi_mode"],
@@ -336,7 +374,9 @@ def main():
         report["submission"] = submission
         report["submission_sha256"] = file_sha256(submission_path)
         stats_path = m5out / "stats.txt"
-        report["metrics"] = read_stats(stats_path, metadata)
+        report["metrics"] = read_stats(
+            stats_path, metadata, arguments.model_payload_overlay_ports
+        )
         report["stats_sha256"] = file_sha256(stats_path)
         report["stdout_sha256"] = file_sha256(outdir / "stdout.log")
         report["stderr_sha256"] = file_sha256(outdir / "stderr.log")

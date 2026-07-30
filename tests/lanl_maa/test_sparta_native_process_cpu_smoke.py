@@ -94,6 +94,44 @@ class SpartaNativeProcessCpuSmokeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unbalanced retry"):
                 RUNNER.read_stats(path, 156)
 
+    def test_payload_overlay_stats_close(self):
+        required = {
+            "descriptorFetches": 2,
+            "descriptorErrors": 0,
+            "descriptorCompletionWrites": 1,
+            "descriptorSpartaFusedCellsLoaded": 27,
+            "descriptorSpartaFusedParticlesVisited": 64,
+            "descriptorSpartaFusedEligibleParticles": 64,
+            "descriptorSpartaFusedFp64Multiplies": 448,
+            "descriptorSpartaFusedFp64Adds": 512,
+            "descriptorSpartaFusedTallyZeroReads": 162,
+            "descriptorSpartaFusedWritesAcknowledged": 156,
+            "descriptorResultWrites": 156,
+            "activeContextHighWaterMark": 8,
+            "portSendFailures": 0,
+            "portRetryNotifications": 0,
+            "retryPacketResubmissions": 0,
+            "retryPacketAcceptances": 0,
+            "logicalItems": 27,
+            "payloadOverlayCompletionWrites": 27,
+            "payloadOverlayRetirementReads": 27,
+            "payloadOverlayCompletionBankConflictCycles": 1,
+            "payloadOverlayCompletionReadConflictCycles": 2,
+            "payloadOverlayCompletionWouldBlockCycles": 3,
+            "payloadOverlayCompletionQueueHighWaterMark": 4,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "stats.txt"
+            path.write_text(
+                "".join(
+                    f"system.lanl_maa.{name} {value}\n"
+                    for name, value in required.items()
+                ),
+                encoding="utf-8",
+            )
+            metrics = RUNNER.read_stats(path, 156, True)
+            self.assertEqual(metrics["payloadOverlayRetirementReads"], 27)
+
 
 if __name__ == "__main__":
     unittest.main()

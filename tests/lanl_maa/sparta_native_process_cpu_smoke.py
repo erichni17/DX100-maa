@@ -24,6 +24,7 @@ parser.add_argument("--cwd", required=True)
 parser.add_argument("--metadata", required=True)
 parser.add_argument("--submission-report", required=True)
 parser.add_argument("--submission-timestep", type=int, default=1)
+parser.add_argument("--model-payload-overlay-ports", action="store_true")
 arguments = parser.parse_args()
 
 if arguments.submission_timestep < 0:
@@ -93,6 +94,7 @@ system.lanl_maa = LANLMAA(
     logical_admission_width=2,
     line_issue_width=2,
     retirement_width=2,
+    model_payload_overlay_ports=arguments.model_payload_overlay_ports,
     exit_on_completion=False,
 )
 system.maa_cache = MAACoherenceCache()

@@ -50,6 +50,7 @@ def validate(
     minimum_physical_line_reads=10,
     coherence_stats=None,
     expect_reference_coherence=False,
+    model_payload_overlay_ports=False,
 ):
     errors = []
     accelerator = stats.get("lanl_maa", {})
@@ -102,6 +103,23 @@ def validate(
         errors.append(
             "CPU descriptor request/response accounting did not close"
         )
+    if model_payload_overlay_ports:
+        for name in (
+            "payloadOverlayCompletionWrites",
+            "payloadOverlayRetirementReads",
+        ):
+            if accelerator.get(name) != logical_items:
+                errors.append(
+                    f"{name}: expected {logical_items}, "
+                    f"got {accelerator.get(name)}"
+                )
+        if (
+            accelerator.get(
+                "payloadOverlayCompletionQueueHighWaterMark", 0
+            )
+            <= 0
+        ):
+            errors.append("payload overlay completion queue was not exercised")
     failures = accelerator.get("portSendFailures")
     notifications = accelerator.get("portRetryNotifications")
     resubmissions = accelerator.get("retryPacketResubmissions")
@@ -423,6 +441,8 @@ def run_smoke(args, root):
                 f"--maa-cache-write-buffers={args.maa_cache_write_buffers}",
             ]
         )
+    if args.model_payload_overlay_ports:
+        command.append("--model-payload-overlay-ports")
     result = subprocess.run(command, text=True, capture_output=True)
     (root / "gem5.stdout").write_text(result.stdout, encoding="utf-8")
     (root / "gem5.stderr").write_text(result.stderr, encoding="utf-8")
@@ -467,6 +487,7 @@ def run_smoke(args, root):
         and args.maa_cache_mshrs == 32
         and args.maa_cache_targets_per_mshr == 20
         and args.maa_cache_write_buffers == 8,
+        args.model_payload_overlay_ports,
     )
 
 
@@ -476,6 +497,7 @@ def main():
     parser.add_argument("--trace", required=True, type=pathlib.Path)
     parser.add_argument("--chunks", default=1, type=int)
     parser.add_argument("--l1-caches", action="store_true")
+    parser.add_argument("--model-payload-overlay-ports", action="store_true")
     parser.add_argument("--maa-cache-size", default="4KiB")
     parser.add_argument("--maa-cache-assoc", type=int, default=2)
     parser.add_argument("--maa-cache-mshrs", type=int, default=8)

@@ -25,6 +25,7 @@ parser.add_argument("--input", required=True)
 parser.add_argument("--cwd", required=True)
 parser.add_argument("--metadata", required=True)
 parser.add_argument("--submission-report", required=True)
+parser.add_argument("--model-payload-overlay-ports", action="store_true")
 arguments = parser.parse_args()
 
 
@@ -96,6 +97,7 @@ system.lanl_maa = LANLMAA(
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,
+    model_payload_overlay_ports=arguments.model_payload_overlay_ports,
     exit_on_completion=False,
 )
 system.maa_cache = MAACoherenceCache()

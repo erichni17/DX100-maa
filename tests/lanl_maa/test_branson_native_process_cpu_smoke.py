@@ -90,6 +90,13 @@ class BransonNativeProcessCpuSmokeTest(unittest.TestCase):
             "portRetryNotifications": 7,
             "retryPacketResubmissions": 7,
             "retryPacketAcceptances": 7,
+            "logicalItems": 24000,
+            "payloadOverlayCompletionWrites": 24000,
+            "payloadOverlayRetirementReads": 24000,
+            "payloadOverlayCompletionBankConflictCycles": 3,
+            "payloadOverlayCompletionReadConflictCycles": 4,
+            "payloadOverlayCompletionWouldBlockCycles": 5,
+            "payloadOverlayCompletionQueueHighWaterMark": 6,
         }
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "stats.txt"
@@ -102,7 +109,20 @@ class BransonNativeProcessCpuSmokeTest(unittest.TestCase):
                 + "simTicks 200\n",
                 encoding="utf-8",
             )
-            RUNNER.read_stats(path, METADATA)
+            RUNNER.read_stats(path, METADATA, True)
+            values["payloadOverlayRetirementReads"] = 23999
+            path.write_text(
+                "".join(
+                    f"system.lanl_maa.{name} {value}\n"
+                    for name, value in values.items()
+                )
+                + "system.cpu.commitStats0.numInsts 100\n"
+                + "simTicks 200\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "RetirementReads"):
+                RUNNER.read_stats(path, METADATA, True)
+            values["payloadOverlayRetirementReads"] = 24000
             values["retryPacketAcceptances"] = 6
             path.write_text(
                 "".join(
