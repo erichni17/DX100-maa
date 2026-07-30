@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 
 import argparse
+import array
 import hashlib
 import json
 import pathlib
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 
 from run_xrage_descriptor_rearm_smoke import (
     DESCRIPTOR_ITEMS,
+    TRACE_ENTRIES,
     TRACE_SHA256,
     check_equal,
     file_sha256,
@@ -20,8 +23,8 @@ from run_xrage_descriptor_rearm_smoke import (
 
 DATA_VADDR = 0x1000000000
 DATA_PADDR = 0x02000000
-DATA_BYTES = 0x200000
-CONTROL_VADDR = 0x1000200000
+DATA_BYTES = 0x800000
+CONTROL_VADDR = DATA_VADDR + DATA_BYTES
 CONTROL_PADDR = 0x04000000
 CONTROL_BYTES = 0x1000
 DESCRIPTOR_OFFSET = 0x0000
@@ -32,7 +35,25 @@ TARGET_OFFSET = 0x4000
 WINDOW_SHA256 = (
     "6929711f4f49fbbde674fa80d5b8f5cd" "05f2140b75f1e747ea7467995cb1aa7b"
 )
-MAX_STREAM_DESCRIPTORS = 32
+MAX_STREAM_DESCRIPTORS = TRACE_ENTRIES // DESCRIPTOR_ITEMS
+
+
+def write_json_atomic(path, document):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(document, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
+def repository_identity(root):
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip()
+    status = subprocess.check_output(
+        ["git", "status", "--short"], cwd=root, text=True
+    )
+    return commit, not bool(status.strip())
 
 
 def read_scalar(path, name):
@@ -175,7 +196,6 @@ def generate_source(path, indices, chunks):
     maximum_target_offset = TARGET_OFFSET + (max(indices) - minimum) * 8
     if maximum_target_offset + 8 > DATA_BYTES:
         raise RuntimeError("XRAGE CPU target window exceeds mapped data")
-    index_lines = ",\n".join(f"    UINT64_C({index})" for index in indices)
     source = f"""
 #include <stdint.h>
 
@@ -192,9 +212,8 @@ def generate_source(path, indices, chunks):
 #define CHUNKS UINT64_C({chunks})
 #define TOTAL_ITEMS (ITEMS * CHUNKS)
 
-static const uint64_t indices[TOTAL_ITEMS] = {{
-{index_lines}
-}};
+extern const uint64_t xr_indices[TOTAL_ITEMS];
+#define indices xr_indices
 
 static uint64_t
 splitmix64(uint64_t value)
@@ -305,18 +324,35 @@ _start(void)
     path.write_text(source.lstrip(), encoding="utf-8")
 
 
-def build_program(root, indices, chunks):
+def build_program(root, indices, packed_indices, chunks):
     compiler = shutil.which("cc")
     if not compiler:
         raise RuntimeError("XRAGE CPU descriptor smoke requires cc")
     source = root / "xrage_cpu_descriptor.c"
+    assembly = root / "xrage_cpu_indices.S"
+    index_blob = root / "xrage_cpu_indices.u64le"
     binary = root / "xrage_cpu_descriptor.elf"
     generate_source(source, indices, chunks)
+    index_blob.write_bytes(packed_indices)
+    assembly.write_text(
+        ".section .rodata\n"
+        ".balign 8\n"
+        ".globl xr_indices\n"
+        ".type xr_indices, @object\n"
+        "xr_indices:\n"
+        f'.incbin "{index_blob}"\n'
+        ".size xr_indices, .-xr_indices\n"
+        '.section .note.GNU-stack,"",@progbits\n',
+        encoding="utf-8",
+    )
     subprocess.run(
         [
             compiler,
             "-std=c11",
             "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
             "-nostdlib",
             "-static",
             "-fno-pie",
@@ -326,15 +362,21 @@ def build_program(root, indices, chunks):
             "-Wl,--build-id=none",
             "-Wl,-e,_start",
             source,
+            assembly,
             "-o",
             binary,
         ],
         check=True,
     )
-    return source, binary
+    return source, assembly, index_blob, binary
 
 
 def run_smoke(args, root):
+    runner = pathlib.Path(__file__).resolve()
+    repository = runner.parents[2]
+    simulator_commit, simulator_clean = repository_identity(repository)
+    if args.require_clean_simulator and not simulator_clean:
+        raise RuntimeError("full XRAGE evidence requires a clean simulator")
     trace = args.trace.resolve()
     if file_sha256(trace) != TRACE_SHA256:
         raise RuntimeError("XRAGE CPU trace SHA-256 changed")
@@ -345,28 +387,40 @@ def run_smoke(args, root):
     indices = pattern[:total_items]
     if len(indices) != total_items:
         raise RuntimeError("XRAGE trace ended before the requested CPU stream")
-    packed = struct.pack(f"<{total_items}Q", *indices)
+    packed_array = array.array("Q", indices)
+    if packed_array.itemsize != 8:
+        raise RuntimeError("host uint64 array width changed")
+    if sys.byteorder != "little":
+        packed_array.byteswap()
+    packed = packed_array.tobytes()
     stream_sha256 = hashlib.sha256(packed).hexdigest()
     if args.chunks == 1 and stream_sha256 != WINDOW_SHA256:
         raise RuntimeError("XRAGE CPU descriptor window changed")
     windows = []
+    window_manifest = hashlib.sha256()
+    detailed_windows = args.chunks <= 32
+    minimum_physical_line_reads = 0
     for chunk in range(args.chunks):
         begin = chunk * DESCRIPTOR_ITEMS
         window = indices[begin : begin + DESCRIPTOR_ITEMS]
         window_packed = struct.pack("<64Q", *window)
-        windows.append(
-            {
-                "chunk": chunk,
-                "trace_offset": begin,
-                "window_u64le_sha256": hashlib.sha256(
-                    window_packed
-                ).hexdigest(),
-                "unique_target_lines": len({index // 8 for index in window}),
-            }
-        )
-    source, binary = build_program(root, indices, args.chunks)
-    minimum_physical_line_reads = sum(
-        window["unique_target_lines"] for window in windows
+        window_sha256 = hashlib.sha256(window_packed).hexdigest()
+        unique_target_lines = len({index // 8 for index in window})
+        minimum_physical_line_reads += unique_target_lines
+        window_manifest.update(struct.pack("<Q", chunk))
+        window_manifest.update(bytes.fromhex(window_sha256))
+        window_manifest.update(struct.pack("<Q", unique_target_lines))
+        if detailed_windows or chunk < 4 or chunk >= args.chunks - 4:
+            windows.append(
+                {
+                    "chunk": chunk,
+                    "trace_offset": begin,
+                    "window_u64le_sha256": window_sha256,
+                    "unique_target_lines": unique_target_lines,
+                }
+            )
+    source, assembly, index_blob, binary = build_program(
+        root, indices, packed, args.chunks
     )
     stream_unique_target_lines = len({index // 8 for index in indices})
     metadata = {
@@ -381,6 +435,9 @@ def run_smoke(args, root):
         "trace_sha256": TRACE_SHA256,
         "stream_u64le_sha256": stream_sha256,
         "windows": windows,
+        "window_records_complete": detailed_windows,
+        "window_records_stored": len(windows),
+        "window_manifest_sha256": window_manifest.hexdigest(),
         "chunks": args.chunks,
         "items": DESCRIPTOR_ITEMS,
         "total_items": total_items,
@@ -412,16 +469,21 @@ def run_smoke(args, root):
             else None
         ),
         "source_sha256": file_sha256(source),
+        "assembly_sha256": file_sha256(assembly),
+        "index_blob_sha256": file_sha256(index_blob),
         "binary_sha256": file_sha256(binary),
         "value_oracle": "SplitMix64(index), modulo 2^64",
+        "simulator_commit": simulator_commit,
+        "simulator_worktree_clean": simulator_clean,
+        "gem5_sha256": file_sha256(args.gem5.resolve()),
+        "runner_sha256": file_sha256(runner),
+        "config_sha256": file_sha256(args.config.resolve()),
     }
     if args.chunks == 1:
         metadata["window_u64le_sha256"] = stream_sha256
         metadata["unique_target_lines"] = windows[0]["unique_target_lines"]
     metadata_path = root / "metadata.json"
-    metadata_path.write_text(
-        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
-    )
+    write_json_atomic(metadata_path, metadata)
     outdir = root / "m5out"
     command = [
         str(args.gem5.resolve()),
@@ -444,52 +506,126 @@ def run_smoke(args, root):
         )
     if args.model_payload_overlay_ports:
         command.append("--model-payload-overlay-ports")
-    result = subprocess.run(command, text=True, capture_output=True)
-    (root / "gem5.stdout").write_text(result.stdout, encoding="utf-8")
-    (root / "gem5.stderr").write_text(result.stderr, encoding="utf-8")
-    if result.returncode != 0:
-        raise RuntimeError(
-            "gem5 XRAGE CPU descriptor failed:\n"
-            + result.stdout
-            + result.stderr
+    report_path = root / "report.json"
+    report = {
+        "schema": "lanl-maa-xrage-full-descriptor-stream-v1",
+        "status": "running",
+        "terminal": False,
+        "simulator_commit": simulator_commit,
+        "simulator_worktree_clean": simulator_clean,
+        "gem5_sha256": metadata["gem5_sha256"],
+        "runner_sha256": metadata["runner_sha256"],
+        "config_sha256": metadata["config_sha256"],
+        "trace_sha256": TRACE_SHA256,
+        "stream_u64le_sha256": stream_sha256,
+        "binary_sha256": metadata["binary_sha256"],
+        "metadata_sha256": file_sha256(metadata_path),
+        "chunks": args.chunks,
+        "total_items": total_items,
+        "model_payload_overlay_ports": args.model_payload_overlay_ports,
+        "command": command,
+        "correctness_method": (
+            "Every returned item is compared against SplitMix64(index), and "
+            "every descriptor completion record is checked exactly."
+        ),
+        "claim_boundary": (
+            "CPU-submitted direct-gather replay of the pinned XRAGE trace; "
+            "not the XRAGE application, application speedup, RTL, physical "
+            "closure, or promotion evidence."
+        ),
+    }
+    write_json_atomic(report_path, report)
+    stdout_path = root / "gem5.stdout"
+    stderr_path = root / "gem5.stderr"
+    try:
+        with stdout_path.open("w", encoding="utf-8") as stdout, \
+                stderr_path.open("w", encoding="utf-8") as stderr:
+            result = subprocess.run(command, text=True, stdout=stdout, stderr=stderr)
+        report["driver_return_code"] = result.returncode
+        if result.returncode != 0:
+            raise RuntimeError(
+                "gem5 XRAGE CPU descriptor failed; inspect "
+                f"{stdout_path} and {stderr_path}"
+            )
+        stats_path = outdir / "stats.txt"
+        coherence_stats = None
+        if args.l1_caches:
+            coherence_stats = {
+                "maa_cache_accesses": read_scalar(
+                    stats_path, "system.maa_cache.overallAccesses_T::total"
+                ),
+                "maa_cache_misses": read_scalar(
+                    stats_path, "system.maa_cache.overallMisses_T::total"
+                ),
+                "maa_cache_read_accesses": read_scalar(
+                    stats_path, "system.maa_cache.ReadReq_T.accesses::total"
+                ),
+                "maa_cache_write_accesses": read_scalar(
+                    stats_path, "system.maa_cache.WriteReq_T.accesses::total"
+                ),
+                "membus_snoops": read_scalar(
+                    stats_path, "system.membus.snoops"
+                ),
+                "snoop_filter_single_holder_hits": read_scalar(
+                    stats_path,
+                    "system.membus.snoop_filter.hitSingleRequests",
+                ),
+            }
+        parsed_stats = read_stats(stats_path)
+        committed = read_scalar(
+            stats_path, "system.cpu.commitStats0.numInsts"
         )
-    stats_path = outdir / "stats.txt"
-    coherence_stats = None
-    if args.l1_caches:
-        coherence_stats = {
-            "maa_cache_accesses": read_scalar(
-                stats_path, "system.maa_cache.overallAccesses_T::total"
-            ),
-            "maa_cache_misses": read_scalar(
-                stats_path, "system.maa_cache.overallMisses_T::total"
-            ),
-            "maa_cache_read_accesses": read_scalar(
-                stats_path, "system.maa_cache.ReadReq_T.accesses::total"
-            ),
-            "maa_cache_write_accesses": read_scalar(
-                stats_path, "system.maa_cache.WriteReq_T.accesses::total"
-            ),
-            "membus_snoops": read_scalar(stats_path, "system.membus.snoops"),
-            "snoop_filter_single_holder_hits": read_scalar(
-                stats_path,
-                "system.membus.snoop_filter.hitSingleRequests",
-            ),
+        validate(
+            parsed_stats,
+            committed,
+            args.chunks,
+            minimum_physical_line_reads,
+            coherence_stats,
+            args.chunks == 1
+            and args.l1_caches
+            and args.maa_cache_size == "2KiB"
+            and args.maa_cache_assoc == 4
+            and args.maa_cache_mshrs == 32
+            and args.maa_cache_targets_per_mshr == 20
+            and args.maa_cache_write_buffers == 8,
+            args.model_payload_overlay_ports,
+        )
+        accelerator = parsed_stats["lanl_maa"]
+        metric_names = (
+            "logicalItems",
+            "physicalLineReads",
+            "lineMergeHits",
+            "lineBankConflictCycles",
+            "operationWouldBlockCycles",
+            "lineWouldBlockCycles",
+            "completionsRetired",
+            "payloadOverlayCompletionWrites",
+            "payloadOverlayRetirementReads",
+            "payloadOverlayCompletionBankConflictCycles",
+            "payloadOverlayCompletionReadConflictCycles",
+            "payloadOverlayCompletionWouldBlockCycles",
+            "payloadOverlayCompletionQueueHighWaterMark",
+            "descriptorCycles",
+            "engineCycles",
+            "verificationFailures",
+        )
+        report["metrics"] = {
+            name: accelerator.get(name) for name in metric_names
         }
-    validate(
-        read_stats(stats_path),
-        read_scalar(stats_path, "system.cpu.commitStats0.numInsts"),
-        args.chunks,
-        minimum_physical_line_reads,
-        coherence_stats,
-        args.chunks == 1
-        and args.l1_caches
-        and args.maa_cache_size == "2KiB"
-        and args.maa_cache_assoc == 4
-        and args.maa_cache_mshrs == 32
-        and args.maa_cache_targets_per_mshr == 20
-        and args.maa_cache_write_buffers == 8,
-        args.model_payload_overlay_ports,
-    )
+        report["metrics"]["simTicks"] = read_scalar(stats_path, "simTicks")
+        report["metrics"]["cpuCommittedInstructions"] = committed
+        report["stats_sha256"] = file_sha256(stats_path)
+        report["stdout_sha256"] = file_sha256(stdout_path)
+        report["stderr_sha256"] = file_sha256(stderr_path)
+        report["status"] = "validated"
+        report["terminal"] = True
+    except Exception as error:
+        report["status"] = "failed"
+        report["terminal"] = True
+        report["error"] = str(error)
+        raise
+    finally:
+        write_json_atomic(report_path, report)
 
 
 def main():
@@ -499,6 +635,7 @@ def main():
     parser.add_argument("--chunks", default=1, type=int)
     parser.add_argument("--l1-caches", action="store_true")
     parser.add_argument("--model-payload-overlay-ports", action="store_true")
+    parser.add_argument("--require-clean-simulator", action="store_true")
     parser.add_argument("--maa-cache-size", default="4KiB")
     parser.add_argument("--maa-cache-assoc", type=int, default=2)
     parser.add_argument("--maa-cache-mshrs", type=int, default=8)
