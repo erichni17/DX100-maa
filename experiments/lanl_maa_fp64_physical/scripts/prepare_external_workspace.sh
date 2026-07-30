@@ -37,6 +37,8 @@ install -m 0644 "$harness/activity/portfolio_activity_contract.json" \
     "$target/activity/portfolio_activity_contract.json"
 install -m 0644 "$harness/rtl/LanlFp64HardFloat.v" \
     "$target/rtl/LanlFp64HardFloat.v"
+install -m 0644 "$harness/rtl/LanlFp64DualSharedRecode.v" \
+    "$target/rtl/LanlFp64DualSharedRecode.v"
 install -m 0755 "$harness/scripts/generate_portfolio_saif.py" \
     "$target/scripts/generate_portfolio_saif.py"
 install -m 0755 "$harness/scripts/generate_dual_portfolio_saif.py" \

@@ -35,7 +35,11 @@ module lanl_fp64_dual_portfolio_tb;
     integer lane;
     integer cycles;
 
+`ifdef LANL_FP64_DUAL_SHARED_RECODE
+    LanlFp64Portfolio2SSharedRecode1A1M8D dut(
+`else
     LanlFp64Portfolio2S1A1M8D dut(
+`endif
         clock, nReset,
         req0Valid, req0Op, req0Tag, req0A, req0B, req0Ready,
         req1Valid, req1Op, req1Tag, req1A, req1B, req1Ready,
@@ -186,7 +190,11 @@ module lanl_fp64_dual_portfolio_tb;
         end
         require(completed == 8 && seenDividerTags == 8'hff,
                 "all eight dual-issued divides must complete");
+`ifdef LANL_FP64_DUAL_SHARED_RECODE
+        $display("LANL_FP64_PORTFOLIO_2S_SHARED_RECODE_1A1M8D_SMOKE_PASS");
+`else
         $display("LANL_FP64_PORTFOLIO_2S1A1M8D_SMOKE_PASS");
+`endif
         $finish(0);
     end
 endmodule

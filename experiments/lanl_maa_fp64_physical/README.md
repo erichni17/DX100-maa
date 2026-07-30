@@ -17,6 +17,10 @@ they target distinct add/multiply units or two free divider lanes, and gives
 slot 0 deterministic priority on a same-unit conflict. It retains the same
 eight iterative dividers and per-unit completion boundary so its routed area
 isolates the cost of wider operands, dispatch, and lost recoder sharing.
+`LanlFp64Portfolio2SSharedRecode1A1M8D` moves the four IEEE-to-recoded
+converters ahead of dispatch and routes 65-bit recoded operands to the units.
+It is a separate physical top so the screen can quantify whether eliminating
+per-divider post-mux recoders recovers area and synthesis complexity.
 
 `activity/portfolio_activity_contract.json` and
 `scripts/generate_portfolio_saif.py` generate three top-input SAIF sensitivity
