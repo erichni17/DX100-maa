@@ -39,6 +39,18 @@ converters ahead of dispatch and routes 65-bit recoded operands to the units.
 It is a separate physical top so the screen can quantify whether eliminating
 per-divider post-mux recoders recovers area and synthesis complexity.
 
+`LanlFp64Portfolio2SSharedRecode1A1M8DCompletion2W` closes the selected raw
+back end's non-backpressurable completion boundary. Three-entry add and
+multiply FIFOs, one retained result per divider lane, and two output holding
+registers absorb its ten possible completion sources. A round-robin arbiter
+retires at most two results per cycle, matching the 64-operation live window's
+two-wide completion port. Conservative issue credits prevent buffer overflow;
+held outputs retain identity under backpressure. The physical target is
+`//lanl_fp64:fp64_completion_2w_final` and requests 30 ps of hold-repair
+margin. It still excludes the line table, response-data steering, and operand
+storage, so its delta from the raw shared-recode target measures only the
+completion interface and its interaction with the arithmetic back end.
+
 `activity/portfolio_activity_contract.json` and
 `scripts/generate_portfolio_saif.py` generate three top-input SAIF sensitivity
 profiles. UMT uses the conceptual 32-context source-order operation incidence
