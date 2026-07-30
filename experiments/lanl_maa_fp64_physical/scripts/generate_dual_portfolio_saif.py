@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from generate_portfolio_saif import Activity, OPCODES, net_record
+
+
+DEFAULT_TOP = "LanlFp64Portfolio2S1A1M8D"
 
 
 def resource_class(operation: str) -> str:
@@ -34,7 +38,9 @@ def choose_operation(
     return max(available, key=lambda name: (remaining[name] / initial[name], name))
 
 
-def generate(contract: dict, profile_name: str) -> str:
+def generate(contract: dict, profile_name: str, top: str = DEFAULT_TOP) -> str:
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", top) is None:
+        raise ValueError("invalid SAIF design name")
     profile = contract["profiles"][profile_name]
     initial = {
         name: int(count) for name, count in profile["operation_counts"].items()
@@ -127,7 +133,7 @@ def generate(contract: dict, profile_name: str) -> str:
     return f"""(SAIFILE
   (SAIFVERSION "2.0")
   (DIRECTION "backward")
-  (DESIGN "LanlFp64Portfolio2S1A1M8D")
+  (DESIGN "{top}")
   (DATE "2026-07-30")
   (VENDOR "DX100 LANL-MAA screening")
   (PROGRAM_NAME "generate_dual_portfolio_saif.py")
@@ -136,7 +142,7 @@ def generate(contract: dict, profile_name: str) -> str:
   (TIMESCALE 1 ns)
   (DURATION {duration})
   (INSTANCE TOP
-    (INSTANCE LanlFp64Portfolio2S1A1M8D
+    (INSTANCE {top}
       (NET
 {body}
       )
@@ -150,12 +156,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--profile", required=True)
+    parser.add_argument("--top", default=DEFAULT_TOP)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     contract = json.loads(args.contract.read_text(encoding="utf-8"))
     if args.profile not in contract.get("profiles", {}):
         raise ValueError("unknown activity profile")
-    args.output.write_text(generate(contract, args.profile), encoding="utf-8")
+    args.output.write_text(
+        generate(contract, args.profile, top=args.top), encoding="utf-8"
+    )
     return 0
 
 

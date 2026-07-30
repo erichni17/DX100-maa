@@ -57,6 +57,19 @@ class DualPortfolioSaifTest(unittest.TestCase):
             MODULE.resource_class(first), MODULE.resource_class(second)
         )
 
+    def test_custom_top_retargets_design_and_instance(self):
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        top = "LanlFp64Portfolio2SSharedRecode1A1M8D"
+        result = MODULE.generate(contract, "sparta_64_particle", top=top)
+        self.assertIn(f'(DESIGN "{top}")', result)
+        self.assertIn(f"(INSTANCE {top}", result)
+        self.assertNotIn(f"(INSTANCE {MODULE.DEFAULT_TOP}", result)
+
+    def test_rejects_invalid_top_name(self):
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "design name"):
+            MODULE.generate(contract, "sparta_64_particle", top="bad top")
+
 
 if __name__ == "__main__":
     unittest.main()
