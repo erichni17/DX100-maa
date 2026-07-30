@@ -35,6 +35,7 @@ TOPS = {
     "fp64_fma": "LanlFp64Fma",
     "fp64_mul": "LanlFp64Mul",
     "fp64_portfolio_1a1m8d": "LanlFp64Portfolio1A1M8D",
+    "fp64_portfolio_2s1a1m8d": "LanlFp64Portfolio2S1A1M8D",
 }
 
 [orfs_flow(

@@ -11,6 +11,13 @@ completion tags. It accepts at most one operation per cycle and exposes
 per-unit completions; result-table writeback arbitration is outside this
 screening boundary.
 
+`LanlFp64Portfolio2S1A1M8D` is the bounded successor for the issue-width
+question. It accepts two generic request slots per cycle, permits both when
+they target distinct add/multiply units or two free divider lanes, and gives
+slot 0 deterministic priority on a same-unit conflict. It retains the same
+eight iterative dividers and per-unit completion boundary so its routed area
+isolates the cost of wider operands, dispatch, and lost recoder sharing.
+
 `activity/portfolio_activity_contract.json` and
 `scripts/generate_portfolio_saif.py` generate three top-input SAIF sensitivity
 profiles. UMT uses the conceptual 32-context source-order operation incidence
