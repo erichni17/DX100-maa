@@ -61,3 +61,19 @@ mean latency by -1.051% and writes by -4.867%. The prior surprising gains are
 therefore caused by schedule-dependent C write coalescing, not by the storage
 shrink or by intrinsically faster virtualization. The fully bounded comparable
 storage lower bound is 653,138 bytes. See `offset_capacity_epoch.md`.
+
+Follow-up sweeps rejected the obvious local alternatives. A 2K epoch was
+3.505% slower, an 8K descriptor window was 0.353% slower while using roughly
+twice the descriptor state, and increasing the B feeder from 128 to 192 lines
+improved one case by only 0.105% for 4 KiB more payload. Trace accounting shows
+that source-flight latency, not an empty refill bubble, is now the dominant
+remaining gap. See `bounded_window_followups.md`.
+
+The complete XRAGE input was then rerun as a same-binary seven-arm attribution.
+The original eight-line direct4 mechanism is 5.723% slower than `compact16`,
+confirming the expected virtualization overhead. A deeper bounded B feeder,
+Row-bound scheduling, and a 4K Offset epoch recover that loss and make the
+current bounded arm 7.146% faster than `compact16`. The dominant 4K-epoch gain
+comes from reducing dense C retirement writes from 327,924 to 262,903, not from
+preserving the 16K A reorder window. Offset storage shrink itself remains a
+0.000% effect at a matched schedule. See `xrage_full_attribution.md`.

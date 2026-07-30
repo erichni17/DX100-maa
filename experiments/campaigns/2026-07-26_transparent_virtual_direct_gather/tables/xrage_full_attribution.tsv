@@ -1,0 +1,9 @@
+pair	reference	candidate	reference_ticks	candidate_ticks	latency_delta_pct	throughput_delta_pct	dram_reads_delta	dram_activates_delta	dram_precharges_delta	roi_memory_reads_delta
+fusion	fused16	compact16	1336334094	1166690598	-12.694692	+14.540573	-183778	72273	72872	-183765
+original_virtualization	compact16	direct4_full_lines8	1166690598	1233455376	+5.722578	-5.412825	200	45227	44990	201
+feeder_depth	direct4_full_lines8	direct4_full	1233455376	1160968019	-5.876772	+6.243700	-29	-300	26	-29
+row_capacity	direct4_full	direct4_row4_epoch16	1160968019	1149406425	-0.995858	+1.005875	-10697	-17496	-17662	-10696
+scheduling	direct4_row4_epoch16	direct4_row4_epoch4_cap16	1149406425	1083316475	-5.749920	+6.100706	-43727	-77252	-76915	-43728
+offset_storage	direct4_row4_epoch4_cap16	direct4_bounded4	1083316475	1083316475	+0.000000	+0.000000	0	0	0	0
+total_virtualization	compact16	direct4_bounded4	1166690598	1083316475	-7.146207	+7.696193	-54253	-49821	-49561	-54252
+combined_vs_unfused	fused16	direct4_bounded4	1336334094	1083316475	-18.933710	+23.355836	-238031	22452	23311	-238017

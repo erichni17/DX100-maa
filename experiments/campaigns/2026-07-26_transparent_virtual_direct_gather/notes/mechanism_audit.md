@@ -82,3 +82,13 @@ A stricter producer/consumer test stores virtual output to backing memory and
 then makes a later consumer reload it. That path measured 10.410% overhead with
 warm backing data and 19.77% when the data was displaced. It is the closer model
 of the cost that a general virtual tile chain must pay.
+
+## Full-XRAGE attribution
+
+A same-binary seven-arm experiment now reproduces the expected overhead and
+separates the later optimizations. The original direct4 path with an eight-line
+B feeder is 5.723% slower than `compact16`. A 128-line bounded feeder recovers
+5.877%; bounding Row state changes the schedule for another 0.996% gain; and a
+4K Offset epoch gains 5.750% by reducing C retirement writes to within 0.29% of
+the dense cache-line minimum. Shrinking Offset storage at that matched epoch
+costs exactly 0.000%. See `xrage_full_attribution.md`.
