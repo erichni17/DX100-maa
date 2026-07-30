@@ -171,6 +171,15 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(payloadOverlayCompletionQueueHighWaterMark,
                statistics::units::Count::get(),
                "Maximum queued payload completion writes"),
+      ADD_STAT(payloadOverlayResetAllocatedEntries,
+               statistics::units::Count::get(),
+               "Allocated payload entries discarded by descriptor reset"),
+      ADD_STAT(payloadOverlayResetQueuedCompletions,
+               statistics::units::Count::get(),
+               "Queued payload completions discarded by descriptor reset"),
+      ADD_STAT(payloadOverlayResetCompletedEntries,
+               statistics::units::Count::get(),
+               "Completed payload entries discarded by descriptor reset"),
       ADD_STAT(verificationFailures, statistics::units::Count::get(),
                "Functional values that differ from the supplied oracle"),
       ADD_STAT(continuationSteps, statistics::units::Count::get(),
@@ -859,9 +868,7 @@ LANLMAA::rearmDescriptorEngine()
     faceComputeTiming->reset();
     bransonEventTiming->reset();
     bransonContextScheduler->reset();
-    if (payloadPortModel) {
-        payloadPortModel->reset();
-    }
+    resetPayloadOverlayPorts(false);
     payloadRetirementGrants = 0;
     verificationInFlight = false;
     finished = false;
@@ -969,9 +976,7 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
     activeContexts = 0;
     activeFaceComputations = 0;
     activeBransonEventComputations = 0;
-    if (payloadPortModel) {
-        payloadPortModel->reset();
-    }
+    resetPayloadOverlayPorts(true);
     payloadRetirementGrants = 0;
     spartaFusedContextSlots.fill(false);
     for (auto &operation : operations) {
@@ -3550,9 +3555,7 @@ LANLMAA::beginDescriptorExecution()
     faceComputeTiming->reset(static_cast<uint64_t>(curCycle()));
     bransonEventTiming->reset(static_cast<uint64_t>(curCycle()));
     bransonContextScheduler->reset();
-    if (payloadPortModel) {
-        payloadPortModel->reset();
-    }
+    resetPayloadOverlayPorts(false);
     payloadRetirementGrants = 0;
     descriptorFaceUpdatesAcknowledged = 0;
     descriptorFaceUpdatePhase = false;
@@ -3882,6 +3885,23 @@ LANLMAA::servicePayloadOverlayPorts()
     if (result.completionWouldBlock) {
         ++stats.payloadOverlayCompletionWouldBlockCycles;
     }
+}
+
+void
+LANLMAA::resetPayloadOverlayPorts(bool allowDiscard)
+{
+    if (!payloadPortModel) {
+        return;
+    }
+    const auto discarded = payloadPortModel->reset();
+    panic_if(discarded.queuedCompletions + discarded.completedEntries >
+                 discarded.allocatedEntries,
+             "LANLMAA payload reset states exceeded allocated entries");
+    panic_if(!allowDiscard && discarded.allocatedEntries != 0,
+             "LANLMAA discarded payload state outside error recovery");
+    stats.payloadOverlayResetAllocatedEntries += discarded.allocatedEntries;
+    stats.payloadOverlayResetQueuedCompletions += discarded.queuedCompletions;
+    stats.payloadOverlayResetCompletedEntries += discarded.completedEntries;
 }
 
 void

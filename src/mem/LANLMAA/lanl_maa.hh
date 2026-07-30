@@ -278,6 +278,9 @@ class LANLMAA : public ClockedObject
         statistics::Scalar payloadOverlayCompletionReadConflictCycles;
         statistics::Scalar payloadOverlayCompletionWouldBlockCycles;
         statistics::Scalar payloadOverlayCompletionQueueHighWaterMark;
+        statistics::Scalar payloadOverlayResetAllocatedEntries;
+        statistics::Scalar payloadOverlayResetQueuedCompletions;
+        statistics::Scalar payloadOverlayResetCompletedEntries;
         statistics::Scalar verificationFailures;
         statistics::Scalar continuationSteps;
         statistics::Scalar continuationExhaustions;
@@ -604,6 +607,7 @@ class LANLMAA : public ClockedObject
     void completeDescriptor();
     void tick();
     void servicePayloadOverlayPorts();
+    void resetPayloadOverlayPorts(bool allowDiscard);
     void retireOperations();
     void admitOperations();
     void attachReadyOperations();

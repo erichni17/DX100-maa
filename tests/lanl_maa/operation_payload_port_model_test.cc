@@ -100,9 +100,26 @@ main()
         assert(!model.queueCompletion(2));
         assert(!model.release(3));
         assert(!model.cycle({3}).valid);
-        model.reset();
+        const auto discarded = model.reset();
+        assert(discarded.allocatedEntries == 1);
+        assert(discarded.queuedCompletions == 0);
+        assert(discarded.completedEntries == 0);
         assert(!model.allocated(3));
         assert(model.pendingCompletions() == 0);
+    }
+
+    {
+        OperationPayloadPortModel model(64, 4, 2, 2);
+        for (uint64_t tag : {0, 1, 4}) {
+            assert(model.allocate(tag));
+            assert(model.queueCompletion(tag));
+        }
+        const auto cycle = model.cycle({});
+        assert(cycle.valid && cycle.completionWrites == 2);
+        const auto discarded = model.reset();
+        assert(discarded.allocatedEntries == 3);
+        assert(discarded.queuedCompletions == 1);
+        assert(discarded.completedEntries == 2);
     }
 
     return 0;

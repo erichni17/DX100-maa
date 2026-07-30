@@ -23,6 +23,7 @@ parser.add_argument("--metadata", required=True)
 parser.add_argument("--line-entries", type=int, default=16)
 parser.add_argument("--update-entries", type=int, default=64)
 parser.add_argument("--update-banks", type=int, default=8)
+parser.add_argument("--model-payload-overlay-ports", action="store_true")
 args = parser.parse_args()
 
 
@@ -80,7 +81,7 @@ system.lanl_maa = LANLMAA(
     max_descriptor_items=metadata["corners"],
     control_addr=metadata["control_paddr"],
     control_size=metadata["control_bytes"],
-    operation_entries=metadata["corners"],
+    operation_entries=64,
     continuation_entries=4,
     line_entries=args.line_entries,
     update_entries=args.update_entries,
@@ -89,6 +90,7 @@ system.lanl_maa = LANLMAA(
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,
+    model_payload_overlay_ports=args.model_payload_overlay_ports,
     exit_on_completion=False,
 )
 system.maa_cache = MAACoherenceCache()

@@ -39,7 +39,7 @@ def scalar(stats, name):
     return int(value)
 
 
-def validate_stats(path, metadata):
+def validate_stats(path, metadata, model_payload_overlay_ports=False):
     stats = read_stats(path)
     success = metadata["successful_submissions"]
     rejected = metadata["rejected_submissions"]
@@ -119,9 +119,57 @@ def validate_stats(path, metadata):
         raise RuntimeError("simulation produced no positive simTicks")
     if committed is None or committed <= 0:
         raise RuntimeError("CPU retired no instructions")
+    payload_names = (
+        "payloadOverlayCompletionWrites",
+        "payloadOverlayRetirementReads",
+        "payloadOverlayCompletionBankConflictCycles",
+        "payloadOverlayCompletionReadConflictCycles",
+        "payloadOverlayCompletionWouldBlockCycles",
+        "payloadOverlayCompletionQueueHighWaterMark",
+        "payloadOverlayResetAllocatedEntries",
+        "payloadOverlayResetQueuedCompletions",
+        "payloadOverlayResetCompletedEntries",
+    )
+    payload = {name: scalar(stats, name) for name in payload_names}
+    logical_items = scalar(stats, "logicalItems")
+    completions_retired = scalar(stats, "completionsRetired")
+    if model_payload_overlay_ports:
+        if logical_items <= 0:
+            raise RuntimeError("payload-overlay run admitted no logical items")
+        retirement_reads = payload["payloadOverlayRetirementReads"]
+        completion_writes = payload["payloadOverlayCompletionWrites"]
+        reset_allocated = payload["payloadOverlayResetAllocatedEntries"]
+        reset_queued = payload["payloadOverlayResetQueuedCompletions"]
+        reset_completed = payload["payloadOverlayResetCompletedEntries"]
+        if retirement_reads != completions_retired:
+            raise RuntimeError(
+                "payload-overlay retirement conservation failed: "
+                f"reads={retirement_reads}, retired={completions_retired}"
+            )
+        if completion_writes != retirement_reads + reset_completed:
+            raise RuntimeError(
+                "payload-overlay completion conservation failed: "
+                f"writes={completion_writes}, reads={retirement_reads}, "
+                f"reset_completed={reset_completed}"
+            )
+        if logical_items != completions_retired + reset_allocated:
+            raise RuntimeError(
+                "payload-overlay allocation conservation failed: "
+                f"logical={logical_items}, retired={completions_retired}, "
+                f"reset_allocated={reset_allocated}"
+            )
+        if reset_queued + reset_completed > reset_allocated:
+            raise RuntimeError("payload-overlay reset states overlap")
+    elif any(payload.values()):
+        raise RuntimeError(
+            "baseline run unexpectedly exercised payload-overlay ports"
+        )
     return {
         **observed,
         **retry,
+        **payload,
+        "logicalItems": logical_items,
+        "completionsRetired": completions_retired,
         "simTicks": int(sim_ticks),
         "cpuCommittedInstructions": int(committed),
         "updateCombinerHits": scalar(stats, "updateCombinerHits"),
@@ -135,6 +183,7 @@ def validate_stats(path, metadata):
 
 def main():
     here = pathlib.Path(__file__).resolve().parent
+    runner = pathlib.Path(__file__).resolve()
     repo = here.parents[1]
     parser = argparse.ArgumentParser()
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
@@ -158,6 +207,7 @@ def main():
     parser.add_argument("--update-entries", type=int, default=64)
     parser.add_argument("--update-banks", type=int, default=8)
     parser.add_argument("--timeout-seconds", type=int, default=180)
+    parser.add_argument("--model-payload-overlay-ports", action="store_true")
     parser.add_argument(
         "--launch",
         action="store_true",
@@ -206,14 +256,18 @@ def main():
         f"--update-entries={args.update_entries}",
         f"--update-banks={args.update_banks}",
     ]
+    if args.model_payload_overlay_ports:
+        command.append("--model-payload-overlay-ports")
     identity = {
         "schema": "lanl-maa-ume-gradzatp-live-v1",
         "source_sha256": file_sha256(source),
         "config_sha256": file_sha256(config),
         "metadata_sha256": file_sha256(metadata_path),
         "gem5_sha256": file_sha256(gem5),
+        "runner_sha256": file_sha256(runner),
         "compile_command": compile_command,
         "command": command,
+        "model_payload_overlay_ports": args.model_payload_overlay_ports,
     }
 
     if outdir.exists():
@@ -260,7 +314,11 @@ def main():
             stdout=(outdir / "stdout.log").open("w", encoding="utf-8"),
             stderr=(outdir / "stderr.log").open("w", encoding="utf-8"),
         )
-        report["metrics"] = validate_stats(m5out / "stats.txt", metadata)
+        report["metrics"] = validate_stats(
+            m5out / "stats.txt",
+            metadata,
+            args.model_payload_overlay_ports,
+        )
         report["status"] = "validated"
     except Exception as error:
         report["status"] = "failed"

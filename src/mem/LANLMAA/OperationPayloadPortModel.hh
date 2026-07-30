@@ -36,6 +36,13 @@ class OperationPayloadPortModel
         size_t completionQueueDepth = 0;
     };
 
+    struct ResetResult
+    {
+        size_t allocatedEntries = 0;
+        size_t queuedCompletions = 0;
+        size_t completedEntries = 0;
+    };
+
     OperationPayloadPortModel(
         size_t entries, size_t banks, size_t completionWidth,
         size_t retirementWidth)
@@ -53,13 +60,18 @@ class OperationPayloadPortModel
             retirementLaneCount != 0;
     }
 
-    void
+    ResetResult
     reset()
     {
+        ResetResult result;
         completionQueue.clear();
         for (auto &slot : slots) {
+            result.allocatedEntries += slot.allocated;
+            result.queuedCompletions += slot.completionQueued;
+            result.completedEntries += slot.completed;
             slot = Slot{};
         }
+        return result;
     }
 
     bool

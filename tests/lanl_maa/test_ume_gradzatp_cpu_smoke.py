@@ -47,6 +47,17 @@ class UmeGradzatpCpuSmokeTest(unittest.TestCase):
             "lineMergeHits": 5,
             "descriptorCycles": 100,
             "engineCycles": 80,
+            "logicalItems": 16,
+            "completionsRetired": 16,
+            "payloadOverlayCompletionWrites": 0,
+            "payloadOverlayRetirementReads": 0,
+            "payloadOverlayCompletionBankConflictCycles": 0,
+            "payloadOverlayCompletionReadConflictCycles": 0,
+            "payloadOverlayCompletionWouldBlockCycles": 0,
+            "payloadOverlayCompletionQueueHighWaterMark": 0,
+            "payloadOverlayResetAllocatedEntries": 0,
+            "payloadOverlayResetQueuedCompletions": 0,
+            "payloadOverlayResetCompletedEntries": 0,
         }
         values.update(overrides or {})
         path.write_text(
@@ -82,6 +93,38 @@ class UmeGradzatpCpuSmokeTest(unittest.TestCase):
             self.write_stats(path, {"retryPacketAcceptances": 2})
             with self.assertRaisesRegex(RuntimeError, "retry accounting"):
                 RUNNER.validate_stats(path, METADATA)
+
+    def test_stats_close_modeled_payload_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "stats.txt"
+            self.write_stats(
+                path,
+                {
+                    "payloadOverlayCompletionWrites": 16,
+                    "payloadOverlayRetirementReads": 16,
+                    "payloadOverlayCompletionBankConflictCycles": 1,
+                    "payloadOverlayCompletionReadConflictCycles": 2,
+                    "payloadOverlayCompletionWouldBlockCycles": 3,
+                    "payloadOverlayCompletionQueueHighWaterMark": 2,
+                },
+            )
+            metrics = RUNNER.validate_stats(path, METADATA, True)
+            self.assertEqual(metrics["payloadOverlayRetirementReads"], 16)
+
+    def test_stats_reject_payload_overlay_conservation_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "stats.txt"
+            self.write_stats(
+                path,
+                {
+                    "payloadOverlayCompletionWrites": 16,
+                    "payloadOverlayRetirementReads": 15,
+                },
+            )
+            with self.assertRaisesRegex(
+                RuntimeError, "retirement conservation"
+            ):
+                RUNNER.validate_stats(path, METADATA, True)
 
 
 if __name__ == "__main__":
