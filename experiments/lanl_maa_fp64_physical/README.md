@@ -62,6 +62,22 @@ It remains lossless under an imbalance, but a pathological stream confined to
 one domain retires at one result per cycle. The physical target is
 `//lanl_fp64:fp64_completion_2w_split_final`.
 
+`LanlMaaOperationRetirement64x4x2` adds the bounded 64-tag operation and
+retirement boundary. Four tag-interleaved banks accept at most one allocation
+and one completion per bank each cycle. Completion results remain resident
+until a common two-wide retirement handshake; ordered mode exposes only the
+head and its consecutive successor, while unordered mode selects at most one
+ready result from each of two distinct banks. Backpressure freezes selection,
+so tag/value/flag identity is stable. Allocated and issued bits reject stale,
+duplicate, or unallocated completions rather than silently consuming them.
+The integrated
+`LanlFp64Portfolio2SSharedRecode1A1M8DCompletion2WSplitRetirement64x4x2`
+top connects that boundary directly to the split FP64 completion channels and
+gates arithmetic issue on a prior operation allocation. The external operands
+remain a test interface; returned-line steering and the selected line table
+are still separate. Its prepared physical target is
+`//lanl_fp64:fp64_split_retirement_64x4x2_final`.
+
 `activity/portfolio_activity_contract.json` and
 `scripts/generate_portfolio_saif.py` generate three top-input SAIF sensitivity
 profiles. UMT uses the conceptual 32-context source-order operation incidence

@@ -43,6 +43,8 @@ install -m 0644 "$harness/rtl/LanlFp64Completion2W.v" \
     "$target/rtl/LanlFp64Completion2W.v"
 install -m 0644 "$harness/rtl/LanlFp64Completion2WSplit.v" \
     "$target/rtl/LanlFp64Completion2WSplit.v"
+install -m 0644 "$harness/rtl/LanlMaaOperationRetirement.v" \
+    "$target/rtl/LanlMaaOperationRetirement.v"
 install -m 0644 "$harness/rtl/LanlMaaLineTable.v" \
     "$target/rtl/LanlMaaLineTable.v"
 install -m 0755 "$harness/scripts/generate_portfolio_saif.py" \
