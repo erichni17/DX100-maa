@@ -1,0 +1,52 @@
+load("//:openroad.bzl", "orfs_flow")
+
+HARDFLOAT_SOURCES = [
+    "//lanl_fp64/hardfloat:HardFloat_primitives.v",
+    "//lanl_fp64/hardfloat:HardFloat_rawFN.v",
+    "//lanl_fp64/hardfloat:HardFloat_specialize.v",
+    "//lanl_fp64/hardfloat:addRecFN.v",
+    "//lanl_fp64/hardfloat:divSqrtRecFN_small.v",
+    "//lanl_fp64/hardfloat:fNToRecFN.v",
+    "//lanl_fp64/hardfloat:isSigNaNRecFN.v",
+    "//lanl_fp64/hardfloat:mulAddRecFN.v",
+    "//lanl_fp64/hardfloat:mulRecFN.v",
+    "//lanl_fp64/hardfloat:recFNToFN.v",
+]
+
+COMMON_ARGUMENTS = {
+    "CORE_UTILIZATION": "40",
+    "GPL_ROUTABILITY_DRIVEN": "1",
+    "GPL_TIMING_DRIVEN": "1",
+    "NUM_CORES": "4",
+    "PLACE_DENSITY": "0.60",
+    "REMOVE_ABC_BUFFERS": "0",
+    "SKIP_CTS_REPAIR_TIMING": "0",
+    "SKIP_INCREMENTAL_REPAIR": "0",
+    "SKIP_REPORT_METRICS": "0",
+    "VERILOG_INCLUDE_DIRS": "lanl_fp64/hardfloat",
+}
+
+TOPS = {
+    "fp64_add": "LanlFp64Add",
+    "fp64_div1": "LanlFp64Div1",
+    "fp64_div4": "LanlFp64Div4",
+    "fp64_div8": "LanlFp64Div8",
+    "fp64_fma": "LanlFp64Fma",
+    "fp64_mul": "LanlFp64Mul",
+}
+
+[orfs_flow(
+    name = name,
+    arguments = COMMON_ARGUMENTS,
+    last_stage = "final",
+    pdk = "@orfs//flow:nangate45",
+    sources = {
+        "SDC_FILE": [":constraints.sdc"],
+    },
+    stage_data = {
+        "synth": ["//lanl_fp64/hardfloat:include"],
+    },
+    tags = ["manual"],
+    top = top,
+    verilog_files = HARDFLOAT_SOURCES + ["rtl/LanlFp64HardFloat.v"],
+) for name, top in TOPS.items()]
