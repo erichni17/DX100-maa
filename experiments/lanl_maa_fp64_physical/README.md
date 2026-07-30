@@ -4,15 +4,22 @@ This harness compares Berkeley HardFloat Release 1 binary64 add/subtract,
 multiply, fused multiply-add, and replicated iterative-divider blocks under one
 pinned OpenROAD-flow-scripts Nangate45 typical corner.
 
-The independent `LanlMaaLineTable32x4` top costs the first memory/control
-slice at that same corner. It models 32 entries in four eight-way banks, 42-bit
-line tags, 16-bit per-entry generations, 64 operation-slot waiter bits per
-entry, two logical issue slots, one retained request channel, stale-response
-rejection, one acknowledged completion channel, and nine 32-bit accounting
-counters. Each bank resolves one distinct line per cycle; a same-line pair
-shares its lookup. The top excludes the 512-bit response-data steering path,
-operation payload storage, coherence cache, MSHRs, and the FP64 back end, so it
-is a metadata/control cost screen rather than a whole-accelerator result.
+The independent `LanlMaaLineTable32x4LinkedWaiters` top costs the first
+memory/control slice at that same corner. It models 32 entries in four
+eight-way banks, 42-bit line tags, 16-bit per-entry generations, two logical
+issue slots, one retained request channel, stale-response rejection, one
+acknowledged completion channel, and nine 32-bit accounting counters. Each of
+the 64 operation slots owns one waiting bit and one six-bit next pointer; each
+line entry owns a head, tail, and count. This replaces the baseline's
+2,048-bit waiter matrix and 64-way completion encoder while preserving
+arrival-ordered completion. Each bank resolves one distinct line per cycle; a
+same-line pair shares its lookup. The top excludes the 512-bit response-data
+steering path, operation payload storage, coherence cache, MSHRs, and the FP64
+back end, so it is a metadata/control cost screen rather than a
+whole-accelerator result. The physical target is
+`//lanl_fp64:line_table_32x4_linked_waiters_final` and requests 30 ps of
+hold-repair margin because the bitmap baseline missed extracted hold by
+6.15 ps.
 
 The successor screening top `LanlFp64Portfolio1A1M8D` places the selected
 non-fusing one-add/subtract, one-multiply, eight-divider organization together

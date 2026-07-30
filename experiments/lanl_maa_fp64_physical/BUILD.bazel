@@ -74,15 +74,15 @@ orfs_flow(
 )
 
 orfs_flow(
-    name = "line_table_32x4",
-    arguments = COMMON_ARGUMENTS,
+    name = "line_table_32x4_linked_waiters",
+    arguments = dict(COMMON_ARGUMENTS, HOLD_SLACK_MARGIN = "0.03"),
     last_stage = "final",
     pdk = "@orfs//flow:nangate45",
     sources = {
         "SDC_FILE": [":constraints.sdc"],
     },
     tags = ["manual"],
-    top = "LanlMaaLineTable32x4",
+    top = "LanlMaaLineTable32x4LinkedWaiters",
     verilog_files = ["rtl/LanlMaaLineTable.v"],
 )
 

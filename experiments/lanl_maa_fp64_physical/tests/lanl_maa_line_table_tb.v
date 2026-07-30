@@ -38,7 +38,7 @@ module lanl_maa_line_table_tb;
     reg [20:0] savedToken;
     integer line;
 
-    LanlMaaLineTable32x4 dut(
+    LanlMaaLineTable32x4LinkedWaiters dut(
         .clock(clock),
         .nReset(nReset),
         .issue0Valid(issue0Valid),
@@ -189,8 +189,8 @@ module lanl_maa_line_table_tb;
     initial begin
         resetDut();
 
-        issuePair(1'b1, 42'd9, 6'd0, 1'b1, 1'b0,
-                  1'b1, 42'd9, 6'd1, 1'b1, 1'b1);
+        issuePair(1'b1, 42'd9, 6'd9, 1'b1, 1'b0,
+                  1'b1, 42'd9, 6'd2, 1'b1, 1'b1);
         require(acceptedSlots == 2 && mergedSlots == 1,
                 "same-line pair accounting differs");
         require(requestValid && requestLine == 42'd9,
@@ -206,19 +206,19 @@ module lanl_maa_line_table_tb;
         acceptRequest(42'd9);
         require(lineRequests == 1, "one physical request must issue");
 
-        issuePair(1'b1, 42'd9, 6'd2, 1'b1, 1'b1,
+        issuePair(1'b1, 42'd9, 6'd63, 1'b1, 1'b1,
                   1'b0, 42'd0, 6'd0, 1'b1, 1'b0);
         require(acceptedSlots == 3 && mergedSlots == 2,
                 "in-flight merge accounting differs");
 
-        issuePair(1'b1, 42'd9, 6'd0, 1'b0, 1'b0,
+        issuePair(1'b1, 42'd9, 6'd9, 1'b0, 1'b0,
                   1'b0, 42'd0, 6'd0, 1'b1, 1'b0);
         require(duplicateIssueCycles == 1 && tableWouldBlockCycles == 0,
                 "duplicate waiter must not masquerade as table pressure");
 
         returnResponse(savedToken);
-        require(completionValid && completionSlot == 6'd0,
-                "response must expose the first waiter");
+        require(completionValid && completionSlot == 6'd9,
+                "response must expose the first arrival");
 
         issuePair(1'b1, 42'd9, 6'd3, 1'b0, 1'b0,
                   1'b0, 42'd0, 6'd0, 1'b1, 1'b0);
@@ -228,12 +228,12 @@ module lanl_maa_line_table_tb;
         repeat (2) begin
             @(posedge clock);
             #1;
-            require(completionValid && completionSlot == 6'd0,
+            require(completionValid && completionSlot == 6'd9,
                     "stalled completion identity must remain stable");
         end
-        acceptCompletion(6'd0);
-        acceptCompletion(6'd1);
+        acceptCompletion(6'd9);
         acceptCompletion(6'd2);
+        acceptCompletion(6'd63);
         require(completionAcks == 3,
                 "every same-line waiter must acknowledge");
         require(!completionValid, "entry must free after its final waiter");
@@ -241,6 +241,13 @@ module lanl_maa_line_table_tb;
         returnResponse(savedToken);
         require(staleResponse && staleResponses == 1,
                 "late response must fail closed");
+
+        resetDut();
+        issuePair(1'b1, 42'd0, 6'd7, 1'b1, 1'b0,
+                  1'b1, 42'd1, 6'd7, 1'b0, 1'b0);
+        require(acceptedSlots == 1 && duplicateIssueCycles == 1 &&
+                bankConflictCycles == 0,
+                "one operation slot must not join two different lines");
 
         resetDut();
         issuePair(1'b1, 42'd0, 6'd0, 1'b1, 1'b0,
@@ -262,7 +269,7 @@ module lanl_maa_line_table_tb;
         require(acceptedSlots == 8 && tableWouldBlockCycles == 1,
                 "full target bank must not borrow another bank");
 
-        $display("LANL_MAA_LINE_TABLE_32X4_SMOKE_PASS");
+        $display("LANL_MAA_LINE_TABLE_32X4_LINKED_WAITERS_SMOKE_PASS");
         $finish(0);
     end
 endmodule

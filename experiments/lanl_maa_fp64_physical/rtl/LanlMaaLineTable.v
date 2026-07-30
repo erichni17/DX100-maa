@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-module LanlMaaLineTable32x4(
+module LanlMaaLineTable32x4LinkedWaiters(
     input clock,
     input nReset,
 
@@ -48,7 +48,11 @@ module LanlMaaLineTable32x4(
     reg [1:0] entryState [0:31];
     reg [41:0] entryLine [0:31];
     reg [15:0] entryGeneration [0:31];
-    reg [63:0] entryWaiters [0:31];
+    reg [5:0] entryWaiterHead [0:31];
+    reg [5:0] entryWaiterTail [0:31];
+    reg [6:0] entryWaiterCount [0:31];
+    reg [5:0] slotNext [0:63];
+    reg slotWaiting [0:63];
 
     reg requestHoldValid;
     reg [4:0] requestHoldIndex;
@@ -79,7 +83,6 @@ module LanlMaaLineTable32x4(
     reg [4:0] requestSelectedIndex;
     reg [4:0] completionSelectedIndex;
     reg [5:0] completionSelectedSlot;
-    reg completionWaiterFound;
 
     wire issue0Accepted = issue0Valid && issue0Ready;
     wire issue1Accepted = issue1Valid && issue1Ready;
@@ -92,14 +95,13 @@ module LanlMaaLineTable32x4(
     wire responseEnqueues = responseAccepted && responseMatches;
     wire completionAccepted = completionValid && completionReady;
     wire completionFinishesEntry = completionAccepted &&
-        entryWaiters[completionSelectedIndex] ==
-            (64'b1 << completionSelectedSlot);
+        entryWaiterCount[completionSelectedIndex] == 7'd1;
 
     integer issueIndex;
     integer issueWay;
     integer requestIndex;
-    integer completionWaiter;
     integer resetIndex;
+    integer resetSlot;
 
     assign responseReady = !responseMatches || drainCount < 6'd32;
 
@@ -133,7 +135,7 @@ module LanlMaaLineTable32x4(
         issue0SelectedIndex = issue0Hit ? issue0HitIndex : issue0FreeIndex;
         issue0Ready = !issue0DrainHit &&
             (issue0Hit || issue0FreeFound) &&
-            !entryWaiters[issue0SelectedIndex][issue0Slot];
+            !slotWaiting[issue0Slot];
         issue0Merged = issue0Ready && issue0Hit;
 
         issue1Hit = 1'b0;
@@ -166,16 +168,20 @@ module LanlMaaLineTable32x4(
         issue1SelectedIndex = issue1Hit ? issue1HitIndex : issue1FreeIndex;
         issue1Ready = !issue1DrainHit &&
             (issue1Hit || issue1FreeFound) &&
-            !entryWaiters[issue1SelectedIndex][issue1Slot];
+            !slotWaiting[issue1Slot];
         issue1Merged = issue1Ready && issue1Hit;
         if (issue0Valid && issue1Valid && issue0Line == issue1Line) begin
             issue1SelectedIndex = issue0SelectedIndex;
             issue1Ready = issue0Ready && issue0Slot != issue1Slot &&
-                !entryWaiters[issue0SelectedIndex][issue1Slot];
+                !slotWaiting[issue1Slot];
             issue1Merged = issue1Ready;
         end else if (issue0Valid && issue1Valid &&
                      issue0Line[1:0] == issue1Line[1:0]) begin
             issueBankConflict = 1'b1;
+            issue1Ready = 1'b0;
+            issue1Merged = 1'b0;
+        end else if (issue0Valid && issue1Valid &&
+                     issue0Slot == issue1Slot) begin
             issue1Ready = 1'b0;
             issue1Merged = 1'b0;
         end
@@ -190,11 +196,9 @@ module LanlMaaLineTable32x4(
             (issue0Valid && issue0DrainHit) ||
             (issue1Valid && issue1DrainHit && !issueBankConflict);
         issueDuplicate =
-            (issue0Valid && issue0Hit &&
-             entryWaiters[issue0HitIndex][issue0Slot]) ||
-            (issue1Valid && issue1Hit &&
-             entryWaiters[issue1HitIndex][issue1Slot]) ||
-            (issue0Valid && issue1Valid && issue0Line == issue1Line &&
+            (issue0Valid && slotWaiting[issue0Slot]) ||
+            (issue1Valid && slotWaiting[issue1Slot]) ||
+            (issue0Valid && issue1Valid &&
              issue0Slot == issue1Slot);
     end
 
@@ -220,17 +224,9 @@ module LanlMaaLineTable32x4(
 
     always @* begin
         completionSelectedIndex = drainQueue[drainHead];
-        completionSelectedSlot = 6'b0;
-        completionWaiterFound = 1'b0;
-        for (completionWaiter = 0; completionWaiter < 64;
-             completionWaiter = completionWaiter + 1) begin
-            if (!completionWaiterFound &&
-                entryWaiters[completionSelectedIndex][completionWaiter]) begin
-                completionWaiterFound = 1'b1;
-                completionSelectedSlot = completionWaiter[5:0];
-            end
-        end
-        completionValid = drainCount != 0 && completionWaiterFound;
+        completionSelectedSlot = entryWaiterHead[completionSelectedIndex];
+        completionValid = drainCount != 0 &&
+            entryWaiterCount[completionSelectedIndex] != 0;
         completionSlot = completionSelectedSlot;
     end
 
@@ -256,8 +252,15 @@ module LanlMaaLineTable32x4(
                 entryState[resetIndex] <= STATE_FREE;
                 entryLine[resetIndex] <= 42'b0;
                 entryGeneration[resetIndex] <= 16'b0;
-                entryWaiters[resetIndex] <= 64'b0;
+                entryWaiterHead[resetIndex] <= 6'b0;
+                entryWaiterTail[resetIndex] <= 6'b0;
+                entryWaiterCount[resetIndex] <= 7'b0;
                 drainQueue[resetIndex] <= 5'b0;
+            end
+            for (resetSlot = 0; resetSlot < 64;
+                 resetSlot = resetSlot + 1) begin
+                slotNext[resetSlot] <= 6'b0;
+                slotWaiting[resetSlot] <= 1'b0;
             end
         end else begin
             staleResponse <= 1'b0;
@@ -274,13 +277,16 @@ module LanlMaaLineTable32x4(
             end
 
             if (completionAccepted) begin
+                slotWaiting[completionSelectedSlot] <= 1'b0;
                 if (completionFinishesEntry) begin
                     entryState[completionSelectedIndex] <= STATE_FREE;
-                    entryWaiters[completionSelectedIndex] <= 64'b0;
+                    entryWaiterCount[completionSelectedIndex] <= 7'b0;
                     drainHead <= drainHead + 1'b1;
                 end else begin
-                    entryWaiters[completionSelectedIndex]
-                        [completionSelectedSlot] <= 1'b0;
+                    entryWaiterHead[completionSelectedIndex] <=
+                        slotNext[completionSelectedSlot];
+                    entryWaiterCount[completionSelectedIndex] <=
+                        entryWaiterCount[completionSelectedIndex] - 1'b1;
                 end
                 completionAcks <= completionAcks + 1'b1;
             end
@@ -309,13 +315,19 @@ module LanlMaaLineTable32x4(
                     entryLine[issue0SelectedIndex] <= issue0Line;
                     entryGeneration[issue0SelectedIndex] <=
                         entryGeneration[issue0SelectedIndex] + 1'b1;
-                    entryWaiters[issue0SelectedIndex] <=
-                        (64'b1 << issue0Slot) | (64'b1 << issue1Slot);
+                    entryWaiterHead[issue0SelectedIndex] <= issue0Slot;
+                    entryWaiterTail[issue0SelectedIndex] <= issue1Slot;
+                    entryWaiterCount[issue0SelectedIndex] <= 7'd2;
                 end else begin
-                    entryWaiters[issue0SelectedIndex] <=
-                        entryWaiters[issue0SelectedIndex] |
-                        (64'b1 << issue0Slot) | (64'b1 << issue1Slot);
+                    slotNext[entryWaiterTail[issue0SelectedIndex]] <=
+                        issue0Slot;
+                    entryWaiterTail[issue0SelectedIndex] <= issue1Slot;
+                    entryWaiterCount[issue0SelectedIndex] <=
+                        entryWaiterCount[issue0SelectedIndex] + 2'd2;
                 end
+                slotWaiting[issue0Slot] <= 1'b1;
+                slotWaiting[issue1Slot] <= 1'b1;
+                slotNext[issue0Slot] <= issue1Slot;
             end else begin
                 if (issue0Accepted) begin
                     if (entryState[issue0SelectedIndex] == STATE_FREE) begin
@@ -323,11 +335,17 @@ module LanlMaaLineTable32x4(
                         entryLine[issue0SelectedIndex] <= issue0Line;
                         entryGeneration[issue0SelectedIndex] <=
                             entryGeneration[issue0SelectedIndex] + 1'b1;
-                        entryWaiters[issue0SelectedIndex] <=
-                            64'b1 << issue0Slot;
+                        entryWaiterHead[issue0SelectedIndex] <= issue0Slot;
+                        entryWaiterTail[issue0SelectedIndex] <= issue0Slot;
+                        entryWaiterCount[issue0SelectedIndex] <= 7'd1;
                     end else begin
-                        entryWaiters[issue0SelectedIndex][issue0Slot] <= 1'b1;
+                        slotNext[entryWaiterTail[issue0SelectedIndex]] <=
+                            issue0Slot;
+                        entryWaiterTail[issue0SelectedIndex] <= issue0Slot;
+                        entryWaiterCount[issue0SelectedIndex] <=
+                            entryWaiterCount[issue0SelectedIndex] + 1'b1;
                     end
+                    slotWaiting[issue0Slot] <= 1'b1;
                 end
                 if (issue1Accepted) begin
                     if (entryState[issue1SelectedIndex] == STATE_FREE) begin
@@ -335,11 +353,17 @@ module LanlMaaLineTable32x4(
                         entryLine[issue1SelectedIndex] <= issue1Line;
                         entryGeneration[issue1SelectedIndex] <=
                             entryGeneration[issue1SelectedIndex] + 1'b1;
-                        entryWaiters[issue1SelectedIndex] <=
-                            64'b1 << issue1Slot;
+                        entryWaiterHead[issue1SelectedIndex] <= issue1Slot;
+                        entryWaiterTail[issue1SelectedIndex] <= issue1Slot;
+                        entryWaiterCount[issue1SelectedIndex] <= 7'd1;
                     end else begin
-                        entryWaiters[issue1SelectedIndex][issue1Slot] <= 1'b1;
+                        slotNext[entryWaiterTail[issue1SelectedIndex]] <=
+                            issue1Slot;
+                        entryWaiterTail[issue1SelectedIndex] <= issue1Slot;
+                        entryWaiterCount[issue1SelectedIndex] <=
+                            entryWaiterCount[issue1SelectedIndex] + 1'b1;
                     end
+                    slotWaiting[issue1Slot] <= 1'b1;
                 end
             end
 
