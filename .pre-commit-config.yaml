@@ -80,6 +80,8 @@ repos:
       rev: 23.9.1
       hooks:
           - id: black
+            # Avoid one process pool per host CPU on large shared servers.
+            args: [--workers, "4"]
     - repo: https://github.com/asottile/pyupgrade
       rev: v3.14.0
       hooks:
