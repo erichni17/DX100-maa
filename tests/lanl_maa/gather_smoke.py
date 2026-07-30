@@ -62,6 +62,7 @@ system.lanl_maa = LANLMAA(
     ],
     operation_entries=8,
     line_entries=2,
+    line_banks=2,
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,

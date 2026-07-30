@@ -21,18 +21,21 @@ WINDOWS = (
         0,
         "6929711f4f49fbbde674fa80d5b8f5cd05f2140b75f1e747ea7467995cb1aa7b",
         10,
+        5,
     ),
     (
         "middle",
         1048576,
         "31991c1a68af084a338bc5d1a2a2d01fc91c4f83050c3ca0a2ba2b9e84f74086",
         17,
+        5,
     ),
     (
         "tail",
         2097088,
         "3442d2efad36a1b236f3f73a2654f8b9ce04dd94668e9727a1c059611166593b",
         14,
+        0,
     ),
 )
 INSTANCES = ("lanl_maa", "final_verifier", "submitter")
@@ -134,6 +137,12 @@ def validate(stats, metadata):
 
     physical = accelerator.get("physicalLineReads")
     merges = accelerator.get("lineMergeHits")
+    check_equal(
+        errors,
+        accelerator,
+        "lineBankConflictCycles",
+        metadata["expected_line_bank_conflict_cycles"],
+    )
     if physical is None or merges is None or physical + merges != items:
         errors.append(
             "gather accounting mismatch: "
@@ -190,7 +199,14 @@ def validate(stats, metadata):
 
 
 def build_image(
-    root, indices, name, offset, expected_hash, unique_lines, source_path
+    root,
+    indices,
+    name,
+    offset,
+    expected_hash,
+    unique_lines,
+    expected_bank_conflicts,
+    source_path,
 ):
     assembler = shutil.which("cc")
     linker = shutil.which("ld")
@@ -264,6 +280,7 @@ def build_image(
         "descriptor_items": len(indices),
         "unique_indices": len(set(indices)),
         "unique_target_lines": actual_unique_lines,
+        "expected_line_bank_conflict_cycles": expected_bank_conflicts,
         "value_oracle": "SplitMix64(index), modulo 2^64",
         "trace_indices": indices,
         "expected_results": expected,
@@ -287,7 +304,7 @@ def build_image(
 
 
 def run_case(args, root, pattern, window):
-    name, offset, expected_hash, unique_lines = window
+    name, offset, expected_hash, unique_lines, expected_bank_conflicts = window
     case_root = root / name
     case_root.mkdir()
     indices = pattern[offset : offset + WINDOW_ITEMS]
@@ -300,6 +317,7 @@ def run_case(args, root, pattern, window):
         offset,
         expected_hash,
         unique_lines,
+        expected_bank_conflicts,
         args.trace.resolve(),
     )
     outdir = case_root / "m5out"

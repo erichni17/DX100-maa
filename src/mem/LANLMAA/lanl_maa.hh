@@ -14,6 +14,7 @@
 #include "mem/LANLMAA/BransonEventTiming.hh"
 #include "mem/LANLMAA/Descriptor.hh"
 #include "mem/LANLMAA/FaceComputeTiming.hh"
+#include "mem/LANLMAA/LineTableGeometry.hh"
 #include "mem/LANLMAA/SharedOverlayModeBarrier.hh"
 #include "mem/LANLMAA/SpartaFusedCellModel.hh"
 #include "mem/LANLMAA/SpartaPairedSummaryStore.hh"
@@ -258,6 +259,7 @@ class LANLMAA : public ClockedObject
         statistics::Scalar logicalMemoryAccesses;
         statistics::Scalar physicalLineReads;
         statistics::Scalar lineMergeHits;
+        statistics::Scalar lineBankConflictCycles;
         statistics::Scalar operationWouldBlockCycles;
         statistics::Scalar lineWouldBlockCycles;
         statistics::Scalar contextWouldBlockCycles;
@@ -396,10 +398,12 @@ class LANLMAA : public ClockedObject
     const BransonContextLimit bransonContextLimit;
     const size_t operationEntries;
     const size_t lineEntries;
+    const size_t lineBanks;
     const size_t logicalAdmissionWidth;
     const size_t lineIssueWidth;
     const size_t retirementWidth;
     const size_t lineBytes;
+    LineTableGeometry lineTableGeometry;
     const Cycles startCycle;
     const bool exitOnCompletion;
     System *const system;
@@ -474,7 +478,7 @@ class LANLMAA : public ClockedObject
 
     Addr lineAddress(Addr address) const;
     LineEntry *matchingLine(Addr address);
-    LineEntry *freeLine();
+    LineEntry *freeLine(Addr address);
     size_t updateBank(Addr address) const;
     UpdateEntry *matchingUpdate(Addr address);
     UpdateEntry *accumulatingUpdate(Addr address);

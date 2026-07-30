@@ -124,6 +124,9 @@ class LANLMAA(ClockedObject):
 
     operation_entries = Param.Unsigned(64, "Logical operation-window entries")
     line_entries = Param.Unsigned(32, "Coherent line-merge entries")
+    line_banks = Param.Unsigned(
+        4, "Single-distinct-line-access banks in the line-merge table"
+    )
     logical_admission_width = Param.Unsigned(
         2, "Maximum logical items admitted per cycle"
     )

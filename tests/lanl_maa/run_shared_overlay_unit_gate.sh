@@ -51,6 +51,7 @@ sanitizer_flags=(
     -fsanitize=address,undefined
 )
 sources=(
+    tests/lanl_maa/line_table_geometry_test.cc
     tests/lanl_maa/shared_overlay_cost_test.cc
     tests/lanl_maa/shared_overlay_mode_barrier_test.cc
 )
@@ -70,4 +71,4 @@ for source in "${sources[@]}"; do
         "$sanitizer_binary"
 done
 
-echo "LANL-MAA shared-overlay warning and sanitizer gate: PASS"
+echo "LANL-MAA shared-shell warning and sanitizer gate: PASS"

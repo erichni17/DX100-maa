@@ -128,6 +128,8 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Coherent line reads accepted by the memory port"),
       ADD_STAT(lineMergeHits, statistics::units::Count::get(),
                "Logical items merged into an allocated line"),
+      ADD_STAT(lineBankConflictCycles, statistics::units::Cycle::get(),
+               "Cycles with two distinct line-table accesses to one bank"),
       ADD_STAT(operationWouldBlockCycles, statistics::units::Cycle::get(),
                "Cycles blocked by a full operation window"),
       ADD_STAT(lineWouldBlockCycles, statistics::units::Cycle::get(),
@@ -426,10 +428,12 @@ LANLMAA::LANLMAA(const LANLMAAParams &params)
           params.branson_active_context_limit),
       operationEntries(params.operation_entries),
       lineEntries(params.line_entries),
+      lineBanks(params.line_banks),
       logicalAdmissionWidth(params.logical_admission_width),
       lineIssueWidth(params.line_issue_width),
       retirementWidth(params.retirement_width),
       lineBytes(params.line_bytes),
+      lineTableGeometry(lineEntries, lineBanks, lineBytes),
       startCycle(params.start_cycle),
       exitOnCompletion(params.exit_on_completion),
       system(params.system),
@@ -607,6 +611,9 @@ LANLMAA::validateConfiguration() const
     fatal_if(dependentMode && maxContinuationSteps == 0,
              "LANLMAA dependent mode requires a nonzero step bound");
     fatal_if(lineEntries == 0, "LANLMAA line_entries must be nonzero");
+    fatal_if(!lineTableGeometry.valid(),
+             "LANLMAA line table requires power-of-two banks that divide "
+             "the entries and a power-of-two line size");
     fatal_if(logicalAdmissionWidth == 0,
              "LANLMAA logical_admission_width must be nonzero");
     fatal_if(lineIssueWidth == 0, "LANLMAA line_issue_width must be nonzero");
@@ -1206,22 +1213,28 @@ LANLMAA::lineAddress(Addr address) const
 LANLMAA::LineEntry *
 LANLMAA::matchingLine(Addr address)
 {
+    const size_t bank = lineTableGeometry.bank(address);
+    auto begin = lines.begin() + lineTableGeometry.begin(bank);
+    auto end = lines.begin() + lineTableGeometry.end(bank);
     auto line = std::find_if(
-        lines.begin(), lines.end(), [address](const LineEntry &entry) {
+        begin, end, [address](const LineEntry &entry) {
             return entry.state != LineState::Free &&
                    entry.lineAddress == address;
         });
-    return line == lines.end() ? nullptr : &*line;
+    return line == end ? nullptr : &*line;
 }
 
 LANLMAA::LineEntry *
-LANLMAA::freeLine()
+LANLMAA::freeLine(Addr address)
 {
+    const size_t bank = lineTableGeometry.bank(address);
+    auto begin = lines.begin() + lineTableGeometry.begin(bank);
+    auto end = lines.begin() + lineTableGeometry.end(bank);
     auto line = std::find_if(
-        lines.begin(), lines.end(), [](const LineEntry &entry) {
+        begin, end, [](const LineEntry &entry) {
             return entry.state == LineState::Free;
         });
-    return line == lines.end() ? nullptr : &*line;
+    return line == end ? nullptr : &*line;
 }
 
 size_t
@@ -3863,6 +3876,7 @@ LANLMAA::admitOperations()
 void
 LANLMAA::attachReadyOperations()
 {
+    lineTableGeometry.beginCycle();
     if (spartaFusedCellDescriptor() &&
         spartaFusedPhase == SpartaFusedPhase::Traverse) {
         std::vector<bool> ready(operations.size(), false);
@@ -3872,6 +3886,7 @@ LANLMAA::attachReadyOperations()
         }
         size_t attached = 0;
         bool lineBlocked = false;
+        bool lineBankBlocked = false;
         bool pairBankBlocked = false;
         while (attached < logicalAdmissionWidth) {
             size_t selected = operations.size();
@@ -3899,11 +3914,18 @@ LANLMAA::attachReadyOperations()
                 }
             }
             const Addr aligned = lineAddress(operation.address);
+            const auto lineAccess = lineTableGeometry.access(aligned);
+            panic_if(lineAccess == LineBankAccess::Invalid,
+                     "LANLMAA generated an invalid line-table access");
+            if (lineAccess == LineBankAccess::Conflict) {
+                lineBankBlocked = true;
+                continue;
+            }
             LineEntry *line = matchingLine(aligned);
             if (line) {
                 ++stats.lineMergeHits;
             } else {
-                line = freeLine();
+                line = freeLine(aligned);
                 if (!line) {
                     lineBlocked = true;
                     continue;
@@ -3926,6 +3948,9 @@ LANLMAA::attachReadyOperations()
         if (lineBlocked) {
             ++stats.lineWouldBlockCycles;
         }
+        if (lineBankBlocked) {
+            ++stats.lineBankConflictCycles;
+        }
         if (pairBankBlocked) {
             ++stats.descriptorSpartaFusedPairBankConflictCycles;
         }
@@ -3943,6 +3968,7 @@ LANLMAA::attachReadyOperations()
         }
 
         bool lineBlocked = false;
+        bool lineBankBlocked = false;
         for (size_t attached = 0; attached < logicalAdmissionWidth;
              ++attached) {
             const auto selected = bransonContextScheduler->select(
@@ -3953,11 +3979,19 @@ LANLMAA::attachReadyOperations()
             const size_t index = *selected;
             auto &operation = operations[index];
             const Addr aligned = lineAddress(operation.address);
+            const auto lineAccess = lineTableGeometry.access(aligned);
+            panic_if(lineAccess == LineBankAccess::Invalid,
+                     "LANLMAA generated an invalid line-table access");
+            if (lineAccess == LineBankAccess::Conflict) {
+                lineBankBlocked = true;
+                ready[index] = false;
+                continue;
+            }
             LineEntry *line = matchingLine(aligned);
             if (line) {
                 ++stats.lineMergeHits;
             } else {
-                line = freeLine();
+                line = freeLine(aligned);
                 if (!line) {
                     lineBlocked = true;
                     ready[index] = false;
@@ -3975,11 +4009,15 @@ LANLMAA::attachReadyOperations()
         if (lineBlocked) {
             ++stats.lineWouldBlockCycles;
         }
+        if (lineBankBlocked) {
+            ++stats.lineBankConflictCycles;
+        }
         return;
     }
 
     size_t attached = 0;
     bool lineBlocked = false;
+    bool lineBankBlocked = false;
     for (size_t index = nextRetirement;
          index < nextAdmission && attached < logicalAdmissionWidth; ++index) {
         auto &operation = operations[index];
@@ -3988,11 +4026,18 @@ LANLMAA::attachReadyOperations()
         }
 
         const Addr aligned = lineAddress(operation.address);
+        const auto lineAccess = lineTableGeometry.access(aligned);
+        panic_if(lineAccess == LineBankAccess::Invalid,
+                 "LANLMAA generated an invalid line-table access");
+        if (lineAccess == LineBankAccess::Conflict) {
+            lineBankBlocked = true;
+            continue;
+        }
         LineEntry *line = matchingLine(aligned);
         if (line) {
             ++stats.lineMergeHits;
         } else {
-            line = freeLine();
+            line = freeLine(aligned);
             if (!line) {
                 lineBlocked = true;
                 continue;
@@ -4007,6 +4052,9 @@ LANLMAA::attachReadyOperations()
     }
     if (lineBlocked) {
         ++stats.lineWouldBlockCycles;
+    }
+    if (lineBankBlocked) {
+        ++stats.lineBankConflictCycles;
     }
 }
 

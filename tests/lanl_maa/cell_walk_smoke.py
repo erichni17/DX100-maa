@@ -40,6 +40,7 @@ system.lanl_maa = LANLMAA(
     max_continuation_steps=args.max_steps,
     operation_entries=4,
     line_entries=2,
+    line_banks=2,
     logical_admission_width=2,
     line_issue_width=1,
     retirement_width=2,

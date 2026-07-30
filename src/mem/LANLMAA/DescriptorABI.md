@@ -307,6 +307,20 @@ structural mapping only: it does not price ports or arbitration, establish
 synthesis timing/area/energy, provide a native SPARTA ABI, or demonstrate
 application speedup.
 
+### Banked line-merge table contract
+
+The selected 32-entry line table is four banks with eight entries per bank,
+not an unpriced 32-way multiported search. Consecutive 64-byte lines select
+consecutive banks. Each bank resolves at most one distinct line address in a
+cycle. Two logical slots targeting the same line share that lookup and both
+join the retained waiter list; two different lines mapping to the same bank
+leave the younger operation ready and increment `lineBankConflictCycles`.
+Allocation and matching search only the selected bank, so capacity cannot be
+borrowed from another bank. `line_banks` must be a power of two, divide
+`line_entries`, and not exceed it. This establishes functional arbitration and
+bounded contention accounting; metadata SRAM/CAM synthesis and whole-path
+timing, area, power, or speedup remain unclaimed.
+
 `Completed` and `Error` remain visible until the next doorbell. A terminal
 rearm clears the previous error and per-descriptor cursors only after all
 retained packets, operation contexts, line entries, and update entries are

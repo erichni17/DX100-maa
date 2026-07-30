@@ -69,6 +69,7 @@ system.lanl_maa = LANLMAA(
     update_banks=3 if args.invalid_banks else 2,
     update_issue_width=1,
     line_entries=2,
+    line_banks=2,
     logical_admission_width=2,
     retirement_width=2,
 )
