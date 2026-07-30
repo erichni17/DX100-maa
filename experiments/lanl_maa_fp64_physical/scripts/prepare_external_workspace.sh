@@ -27,11 +27,20 @@ if [[ -e "$target" && ! -d "$target" ]]; then
     exit 1
 fi
 
-mkdir -p "$target/rtl" "$target/hardfloat"
+mkdir -p "$target/activity" "$target/hardfloat" "$target/rtl" \
+    "$target/scripts"
 install -m 0644 "$harness/BUILD.bazel" "$target/BUILD.bazel"
 install -m 0644 "$harness/constraints.sdc" "$target/constraints.sdc"
+install -m 0644 "$harness/portfolio_power.bzl" \
+    "$target/portfolio_power.bzl"
+install -m 0644 "$harness/activity/portfolio_activity_contract.json" \
+    "$target/activity/portfolio_activity_contract.json"
 install -m 0644 "$harness/rtl/LanlFp64HardFloat.v" \
     "$target/rtl/LanlFp64HardFloat.v"
+install -m 0755 "$harness/scripts/generate_portfolio_saif.py" \
+    "$target/scripts/generate_portfolio_saif.py"
+install -m 0644 "$harness/scripts/portfolio_power_base.tcl" \
+    "$target/scripts/portfolio_power_base.tcl"
 install -m 0644 "$harness/hardfloat.BUILD.bazel" \
     "$target/hardfloat/BUILD.bazel"
 

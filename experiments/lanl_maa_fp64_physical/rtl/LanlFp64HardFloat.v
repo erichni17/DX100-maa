@@ -232,3 +232,118 @@ module LanlFp64Div8(
         clock, nReset, inValid, a, b, inReady, outValid, out, exceptionFlags
     );
 endmodule
+
+module LanlFp64Portfolio1A1M8D(
+    input clock,
+    input nReset,
+    input reqValid,
+    input [1:0] reqOp,
+    input [5:0] reqTag,
+    input [63:0] reqA,
+    input [63:0] reqB,
+    output reqReady,
+    output addOutValid,
+    output [5:0] addOutTag,
+    output [63:0] addOut,
+    output [4:0] addExceptionFlags,
+    output mulOutValid,
+    output [5:0] mulOutTag,
+    output [63:0] mulOut,
+    output [4:0] mulExceptionFlags,
+    output [7:0] divOutValid,
+    output [47:0] divOutTag,
+    output [511:0] divOut,
+    output [39:0] divExceptionFlags
+);
+    localparam [1:0] OpAdd = 2'b00;
+    localparam [1:0] OpSubtract = 2'b01;
+    localparam [1:0] OpMultiply = 2'b10;
+    localparam [1:0] OpDivide = 2'b11;
+
+    wire addInValid;
+    wire mulInValid;
+    wire [7:0] divInReady;
+    reg [7:0] divInValid;
+    wire [511:0] divA;
+    wire [511:0] divB;
+    reg [2:0] roundRobin;
+    reg [2:0] selectedDivider;
+    reg dividerFound;
+    reg [5:0] addTag;
+    reg [5:0] mulTag;
+    reg [5:0] dividerTag [0:7];
+    integer offset;
+    integer candidate;
+    integer lane;
+
+    always @* begin
+        dividerFound = 1'b0;
+        selectedDivider = roundRobin;
+        candidate = 0;
+        for (offset = 0; offset < 8; offset = offset + 1) begin
+            candidate = (roundRobin + offset) & 7;
+            if (!dividerFound && divInReady[candidate]) begin
+                dividerFound = 1'b1;
+                selectedDivider = candidate[2:0];
+            end
+        end
+    end
+
+    assign reqReady = nReset &&
+        ((reqOp == OpDivide) ? dividerFound : 1'b1);
+    assign addInValid = reqValid && reqReady &&
+        (reqOp == OpAdd || reqOp == OpSubtract);
+    assign mulInValid = reqValid && reqReady && reqOp == OpMultiply;
+    always @* begin
+        divInValid = 8'b0;
+        if (reqValid && reqReady && reqOp == OpDivide) begin
+            divInValid[selectedDivider] = 1'b1;
+        end
+    end
+    assign divA = {8{reqA}};
+    assign divB = {8{reqB}};
+
+    LanlFp64Add adder(
+        clock, nReset, addInValid, reqOp == OpSubtract, reqA, reqB,
+        addOutValid, addOut, addExceptionFlags
+    );
+    LanlFp64Mul multiplier(
+        clock, nReset, mulInValid, reqA, reqB,
+        mulOutValid, mulOut, mulExceptionFlags
+    );
+    LanlFp64DivReplicated#(8) dividers(
+        clock, nReset, divInValid, divA, divB, divInReady,
+        divOutValid, divOut, divExceptionFlags
+    );
+
+    assign addOutTag = addTag;
+    assign mulOutTag = mulTag;
+    genvar tagLane;
+    generate
+        for (tagLane = 0; tagLane < 8; tagLane = tagLane + 1) begin: tags
+            assign divOutTag[tagLane*6 +: 6] = dividerTag[tagLane];
+        end
+    endgenerate
+
+    always @(posedge clock or negedge nReset) begin
+        if (!nReset) begin
+            roundRobin <= 3'b0;
+            addTag <= 6'b0;
+            mulTag <= 6'b0;
+            for (lane = 0; lane < 8; lane = lane + 1) begin
+                dividerTag[lane] <= 6'b0;
+            end
+        end else begin
+            if (addInValid) begin
+                addTag <= reqTag;
+            end
+            if (mulInValid) begin
+                mulTag <= reqTag;
+            end
+            if (reqValid && reqReady && reqOp == OpDivide) begin
+                dividerTag[selectedDivider] <= reqTag;
+                roundRobin <= selectedDivider + 3'b1;
+            end
+        end
+    end
+endmodule

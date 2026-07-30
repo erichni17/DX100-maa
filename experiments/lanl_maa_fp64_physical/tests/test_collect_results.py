@@ -110,6 +110,16 @@ class CollectResultsTest(unittest.TestCase):
         summary = MODULE.summarize_top(self.root, self.top)
         self.assertFalse(summary["checks"]["detailed_route_drc_clean"])
 
+    def test_custom_top_overrides_are_strict(self):
+        self.assertEqual(
+            MODULE.parse_top_overrides(["portfolio=PortfolioTop"]),
+            {"portfolio": "PortfolioTop"},
+        )
+        with self.assertRaisesRegex(ValueError, "NAME=MODULE"):
+            MODULE.parse_top_overrides(["PortfolioTop"])
+        with self.assertRaisesRegex(ValueError, "unique"):
+            MODULE.parse_top_overrides(["x=A", "x=B"])
+
     def test_relative_preserves_workspace_path_through_symlink(self):
         with tempfile.TemporaryDirectory() as output_dir:
             target = Path(output_dir) / "artifact.json"

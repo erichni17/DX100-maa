@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "clock_period_ns": 10,
+  "idle_drain_cycles": 80,
+  "operand_pool_source": "Exact binary64 contribution words from the correctness-matched SPARTA timestep-56 native batch; this is a data-toggle proxy for UMT and AMG, not native operand replay for those applications.",
+  "operand_pool": [
+    "3ff0000000000000",
+    "3aacc83817d7ff47",
+    "bb52ae2079492671",
+    "3b38a759e1622bb7",
+    "3b47f8f2e41d8c18",
+    "3c026f6fd19e280c",
+    "3b5c5a5ba71d5690",
+    "3b467fd6e58e9120",
+    "3b62492ac13e6b8c",
+    "3c23b2f9c175bb9c",
+    "bb405ca85b51b9f7",
+    "3b61fc4ebd79e69e",
+    "bb49e26dd4b07c75",
+    "3c1a8ce82203e651"
+  ],
+  "profiles": {
+    "umt_32_context": {
+      "operation_counts": {
+        "add_subtract": 1216,
+        "multiply": 2496,
+        "divide": 128
+      },
+      "source": "conceptual source-order three-face UMT incidence, 32 contexts, 38 add/subtract + 78 multiply + 4 divide per context; this is not the observed-safe-reuse scheduling DAG, which has 38 add/subtract + 59 multiply + 4 divide per context",
+      "native_operand_replay": false
+    },
+    "sparta_64_particle": {
+      "operation_counts": {
+        "add_subtract": 512,
+        "multiply": 448,
+        "divide": 0
+      },
+      "source": "correctness-matched timestep-56 64-particle native batch",
+      "native_operand_replay": false
+    },
+    "amg_sparse_normalized": {
+      "operation_counts": {
+        "add_subtract": 32768,
+        "multiply": 32768,
+        "divide": 0
+      },
+      "source_nonzero_visits": 776270,
+      "source": "normalized balanced request stream from exact residual/restriction/interpolation nonzero visits in 22 bounded native BoomerAMG cycles",
+      "native_operand_replay": false
+    }
+  },
+  "power_claim_eligible": false,
+  "claim_boundary": "Operation-valid and opcode activity is workload-incidence-derived. Operand toggles use an exact SPARTA value pool as a deterministic proxy, all streams assume continuously available inputs, and only top-level input nets are annotated. The generated SAIF is suitable for sensitivity screening, not workload energy or power claims."
+}

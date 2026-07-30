@@ -4,6 +4,33 @@ This harness compares Berkeley HardFloat Release 1 binary64 add/subtract,
 multiply, fused multiply-add, and replicated iterative-divider blocks under one
 pinned OpenROAD-flow-scripts Nangate45 typical corner.
 
+The successor screening top `LanlFp64Portfolio1A1M8D` places the selected
+non-fusing one-add/subtract, one-multiply, eight-divider organization together
+with a round-robin divide dispatcher, ready/valid backpressure, and six-bit
+completion tags. It accepts at most one operation per cycle and exposes
+per-unit completions; result-table writeback arbitration is outside this
+screening boundary.
+
+`activity/portfolio_activity_contract.json` and
+`scripts/generate_portfolio_saif.py` generate three top-input SAIF sensitivity
+profiles. UMT uses the conceptual 32-context source-order operation incidence
+(38 add/subtract, 78 multiply, and 4 divide per context), not the smaller
+observed-safe-reuse scheduling DAG. SPARTA uses the exact 64-particle
+source-order operation count, and AMG uses a normalized balanced stream derived
+from exact sparse-phase nonzero visits. Operand bits
+come from an exact SPARTA native value pool for all three profiles, and only
+top-level input nets are annotated. These reports are therefore useful for
+control/datapath activity sensitivity but are deliberately ineligible for
+native workload power or energy claims.
+
+After the joint final route exists, `scripts/run_portfolio_power.sh` stages the
+tracked activity inputs and builds only the three SAIF/OpenSTA power targets.
+It intentionally omits the physical-flow output-group override used by
+`run_common_corner.sh`, so Bazel materializes the power rule's JSON outputs.
+The design-local `portfolio_power.bzl` and `portfolio_power_base.tcl` preserve
+the generic flow while applying the correct steady-state case analysis
+(`nReset=1`); the upstream helper assumes an unrelated active-high `reset`.
+
 The tracked RTL exposes IEEE-754 binary64 at the block boundary. Each operation
 therefore includes its required `fNToRecFN` input converters and `recFNToFN`
 output converter. Add, multiply, and FMA retain one registered output stage and

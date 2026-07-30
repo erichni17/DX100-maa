@@ -172,18 +172,54 @@ def summarize_top(bazel_root: Path, top: str) -> dict:
     }
 
 
+def parse_top_overrides(values: list[str] | None) -> dict[str, str]:
+    if not values:
+        return dict(TOPS)
+    result = {}
+    for value in values:
+        if value.count("=") != 1:
+            raise ValueError("--top must use NAME=MODULE")
+        name, module = value.split("=", 1)
+        if not name or not module or name in result:
+            raise ValueError(
+                "--top names and modules must be nonempty and unique"
+            )
+        result[name] = module
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bazel-root", type=Path, required=True)
     parser.add_argument("--orfs-platform-root", type=Path, required=True)
     parser.add_argument("--created-utc", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--top",
+        action="append",
+        metavar="NAME=MODULE",
+        help="collect only the named top; repeat for multiple custom tops",
+    )
     args = parser.parse_args()
 
+    selected_tops = parse_top_overrides(args.top)
     blocks = {
-        name: summarize_top(args.bazel_root, top) for name, top in TOPS.items()
+        name: summarize_top(args.bazel_root, top)
+        for name, top in selected_tops.items()
     }
-    div1_area = blocks["div1"]["physical_metrics"]["instance_area_um2"]
+    derived = {}
+    if {"div1", "div4", "div8"}.issubset(blocks):
+        div1_area = blocks["div1"]["physical_metrics"]["instance_area_um2"]
+        derived = {
+            "div4_to_div1_area_ratio": (
+                blocks["div4"]["physical_metrics"]["instance_area_um2"]
+                / div1_area
+            ),
+            "div8_to_div1_area_ratio": (
+                blocks["div8"]["physical_metrics"]["instance_area_um2"]
+                / div1_area
+            ),
+        }
     result = {
         "schema_version": 1,
         "created_utc": args.created_utc,
@@ -214,16 +250,7 @@ def main() -> None:
             "bazel_mode": "batch",
         },
         "blocks": blocks,
-        "derived": {
-            "div4_to_div1_area_ratio": (
-                blocks["div4"]["physical_metrics"]["instance_area_um2"]
-                / div1_area
-            ),
-            "div8_to_div1_area_ratio": (
-                blocks["div8"]["physical_metrics"]["instance_area_um2"]
-                / div1_area
-            ),
-        },
+        "derived": derived,
         "claim_boundary": (
             "This is an open Nangate45 common-corner P&R screen, not signoff. "
             "The recorded default-activity power is not workload-derived and "

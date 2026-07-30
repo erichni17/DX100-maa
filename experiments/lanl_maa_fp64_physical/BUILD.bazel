@@ -1,4 +1,5 @@
 load("//:openroad.bzl", "orfs_flow")
+load(":portfolio_power.bzl", "portfolio_power_data")
 
 HARDFLOAT_SOURCES = [
     "//lanl_fp64/hardfloat:HardFloat_primitives.v",
@@ -33,6 +34,7 @@ TOPS = {
     "fp64_div8": "LanlFp64Div8",
     "fp64_fma": "LanlFp64Fma",
     "fp64_mul": "LanlFp64Mul",
+    "fp64_portfolio_1a1m8d": "LanlFp64Portfolio1A1M8D",
 }
 
 [orfs_flow(
@@ -50,3 +52,53 @@ TOPS = {
     top = top,
     verilog_files = HARDFLOAT_SOURCES + ["rtl/LanlFp64HardFloat.v"],
 ) for name, top in TOPS.items()]
+
+filegroup(
+    name = "fp64_portfolio_final_verilog",
+    srcs = [":fp64_portfolio_1a1m8d_final"],
+    output_group = "6_final.v",
+)
+
+filegroup(
+    name = "fp64_portfolio_final_spef",
+    srcs = [":fp64_portfolio_1a1m8d_final"],
+    output_group = "6_final.spef",
+)
+
+[
+    genrule(
+        name = "fp64_portfolio_{}_saif".format(profile),
+        srcs = [
+            "activity/portfolio_activity_contract.json",
+            "scripts/generate_portfolio_saif.py",
+        ],
+        outs = ["fp64_portfolio_{}.saif".format(profile)],
+        cmd = "python3 $(location scripts/generate_portfolio_saif.py) " +
+              "--contract $(location activity/portfolio_activity_contract.json) " +
+              "--profile {} --output $@".format(profile),
+        tags = ["manual"],
+    )
+    for profile in [
+        "umt_32_context",
+        "sparta_64_particle",
+        "amg_sparse_normalized",
+    ]
+]
+
+[
+    portfolio_power_data(
+        name = "fp64_portfolio_{}_power".format(profile),
+        flow_target = ":fp64_portfolio_1a1m8d_final",
+        out_template = "fp64_portfolio_{}_{{power}}_power.json".format(profile),
+        saif = ":fp64_portfolio_{}_saif".format(profile),
+        saif_scope = "TOP/LanlFp64Portfolio1A1M8D",
+        spef = ":fp64_portfolio_final_spef",
+        stage = "final",
+        verilog = ":fp64_portfolio_final_verilog",
+    )
+    for profile in [
+        "umt_32_context",
+        "sparta_64_particle",
+        "amg_sparse_normalized",
+    ]
+]

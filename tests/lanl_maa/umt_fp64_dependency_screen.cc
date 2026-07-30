@@ -55,6 +55,12 @@ main()
                          separate(1, 2, 1, 1)});
         cases.push_back({"reuse_sep_1a2m_iter_1d", true, contexts,
                          separate(1, 2, 1, 64)});
+        cases.push_back({"reuse_sep_1a1m_iter_1d", true, contexts,
+                         separate(1, 1, 1, 64)});
+        cases.push_back({"reuse_sep_1a1m_iter_4d", true, contexts,
+                         separate(1, 1, 4, 64)});
+        cases.push_back({"reuse_sep_1a1m_iter_8d", true, contexts,
+                         separate(1, 1, 8, 64)});
         cases.push_back({"reuse_sep_1a2m_iter_2d", true, contexts,
                          separate(1, 2, 2, 64)});
         cases.push_back({"reuse_sep_1a2m_iter_4d", true, contexts,
