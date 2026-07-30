@@ -77,3 +77,11 @@ current bounded arm 7.146% faster than `compact16`. The dominant 4K-epoch gain
 comes from reducing dense C retirement writes from 327,924 to 262,903, not from
 preserving the 16K A reorder window. Offset storage shrink itself remains a
 0.000% effect at a matched schedule. See `xrage_full_attribution.md`.
+
+That XRAGE gain does not generalize as a speedup. Against current-build
+`compact16`, bounded4 is 5.290% slower geometrically across all 14 FLAG gathers
+(range -2.040% to +8.624%; 2 wins and 12 losses). The discriminator is C-line
+fragmentation: XRAGE compact16 has 80,396 excess retirement writes, whereas the
+entire FLAG suite has 9,329. This leaves bounded4 as a substantial storage
+reduction with workload-dependent scheduling gains, not a universally faster
+architecture. See `flag_bounded_vs_compact.md`.

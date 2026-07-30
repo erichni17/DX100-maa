@@ -63,6 +63,11 @@ memory. It does not yet implement transparent backing and reload for arbitrary
 later MAA instructions. Such producer/consumer chains still pay backing-store
 cost; the displaced-data microbenchmark measured 19.77% overhead.
 
+The schedule win is not universal. A same-binary comparison across all 14 FLAG
+gathers finds bounded4 5.290% slower geometrically, with only 2/14 wins. The
+winning cases are those with enough compact16 C-line fragmentation to amortize
+the virtualization overhead. See `flag_bounded_vs_compact.md`.
+
 ## Evidence
 
 - Simulator source: `3b50cdb64fae484263305eeb56008677ac2f9990`

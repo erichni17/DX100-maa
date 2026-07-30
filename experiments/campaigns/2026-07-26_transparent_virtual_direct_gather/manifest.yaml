@@ -38,6 +38,8 @@ run:
     bounded_refill_trace: /data1/nier/dx100-runs/2026-07-29-flag-offset-epoch-trace-3b50cdb
     xrage_full_attribution: /data1/nier/dx100-runs/2026-07-29-xrage-bounded-storage-attribution-3b50cdb
     xrage_full_comparison: /data1/nier/dx100-runs/2026-07-29-xrage-bounded-storage-attribution-3b50cdb/comparison-seven-arm
+    flag_bounded_vs_compact: /data1/nier/dx100-runs/2026-07-29-flag-bounded-vs-compact-3b50cdb-v2
+    flag_bounded_vs_compact_summary: /data1/nier/dx100-runs/2026-07-29-flag-bounded-vs-compact-3b50cdb-v2/summary-v2
     gem5_memory: 2GB
     cgroup_memory_max: 16G
     cgroup_swap_max: '0'
@@ -49,9 +51,11 @@ outputs:
     descriptor_capacity_table: tables/descriptor_capacity.tsv
     offset_capacity_epoch_table: tables/offset_capacity_epoch.tsv
     xrage_full_attribution_table: tables/xrage_full_attribution.tsv
+    flag_bounded_vs_compact_table: tables/flag_bounded_vs_compact.tsv
     notes_file: notes/summary.md
     storage_model: notes/storage_model.md
     descriptor_capacity: notes/descriptor_capacity.md
     offset_capacity_epoch: notes/offset_capacity_epoch.md
     bounded_window_followups: notes/bounded_window_followups.md
     xrage_full_attribution: notes/xrage_full_attribution.md
+    flag_bounded_vs_compact: notes/flag_bounded_vs_compact.md
