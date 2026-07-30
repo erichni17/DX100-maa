@@ -20,9 +20,10 @@ struct ScreenCase
 
 UmtFp64Resources
 separate(uint32_t adders, uint32_t multipliers, uint32_t dividers,
-         uint32_t divideInterval)
+         uint32_t divideInterval, uint32_t issueWidth = 64)
 {
     UmtFp64Resources value;
+    value.globalIssueWidth = issueWidth;
     value.addSubUnits = adders;
     value.multiplyUnits = multipliers;
     value.divideUnits = dividers;
@@ -32,9 +33,11 @@ separate(uint32_t adders, uint32_t multipliers, uint32_t dividers,
 }
 
 UmtFp64Resources
-unified(uint32_t lanes, uint32_t dividers, uint32_t divideInterval)
+unified(uint32_t lanes, uint32_t dividers, uint32_t divideInterval,
+        uint32_t issueWidth = 64)
 {
     UmtFp64Resources value;
+    value.globalIssueWidth = issueWidth;
     value.unifiedAddMultiplyUnits = lanes;
     value.divideUnits = dividers;
     value.divideLatency = 64;
@@ -61,6 +64,10 @@ main()
                          separate(1, 1, 4, 64)});
         cases.push_back({"reuse_sep_1a1m_iter_8d", true, contexts,
                          separate(1, 1, 8, 64)});
+        cases.push_back({"reuse_sep_1a1m_iter_8d_issue1", true, contexts,
+                         separate(1, 1, 8, 64, 1)});
+        cases.push_back({"reuse_sep_1a1m_iter_8d_issue2", true, contexts,
+                         separate(1, 1, 8, 64, 2)});
         cases.push_back({"reuse_sep_1a2m_iter_2d", true, contexts,
                          separate(1, 2, 2, 64)});
         cases.push_back({"reuse_sep_1a2m_iter_4d", true, contexts,
@@ -100,6 +107,8 @@ main()
                   << "\",\"contexts\":" << screen.contexts
                   << ",\"add_sub_units\":"
                   << screen.resources.addSubUnits
+                  << ",\"global_issue_width\":"
+                  << screen.resources.globalIssueWidth
                   << ",\"multiply_units\":"
                   << screen.resources.multiplyUnits
                   << ",\"unified_units\":"

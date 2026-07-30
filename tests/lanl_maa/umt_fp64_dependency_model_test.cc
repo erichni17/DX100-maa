@@ -9,9 +9,10 @@ namespace
 
 UmtFp64Resources
 separate(uint32_t adders, uint32_t multipliers, uint32_t dividers,
-         uint32_t divideInterval)
+         uint32_t divideInterval, uint32_t issueWidth = 64)
 {
     UmtFp64Resources value;
+    value.globalIssueWidth = issueWidth;
     value.addSubUnits = adders;
     value.multiplyUnits = multipliers;
     value.divideUnits = dividers;
@@ -21,9 +22,11 @@ separate(uint32_t adders, uint32_t multipliers, uint32_t dividers,
 }
 
 UmtFp64Resources
-unified(uint32_t lanes, uint32_t dividers, uint32_t divideInterval)
+unified(uint32_t lanes, uint32_t dividers, uint32_t divideInterval,
+        uint32_t issueWidth = 64)
 {
     UmtFp64Resources value;
+    value.globalIssueWidth = issueWidth;
     value.unifiedAddMultiplyUnits = lanes;
     value.divideUnits = dividers;
     value.divideLatency = 64;
@@ -100,6 +103,18 @@ main()
     assert(iterativeOne.dividerQueueHighWater > 1);
     assert(iterativeOne.maximumDividerWaitCycles > 0);
 
+    const auto singleIssue = UmtFp64DependencyModel::schedule(
+        reuse, 32, separate(1, 1, 8, 64, 1));
+    const auto dualIssue = UmtFp64DependencyModel::schedule(
+        reuse, 32, separate(1, 1, 8, 64, 2));
+    const auto unconstrainedIssue = UmtFp64DependencyModel::schedule(
+        reuse, 32, separate(1, 1, 8, 64, 64));
+    assert(singleIssue && dualIssue && unconstrainedIssue);
+    assert(singleIssue.resourceLowerBoundCycles == 3232);
+    assert(singleIssue.makespanCycles >= singleIssue.resourceLowerBoundCycles);
+    assert(singleIssue.makespanCycles > dualIssue.makespanCycles);
+    assert(dualIssue.makespanCycles >= unconstrainedIssue.makespanCycles);
+
     const auto unifiedTwo = UmtFp64DependencyModel::schedule(
         reuse, 32, unified(2, 1, 64));
     assert(unifiedTwo);
@@ -153,6 +168,11 @@ main()
 
     badResources = separate(1, 2, 1, 64);
     badResources.divideInitiationInterval = 0;
+    invalid = UmtFp64DependencyModel::schedule(reuse, 1, badResources);
+    assert(invalid.error == UmtFp64ScheduleError::BadResources);
+
+    badResources = separate(1, 2, 1, 64);
+    badResources.globalIssueWidth = 0;
     invalid = UmtFp64DependencyModel::schedule(reuse, 1, badResources);
     assert(invalid.error == UmtFp64ScheduleError::BadResources);
     return 0;

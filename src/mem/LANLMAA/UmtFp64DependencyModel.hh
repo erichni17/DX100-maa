@@ -69,6 +69,7 @@ struct UmtFp64DependencyDag
 
 struct UmtFp64Resources
 {
+    uint32_t globalIssueWidth = 0;
     uint32_t addSubUnits = 0;
     uint32_t multiplyUnits = 0;
     uint32_t unifiedAddMultiplyUnits = 0;
@@ -373,7 +374,8 @@ class UmtFp64DependencyModel
             resources.addSubUnits != 0 && resources.multiplyUnits != 0;
         const bool unified = resources.unifiedAddMultiplyUnits != 0 &&
             resources.addSubUnits == 0 && resources.multiplyUnits == 0;
-        if ((!separate && !unified) || resources.divideUnits == 0 ||
+        if ((!separate && !unified) || resources.globalIssueWidth == 0 ||
+            resources.divideUnits == 0 ||
             resources.addSubLatency == 0 ||
             resources.multiplyLatency == 0 ||
             resources.divideLatency == 0 ||
@@ -438,8 +440,10 @@ class UmtFp64DependencyModel
         const uint64_t divideBound = issueLowerBound(
             result.operations.divide, resources.divideUnits,
             resources.divideInitiationInterval, resources.divideLatency);
-        result.resourceLowerBoundCycles =
-            std::max(addMultiplyBound, divideBound);
+        const uint64_t globalIssueBound = issueLowerBound(
+            result.operations.total(), resources.globalIssueWidth, 1, 1);
+        result.resourceLowerBoundCycles = std::max(
+            {addMultiplyBound, divideBound, globalIssueBound});
         result.lowerBoundCycles =
             std::max(result.criticalPathCycles,
                      result.resourceLowerBoundCycles);
@@ -516,7 +520,12 @@ class UmtFp64DependencyModel
                       });
 
             uint64_t nextResource = Unscheduled;
+            uint32_t issuedThisCycle = 0;
             for (const auto &candidate : candidates) {
+                if (issuedThisCycle >= resources.globalIssueWidth) {
+                    nextResource = std::min(nextResource, cycle + 1);
+                    continue;
+                }
                 const auto kind = dag.nodes[candidate.local].kind;
                 bool accepted = false;
                 if (kind == UmtFp64OperationKind::Divide) {
@@ -558,6 +567,7 @@ class UmtFp64DependencyModel
                 completion[candidate.global] =
                     cycle + latency(kind, resources);
                 ++scheduled;
+                ++issuedThisCycle;
                 if (kind == UmtFp64OperationKind::Divide) {
                     const uint64_t wait = cycle - candidate.ready;
                     result.totalDividerWaitCycles += wait;
