@@ -51,6 +51,17 @@ margin. It still excludes the line table, response-data steering, and operand
 storage, so its delta from the raw shared-recode target measures only the
 completion interface and its interaction with the arithmetic back end.
 
+`LanlFp64Portfolio2SSharedRecode1A1M8DCompletion2WSplit` is the bounded cost
+challenger. Output zero serves add plus even-numbered dividers; output one
+serves multiply plus odd-numbered dividers. Each output arbitrates only five
+stable retained sources instead of selecting any two of ten, while preserving
+the same FIFOs, per-divider retention, issue-credit overflow protection, and
+ready/valid holding registers. The fixed split is naturally balanced for a
+simultaneous add/multiply pair and for consecutive round-robin divider issue.
+It remains lossless under an imbalance, but a pathological stream confined to
+one domain retires at one result per cycle. The physical target is
+`//lanl_fp64:fp64_completion_2w_split_final`.
+
 `activity/portfolio_activity_contract.json` and
 `scripts/generate_portfolio_saif.py` generate three top-input SAIF sensitivity
 profiles. UMT uses the conceptual 32-context source-order operation incidence

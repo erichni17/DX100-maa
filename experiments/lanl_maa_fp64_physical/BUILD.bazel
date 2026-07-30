@@ -93,6 +93,25 @@ orfs_flow(
 )
 
 orfs_flow(
+    name = "fp64_completion_2w_split",
+    arguments = dict(COMMON_ARGUMENTS, HOLD_SLACK_MARGIN = "0.03"),
+    last_stage = "final",
+    pdk = "@orfs//flow:nangate45",
+    sources = {
+        "SDC_FILE": [":constraints.sdc"],
+    },
+    stage_data = {
+        "synth": ["//lanl_fp64/hardfloat:include"],
+    },
+    tags = ["manual"],
+    top = "LanlFp64Portfolio2SSharedRecode1A1M8DCompletion2WSplit",
+    verilog_files = HARDFLOAT_SOURCES + [
+        "rtl/LanlFp64DualSharedRecode.v",
+        "rtl/LanlFp64Completion2WSplit.v",
+    ],
+)
+
+orfs_flow(
     name = "line_table_32x4_linked_waiters",
     arguments = dict(COMMON_ARGUMENTS, HOLD_SLACK_MARGIN = "0.03"),
     last_stage = "final",
