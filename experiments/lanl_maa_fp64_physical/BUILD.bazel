@@ -73,6 +73,19 @@ orfs_flow(
     ],
 )
 
+orfs_flow(
+    name = "line_table_32x4",
+    arguments = COMMON_ARGUMENTS,
+    last_stage = "final",
+    pdk = "@orfs//flow:nangate45",
+    sources = {
+        "SDC_FILE": [":constraints.sdc"],
+    },
+    tags = ["manual"],
+    top = "LanlMaaLineTable32x4",
+    verilog_files = ["rtl/LanlMaaLineTable.v"],
+)
+
 filegroup(
     name = "fp64_portfolio_final_verilog",
     srcs = [":fp64_portfolio_1a1m8d_final"],
