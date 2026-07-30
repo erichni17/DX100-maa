@@ -398,6 +398,7 @@ def run_smoke(args, root):
         "control_paddr": CONTROL_PADDR,
         "control_bytes": CONTROL_BYTES,
         "descriptor_paddr": DATA_PADDR + DESCRIPTOR_OFFSET,
+        "model_payload_overlay_ports": args.model_payload_overlay_ports,
         "l1_caches": args.l1_caches,
         "maa_coherence_cache": (
             {
