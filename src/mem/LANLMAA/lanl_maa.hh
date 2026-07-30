@@ -21,6 +21,7 @@
 #include "mem/LANLMAA/SpartaPairedSummaryStore.hh"
 #include "mem/LANLMAA/SpartaTallyDescriptor.hh"
 #include "mem/LANLMAA/UmeGradzatpDescriptor.hh"
+#include "mem/LANLMAA/UmtFusedCornerModel.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
 #include "params/LANLMAA.hh"
@@ -52,6 +53,8 @@ class LANLMAA : public ClockedObject
         BransonUpdateReady,
         SpartaUpdateReady,
         UmeUpdateReady,
+        UmtComputeReady,
+        UmtComputePending,
         FaceComputeReady,
         FaceComputePending,
         FaceGatherComplete,
@@ -126,6 +129,13 @@ class LANLMAA : public ClockedObject
         Update
     };
 
+    enum class UmtFusedCornerPhase
+    {
+        Inactive,
+        Read,
+        Compute
+    };
+
     enum class SpartaFusedStage : uint8_t
     {
         CellCount,
@@ -198,6 +208,11 @@ class LANLMAA : public ClockedObject
         SpartaFusedStage spartaFusedStage = SpartaFusedStage::CellCount;
         uint8_t spartaFusedChannel = 0;
         uint8_t spartaFusedContext = SpartaFusedActiveContexts;
+        // Eight folded FP64 inputs plus value form one 640-bit paired
+        // operation/continuation entry for the UMT fused path.
+        std::array<uint64_t, 8> umtFusedValues{};
+        uint32_t umtFusedGroup = 0;
+        uint8_t umtFusedReadStage = 0;
         OperationState state = OperationState::Unadmitted;
         bool ownsContext = false;
         bool positiveDirection = false;
@@ -367,6 +382,14 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorUmeOutputZeroReads;
         statistics::Scalar descriptorUmeFp32Multiplies;
         statistics::Scalar descriptorUmeUpdatesAcknowledged;
+        statistics::Scalar descriptorUmtGroupsLoaded;
+        statistics::Scalar descriptorUmtInputReads;
+        statistics::Scalar descriptorUmtFp64AddSubOperations;
+        statistics::Scalar descriptorUmtFp64MultiplyOperations;
+        statistics::Scalar descriptorUmtFp64DivideOperations;
+        statistics::Scalar descriptorUmtBatches;
+        statistics::Scalar descriptorUmtBatchCycles;
+        statistics::Scalar descriptorUmtResultsComputed;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -460,6 +483,9 @@ class LANLMAA : public ClockedObject
     SpartaFusedPhase spartaFusedPhase = SpartaFusedPhase::Inactive;
     UmeGradzatpDescriptor umeGradzatp;
     UmeGradzatpPhase umeGradzatpPhase = UmeGradzatpPhase::Inactive;
+    UmtFusedCornerDescriptor umtFusedCorner;
+    UmtFusedCornerPhase umtFusedCornerPhase =
+        UmtFusedCornerPhase::Inactive;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
@@ -479,6 +505,8 @@ class LANLMAA : public ClockedObject
     uint64_t umeActiveCorners = 0;
     uint64_t umeCornersValidated = 0;
     uint64_t umeUpdatesAcknowledged = 0;
+    uint64_t umtFusedBatchReadyCycle = 0;
+    uint64_t umtFusedResultsComputed = 0;
     size_t spartaFusedIssueCursor = 0;
     uint8_t spartaFusedWriteChannel = 0;
     size_t descriptorFetchOffset = 0;
@@ -508,6 +536,7 @@ class LANLMAA : public ClockedObject
     bool spartaTallyDescriptor() const;
     bool spartaFusedCellDescriptor() const;
     bool umeGradzatpDescriptor() const;
+    bool umtFusedCornerDescriptor() const;
     static bool bransonTerminalKind(uint8_t kind);
     Addr bransonEventAddress(uint32_t event) const;
     Addr bransonTallyAddress(const Operation &operation) const;
@@ -544,6 +573,8 @@ class LANLMAA : public ClockedObject
     Addr umeGradzatpReadAddress(const Operation &operation) const;
     Addr umeGradzatpUpdateAddress(const Operation &operation) const;
     void beginUmeGradzatpUpdatePhase();
+    Addr umtFusedCornerReadAddress(const Operation &operation) const;
+    void progressUmtFusedCornerBatch();
     bool faceMinMaxDescriptor() const;
     UpdateKind configuredUpdateKind() const;
     bool floatingUpdate() const;
