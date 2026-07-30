@@ -36,12 +36,13 @@ def load_power(path: Path) -> dict[str, Any]:
     return {name: float(value) for name, value in total.items()}
 
 
-def parse_annotations(path: Path) -> dict[str, int]:
+def parse_annotations(path: Path, design_prefix: str) -> dict[str, int]:
     text = path.read_text(encoding="utf-8")
     if "Build completed successfully" not in text:
         raise ValueError(f"{path}: successful power build marker is absent")
     pattern = re.compile(
-        r"read_saif[^\n]*fp64_portfolio_(?P<profile>[a-z0-9_]+)\.saif\n"
+        r"read_saif[^\n]*" + re.escape(design_prefix) +
+        r"_(?P<profile>[a-z0-9_]+)\.saif\n"
         r"[^\n]*Annotated (?P<pins>[0-9]+) pin activities\."
     )
     result: dict[str, int] = {}
@@ -55,23 +56,28 @@ def parse_annotations(path: Path) -> dict[str, int]:
     return result
 
 
-def collect(power_dir: Path, service_log: Path) -> dict[str, Any]:
-    annotations = parse_annotations(service_log)
+def collect(power_dir: Path, service_log: Path,
+            design_prefix: str = "fp64_portfolio",
+            expected_pins: int = 139) -> dict[str, Any]:
+    if not design_prefix or expected_pins <= 0:
+        raise ValueError("invalid design prefix or expected pin count")
+    annotations = parse_annotations(service_log, design_prefix)
     profiles = {}
     for profile in PROFILES:
         paths = {
-            "saif": power_dir / f"fp64_portfolio_{profile}.saif",
+            "saif": power_dir / f"{design_prefix}_{profile}.saif",
             "vectorless": power_dir
-            / f"fp64_portfolio_{profile}_vectorless_power.json",
+            / f"{design_prefix}_{profile}_vectorless_power.json",
             "vector_driven": power_dir
-            / f"fp64_portfolio_{profile}_vector-driven_power.json",
+            / f"{design_prefix}_{profile}_vector-driven_power.json",
         }
         if not all(path.is_file() for path in paths.values()):
             raise ValueError(f"{profile}: incomplete power outputs")
         profiles[profile] = {
             "annotated_top_input_pins": annotations[profile],
-            "expected_top_input_pins": 139,
-            "all_top_input_pins_annotated": annotations[profile] == 139,
+            "expected_top_input_pins": expected_pins,
+            "all_top_input_pins_annotated": (
+                annotations[profile] == expected_pins),
             "vectorless_total_w": load_power(paths["vectorless"]),
             "vector_driven_total_w": load_power(paths["vector_driven"]),
             "raw_evidence": {
@@ -93,7 +99,7 @@ def collect(power_dir: Path, service_log: Path) -> dict[str, Any]:
         },
         "power_claim_eligible": False,
         "claim_boundary": (
-            "All 139 top-input pins were annotated, but internal workload "
+            f"All {expected_pins} top-input pins were annotated, but internal workload "
             "activity was propagated from a deterministic operand proxy. "
             "These values are sensitivity screens, not native workload power "
             "or energy measurements."
@@ -105,9 +111,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--power-dir", type=Path, required=True)
     parser.add_argument("--service-log", type=Path, required=True)
+    parser.add_argument("--design-prefix", default="fp64_portfolio")
+    parser.add_argument("--expected-pins", type=int, default=139)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    result = collect(args.power_dir, args.service_log)
+    result = collect(
+        args.power_dir,
+        args.service_log,
+        design_prefix=args.design_prefix,
+        expected_pins=args.expected_pins,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(result, indent=2) + "\n", encoding="utf-8"

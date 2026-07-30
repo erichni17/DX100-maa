@@ -63,6 +63,40 @@ class CollectPowerResultsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete"):
             MODULE.collect(self.root, self.log)
 
+    def test_collects_dual_slot_prefix_and_pin_count(self):
+        lines = ["Build completed successfully"]
+        total = {
+            "Total": {
+                "internal": 0.1,
+                "switching": 0.2,
+                "leakage": 0.01,
+                "total": 0.31,
+            }
+        }
+        for profile in MODULE.PROFILES:
+            (self.root / f"fp64_dual_portfolio_{profile}.saif").write_text(
+                "(SAIFILE)\n", encoding="utf-8")
+            for kind in ("vectorless", "vector-driven"):
+                path = self.root / (
+                    f"fp64_dual_portfolio_{profile}_{kind}_power.json")
+                path.write_text(json.dumps(total), encoding="utf-8")
+            lines.extend((
+                "read_saif -scope TOP/DUT "
+                f"fp64_dual_portfolio_{profile}.saif",
+                "prefix: Annotated 276 pin activities.",
+            ))
+        log = self.root / "dual.log"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = MODULE.collect(
+            self.root,
+            log,
+            design_prefix="fp64_dual_portfolio",
+            expected_pins=276,
+        )
+        self.assertTrue(all(
+            profile["all_top_input_pins_annotated"]
+            for profile in result["profiles"].values()))
+
 
 if __name__ == "__main__":
     unittest.main()

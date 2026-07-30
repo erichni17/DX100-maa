@@ -61,6 +61,18 @@ filegroup(
 )
 
 filegroup(
+    name = "fp64_dual_portfolio_final_verilog",
+    srcs = [":fp64_portfolio_2s1a1m8d_final"],
+    output_group = "6_final.v",
+)
+
+filegroup(
+    name = "fp64_dual_portfolio_final_spef",
+    srcs = [":fp64_portfolio_2s1a1m8d_final"],
+    output_group = "6_final.spef",
+)
+
+filegroup(
     name = "fp64_portfolio_final_spef",
     srcs = [":fp64_portfolio_1a1m8d_final"],
     output_group = "6_final.spef",
@@ -87,6 +99,27 @@ filegroup(
 ]
 
 [
+    genrule(
+        name = "fp64_dual_portfolio_{}_saif".format(profile),
+        srcs = [
+            "activity/portfolio_activity_contract.json",
+            "scripts/generate_dual_portfolio_saif.py",
+            "scripts/generate_portfolio_saif.py",
+        ],
+        outs = ["fp64_dual_portfolio_{}.saif".format(profile)],
+        cmd = "python3 $(location scripts/generate_dual_portfolio_saif.py) " +
+              "--contract $(location activity/portfolio_activity_contract.json) " +
+              "--profile {} --output $@".format(profile),
+        tags = ["manual"],
+    )
+    for profile in [
+        "umt_32_context",
+        "sparta_64_particle",
+        "amg_sparse_normalized",
+    ]
+]
+
+[
     portfolio_power_data(
         name = "fp64_portfolio_{}_power".format(profile),
         flow_target = ":fp64_portfolio_1a1m8d_final",
@@ -96,6 +129,24 @@ filegroup(
         spef = ":fp64_portfolio_final_spef",
         stage = "final",
         verilog = ":fp64_portfolio_final_verilog",
+    )
+    for profile in [
+        "umt_32_context",
+        "sparta_64_particle",
+        "amg_sparse_normalized",
+    ]
+]
+
+[
+    portfolio_power_data(
+        name = "fp64_dual_portfolio_{}_power".format(profile),
+        flow_target = ":fp64_portfolio_2s1a1m8d_final",
+        out_template = "fp64_dual_portfolio_{}_{{power}}_power.json".format(profile),
+        saif = ":fp64_dual_portfolio_{}_saif".format(profile),
+        saif_scope = "TOP/LanlFp64Portfolio2S1A1M8D",
+        spef = ":fp64_dual_portfolio_final_spef",
+        stage = "final",
+        verilog = ":fp64_dual_portfolio_final_verilog",
     )
     for profile in [
         "umt_32_context",

@@ -39,6 +39,8 @@ install -m 0644 "$harness/rtl/LanlFp64HardFloat.v" \
     "$target/rtl/LanlFp64HardFloat.v"
 install -m 0755 "$harness/scripts/generate_portfolio_saif.py" \
     "$target/scripts/generate_portfolio_saif.py"
+install -m 0755 "$harness/scripts/generate_dual_portfolio_saif.py" \
+    "$target/scripts/generate_dual_portfolio_saif.py"
 install -m 0644 "$harness/scripts/portfolio_power_base.tcl" \
     "$target/scripts/portfolio_power_base.tcl"
 install -m 0644 "$harness/hardfloat.BUILD.bazel" \
