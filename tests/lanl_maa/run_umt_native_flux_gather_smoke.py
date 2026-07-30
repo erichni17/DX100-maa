@@ -227,7 +227,7 @@ def c_array(name, values):
     return f"static const uint64_t {name}[] = {{\n" + "\n".join(rows) + "\n};"
 
 
-def generate_source(path, values, accesses):
+def generate_source(path, values, accesses, cpu_baseline=False):
     source = f"""
 #include <stdint.h>
 
@@ -241,16 +241,19 @@ def generate_source(path, values, accesses):
 #define MAX_ITEMS UINT64_C({DESCRIPTOR_ITEMS})
 #define TOTAL_ITEMS UINT64_C({len(accesses)})
 #define VALUE_COUNT UINT64_C({len(values)})
+#define CPU_BASELINE {1 if cpu_baseline else 0}
 
 {c_array("native_flux_values", values)}
 
 {c_array("native_flux_indices", accesses)}
 
+#if !CPU_BASELINE
 static void
 fence(void)
 {{
     __asm__ volatile("mfence" ::: "memory");
 }}
+#endif
 
 static void __attribute__((noreturn))
 finish(uint64_t code)
@@ -266,6 +269,21 @@ finish(uint64_t code)
 void __attribute__((noreturn))
 _start(void)
 {{
+    volatile uint64_t *targets = (volatile uint64_t *)(uintptr_t)(
+        DATA_VADDR + TARGET_OFFSET);
+
+    for (uint64_t value = 0; value < VALUE_COUNT; ++value) {{
+        targets[value] = native_flux_values[value];
+    }}
+
+#if CPU_BASELINE
+    for (uint64_t item = 0; item < TOTAL_ITEMS; ++item) {{
+        const uint64_t index = native_flux_indices[item];
+        if (targets[index] != native_flux_values[index]) {{
+            finish(UINT64_C(40));
+        }}
+    }}
+#else
     volatile uint64_t *descriptor = (volatile uint64_t *)(uintptr_t)DATA_VADDR;
     volatile uint64_t *addresses = (volatile uint64_t *)(uintptr_t)(
         DATA_VADDR + ADDRESS_VECTOR_OFFSET);
@@ -273,13 +291,8 @@ _start(void)
         DATA_VADDR + RESULT_VECTOR_OFFSET);
     volatile uint64_t *completion = (volatile uint64_t *)(uintptr_t)(
         DATA_VADDR + COMPLETION_OFFSET);
-    volatile uint64_t *targets = (volatile uint64_t *)(uintptr_t)(
-        DATA_VADDR + TARGET_OFFSET);
     volatile uint64_t *control = (volatile uint64_t *)(uintptr_t)CONTROL_VADDR;
 
-    for (uint64_t value = 0; value < VALUE_COUNT; ++value) {{
-        targets[value] = native_flux_values[value];
-    }}
     descriptor[0] = UINT64_C(0x0001000131414d4c);
     descriptor[2] = DATA_PADDR + ADDRESS_VECTOR_OFFSET;
     descriptor[3] = DATA_PADDR + RESULT_VECTOR_OFFSET;
@@ -340,19 +353,20 @@ _start(void)
             finish(UINT64_C(41));
         }}
     }}
+#endif
     finish(0);
 }}
 """
     path.write_text(source.lstrip(), encoding="utf-8")
 
 
-def build_program(root, values, accesses):
+def build_program(root, values, accesses, cpu_baseline=False):
     compiler = shutil.which("cc")
     if not compiler:
         raise RuntimeError("UMT flux gather smoke requires cc")
     source = root / "umt_native_flux_gather.c"
     binary = root / "umt_native_flux_gather.elf"
-    generate_source(source, values, accesses)
+    generate_source(source, values, accesses, cpu_baseline)
     subprocess.run(
         [
             compiler,
@@ -455,6 +469,22 @@ def validate(stats, logical_reads, chunks, minimum_reads, payload_model):
         raise RuntimeError(f"UMT gather retry accounting diverged: {retries}")
 
 
+def validate_cpu_baseline(stats):
+    for name in (
+        "logicalItems",
+        "physicalLineReads",
+        "lineMergeHits",
+        "completionsRetired",
+        "descriptorDoorbells",
+        "descriptorErrors",
+    ):
+        if stats.get(name, 0) != 0:
+            raise RuntimeError(
+                f"UMT CPU baseline unexpectedly exercised {name}: "
+                f"{stats.get(name)}"
+            )
+
+
 def run_smoke(args, root):
     simulator_commit, simulator_clean = repository_identity(ROOT)
     if args.require_clean_simulator and not simulator_clean:
@@ -470,7 +500,11 @@ def run_smoke(args, root):
     minimum_reads = sum(chunk_unique_lines)
     access_stream = b"".join(struct.pack("<Q", index) for index in accesses)
     value_stream = b"".join(struct.pack("<Q", value) for value in values)
-    source, binary = build_program(root, values, accesses)
+    if args.cpu_baseline and args.model_payload_overlay_ports:
+        raise RuntimeError(
+            "CPU baseline cannot model accelerator payload ports"
+        )
+    source, binary = build_program(root, values, accesses, args.cpu_baseline)
     metadata = {
         "schema": "lanl-maa-umt-native-flux-gather-v1",
         "mapping": (
@@ -500,6 +534,7 @@ def run_smoke(args, root):
         "control_bytes": CONTROL_BYTES,
         "descriptor_paddr": DATA_PADDR + DESCRIPTOR_OFFSET,
         "model_payload_overlay_ports": args.model_payload_overlay_ports,
+        "cpu_baseline": args.cpu_baseline,
         "l1_caches": args.l1_caches,
         "source_sha256": file_sha256(source),
         "binary_sha256": file_sha256(binary),
@@ -540,10 +575,14 @@ def run_smoke(args, root):
         "logical_reads": len(accesses),
         "chunks": chunks,
         "model_payload_overlay_ports": args.model_payload_overlay_ports,
+        "cpu_baseline": args.cpu_baseline,
         "l1_caches": args.l1_caches,
         "command": command,
         "correctness_method": (
-            "Every gathered FP64 word is compared bit-exactly with the "
+            "Every scalar-loaded FP64 word is compared bit-exactly with the "
+            "corresponding native UMT psi1 record word."
+            if args.cpu_baseline
+            else "Every gathered FP64 word is compared bit-exactly with the "
             "corresponding native UMT psi1 record word; every descriptor "
             "completion record is checked exactly."
         ),
@@ -569,13 +608,16 @@ def run_smoke(args, root):
             raise RuntimeError("gem5 native UMT flux gather failed")
         stats_path = outdir / "stats.txt"
         stats = read_stats(stats_path)
-        validate(
-            stats,
-            len(accesses),
-            chunks,
-            minimum_reads,
-            args.model_payload_overlay_ports,
-        )
+        if args.cpu_baseline:
+            validate_cpu_baseline(stats)
+        else:
+            validate(
+                stats,
+                len(accesses),
+                chunks,
+                minimum_reads,
+                args.model_payload_overlay_ports,
+            )
         metric_names = (
             "logicalItems",
             "physicalLineReads",
@@ -599,7 +641,7 @@ def run_smoke(args, root):
         report["metrics"]["cpuCommittedInstructions"] = read_scalar(
             stats_path, "system.cpu.commitStats0.numInsts"
         )
-        if args.l1_caches:
+        if args.l1_caches and not args.cpu_baseline:
             report["cache_metrics"] = {
                 "accesses": read_scalar(
                     stats_path, "system.maa_cache.overallAccesses_T::total"
@@ -622,11 +664,12 @@ def run_smoke(args, root):
                 raise RuntimeError(
                     f"UMT gather cache accounting failed: {cache}"
                 )
-        report["logical_to_physical_read_reduction_percent"] = (
-            100.0
-            * (len(accesses) - stats["physicalLineReads"])
-            / len(accesses)
-        )
+        if not args.cpu_baseline:
+            report["logical_to_physical_read_reduction_percent"] = (
+                100.0
+                * (len(accesses) - stats["physicalLineReads"])
+                / len(accesses)
+            )
         report["stats_sha256"] = file_sha256(stats_path)
         report["stdout_sha256"] = file_sha256(stdout_path)
         report["stderr_sha256"] = file_sha256(stderr_path)
@@ -646,6 +689,7 @@ def main():
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
     parser.add_argument("--record", required=True, type=pathlib.Path)
     parser.add_argument("--l1-caches", action="store_true")
+    parser.add_argument("--cpu-baseline", action="store_true")
     parser.add_argument("--model-payload-overlay-ports", action="store_true")
     parser.add_argument("--require-clean-simulator", action="store_true")
     parser.add_argument(
