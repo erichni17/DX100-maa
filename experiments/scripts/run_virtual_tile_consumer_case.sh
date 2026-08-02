@@ -132,6 +132,14 @@ transparent_4k)
     direct=1
     reload_only=0
     ;;
+transparent_displaced_4k)
+    mode=transparent_displaced
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    ;;
 paged_staged_16k)
     mode=paged_staged
     page=16384
@@ -448,7 +456,8 @@ elif [[ $virtual -eq 1 ]]; then
         echo "invalid virtual page trace count: $trace_pages/$expected_pages" >&2
         exit 1
     }
-    if [[ $case_name == transparent_4k ]]; then
+    if [[ $case_name == transparent_4k ||
+          $case_name == transparent_displaced_4k ]]; then
         transparent_submits=$(grep -c 'event=transparent_submit' "$trace" || true)
         transparent_issues=$(grep -c 'event=transparent_issue' "$trace" || true)
         transparent_completes=$(grep -c 'event=transparent_complete' "$trace" || true)
