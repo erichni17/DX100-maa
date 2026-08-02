@@ -1,7 +1,7 @@
 # Logical SPD cache: first honest vertical slice
 
 Date: 2026-08-02
-Audited tree: `a63ac39` (`mem: add atomic logical SPD overwrite pair`)
+Audited basis: `a65374c` (`mem: repair logical SPD ABI admission`)
 Status: implementation design only. This document changes no simulator or
 benchmark source and authorizes no gem5 run.
 
@@ -109,18 +109,13 @@ These are audited facts, not proposed interfaces.
   [#L1246](../../src/mem/MAA/MAA.cc#L1246)); it is not a
   generation-safe logical wait interface.
 
-## Pending commits are inputs, not interfaces
+## Accepted and pending integration inputs
 
-Neither `57d8aae` nor `08dc106` is an ancestor of the audited tree.
-They are not accepted ABI, response transport, or correctness authority.
-
-| Commit | Inspected concept | Decision here |
-| --- | --- | --- |
-| `57d8aae` | Logical header discriminator and pre-mutation operand/range validation. | Keep the principles only. Do not adopt its overloaded opcode-8 image, headers, helper names, or enums. |
-| `08dc106` | Full response tag, sender state, and bounded line ledger. | Keep full identity and line-exact ACK requirements only. Do not adopt its structures, port behavior, or response-owner API. |
-
-The active independent response review is a further reason not to cherry-pick
-either patch as an implied acceptance.
+The repaired high-byte opcode-8 ABI is accepted and integrated through
+`a65374c`. The logical response transport remains a separate integration
+series under independent review. Until that review passes, this design uses
+its required full-tag and line-exact ACK behavior as a contract, not as proof
+that the live port path is correct.
 
 ## Exact ABI: accepted high-byte logical opcode-8 form
 
@@ -139,7 +134,7 @@ accepted high-byte form already separates the logical and physical images.
 
 ```text
 word 0, bits 63:56: logical source ID       (0 or 1)
-word 0, bits 55:48: logical destination ID  (0 or 1, different)
+word 0, bits 55:48: 0xff reserved source-2 / logical-form discriminator
 word 0, bits 47:40: logical destination ID  (0 or 1)
 word 0, bits 39:32: opcode 8
 word 0, bits 31:24: FLOAT64 datatype (5)
