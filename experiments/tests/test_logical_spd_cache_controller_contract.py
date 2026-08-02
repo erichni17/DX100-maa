@@ -16,6 +16,10 @@ RUNNER_PATH = (
 NOTE_PATH = (
     ROOT / "experiments/analysis/logical_spd_cache_controller_2026-08-02.md"
 )
+INTEGRATION_PLAN_PATH = ROOT / (
+    "experiments/analysis/"
+    "logical_spd_cache_gem5_integration_plan_2026-08-02.md"
+)
 
 
 class LogicalSpdCacheControllerContractTest(unittest.TestCase):
@@ -88,7 +92,14 @@ class LogicalSpdCacheControllerContractTest(unittest.TestCase):
             self.assertIn(evidence, self.header)
 
     def test_explicit_lease_and_writeback_completion_contracts(self) -> None:
-        for phase in ("Filling", "Clean", "Dirty", "Writeback"):
+        for phase in (
+            "Filling",
+            "Reserved",
+            "Computing",
+            "Clean",
+            "Dirty",
+            "Writeback",
+        ):
             self.assertIn(phase, self.header)
         for api in (
             "pendingAction() const",
@@ -108,6 +119,83 @@ class LogicalSpdCacheControllerContractTest(unittest.TestCase):
         self.assertIn("slot.page != page", completion)
         self.assertIn("slot.transaction != serial", completion)
         self.assertIn("slot = Slot{}", completion)
+
+    def test_atomic_full_overwrite_surface_is_exact_and_bounded(self) -> None:
+        for api in (
+            "reserveFullOverwrite(const PageIdentity &source,",
+            "beginOverwriteCompute(const OverwriteReservation &reservation)",
+            "completeOverwrite(const OverwriteReservation &reservation)",
+            "cancelOverwrite(const OverwriteReservation &reservation)",
+        ):
+            self.assertIn(api, self.header)
+        reservation_start = self.header.index("struct OverwriteReservation")
+        reservation_end = self.header.index("struct OverwriteReply")
+        reservation = self.header[reservation_start:reservation_end]
+        for evidence in (
+            "Lease source",
+            "Lease destination",
+            "uint16_t sourceSlot",
+            "uint16_t destinationSlot",
+            "TransactionSerial computeSerial",
+            "TransactionSerial writebackSerial",
+        ):
+            self.assertIn(evidence, reservation)
+        for evidence in (
+            "std::array<uint16_t, 2> leaseEntries",
+            "OverwriteStatus::DestinationUnavailable",
+            "OverwriteStatus::Backpressure",
+            "OverwriteStatus::SerialExhausted",
+            "LeasePurpose::OverwriteSource",
+            "LeasePurpose::OverwriteDestination",
+            "source.slot == destination.slot",
+        ):
+            self.assertIn(evidence, self.header)
+
+    def test_overwrite_destination_is_not_ready_until_exact_writeback(
+        self,
+    ) -> None:
+        reserve = self.header[
+            self.header.index("reserveFullOverwrite(") : self.header.index(
+                "Start the exact reserved compute"
+            )
+        ]
+        complete = self.header[
+            self.header.index("completeOverwrite(") : self.header.index(
+                "/**\n     * Cancel an exact reservation"
+            )
+        ]
+        writeback = self.header[
+            self.header.index("completeWriteback(") : self.header.index(
+                "/** Acquire one explicit"
+            )
+        ]
+        self.assertNotIn("missQueue[queueSize++]", reserve)
+        self.assertIn("slot.phase = Phase::Reserved", reserve)
+        self.assertIn("slot.writebackTransaction = writebackSerial", reserve)
+        self.assertIn("slot.phase = Phase::Dirty", complete)
+        self.assertIn("releaseManagedLease(source)", complete)
+        self.assertIn("releaseManagedLease(destination)", complete)
+        self.assertNotIn("ready[", complete)
+        self.assertIn("slot.publishOnWriteback && isLive(page)", writeback)
+        self.assertIn("ready[page.page] = true", writeback)
+
+    def test_tests_cover_atomic_overwrite_adversaries(self) -> None:
+        source = TEST_PATH.read_text(encoding="utf-8")
+        for evidence in (
+            "testAtomicOverwriteOneSlotFailureHasNoPartialMutation",
+            "testAtomicOverwriteTwoSlotLifecycleAndExactCompletion",
+            "testOverwriteCancellationLeasePressureAndLateCapability",
+            "testOverwriteDescriptorReuseAndPreallocatedSerialExhaustion",
+            "OverwriteStatus::DestinationUnavailable",
+            "OverwriteStatus::Backpressure",
+            "OverwriteStatus::SerialExhausted",
+            "LeaseResult::Managed",
+            "Phase::Reserved",
+            "Phase::Computing",
+            "writeback.serial + 1",
+            "newDestination.generation != oldDestination.generation",
+        ):
+            self.assertIn(evidence, source)
 
     def test_tests_cover_reordered_duplicate_and_late_responses(self) -> None:
         source = TEST_PATH.read_text(encoding="utf-8")
@@ -202,6 +290,10 @@ class LogicalSpdCacheControllerContractTest(unittest.TestCase):
         runner = RUNNER_PATH.read_text(encoding="utf-8")
         self.assertIn("logical_spd_cache_controller_test.cc", runner)
         self.assertIn("test_logical_spd_cache_controller_contract.py", runner)
+        self.assertIn("-O2", runner)
+        self.assertIn("-fsanitize=address,undefined", runner)
+        self.assertIn("ASAN_OPTIONS", runner)
+        self.assertIn("UBSAN_OPTIONS", runner)
         self.assertNotIn("gem5.opt", runner)
         self.assertNotIn("scons", runner.lower())
 
@@ -213,6 +305,15 @@ class LogicalSpdCacheControllerContractTest(unittest.TestCase):
             "stores no page payload",
         ):
             self.assertIn(caveat, notes)
+
+        plan = INTEGRATION_PLAN_PATH.read_text(encoding="utf-8")
+        for audit_statement in (
+            "First-slice standalone-core audit",
+            "slot cannot satisfy the pair",
+            "Reserved -> Computing -> Dirty -> Writeback",
+            "No gem5 wiring",
+        ):
+            self.assertIn(audit_statement, plan)
 
 
 if __name__ == "__main__":

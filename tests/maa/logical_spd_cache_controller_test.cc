@@ -601,6 +601,296 @@ testIndependentPageReadinessAndDescriptorCancellation()
     CHECK(controller.access(page01) == SingleSlot::AccessResult::Stale);
 }
 
+void
+testAtomicOverwriteOneSlotFailureHasNoPartialMutation()
+{
+    SingleSlot controller;
+    const auto sourceDescriptor = allocate(controller, 0);
+    const auto destinationDescriptor = allocate(controller, 1);
+    const auto source = ready(controller, sourceDescriptor, 0);
+    const auto destination = controller.identity(destinationDescriptor, 0);
+    CHECK(controller.access(source) == SingleSlot::AccessResult::MissQueued);
+    acceptFill(controller, source, 0);
+
+    const auto initialPhase = controller.slotPhase(0);
+    const auto initialIdentity = controller.slotIdentity(0);
+    const auto initialSerial = controller.lastMemorySerial;
+    const auto initialQueueSize = controller.missQueueSize();
+    const auto reply =
+        controller.reserveFullOverwrite(source, destination);
+    CHECK(reply.status ==
+          SingleSlot::OverwriteStatus::DestinationUnavailable);
+    CHECK(reply.reservation.computeSerial == SingleSlot::NoTransaction);
+    CHECK(controller.slotPhase(0) == initialPhase);
+    CHECK(controller.slotIdentity(0) == initialIdentity);
+    CHECK(controller.lastMemorySerial == initialSerial);
+    CHECK(controller.missQueueSize() == initialQueueSize);
+    CHECK(controller.activeLeaseCount() == 0);
+    CHECK(!controller.slotIsPinned(0));
+    CHECK(!controller.pageIsReady(destination));
+    CHECK(controller.residentSlot(destination) == SingleSlot::NoSlot);
+    CHECK(controller.pendingAction().kind == SingleSlot::ActionKind::None);
+}
+
+void
+testAtomicOverwriteTwoSlotLifecycleAndExactCompletion()
+{
+    TwoSlot controller;
+    const auto sourceDescriptor = allocate(controller, 0);
+    const auto destinationDescriptor = allocate(controller, 1);
+    const auto source = ready(controller, sourceDescriptor, 0);
+    const auto destination = controller.identity(destinationDescriptor, 0);
+    const auto otherDestination = ready(controller, destinationDescriptor, 1);
+    CHECK(controller.access(source) == TwoSlot::AccessResult::MissQueued);
+    acceptFill(controller, source, 0);
+
+    const auto queueSize = controller.missQueueSize();
+    const auto reply =
+        controller.reserveFullOverwrite(source, destination);
+    CHECK(reply.status == TwoSlot::OverwriteStatus::Accepted);
+    const auto reservation = reply.reservation;
+    CHECK(reservation.computeSerial != TwoSlot::NoTransaction);
+    CHECK(reservation.writebackSerial != TwoSlot::NoTransaction);
+    CHECK(reservation.computeSerial != reservation.writebackSerial);
+    CHECK(reservation.source.entry != reservation.destination.entry);
+    const uint16_t sourceSlot = reservation.sourceSlot;
+    const uint16_t destinationSlot = reservation.destinationSlot;
+    CHECK(controller.leases[reservation.source.entry].slot == sourceSlot);
+    CHECK(controller.leases[reservation.destination.entry].slot ==
+          destinationSlot);
+    CHECK(sourceSlot != destinationSlot);
+    CHECK(sourceSlot == 0);
+    CHECK(destinationSlot == 1);
+    CHECK(controller.slotPhase(destinationSlot) == TwoSlot::Phase::Reserved);
+    CHECK(controller.slotTransaction(destinationSlot) ==
+          reservation.computeSerial);
+    CHECK(controller.activeLeaseCount() == 2);
+    CHECK(controller.slotIsPinned(sourceSlot));
+    CHECK(controller.slotIsPinned(destinationSlot));
+    CHECK(controller.missQueueSize() == queueSize);
+
+    // A reserved destination is neither ready nor resident, and its managed
+    // leases cannot be split by the generic lease API.
+    CHECK(controller.access(destination) == TwoSlot::AccessResult::NotReady);
+    CHECK(controller.pin(destination).status == TwoSlot::PinStatus::NotReady);
+    CHECK(controller.residentSlot(destination) == TwoSlot::NoSlot);
+    CHECK(controller.notifyPageReady(destination) ==
+          TwoSlot::ReadyResult::Busy);
+    CHECK(controller.release(reservation.source) ==
+          TwoSlot::LeaseResult::Managed);
+    CHECK(controller.markDirty(reservation.destination) ==
+          TwoSlot::LeaseResult::Managed);
+    CHECK(controller.freeDescriptor(sourceDescriptor) ==
+          TwoSlot::FreeResult::Busy);
+    CHECK(controller.freeDescriptor(destinationDescriptor) ==
+          TwoSlot::FreeResult::Busy);
+    CHECK(controller.access(otherDestination) ==
+          TwoSlot::AccessResult::MissQueued);
+    CHECK(controller.missQueueSize() == queueSize + 1);
+    // The ready miss cannot evict/reuse either managed slot.
+    CHECK(controller.pendingAction().kind == TwoSlot::ActionKind::None);
+
+    CHECK(controller.beginOverwriteCompute(reservation) ==
+          TwoSlot::OverwriteResult::Accepted);
+    CHECK(controller.slotPhase(destinationSlot) ==
+          TwoSlot::Phase::Computing);
+    CHECK(controller.beginOverwriteCompute(reservation) ==
+          TwoSlot::OverwriteResult::Stale);
+
+    auto forged = reservation;
+    forged.computeSerial += 2;
+    CHECK(controller.completeOverwrite(forged) ==
+          TwoSlot::OverwriteResult::Stale);
+    forged = reservation;
+    ++forged.destination.serial;
+    CHECK(controller.completeOverwrite(forged) ==
+          TwoSlot::OverwriteResult::Stale);
+    forged = reservation;
+    ++forged.destination.page.generation;
+    CHECK(controller.completeOverwrite(forged) ==
+          TwoSlot::OverwriteResult::Stale);
+    CHECK(controller.slotPhase(destinationSlot) ==
+          TwoSlot::Phase::Computing);
+    CHECK(controller.activeLeaseCount() == 2);
+
+    CHECK(controller.completeOverwrite(reservation) ==
+          TwoSlot::OverwriteResult::Accepted);
+    CHECK(controller.completeOverwrite(reservation) ==
+          TwoSlot::OverwriteResult::Stale);
+    CHECK(controller.slotPhase(sourceSlot) == TwoSlot::Phase::Clean);
+    CHECK(controller.slotIdentity(sourceSlot) == source);
+    CHECK(controller.slotPhase(destinationSlot) == TwoSlot::Phase::Dirty);
+    CHECK(controller.slotIdentity(destinationSlot) == destination);
+    CHECK(controller.activeLeaseCount() == 0);
+    CHECK(!controller.pageIsReady(destination));
+    CHECK(controller.residentSlot(destination) == TwoSlot::NoSlot);
+    CHECK(controller.access(destination) == TwoSlot::AccessResult::NotReady);
+
+    const auto writeback = controller.pendingAction();
+    CHECK(writeback.kind == TwoSlot::ActionKind::Writeback);
+    CHECK(writeback.slot == destinationSlot);
+    CHECK(writeback.page == destination);
+    CHECK(writeback.serial == reservation.writebackSerial);
+    CHECK(writeback == controller.pendingAction());
+    auto forgedWriteback = writeback;
+    ++forgedWriteback.serial;
+    CHECK(controller.acceptAction(forgedWriteback) ==
+          TwoSlot::ActionResult::Stale);
+    CHECK(controller.slotPhase(destinationSlot) == TwoSlot::Phase::Dirty);
+    CHECK(controller.acceptAction(writeback) ==
+          TwoSlot::ActionResult::Accepted);
+    CHECK(controller.slotPhase(destinationSlot) ==
+          TwoSlot::Phase::Writeback);
+    CHECK(controller.completeWriteback(destinationSlot, destination,
+                                       writeback.serial + 1) ==
+          TwoSlot::ResponseResult::Stale);
+    auto wrongDestination = destination;
+    ++wrongDestination.generation;
+    CHECK(controller.completeWriteback(destinationSlot, wrongDestination,
+                                       writeback.serial) ==
+          TwoSlot::ResponseResult::Stale);
+    CHECK(controller.slotPhase(destinationSlot) ==
+          TwoSlot::Phase::Writeback);
+    CHECK(controller.completeWriteback(destinationSlot, destination,
+                                       writeback.serial) ==
+          TwoSlot::ResponseResult::WritebackCompleted);
+    CHECK(controller.completeWriteback(destinationSlot, destination,
+                                       writeback.serial) ==
+          TwoSlot::ResponseResult::Stale);
+    CHECK(controller.slotPhase(destinationSlot) == TwoSlot::Phase::Empty);
+    CHECK(controller.pageIsReady(destination));
+    CHECK(controller.access(destination) == TwoSlot::AccessResult::MissQueued);
+}
+
+void
+testOverwriteCancellationLeasePressureAndLateCapability()
+{
+    TwoSlot controller;
+    const auto sourceDescriptor = allocate(controller, 0);
+    const auto destinationDescriptor = allocate(controller, 1);
+    const auto source = ready(controller, sourceDescriptor, 0);
+    const auto destination = controller.identity(destinationDescriptor, 0);
+    const auto cleanVictim = ready(controller, destinationDescriptor, 1);
+    CHECK(controller.access(source) == TwoSlot::AccessResult::MissQueued);
+    acceptFill(controller, source, 0);
+    CHECK(controller.access(cleanVictim) ==
+          TwoSlot::AccessResult::MissQueued);
+    acceptFill(controller, cleanVictim, 1);
+
+    const auto ordinaryPin = controller.pin(source);
+    CHECK(ordinaryPin.status == TwoSlot::PinStatus::Accepted);
+    const auto serialBeforePressure = controller.lastMemorySerial;
+    CHECK(controller.reserveFullOverwrite(source, destination).status ==
+          TwoSlot::OverwriteStatus::Backpressure);
+    CHECK(controller.activeLeaseCount() == 1);
+    CHECK(controller.lastMemorySerial == serialBeforePressure);
+    CHECK(controller.slotPhase(1) == TwoSlot::Phase::Clean);
+    CHECK(controller.slotIdentity(1) == cleanVictim);
+    CHECK(controller.release(ordinaryPin.lease) ==
+          TwoSlot::LeaseResult::Accepted);
+
+    const auto first =
+        controller.reserveFullOverwrite(source, destination).reservation;
+    CHECK(controller.slotPhase(1) == TwoSlot::Phase::Reserved);
+    CHECK(controller.slotIdentity(1) == destination);
+    CHECK(controller.residentSlot(cleanVictim) == TwoSlot::NoSlot);
+    CHECK(controller.missQueueSize() == 0);
+    CHECK(controller.beginOverwriteCompute(first) ==
+          TwoSlot::OverwriteResult::Accepted);
+    CHECK(controller.cancelOverwrite(first) ==
+          TwoSlot::OverwriteResult::Accepted);
+    CHECK(controller.activeLeaseCount() == 0);
+    CHECK(controller.slotPhase(1) == TwoSlot::Phase::Empty);
+    CHECK(!controller.pageIsReady(destination));
+    CHECK(controller.completeOverwrite(first) ==
+          TwoSlot::OverwriteResult::Stale);
+
+    const auto secondReply =
+        controller.reserveFullOverwrite(source, destination);
+    CHECK(secondReply.status == TwoSlot::OverwriteStatus::Accepted);
+    const auto second = secondReply.reservation;
+    CHECK(second.computeSerial != first.computeSerial);
+    CHECK(second.writebackSerial != first.writebackSerial);
+    CHECK(second.source.serial != first.source.serial);
+    CHECK(second.destination.serial != first.destination.serial);
+    CHECK(controller.beginOverwriteCompute(first) ==
+          TwoSlot::OverwriteResult::Stale);
+    CHECK(controller.cancelOverwrite(first) ==
+          TwoSlot::OverwriteResult::Stale);
+    CHECK(controller.slotPhase(1) == TwoSlot::Phase::Reserved);
+    CHECK(controller.activeLeaseCount() == 2);
+    CHECK(controller.cancelOverwrite(second) ==
+          TwoSlot::OverwriteResult::Accepted);
+    CHECK(controller.cancelOverwrite(second) ==
+          TwoSlot::OverwriteResult::Stale);
+    CHECK(controller.freeDescriptor(sourceDescriptor) ==
+          TwoSlot::FreeResult::Accepted);
+    CHECK(controller.freeDescriptor(destinationDescriptor) ==
+          TwoSlot::FreeResult::Accepted);
+}
+
+void
+testOverwriteDescriptorReuseAndPreallocatedSerialExhaustion()
+{
+    TwoSlot controller;
+    const auto sourceDescriptor = allocate(controller, 0);
+    const auto oldDestinationDescriptor = allocate(controller, 1);
+    const auto source = ready(controller, sourceDescriptor, 0);
+    const auto oldDestination =
+        controller.identity(oldDestinationDescriptor, 0);
+    CHECK(controller.access(source) == TwoSlot::AccessResult::MissQueued);
+    acceptFill(controller, source, 0);
+
+    controller.lastMemorySerial =
+        std::numeric_limits<TwoSlot::TransactionSerial>::max() - 2;
+    const auto reply =
+        controller.reserveFullOverwrite(source, oldDestination);
+    CHECK(reply.status == TwoSlot::OverwriteStatus::Accepted);
+    const auto reservation = reply.reservation;
+    CHECK(reservation.computeSerial ==
+          std::numeric_limits<TwoSlot::TransactionSerial>::max() - 1);
+    CHECK(reservation.writebackSerial ==
+          std::numeric_limits<TwoSlot::TransactionSerial>::max());
+    CHECK(controller.memorySerialExhausted());
+    CHECK(controller.beginOverwriteCompute(reservation) ==
+          TwoSlot::OverwriteResult::Accepted);
+    CHECK(controller.completeOverwrite(reservation) ==
+          TwoSlot::OverwriteResult::Accepted);
+
+    // Descriptor reuse cannot turn the old generation's eventual writeback
+    // response into publication of the replacement generation.
+    CHECK(controller.freeDescriptor(oldDestinationDescriptor) ==
+          TwoSlot::FreeResult::Accepted);
+    const auto newDestinationDescriptor = allocate(controller, 1);
+    const auto newDestination =
+        controller.identity(newDestinationDescriptor, 0);
+    CHECK(newDestination.generation != oldDestination.generation);
+    CHECK(!controller.pageIsReady(newDestination));
+
+    const auto writeback = controller.pendingAction();
+    CHECK(writeback.kind == TwoSlot::ActionKind::Writeback);
+    CHECK(writeback.page == oldDestination);
+    CHECK(writeback.serial == reservation.writebackSerial);
+    CHECK(controller.acceptAction(writeback) ==
+          TwoSlot::ActionResult::Accepted);
+    CHECK(controller.completeWriteback(writeback.slot, newDestination,
+                                       writeback.serial) ==
+          TwoSlot::ResponseResult::Stale);
+    CHECK(controller.completeWriteback(writeback.slot, oldDestination,
+                                       writeback.serial) ==
+          TwoSlot::ResponseResult::WritebackCompleted);
+    CHECK(!controller.pageIsReady(newDestination));
+
+    // No further reservation may wrap either serial, and failure is atomic.
+    const auto slotBefore = controller.slotIdentity(0);
+    const auto exhausted =
+        controller.reserveFullOverwrite(source, newDestination);
+    CHECK(exhausted.status == TwoSlot::OverwriteStatus::SerialExhausted);
+    CHECK(controller.activeLeaseCount() == 0);
+    CHECK(controller.slotIdentity(0) == slotBefore);
+    CHECK(!controller.pageIsReady(newDestination));
+}
+
 } // namespace
 
 int
@@ -617,6 +907,10 @@ main()
     testTransactionAndLeaseSerialExhaustionFailClosed();
     testWritebackFillExclusionPreservesSinglePageOwner();
     testIndependentPageReadinessAndDescriptorCancellation();
+    testAtomicOverwriteOneSlotFailureHasNoPartialMutation();
+    testAtomicOverwriteTwoSlotLifecycleAndExactCompletion();
+    testOverwriteCancellationLeasePressureAndLateCapability();
+    testOverwriteDescriptorReuseAndPreallocatedSerialExhaustion();
     std::cout << "logical_spd_cache_controller_test: PASS"
               << " controller_bytes=" << sizeof(DefaultController)
               << " page_identity_bytes="

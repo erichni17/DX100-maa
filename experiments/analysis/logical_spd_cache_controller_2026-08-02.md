@@ -13,18 +13,18 @@ All capacities are C++ template parameters and all backing objects are
 | Resource | Default capacity | Stored control |
 | --- | ---: | --- |
 | logical descriptors | 2 | allocated bit, 32-bit generation, 4 ready bits |
-| physical page slots | 2 | phase, page identity, live transaction serial |
+| physical page slots | 2 | phase, page identity, compute/writeback serials, publish bit |
 | FIFO miss entries | 4 | generation-tagged page identity |
-| client leases | 4 | active bit, slot, 64-bit serial, page identity |
+| client leases | 4 | active bit, slot, 64-bit serial, page identity, managed-pair role |
 
-The controller also stores one global 64-bit last-issued memory serial. The
-default object measured 216 C++ bytes with the repository's `g++`, and
+The controller also stores one global 64-bit last-allocated transaction serial.
+The default object measured 312 C++ bytes with the repository's `g++`, and
 `PageIdentity` measured 8 bytes. Those `sizeof` values describe this host ABI;
 they are not a synthesis or area estimate. In particular, compiler padding,
 the representation of `bool`, ports, arbitration, data SRAM, ECC, and timing
 closure are outside this measurement. The existing SPD hardware ledger's 4K
 physical payload remains a separate allocation and must not be inferred from
-the 216-byte controller object.
+the 312-byte controller object.
 
 ## Ownership and completion contract
 
@@ -32,10 +32,10 @@ the 216-byte controller object.
   Allocation fails permanently at generation exhaustion instead of wrapping
   into an old response's identity.
 - A ready event or access names one exact `(logical, page, generation)`
-  identity. Every accepted fill or writeback also receives a globally unique,
-  nonzero 64-bit serial. A response must match its action kind, physical slot,
-  page identity, and serial; reordered, duplicate, stale, and mismatched
-  responses are no-ops.
+  identity. Every accepted fill, overwrite compute, or writeback receives a
+  globally unique, nonzero 64-bit serial. A response must match its action
+  kind, physical slot, page identity, and serial; reordered, duplicate, stale,
+  and mismatched responses are no-ops.
 - A hit reports an exact clean/dirty resident. `pin` then returns one bounded
   lease capability; dirtying and releasing require that exact active lease.
   Duplicate or forged releases do not change residency.
@@ -54,6 +54,41 @@ the 216-byte controller object.
   leases make free return `Busy`; dirty, filling, and writeback slots retain
   their tagged completion obligations.
 
+## Atomic full-overwrite pair
+
+`reserveFullOverwrite(source, destination)` is a finite all-or-nothing API for
+the first logical-ALU slice. It requires a ready resident source and an unready,
+unowned destination on a different live descriptor. It chooses a distinct
+empty slot, or a distinct unpinned clean victim, without queueing a destination
+miss or fetching old destination bytes. It then allocates two exact managed
+lease records plus unique compute and writeback serials in one mutation, and
+returns both distinct slot IDs in the exact capability used for dispatch.
+
+Any invalid, stale, one-slot-impossible, destination-unavailable, lease-full,
+or serial-exhausted result leaves the source unpinned and leaves slots, ready
+bits, the miss FIFO, lease records, and the serial allocator unchanged. Generic
+`markDirty` and `release` reject managed pair leases, so a caller cannot split
+the capability. Active pair leases also prevent either exact descriptor
+generation from being freed.
+
+The destination lifecycle is `Reserved`, `Computing`, `Dirty`, then
+`Writeback`. Reserved and Computing destinations are not hit-ready residents,
+victims, or candidates for another reservation. `beginOverwriteCompute`
+requires the exact paired leases and compute serial. `completeOverwrite`
+requires that same capability, transitions only the destination to Dirty, and
+atomically releases both managed leases. `cancelOverwrite` safely discards the
+tentative destination and releases both leases before issue or after the caller
+has quiesced a failed compute. Duplicate, forged, canceled, and late
+capabilities do not mutate state.
+
+The writeback serial is allocated with the pair, so an accepted computation can
+still drain when that allocation reaches the terminal 64-bit serial. Completion
+does not mark the destination ready. The dirty slot advertises its mandatory
+writeback, remains owned through exact response matching, and publishes the
+page only if the same descriptor generation is still live when that response
+arrives. Free/reallocation during dirty writeback therefore cannot publish an
+old generation into a replacement descriptor.
+
 Miss insertion returns `Backpressure` when the finite FIFO is full. Lease
 allocation also returns `Backpressure` when all finite records are owned.
 Pending memory actions are observational: a downstream refusal causes no
@@ -62,19 +97,25 @@ the FIFO head uses the lowest empty slot, then the lowest unpinned clean slot;
 if neither exists, the lowest unpinned dirty slot is written back. Obsolete
 dirty pages are explicitly written back before ordinary miss service.
 When the 64-bit transaction serial reaches its maximum, `pendingAction`
-permanently returns no action. This fail-closed exhaustion policy avoids serial
-reuse; there is no recovery or epoch-reset mechanism in this standalone core.
+returns no action that would require another serial allocation. A mandatory
+overwrite writeback whose exact serial was allocated with its pair may still
+drain. This fail-closed policy avoids serial reuse; there is no recovery or
+epoch-reset mechanism in this standalone core.
 
 ## Validation and scope
 
 The focused C++ test covers two logical descriptors, alternate one/two-slot
 configurations, FIFO pressure, hits, independent page readiness, fill and clean
 victim selection, bounded leases, dirty replacement, descriptor reuse,
-same-generation reordered/duplicate/late fill and writeback responses, and
-writeback/fill exclusion. The Python contract rejects dynamic containers or
-payload buffers and checks the serial-bearing action/response surface,
-single-owner guard, adversarial coverage, and finite fail-closed paths. Run both
-with:
+same-generation reordered/duplicate/late fill and writeback responses,
+writeback/fill exclusion, one-slot pair impossibility, two-slot full-overwrite
+success, reservation/compute cancellation, forged and late compute capability,
+pair lease pressure, terminal serial allocation, and old-generation writeback
+after descriptor reuse. The Python contract rejects dynamic containers or
+payload buffers and checks the serial-bearing action/response surface, atomic
+pair lifecycle, source coverage, runner sanitizer flags, single-owner guard,
+and finite fail-closed paths. The runner executes optimized and ASan/UBSan C++
+tests plus the Python/source contracts:
 
 ```sh
 bash experiments/scripts/run_logical_spd_cache_controller_unit.sh

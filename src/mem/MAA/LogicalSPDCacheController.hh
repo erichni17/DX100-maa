@@ -19,18 +19,20 @@ namespace gem5 {
  *
  * Ownership is split deliberately:
  *  - an allocated DescriptorHandle owns its ready bits until freeDescriptor;
- *  - a non-empty Slot owns exactly one PageIdentity and, while Filling or
- *    Writeback, exactly one matching external memory transaction;
+ *  - a non-empty Slot owns exactly one PageIdentity and, while Filling,
+ *    Reserved, Computing, or Writeback, one exact transaction identity;
  *  - a successful pin owns one bounded Lease until its exact release;
+ *  - a successful full-overwrite reservation owns two managed leases and a
+ *    distinct destination slot until exact completion or cancellation;
  *  - a queued miss owns only a PageIdentity, never page payload.
  *
- * Every accepted fill or writeback receives one globally unique, nonzero
- * transaction serial.  Completion requires the exact action kind, slot, page,
- * and serial.  Fill completion installs data only if its identity is still
- * live and ready.  Dirty data enters Writeback only when the caller accepts
- * the explicit action, and that slot cannot be reused until the exact
- * writeback response.  Serial exhaustion permanently suppresses further
- * actions instead of wrapping into an earlier transaction.
+ * Every accepted fill, overwrite compute, and writeback receives a globally
+ * unique, nonzero transaction serial.  Completion requires the exact action,
+ * slot/page identity, leases, and serial.  Fill completion installs data only
+ * if its identity is still live and ready.  A completed overwrite destination
+ * becomes dirty and is published ready only after its preallocated writeback
+ * transaction receives the exact response.  Serial exhaustion permanently
+ * suppresses future work instead of wrapping into an earlier transaction.
  */
 template <std::size_t LogicalDescriptors = 2,
           std::size_t PagesPerDescriptor = 4,
@@ -99,6 +101,12 @@ class LogicalSPDCacheController
         uint16_t entry = NoLease;
         uint64_t serial = 0;
         PageIdentity page{};
+
+        bool operator==(const Lease &other) const
+        {
+            return entry == other.entry && serial == other.serial &&
+                   page == other.page;
+        }
     };
 
     enum class AllocateStatus : uint8_t
@@ -127,6 +135,7 @@ class LogicalSPDCacheController
     {
         Accepted,
         Duplicate,
+        Busy,
         Stale,
         Invalid,
     };
@@ -145,6 +154,7 @@ class LogicalSPDCacheController
     enum class PinStatus : uint8_t
     {
         Accepted,
+        NotReady,
         NotResident,
         Backpressure,
         Stale,
@@ -160,6 +170,7 @@ class LogicalSPDCacheController
     enum class LeaseResult : uint8_t
     {
         Accepted,
+        Managed,
         Stale,
         Invalid,
     };
@@ -168,6 +179,8 @@ class LogicalSPDCacheController
     {
         Empty,
         Filling,
+        Reserved,
+        Computing,
         Clean,
         Dirty,
         Writeback,
@@ -215,6 +228,42 @@ class LogicalSPDCacheController
         FillInstalled,
         FillReleasedObsolete,
         WritebackCompleted,
+        Stale,
+        Invalid,
+    };
+
+    enum class OverwriteStatus : uint8_t
+    {
+        Accepted,
+        SourceNotReady,
+        SourceNotResident,
+        DestinationReady,
+        DestinationUnavailable,
+        Backpressure,
+        SerialExhausted,
+        Stale,
+        Invalid,
+    };
+
+    struct OverwriteReservation
+    {
+        Lease source{};
+        Lease destination{};
+        uint16_t sourceSlot = NoSlot;
+        uint16_t destinationSlot = NoSlot;
+        TransactionSerial computeSerial = NoTransaction;
+        TransactionSerial writebackSerial = NoTransaction;
+    };
+
+    struct OverwriteReply
+    {
+        OverwriteStatus status = OverwriteStatus::Invalid;
+        OverwriteReservation reservation{};
+    };
+
+    enum class OverwriteResult : uint8_t
+    {
+        Accepted,
         Stale,
         Invalid,
     };
@@ -299,6 +348,8 @@ class LogicalSPDCacheController
         }
         if (descriptor.ready[page.page])
             return ReadyResult::Duplicate;
+        if (pageHasOwner(page))
+            return ReadyResult::Busy;
         descriptor.ready[page.page] = true;
         return ReadyResult::Accepted;
     }
@@ -331,16 +382,166 @@ class LogicalSPDCacheController
     }
 
     /**
+     * Atomically pin one ready resident source and reserve a distinct slot for
+     * a full-overwrite destination.  The destination must belong to a live
+     * different descriptor and must not already be ready, queued, or owned.
+     * It is never fetched.  Any non-Accepted result leaves every descriptor,
+     * slot, lease, queue entry, and serial unchanged.
+     *
+     * Two exact managed leases and both the compute and mandatory writeback
+     * serials are allocated together.  Preallocating the writeback serial
+     * guarantees that a computation accepted near serial exhaustion can still
+     * publish or discard its dirty result through an exact response.
+     */
+    OverwriteReply
+    reserveFullOverwrite(const PageIdentity &source,
+                         const PageIdentity &destination)
+    {
+        if (!validCoordinates(source) || !validCoordinates(destination) ||
+            source.logical == destination.logical) {
+            return {OverwriteStatus::Invalid, {}};
+        }
+        if (!isLive(source) || !isLive(destination))
+            return {OverwriteStatus::Stale, {}};
+        if (!descriptors[source.logical].ready[source.page])
+            return {OverwriteStatus::SourceNotReady, {}};
+        if (descriptors[destination.logical].ready[destination.page])
+            return {OverwriteStatus::DestinationReady, {}};
+
+        const uint16_t sourceSlot = residentSlot(source);
+        if (sourceSlot == NoSlot)
+            return {OverwriteStatus::SourceNotResident, {}};
+        if (queued(destination) || pageHasOwner(destination))
+            return {OverwriteStatus::DestinationUnavailable, {}};
+
+        const uint16_t destinationSlot =
+            overwriteDestinationSlot(sourceSlot);
+        if (destinationSlot == NoSlot)
+            return {OverwriteStatus::DestinationUnavailable, {}};
+
+        std::array<uint16_t, 2> leaseEntries{NoLease, NoLease};
+        std::size_t freeLeases = 0;
+        for (uint16_t entry = 0;
+             entry < LeaseEntries && freeLeases < leaseEntries.size();
+             ++entry) {
+            const LeaseRecord &record = leases[entry];
+            if (!record.active &&
+                record.serial != std::numeric_limits<uint64_t>::max()) {
+                leaseEntries[freeLeases++] = entry;
+            }
+        }
+        if (freeLeases != leaseEntries.size())
+            return {OverwriteStatus::Backpressure, {}};
+
+        const TransactionSerial maximum =
+            std::numeric_limits<TransactionSerial>::max();
+        if (lastMemorySerial >= maximum - 1)
+            return {OverwriteStatus::SerialExhausted, {}};
+
+        const TransactionSerial computeSerial = lastMemorySerial + 1;
+        const TransactionSerial writebackSerial = computeSerial + 1;
+        const Lease sourceLease = activateManagedLease(
+            leaseEntries[0], sourceSlot, source, LeasePurpose::OverwriteSource,
+            computeSerial);
+        const Lease destinationLease = activateManagedLease(
+            leaseEntries[1], destinationSlot, destination,
+            LeasePurpose::OverwriteDestination, computeSerial);
+
+        Slot &slot = slots[destinationSlot];
+        slot = Slot{};
+        slot.phase = Phase::Reserved;
+        slot.page = destination;
+        slot.transaction = computeSerial;
+        slot.writebackTransaction = writebackSerial;
+        slot.publishOnWriteback = true;
+        lastMemorySerial = writebackSerial;
+        return {OverwriteStatus::Accepted,
+                {sourceLease, destinationLease, sourceSlot, destinationSlot,
+                 computeSerial, writebackSerial}};
+    }
+
+    /**
+     * Start the exact reserved compute; duplicate/forged starts are no-ops.
+     */
+    OverwriteResult
+    beginOverwriteCompute(const OverwriteReservation &reservation)
+    {
+        if (!validOverwriteFields(reservation))
+            return OverwriteResult::Invalid;
+        if (!matchingOverwrite(reservation, Phase::Reserved))
+            return OverwriteResult::Stale;
+        slots[reservation.destinationSlot].phase = Phase::Computing;
+        return OverwriteResult::Accepted;
+    }
+
+    /**
+     * Complete the exact compute, atomically release both managed leases, and
+     * transition only the destination to Dirty.  The destination remains not
+     * ready and owns its slot until its preallocated writeback is
+     * acknowledged.
+     */
+    OverwriteResult
+    completeOverwrite(const OverwriteReservation &reservation)
+    {
+        if (!validOverwriteFields(reservation))
+            return OverwriteResult::Invalid;
+        if (!matchingOverwrite(reservation, Phase::Computing))
+            return OverwriteResult::Stale;
+
+        LeaseRecord &source = leases[reservation.source.entry];
+        LeaseRecord &destination = leases[reservation.destination.entry];
+        Slot &slot = slots[destination.slot];
+        slot.phase = Phase::Dirty;
+        slot.transaction = NoTransaction;
+        releaseManagedLease(source);
+        releaseManagedLease(destination);
+        return OverwriteResult::Accepted;
+    }
+
+    /**
+     * Cancel an exact reservation before issue or after the caller has
+     * quiesced a failed compute.  The tentative destination is discarded,
+     * neither page is published, and both managed leases are released.
+     */
+    OverwriteResult
+    cancelOverwrite(const OverwriteReservation &reservation)
+    {
+        if (!validOverwriteFields(reservation))
+            return OverwriteResult::Invalid;
+        if (!matchingOverwrite(reservation, Phase::Reserved) &&
+            !matchingOverwrite(reservation, Phase::Computing)) {
+            return OverwriteResult::Stale;
+        }
+
+        LeaseRecord &source = leases[reservation.source.entry];
+        LeaseRecord &destination = leases[reservation.destination.entry];
+        slots[destination.slot] = Slot{};
+        releaseManagedLease(source);
+        releaseManagedLease(destination);
+        return OverwriteResult::Accepted;
+    }
+
+    /**
      * Return one deterministic external action without consuming it.
      *
-     * Repeated calls return the same action until some accepted mutation.  An
-     * obsolete dirty page is written back first.  Otherwise the FIFO miss head
-     * uses the lowest empty slot, then the lowest unpinned clean victim.  Only
-     * when neither exists is the lowest unpinned dirty slot written back.
+     * Repeated calls return the same action until some accepted mutation.  A
+     * completed full-overwrite destination uses its already allocated serial
+     * and is written back first, even when global serial allocation is now
+     * exhausted.  Then an obsolete dirty page is written back.  Otherwise the
+     * FIFO miss head uses the lowest empty slot, then the lowest unpinned
+     * clean victim.  Only when neither exists is the lowest unpinned dirty
+     * slot written back.
      */
     MemoryAction
     pendingAction() const
     {
+        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+            if (slots[slot].phase == Phase::Dirty &&
+                slots[slot].writebackTransaction != NoTransaction &&
+                !slotPinned(slot)) {
+                return writebackAction(slot);
+            }
+        }
         if (memorySerialExhausted())
             return {};
         for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
@@ -391,6 +592,7 @@ class LogicalSPDCacheController
         if (action.kind == ActionKind::Fill) {
             if (pageOwnerCount(action.page) != 0)
                 return ActionResult::Stale;
+            slot = Slot{};
             slot.phase = Phase::Filling;
             slot.page = action.page;
             slot.transaction = action.serial;
@@ -405,7 +607,8 @@ class LogicalSPDCacheController
         } else {
             return ActionResult::Invalid;
         }
-        lastMemorySerial = action.serial;
+        if (action.serial > lastMemorySerial)
+            lastMemorySerial = action.serial;
         return ActionResult::Accepted;
     }
 
@@ -444,6 +647,8 @@ class LogicalSPDCacheController
             slot.transaction != serial || pageOwnerCount(page) != 1) {
             return ResponseResult::Stale;
         }
+        if (slot.publishOnWriteback && isLive(page))
+            descriptors[page.logical].ready[page.page] = true;
         slot = Slot{};
         return ResponseResult::WritebackCompleted;
     }
@@ -456,6 +661,8 @@ class LogicalSPDCacheController
             return {PinStatus::Invalid, {}};
         if (!isLive(page))
             return {PinStatus::Stale, {}};
+        if (!descriptors[page.logical].ready[page.page])
+            return {PinStatus::NotReady, {}};
         const uint16_t slot = residentSlot(page);
         if (slot == NoSlot)
             return {PinStatus::NotResident, {}};
@@ -470,6 +677,8 @@ class LogicalSPDCacheController
             record.active = true;
             record.slot = slot;
             record.page = page;
+            record.purpose = LeasePurpose::General;
+            record.overwriteSerial = NoTransaction;
             return {PinStatus::Accepted,
                     {entry, record.serial, record.page}};
         }
@@ -485,6 +694,8 @@ class LogicalSPDCacheController
             return LeaseResult::Invalid;
         if (record == nullptr)
             return LeaseResult::Stale;
+        if (record->purpose != LeasePurpose::General)
+            return LeaseResult::Managed;
         Slot &slot = slots[record->slot];
         if ((slot.phase != Phase::Clean && slot.phase != Phase::Dirty) ||
             slot.page != record->page) {
@@ -503,7 +714,9 @@ class LogicalSPDCacheController
         LeaseRecord *record = matchingLease(lease);
         if (record == nullptr)
             return LeaseResult::Stale;
-        record->active = false;
+        if (record->purpose != LeasePurpose::General)
+            return LeaseResult::Managed;
+        releaseLease(*record);
         return LeaseResult::Accepted;
     }
 
@@ -554,6 +767,8 @@ class LogicalSPDCacheController
 
     uint16_t residentSlot(const PageIdentity &page) const
     {
+        if (!pageIsReady(page))
+            return NoSlot;
         for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
             if ((slots[slot].phase == Phase::Clean ||
                  slots[slot].phase == Phase::Dirty) &&
@@ -579,6 +794,13 @@ class LogicalSPDCacheController
     }
 
   private:
+    enum class LeasePurpose : uint8_t
+    {
+        General,
+        OverwriteSource,
+        OverwriteDestination,
+    };
+
     struct Descriptor
     {
         bool allocated = false;
@@ -591,6 +813,8 @@ class LogicalSPDCacheController
         Phase phase = Phase::Empty;
         PageIdentity page{};
         TransactionSerial transaction = NoTransaction;
+        TransactionSerial writebackTransaction = NoTransaction;
+        bool publishOnWriteback = false;
     };
 
     struct LeaseRecord
@@ -599,6 +823,8 @@ class LogicalSPDCacheController
         uint16_t slot = NoSlot;
         uint64_t serial = 0;
         PageIdentity page{};
+        LeasePurpose purpose = LeasePurpose::General;
+        TransactionSerial overwriteSerial = NoTransaction;
     };
 
     bool
@@ -685,6 +911,22 @@ class LogicalSPDCacheController
         return false;
     }
 
+    uint16_t
+    overwriteDestinationSlot(uint16_t sourceSlot) const
+    {
+        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+            if (slot != sourceSlot && slots[slot].phase == Phase::Empty)
+                return slot;
+        }
+        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+            if (slot != sourceSlot && slots[slot].phase == Phase::Clean &&
+                !slotPinned(slot)) {
+                return slot;
+            }
+        }
+        return NoSlot;
+    }
+
     MemoryAction
     fillAction(uint16_t slot, bool cleanVictim) const
     {
@@ -705,9 +947,103 @@ class LogicalSPDCacheController
         MemoryAction action;
         action.kind = ActionKind::Writeback;
         action.slot = slot;
-        action.serial = nextMemorySerial();
+        action.serial = slots[slot].writebackTransaction != NoTransaction
+                            ? slots[slot].writebackTransaction
+                            : nextMemorySerial();
         action.page = slots[slot].page;
         return action;
+    }
+
+    Lease
+    activateManagedLease(uint16_t entry, uint16_t slot,
+                         const PageIdentity &page, LeasePurpose purpose,
+                         TransactionSerial overwriteSerial)
+    {
+        LeaseRecord &record = leases[entry];
+        ++record.serial;
+        record.active = true;
+        record.slot = slot;
+        record.page = page;
+        record.purpose = purpose;
+        record.overwriteSerial = overwriteSerial;
+        return {entry, record.serial, page};
+    }
+
+    void
+    releaseLease(LeaseRecord &record)
+    {
+        record.active = false;
+        record.slot = NoSlot;
+        record.page = PageIdentity{};
+        record.purpose = LeasePurpose::General;
+        record.overwriteSerial = NoTransaction;
+    }
+
+    void
+    releaseManagedLease(LeaseRecord &record)
+    {
+        releaseLease(record);
+    }
+
+    bool
+    validOverwriteFields(const OverwriteReservation &reservation) const
+    {
+        return reservation.source.entry < LeaseEntries &&
+               reservation.destination.entry < LeaseEntries &&
+               reservation.source.entry != reservation.destination.entry &&
+               reservation.source.serial != 0 &&
+               reservation.destination.serial != 0 &&
+               reservation.sourceSlot < PhysicalSlots &&
+               reservation.destinationSlot < PhysicalSlots &&
+               reservation.sourceSlot != reservation.destinationSlot &&
+               validCoordinates(reservation.source.page) &&
+               validCoordinates(reservation.destination.page) &&
+               reservation.source.page.logical !=
+                   reservation.destination.page.logical &&
+               reservation.computeSerial != NoTransaction &&
+               reservation.writebackSerial != NoTransaction &&
+               reservation.computeSerial != reservation.writebackSerial;
+    }
+
+    bool
+    matchingOverwrite(const OverwriteReservation &reservation,
+                      Phase destinationPhase) const
+    {
+        const LeaseRecord &source = leases[reservation.source.entry];
+        const LeaseRecord &destination =
+            leases[reservation.destination.entry];
+        if (!source.active || !destination.active ||
+            source.serial != reservation.source.serial ||
+            destination.serial != reservation.destination.serial ||
+            source.page != reservation.source.page ||
+            destination.page != reservation.destination.page ||
+            source.purpose != LeasePurpose::OverwriteSource ||
+            destination.purpose != LeasePurpose::OverwriteDestination ||
+            source.overwriteSerial != reservation.computeSerial ||
+            destination.overwriteSerial != reservation.computeSerial ||
+            source.slot >= PhysicalSlots ||
+            destination.slot >= PhysicalSlots ||
+            source.slot == destination.slot ||
+            source.slot != reservation.sourceSlot ||
+            destination.slot != reservation.destinationSlot ||
+            !isLive(source.page) || !isLive(destination.page) ||
+            !descriptors[source.page.logical].ready[source.page.page] ||
+            descriptors[destination.page.logical]
+                       .ready[destination.page.page]) {
+            return false;
+        }
+
+        const Slot &sourceSlot = slots[source.slot];
+        const Slot &destinationSlot = slots[destination.slot];
+        return (sourceSlot.phase == Phase::Clean ||
+                sourceSlot.phase == Phase::Dirty) &&
+               sourceSlot.page == source.page &&
+               destinationSlot.phase == destinationPhase &&
+               destinationSlot.page == destination.page &&
+               destinationSlot.transaction == reservation.computeSerial &&
+               destinationSlot.writebackTransaction ==
+                   reservation.writebackSerial &&
+               destinationSlot.publishOnWriteback;
     }
 
     LeaseRecord *

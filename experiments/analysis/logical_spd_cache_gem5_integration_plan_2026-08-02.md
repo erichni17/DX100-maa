@@ -14,6 +14,55 @@ This first slice deliberately permits only one logical ALU consumer at a time pe
 
 No performance, timing, or area conclusion is part of this plan.
 
+### First-slice standalone-core audit
+
+Standalone core audit base: `87230d797ce885f1c31cede6ebdc78ef62def917`.
+The base controller already enforced finite descriptors, slots, miss entries,
+leases, generation-tagged page identities, unique fill/writeback serials, and
+exact dirty-writeback responses. It did not, however, have one atomic operation
+that joined a resident source to a full-overwrite destination. Building that
+flow from separate `pin` and cache operations could retain a source pin while
+the destination was unavailable, and no existing state distinguished an
+uninitialized destination from a hit-ready resident.
+
+The audited standalone first slice now has this contract:
+
+- `reserveFullOverwrite` checks both descriptor generations, requires a ready
+  resident source, requires an unready and unowned destination on a different
+  descriptor, selects a distinct empty or unpinned-clean slot, and acquires two
+  finite managed leases atomically. Its exact capability returns both slot IDs
+  plus the leases and serials needed for dispatch and completion validation. It
+  does not queue or issue a destination fill, so old destination payload is
+  never fetched.
+- All resource and serial checks precede mutation. In particular, one physical
+  slot cannot satisfy the pair: the call returns destination backpressure with
+  no source lease, slot mutation, queue mutation, ready-bit mutation, or serial
+  consumption. Fewer than two reusable lease records likewise returns finite
+  lease backpressure with no partial acquisition.
+- The destination follows `Reserved -> Computing -> Dirty -> Writeback`.
+  Reserved and Computing slots are not hits, residents, victims, or reusable
+  destinations. Their two leases are managed as one capability; generic
+  dirty/release calls cannot split them, and either descriptor remains busy to
+  `freeDescriptor` while the pair is active.
+- The accepted pair owns two globally unique serials: one exact compute serial
+  and one preallocated writeback serial. Exact compute completion makes only
+  the destination dirty and releases both leases. Exact cancellation discards
+  the tentative destination and releases both leases; cancellation of an
+  issued compute is valid only after its executor has been quiesced.
+- A completed destination remains architecturally not-ready. Its preallocated
+  writeback is mandatory even if the global serial allocator has reached its
+  terminal value. The slot and old descriptor generation remain owned through
+  Writeback, and only the exact slot/page/generation/serial response releases
+  it. That response publishes readiness only if the destination generation is
+  still live; descriptor free/reuse cannot publish into the replacement.
+- Forged, duplicate, wrong-generation, canceled, and late compute capabilities
+  and writeback responses are no-ops. Successful cancellation or an exact
+  response is allowed to mutate state; every rejected operation is atomic.
+
+No gem5 wiring, payload movement, timing result, or performance claim is added
+by this audit. The host core still requires the later integration slices below
+to provide hidden SPD storage, ALU dispatch/quiescence, and response routing.
+
 ## 2. Source audit: what exists at the baseline
 
 ### Instruction file and MMIO ABI
@@ -338,7 +387,10 @@ Each patch must compile and pass its host/unit gate before the next patch. No pa
 | 2. Functional simulator gate | Focused microbenchmark with two interleaved indirect producers and ordinary logical scalar ALU consumers | Check 32-bit, 64-bit, and comparison destination sizing; out-of-order producer page readiness; a chained consumer; descriptor waits; guard regions; and exact CPU-reference bytes. Trace must show four matching destination `writeback_ack` events before consumer completion. |
 | 3. Adversarial reuse/backpressure gate | Delayed/reordered write responses, IF/stream/retirement-port retry, full miss FIFO, and immediate logical-ID reuse attempts | No hang or unbounded queue; queue high-water never exceeds four; no pin leak; old-generation responses are counted and ignored; same-page fill is excluded while dirty writeback owns the tag; neither physical slot nor logical descriptor changes generation before the final matching response. |
 
-The current plan-only change runs gate 1's document/source consistency checks only. Simulator gates 2 and 3 belong to the future implementation and must not be reported as completed by this plan.
+The standalone-core change covers only gate 1's controller transition and
+finite-storage portion. Its optimized, sanitizer, and Python/source contracts
+do not cover the instruction/API checks assigned to patch 2. Simulator gates 2
+and 3 remain future integration work and must not be reported as completed.
 
 ## 13. Definition of implementation completion
 
