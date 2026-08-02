@@ -24,6 +24,10 @@ using Route = gem5::LogicalStreamResponseRoute;
 using RouteDecision = gem5::LogicalStreamResponseRouteDecision;
 using CounterEvent = gem5::LogicalStreamCounterEvent;
 using CounterDecision = gem5::LogicalStreamCounterDecision;
+using Disposition = gem5::TimingResponseDisposition;
+using DispositionDecision =
+    gem5::LogicalStreamResponseDispositionDecision;
+using WrapperDecision = gem5::TimingResponseWrapperDecision;
 
 namespace {
 
@@ -145,6 +149,209 @@ testCommandSpecificCounterOwnershipAndRetries()
     CHECK(!overflow.valid);
     CHECK(!overflow.changed);
     CHECK(overflow.value == maximum);
+
+    const CounterDecision aborted =
+        gem5::decideLogicalStreamCounterUpdate(
+            Kind::Write, CounterEvent::ResponseAborted, 1);
+    CHECK(aborted.valid);
+    CHECK(aborted.changed);
+    CHECK(aborted.value == 0);
+    const CounterDecision abortedUnderflow =
+        gem5::decideLogicalStreamCounterUpdate(
+            Kind::Write, CounterEvent::ResponseAborted, 0);
+    CHECK(!abortedUnderflow.valid);
+    CHECK(!abortedUnderflow.changed);
+    CHECK(abortedUnderflow.value == 0);
+}
+
+void
+testExactPointerDispositionAndExtraPacketIsolation()
+{
+    for (Kind kind : {Kind::Read, Kind::ReadEx, Kind::Write}) {
+        Route route = makeRoute();
+        route.expectedKind = kind;
+        route.receivedKind = kind;
+        const DispositionDecision accepted =
+            gem5::classifyLogicalStreamResponseDisposition(
+                route, true, true);
+        CHECK(accepted.accepts());
+        CHECK(accepted.result == Result::Accepted);
+        CHECK(accepted.disposition == Disposition::Retired);
+        CHECK(accepted.retireOutstanding);
+        CHECK(accepted.popSenderState);
+        CHECK(accepted.settleStreamCredit);
+
+        const DispositionDecision wrongPacket =
+            gem5::classifyLogicalStreamResponseDisposition(
+                route, false, true);
+        CHECK(!wrongPacket.accepts());
+        CHECK(wrongPacket.result == Result::WrongPacket);
+        CHECK(wrongPacket.disposition == Disposition::DroppedExtra);
+        CHECK(!wrongPacket.retireOutstanding);
+        CHECK(wrongPacket.popSenderState);
+        CHECK(!wrongPacket.settleStreamCredit);
+    }
+
+    Route duplicate = makeRoute();
+    duplicate.ledgerResult = Result::Duplicate;
+    const DispositionDecision duplicateExtra =
+        gem5::classifyLogicalStreamResponseDisposition(
+            duplicate, false, true);
+    CHECK(duplicateExtra.result == Result::Duplicate);
+    CHECK(duplicateExtra.disposition == Disposition::DroppedExtra);
+    CHECK(!duplicateExtra.retireOutstanding);
+    CHECK(duplicateExtra.popSenderState);
+    CHECK(!duplicateExtra.settleStreamCredit);
+
+    Route unowned = makeRoute();
+    unowned.hasOutstanding = false;
+    const DispositionDecision staleExtra =
+        gem5::classifyLogicalStreamResponseDisposition(
+            unowned, false, true);
+    CHECK(staleExtra.result == Result::Stale);
+    CHECK(staleExtra.disposition == Disposition::DroppedExtra);
+    CHECK(!staleExtra.retireOutstanding);
+    CHECK(staleExtra.popSenderState);
+
+    const DispositionDecision aliasedExtra =
+        gem5::classifyLogicalStreamResponseDisposition(
+            unowned, false, false);
+    CHECK(aliasedExtra.disposition == Disposition::FatalUnownedExtra);
+    CHECK(!aliasedExtra.retireOutstanding);
+    CHECK(!aliasedExtra.popSenderState);
+    CHECK(!aliasedExtra.settleStreamCredit);
+
+    for (Result corruption : {Result::WrongKind, Result::WrongTransaction,
+                              Result::WrongAddress, Result::Invalid}) {
+        Route exactCorrupt = makeRoute();
+        exactCorrupt.ledgerResult = corruption;
+        const DispositionDecision fatal =
+            gem5::classifyLogicalStreamResponseDisposition(
+                exactCorrupt, true, true);
+        CHECK(!fatal.accepts());
+        CHECK(fatal.result == corruption);
+        CHECK(fatal.disposition == Disposition::FatalOwnedCorruption);
+        CHECK(fatal.retireOutstanding);
+        CHECK(fatal.popSenderState);
+        CHECK(fatal.settleStreamCredit);
+    }
+}
+
+void
+testRealWrapperInvocationAndCreditLifetime()
+{
+    const auto run = [](Disposition disposition, uint32_t *credit,
+                        int &receiveCount, int &settleCount,
+                        int &deleteCount, int &fatalCount,
+                        bool &deletePrecededFatal) {
+        return gem5::invokeTimingResponseWrapper(
+            credit,
+            [&]() {
+                ++receiveCount;
+                return disposition;
+            },
+            [&]() { ++settleCount; },
+            [&]() { ++deleteCount; },
+            [&](Disposition received, bool valid) {
+                CHECK(received == disposition);
+                const bool fatalDisposition =
+                    disposition == Disposition::FatalOwnedCorruption ||
+                    disposition == Disposition::FatalUnownedExtra;
+                CHECK(!valid || fatalDisposition);
+                deletePrecededFatal = deleteCount == 1;
+                ++fatalCount;
+            });
+    };
+
+    uint32_t credit = 1;
+    int receives = 0;
+    int settles = 0;
+    int deletions = 0;
+    int fatals = 0;
+    bool deletePrecededFatal = false;
+    CHECK(run(Disposition::Retired, &credit, receives, settles, deletions,
+              fatals, deletePrecededFatal));
+    CHECK(credit == 0);
+    CHECK(receives == 1);
+    CHECK(settles == 1);
+    CHECK(deletions == 1);
+    CHECK(fatals == 0);
+
+    credit = 1;
+    receives = settles = deletions = fatals = 0;
+    CHECK(run(Disposition::DroppedExtra, &credit, receives, settles,
+              deletions, fatals, deletePrecededFatal));
+    CHECK(credit == 1);
+    CHECK(receives == 1);
+    CHECK(settles == 0);
+    CHECK(deletions == 1);
+    CHECK(fatals == 0);
+
+    credit = 1;
+    receives = settles = deletions = fatals = 0;
+    deletePrecededFatal = false;
+    CHECK(run(Disposition::FatalOwnedCorruption, &credit, receives, settles,
+              deletions, fatals, deletePrecededFatal));
+    CHECK(credit == 0);
+    CHECK(receives == 1);
+    CHECK(settles == 1);
+    CHECK(deletions == 1);
+    CHECK(fatals == 1);
+    CHECK(deletePrecededFatal);
+
+    // An unsafe non-exact packet is also terminal, but it has no authority to
+    // settle the active request's credit.
+    credit = 1;
+    receives = settles = deletions = fatals = 0;
+    deletePrecededFatal = false;
+    CHECK(run(Disposition::FatalUnownedExtra, &credit, receives, settles,
+              deletions, fatals, deletePrecededFatal));
+    CHECK(credit == 1);
+    CHECK(receives == 1);
+    CHECK(settles == 0);
+    CHECK(deletions == 1);
+    CHECK(fatals == 1);
+    CHECK(deletePrecededFatal);
+
+    // An impossible accepted response at zero is destroyed and fails closed
+    // without wrapping the unsigned credit counter.
+    credit = 0;
+    receives = settles = deletions = fatals = 0;
+    deletePrecededFatal = false;
+    CHECK(run(Disposition::Retired, &credit, receives, settles, deletions,
+              fatals, deletePrecededFatal));
+    CHECK(credit == 0);
+    CHECK(receives == 1);
+    CHECK(settles == 0);
+    CHECK(deletions == 1);
+    CHECK(fatals == 1);
+    CHECK(deletePrecededFatal);
+
+    const uint32_t maximum = std::numeric_limits<uint32_t>::max();
+    const WrapperDecision maxDrop =
+        gem5::decideTimingResponseWrapperUpdate(
+            Disposition::DroppedExtra, maximum, true);
+    CHECK(maxDrop.valid);
+    CHECK(!maxDrop.creditChanged);
+    CHECK(maxDrop.creditValue == maximum);
+    CHECK(!maxDrop.settlePortCredit);
+    CHECK(maxDrop.deletePacket);
+    CHECK(!maxDrop.sendRetry);
+    const WrapperDecision maxRetire =
+        gem5::decideTimingResponseWrapperUpdate(
+            Disposition::Retired, maximum, true);
+    CHECK(maxRetire.valid);
+    CHECK(maxRetire.creditChanged);
+    CHECK(maxRetire.creditValue == maximum - 1);
+
+    // The memory wrapper invokes the same executor without a local credit.
+    receives = settles = deletions = fatals = 0;
+    CHECK(run(Disposition::Retired, nullptr, receives, settles, deletions,
+              fatals, deletePrecededFatal));
+    CHECK(receives == 1);
+    CHECK(settles == 0);
+    CHECK(deletions == 1);
+    CHECK(fatals == 0);
 }
 
 void
@@ -403,6 +610,8 @@ int
 main()
 {
     testCommandSpecificCounterOwnershipAndRetries();
+    testExactPointerDispositionAndExtraPacketIsolation();
+    testRealWrapperInvocationAndCreditLifetime();
     testPortRouteOwnershipIsPureAndFailClosed();
     testFillDelayedReorderedDuplicateCallbacks();
     testWritebackReadExCallbacksAreExactlyOnce();

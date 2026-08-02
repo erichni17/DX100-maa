@@ -1,26 +1,27 @@
-#include "mem/MAA/ALU.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/IndirectAccess.hh"
-#include "mem/MAA/Invalidator.hh"
-#include "mem/MAA/RangeFuser.hh"
-#include "mem/MAA/SPD.hh"
-#include "mem/MAA/StreamAccess.hh"
-#include "mem/MAA/MAA.hh"
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <string>
 
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
+#include "debug/MAACachePort.hh"
+#include "debug/MAAController.hh"
+#include "debug/MAACpuPort.hh"
+#include "debug/MAAMemPort.hh"
+#include "debug/MAAPort.hh"
+#include "mem/MAA/ALU.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/IndirectAccess.hh"
+#include "mem/MAA/Invalidator.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/RangeFuser.hh"
+#include "mem/MAA/SPD.hh"
+#include "mem/MAA/StreamAccess.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
-#include "debug/MAAPort.hh"
-#include "debug/MAACpuPort.hh"
-#include "debug/MAACachePort.hh"
-#include "debug/MAAMemPort.hh"
-#include "debug/MAAController.hh"
 #include "sim/cur_tick.hh"
-#include <cassert>
-#include <cstdint>
-#include <string>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -40,6 +41,63 @@ logicalStreamRequestKind(const MemCmd &command)
     if (command == MemCmd::ReadExReq)
         return LogicalStreamResponseKind::ReadEx;
     return LogicalStreamResponseKind::Write;
+}
+
+bool
+decodeLogicalStreamResponseKind(const MemCmd &command,
+                                LogicalStreamResponseKind &kind)
+{
+    if (command == MemCmd::ReadResp) {
+        kind = LogicalStreamResponseKind::Read;
+        return true;
+    }
+    if (command == MemCmd::ReadExResp) {
+        kind = LogicalStreamResponseKind::ReadEx;
+        return true;
+    }
+    if (command == MemCmd::WriteResp) {
+        kind = LogicalStreamResponseKind::Write;
+        return true;
+    }
+    return false;
+}
+
+constexpr uint32_t MaxResponseSenderStateDepth = 64;
+
+bool
+senderStateChainExcludes(const Packet::SenderState *state,
+                         const Packet::SenderState *target)
+{
+    uint32_t depth = 0;
+    while (state != nullptr && depth < MaxResponseSenderStateDepth) {
+        if (state == target)
+            return false;
+        state = state->predecessor;
+        ++depth;
+    }
+    // A longer or cyclic chain cannot prove unique ownership.
+    return state == nullptr;
+}
+
+struct LogicalSenderStateSearch
+{
+    LogicalSPDTransactionState *state = nullptr;
+    bool complete = false;
+};
+
+LogicalSenderStateSearch
+findLogicalSenderStateBounded(Packet::SenderState *state)
+{
+    uint32_t depth = 0;
+    while (state != nullptr && depth < MaxResponseSenderStateDepth) {
+        if (auto *logical =
+                dynamic_cast<LogicalSPDTransactionState *>(state)) {
+            return {logical, true};
+        }
+        state = state->predecessor;
+        ++depth;
+    }
+    return {nullptr, state == nullptr};
 }
 
 void
@@ -98,14 +156,21 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
                 bool bypass_deferred_queue)
 {
     Addr paddr = pkt->req->getPaddr();
-    auto *logical_state =
-        dynamic_cast<LogicalSPDTransactionState *>(pkt->senderState);
+    const LogicalSenderStateSearch sender_state_search =
+        findLogicalSenderStateBounded(pkt->senderState);
+    auto *logical_state = sender_state_search.state;
+    panic_if(!sender_state_search.complete,
+             "%s: sender-state stack exceeds bounded ownership proof\n",
+             __func__);
     const bool logical_response_managed = logical_state != nullptr;
     const LogicalStreamTransactionTag logical_transaction =
         logical_response_managed ? logical_state->tag
                                  : LogicalStreamTransactionTag{};
     if (logical_response_managed) {
-        panic_if(funcUnit != FuncUnitType::STREAM ||
+        panic_if(pkt->senderState != logical_state ||
+                     !senderStateChainExcludes(logical_state->predecessor,
+                                               logical_state) ||
+                     funcUnit != FuncUnitType::STREAM ||
                      !logical_transaction.valid() ||
                      logical_transaction.maaID != maaID ||
                      logical_state->lineAddress != paddr,
@@ -834,188 +899,348 @@ bool MAA::sendOutstandingCachePacket() {
     }
     return true;
 }
-void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
-    DPRINTF(MAAPort, "%s: received %s, cmd: %s, size: %d\n", __func__, pkt->print(), pkt->cmdString(), pkt->getSize());
-    panic_if(pkt->cmd.toInt() != MemCmd::ReadExResp &&
-             pkt->cmd.toInt() != MemCmd::ReadResp &&
-             pkt->cmd.toInt() != MemCmd::WriteResp,
-             "%s received an unknown response: %s\n", __func__, pkt->print());
-    if (pkt->cmd != MemCmd::WriteResp)
-        assert(pkt->getSize() == 64);
-    Addr paddr = pkt->req->getPaddr();
-    auto *logical_state =
-        dynamic_cast<LogicalSPDTransactionState *>(pkt->senderState);
+TimingResponseDisposition
+MAA::recvTimingResp(PacketPtr pkt, bool cached)
+{
+    DPRINTF(MAAPort, "%s: received %s, cmd: %s, size: %d\n", __func__,
+            pkt->print(), pkt->cmdString(), pkt->getSize());
+
+    const Addr response_paddr = pkt->req->getPaddr();
+    const Addr response_address = pkt->getAddr();
+    LogicalStreamResponseKind response_kind =
+        LogicalStreamResponseKind::Read;
+    const bool response_command_valid =
+        decodeLogicalStreamResponseKind(pkt->cmd, response_kind);
+    const LogicalSenderStateSearch sender_state_search =
+        findLogicalSenderStateBounded(pkt->senderState);
+    auto *logical_state = sender_state_search.state;
     const LogicalStreamTransactionTag received_tag =
         logical_state != nullptr ? logical_state->tag
                                  : LogicalStreamTransactionTag{};
     const Addr sender_line_address =
         logical_state != nullptr ? logical_state->lineAddress : 0;
-    const LogicalStreamResponseKind response_kind =
-        pkt->cmd == MemCmd::WriteResp
-            ? LogicalStreamResponseKind::Write
-            : pkt->cmd == MemCmd::ReadExResp
-                  ? LogicalStreamResponseKind::ReadEx
-                  : LogicalStreamResponseKind::Read;
-    auto releaseAcceptedLogicalState = [&pkt, &logical_state]() {
-        if (logical_state == nullptr)
-            return;
+
+    const auto exact = std::find_if(
+        my_outstanding_pkt_map.begin(), my_outstanding_pkt_map.end(),
+        [pkt](const auto &entry) { return entry.second.packet == pkt; });
+    const auto address_outstanding =
+        my_outstanding_pkt_map.find(response_paddr);
+    const bool sender_state_release_safe = [&]() {
+        if (logical_state == nullptr || pkt->senderState != logical_state ||
+            !senderStateChainExcludes(logical_state->predecessor,
+                                      logical_state)) {
+            return false;
+        }
+        for (const auto &entry : my_outstanding_pkt_map) {
+            if (entry.second.packet != pkt &&
+                !senderStateChainExcludes(entry.second.packet->senderState,
+                                          logical_state)) {
+                return false;
+            }
+        }
+        return true;
+    }();
+    auto releaseLogicalState = [&]() {
+        panic_if(logical_state == nullptr || !sender_state_release_safe,
+                 "%s: attempted unsafe logical sender-state release\n",
+                 __func__);
         panic_if(pkt->senderState != logical_state,
-                 "logical stream sender state is not response-stack top\n");
+                 "%s: logical sender state is not response-stack top\n",
+                 __func__);
         auto *popped = pkt->popSenderState();
         panic_if(popped != logical_state,
-                 "logical stream sender state changed while handling "
-                 "response\n");
+                 "%s: logical sender state changed during response\n",
+                 __func__);
         delete popped;
         logical_state = nullptr;
     };
-    const auto outstanding = my_outstanding_pkt_map.find(paddr);
-    if (outstanding == my_outstanding_pkt_map.end()) {
-        if (logical_state != nullptr) {
-            LogicalStreamResponseResult ledger_result =
-                LogicalStreamResponseResult::Stale;
-            StreamAccessUnit *stream = nullptr;
-            if (received_tag.maaID < num_maas) {
-                stream = &streamAccessUnits[received_tag.maaID];
-                ledger_result = stream->validateLogicalResponse(
+
+    /*
+     * No packet other than the exact map-owned PacketPtr can settle the
+     * active address.  A separately owned tagged callback is consumed after
+     * releasing its own state; an untagged or aliased extra is fatal because
+     * it cannot be safely retried or destroyed as an ordinary duplicate.
+     */
+    if (exact == my_outstanding_pkt_map.end()) {
+        StreamAccessUnit *received_stream = nullptr;
+        LogicalStreamResponseResult ledger_result =
+            response_command_valid ? LogicalStreamResponseResult::Stale
+                                   : LogicalStreamResponseResult::Invalid;
+        if (logical_state != nullptr && received_tag.maaID < num_maas) {
+            received_stream = &streamAccessUnits[received_tag.maaID];
+            if (response_command_valid) {
+                ledger_result = received_stream->validateLogicalResponse(
                     received_tag, sender_line_address, response_kind);
             }
-            const LogicalStreamResponseRouteDecision route =
-                classifyLogicalStreamResponseRoute(
-                    {false, false, true, {}, received_tag, paddr,
-                     sender_line_address, paddr, response_kind,
-                     response_kind, ledger_result});
-            if (stream != nullptr)
-                stream->rejectLogicalResponse(route.result);
-            DPRINTF(MAAPort,
-                    "%s: rejected unowned tagged logical response at "
-                    "0x%lx without popping sender state\n",
-                    __func__, paddr);
-            return;
         }
-        panic("%s: response for packet %s not found in "
-              "my_outstanding_pkt_map\n",
-              __func__, pkt->print());
-    }
-    OutstandingPacket tmp = outstanding->second;
-    panic_if(!tmp.sent, "%s received response %s for an unsent packet!\n",
-             pkt->cmdString(), pkt->getSize());
-    panic_if(cached != tmp.cached,
-             "%s: response %s cached %d does not match with outstanding "
-             "packet cached %d\n",
-             __func__, pkt->print(), cached, tmp.cached);
 
+        bool address_is_logical = false;
+        LogicalStreamTransactionTag expected_tag{};
+        Addr outstanding_address = response_paddr;
+        LogicalStreamResponseKind expected_kind = response_kind;
+        if (address_outstanding != my_outstanding_pkt_map.end()) {
+            const OutstandingPacket &address_owner =
+                address_outstanding->second;
+            outstanding_address = address_outstanding->first;
+            address_is_logical = address_owner.logicalResponseManaged;
+            expected_tag = address_owner.logicalTransaction;
+            if (address_owner.cmd == MemCmd::ReadReq) {
+                expected_kind = LogicalStreamResponseKind::Read;
+            } else if (address_owner.cmd == MemCmd::ReadExReq) {
+                expected_kind = LogicalStreamResponseKind::ReadEx;
+            } else if (address_owner.cmd == MemCmd::WriteReq) {
+                expected_kind = LogicalStreamResponseKind::Write;
+            } else {
+                ledger_result = LogicalStreamResponseResult::Invalid;
+            }
+        }
+        const LogicalStreamResponseRoute route = {
+            address_outstanding != my_outstanding_pkt_map.end(),
+            address_is_logical,
+            logical_state != nullptr,
+            expected_tag,
+            received_tag,
+            outstanding_address,
+            sender_line_address,
+            response_address,
+            expected_kind,
+            response_kind,
+            ledger_result};
+        const LogicalStreamResponseDispositionDecision decision =
+            classifyLogicalStreamResponseDisposition(
+                route, false, sender_state_release_safe);
+        if (received_stream != nullptr &&
+            decision.result != LogicalStreamResponseResult::Accepted &&
+            decision.result != LogicalStreamResponseResult::Completed) {
+            received_stream->rejectLogicalResponse(decision.result);
+        }
+        if (decision.popSenderState)
+            releaseLogicalState();
+        DPRINTF(MAAPort,
+                "%s: non-owning response at 0x%lx classified %d with "
+                "disposition %d; active map entry unchanged\n",
+                __func__, response_paddr,
+                static_cast<int>(decision.result),
+                static_cast<int>(decision.disposition));
+        return decision.disposition;
+    }
+
+    const Addr owned_address = exact->first;
+    const OutstandingPacket tmp = exact->second;
     if (tmp.logicalResponseManaged) {
-        panic_if(tmp.maaIDs.size() != 1 ||
-                     tmp.funcUnits[0] != FuncUnitType::STREAM ||
-                     tmp.maaIDs[0] >= num_maas,
-                 "%s: invalid logical stream outstanding owner at 0x%lx\n",
-                 __func__, paddr);
-        StreamAccessUnit &stream = streamAccessUnits[tmp.maaIDs[0]];
-        panic_if(tmp.cmd != MemCmd::ReadReq && tmp.cmd != MemCmd::ReadExReq &&
-                     tmp.cmd != MemCmd::WriteReq,
-                 "%s: logical outstanding packet at 0x%lx has invalid "
-                 "command %s\n",
-                 __func__, paddr, tmp.cmd.toString());
-        const LogicalStreamResponseKind expected_kind =
-            tmp.cmd == MemCmd::WriteReq
-                ? LogicalStreamResponseKind::Write
-                : tmp.cmd == MemCmd::ReadExReq
-                      ? LogicalStreamResponseKind::ReadEx
-                      : LogicalStreamResponseKind::Read;
-        const LogicalStreamResponseResult ledger_result =
-            logical_state != nullptr
-                ? stream.validateLogicalResponse(received_tag,
-                                                 sender_line_address,
-                                                 response_kind)
-                : LogicalStreamResponseResult::Stale;
-        const LogicalStreamResponseRouteDecision route =
-            classifyLogicalStreamResponseRoute(
-                {true, true, logical_state != nullptr, tmp.logicalTransaction,
-                 received_tag, paddr, sender_line_address, paddr,
-                 expected_kind, response_kind, ledger_result});
-        LogicalStreamResponseResult result = route.result;
-        const bool route_accepted =
-            route.authorizesOutstandingRetirement() &&
-            route.authorizesSenderStatePop() &&
-            result == LogicalStreamResponseResult::Accepted;
-        applyLogicalStreamCounterEvent(
-            my_num_outstanding_stream_pkts[tmp.maaIDs[0]], tmp.cmd,
-            route_accepted ? LogicalStreamCounterEvent::ResponseAccepted
-                           : LogicalStreamCounterEvent::ResponseRejected,
-            paddr);
-        if (!route_accepted) {
-            stream.rejectLogicalResponse(result);
-            DPRINTF(MAAPort,
-                    "%s: rejected logical response at 0x%lx as %d without "
-                    "retiring current transaction or popping sender state\n",
-                    __func__, paddr, static_cast<int>(result));
-            return;
+        const bool owner_valid =
+            tmp.maaIDs.size() == 1 && tmp.funcUnits.size() == 1 &&
+            tmp.funcUnits[0] == FuncUnitType::STREAM &&
+            tmp.maaIDs[0] >= 0 && tmp.maaIDs[0] < num_maas;
+        StreamAccessUnit *stream =
+            owner_valid ? &streamAccessUnits[tmp.maaIDs[0]] : nullptr;
+        LogicalStreamResponseKind expected_kind =
+            LogicalStreamResponseKind::Read;
+        const bool request_command_valid =
+            tmp.cmd == MemCmd::ReadReq || tmp.cmd == MemCmd::ReadExReq ||
+            tmp.cmd == MemCmd::WriteReq;
+        if (tmp.cmd == MemCmd::ReadExReq)
+            expected_kind = LogicalStreamResponseKind::ReadEx;
+        else if (tmp.cmd == MemCmd::WriteReq)
+            expected_kind = LogicalStreamResponseKind::Write;
+
+        LogicalStreamCounterDecision response_counter{};
+        bool response_counter_valid = false;
+        if (owner_valid && request_command_valid) {
+            response_counter = decideLogicalStreamCounterUpdate(
+                logicalStreamRequestKind(tmp.cmd),
+                LogicalStreamCounterEvent::ResponseAccepted,
+                my_num_outstanding_stream_pkts[tmp.maaIDs[0]]);
+            response_counter_valid = response_counter.valid;
         }
 
-        my_outstanding_pkt_map.erase(paddr);
-        sendNextDeferredPacket(paddr);
-        const LogicalStreamResponseResult accepted =
-            tmp.cmd == MemCmd::WriteReq
-                ? stream.writeResponseReceived(received_tag,
-                                               sender_line_address)
-                : stream.logicalResponseReceived(received_tag,
-                                                 sender_line_address,
-                                                 response_kind);
-        panic_if(accepted != LogicalStreamResponseResult::Accepted &&
-                     accepted != LogicalStreamResponseResult::Completed,
-                 "%s: validated logical response changed classification to "
-                 "%d\n",
-                 __func__, static_cast<int>(accepted));
-        if (tmp.cmd != MemCmd::WriteReq) {
-            panic_if(stream.recvData(pkt->getAddr(), pkt->getPtr<uint8_t>()) ==
-                         false,
-                     "%s: logical stream read response at 0x%lx was "
-                     "rejected\n",
-                     __func__, paddr);
-        }
-        releaseAcceptedLogicalState();
-        return;
-    }
-
-    if (logical_state != nullptr) {
+        const bool response_size_valid =
+            response_kind == LogicalStreamResponseKind::Write ||
+            pkt->getSize() == 64;
+        const bool structure_valid =
+            owner_valid && request_command_valid && response_command_valid &&
+            response_size_valid && tmp.sent && cached == tmp.cached &&
+            tmp.paddr == owned_address && response_paddr == owned_address &&
+            response_address == owned_address && logical_state != nullptr &&
+            sender_state_release_safe && response_counter_valid;
         LogicalStreamResponseResult ledger_result =
-            LogicalStreamResponseResult::Stale;
-        StreamAccessUnit *stream = nullptr;
-        if (received_tag.maaID < num_maas) {
-            stream = &streamAccessUnits[received_tag.maaID];
+            logical_state == nullptr ? LogicalStreamResponseResult::Stale
+                                     : LogicalStreamResponseResult::Invalid;
+        if (structure_valid) {
             ledger_result = stream->validateLogicalResponse(
                 received_tag, sender_line_address, response_kind);
         }
-        const LogicalStreamResponseRouteDecision route =
-            classifyLogicalStreamResponseRoute(
-                {true, false, true, {}, received_tag, paddr,
-                 sender_line_address, paddr, response_kind, response_kind,
-                 ledger_result});
-        if (stream != nullptr)
-            stream->rejectLogicalResponse(route.result);
-        DPRINTF(MAAPort,
-                "%s: rejected tagged response that does not own normal "
-                "outstanding packet at 0x%lx without popping sender state\n",
-                __func__, paddr);
-        return;
-    }
-    my_outstanding_pkt_map.erase(paddr);
-    for (int i = 0; i < tmp.maaIDs.size(); i++) {
-        if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {
-            if (pkt->cmd == MemCmd::WriteResp) {
-                my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
-                sendNextDeferredPacket(paddr);
-                indirectAccessUnits[tmp.maaIDs[i]].retirementWriteComplete(paddr);
-            } else {
-                panic_if(indirectAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>(), tmp.cached) == false, "%s: received %s but rejected from indirectAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
-            }
-        } else if (tmp.funcUnits[i] == FuncUnitType::STREAM) {
-            panic_if(streamAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>()) == false, "%s: received %s but rejected from streamAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
-        } else {
-            panic("Invalid func unit type\n");
+        const LogicalStreamResponseRoute route = {
+            true,
+            true,
+            logical_state != nullptr,
+            tmp.logicalTransaction,
+            received_tag,
+            owned_address,
+            sender_line_address,
+            response_address,
+            expected_kind,
+            response_kind,
+            ledger_result};
+        LogicalStreamResponseDispositionDecision decision =
+            classifyLogicalStreamResponseDisposition(
+                route, true, sender_state_release_safe);
+        if (!structure_valid && decision.accepts()) {
+            decision = {LogicalStreamResponseResult::Invalid,
+                        TimingResponseDisposition::FatalOwnedCorruption, true,
+                        logical_state != nullptr &&
+                            sender_state_release_safe,
+                        true};
         }
+
+        if (!decision.accepts()) {
+            LogicalStreamResponseResult rejected = decision.result;
+            if (rejected == LogicalStreamResponseResult::Accepted ||
+                rejected == LogicalStreamResponseResult::Completed) {
+                rejected = LogicalStreamResponseResult::Invalid;
+            }
+            if (stream != nullptr)
+                stream->rejectLogicalResponse(rejected);
+            if (owner_valid && request_command_valid) {
+                const LogicalStreamCounterDecision aborted_counter =
+                    decideLogicalStreamCounterUpdate(
+                        logicalStreamRequestKind(tmp.cmd),
+                        LogicalStreamCounterEvent::ResponseAborted,
+                        my_num_outstanding_stream_pkts[tmp.maaIDs[0]]);
+                if (aborted_counter.valid) {
+                    my_num_outstanding_stream_pkts[tmp.maaIDs[0]] =
+                        aborted_counter.value;
+                }
+            }
+            if (decision.popSenderState)
+                releaseLogicalState();
+            my_outstanding_pkt_map.erase(exact);
+            DPRINTF(MAAPort,
+                    "%s: exact logical packet at 0x%lx is corrupt (%d); "
+                    "removed map ownership before wrapper destruction\n",
+                    __func__, owned_address, static_cast<int>(rejected));
+            return TimingResponseDisposition::FatalOwnedCorruption;
+        }
+
+        my_num_outstanding_stream_pkts[tmp.maaIDs[0]] =
+            response_counter.value;
+        const LogicalStreamResponseResult accepted =
+            tmp.cmd == MemCmd::WriteReq
+                ? stream->writeResponseReceived(received_tag,
+                                                sender_line_address)
+                : stream->logicalResponseReceived(received_tag,
+                                                  sender_line_address,
+                                                  response_kind);
+        bool delivery_valid =
+            accepted == LogicalStreamResponseResult::Accepted ||
+            accepted == LogicalStreamResponseResult::Completed;
+        if (delivery_valid && tmp.cmd != MemCmd::WriteReq) {
+            delivery_valid = stream->recvData(response_address,
+                                              pkt->getPtr<uint8_t>());
+        }
+        if (!delivery_valid) {
+            releaseLogicalState();
+            my_outstanding_pkt_map.erase(exact);
+            DPRINTF(MAAPort,
+                    "%s: validated logical response at 0x%lx failed owner "
+                    "delivery; removed ownership before fatal destruction\n",
+                    __func__, owned_address);
+            return TimingResponseDisposition::FatalOwnedCorruption;
+        }
+        releaseLogicalState();
+        my_outstanding_pkt_map.erase(exact);
+        sendNextDeferredPacket(owned_address);
+        return TimingResponseDisposition::Retired;
     }
-    sendNextDeferredPacket(paddr);
+
+    const bool owners_valid =
+        tmp.maaIDs.size() == tmp.funcUnits.size() && !tmp.maaIDs.empty() &&
+        std::all_of(tmp.maaIDs.begin(), tmp.maaIDs.end(),
+                    [this](int maa_id) {
+                        return maa_id >= 0 && maa_id < num_maas;
+                    }) &&
+        std::all_of(tmp.funcUnits.begin(), tmp.funcUnits.end(),
+                    [](FuncUnitType unit) {
+                        return unit == FuncUnitType::INDIRECT ||
+                               unit == FuncUnitType::STREAM;
+                    });
+    LogicalStreamResponseKind expected_kind =
+        LogicalStreamResponseKind::Read;
+    bool request_command_valid = true;
+    if (tmp.cmd == MemCmd::ReadReq) {
+        expected_kind = LogicalStreamResponseKind::Read;
+    } else if (tmp.cmd == MemCmd::ReadExReq) {
+        expected_kind = LogicalStreamResponseKind::ReadEx;
+    } else if (tmp.cmd == MemCmd::WriteReq) {
+        expected_kind = LogicalStreamResponseKind::Write;
+    } else {
+        request_command_valid = false;
+    }
+    const bool response_size_valid =
+        response_kind == LogicalStreamResponseKind::Write ||
+        pkt->getSize() == 64;
+    const bool write_owners_valid =
+        expected_kind != LogicalStreamResponseKind::Write ||
+        std::all_of(tmp.funcUnits.begin(), tmp.funcUnits.end(),
+                    [](FuncUnitType unit) {
+                        return unit == FuncUnitType::INDIRECT;
+                    });
+    const bool write_counters_valid =
+        expected_kind != LogicalStreamResponseKind::Write ||
+        (owners_valid &&
+         std::all_of(tmp.maaIDs.begin(), tmp.maaIDs.end(),
+                     [this](int maa_id) {
+                         return my_num_outstanding_indirect_pkts[maa_id] != 0;
+                     }));
+    const bool normal_valid =
+        owners_valid && request_command_valid && response_command_valid &&
+        response_size_valid && response_kind == expected_kind && tmp.sent &&
+        cached == tmp.cached && tmp.paddr == owned_address &&
+        response_paddr == owned_address && response_address == owned_address &&
+        sender_state_search.complete && logical_state == nullptr &&
+        write_owners_valid &&
+        write_counters_valid;
+    if (!normal_valid) {
+        if (logical_state != nullptr && sender_state_release_safe)
+            releaseLogicalState();
+        my_outstanding_pkt_map.erase(exact);
+        DPRINTF(MAAPort,
+                "%s: exact normal packet at 0x%lx is corrupt; removed map "
+                "ownership before wrapper destruction\n",
+                __func__, owned_address);
+        return TimingResponseDisposition::FatalOwnedCorruption;
+    }
+
+    bool delivery_valid = true;
+    for (std::size_t i = 0; i < tmp.maaIDs.size(); ++i) {
+        if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {
+            if (response_kind == LogicalStreamResponseKind::Write) {
+                --my_num_outstanding_indirect_pkts[tmp.maaIDs[i]];
+                indirectAccessUnits[tmp.maaIDs[i]].retirementWriteComplete(
+                    owned_address);
+            } else {
+                delivery_valid =
+                    indirectAccessUnits[tmp.maaIDs[i]].recvData(
+                        response_address, pkt->getPtr<uint8_t>(), tmp.cached);
+            }
+        } else {
+            delivery_valid = streamAccessUnits[tmp.maaIDs[i]].recvData(
+                response_address, pkt->getPtr<uint8_t>());
+        }
+        if (!delivery_valid)
+            break;
+    }
+    if (!delivery_valid) {
+        my_outstanding_pkt_map.erase(exact);
+        DPRINTF(MAAPort,
+                "%s: exact normal response at 0x%lx was rejected by its "
+                "owner; removed map ownership before fatal destruction\n",
+                __func__, owned_address);
+        return TimingResponseDisposition::FatalOwnedCorruption;
+    }
+    my_outstanding_pkt_map.erase(exact);
+    sendNextDeferredPacket(owned_address);
+    return TimingResponseDisposition::Retired;
 }
 void MAA::scheduleSendCacheEvent(int latency) {
     DPRINTF(MAAPort, "%s: scheduling send cache packet in the next %d cycles!\n", __func__, latency);

@@ -253,8 +253,8 @@ class MAA : public ClockedObject {
         void recvReqRetry();
 
     protected:
-        int outstandingCacheSidePackets;
-        int maxOutstandingCacheSidePackets;
+        uint32_t outstandingCacheSidePackets;
+        uint32_t maxOutstandingCacheSidePackets;
         BlockReason blockReason;
         void setUnblocked(BlockReason reason);
         int core_id;
@@ -315,7 +315,7 @@ protected:
      * Handles a response from the bus.
      * @param pkt The response packet
      */
-    void recvTimingResp(PacketPtr pkt, bool cached);
+    TimingResponseDisposition recvTimingResp(PacketPtr pkt, bool cached);
 
     /**
      * Handle a snoop response.

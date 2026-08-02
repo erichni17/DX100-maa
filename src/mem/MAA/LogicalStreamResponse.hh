@@ -82,8 +82,95 @@ enum class LogicalStreamResponseResult : uint8_t
     WrongSlot,
     WrongMAA,
     WrongAddress,
+    WrongPacket,
     Invalid,
 };
+
+/**
+ * Complete ownership result returned from MAA::recvTimingResp to its port.
+ *
+ * A timing response is never retried by this path.  Retired consumes the
+ * exact map-owned packet and settles its port credit.  DroppedExtra consumes
+ * a different, safely releasable tagged packet without touching the active
+ * map entry or its credit.  FatalOwnedCorruption consumes and settles an
+ * exact packet after Port.cc removes every owned pointer.  FatalUnownedExtra
+ * consumes an unsafe non-exact packet without settling the active port
+ * credit. Both fatal dispositions terminate after wrapper destruction.
+ */
+enum class TimingResponseDisposition : uint8_t
+{
+    Retired,
+    DroppedExtra,
+    FatalOwnedCorruption,
+    FatalUnownedExtra,
+};
+
+struct TimingResponseWrapperDecision
+{
+    uint32_t creditValue = 0;
+    bool creditChanged = false;
+    bool settlePortCredit = false;
+    bool deletePacket = true;
+    bool sendRetry = false;
+    bool failClosed = false;
+    bool valid = true;
+};
+
+/**
+ * Bounded port-credit transition shared by the real cache and memory
+ * wrappers and the dependency-light host replay.
+ */
+inline TimingResponseWrapperDecision
+decideTimingResponseWrapperUpdate(TimingResponseDisposition disposition,
+                                  uint32_t currentCredit,
+                                  bool tracksCredit)
+{
+    const bool settles =
+        disposition == TimingResponseDisposition::Retired ||
+        disposition == TimingResponseDisposition::FatalOwnedCorruption;
+    const bool fatal =
+        disposition == TimingResponseDisposition::FatalOwnedCorruption ||
+        disposition == TimingResponseDisposition::FatalUnownedExtra;
+    if (tracksCredit && settles && currentCredit == 0) {
+        return {currentCredit, false, true, true, false, true, false};
+    }
+    return {tracksCredit && settles ? currentCredit - 1 : currentCredit,
+            tracksCredit && settles, settles, true, false, fatal, true};
+}
+
+/**
+ * Invoke one complete RequestPort response callback.
+ *
+ * Both production wrappers call this exact helper.  Deletion precedes a
+ * fail-closed callback so fatal corruption cannot leave the wrapper with
+ * a live packet, and every returning path returns true: returning false would
+ * make the ResponsePort retain the packet indefinitely pending recvRespRetry.
+ */
+template <typename Receive, typename CreditSettled, typename DeletePacket,
+          typename FailClosed>
+inline bool
+invokeTimingResponseWrapper(uint32_t *outstandingCredit, Receive &&receive,
+                            CreditSettled &&creditSettled,
+                            DeletePacket &&deletePacket,
+                            FailClosed &&failClosed)
+{
+    const TimingResponseDisposition disposition = receive();
+    const bool tracksCredit = outstandingCredit != nullptr;
+    const uint32_t currentCredit =
+        tracksCredit ? *outstandingCredit : 0;
+    const TimingResponseWrapperDecision decision =
+        decideTimingResponseWrapperUpdate(disposition, currentCredit,
+                                          tracksCredit);
+    if (decision.valid && decision.creditChanged) {
+        *outstandingCredit = decision.creditValue;
+        creditSettled();
+    }
+    if (decision.deletePacket)
+        deletePacket();
+    if (!decision.valid || decision.failClosed)
+        failClosed(disposition, decision.valid);
+    return true;
+}
 
 /**
  * Immutable input to Port.cc's logical-response ownership decision.
@@ -131,6 +218,22 @@ struct LogicalStreamResponseRouteDecision
     }
 };
 
+struct LogicalStreamResponseDispositionDecision
+{
+    LogicalStreamResponseResult result = LogicalStreamResponseResult::Stale;
+    TimingResponseDisposition disposition =
+        TimingResponseDisposition::DroppedExtra;
+    bool retireOutstanding = false;
+    bool popSenderState = false;
+    bool settleStreamCredit = false;
+
+    bool accepts() const
+    {
+        return result == LogicalStreamResponseResult::Accepted &&
+               disposition == TimingResponseDisposition::Retired;
+    }
+};
+
 /**
  * Lifecycle events that can affect the stream packet counter.
  *
@@ -145,6 +248,7 @@ enum class LogicalStreamCounterEvent : uint8_t
     SendAccepted,
     ResponseRejected,
     ResponseAccepted,
+    ResponseAborted,
 };
 
 struct LogicalStreamCounterDecision
@@ -182,7 +286,8 @@ decideLogicalStreamCounterUpdate(LogicalStreamResponseKind requestKind,
     const bool relinquishes =
         (readRequest && event == LogicalStreamCounterEvent::SendAccepted) ||
         (!readRequest &&
-         event == LogicalStreamCounterEvent::ResponseAccepted);
+         (event == LogicalStreamCounterEvent::ResponseAccepted ||
+          event == LogicalStreamCounterEvent::ResponseAborted));
     if (!relinquishes)
         return {currentValue, false, true};
     if (currentValue == 0)
@@ -249,6 +354,47 @@ classifyLogicalStreamResponseRoute(const LogicalStreamResponseRoute &route)
     return {LogicalStreamResponseResult::Accepted, true, true};
 }
 
+/**
+ * Add PacketPtr and sender-state ownership to the pure route decision.
+ *
+ * A different packet can never retire an address-owned request, even when it
+ * copied a valid tag.  It is droppable only when its top logical sender state
+ * is not referenced by any map-owned packet.  An exact corrupted packet has
+ * no possible later response, so it authorizes bounded cleanup followed by a
+ * fatal wrapper disposition instead of retaining a pointer that the wrapper
+ * is about to destroy.
+ */
+inline LogicalStreamResponseDispositionDecision
+classifyLogicalStreamResponseDisposition(
+    const LogicalStreamResponseRoute &route, bool packetMatchesOutstanding,
+    bool senderStateReleaseSafe)
+{
+    const LogicalStreamResponseRouteDecision routeDecision =
+        classifyLogicalStreamResponseRoute(route);
+    LogicalStreamResponseResult result = routeDecision.result;
+
+    if (!packetMatchesOutstanding) {
+        if (result == LogicalStreamResponseResult::Accepted)
+            result = LogicalStreamResponseResult::WrongPacket;
+        if (route.hasLogicalSenderState && senderStateReleaseSafe) {
+            return {result, TimingResponseDisposition::DroppedExtra, false,
+                    true, false};
+        }
+        return {result, TimingResponseDisposition::FatalUnownedExtra,
+                false, false, false};
+    }
+
+    if (routeDecision.accepts() &&
+        routeDecision.authorizesOutstandingRetirement() &&
+        routeDecision.authorizesSenderStatePop() &&
+        senderStateReleaseSafe) {
+        return {LogicalStreamResponseResult::Accepted,
+                TimingResponseDisposition::Retired, true, true, true};
+    }
+    return {result, TimingResponseDisposition::FatalOwnedCorruption, true,
+            route.hasLogicalSenderState && senderStateReleaseSafe, true};
+}
+
 inline bool
 isTerminalLogicalStreamResponse(LogicalStreamAction action,
                                 LogicalStreamResponseKind kind)
@@ -294,6 +440,7 @@ class LogicalStreamResponseLedger
         uint64_t wrongSlot = 0;
         uint64_t wrongMAA = 0;
         uint64_t wrongAddress = 0;
+        uint64_t wrongPacket = 0;
         uint64_t invalid = 0;
     };
 
@@ -512,6 +659,9 @@ class LogicalStreamResponseLedger
             break;
           case LogicalStreamResponseResult::WrongAddress:
             ++responseCounters.wrongAddress;
+            break;
+          case LogicalStreamResponseResult::WrongPacket:
+            ++responseCounters.wrongPacket;
             break;
           case LogicalStreamResponseResult::Invalid:
             ++responseCounters.invalid;
