@@ -1,5 +1,7 @@
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <type_traits>
 
 #include "mem/MAA/LogicalStreamResponse.hh"
@@ -20,6 +22,8 @@ using Kind = gem5::LogicalStreamResponseKind;
 using Result = gem5::LogicalStreamResponseResult;
 using Route = gem5::LogicalStreamResponseRoute;
 using RouteDecision = gem5::LogicalStreamResponseRouteDecision;
+using CounterEvent = gem5::LogicalStreamCounterEvent;
+using CounterDecision = gem5::LogicalStreamCounterDecision;
 
 namespace {
 
@@ -48,6 +52,99 @@ checkRejectedRoute(const Route &route, Result expected)
     CHECK(!decision.accepts());
     CHECK(!decision.authorizesOutstandingRetirement());
     CHECK(!decision.authorizesSenderStatePop());
+}
+
+uint32_t
+applyCounter(Kind kind, CounterEvent event, uint32_t value,
+             bool expectChange)
+{
+    const CounterDecision decision =
+        gem5::decideLogicalStreamCounterUpdate(kind, event, value);
+    CHECK(decision.valid);
+    CHECK(decision.changed == expectChange);
+    return decision.value;
+}
+
+void
+testCommandSpecificCounterOwnershipAndRetries()
+{
+    // Ordinary and logical reads have the same counter owner: the one
+    // successful send. Failed attempts retain the count, and the accepted
+    // response cannot debit it for a second time.
+    for (Kind readKind : {Kind::Read, Kind::ReadEx}) {
+        uint32_t count =
+            applyCounter(readKind, CounterEvent::Enqueued, 0, true);
+        CHECK(count == 1);
+        count = applyCounter(readKind, CounterEvent::SendRejected, count,
+                             false);
+        count = applyCounter(readKind, CounterEvent::SendRejected, count,
+                             false);
+        CHECK(count == 1);
+        count = applyCounter(readKind, CounterEvent::SendAccepted, count,
+                             true);
+        CHECK(count == 0);
+        count = applyCounter(readKind, CounterEvent::ResponseAccepted, count,
+                             false);
+        count = applyCounter(readKind, CounterEvent::ResponseRejected, count,
+                             false);
+        CHECK(count == 0);
+    }
+
+    // A response-bearing logical write stays counted across both failed and
+    // successful send attempts. Only its accepted Write response settles it.
+    uint32_t writeCount =
+        applyCounter(Kind::Write, CounterEvent::Enqueued, 0, true);
+    CHECK(writeCount == 1);
+    writeCount = applyCounter(Kind::Write, CounterEvent::SendRejected,
+                              writeCount, false);
+    writeCount = applyCounter(Kind::Write, CounterEvent::SendAccepted,
+                              writeCount, false);
+    CHECK(writeCount == 1);
+
+    Route wrong = makeRoute();
+    wrong.expectedKind = Kind::Write;
+    wrong.receivedKind = Kind::ReadEx;
+    const RouteDecision wrongDecision =
+        gem5::classifyLogicalStreamResponseRoute(wrong);
+    CHECK(wrongDecision.result == Result::WrongKind);
+    writeCount = applyCounter(Kind::Write, CounterEvent::ResponseRejected,
+                              writeCount, false);
+    CHECK(writeCount == 1);
+
+    writeCount = applyCounter(Kind::Write, CounterEvent::ResponseAccepted,
+                              writeCount, true);
+    CHECK(writeCount == 0);
+
+    Route duplicate = makeRoute();
+    duplicate.expectedKind = Kind::Write;
+    duplicate.receivedKind = Kind::Write;
+    duplicate.ledgerResult = Result::Duplicate;
+    const RouteDecision duplicateDecision =
+        gem5::classifyLogicalStreamResponseRoute(duplicate);
+    CHECK(duplicateDecision.result == Result::Duplicate);
+    writeCount = applyCounter(Kind::Write, CounterEvent::ResponseRejected,
+                              writeCount, false);
+    CHECK(writeCount == 0);
+
+    // Even an impossible accepted settlement at zero fails closed without
+    // wrapping UINT32_MAX. Nonzero settlement reaches the exact boundary.
+    const CounterDecision underflow =
+        gem5::decideLogicalStreamCounterUpdate(
+            Kind::Write, CounterEvent::ResponseAccepted, 0);
+    CHECK(!underflow.valid);
+    CHECK(!underflow.changed);
+    CHECK(underflow.value == 0);
+    CHECK(applyCounter(Kind::Read, CounterEvent::SendAccepted, 2, true) == 1);
+    CHECK(applyCounter(Kind::Write, CounterEvent::ResponseAccepted, 2, true) ==
+          1);
+
+    const uint32_t maximum = std::numeric_limits<uint32_t>::max();
+    const CounterDecision overflow =
+        gem5::decideLogicalStreamCounterUpdate(
+            Kind::Read, CounterEvent::Enqueued, maximum);
+    CHECK(!overflow.valid);
+    CHECK(!overflow.changed);
+    CHECK(overflow.value == maximum);
 }
 
 void
@@ -305,6 +402,7 @@ testFixedLedgerCapacityAndUntaggedPathExclusion()
 int
 main()
 {
+    testCommandSpecificCounterOwnershipAndRetries();
     testPortRouteOwnershipIsPureAndFailClosed();
     testFillDelayedReorderedDuplicateCallbacks();
     testWritebackReadExCallbacksAreExactlyOnce();

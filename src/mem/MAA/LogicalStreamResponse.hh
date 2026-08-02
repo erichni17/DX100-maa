@@ -131,6 +131,65 @@ struct LogicalStreamResponseRouteDecision
     }
 };
 
+/**
+ * Lifecycle events that can affect the stream packet counter.
+ *
+ * Deferred packets do not enter this lifecycle until Port.cc promotes them
+ * into its outstanding map.  A rejected send is a retry, and a rejected
+ * response includes every stale, duplicate, or identity-mismatched callback.
+ */
+enum class LogicalStreamCounterEvent : uint8_t
+{
+    Enqueued,
+    SendRejected,
+    SendAccepted,
+    ResponseRejected,
+    ResponseAccepted,
+};
+
+struct LogicalStreamCounterDecision
+{
+    uint32_t value = 0;
+    bool changed = false;
+    bool valid = true;
+};
+
+/**
+ * Pure command-specific ownership transition for
+ * MAA::my_num_outstanding_stream_pkts.
+ *
+ * Read and ReadEx requests relinquish counter ownership when their request is
+ * accepted by a memory-side port.  A response-bearing logical Write retains
+ * ownership across its accepted send and relinquishes it only when the
+ * fail-closed response route accepts the matching Write response.  Rejected
+ * sends and responses never change the count.  Boundary failures also leave
+ * the input unchanged, so neither unsigned increment overflow nor decrement
+ * underflow is possible through this decision.
+ */
+inline LogicalStreamCounterDecision
+decideLogicalStreamCounterUpdate(LogicalStreamResponseKind requestKind,
+                                 LogicalStreamCounterEvent event,
+                                 uint32_t currentValue)
+{
+    if (event == LogicalStreamCounterEvent::Enqueued) {
+        if (currentValue == std::numeric_limits<uint32_t>::max())
+            return {currentValue, false, false};
+        return {currentValue + 1, true, true};
+    }
+
+    const bool readRequest = requestKind == LogicalStreamResponseKind::Read ||
+                             requestKind == LogicalStreamResponseKind::ReadEx;
+    const bool relinquishes =
+        (readRequest && event == LogicalStreamCounterEvent::SendAccepted) ||
+        (!readRequest &&
+         event == LogicalStreamCounterEvent::ResponseAccepted);
+    if (!relinquishes)
+        return {currentValue, false, true};
+    if (currentValue == 0)
+        return {currentValue, false, false};
+    return {currentValue - 1, true, true};
+}
+
 inline LogicalStreamResponseResult
 classifyLogicalStreamTag(const LogicalStreamTransactionTag &expected,
                          const LogicalStreamTransactionTag &received)

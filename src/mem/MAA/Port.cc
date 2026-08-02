@@ -26,6 +26,52 @@
 #define TRACING_ON 1
 #endif
 namespace gem5 {
+namespace {
+
+LogicalStreamResponseKind
+logicalStreamRequestKind(const MemCmd &command)
+{
+    panic_if(command != MemCmd::ReadReq && command != MemCmd::ReadExReq &&
+                 command != MemCmd::WriteReq,
+             "%s: command %s has no logical stream counter ownership\n",
+             __func__, command.toString());
+    if (command == MemCmd::ReadReq)
+        return LogicalStreamResponseKind::Read;
+    if (command == MemCmd::ReadExReq)
+        return LogicalStreamResponseKind::ReadEx;
+    return LogicalStreamResponseKind::Write;
+}
+
+void
+applyLogicalStreamCounterEvent(uint32_t &counter, const MemCmd &command,
+                               LogicalStreamCounterEvent event, Addr address)
+{
+    const LogicalStreamCounterDecision decision =
+        decideLogicalStreamCounterUpdate(logicalStreamRequestKind(command),
+                                         event, counter);
+    panic_if(!decision.valid,
+             "%s: logical stream counter boundary violation for %s event %d "
+             "at 0x%lx (count %u)\n",
+             __func__, command.toString(), static_cast<int>(event), address,
+             counter);
+    counter = decision.value;
+}
+
+void
+settleAcceptedStreamReadCounter(uint32_t &counter, bool logical,
+                                const MemCmd &command, Addr address)
+{
+    if (logical) {
+        applyLogicalStreamCounterEvent(
+            counter, command, LogicalStreamCounterEvent::SendAccepted,
+            address);
+    } else {
+        --counter;
+    }
+}
+
+} // anonymous namespace
+
 bool
 MAA::canCoalesceOutstandingRead(Addr paddr, FuncUnitType func_unit,
                                 int maa_id) const
@@ -244,7 +290,13 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
                 }
             }
         } else if (funcUnit == FuncUnitType::STREAM) {
-            my_num_outstanding_stream_pkts[maaID]++;
+            if (logical_response_managed) {
+                applyLogicalStreamCounterEvent(
+                    my_num_outstanding_stream_pkts[maaID], pkt->cmd,
+                    LogicalStreamCounterEvent::Enqueued, paddr);
+            } else {
+                my_num_outstanding_stream_pkts[maaID]++;
+            }
             my_outstanding_pkt_map[paddr].cached = true;
             if (hit_cache) {
                 if (pkt->isRead()) {
@@ -460,8 +512,11 @@ bool MAA::sendOutstandingMemPacket() {
                         my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
                         indirectAccessUnits[tmp.maaIDs[i]].memReadPacketSent(it->paddr);
                     } else if (tmp.funcUnits[i] == FuncUnitType::STREAM) {
-                        my_num_outstanding_stream_pkts[tmp.maaIDs[i]]--;
-                        streamAccessUnits[tmp.maaIDs[i]].readPacketSent(it->paddr);
+                        settleAcceptedStreamReadCounter(
+                            my_num_outstanding_stream_pkts[tmp.maaIDs[i]],
+                            tmp.logicalResponseManaged, tmp.cmd, paddr);
+                        streamAccessUnits[tmp.maaIDs[i]].readPacketSent(
+                            it->paddr);
                     } else {
                         panic("Invalid func unit type\n");
                     }
@@ -564,10 +619,14 @@ bool MAA::sendOutstandingCachePacket() {
                 for (int i = 0; i < tmp.maaIDs.size(); i++) {
                     if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {
                         my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
-                        indirectAccessUnits[tmp.maaIDs[i]].cacheReadPacketSent(it->paddr);
+                        indirectAccessUnits[tmp.maaIDs[i]].cacheReadPacketSent(
+                            it->paddr);
                     } else if (tmp.funcUnits[i] == FuncUnitType::STREAM) {
-                        my_num_outstanding_stream_pkts[tmp.maaIDs[i]]--;
-                        streamAccessUnits[tmp.maaIDs[i]].readPacketSent(it->paddr);
+                        settleAcceptedStreamReadCounter(
+                            my_num_outstanding_stream_pkts[tmp.maaIDs[i]],
+                            tmp.logicalResponseManaged, tmp.cmd, paddr);
+                        streamAccessUnits[tmp.maaIDs[i]].readPacketSent(
+                            it->paddr);
                     } else {
                         panic("Invalid func unit type\n");
                     }
@@ -649,6 +708,10 @@ bool MAA::sendOutstandingCachePacket() {
                              "%s: logical stream write at 0x%lx lost its "
                              "response-bearing retirement identity\n",
                              __func__, paddr);
+                    applyLogicalStreamCounterEvent(
+                        my_num_outstanding_stream_pkts[tmp.maaIDs[0]],
+                        tmp.cmd, LogicalStreamCounterEvent::SendAccepted,
+                        paddr);
                     my_outstanding_pkt_map[paddr].sent = true;
                 } else {
                     panic_if(needs_response,
@@ -685,8 +748,11 @@ bool MAA::sendOutstandingCachePacket() {
                         my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
                         indirectAccessUnits[tmp.maaIDs[i]].cacheReadPacketSent(it->paddr);
                     } else if (tmp.funcUnits[i] == FuncUnitType::STREAM) {
-                        my_num_outstanding_stream_pkts[tmp.maaIDs[i]]--;
-                        streamAccessUnits[tmp.maaIDs[i]].readPacketSent(it->paddr);
+                        settleAcceptedStreamReadCounter(
+                            my_num_outstanding_stream_pkts[tmp.maaIDs[i]],
+                            tmp.logicalResponseManaged, tmp.cmd, paddr);
+                        streamAccessUnits[tmp.maaIDs[i]].readPacketSent(
+                            it->paddr);
                     } else {
                         panic("Invalid func unit type\n");
                     }
@@ -743,10 +809,14 @@ bool MAA::sendOutstandingCachePacket() {
                     for (int i = 0; i < tmp.maaIDs.size(); i++) {
                         if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {
                             my_num_outstanding_indirect_pkts[tmp.maaIDs[i]]--;
-                            indirectAccessUnits[tmp.maaIDs[i]].cacheReadPacketSent(it->paddr);
+                            indirectAccessUnits[tmp.maaIDs[i]]
+                                .cacheReadPacketSent(it->paddr);
                         } else if (tmp.funcUnits[i] == FuncUnitType::STREAM) {
-                            my_num_outstanding_stream_pkts[tmp.maaIDs[i]]--;
-                            streamAccessUnits[tmp.maaIDs[i]].readPacketSent(it->paddr);
+                            settleAcceptedStreamReadCounter(
+                                my_num_outstanding_stream_pkts[tmp.maaIDs[i]],
+                                tmp.logicalResponseManaged, tmp.cmd, paddr);
+                            streamAccessUnits[tmp.maaIDs[i]].readPacketSent(
+                                it->paddr);
                         } else {
                             panic("Invalid func unit type\n");
                         }
@@ -864,9 +934,16 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
                  received_tag, paddr, sender_line_address, paddr,
                  expected_kind, response_kind, ledger_result});
         LogicalStreamResponseResult result = route.result;
-        if (!route.authorizesOutstandingRetirement() ||
-            !route.authorizesSenderStatePop() ||
-            result != LogicalStreamResponseResult::Accepted) {
+        const bool route_accepted =
+            route.authorizesOutstandingRetirement() &&
+            route.authorizesSenderStatePop() &&
+            result == LogicalStreamResponseResult::Accepted;
+        applyLogicalStreamCounterEvent(
+            my_num_outstanding_stream_pkts[tmp.maaIDs[0]], tmp.cmd,
+            route_accepted ? LogicalStreamCounterEvent::ResponseAccepted
+                           : LogicalStreamCounterEvent::ResponseRejected,
+            paddr);
+        if (!route_accepted) {
             stream.rejectLogicalResponse(result);
             DPRINTF(MAAPort,
                     "%s: rejected logical response at 0x%lx as %d without "
@@ -876,7 +953,6 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
         }
 
         my_outstanding_pkt_map.erase(paddr);
-        my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
         sendNextDeferredPacket(paddr);
         const LogicalStreamResponseResult accepted =
             tmp.cmd == MemCmd::WriteReq
