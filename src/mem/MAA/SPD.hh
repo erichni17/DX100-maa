@@ -8,6 +8,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "debug/SPD.hh"
+#include "mem/MAA/LogicalSPDHiddenPayload.hh"
 
 namespace gem5 {
 class MAA;
@@ -35,7 +36,8 @@ protected:
     bool *element_finished;
     std::vector<uint8_t> *waiting_units_funcs;
     std::vector<int> *waiting_units_ids;
-    unsigned int num_tiles;
+    unsigned int visible_tile_count;
+    unsigned int allocated_tile_count;
     unsigned int num_tile_elements;
     unsigned int physical_tile_elements;
     Tick *read_port_busy_until;
@@ -44,11 +46,25 @@ protected:
     const int num_read_ports, num_write_ports;
     MAA *maa;
 
+private:
+    friend class MAA;
+
+    unsigned int logicalSpdHiddenSlotBaseTileID(int maa_id,
+                                                int logical_slot) const;
+    unsigned int logicalSpdHiddenLaneTileID(int maa_id, int logical_slot,
+                                            int fp64_lane) const;
+
 public:
     void check_tile_id(int tile_id, int word_size) {
-        panic_if(tile_id < 0 || tile_id >= num_tiles, "Invalid tile_id: %d\n", tile_id);
-        panic_if(word_size != 4 && word_size != 8, "Invalid data type size: %d\n", word_size);
-        panic_if(word_size == 8 && tile_id >= num_tiles - 1, "Invalid tile_id for 8-byte data type: %d\n", tile_id);
+        panic_if(tile_id < 0 || tile_id >= visible_tile_count,
+                 "Invalid visible tile_id: %d (visible count %u)\n",
+                 tile_id, visible_tile_count);
+        panic_if(word_size != 4 && word_size != 8,
+                 "Invalid data type size: %d\n", word_size);
+        panic_if(word_size == 8 &&
+                     tile_id >= static_cast<int>(visible_tile_count) - 1,
+                 "Invalid visible tile_id for 8-byte data type: %d\n",
+                 tile_id);
     }
     void check_tile_element_id(int tile_id, int element_id, int word_size) {
         check_tile_id(tile_id, word_size);
@@ -112,7 +128,8 @@ public:
 
 public:
     SPD(MAA *_maa,
-        unsigned int _num_tiles,
+        unsigned int _visible_tile_count,
+        unsigned int _num_maas,
         unsigned int _num_tile_elements,
         unsigned int _physical_tile_elements,
         Cycles _read_latency,

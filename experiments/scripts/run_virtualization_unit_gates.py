@@ -31,6 +31,11 @@ class Gate:
 
 REQUIRED_GATES = (
     Gate(
+        "logical_spd_hidden_payload",
+        SCRIPTS / "run_logical_spd_hidden_payload_unit.sh",
+        ("bash",),
+    ),
+    Gate(
         "transparent_spd_controller",
         SCRIPTS / "run_transparent_spd_controller_unit.sh",
         ("bash",),

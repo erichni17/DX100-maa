@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "experiments/scripts/run_virtualization_unit_gates.py"
 REQUIRED_SCRIPTS = (
+    "run_logical_spd_hidden_payload_unit.sh",
     "run_transparent_spd_controller_unit.sh",
     "run_logical_spd_cache_controller_unit.sh",
     "run_logical_spd_cache_abi_unit.sh",
@@ -92,7 +93,7 @@ class VirtualizationUnitGateRunnerTest(unittest.TestCase):
             self.assertEqual(summary["source_status"], [])
             self.assertEqual(summary["pass_marker"], PASS_MARKER)
             self.assertTrue((output / PASS_MARKER).is_file())
-            self.assertEqual(len(summary["gates"]), 5)
+            self.assertEqual(len(summary["gates"]), 6)
             for gate in summary["gates"]:
                 self.assertEqual(gate["status"], "passed")
                 self.assertEqual(gate["return_code"], 0)
@@ -197,6 +198,7 @@ class VirtualizationUnitGateRunnerTest(unittest.TestCase):
             self.assertEqual(
                 completed.stdout.splitlines(),
                 [
+                    "PASS logical_spd_hidden_payload",
                     "PASS transparent_spd_controller",
                     "PASS logical_spd_cache_controller",
                     "PASS logical_spd_cache_abi",

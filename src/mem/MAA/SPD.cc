@@ -79,7 +79,7 @@ SPD::TileStatus SPD::getTileStatus(int tile_id) {
     return tiles_status[tile_id];
 }
 void SPD::setTileIdle(int tile_id, int word_size) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     tiles_status[tile_id] = SPD::TileStatus::Idle;
     if (word_size == 8) {
         tiles_status[tile_id + 1] = SPD::TileStatus::Idle;
@@ -89,28 +89,28 @@ void SPD::setTileIdle(int tile_id, int word_size) {
     }
 }
 void SPD::setTileFinished(int tile_id, int word_size) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     tiles_status[tile_id] = SPD::TileStatus::Finished;
     if (word_size == 8) {
         tiles_status[tile_id + 1] = SPD::TileStatus::Finished;
     }
 }
 void SPD::setTileService(int tile_id, int word_size) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     tiles_status[tile_id] = SPD::TileStatus::Service;
     if (word_size == 8) {
         tiles_status[tile_id + 1] = SPD::TileStatus::Service;
     }
 }
 void SPD::setTileDirty(int tile_id, int word_size) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     tiles_dirty[tile_id] = true;
     if (word_size == 8) {
         tiles_dirty[tile_id + 1] = true;
     }
 }
 void SPD::setTileClean(int tile_id, int word_size) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     tiles_dirty[tile_id] = false;
     if (word_size == 8) {
         tiles_dirty[tile_id + 1] = false;
@@ -121,7 +121,7 @@ bool SPD::getTileDirty(int tile_id) {
     return tiles_dirty[tile_id];
 }
 void SPD::setTileReady(int tile_id, int word_size) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     panic_if(tiles_ready[tile_id] == 0 ||
                  (word_size == 8 && tiles_ready[tile_id + 1] == 0),
              "Tile %d received a ready credit without a matching debit\n",
@@ -134,7 +134,7 @@ void SPD::setTileReady(int tile_id, int word_size) {
     }
 }
 void SPD::setTileNotReady(int tile_id, int word_size) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     constexpr auto max_ready_refs = std::numeric_limits<uint16_t>::max();
     panic_if(tiles_ready[tile_id] == max_ready_refs ||
                  (word_size == 8 &&
@@ -151,7 +151,7 @@ bool SPD::getTileReady(int tile_id) {
 }
 bool SPD::getElementFinished(int tile_id, int element_id, int word_size,
                              uint8_t func, int id) {
-    check_tile_id(tile_id, sizeof(uint32_t));
+    check_tile_id(tile_id, word_size);
     bool is_element_finished;
     // Functional units use one-past-the-tile as a sentinel while waiting for
     // the producer to mark the whole tile finished. With a smaller physical
@@ -174,6 +174,7 @@ bool SPD::getElementFinished(int tile_id, int element_id, int word_size,
     return is_element_finished;
 }
 void SPD::wakeup_waiting_units(int tile_id) {
+    check_tile_id(tile_id, sizeof(uint32_t));
     for (int i = 0; i < waiting_units_funcs[tile_id].size(); i++) {
         int waiting_units_id = waiting_units_ids[tile_id][i];
         switch (waiting_units_funcs[tile_id][i]) {
@@ -220,7 +221,7 @@ int SPD::getSizeForReadyElement(int tile_id, int element_id, int word_size) {
     return static_cast<int>(tiles_size[tile_id]);
 }
 void SPD::setSize(int tile_id, int size) {
-    assert((0 <= tile_id) && (tile_id < num_tiles));
+    check_tile_id(tile_id, sizeof(uint32_t));
     panic_if(size < 0 || size > static_cast<int>(physical_tile_elements),
              "SPD tile size %d exceeds physical capacity %u "
              "(logical capacity %u) for tile[%d]!\n",
@@ -228,21 +229,45 @@ void SPD::setSize(int tile_id, int size) {
     tiles_size[tile_id] = size;
 }
 void SPD::setVirtualSize(int tile_id, int size) {
-    assert((0 <= tile_id) && (tile_id < num_tiles));
+    check_tile_id(tile_id, sizeof(uint32_t));
     panic_if(size < 0 || size > static_cast<int>(num_tile_elements),
              "Invalid virtual tile size %d (logical max=%u) for tile[%d]!\n",
              size, num_tile_elements, tile_id);
     tiles_size[tile_id] = size;
 }
+unsigned int
+SPD::logicalSpdHiddenSlotBaseTileID(int maa_id, int logical_slot) const
+{
+    return logicalSpdHiddenLaneTileID(maa_id, logical_slot, 0);
+}
+
+unsigned int
+SPD::logicalSpdHiddenLaneTileID(int maa_id, int logical_slot,
+                                int fp64_lane) const
+{
+    const uint32_t num_maas =
+        (allocated_tile_count - visible_tile_count) /
+        LogicalSPDHiddenPayloadLayout::HiddenLanesPerMAA;
+    uint32_t tile_id = 0;
+    panic_if(!LogicalSPDHiddenPayloadLayout::tryHiddenLaneTileID(
+                 visible_tile_count, num_maas, maa_id, logical_slot,
+                 fp64_lane, &tile_id),
+             "Invalid logical SPD hidden lane: maa=%d slot=%d lane=%d\n",
+             maa_id, logical_slot, fp64_lane);
+    return tile_id;
+}
+
 SPD::SPD(MAA *_maa,
-         unsigned int _num_tiles,
+         unsigned int _visible_tile_count,
+         unsigned int _num_maas,
          unsigned int _num_tile_elements,
          unsigned int _physical_tile_elements,
          Cycles _read_latency,
          Cycles _write_latency,
          int _num_read_ports,
          int _num_write_ports)
-    : num_tiles(_num_tiles),
+    : visible_tile_count(_visible_tile_count),
+      allocated_tile_count(0),
       num_tile_elements(_num_tile_elements),
       physical_tile_elements(_physical_tile_elements),
       read_latency(_read_latency),
@@ -255,26 +280,54 @@ SPD::SPD(MAA *_maa,
                  physical_tile_elements > num_tile_elements,
              "Invalid physical/logical SPD capacities: %u/%u\n",
              physical_tile_elements, num_tile_elements);
-    tiles_data = new uint8_t[
-        num_tiles * physical_tile_elements * sizeof(uint32_t)];
-    tiles_status = new SPD::TileStatus[num_tiles];
-    tiles_dirty = new bool[num_tiles];
-    tiles_ready = new uint16_t[num_tiles];
-    tiles_size = new uint32_t[num_tiles];
-    for (int i = 0; i < num_tiles; i++) {
+    panic_if(!LogicalSPDHiddenPayloadLayout::tryAllocatedTileCount(
+                 visible_tile_count, _num_maas, &allocated_tile_count),
+             "Invalid logical SPD hidden payload geometry: visible=%u "
+             "maas=%u\n",
+             visible_tile_count, _num_maas);
+
+    std::size_t allocated_payload_bytes = 0;
+    panic_if(!LogicalSPDHiddenPayloadLayout::tryAllocatedPayloadBytes(
+                 visible_tile_count, physical_tile_elements, _num_maas,
+                 &allocated_payload_bytes),
+             "Logical SPD payload allocation overflows: visible=%u "
+             "elements=%u maas=%u\n",
+             visible_tile_count, physical_tile_elements, _num_maas);
+    const std::size_t visible_payload_bytes =
+        static_cast<std::size_t>(visible_tile_count) *
+        physical_tile_elements * sizeof(uint32_t);
+
+    std::size_t allocated_element_count = 0;
+    panic_if(!LogicalSPDHiddenPayloadLayout::tryAllocatedElementStateCount(
+                 visible_tile_count, physical_tile_elements, _num_maas,
+                 &allocated_element_count),
+             "Logical SPD element-state allocation overflows: visible=%u "
+             "elements=%u maas=%u\n",
+             visible_tile_count, physical_tile_elements, _num_maas);
+
+    tiles_data = new uint8_t[allocated_payload_bytes];
+    tiles_status = new SPD::TileStatus[allocated_tile_count];
+    tiles_dirty = new bool[allocated_tile_count];
+    tiles_ready = new uint16_t[allocated_tile_count];
+    tiles_size = new uint32_t[allocated_tile_count];
+    for (unsigned int i = 0; i < allocated_tile_count; i++) {
         tiles_status[i] = SPD::TileStatus::Finished;
         tiles_size[i] = 0;
         tiles_dirty[i] = false;
         tiles_ready[i] = 0;
     }
-    element_finished = new bool[num_tiles * physical_tile_elements];
-    for (int i = 0; i < num_tiles * physical_tile_elements; i++) {
+    element_finished = new bool[allocated_element_count];
+    for (std::size_t i = 0; i < allocated_element_count; i++) {
         element_finished[i] = true;
     }
-    waiting_units_funcs = new std::vector<uint8_t>[num_tiles];
-    waiting_units_ids = new std::vector<int>[num_tiles];
-    memset(tiles_data, 0,
-           num_tiles * physical_tile_elements * sizeof(uint32_t));
+    waiting_units_funcs =
+        new std::vector<uint8_t>[allocated_tile_count];
+    waiting_units_ids = new std::vector<int>[allocated_tile_count];
+    memset(tiles_data, 0, visible_payload_bytes);
+    panic_if(!LogicalSPDHiddenPayloadLayout::initializeHiddenPayload(
+                 tiles_data, allocated_payload_bytes, visible_tile_count,
+                 physical_tile_elements, _num_maas),
+             "Could not initialize logical SPD hidden payload\n");
     read_port_busy_until = new Tick[num_read_ports];
     write_port_busy_until = new Tick[num_write_ports];
     for (int i = 0; i < num_read_ports; i++) {
@@ -289,6 +342,10 @@ SPD::~SPD() {
     delete[] tiles_data;
     assert(tiles_status != nullptr);
     delete[] tiles_status;
+    assert(tiles_dirty != nullptr);
+    delete[] tiles_dirty;
+    assert(tiles_ready != nullptr);
+    delete[] tiles_ready;
     assert(tiles_size != nullptr);
     delete[] tiles_size;
     assert(read_port_busy_until != nullptr);
@@ -297,6 +354,10 @@ SPD::~SPD() {
     delete[] write_port_busy_until;
     assert(element_finished != nullptr);
     delete[] element_finished;
+    assert(waiting_units_funcs != nullptr);
+    delete[] waiting_units_funcs;
+    assert(waiting_units_ids != nullptr);
+    delete[] waiting_units_ids;
 }
 
 ///////////////
