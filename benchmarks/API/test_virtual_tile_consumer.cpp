@@ -41,12 +41,13 @@ main(int argc, char **argv)
     if (mode != "native" && mode != "native_direct" &&
         mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_staged_conditional" &&
-        mode != "transparent" &&
+        mode != "transparent" && mode != "transparent_displaced" &&
         mode != "paged_reload_warm" &&
         mode != "paged_reload_cold") {
         std::cerr << "mode must be native, native_direct, paged, "
                      "paged_overlap, "
-                     "paged_staged, paged_staged_conditional, transparent, or "
+                     "paged_staged, paged_staged_conditional, transparent, "
+                     "transparent_displaced, or "
                      "paged_reload_warm/paged_reload_cold"
                   << std::endl;
         return 2;
@@ -56,8 +57,9 @@ main(int argc, char **argv)
         std::cerr << "page_elements must be 4096 or 16384" << std::endl;
         return 2;
     }
-    if (mode == "transparent" && page_elements != 4096) {
-        std::cerr << "transparent mode requires four 4096-element pages"
+    if ((mode == "transparent" || mode == "transparent_displaced") &&
+        page_elements != 4096) {
+        std::cerr << "transparent modes require four 4096-element pages"
                   << std::endl;
         return 2;
     }
@@ -76,7 +78,7 @@ main(int argc, char **argv)
     const bool reload_only = mode == "paged_reload_warm" ||
                              mode == "paged_reload_cold";
     std::vector<uint64_t> cache_pollution(
-        mode == "paged_reload_cold"
+        mode == "paged_reload_cold" || mode == "transparent_displaced"
             ? cache_pollution_bytes / sizeof(uint64_t)
             : 1,
         1);
@@ -182,8 +184,25 @@ main(int argc, char **argv)
                 source.data(), indices.data(), completion_tile, backing,
                 min_reg, max_reg, stride_reg);
         }
-        const bool transparent = mode == "transparent";
+        const bool transparent = mode == "transparent" ||
+                                 mode == "transparent_displaced";
+        const bool transparent_displaced = mode == "transparent_displaced";
         const bool overlap_pages = mode == "paged_overlap";
+        if (transparent_displaced) {
+            // Force the transparent controller to reload its coherent backing
+            // after the direct virtual producer has completed.  This remains
+            // in the ROI, but application code still submits just one
+            // controller-owned transparent consumer instruction.
+            wait_ready(completion_tile);
+            volatile uint64_t sink = 0;
+            constexpr size_t words_per_cache_line = 64 / sizeof(uint64_t);
+            for (size_t i = 0; i < cache_pollution.size();
+                 i += words_per_cache_line)
+                sink += cache_pollution[i];
+            asm volatile("" : : "r"(sink) : "memory");
+            std::cout << "VIRTUAL_TILE_CONSUMER_POLLUTION bytes="
+                      << cache_pollution_bytes << std::endl;
+        }
         if (transparent) {
             // Application code submits one logical consumer.  Page-ready
             // gating, coherent backing reloads, physical-tile remapping, and
