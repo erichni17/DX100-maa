@@ -150,6 +150,23 @@ transparent_displaced_4k)
     reload_only=0
     polluted=1
     ;;
+transparent_reload_warm_4k)
+    mode=transparent_reload_warm
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=1
+    ;;
+transparent_reload_cold_4k)
+    mode=transparent_reload_cold
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=1
+    polluted=1
+    ;;
 paged_displaced_4k)
     mode=paged_displaced
     page=4096
@@ -190,6 +207,7 @@ paged_reload_cold_4k)
     virtual=1
     direct=1
     reload_only=1
+    polluted=1
     ;;
 *)
     echo "unknown consumer case: $case_name" >&2
@@ -464,6 +482,19 @@ if [[ $reload_only -eq 1 ]]; then
         echo "reload-only window includes gather activity" >&2
         exit 1
     }
+    if [[ $case_name == transparent_reload_warm_4k ||
+          $case_name == transparent_reload_cold_4k ]]; then
+        trace="$out/run/virtual_trace.log"
+        transparent_submits=$(grep -c 'event=transparent_submit' "$trace" || true)
+        transparent_issues=$(grep -c 'event=transparent_issue' "$trace" || true)
+        transparent_completes=$(grep -c 'event=transparent_complete' "$trace" || true)
+        transparent_retires=$(grep -c 'event=transparent_retire' "$trace" || true)
+        [[ $transparent_submits -eq 1 && $transparent_issues -eq 12 && \
+           $transparent_completes -eq 12 && $transparent_retires -eq 1 ]] || {
+            echo "invalid reload-only transparent trace: submit=$transparent_submits issue=$transparent_issues complete=$transparent_completes retire=$transparent_retires" >&2
+            exit 1
+        }
+    fi
 elif [[ $virtual -eq 1 ]]; then
     [[ $write_issues -gt 0 && $write_issues -eq $write_completions ]] || {
         echo "unbalanced virtual retirement: $write_issues/$write_completions" >&2

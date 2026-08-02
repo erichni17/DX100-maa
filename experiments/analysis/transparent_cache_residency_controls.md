@@ -16,6 +16,10 @@ the same exact-output oracle.
 | `transparent_displaced_4k` | after producer completion | yes | one transparent controller instruction |
 | `paged_4k` | after producer completion | no | four application page consumers |
 | `paged_displaced_4k` | after producer completion | yes | four application page consumers |
+| `transparent_reload_warm_4k` | after producer completion and stats reset | no | one transparent controller instruction |
+| `transparent_reload_cold_4k` | after pollution and stats reset | no, excluded before reset | one transparent controller instruction |
+| `paged_reload_warm_4k` | after producer completion and stats reset | no | four application page consumers |
+| `paged_reload_cold_4k` | after pollution and stats reset | no, excluded before reset | four application page consumers |
 
 Use these exact comparisons:
 
@@ -29,6 +33,10 @@ Use these exact comparisons:
    attribute only the transparent-specific sensitivity.  The equal 32 MiB
    walk is charged in both arms, so this result must not be described as a
    transparent-only CPU-pollution cost.
+5. Compare each reload-only cold/warm pair to measure backing-residency
+   sensitivity without producer or CPU-walk ticks. Compare transparent and
+   paged deltas separately; one is controller-owned and one is application
+   owned.
 
 The case runner fail-closes each new case on its mode/layout/result line,
 exactly one or zero pollution marker as specified, and, for every transparent

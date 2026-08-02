@@ -34,7 +34,7 @@ class TransparentControllerContractTest(unittest.TestCase):
             ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
         ).read_text()
         begin = source.index("if (transparent) {")
-        end = source.index("} else if (!overlap_pages)", begin)
+        end = source.index("} else if (!overlap_pages", begin)
         transparent_path = source[begin:end]
         self.assertIn(
             "maa_virtual_tile_alu_scalar_store<double>", transparent_path
@@ -48,21 +48,22 @@ class TransparentControllerContractTest(unittest.TestCase):
         ).read_text()
         self.assertIn('mode == "transparent_ready"', source)
         self.assertIn('mode == "transparent_displaced"', source)
+        self.assertIn('mode == "transparent_reload_warm"', source)
+        self.assertIn('mode == "transparent_reload_cold"', source)
         self.assertIn('mode == "paged_displaced"', source)
         self.assertIn(
             'const bool cache_displaced = mode == "transparent_displaced" ||',
             source,
         )
-        controls = source[
-            source.index("if (transparent_ready || cache_displaced) {") :
-        ]
+        controls = source[source.index("if (wait_before_consumer) {") :]
         consumer = controls.index("maa_virtual_tile_alu_scalar_store<double>")
         self.assertLess(
             controls.index("wait_ready(completion_tile)"), consumer
         )
-        displaced = controls[controls.index("if (cache_displaced) {") :]
+        displaced = controls[controls.index("if (pollute_cache) {") :]
         self.assertLess(displaced.index("cache_pollution.size()"), consumer)
         self.assertIn("VIRTUAL_TILE_CONSUMER_POLLUTION bytes=", displaced)
+        self.assertLess(controls.index("m5_reset_stats(0, 0)"), consumer)
         self.assertEqual(
             1,
             controls[
@@ -142,11 +143,19 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertIn("mode=transparent_displaced", runner)
         self.assertIn("paged_displaced_4k)", runner)
         self.assertIn("mode=paged_displaced", runner)
+        self.assertIn("transparent_reload_warm_4k)", runner)
+        self.assertIn("mode=transparent_reload_warm", runner)
+        self.assertIn("transparent_reload_cold_4k)", runner)
+        self.assertIn("mode=transparent_reload_cold", runner)
+        paged_cold = runner[runner.index("paged_reload_cold_4k)") :]
+        paged_cold = paged_cold[: paged_cold.index(";;")]
+        self.assertIn("polluted=1", paged_cold)
         self.assertIn("$case_name == transparent_4k ||", runner)
         self.assertIn("$case_name == transparent_ready_4k ||", runner)
         self.assertIn("$case_name == transparent_displaced_4k", runner)
         self.assertIn("polluted=1", runner)
         self.assertIn("pollution_count -eq $polluted", runner)
+        self.assertIn("invalid reload-only transparent trace", runner)
         self.assertIn("transparent_submits -eq 1", runner)
         self.assertIn("transparent_issues -eq 12", runner)
         self.assertIn("transparent_completes -eq 12", runner)

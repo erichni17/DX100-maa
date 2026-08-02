@@ -43,14 +43,17 @@ main(int argc, char **argv)
         mode != "paged_staged" && mode != "paged_staged_conditional" &&
         mode != "transparent" && mode != "transparent_ready" &&
         mode != "transparent_displaced" && mode != "paged_displaced" &&
+        mode != "transparent_reload_warm" &&
+        mode != "transparent_reload_cold" &&
         mode != "paged_reload_warm" &&
         mode != "paged_reload_cold") {
         std::cerr << "mode must be native, native_direct, paged, "
                      "paged_overlap, "
                      "paged_staged, paged_staged_conditional, transparent, "
                      "transparent_ready, transparent_displaced, "
-                     "paged_displaced, or "
-                     "paged_reload_warm/paged_reload_cold"
+                     "paged_displaced, transparent_reload_warm/"
+                     "transparent_reload_cold, or paged_reload_warm/"
+                     "paged_reload_cold"
                   << std::endl;
         return 2;
     }
@@ -60,7 +63,9 @@ main(int argc, char **argv)
         return 2;
     }
     if ((mode == "transparent" || mode == "transparent_ready" ||
-         mode == "transparent_displaced" || mode == "paged_displaced") &&
+         mode == "transparent_displaced" || mode == "paged_displaced" ||
+         mode == "transparent_reload_warm" ||
+         mode == "transparent_reload_cold") &&
         page_elements != 4096) {
         std::cerr << "cache-residency controls require four 4096-element pages"
                   << std::endl;
@@ -79,13 +84,16 @@ main(int argc, char **argv)
         total_elements + 2 * guard_elements, -1.0);
     std::vector<double> fence_storage(1, 0.0);
     const bool reload_only = mode == "paged_reload_warm" ||
-                             mode == "paged_reload_cold";
+                             mode == "paged_reload_cold" ||
+                             mode == "transparent_reload_warm" ||
+                             mode == "transparent_reload_cold";
     const bool cache_displaced = mode == "transparent_displaced" ||
                                  mode == "paged_displaced";
+    const bool reload_cold = mode == "paged_reload_cold" ||
+                             mode == "transparent_reload_cold";
+    const bool pollute_cache = cache_displaced || reload_cold;
     std::vector<uint64_t> cache_pollution(
-        mode == "paged_reload_cold" || cache_displaced
-            ? cache_pollution_bytes / sizeof(uint64_t)
-            : 1,
+        pollute_cache ? cache_pollution_bytes / sizeof(uint64_t) : 1,
         1);
     const bool conditional_staged = mode == "paged_staged_conditional";
     std::vector<uint32_t> conditions;
@@ -191,20 +199,22 @@ main(int argc, char **argv)
         }
         const bool transparent = mode == "transparent" ||
                                  mode == "transparent_ready" ||
-                                 mode == "transparent_displaced";
-        const bool transparent_ready = mode == "transparent_ready";
+                                 mode == "transparent_displaced" ||
+                                 mode == "transparent_reload_warm" ||
+                                 mode == "transparent_reload_cold";
+        const bool wait_before_consumer = mode == "transparent_ready" ||
+                                          cache_displaced || reload_only;
         const bool overlap_pages = mode == "paged_overlap";
-        if (transparent_ready || cache_displaced) {
+        if (wait_before_consumer) {
             // The ready control removes producer/consumer overlap without
-            // changing the controller instruction.  Both displaced modes
-            // share this boundary before their matched cache walk.
+            // changing the consumer. Displaced and reload-only modes share
+            // this boundary before their matched cache walk or stats reset.
             wait_ready(completion_tile);
         }
-        if (cache_displaced) {
+        if (pollute_cache) {
             // Keep the 32 MiB walk identical for transparent and paged
-            // consumers.  It intentionally remains in the ROI: paired
-            // differences can then separate its CPU charge from the effect
-            // of evicting the coherent backing.
+            // consumers. Full-path displaced controls charge it in the ROI;
+            // reload-only controls reset stats immediately afterward.
             volatile uint64_t sink = 0;
             constexpr size_t words_per_cache_line = 64 / sizeof(uint64_t);
             for (size_t i = 0; i < cache_pollution.size();
@@ -213,6 +223,10 @@ main(int argc, char **argv)
             asm volatile("" : : "r"(sink) : "memory");
             std::cout << "VIRTUAL_TILE_CONSUMER_POLLUTION bytes="
                       << cache_pollution_bytes << std::endl;
+        }
+        if (reload_only) {
+            m5_work_begin(0, 0);
+            m5_reset_stats(0, 0);
         }
         if (transparent) {
             // Application code submits one logical consumer.  Page-ready
@@ -222,23 +236,8 @@ main(int argc, char **argv)
                 backing, destination, completion_tile, page_tile,
                 output_tile, scale_reg, page_min_reg, page_max_reg,
                 page_stride_reg, Operation_t::MUL_OP);
-        } else if (!overlap_pages) {
+        } else if (!overlap_pages && !wait_before_consumer) {
             wait_ready(completion_tile);
-        }
-
-        if (!transparent && mode == "paged_reload_cold") {
-            volatile uint64_t sink = 0;
-            constexpr size_t words_per_cache_line = 64 / sizeof(uint64_t);
-            for (size_t i = 0; i < cache_pollution.size();
-                 i += words_per_cache_line)
-                sink += cache_pollution[i];
-            asm volatile("" : : "r"(sink) : "memory");
-            std::cout << "VIRTUAL_TILE_CONSUMER_POLLUTION bytes="
-                      << cache_pollution_bytes << std::endl;
-        }
-        if (!transparent && reload_only) {
-            m5_work_begin(0, 0);
-            m5_reset_stats(0, 0);
         }
 
         if (!transparent) {
