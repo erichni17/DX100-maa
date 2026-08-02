@@ -53,6 +53,32 @@ route. The existing transparent controller also leaves
 `logicalResponseManaged` false, so its response-less completion behavior is
 unchanged.
 
+## Stream packet counter ownership
+
+`my_num_outstanding_stream_pkts` counts each request once when `Port.cc`
+admits it to the outstanding map. A packet waiting in the exact-address
+deferred queue is not counted until it is promoted, so promotion is its sole
+increment point. Its command then determines the sole decrement point:
+
+- Ordinary and logical `ReadReq` and `ReadExReq` relinquish counter ownership
+  only when the corresponding send attempt is accepted. Their outstanding-map
+  entries remain until the data response, but an accepted response does not
+  decrement the counter again.
+- An ordinary response-less `WritebackDirty` retains its established behavior:
+  its one accepted send removes the outstanding entry and decrements once.
+- A response-bearing logical `WriteReq` relinquishes counter ownership only
+  after the fail-closed route accepts its matching `WriteResp`. Its accepted
+  send marks the packet sent but deliberately leaves the count unchanged.
+- Rejected send attempts retain both the queued packet and its count for retry.
+  Rejected, stale, duplicate, wrong-command, wrong-address, or wrong-identity
+  responses have no counter authority and cannot decrement.
+
+The packet-free `decideLogicalStreamCounterUpdate` transition implements this
+ownership table and is called by `Port.cc` for logical enqueue, accepted send,
+and accepted or rejected response events. Its zero and maximum boundaries
+leave the input unchanged and report an invalid transition, which the Port
+treats as fatal without performing unsigned arithmetic.
+
 ## Validation
 
 `experiments/scripts/run_logical_stream_response_unit.sh` compiles and runs a
@@ -61,7 +87,11 @@ executes the same pure Port routing gate used in `Port.cc`, then covers delayed
 and reordered fills, exact final completion, duplicate nonterminal `ReadExResp`
 callbacks, full tag/address/kind rejection without retirement or sender-state
 pop authority, old-tag reuse of the same address, post-reset stale callbacks,
-and the fixed 512-line capacity. It does not run a gem5 simulation.
+the fixed 512-line capacity, and the command-specific packet-counter lifecycle.
+Counter replay includes Read/ReadEx/write enqueue, rejected-send retries,
+accepted sends, wrong and duplicate responses, accepted responses, zero and
+nonzero settlement boundaries, and explicit no-wrap checks. It does not run a
+gem5 simulation.
 
 ## Integration boundary and base status
 
