@@ -1,13 +1,13 @@
 /*************************************************************************
- *                                                                       * 
+ *                                                                       *
  *       N  A  S     P A R A L L E L     B E N C H M A R K S  3.3        *
  *                                                                       *
  *                      O p e n M P     V E R S I O N                    *
- *                                                                       * 
- *                                  I S                                  * 
- *                                                                       * 
- ************************************************************************* 
- *                                                                       * 
+ *                                                                       *
+ *                                  I S                                  *
+ *                                                                       *
+ *************************************************************************
+ *                                                                       *
  *   This benchmark is an OpenMP version of the NPB IS code.             *
  *   It is described in NAS Technical Report 99-011.                     *
  *                                                                       *
@@ -33,11 +33,11 @@
  *         E-mail:  npb@nas.nasa.gov                                     *
  *         Fax:     (650) 604-3957                                       *
  *                                                                       *
- ************************************************************************* 
- *                                                                       * 
- *   Author: M. Yarrow                                                   * 
- *           H. Jin                                                      * 
- *                                                                       * 
+ *************************************************************************
+ *                                                                       *
+ *   Author: M. Yarrow                                                   *
+ *           H. Jin                                                      *
+ *                                                                       *
  *************************************************************************/
 
 #include <iostream>
@@ -494,7 +494,7 @@ void full_verify(void) {
         for (i = 0; i < NUM_KEYS; i++)
             key_buff2[i] = key_array[i];
 
-        /* This is actual sorting. Each thread is responsible for 
+        /* This is actual sorting. Each thread is responsible for
        a subset of key values */
         j = omp_get_num_threads();
         j = (MAX_KEY + j - 1) / j;
@@ -1125,10 +1125,18 @@ int main(int argc, char **argv) {
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
     std::cout << "ROI End!!!" << std::endl;
+#if defined(DO_VERIFY) && defined(VERIFY_BEFORE_GEM5_EXIT)
+    full_verify();
+    if (passed_verification == 5 * MAX_ITERATIONS + 1)
+        std::cout << "successfull: passed verification "
+                  << passed_verification << std::endl;
+    else
+        std::cout << "failed" << std::endl;
+#endif
     m5_exit(0);
 #endif
 
-#ifdef DO_VERIFY
+#if defined(DO_VERIFY) && !defined(VERIFY_BEFORE_GEM5_EXIT)
     full_verify();
     if (passed_verification == 5 * MAX_ITERATIONS + 1)
         std::cout << "successfull: passed verification " << passed_verification << std::endl;

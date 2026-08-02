@@ -6,12 +6,14 @@ MAA_INCLUDE = -I$(MAA_HOME)
 GEM5_LIB = -L$(GEM5_HOME)/util/m5/build/x86/out
 
 SUITE = is
+ROI_VERIFY_FLAGS = -DDO_VERIFY -DCLASS=\'B\' -DVERIFY_BEFORE_GEM5_EXIT
+VERIFY_BINARIES = $(SUITE)_maa_16K_roi_verify
 
 # Targets for baseline binaries
 BASELINE_BINARIES = $(SUITE)_base
 BASELINE_BINARIES += $(SUITE)_base_4C
 BASELINE_BINARIES += $(SUITE)_base_8C
-MAA_BINARIES = 
+MAA_BINARIES =
 
 ifdef SMALL
 	CXX_FLAGS += -DSMALL_CLASS
@@ -77,6 +79,10 @@ GEM5: m5op.o all
 %_maa_16K: $(SUITE).cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 $(GEM5_LIB) m5op.o $< -o $@
 
+# Keep verification outside the measured ROI but before the terminating m5_exit.
+%_maa_16K_roi_verify: $(SUITE).cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=16384 $(ROI_VERIFY_FLAGS) $(GEM5_LIB) m5op.o $< -o $@
+
 %_maa_32K: $(SUITE).cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DNUM_CORES=4 -DTILE_SIZE=32768 $(GEM5_LIB) m5op.o $< -o $@
 
@@ -95,4 +101,4 @@ m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
 
 .PHONY: clean
 clean:
-	rm -f $(BASELINE_BINARIES) $(MAA_BINARIES)
+	rm -f $(BASELINE_BINARIES) $(MAA_BINARIES) $(VERIFY_BINARIES)
