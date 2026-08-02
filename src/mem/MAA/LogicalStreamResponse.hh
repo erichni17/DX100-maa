@@ -66,6 +66,7 @@ struct LogicalStreamTransactionTag
 enum class LogicalStreamResponseKind : uint8_t
 {
     Read,
+    ReadEx,
     Write,
 };
 
@@ -83,6 +84,121 @@ enum class LogicalStreamResponseResult : uint8_t
     WrongAddress,
     Invalid,
 };
+
+/**
+ * Immutable input to Port.cc's logical-response ownership decision.
+ *
+ * The port owns an outstanding entry only when every field below agrees.
+ * This small, packet-free representation keeps that decision host-testable:
+ * the caller performs no erase, sender-state pop, or ledger acknowledgement
+ * unless the returned decision authorizes both mutations.
+ */
+struct LogicalStreamResponseRoute
+{
+    bool hasOutstanding = false;
+    bool outstandingIsLogical = false;
+    bool hasLogicalSenderState = false;
+    LogicalStreamTransactionTag expectedTag{};
+    LogicalStreamTransactionTag receivedTag{};
+    Addr outstandingAddress = 0;
+    Addr senderLineAddress = 0;
+    Addr responseAddress = 0;
+    LogicalStreamResponseKind expectedKind = LogicalStreamResponseKind::Read;
+    LogicalStreamResponseKind receivedKind = LogicalStreamResponseKind::Read;
+    LogicalStreamResponseResult ledgerResult =
+        LogicalStreamResponseResult::Accepted;
+};
+
+struct LogicalStreamResponseRouteDecision
+{
+    LogicalStreamResponseResult result = LogicalStreamResponseResult::Stale;
+    bool retireOutstanding = false;
+    bool popSenderState = false;
+
+    bool accepts() const
+    {
+        return result == LogicalStreamResponseResult::Accepted;
+    }
+
+    bool authorizesOutstandingRetirement() const
+    {
+        return retireOutstanding;
+    }
+
+    bool authorizesSenderStatePop() const
+    {
+        return popSenderState;
+    }
+};
+
+inline LogicalStreamResponseResult
+classifyLogicalStreamTag(const LogicalStreamTransactionTag &expected,
+                         const LogicalStreamTransactionTag &received)
+{
+    if (!expected.valid() || !received.valid())
+        return LogicalStreamResponseResult::Invalid;
+    if (received.maaID != expected.maaID)
+        return LogicalStreamResponseResult::WrongMAA;
+    if (received.action != expected.action)
+        return LogicalStreamResponseResult::WrongKind;
+    if (received.transactionID != expected.transactionID)
+        return LogicalStreamResponseResult::WrongTransaction;
+    if (received.logicalID != expected.logicalID ||
+        received.page != expected.page ||
+        received.generation != expected.generation) {
+        return LogicalStreamResponseResult::WrongPage;
+    }
+    if (received.slot != expected.slot)
+        return LogicalStreamResponseResult::WrongSlot;
+    return LogicalStreamResponseResult::Accepted;
+}
+
+/**
+ * Pure finite response-routing gate used by MAA::recvTimingResp.
+ *
+ * This intentionally makes rejection fail closed: an unowned callback or
+ * any full-tag, address, or response-kind mismatch has no authority to
+ * retire an outstanding entry or pop the sender-state stack.
+ */
+inline LogicalStreamResponseRouteDecision
+classifyLogicalStreamResponseRoute(const LogicalStreamResponseRoute &route)
+{
+    LogicalStreamResponseResult result = LogicalStreamResponseResult::Accepted;
+    if (!route.hasOutstanding || !route.outstandingIsLogical ||
+        !route.hasLogicalSenderState) {
+        result = LogicalStreamResponseResult::Stale;
+    } else {
+        result = classifyLogicalStreamTag(route.expectedTag,
+                                          route.receivedTag);
+        if (result == LogicalStreamResponseResult::Accepted &&
+            (route.outstandingAddress != route.senderLineAddress ||
+             route.responseAddress != route.outstandingAddress)) {
+            result = LogicalStreamResponseResult::WrongAddress;
+        }
+        if (result == LogicalStreamResponseResult::Accepted &&
+            route.expectedKind != route.receivedKind) {
+            result = LogicalStreamResponseResult::WrongKind;
+        }
+    }
+    if (result != LogicalStreamResponseResult::Accepted) {
+        if (route.ledgerResult == LogicalStreamResponseResult::Duplicate)
+            result = route.ledgerResult;
+        return {result, false, false};
+    }
+    if (route.ledgerResult != LogicalStreamResponseResult::Accepted)
+        return {route.ledgerResult, false, false};
+    return {LogicalStreamResponseResult::Accepted, true, true};
+}
+
+inline bool
+isTerminalLogicalStreamResponse(LogicalStreamAction action,
+                                LogicalStreamResponseKind kind)
+{
+    return (action == LogicalStreamAction::Fill &&
+            kind == LogicalStreamResponseKind::Read) ||
+           (action == LogicalStreamAction::Writeback &&
+            kind == LogicalStreamResponseKind::Write);
+}
 
 /**
  * Fixed per-page response ledger for one controller-owned stream action.
@@ -104,6 +220,8 @@ class LogicalStreamResponseLedger
     {
         Addr address = 0;
         bool issued = false;
+        bool readExResponseReceived = false;
+        bool terminalIssued = false;
         bool acknowledged = false;
     };
 
@@ -164,14 +282,40 @@ class LogicalStreamResponseLedger
         const LogicalStreamResponseResult tagResult = validateTag(tag);
         if (tagResult != LogicalStreamResponseResult::Accepted)
             return reject(tagResult);
-        if (!isTerminalKind(kind))
+        if (transaction.action == LogicalStreamAction::Fill) {
+            if (kind != LogicalStreamResponseKind::Read)
+                return reject(LogicalStreamResponseResult::WrongKind);
+            if (issuedLines == expectedLines)
+                return reject(LogicalStreamResponseResult::Invalid);
+            if (findLine(address) != expectedLines)
+                return reject(LogicalStreamResponseResult::Duplicate);
+            lines[issuedLines] = {address, true, false, true, false};
+            ++issuedLines;
+            return LogicalStreamResponseResult::Accepted;
+        }
+
+        if (transaction.action != LogicalStreamAction::Writeback)
             return reject(LogicalStreamResponseResult::WrongKind);
-        if (issuedLines == expectedLines)
+        if (kind == LogicalStreamResponseKind::ReadEx) {
+            if (issuedLines == expectedLines)
+                return reject(LogicalStreamResponseResult::Invalid);
+            if (findLine(address) != expectedLines)
+                return reject(LogicalStreamResponseResult::Duplicate);
+            lines[issuedLines] = {address, true, false, false, false};
+            ++issuedLines;
+            return LogicalStreamResponseResult::Accepted;
+        }
+        if (kind != LogicalStreamResponseKind::Write)
+            return reject(LogicalStreamResponseResult::WrongKind);
+
+        const std::size_t index = findLine(address);
+        if (index == expectedLines)
+            return reject(LogicalStreamResponseResult::WrongAddress);
+        if (!lines[index].readExResponseReceived)
             return reject(LogicalStreamResponseResult::Invalid);
-        if (findLine(address) != expectedLines)
+        if (lines[index].terminalIssued)
             return reject(LogicalStreamResponseResult::Duplicate);
-        lines[issuedLines] = {address, true, false};
-        ++issuedLines;
+        lines[index].terminalIssued = true;
         return LogicalStreamResponseResult::Accepted;
     }
 
@@ -182,39 +326,58 @@ class LogicalStreamResponseLedger
      */
     LogicalStreamResponseResult validateResponse(
         const LogicalStreamTransactionTag &tag, Addr address,
-        LogicalStreamResponseKind kind, bool terminal) const
+        LogicalStreamResponseKind kind) const
     {
         const LogicalStreamResponseResult tagResult = validateTag(tag);
         if (tagResult != LogicalStreamResponseResult::Accepted)
             return tagResult;
-        if (terminal) {
-            if (!isTerminalKind(kind))
+        const std::size_t index = findLine(address);
+        if (index == expectedLines)
+            return LogicalStreamResponseResult::WrongAddress;
+
+        if (transaction.action == LogicalStreamAction::Fill) {
+            if (kind != LogicalStreamResponseKind::Read)
                 return LogicalStreamResponseResult::WrongKind;
-            const std::size_t index = findLine(address);
-            if (index == expectedLines)
-                return LogicalStreamResponseResult::WrongAddress;
             if (lines[index].acknowledged)
                 return LogicalStreamResponseResult::Duplicate;
-        } else if (transaction.action != LogicalStreamAction::Writeback ||
-                   kind != LogicalStreamResponseKind::Read) {
-            return LogicalStreamResponseResult::WrongKind;
+            return LogicalStreamResponseResult::Accepted;
         }
+        if (transaction.action != LogicalStreamAction::Writeback)
+            return LogicalStreamResponseResult::WrongKind;
+
+        if (kind == LogicalStreamResponseKind::ReadEx) {
+            if (lines[index].readExResponseReceived)
+                return LogicalStreamResponseResult::Duplicate;
+            return LogicalStreamResponseResult::Accepted;
+        }
+        if (kind != LogicalStreamResponseKind::Write)
+            return LogicalStreamResponseResult::WrongKind;
+        if (!lines[index].terminalIssued ||
+            !lines[index].readExResponseReceived)
+            return LogicalStreamResponseResult::Invalid;
+        if (lines[index].acknowledged)
+            return LogicalStreamResponseResult::Duplicate;
         return LogicalStreamResponseResult::Accepted;
     }
 
     LogicalStreamResponseResult acceptResponse(
         const LogicalStreamTransactionTag &tag, Addr address,
-        LogicalStreamResponseKind kind, bool terminal)
+        LogicalStreamResponseKind kind)
     {
         const LogicalStreamResponseResult result =
-            validateResponse(tag, address, kind, terminal);
+            validateResponse(tag, address, kind);
         if (result != LogicalStreamResponseResult::Accepted)
             return reject(result);
-        if (!terminal)
-            return LogicalStreamResponseResult::Accepted;
 
         const std::size_t index = findLine(address);
         assert(index != expectedLines);
+        if (!isTerminalLogicalStreamResponse(transaction.action, kind)) {
+            assert(transaction.action == LogicalStreamAction::Writeback);
+            assert(kind == LogicalStreamResponseKind::ReadEx);
+            assert(!lines[index].readExResponseReceived);
+            lines[index].readExResponseReceived = true;
+            return LogicalStreamResponseResult::Accepted;
+        }
         assert(!lines[index].acknowledged);
         lines[index].acknowledged = true;
         ++acknowledgedLines;
@@ -253,14 +416,6 @@ class LogicalStreamResponseLedger
         if (tag.slot != transaction.slot)
             return LogicalStreamResponseResult::WrongSlot;
         return LogicalStreamResponseResult::Accepted;
-    }
-
-    bool isTerminalKind(LogicalStreamResponseKind kind) const
-    {
-        return (transaction.action == LogicalStreamAction::Fill &&
-                kind == LogicalStreamResponseKind::Read) ||
-               (transaction.action == LogicalStreamAction::Writeback &&
-                kind == LogicalStreamResponseKind::Write);
     }
 
     std::size_t findLine(Addr address) const

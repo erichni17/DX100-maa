@@ -396,9 +396,11 @@ void StreamAccessUnit::createReadPacket(Addr addr, int latency) {
     }
     my_pkt->allocate();
     if (logicalResponseManaged()) {
-        attachLogicalSenderState(my_pkt, addr, LogicalStreamResponseKind::Read,
-                                 my_instruction->opcode ==
-                                     Instruction::OpcodeType::STREAM_LD);
+        const LogicalStreamResponseKind kind =
+            my_instruction->opcode == Instruction::OpcodeType::STREAM_LD
+                ? LogicalStreamResponseKind::Read
+                : LogicalStreamResponseKind::ReadEx;
+        attachLogicalSenderState(my_pkt, addr, kind);
         maa->sendPacket(FuncUnitType::STREAM, my_stream_id, my_pkt,
                         maa->getClockEdge(Cycles(latency)), true);
     } else {
@@ -512,7 +514,7 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
         write_pkt->setData(new_data);
         if (response_managed) {
             attachLogicalSenderState(write_pkt, addr,
-                                     LogicalStreamResponseKind::Write, true);
+                                     LogicalStreamResponseKind::Write);
         }
         DPRINTF(MAAStream, "S[%d] %s: created %s to send in %d cycles\n",
                 my_stream_id, __func__, write_pkt->print(), total_latency);
@@ -580,7 +582,8 @@ void StreamAccessUnit::beginLogicalResponseTransaction() {
                  my_min != 0 ||
                  my_max != static_cast<int>(
                                LogicalStreamResponseLedger::PageElements) ||
-                 my_stride != 1 || my_base_addr % page_size != 0 ||
+                 my_stride != 1 || my_cond_tile != -1 ||
+                 my_base_addr % page_size != 0 ||
                  (my_word_size != 4 && my_word_size != 8),
              "S[%d] %s: response-managed stream action must cover exactly "
              "one aligned 4096-element page\n",
@@ -595,39 +598,36 @@ void StreamAccessUnit::beginLogicalResponseTransaction() {
 }
 
 void StreamAccessUnit::attachLogicalSenderState(
-    PacketPtr pkt, Addr lineAddress, LogicalStreamResponseKind kind,
-    bool terminal)
+    PacketPtr pkt, Addr lineAddress, LogicalStreamResponseKind kind)
 {
     assert(logicalResponseManaged());
     const LogicalStreamTransactionTag tag = logicalResponseTag();
-    if (terminal) {
-        const LogicalStreamResponseResult result =
-            logicalResponseLedger.issueLine(tag, lineAddress, kind);
-        panic_if(result != LogicalStreamResponseResult::Accepted,
-                 "S[%d] %s: logical line 0x%lx could not be issued (%d)\n",
-                 my_stream_id, __func__, lineAddress,
-                 static_cast<int>(result));
-    }
+    const LogicalStreamResponseResult result =
+        logicalResponseLedger.issueLine(tag, lineAddress, kind);
+    panic_if(result != LogicalStreamResponseResult::Accepted,
+             "S[%d] %s: logical line 0x%lx could not be issued (%d)\n",
+             my_stream_id, __func__, lineAddress,
+             static_cast<int>(result));
     pkt->pushSenderState(new LogicalSPDTransactionState(tag, lineAddress));
 }
 
 LogicalStreamResponseResult StreamAccessUnit::validateLogicalResponse(
     const LogicalStreamTransactionTag &tag, Addr lineAddress,
-    LogicalStreamResponseKind kind, bool terminal) const
+    LogicalStreamResponseKind kind) const
 {
-    return logicalResponseLedger.validateResponse(tag, lineAddress, kind,
-                                                  terminal);
+    return logicalResponseLedger.validateResponse(tag, lineAddress, kind);
 }
 
 LogicalStreamResponseResult StreamAccessUnit::logicalResponseReceived(
     const LogicalStreamTransactionTag &tag, Addr lineAddress,
-    LogicalStreamResponseKind kind, bool terminal)
+    LogicalStreamResponseKind kind)
 {
     const LogicalStreamResponseResult result =
-        logicalResponseLedger.acceptResponse(tag, lineAddress, kind, terminal);
+        logicalResponseLedger.acceptResponse(tag, lineAddress, kind);
     if ((result == LogicalStreamResponseResult::Accepted ||
          result == LogicalStreamResponseResult::Completed) &&
-        terminal && tag.action == LogicalStreamAction::Writeback) {
+        isTerminalLogicalStreamResponse(tag.action, kind) &&
+        tag.action == LogicalStreamAction::Writeback) {
         ++my_received_responses;
         panic_if(my_received_responses > my_sent_requests,
                  "S[%d] %s: more logical write responses (%d) than source "
