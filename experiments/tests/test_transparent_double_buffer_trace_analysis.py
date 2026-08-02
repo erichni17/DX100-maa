@@ -125,6 +125,29 @@ class TraceParserTest(unittest.TestCase):
                 with self.assertRaises(ANALYSIS.TraceFormatError):
                     ANALYSIS.analyze_text(trace)
 
+    def test_whitespace_disguised_target_events_fail_at_the_bad_line(self):
+        malformed_targets = {
+            "tab after page_ready": (
+                "99: global: event=page_ready\tunit=0 page=0 pages=1/4"
+            ),
+            "spaces around equals": (
+                "99: system.maa: event = transparent_submit token=2"
+            ),
+            "tab delimiters": (
+                "99:\tsystem.maa:\tevent=transparent_issue\tpage=0"
+            ),
+            "missing event equals": (
+                "99: system.maa: event transparent_complete page=0 action=1"
+            ),
+        }
+        for name, malformed in malformed_targets.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    ANALYSIS.TraceFormatError,
+                    r"line 1: malformed target event line",
+                ):
+                    ANALYSIS.analyze_text(malformed + "\n" + valid_trace())
+
     def test_incomplete_duplicate_and_misordered_lifecycles_fail_closed(self):
         duplicate_ready = valid_trace().replace(
             "120: system.maa: event=transparent_complete page=0 action=1",
@@ -157,7 +180,7 @@ class TraceParserTest(unittest.TestCase):
             ANALYSIS.analyze_text(trace)
 
 
-class TwoSlotScheduleTest(unittest.TestCase):
+class SharedStreamTwoSlotScheduleTest(unittest.TestCase):
     @staticmethod
     def page(page: int, ready: int) -> object:
         return ANALYSIS.PageTimeline(
@@ -176,13 +199,35 @@ class TwoSlotScheduleTest(unittest.TestCase):
             one_slot_dispatch_gap=0,
         )
 
-    def test_prefill_overlaps_prior_page_store_with_finite_ownership(self):
+    def test_stream_loads_and_stores_serialize_while_alu_may_overlap(self):
         pages = tuple(self.page(page, 0) for page in range(4))
-        schedule = ANALYSIS.ideal_two_slot_schedule(pages)
+        schedule = ANALYSIS.shared_stream_two_slot_schedule(pages)
         self.assertEqual([page.input_slot for page in schedule], [0, 1, 0, 1])
-        self.assertLess(schedule[1].fill.complete, schedule[0].store.complete)
-        self.assertEqual(schedule[2].fill.issue, schedule[0].compute.complete)
-        self.assertEqual(schedule[3].fill.issue, schedule[1].compute.complete)
+        stream_actions = [
+            interval
+            for page in schedule
+            for interval in (page.fill, page.store)
+        ]
+        for index, left in enumerate(stream_actions):
+            for right in stream_actions[index + 1 :]:
+                self.assertFalse(ANALYSIS._overlap(left, right))
+        self.assertTrue(
+            ANALYSIS._overlap(schedule[0].compute, schedule[1].fill)
+        )
+        self.assertTrue(
+            ANALYSIS._overlap(schedule[1].compute, schedule[2].fill)
+        )
+        self.assertTrue(
+            ANALYSIS._overlap(schedule[2].compute, schedule[3].fill)
+        )
+
+    def test_input_and_output_owners_release_only_on_exact_completion(self):
+        pages = tuple(self.page(page, 0) for page in range(4))
+        schedule = ANALYSIS.shared_stream_two_slot_schedule(pages)
+        pairs = ((schedule[0], schedule[2]), (schedule[1], schedule[3]))
+        for earlier, later in pairs:
+            self.assertEqual(earlier.input_slot, later.input_slot)
+            self.assertGreaterEqual(later.fill.issue, earlier.compute.complete)
         for previous, current in zip(schedule, schedule[1:]):
             self.assertGreaterEqual(
                 current.compute.issue, previous.store.complete
@@ -191,9 +236,54 @@ class TwoSlotScheduleTest(unittest.TestCase):
     def test_page_readiness_backpressures_fill_without_consuming_slot(self):
         pages = [self.page(page, 0) for page in range(4)]
         pages[1] = replace(pages[1], ready=200)
-        schedule = ANALYSIS.ideal_two_slot_schedule(tuple(pages))
+        schedule = ANALYSIS.shared_stream_two_slot_schedule(tuple(pages))
         self.assertEqual(schedule[1].fill.issue, 200)
         self.assertEqual(schedule[2].fill.issue, schedule[1].fill.complete)
+
+    def test_synthetic_trace_has_exact_shared_stream_projection(self):
+        result = ANALYSIS.analyze_text(valid_trace())
+        self.assertEqual(result.scheduled_retire_tick, 245)
+        self.assertEqual(result.scheduled_submit_to_retire, 145)
+        self.assertEqual(result.conditional_schedule_delta, 25)
+        self.assertAlmostEqual(
+            result.submit_to_retire_reduction_percent, 100.0 * 25 / 170
+        )
+        schedule = result.shared_stream_two_slot
+        self.assertEqual(schedule[0].store.issue, schedule[1].fill.complete)
+        self.assertEqual(schedule[2].fill.issue, schedule[0].store.complete)
+        self.assertEqual(schedule[3].fill.issue, schedule[1].store.complete)
+
+    def test_frozen_timeline_recomputes_exact_ticks_and_percentages(self):
+        ready = (3155463802, 3164183043, 3164746130, 3164745191)
+        fill = (323329, 323329, 323016, 323016)
+        compute = (160256, 160256, 160256, 160256)
+        store = (2758782, 1564061, 1445434, 1842005)
+        pages = tuple(
+            replace(
+                self.page(page, ready[page]),
+                fill=ANALYSIS.Interval(0, fill[page]),
+                compute=ANALYSIS.Interval(0, compute[page]),
+                store=ANALYSIS.Interval(0, store[page]),
+            )
+            for page in range(4)
+        )
+        schedule = ANALYSIS.shared_stream_two_slot_schedule(pages)
+        self.assertEqual(schedule[-1].store.complete, 3170324416)
+        self.assertEqual(schedule[2].fill.issue, schedule[1].store.complete)
+        self.assertEqual(schedule[3].fill.issue, schedule[2].compute.issue)
+        self.assertEqual(schedule[2].store.issue, schedule[3].fill.complete)
+        observed_submit_to_retire = 44828485
+        observed_first_ready_to_retire = 15020870
+        delta = 3170484672 - schedule[-1].store.complete
+        self.assertEqual(delta, 160256)
+        self.assertAlmostEqual(
+            100.0 * delta / observed_submit_to_retire,
+            0.3574869862320799,
+        )
+        self.assertAlmostEqual(
+            100.0 * delta / observed_first_ready_to_retire,
+            1.0668889351948323,
+        )
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ This report reconstructs one transparent-controller lifecycle from:
   `f4f3209e79ebf0e002ff12cb5d836ca5d197675e964ca6463e978e2a03358f06`
 - `MAA.cc` SHA-256:
   `0d697f1d66701f479526ef458f72aa151db4446ec5b6e80503602a4db002fc13`
+- `IF.cc` SHA-256:
+  `1ff465fd5f398cbcc920fb12b1fffd1155d98ed0974c67bda26546aaf9e7528e`
 
 The trace was supplied as a successful run.  The parser proves that the named
 trace contains one internally complete submit/page-ready/issue/complete/retire
@@ -25,19 +27,24 @@ At the recorded commit, `TransparentSPDController.hh:14-16` declares one 4K
 mapping and one in-flight native micro-op; lines 152-153 retain one current and
 one mapped page; and lines 253-260 release the mapping only after store
 completion.  `MAA.cc:835-866` lowers the stages to stream-load, out-of-place
-ALU, and stream-store operations.  `MAA.cc:1156-1159` returns the lifetime tile
-credits after the final store is accepted by the memory hierarchy.  The
-schedule below preserves those data dependencies while making slot ownership
-and concurrent lanes explicit.
+ALU, and stream-store operations.  Critically, `IF.cc:323-347` maps both
+`STREAM_LD` and `STREAM_ST` to `FuncUnitType::STREAM`, while `MAA.cc:158-164`
+constructs one `StreamAccessUnit` per MAA and `MAA.cc:513-527` admits only one
+instruction while that unit is idle.  The ALU is distinct.  `MAA.cc:1156-1159`
+returns the lifetime tile credits after the final store is accepted by the
+memory hierarchy.  The schedule below preserves those dependencies and actual
+functional-unit serialization while making slot ownership explicit.
 
 ## Fail-closed parser contract
 
 `transparent_double_buffer_trace_analysis.py` ignores unrelated trace lines
 but rejects the entire analysis for any of the following:
 
-- a malformed target line, a duplicate or missing field, an unexpected field,
-  or an unknown `transparent_*` event (including backpressure, which this
-  timing model does not account for);
+- a malformed target line (including tab-delimited or whitespace-disguised
+  `event = transparent_*`, `event transparent_*`, and `page_ready` forms), a
+  duplicate or missing field, an unexpected field, or an unknown
+  `transparent_*` event (including backpressure, which this timing model does
+  not account for);
 - a component mismatch (`system.maa` for controller events and `global` for
   page readiness), decreasing target-event ticks, a second submit, an event
   after retirement, or missing retirement;
@@ -101,9 +108,10 @@ means two input slots in addition to the existing shared output span.
 The minimal schedule below uses the latter definition: two 4K input slots and
 one 4K shared output span.  For FP64, each page span covers two adjacent SPD tile
 IDs, so all ownership and hazard tests are span-aware.  This design can prefill
-while the current output computes/stores, but deliberately does not overlap
-two pages' compute/store chains.  Two complete input/output slot pairs would
-cost four page spans and are outside this schedule.
+while the ALU computes, but the one STREAM unit prevents a prefill from
+overlapping any store.  The shared output deliberately prevents two pages'
+compute/store chains from overlapping.  Two complete input/output slot pairs
+would cost four page spans and are outside this schedule.
 
 ## Finite two-input-slot controller
 
@@ -115,9 +123,9 @@ The controller has fixed storage only:
 - two input records `{owner=(generation,page), phase}`;
 - one output record `{owner=(generation,page), phase}`;
 - `next_fill`, `next_output`, and `done_pages` counters in `[0,4]`;
-- one stable fill request latch, one stable output request latch, and one
-  round-robin arbitration bit; and
-- at most one accepted fill plus one accepted compute-or-store action in
+- one stable STREAM request latch tagged as fill or store and one stable ALU
+  compute request latch; and
+- at most one accepted STREAM fill-or-store plus one accepted ALU compute in
   flight.  There is no unbounded request queue.
 
 The ordered transition schedule is:
@@ -130,8 +138,9 @@ The ordered transition schedule is:
    for each page.  A duplicate, stale generation, wrong token, or out-of-range
    page fails closed.  Out-of-order bits may accumulate, but `next_fill`
    prevents page bypass.
-3. **Fill admission.** When page `next_fill` is ready, fill lane is free, and
-   input slot `next_fill % 2` is free, latch
+3. **Fill admission.** When page `next_fill` is ready, the shared STREAM unit
+   and input slot `next_fill % 2` are free, and no completed output is waiting
+   to store, latch
    `(generation,page,Fill,slot,offset,elements)` and atomically reserve that
    slot owner.  An IF rejection leaves the latch and owner unchanged.  Only an
    accepted push changes `fill_pending` to `filling` and increments
@@ -139,38 +148,43 @@ The ordered transition schedule is:
 4. **Fill completion.** Require an exact matching accepted action and slot
    owner, then change the input to `filled`.  Duplicate, stale, or mismatched
    completion fails closed.
-5. **Compute admission.** Page `next_output` may compute only when its exact
-   input owner is `filled` and the shared output is free.  Latch the compute
-   without changing either payload owner; change to `computing` only after IF
-   acceptance.
+5. **Compute admission.** Page `next_output` may compute on the ALU only when
+   its exact input owner is `filled` and the shared output is free.  Reserve the
+   output for that page at admission; a simultaneous STREAM fill is legal only
+   when it owns a different free input slot.  IF rejection is side-effect free.
 6. **Compute completion.** Require the exact action/page/generation.  The ALU
    has finished reading the input, so release that input slot.  The output
    becomes owned by the page and enters `output`; the page cannot bypass its
    store.
-7. **Store admission and completion.** Latch store from the exact output owner;
-   IF rejection is side-effect free.  Acceptance changes it to `store`.  Its
-   matching native completion releases the output, marks the page done, and
-   increments `next_output` and `done_pages`.  This permits page k+1 compute
-   and page k+2 fill while preserving output and input hazards.
+7. **Store admission and completion.** A completed output has priority for the
+   one STREAM unit; it cannot issue until any active fill finishes.  Latch the
+   store from the exact output owner; IF rejection is side-effect free.
+   Acceptance changes it to `store`.  Its matching native completion releases
+   the output, marks the page done, and increments `next_output` and
+   `done_pages`.  This permits page k+1 compute and page k+2 fill while
+   preserving output, input, and STREAM hazards.
 8. **Retire.** Retire exactly once only when `done_pages == 4`, both request
    latches and both in-flight lanes are empty, both input slots and the output
    are free, and the producer generation still matches.  Then consume that
    generation and release descriptor-lifetime tile/register credits.
 
-The arbitration bit changes only on a successful push.  A rejected latch
-remains byte-for-byte stable, while the other lane may be tried on the next
-issue opportunity; finite round robin prevents either lane from starving.
-Completion callbacks carry `(generation,page,action,slot)` rather than relying
-on whichever page is currently at the head.
+A rejected latch remains byte-for-byte stable.  ALU admission is independent
+of STREAM occupancy, but a ready store takes STREAM priority over a later fill;
+the fixed four-page descriptor makes this policy finite.  Completion callbacks
+carry `(generation,page,action,slot)` rather than relying on whichever page is
+currently at the head.
 
 ### Tile and data hazards
 
 - A fill may write a slot only after the old owner was released by matching
   compute completion; issue is not sufficient because the ALU may still read
   the input.
+- Every fill and store occupies the same STREAM unit for its complete observed
+  interval.  No `STREAM_LD` may overlap any `STREAM_ST` (or another load).
 - Compute reads exactly one filled input owner and writes only the free shared
   output.  Store reads that output until its matching completion, so the output
-  cannot be reused at store issue.
+  cannot be reused at store issue.  ALU compute may overlap STREAM only when
+  these exact input/output owners remain disjoint.
 - External instructions and register writes remain excluded from every
   descriptor-owned FP64 span, including both adjacent tile IDs, for the same
   lifetime rules used by the current controller.
@@ -189,39 +203,48 @@ requires a write acknowledgement beyond that point, an explicit bounded ACK
 counter must keep the output owned and delay page/descriptor completion; the
 provided trace cannot quantify that stronger semantic.
 
-## Conditional critical-path lower bounds
+## Conditional resource-feasible fixed-duration schedule
 
-The executable recurrence in the parser assigns input slot `page % 2`, keeps
-one in-order fill lane, releases an input only on compute completion, and
-serializes compute+store on one shared output.  It fixes page-ready ticks and
-every observed per-page stage duration, while assuming zero dispatch cost and
-that fixed stage durations do not inflate when the fill and output lanes
-overlap.  Dispatch gaps and cross-lane IF, cache, memory, and functional-unit
-contention are absent.  These are ideal-resource assumptions.  The results are
-conditional critical-path lower bounds for that recurrence, not predicted
-gem5 results and not gem5 speedups.
+The executable list schedule assigns input slot `page % 2`, releases an input
+only on compute completion, and releases the single output only on store
+completion.  One STREAM resource serializes every ordered fill and store; a
+ready store has priority.  The distinct ALU may overlap STREAM when the exact
+owners permit it.  Page-ready ticks and every observed stage duration remain
+fixed, with zero dispatch cost and no duration inflation from legal overlap.
+The ordering is finite and resource-feasible under those assumptions, but the
+ticks are still a conditional projection—not a critical-path lower bound, a
+gem5 prediction, or a gem5 speedup.
 
-| Quantity | Observed trace | Conditional two-input-slot bound | Distance to bound |
-|---|---:|---:|---:|
-| Submit -> retire | 44,828,485 | 44,182,453 | 646,032 |
-| First page ready -> retire | 15,020,870 | 14,374,838 | 646,032 |
-| Completion tick | 3,170,484,672 | 3,169,838,640 | 646,032 |
+| Quantity | Observed trace | Feasible fixed-duration schedule | Reduction | Reduction vs. observed |
+|---|---:|---:|---:|---:|
+| Submit -> retire | 44,828,485 | 44,668,229 | 160,256 | 0.357487% |
+| First page ready -> retire | 15,020,870 | 14,860,614 | 160,256 | 1.066889% |
+| Completion tick | 3,170,484,672 | 3,170,324,416 | 160,256 | n/a |
 
-Under this recurrence, pages 2 and 3 fill during page 1's output-store chain;
-their two 323,016-tick fills account for the 646,032-tick distance.  Page 1's
-fill cannot be hidden because page 1 becomes ready 5,476,874 ticks after page
-0's store completion.  The bound does not claim those observed stage durations
-would remain unchanged in a modified controller, that fill and store traffic
-will be contention-free, or that gem5 would realize the bound.
+Page 2 fills only after page 1's store releases STREAM.  Page 3 then fills from
+3,166,553,705 through 3,166,876,721 while page 2 computes from 3,166,553,705
+through 3,166,713,961.  That legal ALU/STREAM overlap hides exactly one
+160,256-tick compute interval.  Page 2's store waits for page 3's fill to
+release STREAM.  No fill overlaps a store.
 
-The ideal page schedule is:
+The resource-feasible page schedule is:
 
 | Page | Input | Fill [issue, complete) | Compute [issue, complete) | Store [issue, complete) |
 |---:|---:|---:|---:|---:|
 | 0 | 0 | [3,155,463,802, 3,155,787,131) | [3,155,787,131, 3,155,947,387) | [3,155,947,387, 3,158,706,169) |
 | 1 | 1 | [3,164,183,043, 3,164,506,372) | [3,164,506,372, 3,164,666,628) | [3,164,666,628, 3,166,230,689) |
-| 2 | 0 | [3,164,746,130, 3,165,069,146) | [3,166,230,689, 3,166,390,945) | [3,166,390,945, 3,167,836,379) |
-| 3 | 1 | [3,165,069,146, 3,165,392,162) | [3,167,836,379, 3,167,996,635) | [3,167,996,635, 3,169,838,640) |
+| 2 | 0 | [3,166,230,689, 3,166,553,705) | [3,166,553,705, 3,166,713,961) | [3,166,876,721, 3,168,322,155) |
+| 3 | 1 | [3,166,553,705, 3,166,876,721) | [3,168,322,155, 3,168,482,411) | [3,168,482,411, 3,170,324,416) |
+
+### Relaxed independent-STREAM counterfactual (not implementable)
+
+The superseded recurrence completed at tick 3,169,838,640: 44,182,453 ticks
+from submit and 14,374,838 ticks from first readiness.  Its 646,032-tick
+reduction was 1.441119% and 4.300896% of those respective observed intervals.
+It overlaps both page 2 and page 3 fills with page 1's `STREAM_ST`, despite all
+three mapping to the one `StreamAccessUnit`.  Those values are retained only to
+identify the relaxed independent-STREAM counterfactual; they are not a feasible
+schedule, implementable bound, prediction, or speedup.
 
 Regenerate the machine-readable analysis with:
 

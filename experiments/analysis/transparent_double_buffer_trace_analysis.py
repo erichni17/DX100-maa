@@ -5,11 +5,11 @@ Only the lifecycle events named in ``SUPPORTED_EVENTS`` are accepted.  Other
 trace traffic is ignored, but an unknown ``transparent_*`` event or a malformed
 target event rejects the complete input rather than producing partial timing.
 
-The ideal schedule is deliberately narrow: two input page slots, one fill
-lane, and one shared compute/output/store lane.  It keeps every observed stage
-duration fixed while removing all dispatch gaps and cross-lane interference.
-Its result is a conditional critical-path lower bound, not a gem5 prediction
-or speedup.
+The projected schedule is deliberately narrow: two input page slots, one
+shared STREAM unit for fills and stores, one ALU, and one shared output slot.
+It keeps every observed stage duration fixed and applies a finite store-first
+list schedule.  Its result is resource-feasible under those fixed-duration
+assumptions, not a gem5 prediction, lower bound, or speedup.
 """
 
 from __future__ import annotations
@@ -45,6 +45,10 @@ EVENT_RE = re.compile(
     r"^(?P<tick>[0-9]+): (?P<component>[A-Za-z0-9_.-]+): "
     r"event=(?P<event>[A-Za-z0-9_]+)"
     r"(?P<fields>(?: [A-Za-z][A-Za-z0-9_]*=[^ ]+)*)$"
+)
+TARGET_MARKER_RE = re.compile(
+    r"(?:^|[ \t])event(?:[ \t]*=[ \t]*|[ \t]+)"
+    r"(?:transparent_[A-Za-z0-9_]+|page_ready)(?=[ \t]|$)"
 )
 FIELD_RE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_]*)=(?P<value>[^ ]+)$")
 READY_COUNT_RE = re.compile(r"^(?P<ordinal>[0-9]+)/(?P<total>[0-9]+)$")
@@ -91,7 +95,7 @@ class PageTimeline:
 
 
 @dataclass(frozen=True)
-class IdealPageSchedule:
+class ScheduledPage:
     page: int
     input_slot: int
     ready: int
@@ -107,7 +111,7 @@ class TraceAnalysis:
     logical_elements: int
     page_elements: int
     pages: tuple[PageTimeline, ...]
-    ideal_two_slot: tuple[IdealPageSchedule, ...]
+    shared_stream_two_slot: tuple[ScheduledPage, ...]
 
     @property
     def observed_submit_to_retire(self) -> int:
@@ -124,21 +128,37 @@ class TraceAnalysis:
         )
 
     @property
-    def ideal_retire_tick(self) -> int:
-        return max(page.store.complete for page in self.ideal_two_slot)
+    def scheduled_retire_tick(self) -> int:
+        return max(page.store.complete for page in self.shared_stream_two_slot)
 
     @property
-    def ideal_submit_to_retire(self) -> int:
-        return self.ideal_retire_tick - self.submit_tick
+    def scheduled_submit_to_retire(self) -> int:
+        return self.scheduled_retire_tick - self.submit_tick
 
     @property
-    def ideal_first_ready_to_retire(self) -> int:
+    def scheduled_first_ready_to_retire(self) -> int:
         first_ready = min(page.ready for page in self.pages)
-        return self.ideal_retire_tick - first_ready
+        return self.scheduled_retire_tick - first_ready
 
     @property
-    def conditional_overlap_delta(self) -> int:
-        return self.retire_tick - self.ideal_retire_tick
+    def conditional_schedule_delta(self) -> int:
+        return self.retire_tick - self.scheduled_retire_tick
+
+    @property
+    def submit_to_retire_reduction_percent(self) -> float:
+        return (
+            100.0
+            * self.conditional_schedule_delta
+            / self.observed_submit_to_retire
+        )
+
+    @property
+    def first_ready_to_retire_reduction_percent(self) -> float:
+        return (
+            100.0
+            * self.conditional_schedule_delta
+            / self.observed_first_ready_to_retire
+        )
 
 
 @dataclass
@@ -149,15 +169,20 @@ class _MutablePage:
     store: Interval | None = None
 
 
+@dataclass
+class _ScheduledState:
+    phase: str = "unseen"
+    fill: Interval | None = None
+    compute: Interval | None = None
+    store: Interval | None = None
+
+
 def _fail(line: int, message: str) -> TraceFormatError:
     return TraceFormatError(f"line {line}: {message}")
 
 
 def _target_marker(line: str) -> bool:
-    return (
-        "event=transparent_" in line
-        or re.search(r"event=page_ready(?: |$)", line) is not None
-    )
+    return TARGET_MARKER_RE.search(line) is not None
 
 
 def _parse_fields(line_number: int, text: str) -> dict[str, str]:
@@ -486,61 +511,192 @@ def analyze_events(events: Sequence[Event]) -> TraceAnalysis:
     if retire.tick < max(page.store.complete for page in timelines):
         raise _fail(retire.line, "retirement preceded final store completion")
 
-    ideal = ideal_two_slot_schedule(tuple(timelines))
+    scheduled = shared_stream_two_slot_schedule(tuple(timelines))
     return TraceAnalysis(
         submit_tick=submit.tick,
         retire_tick=retire.tick,
         logical_elements=logical,
         page_elements=page_elements,
         pages=tuple(timelines),
-        ideal_two_slot=ideal,
+        shared_stream_two_slot=scheduled,
     )
 
 
-def ideal_two_slot_schedule(
-    pages: Sequence[PageTimeline],
-) -> tuple[IdealPageSchedule, ...]:
-    """Schedule fixed trace durations on two inputs and one shared output.
+def _overlap(left: Interval, right: Interval) -> bool:
+    return left.issue < right.complete and right.issue < left.complete
 
-    A single fill lane serves pages in logical order.  Input slot ``page % 2``
-    is reusable after that page's compute completes.  A single shared output
-    buffer serializes compute+store chains.  The fill lane is otherwise ideal
-    and independent of the output lane.
+
+def _validate_shared_stream_schedule(
+    pages: Sequence[PageTimeline],
+    scheduled: Sequence[ScheduledPage],
+) -> None:
+    if len(pages) != len(scheduled):
+        raise ValueError("schedule omitted a page")
+    for page, item in zip(pages, scheduled):
+        if item.page != page.page or item.input_slot != page.page % 2:
+            raise ValueError("schedule changed page or input-slot ownership")
+        if item.fill.issue < page.ready:
+            raise ValueError("schedule filled a page before readiness")
+        if (
+            item.fill.duration != page.fill.duration
+            or item.compute.duration != page.compute.duration
+            or item.store.duration != page.store.duration
+        ):
+            raise ValueError("schedule changed an observed stage duration")
+        if item.fill.complete > item.compute.issue:
+            raise ValueError("schedule computed before its fill completed")
+        if item.compute.complete > item.store.issue:
+            raise ValueError("schedule stored before its compute completed")
+
+    stream_actions = [
+        interval for item in scheduled for interval in (item.fill, item.store)
+    ]
+    for index, left in enumerate(stream_actions):
+        if any(_overlap(left, right) for right in stream_actions[index + 1 :]):
+            raise ValueError("STREAM_LD overlapped STREAM_LD or STREAM_ST")
+
+    for index, left in enumerate(scheduled):
+        left_input = Interval(left.fill.issue, left.compute.complete)
+        left_output = Interval(left.compute.issue, left.store.complete)
+        for right in scheduled[index + 1 :]:
+            if left.input_slot == right.input_slot and _overlap(
+                left_input, Interval(right.fill.issue, right.compute.complete)
+            ):
+                raise ValueError("two pages owned one input slot")
+            if _overlap(
+                left_output,
+                Interval(right.compute.issue, right.store.complete),
+            ):
+                raise ValueError("two pages owned the shared output")
+
+
+def shared_stream_two_slot_schedule(
+    pages: Sequence[PageTimeline],
+) -> tuple[ScheduledPage, ...]:
+    """List-schedule fixed trace durations on the finite proposed resources.
+
+    Fills remain in logical order.  One STREAM unit executes every fill and
+    store, with a ready store taking priority over a fill.  One ALU may overlap
+    that STREAM unit.  Input slot ``page % 2`` remains owned from fill admission
+    through matching compute completion, and the output remains owned from
+    compute admission through matching store completion.
     """
 
     if not pages:
-        raise ValueError("ideal schedule requires at least one page")
-    input_free = [0, 0]
-    fill_lane_free = 0
-    output_free = 0
-    scheduled: list[IdealPageSchedule] = []
+        raise ValueError("shared-STREAM schedule requires at least one page")
     for expected_page, page in enumerate(pages):
         if page.page != expected_page:
-            raise ValueError("ideal schedule requires logical page order")
-        slot = page.page % 2
-        fill_issue = max(page.ready, input_free[slot], fill_lane_free)
-        fill = Interval(fill_issue, fill_issue + page.fill.duration)
-        fill_lane_free = fill.complete
-        compute_issue = max(fill.complete, output_free)
-        compute = Interval(
-            compute_issue, compute_issue + page.compute.duration
-        )
-        input_free[slot] = compute.complete
-        store = Interval(
-            compute.complete, compute.complete + page.store.duration
-        )
-        output_free = store.complete
-        scheduled.append(
-            IdealPageSchedule(
+            raise ValueError(
+                "shared-STREAM schedule requires logical page order"
+            )
+
+    states = [_ScheduledState() for _ in pages]
+    input_owner: list[int | None] = [None, None]
+    output_owner: int | None = None
+    stream_active: tuple[str, int, Interval] | None = None
+    alu_active: tuple[int, Interval] | None = None
+    next_fill = 0
+    next_output = 0
+    done_pages = 0
+    now = min(page.ready for page in pages)
+
+    while done_pages != len(pages):
+        if stream_active is not None and stream_active[2].complete == now:
+            action, page_number, _ = stream_active
+            state = states[page_number]
+            if action == "fill":
+                state.phase = "filled"
+            else:
+                state.phase = "done"
+                output_owner = None
+                next_output += 1
+                done_pages += 1
+            stream_active = None
+
+        if alu_active is not None and alu_active[1].complete == now:
+            page_number, _ = alu_active
+            state = states[page_number]
+            state.phase = "output"
+            input_owner[page_number % 2] = None
+            alu_active = None
+
+        if (
+            alu_active is None
+            and output_owner is None
+            and next_output < len(pages)
+            and states[next_output].phase == "filled"
+        ):
+            page_number = next_output
+            duration = pages[page_number].compute.duration
+            interval = Interval(now, now + duration)
+            states[page_number].compute = interval
+            states[page_number].phase = "computing"
+            output_owner = page_number
+            alu_active = (page_number, interval)
+
+        if stream_active is None:
+            if (
+                next_output < len(pages)
+                and states[next_output].phase == "output"
+            ):
+                page_number = next_output
+                duration = pages[page_number].store.duration
+                interval = Interval(now, now + duration)
+                states[page_number].store = interval
+                states[page_number].phase = "storing"
+                stream_active = ("store", page_number, interval)
+            elif next_fill < len(pages):
+                page_number = next_fill
+                slot = page_number % 2
+                if (
+                    pages[page_number].ready <= now
+                    and input_owner[slot] is None
+                    and states[page_number].phase == "unseen"
+                ):
+                    duration = pages[page_number].fill.duration
+                    interval = Interval(now, now + duration)
+                    states[page_number].fill = interval
+                    states[page_number].phase = "filling"
+                    input_owner[slot] = page_number
+                    next_fill += 1
+                    stream_active = ("fill", page_number, interval)
+
+        if done_pages == len(pages):
+            break
+
+        future_ticks: list[int] = []
+        if stream_active is not None:
+            future_ticks.append(stream_active[2].complete)
+        if alu_active is not None:
+            future_ticks.append(alu_active[1].complete)
+        if stream_active is None and next_fill < len(pages):
+            page_number = next_fill
+            if (
+                input_owner[page_number % 2] is None
+                and pages[page_number].ready > now
+            ):
+                future_ticks.append(pages[page_number].ready)
+        if not future_ticks:
+            raise ValueError("shared-STREAM schedule reached a deadlock")
+        now = min(future_ticks)
+
+    result: list[ScheduledPage] = []
+    for page, state in zip(pages, states):
+        if state.fill is None or state.compute is None or state.store is None:
+            raise ValueError("shared-STREAM schedule left a page incomplete")
+        result.append(
+            ScheduledPage(
                 page=page.page,
-                input_slot=slot,
+                input_slot=page.page % 2,
                 ready=page.ready,
-                fill=fill,
-                compute=compute,
-                store=store,
+                fill=state.fill,
+                compute=state.compute,
+                store=state.store,
             )
         )
-    return tuple(scheduled)
+    scheduled = tuple(result)
+    _validate_shared_stream_schedule(pages, scheduled)
+    return scheduled
 
 
 def analyze_text(text: str) -> TraceAnalysis:
@@ -564,24 +720,39 @@ def analysis_dict(analysis: TraceAnalysis) -> dict[str, object]:
             "final_store_to_retire_ticks": analysis.final_store_to_retire,
             "pages": [asdict(page) for page in analysis.pages],
         },
-        "conditional_ideal_two_input_slots_shared_output": {
-            "retire_tick": analysis.ideal_retire_tick,
-            "submit_to_retire_ticks": analysis.ideal_submit_to_retire,
+        "conditional_feasible_two_input_slots_shared_stream_shared_output": {
+            "retire_tick": analysis.scheduled_retire_tick,
+            "submit_to_retire_ticks": analysis.scheduled_submit_to_retire,
             "first_ready_to_retire_ticks": (
-                analysis.ideal_first_ready_to_retire
+                analysis.scheduled_first_ready_to_retire
             ),
-            "observed_minus_bound_ticks": analysis.conditional_overlap_delta,
-            "pages": [asdict(page) for page in analysis.ideal_two_slot],
+            "observed_minus_schedule_ticks": (
+                analysis.conditional_schedule_delta
+            ),
+            "submit_to_retire_reduction_percent": (
+                analysis.submit_to_retire_reduction_percent
+            ),
+            "first_ready_to_retire_reduction_percent": (
+                analysis.first_ready_to_retire_reduction_percent
+            ),
+            "pages": [
+                asdict(page) for page in analysis.shared_stream_two_slot
+            ],
             "assumptions": [
                 "page-ready ticks are fixed to the trace",
                 "each page keeps its observed fill/compute/store duration",
-                "one in-order fill lane is independent of the shared output lane",
+                "one STREAM unit serializes all in-order fills and stores",
+                "a ready store has STREAM priority over a fill",
+                "one ALU may overlap STREAM when ownership permits",
                 "two input slots release only after matching compute completion",
-                "one output slot serializes each compute-plus-store chain",
-                "fixed durations do not inflate when the two lanes overlap",
-                "dispatch gaps and cross-lane resource contention are absent",
+                "one output slot releases only after matching store completion",
+                "fixed durations do not inflate during legal ALU/STREAM overlap",
+                "dispatch gaps and other shared-resource contention are absent",
             ],
-            "claim_scope": "conditional critical-path lower bound, not speedup",
+            "claim_scope": (
+                "resource-feasible fixed-duration list schedule; not a lower "
+                "bound, gem5 prediction, or speedup"
+            ),
         },
     }
 
