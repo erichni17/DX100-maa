@@ -217,12 +217,56 @@ class LogicalSpdHiddenPayloadContractTest(unittest.TestCase):
         ):
             self.assertIn(evidence, self.spd_source + self.layout)
         for released in (
+            "delete[] tiles_data",
+            "delete[] tiles_status",
             "delete[] tiles_dirty",
             "delete[] tiles_ready",
+            "delete[] tiles_size",
+            "delete[] element_finished",
             "delete[] waiting_units_funcs",
             "delete[] waiting_units_ids",
         ):
             self.assertIn(released, self.spd_source)
+
+    def test_maa_owns_and_destroys_exactly_one_spd(self) -> None:
+        self.assertEqual(self.maa_source.count("spd = new SPD("), 1)
+        destructor_start = self.maa_source.index("MAA::~MAA()")
+        destructor_end = self.maa_source.index(
+            "void MAA::addAddrRegion", destructor_start
+        )
+        destructor = self.maa_source[destructor_start:destructor_end]
+        self.assertEqual(destructor.count("delete spd;"), 1)
+
+        maa_sources = list((ROOT / "src/mem/MAA").glob("*.cc"))
+        maa_sources.extend((ROOT / "src/mem/MAA").glob("*.hh"))
+        spd_deletes = sum(
+            path.read_text(encoding="utf-8").count("delete spd;")
+            for path in maa_sources
+        )
+        self.assertEqual(spd_deletes, 1)
+
+        spd_destructor_start = self.spd_source.index("SPD::~SPD()")
+        spd_destructor_end = self.spd_source.index(
+            "///////////////\n//\n// RF", spd_destructor_start
+        )
+        spd_destructor = self.spd_source[
+            spd_destructor_start:spd_destructor_end
+        ]
+        for released in (
+            "tiles_data",
+            "tiles_status",
+            "tiles_dirty",
+            "tiles_ready",
+            "tiles_size",
+            "read_port_busy_until",
+            "write_port_busy_until",
+            "element_finished",
+            "waiting_units_funcs",
+            "waiting_units_ids",
+        ):
+            self.assertEqual(
+                spd_destructor.count(f"delete[] {released};"), 1, released
+            )
 
     def test_scope_contains_no_scheduler_response_or_benchmark_wiring(
         self,
