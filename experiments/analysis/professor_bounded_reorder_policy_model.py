@@ -37,8 +37,14 @@ CACHE_LINE_BYTES = 64
 WORDS_PER_LINE = CACHE_LINE_BYTES // WORD_BYTES
 RECORD_BYTES = 16
 SOURCE_LINE_BITS = 18
+SOURCE_WORD_BITS = 3
+SOURCE_INDEX_BITS = SOURCE_LINE_BITS + SOURCE_WORD_BITS
 ROW_KEY_BITS = 11
 MAX_SOURCE_LINE = (1 << SOURCE_LINE_BITS) - 1
+MAX_SOURCE_INDEX = (1 << SOURCE_INDEX_BITS) - 1
+UINT64_MAX = (1 << 64) - 1
+TRANSFER_LINE_BITS = 12
+MAX_TRANSFER_LINE = (1 << TRANSFER_LINE_BITS) - 1
 PARTITIONS = 4
 
 XRAGE_SHA256 = (
@@ -80,6 +86,17 @@ class ReplayError(RuntimeError):
     """A malformed source, impossible transition, or bound violation."""
 
 
+def require_exact_uint(
+    name: str, value: object, maximum: int, *, minimum: int = 0
+) -> int:
+    """Admit one packed unsigned identity without Python coercions."""
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ReplayError(
+            f"{name} must be an exact integer in [{minimum}, {maximum}]"
+        )
+    return value
+
+
 def ceil_div(dividend: int, divisor: int) -> int:
     if dividend < 0 or divisor <= 0:
         raise ValueError("dividend must be non-negative and divisor positive")
@@ -96,6 +113,8 @@ def sha256(path: Path) -> str:
 
 def bank_row_key(source_line: int, source_line_phase: int) -> tuple[int, ...]:
     """Return the archived DDR4 RoBaRaCoCh row proxy (rank is fixed zero)."""
+    require_exact_uint("source line", source_line, MAX_SOURCE_LINE)
+    require_exact_uint("source-line phase", source_line_phase, MAX_SOURCE_LINE)
     mapped = source_line + source_line_phase
     if not 0 <= mapped <= MAX_SOURCE_LINE:
         raise ReplayError(
@@ -120,12 +139,29 @@ Record = tuple[int, int, int]
 
 
 def make_record(destination: int, source_index: int) -> Record:
+    require_exact_uint("record destination", destination, LOGICAL_ELEMENTS - 1)
+    require_exact_uint("B source index", source_index, MAX_SOURCE_INDEX)
     source_line, source_word = divmod(source_index, WORDS_PER_LINE)
     return source_line, source_word, destination
 
 
-def record_key(record: Record, source_line_phase: int) -> tuple[int, ...]:
+def admit_record(record: Record) -> Record:
+    if type(record) is not tuple or len(record) != 3:
+        raise ReplayError("record must be an exact three-integer value tuple")
     source_line, source_word, destination = record
+    return (
+        require_exact_uint("record source line", source_line, MAX_SOURCE_LINE),
+        require_exact_uint(
+            "record source word", source_word, WORDS_PER_LINE - 1
+        ),
+        require_exact_uint(
+            "record destination", destination, LOGICAL_ELEMENTS - 1
+        ),
+    )
+
+
+def record_key(record: Record, source_line_phase: int) -> tuple[int, ...]:
+    source_line, source_word, destination = admit_record(record)
     return (
         *bank_row_key(source_line, source_line_phase),
         source_line,
@@ -185,14 +221,21 @@ class CoverageProof:
     """A bounded replay-only exact-once and source-mapping observer."""
 
     def __init__(self, pattern: Sequence[int]):
-        if not pattern or len(pattern) > LOGICAL_ELEMENTS:
+        admitted_pattern = tuple(pattern)
+        if not admitted_pattern or len(admitted_pattern) > LOGICAL_ELEMENTS:
             raise ReplayError("a logical tile must contain 1..16384 B words")
-        self.pattern = pattern
+        for source_index in admitted_pattern:
+            require_exact_uint(
+                "admitted B source index", source_index, MAX_SOURCE_INDEX
+            )
+        # The proof owns this immutable identity snapshot.  It never aliases
+        # a caller-owned list whose elements could change after admission.
+        self.pattern = admitted_pattern
         self.seen_mask = 0
         self.seen_count = 0
 
     def observe(self, record: Record) -> None:
-        source_line, source_word, destination = record
+        source_line, source_word, destination = admit_record(record)
         if not 0 <= destination < len(self.pattern):
             raise ReplayError("record destination is outside its logical tile")
         bit = 1 << destination
@@ -223,31 +266,80 @@ class AckLedger:
     """One-entry response ledger used for spill/reload line transfers."""
 
     def __init__(self, generation: int):
-        if generation <= 0:
-            raise ReplayError("generation zero is never live")
-        self.generation = generation
+        self._generation = require_exact_uint(
+            "generation", generation, UINT64_MAX, minimum=1
+        )
         self.next_serial = 1
-        self.active: TransferTag | None = None
+        self._active_identity: tuple[int, int, int, int] | None = None
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    @property
+    def active(self) -> TransferTag | None:
+        """Return a value copy without exposing the owned live identity."""
+        if self._active_identity is None:
+            return None
+        return TransferTag(*self._active_identity)
+
+    @staticmethod
+    def _admit_response(response: TransferTag) -> tuple[int, int, int, int]:
+        if type(response) is not TransferTag:
+            raise ReplayError("LLC response must be an exact TransferTag")
+        return (
+            require_exact_uint(
+                "response generation",
+                response.generation,
+                UINT64_MAX,
+                minimum=1,
+            ),
+            require_exact_uint(
+                "response serial", response.serial, UINT64_MAX, minimum=1
+            ),
+            require_exact_uint("response direction", response.direction, 1),
+            require_exact_uint(
+                "response line index", response.line_index, MAX_TRANSFER_LINE
+            ),
+        )
 
     def issue(self, direction: int, line_index: int) -> TransferTag:
-        if self.active is not None:
-            raise ReplayError("transfer buffer reused before matching ACK")
-        if direction not in (0, 1) or not 0 <= line_index < 4096:
-            raise ReplayError("invalid spill/reload transfer identity")
-        tag = TransferTag(
-            self.generation, self.next_serial, direction, line_index
+        admitted_direction = require_exact_uint("direction", direction, 1)
+        admitted_line = require_exact_uint(
+            "line index", line_index, MAX_TRANSFER_LINE
         )
-        self.next_serial += 1
-        self.active = tag
-        return tag
+        if self._active_identity is not None:
+            raise ReplayError("transfer buffer reused before matching ACK")
+        if self.next_serial == 0:
+            raise ReplayError("uint64 transfer serial space is exhausted")
+        admitted_serial = require_exact_uint(
+            "next serial", self.next_serial, UINT64_MAX, minimum=1
+        )
+        admitted_generation = require_exact_uint(
+            "generation", self._generation, UINT64_MAX, minimum=1
+        )
+        identity = (
+            admitted_generation,
+            admitted_serial,
+            admitted_direction,
+            admitted_line,
+        )
+        self.next_serial = (
+            0 if admitted_serial == UINT64_MAX else admitted_serial + 1
+        )
+        self._active_identity = identity
+        # The caller receives a distinct value object.  The ledger retains an
+        # immutable tuple, so object.__setattr__ cannot rewrite live state.
+        return TransferTag(*identity)
 
     def complete(self, response: TransferTag) -> None:
-        if self.active is None or response != self.active:
+        identity = self._admit_response(response)
+        if self._active_identity is None or identity != self._active_identity:
             raise ReplayError("stale, duplicate, or forged LLC response")
-        self.active = None
+        self._active_identity = None
 
     def finish(self) -> None:
-        if self.active is not None:
+        if self._active_identity is not None:
             raise ReplayError("LLC response obligation remained live")
 
 
@@ -578,8 +670,14 @@ def state_contract() -> dict[str, object]:
         )
 
     observer_counter_fields = len(fields(Metrics))
+    observer_b_snapshot_bits = LOGICAL_ELEMENTS * SOURCE_INDEX_BITS
     observer_bits = (
-        LOGICAL_ELEMENTS + 15 + observer_counter_fields * 64 + 1 + ROW_KEY_BITS
+        observer_b_snapshot_bits
+        + LOGICAL_ELEMENTS
+        + 15
+        + observer_counter_fields * 64
+        + 1
+        + ROW_KEY_BITS
     )
     return {
         "packing": (
@@ -595,6 +693,9 @@ def state_contract() -> dict[str, object]:
         "global_on_chip_budget_bytes": GLOBAL_ON_CHIP_BUDGET_BYTES,
         "policies": policies,
         "replay_observer_state": {
+            "admitted_b_snapshot_entries": LOGICAL_ELEMENTS,
+            "admitted_b_snapshot_bits_per_entry": SOURCE_INDEX_BITS,
+            "admitted_b_snapshot_bits": observer_b_snapshot_bits,
             "completion_bitmap_bits": LOGICAL_ELEMENTS,
             "completion_count_bits": 15,
             "metrics_counter_fields": observer_counter_fields,
@@ -604,10 +705,16 @@ def state_contract() -> dict[str, object]:
             "total_bytes": ceil_div(observer_bits, 8),
             "classification": "evidence-only; excluded from policy budget",
         },
+        "serial_exhaustion_contract": {
+            "next_serial_bits": 64,
+            "exhausted_sentinel": 0,
+            "serial_zero_issued": False,
+            "extra_exhaustion_flag_bits": 0,
+        },
         "interpreter_boundary": (
-            "Python object headers and immutable input JSON storage are not "
-            "hardware; "
-            "all logical policy arrays are capped at 16K backing or 4K on chip"
+            "Python object headers are not hardware; the admitted immutable "
+            "B snapshot is charged above as bounded evidence-only state, and "
+            "all policy arrays are capped at 16K backing or 4K on chip"
         ),
     }
 
@@ -672,15 +779,11 @@ def strict_gate(
 def analyze_pattern(
     pattern: Sequence[int], source_line_phase: int
 ) -> dict[str, object]:
+    require_exact_uint("source-line phase", source_line_phase, MAX_SOURCE_LINE)
     if not pattern:
         raise ReplayError("gather pattern is empty")
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value < 0
-        for value in pattern
-    ):
-        raise ReplayError(
-            "gather pattern contains a non-negative-integer violation"
-        )
+    for value in pattern:
+        require_exact_uint("gather source index", value, MAX_SOURCE_INDEX)
     maximum = max(pattern) // WORDS_PER_LINE + source_line_phase
     if maximum > MAX_SOURCE_LINE:
         raise ReplayError(

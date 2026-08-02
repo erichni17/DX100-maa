@@ -121,12 +121,20 @@ sort/merge control. Thus reorder state is `66,013 + 4,096 = 70,109 B`.
 | Generation, next serial, cursors, range, count, phase, min/max key | `198 bits = 25 B` |
 | **Total** | **205 B** |
 
+Serial exhaustion adds no hidden persistent bit. The already charged 64-bit
+`next serial` field uses zero as its exhausted sentinel after serial
+`2^64 - 1` is issued; zero is never issued, and a later issue fails before any
+ledger mutation. Generation and live serial remain nonzero exact uint64
+identities.
+
 The replay-only exact-once observer is explicitly separate: one 16,384-bit
-completion bitmap, a 15-bit completion count, sixteen 64-bit metric/high-water
-counters, and a valid + 11-bit previous-row key. It is evidence state and is
-not presented as free policy hardware. Immutable input JSON and Python object
-headers are host representation, while every logical list is asserted at
-either the 4K on-chip or 16K external-backing bound.
+completion bitmap, an immutable 16,384-entry × 21-bit admitted-B identity
+snapshot, a 15-bit completion count, sixteen 64-bit metric/high-water counters,
+and a valid + 11-bit previous-row key. The exact lower bound is therefore
+361,499 bits / 45,188 B. It is bounded evidence-only state and is not presented
+as free policy hardware. Python object headers are host representation, while
+every logical list is asserted at either the 4K on-chip or 16K
+external-backing bound.
 
 ## Policy 1: four static row-bucket B rescans
 
@@ -184,14 +192,21 @@ order/issue them, and drain on capacity.
 The executable model fails closed on an unknown input SHA-256, non-Gather
 JSON, invalid index, source-line overflow, duplicate/missing destination,
 changed B-to-A mapping, record/window overflow, queue mismatch, forged/stale
-ACK, reuse before ACK, or a live final response obligation.
+ACK, reuse before ACK, serial exhaustion, or a live final response obligation.
+Every packed identity admits only an exact non-bool integer in its declared
+unsigned range before state mutation: 18-bit A line and phase, 21-bit B source
+index, nonzero uint64 generation/serial, 1-bit direction, and 12-bit backing
+line.
 
 Every record carries `(A line, A word, logical destination)`. The observer
 proves each destination appears exactly once and reconstructs the original B
-index exactly. Spill/reload uses nonzero tile generations, non-wrapping 64-bit
-serials, direction, and backing-line identity. A buffer is released only by an
-exact matching completion transition; model-selected immediate completion is
-ordering evidence, not response timing.
+index exactly from an immutable value-tuple record and its privately owned
+immutable B snapshot. Spill/reload uses nonzero tile generations, non-wrapping
+64-bit serials, direction, and backing-line identity. The ledger owns an
+immutable identity tuple and returns a distinct `TransferTag` value, so caller
+mutation cannot rewrite live state. A buffer is released only by an exact
+matching completion value; model-selected immediate completion is ordering
+evidence, not response timing.
 
 Inputs are accepted only through the hard-coded allowlist in
 `professor_bounded_reorder_policy_model.py`:
@@ -304,14 +319,23 @@ python3 experiments/analysis/professor_bounded_reorder_policy_model.py \
 sha256sum /tmp/professor_bounded_reorder_replay.json
 ```
 
-Focused result: 9/9 tests passed. The full replay processed 2,097,152 XRAGE
-words plus 638,460 FLAG words in about 1:08 with about 128 MiB peak host RSS.
-Two independent final full replays produced the same JSON SHA-256:
-`b26e0df72c31ea4c6d19939b04cd61e32965a6748be128db0f696cba9a7aa691`.
+Focused result: 21/21 tests passed, including the nine independently
+reproduced adversarial failures, exact maximum-field successes, rejection
+atomicity, and immutable sorted/spilled record checks. Two final full replays
+from model SHA-256
+`48185a93d610a4cb00341bf499d06caca117cfff5ffa6cdcdab8a246a96dd315`
+processed the frozen 2,097,152 XRAGE words plus 638,460 FLAG words and produced
+byte-identical JSON SHA-256
+`d1c75cdc5446c838937a2f201c3bb81afb0288dd9f9de2db5054cadb0d28c31b`.
+An exact baseline/repaired JSON comparison proves `scope`, all XRAGE request,
+transition, traffic, bound, and pass/fail records, all 14 FLAG records and
+aggregates, and the promotion gate are unchanged.
 
-The direct system Python does not expose a `black` module. The repository's
-checkpoint environment supplies and runs its required isort, black, pyupgrade,
-gem5-style, and hygiene hooks. Compileall and `git diff --check` also pass.
+The exact-path checkpoint's isort, Black 23.9.1, pyupgrade, gem5-style, and
+hygiene hooks pass. `py_compile`, repository style, and `git diff --check` also
+pass. An earlier standalone Black `--workers 1 --check` attempt hit the known
+non-terminating host process failure and was stopped; the subsequent bounded
+checkpoint hook completed normally.
 
 ## Handoff
 
