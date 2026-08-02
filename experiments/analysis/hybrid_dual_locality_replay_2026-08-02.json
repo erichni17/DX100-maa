@@ -1,0 +1,2102 @@
+{
+  "config": {
+    "cache_line_bytes": 64,
+    "combine_slots": 384,
+    "combine_ways": 4,
+    "logical_elements": 16384,
+    "nonfocus_row_bonus": 1,
+    "page_elements": 4096,
+    "row_burst": 4,
+    "word_bytes": 8
+  },
+  "flag": {
+    "case_count": 14,
+    "cases": [
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 538,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 3,
+          "threshold_fraction": "1/16",
+          "total_tiles": 4,
+          "unique_source_descriptors": 7415
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001/config_00_gather.json",
+        "pattern_words": 63846,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 8053,
+          "first_page_issue_complete_ordinal_target_upper": 488.25,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 7415,
+          "source_read_requests_upper": 7953
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.009021426,
+            "c_writes": 8053,
+            "duplicate_source_reads": 538,
+            "excess_c_writes": 72,
+            "focus_claims": 7953,
+            "full_c_writes": 7908,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              489.25,
+              1026.5,
+              1490.25
+            ],
+            "mean_page_issue_complete_ordinal": [
+              488.25,
+              1025.5,
+              1489.25,
+              1988.25
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2117,
+              1840
+            ],
+            "partial_c_writes": 145,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.889797459,
+            "same_bank_row_successors": 7073,
+            "source_read_requests": 7953,
+            "source_successor_pairs": 7949,
+            "unique_bank_rows": 850,
+            "unique_source_lines": 7415
+          },
+          "full_row": {
+            "c_write_amplification": 1.052374389,
+            "c_writes": 8399,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 418,
+            "focus_claims": 0,
+            "full_c_writes": 7591,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              455.25,
+              940.0,
+              1322.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              500.25,
+              1020.75,
+              1478.25,
+              1853.75
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2340,
+              1963
+            ],
+            "partial_c_writes": 808,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.885845365,
+            "same_bank_row_successors": 6565,
+            "source_read_requests": 7415,
+            "source_successor_pairs": 7411,
+            "unique_bank_rows": 850,
+            "unique_source_lines": 7415
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.088710688,
+            "c_writes": 8689,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 708,
+            "focus_claims": 7398,
+            "full_c_writes": 7284,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              179.5,
+              756.0,
+              1148.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              489.5,
+              996.25,
+              1432.5,
+              1853.75
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 17,
+            "page_c_writes": [
+              2240,
+              2259,
+              2173,
+              2017
+            ],
+            "partial_c_writes": 1405,
+            "row_bursts": 2234,
+            "same_bank_row_successor_rate": 0.699635677,
+            "same_bank_row_successors": 5185,
+            "source_read_requests": 7415,
+            "source_successor_pairs": 7411,
+            "unique_bank_rows": 850,
+            "unique_source_lines": 7415
+          }
+        },
+        "sha256": "9f344be7df05084a33d1675e1cfa29fe60e0aa3740791b9900c74066e5443919",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 280,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 12559
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001/config_01_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 1509.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 12559,
+          "source_read_requests_upper": 12839
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 280,
+            "excess_c_writes": 0,
+            "focus_claims": 12839,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1510.0,
+              3210.5,
+              5074.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1509.0,
+              3209.5,
+              5073.5,
+              6419.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.872010594,
+            "same_bank_row_successors": 11194,
+            "source_read_requests": 12839,
+            "source_successor_pairs": 12837,
+            "unique_bank_rows": 1624,
+            "unique_source_lines": 12559
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1404.5,
+              3036.0,
+              4917.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1521.0,
+              3183.5,
+              4968.5,
+              6279.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.87082902,
+            "same_bank_row_successors": 10935,
+            "source_read_requests": 12559,
+            "source_successor_pairs": 12557,
+            "unique_bank_rows": 1624,
+            "unique_source_lines": 12559
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.027562015,
+            "c_writes": 4101,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 110,
+            "focus_claims": 12549,
+            "full_c_writes": 3880,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              401.5,
+              2122.5,
+              4040.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1511.0,
+              3147.5,
+              4951.5,
+              6279.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 10,
+            "page_c_writes": [
+              1041,
+              1075,
+              1045,
+              940
+            ],
+            "partial_c_writes": 221,
+            "row_bursts": 3933,
+            "same_bank_row_successor_rate": 0.686947519,
+            "same_bank_row_successors": 8626,
+            "source_read_requests": 12559,
+            "source_successor_pairs": 12557,
+            "unique_bank_rows": 1624,
+            "unique_source_lines": 12559
+          }
+        },
+        "sha256": "1aea650887ee2e0424a0208039f32bd777886c6c746514fc7945b86b66c9f61c",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 8,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 4,
+          "unique_source_descriptors": 13698
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001/config_02_gather.json",
+        "pattern_words": 63846,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 7981,
+          "first_page_issue_complete_ordinal_target_upper": 855.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 13698,
+          "source_read_requests_upper": 13706
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 8,
+            "excess_c_writes": 0,
+            "focus_claims": 13706,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              856.0,
+              1788.0,
+              2629.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              855.0,
+              1787.0,
+              2628.0,
+              3426.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.880236462,
+            "same_bank_row_successors": 12061,
+            "source_read_requests": 13706,
+            "source_successor_pairs": 13702,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              851.0,
+              1767.25,
+              2594.75
+            ],
+            "mean_page_issue_complete_ordinal": [
+              880.75,
+              1819.5,
+              2665.25,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.881407916,
+            "same_bank_row_successors": 12070,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 13676,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              396.5,
+              1534.5,
+              2379.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              857.0,
+              1788.0,
+              2628.5,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 22,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 4185,
+            "same_bank_row_successor_rate": 0.694683803,
+            "same_bank_row_successors": 9513,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          }
+        },
+        "sha256": "995cd9c0e9cfc37bdde92220e832162d6a5d5dbf837060c9d3e4cf87818f65ef",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 8,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 4,
+          "unique_source_descriptors": 13698
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001/config_03_gather.json",
+        "pattern_words": 63846,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 7981,
+          "first_page_issue_complete_ordinal_target_upper": 855.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 13698,
+          "source_read_requests_upper": 13706
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 8,
+            "excess_c_writes": 0,
+            "focus_claims": 13706,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              856.0,
+              1788.0,
+              2629.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              855.0,
+              1787.0,
+              2628.0,
+              3426.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.880236462,
+            "same_bank_row_successors": 12061,
+            "source_read_requests": 13706,
+            "source_successor_pairs": 13702,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              851.0,
+              1767.25,
+              2594.75
+            ],
+            "mean_page_issue_complete_ordinal": [
+              880.75,
+              1819.5,
+              2665.25,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.881407916,
+            "same_bank_row_successors": 12070,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 13676,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              396.5,
+              1534.5,
+              2379.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              857.0,
+              1788.0,
+              2628.5,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 22,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 4185,
+            "same_bank_row_successor_rate": 0.694683803,
+            "same_bank_row_successors": 9513,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          }
+        },
+        "sha256": "5050da44959941078daa859c13420a7e83a9e0e5be2452f506e5f6fd64153cf2",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 4,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 12297
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001/config_04_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 1441.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 12297,
+          "source_read_requests_upper": 12301
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 4,
+            "excess_c_writes": 0,
+            "focus_claims": 12301,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1442.0,
+              3029.0,
+              4774.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1441.0,
+              3028.0,
+              4773.5,
+              6150.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.868281974,
+            "same_bank_row_successors": 10679,
+            "source_read_requests": 12301,
+            "source_successor_pairs": 12299,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1425.0,
+              3017.5,
+              4762.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1469.0,
+              3042.0,
+              4817.5,
+              6148.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.869133794,
+            "same_bank_row_successors": 10686,
+            "source_read_requests": 12297,
+            "source_successor_pairs": 12295,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.000250564,
+            "c_writes": 3992,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 1,
+            "focus_claims": 12292,
+            "full_c_writes": 3989,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1002.0,
+              2187.5,
+              4462.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1441.5,
+              3028.0,
+              4772.5,
+              6148.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 5,
+            "page_c_writes": [
+              1024,
+              1024,
+              1025,
+              919
+            ],
+            "partial_c_writes": 3,
+            "row_bursts": 3869,
+            "same_bank_row_successor_rate": 0.685481903,
+            "same_bank_row_successors": 8428,
+            "source_read_requests": 12297,
+            "source_successor_pairs": 12295,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          }
+        },
+        "sha256": "fadee14ce0da8334af2a3bf7d5416fc96bf5d1b5051aa3ed0bce445d71488488",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 4,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 12297
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.fp/config_00_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 1441.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 12297,
+          "source_read_requests_upper": 12301
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 4,
+            "excess_c_writes": 0,
+            "focus_claims": 12301,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1442.0,
+              3029.0,
+              4774.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1441.0,
+              3028.0,
+              4773.5,
+              6150.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.868281974,
+            "same_bank_row_successors": 10679,
+            "source_read_requests": 12301,
+            "source_successor_pairs": 12299,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1425.0,
+              3017.5,
+              4762.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1469.0,
+              3042.0,
+              4817.5,
+              6148.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.869133794,
+            "same_bank_row_successors": 10686,
+            "source_read_requests": 12297,
+            "source_successor_pairs": 12295,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.000250564,
+            "c_writes": 3992,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 1,
+            "focus_claims": 12292,
+            "full_c_writes": 3989,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1002.0,
+              2187.5,
+              4462.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1441.5,
+              3028.0,
+              4772.5,
+              6148.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 5,
+            "page_c_writes": [
+              1024,
+              1024,
+              1025,
+              919
+            ],
+            "partial_c_writes": 3,
+            "row_bursts": 3869,
+            "same_bank_row_successor_rate": 0.685481903,
+            "same_bank_row_successors": 8428,
+            "source_read_requests": 12297,
+            "source_successor_pairs": 12295,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          }
+        },
+        "sha256": "c5bad529c2dd45d23cee0bc10cfe5d109f2a971db1ade90a091a67dff641fe8c",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 280,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 12559
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.fp/config_01_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 1509.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 12559,
+          "source_read_requests_upper": 12839
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 280,
+            "excess_c_writes": 0,
+            "focus_claims": 12839,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1510.0,
+              3210.5,
+              5074.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1509.0,
+              3209.5,
+              5073.5,
+              6419.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.872010594,
+            "same_bank_row_successors": 11194,
+            "source_read_requests": 12839,
+            "source_successor_pairs": 12837,
+            "unique_bank_rows": 1624,
+            "unique_source_lines": 12559
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1404.5,
+              3036.0,
+              4917.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1521.0,
+              3183.5,
+              4968.5,
+              6279.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.87082902,
+            "same_bank_row_successors": 10935,
+            "source_read_requests": 12559,
+            "source_successor_pairs": 12557,
+            "unique_bank_rows": 1624,
+            "unique_source_lines": 12559
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.027562015,
+            "c_writes": 4101,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 110,
+            "focus_claims": 12549,
+            "full_c_writes": 3880,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              401.5,
+              2122.5,
+              4040.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1511.0,
+              3147.5,
+              4951.5,
+              6279.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 10,
+            "page_c_writes": [
+              1041,
+              1075,
+              1045,
+              940
+            ],
+            "partial_c_writes": 221,
+            "row_bursts": 3933,
+            "same_bank_row_successor_rate": 0.686947519,
+            "same_bank_row_successors": 8626,
+            "source_read_requests": 12559,
+            "source_successor_pairs": 12557,
+            "unique_bank_rows": 1624,
+            "unique_source_lines": 12559
+          }
+        },
+        "sha256": "4863bc4ad276c6a7f3021fbd002bcc37d8c7c60b91502d2fd125d63269dfd11f",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 5,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 7312
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.fp/config_02_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 801.5,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 7312,
+          "source_read_requests_upper": 7317
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 5,
+            "excess_c_writes": 0,
+            "focus_claims": 7317,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              802.5,
+              1763.5,
+              2894.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              801.5,
+              1762.5,
+              2893.5,
+              3658.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.883937116,
+            "same_bank_row_successors": 6466,
+            "source_read_requests": 7317,
+            "source_successor_pairs": 7315,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              788.0,
+              1751.0,
+              2873.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              824.0,
+              1779.5,
+              2925.5,
+              3656.0
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.885088919,
+            "same_bank_row_successors": 6470,
+            "source_read_requests": 7312,
+            "source_successor_pairs": 7310,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.000501128,
+            "c_writes": 3993,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 2,
+            "focus_claims": 7302,
+            "full_c_writes": 3988,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              552.0,
+              1409.5,
+              2582.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              803.0,
+              1763.0,
+              2893.5,
+              3656.0
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 10,
+            "page_c_writes": [
+              1024,
+              1025,
+              1025,
+              919
+            ],
+            "partial_c_writes": 5,
+            "row_bursts": 2201,
+            "same_bank_row_successor_rate": 0.699316005,
+            "same_bank_row_successors": 5112,
+            "source_read_requests": 7312,
+            "source_successor_pairs": 7310,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          }
+        },
+        "sha256": "549f83b4d28063b6240b4e6c1d424ee115142231017f304c26defa40d04ad471",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 5,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 7312
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.fp/config_03_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 801.5,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 7312,
+          "source_read_requests_upper": 7317
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 5,
+            "excess_c_writes": 0,
+            "focus_claims": 7317,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              802.5,
+              1763.5,
+              2894.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              801.5,
+              1762.5,
+              2893.5,
+              3658.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.883937116,
+            "same_bank_row_successors": 6466,
+            "source_read_requests": 7317,
+            "source_successor_pairs": 7315,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              788.0,
+              1751.0,
+              2873.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              824.0,
+              1779.5,
+              2925.5,
+              3656.0
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.885088919,
+            "same_bank_row_successors": 6470,
+            "source_read_requests": 7312,
+            "source_successor_pairs": 7310,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.000501128,
+            "c_writes": 3993,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 2,
+            "focus_claims": 7302,
+            "full_c_writes": 3988,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              552.0,
+              1409.5,
+              2582.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              803.0,
+              1763.0,
+              2893.5,
+              3656.0
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 10,
+            "page_c_writes": [
+              1024,
+              1025,
+              1025,
+              919
+            ],
+            "partial_c_writes": 5,
+            "row_bursts": 2201,
+            "same_bank_row_successor_rate": 0.699316005,
+            "same_bank_row_successors": 5112,
+            "source_read_requests": 7312,
+            "source_successor_pairs": 7310,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          }
+        },
+        "sha256": "c7f8a957edf689cf92b9bcf14707f8f0ddacbaba6d6242557582a5204f5e274a",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 538,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 3,
+          "threshold_fraction": "1/16",
+          "total_tiles": 4,
+          "unique_source_descriptors": 7415
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.nonfp/config_00_gather.json",
+        "pattern_words": 63846,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 8053,
+          "first_page_issue_complete_ordinal_target_upper": 488.25,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 7415,
+          "source_read_requests_upper": 7953
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.009021426,
+            "c_writes": 8053,
+            "duplicate_source_reads": 538,
+            "excess_c_writes": 72,
+            "focus_claims": 7953,
+            "full_c_writes": 7908,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              489.25,
+              1026.5,
+              1490.25
+            ],
+            "mean_page_issue_complete_ordinal": [
+              488.25,
+              1025.5,
+              1489.25,
+              1988.25
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2117,
+              1840
+            ],
+            "partial_c_writes": 145,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.889797459,
+            "same_bank_row_successors": 7073,
+            "source_read_requests": 7953,
+            "source_successor_pairs": 7949,
+            "unique_bank_rows": 850,
+            "unique_source_lines": 7415
+          },
+          "full_row": {
+            "c_write_amplification": 1.052374389,
+            "c_writes": 8399,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 418,
+            "focus_claims": 0,
+            "full_c_writes": 7591,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              455.25,
+              940.0,
+              1322.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              500.25,
+              1020.75,
+              1478.25,
+              1853.75
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2340,
+              1963
+            ],
+            "partial_c_writes": 808,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.885845365,
+            "same_bank_row_successors": 6565,
+            "source_read_requests": 7415,
+            "source_successor_pairs": 7411,
+            "unique_bank_rows": 850,
+            "unique_source_lines": 7415
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.088710688,
+            "c_writes": 8689,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 708,
+            "focus_claims": 7398,
+            "full_c_writes": 7284,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              179.5,
+              756.0,
+              1148.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              489.5,
+              996.25,
+              1432.5,
+              1853.75
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 17,
+            "page_c_writes": [
+              2240,
+              2259,
+              2173,
+              2017
+            ],
+            "partial_c_writes": 1405,
+            "row_bursts": 2234,
+            "same_bank_row_successor_rate": 0.699635677,
+            "same_bank_row_successors": 5185,
+            "source_read_requests": 7415,
+            "source_successor_pairs": 7411,
+            "unique_bank_rows": 850,
+            "unique_source_lines": 7415
+          }
+        },
+        "sha256": "82eb717150a0a321554788dac62bcf53b5460f87af1729dc3b72d22f61c8f2d5",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 8,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 4,
+          "unique_source_descriptors": 13698
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.nonfp/config_01_gather.json",
+        "pattern_words": 63846,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 7981,
+          "first_page_issue_complete_ordinal_target_upper": 855.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 13698,
+          "source_read_requests_upper": 13706
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 8,
+            "excess_c_writes": 0,
+            "focus_claims": 13706,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              856.0,
+              1788.0,
+              2629.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              855.0,
+              1787.0,
+              2628.0,
+              3426.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.880236462,
+            "same_bank_row_successors": 12061,
+            "source_read_requests": 13706,
+            "source_successor_pairs": 13702,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              851.0,
+              1767.25,
+              2594.75
+            ],
+            "mean_page_issue_complete_ordinal": [
+              880.75,
+              1819.5,
+              2665.25,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.881407916,
+            "same_bank_row_successors": 12070,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 13676,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              396.5,
+              1534.5,
+              2379.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              857.0,
+              1788.0,
+              2628.5,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 22,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 4185,
+            "same_bank_row_successor_rate": 0.694683803,
+            "same_bank_row_successors": 9513,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          }
+        },
+        "sha256": "e68891544be79a293fe9c35f5209209e1e3d38cefc9403613f06a83f6e3c19a9",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 8,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 4,
+          "unique_source_descriptors": 13698
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.nonfp/config_02_gather.json",
+        "pattern_words": 63846,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 7981,
+          "first_page_issue_complete_ordinal_target_upper": 855.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 13698,
+          "source_read_requests_upper": 13706
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 8,
+            "excess_c_writes": 0,
+            "focus_claims": 13706,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              856.0,
+              1788.0,
+              2629.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              855.0,
+              1787.0,
+              2628.0,
+              3426.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.880236462,
+            "same_bank_row_successors": 12061,
+            "source_read_requests": 13706,
+            "source_successor_pairs": 13702,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              851.0,
+              1767.25,
+              2594.75
+            ],
+            "mean_page_issue_complete_ordinal": [
+              880.75,
+              1819.5,
+              2665.25,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.881407916,
+            "same_bank_row_successors": 12070,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.0,
+            "c_writes": 7981,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 13676,
+            "full_c_writes": 7980,
+            "logical_tiles": 4,
+            "logical_words": 63846,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              396.5,
+              1534.5,
+              2379.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              857.0,
+              1788.0,
+              2628.5,
+              3424.5
+            ],
+            "minimum_c_writes": 7981,
+            "nonfocus_row_bonus_claims": 22,
+            "page_c_writes": [
+              2048,
+              2048,
+              2048,
+              1837
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 4185,
+            "same_bank_row_successor_rate": 0.694683803,
+            "same_bank_row_successors": 9513,
+            "source_read_requests": 13698,
+            "source_successor_pairs": 13694,
+            "unique_bank_rows": 1628,
+            "unique_source_lines": 13698
+          }
+        },
+        "sha256": "dc2a28bfc7be88c1a99c98d8e3548d76bc569bc339abfb54831f71d43c0551e5",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 4,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 12297
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.nonfp/config_03_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 1441.0,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 12297,
+          "source_read_requests_upper": 12301
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 4,
+            "excess_c_writes": 0,
+            "focus_claims": 12301,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1442.0,
+              3029.0,
+              4774.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1441.0,
+              3028.0,
+              4773.5,
+              6150.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.868281974,
+            "same_bank_row_successors": 10679,
+            "source_read_requests": 12301,
+            "source_successor_pairs": 12299,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1425.0,
+              3017.5,
+              4762.0
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1469.0,
+              3042.0,
+              4817.5,
+              6148.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.869133794,
+            "same_bank_row_successors": 10686,
+            "source_read_requests": 12297,
+            "source_successor_pairs": 12295,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.000250564,
+            "c_writes": 3992,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 1,
+            "focus_claims": 12292,
+            "full_c_writes": 3989,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              1002.0,
+              2187.5,
+              4462.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              1441.5,
+              3028.0,
+              4772.5,
+              6148.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 5,
+            "page_c_writes": [
+              1024,
+              1024,
+              1025,
+              919
+            ],
+            "partial_c_writes": 3,
+            "row_bursts": 3869,
+            "same_bank_row_successor_rate": 0.685481903,
+            "same_bank_row_successors": 8428,
+            "source_read_requests": 12297,
+            "source_successor_pairs": 12295,
+            "unique_bank_rows": 1611,
+            "unique_source_lines": 12297
+          }
+        },
+        "sha256": "b16c0f8aba0bf377d429c054b426683220c9d012817d605b36b901a04a4931ed",
+        "source_line_phase": 0
+      },
+      {
+        "mode_gate": {
+          "cross_page_refetch_requests": 5,
+          "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+          "selected_tiles": 0,
+          "threshold_fraction": "1/16",
+          "total_tiles": 2,
+          "unique_source_descriptors": 7312
+        },
+        "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag/static_2d/001.nonfp/config_04_gather.json",
+        "pattern_words": 31923,
+        "pfcc64_conservative_proxy_bounds": {
+          "c_writes_target_upper": 3991,
+          "first_page_issue_complete_ordinal_target_upper": 801.5,
+          "qualification": "mechanism bounds, not a response-order or latency replay",
+          "source_read_requests_lower": 7312,
+          "source_read_requests_upper": 7317
+        },
+        "policies": {
+          "bounded4": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 5,
+            "excess_c_writes": 0,
+            "focus_claims": 7317,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              802.5,
+              1763.5,
+              2894.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              801.5,
+              1762.5,
+              2893.5,
+              3658.5
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.883937116,
+            "same_bank_row_successors": 6466,
+            "source_read_requests": 7317,
+            "source_successor_pairs": 7315,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          },
+          "full_row": {
+            "c_write_amplification": 1.0,
+            "c_writes": 3991,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 0,
+            "focus_claims": 0,
+            "full_c_writes": 3990,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              788.0,
+              1751.0,
+              2873.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              824.0,
+              1779.5,
+              2925.5,
+              3656.0
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 0,
+            "page_c_writes": [
+              1024,
+              1024,
+              1024,
+              919
+            ],
+            "partial_c_writes": 1,
+            "row_bursts": 0,
+            "same_bank_row_successor_rate": 0.885088919,
+            "same_bank_row_successors": 6470,
+            "source_read_requests": 7312,
+            "source_successor_pairs": 7310,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          },
+          "page_focus_r1": {
+            "c_write_amplification": 1.000501128,
+            "c_writes": 3993,
+            "duplicate_source_reads": 0,
+            "excess_c_writes": 2,
+            "focus_claims": 7302,
+            "full_c_writes": 3988,
+            "logical_tiles": 2,
+            "logical_words": 31923,
+            "mean_page_first_source_claim_ordinal": [
+              1.0,
+              552.0,
+              1409.5,
+              2582.5
+            ],
+            "mean_page_issue_complete_ordinal": [
+              803.0,
+              1763.0,
+              2893.5,
+              3656.0
+            ],
+            "minimum_c_writes": 3991,
+            "nonfocus_row_bonus_claims": 10,
+            "page_c_writes": [
+              1024,
+              1025,
+              1025,
+              919
+            ],
+            "partial_c_writes": 5,
+            "row_bursts": 2201,
+            "same_bank_row_successor_rate": 0.699316005,
+            "same_bank_row_successors": 5112,
+            "source_read_requests": 7312,
+            "source_successor_pairs": 7310,
+            "unique_bank_rows": 842,
+            "unique_source_lines": 7312
+          }
+        },
+        "sha256": "5938c8bea649b29380e9f19b2fc70002d91ebcc72d9348dc3e9d8c7fc5cece17",
+        "source_line_phase": 0
+      }
+    ],
+    "source_line_phase_limitation": "A base address was not archived in the FLAG digest; phase zero is a declared row-boundary proxy"
+  },
+  "model_scope": {
+    "claim": "ordering_and_combiner_proxy_only",
+    "retirement_writes": "assumed_immediately_accepted",
+    "source_responses": "assumed_in_issue_order",
+    "timing_prediction": false
+  },
+  "pfcc64_state_lower_bound": {
+    "carry_line_metadata_bytes": 240,
+    "carry_offset_token_bytes": 960,
+    "carry_payload_bytes": 4096,
+    "descriptor_page_mask_bytes": 8192,
+    "focus_control_bytes": 1,
+    "incremental_pfcc64_bytes": 204049,
+    "mode_gate_counter_bytes": 4,
+    "page_remaining_counter_bytes": 8,
+    "page_subchain_pointer_delta_bytes": 184320,
+    "row_page_descriptor_counter_bytes": 4096,
+    "slice_control_bytes": 84,
+    "tentative_offset_bitmap_bytes": 2048
+  },
+  "policy_state_lower_bound": {
+    "descriptor_page_mask_bytes": 8192,
+    "focus_control_bytes": 1,
+    "incremental_policy_bytes": 12365,
+    "page_remaining_counter_bytes": 8,
+    "row_page_descriptor_counter_bytes": 4096,
+    "slice_control_bytes": 68
+  },
+  "schema": "dx100-dual-locality-replay-v1",
+  "xrage": {
+    "mode_gate": {
+      "cross_page_refetch_requests": 23142,
+      "rule": "select_pfcc64_when_16x_cross_page_refetch_ge_unique",
+      "selected_tiles": 71,
+      "threshold_fraction": "1/16",
+      "total_tiles": 128,
+      "unique_source_descriptors": 299046
+    },
+    "path": "/data1/nier/DX100/experiments/inputs/xrage_gather0_full.json",
+    "pattern_words": 2097152,
+    "pfcc64_conservative_proxy_bounds": {
+      "c_writes_target_upper": 262762,
+      "first_page_issue_complete_ordinal_target_upper": 633.844,
+      "qualification": "mechanism bounds, not a response-order or latency replay",
+      "source_read_requests_lower": 299046,
+      "source_read_requests_upper": 322188
+    },
+    "policies": {
+      "bounded4": {
+        "c_write_amplification": 1.002357483,
+        "c_writes": 262762,
+        "duplicate_source_reads": 23142,
+        "excess_c_writes": 618,
+        "focus_claims": 322188,
+        "full_c_writes": 261527,
+        "logical_tiles": 128,
+        "logical_words": 2097152,
+        "mean_page_first_source_claim_ordinal": [
+          1.0,
+          634.844,
+          1264.5,
+          1890.352
+        ],
+        "mean_page_issue_complete_ordinal": [
+          633.844,
+          1263.5,
+          1889.352,
+          2517.094
+        ],
+        "minimum_c_writes": 262144,
+        "nonfocus_row_bonus_claims": 0,
+        "page_c_writes": [
+          65624,
+          65611,
+          65624,
+          65903
+        ],
+        "partial_c_writes": 1235,
+        "row_bursts": 0,
+        "same_bank_row_successor_rate": 0.97981432,
+        "same_bank_row_successors": 315559,
+        "source_read_requests": 322188,
+        "source_successor_pairs": 322060,
+        "unique_bank_rows": 4059,
+        "unique_source_lines": 299046
+      },
+      "full_row": {
+        "c_write_amplification": 1.034626007,
+        "c_writes": 271221,
+        "duplicate_source_reads": 0,
+        "excess_c_writes": 9077,
+        "focus_claims": 0,
+        "full_c_writes": 253296,
+        "logical_tiles": 128,
+        "logical_words": 2097152,
+        "mean_page_first_source_claim_ordinal": [
+          1.0,
+          370.383,
+          611.477,
+          758.234
+        ],
+        "mean_page_issue_complete_ordinal": [
+          989.93,
+          1556.383,
+          2058.227,
+          2334.531
+        ],
+        "minimum_c_writes": 262144,
+        "nonfocus_row_bonus_claims": 0,
+        "page_c_writes": [
+          67247,
+          67605,
+          67938,
+          68431
+        ],
+        "partial_c_writes": 17925,
+        "row_bursts": 0,
+        "same_bank_row_successor_rate": 0.986849236,
+        "same_bank_row_successors": 294987,
+        "source_read_requests": 299046,
+        "source_successor_pairs": 298918,
+        "unique_bank_rows": 4059,
+        "unique_source_lines": 299046
+      },
+      "page_focus_r1": {
+        "c_write_amplification": 1.03068161,
+        "c_writes": 270187,
+        "duplicate_source_reads": 0,
+        "excess_c_writes": 8043,
+        "focus_claims": 297193,
+        "full_c_writes": 254137,
+        "logical_tiles": 128,
+        "logical_words": 2097152,
+        "mean_page_first_source_claim_ordinal": [
+          1.0,
+          50.797,
+          427.117,
+          622.461
+        ],
+        "mean_page_issue_complete_ordinal": [
+          639.523,
+          1220.555,
+          1789.133,
+          2336.297
+        ],
+        "minimum_c_writes": 262144,
+        "nonfocus_row_bonus_claims": 1853,
+        "page_c_writes": [
+          66578,
+          67528,
+          68082,
+          67999
+        ],
+        "partial_c_writes": 16050,
+        "row_bursts": 76861,
+        "same_bank_row_successor_rate": 0.743561779,
+        "same_bank_row_successors": 222264,
+        "source_read_requests": 299046,
+        "source_successor_pairs": 298918,
+        "unique_bank_rows": 4059,
+        "unique_source_lines": 299046
+      }
+    },
+    "sha256": "1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde",
+    "source_line_phase": 3585
+  }
+}
