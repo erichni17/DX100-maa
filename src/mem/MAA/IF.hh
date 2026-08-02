@@ -168,6 +168,10 @@ public:
     TileStatus dst1Status, dst2Status;
     int16_t condSpdID;
     TileStatus condStatus;
+    // Software-visible logical descriptor IDs.  Generation and controller
+    // lifecycle fields remain inert until the logical controller is wired.
+    int16_t src1LogicalID, src2LogicalID, dst1LogicalID;
+    uint64_t src1LogicalGeneration, dst1LogicalGeneration;
     // {STREAM_LD, INDIR_LD, INDIR_ST, INDIR_RMW, RANGE_LOOP, CONDITION}
     OpcodeType opcode;
     // {ADD, SUB, MUL, DIV, MIN, MAX, GT, GTE, LT, LTE, EQ}
@@ -192,7 +196,17 @@ public:
     int func_unit_id;
     bool controllerManaged;
     TransparentSPDController::Action controllerAction;
+    uint64_t controllerTransactionID;
+    int16_t controllerSrcSlot, controllerDstSlot;
     int controllerPage;
+    bool hasLogicalOperands() const {
+        return src1LogicalID != -1 || src2LogicalID != -1 ||
+               dst1LogicalID != -1;
+    }
+    bool isLogicalALUScalar() const {
+        return opcode == OpcodeType::ALU_SCALAR && src1LogicalID != -1 &&
+               src2LogicalID == -1 && dst1LogicalID != -1;
+    }
 };
 
 class IF {

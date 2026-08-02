@@ -1,7 +1,10 @@
 #pragma once
-#include "MAA.hpp"
-#include <gem5/m5ops.h>
 #include <atomic>
+
+#include <gem5/m5ops.h>
+#include <gem5/maa_logical_spd_cache_abi.hh>
+
+#include "MAA.hpp"
 
 /*******************************************************************************/
 /*******************************************************************************/
@@ -32,6 +35,9 @@
 #define SPD_DATA_SIZE (NUM_TILES * TILE_SIZE * sizeof(uint32_t)) // 128KB = 32 tiles x 1K elements x 4B each element (uint32_t, int32_t, float)
 #define SPD_SIZE_SIZE (NUM_TILES * sizeof(uint16_t))             // 64B = 32 tiles x 2B each tile (uint16_t)
 #define MAX_VIRTUAL_PAGES 16
+#define LOGICAL_DESCRIPTOR_COUNT \
+    gem5::maa::LogicalSPDCacheABI::LogicalDescriptorCount
+#define LOGICAL_PAGES_PER_DESCRIPTOR 4
 #define SPD_READY_SIZE (NUM_TILES * sizeof(uint16_t))
 #define VIRTUAL_PAGE_READY_SIZE \
     (NUM_TILES * MAX_VIRTUAL_PAGES * sizeof(uint16_t))
@@ -138,6 +144,18 @@ void wait_virtual_page(int completion_tile, int page) {
         VIRTUAL_PAGE_READY_noncacheable[ready_id];
     __asm__ __volatile__("mfence;");
 }
+void maa_wait_logical_page(int logical_id, int page) {
+    assert(logical_id >= 0 && logical_id < LOGICAL_DESCRIPTOR_COUNT);
+    assert(page >= 0 && page < LOGICAL_PAGES_PER_DESCRIPTOR);
+    const int ready_id = logical_id * MAX_VIRTUAL_PAGES + page;
+    volatile uint16_t ready __attribute__((unused)) =
+        VIRTUAL_PAGE_READY_noncacheable[ready_id];
+    __asm__ __volatile__("mfence;");
+}
+void maa_wait_logical_tile(int logical_id) {
+    for (int page = 0; page < LOGICAL_PAGES_PER_DESCRIPTOR; ++page)
+        maa_wait_logical_page(logical_id, page);
+}
 inline volatile uint16_t get_tile_size(int SPD_id) {
     volatile uint16_t sz = SPD_size_noncacheable[SPD_id];
     __asm__ __volatile__("mfence;");
@@ -227,6 +245,43 @@ inline void maa_alu_scalar(int src1_tile, int src2_reg, int dst_tile, Operation_
                                                             ((uint64_t)NA_UINT8 << 8) |                         // rsrc3
                                                             (uint64_t)(cond_tile == -1 ? NA_UINT8 : cond_tile); // cond
     *INSTR_baseaddr = NA_UINT64;                                                                                // baseaddr
+    __asm__ __volatile__("mfence;");
+}
+/**
+ * Encode the controller-owned logical form of ordinary ALU_SCALAR.  It does
+ * not name a physical SPD tile: source and destination descriptor IDs occupy
+ * word zero's high bytes, word two is the no-address sentinel, and word three
+ * carries the destination backing address.  The simulator decodes and
+ * validates this ABI but deliberately rejects admission until the logical
+ * controller is connected in a later patch.
+ */
+template <class T1>
+inline void maa_alu_scalar_logical(int src_logical, int dst_logical,
+                                   T1 *destination_backing, int scalar_reg,
+                                   Operation_t op) {
+    assert(src_logical >= 0 && src_logical < LOGICAL_DESCRIPTOR_COUNT);
+    assert(dst_logical >= 0 && dst_logical < LOGICAL_DESCRIPTOR_COUNT);
+    assert(src_logical != dst_logical);
+    assert(scalar_reg >= 0 && scalar_reg < NUM_SCALAR_REGS);
+    const DataType data_type = get_data_type<T1>();
+    assert(data_type != DataType::MAX);
+    assert(static_cast<uint8_t>(op) <
+           gem5::maa::LogicalSPDCacheABI::ScalarOperationCount);
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        gem5::maa::LogicalSPDCacheABI::encodeLogicalALUScalarHeader(
+            static_cast<uint8_t>(src_logical),
+            static_cast<uint8_t>(dst_logical),
+            static_cast<uint8_t>(data_type), static_cast<uint8_t>(op));
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)scalar_reg << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = NA_UINT64;
+    *INSTR_backingaddr = (uint64_t)destination_backing;
     __asm__ __volatile__("mfence;");
 }
 template <class T1>
