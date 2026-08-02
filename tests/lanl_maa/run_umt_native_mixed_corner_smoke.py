@@ -367,7 +367,7 @@ def build_program(root, record, cpu_baseline):
     return source, binary
 
 
-def validate(stats, record, cpu_baseline):
+def validate(stats, record, cpu_baseline, payload_model):
     groups = record["groups"]
     if cpu_baseline:
         for name in (
@@ -400,6 +400,13 @@ def validate(stats, record, cpu_baseline):
         "descriptorUmtSidecarReads": 2 * groups,
         "verificationFailures": 0,
     }
+    if payload_model:
+        expected.update(
+            {
+                "payloadOverlayCompletionWrites": groups,
+                "payloadOverlayRetirementReads": groups,
+            }
+        )
     for name, value in expected.items():
         if stats.get(name) != value:
             raise RuntimeError(
@@ -420,6 +427,8 @@ def run(args, root):
     if args.require_clean_simulator and not clean:
         raise RuntimeError("mixed UMT evidence requires a clean simulator")
     record = parse_record(args.record.resolve())
+    if args.cpu_baseline and args.model_payload_overlay_ports:
+        raise RuntimeError("scalar arm cannot model accelerator payload ports")
     source, binary = build_program(root, record, args.cpu_baseline)
     record_bytes = b"".join(
         struct.pack("<Q", word) for word in record["records"]
@@ -442,6 +451,7 @@ def run(args, root):
         "incident_mask": record["incident_mask"],
         "cpu_baseline": args.cpu_baseline,
         "l1_caches": args.l1_caches,
+        "model_payload_overlay_ports": args.model_payload_overlay_ports,
         "simulator_commit": commit,
         "simulator_worktree_clean": clean,
         "gem5_sha256": support.file_sha256(args.gem5.resolve()),
@@ -462,6 +472,8 @@ def run(args, root):
     ]
     if args.l1_caches:
         command.append("--l1-caches")
+    if args.model_payload_overlay_ports:
+        command.append("--model-payload-overlay-ports")
     report = {
         **metadata,
         "schema": "lanl-maa-umt-native-mixed-corner-report-v1",
@@ -487,7 +499,12 @@ def run(args, root):
             raise RuntimeError("gem5 native UMT mixed corner failed")
         stats_path = outdir / "stats.txt"
         stats = support.read_stats(stats_path)
-        validate(stats, record, args.cpu_baseline)
+        validate(
+            stats,
+            record,
+            args.cpu_baseline,
+            args.model_payload_overlay_ports,
+        )
         names = (
             "logicalItems",
             "logicalMemoryAccesses",
@@ -539,6 +556,7 @@ def main():
     parser.add_argument("--record", required=True, type=pathlib.Path)
     parser.add_argument("--cpu-baseline", action="store_true")
     parser.add_argument("--l1-caches", action="store_true")
+    parser.add_argument("--model-payload-overlay-ports", action="store_true")
     parser.add_argument("--require-clean-simulator", action="store_true")
     parser.add_argument(
         "--config",
