@@ -91,6 +91,14 @@ native_direct_16k)
     direct=1
     reload_only=0
     ;;
+native_direct_4k)
+    mode=native_direct
+    page=4096
+    physical=4096
+    virtual=0
+    direct=1
+    reload_only=0
+    ;;
 paged_16k)
     mode=paged
     page=16384
