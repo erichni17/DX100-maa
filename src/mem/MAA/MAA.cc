@@ -146,7 +146,7 @@ MAA::MAA(const MAAParams &p)
     virtualPageWordSize.assign(num_tiles, 0);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
-    spd = new SPD(this, num_tiles, num_tile_elements,
+    spd = new SPD(this, num_tiles, num_maas, num_tile_elements,
                   physical_tile_elements, p.spd_read_latency,
                   p.spd_write_latency,
                   p.num_spd_read_ports_per_maa * num_maas,
