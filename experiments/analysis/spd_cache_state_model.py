@@ -46,8 +46,8 @@ class Token:
 class Tile:
     allocated: bool = False
     generation: int = 0
-    backing_acked: bool = False
-    ready: bool = False
+    backing_acked: tuple[bool, bool] = (False, False)
+    ready: tuple[bool, bool] = (False, False)
 
 
 @dataclass(frozen=True)
@@ -110,30 +110,43 @@ def allocate(state: State, tile: int) -> State:
 
 
 def backing_ack(state: State, token: Token) -> State:
-    """Accept a backing acknowledgement only for the live descriptor epoch."""
+    """Accept an ACK only for the live descriptor and named backing page."""
     _require_tile_page(token.tile, token.page)
     tile = state.tiles[token.tile]
     if not tile.allocated or tile.generation != token.generation:
         return state  # late acknowledgement is deliberately harmless
-    return _replace_tile(state, token.tile, replace(tile, backing_acked=True))
+    acknowledgements = list(tile.backing_acked)
+    acknowledgements[token.page] = True
+    return _replace_tile(
+        state, token.tile, replace(tile, backing_acked=tuple(acknowledgements))
+    )
 
 
-def backing_ready(state: State, tile: int) -> State:
-    _require_tile_page(tile, 0)
-    descriptor = state.tiles[tile]
-    if not descriptor.allocated or not descriptor.backing_acked:
+def backing_ready(state: State, token: Token) -> State:
+    """Publish readiness for one acknowledged backing page token."""
+    _require_tile_page(token.tile, token.page)
+    descriptor = state.tiles[token.tile]
+    if not descriptor.allocated or descriptor.generation != token.generation:
+        return (
+            state  # a stale ready event cannot authorize a reused descriptor
+        )
+    if not descriptor.backing_acked[token.page]:
         raise PreconditionsError(
             "backing readiness requires an acknowledgement"
         )
-    return _replace_tile(state, tile, replace(descriptor, ready=True))
+    readiness = list(descriptor.ready)
+    readiness[token.page] = True
+    return _replace_tile(
+        state, token.tile, replace(descriptor, ready=tuple(readiness))
+    )
 
 
 def miss(state: State, tile: int, page: int) -> State:
     _require_tile_page(tile, page)
     token = current_token(state, tile, page)
-    if not state.tiles[tile].ready:
+    if not state.tiles[tile].ready[page]:
         raise PreconditionsError(
-            "a descriptor cannot miss before backing-ready"
+            "a page cannot miss before its backing-ready event"
         )
     if state.slot.token == token or token in state.miss_queue:
         raise PreconditionsError(
@@ -161,7 +174,7 @@ def fill_response(state: State, token: Token) -> State:
     if (
         descriptor.allocated
         and descriptor.generation == token.generation
-        and descriptor.ready
+        and descriptor.ready[token.page]
     ):
         return replace(state, slot=Slot(phase=CLEAN, token=token))
     # The response completed an obsolete transfer, so it may release the slot
@@ -248,7 +261,9 @@ def assert_invariants(before: State, after: State, action: str) -> None:
         assert after.slot.phase == EMPTY and after.slot.pins == 0
     assert after.slot.pins == 0 or after.slot.phase in (CLEAN, DIRTY)
     for tile in after.tiles:
-        assert not tile.ready or tile.backing_acked  # ready only after ACK
+        for page in range(PAGES_PER_TILE):
+            # Each page, rather than the entire descriptor, is ACK-gated.
+            assert not tile.ready[page] or tile.backing_acked[page]
     # A dirty resident cannot vanish; it must first become a tagged writeback.
     if before.slot.phase == DIRTY and after.slot.phase != DIRTY:
         assert action in ("evict", "free") and after.slot.phase == WRITEBACK
@@ -265,28 +280,32 @@ def _actions(state: State) -> list[Action]:
                 (f"allocate({tile})", lambda s, t=tile: allocate(s, t))
             )
         if descriptor.allocated:
-            token0 = Token(tile, 0, descriptor.generation)
-            if not descriptor.backing_acked:
-                actions.append(
-                    (
-                        f"backing_ack({tile})",
-                        lambda s, x=token0: backing_ack(s, x),
+            for page in range(PAGES_PER_TILE):
+                token = Token(tile, page, descriptor.generation)
+                if not descriptor.backing_acked[page]:
+                    actions.append(
+                        (
+                            f"backing_ack({tile},{page})",
+                            lambda s, x=token: backing_ack(s, x),
+                        )
                     )
-                )
-            if descriptor.backing_acked and not descriptor.ready:
-                actions.append(
-                    (
-                        f"backing_ready({tile})",
-                        lambda s, t=tile: backing_ready(s, t),
+                if (
+                    descriptor.backing_acked[page]
+                    and not descriptor.ready[page]
+                ):
+                    actions.append(
+                        (
+                            f"backing_ready({tile},{page})",
+                            lambda s, x=token: backing_ready(s, x),
+                        )
                     )
-                )
             if state.slot.pins == 0 or not (
                 state.slot.token and state.slot.token.tile == tile
             ):
                 actions.append((f"free({tile})", lambda s, t=tile: free(s, t)))
-            if descriptor.ready:
-                for page in range(PAGES_PER_TILE):
-                    token = Token(tile, page, descriptor.generation)
+            for page in range(PAGES_PER_TILE):
+                token = Token(tile, page, descriptor.generation)
+                if descriptor.ready[page]:
                     if (
                         state.slot.token != token
                         and token not in state.miss_queue
