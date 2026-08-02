@@ -37,7 +37,6 @@
 #define MAX_VIRTUAL_PAGES 16
 #define LOGICAL_DESCRIPTOR_COUNT \
     gem5::maa::LogicalSPDCacheABI::LogicalDescriptorCount
-#define LOGICAL_PAGES_PER_DESCRIPTOR 4
 #define SPD_READY_SIZE (NUM_TILES * sizeof(uint16_t))
 #define VIRTUAL_PAGE_READY_SIZE \
     (NUM_TILES * MAX_VIRTUAL_PAGES * sizeof(uint16_t))
@@ -143,18 +142,6 @@ void wait_virtual_page(int completion_tile, int page) {
     volatile uint16_t ready __attribute__((unused)) =
         VIRTUAL_PAGE_READY_noncacheable[ready_id];
     __asm__ __volatile__("mfence;");
-}
-void maa_wait_logical_page(int logical_id, int page) {
-    assert(logical_id >= 0 && logical_id < LOGICAL_DESCRIPTOR_COUNT);
-    assert(page >= 0 && page < LOGICAL_PAGES_PER_DESCRIPTOR);
-    const int ready_id = logical_id * MAX_VIRTUAL_PAGES + page;
-    volatile uint16_t ready __attribute__((unused)) =
-        VIRTUAL_PAGE_READY_noncacheable[ready_id];
-    __asm__ __volatile__("mfence;");
-}
-void maa_wait_logical_tile(int logical_id) {
-    for (int page = 0; page < LOGICAL_PAGES_PER_DESCRIPTOR; ++page)
-        maa_wait_logical_page(logical_id, page);
 }
 inline volatile uint16_t get_tile_size(int SPD_id) {
     volatile uint16_t sz = SPD_size_noncacheable[SPD_id];
@@ -262,9 +249,14 @@ inline void maa_alu_scalar_logical(int src_logical, int dst_logical,
     assert(src_logical >= 0 && src_logical < LOGICAL_DESCRIPTOR_COUNT);
     assert(dst_logical >= 0 && dst_logical < LOGICAL_DESCRIPTOR_COUNT);
     assert(src_logical != dst_logical);
-    assert(scalar_reg >= 0 && scalar_reg < NUM_SCALAR_REGS);
     const DataType data_type = get_data_type<T1>();
     assert(data_type != DataType::MAX);
+    const int scalar_register_words =
+        static_cast<int>(sizeof(T1) / sizeof(uint32_t));
+    assert(scalar_reg >= 0 && scalar_register_words <= NUM_SCALAR_REGS &&
+           scalar_reg <= NUM_SCALAR_REGS - scalar_register_words);
+    assert(destination_backing != nullptr);
+    assert(reinterpret_cast<uintptr_t>(destination_backing) % sizeof(T1) == 0);
     assert(static_cast<uint8_t>(op) <
            gem5::maa::LogicalSPDCacheABI::ScalarOperationCount);
     *INSTR_opcode_datatype_optype_tdst1_tdst2 =

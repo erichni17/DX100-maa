@@ -25,6 +25,7 @@ class LogicalSPDCacheABI
     static constexpr uint8_t ALUScalarOpcode = 8;
     static constexpr uint8_t DataTypeCount = 6;
     static constexpr uint8_t ScalarOperationCount = 16;
+    static constexpr uint32_t LogicalElements = 16384;
     static constexpr uint64_t NoAddress = ~uint64_t(0);
 
     enum class HeaderKind : uint8_t
@@ -36,10 +37,20 @@ class LogicalSPDCacheABI
 
     struct Header
     {
-        HeaderKind kind = HeaderKind::Unsupported;
-        int16_t src1LogicalID = -1;
-        int16_t src2LogicalID = -1;
-        int16_t dst1LogicalID = -1;
+        HeaderKind kind;
+        int16_t src1LogicalID;
+        int16_t src2LogicalID;
+        int16_t dst1LogicalID;
+
+        Header(HeaderKind _kind = HeaderKind::Unsupported,
+               int16_t _src1LogicalID = -1,
+               int16_t _src2LogicalID = -1,
+               int16_t _dst1LogicalID = -1)
+            : kind(_kind), src1LogicalID(_src1LogicalID),
+              src2LogicalID(_src2LogicalID),
+              dst1LogicalID(_dst1LogicalID)
+        {
+        }
     };
 
     enum class ScalarValidation : uint8_t
@@ -53,31 +64,55 @@ class LogicalSPDCacheABI
         AliasedLogicalIDs,
         MixedPhysicalOperands,
         MissingScalarRegister,
+        ScalarRegisterOutOfRange,
         ExtraRegisterOperand,
         Conditional,
         UnexpectedBaseAddress,
         MissingDestinationBacking,
+        NullDestinationBacking,
+    };
+
+    enum class DestinationValidation : uint8_t
+    {
+        Valid,
+        UnsupportedDataType,
+        MissingDestinationBacking,
+        NullDestinationBacking,
+        MisalignedDestinationBacking,
+        UnregisteredDestinationRange,
+        DestinationOutsideRange,
+        IncompleteDestinationSpan,
     };
 
     struct ScalarOperandShape
     {
-        uint8_t datatype = 0;
-        uint8_t optype = 0;
-        int16_t src1LogicalID = -1;
-        int16_t src2LogicalID = -1;
-        int16_t dst1LogicalID = -1;
-        int16_t src1SpdID = -1;
-        int16_t src2SpdID = -1;
-        int16_t dst1SpdID = -1;
-        int16_t dst2SpdID = -1;
-        int16_t src1RegID = -1;
-        int16_t src2RegID = -1;
-        int16_t src3RegID = -1;
-        int16_t dst1RegID = -1;
-        int16_t dst2RegID = -1;
-        int16_t condSpdID = -1;
-        uint64_t baseAddr = NoAddress;
-        uint64_t destinationBackingAddr = NoAddress;
+        uint8_t datatype;
+        uint8_t optype;
+        int16_t src1LogicalID;
+        int16_t src2LogicalID;
+        int16_t dst1LogicalID;
+        int16_t src1SpdID;
+        int16_t src2SpdID;
+        int16_t dst1SpdID;
+        int16_t dst2SpdID;
+        int16_t src1RegID;
+        int16_t src2RegID;
+        int16_t src3RegID;
+        int16_t dst1RegID;
+        int16_t dst2RegID;
+        int16_t condSpdID;
+        uint64_t baseAddr;
+        uint64_t destinationBackingAddr;
+
+        ScalarOperandShape()
+            : datatype(0), optype(0), src1LogicalID(-1),
+              src2LogicalID(-1), dst1LogicalID(-1), src1SpdID(-1),
+              src2SpdID(-1), dst1SpdID(-1), dst2SpdID(-1),
+              src1RegID(-1), src2RegID(-1), src3RegID(-1),
+              dst1RegID(-1), dst2RegID(-1), condSpdID(-1),
+              baseAddr(NoAddress), destinationBackingAddr(NoAddress)
+        {
+        }
     };
 
     static constexpr bool
@@ -92,7 +127,19 @@ class LogicalSPDCacheABI
      * logical scalar form uses NoOperand in the reserved logical-source-2
      * byte, which makes it disjoint from that legacy all-zero wire image.
      */
-    static constexpr Header
+    static constexpr uint8_t
+    dataTypeBytes(uint8_t datatype)
+    {
+        return datatype < 3 ? 4 : (datatype < DataTypeCount ? 8 : 0);
+    }
+
+    static constexpr uint8_t
+    scalarRegisterWords(uint8_t datatype)
+    {
+        return dataTypeBytes(datatype) / sizeof(uint32_t);
+    }
+
+    static Header
     decodeWord0(uint64_t word)
     {
         const uint8_t src1 = static_cast<uint8_t>(word >> 56);
@@ -101,15 +148,15 @@ class LogicalSPDCacheABI
         if (src1 == LegacyPhysicalHighByte &&
             src2 == LegacyPhysicalHighByte &&
             dst1 == LegacyPhysicalHighByte) {
-            return {HeaderKind::Physical, -1, -1, -1};
+            return Header(HeaderKind::Physical, -1, -1, -1);
         }
         if (src2 == NoOperand && src1 < LogicalDescriptorCount &&
             dst1 < LogicalDescriptorCount) {
-            return {HeaderKind::LogicalALUScalar,
-                    static_cast<int16_t>(src1), -1,
-                    static_cast<int16_t>(dst1)};
+            return Header(HeaderKind::LogicalALUScalar,
+                          static_cast<int16_t>(src1), -1,
+                          static_cast<int16_t>(dst1));
         }
-        return {};
+        return Header();
     }
 
     static constexpr uint64_t
@@ -126,9 +173,10 @@ class LogicalSPDCacheABI
                static_cast<uint64_t>(NoOperand);
     }
 
-    static constexpr ScalarValidation
+    static ScalarValidation
     validateLogicalALUScalar(const ScalarOperandShape &shape,
-                             uint8_t opcode)
+                             uint8_t opcode,
+                             uint32_t scalarRegisterCount)
     {
         if (opcode != ALUScalarOpcode)
             return ScalarValidation::WrongOpcode;
@@ -150,6 +198,14 @@ class LogicalSPDCacheABI
         }
         if (shape.src1RegID == -1)
             return ScalarValidation::MissingScalarRegister;
+        const uint8_t registerWords = scalarRegisterWords(shape.datatype);
+        if (shape.src1RegID < 0 || scalarRegisterCount == 0 ||
+            static_cast<uint32_t>(shape.src1RegID) >= scalarRegisterCount ||
+            registerWords >
+                scalarRegisterCount -
+                    static_cast<uint32_t>(shape.src1RegID)) {
+            return ScalarValidation::ScalarRegisterOutOfRange;
+        }
         if (shape.src2RegID != -1 || shape.src3RegID != -1 ||
             shape.dst1RegID != -1 || shape.dst2RegID != -1) {
             return ScalarValidation::ExtraRegisterOperand;
@@ -160,7 +216,40 @@ class LogicalSPDCacheABI
             return ScalarValidation::UnexpectedBaseAddress;
         if (shape.destinationBackingAddr == NoAddress)
             return ScalarValidation::MissingDestinationBacking;
+        if (shape.destinationBackingAddr == 0)
+            return ScalarValidation::NullDestinationBacking;
         return ScalarValidation::Valid;
+    }
+
+    /**
+     * Validate the complete 16K-element destination in the registered range.
+     * The range end is exclusive, matching MAA's registered address regions.
+     */
+    static DestinationValidation
+    validateDestinationSpan(uint64_t destinationBackingAddr,
+                            uint8_t datatype, uint64_t rangeBegin,
+                            uint64_t rangeEnd)
+    {
+        if (destinationBackingAddr == NoAddress)
+            return DestinationValidation::MissingDestinationBacking;
+        if (destinationBackingAddr == 0)
+            return DestinationValidation::NullDestinationBacking;
+        const uint8_t wordBytes = dataTypeBytes(datatype);
+        if (wordBytes == 0)
+            return DestinationValidation::UnsupportedDataType;
+        if (destinationBackingAddr % wordBytes != 0)
+            return DestinationValidation::MisalignedDestinationBacking;
+        if (rangeBegin >= rangeEnd)
+            return DestinationValidation::UnregisteredDestinationRange;
+        if (destinationBackingAddr < rangeBegin ||
+            destinationBackingAddr >= rangeEnd) {
+            return DestinationValidation::DestinationOutsideRange;
+        }
+        const uint64_t payloadBytes =
+            static_cast<uint64_t>(LogicalElements) * wordBytes;
+        if (payloadBytes > rangeEnd - destinationBackingAddr)
+            return DestinationValidation::IncompleteDestinationSpan;
+        return DestinationValidation::Valid;
     }
 };
 

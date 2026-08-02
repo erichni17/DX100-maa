@@ -29,6 +29,15 @@ namespace {
     } while (false)
 
 using ABI = gem5::maa::LogicalSPDCacheABI;
+const int ScalarRegisterCount = 32;
+
+ABI::ScalarValidation
+validate(const ABI::ScalarOperandShape &shape,
+         uint8_t opcode = ABI::ALUScalarOpcode)
+{
+    return ABI::validateLogicalALUScalar(
+        shape, opcode, ScalarRegisterCount);
+}
 
 ABI::ScalarOperandShape
 validShape()
@@ -112,42 +121,40 @@ void
 testLogicalScalarValidationMatrix()
 {
     const auto valid = validShape();
-    CHECK(ABI::validateLogicalALUScalar(valid, ABI::ALUScalarOpcode) ==
-          ABI::ScalarValidation::Valid);
+    CHECK(validate(valid) == ABI::ScalarValidation::Valid);
     for (uint8_t datatype = 0; datatype < ABI::DataTypeCount; ++datatype) {
         for (uint8_t optype = 0; optype < ABI::ScalarOperationCount;
              ++optype) {
             auto accepted = valid;
             accepted.datatype = datatype;
             accepted.optype = optype;
-            CHECK(ABI::validateLogicalALUScalar(
-                      accepted, ABI::ALUScalarOpcode) ==
+            CHECK(validate(accepted) ==
                   ABI::ScalarValidation::Valid);
         }
     }
 
     auto shape = valid;
-    CHECK(ABI::validateLogicalALUScalar(shape, 9) ==
+    CHECK(validate(shape, 9) ==
           ABI::ScalarValidation::WrongOpcode);
     shape = valid;
     shape.datatype = ABI::DataTypeCount;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::UnsupportedDataType);
     shape = valid;
     shape.optype = ABI::ScalarOperationCount;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::UnsupportedOperation);
     shape = valid;
     shape.src1LogicalID = 2;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::InvalidLogicalID);
     shape = valid;
     shape.src2LogicalID = 0;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::LogicalSource2Present);
     shape = valid;
     shape.dst1LogicalID = shape.src1LogicalID;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::AliasedLogicalIDs);
 
     int16_t ABI::ScalarOperandShape::*const physicalFields[] = {
@@ -159,14 +166,35 @@ testLogicalScalarValidationMatrix()
     for (const auto field : physicalFields) {
         shape = valid;
         shape.*field = 0;
-        CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+        CHECK(validate(shape) ==
               ABI::ScalarValidation::MixedPhysicalOperands);
     }
 
     shape = valid;
     shape.src1RegID = -1;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::MissingScalarRegister);
+    shape = valid;
+    shape.src1RegID = -2;
+    CHECK(validate(shape) ==
+          ABI::ScalarValidation::ScalarRegisterOutOfRange);
+    for (int16_t reg = 0; reg < ABI::NoOperand; ++reg) {
+        shape = valid;
+        shape.datatype = 2;
+        shape.src1RegID = reg;
+        CHECK(validate(shape) ==
+              (reg < ScalarRegisterCount
+                   ? ABI::ScalarValidation::Valid
+                   : ABI::ScalarValidation::ScalarRegisterOutOfRange));
+        shape.datatype = 5;
+        CHECK(validate(shape) ==
+              (reg + 1 < ScalarRegisterCount
+                   ? ABI::ScalarValidation::Valid
+                   : ABI::ScalarValidation::ScalarRegisterOutOfRange));
+    }
+    shape = valid;
+    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode, 0) ==
+          ABI::ScalarValidation::ScalarRegisterOutOfRange);
     int16_t ABI::ScalarOperandShape::*const extraRegisterFields[] = {
         &ABI::ScalarOperandShape::src2RegID,
         &ABI::ScalarOperandShape::src3RegID,
@@ -176,21 +204,74 @@ testLogicalScalarValidationMatrix()
     for (const auto field : extraRegisterFields) {
         shape = valid;
         shape.*field = 0;
-        CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+        CHECK(validate(shape) ==
               ABI::ScalarValidation::ExtraRegisterOperand);
     }
     shape = valid;
     shape.condSpdID = 0;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::Conditional);
     shape = valid;
     shape.baseAddr = 0;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::UnexpectedBaseAddress);
     shape = valid;
     shape.destinationBackingAddr = ABI::NoAddress;
-    CHECK(ABI::validateLogicalALUScalar(shape, ABI::ALUScalarOpcode) ==
+    CHECK(validate(shape) ==
           ABI::ScalarValidation::MissingDestinationBacking);
+    shape = valid;
+    shape.destinationBackingAddr = 0;
+    CHECK(validate(shape) == ABI::ScalarValidation::NullDestinationBacking);
+}
+
+void
+testDestinationBackingValidation()
+{
+    using Result = ABI::DestinationValidation;
+    const uint64_t fp32Addr = 0x1000;
+    const uint64_t fp32Bytes =
+        static_cast<uint64_t>(ABI::LogicalElements) * 4;
+    const uint64_t fp64Addr = 0x2000;
+    const uint64_t fp64Bytes =
+        static_cast<uint64_t>(ABI::LogicalElements) * 8;
+
+    CHECK(ABI::dataTypeBytes(2) == 4);
+    CHECK(ABI::dataTypeBytes(5) == 8);
+    CHECK(ABI::validateDestinationSpan(
+              fp32Addr, 2, fp32Addr, fp32Addr + fp32Bytes) ==
+          Result::Valid);
+    CHECK(ABI::validateDestinationSpan(
+              fp64Addr, 5, fp64Addr, fp64Addr + fp64Bytes) ==
+          Result::Valid);
+    CHECK(ABI::validateDestinationSpan(
+              ABI::NoAddress, 2, fp32Addr, fp32Addr + fp32Bytes) ==
+          Result::MissingDestinationBacking);
+    CHECK(ABI::validateDestinationSpan(
+              0, 2, 0, fp32Bytes) == Result::NullDestinationBacking);
+    CHECK(ABI::validateDestinationSpan(
+              fp32Addr + 2, 2, fp32Addr,
+              fp32Addr + fp32Bytes + 4) ==
+          Result::MisalignedDestinationBacking);
+    CHECK(ABI::validateDestinationSpan(fp32Addr, 2, 0x2000, 0x2000) ==
+          Result::UnregisteredDestinationRange);
+    CHECK(ABI::validateDestinationSpan(
+              fp32Addr, 2, fp32Addr + 4,
+              fp32Addr + fp32Bytes + 4) ==
+          Result::DestinationOutsideRange);
+    CHECK(ABI::validateDestinationSpan(
+              fp32Addr, 2, fp32Addr,
+              fp32Addr + fp32Bytes - 1) ==
+          Result::IncompleteDestinationSpan);
+    CHECK(ABI::validateDestinationSpan(
+              fp64Addr, 5, fp64Addr,
+              fp64Addr + fp64Bytes - 1) ==
+          Result::IncompleteDestinationSpan);
+    CHECK(ABI::validateDestinationSpan(
+              UINT64_MAX - 7, 5, UINT64_MAX - 7, UINT64_MAX) ==
+          Result::IncompleteDestinationSpan);
+    CHECK(ABI::validateDestinationSpan(
+              fp32Addr, ABI::DataTypeCount, fp32Addr,
+              fp32Addr + fp32Bytes) == Result::UnsupportedDataType);
 }
 
 void
@@ -235,6 +316,7 @@ main()
 {
     testHeaderDecodeMatrix();
     testLogicalScalarValidationMatrix();
+    testDestinationBackingValidation();
     testGuestAPIWritesTheSharedWireImage();
     std::cout << "logical_spd_cache_abi_test: PASS" << std::endl;
     return 0;
