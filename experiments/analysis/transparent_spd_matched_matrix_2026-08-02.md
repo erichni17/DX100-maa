@@ -53,6 +53,30 @@ fills, and four ALU/store page chains. Its current controller is only 0.4%
 faster than explicit software paging, so the demonstrated benefit is
 transparent ownership and preserved reordering, not a large scheduler gain.
 
+## Cache Residency And Page-Ready Controls
+
+Two additional qualified matrices isolate effects hidden in the full path.
+
+| Reload-only case | `simTicks` | MAA L3 read hits | MAA L3 read misses |
+|---|---:|---:|---:|
+| Explicit warm | 8,214,059 | 2,036 | 1 |
+| Explicit cold | 12,780,416 | 3 | 2,034 |
+| Transparent warm | 8,410,623 | 2,036 | 1 |
+| Transparent cold | 13,463,069 | 3 | 2,034 |
+
+Evicting the coherent backing raises reload-only latency by 55.592% for the
+explicit control and 60.072% for the transparent controller. The transparent
+controller adds 486,089 ticks of cold sensitivity beyond the explicit path,
+5.779% of its warm reload time. These percentages apply only to the isolated
+reload phase, not to the complete producer-consumer application.
+
+In a separate full-path control, delaying consumption until all four pages
+were ready increased transparent latency from 46,546,856 to 48,771,034 ticks.
+Early-page consumption therefore saves 4.560% latency, or makes the delayed
+case 4.778% slower. This establishes that current page-ready overlap is useful;
+it does not prove that two physical SPD slots can overlap fill, compute, and
+store, which requires a separate resource-legality analysis.
+
 ## Limits
 
 This matrix is one deterministic microbenchmark. It does not establish a
@@ -71,6 +95,17 @@ The generated summary hashes are:
 
 - JSON: `c331a36b6802936135d4e8431d87fb69025fe6d172584d7255213308fead2556`
 - Markdown: `ad7630887b471b22974733506a0047f220205e5bc4d0eb20f58531af9dc11419`
+
+The cache-control summary hashes are:
+
+- full-path JSON:
+  `426c1e144434850ee5da00e3f297fd38da564293b23dc30e9c00e82ff740adfb`
+- full-path Markdown:
+  `0133c182c26d32ec469b7d06eb3e15773ce238f269b132e43e82237298de28c5`
+- reload-only JSON:
+  `17aba03d9e6a9a1b3c0df58c2e98e8f5906253f72183e3bca2b6b47bb26f9bc4`
+- reload-only Markdown:
+  `26d9ee0df60ca7d9ffece5dbb66a1e339cc0a0f74af1f2f33476230c805e5369`
 
 Regenerate the fail-closed summary with
 `experiments/analysis/summarize_virtual_tile_consumer_matrix.py`, naming each
