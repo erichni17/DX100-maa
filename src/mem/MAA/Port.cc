@@ -33,6 +33,7 @@ MAA::canCoalesceOutstandingRead(Addr paddr, FuncUnitType func_unit,
     const auto outstanding = my_outstanding_pkt_map.find(paddr);
     if (outstanding == my_outstanding_pkt_map.end() ||
         outstanding->second.virtualRetirement ||
+        outstanding->second.logicalResponseManaged ||
         outstanding->second.cmd != MemCmd::ReadReq)
         return false;
 
@@ -51,6 +52,27 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
                 bool bypass_deferred_queue)
 {
     Addr paddr = pkt->req->getPaddr();
+    auto *logical_state =
+        dynamic_cast<LogicalSPDTransactionState *>(pkt->senderState);
+    const bool logical_response_managed = logical_state != nullptr;
+    const LogicalStreamTransactionTag logical_transaction =
+        logical_response_managed ? logical_state->tag
+                                 : LogicalStreamTransactionTag{};
+    if (logical_response_managed) {
+        panic_if(funcUnit != FuncUnitType::STREAM ||
+                     !logical_transaction.valid() ||
+                     logical_transaction.maaID != maaID ||
+                     logical_state->lineAddress != paddr,
+                 "%s: invalid logical stream packet identity at 0x%lx\n",
+                 __func__, paddr);
+        if (logical_transaction.action == LogicalStreamAction::Writeback) {
+            panic_if(pkt->cmd != MemCmd::WriteReq || !force_cache ||
+                         !force_retirement_cache,
+                     "%s: logical writeback must be a response-bearing "
+                     "retirement-cache WriteReq\n",
+                     __func__);
+        }
+    }
     panic_if(force_retirement_cache && !force_cache,
              "%s: retirement-cache routing requires force_cache\n", __func__);
     panic_if(pkt->getAddr() != paddr, "%s: paddr 0x%lx and addr 0x%lx do not match for packet %s\n", __func__, paddr, pkt->getAddr(), pkt->print());
@@ -62,15 +84,22 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
     const bool retirement_owns_address =
         outstanding_it != my_outstanding_pkt_map.end() &&
         outstanding_it->second.virtualRetirement;
+    const bool logical_owns_address =
+        outstanding_it != my_outstanding_pkt_map.end() &&
+        outstanding_it->second.logicalResponseManaged;
     if (!bypass_deferred_queue &&
-        (has_deferred_packets || retirement_owns_address)) {
+        (has_deferred_packets || retirement_owns_address ||
+         logical_owns_address ||
+         (logical_response_managed &&
+          outstanding_it != my_outstanding_pkt_map.end()))) {
         DPRINTF(MAAPort,
                 "%s: deferring packet %s behind exact-address "
                 "retirement serialization at 0x%lx\n",
                 __func__, pkt->print(), paddr);
         my_deferred_pkt_map[paddr].push_back(
             {funcUnit, maaID, pkt, tick, force_cache,
-             force_retirement_cache});
+             force_retirement_cache, logical_response_managed,
+             logical_transaction});
         stats.virtual_retirement_native_deferrals += 1;
         if (!retirement_owns_address)
             stats.virtual_retirement_queue_deferrals += 1;
@@ -170,6 +199,10 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
         my_outstanding_pkt_map[paddr] = OutstandingPacket(pkt, paddr, tick, pkt->cmd);
         my_outstanding_pkt_map[paddr].virtualRetirement =
             force_retirement_cache;
+        my_outstanding_pkt_map[paddr].logicalResponseManaged =
+            logical_response_managed;
+        my_outstanding_pkt_map[paddr].logicalTransaction =
+            logical_transaction;
         bool hit_cache = true;
         if (force_cache_access == false && force_cache == false) {
             RequestPtr snoop_req = std::make_shared<Request>(pkt->req->getPaddr(), pkt->req->getSize(), pkt->req->getFlags(), pkt->req->requestorId());
@@ -258,6 +291,16 @@ void MAA::sendNextDeferredPacket(Addr paddr) {
     if (deferred_it->second.empty())
         my_deferred_pkt_map.erase(deferred_it);
 
+    if (deferred.logicalResponseManaged) {
+        auto *logical_state = dynamic_cast<LogicalSPDTransactionState *>(
+            deferred.packet->senderState);
+        panic_if(logical_state == nullptr ||
+                     logical_state->tag != deferred.logicalTransaction ||
+                     logical_state->lineAddress != paddr,
+                 "%s: deferred logical stream metadata lost identity at "
+                 "0x%lx\n",
+                 __func__, paddr);
+    }
     DPRINTF(MAAPort, "%s: releasing deferred packet %s at 0x%lx\n",
             __func__, deferred.packet->print(), paddr);
     sendPacket(deferred.funcUnit, deferred.maaID, deferred.packet,
@@ -577,20 +620,46 @@ bool MAA::sendOutstandingCachePacket() {
                 break;
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
-            if (sendPacketCache(it->packet) == false) {
-                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+            const bool needs_response = it->packet->needsResponse();
+            const bool sent = it->virtualRetirement
+                ? sendPacketRetirementCache(it->packet)
+                : sendPacketCache(it->packet);
+            if (!sent) {
+                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
+                        core);
                 cache_bus_blocked[core] = true;
                 break;
             } else {
                 Addr paddr = it->paddr;
-                panic_if(it->packet->needsResponse(), "%s write packet %s needs response!\n", __func__, it->packet->print());
                 OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
-                my_outstanding_pkt_map.erase(paddr);
-                panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
-                panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::STREAM]);
-                my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
-                sendNextDeferredPacket(paddr);
-                streamAccessUnits[tmp.maaIDs[0]].writePacketSent(it->paddr);
+                panic_if(tmp.maaIDs.size() != 1,
+                         "%s multiple write packes coalesced into one!\n",
+                         __func__);
+                panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM,
+                         "%s: func unit type %d does not match with %d\n",
+                         __func__,
+                         func_unit_names[(uint8_t)tmp.funcUnits[0]],
+                         func_unit_names[(uint8_t)FuncUnitType::STREAM]);
+                if (tmp.logicalResponseManaged) {
+                    panic_if(!needs_response ||
+                                 tmp.logicalTransaction.action !=
+                                     LogicalStreamAction::Writeback ||
+                                 tmp.cmd != MemCmd::WriteReq ||
+                                 !tmp.virtualRetirement,
+                             "%s: logical stream write at 0x%lx lost its "
+                             "response-bearing retirement identity\n",
+                             __func__, paddr);
+                    my_outstanding_pkt_map[paddr].sent = true;
+                } else {
+                    panic_if(needs_response,
+                             "%s write packet %s needs response!\n",
+                             __func__, it->packet->print());
+                    my_outstanding_pkt_map.erase(paddr);
+                    my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
+                    sendNextDeferredPacket(paddr);
+                    streamAccessUnits[tmp.maaIDs[0]].writePacketSent(
+                        it->paddr);
+                }
                 it = my_outstanding_stream_cache_write_pkts[core].erase(it);
                 stats.port_cache_WR_packets += 1;
             }
@@ -704,10 +773,168 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
     if (pkt->cmd != MemCmd::WriteResp)
         assert(pkt->getSize() == 64);
     Addr paddr = pkt->req->getPaddr();
-    panic_if(my_outstanding_pkt_map.find(paddr) == my_outstanding_pkt_map.end(), "%s: response for packet %s not found in my_outstanding_pkt_map\n", __func__, pkt->print());
-    OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
-    panic_if(tmp.sent == false, "%s received response %s for an unsent packet!\n", pkt->cmdString(), pkt->getSize());
-    panic_if(cached != tmp.cached, "%s: response %s cached %d does not match with outstanding packet cached %d\n", __func__, pkt->print(), cached, tmp.cached);
+    auto *logical_state =
+        dynamic_cast<LogicalSPDTransactionState *>(pkt->senderState);
+    auto release_logical_state = [&pkt, &logical_state]() {
+        if (logical_state == nullptr)
+            return;
+        panic_if(pkt->senderState != logical_state,
+                 "logical stream sender state is not response-stack top\n");
+        auto *popped = pkt->popSenderState();
+        panic_if(popped != logical_state,
+                 "logical stream sender state changed while handling "
+                 "response\n");
+        delete popped;
+        logical_state = nullptr;
+    };
+    const auto outstanding = my_outstanding_pkt_map.find(paddr);
+    if (outstanding == my_outstanding_pkt_map.end()) {
+        if (logical_state != nullptr) {
+            const bool terminal =
+                pkt->cmd == MemCmd::WriteResp ||
+                logical_state->tag.action == LogicalStreamAction::Fill;
+            const LogicalStreamResponseKind kind =
+                pkt->cmd == MemCmd::WriteResp
+                    ? LogicalStreamResponseKind::Write
+                    : LogicalStreamResponseKind::Read;
+            if (logical_state->tag.maaID < num_maas) {
+                streamAccessUnits[logical_state->tag.maaID]
+                    .logicalResponseReceived(logical_state->tag,
+                                             logical_state->lineAddress,
+                                             kind, terminal);
+            }
+            DPRINTF(MAAPort,
+                    "%s: discarded unmatched tagged logical response at "
+                    "0x%lx\n",
+                    __func__, paddr);
+            release_logical_state();
+            return;
+        }
+        panic("%s: response for packet %s not found in "
+              "my_outstanding_pkt_map\n",
+              __func__, pkt->print());
+    }
+    OutstandingPacket tmp = outstanding->second;
+    panic_if(!tmp.sent, "%s received response %s for an unsent packet!\n",
+             pkt->cmdString(), pkt->getSize());
+    panic_if(cached != tmp.cached,
+             "%s: response %s cached %d does not match with outstanding "
+             "packet cached %d\n",
+             __func__, pkt->print(), cached, tmp.cached);
+
+    if (tmp.logicalResponseManaged) {
+        panic_if(tmp.maaIDs.size() != 1 ||
+                     tmp.funcUnits[0] != FuncUnitType::STREAM ||
+                     tmp.maaIDs[0] >= num_maas,
+                 "%s: invalid logical stream outstanding owner at 0x%lx\n",
+                 __func__, paddr);
+        StreamAccessUnit &stream = streamAccessUnits[tmp.maaIDs[0]];
+        LogicalStreamResponseResult result =
+            LogicalStreamResponseResult::Stale;
+        if (logical_state != nullptr) {
+            const auto classify_tag_mismatch =
+                [&tmp, &logical_state]() -> LogicalStreamResponseResult {
+                const LogicalStreamTransactionTag &expected =
+                    tmp.logicalTransaction;
+                const LogicalStreamTransactionTag &received =
+                    logical_state->tag;
+                if (received.maaID != expected.maaID)
+                    return LogicalStreamResponseResult::WrongMAA;
+                if (received.action != expected.action)
+                    return LogicalStreamResponseResult::WrongKind;
+                if (received.transactionID != expected.transactionID)
+                    return LogicalStreamResponseResult::WrongTransaction;
+                if (received.logicalID != expected.logicalID ||
+                    received.page != expected.page ||
+                    received.generation != expected.generation) {
+                    return LogicalStreamResponseResult::WrongPage;
+                }
+                if (received.slot != expected.slot)
+                    return LogicalStreamResponseResult::WrongSlot;
+                return LogicalStreamResponseResult::Accepted;
+            };
+            const bool terminal = tmp.cmd == MemCmd::WriteReq ||
+                                  tmp.logicalTransaction.action ==
+                                      LogicalStreamAction::Fill;
+            const LogicalStreamResponseKind kind =
+                pkt->cmd == MemCmd::WriteResp
+                    ? LogicalStreamResponseKind::Write
+                    : LogicalStreamResponseKind::Read;
+            result = classify_tag_mismatch();
+            if (result == LogicalStreamResponseResult::Accepted &&
+                logical_state->lineAddress != paddr) {
+                result = LogicalStreamResponseResult::WrongAddress;
+            }
+            if (result == LogicalStreamResponseResult::Accepted) {
+                result = stream.validateLogicalResponse(
+                    logical_state->tag, logical_state->lineAddress, kind,
+                    terminal);
+            }
+            const bool command_matches =
+                (tmp.cmd == MemCmd::WriteReq &&
+                 pkt->cmd == MemCmd::WriteResp) ||
+                (tmp.cmd == MemCmd::ReadReq && pkt->cmd == MemCmd::ReadResp) ||
+                (tmp.cmd == MemCmd::ReadExReq &&
+                 pkt->cmd == MemCmd::ReadExResp);
+            if (result == LogicalStreamResponseResult::Accepted &&
+                !command_matches) {
+                result = LogicalStreamResponseResult::WrongKind;
+            }
+        }
+        if (result != LogicalStreamResponseResult::Accepted) {
+            stream.rejectLogicalResponse(result);
+            DPRINTF(MAAPort,
+                    "%s: rejected logical response at 0x%lx as %d without "
+                    "retiring current transaction\n",
+                    __func__, paddr, static_cast<int>(result));
+            release_logical_state();
+            return;
+        }
+
+        my_outstanding_pkt_map.erase(paddr);
+        my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
+        sendNextDeferredPacket(paddr);
+        const bool terminal = tmp.cmd == MemCmd::WriteReq ||
+                              tmp.logicalTransaction.action ==
+                                  LogicalStreamAction::Fill;
+        const LogicalStreamResponseKind kind =
+            pkt->cmd == MemCmd::WriteResp ? LogicalStreamResponseKind::Write
+                                          : LogicalStreamResponseKind::Read;
+        const LogicalStreamResponseResult accepted =
+            tmp.cmd == MemCmd::WriteReq
+                ? stream.writeResponseReceived(logical_state->tag,
+                                               logical_state->lineAddress)
+                : stream.logicalResponseReceived(logical_state->tag,
+                                                 logical_state->lineAddress,
+                                                 kind, terminal);
+        panic_if(accepted != LogicalStreamResponseResult::Accepted &&
+                     accepted != LogicalStreamResponseResult::Completed,
+                 "%s: validated logical response changed classification to "
+                 "%d\n",
+                 __func__, static_cast<int>(accepted));
+        if (tmp.cmd != MemCmd::WriteReq) {
+            panic_if(stream.recvData(pkt->getAddr(), pkt->getPtr<uint8_t>()) ==
+                         false,
+                     "%s: logical stream read response at 0x%lx was "
+                     "rejected\n",
+                     __func__, paddr);
+        }
+        release_logical_state();
+        return;
+    }
+
+    if (logical_state != nullptr) {
+        if (logical_state->tag.maaID < num_maas) {
+            streamAccessUnits[logical_state->tag.maaID].rejectLogicalResponse(
+                LogicalStreamResponseResult::Stale);
+        }
+        DPRINTF(MAAPort,
+                "%s: discarded tagged response that does not own normal "
+                "outstanding packet at 0x%lx\n",
+                __func__, paddr);
+        release_logical_state();
+        return;
+    }
     my_outstanding_pkt_map.erase(paddr);
     for (int i = 0; i < tmp.maaIDs.size(); i++) {
         if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {

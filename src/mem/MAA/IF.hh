@@ -195,6 +195,9 @@ public:
     int maa_id;
     int func_unit_id;
     bool controllerManaged;
+    // Set only by the future logical-cache scheduler.  Legacy transparent
+    // controller stores remain response-less WritebackDirty transactions.
+    bool logicalResponseManaged;
     TransparentSPDController::Action controllerAction;
     uint64_t controllerTransactionID;
     int16_t controllerSrcSlot, controllerDstSlot;

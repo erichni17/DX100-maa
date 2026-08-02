@@ -6,17 +6,30 @@
 #include <cstring>
 #include <string>
 
+#include "arch/generic/mmu.hh"
 #include "base/types.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/LogicalStreamResponse.hh"
+#include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/Tables.hh"
 
 namespace gem5 {
 
 class MAA;
+
+/** Sender state retained until a controller-owned packet response arrives. */
+class LogicalSPDTransactionState : public Packet::SenderState
+{
+  public:
+    LogicalSPDTransactionState(const LogicalStreamTransactionTag &_tag,
+                               Addr _lineAddress)
+        : tag(_tag), lineAddress(_lineAddress) {}
+
+    LogicalStreamTransactionTag tag;
+    Addr lineAddress;
+};
 
 class StreamAccessUnit : public BaseMMU::Translation {
 public:
@@ -97,6 +110,35 @@ public:
     void writePacketSent(Addr addr);
     void readPacketSent(Addr addr);
 
+    /**
+     * Validate a tagged response before Port.cc retires the matching
+     * outstanding entry.  It is deliberately side-effect free.
+     */
+    LogicalStreamResponseResult validateLogicalResponse(
+        const LogicalStreamTransactionTag &tag, Addr lineAddress,
+        LogicalStreamResponseKind kind, bool terminal) const;
+
+    /**
+     * Accept one already-validated callback.  Write responses reach this
+     * method only after the outstanding entry is removed, so completion can
+     * observe that every response-bearing write left the port tables.
+     */
+    LogicalStreamResponseResult logicalResponseReceived(
+        const LogicalStreamTransactionTag &tag, Addr lineAddress,
+        LogicalStreamResponseKind kind, bool terminal);
+    LogicalStreamResponseResult writeResponseReceived(
+        const LogicalStreamTransactionTag &tag, Addr lineAddress) {
+        return logicalResponseReceived(tag, lineAddress,
+                                       LogicalStreamResponseKind::Write,
+                                       true);
+    }
+    void rejectLogicalResponse(LogicalStreamResponseResult result) {
+        logicalResponseLedger.recordRejected(result);
+    }
+    const LogicalStreamResponseLedger &getLogicalResponseLedger() const {
+        return logicalResponseLedger;
+    }
+
     /* Related to BaseMMU::Translation Inheretance */
     void markDelayed() override {}
     void finish(const Fault &fault, const RequestPtr &req,
@@ -123,10 +165,18 @@ protected:
     Tick my_request_start_tick;
     int my_size;
 
+    LogicalStreamResponseLedger logicalResponseLedger;
+
     Addr my_translated_addr;
     bool my_translation_done;
 
     void createReadPacket(Addr addr, int latency);
+    bool logicalResponseManaged() const;
+    LogicalStreamTransactionTag logicalResponseTag() const;
+    void beginLogicalResponseTransaction();
+    void attachLogicalSenderState(PacketPtr pkt, Addr lineAddress,
+                                  LogicalStreamResponseKind kind,
+                                  bool terminal);
     Addr translatePacket(Addr vaddr);
     void executeInstruction();
     EventFunctionWrapper executeInstructionEvent;

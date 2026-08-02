@@ -14,6 +14,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "mem/MAA/IF.hh"
+#include "mem/MAA/StreamAccess.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
@@ -38,7 +39,6 @@ struct MAAParams;
 class IF;
 class RF;
 class SPD;
-class StreamAccessUnit;
 class IndirectAccessUnit;
 class Invalidator;
 class ALUUnit;
@@ -768,12 +768,15 @@ protected:
         MemCmd cmd;
         bool cached;
         bool virtualRetirement;
+        bool logicalResponseManaged;
+        LogicalStreamTransactionTag logicalTransaction;
         bool sent;
         std::vector<int> maaIDs;
         std::vector<FuncUnitType> funcUnits;
         OutstandingPacket(PacketPtr _packet, Addr _paddr, Tick _tick, MemCmd _cmd)
             : packet(_packet), paddr(_paddr), tick(_tick), cmd(_cmd),
-              cached(false), virtualRetirement(false), sent(false) {}
+              cached(false), virtualRetirement(false),
+              logicalResponseManaged(false), sent(false) {}
         OutstandingPacket() {}
         OutstandingPacket(const OutstandingPacket &other) {
             packet = other.packet;
@@ -785,6 +788,8 @@ protected:
             sent = other.sent;
             cached = other.cached;
             virtualRetirement = other.virtualRetirement;
+            logicalResponseManaged = other.logicalResponseManaged;
+            logicalTransaction = other.logicalTransaction;
         }
         bool operator<(const OutstandingPacket &rhs) const {
             return tick < rhs.tick;
@@ -803,6 +808,8 @@ protected:
         Tick tick;
         bool forceCache;
         bool forceRetirementCache;
+        bool logicalResponseManaged;
+        LogicalStreamTransactionTag logicalTransaction;
     };
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_read_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_write_pkts;

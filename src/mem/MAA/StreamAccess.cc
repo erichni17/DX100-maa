@@ -36,6 +36,7 @@ void StreamAccessUnit::allocate(int _my_stream_id, unsigned int _num_request_tab
     request_table = new RequestTable(maa, num_request_table_addresses, num_request_table_entries_per_address, my_stream_id, true);
     my_translation_done = false;
     my_instruction = nullptr;
+    logicalResponseLedger.reset();
 }
 Cycles StreamAccessUnit::updateLatency(int num_spd_condread_accesses, int num_spd_srcread_accesses, int num_spd_write_accesses, int num_requesttable_accesses) {
     if (num_spd_condread_accesses != 0) {
@@ -164,6 +165,11 @@ void StreamAccessUnit::executeInstruction() {
         }
         my_words_per_cl = block_size / my_word_size;
         my_words_per_page = page_size / my_word_size;
+        if (logicalResponseManaged()) {
+            beginLogicalResponseTransaction();
+        } else {
+            logicalResponseLedger.reset();
+        }
         (*maa->stats.STR_NumInsts[my_stream_id])++;
         if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD ||
             my_instruction->opcode ==
@@ -331,13 +337,27 @@ void StreamAccessUnit::executeInstruction() {
     }
     case Status::Response: {
         assert(my_instruction != nullptr);
-        DPRINTF(MAAStream, "S[%d] %s: responding %s!\n", my_stream_id, __func__, my_instruction->print());
-        DPRINTF(MAATrace, "S[%d] End [%s]\n", my_stream_id, my_instruction->print());
-        panic_if(scheduleNextExecution(), "S[%d] %s: Execution is not completed!\n", my_stream_id, __func__);
-        panic_if(maa->allStreamPacketsSent(my_stream_id) == false, "S[%d] %s: all stream packets are not sent!\n", my_stream_id, __func__);
-        panic_if(my_received_responses != my_sent_requests, "S[%d] %s: received_responses(%d) != sent_requests(%d)!\n",
-                 my_stream_id, __func__, my_received_responses, my_sent_requests);
-        DPRINTF(MAAStream, "S[%d] %s: state set to finish for request %s!\n", my_stream_id, __func__, my_instruction->print());
+        const bool response_managed = logicalResponseManaged();
+        DPRINTF(MAAStream, "S[%d] %s: responding %s!\n", my_stream_id,
+                __func__, my_instruction->print());
+        DPRINTF(MAATrace, "S[%d] End [%s]\n", my_stream_id,
+                my_instruction->print());
+        panic_if(scheduleNextExecution(),
+                 "S[%d] %s: Execution is not completed!\n", my_stream_id,
+                 __func__);
+        panic_if(!maa->allStreamPacketsSent(my_stream_id),
+                 "S[%d] %s: all stream packets are not sent!\n",
+                 my_stream_id, __func__);
+        panic_if(my_received_responses != my_sent_requests,
+                 "S[%d] %s: received_responses(%d) != sent_requests(%d)!\n",
+                 my_stream_id, __func__, my_received_responses,
+                 my_sent_requests);
+        panic_if(response_managed && !logicalResponseLedger.isComplete(),
+                 "S[%d] %s: logical response transaction completed before "
+                 "all tagged lines acknowledged!\n",
+                 my_stream_id, __func__);
+        DPRINTF(MAAStream, "S[%d] %s: state set to finish for request %s!\n",
+                my_stream_id, __func__, my_instruction->print());
         my_instruction->state = Instruction::Status::Finish;
         if (my_request_start_tick != 0) {
             (*maa->stats.STR_CyclesRequest[my_stream_id]) += maa->getTicksToCycles(curTick() - my_request_start_tick);
@@ -353,6 +373,8 @@ void StreamAccessUnit::executeInstruction() {
         }
         maa->finishInstructionCompute(my_instruction);
         my_instruction = nullptr;
+        if (response_managed)
+            logicalResponseLedger.reset();
         request_table->check_reset();
         break;
     }
@@ -373,10 +395,19 @@ void StreamAccessUnit::createReadPacket(Addr addr, int latency) {
         my_pkt = new Packet(real_req, MemCmd::ReadExReq);
     }
     my_pkt->allocate();
-    maa->sendPacket(
-        FuncUnitType::STREAM, my_stream_id, my_pkt,
-        maa->getClockEdge(Cycles(latency)),
-        my_instruction->opcode == Instruction::OpcodeType::STREAM_PREFETCH);
+    if (logicalResponseManaged()) {
+        attachLogicalSenderState(my_pkt, addr, LogicalStreamResponseKind::Read,
+                                 my_instruction->opcode ==
+                                     Instruction::OpcodeType::STREAM_LD);
+        maa->sendPacket(FuncUnitType::STREAM, my_stream_id, my_pkt,
+                        maa->getClockEdge(Cycles(latency)), true);
+    } else {
+        maa->sendPacket(
+            FuncUnitType::STREAM, my_stream_id, my_pkt,
+            maa->getClockEdge(Cycles(latency)),
+            my_instruction->opcode ==
+                Instruction::OpcodeType::STREAM_PREFETCH);
+    }
     DPRINTF(MAAStream,
             "S[%d] %s: created %s to send in %d cycles\n",
             my_stream_id, __func__, my_pkt->print(), latency);
@@ -387,6 +418,13 @@ void StreamAccessUnit::readPacketSent(Addr addr) {
 }
 void StreamAccessUnit::writePacketSent(Addr addr) {
     DPRINTF(MAAStream, "S[%d] %s: cache write packet 0x%lx sent!\n", my_stream_id, __func__, addr);
+    if (logicalResponseManaged()) {
+        DPRINTF(MAAStream,
+                "S[%d] %s: logical write 0x%lx remains live until "
+                "WriteResp\n",
+                my_stream_id, __func__, addr);
+        return;
+    }
     my_received_responses++;
     if (maa->allStreamPacketsSent(my_stream_id) && (my_received_responses == my_sent_requests)) {
         DPRINTF(MAAStream, "S[%d] %s: all responses received, calling execution again in state %s!\n", my_stream_id, __func__, status_names[(int)state]);
@@ -466,18 +504,144 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
         total_latency = updateLatency(0, entries.size(), 0, 1);
         RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
         real_req->setRegion(my_addr_range_id);
-        PacketPtr write_pkt = new Packet(real_req, MemCmd::WritebackDirty);
+        const bool response_managed = logicalResponseManaged();
+        PacketPtr write_pkt = new Packet(
+            real_req, response_managed ? MemCmd::WriteReq
+                                        : MemCmd::WritebackDirty);
         write_pkt->allocate();
         write_pkt->setData(new_data);
-        DPRINTF(MAAStream, "S[%d] %s: created %s to send in %d cycles\n", my_stream_id, __func__, write_pkt->print(), total_latency);
-        maa->sendPacket(FuncUnitType::STREAM, my_stream_id, write_pkt,
-                        maa->getClockEdge(total_latency), false, false, true);
+        if (response_managed) {
+            attachLogicalSenderState(write_pkt, addr,
+                                     LogicalStreamResponseKind::Write, true);
+        }
+        DPRINTF(MAAStream, "S[%d] %s: created %s to send in %d cycles\n",
+                my_stream_id, __func__, write_pkt->print(), total_latency);
+        if (response_managed) {
+            maa->sendPacket(FuncUnitType::STREAM, my_stream_id, write_pkt,
+                            maa->getClockEdge(total_latency), true, true);
+        } else {
+            maa->sendPacket(FuncUnitType::STREAM, my_stream_id, write_pkt,
+                            maa->getClockEdge(total_latency), false, false,
+                            true);
+        }
     }
     if (was_request_table_full) {
         scheduleNextExecution(true);
     }
     return true;
 }
+bool StreamAccessUnit::logicalResponseManaged() const {
+    return my_instruction != nullptr && my_instruction->logicalResponseManaged;
+}
+
+LogicalStreamTransactionTag StreamAccessUnit::logicalResponseTag() const {
+    assert(logicalResponseManaged());
+    const bool fill =
+        my_instruction->opcode == Instruction::OpcodeType::STREAM_LD;
+    panic_if(!fill &&
+                 my_instruction->opcode != Instruction::OpcodeType::STREAM_ST,
+             "S[%d] %s: response-managed stream opcode %d is not a logical "
+             "fill or writeback\n",
+             my_stream_id, __func__, static_cast<int>(my_instruction->opcode));
+    const int logical_id =
+        fill ? my_instruction->src1LogicalID : my_instruction->dst1LogicalID;
+    const uint64_t generation = fill ? my_instruction->src1LogicalGeneration
+                                     : my_instruction->dst1LogicalGeneration;
+    const int slot = fill ? my_instruction->controllerSrcSlot
+                          : my_instruction->controllerDstSlot;
+    panic_if(my_instruction->maa_id < 0 ||
+                 my_instruction->maa_id >
+                     std::numeric_limits<uint16_t>::max() ||
+                 logical_id < 0 ||
+                 logical_id > std::numeric_limits<uint16_t>::max() ||
+                 my_instruction->controllerPage < 0 ||
+                 my_instruction->controllerPage >
+                     std::numeric_limits<uint16_t>::max() ||
+                 slot < 0 || slot > std::numeric_limits<int16_t>::max() ||
+                 generation == 0 ||
+                 my_instruction->controllerTransactionID == 0,
+             "S[%d] %s: invalid logical response transaction fields\n",
+             my_stream_id, __func__);
+    return {static_cast<uint16_t>(my_instruction->maa_id),
+            my_instruction->controllerTransactionID,
+            fill ? LogicalStreamAction::Fill
+                 : LogicalStreamAction::Writeback,
+            static_cast<uint16_t>(logical_id),
+            static_cast<uint16_t>(my_instruction->controllerPage), generation,
+            static_cast<int16_t>(slot)};
+}
+
+void StreamAccessUnit::beginLogicalResponseTransaction() {
+    panic_if(logicalResponseLedger.isActive(),
+             "S[%d] %s: prior logical response transaction remains active\n",
+             my_stream_id, __func__);
+    panic_if(my_size !=
+                 static_cast<int>(LogicalStreamResponseLedger::PageElements) ||
+                 my_min != 0 ||
+                 my_max != static_cast<int>(
+                               LogicalStreamResponseLedger::PageElements) ||
+                 my_stride != 1 || my_base_addr % page_size != 0 ||
+                 (my_word_size != 4 && my_word_size != 8),
+             "S[%d] %s: response-managed stream action must cover exactly "
+             "one aligned 4096-element page\n",
+             my_stream_id, __func__);
+    const std::size_t line_count =
+        LogicalStreamResponseLedger::PageElements * my_word_size / block_size;
+    const LogicalStreamResponseResult result =
+        logicalResponseLedger.begin(logicalResponseTag(), line_count);
+    panic_if(result != LogicalStreamResponseResult::Accepted,
+             "S[%d] %s: could not initialize logical response ledger (%d)\n",
+             my_stream_id, __func__, static_cast<int>(result));
+}
+
+void StreamAccessUnit::attachLogicalSenderState(
+    PacketPtr pkt, Addr lineAddress, LogicalStreamResponseKind kind,
+    bool terminal)
+{
+    assert(logicalResponseManaged());
+    const LogicalStreamTransactionTag tag = logicalResponseTag();
+    if (terminal) {
+        const LogicalStreamResponseResult result =
+            logicalResponseLedger.issueLine(tag, lineAddress, kind);
+        panic_if(result != LogicalStreamResponseResult::Accepted,
+                 "S[%d] %s: logical line 0x%lx could not be issued (%d)\n",
+                 my_stream_id, __func__, lineAddress,
+                 static_cast<int>(result));
+    }
+    pkt->pushSenderState(new LogicalSPDTransactionState(tag, lineAddress));
+}
+
+LogicalStreamResponseResult StreamAccessUnit::validateLogicalResponse(
+    const LogicalStreamTransactionTag &tag, Addr lineAddress,
+    LogicalStreamResponseKind kind, bool terminal) const
+{
+    return logicalResponseLedger.validateResponse(tag, lineAddress, kind,
+                                                  terminal);
+}
+
+LogicalStreamResponseResult StreamAccessUnit::logicalResponseReceived(
+    const LogicalStreamTransactionTag &tag, Addr lineAddress,
+    LogicalStreamResponseKind kind, bool terminal)
+{
+    const LogicalStreamResponseResult result =
+        logicalResponseLedger.acceptResponse(tag, lineAddress, kind, terminal);
+    if ((result == LogicalStreamResponseResult::Accepted ||
+         result == LogicalStreamResponseResult::Completed) &&
+        terminal && tag.action == LogicalStreamAction::Writeback) {
+        ++my_received_responses;
+        panic_if(my_received_responses > my_sent_requests,
+                 "S[%d] %s: more logical write responses (%d) than source "
+                 "requests (%d)\n",
+                 my_stream_id, __func__, my_received_responses,
+                 my_sent_requests);
+        if (maa->allStreamPacketsSent(my_stream_id) &&
+            my_received_responses == my_sent_requests) {
+            scheduleNextExecution(true);
+        }
+    }
+    return result;
+}
+
 Addr StreamAccessUnit::translatePacket(Addr vaddr) {
     /**** Address translation ****/
     RequestPtr translation_req = std::make_shared<Request>(vaddr, block_size, flags, maa->requestorId, my_instruction->PC, my_instruction->CID);
