@@ -116,7 +116,7 @@ public:
      */
     LogicalStreamResponseResult validateLogicalResponse(
         const LogicalStreamTransactionTag &tag, Addr lineAddress,
-        LogicalStreamResponseKind kind, bool terminal) const;
+        LogicalStreamResponseKind kind) const;
 
     /**
      * Accept one already-validated callback.  Write responses reach this
@@ -125,12 +125,11 @@ public:
      */
     LogicalStreamResponseResult logicalResponseReceived(
         const LogicalStreamTransactionTag &tag, Addr lineAddress,
-        LogicalStreamResponseKind kind, bool terminal);
+        LogicalStreamResponseKind kind);
     LogicalStreamResponseResult writeResponseReceived(
         const LogicalStreamTransactionTag &tag, Addr lineAddress) {
         return logicalResponseReceived(tag, lineAddress,
-                                       LogicalStreamResponseKind::Write,
-                                       true);
+                                       LogicalStreamResponseKind::Write);
     }
     void rejectLogicalResponse(LogicalStreamResponseResult result) {
         logicalResponseLedger.recordRejected(result);
@@ -175,8 +174,7 @@ protected:
     LogicalStreamTransactionTag logicalResponseTag() const;
     void beginLogicalResponseTransaction();
     void attachLogicalSenderState(PacketPtr pkt, Addr lineAddress,
-                                  LogicalStreamResponseKind kind,
-                                  bool terminal);
+                                  LogicalStreamResponseKind kind);
     Addr translatePacket(Addr vaddr);
     void executeInstruction();
     EventFunctionWrapper executeInstructionEvent;

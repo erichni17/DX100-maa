@@ -24,19 +24,24 @@ generation, slot}` tag:
 - A controller writeback still performs the stream unit's source `ReadExReq`
   step, but its written lines use `WriteReq`, are forced through the
   retirement-side cache path, and remain outstanding until their individual
-  `WriteResp` callbacks.
+  `WriteResp` callbacks.  Each fixed line state records its source
+  `ReadExResp` exactly once before its `WriteResp` can be armed; a duplicate
+  source callback is counted as `Duplicate` and cannot alter a terminal
+  acknowledgement.
 - Every controller page has a preallocated `std::array` ledger of at most 512
   64-byte lines (4096 eight-byte elements). A 32-bit page uses exactly 256
   entries; an eight-byte page uses exactly 512. The ledger rejects duplicate
   issues and cannot grow.
 
-The port copies the full tag into both outstanding and deferred metadata.
-Exact address ordering remains, but an address never authenticates a callback:
-the response sender state is cross-checked against the metadata tag, its line
-address, and the active ledger before the outstanding entry is erased. Stale,
-duplicate, wrong-kind, wrong-transaction, wrong-page/generation, wrong-slot,
-wrong-MAA, and wrong-address callbacks are counted by the ledger and leave the
-current transaction unchanged.
+The port copies the full tag into both outstanding and deferred metadata. Its
+logical ownership decision is a small pure finite helper exercised by the host
+replay. Exact address ordering remains, but an address never authenticates a
+callback: the response sender state is cross-checked against the full metadata
+tag, its line address, response kind, and the active ledger before the
+outstanding entry is erased or the sender state is popped. Stale, duplicate,
+wrong-kind, wrong-transaction, wrong-page/generation, wrong-slot, wrong-MAA,
+and wrong-address callbacks are counted by the ledger and leave the current
+transaction unchanged.
 
 ## Ordinary stream compatibility
 
@@ -51,11 +56,12 @@ unchanged.
 ## Validation
 
 `experiments/scripts/run_logical_stream_response_unit.sh` compiles and runs a
-dependency-light C++ replay plus source-contract checks. The replay covers
-delayed and reordered fills, exact final completion, duplicate responses,
-wrong kind/transaction/page/slot/MAA/address responses, old-tag reuse of the
-same address, and the fixed 512-line capacity. It does not run a gem5
-simulation.
+dependency-light C++17 replay plus a Python behavioral launcher. The replay
+executes the same pure Port routing gate used in `Port.cc`, then covers delayed
+and reordered fills, exact final completion, duplicate nonterminal `ReadExResp`
+callbacks, full tag/address/kind rejection without retirement or sender-state
+pop authority, old-tag reuse of the same address, post-reset stale callbacks,
+and the fixed 512-line capacity. It does not run a gem5 simulation.
 
 ## Integration boundary and base status
 
@@ -64,5 +70,8 @@ working base. This patch does not validate the rejected ABI base and does not
 extend public ABI helpers, MMIO decoding, or logical scheduler policy. It is
 intended to be cherry-picked onto a repaired ABI: the sole dependency is the
 internal instruction metadata already described above. A follow-up scheduler
-patch must supply transaction IDs and make its final controller completion only
-after this path reports all matching write responses.
+patch must supply monotonically increasing, never-reused transaction IDs and
+generation IDs for the lifetime in which callbacks can arrive. This transport
+layer does not invent a scheduler identity lifecycle. The scheduler must also
+make its final controller completion only after this path reports all matching
+write responses.

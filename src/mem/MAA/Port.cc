@@ -775,7 +775,18 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
     Addr paddr = pkt->req->getPaddr();
     auto *logical_state =
         dynamic_cast<LogicalSPDTransactionState *>(pkt->senderState);
-    auto release_logical_state = [&pkt, &logical_state]() {
+    const LogicalStreamTransactionTag received_tag =
+        logical_state != nullptr ? logical_state->tag
+                                 : LogicalStreamTransactionTag{};
+    const Addr sender_line_address =
+        logical_state != nullptr ? logical_state->lineAddress : 0;
+    const LogicalStreamResponseKind response_kind =
+        pkt->cmd == MemCmd::WriteResp
+            ? LogicalStreamResponseKind::Write
+            : pkt->cmd == MemCmd::ReadExResp
+                  ? LogicalStreamResponseKind::ReadEx
+                  : LogicalStreamResponseKind::Read;
+    auto releaseAcceptedLogicalState = [&pkt, &logical_state]() {
         if (logical_state == nullptr)
             return;
         panic_if(pkt->senderState != logical_state,
@@ -790,24 +801,25 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
     const auto outstanding = my_outstanding_pkt_map.find(paddr);
     if (outstanding == my_outstanding_pkt_map.end()) {
         if (logical_state != nullptr) {
-            const bool terminal =
-                pkt->cmd == MemCmd::WriteResp ||
-                logical_state->tag.action == LogicalStreamAction::Fill;
-            const LogicalStreamResponseKind kind =
-                pkt->cmd == MemCmd::WriteResp
-                    ? LogicalStreamResponseKind::Write
-                    : LogicalStreamResponseKind::Read;
-            if (logical_state->tag.maaID < num_maas) {
-                streamAccessUnits[logical_state->tag.maaID]
-                    .logicalResponseReceived(logical_state->tag,
-                                             logical_state->lineAddress,
-                                             kind, terminal);
+            LogicalStreamResponseResult ledger_result =
+                LogicalStreamResponseResult::Stale;
+            StreamAccessUnit *stream = nullptr;
+            if (received_tag.maaID < num_maas) {
+                stream = &streamAccessUnits[received_tag.maaID];
+                ledger_result = stream->validateLogicalResponse(
+                    received_tag, sender_line_address, response_kind);
             }
+            const LogicalStreamResponseRouteDecision route =
+                classifyLogicalStreamResponseRoute(
+                    {false, false, true, {}, received_tag, paddr,
+                     sender_line_address, paddr, response_kind,
+                     response_kind, ledger_result});
+            if (stream != nullptr)
+                stream->rejectLogicalResponse(route.result);
             DPRINTF(MAAPort,
-                    "%s: discarded unmatched tagged logical response at "
-                    "0x%lx\n",
+                    "%s: rejected unowned tagged logical response at "
+                    "0x%lx without popping sender state\n",
                     __func__, paddr);
-            release_logical_state();
             return;
         }
         panic("%s: response for packet %s not found in "
@@ -829,84 +841,50 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
                  "%s: invalid logical stream outstanding owner at 0x%lx\n",
                  __func__, paddr);
         StreamAccessUnit &stream = streamAccessUnits[tmp.maaIDs[0]];
-        LogicalStreamResponseResult result =
-            LogicalStreamResponseResult::Stale;
-        if (logical_state != nullptr) {
-            const auto classify_tag_mismatch =
-                [&tmp, &logical_state]() -> LogicalStreamResponseResult {
-                const LogicalStreamTransactionTag &expected =
-                    tmp.logicalTransaction;
-                const LogicalStreamTransactionTag &received =
-                    logical_state->tag;
-                if (received.maaID != expected.maaID)
-                    return LogicalStreamResponseResult::WrongMAA;
-                if (received.action != expected.action)
-                    return LogicalStreamResponseResult::WrongKind;
-                if (received.transactionID != expected.transactionID)
-                    return LogicalStreamResponseResult::WrongTransaction;
-                if (received.logicalID != expected.logicalID ||
-                    received.page != expected.page ||
-                    received.generation != expected.generation) {
-                    return LogicalStreamResponseResult::WrongPage;
-                }
-                if (received.slot != expected.slot)
-                    return LogicalStreamResponseResult::WrongSlot;
-                return LogicalStreamResponseResult::Accepted;
-            };
-            const bool terminal = tmp.cmd == MemCmd::WriteReq ||
-                                  tmp.logicalTransaction.action ==
-                                      LogicalStreamAction::Fill;
-            const LogicalStreamResponseKind kind =
-                pkt->cmd == MemCmd::WriteResp
-                    ? LogicalStreamResponseKind::Write
-                    : LogicalStreamResponseKind::Read;
-            result = classify_tag_mismatch();
-            if (result == LogicalStreamResponseResult::Accepted &&
-                logical_state->lineAddress != paddr) {
-                result = LogicalStreamResponseResult::WrongAddress;
-            }
-            if (result == LogicalStreamResponseResult::Accepted) {
-                result = stream.validateLogicalResponse(
-                    logical_state->tag, logical_state->lineAddress, kind,
-                    terminal);
-            }
-            const bool command_matches =
-                (tmp.cmd == MemCmd::WriteReq &&
-                 pkt->cmd == MemCmd::WriteResp) ||
-                (tmp.cmd == MemCmd::ReadReq && pkt->cmd == MemCmd::ReadResp) ||
-                (tmp.cmd == MemCmd::ReadExReq &&
-                 pkt->cmd == MemCmd::ReadExResp);
-            if (result == LogicalStreamResponseResult::Accepted &&
-                !command_matches) {
-                result = LogicalStreamResponseResult::WrongKind;
-            }
-        }
-        if (result != LogicalStreamResponseResult::Accepted) {
+        panic_if(tmp.cmd != MemCmd::ReadReq && tmp.cmd != MemCmd::ReadExReq &&
+                     tmp.cmd != MemCmd::WriteReq,
+                 "%s: logical outstanding packet at 0x%lx has invalid "
+                 "command %s\n",
+                 __func__, paddr, tmp.cmd.toString());
+        const LogicalStreamResponseKind expected_kind =
+            tmp.cmd == MemCmd::WriteReq
+                ? LogicalStreamResponseKind::Write
+                : tmp.cmd == MemCmd::ReadExReq
+                      ? LogicalStreamResponseKind::ReadEx
+                      : LogicalStreamResponseKind::Read;
+        const LogicalStreamResponseResult ledger_result =
+            logical_state != nullptr
+                ? stream.validateLogicalResponse(received_tag,
+                                                 sender_line_address,
+                                                 response_kind)
+                : LogicalStreamResponseResult::Stale;
+        const LogicalStreamResponseRouteDecision route =
+            classifyLogicalStreamResponseRoute(
+                {true, true, logical_state != nullptr, tmp.logicalTransaction,
+                 received_tag, paddr, sender_line_address, paddr,
+                 expected_kind, response_kind, ledger_result});
+        LogicalStreamResponseResult result = route.result;
+        if (!route.authorizesOutstandingRetirement() ||
+            !route.authorizesSenderStatePop() ||
+            result != LogicalStreamResponseResult::Accepted) {
             stream.rejectLogicalResponse(result);
             DPRINTF(MAAPort,
                     "%s: rejected logical response at 0x%lx as %d without "
-                    "retiring current transaction\n",
+                    "retiring current transaction or popping sender state\n",
                     __func__, paddr, static_cast<int>(result));
-            release_logical_state();
             return;
         }
 
         my_outstanding_pkt_map.erase(paddr);
         my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
         sendNextDeferredPacket(paddr);
-        const bool terminal = tmp.cmd == MemCmd::WriteReq ||
-                              tmp.logicalTransaction.action ==
-                                  LogicalStreamAction::Fill;
-        const LogicalStreamResponseKind kind =
-            pkt->cmd == MemCmd::WriteResp ? LogicalStreamResponseKind::Write
-                                          : LogicalStreamResponseKind::Read;
         const LogicalStreamResponseResult accepted =
             tmp.cmd == MemCmd::WriteReq
-                ? stream.writeResponseReceived(logical_state->tag,
-                                               logical_state->lineAddress)
-                : stream.logicalResponseReceived(logical_state->tag,
-                                                 logical_state->lineAddress,
-                                                 kind, terminal);
+                ? stream.writeResponseReceived(received_tag,
+                                               sender_line_address)
+                : stream.logicalResponseReceived(received_tag,
+                                                 sender_line_address,
+                                                 response_kind);
         panic_if(accepted != LogicalStreamResponseResult::Accepted &&
                      accepted != LogicalStreamResponseResult::Completed,
                  "%s: validated logical response changed classification to "
@@ -919,20 +897,30 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
                      "rejected\n",
                      __func__, paddr);
         }
-        release_logical_state();
+        releaseAcceptedLogicalState();
         return;
     }
 
     if (logical_state != nullptr) {
-        if (logical_state->tag.maaID < num_maas) {
-            streamAccessUnits[logical_state->tag.maaID].rejectLogicalResponse(
-                LogicalStreamResponseResult::Stale);
+        LogicalStreamResponseResult ledger_result =
+            LogicalStreamResponseResult::Stale;
+        StreamAccessUnit *stream = nullptr;
+        if (received_tag.maaID < num_maas) {
+            stream = &streamAccessUnits[received_tag.maaID];
+            ledger_result = stream->validateLogicalResponse(
+                received_tag, sender_line_address, response_kind);
         }
+        const LogicalStreamResponseRouteDecision route =
+            classifyLogicalStreamResponseRoute(
+                {true, false, true, {}, received_tag, paddr,
+                 sender_line_address, paddr, response_kind, response_kind,
+                 ledger_result});
+        if (stream != nullptr)
+            stream->rejectLogicalResponse(route.result);
         DPRINTF(MAAPort,
-                "%s: discarded tagged response that does not own normal "
-                "outstanding packet at 0x%lx\n",
+                "%s: rejected tagged response that does not own normal "
+                "outstanding packet at 0x%lx without popping sender state\n",
                 __func__, paddr);
-        release_logical_state();
         return;
     }
     my_outstanding_pkt_map.erase(paddr);
