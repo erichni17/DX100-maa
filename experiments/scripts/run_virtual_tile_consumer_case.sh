@@ -1,12 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Bash reads scripts incrementally. Execute a private snapshot so edits to this
+# runner cannot change an already-running experiment.
+if [[ ${DX100_FROZEN_RUNNER:-0} != 1 ]]; then
+    runner_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+    frozen_runner=$(mktemp /tmp/dx100-vt-consumer-runner.XXXXXX.sh)
+    cp -- "${BASH_SOURCE[0]}" "$frozen_runner"
+    chmod 0555 "$frozen_runner"
+    exec env \
+        DX100_FROZEN_RUNNER=1 \
+        DX100_FROZEN_RUNNER_PATH="$frozen_runner" \
+        DX100_RUNNER_ROOT="$runner_root" \
+        "$frozen_runner" "$@"
+fi
+
+if [[ -n ${DX100_FROZEN_RUNNER_PATH:-} ]]; then
+    trap 'rm -f -- "$DX100_FROZEN_RUNNER_PATH"' EXIT
+fi
+
 if [[ $# -ne 4 ]]; then
     echo "usage: $0 GEM5_BIN TEST_BIN CASE OUTDIR" >&2
     exit 2
 fi
 
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+[[ -n ${DX100_RUNNER_ROOT:-} ]] || {
+    echo "frozen runner is missing DX100_RUNNER_ROOT" >&2
+    exit 2
+}
+root=$(realpath "$DX100_RUNNER_ROOT")
 gem5=$(realpath "$1")
 binary=$(realpath "$2")
 case_name=$3

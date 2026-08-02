@@ -169,6 +169,19 @@ class TransparentControllerContractTest(unittest.TestCase):
         ):
             self.assertIn(artifact, runner)
 
+    def test_runner_executes_an_immutable_snapshot(self):
+        runner = (
+            ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
+        ).read_text()
+        freeze = runner.index("DX100_FROZEN_RUNNER")
+        argument_check = runner.index("if [[ $# -ne 4 ]]")
+        self.assertLess(freeze, argument_check)
+        self.assertIn("mktemp /tmp/dx100-vt-consumer-runner.", runner)
+        self.assertIn('cp -- "${BASH_SOURCE[0]}" "$frozen_runner"', runner)
+        self.assertIn('DX100_RUNNER_ROOT="$runner_root"', runner)
+        self.assertIn('root=$(realpath "$DX100_RUNNER_ROOT")', runner)
+        self.assertIn("trap 'rm -f --", runner)
+
 
 if __name__ == "__main__":
     unittest.main()
