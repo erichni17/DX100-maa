@@ -33,6 +33,7 @@ validDescriptor()
     descriptor.coreID = 0;
     descriptor.maaID = 0;
     descriptor.contextID = 0;
+    descriptor.generation = 1;
     descriptor.backingAddr = 0x11000;
     descriptor.backingMinAddr = 0x10000;
     descriptor.backingMaxAddr = 0x40000;

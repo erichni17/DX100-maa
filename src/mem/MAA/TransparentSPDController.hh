@@ -68,6 +68,7 @@ class TransparentSPDController
         int coreID = -1;
         int maaID = -1;
         int contextID = -1;
+        uint64_t generation = 0;
         uint8_t dataType = 0;
         uint8_t operation = 0;
         uint64_t pc = 0;
@@ -115,6 +116,8 @@ class TransparentSPDController
         if (descriptor.coreID < 0 || descriptor.maaID < 0 ||
             descriptor.contextID < 0)
             return "execution identity must be valid";
+        if (descriptor.generation == 0)
+            return "logical tile generation must be nonzero";
         if (descriptor.backingRangeID < 0 ||
             descriptor.destinationRangeID < 0)
             return "backing and destination regions must be registered";

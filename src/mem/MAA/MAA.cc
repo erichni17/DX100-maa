@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include "base/addr_range.hh"
@@ -139,6 +140,10 @@ MAA::MAA(const MAAParams &p)
     virtualPageReady.resize(num_tiles);
     for (auto &pages : virtualPageReady)
         pages.fill(false);
+    virtualPageGeneration.assign(num_tiles, 0);
+    virtualPageConsumedGeneration.assign(num_tiles, 0);
+    virtualPageBackingAddr.assign(num_tiles, 0);
+    virtualPageWordSize.assign(num_tiles, 0);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
     spd = new SPD(this, num_tiles, num_tile_elements,
@@ -753,6 +758,19 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     descriptor.coreID = instruction->core_id;
     descriptor.maaID = instruction->maa_id;
     descriptor.contextID = instruction->CID;
+    const int token_tile = instruction->src1SpdID;
+    panic_if(virtualPageGeneration[token_tile] == 0 ||
+                 virtualPageGeneration[token_tile] ==
+                     virtualPageConsumedGeneration[token_tile],
+             "Transparent token %d has no unconsumed producer generation\n",
+             token_tile);
+    panic_if(virtualPageBackingAddr[token_tile] != instruction->baseAddr ||
+                 virtualPageWordSize[token_tile] != word_size,
+             "Transparent token %d generation %lu does not name backing "
+             "0x%lx/%d\n",
+             token_tile, virtualPageGeneration[token_tile],
+             instruction->baseAddr, word_size);
+    descriptor.generation = virtualPageGeneration[token_tile];
     descriptor.dataType = static_cast<uint8_t>(instruction->datatype);
     descriptor.operation = static_cast<uint8_t>(instruction->optype);
     descriptor.pc = instruction->PC;
@@ -789,10 +807,11 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     }
     DPRINTF(MAAVirtualTrace,
             "event=transparent_submit token=%d physical=%d output=%d "
-            "logical=%d page=%d pages=%d\n",
+            "generation=%lu logical=%d page=%d pages=%d\n",
             descriptor.tokenTile, descriptor.physicalTile,
-            descriptor.outputTile, descriptor.logicalElements,
-            descriptor.pageElements, TransparentSPDController::NumPages);
+            descriptor.outputTile, descriptor.generation,
+            descriptor.logicalElements, descriptor.pageElements,
+            TransparentSPDController::NumPages);
     tryIssueTransparentMicroOp();
     return true;
 }
@@ -1024,7 +1043,9 @@ void MAA::dispatchInstruction() {
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX) {
-                    resetVirtualPageReady(instruction->dst1SpdID);
+                    resetVirtualPageReady(
+                        instruction->dst1SpdID, instruction->backingAddr,
+                        instruction->WordSize());
                 }
                 if (instruction->dst2SpdID != -1) {
                     assert(instruction->dst2SpdID != instruction->src1SpdID);
@@ -1136,6 +1157,12 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
             // native stream store has been acknowledged.
             setTileReady(descriptor.physicalTile, descriptor.wordSize);
             setTileReady(descriptor.outputTile, descriptor.wordSize);
+            panic_if(virtualPageGeneration[descriptor.tokenTile] !=
+                         descriptor.generation,
+                     "Transparent token %d generation changed while active\n",
+                     descriptor.tokenTile);
+            virtualPageConsumedGeneration[descriptor.tokenTile] =
+                descriptor.generation;
             panic_if(!transparentController.retire(),
                      "Completed transparent descriptor did not retire\n");
             transparentControllerLookupReadyTick = 0;
@@ -1187,7 +1214,8 @@ void MAA::setTileReady(int tileID, int wordSize) {
         port->retryTileRequest();
     }
 }
-void MAA::resetVirtualPageReady(int tokenTileID) {
+void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
+                                int wordSize) {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
              "invalid virtual completion token tile %d\n", tokenTileID);
     const int firstReadyID = num_tiles + tokenTileID * MaxVirtualPages;
@@ -1200,6 +1228,13 @@ void MAA::resetVirtualPageReady(int tokenTileID) {
              "token tile %d reused with an outstanding virtual-page wait\n",
              tokenTileID);
     virtualPageReady[tokenTileID].fill(false);
+    panic_if(virtualPageGeneration[tokenTileID] ==
+                 std::numeric_limits<uint64_t>::max(),
+             "virtual completion token %d generation overflow\n",
+             tokenTileID);
+    ++virtualPageGeneration[tokenTileID];
+    virtualPageBackingAddr[tokenTileID] = backingAddr;
+    virtualPageWordSize[tokenTileID] = wordSize;
 }
 bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || pageID < 0 ||
@@ -1218,6 +1253,10 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
     if (transparentController.active() &&
         transparentController.descriptor().tokenTile == tokenTileID &&
         pageID < TransparentSPDController::NumPages) {
+        panic_if(transparentController.descriptor().generation !=
+                     virtualPageGeneration[tokenTileID],
+                 "Transparent token %d received stale page %d generation\n",
+                 tokenTileID, pageID);
         panic_if(!transparentController.notifyPageReady(tokenTileID, pageID),
                  "Transparent controller rejected ready token=%d page=%d\n",
                  tokenTileID, pageID);

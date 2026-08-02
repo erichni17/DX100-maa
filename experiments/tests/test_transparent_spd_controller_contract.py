@@ -83,6 +83,17 @@ class TransparentControllerContractTest(unittest.TestCase):
             "backing and destination payloads must not overlap", controller
         )
 
+    def test_token_generation_is_bound_to_producer_backing(self):
+        header = (ROOT / "src/mem/MAA/MAA.hh").read_text()
+        maa = (ROOT / "src/mem/MAA/MAA.cc").read_text()
+        self.assertIn("virtualPageGeneration", header)
+        self.assertIn("virtualPageConsumedGeneration", header)
+        self.assertIn("virtualPageBackingAddr", header)
+        self.assertIn("virtualPageWordSize", header)
+        self.assertIn("has no unconsumed producer generation", maa)
+        self.assertIn("does not name backing", maa)
+        self.assertIn("virtualPageConsumedGeneration", maa)
+
     def test_runner_has_fail_closed_transparent_case(self):
         runner = (
             ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"

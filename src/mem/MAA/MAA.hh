@@ -465,7 +465,8 @@ public:
 
     const AddrRangeList &getAddrRanges(int core_id) const { return cpuPortAddrRanges[core_id]; }
     void setTileReady(int tileID, int wordSize);
-    void resetVirtualPageReady(int tokenTileID);
+    void resetVirtualPageReady(int tokenTileID, Addr backingAddr,
+                               int wordSize);
     void setVirtualPageReady(int tokenTileID, int pageID);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
     bool transparentControllerOwnsTile(int maaID, int tileID) const;
@@ -491,6 +492,10 @@ protected:
     std::vector<PacketPtr> my_register_pkts;
     std::vector<int> my_ready_tile_ids;
     std::vector<std::array<bool, MaxVirtualPages>> virtualPageReady;
+    std::vector<uint64_t> virtualPageGeneration;
+    std::vector<uint64_t> virtualPageConsumedGeneration;
+    std::vector<Addr> virtualPageBackingAddr;
+    std::vector<int> virtualPageWordSize;
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
     std::vector<InstructionPtr> my_instructions;
