@@ -41,6 +41,64 @@ def negative(word):
     return bool(word >> 63)
 
 
+def from_bits(word):
+    return struct.unpack("<d", struct.pack("<Q", word))[0]
+
+
+def to_bits(value):
+    return struct.unpack("<Q", struct.pack("<d", value))[0]
+
+
+def model_expected(record):
+    tau = from_bits(record["tau"])
+    volume = from_bits(record["volume"])
+    norm_sum = from_bits(record["norm_sum"])
+    fp_norm = [from_bits(word) for word in record["fp_norm"]]
+    ez_norm = [from_bits(word) for word in record["ez_norm"]]
+    values = []
+    for group in range(record["groups"]):
+        begin = group * RECORD_WORDS
+        words = record["records"][begin : begin + RECORD_WORDS]
+        source = from_bits(words[0]) + tau * from_bits(words[1])
+        sigma = from_bits(words[2])
+        neighbor = [
+            from_bits(words[3 + 2 * face])
+            + tau * from_bits(words[4 + 2 * face])
+            for face in range(3)
+        ]
+        ss = volume * source
+        for face in range(3):
+            if fp_norm[face] < 0.0:
+                ss -= fp_norm[face] * from_bits(words[9 + face])
+        for face in range(3):
+            outgoing = ez_norm[face] > 0.0
+            aez = ez_norm[face] if outgoing else -ez_norm[face]
+            if not outgoing:
+                ss -= ez_norm[face] * from_bits(words[12 + face])
+            qq = source if outgoing else neighbor[face]
+            qez = neighbor[face] if outgoing else source
+            psi_opposite = (
+                from_bits(words[9 + (face + 1) % 3])
+                if outgoing
+                else from_bits(words[15 + face])
+            )
+            sigv = sigma * volume
+            sigv2 = sigv * sigv
+            aez2 = aez * aez
+            gnum = aez2 * (1.82 * sigv2 + aez * (4.0 * sigv + 3.0 * aez))
+            gden = volume * (
+                4.0 * sigv * sigv2
+                + aez * (6.0 * sigv2 + 2.0 * aez * (2.0 * sigv + aez))
+            )
+            sez = (
+                volume * gnum * (sigma * psi_opposite - qq)
+                + 0.5 * aez * gden * (qq - qez)
+            ) / (gnum + gden * sigma)
+            ss += (1.0 if outgoing else -1.0) * sez
+        values.append(to_bits(ss / (norm_sum + sigma * volume)))
+    return values
+
+
 def parse_record(path):
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0] != "LANL_MAA_UMT_SWEEP_V1":
@@ -427,6 +485,8 @@ def run(args, root):
     if args.require_clean_simulator and not clean:
         raise RuntimeError("mixed UMT evidence requires a clean simulator")
     record = parse_record(args.record.resolve())
+    record["native_expected"] = record["expected"]
+    record["expected"] = model_expected(record)
     if args.cpu_baseline and args.model_payload_overlay_ports:
         raise RuntimeError("scalar arm cannot model accelerator payload ports")
     source, binary = build_program(root, record, args.cpu_baseline)
@@ -436,6 +496,24 @@ def run(args, root):
     expected_bytes = b"".join(
         struct.pack("<Q", word) for word in record["expected"]
     )
+    native_expected_bytes = b"".join(
+        struct.pack("<Q", word) for word in record["native_expected"]
+    )
+    native_errors = []
+    for model_word, native_word in zip(
+        record["expected"], record["native_expected"]
+    ):
+        model_value = from_bits(model_word)
+        native_value = from_bits(native_word)
+        absolute = abs(model_value - native_value)
+        scale = max(abs(model_value), abs(native_value))
+        native_errors.append(
+            {
+                "absolute": absolute,
+                "relative": 0.0 if scale == 0.0 else absolute / scale,
+                "bit_exact": model_word == native_word,
+            }
+        )
     metadata = {
         "schema": "lanl-maa-umt-native-mixed-corner-v1",
         "problem": record["problem"],
@@ -448,6 +526,31 @@ def run(args, root):
         "expected_stream_u64le_sha256": hashlib.sha256(
             expected_bytes
         ).hexdigest(),
+        "native_expected_stream_u64le_sha256": hashlib.sha256(
+            native_expected_bytes
+        ).hexdigest(),
+        "native_comparison": {
+            "bit_exact_groups": sum(
+                item["bit_exact"] for item in native_errors
+            ),
+            "maximum_absolute_error": max(
+                item["absolute"] for item in native_errors
+            ),
+            "maximum_relative_error": max(
+                item["relative"] for item in native_errors
+            ),
+            "all_within_1e_minus_12": all(
+                item["absolute"]
+                <= 1.0e-12
+                + 1.0e-12
+                * max(abs(from_bits(model_word)), abs(from_bits(native_word)))
+                for item, model_word, native_word in zip(
+                    native_errors,
+                    record["expected"],
+                    record["native_expected"],
+                )
+            ),
+        },
         "incoming_mask": record["incoming_mask"],
         "incident_mask": record["incident_mask"],
         "data_vaddr": DATA_VADDR,
@@ -488,8 +591,8 @@ def run(args, root):
         "status": "running",
         "terminal": False,
         "command": command,
-        "correctness_method": "Every result is compared bit-exactly with the preserved native UMT corner result.",
-        "claim_boundary": "One native corner record is a source-derived gem5 microbenchmark, not a full UMT application run.",
+        "correctness_method": "Every scalar and MAA result is compared bit-exactly with the same frozen mixed-corner source-order model; native UMT error is reported separately.",
+        "claim_boundary": "One native-derived corner record is a gem5 microbenchmark. Mixed directions are tolerance-equal, not bit-identical, to native UMT; this is not a full UMT application run.",
     }
     report_path = root / "report.json"
     support.write_json_atomic(report_path, report)
