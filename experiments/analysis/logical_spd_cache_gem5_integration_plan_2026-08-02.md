@@ -106,6 +106,13 @@ internalLaneBase(maa, slot) = architecturalLaneCount + maa * 4 + slot * 2
 
 CPU-visible SPD ranges and all external physical-ID validation remain bounded by `architecturalLaneCount`. Only controller-generated instructions may name the hidden lane range. A slot uses its base lane for 32-bit data and both lanes for 64-bit data. Logical cache state, pins, tags, and dirty state live in the controller; they do not reuse `SPD::tiles_dirty`.
 
+Appending hidden lanes is an integration-isolation choice, not an area-saving
+result.  The first slice must report them in every storage ledger: two FP64
+slots add four 4K lane tiles, or 64 KiB per MAA.  A final cost-oriented design
+must either reserve those lanes from the architectural SPD pool or count the
+appended payload on top of that pool.  It may not claim the 512 KiB 4K-SPD
+point while silently excluding controller-private payload.
+
 ### Transactions
 
 Every asynchronous producer instruction, fill, ALU page operation, and page writeback receives a monotonically increasing nonzero `uint64_t transactionID` from the owning per-MAA controller. A producer's page notifications share its unique producer-instruction ID and are further identified by their page; each fill, ALU page, and writeback operation has its own ID. IDs are not recycled; exhaustion is fatal.
