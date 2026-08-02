@@ -70,6 +70,14 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertIn("schedule(issueInstructionEvent", retry_body)
         self.assertNotIn("scheduleIssueInstructionEvent(1);", retry_body)
 
+    def test_completion_does_not_reuse_live_if_slot(self):
+        maa = (ROOT / "src/mem/MAA/MAA.cc").read_text()
+        begin = maa.index("void MAA::finishInstructionCompute")
+        end = maa.index("void MAA::setTileReady", begin)
+        completion = maa[begin:end]
+        self.assertNotIn("tryIssueTransparentMicroOp();", completion)
+        self.assertIn("scheduleIssueInstructionEvent();", completion)
+
     def test_tile_and_register_hazards_are_span_aware(self):
         interface = (ROOT / "src/mem/MAA/IF.cc").read_text()
         controller = (

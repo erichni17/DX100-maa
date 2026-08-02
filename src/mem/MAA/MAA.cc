@@ -1154,7 +1154,7 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
         if (transparentController.complete()) {
             const auto descriptor = transparentController.descriptor();
             // Return the descriptor-lifetime credits only after the final
-            // native stream store has been acknowledged.
+            // native stream store has been accepted by the memory hierarchy.
             setTileReady(descriptor.physicalTile, descriptor.wordSize);
             setTileReady(descriptor.outputTile, descriptor.wordSize);
             panic_if(virtualPageGeneration[descriptor.tokenTile] !=
@@ -1169,14 +1169,14 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
             DPRINTF(MAAVirtualTrace,
                     "event=transparent_retire pages=%d\n",
                     TransparentSPDController::NumPages);
-        } else {
-            tryIssueTransparentMicroOp();
         }
     } else if (transparentController.active()) {
-        // A ready action may previously have observed a full instruction file.
-        // Any unrelated retirement is a finite retry opportunity.
-        tryIssueTransparentMicroOp();
+        // The scheduled issue event below is the finite retry opportunity for
+        // controller work that previously observed a full instruction file.
     }
+    // Do not dispatch a successor controller micro-op synchronously here.  A
+    // functional unit still owns a pointer to this IF slot until its finish
+    // handler returns, so immediate reuse would mutate the retiring opcode.
     scheduleIssueInstructionEvent();
     scheduleDispatchInstructionEvent();
     scheduleDispatchRegisterEvent();
