@@ -122,42 +122,51 @@ They are not accepted ABI, response transport, or correctness authority.
 The active independent response review is a further reason not to cherry-pick
 either patch as an implied acceptance.
 
-## Exact ABI: new opcode, legacy untouched
+## Exact ABI: accepted high-byte logical opcode-8 form
 
-Use `LOGICAL_ALU_SCALAR = 17`. Do **not** overload opcode 8: old physical
-software may place arbitrary values in currently ignored word-0 high bytes.
-Adding a positive opcode keeps every old opcode-0--16 encoding and behavior
-unchanged, including `ALU_SCALAR = 8` and
-`VIRTUAL_TILE_ALU_SCALAR = 16`.
+Use the accepted high-byte-tagged `ALU_SCALAR = 8` form from the repaired ABI
+series (`6bee6a5` followed by `a65374c`). Existing physical writers emit zero
+in all three formerly ignored word-0 high bytes, so the logical form is
+disjoint: its middle high byte is `0xff`. Do not introduce a second numeric
+opcode for this slice. Opcode 8's ordinary physical encoding and behavior, and
+all opcode values 0--16 including opcode 16 transparent operation, remain
+unchanged.
+
+Opcode 17 is an **unimplemented alternative**, not a second accepted ABI. It
+would require a new opcode table value, API encoding, decoder contract, and
+legacy regression surface without solving a compatibility problem; the
+accepted high-byte form already separates the logical and physical images.
 
 ```text
 word 0, bits 63:56: logical source ID       (0 or 1)
 word 0, bits 55:48: logical destination ID  (0 or 1, different)
-word 0, bits 47:40: LogicalABIv1 magic      (0xa1)
-word 0, bits 39:32: opcode 17
+word 0, bits 47:40: logical destination ID  (0 or 1)
+word 0, bits 39:32: opcode 8
 word 0, bits 31:24: FLOAT64 datatype (5)
 word 0, bits 23:16: {ADD,SUB,MUL,DIV,MIN,MAX}
 word 0, bits 15: 0: physical destination IDs = 0xff, 0xff
 
 word 1: src1 scalar register valid; all physical SPD IDs, other registers,
         destination registers, and condition fields = 0xff
-word 2: source backing base, aligned to 8, complete 128-KiB registered span
+word 2: `NoAddress` (0xffffffffffffffff); source backing is descriptor state
 word 3: destination backing base, aligned to 8, complete 128-KiB span
 word 4: forbidden
 ```
 
-Word 2 reuses `baseAddr`; word 3 reuses `backingAddr`. A small CPU decode
-sidecar records `{srcLogical:uint16,dstLogical:uint16,magic:uint8,word3Seen}`
-until word 3 arrives. It is not a reinterpretation of physical SPD fields.
-`Instruction` gains exactly 8 bytes for logical IDs/flags/padding; a target
-build must assert that delta.
+Word 2 remains the existing `baseAddr` field and must be `NoAddress`; word 3
+reuses `backingAddr`. A small CPU decode sidecar records
+`{srcLogical:uint16,dstLogical:uint16,headerKind:uint8,word3Seen}` until word 3
+arrives. It is not a reinterpretation of physical SPD fields. `Instruction`
+gains exactly 8 bytes for logical IDs/flags/padding; a target build must assert
+that delta.
 
 Admission is atomic:
 
-1. Validate every wire field, scalar-register range, 128-KiB spans, alignment,
-   non-overlap, IDs, and operation before mutation.
-2. A free source ID becomes `SourceLive` with all four pages ready. A live
-   source must match base/type/span exactly. No speculative producer page is
+1. Validate every wire field, scalar-register range, destination 128-KiB span,
+   alignment, IDs, and operation before mutation.
+2. The source descriptor must already have a validated coherent backing range
+   and matching generation/type. A free source is established by the source
+   flow below; a live source must match it. No speculative producer page is
    accepted.
 3. Destination ID must be free; allocate it `DestinationProducing` with no
    ready pages. Capture the FP64 scalar bits now.
@@ -168,6 +177,26 @@ A malformed software instruction is a pre-mutation `panic_if`, consistent
 with current MMIO programming errors. A malformed or late asynchronous response
 is classified and dropped, never turned into a panic merely because it arrived
 late.
+
+### Source readiness flow (`notifyPageReady`)
+
+The source is not made ready by the consumer opcode. A source-registration
+operation first validates its complete coherent 128-KiB backing span and
+allocates `S:gS` plus a nonzero source/producer transaction. It then constructs
+each `PageIdentity{logical=S,page=0..3,generation=gS}` and calls the controller's
+`notifyPageReady` once per page ([LogicalSPDCacheController.hh:339-355](../../src/mem/MAA/LogicalSPDCacheController.hh#L339)).
+Only four `Accepted` results may transition the integration descriptor to
+`SourceLive`; a `Duplicate`, `Busy`, `Stale`, or `Invalid` result leaves that
+page unpublished and blocks consumer admission. The backing data is already
+coherent before these notifications, so a later `access(S.p)` may queue a fill,
+but `notifyPageReady` never installs payload and never substitutes for a
+producer's retirement ACKs.
+
+An eventual indirect producer uses the same callback shape only after its own
+page's acknowledged retirement writes; it must carry the producer transaction
+and generation and is a separate, unimplemented integration. The first slice
+therefore has an explicit source flow and does not claim that a payload cache
+preserves producer reorder metadata.
 
 ## Finite resources and identities
 
@@ -189,7 +218,7 @@ All capacities are compile-time constants; no new runtime knob is introduced.
 ```text
 DescriptorKey = { logical:uint16, generation:uint32 }                 // nonzero
 PageKey       = { logical:uint16, page:uint16, generation:uint32 }
-OperationID   = uint64, nonzero, unique per accepted opcode 17
+OperationID   = uint64, nonzero, unique per accepted logical opcode-8 form
 ActionSerial  = uint64, nonzero, unique per fill/compute/writeback
 ActionTag     = { OperationID, ActionSerial, generation,
                   maa:uint16, logical:uint16, page:uint16, slot:uint16,
@@ -237,8 +266,8 @@ ordering, not latency.
 
 | Event | Exact state/action | Concrete hook |
 | --- | --- | --- |
-| T0 | CPU writes opcode-17 words 0--3; all fields and spans validate. | Extend `CpuSidePort::recvTimingReq` cases at [CpuSidePort.cc:182](../../src/mem/MAA/CpuSidePort.cc#L182). |
-| T1 | `S:gS` becomes source-live; `D:gD` allocated empty; scalar and `OperationID O` captured. | New `MAA::admitLogicalScalar`, called through `dispatchInstruction` ([MAA.cc:979](../../src/mem/MAA/MAA.cc#L979)). |
+| T0 | Source flow has accepted four `notifyPageReady(S.p:gS)` calls; CPU writes the accepted opcode-8 logical words 0--3; destination fields and span validate. | Source callback at [LogicalSPDCacheController.hh:339](../../src/mem/MAA/LogicalSPDCacheController.hh#L339), then extend `CpuSidePort::recvTimingReq` at [CpuSidePort.cc:182](../../src/mem/MAA/CpuSidePort.cc#L182). |
+| T1 | `S:gS` is already source-live; `D:gD` is allocated empty; scalar and `OperationID O` are captured. | New `MAA::admitLogicalScalar`, called through `dispatchInstruction` ([MAA.cc:979](../../src/mem/MAA/MAA.cc#L979)). |
 | T2 | `access(S.0:gS)` queues a miss; advertise `Fill(A,S.0,F0)`. | Existing controller [access](../../src/mem/MAA/LogicalSPDCacheController.hh#L359), [pendingAction](../../src/mem/MAA/LogicalSPDCacheController.hh#L536), [acceptAction](../../src/mem/MAA/LogicalSPDCacheController.hh#L581). |
 | T3 | Fill issues up to 8 tagged `ReadReq` lines at a time, until all 512 for `{O,F0,S.0,gS,A,Fill}` are sent. | New bounded stream method beside `createReadPacket` ([StreamAccess.cc:363](../../src/mem/MAA/StreamAccess.cc#L363)). |
 | T4 | The 512th exact read response installs the line and calls `completeFill(A,S.0,F0)`. A is clean source. | New `logicalReadResponse`; route from [Port.cc:698](../../src/mem/MAA/Port.cc#L698). |
@@ -262,6 +291,13 @@ completes only then: neither admission, ALU completion, packet acceptance, nor
 a response-less store is an architectural completion boundary. The full FP64
 transform has exactly 2,048 tagged read responses and 2,048 tagged write
 responses.
+
+Destination publication has exactly one path: the final matching `WriteResp`
+sets the page's ACK bit, the line ledger reports terminal completion, and only
+then does the scheduler call `completeWriteback`. That controller transition
+sets the destination page's ready bit only if its `{logical,generation}` is
+still live, then releases the slot. No ALU completion, packet send, ordinary
+`WritebackDirty`, or source `notifyPageReady` call can publish `D.p`.
 
 ## True ACK ownership and bad-event behavior
 
@@ -289,7 +325,7 @@ direct full-line `WriteReq` on the retirement cache path and waits for
 
 | Event | Required result |
 | --- | --- |
-| Malformed opcode-17 input | Pre-mutation `panic_if`. |
+| Malformed logical opcode-8 input | Pre-mutation `panic_if`. |
 | Tagged response with no outstanding request | Increment stale counter; free only that sender state; do not recreate state. |
 | Wrong MAA/action/op/serial/page/generation/slot/address/command | Increment specific wrong counter; no mutation. |
 | Already ACKed line | Increment duplicate counter; no mutation. |
@@ -373,13 +409,26 @@ controller state are an architectural proposal. The C++ `element_finished`
 and vector objects are simulator bookkeeping, but they are counted above so a
 simulator-memory claim cannot omit them.
 
+### Payload versus 16K reorder metadata
+
+The two physical slots are exactly two 4K-element FP64 payloads: 32,768 bytes
+per slot, 65,536 bytes per MAA, and 262,144 bytes for four MAAs. That number is
+separate from logical ordering metadata. This first slice allocates **zero
+bytes** for a 16K reorder ledger because its source is already coherent and
+page-ready; zero here means “unimplemented,” not “free.” The 16K producer
+request/order/filtered-index metadata cost is therefore not included in the
+333,576-byte simulator total or in the 262,144-byte payload total. A future
+reorder alternative must specify its entry count, fields, ACK ownership, and
+checkpoint bytes as a separate ledger and cannot inherit the two-slot payload
+number as its cost.
+
 ## Source-file implementation map
 
 | File/function | Required change |
 | --- | --- |
 | `LogicalSPDCacheController.hh` | Reuse fixed controller and atomic pair unchanged for control. Do not add page payload. Backing/type/reference data is an explicitly sized integration extension, not a shadow slot FSM. |
-| `IF.hh:33-195`, `IF.cc:12-55` | Add opcode 17/name only. Preserve numbers and behavior of 0--16. Generated ALUs use physical hidden IDs and internal tag fields. |
-| `CpuSidePort.cc:216-350` | Decode opcode-17 high bytes only for opcode 17; defer its dispatch until word 3. Extend virtual-ready shell with finite generation-tagged logical waiters. |
+| `IF.hh:33-195`, `IF.cc:12-55` | Add the accepted logical opcode-8 header classification only. Preserve numbers and behavior of all physical opcode images; generated ALUs use physical hidden IDs and internal tag fields. |
+| `CpuSidePort.cc:216-350` | Decode the high-byte logical header only when opcode 8 and the `src2=0xff` discriminator are present; defer logical dispatch until word 3. Extend virtual-ready shell with finite generation-tagged logical waiters. |
 | `MAA.hh:468-513` | Own fixed per-MAA logical state; add admission, waits, action scheduler, response, drain, and serialization declarations. Do not remove `transparentController`. |
 | `MAA.cc:487-587` | At existing retry point, schedule responses first, then logical writeback, fill, ALU, and new admission. Busy unit/port means retry with no mutation. |
 | `MAA.cc:648-970` | Leave transparent submission/dispatch/issue behavior unchanged; add disjoint `tryIssueLogicalSliceAction`. A call cannot be owned by both schedulers. |
@@ -389,7 +438,7 @@ simulator-memory claim cannot omit them.
 | `StreamAccess.hh:84-135`, `StreamAccess.cc:363-479` | Add bounded logical fill/direct-writeback and response methods. Preserve ordinary load/store, `recvData`, and `writePacketSent` behavior. |
 | `MAA.hh:799-850`, `Port.cc:30-295,499-745` | Preserve address ordering; prohibit logical coalescing; retain logical writes until `WriteResp`; validate sender state and complete tag before line ACK. |
 | `IndirectAccess.*` | No first-slice change. A producer conversion is a separate response-ACK/generation-identity feature. |
-| API/config/tests | Add only opcode-17 helper and logical waits after unit contracts pass. Old helpers and visible-SPD ranges stay unchanged. |
+| API/config/tests | Add only the accepted logical opcode-8 helper and logical waits after unit contracts pass. Old helpers and visible-SPD ranges stay unchanged. |
 
 ## Payload caching does not preserve 16K reorder metadata
 
@@ -434,13 +483,13 @@ this order:
 
 | Stage | Smallest test | Promotion gate | Failure gate |
 | ---: | --- | --- | --- |
-| 0 | Source contract: fixed capacities, opcode-17 isolation, hidden-ID rejection, tag fields, no logical `WritebackDirty`. | Required before compile. | Dynamic logical queue/ledger, visible hidden lane, or opcode-8 reinterpretation. |
+| 0 | Source contract: fixed capacities, accepted opcode-8 discriminator, hidden-ID rejection, tag fields, no logical `WritebackDirty`. | Required before compile. | Dynamic logical queue/ledger, visible hidden lane, or opcode-8/physical ambiguity. |
 | 1 | Header-only controller test: existing atomic-pair tests plus A/B/A/B four-page schedule and stale serials. | Optimized and ASan/UBSan pass. | Partial reservation, pin leak, serial/generation reuse, or reuse before ACK. |
 | 2 | Pure C++ stream/port ledger: 512 lines, 8 credits, reordered good responses, duplicate, wrong tag/address, and port refusal. | Exactly one terminal callback at `acked==issued==512`. | Send acceptance completes write, dynamic growth, or bad response retires good request. |
 | 3 | Incremental then configured `gem5.opt` build. | Warnings-as-errors; byte assertions yield 333,576 for the four-MAA/four-core point and record `sizeof(Packet)`. | Opcode renumbering, padding/accounting drift, or transparent-test regression. |
-| 4 | Focused gem5 SE, one MAA then four: source -> opcode 17 -> page waits -> byte/guard check. | Trace: 4 fills, 4 computes, 4 complete 512-line writeback ACKs, then completion. | Early ready/completion, mismatched bytes, hidden-visible alias, or legacy trace change. |
+| 4 | Focused gem5 SE, one MAA then four: source notifyPageReady flow -> logical opcode 8 -> page waits -> byte/guard check. | Trace: 4 fills, 4 computes, 4 complete 512-line writeback ACKs, then completion. | Early ready/completion, mismatched bytes, hidden-visible alias, or legacy trace change. |
 | 5 | Delayed/reordered/duplicate response, cache retry, reuse, FIFO-full, drain/checkpoint/restart gem5 tests. | High waters bounded 4/4/8/8; old generation never publishes. | Hang, growth, stale mutation, lost ACK, dirty discard, or live checkpoint. |
-| 6 | Existing physical opcode-8, opcode-16, stream-store, and CPU-visible-SPD regressions. | All legacy behavior unchanged. | Difference for an instruction without opcode-17 marker. |
+| 6 | Existing physical opcode-8, opcode-16, stream-store, and CPU-visible-SPD regressions. | All legacy behavior unchanged. | Difference for an instruction without the logical high-byte discriminator. |
 
 Stages 0--6 establish functional safety only. No performance or architecture
 promotion may occur until a separate cost study charges the 256-KiB private
