@@ -196,6 +196,7 @@ class LineOwner:
     tokens: dict[int, int] = field(default_factory=dict)
     reservation_request_ids: dict[int, int] = field(default_factory=dict)
     reservation_source_lines: dict[int, int] = field(default_factory=dict)
+    payload: dict[int, int] = field(default_factory=dict)
     state: str = "collecting"
     write_request_id: int | None = None
 
@@ -223,6 +224,300 @@ class WriteRequest:
     line: int
     mask: int
     destinations: tuple[int, ...]
+
+
+HARDWARE_POLICY_STATE = "hardware_policy_state"
+REPLAY_EVIDENCE_OBSERVER_STATE = "replay_evidence_observer_state"
+
+# This inventory names only state that persists in the finite replay model.
+# Function locals, temporary Python containers, object headers, hash-table
+# slack, and other interpreter implementation overhead are deliberately out of
+# scope.  A field appears once, at the component that stores its bit-packed
+# logical representation.  The unit tests compare this inventory with the
+# scheduler's actual assignments and embedded record schemas.
+_CONFIG_FIELDS = (
+    "logical_elements",
+    "page_elements",
+    "word_bytes",
+    "cache_line_bytes",
+    "combine_slots",
+    "combine_ways",
+    "owner_lines",
+    "owner_ways",
+    "source_request_slots",
+    "source_response_slots",
+    "write_request_slots",
+    "write_ack_slots",
+    "new_focus_owner_lines_per_request",
+    "new_future_owner_lines_per_request",
+    "row_burst",
+)
+_OWNER_METADATA_FIELDS = (
+    "line",
+    "generation",
+    "expected_mask",
+    "allocation_sequence",
+    "received_mask",
+    "reserved_mask",
+    "tokens",
+    "reservation_request_ids",
+    "reservation_source_lines",
+    "state",
+    "write_request_id",
+)
+_SOURCE_REQUEST_FIELDS = (
+    "request_id",
+    "generation",
+    "source_line",
+    "destinations",
+)
+_SOURCE_RESPONSE_FIELDS = (
+    "request_id",
+    "generation",
+    "source_line",
+    "payload",
+)
+_WRITE_REQUEST_FIELDS = (
+    "request_id",
+    "generation",
+    "line",
+    "mask",
+    "destinations",
+)
+_EVENT_COUNTER_FIELDS = (
+    "transition_steps",
+    "source_request_issues",
+    "source_request_acceptances",
+    "source_response_completions",
+    "write_request_issues",
+    "write_request_acceptances",
+    "write_completions",
+    "owner_promotions",
+    "owner_allocations",
+    "owner_allocation_refusals",
+    "focus_switches",
+    "stale_source_responses",
+    "forged_source_responses",
+    "stale_write_responses",
+    "same_bank_row_successors",
+    "source_successor_pairs",
+    "row_rotations",
+    "row_same_reselections",
+)
+_HIGH_WATER_FIELDS = (
+    "owner",
+    "source_request",
+    "accepted_source",
+    "source_response",
+    "write_request",
+    "write_ack",
+)
+
+
+def _inventory_entries(
+    classification: str, component: str, fields: Sequence[str]
+) -> tuple[tuple[str, str, str], ...]:
+    return tuple((field, classification, component) for field in fields)
+
+
+PERSISTENT_FIELD_INVENTORY = (
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "configuration_image_bits",
+        tuple(
+            f"CorrectedHybridScheduler.config.{name}"
+            for name in _CONFIG_FIELDS
+        )
+        + ("CorrectedHybridScheduler.source_line_phase",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "source_mapping_table_bits",
+        ("CorrectedHybridScheduler.pattern",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "live_predicate_bits",
+        ("CorrectedHybridScheduler.live",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "exact_live_mask_table_bits",
+        ("CorrectedHybridScheduler.expected_masks",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "destination_line_directory_bits",
+        ("CorrectedHybridScheduler.line_destinations",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "source_target_directory_bits",
+        ("CorrectedHybridScheduler.source_targets",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "source_pending_directory_bits",
+        ("CorrectedHybridScheduler.source_pending_lines",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "token_state_bits",
+        ("CorrectedHybridScheduler.token_state",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "progress_state_bits",
+        (
+            "CorrectedHybridScheduler.remaining_live_words",
+            "CorrectedHybridScheduler.page_remaining",
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "focus_row_structure_bits",
+        ("CorrectedHybridScheduler.focus_rows",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "focus_membership_bits",
+        ("CorrectedHybridScheduler.focus_heap_members",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "selector_state_bits",
+        (
+            "CorrectedHybridScheduler.focus_page",
+            "CorrectedHybridScheduler.active_row",
+            "CorrectedHybridScheduler.active_row_remaining",
+            "CorrectedHybridScheduler.owner_set_counts",
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "owner_payload_bits",
+        ("CorrectedHybridScheduler.owners[].LineOwner.payload",),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "owner_metadata_bits",
+        tuple(
+            f"CorrectedHybridScheduler.owners[].LineOwner.{name}"
+            for name in _OWNER_METADATA_FIELDS
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "source_request_queue_bits",
+        tuple(
+            "CorrectedHybridScheduler.source_requests[]"
+            f".SourceRequest.{name}"
+            for name in _SOURCE_REQUEST_FIELDS
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "accepted_source_ledger_bits",
+        tuple(
+            "CorrectedHybridScheduler.accepted_source_requests[]"
+            f".SourceRequest.{name}"
+            for name in _SOURCE_REQUEST_FIELDS
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "source_response_event_queue_bits",
+        tuple(
+            "CorrectedHybridScheduler.source_responses[]"
+            f".SourceResponse.{name}"
+            for name in _SOURCE_RESPONSE_FIELDS
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "write_request_queue_bits",
+        tuple(
+            "CorrectedHybridScheduler.write_requests[]" f".WriteRequest.{name}"
+            for name in _WRITE_REQUEST_FIELDS
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "write_ack_queue_bits",
+        tuple(
+            f"CorrectedHybridScheduler.write_acks[].WriteRequest.{name}"
+            for name in _WRITE_REQUEST_FIELDS
+        ),
+    ),
+    *_inventory_entries(
+        HARDWARE_POLICY_STATE,
+        "identity_state_bits",
+        (
+            "CorrectedHybridScheduler.generation",
+            "CorrectedHybridScheduler.next_source_request_id",
+            "CorrectedHybridScheduler.next_write_request_id",
+            "CorrectedHybridScheduler.next_allocation_sequence",
+        ),
+    ),
+    *_inventory_entries(
+        REPLAY_EVIDENCE_OBSERVER_STATE,
+        "payload_oracle_observer_bits",
+        (
+            "CorrectedHybridScheduler.expected_destination_values",
+            "CorrectedHybridScheduler.destination_values",
+            "CorrectedHybridScheduler.destination_receive_counts",
+        ),
+    ),
+    *_inventory_entries(
+        REPLAY_EVIDENCE_OBSERVER_STATE,
+        "functional_work_accounting_bits",
+        tuple(
+            f"CorrectedHybridScheduler.work_counts.{name}"
+            for name in WORK_COUNTER_NAMES
+        )
+        + (
+            "CorrectedHybridScheduler.functional_work_total",
+            "CorrectedHybridScheduler._atomic_depth",
+            "CorrectedHybridScheduler._atomic_start_work",
+            "CorrectedHybridScheduler._atomic_name",
+            "CorrectedHybridScheduler.atomic_transition_work_high_water",
+            "CorrectedHybridScheduler.atomic_transition_work_limit",
+        ),
+    ),
+    *_inventory_entries(
+        REPLAY_EVIDENCE_OBSERVER_STATE,
+        "execution_event_counter_bits",
+        tuple(
+            f"CorrectedHybridScheduler.{name}"
+            for name in _EVENT_COUNTER_FIELDS
+        ),
+    ),
+    *_inventory_entries(
+        REPLAY_EVIDENCE_OBSERVER_STATE,
+        "ordering_observer_state_bits",
+        ("CorrectedHybridScheduler.previous_source_row",),
+    ),
+    *_inventory_entries(
+        REPLAY_EVIDENCE_OBSERVER_STATE,
+        "high_water_observer_bits",
+        tuple(
+            f"CorrectedHybridScheduler.high_water.{name}"
+            for name in _HIGH_WATER_FIELDS
+        ),
+    ),
+)
+
+
+def persistent_field_inventory() -> list[dict[str, str]]:
+    """Return the complete field-level finite-state classification."""
+    return [
+        {
+            "field": field,
+            "classification": classification,
+            "component": component,
+        }
+        for field, classification, component in PERSISTENT_FIELD_INVENTORY
+    ]
 
 
 def validate_pattern(pattern: Sequence[int]) -> None:
@@ -536,9 +831,11 @@ class CorrectedHybridScheduler:
             self.live, self.config.words_per_line
         )
         self.expected_destination_values = [
-            deterministic_source_value(source_word)
-            if self.live[destination]
-            else None
+            (
+                deterministic_source_value(source_word)
+                if self.live[destination]
+                else None
+            )
             for destination, source_word in enumerate(self.pattern)
         ]
         self.destination_values: list[int | None] = [None] * len(self.pattern)
@@ -1053,6 +1350,7 @@ class CorrectedHybridScheduler:
                 raise AssertionError(
                     "destination received a source value twice"
                 )
+            owner.payload[word] = value
             self.destination_values[destination] = value
             self.destination_receive_counts[destination] += 1
         del self.accepted_source_requests[response.request_id]
@@ -1148,11 +1446,14 @@ class CorrectedHybridScheduler:
         del self.write_acks[matching_index]
         for destination in request.destinations:
             self._charge("write_token_walks", 1)
+            _, word = divmod(destination, self.config.words_per_line)
             if self.token_state[destination] != "tentative":
                 raise AssertionError("write completion token is not tentative")
             if (
                 self.destination_receive_counts[destination] != 1
                 or self.destination_values[destination]
+                != self.expected_destination_values[destination]
+                or owner.payload.get(word)
                 != self.expected_destination_values[destination]
             ):
                 raise AssertionError("write completion failed payload oracle")
@@ -1273,6 +1574,13 @@ class CorrectedHybridScheduler:
                 raise AssertionError("reservation request-ID ledger diverged")
             if reservation_words != set(owner.reservation_source_lines):
                 raise AssertionError("reservation source-line ledger diverged")
+            received_words = {
+                word
+                for word in range(self.config.words_per_line)
+                if owner.received_mask & (1 << word)
+            }
+            if received_words != set(owner.payload):
+                raise AssertionError("owner payload ledger diverged")
         for request_id, request in self.accepted_source_requests.items():
             if request_id != request.request_id:
                 raise AssertionError("accepted source ledger key diverged")
@@ -1345,9 +1653,11 @@ class CorrectedHybridScheduler:
                 "completed replay did not issue every source line"
             )
         same_row_rate = round(
-            self.same_bank_row_successors / self.source_successor_pairs
-            if self.source_successor_pairs
-            else 0.0,
+            (
+                self.same_bank_row_successors / self.source_successor_pairs
+                if self.source_successor_pairs
+                else 0.0
+            ),
             9,
         )
         physical_full_mask = (1 << self.config.words_per_line) - 1
@@ -1437,7 +1747,7 @@ class CorrectedHybridScheduler:
 def corrected_state_lower_bound(
     config: ReplayConfig | None = None,
 ) -> dict[str, object]:
-    """Finite bit-packed policy/observer ledger; not synthesis evidence."""
+    """Return a complete finite replay-state ledger, not synthesis evidence."""
     config = config or ReplayConfig()
     config.validate()
     line_count = config.destination_lines
@@ -1460,23 +1770,60 @@ def corrected_state_lower_bound(
     )
     owner_set_count_bits = max(1, math.ceil(math.log2(config.owner_ways + 1)))
     row_burst_bits = max(1, math.ceil(math.log2(config.row_burst + 1)))
+    observer_counter_bits = REQUEST_ID_BITS
 
+    def fifo_protocol_bits(slots: int) -> int:
+        pointer_bits = max(1, math.ceil(math.log2(slots)))
+        count_bits = max(1, math.ceil(math.log2(slots + 1)))
+        return 2 * pointer_bits + count_bits
+
+    configuration_image_bits = (
+        sum(getattr(config, name).bit_length() for name in _CONFIG_FIELDS)
+        + source_line_bits
+    )
+    source_mapping_bits = config.logical_elements * (
+        source_line_bits + source_word_bits
+    )
+    live_predicate_bits = config.logical_elements
+    exact_live_mask_table_bits = line_count * (1 + mask_bits)
+    destination_line_directory_bits = line_count * (1 + mask_bits)
+    source_target_directory_bits = config.logical_elements * source_line_bits
+    source_pending_directory_bits = config.logical_elements * (
+        1 + source_line_bits + line_bits
+    )
+    token_state_bits = config.logical_elements * 2
+    progress_state_bits = (
+        max(1, math.ceil(math.log2(config.logical_elements + 1)))
+        + page_count * page_remaining_bits
+    )
+    focus_pointer_bits = max(
+        1, math.ceil(math.log2(config.logical_elements + 1))
+    )
+    focus_row_structure_bits = config.logical_elements * (
+        1 + source_line_bits + row_key_bits + 2 * focus_pointer_bits
+    )
+    focus_membership_bits = config.logical_elements * (1 + source_line_bits)
+    selector_state_bits = (
+        page_bits
+        + config.owner_sets * owner_set_count_bits
+        + 1
+        + row_key_bits
+        + row_burst_bits
+    )
+    owner_payload_bits = (
+        config.owner_lines * config.words_per_line * VALUE_BITS
+    )
     owner_metadata_bits = config.owner_lines * (
         line_bits
         + GENERATION_BITS
         + 3 * mask_bits
         + allocation_sequence_bits
         + owner_state_bits
-        + REQUEST_ID_BITS
         + 1
+        + REQUEST_ID_BITS
         + config.words_per_line
         * (token_bits + REQUEST_ID_BITS + source_line_bits)
     )
-    live_mask_table_bits = line_count * (mask_bits + GENERATION_BITS + 1)
-    source_mapping_bits = config.logical_elements * (
-        source_line_bits + source_word_bits
-    )
-    token_state_bits = config.logical_elements * 2
     source_queue_descriptor_bits = (
         1
         + REQUEST_ID_BITS
@@ -1487,17 +1834,19 @@ def corrected_state_lower_bound(
     )
     source_request_queue_bits = (
         config.source_request_slots * source_queue_descriptor_bits
+        + fifo_protocol_bits(config.source_request_slots)
     )
     accepted_source_ledger_bits = (
         config.source_response_slots * source_queue_descriptor_bits
+        + max(1, math.ceil(math.log2(config.source_response_slots + 1)))
     )
-    source_response_event_bits = config.source_response_slots * (
+    source_response_event_queue_bits = config.source_response_slots * (
         1
         + REQUEST_ID_BITS
         + GENERATION_BITS
         + source_line_bits
         + config.words_per_line * VALUE_BITS
-    )
+    ) + fifo_protocol_bits(config.source_response_slots)
     write_descriptor_bits = (
         1
         + REQUEST_ID_BITS
@@ -1509,80 +1858,106 @@ def corrected_state_lower_bound(
     )
     write_request_queue_bits = (
         config.write_request_slots * write_descriptor_bits
+        + fifo_protocol_bits(config.write_request_slots)
     )
-    write_ack_queue_bits = config.write_ack_slots * write_descriptor_bits
-    focus_heap_bits = config.logical_elements * (1 + source_line_bits)
-    focus_membership_bits = config.logical_elements * (1 + source_line_bits)
-    focus_pointer_bits = max(
-        1, math.ceil(math.log2(config.logical_elements + 1))
-    )
-    focus_row_directory_bits = config.logical_elements * (
-        1 + row_key_bits + 2 * focus_pointer_bits
-    )
-    selector_state_bits = (
-        page_bits
-        + page_count * page_remaining_bits
-        + max(1, math.ceil(math.log2(config.logical_elements + 1)))
-        + config.owner_sets * owner_set_count_bits
-        + 1
-        + row_key_bits
-        + row_burst_bits
-        + max(1, math.ceil(math.log2(config.logical_elements + 1)))
+    write_ack_queue_bits = (
+        config.write_ack_slots * write_descriptor_bits
+        + fifo_protocol_bits(config.write_ack_slots)
     )
     identity_state_bits = (
         GENERATION_BITS + 2 * REQUEST_ID_BITS + allocation_sequence_bits
     )
 
-    def fifo_protocol_bits(slots: int) -> int:
-        pointer_bits = max(1, math.ceil(math.log2(slots)))
-        count_bits = max(1, math.ceil(math.log2(slots + 1)))
-        return 2 * pointer_bits + count_bits
-
-    queue_protocol_bits = sum(
-        fifo_protocol_bits(slots)
-        for slots in (
-            config.source_request_slots,
-            config.source_response_slots,
-            config.write_request_slots,
-            config.write_ack_slots,
-        )
-    ) + max(1, math.ceil(math.log2(config.source_response_slots + 1)))
-    ordering_state_bits = 1 + row_key_bits + 5 * REQUEST_ID_BITS
-    work_accounting_bits = (len(WORK_COUNTER_NAMES) + 4) * REQUEST_ID_BITS
-    payload_oracle_observer_bits = config.logical_elements * (VALUE_BITS + 1)
+    # Replay/evidence fields never steer issue, ownership, or completion.
+    # They are retained so the frozen replay can prove bounded work, ordering,
+    # queue occupancy, and exact-once values without smuggling them into the
+    # hardware-policy subtotal.
+    payload_oracle_observer_bits = config.logical_elements * (
+        VALUE_BITS + 1 + VALUE_BITS + 1
+    )
+    functional_work_accounting_bits = (
+        len(WORK_COUNTER_NAMES) + 4
+    ) * observer_counter_bits + 6
+    execution_event_counter_bits = (
+        len(_EVENT_COUNTER_FIELDS) * observer_counter_bits
+    )
+    ordering_observer_state_bits = 1 + row_key_bits
+    high_water_observer_bits = (
+        max(1, math.ceil(math.log2(config.owner_lines + 1)))
+        + max(1, math.ceil(math.log2(config.source_request_slots + 1)))
+        + 2 * max(1, math.ceil(math.log2(config.source_response_slots + 1)))
+        + max(1, math.ceil(math.log2(config.write_request_slots + 1)))
+        + max(1, math.ceil(math.log2(config.write_ack_slots + 1)))
+    )
 
     component_bits = {
-        "owner_payload_bits": config.owner_lines * config.cache_line_bytes * 8,
-        "owner_metadata_bits": owner_metadata_bits,
-        "exact_live_mask_table_bits": live_mask_table_bits,
+        "configuration_image_bits": configuration_image_bits,
         "source_mapping_table_bits": source_mapping_bits,
+        "live_predicate_bits": live_predicate_bits,
+        "exact_live_mask_table_bits": exact_live_mask_table_bits,
+        "destination_line_directory_bits": destination_line_directory_bits,
+        "source_target_directory_bits": source_target_directory_bits,
+        "source_pending_directory_bits": source_pending_directory_bits,
         "token_state_bits": token_state_bits,
+        "progress_state_bits": progress_state_bits,
+        "focus_row_structure_bits": focus_row_structure_bits,
+        "focus_membership_bits": focus_membership_bits,
+        "selector_state_bits": selector_state_bits,
+        "owner_payload_bits": owner_payload_bits,
+        "owner_metadata_bits": owner_metadata_bits,
         "source_request_queue_bits": source_request_queue_bits,
         "accepted_source_ledger_bits": accepted_source_ledger_bits,
-        "source_response_event_queue_bits": source_response_event_bits,
+        "source_response_event_queue_bits": source_response_event_queue_bits,
         "write_request_queue_bits": write_request_queue_bits,
         "write_ack_queue_bits": write_ack_queue_bits,
-        "focus_heap_bits": focus_heap_bits,
-        "focus_membership_bits": focus_membership_bits,
-        "focus_row_directory_bits": focus_row_directory_bits,
-        "selector_state_bits": selector_state_bits,
-        "queue_protocol_state_bits": queue_protocol_bits,
         "identity_state_bits": identity_state_bits,
-        "ordering_observer_state_bits": ordering_state_bits,
-        "functional_work_accounting_bits": work_accounting_bits,
         "payload_oracle_observer_bits": payload_oracle_observer_bits,
+        "functional_work_accounting_bits": functional_work_accounting_bits,
+        "execution_event_counter_bits": execution_event_counter_bits,
+        "ordering_observer_state_bits": ordering_observer_state_bits,
+        "high_water_observer_bits": high_water_observer_bits,
     }
-    observer_components = {
-        "ordering_observer_state_bits",
-        "functional_work_accounting_bits",
-        "payload_oracle_observer_bits",
-    }
-    observer_bits = sum(
-        bits
-        for name, bits in component_bits.items()
-        if name in observer_components
+    inventory = persistent_field_inventory()
+    fields = [entry["field"] for entry in inventory]
+    if len(fields) != len(set(fields)):
+        raise AssertionError("persistent-field inventory has a duplicate")
+    component_classifications: dict[str, str] = {}
+    for entry in inventory:
+        classification = entry["classification"]
+        component = entry["component"]
+        if classification not in {
+            HARDWARE_POLICY_STATE,
+            REPLAY_EVIDENCE_OBSERVER_STATE,
+        }:
+            raise AssertionError(
+                "persistent field has an unknown classification"
+            )
+        previous = component_classifications.setdefault(
+            component, classification
+        )
+        if previous != classification:
+            raise AssertionError(
+                "persistent component has mixed classifications"
+            )
+    if set(component_bits) != set(component_classifications):
+        raise AssertionError("ledger components and field inventory diverged")
+
+    policy_components = sorted(
+        component
+        for component, classification in component_classifications.items()
+        if classification == HARDWARE_POLICY_STATE
     )
-    policy_bits = sum(component_bits.values()) - observer_bits
+    observer_components = sorted(
+        component
+        for component, classification in component_classifications.items()
+        if classification == REPLAY_EVIDENCE_OBSERVER_STATE
+    )
+    policy_bits = sum(
+        component_bits[component] for component in policy_components
+    )
+    observer_bits = sum(
+        component_bits[component] for component in observer_components
+    )
     total_bits = policy_bits + observer_bits
     return {
         "widths": {
@@ -1596,6 +1971,7 @@ def corrected_state_lower_bound(
             "owner_state_bits": owner_state_bits,
             "row_key_bits": row_key_bits,
             "value_bits": VALUE_BITS,
+            "observer_counter_bits": observer_counter_bits,
         },
         "capacities": {
             "destination_lines": line_count,
@@ -1604,7 +1980,27 @@ def corrected_state_lower_bound(
             "focus_heap_entries": config.logical_elements,
         },
         "components_bits": component_bits,
-        "observer_components": sorted(observer_components),
+        "component_classifications": component_classifications,
+        "persistent_field_inventory": inventory,
+        "persistent_field_inventory_count": len(inventory),
+        "hardware_policy_state_field_count": sum(
+            entry["classification"] == HARDWARE_POLICY_STATE
+            for entry in inventory
+        ),
+        "replay_evidence_observer_state_field_count": sum(
+            entry["classification"] == REPLAY_EVIDENCE_OBSERVER_STATE
+            for entry in inventory
+        ),
+        "hardware_policy_components": policy_components,
+        "replay_evidence_observer_components": observer_components,
+        "hardware_policy_state_bits": policy_bits,
+        "hardware_policy_state_bytes": ceil_div(policy_bits, 8),
+        "replay_evidence_observer_state_bits": observer_bits,
+        "replay_evidence_observer_state_bytes": ceil_div(observer_bits, 8),
+        "finite_replay_model_bits": total_bits,
+        "finite_replay_model_bytes": ceil_div(total_bits, 8),
+        # Backward-compatible aliases retained for consumers of the frozen
+        # artifact.  They have the exact same values as the explicit names.
         "bit_packed_policy_state_bits": policy_bits,
         "bit_packed_policy_state_bytes": ceil_div(policy_bits, 8),
         "bit_packed_replay_observer_state_bits": observer_bits,
@@ -1638,7 +2034,7 @@ def analyze_tile(
 
 
 def _aggregate_policy(
-    records: Sequence[dict[str, object]]
+    records: Sequence[dict[str, object]],
 ) -> dict[str, object]:
     if not records:
         raise ValueError("cannot aggregate no policy records")

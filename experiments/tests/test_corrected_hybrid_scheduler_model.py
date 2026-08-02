@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import importlib.util
 import json
@@ -383,19 +384,27 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
         state = MODULE.corrected_state_lower_bound(self.small_config())
         components = state["components_bits"]
         for component in (
+            "configuration_image_bits",
+            "live_predicate_bits",
             "exact_live_mask_table_bits",
+            "destination_line_directory_bits",
+            "source_target_directory_bits",
+            "source_pending_directory_bits",
             "owner_metadata_bits",
+            "owner_payload_bits",
             "source_request_queue_bits",
             "accepted_source_ledger_bits",
             "source_response_event_queue_bits",
             "write_request_queue_bits",
             "write_ack_queue_bits",
-            "focus_heap_bits",
+            "focus_row_structure_bits",
+            "focus_membership_bits",
             "selector_state_bits",
-            "queue_protocol_state_bits",
             "identity_state_bits",
             "ordering_observer_state_bits",
             "functional_work_accounting_bits",
+            "execution_event_counter_bits",
+            "high_water_observer_bits",
             "payload_oracle_observer_bits",
         ):
             self.assertGreater(components[component], 0)
@@ -411,8 +420,133 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
             + state["bit_packed_replay_observer_state_bits"],
         )
         self.assertEqual(
+            state["finite_replay_model_bits"],
+            state["hardware_policy_state_bits"]
+            + state["replay_evidence_observer_state_bits"],
+        )
+        self.assertEqual(
             state["bit_packed_finite_ledger_bytes"],
             MODULE.ceil_div(state["bit_packed_finite_ledger_bits"], 8),
+        )
+
+    def test_persistent_field_inventory_matches_scheduler_and_record_schemas(
+        self,
+    ):
+        inventory = MODULE.persistent_field_inventory()
+        fields = [entry["field"] for entry in inventory]
+        self.assertEqual(len(fields), len(set(fields)))
+
+        tree = ast.parse(MODULE_PATH.read_text())
+        scheduler_class = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            and node.name == "CorrectedHybridScheduler"
+        )
+        assigned = set()
+        for node in ast.walk(scheduler_class):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            elif isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    assigned.add(target.attr)
+        prefix = "CorrectedHybridScheduler."
+        inventory_roots = {
+            entry["field"]
+            .removeprefix(prefix)
+            .split(".", 1)[0]
+            .split("[", 1)[0]
+            for entry in inventory
+        }
+        self.assertEqual(assigned, inventory_roots)
+
+        schemas = (
+            ("config", MODULE.ReplayConfig, "ReplayConfig"),
+            ("owners[]", MODULE.LineOwner, "LineOwner"),
+            ("source_requests[]", MODULE.SourceRequest, "SourceRequest"),
+            (
+                "accepted_source_requests[]",
+                MODULE.SourceRequest,
+                "SourceRequest",
+            ),
+            ("source_responses[]", MODULE.SourceResponse, "SourceResponse"),
+            ("write_requests[]", MODULE.WriteRequest, "WriteRequest"),
+            ("write_acks[]", MODULE.WriteRequest, "WriteRequest"),
+        )
+        for root, record_type, type_name in schemas:
+            schema_prefix = f"{prefix}{root}.{type_name}."
+            if root == "config":
+                schema_prefix = f"{prefix}{root}."
+            accounted = {
+                field.removeprefix(schema_prefix)
+                for field in fields
+                if field.startswith(schema_prefix)
+            }
+            self.assertEqual(accounted, set(record_type.__dataclass_fields__))
+
+        scheduler = MODULE.CorrectedHybridScheduler(
+            list(range(8)), config=self.small_config(logical_elements=8)
+        )
+        self.assertEqual(
+            set(scheduler.work_counts), set(MODULE.WORK_COUNTER_NAMES)
+        )
+        self.assertEqual(
+            set(scheduler.high_water), set(MODULE._HIGH_WATER_FIELDS)
+        )
+
+    def test_persistent_field_inventory_classifies_counters_and_subtotals(
+        self,
+    ):
+        state = MODULE.corrected_state_lower_bound(self.small_config())
+        inventory = state["persistent_field_inventory"]
+        by_field = {entry["field"]: entry for entry in inventory}
+        self.assertEqual(len(by_field), len(inventory))
+        self.assertEqual(
+            state["persistent_field_inventory_count"], len(inventory)
+        )
+        self.assertEqual(
+            state["hardware_policy_state_field_count"]
+            + state["replay_evidence_observer_state_field_count"],
+            len(inventory),
+        )
+        self.assertEqual(
+            set(state["components_bits"]),
+            set(state["component_classifications"]),
+        )
+        for entry in inventory:
+            self.assertEqual(
+                entry["classification"],
+                state["component_classifications"][entry["component"]],
+            )
+
+        for counter in MODULE._EVENT_COUNTER_FIELDS:
+            self.assertEqual(
+                by_field[f"CorrectedHybridScheduler.{counter}"][
+                    "classification"
+                ],
+                MODULE.REPLAY_EVIDENCE_OBSERVER_STATE,
+            )
+        for high_water in MODULE._HIGH_WATER_FIELDS:
+            self.assertEqual(
+                by_field[f"CorrectedHybridScheduler.high_water.{high_water}"][
+                    "classification"
+                ],
+                MODULE.REPLAY_EVIDENCE_OBSERVER_STATE,
+            )
+        self.assertEqual(
+            by_field["CorrectedHybridScheduler.owners[].LineOwner.payload"][
+                "classification"
+            ],
+            MODULE.HARDWARE_POLICY_STATE,
         )
 
     def test_archived_source_generation_and_id_widths_fail_closed(self):
@@ -483,7 +617,7 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
         artifact = json.loads(artifact_path.read_text())
         self.assertEqual(
             hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
-            "a31b2e40432a1f35e78580d544d9a10581a7cd23f18057795383c8b220f259e7",
+            "3c4adfe7b06e094b5bb0352369a0a378d6f00b2f1a0d0eab811b0fbc5d1e0077",
         )
         self.assertEqual(artifact["schema"], MODULE.SCHEMA)
         self.assertFalse(artifact["model_scope"]["timing_prediction"])

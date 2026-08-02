@@ -2237,49 +2237,743 @@
   },
   "schema": "dx100-corrected-hybrid-single-owner-replay-v2",
   "state_contract": {
-    "bit_packed_finite_ledger_bits": 3816714,
-    "bit_packed_finite_ledger_bytes": 477090,
-    "bit_packed_policy_state_bits": 2749758,
-    "bit_packed_policy_state_bytes": 343720,
-    "bit_packed_replay_observer_state_bits": 1066956,
-    "bit_packed_replay_observer_state_bytes": 133370,
+    "bit_packed_finite_ledger_bits": 5556428,
+    "bit_packed_finite_ledger_bytes": 694554,
+    "bit_packed_policy_state_bits": 3423648,
+    "bit_packed_policy_state_bytes": 427956,
+    "bit_packed_replay_observer_state_bits": 2132780,
+    "bit_packed_replay_observer_state_bytes": 266598,
     "capacities": {
       "destination_lines": 2048,
       "focus_heap_entries": 16384,
       "maximum_response_tokens": 3072,
       "maximum_source_line": 262143
     },
+    "component_classifications": {
+      "accepted_source_ledger_bits": "hardware_policy_state",
+      "configuration_image_bits": "hardware_policy_state",
+      "destination_line_directory_bits": "hardware_policy_state",
+      "exact_live_mask_table_bits": "hardware_policy_state",
+      "execution_event_counter_bits": "replay_evidence_observer_state",
+      "focus_membership_bits": "hardware_policy_state",
+      "focus_row_structure_bits": "hardware_policy_state",
+      "functional_work_accounting_bits": "replay_evidence_observer_state",
+      "high_water_observer_bits": "replay_evidence_observer_state",
+      "identity_state_bits": "hardware_policy_state",
+      "live_predicate_bits": "hardware_policy_state",
+      "ordering_observer_state_bits": "replay_evidence_observer_state",
+      "owner_metadata_bits": "hardware_policy_state",
+      "owner_payload_bits": "hardware_policy_state",
+      "payload_oracle_observer_bits": "replay_evidence_observer_state",
+      "progress_state_bits": "hardware_policy_state",
+      "selector_state_bits": "hardware_policy_state",
+      "source_mapping_table_bits": "hardware_policy_state",
+      "source_pending_directory_bits": "hardware_policy_state",
+      "source_request_queue_bits": "hardware_policy_state",
+      "source_response_event_queue_bits": "hardware_policy_state",
+      "source_target_directory_bits": "hardware_policy_state",
+      "token_state_bits": "hardware_policy_state",
+      "write_ack_queue_bits": "hardware_policy_state",
+      "write_request_queue_bits": "hardware_policy_state"
+    },
     "components_bits": {
-      "accepted_source_ledger_bits": 172668,
-      "exact_live_mask_table_bits": 149504,
-      "focus_heap_bits": 311296,
+      "accepted_source_ledger_bits": 172671,
+      "configuration_image_bits": 113,
+      "destination_line_directory_bits": 18432,
+      "exact_live_mask_table_bits": 18432,
+      "execution_event_counter_bits": 1152,
       "focus_membership_bits": 311296,
-      "focus_row_directory_bits": 688128,
-      "functional_work_accounting_bits": 1664,
+      "focus_row_structure_bits": 983040,
+      "functional_work_accounting_bits": 1670,
+      "high_water_observer_bits": 26,
       "identity_state_bits": 204,
-      "ordering_observer_state_bits": 332,
+      "live_predicate_bits": 16384,
+      "ordering_observer_state_bits": 12,
       "owner_metadata_bits": 363264,
       "owner_payload_bits": 196608,
-      "payload_oracle_observer_bits": 1064960,
-      "queue_protocol_state_bits": 37,
-      "selector_state_bits": 393,
+      "payload_oracle_observer_bits": 2129920,
+      "progress_state_bits": 67,
+      "selector_state_bits": 311,
       "source_mapping_table_bits": 344064,
-      "source_request_queue_bits": 172668,
-      "source_response_event_queue_bits": 2636,
+      "source_pending_directory_bits": 491520,
+      "source_request_queue_bits": 172675,
+      "source_response_event_queue_bits": 2643,
+      "source_target_directory_bits": 294912,
       "token_state_bits": 32768,
-      "write_ack_queue_bits": 2112,
-      "write_request_queue_bits": 2112
+      "write_ack_queue_bits": 2122,
+      "write_request_queue_bits": 2122
     },
-    "observer_components": [
+    "finite_replay_model_bits": 5556428,
+    "finite_replay_model_bytes": 694554,
+    "hardware_policy_components": [
+      "accepted_source_ledger_bits",
+      "configuration_image_bits",
+      "destination_line_directory_bits",
+      "exact_live_mask_table_bits",
+      "focus_membership_bits",
+      "focus_row_structure_bits",
+      "identity_state_bits",
+      "live_predicate_bits",
+      "owner_metadata_bits",
+      "owner_payload_bits",
+      "progress_state_bits",
+      "selector_state_bits",
+      "source_mapping_table_bits",
+      "source_pending_directory_bits",
+      "source_request_queue_bits",
+      "source_response_event_queue_bits",
+      "source_target_directory_bits",
+      "token_state_bits",
+      "write_ack_queue_bits",
+      "write_request_queue_bits"
+    ],
+    "hardware_policy_state_bits": 3423648,
+    "hardware_policy_state_bytes": 427956,
+    "hardware_policy_state_field_count": 69,
+    "persistent_field_inventory": [
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.logical_elements"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.page_elements"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.word_bytes"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.cache_line_bytes"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.combine_slots"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.combine_ways"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.owner_lines"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.owner_ways"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.source_request_slots"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.source_response_slots"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.write_request_slots"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.write_ack_slots"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.new_focus_owner_lines_per_request"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.new_future_owner_lines_per_request"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.config.row_burst"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "configuration_image_bits",
+        "field": "CorrectedHybridScheduler.source_line_phase"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_mapping_table_bits",
+        "field": "CorrectedHybridScheduler.pattern"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "live_predicate_bits",
+        "field": "CorrectedHybridScheduler.live"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "exact_live_mask_table_bits",
+        "field": "CorrectedHybridScheduler.expected_masks"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "destination_line_directory_bits",
+        "field": "CorrectedHybridScheduler.line_destinations"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_target_directory_bits",
+        "field": "CorrectedHybridScheduler.source_targets"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_pending_directory_bits",
+        "field": "CorrectedHybridScheduler.source_pending_lines"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "token_state_bits",
+        "field": "CorrectedHybridScheduler.token_state"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "progress_state_bits",
+        "field": "CorrectedHybridScheduler.remaining_live_words"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "progress_state_bits",
+        "field": "CorrectedHybridScheduler.page_remaining"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "focus_row_structure_bits",
+        "field": "CorrectedHybridScheduler.focus_rows"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "focus_membership_bits",
+        "field": "CorrectedHybridScheduler.focus_heap_members"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "selector_state_bits",
+        "field": "CorrectedHybridScheduler.focus_page"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "selector_state_bits",
+        "field": "CorrectedHybridScheduler.active_row"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "selector_state_bits",
+        "field": "CorrectedHybridScheduler.active_row_remaining"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "selector_state_bits",
+        "field": "CorrectedHybridScheduler.owner_set_counts"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_payload_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.payload"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.line"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.generation"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.expected_mask"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.allocation_sequence"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.received_mask"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.reserved_mask"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.tokens"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.reservation_request_ids"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.reservation_source_lines"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.state"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "owner_metadata_bits",
+        "field": "CorrectedHybridScheduler.owners[].LineOwner.write_request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_request_queue_bits",
+        "field": "CorrectedHybridScheduler.source_requests[].SourceRequest.request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_request_queue_bits",
+        "field": "CorrectedHybridScheduler.source_requests[].SourceRequest.generation"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_request_queue_bits",
+        "field": "CorrectedHybridScheduler.source_requests[].SourceRequest.source_line"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_request_queue_bits",
+        "field": "CorrectedHybridScheduler.source_requests[].SourceRequest.destinations"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "accepted_source_ledger_bits",
+        "field": "CorrectedHybridScheduler.accepted_source_requests[].SourceRequest.request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "accepted_source_ledger_bits",
+        "field": "CorrectedHybridScheduler.accepted_source_requests[].SourceRequest.generation"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "accepted_source_ledger_bits",
+        "field": "CorrectedHybridScheduler.accepted_source_requests[].SourceRequest.source_line"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "accepted_source_ledger_bits",
+        "field": "CorrectedHybridScheduler.accepted_source_requests[].SourceRequest.destinations"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_response_event_queue_bits",
+        "field": "CorrectedHybridScheduler.source_responses[].SourceResponse.request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_response_event_queue_bits",
+        "field": "CorrectedHybridScheduler.source_responses[].SourceResponse.generation"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_response_event_queue_bits",
+        "field": "CorrectedHybridScheduler.source_responses[].SourceResponse.source_line"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "source_response_event_queue_bits",
+        "field": "CorrectedHybridScheduler.source_responses[].SourceResponse.payload"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_request_queue_bits",
+        "field": "CorrectedHybridScheduler.write_requests[].WriteRequest.request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_request_queue_bits",
+        "field": "CorrectedHybridScheduler.write_requests[].WriteRequest.generation"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_request_queue_bits",
+        "field": "CorrectedHybridScheduler.write_requests[].WriteRequest.line"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_request_queue_bits",
+        "field": "CorrectedHybridScheduler.write_requests[].WriteRequest.mask"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_request_queue_bits",
+        "field": "CorrectedHybridScheduler.write_requests[].WriteRequest.destinations"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_ack_queue_bits",
+        "field": "CorrectedHybridScheduler.write_acks[].WriteRequest.request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_ack_queue_bits",
+        "field": "CorrectedHybridScheduler.write_acks[].WriteRequest.generation"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_ack_queue_bits",
+        "field": "CorrectedHybridScheduler.write_acks[].WriteRequest.line"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_ack_queue_bits",
+        "field": "CorrectedHybridScheduler.write_acks[].WriteRequest.mask"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "write_ack_queue_bits",
+        "field": "CorrectedHybridScheduler.write_acks[].WriteRequest.destinations"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "identity_state_bits",
+        "field": "CorrectedHybridScheduler.generation"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "identity_state_bits",
+        "field": "CorrectedHybridScheduler.next_source_request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "identity_state_bits",
+        "field": "CorrectedHybridScheduler.next_write_request_id"
+      },
+      {
+        "classification": "hardware_policy_state",
+        "component": "identity_state_bits",
+        "field": "CorrectedHybridScheduler.next_allocation_sequence"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "payload_oracle_observer_bits",
+        "field": "CorrectedHybridScheduler.expected_destination_values"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "payload_oracle_observer_bits",
+        "field": "CorrectedHybridScheduler.destination_values"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "payload_oracle_observer_bits",
+        "field": "CorrectedHybridScheduler.destination_receive_counts"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.atomic_transition_invocations"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.descriptor_word_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.focus_page_counter_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.focus_rebuild_source_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.focus_membership_line_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.focus_heap_pushes"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.focus_heap_pops"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.focus_heap_reinserts"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.row_directory_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.planning_line_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.sort_input_items"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.sort_comparison_bound"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.reservation_token_walks"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.promotion_owner_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.promotion_token_walks"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.response_match_probes"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.response_payload_word_builds"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.response_payload_word_checks"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.response_token_prechecks"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.ready_owner_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.write_token_walks"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.work_counts.write_ack_match_entry_scans"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.functional_work_total"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler._atomic_depth"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler._atomic_start_work"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler._atomic_name"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.atomic_transition_work_high_water"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "functional_work_accounting_bits",
+        "field": "CorrectedHybridScheduler.atomic_transition_work_limit"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.transition_steps"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.source_request_issues"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.source_request_acceptances"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.source_response_completions"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.write_request_issues"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.write_request_acceptances"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.write_completions"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.owner_promotions"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.owner_allocations"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.owner_allocation_refusals"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.focus_switches"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.stale_source_responses"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.forged_source_responses"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.stale_write_responses"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.same_bank_row_successors"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.source_successor_pairs"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.row_rotations"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "execution_event_counter_bits",
+        "field": "CorrectedHybridScheduler.row_same_reselections"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "ordering_observer_state_bits",
+        "field": "CorrectedHybridScheduler.previous_source_row"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "high_water_observer_bits",
+        "field": "CorrectedHybridScheduler.high_water.owner"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "high_water_observer_bits",
+        "field": "CorrectedHybridScheduler.high_water.source_request"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "high_water_observer_bits",
+        "field": "CorrectedHybridScheduler.high_water.accepted_source"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "high_water_observer_bits",
+        "field": "CorrectedHybridScheduler.high_water.source_response"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "high_water_observer_bits",
+        "field": "CorrectedHybridScheduler.high_water.write_request"
+      },
+      {
+        "classification": "replay_evidence_observer_state",
+        "component": "high_water_observer_bits",
+        "field": "CorrectedHybridScheduler.high_water.write_ack"
+      }
+    ],
+    "persistent_field_inventory_count": 125,
+    "replay_evidence_observer_components": [
+      "execution_event_counter_bits",
       "functional_work_accounting_bits",
+      "high_water_observer_bits",
       "ordering_observer_state_bits",
       "payload_oracle_observer_bits"
     ],
+    "replay_evidence_observer_state_bits": 2132780,
+    "replay_evidence_observer_state_bytes": 266598,
+    "replay_evidence_observer_state_field_count": 56,
     "widths": {
       "allocation_sequence_bits": 12,
       "destination_line_bits": 11,
       "destination_token_bits": 14,
       "generation_bits": 64,
+      "observer_counter_bits": 64,
       "owner_state_bits": 2,
       "request_id_bits": 64,
       "row_key_bits": 11,

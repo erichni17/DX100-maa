@@ -236,48 +236,67 @@ transparent stream-store run is true CHSO timing evidence.
 
 ## Finite state contract
 
-The executable model now reports a complete bit ledger for every finite policy
-and replay-observer structure it uses.  Its width contract is: 11-bit
-destination-line tags, 14-bit destination tokens, **18-bit source-line tags**,
-3-bit source-word offsets, 64-bit generations, 64-bit non-wrapping request IDs,
-12-bit owner allocation sequences, 11-bit bank-row keys, two-bit owner states,
-and 64-bit payload words.
+The replay now emits a field-level inventory rather than inferring a total from
+a hand-selected component list.  Each of the 125 persistent fields is assigned
+exactly once: 69 fields are **hardware policy state** and 56 are
+**replay/evidence-only observer state**.  The complete named inventory and its
+component mapping are in the artifact's `state_contract.persistent_field_inventory`.
+The unit test parses every `self.field` assignment, checks all embedded record
+schemas, checks the work-counter and high-water key sets, rejects duplicates,
+and rejects component/classification disagreement.
 
-| Component | Bits | Byte ceiling |
-|---|---:|---:|
-| 384 owner payloads | 196,608 | 24,576 |
-| Owner tags, masks, reservation identities, tokens, and protocol state | 363,264 | 45,408 |
-| Exact live-mask/generation table | 149,504 | 18,688 |
-| Source mapping + two-bit token state | 376,832 | 47,104 |
-| Issued-source queue + authoritative accepted-source ledger | 345,336 | 43,168 |
-| Incoming source-response event FIFO | 2,636 | 330 |
-| Write-request + accepted-write/ACK queues | 4,224 | 528 |
-| Focus heaps, membership CAM, and row directory | 1,310,720 | 163,840 |
-| Selector, queue protocol, and global identity state | 634 | 80 |
-| **Bit-packed executable policy state** | **2,749,758** | **343,720** |
-| Ordering/work/value replay observers | 1,066,956 | 133,370 |
-| **Complete finite executable + observer ledger** | **3,816,714** | **477,090** |
+The width contract remains 11-bit destination-line tags, 14-bit destination
+tokens, **18-bit source-line tags**, 3-bit source-word offsets, 64-bit
+generations and non-wrapping request IDs, 12-bit allocation sequences, 11-bit
+bank-row keys, two-bit owner states, and 64-bit values/counters.  The owner now
+also retains each received 64-bit word in an explicit persistent payload field;
+completion checks that owner payload before releasing the owner.  This does not
+change the replay's work, ordering, provenance, or exact-once results.
 
-The JSON preserves the exact per-component bit arithmetic; byte ceilings in
-this table are explanatory and therefore do not sum component-by-component.
-The source descriptors reserve the maximum 384 × eight Offset tokens.  Unlike
-the rejected ledger, this total includes focus heap/membership/row-directory
-selector state, active-row and page ordering state, FIFO head/tail/count state,
-accepted-response identities, global next-ID/generation/allocation state, and
-the counters required to prove bounded work.  The value and ordering observers
-are shown separately from executable policy state.
+| Classification | Component | Bits |
+|---|---|---:|
+| Hardware policy | Configuration image | 113 |
+| Hardware policy | Source mapping | 344,064 |
+| Hardware policy | Live predicate + exact live-mask + destination-line directories | 53,248 |
+| Hardware policy | Source-target and pending-line directories | 786,432 |
+| Hardware policy | Token/progress state | 32,835 |
+| Hardware policy | Focus row structure + membership | 1,294,336 |
+| Hardware policy | Selector state | 311 |
+| Hardware policy | Owner payload + metadata | 559,872 |
+| Hardware policy | Source request + accepted-source ledger | 345,346 |
+| Hardware policy | Source-response event queue | 2,643 |
+| Hardware policy | Write request + ACK queues | 4,244 |
+| Hardware policy | Global generation/request/allocation identity | 204 |
+| **Hardware policy subtotal** | **all 69 policy fields** | **3,423,648** |
+| Replay/evidence observer | Expected/observed values and receive-count oracle | 2,129,920 |
+| Replay/evidence observer | Functional-work counters and atomic-bound diagnostics | 1,670 |
+| Replay/evidence observer | Transition/promotion/refusal/error counters | 1,152 |
+| Replay/evidence observer | Previous-row ordering observer | 12 |
+| Replay/evidence observer | Six queue/owner high-water observers | 26 |
+| **Replay/evidence observer subtotal** | **all 56 observer fields** | **2,132,780** |
+| **Combined finite replay-model total** | **all 125 persistent fields** | **5,556,428** |
 
-This remains a finite model-state ledger, not a whole-MAA storage or physical
-cost result.  It excludes ports, allocators, wiring, ECC, banking overhead, and
+Those subtotals are 427,956 B, 266,598 B, and 694,554 B respectively after a
+whole-total byte ceiling.  The JSON contains the exact per-component arithmetic;
+component byte ceilings are intentionally not summed.  The source descriptors
+still reserve at most 384 × eight Offset tokens.  The combined total includes
+the source-target and pending-line directories actually retained by this Python
+model, owner payload, every promotion/refusal/stale/forged/error counter, every
+functional-work diagnostic, and every high-water observer.  It excludes only
+ephemeral interpreter overhead such as Python object headers, hash-table slack,
+temporary locals, and transient sorting/materialization containers.
+
+This is a finite model-state ledger, not a whole-MAA storage or physical-cost
+result.  It excludes ports, allocators, wiring, ECC, banking overhead, and
 implementation margins.  The 384 payload lines replace/repurpose the existing
-combiner role; neither 343,720 nor 477,090 bytes may be described as incremental
-area, synthesis, energy, or timing evidence.
+combiner role; neither subtotal nor the combined total may be described as
+incremental area, synthesis, energy, or timing evidence.
 
 ## Archived deterministic replay
 
 The frozen artifact is
 `experiments/analysis/corrected_hybrid_scheduler_replay_2026-08-02.json`
-(SHA-256 `a31b2e40432a1f35e78580d544d9a10581a7cd23f18057795383c8b220f259e7`).
+(SHA-256 `3c4adfe7b06e094b5bb0352369a0a378d6f00b2f1a0d0eab811b0fbc5d1e0077`).
 It uses XRAGE input SHA-256
 `1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde`
 and all 14 archived FLAG gather JSON files.  Each file hash is stored in the
