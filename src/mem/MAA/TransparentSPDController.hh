@@ -101,10 +101,14 @@ class TransparentSPDController
         if (descriptor.tokenTile < 0 || descriptor.physicalTile < 0 ||
             descriptor.outputTile < 0)
             return "tile identifiers must be nonnegative";
-        if (descriptor.tokenTile == descriptor.physicalTile ||
-            descriptor.tokenTile == descriptor.outputTile ||
-            descriptor.physicalTile == descriptor.outputTile)
-            return "token, physical, and output tiles must be distinct";
+        const int tile_words = descriptor.wordSize / 4;
+        if (spansOverlap(descriptor.tokenTile, tile_words,
+                         descriptor.physicalTile, tile_words) ||
+            spansOverlap(descriptor.tokenTile, tile_words,
+                         descriptor.outputTile, tile_words) ||
+            spansOverlap(descriptor.physicalTile, tile_words,
+                         descriptor.outputTile, tile_words))
+            return "token, physical, and output tile spans must be distinct";
         if (descriptor.scaleReg < 0 || descriptor.minReg < 0 ||
             descriptor.maxReg < 0 || descriptor.strideReg < 0)
             return "controller registers must be nonnegative";
@@ -125,6 +129,9 @@ class TransparentSPDController
                            descriptor.destinationMaxAddr,
                            descriptor.destinationAddr, bytes))
             return "destination range is too small";
+        if (rangesOverlap(descriptor.backingAddr, bytes,
+                          descriptor.destinationAddr, bytes))
+            return "backing and destination payloads must not overlap";
         return nullptr;
     }
 
@@ -289,12 +296,17 @@ class TransparentSPDController
     }
 
     bool
-    usesRegister(int maa_id, int register_id) const
+    usesRegister(int maa_id, int first_register, int register_words) const
     {
-        if (!active() || maa_id != desc.maaID)
+        if (!active() || maa_id != desc.maaID || register_words <= 0)
             return false;
-        return register_id == desc.scaleReg || register_id == desc.minReg ||
-               register_id == desc.maxReg || register_id == desc.strideReg;
+        const int scale_words = desc.wordSize / 4;
+        return spansOverlap(first_register, register_words, desc.scaleReg,
+                            scale_words) ||
+               spansOverlap(first_register, register_words, desc.minReg, 1) ||
+               spansOverlap(first_register, register_words, desc.maxReg, 1) ||
+               spansOverlap(first_register, register_words, desc.strideReg,
+                            1);
     }
 
   private:
@@ -305,6 +317,19 @@ class TransparentSPDController
         if (range_min >= range_max || base < range_min || base >= range_max)
             return false;
         return bytes <= range_max - base;
+    }
+
+    static bool
+    rangesOverlap(uint64_t lhs, uint64_t lhs_bytes, uint64_t rhs,
+                  uint64_t rhs_bytes)
+    {
+        return lhs < rhs + rhs_bytes && rhs < lhs + lhs_bytes;
+    }
+
+    static bool
+    spansOverlap(int lhs, int lhs_count, int rhs, int rhs_count)
+    {
+        return lhs < rhs + rhs_count && rhs < lhs + lhs_count;
     }
 
     static bool

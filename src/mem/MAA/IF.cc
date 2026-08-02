@@ -191,15 +191,32 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
             _instruction.condSpdID,
         };
         for (const int tile : tiles) {
-            if (tile != -1 &&
-                maa->transparentControllerOwnsTile(
-                    _instruction.maa_id, tile)) {
+            if (tile == -1)
+                continue;
+            const int tile_words =
+                _instruction.getWordSize(tile) / sizeof(uint32_t);
+            for (int offset = 0; offset < tile_words; ++offset) {
+                if (!maa->transparentControllerOwnsTile(
+                        _instruction.maa_id, tile + offset))
+                    continue;
                 DPRINTF(MAAController,
                         "%s: %s cannot be pushed because transparent "
                         "controller owns tile %d\n",
-                        __func__, _instruction.print(), tile);
+                        __func__, _instruction.print(), tile + offset);
                 return false;
             }
+        }
+        const int registers[] = {
+            _instruction.dst1RegID, _instruction.dst2RegID,
+            _instruction.src1RegID, _instruction.src2RegID,
+            _instruction.src3RegID,
+        };
+        const int register_words = _instruction.WordSize() / sizeof(uint32_t);
+        for (const int register_id : registers) {
+            if (register_id != -1 &&
+                maa->transparentControllerUsesRegister(
+                    _instruction.maa_id, register_id, register_words))
+                return false;
         }
     }
     if (_instruction.opcode ==
@@ -435,7 +452,7 @@ bool IF::canPushRegister(Register _reg) {
     }
     return true;
 }
-bool IF::hasTileReference(int maa_id, int tile_id) const {
+bool IF::hasTileReference(int maa_id, int tile_id) {
     panic_if(maa_id < 0 || maa_id >= static_cast<int>(num_maas),
              "Invalid MAA id %d\n", maa_id);
     panic_if(tile_id < 0 || tile_id >= static_cast<int>(num_tiles),
@@ -443,13 +460,20 @@ bool IF::hasTileReference(int maa_id, int tile_id) const {
     for (int i = 0; i < num_instructions_per_maa; ++i) {
         if (!valids[maa_id][i])
             continue;
-        const Instruction &instruction = instructions[maa_id][i];
-        if (instruction.src1SpdID == tile_id ||
-            instruction.src2SpdID == tile_id ||
-            instruction.dst1SpdID == tile_id ||
-            instruction.dst2SpdID == tile_id ||
-            instruction.condSpdID == tile_id)
-            return true;
+        Instruction &instruction = instructions[maa_id][i];
+        const int tiles[] = {
+            instruction.src1SpdID, instruction.src2SpdID,
+            instruction.dst1SpdID, instruction.dst2SpdID,
+            instruction.condSpdID,
+        };
+        for (const int first : tiles) {
+            if (first == -1)
+                continue;
+            const int words =
+                instruction.getWordSize(first) / sizeof(uint32_t);
+            if (tile_id >= first && tile_id < first + words)
+                return true;
+        }
     }
     return false;
 }

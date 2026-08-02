@@ -237,7 +237,7 @@ public:
                          int *inserted_slot = nullptr,
                          int ignored_hazard_slot = -1);
     bool canPushRegister(Register _reg);
-    bool hasTileReference(int maa_id, int tile_id) const;
+    bool hasTileReference(int maa_id, int tile_id);
     bool isCompletionOnlyTile(int maa_id, int tile_id) const;
     Instruction *getReady(FuncUnitType funcUniType, int maa_id = -1);
     void finishInstructionCompute(Instruction *instruction);

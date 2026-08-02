@@ -469,6 +469,8 @@ public:
     void setVirtualPageReady(int tokenTileID, int pageID);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
     bool transparentControllerOwnsTile(int maaID, int tileID) const;
+    bool transparentControllerUsesRegister(int maaID, int firstRegister,
+                                           int registerWords) const;
     void finishInstructionCompute(InstructionPtr instruction);
     void finishInstructionInvalidate(InstructionPtr instruction, int tileID);
     bool sentMemSidePacket(PacketPtr pkt);
@@ -490,6 +492,7 @@ protected:
     std::vector<int> my_ready_tile_ids;
     std::vector<std::array<bool, MaxVirtualPages>> virtualPageReady;
     TransparentSPDController transparentController;
+    Tick transparentControllerLookupReadyTick = 0;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();

@@ -63,8 +63,25 @@ class TransparentControllerContractTest(unittest.TestCase):
         body = maa[issue : maa.index("uint8_t MAA::getTileStatus", issue)]
         self.assertIn("tryIssueTransparentMicroOp();", body)
         retry = maa.index("void MAA::tryIssueTransparentMicroOp()")
-        retry_body = maa[retry : maa.index("void MAA::dispatchRegister()", retry)]
-        self.assertIn("scheduleIssueInstructionEvent(1);", retry_body)
+        retry_body = maa[
+            retry : maa.index("void MAA::dispatchRegister()", retry)
+        ]
+        self.assertIn("transparentControllerLookupReadyTick", retry_body)
+        self.assertIn("schedule(issueInstructionEvent", retry_body)
+        self.assertNotIn("scheduleIssueInstructionEvent(1);", retry_body)
+
+    def test_tile_and_register_hazards_are_span_aware(self):
+        interface = (ROOT / "src/mem/MAA/IF.cc").read_text()
+        controller = (
+            ROOT / "src/mem/MAA/TransparentSPDController.hh"
+        ).read_text()
+        self.assertIn("_instruction.getWordSize(tile)", interface)
+        self.assertIn("tile + offset", interface)
+        self.assertIn("transparentControllerUsesRegister", interface)
+        self.assertIn("spansOverlap(first_register", controller)
+        self.assertIn(
+            "backing and destination payloads must not overlap", controller
+        )
 
     def test_runner_has_fail_closed_transparent_case(self):
         runner = (

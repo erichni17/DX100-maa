@@ -635,6 +635,11 @@ uint8_t MAA::getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst)
 bool MAA::transparentControllerOwnsTile(int maaID, int tileID) const {
     return transparentController.ownsTile(maaID, tileID);
 }
+bool MAA::transparentControllerUsesRegister(int maaID, int firstRegister,
+                                            int registerWords) const {
+    return transparentController.usesRegister(maaID, firstRegister,
+                                              registerWords);
+}
 bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     panic_if(instruction->opcode !=
                  Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR,
@@ -647,11 +652,18 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
         instruction->dst1RegID, instruction->src1RegID,
         instruction->src2RegID, instruction->src3RegID,
     };
+    const int register_words[] = {
+        instruction->WordSize() / static_cast<int>(sizeof(uint32_t)), 1, 1, 1,
+    };
+    const auto spans_overlap = [](int lhs, int lhs_words, int rhs,
+                                  int rhs_words) {
+        return lhs < rhs + rhs_words && rhs < lhs + lhs_words;
+    };
     for (const RegisterPtr pending : my_registers) {
         const int pending_words = pending->size / sizeof(uint32_t);
-        for (const int register_id : register_ids) {
-            if (register_id >= pending->register_id &&
-                register_id < pending->register_id + pending_words)
+        for (int i = 0; i < 4; ++i) {
+            if (spans_overlap(pending->register_id, pending_words,
+                              register_ids[i], register_words[i]))
                 return false;
         }
     }
@@ -682,15 +694,15 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
              "token=%d physical=%d output=%d tiles=%u\n",
              instruction->src1SpdID, instruction->dst1SpdID,
              instruction->dst2SpdID, num_tiles);
-    const auto spans_overlap = [tile_words](int lhs, int rhs) {
+    const auto tile_spans_overlap = [tile_words](int lhs, int rhs) {
         return lhs < rhs + tile_words && rhs < lhs + tile_words;
     };
-    panic_if(spans_overlap(instruction->src1SpdID,
-                           instruction->dst1SpdID) ||
-                 spans_overlap(instruction->src1SpdID,
-                               instruction->dst2SpdID) ||
-                 spans_overlap(instruction->dst1SpdID,
-                               instruction->dst2SpdID),
+    panic_if(tile_spans_overlap(instruction->src1SpdID,
+                                instruction->dst1SpdID) ||
+                 tile_spans_overlap(instruction->src1SpdID,
+                                    instruction->dst2SpdID) ||
+                 tile_spans_overlap(instruction->dst1SpdID,
+                                    instruction->dst2SpdID),
              "Transparent descriptor tile spans overlap: token=%d "
              "physical=%d output=%d\n",
              instruction->src1SpdID, instruction->dst1SpdID,
@@ -760,6 +772,8 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     const auto result = transparentController.submit(descriptor);
     panic_if(result != TransparentSPDController::SubmitResult::Accepted,
              "Validated transparent descriptor was not accepted\n");
+    transparentControllerLookupReadyTick =
+        getClockEdge(Cycles(TransparentSPDController::ControllerLookupCycles));
 
     // These two credits cover the complete descriptor lifetime.  Native
     // micro-ops take and return their own credits independently.
@@ -877,12 +891,19 @@ bool MAA::dispatchTransparentMicroOp(
     return true;
 }
 void MAA::tryIssueTransparentMicroOp() {
-    // Keep the request invisible for the lookup cycle.  The scheduled retry
-    // is the event that makes the finite transition observable.
     if (transparentController.controllerCyclesRemaining() != 0) {
+        if (curTick() < transparentControllerLookupReadyTick) {
+            if (!issueInstructionEvent.scheduled()) {
+                schedule(issueInstructionEvent,
+                         transparentControllerLookupReadyTick);
+            } else if (transparentControllerLookupReadyTick <
+                       issueInstructionEvent.when()) {
+                reschedule(issueInstructionEvent,
+                           transparentControllerLookupReadyTick);
+            }
+            return;
+        }
         transparentController.advanceControllerCycle();
-        scheduleIssueInstructionEvent(1);
-        return;
     }
     const auto request = transparentController.pending();
     if (request.action == TransparentSPDController::Action::None)
@@ -910,9 +931,10 @@ void MAA::dispatchRegister() {
     while (pkt_it != my_register_pkts.end() && register_it != my_registers.end()) {
         RegisterPtr reg = *register_it;
         PacketPtr pkt = *pkt_it;
+        const int register_words = reg->size / sizeof(uint32_t);
         if (ifile->canPushRegister(*reg) &&
-            !transparentController.usesRegister(reg->maa_id,
-                                                reg->register_id)) {
+            !transparentController.usesRegister(
+                reg->maa_id, reg->register_id, register_words)) {
             DPRINTF(MAAController,
                     "%s: register %d write dispatched!\n", __func__,
                     reg->register_id);
@@ -1116,6 +1138,7 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
             setTileReady(descriptor.outputTile, descriptor.wordSize);
             panic_if(!transparentController.retire(),
                      "Completed transparent descriptor did not retire\n");
+            transparentControllerLookupReadyTick = 0;
             DPRINTF(MAAVirtualTrace,
                     "event=transparent_retire pages=%d\n",
                     TransparentSPDController::NumPages);

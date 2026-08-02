@@ -125,6 +125,16 @@ testFailClosedValidation()
     descriptor.backingMaxAddr = descriptor.backingAddr + 1;
     CHECK(TransparentSPDController::validate(descriptor) != nullptr);
 
+    descriptor = validDescriptor();
+    descriptor.destinationAddr = descriptor.backingAddr + 4096;
+    descriptor.destinationMinAddr = descriptor.backingMinAddr;
+    descriptor.destinationMaxAddr = descriptor.backingMaxAddr;
+    CHECK(TransparentSPDController::validate(descriptor) != nullptr);
+
+    descriptor = validDescriptor();
+    descriptor.physicalTile = descriptor.tokenTile + 1;
+    CHECK(TransparentSPDController::validate(descriptor) != nullptr);
+
     TransparentSPDController bad_transition;
     descriptor = validDescriptor();
     CHECK(bad_transition.submit(descriptor) ==
@@ -150,9 +160,11 @@ testFiniteOwnership()
     // The completion token remains protected for the whole descriptor.
     CHECK(controller.ownsTile(0, 0));
     CHECK(!controller.ownsTile(1, 2));
-    CHECK(controller.usesRegister(0, descriptor.scaleReg));
-    CHECK(controller.usesRegister(0, descriptor.minReg));
-    CHECK(!controller.usesRegister(0, 99));
+    CHECK(controller.usesRegister(0, descriptor.scaleReg, 1));
+    CHECK(controller.usesRegister(0, descriptor.scaleReg + 1, 1));
+    CHECK(controller.usesRegister(0, descriptor.scaleReg - 1, 2));
+    CHECK(controller.usesRegister(0, descriptor.minReg, 1));
+    CHECK(!controller.usesRegister(0, 99, 1));
 }
 
 } // namespace
