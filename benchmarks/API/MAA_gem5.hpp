@@ -54,7 +54,8 @@ enum OpcodeType : uint8_t {
     INDIR_LD_SPD_STREAM = 12,
     INDIR_LD_VIRTUAL_INDEX = 13,
     INDIR_LD_INDEX = 14,
-    STREAM_PREFETCH = 15
+    STREAM_PREFETCH = 15,
+    VIRTUAL_TILE_ALU_SCALAR = 16
 };
 enum class DataType : uint8_t {
     UINT32_TYPE = 0,
@@ -389,6 +390,35 @@ inline void maa_indirect_load_virtual_index(
     *INSTR_baseaddr = (uint64_t)data;
     *INSTR_backingaddr = (uint64_t)backing;
     *INSTR_indexaddr = (uint64_t)indices;
+    __asm__ __volatile__("mfence;");
+}
+/**
+ * Submit the bounded transparent consumer descriptor.  Hardware waits for
+ * each acknowledged backing page, fills one real physical SPD tile, executes
+ * a native scalar ALU operation, and stores that page before remapping it.
+ * This first ABI intentionally describes only the gather->ALU->store chain.
+ */
+template <class T1>
+inline void maa_virtual_tile_alu_scalar_store(
+    T1 *backing, T1 *destination, int completion_token, int physical_tile,
+    int output_tile, int scale_reg, int page_min_reg, int page_max_reg,
+    int page_stride_reg, Operation_t op) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::VIRTUAL_TILE_ALU_SCALAR << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)op << 16) |
+        ((uint64_t)physical_tile << 8) | (uint64_t)output_tile;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)completion_token << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)scale_reg << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)page_min_reg << 24) |
+        ((uint64_t)page_max_reg << 16) |
+        ((uint64_t)page_stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)backing;
+    *INSTR_backingaddr = (uint64_t)destination;
     __asm__ __volatile__("mfence;");
 }
 template <class T1>

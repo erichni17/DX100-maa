@@ -48,7 +48,11 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              if_id(-1),
                              core_id(-1),
                              maa_id(-1),
-                             func_unit_id(-1) {}
+                             func_unit_id(-1),
+                             controllerManaged(false),
+                             controllerAction(
+                                 TransparentSPDController::Action::None),
+                             controllerPage(-1) {}
 std::string Instruction::print() const {
     char baseAddrStr[32];
     std::sprintf(baseAddrStr, "0x%lx", baseAddr);
@@ -180,6 +184,24 @@ int Instruction::WordSize() {
 }
 bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                          int ignored_hazard_slot) {
+    if (!_instruction.controllerManaged) {
+        const int tiles[] = {
+            _instruction.src1SpdID, _instruction.src2SpdID,
+            _instruction.dst1SpdID, _instruction.dst2SpdID,
+            _instruction.condSpdID,
+        };
+        for (const int tile : tiles) {
+            if (tile != -1 &&
+                maa->transparentControllerOwnsTile(
+                    _instruction.maa_id, tile)) {
+                DPRINTF(MAAController,
+                        "%s: %s cannot be pushed because transparent "
+                        "controller owns tile %d\n",
+                        __func__, _instruction.print(), tile);
+                return false;
+            }
+        }
+    }
     if (_instruction.opcode ==
             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
         _instruction.dst2SpdID != -1) {
@@ -412,6 +434,31 @@ bool IF::canPushRegister(Register _reg) {
         }
     }
     return true;
+}
+bool IF::hasTileReference(int maa_id, int tile_id) const {
+    panic_if(maa_id < 0 || maa_id >= static_cast<int>(num_maas),
+             "Invalid MAA id %d\n", maa_id);
+    panic_if(tile_id < 0 || tile_id >= static_cast<int>(num_tiles),
+             "Invalid tile id %d\n", tile_id);
+    for (int i = 0; i < num_instructions_per_maa; ++i) {
+        if (!valids[maa_id][i])
+            continue;
+        const Instruction &instruction = instructions[maa_id][i];
+        if (instruction.src1SpdID == tile_id ||
+            instruction.src2SpdID == tile_id ||
+            instruction.dst1SpdID == tile_id ||
+            instruction.dst2SpdID == tile_id ||
+            instruction.condSpdID == tile_id)
+            return true;
+    }
+    return false;
+}
+bool IF::isCompletionOnlyTile(int maa_id, int tile_id) const {
+    panic_if(maa_id < 0 || maa_id >= static_cast<int>(num_maas),
+             "Invalid MAA id %d\n", maa_id);
+    panic_if(tile_id < 0 || tile_id >= static_cast<int>(num_tiles),
+             "Invalid tile id %d\n", tile_id);
+    return completion_only_tiles[maa_id][tile_id];
 }
 Instruction *IF::getReady(FuncUnitType funcUniType, int maa_id) {
     int rand_base = rand() % num_instructions_per_maa;

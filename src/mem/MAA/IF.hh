@@ -8,6 +8,7 @@
 
 #include "base/types.hh"
 #include "mem/MAA/SPD.hh"
+#include "mem/MAA/TransparentSPDController.hh"
 #include "sim/system.hh"
 #include "arch/generic/mmu.hh"
 
@@ -48,9 +49,10 @@ public:
         INDIR_LD_VIRTUAL_INDEX = 13,
         INDIR_LD_INDEX = 14,
         STREAM_PREFETCH = 15,
+        VIRTUAL_TILE_ALU_SCALAR = 16,
         MAX
     };
-    std::string opcode_names[16] = {
+    std::string opcode_names[17] = {
         "STREAM_LD",
         "STREAM_ST",
         "INDIR_LD",
@@ -66,7 +68,8 @@ public:
         "INDIR_LD_SPD_STREAM",
         "INDIR_LD_VIRTUAL_INDEX",
         "INDIR_LD_INDEX",
-        "STREAM_PREFETCH"
+        "STREAM_PREFETCH",
+        "VIRTUAL_TILE_ALU_SCALAR"
     };
     enum class OPType : uint8_t
     {
@@ -187,6 +190,9 @@ public:
     int core_id;
     int maa_id;
     int func_unit_id;
+    bool controllerManaged;
+    TransparentSPDController::Action controllerAction;
+    int controllerPage;
 };
 
 class IF {
@@ -231,6 +237,8 @@ public:
                          int *inserted_slot = nullptr,
                          int ignored_hazard_slot = -1);
     bool canPushRegister(Register _reg);
+    bool hasTileReference(int maa_id, int tile_id) const;
+    bool isCompletionOnlyTile(int maa_id, int tile_id) const;
     Instruction *getReady(FuncUnitType funcUniType, int maa_id = -1);
     void finishInstructionCompute(Instruction *instruction);
     void finishInstructionInvalidate(Instruction *instruction, int tile_id, uint8_t tile_status);

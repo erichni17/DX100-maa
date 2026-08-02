@@ -41,11 +41,12 @@ main(int argc, char **argv)
     if (mode != "native" && mode != "native_direct" &&
         mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_staged_conditional" &&
+        mode != "transparent" &&
         mode != "paged_reload_warm" &&
         mode != "paged_reload_cold") {
         std::cerr << "mode must be native, native_direct, paged, "
                      "paged_overlap, "
-                     "paged_staged, paged_staged_conditional, or "
+                     "paged_staged, paged_staged_conditional, transparent, or "
                      "paged_reload_warm/paged_reload_cold"
                   << std::endl;
         return 2;
@@ -53,6 +54,11 @@ main(int argc, char **argv)
     if ((page_elements != 4096 && page_elements != total_elements) ||
         total_elements % page_elements != 0) {
         std::cerr << "page_elements must be 4096 or 16384" << std::endl;
+        return 2;
+    }
+    if (mode == "transparent" && page_elements != 4096) {
+        std::cerr << "transparent mode requires four 4096-element pages"
+                  << std::endl;
         return 2;
     }
     if (TILE_SIZE != total_elements) {
@@ -116,6 +122,9 @@ main(int argc, char **argv)
     const int max_reg = get_new_reg<int>(total_elements);
     const int stride_reg = get_new_reg<int>(1);
     const int scale_reg = get_new_reg<double>(scale);
+    const int page_min_reg = get_new_reg<int>(0);
+    const int page_max_reg = get_new_reg<int>(4096);
+    const int page_stride_reg = get_new_reg<int>(1);
     const int output_tile = get_new_tile<double>();
 
     if (!reload_only) {
@@ -173,11 +182,21 @@ main(int argc, char **argv)
                 source.data(), indices.data(), completion_tile, backing,
                 min_reg, max_reg, stride_reg);
         }
+        const bool transparent = mode == "transparent";
         const bool overlap_pages = mode == "paged_overlap";
-        if (!overlap_pages)
+        if (transparent) {
+            // Application code submits one logical consumer.  Page-ready
+            // gating, coherent backing reloads, physical-tile remapping, and
+            // the native ALU/store chain are owned by the MAA controller.
+            maa_virtual_tile_alu_scalar_store<double>(
+                backing, destination, completion_tile, page_tile,
+                output_tile, scale_reg, page_min_reg, page_max_reg,
+                page_stride_reg, Operation_t::MUL_OP);
+        } else if (!overlap_pages) {
             wait_ready(completion_tile);
+        }
 
-        if (mode == "paged_reload_cold") {
+        if (!transparent && mode == "paged_reload_cold") {
             volatile uint64_t sink = 0;
             constexpr size_t words_per_cache_line = 64 / sizeof(uint64_t);
             for (size_t i = 0; i < cache_pollution.size();
@@ -187,30 +206,32 @@ main(int argc, char **argv)
             std::cout << "VIRTUAL_TILE_CONSUMER_POLLUTION bytes="
                       << cache_pollution_bytes << std::endl;
         }
-        if (reload_only) {
+        if (!transparent && reload_only) {
             m5_work_begin(0, 0);
             m5_reset_stats(0, 0);
         }
 
-        for (int offset = 0; offset < total_elements;
-             offset += page_elements) {
-            const int count = std::min(page_elements,
-                                       total_elements - offset);
+        if (!transparent) {
+            for (int offset = 0; offset < total_elements;
+                 offset += page_elements) {
+                const int count = std::min(page_elements,
+                                           total_elements - offset);
+                if (overlap_pages)
+                    wait_virtual_page(completion_tile,
+                                      offset / page_elements);
+                wait_ready(page_tile);
+                maa_const(0, min_reg);
+                maa_const(count, max_reg);
+                maa_stream_load<double>(backing + offset, min_reg, max_reg,
+                                        stride_reg, page_tile);
+                maa_alu_scalar<double>(page_tile, scale_reg, output_tile,
+                                       Operation_t::MUL_OP);
+                maa_stream_store<double>(destination + offset, min_reg,
+                                         max_reg, stride_reg, output_tile);
+            }
             if (overlap_pages)
-                wait_virtual_page(completion_tile,
-                                  offset / page_elements);
-            wait_ready(page_tile);
-            maa_const(0, min_reg);
-            maa_const(count, max_reg);
-            maa_stream_load<double>(backing + offset, min_reg, max_reg,
-                                    stride_reg, page_tile);
-            maa_alu_scalar<double>(page_tile, scale_reg, output_tile,
-                                   Operation_t::MUL_OP);
-            maa_stream_store<double>(destination + offset, min_reg, max_reg,
-                                     stride_reg, output_tile);
+                wait_ready(completion_tile);
         }
-        if (overlap_pages)
-            wait_ready(completion_tile);
     }
 
     // A source tile becomes ready before its stream store finishes. Reusing it

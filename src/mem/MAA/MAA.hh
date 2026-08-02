@@ -468,6 +468,7 @@ public:
     void resetVirtualPageReady(int tokenTileID);
     void setVirtualPageReady(int tokenTileID, int pageID);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
+    bool transparentControllerOwnsTile(int maaID, int tileID) const;
     void finishInstructionCompute(InstructionPtr instruction);
     void finishInstructionInvalidate(InstructionPtr instruction, int tileID);
     bool sentMemSidePacket(PacketPtr pkt);
@@ -488,12 +489,18 @@ protected:
     std::vector<PacketPtr> my_register_pkts;
     std::vector<int> my_ready_tile_ids;
     std::vector<std::array<bool, MaxVirtualPages>> virtualPageReady;
+    TransparentSPDController transparentController;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();
     void dispatchInstruction();
     void dispatchRegister();
-    EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent, dispatchRegisterEvent;
+    bool submitTransparentDescriptor(InstructionPtr instruction);
+    bool dispatchTransparentMicroOp(
+        const TransparentSPDController::Request &request);
+    void tryIssueTransparentMicroOp();
+    EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
+        dispatchRegisterEvent;
     void scheduleDispatchInstructionEvent(int latency = 0);
     void scheduleDispatchRegisterEvent(int latency = 0);
     bool *streamAccessIdle;

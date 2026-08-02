@@ -241,6 +241,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_SPD_STREAM ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD) {
                     current_instruction->accessType =
                         Instruction::AccessType::READ;
@@ -300,7 +302,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_INDEX ||
                     current_instruction->opcode ==
-                        Instruction::OpcodeType::INDIR_LD_SPD_STREAM)
+                        Instruction::OpcodeType::INDIR_LD_SPD_STREAM ||
+                    current_instruction->opcode ==
+                        Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR)
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController, "%s: %s received!\n", __func__, current_instruction->print());
@@ -317,7 +321,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                         current_instruction->opcode !=
-                            Instruction::OpcodeType::INDIR_LD_SPD_STREAM,
+                            Instruction::OpcodeType::INDIR_LD_SPD_STREAM &&
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR,
                     "Backing address is only valid for virtual or fused "
                     "indirect loads!\n");
                 current_instruction->backingAddr = data;

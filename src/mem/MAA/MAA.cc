@@ -629,6 +629,276 @@ uint8_t MAA::getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst)
     assert(false);
     return (uint8_t)(Instruction::TileStatus::WaitForService);
 }
+bool MAA::transparentControllerOwnsTile(int maaID, int tileID) const {
+    return transparentController.ownsTile(maaID, tileID);
+}
+bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
+    panic_if(instruction->opcode !=
+                 Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR,
+             "Cannot submit non-transparent descriptor %s\n",
+             instruction->print());
+    if (transparentController.active())
+        return false;
+
+    const int register_ids[] = {
+        instruction->dst1RegID, instruction->src1RegID,
+        instruction->src2RegID, instruction->src3RegID,
+    };
+    for (const RegisterPtr pending : my_registers) {
+        const int pending_words = pending->size / sizeof(uint32_t);
+        for (const int register_id : register_ids) {
+            if (register_id >= pending->register_id &&
+                register_id < pending->register_id + pending_words)
+                return false;
+        }
+    }
+
+    panic_if(num_tile_elements != TransparentSPDController::LogicalElements ||
+                 physical_tile_elements !=
+                     TransparentSPDController::PageElements,
+             "Transparent controller requires logical/physical elements "
+             "%d/%d, got %u/%u\n",
+             TransparentSPDController::LogicalElements,
+             TransparentSPDController::PageElements, num_tile_elements,
+             physical_tile_elements);
+    panic_if(instruction->datatype != Instruction::DataType::FLOAT64_TYPE ||
+                 instruction->optype != Instruction::OPType::MUL_OP,
+             "Transparent controller currently supports only FLOAT64 "
+             "scalar multiply, got %s\n",
+             instruction->print());
+
+    const int word_size = instruction->WordSize();
+    const int tile_words = word_size / sizeof(uint32_t);
+    const auto valid_tile_span = [&](int first) {
+        return first >= 0 && first + tile_words <= static_cast<int>(num_tiles);
+    };
+    panic_if(!valid_tile_span(instruction->src1SpdID) ||
+                 !valid_tile_span(instruction->dst1SpdID) ||
+                 !valid_tile_span(instruction->dst2SpdID),
+             "Transparent descriptor has an invalid double-width tile span: "
+             "token=%d physical=%d output=%d tiles=%u\n",
+             instruction->src1SpdID, instruction->dst1SpdID,
+             instruction->dst2SpdID, num_tiles);
+    const auto spans_overlap = [tile_words](int lhs, int rhs) {
+        return lhs < rhs + tile_words && rhs < lhs + tile_words;
+    };
+    panic_if(spans_overlap(instruction->src1SpdID,
+                           instruction->dst1SpdID) ||
+                 spans_overlap(instruction->src1SpdID,
+                               instruction->dst2SpdID) ||
+                 spans_overlap(instruction->dst1SpdID,
+                               instruction->dst2SpdID),
+             "Transparent descriptor tile spans overlap: token=%d "
+             "physical=%d output=%d\n",
+             instruction->src1SpdID, instruction->dst1SpdID,
+             instruction->dst2SpdID);
+    panic_if(!ifile->isCompletionOnlyTile(instruction->maa_id,
+                                          instruction->src1SpdID),
+             "Transparent descriptor token tile %d is not a logical virtual "
+             "completion token\n",
+             instruction->src1SpdID);
+    for (int offset = 0; offset < tile_words; ++offset) {
+        if (ifile->hasTileReference(instruction->maa_id,
+                                    instruction->dst1SpdID + offset) ||
+            ifile->hasTileReference(instruction->maa_id,
+                                    instruction->dst2SpdID + offset))
+            return false;
+    }
+
+    const int reg_words = word_size / sizeof(uint32_t);
+    panic_if(instruction->dst1RegID < 0 ||
+                 instruction->dst1RegID + reg_words >
+                     static_cast<int>(num_regs) ||
+                 instruction->src1RegID < 0 ||
+                 instruction->src2RegID < 0 ||
+                 instruction->src3RegID < 0 ||
+                 instruction->src1RegID >= static_cast<int>(num_regs) ||
+                 instruction->src2RegID >= static_cast<int>(num_regs) ||
+                 instruction->src3RegID >= static_cast<int>(num_regs),
+             "Transparent descriptor register span is invalid\n");
+    panic_if(rf->getData<int32_t>(instruction->src1RegID) != 0 ||
+                 rf->getData<int32_t>(instruction->src2RegID) !=
+                     TransparentSPDController::PageElements ||
+                 rf->getData<int32_t>(instruction->src3RegID) != 1,
+             "Transparent page range registers must be min=0 max=%d "
+             "stride=1\n",
+             TransparentSPDController::PageElements);
+
+    TransparentSPDController::Descriptor descriptor;
+    descriptor.tokenTile = instruction->src1SpdID;
+    descriptor.physicalTile = instruction->dst1SpdID;
+    descriptor.outputTile = instruction->dst2SpdID;
+    descriptor.scaleReg = instruction->dst1RegID;
+    descriptor.minReg = instruction->src1RegID;
+    descriptor.maxReg = instruction->src2RegID;
+    descriptor.strideReg = instruction->src3RegID;
+    descriptor.wordSize = word_size;
+    descriptor.logicalElements = num_tile_elements;
+    descriptor.pageElements = physical_tile_elements;
+    descriptor.coreID = instruction->core_id;
+    descriptor.maaID = instruction->maa_id;
+    descriptor.contextID = instruction->CID;
+    descriptor.dataType = static_cast<uint8_t>(instruction->datatype);
+    descriptor.operation = static_cast<uint8_t>(instruction->optype);
+    descriptor.pc = instruction->PC;
+    descriptor.backingAddr = instruction->baseAddr;
+    descriptor.backingMinAddr = instruction->minAddr;
+    descriptor.backingMaxAddr = instruction->maxAddr;
+    descriptor.backingRangeID = instruction->addrRangeID;
+    descriptor.destinationAddr = instruction->backingAddr;
+    descriptor.destinationMinAddr = instruction->backingMinAddr;
+    descriptor.destinationMaxAddr = instruction->backingMaxAddr;
+    descriptor.destinationRangeID = instruction->backingAddrRangeID;
+
+    const char *validation =
+        TransparentSPDController::validate(descriptor);
+    panic_if(validation != nullptr, "Invalid transparent descriptor: %s\n",
+             validation == nullptr ? "unknown" : validation);
+    const auto result = transparentController.submit(descriptor);
+    panic_if(result != TransparentSPDController::SubmitResult::Accepted,
+             "Validated transparent descriptor was not accepted\n");
+
+    // These two credits cover the complete descriptor lifetime.  Native
+    // micro-ops take and return their own credits independently.
+    spd->setTileNotReady(descriptor.physicalTile, descriptor.wordSize);
+    spd->setTileNotReady(descriptor.outputTile, descriptor.wordSize);
+    for (int page = 0; page < TransparentSPDController::NumPages; ++page) {
+        if (!getVirtualPageReady(descriptor.tokenTile, page))
+            continue;
+        panic_if(!transparentController.notifyPageReady(
+                     descriptor.tokenTile, page),
+                 "Failed to import ready page %d for token %d\n", page,
+                 descriptor.tokenTile);
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=transparent_submit token=%d physical=%d output=%d "
+            "logical=%d page=%d pages=%d\n",
+            descriptor.tokenTile, descriptor.physicalTile,
+            descriptor.outputTile, descriptor.logicalElements,
+            descriptor.pageElements, TransparentSPDController::NumPages);
+    tryIssueTransparentMicroOp();
+    return true;
+}
+bool MAA::dispatchTransparentMicroOp(
+    const TransparentSPDController::Request &request) {
+    const auto &descriptor = transparentController.descriptor();
+    Instruction instruction;
+    instruction.core_id = descriptor.coreID;
+    instruction.maa_id = descriptor.maaID;
+    instruction.CID = descriptor.contextID;
+    instruction.PC = descriptor.pc;
+    instruction.datatype =
+        static_cast<Instruction::DataType>(descriptor.dataType);
+    instruction.controllerManaged = true;
+    instruction.controllerAction = request.action;
+    instruction.controllerPage = request.page;
+
+    const Addr byte_offset =
+        static_cast<Addr>(request.logicalOffset) * descriptor.wordSize;
+    switch (request.action) {
+      case TransparentSPDController::Action::Fill:
+        instruction.opcode = Instruction::OpcodeType::STREAM_LD;
+        instruction.accessType = Instruction::AccessType::READ;
+        instruction.dst1SpdID = descriptor.physicalTile;
+        instruction.src1RegID = descriptor.minReg;
+        instruction.src2RegID = descriptor.maxReg;
+        instruction.src3RegID = descriptor.strideReg;
+        instruction.baseAddr = descriptor.backingAddr + byte_offset;
+        instruction.minAddr = descriptor.backingMinAddr;
+        instruction.maxAddr = descriptor.backingMaxAddr;
+        instruction.addrRangeID = descriptor.backingRangeID;
+        break;
+      case TransparentSPDController::Action::Compute:
+        instruction.opcode = Instruction::OpcodeType::ALU_SCALAR;
+        instruction.optype =
+            static_cast<Instruction::OPType>(descriptor.operation);
+        instruction.accessType = Instruction::AccessType::COMPUTE;
+        instruction.src1SpdID = descriptor.physicalTile;
+        instruction.src1RegID = descriptor.scaleReg;
+        instruction.dst1SpdID = descriptor.outputTile;
+        break;
+      case TransparentSPDController::Action::Store:
+        instruction.opcode = Instruction::OpcodeType::STREAM_ST;
+        instruction.accessType = Instruction::AccessType::WRITE;
+        instruction.src1SpdID = descriptor.outputTile;
+        instruction.src1RegID = descriptor.minReg;
+        instruction.src2RegID = descriptor.maxReg;
+        instruction.src3RegID = descriptor.strideReg;
+        instruction.baseAddr = descriptor.destinationAddr + byte_offset;
+        instruction.minAddr = descriptor.destinationMinAddr;
+        instruction.maxAddr = descriptor.destinationMaxAddr;
+        instruction.addrRangeID = descriptor.destinationRangeID;
+        break;
+      default:
+        panic("Cannot dispatch empty transparent-controller action\n");
+    }
+
+    instruction.src1Status = static_cast<Instruction::TileStatus>(
+        getTileStatus(&instruction, instruction.src1SpdID, false));
+    instruction.src2Status = static_cast<Instruction::TileStatus>(
+        getTileStatus(&instruction, instruction.src2SpdID, false));
+    instruction.condStatus = static_cast<Instruction::TileStatus>(
+        getTileStatus(&instruction, instruction.condSpdID, false));
+    instruction.dst1Status = static_cast<Instruction::TileStatus>(
+        getTileStatus(&instruction, instruction.dst1SpdID, true));
+    instruction.dst2Status = static_cast<Instruction::TileStatus>(
+        getTileStatus(&instruction, instruction.dst2SpdID, true));
+    if (!ifile->pushInstruction(instruction))
+        return false;
+
+    if (instruction.dst1SpdID != -1) {
+        spd->setTileIdle(instruction.dst1SpdID,
+                         instruction.getWordSize(instruction.dst1SpdID));
+        spd->setTileNotReady(
+            instruction.dst1SpdID,
+            instruction.getWordSize(instruction.dst1SpdID));
+    }
+    if (instruction.dst2SpdID != -1) {
+        spd->setTileIdle(instruction.dst2SpdID,
+                         instruction.getWordSize(instruction.dst2SpdID));
+        spd->setTileNotReady(
+            instruction.dst2SpdID,
+            instruction.getWordSize(instruction.dst2SpdID));
+    }
+    if (instruction.src1SpdID != -1) {
+        spd->setTileNotReady(
+            instruction.src1SpdID,
+            instruction.getWordSize(instruction.src1SpdID));
+    }
+    if (instruction.src2SpdID != -1) {
+        spd->setTileNotReady(
+            instruction.src2SpdID,
+            instruction.getWordSize(instruction.src2SpdID));
+    }
+    scheduleIssueInstructionEvent(1);
+    return true;
+}
+void MAA::tryIssueTransparentMicroOp() {
+    // Keep the request invisible for the lookup cycle.  The scheduled retry
+    // is the event that makes the finite transition observable.
+    if (transparentController.controllerCyclesRemaining() != 0) {
+        transparentController.advanceControllerCycle();
+        scheduleIssueInstructionEvent(1);
+        return;
+    }
+    const auto request = transparentController.pending();
+    if (request.action == TransparentSPDController::Action::None)
+        return;
+    if (!dispatchTransparentMicroOp(request)) {
+        DPRINTF(MAAVirtualTrace,
+                "event=transparent_backpressure page=%d action=%d\n",
+                request.page, static_cast<int>(request.action));
+        return;
+    }
+    panic_if(!transparentController.accept(request),
+             "Transparent controller rejected dispatched page %d action %d\n",
+             request.page, static_cast<int>(request.action));
+    DPRINTF(MAAVirtualTrace,
+            "event=transparent_issue page=%d action=%d offset=%d "
+            "elements=%d\n",
+            request.page, static_cast<int>(request.action),
+            request.logicalOffset, request.elements);
+}
 void MAA::dispatchRegister() {
     DPRINTF(MAAController, "%s: dispatching register...!\n", __func__);
     assert(my_register_pkts.size() == my_registers.size());
@@ -637,8 +907,12 @@ void MAA::dispatchRegister() {
     while (pkt_it != my_register_pkts.end() && register_it != my_registers.end()) {
         RegisterPtr reg = *register_it;
         PacketPtr pkt = *pkt_it;
-        if (ifile->canPushRegister(*reg)) {
-            DPRINTF(MAAController, "%s: register %d write dispatched!\n", __func__, reg->register_id);
+        if (ifile->canPushRegister(*reg) &&
+            !transparentController.usesRegister(reg->maa_id,
+                                                reg->register_id)) {
+            DPRINTF(MAAController,
+                    "%s: register %d write dispatched!\n", __func__,
+                    reg->register_id);
             if (reg->size == 4) {
                 rf->setData<uint32_t>(reg->register_id, reg->data_UINT32);
             } else {
@@ -672,14 +946,47 @@ void MAA::dispatchInstruction() {
         if (*recv_it == true) {
             InstructionPtr instruction = *instruction_it;
             PacketPtr pkt = *pkt_it;
-            instruction->src1Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->src1SpdID, false);
-            instruction->src2Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->src2SpdID, false);
-            instruction->condStatus = (Instruction::TileStatus)getTileStatus(instruction, instruction->condSpdID, false);
-            // assume that we can read from any tile, so invalidate all destinations
-            // Instructions with DST1: stream and indirect load, range loop, ALU
-            instruction->dst1Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->dst1SpdID, true);
+            if (instruction->opcode ==
+                Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR) {
+                if (!submitTransparentDescriptor(instruction)) {
+                    ++pkt_it;
+                    ++recv_it;
+                    ++rid_it;
+                    ++instruction_it;
+                    continue;
+                }
+                DPRINTF(MAAController,
+                        "%s: transparent descriptor %s dispatched\n",
+                        __func__, instruction->print());
+                pkt->makeTimingResponse();
+                pkt->headerDelay = pkt->payloadDelay = 0;
+                cpuSidePorts[0]->schedTimingResp(
+                    pkt, getClockEdge(Cycles(1)));
+                pkt_it = my_instruction_pkts.erase(pkt_it);
+                recv_it = my_instruction_recvs.erase(recv_it);
+                rid_it = my_instruction_RIDs.erase(rid_it);
+                instruction_it = my_instructions.erase(instruction_it);
+                delete instruction;
+                continue;
+            }
+            instruction->src1Status =
+                (Instruction::TileStatus)getTileStatus(
+                    instruction, instruction->src1SpdID, false);
+            instruction->src2Status =
+                (Instruction::TileStatus)getTileStatus(
+                    instruction, instruction->src2SpdID, false);
+            instruction->condStatus =
+                (Instruction::TileStatus)getTileStatus(
+                    instruction, instruction->condSpdID, false);
+            // Assume every tile is readable, so invalidate all destinations.
+            // DST1 users include stream/indirect loads, range loops, and ALUs.
+            instruction->dst1Status =
+                (Instruction::TileStatus)getTileStatus(
+                    instruction, instruction->dst1SpdID, true);
             // Instructions with DST2: range loop
-            instruction->dst2Status = (Instruction::TileStatus)getTileStatus(instruction, instruction->dst2SpdID, true);
+            instruction->dst2Status =
+                (Instruction::TileStatus)getTileStatus(
+                    instruction, instruction->dst2SpdID, true);
             if (ifile->pushInstruction(*instruction)) {
                 DPRINTF(MAAController, "%s: %s dispatched!\n", __func__, instruction->print());
                 if (instruction->dst1SpdID != -1) {
@@ -748,6 +1055,9 @@ void MAA::dispatchInstruction() {
 }
 void MAA::finishInstructionCompute(Instruction *instruction) {
     DPRINTF(MAAController, "%s: %s finishing!\n", __func__, instruction->print());
+    const bool controller_managed = instruction->controllerManaged;
+    const auto controller_action = instruction->controllerAction;
+    const int controller_page = instruction->controllerPage;
     if (instruction->dst1SpdID != -1) {
         spd->setTileFinished(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
         setTileReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
@@ -785,6 +1095,34 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     default: {
         assert(false);
     }
+    }
+    if (controller_managed) {
+        panic_if(!transparentController.complete(controller_action,
+                                                  controller_page),
+                 "Transparent controller rejected completion of page %d "
+                 "action %d\n",
+                 controller_page, static_cast<int>(controller_action));
+        DPRINTF(MAAVirtualTrace,
+                "event=transparent_complete page=%d action=%d\n",
+                controller_page, static_cast<int>(controller_action));
+        if (transparentController.complete()) {
+            const auto descriptor = transparentController.descriptor();
+            // Return the descriptor-lifetime credits only after the final
+            // native stream store has been acknowledged.
+            setTileReady(descriptor.physicalTile, descriptor.wordSize);
+            setTileReady(descriptor.outputTile, descriptor.wordSize);
+            panic_if(!transparentController.retire(),
+                     "Completed transparent descriptor did not retire\n");
+            DPRINTF(MAAVirtualTrace,
+                    "event=transparent_retire pages=%d\n",
+                    TransparentSPDController::NumPages);
+        } else {
+            tryIssueTransparentMicroOp();
+        }
+    } else if (transparentController.active()) {
+        // A ready action may previously have observed a full instruction file.
+        // Any unrelated retirement is a finite retry opportunity.
+        tryIssueTransparentMicroOp();
     }
     scheduleIssueInstructionEvent();
     scheduleDispatchInstructionEvent();
@@ -850,6 +1188,15 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
              tokenTileID, pageID);
     virtualPageReady[tokenTileID][pageID] = true;
     stats.virtual_page_ready_signals++;
+
+    if (transparentController.active() &&
+        transparentController.descriptor().tokenTile == tokenTileID &&
+        pageID < TransparentSPDController::NumPages) {
+        panic_if(!transparentController.notifyPageReady(tokenTileID, pageID),
+                 "Transparent controller rejected ready token=%d page=%d\n",
+                 tokenTileID, pageID);
+        tryIssueTransparentMicroOp();
+    }
 
     const int readyID =
         num_tiles + tokenTileID * MaxVirtualPages + pageID;
