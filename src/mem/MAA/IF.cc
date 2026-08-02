@@ -55,6 +55,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              maa_id(-1),
                              func_unit_id(-1),
                              controllerManaged(false),
+                             logicalResponseManaged(false),
                              controllerAction(
                                  TransparentSPDController::Action::None),
                              controllerTransactionID(0),
