@@ -2,8 +2,10 @@
 """Fail-closed analysis of transparent-controller lifecycle traces.
 
 Only the lifecycle events named in ``SUPPORTED_EVENTS`` are accepted.  Other
-trace traffic is ignored, but an unknown ``transparent_*`` event or a malformed
-target event rejects the complete input rather than producing partial timing.
+trace traffic is ignored, but a raw line or carriage-return fragment containing
+``event=transparent_`` or ``event=page_ready`` is a target candidate.  It must
+parse under the exact event schema or reject the complete input rather than
+producing partial timing.
 
 The projected schedule is deliberately narrow: two input page slots, one
 shared STREAM unit for fills and stores, one ALU, and one shared output slot.
@@ -50,6 +52,7 @@ TARGET_MARKER_RE = re.compile(
     r"(?:^|[ \t])event(?:[ \t]*=[ \t]*|[ \t]+)"
     r"(?:transparent_[A-Za-z0-9_]+|page_ready)(?=[ \t]|$)"
 )
+TARGET_CANDIDATE_PREFIXES = ("event=transparent_", "event=page_ready")
 FIELD_RE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_]*)=(?P<value>[^ ]+)$")
 READY_COUNT_RE = re.compile(r"^(?P<ordinal>[0-9]+)/(?P<total>[0-9]+)$")
 
@@ -181,8 +184,19 @@ def _fail(line: int, message: str) -> TraceFormatError:
     return TraceFormatError(f"line {line}: {message}")
 
 
-def _target_marker(line: str) -> bool:
-    return TARGET_MARKER_RE.search(line) is not None
+def _target_candidate(fragment: str) -> bool:
+    """Return whether a raw trace fragment must be parsed fail-closed.
+
+    The literal prefixes deliberately do not require a separator or a valid
+    event name.  They catch malformed and unknown target events before the
+    exact line grammar is applied.  ``TARGET_MARKER_RE`` preserves rejection
+    for the whitespace-disguised target forms accepted by earlier audits.
+    """
+
+    return (
+        any(prefix in fragment for prefix in TARGET_CANDIDATE_PREFIXES)
+        or TARGET_MARKER_RE.search(fragment) is not None
+    )
 
 
 def _parse_fields(line_number: int, text: str) -> dict[str, str]:
@@ -266,34 +280,40 @@ def parse_events(lines: Iterable[str]) -> tuple[Event, ...]:
     events: list[Event] = []
     previous_tick = -1
     for line_number, raw_line in enumerate(lines, 1):
-        line = raw_line.rstrip("\n")
-        if not _target_marker(line):
-            continue
-        match = EVENT_RE.fullmatch(line)
-        if match is None:
-            raise _fail(line_number, "malformed target event line")
-        kind = match.group("event")
-        if kind not in SUPPORTED_EVENTS:
-            raise _fail(line_number, f"unsupported target event {kind!r}")
-        tick = int(match.group("tick"))
-        if tick < previous_tick:
-            raise _fail(line_number, "target-event ticks moved backwards")
-        previous_tick = tick
-        event = _decode_event(
-            line_number,
-            tick,
-            match.group("component"),
-            kind,
-            match.group("fields"),
-        )
-        expected_component = "global" if kind == "page_ready" else "system.maa"
-        if event.component != expected_component:
-            raise _fail(
+        # Preserve CR fragments for fail-closed candidate detection.  A trace
+        # reader normally yields newline-terminated raw lines, including CRLF
+        # lines; a bare CR must never hide a target-shaped fragment.
+        for fragment in raw_line.split("\r"):
+            line = fragment.rstrip("\n")
+            if not _target_candidate(line):
+                continue
+            match = EVENT_RE.fullmatch(line)
+            if match is None:
+                raise _fail(line_number, "malformed target event line")
+            kind = match.group("event")
+            if kind not in SUPPORTED_EVENTS:
+                raise _fail(line_number, f"unsupported target event {kind!r}")
+            tick = int(match.group("tick"))
+            if tick < previous_tick:
+                raise _fail(line_number, "target-event ticks moved backwards")
+            previous_tick = tick
+            event = _decode_event(
                 line_number,
-                f"{kind} came from {event.component!r}, expected "
-                f"{expected_component!r}",
+                tick,
+                match.group("component"),
+                kind,
+                match.group("fields"),
             )
-        events.append(event)
+            expected_component = (
+                "global" if kind == "page_ready" else "system.maa"
+            )
+            if event.component != expected_component:
+                raise _fail(
+                    line_number,
+                    f"{kind} came from {event.component!r}, expected "
+                    f"{expected_component!r}",
+                )
+            events.append(event)
     if not events:
         raise TraceFormatError("trace contains no supported target events")
     return tuple(events)
@@ -700,7 +720,10 @@ def shared_stream_two_slot_schedule(
 
 
 def analyze_text(text: str) -> TraceAnalysis:
-    return analyze_events(parse_events(text.splitlines()))
+    # ``str.splitlines`` discards bare carriage returns before ``parse_events``
+    # can inspect their fragments.  Split only on LF and let the parser retain
+    # CR boundaries for target-candidate detection.
+    return analyze_events(parse_events(text.split("\n")))
 
 
 def analysis_dict(analysis: TraceAnalysis) -> dict[str, object]:

@@ -148,6 +148,49 @@ class TraceParserTest(unittest.TestCase):
                 ):
                     ANALYSIS.analyze_text(malformed + "\n" + valid_trace())
 
+    def test_raw_target_candidates_fail_closed_despite_malformed_framing(self):
+        malformed_targets = {
+            "missing separator after transparent event": (
+                "99: system.maa: event=transparent_submittoken=2"
+            ),
+            "missing separator after page-ready event": (
+                "99: global: event=page_readypage=0"
+            ),
+            "tab after event": (
+                "99: system.maa: event=transparent_issue\tpage=0"
+            ),
+            "unknown target event": (
+                "99: system.maa: event=transparent_backpressure page=0"
+            ),
+            "malformed prefix": ("malformed-prefixevent=page_ready page=0"),
+            "CR fragment starts a target": (
+                "unrelated carriage-return fragment\r"
+                "event=transparent_unknown page=0"
+            ),
+            "CR splits target event name": (
+                "99: system.maa: event=transparent_\rissue page=0"
+            ),
+        }
+        for name, malformed in malformed_targets.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    ANALYSIS.TraceFormatError,
+                    r"line 1: (?:malformed target event line|unsupported "
+                    r"target event)",
+                ):
+                    ANALYSIS.analyze_text(malformed + "\n" + valid_trace())
+
+    def test_non_target_lines_remain_ignored(self):
+        trace = "\n".join(
+            (
+                "1: global: event=request_heartbeat calls=1",
+                "2: logger: transparent_submit is only descriptive text",
+                "3: logger: page_ready is only descriptive text",
+                valid_trace(),
+            )
+        )
+        self.assertEqual(len(ANALYSIS.analyze_text(trace).pages), 4)
+
     def test_incomplete_duplicate_and_misordered_lifecycles_fail_closed(self):
         duplicate_ready = valid_trace().replace(
             "120: system.maa: event=transparent_complete page=0 action=1",
