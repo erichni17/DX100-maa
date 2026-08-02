@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Static contract checks for the standalone bounded SPD-cache core."""
+"""Contract and behavioral checks for the bounded SPD-cache core."""
 
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -56,13 +59,33 @@ class LogicalSpdCacheControllerContractTest(unittest.TestCase):
         for operation in (
             "notifyPageReady(const PageIdentity &page)",
             "access(const PageIdentity &page)",
-            "completeFill(uint16_t slotIndex, const PageIdentity &page)",
-            "completeWriteback(uint16_t slotIndex, const PageIdentity &page)",
             "pin(const PageIdentity &page)",
         ):
             self.assertIn(operation, self.header)
         self.assertIn("FillReleasedObsolete", self.header)
         self.assertIn("GenerationExhausted", self.header)
+
+    def test_memory_actions_and_responses_require_unique_serials(self) -> None:
+        action = self.header[
+            self.header.index("struct MemoryAction") : self.header.index(
+                "enum class ActionResult"
+            )
+        ]
+        self.assertIn("TransactionSerial serial = NoTransaction", action)
+        self.assertIn("serial == other.serial", action)
+        for signature in (
+            "completeFill(uint16_t slotIndex, const PageIdentity &page,",
+            "completeWriteback(uint16_t slotIndex, const PageIdentity &page,",
+        ):
+            self.assertIn(signature, self.header)
+        for evidence in (
+            "slot.transaction != serial",
+            "action.serial = nextMemorySerial()",
+            "lastMemorySerial = action.serial",
+            "memorySerialExhausted()",
+            "std::numeric_limits<TransactionSerial>::max()",
+        ):
+            self.assertIn(evidence, self.header)
 
     def test_explicit_lease_and_writeback_completion_contracts(self) -> None:
         for phase in ("Filling", "Clean", "Dirty", "Writeback"):
@@ -83,21 +106,95 @@ class LogicalSpdCacheControllerContractTest(unittest.TestCase):
         ]
         self.assertIn("slot.phase != Phase::Writeback", completion)
         self.assertIn("slot.page != page", completion)
+        self.assertIn("slot.transaction != serial", completion)
         self.assertIn("slot = Slot{}", completion)
 
-    def test_tests_cover_required_adversarial_paths(self) -> None:
+    def test_tests_cover_reordered_duplicate_and_late_responses(self) -> None:
+        source = TEST_PATH.read_text(encoding="utf-8")
+        for evidence in (
+            "testTransactionSerialRejectsReorderedDuplicateAndLateResponses",
+            "firstFill.serial",
+            "laterFill.serial",
+            "firstWriteback.serial",
+            "laterWriteback.serial",
+            "laterFill.serial + 1",
+            "ResponseResult::Stale",
+            "ResponseResult::Invalid",
+        ):
+            self.assertIn(evidence, source)
+
+    def test_tests_cover_writeback_fill_exclusion(self) -> None:
+        source = TEST_PATH.read_text(encoding="utf-8")
+        pending = self.header[
+            self.header.index("pendingAction() const") : self.header.index(
+                "acceptAction(const MemoryAction &action)"
+            )
+        ]
+        self.assertIn("pageHasOwner(missQueue[0])", pending)
+        for evidence in (
+            "testWritebackFillExclusionPreservesSinglePageOwner",
+            "pageWriteback",
+            "replacementFill",
+            "ActionKind::None",
+            "Phase::Writeback",
+            "replayFill",
+        ):
+            self.assertIn(evidence, source)
+
+    def test_existing_finite_fail_closed_paths_remain_covered(self) -> None:
         source = TEST_PATH.read_text(encoding="utf-8")
         for evidence in (
             "Backpressure",
             "discardsCleanVictim",
             "FillReleasedObsolete",
-            "WritebackCompleted",
             "notifyPageReady(oldPage)",
             "forgedLease",
             "freeDescriptor",
-            "controller.pendingAction()",
         ):
             self.assertIn(evidence, source)
+
+    def test_adversarial_cpp_scenarios_execute_from_python(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "logical_spd_cache_controller_test"
+            compile_result = subprocess.run(
+                [
+                    os.environ.get("CXX", "g++"),
+                    f"-I{ROOT / 'src'}",
+                    "-std=c++17",
+                    "-O2",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-pedantic",
+                    str(TEST_PATH),
+                    "-o",
+                    str(binary),
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                0,
+                compile_result.returncode,
+                compile_result.stdout + compile_result.stderr,
+            )
+            run_result = subprocess.run(
+                [str(binary)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(
+            0,
+            run_result.returncode,
+            run_result.stdout + run_result.stderr,
+        )
+        self.assertIn(
+            "logical_spd_cache_controller_test: PASS", run_result.stdout
+        )
 
     def test_runner_is_standalone_and_notes_reject_integration_claims(
         self,

@@ -54,7 +54,8 @@ acceptFill(Controller &controller,
     CHECK(action.page == page);
     CHECK(controller.acceptAction(action) ==
           Controller::ActionResult::Accepted);
-    CHECK(controller.completeFill(action.slot, page) ==
+    CHECK(action.serial != Controller::NoTransaction);
+    CHECK(controller.completeFill(action.slot, page, action.serial) ==
           Controller::ResponseResult::FillInstalled);
 }
 
@@ -89,15 +90,24 @@ testFiniteQueueLeasesAndDirtyWriteback()
     forged.page = page1;
     CHECK(controller.acceptAction(forged) ==
           SingleSlot::ActionResult::Stale);
+    forged = fill;
+    ++forged.serial;
+    CHECK(controller.acceptAction(forged) ==
+          SingleSlot::ActionResult::Stale);
     CHECK(controller.missQueueSize() == 2);
     CHECK(controller.slotPhase(0) == SingleSlot::Phase::Empty);
 
     CHECK(controller.acceptAction(fill) == SingleSlot::ActionResult::Accepted);
     CHECK(controller.missQueueSize() == 1);
-    CHECK(controller.completeFill(0, page1) ==
+    CHECK(controller.access(page0Later) ==
+          SingleSlot::AccessResult::MissQueued);
+    CHECK(controller.missQueueSize() == SingleSlot::QueueCapacity);
+    CHECK(controller.queuedMiss(0) == page1);
+    CHECK(controller.queuedMiss(1) == page0Later);
+    CHECK(controller.completeFill(0, page1, fill.serial) ==
           SingleSlot::ResponseResult::Stale);
     CHECK(controller.slotPhase(0) == SingleSlot::Phase::Filling);
-    CHECK(controller.completeFill(0, page0) ==
+    CHECK(controller.completeFill(0, page0, fill.serial) ==
           SingleSlot::ResponseResult::FillInstalled);
     CHECK(controller.access(page0) == SingleSlot::AccessResult::Hit);
     CHECK(controller.access(page1) == SingleSlot::AccessResult::Pending);
@@ -135,13 +145,15 @@ testFiniteQueueLeasesAndDirtyWriteback()
           SingleSlot::ActionResult::Accepted);
     CHECK(controller.slotPhase(0) == SingleSlot::Phase::Writeback);
     CHECK(controller.pendingAction().kind == SingleSlot::ActionKind::None);
-    CHECK(controller.completeWriteback(0, page1) ==
+    CHECK(controller.completeWriteback(0, page1, writeback.serial) ==
           SingleSlot::ResponseResult::Stale);
     CHECK(controller.slotPhase(0) == SingleSlot::Phase::Writeback);
-    CHECK(controller.completeWriteback(0, page0) ==
+    CHECK(controller.completeWriteback(0, page0, writeback.serial) ==
           SingleSlot::ResponseResult::WritebackCompleted);
     CHECK(controller.slotPhase(0) == SingleSlot::Phase::Empty);
     acceptFill(controller, page1, 0);
+    CHECK(controller.missQueueSize() == 1);
+    CHECK(controller.queuedMiss(0) == page0Later);
 }
 
 void
@@ -167,7 +179,7 @@ testDeterministicCleanVictimSelection()
     CHECK(action.discardsCleanVictim);
     CHECK(action.cleanVictim == page00);
     CHECK(controller.acceptAction(action) == TwoSlot::ActionResult::Accepted);
-    CHECK(controller.completeFill(0, page01) ==
+    CHECK(controller.completeFill(0, page01, action.serial) ==
           TwoSlot::ResponseResult::FillInstalled);
     CHECK(controller.residentSlot(page00) == TwoSlot::NoSlot);
 
@@ -186,7 +198,7 @@ testDeterministicCleanVictimSelection()
     CHECK(action.slot == 0);
     CHECK(action.cleanVictim == page01);
     CHECK(controller.acceptAction(action) == TwoSlot::ActionResult::Accepted);
-    CHECK(controller.completeFill(0, page11) ==
+    CHECK(controller.completeFill(0, page11, action.serial) ==
           TwoSlot::ResponseResult::FillInstalled);
 }
 
@@ -212,16 +224,16 @@ testGenerationTaggedReuseAndStaleResponses()
     const auto newPage = ready(controller, newDescriptor, 1);
     CHECK(controller.access(newPage) == SingleSlot::AccessResult::MissQueued);
 
-    CHECK(controller.completeFill(0, oldPage) ==
+    CHECK(controller.completeFill(0, oldPage, oldFill.serial) ==
           SingleSlot::ResponseResult::FillReleasedObsolete);
     const auto newFill = controller.pendingAction();
     CHECK(newFill.page == newPage);
     CHECK(controller.acceptAction(newFill) ==
           SingleSlot::ActionResult::Accepted);
-    CHECK(controller.completeFill(0, oldPage) ==
+    CHECK(controller.completeFill(0, oldPage, oldFill.serial) ==
           SingleSlot::ResponseResult::Stale);
     CHECK(controller.slotIdentity(0) == newPage);
-    CHECK(controller.completeFill(0, newPage) ==
+    CHECK(controller.completeFill(0, newPage, newFill.serial) ==
           SingleSlot::ResponseResult::FillInstalled);
 
     const auto pin = controller.pin(newPage);
@@ -241,13 +253,191 @@ testGenerationTaggedReuseAndStaleResponses()
           SingleSlot::ActionResult::Accepted);
     const auto newestDescriptor = allocate(controller, 0);
     const auto newestPage = ready(controller, newestDescriptor, 1);
-    CHECK(controller.completeWriteback(0, newestPage) ==
+    CHECK(controller.completeWriteback(0, newestPage, writeback.serial) ==
           SingleSlot::ResponseResult::Stale);
     CHECK(controller.slotPhase(0) == SingleSlot::Phase::Writeback);
-    CHECK(controller.completeWriteback(0, newPage) ==
+    CHECK(controller.completeWriteback(0, newPage, writeback.serial) ==
           SingleSlot::ResponseResult::WritebackCompleted);
-    CHECK(controller.completeWriteback(0, newPage) ==
+    CHECK(controller.completeWriteback(0, newPage, writeback.serial) ==
           SingleSlot::ResponseResult::Stale);
+}
+
+void
+testTransactionSerialRejectsReorderedDuplicateAndLateResponses()
+{
+    SingleSlot controller;
+    const auto descriptor = allocate(controller, 0);
+    const auto page = ready(controller, descriptor, 0);
+    const auto other = ready(controller, descriptor, 1);
+
+    CHECK(controller.access(page) == SingleSlot::AccessResult::MissQueued);
+    const auto firstFill = controller.pendingAction();
+    CHECK(controller.acceptAction(firstFill) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.completeFill(firstFill.slot, page, firstFill.serial) ==
+          SingleSlot::ResponseResult::FillInstalled);
+
+    CHECK(controller.access(other) == SingleSlot::AccessResult::MissQueued);
+    const auto interveningFill = controller.pendingAction();
+    CHECK(controller.acceptAction(interveningFill) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.completeFill(interveningFill.slot, other,
+                                  interveningFill.serial) ==
+          SingleSlot::ResponseResult::FillInstalled);
+
+    CHECK(controller.access(page) == SingleSlot::AccessResult::MissQueued);
+    const auto laterFill = controller.pendingAction();
+    CHECK(laterFill.serial != firstFill.serial);
+    CHECK(controller.acceptAction(laterFill) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.slotTransaction(laterFill.slot) == laterFill.serial);
+    CHECK(controller.completeFill(firstFill.slot, page, firstFill.serial) ==
+          SingleSlot::ResponseResult::Stale);
+    CHECK(controller.completeFill(laterFill.slot, page,
+                                  laterFill.serial + 1) ==
+          SingleSlot::ResponseResult::Stale);
+    CHECK(controller.completeWriteback(laterFill.slot, page,
+                                       laterFill.serial) ==
+          SingleSlot::ResponseResult::Stale);
+    CHECK(controller.slotPhase(laterFill.slot) == SingleSlot::Phase::Filling);
+    CHECK(controller.completeFill(laterFill.slot, page, laterFill.serial) ==
+          SingleSlot::ResponseResult::FillInstalled);
+    CHECK(controller.completeFill(laterFill.slot, page, laterFill.serial) ==
+          SingleSlot::ResponseResult::Stale);
+
+    auto pin = controller.pin(page);
+    CHECK(pin.status == SingleSlot::PinStatus::Accepted);
+    CHECK(controller.markDirty(pin.lease) ==
+          SingleSlot::LeaseResult::Accepted);
+    CHECK(controller.release(pin.lease) == SingleSlot::LeaseResult::Accepted);
+    CHECK(controller.access(other) == SingleSlot::AccessResult::MissQueued);
+    const auto firstWriteback = controller.pendingAction();
+    CHECK(firstWriteback.kind == SingleSlot::ActionKind::Writeback);
+    CHECK(controller.acceptAction(firstWriteback) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.completeWriteback(firstWriteback.slot, page,
+                                       firstWriteback.serial) ==
+          SingleSlot::ResponseResult::WritebackCompleted);
+    const auto refillOther = controller.pendingAction();
+    CHECK(controller.acceptAction(refillOther) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.completeFill(refillOther.slot, other,
+                                  refillOther.serial) ==
+          SingleSlot::ResponseResult::FillInstalled);
+
+    CHECK(controller.access(page) == SingleSlot::AccessResult::MissQueued);
+    const auto refillPage = controller.pendingAction();
+    CHECK(controller.acceptAction(refillPage) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.completeFill(refillPage.slot, page, refillPage.serial) ==
+          SingleSlot::ResponseResult::FillInstalled);
+    pin = controller.pin(page);
+    CHECK(pin.status == SingleSlot::PinStatus::Accepted);
+    CHECK(controller.markDirty(pin.lease) ==
+          SingleSlot::LeaseResult::Accepted);
+    CHECK(controller.release(pin.lease) == SingleSlot::LeaseResult::Accepted);
+    CHECK(controller.access(other) == SingleSlot::AccessResult::MissQueued);
+    const auto laterWriteback = controller.pendingAction();
+    CHECK(laterWriteback.kind == SingleSlot::ActionKind::Writeback);
+    CHECK(laterWriteback.serial != firstWriteback.serial);
+    CHECK(controller.acceptAction(laterWriteback) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.completeWriteback(firstWriteback.slot, page,
+                                       firstWriteback.serial) ==
+          SingleSlot::ResponseResult::Stale);
+    CHECK(controller.completeFill(laterWriteback.slot, page,
+                                  laterWriteback.serial) ==
+          SingleSlot::ResponseResult::Stale);
+    CHECK(controller.slotPhase(laterWriteback.slot) ==
+          SingleSlot::Phase::Writeback);
+    CHECK(controller.completeWriteback(laterWriteback.slot, page,
+                                       laterWriteback.serial) ==
+          SingleSlot::ResponseResult::WritebackCompleted);
+    CHECK(controller.completeWriteback(laterWriteback.slot, page,
+                                       laterWriteback.serial) ==
+          SingleSlot::ResponseResult::Stale);
+    CHECK(controller.completeWriteback(laterWriteback.slot, page,
+                                       SingleSlot::NoTransaction) ==
+          SingleSlot::ResponseResult::Invalid);
+}
+
+void
+testWritebackFillExclusionPreservesSinglePageOwner()
+{
+    TwoSlot controller;
+    const auto descriptor0 = allocate(controller, 0);
+    const auto descriptor1 = allocate(controller, 1);
+    const auto page = ready(controller, descriptor0, 0);
+    const auto secondDirtyPage = ready(controller, descriptor0, 1);
+    const auto replacement = ready(controller, descriptor1, 0);
+
+    CHECK(controller.access(page) == TwoSlot::AccessResult::MissQueued);
+    acceptFill(controller, page, 0);
+    CHECK(controller.access(secondDirtyPage) ==
+          TwoSlot::AccessResult::MissQueued);
+    acceptFill(controller, secondDirtyPage, 1);
+
+    auto pin = controller.pin(page);
+    CHECK(pin.status == TwoSlot::PinStatus::Accepted);
+    CHECK(controller.markDirty(pin.lease) ==
+          TwoSlot::LeaseResult::Accepted);
+    CHECK(controller.release(pin.lease) == TwoSlot::LeaseResult::Accepted);
+    pin = controller.pin(secondDirtyPage);
+    CHECK(pin.status == TwoSlot::PinStatus::Accepted);
+    CHECK(controller.markDirty(pin.lease) ==
+          TwoSlot::LeaseResult::Accepted);
+    CHECK(controller.release(pin.lease) == TwoSlot::LeaseResult::Accepted);
+
+    CHECK(controller.access(replacement) == TwoSlot::AccessResult::MissQueued);
+    const auto pageWriteback = controller.pendingAction();
+    CHECK(pageWriteback.kind == TwoSlot::ActionKind::Writeback);
+    CHECK(pageWriteback.page == page);
+    CHECK(controller.acceptAction(pageWriteback) ==
+          TwoSlot::ActionResult::Accepted);
+    CHECK(controller.access(page) == TwoSlot::AccessResult::MissQueued);
+
+    const auto secondWriteback = controller.pendingAction();
+    CHECK(secondWriteback.kind == TwoSlot::ActionKind::Writeback);
+    CHECK(secondWriteback.page == secondDirtyPage);
+    CHECK(controller.acceptAction(secondWriteback) ==
+          TwoSlot::ActionResult::Accepted);
+    CHECK(controller.completeWriteback(secondWriteback.slot,
+                                       secondDirtyPage,
+                                       secondWriteback.serial) ==
+          TwoSlot::ResponseResult::WritebackCompleted);
+
+    const auto replacementFill = controller.pendingAction();
+    CHECK(replacementFill.kind == TwoSlot::ActionKind::Fill);
+    CHECK(replacementFill.page == replacement);
+    CHECK(controller.acceptAction(replacementFill) ==
+          TwoSlot::ActionResult::Accepted);
+    CHECK(controller.completeFill(replacementFill.slot, replacement,
+                                  replacementFill.serial) ==
+          TwoSlot::ResponseResult::FillInstalled);
+
+    // The FIFO head is a replay of the page still owned by dirty writeback.
+    // Even though another clean slot is available, no conflicting fill may
+    // be advertised or accepted until the exact writeback response arrives.
+    CHECK(controller.pendingAction().kind == TwoSlot::ActionKind::None);
+    CHECK(controller.pendingAction().kind == TwoSlot::ActionKind::None);
+    CHECK(controller.slotPhase(pageWriteback.slot) ==
+          TwoSlot::Phase::Writeback);
+    CHECK(controller.slotIdentity(pageWriteback.slot) == page);
+    CHECK(controller.slotIdentity(replacementFill.slot) != page);
+
+    CHECK(controller.completeWriteback(pageWriteback.slot, page,
+                                       pageWriteback.serial) ==
+          TwoSlot::ResponseResult::WritebackCompleted);
+    const auto replayFill = controller.pendingAction();
+    CHECK(replayFill.kind == TwoSlot::ActionKind::Fill);
+    CHECK(replayFill.page == page);
+    CHECK(replayFill.slot == pageWriteback.slot);
+    CHECK(controller.acceptAction(replayFill) ==
+          TwoSlot::ActionResult::Accepted);
+    CHECK(controller.slotIdentity(replayFill.slot) == page);
+    CHECK(controller.slotIdentity(replacementFill.slot) != page);
+    CHECK(controller.completeFill(replayFill.slot, page, replayFill.serial) ==
+          TwoSlot::ResponseResult::FillInstalled);
 }
 
 void
@@ -281,6 +471,8 @@ main()
     testFiniteQueueLeasesAndDirtyWriteback();
     testDeterministicCleanVictimSelection();
     testGenerationTaggedReuseAndStaleResponses();
+    testTransactionSerialRejectsReorderedDuplicateAndLateResponses();
+    testWritebackFillExclusionPreservesSinglePageOwner();
     testIndependentPageReadinessAndDescriptorCancellation();
     std::cout << "logical_spd_cache_controller_test: PASS"
               << " controller_bytes=" << sizeof(DefaultController)

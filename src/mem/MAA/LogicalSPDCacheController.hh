@@ -24,9 +24,13 @@ namespace gem5 {
  *  - a successful pin owns one bounded Lease until its exact release;
  *  - a queued miss owns only a PageIdentity, never page payload.
  *
- * Fill completion installs data only if its identity is still live and ready.
- * Dirty data enters Writeback only when the caller accepts the explicit
- * action, and that slot cannot be reused until the exact writeback response.
+ * Every accepted fill or writeback receives one globally unique, nonzero
+ * transaction serial.  Completion requires the exact action kind, slot, page,
+ * and serial.  Fill completion installs data only if its identity is still
+ * live and ready.  Dirty data enters Writeback only when the caller accepts
+ * the explicit action, and that slot cannot be reused until the exact
+ * writeback response.  Serial exhaustion permanently suppresses further
+ * actions instead of wrapping into an earlier transaction.
  */
 template <std::size_t LogicalDescriptors = 2,
           std::size_t PagesPerDescriptor = 4,
@@ -37,6 +41,7 @@ class LogicalSPDCacheController
 {
   public:
     using Generation = uint32_t;
+    using TransactionSerial = uint64_t;
 
     static_assert(LogicalDescriptors >= 2,
                   "the cache core requires at least two logical descriptors");
@@ -58,6 +63,7 @@ class LogicalSPDCacheController
     static constexpr std::size_t LeaseCapacity = LeaseEntries;
     static constexpr uint16_t NoSlot = std::numeric_limits<uint16_t>::max();
     static constexpr uint16_t NoLease = std::numeric_limits<uint16_t>::max();
+    static constexpr TransactionSerial NoTransaction = 0;
 
     struct DescriptorHandle
     {
@@ -178,6 +184,7 @@ class LogicalSPDCacheController
     {
         ActionKind kind = ActionKind::None;
         uint16_t slot = NoSlot;
+        TransactionSerial serial = NoTransaction;
         PageIdentity page{};
         PageIdentity cleanVictim{};
         bool discardsCleanVictim = false;
@@ -185,7 +192,8 @@ class LogicalSPDCacheController
         bool operator==(const MemoryAction &other) const
         {
             return kind == other.kind && slot == other.slot &&
-                   page == other.page && cleanVictim == other.cleanVictim &&
+                   serial == other.serial && page == other.page &&
+                   cleanVictim == other.cleanVictim &&
                    discardsCleanVictim == other.discardsCleanVictim;
         }
 
@@ -333,6 +341,8 @@ class LogicalSPDCacheController
     MemoryAction
     pendingAction() const
     {
+        if (memorySerialExhausted())
+            return {};
         for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
             if (slots[slot].phase == Phase::Dirty &&
                 !isLive(slots[slot].page) && !slotPinned(slot)) {
@@ -340,6 +350,11 @@ class LogicalSPDCacheController
             }
         }
         if (queueSize == 0)
+            return {};
+
+        // A queued replay may wait behind dirty writeback of the same exact
+        // page.  It owns no payload and cannot start a second transaction.
+        if (pageHasOwner(missQueue[0]))
             return {};
 
         for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
@@ -364,35 +379,52 @@ class LogicalSPDCacheController
     ActionResult
     acceptAction(const MemoryAction &action)
     {
-        if (action.kind == ActionKind::None || action.slot >= PhysicalSlots)
+        if (action.kind == ActionKind::None || action.slot >= PhysicalSlots ||
+            action.serial == NoTransaction) {
             return ActionResult::Invalid;
+        }
         const MemoryAction expected = pendingAction();
         if (action != expected)
             return ActionResult::Stale;
 
         Slot &slot = slots[action.slot];
         if (action.kind == ActionKind::Fill) {
+            if (pageOwnerCount(action.page) != 0)
+                return ActionResult::Stale;
             slot.phase = Phase::Filling;
             slot.page = action.page;
+            slot.transaction = action.serial;
             popMiss();
         } else if (action.kind == ActionKind::Writeback) {
+            if (pageOwnerCount(action.page) != 1 ||
+                slot.page != action.page || slot.phase != Phase::Dirty) {
+                return ActionResult::Stale;
+            }
             slot.phase = Phase::Writeback;
+            slot.transaction = action.serial;
         } else {
             return ActionResult::Invalid;
         }
+        lastMemorySerial = action.serial;
         return ActionResult::Accepted;
     }
 
     ResponseResult
-    completeFill(uint16_t slotIndex, const PageIdentity &page)
+    completeFill(uint16_t slotIndex, const PageIdentity &page,
+                 TransactionSerial serial)
     {
-        if (slotIndex >= PhysicalSlots || !validCoordinates(page))
+        if (slotIndex >= PhysicalSlots || !validCoordinates(page) ||
+            serial == NoTransaction) {
             return ResponseResult::Invalid;
+        }
         Slot &slot = slots[slotIndex];
-        if (slot.phase != Phase::Filling || slot.page != page)
+        if (slot.phase != Phase::Filling || slot.page != page ||
+            slot.transaction != serial || pageOwnerCount(page) != 1) {
             return ResponseResult::Stale;
+        }
         if (isLive(page) && descriptors[page.logical].ready[page.page]) {
             slot.phase = Phase::Clean;
+            slot.transaction = NoTransaction;
             return ResponseResult::FillInstalled;
         }
         slot = Slot{};
@@ -400,13 +432,18 @@ class LogicalSPDCacheController
     }
 
     ResponseResult
-    completeWriteback(uint16_t slotIndex, const PageIdentity &page)
+    completeWriteback(uint16_t slotIndex, const PageIdentity &page,
+                      TransactionSerial serial)
     {
-        if (slotIndex >= PhysicalSlots || !validCoordinates(page))
+        if (slotIndex >= PhysicalSlots || !validCoordinates(page) ||
+            serial == NoTransaction) {
             return ResponseResult::Invalid;
+        }
         Slot &slot = slots[slotIndex];
-        if (slot.phase != Phase::Writeback || slot.page != page)
+        if (slot.phase != Phase::Writeback || slot.page != page ||
+            slot.transaction != serial || pageOwnerCount(page) != 1) {
             return ResponseResult::Stale;
+        }
         slot = Slot{};
         return ResponseResult::WritebackCompleted;
     }
@@ -504,6 +541,17 @@ class LogicalSPDCacheController
         return slot < PhysicalSlots ? slots[slot].page : PageIdentity{};
     }
 
+    TransactionSerial slotTransaction(std::size_t slot) const
+    {
+        return slot < PhysicalSlots ? slots[slot].transaction : NoTransaction;
+    }
+
+    bool memorySerialExhausted() const
+    {
+        return lastMemorySerial ==
+               std::numeric_limits<TransactionSerial>::max();
+    }
+
     uint16_t residentSlot(const PageIdentity &page) const
     {
         for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
@@ -542,6 +590,7 @@ class LogicalSPDCacheController
     {
         Phase phase = Phase::Empty;
         PageIdentity page{};
+        TransactionSerial transaction = NoTransaction;
     };
 
     struct LeaseRecord
@@ -574,6 +623,29 @@ class LogicalSPDCacheController
                 return true;
         }
         return false;
+    }
+
+    std::size_t
+    pageOwnerCount(const PageIdentity &page) const
+    {
+        std::size_t count = 0;
+        for (const Slot &slot : slots) {
+            if (slot.phase != Phase::Empty && slot.page == page)
+                ++count;
+        }
+        return count;
+    }
+
+    bool
+    pageHasOwner(const PageIdentity &page) const
+    {
+        return pageOwnerCount(page) != 0;
+    }
+
+    TransactionSerial
+    nextMemorySerial() const
+    {
+        return lastMemorySerial + 1;
     }
 
     void
@@ -619,6 +691,7 @@ class LogicalSPDCacheController
         MemoryAction action;
         action.kind = ActionKind::Fill;
         action.slot = slot;
+        action.serial = nextMemorySerial();
         action.page = missQueue[0];
         action.discardsCleanVictim = cleanVictim;
         if (cleanVictim)
@@ -632,6 +705,7 @@ class LogicalSPDCacheController
         MemoryAction action;
         action.kind = ActionKind::Writeback;
         action.slot = slot;
+        action.serial = nextMemorySerial();
         action.page = slots[slot].page;
         return action;
     }
@@ -654,6 +728,7 @@ class LogicalSPDCacheController
     std::array<PageIdentity, MissQueueEntries> missQueue{};
     std::array<LeaseRecord, LeaseEntries> leases{};
     std::size_t queueSize = 0;
+    TransactionSerial lastMemorySerial = NoTransaction;
 };
 
 } // namespace gem5
