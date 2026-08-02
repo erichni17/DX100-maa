@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one native UMT three-face corner batch through fused LANL-MAA."""
+"""Run native-linked UMT three-face corner batches through fused LANL-MAA."""
 
 import argparse
 import hashlib
@@ -26,6 +26,7 @@ CONTROL_BYTES = 0x1000
 RECORD_OFFSET = 0x1000
 RESULT_OFFSET = 0x2000
 COMPLETION_OFFSET = 0x3000
+SUBMISSION_STRIDE = 0x4000
 RECORD_WORDS = 12
 RECORD_BYTES = 96
 ABI_FINGERPRINT = 0x3B7345C85F10A927
@@ -48,10 +49,13 @@ def parse_record(path):
     cross_section = {}
     expected = {}
     tau = None
+    native_group_count = None
     for line in path.read_text(encoding="utf-8").splitlines()[1:-1]:
         fields = line.split()
         if fields[0] == "tau_bits":
             tau = bits(fields[1])
+        elif fields[0] == "native_group_count":
+            native_group_count = int(fields[1])
         elif fields[0] == "corner":
             corners[int(fields[1])] = {
                 "face_offset": int(fields[3]),
@@ -76,7 +80,7 @@ def parse_record(path):
             expected[int(fields[1])] = bits(fields[2])
 
     groups = identity["identity"]["groups"]
-    if tau is None or groups not in (16, 32):
+    if tau is None or native_group_count is None or groups not in (16, 32):
         raise ValueError(
             "UMT fused replay requires a frozen 16/32-group record"
         )
@@ -85,9 +89,7 @@ def parse_record(path):
         raise ValueError(
             "UMT fused replay requires native corner zero/three faces"
         )
-    current_faces = [
-        faces[current["face_offset"] + face] for face in range(3)
-    ]
+    current_faces = [faces[current["face_offset"] + face] for face in range(3)]
     if any(
         face["fp_norm"] >> 63 == 0 or face["ez_norm"] >> 63 != 0
         for face in current_faces
@@ -120,6 +122,7 @@ def parse_record(path):
     return {
         **identity,
         "groups": groups,
+        "native_group_count": native_group_count,
         "tau": tau,
         "volume": current["volume"],
         "norm_sum": current["norm_sum"],
@@ -127,6 +130,90 @@ def parse_record(path):
         "ez_norm": [face["ez_norm"] for face in current_faces],
         "records": records,
         "expected": [expected[group] for group in range(groups)],
+    }
+
+
+def parse_issue_wave(path, record):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != "LANL_MAA_UMT_SWEEP_ISSUE_TRACE_V2":
+        raise ValueError("native UMT issue trace has the wrong magic")
+    events = []
+    sweep_ends = []
+    names = (
+        "sweep",
+        "phase",
+        "set",
+        "groups",
+        "angle",
+        "zone_sign",
+        "zone",
+        "corners",
+        "ordinal",
+        "corner",
+        "clock",
+    )
+    for line in lines[1:]:
+        fields = line.split()
+        if not fields or fields[0] in {
+            "clock_rate",
+            "clock_max",
+            "buffer_limit",
+        }:
+            continue
+        if fields[0] == "issue" and len(fields) == 12:
+            events.append(dict(zip(names, map(int, fields[1:]))))
+        elif fields[0] == "sweep_end" and len(fields) == 4:
+            sweep_ends.append(tuple(map(int, fields[1:])))
+        else:
+            raise ValueError(f"invalid native UMT issue trace line: {line}")
+    dropped = any(count for _, _, count in sweep_ends)
+    if not events or not sweep_ends or dropped:
+        raise ValueError("native UMT issue trace is empty or dropped events")
+    first = events[0]
+    wave_key = tuple(
+        first[name]
+        for name in ("sweep", "phase", "set", "angle", "zone_sign", "zone")
+    )
+    wave = []
+    for event in events:
+        key = tuple(
+            event[name]
+            for name in (
+                "sweep",
+                "phase",
+                "set",
+                "angle",
+                "zone_sign",
+                "zone",
+            )
+        )
+        if key != wave_key:
+            break
+        wave.append(event)
+    corners = record["scalars"]["corner_count"]
+    if (
+        len(wave) != corners
+        or [event["ordinal"] for event in wave] != list(range(1, corners + 1))
+        or sorted(event["corner"] for event in wave)
+        != list(range(1, corners + 1))
+        or any(event["corners"] != corners for event in wave)
+        or any(
+            event["groups"] != record["native_group_count"] for event in wave
+        )
+    ):
+        raise ValueError("native UMT first issue wave changed shape")
+    return {
+        "path": str(path),
+        "sha256": gather.file_sha256(path),
+        "submissions": len(wave),
+        "key": dict(
+            zip(
+                ("sweep", "phase", "set", "angle", "zone_sign", "zone"),
+                wave_key,
+            )
+        ),
+        "native_groups": first["groups"],
+        "corner_order": [event["corner"] for event in wave],
     }
 
 
@@ -144,7 +231,7 @@ def c_array(name, values):
     return f"static const uint64_t {name}[] = {{\n" + "\n".join(rows) + "\n};"
 
 
-def generate_source(path, record, cpu_baseline):
+def generate_source(path, record, cpu_baseline, submissions):
     geometry = [
         record["tau"],
         record["volume"],
@@ -161,7 +248,9 @@ def generate_source(path, record, cpu_baseline):
 #define RECORD_OFFSET UINT64_C(0x{RECORD_OFFSET:x})
 #define RESULT_OFFSET UINT64_C(0x{RESULT_OFFSET:x})
 #define COMPLETION_OFFSET UINT64_C(0x{COMPLETION_OFFSET:x})
+#define SUBMISSION_STRIDE UINT64_C(0x{SUBMISSION_STRIDE:x})
 #define GROUPS UINT64_C({record['groups']})
+#define SUBMISSIONS UINT64_C({submissions})
 #define CPU_BASELINE {1 if cpu_baseline else 0}
 
 {c_array("native_records", record["records"])}
@@ -206,22 +295,29 @@ finish(uint64_t code)
 void __attribute__((noreturn))
 _start(void)
 {{
-    volatile uint64_t *records = (volatile uint64_t *)(uintptr_t)(
-        DATA_VADDR + RECORD_OFFSET);
-    volatile uint64_t *results = (volatile uint64_t *)(uintptr_t)(
-        DATA_VADDR + RESULT_OFFSET);
-    for (uint64_t word = 0; word < GROUPS * UINT64_C(12); ++word) {{
-        records[word] = native_records[word];
-    }}
-    for (uint64_t group = 0; group < GROUPS; ++group) {{
-        results[group] = 0;
+    for (uint64_t submission = 0; submission < SUBMISSIONS; ++submission) {{
+        volatile uint64_t *records = (volatile uint64_t *)(uintptr_t)(
+            DATA_VADDR + RECORD_OFFSET + submission * SUBMISSION_STRIDE);
+        volatile uint64_t *results = (volatile uint64_t *)(uintptr_t)(
+            DATA_VADDR + RESULT_OFFSET + submission * SUBMISSION_STRIDE);
+        for (uint64_t word = 0; word < GROUPS * UINT64_C(12); ++word) {{
+            records[word] = native_records[word];
+        }}
+        for (uint64_t group = 0; group < GROUPS; ++group) {{
+            results[group] = 0;
+        }}
     }}
 
 #if CPU_BASELINE
     const double tau = from_bits(native_geometry[0]);
     const double volume = from_bits(native_geometry[1]);
     const double norm_sum = from_bits(native_geometry[2]);
-    for (uint64_t group = 0; group < GROUPS; ++group) {{
+    for (uint64_t submission = 0; submission < SUBMISSIONS; ++submission) {{
+      volatile uint64_t *records = (volatile uint64_t *)(uintptr_t)(
+          DATA_VADDR + RECORD_OFFSET + submission * SUBMISSION_STRIDE);
+      volatile uint64_t *results = (volatile uint64_t *)(uintptr_t)(
+          DATA_VADDR + RESULT_OFFSET + submission * SUBMISSION_STRIDE);
+      for (uint64_t group = 0; group < GROUPS; ++group) {{
         volatile uint64_t *record = records + group * UINT64_C(12);
         const double source =
             from_bits(record[0]) + tau * from_bits(record[1]);
@@ -257,56 +353,62 @@ _start(void)
         if (results[group] != native_expected[group]) {{
             finish(UINT64_C(40));
         }}
+      }}
     }}
 #else
     volatile uint64_t *descriptor =
         (volatile uint64_t *)(uintptr_t)DATA_VADDR;
-    volatile uint64_t *completion = (volatile uint64_t *)(uintptr_t)(
-        DATA_VADDR + COMPLETION_OFFSET);
     volatile uint64_t *control =
         (volatile uint64_t *)(uintptr_t)CONTROL_VADDR;
     descriptor[0] = UINT64_C(0x0109000231414d4c);
     descriptor[1] = (UINT64_C(96) << 32) | GROUPS;
-    descriptor[2] = DATA_PADDR + RECORD_OFFSET;
-    descriptor[3] = DATA_PADDR + RESULT_OFFSET;
-    descriptor[4] = DATA_PADDR + COMPLETION_OFFSET;
     for (uint64_t word = 0; word < UINT64_C(9); ++word) {{
         descriptor[5 + word] = native_geometry[word];
     }}
     descriptor[14] = UINT64_C(0x{ABI_FINGERPRINT:016x});
     descriptor[15] = 0;
-    for (uint64_t word = 0; word < UINT64_C(4); ++word) {{
-        completion[word] = 0;
-    }}
-    fence();
-    control[0] = 0;
-    fence();
-    uint64_t status = 0;
-    for (uint64_t spin = 0; spin < UINT64_C(1000000); ++spin) {{
-        status = control[UINT64_C(0x110) / 8];
-        if (status == UINT64_C(4)) {{
-            break;
+    for (uint64_t submission = 0; submission < SUBMISSIONS; ++submission) {{
+        const uint64_t offset = submission * SUBMISSION_STRIDE;
+        volatile uint64_t *results = (volatile uint64_t *)(uintptr_t)(
+            DATA_VADDR + RESULT_OFFSET + offset);
+        volatile uint64_t *completion = (volatile uint64_t *)(uintptr_t)(
+            DATA_VADDR + COMPLETION_OFFSET + offset);
+        descriptor[2] = DATA_PADDR + RECORD_OFFSET + offset;
+        descriptor[3] = DATA_PADDR + RESULT_OFFSET + offset;
+        descriptor[4] = DATA_PADDR + COMPLETION_OFFSET + offset;
+        for (uint64_t word = 0; word < UINT64_C(4); ++word) {{
+            completion[word] = 0;
         }}
-        if (status == UINT64_C(8)) {{
-            finish(UINT64_C(20) + control[UINT64_C(0x120) / 8]);
+        fence();
+        control[0] = 0;
+        fence();
+        uint64_t status = 0;
+        for (uint64_t spin = 0; spin < UINT64_C(1000000); ++spin) {{
+            status = control[UINT64_C(0x110) / 8];
+            if (status == UINT64_C(4)) {{
+                break;
+            }}
+            if (status == UINT64_C(8)) {{
+                finish(UINT64_C(20) + control[UINT64_C(0x120) / 8]);
+            }}
+            if (status != UINT64_C(1) && status != UINT64_C(2)) {{
+                finish(UINT64_C(12));
+            }}
         }}
-        if (status != UINT64_C(1) && status != UINT64_C(2)) {{
-            finish(UINT64_C(12));
+        if (status != UINT64_C(4)) {{
+            finish(UINT64_C(13));
         }}
-    }}
-    if (status != UINT64_C(4)) {{
-        finish(UINT64_C(13));
-    }}
-    fence();
-    for (uint64_t group = 0; group < GROUPS; ++group) {{
-        if (results[group] != native_expected[group]) {{
-            finish(UINT64_C(40));
+        fence();
+        for (uint64_t group = 0; group < GROUPS; ++group) {{
+            if (results[group] != native_expected[group]) {{
+                finish(UINT64_C(40));
+            }}
         }}
-    }}
-    if (completion[0] != UINT64_C(0x0009000243414d4c) ||
-        completion[1] != 0 || completion[2] != GROUPS ||
-        completion[3] != GROUPS) {{
-        finish(UINT64_C(41));
+        if (completion[0] != UINT64_C(0x0009000243414d4c) ||
+            completion[1] != 0 || completion[2] != GROUPS ||
+            completion[3] != GROUPS) {{
+            finish(UINT64_C(41));
+        }}
     }}
 #endif
     finish(0);
@@ -315,13 +417,13 @@ _start(void)
     path.write_text(source.lstrip(), encoding="utf-8")
 
 
-def build_program(root, record, cpu_baseline):
+def build_program(root, record, cpu_baseline, submissions):
     compiler = shutil.which("cc")
     if not compiler:
         raise RuntimeError("UMT fused smoke requires cc")
     source = root / "umt_native_fused_corner.c"
     binary = root / "umt_native_fused_corner.elf"
-    generate_source(source, record, cpu_baseline)
+    generate_source(source, record, cpu_baseline, submissions)
     subprocess.run(
         [
             compiler,
@@ -348,32 +450,35 @@ def build_program(root, record, cpu_baseline):
     return source, binary
 
 
-def validate(stats, groups, payload_model):
+def validate(stats, groups, submissions, payload_model):
+    items = groups * submissions
     expected = {
-        "logicalItems": groups,
-        "logicalMemoryAccesses": RECORD_WORDS * groups,
-        "completionsRetired": groups,
+        "logicalItems": items,
+        "logicalMemoryAccesses": RECORD_WORDS * items,
+        "completionsRetired": items,
         "verificationFailures": 0,
-        "descriptorDoorbells": 1,
-        "descriptorFetches": 2,
+        "descriptorDoorbells": submissions,
+        "descriptorRearms": submissions - 1,
+        "descriptorFetches": 2 * submissions,
         "descriptorAddressesLoaded": 0,
-        "descriptorResultWrites": groups,
-        "descriptorCompletionWrites": 1,
+        "descriptorResultWrites": items,
+        "descriptorCompletionWrites": submissions,
         "descriptorErrors": 0,
-        "descriptorUmtGroupsLoaded": groups,
-        "descriptorUmtInputReads": RECORD_WORDS * groups,
-        "descriptorUmtFp64AddSubOperations": 38 * groups,
-        "descriptorUmtFp64MultiplyOperations": 59 * groups,
-        "descriptorUmtFp64DivideOperations": 4 * groups,
-        "descriptorUmtBatches": 1,
-        "descriptorUmtBatchCycles": 1819 if groups == 16 else 3595,
-        "descriptorUmtResultsComputed": groups,
+        "descriptorUmtGroupsLoaded": items,
+        "descriptorUmtInputReads": RECORD_WORDS * items,
+        "descriptorUmtFp64AddSubOperations": 38 * items,
+        "descriptorUmtFp64MultiplyOperations": 59 * items,
+        "descriptorUmtFp64DivideOperations": 4 * items,
+        "descriptorUmtBatches": submissions,
+        "descriptorUmtBatchCycles": submissions
+        * (1819 if groups == 16 else 3595),
+        "descriptorUmtResultsComputed": items,
     }
     if payload_model:
         expected.update(
             {
-                "payloadOverlayCompletionWrites": groups,
-                "payloadOverlayRetirementReads": groups,
+                "payloadOverlayCompletionWrites": items,
+                "payloadOverlayRetirementReads": items,
             }
         )
     for name, value in expected.items():
@@ -381,10 +486,10 @@ def validate(stats, groups, payload_model):
             raise RuntimeError(
                 f"UMT fused {name}: expected {value}, got {stats.get(name)}"
             )
-    unique_lines = groups * RECORD_BYTES // 64
+    unique_lines = items * RECORD_BYTES // 64
     physical = stats.get("physicalLineReads")
     merges = stats.get("lineMergeHits")
-    logical = RECORD_WORDS * groups
+    logical = RECORD_WORDS * items
     if physical is None or physical < unique_lines or physical > logical:
         raise RuntimeError(
             "UMT fused physical reads violate exact-stream bounds"
@@ -411,9 +516,20 @@ def run_smoke(args, root):
     if args.require_clean_simulator and not clean:
         raise RuntimeError("UMT fused evidence requires a clean simulator")
     record = parse_record(args.record.resolve())
+    wave = (
+        parse_issue_wave(args.issue_trace.resolve(), record)
+        if args.issue_trace
+        else None
+    )
+    submissions = wave["submissions"] if wave else 1
+    footprint = COMPLETION_OFFSET + (submissions - 1) * SUBMISSION_STRIDE + 32
+    if footprint > DATA_BYTES:
+        raise RuntimeError("UMT fused submission footprint exceeds data map")
     if args.cpu_baseline and args.model_payload_overlay_ports:
         raise RuntimeError("scalar arm cannot model accelerator payload ports")
-    source, binary = build_program(root, record, args.cpu_baseline)
+    source, binary = build_program(
+        root, record, args.cpu_baseline, submissions
+    )
     record_bytes = b"".join(
         struct.pack("<Q", word) for word in record["records"]
     )
@@ -431,10 +547,11 @@ def run_smoke(args, root):
         "record_sha256": record["record_sha256"],
         "upstream_revision": UPSTREAM_REVISION,
         "groups": record["groups"],
+        "submissions": submissions,
+        "total_items": record["groups"] * submissions,
+        "source_issue_wave": wave,
         "record_words_per_group": RECORD_WORDS,
-        "record_stream_u64le_sha256": hashlib.sha256(
-            record_bytes
-        ).hexdigest(),
+        "record_stream_u64le_sha256": hashlib.sha256(record_bytes).hexdigest(),
         "expected_stream_u64le_sha256": hashlib.sha256(
             expected_bytes
         ).hexdigest(),
@@ -490,18 +607,21 @@ def run_smoke(args, root):
         "binary_sha256": metadata["binary_sha256"],
         "metadata_sha256": gather.file_sha256(metadata_path),
         "groups": record["groups"],
+        "submissions": submissions,
+        "source_issue_wave": wave,
         "cpu_baseline": args.cpu_baseline,
         "l1_caches": args.l1_caches,
         "model_payload_overlay_ports": args.model_payload_overlay_ports,
         "command": command,
         "correctness_method": (
-            "Every result is compared bit-exactly with the native UMT "
-            "captured result; the accelerator completion record is exact."
+            "Every result in every submission is compared bit-exactly with "
+            "the native UMT captured result; each completion record is exact."
         ),
         "claim_boundary": (
-            "One native-derived corner/group batch, not the native UMT "
-            "process, full transport sweep, application speedup, or "
-            "promotion evidence."
+            "The native trace supplies only the eight-submission corner-wave "
+            "shape. One captured corner is repeated at disjoint addresses; "
+            "this is not eight distinct native corners, the native UMT "
+            "process, application speedup, or promotion evidence."
         ),
     }
     report_path = root / "report.json"
@@ -523,7 +643,12 @@ def run_smoke(args, root):
         if args.cpu_baseline:
             validate_cpu(stats)
         else:
-            validate(stats, record["groups"], args.model_payload_overlay_ports)
+            validate(
+                stats,
+                record["groups"],
+                submissions,
+                args.model_payload_overlay_ports,
+            )
         names = (
             "logicalItems",
             "logicalMemoryAccesses",
@@ -590,6 +715,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem5", required=True, type=pathlib.Path)
     parser.add_argument("--record", required=True, type=pathlib.Path)
+    parser.add_argument("--issue-trace", type=pathlib.Path)
     parser.add_argument("--l1-caches", action="store_true")
     parser.add_argument("--cpu-baseline", action="store_true")
     parser.add_argument("--model-payload-overlay-ports", action="store_true")
