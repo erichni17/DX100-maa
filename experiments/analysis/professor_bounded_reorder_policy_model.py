@@ -16,10 +16,10 @@ import heapq
 import json
 from collections import OrderedDict
 from dataclasses import (
-    asdict,
     dataclass,
     fields,
 )
+from itertools import groupby
 from pathlib import Path
 from typing import (
     Iterable,
@@ -47,9 +47,7 @@ TRANSFER_LINE_BITS = 12
 MAX_TRANSFER_LINE = (1 << TRANSFER_LINE_BITS) - 1
 PARTITIONS = 4
 
-XRAGE_SHA256 = (
-    "1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde"
-)
+XRAGE_SHA256 = "1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde"
 FLAG_SHA256 = frozenset(
     {
         "9f344be7df05084a33d1675e1cfa29fe60e0aa3740791b9900c74066e5443919",
@@ -91,9 +89,7 @@ def require_exact_uint(
 ) -> int:
     """Admit one packed unsigned identity without Python coercions."""
     if type(value) is not int or not minimum <= value <= maximum:
-        raise ReplayError(
-            f"{name} must be an exact integer in [{minimum}, {maximum}]"
-        )
+        raise ReplayError(f"{name} must be an exact integer in [{minimum}, {maximum}]")
     return value
 
 
@@ -124,9 +120,7 @@ def bank_row_key(source_line: int, source_line_phase: int) -> tuple[int, ...]:
 
 
 def packed_bank_row_key(source_line: int, source_line_phase: int) -> int:
-    channel, bank_group, bank, row = bank_row_key(
-        source_line, source_line_phase
-    )
+    channel, bank_group, bank, row = bank_row_key(source_line, source_line_phase)
     packed = (((channel << 2) | bank_group) << 2 | bank) << 6 | row
     if packed >= (1 << ROW_KEY_BITS):
         raise ReplayError("packed row key exceeds the charged 11-bit field")
@@ -151,12 +145,8 @@ def admit_record(record: Record) -> Record:
     source_line, source_word, destination = record
     return (
         require_exact_uint("record source line", source_line, MAX_SOURCE_LINE),
-        require_exact_uint(
-            "record source word", source_word, WORDS_PER_LINE - 1
-        ),
-        require_exact_uint(
-            "record destination", destination, LOGICAL_ELEMENTS - 1
-        ),
+        require_exact_uint("record source word", source_word, WORDS_PER_LINE - 1),
+        require_exact_uint("record destination", destination, LOGICAL_ELEMENTS - 1),
     )
 
 
@@ -189,28 +179,52 @@ class Metrics:
     max_merge_heads: int = 0
     max_transfer_buffers: int = 0
 
+    def __post_init__(self) -> None:
+        self._admitted_values()
+
+    def _admitted_values(self) -> dict[str, int]:
+        return {
+            field.name: require_exact_uint(
+                f"metric {field.name}", getattr(self, field.name), UINT64_MAX
+            )
+            for field in fields(self)
+        }
+
+    def _commit_values(self, values: dict[str, int]) -> None:
+        self.__dict__.update(values)
+
     def add(self, other: Metrics) -> None:
+        if type(other) is not Metrics:
+            raise ReplayError("metrics operand must be an exact Metrics value")
+        current = self._admitted_values()
+        incoming = other._admitted_values()
         high_waters = {
             "max_active_records",
             "max_merge_heads",
             "max_transfer_buffers",
         }
+        result: dict[str, int] = {}
         for field in fields(self):
             name = field.name
             if name in high_waters:
-                value = max(getattr(self, name), getattr(other, name))
-                setattr(self, name, value)
+                result[name] = max(current[name], incoming[name])
             else:
-                setattr(self, name, getattr(self, name) + getattr(other, name))
+                result[name] = require_exact_uint(
+                    f"combined metric {name}",
+                    current[name] + incoming[name],
+                    UINT64_MAX,
+                )
+        self._commit_values(result)
 
     def rendered(self) -> dict[str, int | float]:
-        accounted_pairs = self.same_row_successors + self.row_transitions
-        if accounted_pairs != self.successor_pairs:
+        values = self._admitted_values()
+        accounted_pairs = values["same_row_successors"] + values["row_transitions"]
+        if accounted_pairs != values["successor_pairs"]:
             raise ReplayError("row successor accounting is inconsistent")
-        result: dict[str, int | float] = asdict(self)
+        result: dict[str, int | float] = values
         result["same_row_successor_rate"] = round(
-            self.same_row_successors / self.successor_pairs
-            if self.successor_pairs
+            values["same_row_successors"] / values["successor_pairs"]
+            if values["successor_pairs"]
             else 0.0,
             9,
         )
@@ -221,31 +235,50 @@ class CoverageProof:
     """A bounded replay-only exact-once and source-mapping observer."""
 
     def __init__(self, pattern: Sequence[int]):
-        admitted_pattern = tuple(pattern)
-        if not admitted_pattern or len(admitted_pattern) > LOGICAL_ELEMENTS:
-            raise ReplayError("a logical tile must contain 1..16384 B words")
-        for source_index in admitted_pattern:
-            require_exact_uint(
-                "admitted B source index", source_index, MAX_SOURCE_INDEX
+        admitted_values: list[int] = []
+        for source_index in pattern:
+            if len(admitted_values) == LOGICAL_ELEMENTS:
+                raise ReplayError("a logical tile must contain 1..16384 B words")
+            admitted_values.append(
+                require_exact_uint(
+                    "admitted B source index", source_index, MAX_SOURCE_INDEX
+                )
             )
+        if not admitted_values:
+            raise ReplayError("a logical tile must contain 1..16384 B words")
+        admitted_pattern = tuple(admitted_values)
         # The proof owns this immutable identity snapshot.  It never aliases
         # a caller-owned list whose elements could change after admission.
         self.pattern = admitted_pattern
         self.seen_mask = 0
         self.seen_count = 0
 
-    def observe(self, record: Record) -> None:
+    def _preview_observation(
+        self, record: Record, seen_mask: int
+    ) -> tuple[Record, int]:
         source_line, source_word, destination = admit_record(record)
         if not 0 <= destination < len(self.pattern):
             raise ReplayError("record destination is outside its logical tile")
         bit = 1 << destination
-        if self.seen_mask & bit:
+        if seen_mask & bit:
             raise ReplayError(f"destination {destination} replayed twice")
         observed_index = source_line * WORDS_PER_LINE + source_word
         if observed_index != self.pattern[destination]:
             raise ReplayError(f"destination {destination} lost its B identity")
-        self.seen_mask |= bit
-        self.seen_count += 1
+        return (source_line, source_word, destination), seen_mask | bit
+
+    def observe(self, record: Record) -> None:
+        admitted_count = require_exact_uint(
+            "coverage count", self.seen_count, len(self.pattern)
+        )
+        admitted_mask = require_exact_uint(
+            "coverage mask", self.seen_mask, (1 << len(self.pattern)) - 1
+        )
+        _, next_mask = self._preview_observation(record, admitted_mask)
+        next_count = require_exact_uint(
+            "coverage count", admitted_count + 1, len(self.pattern)
+        )
+        self.seen_mask, self.seen_count = next_mask, next_count
 
     def finish(self) -> None:
         if self.seen_count != len(self.pattern):
@@ -261,6 +294,14 @@ class TransferTag:
     direction: int
     line_index: int
 
+    def __post_init__(self) -> None:
+        require_exact_uint(
+            "transfer generation", self.generation, UINT64_MAX, minimum=1
+        )
+        require_exact_uint("transfer serial", self.serial, UINT64_MAX, minimum=1)
+        require_exact_uint("transfer direction", self.direction, 1)
+        require_exact_uint("transfer line index", self.line_index, MAX_TRANSFER_LINE)
+
 
 class AckLedger:
     """One-entry response ledger used for spill/reload line transfers."""
@@ -269,12 +310,21 @@ class AckLedger:
         self._generation = require_exact_uint(
             "generation", generation, UINT64_MAX, minimum=1
         )
-        self.next_serial = 1
+        self._next_serial = 1
         self._active_identity: tuple[int, int, int, int] | None = None
 
     @property
     def generation(self) -> int:
         return self._generation
+
+    @property
+    def next_serial(self) -> int:
+        return self._next_serial
+
+    @next_serial.setter
+    def next_serial(self, value: int) -> None:
+        admitted = require_exact_uint("next serial", value, UINT64_MAX)
+        self._next_serial = admitted
 
     @property
     def active(self) -> TransferTag | None:
@@ -305,15 +355,13 @@ class AckLedger:
 
     def issue(self, direction: int, line_index: int) -> TransferTag:
         admitted_direction = require_exact_uint("direction", direction, 1)
-        admitted_line = require_exact_uint(
-            "line index", line_index, MAX_TRANSFER_LINE
-        )
+        admitted_line = require_exact_uint("line index", line_index, MAX_TRANSFER_LINE)
         if self._active_identity is not None:
             raise ReplayError("transfer buffer reused before matching ACK")
-        if self.next_serial == 0:
+        if self._next_serial == 0:
             raise ReplayError("uint64 transfer serial space is exhausted")
         admitted_serial = require_exact_uint(
-            "next serial", self.next_serial, UINT64_MAX, minimum=1
+            "next serial", self._next_serial, UINT64_MAX, minimum=1
         )
         admitted_generation = require_exact_uint(
             "generation", self._generation, UINT64_MAX, minimum=1
@@ -324,13 +372,12 @@ class AckLedger:
             admitted_direction,
             admitted_line,
         )
-        self.next_serial = (
-            0 if admitted_serial == UINT64_MAX else admitted_serial + 1
-        )
-        self._active_identity = identity
+        returned = TransferTag(*identity)
+        next_serial = 0 if admitted_serial == UINT64_MAX else admitted_serial + 1
+        self._next_serial, self._active_identity = next_serial, identity
         # The caller receives a distinct value object.  The ledger retains an
         # immutable tuple, so object.__setattr__ cannot rewrite live state.
-        return TransferTag(*identity)
+        return returned
 
     def complete(self, response: TransferTag) -> None:
         identity = self._admit_response(response)
@@ -346,15 +393,35 @@ class AckLedger:
 def transfer_lines(
     ledger: AckLedger, direction: int, lines: int, metrics: Metrics
 ) -> None:
-    for line_index in range(lines):
-        tag = ledger.issue(direction, line_index)
-        metrics.llc_transactions += 1
+    if type(ledger) is not AckLedger:
+        raise ReplayError("transfer ledger must be an exact AckLedger")
+    if type(metrics) is not Metrics:
+        raise ReplayError("transfer metrics must be an exact Metrics value")
+    admitted_direction = require_exact_uint("direction", direction, 1)
+    admitted_lines = require_exact_uint(
+        "transfer line count", lines, MAX_TRANSFER_LINE + 1
+    )
+
+    staged_ledger = AckLedger(ledger.generation)
+    staged_ledger.next_serial = ledger.next_serial
+    staged_ledger._active_identity = ledger._active_identity
+    staged_metrics = Metrics(**metrics._admitted_values())
+    for line_index in range(admitted_lines):
+        tag = staged_ledger.issue(admitted_direction, line_index)
+        staged_metrics.llc_transactions += 1
         # The static archive has no response timing.  The ordering model uses
         # a distinct, model-selected matching completion transition.
-        ledger.complete(tag)
-        metrics.llc_acks += 1
-    if lines:
-        metrics.max_transfer_buffers = max(metrics.max_transfer_buffers, 1)
+        staged_ledger.complete(tag)
+        staged_metrics.llc_acks += 1
+    if admitted_lines:
+        staged_metrics.max_transfer_buffers = max(
+            staged_metrics.max_transfer_buffers, 1
+        )
+
+    staged_values = staged_metrics._admitted_values()
+    ledger._next_serial = staged_ledger.next_serial
+    ledger._active_identity = staged_ledger._active_identity
+    metrics._commit_values(staged_values)
 
 
 class IssueObserver:
@@ -366,85 +433,190 @@ class IssueObserver:
         source_line_phase: int,
         metrics: Metrics,
     ):
-        self.proof = CoverageProof(pattern)
-        self.source_line_phase = source_line_phase
+        admitted_phase = require_exact_uint(
+            "source-line phase", source_line_phase, MAX_SOURCE_LINE
+        )
+        if type(metrics) is not Metrics:
+            raise ReplayError("observer metrics must be an exact Metrics value")
+        admitted_proof = CoverageProof(pattern)
+        metrics._admitted_values()
+        self.proof = admitted_proof
+        self.source_line_phase = admitted_phase
         self.metrics = metrics
         self.previous_row: tuple[int, ...] | None = None
 
-    def begin_request(self, source_line: int) -> None:
-        row = bank_row_key(source_line, self.source_line_phase)
-        if self.previous_row is None:
-            self.metrics.row_runs += 1
+    @staticmethod
+    def _increment(values: dict[str, int], name: str) -> None:
+        values[name] = require_exact_uint(
+            f"metric {name}", values[name] + 1, UINT64_MAX
+        )
+
+    def _preview_request_state(
+        self,
+        source_line: int,
+        values: dict[str, int],
+        previous_row: tuple[int, ...] | None,
+    ) -> tuple[int, tuple[int, ...], dict[str, int]]:
+        admitted_source_line = require_exact_uint(
+            "request source line", source_line, MAX_SOURCE_LINE
+        )
+        row = bank_row_key(admitted_source_line, self.source_line_phase)
+        updated = dict(values)
+        if previous_row is None:
+            self._increment(updated, "row_runs")
         else:
-            self.metrics.successor_pairs += 1
-            if row == self.previous_row:
-                self.metrics.same_row_successors += 1
+            self._increment(updated, "successor_pairs")
+            if row == previous_row:
+                self._increment(updated, "same_row_successors")
             else:
-                self.metrics.row_transitions += 1
-                self.metrics.row_runs += 1
+                self._increment(updated, "row_transitions")
+                self._increment(updated, "row_runs")
+        self._increment(updated, "a_requests")
+        return admitted_source_line, row, updated
+
+    def _issue_requests(
+        self,
+        requests: Iterable[tuple[int, Iterable[Record]]],
+        *,
+        active_records: int | None = None,
+    ) -> None:
+        next_metrics = self.metrics._admitted_values()
+        next_previous_row = self.previous_row
+        next_seen_count = require_exact_uint(
+            "coverage count", self.proof.seen_count, len(self.proof.pattern)
+        )
+        next_seen_mask = require_exact_uint(
+            "coverage mask",
+            self.proof.seen_mask,
+            (1 << len(self.proof.pattern)) - 1,
+        )
+        if active_records is not None:
+            admitted_active = require_exact_uint(
+                "active record count", active_records, ACTIVE_RECORDS
+            )
+            next_metrics["max_active_records"] = max(
+                next_metrics["max_active_records"], admitted_active
+            )
+
+        for request in requests:
+            if type(request) is not tuple or len(request) != 2:
+                raise ReplayError(
+                    "request must be an exact (source line, records) tuple"
+                )
+            source_line, records = request
+            admitted_source_line, row, next_metrics = self._preview_request_state(
+                source_line, next_metrics, next_previous_row
+            )
+            try:
+                iterator = iter(records)
+            except TypeError as error:
+                raise ReplayError("request records must be iterable") from error
+
+            observed = 0
+            for record in iterator:
+                admitted_record, candidate_mask = self.proof._preview_observation(
+                    record, next_seen_mask
+                )
+                if admitted_record[0] != admitted_source_line:
+                    raise ReplayError("A request received a different source line")
+                next_seen_count = require_exact_uint(
+                    "coverage count",
+                    next_seen_count + 1,
+                    len(self.proof.pattern),
+                )
+                next_seen_mask = candidate_mask
+                observed += 1
+            if observed == 0:
+                raise ReplayError("empty A request is not implementable")
+            next_previous_row = row
+
+        self.metrics._commit_values(next_metrics)
+        self.previous_row = next_previous_row
+        self.proof.seen_mask, self.proof.seen_count = (
+            next_seen_mask,
+            next_seen_count,
+        )
+
+    def begin_request(self, source_line: int) -> None:
+        values = self.metrics._admitted_values()
+        _, row, next_metrics = self._preview_request_state(
+            source_line, values, self.previous_row
+        )
+        self.metrics._commit_values(next_metrics)
         self.previous_row = row
-        self.metrics.a_requests += 1
 
     def observe_record(self, source_line: int, record: Record) -> None:
-        if record[0] != source_line:
+        admitted_source_line = require_exact_uint(
+            "request source line", source_line, MAX_SOURCE_LINE
+        )
+        admitted_count = require_exact_uint(
+            "coverage count", self.proof.seen_count, len(self.proof.pattern)
+        )
+        admitted_mask = require_exact_uint(
+            "coverage mask",
+            self.proof.seen_mask,
+            (1 << len(self.proof.pattern)) - 1,
+        )
+        admitted_record, next_mask = self.proof._preview_observation(
+            record, admitted_mask
+        )
+        if admitted_record[0] != admitted_source_line:
             raise ReplayError("A request received a different source line")
-        self.proof.observe(record)
+        next_count = require_exact_uint(
+            "coverage count", admitted_count + 1, len(self.proof.pattern)
+        )
+        self.proof.seen_mask, self.proof.seen_count = next_mask, next_count
 
     def issue(self, source_line: int, records: Iterable[Record]) -> None:
-        self.begin_request(source_line)
-        observed = 0
-        for record in records:
-            self.observe_record(source_line, record)
-            observed += 1
-        if observed == 0:
-            raise ReplayError("empty A request is not implementable")
+        self._issue_requests(((source_line, records),))
 
     def finish(self) -> None:
         self.proof.finish()
 
 
-def issue_first_seen_rows(
-    records: Sequence[Record], observer: IssueObserver
-) -> None:
+def issue_first_seen_rows(records: Sequence[Record], observer: IssueObserver) -> None:
     """Execute the existing direct4 row grouping for one 4K page."""
-    rows: OrderedDict[
-        tuple[int, ...], OrderedDict[int, list[Record]]
-    ] = OrderedDict()
+    if type(observer) is not IssueObserver:
+        raise ReplayError("issue observer must be an exact IssueObserver")
+    if len(records) > ACTIVE_RECORDS:
+        raise ReplayError("direct page exceeded the 4K record capacity")
+    rows: OrderedDict[tuple[int, ...], OrderedDict[int, list[Record]]] = OrderedDict()
     for record in records:
-        source_line = record[0]
+        admitted_record = admit_record(record)
+        source_line = admitted_record[0]
         row = bank_row_key(source_line, observer.source_line_phase)
         rows.setdefault(row, OrderedDict()).setdefault(source_line, []).append(
-            record
+            admitted_record
         )
-    for lines in rows.values():
-        for source_line, grouped in lines.items():
-            observer.issue(source_line, grouped)
+    requests = (
+        (source_line, grouped)
+        for lines in rows.values()
+        for source_line, grouped in lines.items()
+    )
+    observer._issue_requests(requests)
 
 
-def issue_sorted_window(
-    records: list[Record], observer: IssueObserver
-) -> None:
+def issue_sorted_window(records: list[Record], observer: IssueObserver) -> None:
+    if type(records) is not list:
+        raise ReplayError("retained record queue must be an exact list")
+    if type(observer) is not IssueObserver:
+        raise ReplayError("issue observer must be an exact IssueObserver")
     if not records:
         return
     if len(records) > ACTIVE_RECORDS:
         raise ReplayError("retained subset exceeded the 4K record capacity")
-    observer.metrics.max_active_records = max(
-        observer.metrics.max_active_records, len(records)
-    )
     # The implementable policy is a fixed in-place heap sort.  Python's sort
-    # supplies the same canonical order for replay; the charged record array
-    # is fixed at 4096 entries and no sorted image is persistent policy state.
-    records.sort(
-        key=lambda record: record_key(record, observer.source_line_phase)
+    # supplies the same canonical order for replay.  The temporary host image
+    # validates before commit; the charged policy array remains fixed at 4096.
+    ordered = sorted(
+        (admit_record(record) for record in records),
+        key=lambda record: record_key(record, observer.source_line_phase),
     )
-    begin = 0
-    while begin < len(records):
-        source_line = records[begin][0]
-        end = begin + 1
-        while end < len(records) and records[end][0] == source_line:
-            end += 1
-        observer.issue(source_line, records[begin:end])
-        begin = end
+    requests = (
+        (source_line, grouped)
+        for source_line, grouped in groupby(ordered, key=lambda record: record[0])
+    )
+    observer._issue_requests(requests, active_records=len(ordered))
 
 
 def replay_direct4(pattern: Sequence[int], source_line_phase: int) -> Metrics:
@@ -457,9 +629,7 @@ def replay_direct4(pattern: Sequence[int], source_line_phase: int) -> Metrics:
     for begin in range(0, len(pattern), ACTIVE_RECORDS):
         page = [
             make_record(destination, pattern[destination])
-            for destination in range(
-                begin, min(begin + ACTIVE_RECORDS, len(pattern))
-            )
+            for destination in range(begin, min(begin + ACTIVE_RECORDS, len(pattern)))
         ]
         metrics.max_active_records = max(metrics.max_active_records, len(page))
         issue_first_seen_rows(page, observer)
@@ -467,9 +637,7 @@ def replay_direct4(pattern: Sequence[int], source_line_phase: int) -> Metrics:
     return metrics
 
 
-def replay_row_bucket_rescan(
-    pattern: Sequence[int], source_line_phase: int
-) -> Metrics:
+def replay_row_bucket_rescan(pattern: Sequence[int], source_line_phase: int) -> Metrics:
     metrics = Metrics(
         logical_words=len(pattern),
         index_scan_words=PARTITIONS * len(pattern),
@@ -497,13 +665,13 @@ def replay_row_bucket_rescan(
 def build_sorted_runs(
     pattern: Sequence[int], source_line_phase: int
 ) -> list[list[Record]]:
+    if len(pattern) > LOGICAL_ELEMENTS:
+        raise ReplayError("sorted-run input exceeded one 16K logical tile")
     runs: list[list[Record]] = []
     for begin in range(0, len(pattern), ACTIVE_RECORDS):
         run = [
             make_record(destination, pattern[destination])
-            for destination in range(
-                begin, min(begin + ACTIVE_RECORDS, len(pattern))
-            )
+            for destination in range(begin, min(begin + ACTIVE_RECORDS, len(pattern)))
         ]
         run.sort(key=lambda record: record_key(record, source_line_phase))
         runs.append(run)
@@ -536,23 +704,14 @@ def replay_sorted_runs_merge(
     merged: Iterator[Record] = heapq.merge(
         *runs, key=lambda record: record_key(record, source_line_phase)
     )
-    current_line: int | None = None
-    for record in merged:
-        if current_line is None:
-            current_line = record[0]
-            observer.begin_request(current_line)
-        if record[0] != current_line:
-            current_line = record[0]
-            observer.begin_request(current_line)
-        observer.observe_record(current_line, record)
+    for source_line, grouped in groupby(merged, key=lambda record: record[0]):
+        observer.issue(source_line, grouped)
     observer.finish()
     ledger.finish()
     return metrics
 
 
-def range_for_key(
-    minimum: int, maximum: int, partition: int
-) -> tuple[int, int]:
+def range_for_key(minimum: int, maximum: int, partition: int) -> tuple[int, int]:
     width = ceil_div(maximum - minimum + 1, PARTITIONS)
     lower = minimum + partition * width
     upper = maximum + 1 if partition == PARTITIONS - 1 else lower + width
@@ -623,9 +782,7 @@ def state_contract() -> dict[str, object]:
 
     policies = {
         "row_bucket_rescan": {
-            "row_offset_invalidator_bytes": (
-                BOUNDED_ROW_OFFSET_INVALIDATOR_BYTES
-            ),
+            "row_offset_invalidator_bytes": (BOUNDED_ROW_OFFSET_INVALIDATOR_BYTES),
             "policy_control_bits": row_bucket_control_bits,
             "policy_control_bytes": ceil_div(row_bucket_control_bits, 8),
             "reorder_state_bytes": (
@@ -641,9 +798,7 @@ def state_contract() -> dict[str, object]:
             "llc_backing_capacity_bytes": LOGICAL_ELEMENTS * RECORD_BYTES,
         },
         "range_spool_replay": {
-            "row_offset_invalidator_bytes": (
-                BOUNDED_ROW_OFFSET_INVALIDATOR_BYTES
-            ),
+            "row_offset_invalidator_bytes": (BOUNDED_ROW_OFFSET_INVALIDATOR_BYTES),
             "transfer_buffer_bytes": range_transfer_buffers_bytes,
             "transfer_tag_bits": range_transfer_tags_bits,
             "transfer_tag_bytes": ceil_div(range_transfer_tags_bits, 8),
@@ -680,9 +835,7 @@ def state_contract() -> dict[str, object]:
         + ROW_KEY_BITS
     )
     return {
-        "packing": (
-            "bit-packed lower bound; component byte ceilings are explicit"
-        ),
+        "packing": ("bit-packed lower bound; component byte ceilings are explicit"),
         "physical_payload": {
             "elements_per_lane_tile": ACTIVE_RECORDS,
             "lane_tiles": 32,
@@ -711,6 +864,15 @@ def state_contract() -> dict[str, object]:
             "serial_zero_issued": False,
             "extra_exhaustion_flag_bits": 0,
         },
+        "transaction_contract": {
+            "admission": "exact type and range before state mutation",
+            "request_scope": "complete request and every record",
+            "commit": "staged coupled-state commit after full validation",
+            "rejection_preserves": (
+                "metrics, previous row, coverage, queue, and ACK ledger"
+            ),
+            "returned_transfer_identity": "distinct value copy",
+        },
         "interpreter_boundary": (
             "Python object headers are not hardware; the admitted immutable "
             "B snapshot is charged above as bounded evidence-only state, and "
@@ -727,9 +889,7 @@ def bounds_ok(policy: str, metrics: Metrics) -> tuple[bool, list[str]]:
         reasons.append("LLC transaction/ACK counts differ")
     if policy == "row_bucket_rescan":
         if metrics.max_merge_heads or metrics.max_transfer_buffers:
-            reasons.append(
-                "rescan policy used an undeclared merge/transfer buffer"
-            )
+            reasons.append("rescan policy used an undeclared merge/transfer buffer")
     elif policy == "sorted_runs_merge":
         if metrics.max_merge_heads > PARTITIONS:
             reasons.append("merge head high-water exceeded four")
@@ -745,9 +905,7 @@ def bounds_ok(policy: str, metrics: Metrics) -> tuple[bool, list[str]]:
     return not reasons, reasons
 
 
-def strict_gate(
-    policy: str, candidate: Metrics, direct4: Metrics
-) -> dict[str, object]:
+def strict_gate(policy: str, candidate: Metrics, direct4: Metrics) -> dict[str, object]:
     contract = state_contract()["policies"][policy]
     bounded, reasons = bounds_ok(policy, candidate)
     request_improved = candidate.a_requests < direct4.a_requests
@@ -786,9 +944,7 @@ def analyze_pattern(
         require_exact_uint("gather source index", value, MAX_SOURCE_INDEX)
     maximum = max(pattern) // WORDS_PER_LINE + source_line_phase
     if maximum > MAX_SOURCE_LINE:
-        raise ReplayError(
-            "fixture plus A-base phase exceeds the 18-bit source field"
-        )
+        raise ReplayError("fixture plus A-base phase exceeds the 18-bit source field")
 
     aggregate = {
         "direct4": Metrics(),
@@ -814,9 +970,7 @@ def analyze_pattern(
         "pattern_words": len(pattern),
         "logical_tiles": ceil_div(len(pattern), LOGICAL_ELEMENTS),
         "max_mapped_source_line": maximum,
-        "policies": {
-            name: metrics.rendered() for name, metrics in aggregate.items()
-        },
+        "policies": {name: metrics.rendered() for name, metrics in aggregate.items()},
         "gate": {
             policy: strict_gate(policy, aggregate[policy], direct)
             for policy in POLICIES
@@ -841,9 +995,7 @@ def verified_input(path: Path, expected: frozenset[str]) -> dict[str, object]:
     path = path.resolve(strict=True)
     digest = sha256(path)
     if digest not in expected:
-        raise ReplayError(
-            f"unrecognized frozen fixture SHA-256: {path}: {digest}"
-        )
+        raise ReplayError(f"unrecognized frozen fixture SHA-256: {path}: {digest}")
     return {"path": str(path), "sha256": digest}
 
 
@@ -862,33 +1014,23 @@ def verified_flag_paths(root: Path) -> list[tuple[Path, dict[str, object]]]:
     return records
 
 
-def aggregate_results(
-    results: Sequence[dict[str, object]]
-) -> dict[str, object]:
+def aggregate_results(results: Sequence[dict[str, object]]) -> dict[str, object]:
     totals = {name: Metrics() for name in ("direct4", *POLICIES)}
     for result in results:
         policies = result["policies"]
         for name, total in totals.items():
             raw = policies[name]
             metric = Metrics(
-                **{
-                    field.name: int(raw[field.name])
-                    for field in fields(Metrics)
-                }
+                **{field.name: int(raw[field.name]) for field in fields(Metrics)}
             )
             total.add(metric)
     direct = totals["direct4"]
     return {
         "case_count": len(results),
-        "pattern_words": sum(
-            int(result["pattern_words"]) for result in results
-        ),
-        "policies": {
-            name: metric.rendered() for name, metric in totals.items()
-        },
+        "pattern_words": sum(int(result["pattern_words"]) for result in results),
+        "policies": {name: metric.rendered() for name, metric in totals.items()},
         "aggregate_gate": {
-            policy: strict_gate(policy, totals[policy], direct)
-            for policy in POLICIES
+            policy: strict_gate(policy, totals[policy], direct) for policy in POLICIES
         },
     }
 
@@ -899,9 +1041,7 @@ def promotion_gate(
     sources: list[tuple[str, dict[str, object]]] = []
     if xrage is not None:
         sources.append(("xrage", xrage))
-    sources.extend(
-        (str(case["fixture_id"]), case["analysis"]) for case in flag_cases
-    )
+    sources.extend((str(case["fixture_id"]), case["analysis"]) for case in flag_cases)
     policies: dict[str, object] = {}
     for policy in POLICIES:
         failures = [
@@ -926,9 +1066,7 @@ def promotion_gate(
             "all bounds/ACKs satisfied, and on-chip state <= 656559 bytes"
         ),
         "policies": policies,
-        "promoted": [
-            policy for policy, result in policies.items() if result["pass"]
-        ],
+        "promoted": [policy for policy, result in policies.items() if result["pass"]],
     }
 
 
@@ -941,9 +1079,7 @@ def main() -> int:
     parser.add_argument("--flag-source-line-phase", type=int, default=0)
     args = parser.parse_args()
     if args.xrage is None and args.flag_root is None:
-        parser.error(
-            "at least one frozen XRAGE or FLAG fixture source is required"
-        )
+        parser.error("at least one frozen XRAGE or FLAG fixture source is required")
 
     output: dict[str, object] = {
         "schema": SCHEMA,
@@ -968,9 +1104,7 @@ def main() -> int:
     flag_cases: list[dict[str, object]] = []
     if args.flag_root is not None:
         for path, identity in verified_flag_paths(args.flag_root):
-            analysis = analyze_pattern(
-                load_gather(path), args.flag_source_line_phase
-            )
+            analysis = analyze_pattern(load_gather(path), args.flag_source_line_phase)
             flag_cases.append({**identity, "analysis": analysis})
         output["flag"] = {
             **aggregate_results([case["analysis"] for case in flag_cases]),

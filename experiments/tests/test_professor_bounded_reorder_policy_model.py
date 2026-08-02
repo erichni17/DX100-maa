@@ -4,9 +4,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = (
-    ROOT / "experiments/analysis/professor_bounded_reorder_policy_model.py"
-)
+MODULE_PATH = ROOT / "experiments/analysis/professor_bounded_reorder_policy_model.py"
 SPEC = importlib.util.spec_from_file_location(
     "professor_bounded_reorder_policy_model", MODULE_PATH
 )
@@ -36,6 +34,19 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
     def ledger_state(self, ledger):
         return ledger.generation, ledger.next_serial, ledger.active
 
+    def observer_state(self, observer):
+        metrics = tuple(
+            getattr(observer.metrics, field.name)
+            for field in MODULE.fields(MODULE.Metrics)
+        )
+        return (
+            metrics,
+            observer.previous_row,
+            observer.proof.seen_mask,
+            observer.proof.seen_count,
+            observer.proof.pattern,
+        )
+
     def assert_ledger_rejection_is_atomic(self, ledger, action, regex):
         before = self.ledger_state(ledger)
         with self.assertRaisesRegex(MODULE.ReplayError, regex):
@@ -46,15 +57,11 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         self,
     ) -> None:
         require_fixture(FLAG_ROOT)
-        identity = MODULE.verified_input(
-            XRAGE, frozenset({MODULE.XRAGE_SHA256})
-        )
+        identity = MODULE.verified_input(XRAGE, frozenset({MODULE.XRAGE_SHA256}))
         self.assertEqual(identity["sha256"], MODULE.XRAGE_SHA256)
         flag = MODULE.verified_flag_paths(FLAG_ROOT)
         self.assertEqual(len(flag), 14)
-        self.assertEqual(
-            {record["sha256"] for _, record in flag}, MODULE.FLAG_SHA256
-        )
+        self.assertEqual({record["sha256"] for _, record in flag}, MODULE.FLAG_SHA256)
 
     def test_wrong_fixture_identity_fails_closed(self) -> None:
         require_fixture(FLAG_ROOT)
@@ -66,24 +73,12 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         state = MODULE.state_contract()
         self.assertEqual(state["physical_payload"]["bytes"], 524_288)
         policies = state["policies"]
-        self.assertEqual(
-            policies["row_bucket_rescan"]["reorder_state_bytes"], 66_692
-        )
-        self.assertEqual(
-            policies["row_bucket_rescan"]["on_chip_total_bytes"], 653_142
-        )
-        self.assertEqual(
-            policies["sorted_runs_merge"]["reorder_state_bytes"], 70_109
-        )
-        self.assertEqual(
-            policies["sorted_runs_merge"]["on_chip_total_bytes"], 656_559
-        )
-        self.assertEqual(
-            policies["range_spool_replay"]["added_spool_state_bytes"], 205
-        )
-        self.assertEqual(
-            policies["range_spool_replay"]["on_chip_total_bytes"], 653_343
-        )
+        self.assertEqual(policies["row_bucket_rescan"]["reorder_state_bytes"], 66_692)
+        self.assertEqual(policies["row_bucket_rescan"]["on_chip_total_bytes"], 653_142)
+        self.assertEqual(policies["sorted_runs_merge"]["reorder_state_bytes"], 70_109)
+        self.assertEqual(policies["sorted_runs_merge"]["on_chip_total_bytes"], 656_559)
+        self.assertEqual(policies["range_spool_replay"]["added_spool_state_bytes"], 205)
+        self.assertEqual(policies["range_spool_replay"]["on_chip_total_bytes"], 653_343)
         observer = state["replay_observer_state"]
         self.assertEqual(observer["metrics_counter_fields"], 16)
         self.assertEqual(observer["admitted_b_snapshot_entries"], 16_384)
@@ -96,6 +91,13 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         self.assertEqual(exhaustion["exhausted_sentinel"], 0)
         self.assertFalse(exhaustion["serial_zero_issued"])
         self.assertEqual(exhaustion["extra_exhaustion_flag_bits"], 0)
+        transaction = state["transaction_contract"]
+        self.assertEqual(
+            transaction["request_scope"], "complete request and every record"
+        )
+        self.assertEqual(
+            transaction["returned_transfer_identity"], "distinct value copy"
+        )
         for policy in MODULE.POLICIES:
             self.assertTrue(policies[policy]["within_global_budget"])
         self.assertEqual(
@@ -122,13 +124,9 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         for policy in MODULE.POLICIES:
             metrics = self.analysis["policies"][policy]
             self.assertEqual(metrics["logical_words"], MODULE.LOGICAL_ELEMENTS)
-            self.assertLessEqual(
-                metrics["max_active_records"], MODULE.ACTIVE_RECORDS
-            )
+            self.assertLessEqual(metrics["max_active_records"], MODULE.ACTIVE_RECORDS)
             self.assertEqual(metrics["llc_transactions"], metrics["llc_acks"])
-            self.assertTrue(
-                self.analysis["gate"][policy]["bounded_and_ack_complete"]
-            )
+            self.assertTrue(self.analysis["gate"][policy]["bounded_and_ack_complete"])
 
     def test_policy_scan_and_spill_traffic_is_fully_charged(self) -> None:
         policies = self.analysis["policies"]
@@ -173,9 +171,7 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
             row_transitions=2,
             row_runs=3,
         )
-        rejected = MODULE.strict_gate(
-            "row_bucket_rescan", equal_requests, direct
-        )
+        rejected = MODULE.strict_gate("row_bucket_rescan", equal_requests, direct)
         self.assertFalse(rejected["pass"])
         self.assertIn("A request count", rejected["reasons"][0])
 
@@ -234,6 +230,27 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         ledger.complete(live_snapshot)
         ledger.finish()
 
+    def test_transfer_tag_constructor_validates_every_identity_field(
+        self,
+    ) -> None:
+        valid = {
+            "generation": 1,
+            "serial": 1,
+            "direction": 0,
+            "line_index": 0,
+        }
+        invalid = (
+            ("generation", True),
+            ("serial", 1.0),
+            ("direction", -1),
+            ("line_index", MODULE.MAX_TRANSFER_LINE + 1),
+        )
+        for field, value in invalid:
+            with self.subTest(field=field, value=value):
+                fields = {**valid, field: value}
+                with self.assertRaises(MODULE.ReplayError):
+                    MODULE.TransferTag(**fields)
+
     def test_coverage_proof_snapshots_caller_pattern(self) -> None:
         caller_pattern = [3]
         proof = MODULE.CoverageProof(caller_pattern)
@@ -247,6 +264,83 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         self.assertEqual((proof.seen_mask, proof.seen_count), before)
         proof.observe(MODULE.make_record(0, 3))
         proof.finish()
+
+    def test_observe_record_rejects_bool_source_line_atomically(self) -> None:
+        observer = MODULE.IssueObserver([8], 0, MODULE.Metrics())
+        before = self.observer_state(observer)
+        with self.assertRaisesRegex(MODULE.ReplayError, "request source line"):
+            observer.observe_record(True, (1, 0, 0))
+        self.assertEqual(self.observer_state(observer), before)
+
+    def test_issue_validates_the_complete_request_before_commit(self) -> None:
+        cases = (
+            ("empty", [0], 0, []),
+            ("late malformed", [0, 0], 0, [(0, 0, 0), [0, 0, 1]]),
+            ("late bool word", [0, 0], 0, [(0, 0, 0), (0, True, 1)]),
+            ("duplicate", [0, 0], 0, [(0, 0, 0), (0, 0, 0)]),
+            ("bool request line", [8], True, [(1, 0, 0)]),
+            ("different line", [0, 8], 0, [(0, 0, 0), (1, 0, 1)]),
+        )
+        for label, pattern, source_line, records in cases:
+            with self.subTest(case=label):
+                observer = MODULE.IssueObserver(pattern, 0, MODULE.Metrics())
+                before = self.observer_state(observer)
+                with self.assertRaises(MODULE.ReplayError):
+                    observer.issue(source_line, records)
+                self.assertEqual(self.observer_state(observer), before)
+
+        observer = MODULE.IssueObserver([0, 0], 0, MODULE.Metrics())
+        observer.issue(0, [(0, 0, 0)])
+        before = self.observer_state(observer)
+        with self.assertRaisesRegex(MODULE.ReplayError, "replayed twice"):
+            observer.issue(0, [(0, 0, 1), (0, 0, 0)])
+        self.assertEqual(self.observer_state(observer), before)
+
+        def interrupted_records():
+            yield (0, 0, 1)
+            raise RuntimeError("caller iteration failed")
+
+        before = self.observer_state(observer)
+        with self.assertRaisesRegex(RuntimeError, "caller iteration failed"):
+            observer.issue(0, interrupted_records())
+        self.assertEqual(self.observer_state(observer), before)
+
+    def test_sorted_window_duplicate_rejection_preserves_queue_and_state(
+        self,
+    ) -> None:
+        records = [(0, 0, 0), (0, 0, 0)]
+        observer = MODULE.IssueObserver([0, 0], 0, MODULE.Metrics())
+        records_before = list(records)
+        observer_before = self.observer_state(observer)
+        with self.assertRaisesRegex(MODULE.ReplayError, "replayed twice"):
+            MODULE.issue_sorted_window(records, observer)
+        self.assertEqual(records, records_before)
+        self.assertEqual(self.observer_state(observer), observer_before)
+
+    def test_transfer_batch_serial_exhaustion_is_atomic(self) -> None:
+        ledger = MODULE.AckLedger(MODULE.UINT64_MAX)
+        ledger.next_serial = MODULE.UINT64_MAX
+        metrics = MODULE.Metrics()
+        ledger_before = self.ledger_state(ledger)
+        metrics_before = metrics._admitted_values()
+        with self.assertRaisesRegex(MODULE.ReplayError, "serial space"):
+            MODULE.transfer_lines(ledger, 0, 2, metrics)
+        self.assertEqual(self.ledger_state(ledger), ledger_before)
+        self.assertEqual(metrics._admitted_values(), metrics_before)
+
+    def test_public_serial_and_metric_updates_are_atomic(self) -> None:
+        ledger = MODULE.AckLedger(1)
+        ledger_before = self.ledger_state(ledger)
+        with self.assertRaisesRegex(MODULE.ReplayError, "next serial"):
+            ledger.next_serial = True
+        self.assertEqual(self.ledger_state(ledger), ledger_before)
+
+        metrics = MODULE.Metrics(logical_words=3, llc_acks=1)
+        metrics_before = metrics._admitted_values()
+        overflowing = MODULE.Metrics(llc_acks=MODULE.UINT64_MAX)
+        with self.assertRaisesRegex(MODULE.ReplayError, "combined metric"):
+            metrics.add(overflowing)
+        self.assertEqual(metrics._admitted_values(), metrics_before)
 
     def test_generation_true_is_rejected(self) -> None:
         with self.assertRaisesRegex(MODULE.ReplayError, "generation"):
@@ -365,9 +459,7 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         for phase in (1.0, -1, MODULE.MAX_SOURCE_LINE + 1):
             with self.subTest(field="source_line_phase", value=phase):
                 pattern = [0]
-                with self.assertRaisesRegex(
-                    MODULE.ReplayError, "source-line phase"
-                ):
+                with self.assertRaisesRegex(MODULE.ReplayError, "source-line phase"):
                     MODULE.analyze_pattern(pattern, phase)
                 self.assertEqual(pattern, [0])
         for source_index in (
@@ -378,9 +470,7 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         ):
             with self.subTest(field="source_index", value=source_index):
                 pattern = [source_index]
-                with self.assertRaisesRegex(
-                    MODULE.ReplayError, "gather source index"
-                ):
+                with self.assertRaisesRegex(MODULE.ReplayError, "gather source index"):
                     MODULE.analyze_pattern(pattern, 0)
                 self.assertEqual(pattern, [source_index])
 
@@ -436,9 +526,9 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
             ),
         )
         runs = MODULE.build_sorted_runs([MODULE.MAX_SOURCE_INDEX], 0)
-        self.assertTrue(
-            all(type(item) is tuple for run in runs for item in run)
-        )
+        self.assertTrue(all(type(item) is tuple for run in runs for item in run))
+        with self.assertRaisesRegex(MODULE.ReplayError, "16K logical tile"):
+            MODULE.build_sorted_runs([0] * (MODULE.LOGICAL_ELEMENTS + 1), 0)
 
         captured_spool_records = []
         original_issue_sorted_window = MODULE.issue_sorted_window
@@ -453,9 +543,7 @@ class ProfessorBoundedReorderPolicyModelTest(unittest.TestCase):
         finally:
             MODULE.issue_sorted_window = original_issue_sorted_window
         self.assertTrue(captured_spool_records)
-        self.assertTrue(
-            all(type(item) is tuple for item in captured_spool_records)
-        )
+        self.assertTrue(all(type(item) is tuple for item in captured_spool_records))
 
         self.assertEqual(
             MODULE.analyze_pattern([0], MODULE.MAX_SOURCE_LINE)[

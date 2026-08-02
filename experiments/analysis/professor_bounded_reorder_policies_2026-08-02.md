@@ -198,6 +198,15 @@ unsigned range before state mutation: 18-bit A line and phase, 21-bit B source
 index, nonzero uint64 generation/serial, 1-bit direction, and 12-bit backing
 line.
 
+Every public stateful operation is transactional. It validates and stages the
+complete externally supplied request, all records, coverage changes, metric
+deltas, row successor state, and transfer identities before committing coupled
+state. Empty, malformed, duplicate, wrong-line, exhausted-serial, and
+caller-interrupted requests therefore leave metrics, previous row, coverage
+mask/count/pattern, retained queues, generation/serial/active ACK identity, and
+ledgers unchanged. Batched window issue and line transfer use the same staged
+commit rule.
+
 Every record carries `(A line, A word, logical destination)`. The observer
 proves each destination appears exactly once and reconstructs the original B
 index exactly from an immutable value-tuple record and its privately owned
@@ -306,36 +315,36 @@ evidence.
 From the repository root:
 
 ```bash
-python3 -m unittest \
-  experiments.tests.test_professor_bounded_reorder_policy_model -v
+python3 -m unittest discover -s experiments/tests \
+  -p 'test_professor_bounded_reorder*.py' -v
+python3 experiments/tests/test_professor_bounded_reorder_adversarial.py
 python3 -m compileall -q \
   experiments/analysis/professor_bounded_reorder_policy_model.py \
-  experiments/tests/test_professor_bounded_reorder_policy_model.py
+  experiments/tests/test_professor_bounded_reorder_policy_model.py \
+  experiments/tests/test_professor_bounded_reorder_adversarial.py
 git diff --check
 python3 experiments/analysis/professor_bounded_reorder_policy_model.py \
   --xrage /data1/nier/DX100/experiments/inputs/xrage_gather0_full.json \
   --flag-root /data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/benchmarks/spatter/tests/test-data/lanl/flag \
-  --output /tmp/professor_bounded_reorder_replay.json
-sha256sum /tmp/professor_bounded_reorder_replay.json
+  --output /tmp/bounded_reorder_atomic_final_1.json
+# Repeat as bounded_reorder_atomic_final_2.json, then:
+cmp /tmp/bounded_reorder_atomic_final_1.json \
+  /tmp/bounded_reorder_atomic_final_2.json
+sha256sum /tmp/bounded_reorder_atomic_final_{1,2}.json
 ```
 
-Focused result: 21/21 tests passed, including the nine independently
-reproduced adversarial failures, exact maximum-field successes, rejection
-atomicity, and immutable sorted/spilled record checks. Two final full replays
-from model SHA-256
-`48185a93d610a4cb00341bf499d06caca117cfff5ffa6cdcdab8a246a96dd315`
-processed the frozen 2,097,152 XRAGE words plus 638,460 FLAG words and produced
-byte-identical JSON SHA-256
-`d1c75cdc5446c838937a2f201c3bb81afb0288dd9f9de2db5054cadb0d28c31b`.
-An exact baseline/repaired JSON comparison proves `scope`, all XRAGE request,
-transition, traffic, bound, and pass/fail records, all 14 FLAG records and
-aggregates, and the promotion gate are unchanged.
-
-The exact-path checkpoint's isort, Black 23.9.1, pyupgrade, gem5-style, and
-hygiene hooks pass. `py_compile`, repository style, and `git diff --check` also
-pass. An earlier standalone Black `--workers 1 --check` attempt hit the known
-non-terminating host process failure and was stopped; the subsequent bounded
-checkpoint hook completed normally.
+Discovery passed 28/28 tests, and the copied reviewer audit passed all 49/49
+named probes. Two final full replays from model SHA-256
+`c58fb70d34419c537ae6607bf4caf74f8d166b2486a4b8ccf95c2b81e7585a34`
+processed the frozen 2,097,152 XRAGE words plus 638,460 words from exactly 14
+allowlisted FLAG files. The outputs are byte-identical at JSON SHA-256
+`835829baa47fbff8830c5232933bfa6aa97ef7c8d525455c9dbde4aee88b397b`.
+A fresh `b6f000c` replay produced its archived SHA-256
+`b26e0df72c31ea4c6d19939b04cd61e32965a6748be128db0f696cba9a7aa691`;
+an exact structured comparison proves `scope`, all XRAGE request, transition,
+traffic, bound, and pass/fail records, all 14 FLAG records and aggregates, all
+policy state/budgets, and the promotion gate are unchanged. Only repaired
+contract metadata and the model digest differ.
 
 ## Handoff
 
