@@ -41,13 +41,15 @@ main(int argc, char **argv)
     if (mode != "native" && mode != "native_direct" &&
         mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_staged_conditional" &&
-        mode != "transparent" && mode != "transparent_displaced" &&
+        mode != "transparent" && mode != "transparent_ready" &&
+        mode != "transparent_displaced" && mode != "paged_displaced" &&
         mode != "paged_reload_warm" &&
         mode != "paged_reload_cold") {
         std::cerr << "mode must be native, native_direct, paged, "
                      "paged_overlap, "
                      "paged_staged, paged_staged_conditional, transparent, "
-                     "transparent_displaced, or "
+                     "transparent_ready, transparent_displaced, "
+                     "paged_displaced, or "
                      "paged_reload_warm/paged_reload_cold"
                   << std::endl;
         return 2;
@@ -57,9 +59,10 @@ main(int argc, char **argv)
         std::cerr << "page_elements must be 4096 or 16384" << std::endl;
         return 2;
     }
-    if ((mode == "transparent" || mode == "transparent_displaced") &&
+    if ((mode == "transparent" || mode == "transparent_ready" ||
+         mode == "transparent_displaced" || mode == "paged_displaced") &&
         page_elements != 4096) {
-        std::cerr << "transparent modes require four 4096-element pages"
+        std::cerr << "cache-residency controls require four 4096-element pages"
                   << std::endl;
         return 2;
     }
@@ -77,8 +80,10 @@ main(int argc, char **argv)
     std::vector<double> fence_storage(1, 0.0);
     const bool reload_only = mode == "paged_reload_warm" ||
                              mode == "paged_reload_cold";
+    const bool cache_displaced = mode == "transparent_displaced" ||
+                                 mode == "paged_displaced";
     std::vector<uint64_t> cache_pollution(
-        mode == "paged_reload_cold" || mode == "transparent_displaced"
+        mode == "paged_reload_cold" || cache_displaced
             ? cache_pollution_bytes / sizeof(uint64_t)
             : 1,
         1);
@@ -185,15 +190,21 @@ main(int argc, char **argv)
                 min_reg, max_reg, stride_reg);
         }
         const bool transparent = mode == "transparent" ||
+                                 mode == "transparent_ready" ||
                                  mode == "transparent_displaced";
-        const bool transparent_displaced = mode == "transparent_displaced";
+        const bool transparent_ready = mode == "transparent_ready";
         const bool overlap_pages = mode == "paged_overlap";
-        if (transparent_displaced) {
-            // Force the transparent controller to reload its coherent backing
-            // after the direct virtual producer has completed.  This remains
-            // in the ROI, but application code still submits just one
-            // controller-owned transparent consumer instruction.
+        if (transparent_ready || cache_displaced) {
+            // The ready control removes producer/consumer overlap without
+            // changing the controller instruction.  Both displaced modes
+            // share this boundary before their matched cache walk.
             wait_ready(completion_tile);
+        }
+        if (cache_displaced) {
+            // Keep the 32 MiB walk identical for transparent and paged
+            // consumers.  It intentionally remains in the ROI: paired
+            // differences can then separate its CPU charge from the effect
+            // of evicting the coherent backing.
             volatile uint64_t sink = 0;
             constexpr size_t words_per_cache_line = 64 / sizeof(uint64_t);
             for (size_t i = 0; i < cache_pollution.size();

@@ -42,21 +42,30 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertNotIn("maa_stream_load", transparent_path)
         self.assertNotIn("wait_virtual_page", transparent_path)
 
-    def test_displaced_mode_waits_then_pollutes_before_one_consumer(self):
+    def test_residency_controls_match_ready_and_pollution_boundaries(self):
         source = (
             ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
         ).read_text()
+        self.assertIn('mode == "transparent_ready"', source)
         self.assertIn('mode == "transparent_displaced"', source)
-        displaced = source[source.index("if (transparent_displaced) {") :]
-        consumer = displaced.index("maa_virtual_tile_alu_scalar_store<double>")
-        self.assertLess(
-            displaced.index("wait_ready(completion_tile)"), consumer
+        self.assertIn('mode == "paged_displaced"', source)
+        self.assertIn(
+            'const bool cache_displaced = mode == "transparent_displaced" ||',
+            source,
         )
+        controls = source[
+            source.index("if (transparent_ready || cache_displaced) {") :
+        ]
+        consumer = controls.index("maa_virtual_tile_alu_scalar_store<double>")
+        self.assertLess(
+            controls.index("wait_ready(completion_tile)"), consumer
+        )
+        displaced = controls[controls.index("if (cache_displaced) {") :]
         self.assertLess(displaced.index("cache_pollution.size()"), consumer)
         self.assertIn("VIRTUAL_TILE_CONSUMER_POLLUTION bytes=", displaced)
         self.assertEqual(
             1,
-            displaced[
+            controls[
                 : consumer + len("maa_virtual_tile_alu_scalar_store<double>")
             ].count("maa_virtual_tile_alu_scalar_store<double>"),
         )
@@ -127,10 +136,17 @@ class TransparentControllerContractTest(unittest.TestCase):
         ).read_text()
         self.assertIn("transparent_4k)", runner)
         self.assertIn("mode=transparent", runner)
+        self.assertIn("transparent_ready_4k)", runner)
+        self.assertIn("mode=transparent_ready", runner)
         self.assertIn("transparent_displaced_4k)", runner)
         self.assertIn("mode=transparent_displaced", runner)
+        self.assertIn("paged_displaced_4k)", runner)
+        self.assertIn("mode=paged_displaced", runner)
         self.assertIn("$case_name == transparent_4k ||", runner)
+        self.assertIn("$case_name == transparent_ready_4k ||", runner)
         self.assertIn("$case_name == transparent_displaced_4k", runner)
+        self.assertIn("polluted=1", runner)
+        self.assertIn("pollution_count -eq $polluted", runner)
         self.assertIn("transparent_submits -eq 1", runner)
         self.assertIn("transparent_issues -eq 12", runner)
         self.assertIn("transparent_completes -eq 12", runner)

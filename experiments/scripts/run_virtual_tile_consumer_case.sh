@@ -12,6 +12,7 @@ binary=$(realpath "$2")
 case_name=$3
 out=$(realpath -m "$4")
 overlap=0
+polluted=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
@@ -132,6 +133,14 @@ transparent_4k)
     direct=1
     reload_only=0
     ;;
+transparent_ready_4k)
+    mode=transparent_ready
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    ;;
 transparent_displaced_4k)
     mode=transparent_displaced
     page=4096
@@ -139,6 +148,16 @@ transparent_displaced_4k)
     virtual=1
     direct=1
     reload_only=0
+    polluted=1
+    ;;
+paged_displaced_4k)
+    mode=paged_displaced
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    polluted=1
     ;;
 paged_staged_16k)
     mode=paged_staged
@@ -213,6 +232,8 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'virtual_index_filter_words_per_cycle=%s\n' \
         "$index_filter_words_per_cycle"
     printf 'require_index_filter_wait=%s\n' "$require_index_filter_wait"
+    printf 'cache_pollution_bytes=%s\n' \
+        "$((polluted * 32 * 1024 * 1024))"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -337,6 +358,12 @@ fatal_count=$(grep -Eic \
         "$result_count" "$roi_count" "$fatal_count" >&2
     exit 1
 }
+pollution_count=$(grep -Fxc 'VIRTUAL_TILE_CONSUMER_POLLUTION bytes=33554432' \
+    "$out/restore.log" || true)
+[[ $pollution_count -eq $polluted ]] || {
+    echo "invalid cache-pollution evidence: $pollution_count/$polluted" >&2
+    exit 1
+}
 output_hash=$(sed -nE \
     "s/^VIRTUAL_TILE_CONSUMER_RESULT mode=${mode} page_elements=${page} hash=([0-9]+) errors=0$/\\1/p" \
     "$out/restore.log")
@@ -457,6 +484,7 @@ elif [[ $virtual -eq 1 ]]; then
         exit 1
     }
     if [[ $case_name == transparent_4k ||
+          $case_name == transparent_ready_4k ||
           $case_name == transparent_displaced_4k ]]; then
         transparent_submits=$(grep -c 'event=transparent_submit' "$trace" || true)
         transparent_issues=$(grep -c 'event=transparent_issue' "$trace" || true)
