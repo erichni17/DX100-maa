@@ -2,6 +2,7 @@
 #define __MEM_LANLMAA_UMT_FP64_DEPENDENCY_MODEL_HH__
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -64,6 +65,37 @@ struct UmtFp64DependencyDag
             }
         }
         return value;
+    }
+};
+
+constexpr uint8_t UmtFp64ThreeFaceMask = 0x7;
+
+enum class UmtFp64DagBuildError : uint8_t
+{
+    None = 0,
+    BadMask,
+    UnsupportedFallback,
+    NoncanonicalVolumeClasses
+};
+
+struct UmtFp64MixedThreeFaceConfig
+{
+    uint8_t incomingMask = 0;
+    uint8_t incidentMask = 0;
+    uint8_t specialMask = UmtFp64ThreeFaceMask;
+    // Current volume followed by the first volume selected for each face.
+    std::array<uint8_t, 4> volumeClass{{0, 0, 0, 0}};
+    std::array<uint64_t, 4> volumeBits{{0, 0, 0, 0}};
+};
+
+struct UmtFp64DagBuildResult
+{
+    UmtFp64DependencyDag dag;
+    UmtFp64DagBuildError error = UmtFp64DagBuildError::None;
+
+    explicit operator bool() const
+    {
+        return error == UmtFp64DagBuildError::None;
     }
 };
 
@@ -341,6 +373,211 @@ class UmtFp64DependencyModel
             dag, UmtFp64OperationKind::Divide,
             {accumulator, outputDenominator});
         return dag;
+    }
+
+    /**
+     * Build the optimized all-special three-face DAG for mixed directions.
+     * Reuse is confined to caller-proven exact-volume equivalence classes.
+     * Fallback faces are intentionally outside this timing contract.
+     */
+    static UmtFp64DagBuildResult
+    buildMixedThreeFaceSpecial(const UmtFp64MixedThreeFaceConfig &config)
+    {
+        UmtFp64DagBuildResult result;
+        if ((config.incomingMask & ~UmtFp64ThreeFaceMask) != 0 ||
+            (config.incidentMask & ~UmtFp64ThreeFaceMask) != 0 ||
+            (config.specialMask & ~UmtFp64ThreeFaceMask) != 0) {
+            result.error = UmtFp64DagBuildError::BadMask;
+            return result;
+        }
+        if (config.specialMask != UmtFp64ThreeFaceMask) {
+            result.error = UmtFp64DagBuildError::UnsupportedFallback;
+            return result;
+        }
+        uint8_t maximumClass = 0;
+        if (config.volumeClass[0] != 0) {
+            result.error =
+                UmtFp64DagBuildError::NoncanonicalVolumeClasses;
+            return result;
+        }
+        for (size_t index = 1; index < config.volumeClass.size(); ++index) {
+            const uint8_t value = config.volumeClass[index];
+            if (value > maximumClass + 1) {
+                result.error =
+                    UmtFp64DagBuildError::NoncanonicalVolumeClasses;
+                return result;
+            }
+            maximumClass = std::max(maximumClass, value);
+        }
+        for (size_t first = 0; first < config.volumeClass.size(); ++first) {
+            for (size_t second = first + 1;
+                 second < config.volumeClass.size(); ++second) {
+                const bool equalClass =
+                    config.volumeClass[first] == config.volumeClass[second];
+                const bool equalBits =
+                    config.volumeBits[first] == config.volumeBits[second];
+                if (equalClass != equalBits) {
+                    result.error =
+                        UmtFp64DagBuildError::NoncanonicalVolumeClasses;
+                    return result;
+                }
+            }
+        }
+
+        auto &dag = result.dag;
+        dag.observedSafeReuse = true;
+        const uint32_t currentTau = append(
+            dag, UmtFp64OperationKind::Multiply);
+        const uint32_t currentSource = append(
+            dag, UmtFp64OperationKind::AddSub, {currentTau});
+        uint32_t accumulator = append(
+            dag, UmtFp64OperationKind::Multiply, {currentSource});
+
+        std::array<uint32_t, 3> neighborSources{};
+        for (uint32_t face = 0; face < neighborSources.size(); ++face) {
+            const uint32_t neighborTau = append(
+                dag, UmtFp64OperationKind::Multiply);
+            neighborSources[face] = append(
+                dag, UmtFp64OperationKind::AddSub, {neighborTau});
+        }
+
+        // Both corrections are independent and may apply to the same face.
+        for (uint32_t face = 0; face < neighborSources.size(); ++face) {
+            if ((config.incidentMask & (1U << face)) != 0) {
+                const uint32_t incident = append(
+                    dag, UmtFp64OperationKind::Multiply);
+                accumulator = append(
+                    dag, UmtFp64OperationKind::AddSub,
+                    {accumulator, incident});
+            }
+        }
+        for (uint32_t face = 0; face < neighborSources.size(); ++face) {
+            if ((config.incomingMask & (1U << face)) != 0) {
+                const uint32_t upstream = append(
+                    dag, UmtFp64OperationKind::Multiply);
+                accumulator = append(
+                    dag, UmtFp64OperationKind::AddSub,
+                    {accumulator, upstream});
+            }
+        }
+
+        struct VolumeSetup
+        {
+            bool built = false;
+            uint32_t sigv = 0;
+            uint32_t sigv2 = 0;
+            uint32_t alphaSigv2 = 0;
+            uint32_t fourSigv = 0;
+            uint32_t sixSigv2 = 0;
+            uint32_t twoSigv = 0;
+        };
+        std::array<VolumeSetup, 4> setup{};
+
+        for (uint32_t face = 0; face < neighborSources.size(); ++face) {
+            auto &shared = setup[config.volumeClass[face + 1]];
+            if (!shared.built) {
+                shared.sigv = append(
+                    dag, UmtFp64OperationKind::Multiply);
+                shared.sigv2 = append(
+                    dag, UmtFp64OperationKind::Multiply, {shared.sigv});
+                shared.alphaSigv2 = append(
+                    dag, UmtFp64OperationKind::Multiply,
+                    {shared.sigv2});
+                shared.fourSigv = append(
+                    dag, UmtFp64OperationKind::Multiply, {shared.sigv});
+                shared.sixSigv2 = append(
+                    dag, UmtFp64OperationKind::Multiply,
+                    {shared.sigv2});
+                shared.twoSigv = append(
+                    dag, UmtFp64OperationKind::Multiply, {shared.sigv});
+                shared.built = true;
+            }
+
+            // aez^2 is source-hoisted corner/angle geometry, not a group op.
+            const uint32_t threeAez = append(
+                dag, UmtFp64OperationKind::Multiply);
+            const uint32_t gnumInner = append(
+                dag, UmtFp64OperationKind::AddSub,
+                {shared.fourSigv, threeAez});
+            const uint32_t aezGnumInner = append(
+                dag, UmtFp64OperationKind::Multiply, {gnumInner});
+            const uint32_t gnumSum = append(
+                dag, UmtFp64OperationKind::AddSub,
+                {shared.alphaSigv2, aezGnumInner});
+            const uint32_t gnum = append(
+                dag, UmtFp64OperationKind::Multiply, {gnumSum});
+
+            const uint32_t twoSigvPlusAez = append(
+                dag, UmtFp64OperationKind::AddSub, {shared.twoSigv});
+            const uint32_t twoAez = append(
+                dag, UmtFp64OperationKind::Multiply);
+            const uint32_t twoAezInner = append(
+                dag, UmtFp64OperationKind::Multiply,
+                {twoAez, twoSigvPlusAez});
+            const uint32_t sixPlusInner = append(
+                dag, UmtFp64OperationKind::AddSub,
+                {shared.sixSigv2, twoAezInner});
+            const uint32_t aezGdenInner = append(
+                dag, UmtFp64OperationKind::Multiply, {sixPlusInner});
+            const uint32_t fourSigvSigv2 = append(
+                dag, UmtFp64OperationKind::Multiply,
+                {shared.fourSigv, shared.sigv2});
+            const uint32_t gdenSum = append(
+                dag, UmtFp64OperationKind::AddSub,
+                {fourSigvSigv2, aezGdenInner});
+            const uint32_t gden = append(
+                dag, UmtFp64OperationKind::Multiply, {gdenSum});
+
+            const bool incoming =
+                (config.incomingMask & (1U << face)) != 0;
+            const uint32_t qq = incoming ?
+                neighborSources[face] : currentSource;
+            const uint32_t qez = incoming ?
+                currentSource : neighborSources[face];
+            const uint32_t sigmaPsi = append(
+                dag, UmtFp64OperationKind::Multiply);
+            const uint32_t psiMinusQ = append(
+                dag, UmtFp64OperationKind::AddSub, {sigmaPsi, qq});
+            const uint32_t volumeGnum = append(
+                dag, UmtFp64OperationKind::Multiply, {gnum});
+            const uint32_t firstTerm = append(
+                dag, UmtFp64OperationKind::Multiply,
+                {volumeGnum, psiMinusQ});
+            const uint32_t qDifference = append(
+                dag, UmtFp64OperationKind::AddSub, {qq, qez});
+            const uint32_t halfAez = append(
+                dag, UmtFp64OperationKind::Multiply);
+            const uint32_t halfAezGden = append(
+                dag, UmtFp64OperationKind::Multiply, {halfAez, gden});
+            const uint32_t secondTerm = append(
+                dag, UmtFp64OperationKind::Multiply,
+                {halfAezGden, qDifference});
+            const uint32_t numerator = append(
+                dag, UmtFp64OperationKind::AddSub,
+                {firstTerm, secondTerm});
+            const uint32_t gdenSigma = append(
+                dag, UmtFp64OperationKind::Multiply, {gden});
+            const uint32_t denominator = append(
+                dag, UmtFp64OperationKind::AddSub,
+                {gnum, gdenSigma});
+            const uint32_t contribution = append(
+                dag, UmtFp64OperationKind::Divide,
+                {numerator, denominator});
+            accumulator = append(
+                dag, UmtFp64OperationKind::AddSub,
+                {accumulator, contribution});
+        }
+
+        const auto &currentSetup = setup[config.volumeClass[0]];
+        const uint32_t sigmaVolume = currentSetup.built ?
+            currentSetup.sigv :
+            append(dag, UmtFp64OperationKind::Multiply);
+        const uint32_t outputDenominator = append(
+            dag, UmtFp64OperationKind::AddSub, {sigmaVolume});
+        dag.output = append(
+            dag, UmtFp64OperationKind::Divide,
+            {accumulator, outputDenominator});
+        return result;
     }
 
     static UmtFp64ScheduleResult
