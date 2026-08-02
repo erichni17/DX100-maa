@@ -1,582 +1,553 @@
-# Four sorted runs: response-timed gem5 integration design
+# Four sorted runs: repaired response-timed design
 
 Date: 2026-08-02
-Source basis: `b6f000cdffe0bbdab534fadd9157320bdb95c239`
-Status: design only; no production source change, gem5 run, or performance claim
+
+Original design: `11b56a2ea95a88299ea09f19a4f0edf080645b67`
+
+Reviewed logical-response series: cumulative `08dc106`, `c5dd636`, `fdbce2a`,
+`4787925`; independently rejected, used only to define repair obligations
+
+Status: design and static validation only; no production change, gem5 run,
+latency result, or speedup claim
 
 ## Decision
 
-Four sorted 4K runs are the better **next bounded-reorder mechanism to make
-response-timed** than range spool, but they are not ready for implementation
-promotion. Sorted runs read the 256-KiB descriptor image once during merge;
-range spool reads that image four times and still needs bounded sorting windows.
-The price is a new fixed heap-sort/four-way-merge controller and a response-safe
-metadata transport that cannot reuse the current Row Table lookup path.
+Keep the useful mechanism—four independently sorted 4,096-record runs in
+coherent backing followed by a four-way merge—but reject the original ABI and
+accounting. A record is **32 bytes**, not 16. The controller keeps exactly one
+4K record array on chip; the four complete runs occupy a **524,288-byte
+off-chip coherent image**. There is no 16K on-chip descriptor container.
 
-This document rejects two stronger claims:
+The repaired design is correctness-closed only under all of these gates:
 
-1. The `70,109 B` reorder number is a useful bit-packed mechanism lower bound,
-   but it is not yet a complete gem5 implementation ledger. The Python replay
-   omits or host-represents packet sender state, MMU/page-boundary progress,
-   finite C-owner containers, checkpoint/drain state, and a real response
-   disposition contract. Those objects must be fixed-size and charged before
-   the `656,559 B` total can be called implementation-complete.
-2. The replay at `b6f000c` is rejected as acceptance evidence. An independent
-   review reproduced its numerical trace output but found aliased/mutable
-   `TransferTag` identity, bool-forged equality, no charged 64-bit exhaustion
-   enforcement, and mutable caller-pattern aliasing. The trace counts therefore
-   remain pending structural observations, exactly as required by the task.
+1. B, C, and descriptor-backing bases are 64-byte aligned; A is 8-byte
+   aligned. Admission rejects a violation before generation allocation, owner
+   acquisition, translation, or packet creation.
+2. An MMU translation lease pins the submitting address-space generation and
+   DRAM mapping configuration for the operation. The current MAA has no such
+   lease hook, so production integration is blocked until it exists.
+3. The comparator below is the sole `native16-reference` relation. Existing
+   insertion-order Row-Table issue is not assumed to equal it. A comparison to
+   current `direct16` is illegal until both arms use, or a host trace proves,
+   this exact relation.
+4. The cumulative logical-response ownership series ending at `4787925` is
+   rejected. A repaired and independently accepted successor must be
+   integrated first. Packet send acceptance is never action completion.
+5. All controller queues and owners are constructed at fixed capacity. The
+   current dynamically allocated Packet/Request and address-map path is an
+   integration blocker, not omitted implementation state.
 
-The independently accepted hidden-SPD substrate at
-`3c7cb3ae15daa54619404a4ae9b6015e28b79f41` is a separate dependency: it
-allocates and releases two private FP64 4K slots per MAA, or 262,144 B for four
-MAAs, but deliberately wires no controller. The first sorted-runs slice below
-publishes directly to coherent C backing and does **not** use those hidden
-slots. Enabling both would add the hidden 262,144 B to the sorted-runs ledger;
-the two equal-sized 256-KiB objects must never be conflated.
+Failure to establish any gate leaves sorted mode disabled. This document does
+not reinterpret a failure as a locality or performance result.
 
-## Evidence boundary
+## Audited source boundary
 
-| Input | Use here | Status boundary |
-| --- | --- | --- |
-| [Professor-inspired bounded policies](professor_bounded_reorder_policies_2026-08-02.md) and its Python model at `b6f000c` | Mechanism, 16-B records, 4K bound, traffic definitions, and lower-bound ledger. | Rejected for identity/alias/exhaustion/coverage defects. Reproduced counts are pending structural observations, not acceptance or timing evidence. |
-| [Baseline reorder/storage audit](baseline_dx100_reorder_storage_audit_2026-08-02.md) | B/C separation and Row/Offset/A-response semantics. | Baseline source audit; no inference that current C++ allocations are synthesized area. |
-| [Logical SPD cache vertical-slice design](logical_spd_cache_vertical_slice_design_2026-08-02.md) | Generation/serial discipline, response-versus-acceptance boundary, finite slots, publication, drain/checkpoint rules. | Design contract. Its hidden payload substrate was later accepted separately at `3c7cb3a`; its controller remains unwired. |
-| Current `b6f000c` source | Concrete API, IF, IndirectAccess, Tables, StreamAccess, ports, SPD, configuration, and stats insertion points. | Authoritative integration basis for this document. |
+The following current-source facts constrain the design:
 
-No trace count, cache hit, proxy transition, or accepted hidden-payload test is
-treated as gem5 timing, application speedup, DRAM-command, RTL, area, or power
-evidence.
+- A B index is converted to a virtual A address, translated, decomposed by
+  `MAA::map_addr`, and inserted using `getRowTableIdx` and `getGrowAddr` in
+  [IndirectAccess.cc](../../src/mem/MAA/IndirectAccess.cc).
+- `getRowTableIdx` encodes the configured channel/rank/bank-group/bank slice;
+  `getGrowAddr` encodes the remaining bank-group/bank quotient plus row. Their
+  pair is the exact current Row-Table placement identity, not the replay's
+  archived 11-bit proxy.
+- Current Row-Table send order also depends on slice traversal and insertion
+  order. It is not a total record comparator. The design therefore freezes an
+  explicit inverse slice-order rank and never claims that sorting raw physical
+  addresses approximates native order.
+- `IndirectAccessUnit::translatePacket` and
+  `StreamAccessUnit::translatePacket` assume `translateTiming` calls back
+  immediately. They do not provide an operation generation, page-generation
+  lease, or independently owned asynchronous translation response.
+- Current virtual destination retirement has configurable combiner capacity
+  and response-bearing `WriteReq` writes, but uses `vector`, `map`, and `set`
+  state. Those containers are semantic reference only for this fixed design.
+- The current `INDIR_LD_VIRTUAL_INDEX` helper/decoder has no accepted field for
+  a 524,288-byte descriptor span or an MMU lease. A new disabled-by-default
+  descriptor form and complete pre-dispatch validation are required; existing
+  opcode forms must continue to reject an extra instruction word.
+- [MAA.hh](../../src/mem/MAA/MAA.hh) overrides `resetStats()` but does not
+  override `drain()`, `drainResume()`, `serialize()`, or `unserialize()`.
+  `allFuncUnitsIdle()` is a scheduler/statistics predicate, not a gem5 drain
+  hook.
 
-## Audited current-source boundary
+The rejected response series ending at `4787925` attempted four useful
+semantics retained as design requirements here: full copied tag comparison
+before state mutation, exact `PacketPtr` ownership, separate port/stream credit
+settlement, and a wrapper that always consumes a timing response. Independent
+review found five blocking transport defects: deferred/pending-send aliases
+were omitted from the ownership search, an unsent read could leak its stream
+credit, `WriteResp` size was unchecked, one retirement-owner panic could occur
+before owned-pointer cleanup, and arbitrary residual sender-state chains were
+not handled safely. The series is evidence of what must be repaired, not an
+accepted dependency or implementation base.
 
-The following are facts in `b6f000c`, not proposed behavior.
+## Operation and atomic admission
 
-- `INDIR_LD_VIRTUAL_INDEX` already names A, a direct B-index stream, a C
-  backing range, and a completion token in
-  [MAA_gem5.hpp:419](../../benchmarks/API/MAA_gem5.hpp#L419). Native direct
-  index is the distinct opcode 14 at
-  [MAA_gem5.hpp:495](../../benchmarks/API/MAA_gem5.hpp#L495); the opcode table
-  is in [IF.hh:35](../../src/mem/MAA/IF.hh#L35).
-- Direct B ingestion is bounded in cache lines, translates each line, and
-  keeps pending/ready words in maps at
-  [IndirectAccess.cc:589](../../src/mem/MAA/IndirectAccess.cc#L589). Those maps
-  are simulator containers, not a finite hardware ledger.
-- A descriptors are presently created from B by translating the aligned A
-  line and mapping it to channel/rank/bank-group/bank/row before insertion in
-  Row/Offset state at
-  [IndirectAccess.cc:917](../../src/mem/MAA/IndirectAccess.cc#L917).
-- `OffsetTableEntry` is the destination/word/next link, while Row Table state
-  owns the physical line and row grouping
-  ([Tables.hh:52](../../src/mem/MAA/Tables.hh#L52),
-  [Tables.hh:95](../../src/mem/MAA/Tables.hh#L95)). A normal response remaps
-  its address back through Row Table and then consumes Offset links at
-  [IndirectAccess.cc:2039](../../src/mem/MAA/IndirectAccess.cc#L2039).
-- The bounded virtual response path copies one 64-B A response into a retained
-  response slot and drains its Offset chain into the destination combiner
-  ([IndirectAccess.cc:2088](../../src/mem/MAA/IndirectAccess.cc#L2088),
-  [IndirectAccess.cc:2726](../../src/mem/MAA/IndirectAccess.cc#L2726)). Its
-  `packed_words` vector and source-reservation map are not acceptable as new
-  sorted-runs hardware state
-  ([IndirectAccess.hh:80](../../src/mem/MAA/IndirectAccess.hh#L80)).
-- The destination combiner already rejects a duplicate destination word and
-  applies finite line/word capacity, then creates response-bearing `WriteReq`
-  retirement packets
-  ([IndirectAccess.cc:2866](../../src/mem/MAA/IndirectAccess.cc#L2866),
-  [IndirectAccess.cc:2991](../../src/mem/MAA/IndirectAccess.cc#L2991),
-  [IndirectAccess.cc:2630](../../src/mem/MAA/IndirectAccess.cc#L2630)). Page
-  ready is currently derived from scanned/expected/issued/completed word counts
-  at [IndirectAccess.cc:2530](../../src/mem/MAA/IndirectAccess.cc#L2530).
-- Normal stream stores use response-less `WritebackDirty`, and
-  `writePacketSent` counts send acceptance as completion
-  ([StreamAccess.cc:388](../../src/mem/MAA/StreamAccess.cc#L388),
-  [StreamAccess.cc:465](../../src/mem/MAA/StreamAccess.cc#L465)). Neither is
-  legal for spill or C publication.
-- The port layer coalesces and orders outstanding work by physical address in
-  dynamic maps/queues
-  ([MAA.hh:799](../../src/mem/MAA/MAA.hh#L799)). `MAA::recvTimingResp` erases
-  the address entry before the unit accepts the response
-  ([Port.cc:698](../../src/mem/MAA/Port.cc#L698)); cache and memory ports then
-  unconditionally consume/delete the packet
-  ([CacheSidePort.cc:30](../../src/mem/MAA/CacheSidePort.cc#L30),
-  [MemSidePort.cc:30](../../src/mem/MAA/MemSidePort.cc#L30)). The separately
-  repaired logical-response wrapper must be independently accepted before this
-  design can use it; packet acceptance is not action completion.
-- There is exactly one stream unit per MAA in the current construction and its
-  request table resets at instruction completion
-  ([MAA.cc:149](../../src/mem/MAA/MAA.cc#L149),
-  [StreamAccess.cc:203](../../src/mem/MAA/StreamAccess.cc#L203),
-  [StreamAccess.cc:356](../../src/mem/MAA/StreamAccess.cc#L356)). Sorted-run
-  transfers therefore share that one unit; they do not receive a free port.
-- Current configuration separates logical tile elements, physical SPD
-  elements, Offset capacity, and Offset epoch
-  ([MAA.py:17](../../src/mem/MAA/MAA.py#L17),
-  [MAA.py:34](../../src/mem/MAA/MAA.py#L34)). Existing virtual response,
-  combiner, write-credit, and B-line capacities are also explicit
-  ([MAA.py:63](../../src/mem/MAA/MAA.py#L63)).
-- Statistics already distinguish port packets, indirect requests, unique
-  words/lines/rows, fill/build/request/response cycles, and virtual traffic in
-  [MAA.hh:528](../../src/mem/MAA/MAA.hh#L528). Sorted-run events need new
-  non-overlapping counters; existing counters must not be relabeled.
-
-The baseline storage audit remains the semantic authority for B versus C:
-Row/Offset records carry address and return placement, while returned A data is
-written to a distinct destination. Payload caching does not retain a 16K
-ordering proof. The logical-SPD design reaches the same conclusion and requires
-true write responses before destination publication.
-
-## Exact operation and descriptor ABI
-
-The first slice accepts only an unconditioned, dense FP64 gather:
+The only accepted operation is a dense, unconditional FP64 gather:
 
 ```text
-C[i] = A[B[i]],  i = 0..16383
-B element = uint32_t, A/C element = 8 B, cache line = 64 B
+C[i] = A[B[i]], i = 0..16383
+B element: uint32_t
+A/C element: 8 bytes
+cache line: 64 bytes
 ```
 
-It reuses the current `INDIR_LD_VIRTUAL_INDEX` high-level shape with an
-internal/configured reorder policy; it does not add a new public opcode. In
-sorted mode, instruction word 5 carries `descriptorBase`. The instruction
-aperture is already 64 B, while the current API initializes only words 0--4
-([MAA_gem5.hpp:114](../../benchmarks/API/MAA_gem5.hpp#L114)) and the current
-decoder rejects any word beyond 4
-([CpuSidePort.cc:449](../../src/mem/MAA/CpuSidePort.cc#L449)). Legacy forms
-continue to dispatch at word 2 or 4; only a separately accepted sorted helper
-waits for word 5. The operation owns that aligned 256-KiB private
-descriptor-backing span, disjoint from A, B, C, visible SPD MMIO, and any other
-live operation. A, B, C, and the descriptor span are validated with
-checked-add arithmetic before mutation.
+The descriptor supplies `{A_base, A_elements, B_base, C_base,
+descriptor_base, CID}`. Admission evaluates the following in a temporary
+value object. It may publish no generation, owner, ready bit, or packet until
+every check succeeds.
 
-Each record is exactly 16 B and is value-copied:
+- `A_base % 8 == 0`.
+- `B_base % 64 == C_base % 64 == descriptor_base % 64 == 0`.
+- `A_elements` is nonzero; every B value is later checked `< A_elements`.
+- Checked unsigned arithmetic proves the ends of the A span, 65,536-byte B
+  span, 131,072-byte C span, and 524,288-byte descriptor span do not wrap.
+- The four virtual spans are pairwise disjoint and are covered by permitted
+  MAA address regions.
+- Sorted geometry is exactly four runs of 4,096 records, one 64-byte line, and
+  the configured Row-Table slice count is in `1..64`. The 16-bit record field
+  is not permission to exceed the charged 64-entry inverse table.
+- `my_RT_slice_order[rtConfig]` is a complete permutation. Its inverse and the
+  six DRAM organization/bit fields are copied into the operation state.
+- A nonzero translation lease binds CID/address space, page-table generation,
+  and the copied DRAM mapping. The lease service must prove the physical page
+  sets for the entire admitted A, B, C, and descriptor spans are pairwise
+  disjoint. This deliberately rejects even a read-only alias rather than
+  trying to prove byte-level safety after descriptor/C writes begin.
+- Nonzero generation, transaction, and serial allocators have headroom for
+  the worst-case 66,560 actions without wrapping.
+- The indirect unit, its one shared stream executor, 22 action-owner slots,
+  16 C owners, and the descriptor span are acquired atomically.
+
+For reference, the exact line-count formula is
 
 ```text
-uint64_t aLinePaddr;          // 64-B aligned translated A line
-uint64_t meta;
-  meta[13:0]   destination;  // 0..16383
-  meta[16:14]  sourceWord;   // 0..7 within the FP64 A line
-  meta[17]     valid;        // exactly 1 in an archived descriptor
-  meta[63:18]  reserved;     // exactly 0, checked on reload
+lines(base, bytes) = ((base & 63) + bytes + 63) / 64  // integer division
 ```
 
-The run number is implicit in backing position, not duplicated in the record.
-The source index is exactly reconstructible as
-`(aLinePaddr - translated_A_base_line)/8 + sourceWord` only when physical A is
-contiguous, so correctness never relies on that reconstruction. At record
-creation the controller instead proves that `A + 8*B[i]` is within the A
-virtual span, records the independently translated aligned physical line, and
-retains destination `i` and word offset. Translation is performed line by line;
-physical contiguity across a 4-KiB page boundary is not assumed.
+An unaligned 65,536-byte B span occupies 1,025 lines, an unaligned
+131,072-byte C span occupies 2,049, and an unaligned 524,288-byte descriptor
+span occupies 8,193. The design rejects those bases; it never silently charges
+1,024, 2,048, or 8,192 lines for them.
 
-All runs use one canonical total key derived from the current `map_addr()`
-result:
+## A identity and the 32-byte record
+
+The canonical record identity is a **virtual 64-byte A line under the active
+translation lease**. Physical address is a validated snapshot used for
+ordering, coalescing, and response routing; it is not sufficient identity by
+itself.
+
+The descriptor wire format is little-endian and exactly 32 bytes:
 
 ```text
-(channel, rank, bank-group, bank, row,
- aLinePaddr, sourceWord, destination)
+offset  size  field
+0       8     aLineVaddr       // virtual line, 64-byte aligned
+8       8     aLinePaddr       // build-time translated physical line
+16      8     grow             // exact getGrowAddr(rtConfig, ...)
+24      4     destination      // 0..16383
+28      2     sliceRank        // inverse my_RT_slice_order[rtConfig][rtIdx]
+30      1     sourceWord       // 0..7
+31      1     flags            // bit 0 valid; bits 7:1 must be zero
 ```
 
-The replay's archived 11-bit row proxy is not stored or treated as the live
-DRAM identity. Rank happened to be fixed in that replay; gem5 uses the complete
-configured mapping. The physical line and final destination tie breakers make
-the order total. A configuration/mapping change while an operation is live is
-forbidden.
+At build, the controller computes `A_base + 8*B[i]` with checked arithmetic,
+derives the virtual line and word, submits one tagged translation, and records
+the returned physical line plus exact slice/grow fields. A translation fault,
+lease mismatch, non-line-aligned physical response, or out-of-range B value
+stops before the record is committed.
 
-The descriptor image is exact:
+At merge, every selected record is retranslated through the one bounded
+translation owner before it can consume A data or mutate a C owner. The result
+must equal `aLinePaddr`; recomputed slice rank and grow must equal the stored
+fields. The first record of a new physical-line group uses that same validated
+action to issue the A `ReadReq`; subsequent records, including virtual aliases,
+still retranslate but reuse the retained A payload. A lease break or mismatch
+is fatal and cannot fall back to the snapshot.
+
+The current immediate-callback translation helper cannot implement this
+contract. Required integration adds a one-entry `BaseMMU::Translation` owner
+with copied generation/transaction/serial/virtual-line identity and explicit
+fault handling. No translation response may allocate a map entry or vector.
+
+## Exact comparator and baseline relation
+
+For a valid record `r`, define:
 
 ```text
-descriptorBase                       64-B aligned
-runBase(r) = descriptorBase + r*65536, r in 0..3
-line(r,l)  = runBase(r) + l*64,       l in 0..1023
-record(r,j)= runBase(r) + j*16,       j in 0..4095
+K(r) = (r.sliceRank,
+        r.grow,
+        r.aLinePaddr,
+        r.sourceWord,
+        r.destination,
+        r.aLineVaddr)
 ```
 
-Thus each 64-B spill line holds four descriptors, each run is 64 KiB / 1,024
-lines, and all four runs occupy exactly 262,144 B / 4,096 lines. No request
-crosses a 4-KiB page when the base is 64-B aligned, but every line is translated
-independently so noncontiguous physical pages are legal.
+All fields are stored in the record. `sliceRank` is the frozen position of the
+record's exact `rtIdx` in `my_RT_slice_order`; `grow` is the exact current
+DX100 `getGrowAddr` result. Together they retain the complete configured
+Row-Table slice/grow relation. Physical line orders columns within that
+placement, source word makes same-line word order deterministic, destination
+is the semantic tie-breaker, and virtual line makes physically aliased but
+distinct records total even under corrupted input. Two byte-identical records
+are equal; any distinct valid records compare in exactly one direction.
 
-## Macro timeline
+Each 4K heap sort and the four-way merge use unsigned lexicographic `K` only.
+The merge may select a head only when every nonempty run has a validated head.
+It breaks equal head keys by run number, although valid destinations make that
+case unreachable. Thus the output is exactly `stable_sort(all 16384 records,
+K)`, independent of response arrival order or heap implementation.
 
-This is an ordering contract, not a latency prediction.
+This `K` is the repaired `native16-reference` reorder relation. It is a
+correctness definition, not a claim about the current insertion-driven
+`claim_entry_send_native_order` sequence. Before any native-latency comparison,
+a shared pure helper must generate `K` for both the native reference and sorted
+controller, or a deterministic host trace must prove equality. Otherwise the
+comparison fails closed.
 
-| Time | Required transition |
-| --- | --- |
-| T0 admission | Validate the exact FP64/dense form and all spans; acquire one indirect unit, the one shared stream unit, one destination-combiner context, the descriptor region, generation `g`, and prove nonwrapping serial headroom for the operation's worst case. Generation zero is never live. No state changes on failure. |
-| T1 run 0 B scan | Read the 256 64-B lines covering `B[0..4095]` exactly once. Each exact B response produces its 16 descriptors in destination order in the fixed 4K active array. A B request is not complete at cache-port acceptance. |
-| T2 run 0 sort | Run fixed in-place binary heap sort on all 4,096 records. The only persistent array is the active array; one 16-B swap register is charged. Every comparison and swap advances the timed local-sort FSM. |
-| T3 run 0 spill | For line 0 through 1,023, copy four sorted records into run buffer 0, issue one coherent 64-B `WriteReq`, and do not reuse the buffer or advance the line until its exact `WriteResp`. |
-| T4 run 0 barrier | After exactly 1,024 distinct matching write completions, assert no run-0 transfer is live and mark run 0 immutable. Only now may the active array be cleared/reused. |
-| T5--T16 runs 1--3 | Repeat T1--T4 over `B[4096..8191]`, `B[8192..12287]`, and `B[12288..16383]`. Each is a disjoint 4K scan, in-place sort, 1,024-write/ACK spill, and exact per-run barrier. Total B payload is 65,536 B, not four scans of all 16K. |
-| T17 merge prime | Issue at most one tagged 64-B `ReadReq` for line 0 of each immutable run. Responses may reorder; a run becomes merge-eligible only after its own exact response installs four validated records in its dedicated line buffer/head. |
-| T18 four-way merge | When every nonempty run has a valid head, select the least canonical key. After four records from a run line are consumed, invalidate that buffer, request its next line, and stall global emission until all nonempty runs again have a head. This prevents a temporarily absent head from being skipped. |
-| T19 A-line coalescing | For the first descriptor of a new `aLinePaddr`, reserve the one fixed A-response slot and issue exactly one tagged A `ReadReq`. Do not advance to another A line until the response arrives and every consecutive descriptor with that physical line has been accepted by the C combiner. An equal-line group may span all 16K records; it is streamed, never collected in a host vector. |
-| T20 destination retirement | For each descriptor, select `sourceWord` from the retained 64-B A response and insert it at `C[destination]`. If the finite combiner cannot accept it, preserve the current head/A response and drain C owners; do not consume the descriptor. Full or partial C writes are response-bearing `WriteReq`s with unique identity. |
-| T21 page publication | A C page's ready bit changes only after all 4,096 destinations in that page were generated, issued to owners, and covered by matching destination `WriteResp`s. Send acceptance, A response, merge emission, or a full combiner line is not publication. |
-| T22 completion | Complete the high-level instruction only after all four run cursors equal their counts, exactly 16,384 descriptors were emitted, all run/A/B response slots are free, the C combiner is empty, every C write is ACKed, all four pages are published, and the stream unit/descriptor region can be released. |
+## Descriptor layout and causal timeline
 
-Exact semantic traffic for one full operation is 1,024 B-line reads, 4,096
-descriptor writes plus 4,096 matching responses, 4,096 descriptor reads, at
-most 16,384 coalesced A-line reads, and 131,072 useful C bytes. Cache retries,
-coherence messages, write allocation, evictions, and memory fills are additional
-measured traffic; they are never inferred away.
-
-## Finite state machine
+Two records fit in one cache line:
 
 ```text
-Idle -> Admit -> ScanB -> HeapBuild -> HeapExtract -> SpillLine -> RunBarrier
-                    ^                                      |
-                    `-------- next run (0..3) <------------'
-
-RunBarrier(run 3) -> PrimeHeads -> NeedHead -> NeedA -> DrainEqualLine
-                                        ^          |             |
-                                        |          v             v
-                                        +------ MergePick <- DrainC
-                                                             |
-                                              FinalCDrain <-+'
-                                                   |
-                                             Publish/Complete -> Idle
+runBase(r)  = descriptor_base + r * 131072, r in 0..3
+record(r,j) = runBase(r) + j * 32,            j in 0..4095
+line(r,l)   = runBase(r) + l * 64,            l in 0..2047
 ```
 
-Persistent phase rules:
+One run is 131,072 bytes / 2,048 lines. Four runs are 524,288 bytes / 8,192
+lines. Every descriptor request is separately translated under the lease;
+physical page contiguity is never assumed.
 
-- `ScanB` owns exactly one B feeder line and appends only into
-  `active[0..runCount)`. It cannot observe a future B word.
-- `HeapBuild/HeapExtract` own the active array exclusively. Sort state is one
-  root/child/limit machine; there is no library sort or second sorted image.
-- `SpillLine` has at most one live write globally. `RunBarrier` is satisfied by
-  terminal responses, never sends.
-- `PrimeHeads/NeedHead` have at most one read per run buffer. Responses may
-  reorder, but merge cannot pass an unavailable nonempty run.
-- `NeedA/DrainEqualLine` have exactly one current A line and at most one A
-  request. `DrainC` may run while that response is retained, avoiding a
-  combiner/A circular wait.
-- `FinalCDrain` stops new A and run reads but continues C write retries and
-  response retirement. Completion has no outstanding credit or sender state.
+The state sequence is:
 
-## Persistent-state ledger and accounting verdict
+```text
+Idle -> Admit -> ScanB/BuildRecord -> HeapBuild -> HeapExtract
+     -> Spill -> RunBarrier -> (next run, four times)
+     -> PrimeHeads -> MergePick -> ValidateA -> NeedA/RetainA
+     -> InsertC/DrainC -> FinalDrain -> Complete -> Idle
+```
 
-### Reconciled mechanism lower bound
+For each run, ScanB receives exactly 256 B lines and constructs exactly 4,096
+records. Heap sort is in place with one 32-byte swap register. Spill issues
+2,048 line writes, retaining the line and exact action owner across retries and
+until its `WriteResp`. Only 2,048 matching ACKs make that run immutable; the
+active array is not reused earlier. No run reload begins until all four run
+barriers hold.
 
-The input's exact `66,013 B` run-state arithmetic is:
+Merge maintains one 64-byte/two-record buffer per run. A consumed buffer is
+refilled by one tagged read. If any nonempty run lacks a head, global selection
+stalls. A selected record is not consumed until its A translation succeeds,
+the correct A payload exists, and its destination word is accepted by a C
+owner. That event advances exactly one cursor and sets exactly one destination
+bit.
 
-| Run mechanism state | Bytes | Contract |
+## Fixed owners, queues, and same-address rules
+
+Construction allocates these exact capacities; zero and “unlimited” are not
+legal sorted-mode values.
+
+| Resource | Fixed capacity | Rule |
 | --- | ---: | --- |
-| Active record array | 65,536 | `4096 * 16 B`; only on-chip descriptor array. |
-| Four coherent line buffers | 256 | One per run; reused for sequential spill and merge-head reload. |
-| Four packed buffer tags/state | 103 | Each holds translated backing line, 64-bit generation, 64-bit serial, 2-bit run, and finite state. The run-relative line is derived from the cursor and expected address, avoiding the published insufficient 9-bit field for 1,024 lines. |
-| Four merge heads | 64 | One copied 16-B value per run; invalid if its line buffer is not installed. |
-| Four cursors + four counts | 13 | Eight 13-bit values, including the terminal value 4096. |
-| Global generation, next serial, emitted count, phase | 19 | `64 + 64 + 15 + 3 = 146` bits. |
-| Heap-sort indices, swap register, phase | 22 | Published 170-bit fixed sort state. |
-| **Run state** | **66,013** | Bit-packed architectural lower bound. |
-| Independent invalidator state | 4,096 | Not removed with Row/Offset replacement. |
-| **Reorder state** | **70,109** | `66,013 + 4,096`. |
+| Active records | 4,096 | One run only; no second sort image. |
+| B/control payload | 1 line | One B response or spill staging action. |
+| Run reload buffers | 4 lines | One per run, at most one read per run. |
+| A payload | 1 line | Held while the maximal equal-physical-line group drains. |
+| C owners | 16 lines | Fully associative, round-robin victim, one owner per C virtual line. |
+| Action-owner slots | 22 | Slot 0 control, 1–4 run reads, 5 A, 6–21 C writes. |
+| Simultaneously live packet actions | 21 | Four run reads + one A read + sixteen C writes. |
+| Translation owners | 1 | Reuses the selected action tag; translations serialize. |
+| Ready/retry queue | 0 entries | A fixed priority scan of owner states replaces a queue. |
 
-The 9-bit line-index field described in the earlier table cannot directly name
-0..1023. This design does not enlarge it to 10 bits; it removes the redundant
-field. A tag already carries the exact translated 64-B backing line, and the
-buffer's 13-bit cursor/run deterministically derives the expected virtual line
-and run-relative index. A response must match both. If an implementation keeps
-an explicit line index instead, the run state grows by at least one byte after
-packing and the old total is invalid.
+A C owner contains a virtual line, 64-byte payload, 8-bit present mask, page,
+and state. Duplicate destination bits are rejected by the 16,384-bit coverage
+bitmap. A full line is issued immediately. On owner pressure, the round-robin
+victim is issued as one 64-byte masked `WriteReq`; if that address already has
+an action in translation, ready, sent, or ACK-pending state, insertion stalls.
+The owner remains unavailable until the exact `WriteResp`. A later write to
+the same line gets a new serial only after the prior ACK; logical actions never
+coalesce by address.
 
-The comparable lower-bound total remains:
+An address collision in the shared port map leaves the original owner and
+packet unchanged in `Ready` and retries it after the conflicting exact
+retirement. A rejected `sendTimingReq` likewise preserves the same tag,
+PacketPtr, payload, mask, and credit state. It creates neither a new action nor
+a new serial.
 
-| Boundary | Bytes |
-| --- | ---: |
-| Visible 4K physical SPD payload | 524,288 |
-| Common non-reorder lower bound from the input model | 62,162 |
-| Sorted-run reorder/invalidator | 70,109 |
-| **Candidate on-chip lower bound** | **656,559** |
-| Private coherent descriptor image, off chip | **262,144** |
+Priority is: consume timing responses; complete translation callbacks; retry
+sent/ready C writes; drain a full/victim C owner; refill missing run heads;
+validate the selected A record/issue its A read; scan or spill. This order lets
+C retire while A data is retained and prevents a circular wait.
 
-The descriptor image is four immutable 64-KiB runs. It is external metadata,
-not saved metadata, SPD capacity, or guaranteed LLC residency.
+## Action identity and provisional response semantics
 
-### State omitted or host-represented by the Python replay
-
-| Omitted/host state | Resolution in this design |
-| --- | --- |
-| Four Python run lists and `heapq.merge` random access | Rejected. Replace with one 4K array, the coherent image, four 64-B buffers, and four heads only. |
-| Python `list.sort` work/scratch | Rejected. Fixed in-place heap sort and its 22-B control/swap state are mandatory and timed. |
-| Replay calls its aggregate spill ACK loop before constructing/sorting the Python runs | Rejected as a causal timeline. The gem5 FSM sorts one run, writes exactly its 1,024 lines, and crosses that run's ACK barrier before scanning the next run. |
-| Aliased/mutable/unbounded `TransferTag` values | Rejected. Tags are value-copied fixed-width fields; generation/serial are nonzero `uint64_t`; equality is field-by-field with strongly typed direction/state; reserved bits must be zero. |
-| B request/MMU/page progress | Use a fixed one-line B feeder and one translation callback/identity record. It belongs to the common ledger but must receive an explicit target `sizeof` charge. No B map/vector may remain in the promoted slice. |
-| Packet/sender-state ownership for four merge reads, spill, A, and C | Conceptually use the repaired response-wrapper disposition and a fixed pool after independent acceptance. The final wrapper ABI/size is not accepted as of this design, so its delta over the packed 103-B buffer-tag allowance is unresolved. |
-| A response and destination combiner | Reuse the common finite capacities/64-B payload algorithms only after replacing new-path vectors/maps/sets with fixed arrays. The input's 62,162-B common number does not prove current C++ object size. |
-| Completion bitmap in `CoverageProof` | Evidence-only in host tests. Hardware exact-once follows disjoint destination ranges at generation, immutable run bounds, monotonic per-run cursors, and exactly 16,384 successful emissions. A test-only 2,048-B bitmap checks the invariant but is not runtime policy state. |
-| MMU/TLB faults and noncontiguous pages | Translate every B, descriptor, A, and C transfer line; store the one live translation identity and fail the operation on a fault. No contiguous-physical oracle. |
-| Drain/checkpoint state | The FSM phase, fixed records, nonwrapping allocators, and quiescence assertions are persistent. Checkpoint is quiescent-only in the first slice; a live operation refuses drain completion. |
-| Metrics/high-water objects | Simulator statistics, not hardware policy SRAM. They still require named gem5 stats and may not be used as hidden functional state. |
-
-**Accounting verdict:** the mechanism layout is internally reconciled at
-70,109 B, but the full design remains rejected as a `656,559 B`
-implementation until the response-wrapper size and all common fixed arrays have
-an explicit target-ABI ledger. At minimum, replacing the four 103-B packed
-buffer tags with four 48-B sender states from the pending logical-response
-concept would grow run state by 89 B unless the sender state is proven to alias
-the already charged fields safely. That alias proof does not exist today.
-
-The accepted hidden-SPD payload is an independent row:
-
-| Optional simultaneously enabled substrate | Bytes |
-| --- | ---: |
-| Two private FP64 4K slots per MAA, four MAAs | 262,144 |
-| Candidate lower bound plus hidden payload | 918,703 |
-
-Controller metadata, hidden-lane element tracking, allocator overhead, and
-packet payload objects are additional simulator costs. The first sorted-runs
-slice keeps the hidden substrate disabled/unmerged so it cannot claim the
-smaller total while allocating both.
-
-## Response identity and ownership
-
-One operation per MAA uses its nonzero 64-bit generation as its operation ID.
-Before admission, checked arithmetic proves that the global serial allocator
-has headroom for the bounded worst case without wrapping: 1,024 B reads + 4,096 spill
-writes + 4,096 run reads + 16,384 A reads + 16,384 destination writes =
-41,984 response-bearing actions. Actual A/C counts may be lower, but serials
-are allocated monotonically and never reused. Exhaustion rejects admission; it
-does not wrap or wait for an old generation to disappear.
-
-Every logical request has a value identity:
+Every translation or packet action owns this copied 48-byte tag:
 
 ```text
-{ generation:u64, serial:u64, action:enum,
-  maa:u16, run:u8, expectedVLine:u64, expectedPLine:u64,
-  destinationPage:u8, command:enum }
+generation:u64, transaction:u64, serial:u64,
+expectedVLine:u64, expectedPLine:u64,
+maa:u16, lineIndex:u16,
+action:u8, slot:u8, run:u8, command:u8
 ```
 
-Fields irrelevant to an action are canonical zero, not wildcards. Identity is
-stored in a fixed owner slot before the request becomes visible to a port. The
-packet sender state points to that exact live slot and carries a copied tag;
-address maps may arbitrate but never establish identity.
+Unused fields are canonical zero, never wildcards. `lineIndex` covers B
+0..1023, build/merge records 0..16383, run lines 0..2047, and C lines 0..2047.
+The action owner is populated before a translation or packet becomes
+externally visible. Its 64-byte packed ledger
+entry is the 48-byte tag, an 8-byte exact packet/callback token, five lifecycle
+bytes (`state`, `retry`, `streamCreditOwned`, `portCreditOwned`,
+`senderStateOwned`), and three reserved zero bytes. A retired slot retains its
+last tag long enough to classify an exact repeat as duplicate; allocation
+replaces it only with a strictly newer serial.
 
-| Action | Unique owner and terminal transition |
-| --- | --- |
-| B read | The one B-feeder slot owns `{g,serial,BRead,B virtual/physical line}` until exact `ReadResp`; only that response may append its 16 indices. |
-| Spill write | Buffer `run` owns `{g,serial,SpillWrite,run,line}` and its 64 B until exact `WriteResp`; acceptance/retry does not advance the cursor. Exactly 1,024 ACKs close that run's barrier. |
-| Run-head read | Buffer `run` owns `{g,serial,RunRead,run,line}` until exact `ReadResp`; response data installs four records only after reserved-bit/run-range/key validation. |
-| A read | The single A slot owns `{g,serial,ARead,aLinePaddr}` until exact `ReadResp`; it remains owned while all equal-line descriptors drain. A later identical line in the same canonical group reuses the payload, not another request. |
-| Destination write | A unique C-line owner owns `{g,serial,CWrite,C line,page,mask}` and payload until exact `WriteResp`; same-address later writes receive a new serial and cannot be mistaken for the old response. |
+The owner lifecycle is exact:
 
-Conceptually the repaired wrapper returns one of `Retired`, `DroppedExtra`, or
-`FatalOwnedCorruption` to the cache/memory port. A stale/duplicate/forged packet
-that owns no current slot is consumed once, settles only its transport credit,
-increments a diagnostic, and mutates no FSM/owner. A matching current response
-retires exactly one owner and is then consumed once. A response whose sender
-pointer claims a current owner but whose copied tag/command/address disagrees
-is internal corruption and fails closed; returning `false` forever is not a
-liveness strategy. The exact names may follow the accepted repair, but these
-ownership semantics are mandatory.
+```text
+Reusable -> Translating -> Ready -> Sent -> Retired/Reusable
+                         -> Retired/Reusable       // translation-only
+Ready --send rejected--> Ready                    // same packet and serial
+Translating/Ready --abort--> Retired/Reusable     // release stream credit
+```
 
-## Timing and bandwidth charges
+Only an exact terminal response permits `Sent -> Retired`. Rejected extras do
+not transition the owner; fatal corruption performs bounded cleanup and then
+panics. B/run/A reads are fill-kind actions. Descriptor and C writes are
+writeback-kind actions that retain their line payload and mask through the
+terminal ACK.
 
-No locality or cache-residency event is free.
+The following ownership semantics are the sorted-controller target, not an
+acceptance claim for `4787925`:
 
-| Component | Exact charge and required stats |
-| --- | --- |
-| B | Four disjoint 4K scans, one semantic pass: 16,384 words, 65,536 B, 1,024 line requests/responses. Count translation, cache lookup, retries, LLC hits/misses, memory fills, and response latency. |
-| Descriptor construction | One bounds check, A-address checked add, word extraction, line translation, and mapping operation per B word. Charge translation/mapping time; do not precompute a 16K host vector. |
-| Local sort | One fixed binary heap sort per run. One comparator and one swap datapath in the first slice; increment actual comparison/swap counters and schedule their configured fixed latencies. No instantaneous `std::sort`. |
-| Spill | Exactly 4,096 64-B coherent writes and 4,096 matching responses, 262,144 useful bytes. Count port wait, cache backpressure, write allocation/coherence, LLC/memory traffic, and run-barrier cycles. |
-| Merge reload | Exactly 4,096 64-B reads, 262,144 useful bytes. Count head-empty stalls, port wait, LLC hits/misses, memory fills, and response time. Assume all 4,096 may miss LLC. |
-| Merge comparisons | A deterministic four-head selection (at most three key comparisons per emitted descriptor) plus head-refill stalls. Count actual comparisons, emitted descriptors, and unavailable-head cycles. |
-| A | One request per distinct consecutive physical A line in canonical merge order; between 1 and 16,384. Count cache/memory placement, LLC misses, response latency, equal-line group size, and response-slot/combiner stalls. |
-| Shared stream/ports | Sorted-run B/spill/reload/C actions arbitrate with the one existing stream unit and ordinary cache/memory traffic. Count acquisition wait and per-action port-blocked/retry cycles; do not overlap actions merely because the replay did. |
-| C | Exactly 131,072 useful bytes become architecturally visible. Count full-line, masked-line, and word writes separately, every response, owner conflicts, and final-drain cycles. Fair arms use identical combiner/write policy. |
-| Completion | Instruction cycles end only at the final C ACK and empty-ledger condition. Report B, sort, spill, barrier, reload, merge, A-wait, C-wait, and final-drain buckets whose sum equals total operation cycles. |
+- `Retired`: only the exact map-owned PacketPtr with matching copied tag,
+  address, command, ledger state, and safe sender state. Remove every owned
+  reference, accept exactly one terminal response, settle action/stream and
+  port credit once, pop sender state once, delete once.
+- `DroppedExtra`: a safely releasable non-owned tagged packet. Count its precise
+  stale/duplicate/wrong-* class, pop/delete the extra once, and do not touch the
+  active owner or its port credit.
+- `FatalOwnedCorruption`: an exact owned packet whose identity/state is
+  inconsistent. Remove all references, abort its action credit, settle its
+  port credit once, delete it, then panic.
+- `FatalUnownedExtra`: an unowned packet whose sender state cannot safely be
+  released. It owns no active port credit; delete what is safely owned, then
+  panic.
 
-New stats should include `sortedRunBWords`, `sortedRunSortComparisons`,
-`sortedRunSortSwaps`, `sortedRunSpillLines/ACKs`,
-`sortedRunReloadLines/Responses`, `sortedRunHeadStallCycles`,
-`sortedRunMergeComparisons`, `sortedRunDescriptorsEmitted`,
-`sortedRunALineRequests`, `sortedRunEqualLineRecords`,
-`sortedRunCWriteACKs`, per-phase cycles, every bad-response class, and all
-capacity high waters. Existing port and DRAM statistics remain authoritative
-for placement. Proxy row transitions are not DRAM activate/precharge commands.
+A transport successor is acceptable only if it additionally proves all five
+review repairs: ownership enumeration includes outstanding, deferred, and
+pending-send aliases; aborting an unsent Read/ReadEx releases its enqueued
+stream credit exactly once; every response checks command-specific size
+(all sorted `ReadResp` and `WriteResp` payloads are 64 bytes); exact-owner
+cleanup precedes every panic; and the sender-state stack is either exactly the
+declared single sorted state or is rejected through a cleanup path that cannot
+leave an arbitrary residual chain. Static sorted-controller tests cannot
+substitute for that separate transport review.
 
-## Deadlock and liveness rules
+The cache/memory wrapper returns `true` on every response path. Returning
+`false` would ask the ResponsePort to retain an already classified response
+forever and is forbidden. Validation precedes outstanding-map erase, ledger
+ACK, cursor change, ready-bit publication, and owner reuse.
 
-1. **Finite admission:** one sorted operation per MAA, one active 4K array,
-   four run buffers, one A slot, and configured finite C owners. Full means
-   retry without mutation; no vector/map growth is an escape path.
-2. **Resource order:** acquire operation/descriptor region -> shared stream
-   action -> response owner -> port credit. Release in reverse on exact terminal
-   response. Never hold a port credit while waiting to allocate its owner.
-3. **Progress priority:** retire responses first; then retry already-issued C
-   writes; drain C owners; refill a missing run head; issue the current A read;
-   then issue B/spill work. This permits C to drain while an A payload is held
-   and prevents a full combiner from blocking the response that frees it.
-4. **Response reordering:** independent run-head buffers may complete in any
-   order. Merge waits for every nonempty head; it never chooses around a missing
-   head. Spill is deliberately one line at a time, so its per-run barrier cannot
-   be miscounted.
-5. **Cache/port backpressure:** a refused `sendTimingReq` leaves the same packet,
-   owner, serial, and data live for retry. No second packet is created. Action
-   acceptance and packet acceptance are separate from completion.
-6. **Stale/duplicate/forged responses:** consume transport ownership exactly
-   once, increment the precise class, and do not free or advance any current
-   owner. A bad extra response cannot wait forever for a condition that will
-   never become true.
-7. **Serial/generation exhaustion:** all allocators are nonzero `uint64_t` and
-   use checked addition. Admission fails closed if the 41,984-action reserve or
-   next generation would overflow. Restore never decrements an allocator.
-8. **Skew:** one A line may own all 16K records. Hold one A payload, stream one
-   descriptor at a time, and allow C drains between descriptors. No equal-line
-   list or group-size allocation exists.
-9. **Page boundaries:** every 64-B B/descriptor/A/C transaction is separately
-   translated. Backing spans use checked virtual arithmetic; response identity
-   includes both expected virtual and translated physical lines. Aliased private
-   descriptor backing is rejected by the API contract.
-10. **One shared stream unit:** sorted actions do not wait while owning a normal
-    stream instruction and vice versa. The MAA scheduler advertises one action,
-    acquires the idle unit atomically, and retries through the existing issue
-    event. C drain has priority within the sorted operation.
-11. **Drain/checkpoint:** drain blocks admission and waits for every owner,
-    response credit, combiner entry, and action to clear. First implementation
-    checkpoints only when `Idle`; a live checkpoint is a clean refusal, never a
-    best-effort serialization of packet pointers.
-12. **Cancellation/fault:** before any spill, an MMU fault may abort after
-    releasing owned finite state. After the first acknowledged spill, the first
-    slice drains/fails the simulation rather than silently abandoning coherent
-    metadata or publishing partial C.
+The action classes and terminal events are exact:
 
-## Correctness invariants
+| Action | Owner | Terminal event |
+| --- | --- | --- |
+| B line | slot 0 + control payload | matching `ReadResp` installs 16 indices; the payload remains while slot 0 performs their 16 build translations, and only then may the next B line start |
+| Build A translation | slot 0 | matching translation callback commits one record; no packet ACK |
+| Spill line | slot 0 + run buffer | matching `WriteResp`; 2,048/run close the barrier |
+| Run reload | slot 1–4 + run buffer | matching `ReadResp` installs two validated records |
+| Merge A validation/read | slot 5 + A payload | every record has a translation callback; a new group additionally waits for matching `ReadResp` |
+| C line | slot 6–21 + C owner | matching masked/full `WriteResp` ACKs exactly `popcount(mask)` destinations |
 
-- Run `r` is generated only from destinations `[4096r,4096(r+1))`; its count is
-  exactly 4096 before sorting and spill.
-- The active array is a permutation of those 4,096 value descriptors before
-  and after heap sort; the final keys are nondecreasing.
-- A run becomes immutable only after 1,024 matching `WriteResp`s. No run read
-  precedes all four run barriers.
-- Reload validates `valid=1`, reserved zero, destination in the run's range,
-  word `<8`, aligned A line within the admitted translated A mapping, and
-  nondecreasing per-run keys.
-- Four-way merge never emits a key smaller than the prior key and increments
-  exactly one run cursor per accepted C-combiner insertion.
-- A physical line is requested once per maximal equal-line merge group. The
-  retained A response tag equals every descriptor served from it.
-- Each destination is generated once by disjoint scan position, carried in an
-  immutable descriptor, accepted once by a duplicate-detecting C owner, and
-  covered by exactly one completed C write. Host tests additionally use an
-  independent 16,384-bit observer.
-- A page is published iff generated=issued=ACKed=4096 and no live C owner can
-  modify it. The instruction completes iff all four pages are published and
-  every finite owner is free.
-- Resetting statistics changes no functional state. Retry changes no identity,
-  payload, cursor, count, or ordering decision.
+Admission reserves 66,560 nonwrapping serials:
 
-## Source insertion map and staged implementation
+```text
+1,024 B actions
++ 16,384 build-record translations
++ 8,192 spill actions
++ 8,192 reload actions
++ 16,384 merge-record validation/A actions
++ at most 16,384 C write actions
+= 66,560
+```
 
-| File/class/function | Minimal future change |
-| --- | --- |
-| `src/mem/MAA/SortedRunController.hh` (new) | Header-only/pure C++ fixed FSM, record ABI, heap sorter, four buffer/head records, strong identities, checked allocators, and host-test hooks. No gem5 packet or STL dynamic container in the functional core. |
-| `tests/maa/sorted_run_controller_test.cc` (new) | Exhaustive small geometries plus 4K boundary, adversarial identities, skew, retries, reordered responses, serial exhaustion, and exact byte assertions before any gem5 wiring. |
-| `IF.hh` / `IF.cc` | Add `reorderBackingAddr` and an internal reorder-policy field to the existing virtual-index instruction representation; do not renumber opcodes or reinterpret logical-SPD high bytes. Preserve current logical operand initialization at [IF.hh:159](../../src/mem/MAA/IF.hh#L159). |
-| `CpuSidePort.cc:218-480` | Decode only a separately accepted config-selected sorted form. Normal opcode-13 still completes at word 4; sorted mode waits for word 5, validates the complete descriptor span before dispatch, and rejects word 5 for every other form. |
-| `MAA.hh:394-435`, `MAA.py:14-143`, `configs/common/MAAConfig.py:10-205`, `configs/common/Options.py:217-390` | Add a disabled-by-default `sorted_runs` policy and fixed capacities/latencies. Freeze one comparator, one swap path, one spill in flight, four reload buffers, and one A request for the vertical slice. Do not introduce an unlimited value. |
-| `MAA.cc:149-171`, `MAA.cc:487-587`, `MAA.cc:912-1000` | Allocate one controller per indirect unit, arbitrate the existing stream unit, and add `tryIssueSortedRunAction` beside—not inside—the transparent logical-SPD scheduler. An action is owned by exactly one scheduler. |
-| `IndirectAccess.hh:28-186`, `IndirectAccess.cc:589-730` | Add a disjoint sorted-run mode that feeds one B line into the fixed controller. The existing map-backed direct-index feeder is useful semantic reference but cannot be the promoted finite implementation. |
-| `IndirectAccess.cc:917-990` | Reuse checked A address calculation, translation, `map_addr`, and row-key derivation. Insert a 16-B record instead of Row/Offset state only in sorted mode. |
-| `Tables.*` | No sorted-mode allocation or lookup. Row/Offset cannot be reused for the archived four runs without either retaining 16K state or adding the replaced 62,592 B back. Keep legacy/direct arms unchanged. |
-| `IndirectAccess.cc:2039-2142` | Reuse A-response latency accounting and the fixed 64-B payload concept, but add a sorted response callback keyed by the strong tag. Existing `recvData` requires Row/Offset reservations and is therefore not directly reusable. |
-| `IndirectAccess.cc:2530-3045` | Reuse page-count equations, duplicate-word check, combiner insertion/drain, and retirement-write semantics only after fixed-array owners replace maps/sets/vectors for this mode. Keep all current paths unchanged. |
-| `StreamAccess.hh/.cc` | Add bounded descriptor `ReadReq`/`WriteReq` actions on the one stream unit. Do not call normal store `recvData` or `writePacketSent`; spill waits for `WriteResp`. |
-| `MAA.hh:799-853`, `Port.cc:30-725`, `CacheSidePort.cc`, `MemSidePort.cc` | Integrate only the independently accepted response-wrapper contract. Logical actions prohibit address coalescing, carry sender-state identity, preserve retry ownership, and settle packet/credit exactly once. |
-| `SPD.*` / `LogicalSPDHiddenPayload.hh` from accepted `3c7cb3a` | No first-slice use. If later combined, charge the additional 262,144-B hidden payload and wire only controller-owned internal access; public tile IDs stay rejected. |
-| `benchmarks/API/MAA_gem5.hpp:75-124` | No first host-controller-stage change. Later name instruction word 5 and add a sorted helper only after ABI review; it accepts a caller-provided aligned 256-KiB private descriptor span and never allocates or exposes a 16K host descriptor vector. |
-| `MAA.hh` statistics / `MAA.cc` registration | Add the named counters and mutually exclusive phase-cycle buckets. Do not derive performance from the Python proxy. |
+The actual terminal packet-response count is
+`17,408 + A_line_groups + C_write_actions`, hence 19,457 minimum and 50,176
+maximum. Translation callbacks equal `50,176 + C_write_actions`, hence 52,224
+to 66,560; the merge A action's translation and optional read share one serial.
+For every class, `started = translation_failed + translation_completed`, and
+for packet-bearing actions `packet_created = send_accepted = response_retired`
+at clean completion. Retries change none of these equalities.
 
-Minimal order:
+## Packed controller ledger
 
-1. Pure fixed controller/record/identity host tests and exact `sizeof` ledger.
-2. Response-wrapper rebase plus pure packet-owner executor tests.
-3. B scan -> heap sort -> one run spill/ACK -> reload loopback, with A/C
-   disabled; this is the narrowest response-timed vertical slice.
-4. Four barriers + four-way merge into an observer sink, still without A/C.
-5. One A slot and existing combiner algorithm through fixed owner arrays;
-   publish C only on exact write responses.
-6. Only then expose a disabled-by-default config/API selector and build gem5.
+This is an exact byte-packed architectural ledger for the specified controller,
+not a `sizeof` claim for gem5 Packet, Request, statistics, allocator, or STL
+objects.
 
-Row/Offset reuse is legal for address calculation, mapping, comparator
-definition, and the direct control arms. It is impossible for sorted response
-placement without defeating the storage replacement: current `recvData`
-requires a Row/Offset reservation keyed by the returning A line. The narrow
-slice therefore reuses A payload/combiner algorithms but owns destination
-records in the run stream itself.
+| State | Fields | Bytes |
+| --- | --- | ---: |
+| Active record array | `4096 * 32` | 131,072 |
+| Four run line buffers | `4 * 64` | 256 |
+| B/control payload | one 64-byte line | 64 |
+| A payload | one 64-byte line | 64 |
+| Sixteen C owners | each `vline:u64 + payload:64B + mask:u8 + state:u8 + page:u8 + reserved:u8` = 76 B | 1,216 |
+| Twenty-two action owners | each 48-B tag + 8-B external token + 5 lifecycle bytes + 3 reserved bytes | 1,408 |
+| Destination coverage | 16,384 bits | 2,048 |
+| Operation state | eight endpoints `u64` = 64 B; generation/transaction/serial/lease `u64` = 32 B; `org[6]:u32`, `addrBits[6]:u8`, tx offset/config `u8`, slice count `u16`, inverse order `[64]:u8` = 98 B; IDs/phase = 8 B; reserved zero = 6 B | 208 |
+| Four run states | four 16-bit cursors/counts, four flags, previous 32-B record = 44 B/run | 176 |
+| Heap state | four 16-bit indices, four phase/valid bytes, pending cycles `u32`, and one 32-B swap record | 48 |
+| Merge state | previous 32-B record, winner/valid, emitted count | 36 |
+| Four page ledgers | generated/issued/ACKed 16-bit counts plus published/state | 32 |
+| Conservation counters | six classes × `{started, translationCompleted, translationFailed, packetCreated, sendAccepted, responseRetired}:u32` | 144 |
+| **Sorted controller total** | exact sum above | **136,772** |
+| Of which active descriptor array | 4K, not 16K | **131,072** |
+| Other sorted-controller state | total minus active array | **5,700** |
+| Independent existing invalidator metadata | unchanged separate charge | 4,096 |
+| **Reorder-related total including invalidator** | controller + invalidator | **140,868** |
 
-## Verification matrix and promotion gates
+The optional hidden-SPD substrate is neither used nor counted. The coherent
+524,288-byte run image is off-chip metadata and not guaranteed to reside in
+LLC. Visible physical SPD payload and unrelated existing MAA state are separate
+budget rows; this repair does not repeat the old common-state placeholder as an
+implementation total.
 
-No gem5 or workload stage is authorized by this document.
+The target gem5 ABI remains unpriced because the rejected response path uses
+Packet/Request/sender objects and dynamic address maps. Production promotion
+requires a construction-time pool of 22 exact wrappers and fixed port leases,
+then a host `sizeof`/allocation ledger. Until then, 136,772 bytes is only the
+packed controller contract and the implementation verdict is blocked.
 
-| Stage | Test | Pass gate | Immediate rejection |
-| ---: | --- | --- | --- |
-| 0 | Pure host state machine | Small N/K exhaustive permutations; 4K/1,024-line boundaries; heap result equals an independent canonical sort; skewed all-one-line group; no allocation after construction. | Host vector/list of 16K descriptors, `std::sort`, missing phase timing, cursor overflow, or byte assertion drift. |
-| 1 | Identity/ownership host tests | Value-copy tags; reordered good responses; stale, duplicate, forged bool/enums, mutated copies, wrong command/address/run/generation/serial; exhaustion at `UINT64_MAX`; exactly one disposition/credit settlement. | Acceptance completes an action, bad response advances state, alias mutation changes owner, wrap/reuse, or an unretirable packet. |
-| 2 | Source contracts | Only new fixed arrays; sorted mode no Row/Offset allocation; no logical coalescing; one stream unit; response-bearing spill/C writes; hidden IDs inaccessible; exact target `sizeof` ledger including wrapper pool. | Dynamic map/set/vector in new functional state, simultaneous hidden payload omitted from bytes, or claimed total above an unamended budget. |
-| 3 | Event-trace unit integration | Exactly four `scan_begin/sort_done/spill_acked(1024)` barriers, then 4,096 exact reload responses; nondecreasing merge keys; 16,384 emissions; A group/request equality; page ready only after C ACKs; phase cycles sum to total. | Run read before barrier, missing head skipped, free LLC residency, early page/instruction completion, or unmatched live owner. |
-| 4 | One synthetic FP64 microbenchmark, **only after explicit approval** | Scalar byte/guard oracle, B read once, exact descriptor traffic, bounded high waters, delayed/reordered/retried responses, drain clean. | Any data/guard mismatch, hang, growth, stale mutation, or traffic/cycle bucket inconsistency. |
-| 5 | XRAGE and all 14 FLAG gathers, **only after separate explicit approval** | Frozen input identities; exact scalar oracle; predeclared structural and timing metrics; every arm complete/correct; no proxy relabeled as DRAM command. | One missing fixture, changed hash, aggregate hiding a per-source failure, or trace/replay acceptance inferred from the rejected model. |
+## Exact semantic traffic
 
-### Fair comparison arms
+| Component | Requests/actions | Payload bytes |
+| --- | ---: | ---: |
+| B reads | 1,024 line reads | 65,536 |
+| Descriptor run writes | 8,192 line writes + 8,192 `WriteResp`s | 524,288 |
+| Descriptor run reads | 8,192 line reads | 524,288 |
+| A reads | 1..16,384 line reads | 64..1,048,576 |
+| C writes | 2,048..16,384 64-B full/masked writes | 131,072..1,048,576 carried; exactly 131,072 byte-enabled useful bytes |
 
-Every report must spell out opcode, logical elements, physical SPD elements,
-Offset capacity/epoch, B range, C path, combiner geometry, force-cache policy,
-clock/memory/cache configuration, binary/config hashes, and exact completion
-gate. Labels alone are forbidden.
+The minimum semantic packet payload is **1,245,248 bytes** and the maximum is
+**3,211,264 bytes**. These totals include B, both descriptor directions, A,
+and carried C data; response headers, coherence, write allocation, eviction,
+and memory fills are additional measured traffic.
 
-| Arm | Exact meaning |
-| --- | --- |
-| `direct16` | One native opcode-14 direct-index gather of 16,384 elements, 16K physical SPD destination, 16K Offset capacity/epoch, followed by the matched C store/publication path. |
-| `direct4` | Four native opcode-14 gathers over disjoint 4,096-element B/C ranges, 4K physical SPD and 4K Offset capacity/epoch for each call. No cross-call Row/Offset lifetime. |
-| `bounded4-control` | One 16K logical current virtual-index operation, 4K physical SPD, explicitly 4K Offset capacity and drain epoch, one partition/B pass, same virtual response/combiner/C-write settings as sorted runs. |
-| `current-hybrid` | Current opcode-13 virtual-index operation with 16K logical work and 4K physical SPD but the explicitly reported current Row/Offset capacity/epoch (often full 16K). This is not called `direct4`. |
-| `sorted-runs` | Same opcode-13 A/B/C spans, 4K physical point, response/combiner/write settings, and cache/memory configuration as `bounded4-control`; only Row/Offset reorder is replaced by the controller and private descriptor span. |
+Relative to a matched descriptorless gather with the same B, A-line order, and
+C write policy, sorted runs add exactly **1,048,576 descriptor bytes**. Relative
+to an ideal 2,048-full-line C retirement, descriptor traffic plus extra carried
+C bytes ranges from **1,048,576 to 1,966,080 bytes**. Neither range is a timing
+or DRAM-command estimate.
 
-End-to-end native versus virtual comparisons are invalid if C retirement paths
-differ. Either normalize all arms through the same acknowledged backing writer
-or restrict the claim to separately reported A request/order metrics. C
-combiner contents must survive all four sorted runs; flushing at a run barrier
-changes traffic and is a rejection.
+## Completion, liveness, and faults
 
-Exact rejection gates for any promotion are:
+Each run reload validates flags, alignment, destination range for its run,
+source word, frozen mapping-field bounds, and nondecreasing `K`. The global
+coverage bitmap rejects a duplicate before C-owner mutation. A run cursor
+advances only after successful C insertion. Page `p` publishes only when its
+coverage bits are all set, `generated[p] = issued[p] = ACKed[p] = 4096`, and no
+C owner/action can still write that page.
 
-- scalar output and guards are not exact, or any live destination is missing or
-  duplicated;
-- B semantic payload differs from one 65,536-B pass for sorted runs;
-- descriptor payload differs from 262,144-B writes and 262,144-B reads, or
-  transaction/terminal-response counts differ;
-- an action completes at packet acceptance, a stale/duplicate mutates current
-  state, a serial/generation wraps, or drain/checkpoint loses an owner;
-- high water exceeds 4,096 active records, four run buffers/heads, one A slot,
-  the declared C owners, or the declared port credits;
-- merge order decreases, an unavailable head is skipped, or A requests differ
-  from maximal equal-line groups;
-- any source uses an uncharged 16K host container, oracle order, unlimited
-  throughput, free LLC residency, or hidden-SPD alias;
-- the complete target ledger exceeds the predeclared budget without an explicit
-  budget revision;
-- for later structural promotion, sorted runs fails to strictly reduce both A
-  requests and the predeclared absolute row-transition metric versus the fair
-  bounded4 control on even one approved source;
-- for later timing promotion, correctness-complete matched results fail the
-  separately predeclared per-source timing/DRAM-command gate. Structural proxy
-  counts alone never establish speedup.
+Instruction completion requires all four cursors at 4,096, emitted count
+16,384, coverage all ones, every page published, all 22 action owners reusable,
+all 16 C owners free, translation owner idle, B/run/A buffers invalid, and port
+and action credits zero.
 
-## Recommendation and handoff
+Liveness assumes only the normal timing-system fairness contract: an accepted
+request eventually receives one response and a rejected request is eventually
+retried. The controller itself introduces no wait cycle: response retirement
+has priority; missing heads do not get skipped; an A payload can remain while C
+drains; same-address C writes serialize; serial exhaustion rejects admission.
 
-Proceed with sorted runs before range spool **only as a host-tested,
-response-safe controller vertical slice**. It has the stronger mechanism:
-one B pass, one descriptor write, one descriptor read, deterministic global
-four-run order, and exact cross-run A-line coalescing. Range spool's simpler
-selection logic does not justify four complete descriptor reloads unless the
-sort/merge controller or its revised byte ledger fails.
+Before the first acknowledged spill, a translation fault can abort after all
+owned requests retire. After any descriptor or C write is acknowledged, the
+first slice drains exact owners and then panics rather than attempting rollback
+or publishing partial C. Statistics reset never changes functional state.
 
-Do not yet merge production code or run gem5. First independently accept the
-logical response ownership repair, implement the fixed controller and wrapper
-tests, and replace the input model's common-state placeholder with a complete
-target-ABI ledger. If that ledger cannot fit the agreed budget—or if fixed
-sort/merge timing and descriptor traffic erase the mechanism under the later
-approved microbenchmark—reject sorted runs and reconsider range spool. The
-reproducible but contract-rejected XRAGE/FLAG counts do not change that gate.
+## Drain, checkpoint, restore, reset, and panic hooks
+
+Current MAA source cannot yet provide the claimed lifecycle. The required gem5
+integration is explicit:
+
+- `MAA::drain()` sets `sortedAdmissionBlocked`. If the controller and every
+  response/translation/port owner is idle, return `DrainState::Drained`.
+  Otherwise return `Draining`, continue only already-owned retries/responses and
+  controller progress, and call `signalDrainDone()` exactly when the full
+  completion predicate becomes true.
+- `MAA::drainResume()` clears the admission block and schedules the ordinary
+  issue event. It does not synthesize or replay a packet.
+- `MAA::serialize(CheckpointOut&) const` is legal only after drain and with the
+  controller Idle. It serializes next generation/transaction/serial values and
+  the disabled/config geometry identity. It serializes no live PacketPtr,
+  sender state, MMU callback, owner, or descriptor copy.
+- `MAA::unserialize(CheckpointIn&)` requires all fixed owners in their
+  construction-time empty state, restores only nonzero monotonic allocators and
+  matching geometry/config identity, and leaves admission blocked until
+  `drainResume()`.
+- Functional `resetSortedController()` is legal only at construction or Idle
+  with zero credits. `MAA::resetStats()` continues to call
+  `ClockedObject::resetStats()` and must not invoke it.
+- Contract violation uses `panic_if`/`panic` after first removing exact owned
+  pointers as required by the provisional response disposition. No assertion-only
+  cleanup, best-effort live checkpoint, or silent owner abandonment is legal.
+
+Quiescent-only checkpointing is implementable with those new overrides. Live
+operation serialization is deliberately unsupported and must panic if gem5
+bypasses drain. The static model checks drain/restore rules; no checkpoint or
+gem5 executable is run here.
+
+## Claim boundary and required implementation order
+
+Correctness claims from this document are limited to: alignment rejection,
+record round trip, total comparator definition, bounded state, exact ownership
+transitions, and arithmetic checked by the static unit model. The comparator
+and request counts are structural locality proxies only. Fewer A-line groups or
+row/grow transitions do not prove fewer DRAM commands.
+
+Preserving a global 16K reorder relation is not evidence that latency matches
+`native16`. Sorted runs add two full descriptor transfers, serial translation,
+heap work, head stalls, masked C writes, and shared-port contention. Latency,
+speedup, area, power, LLC residency, and application benefit are unmeasured.
+
+Implementation order, each requiring a separate review, is:
+
+1. Review the descriptor ABI, add atomic pre-dispatch alignment/span checks,
+   and add the address-space/mapping lease plus bounded translation owner.
+2. Repair all five transport defects after `4787925`, obtain independent
+   acceptance, and replace sorted packet/address ownership with
+   construction-time fixed wrappers/port leases.
+3. Add a pure fixed controller and exact target-ABI/allocation tests; no public
+   opcode yet.
+4. Add drain/serialize/unserialize hooks and quiescent restore tests.
+5. Wire B -> one-run sort -> spill/ACK -> reload, then four-run merge, then A/C.
+6. Only after correctness and independent review, expose a disabled-by-default
+   selector. Any gem5 or workload run needs separate authorization.
+
+Residual blockers are the unreviewed descriptor ABI, absent MMU
+lease/page-generation hook, absent MAA drain/checkpoint overrides, all five
+rejected-response transport defects, current dynamic
+Packet/Request/address-map allocation, and lack of a shared native16 reference
+helper for `K`. The design is therefore ready for independent design review,
+but **BLOCKED for production implementation or performance testing**.
+
+Design-repair verdict: **READY_FOR_INDEPENDENT_REVIEW**. Production and
+performance verdict: **BLOCKED** on the residual blockers above.
+
+## Static validation matrix
+
+`experiments/tests/test_sorted_runs_design_contract.py` is dependency-light and
+does not invoke gem5. It checks:
+
+- atomic rejection of unaligned B/C/backing and the 1,025/2,049/8,193 edge-line
+  arithmetic;
+- 32-byte record round trip with noncontiguous virtual/physical identities;
+- comparator totality, deterministic ties, and four-way merge equality;
+- fixed 4K/22-action/16-C-owner occupancy;
+- retry invariance and exact action/ACK conservation;
+- stale, duplicate, wrong-generation, wrong-address, wrong-command, and
+  wrong-packet rejection without current-owner mutation;
+- unsent-credit release, fixed response size, complete port-alias cleanup,
+  residual sender-chain rejection, and same-address C-owner serialization;
+- quiescent drain/serialize/unserialize and allocator preservation;
+- every descriptor, traffic, action, and packed-ledger total in this document.
+
+Any mismatch is a design failure. Static validation is not simulator evidence.
