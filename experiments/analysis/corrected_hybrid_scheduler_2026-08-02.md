@@ -14,9 +14,10 @@ Archived replay reports work and ordering counts only.  It is not gem5 timing,
 an application performance claim, RTL, synthesis, area, power, or frequency
 evidence.
 
-CHSO-384 is a corrected executable candidate, not a promoted architecture.  On
-the archived FLAG cases it performs more source requests and has a lower
-same-bank-row successor proxy than both references.  That negative result must
+CHSO-384 is a corrected executable candidate, not a promoted architecture.
+Against direct4, XRAGE CHSO has fewer A requests but a much worse same-bank-row
+successor proxy; FLAG CHSO has more A requests and a worse row proxy.  It
+therefore fails the strict improve-both gate.  That honest negative result must
 be resolved in a response-timed implementation experiment before promotion.
 
 ## Evidence read and corrections made
@@ -60,6 +61,11 @@ The policy state is finite:
 - one nonzero 64-bit generation and one non-wrapping 64-bit unique request ID
   on every request/response obligation, plus an 18-bit source-line field.  The
   archived FLAG maximum is line 222,112, so the prior 14-bit field was invalid.
+- an external response-admission boundary that accepts only the exact
+  `SourceResponse` record, nonzero uint64 request ID and generation, uint18
+  source line, and exactly eight uint64 payload words.  Malformed events never
+  enter the response FIFO; charged observer work and a saturating 64-bit
+  diagnostic record their rejection.
 
 The apparently large “384 focus lines per request” is a capacity bound, not a
 one-cycle datapath claim.  One accepted-request ledger entry can name at most
@@ -136,12 +142,13 @@ finite row directory.  At quantum expiry it chooses the first eligible row
 strictly after the active row, wraps to the first different eligible row, and
 reselects the old row only when no different row remains.  Rebuild source scans,
 focus-membership scans, row-directory scans, heap pushes/pops, sort inputs and a
-comparison upper bound, allocation/planning scans, promotion walks, response
-payload/token checks, ready-owner scans, and write walks all have explicit
-`work_` counters.  Every logical transition also records a work high-water mark
-and fails if it exceeds the configuration-derived finite bound.  Diagnostic
-invariant checks are validation work outside the modeled policy transition and
-are not presented as scheduler work.
+comparison upper bound, allocation/planning scans, promotion walks,
+response-admission field/word/diagnostic checks, response payload/token checks,
+ready-owner scans, and write walks all have explicit `work_` counters.  Every
+logical transition also records a work high-water mark and fails if it exceeds
+the configuration-derived finite bound.  Diagnostic invariant checks are
+validation work outside the modeled policy transition and are not presented as
+scheduler work.
 
 Focus advances only after true write responses have committed every live word
 in the page.  Future-page owners survive that change unchanged.
@@ -156,24 +163,33 @@ The transition model separates the following events:
 2. **Source acceptance:** move the exact request into the bounded authoritative
    accepted-response ledger.  Issued requests plus accepted ledger entries may
    never exceed the four shared credits.
-3. **Source completion:** match all three identity fields, validate the exact
+3. **External response admission:** before any hardware-policy state mutation,
+   require the exact record and tuple types, nonzero bounded request ID and
+   generation, bounded source line, exact eight-word length, and uint64 range
+   for each payload word.  Length rejection is constant work and at most eight
+   words are inspected.  Malformed responses fail closed before queue
+   insertion, including when the queue is already full.  Only replay/evidence
+   observer state can change: the normal bounded-transition accounting, three
+   admission-work counters, and the saturating malformed-event counter.
+4. **Source completion:** match all three identity fields, validate the exact
    deterministic eight-word source payload, and preflight the complete accepted
    token list before mutating any owner.  Unknown, stale, forged, reordered, or
-   duplicate events cannot consume unrelated reservations.  Valid responses
-   may arrive in any order through the bounded event FIFO.
-4. **Write request:** once `received_mask == exact_live_mask` and no reserved
+   duplicate well-formed events cannot consume unrelated reservations.  Valid
+   responses may arrive in any order through the bounded event FIFO.
+5. **Write request:** once `received_mask == exact_live_mask` and no reserved
    word remains, enqueue one exact-mask write.
-5. **Write acceptance:** move the request into the eight-entry ACK/outstanding
+6. **Write acceptance:** move the request into the eight-entry ACK/outstanding
    queue.  The owner and every tentative token remain live.
-6. **True write completion:** only a matching `(generation, line, request_id)`
+7. **True write completion:** only a matching `(generation, line, request_id)`
    response commits tokens, decrements page work, and frees the owner.  A stale
    or duplicate response is counted and cannot release current state.
 
-Every queue admission is credit checked.  Adversarial response events occupy
-only the bounded event FIFO and cannot create an accepted-response credit;
-issued source requests plus authoritative accepted responses remain bounded by
-four.  Set occupancy, table occupancy, every queue, request-ID exhaustion, and
-every field width are asserted during replay.
+Every queue admission is credit checked.  Well-formed unmatched response events
+occupy only the bounded event FIFO and cannot create an accepted-response
+credit; malformed events cannot occupy even that FIFO.  Issued source requests
+plus authoritative accepted responses remain bounded by four.  Set occupancy,
+table occupancy, every queue, request-ID exhaustion, and every field width are
+asserted during replay.
 
 ### Liveness argument
 
@@ -237,21 +253,25 @@ transparent stream-store run is true CHSO timing evidence.
 ## Finite state contract
 
 The replay now emits a field-level inventory rather than inferring a total from
-a hand-selected component list.  Each of the 125 persistent fields is assigned
-exactly once: 69 fields are **hardware policy state** and 56 are
-**replay/evidence-only observer state**.  The complete named inventory and its
-component mapping are in the artifact's `state_contract.persistent_field_inventory`.
-The unit test parses every `self.field` assignment, checks all embedded record
-schemas, checks the work-counter and high-water key sets, rejects duplicates,
-and rejects component/classification disagreement.
+a hand-selected component list.  Each of the 129 persistent fields is assigned
+exactly once: 69 fields are **hardware policy state** and 60 are
+**replay/evidence-only observer state**.  The four added observer fields are
+three admission-work counters and the saturating malformed-response counter.
+The complete named inventory and its component mapping are in the artifact's
+`state_contract.persistent_field_inventory`.  The unit test parses every
+`self.field` assignment, checks all embedded record schemas, checks the
+work-counter and high-water key sets, rejects duplicates, and rejects
+component/classification disagreement.
 
 The width contract remains 11-bit destination-line tags, 14-bit destination
 tokens, **18-bit source-line tags**, 3-bit source-word offsets, 64-bit
 generations and non-wrapping request IDs, 12-bit allocation sequences, 11-bit
-bank-row keys, two-bit owner states, and 64-bit values/counters.  The owner now
-also retains each received 64-bit word in an explicit persistent payload field;
-completion checks that owner payload before releasing the owner.  This does not
-change the replay's work, ordering, provenance, or exact-once results.
+bank-row keys, two-bit owner states, exactly eight 64-bit response words, and
+64-bit values/counters.  The malformed-response counter saturates at the uint64
+maximum.  The owner also retains each received 64-bit word in an explicit
+persistent payload field; completion checks that owner payload before releasing
+the owner.  This repair does not change any valid replay's mechanism, ordering,
+provenance, work-total, or exact-once result.
 
 | Classification | Component | Bits |
 |---|---|---:|
@@ -269,14 +289,14 @@ change the replay's work, ordering, provenance, or exact-once results.
 | Hardware policy | Global generation/request/allocation identity | 204 |
 | **Hardware policy subtotal** | **all 69 policy fields** | **3,423,648** |
 | Replay/evidence observer | Expected/observed values and receive-count oracle | 2,129,920 |
-| Replay/evidence observer | Functional-work counters and atomic-bound diagnostics | 1,670 |
-| Replay/evidence observer | Transition/promotion/refusal/error counters | 1,152 |
+| Replay/evidence observer | Functional-work counters and atomic-bound diagnostics | 1,862 |
+| Replay/evidence observer | Transition/promotion/refusal/error counters | 1,216 |
 | Replay/evidence observer | Previous-row ordering observer | 12 |
 | Replay/evidence observer | Six queue/owner high-water observers | 26 |
-| **Replay/evidence observer subtotal** | **all 56 observer fields** | **2,132,780** |
-| **Combined finite replay-model total** | **all 125 persistent fields** | **5,556,428** |
+| **Replay/evidence observer subtotal** | **all 60 observer fields** | **2,133,036** |
+| **Combined finite replay-model total** | **all 129 persistent fields** | **5,556,684** |
 
-Those subtotals are 427,956 B, 266,598 B, and 694,554 B respectively after a
+Those subtotals are 427,956 B, 266,630 B, and 694,586 B respectively after a
 whole-total byte ceiling.  The JSON contains the exact per-component arithmetic;
 component byte ceilings are intentionally not summed.  The source descriptors
 still reserve at most 384 × eight Offset tokens.  The combined total includes
@@ -296,7 +316,7 @@ incremental area, synthesis, energy, or timing evidence.
 
 The frozen artifact is
 `experiments/analysis/corrected_hybrid_scheduler_replay_2026-08-02.json`
-(SHA-256 `3c4adfe7b06e094b5bb0352369a0a378d6f00b2f1a0d0eab811b0fbc5d1e0077`).
+(SHA-256 `b82945feea355782b5f319de2430683b223c646bd7de9cc5e76a45e54f57086f`).
 It uses XRAGE input SHA-256
 `1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde`
 and all 14 archived FLAG gather JSON files.  Each file hash is stored in the
@@ -328,6 +348,8 @@ values with zero failures.  Its 91,394,097 charged functional-work items have a
 Its A-request count lies between the two references and its writes reach the
 exact-live-line minimum in this all-live issue-order model.  Its much lower
 same-row successor proxy is an explicit negative cost, not a timing conclusion.
+Against direct4 it saves 4,028 A requests but sharply worsens the row proxy, so
+XRAGE fails the strict improve-both gate.
 
 ### Fourteen FLAG gathers (40 logical tiles, 638,460 live words)
 
@@ -344,8 +366,8 @@ validates all 638,460 live destination values with zero failures.  Its
 transition, below the same derived bound.  It removes partial-live-mask writes
 in this ordering model but performs **2,947 more A requests than direct4** and
 has a substantially lower row proxy.  The repaired policy therefore remains
-negative and is not a promotion candidate; response-timed evidence is still
-absent.
+negative: FLAG worsens both strict-gate dimensions and is not a promotion
+candidate; response-timed evidence is still absent.
 
 ## Focused validation
 
@@ -362,14 +384,21 @@ absent.
   accepted-response credit total;
 - corrupted/reordered payload words failing before partial owner mutation, then
   the legitimate payload satisfying the exact-once destination oracle;
+- zero-, seven-, nine-, and 100,000-word payload tuples failing before FIFO or
+  owner mutation, with length-independent charged work;
+- negative and `2^64` payload words; zero, negative, boolean, over-width, and
+  million-bit request/generation/source-line values failing closed;
+- a full response queue and 256 repeated malformed events preserving the exact
+  queued record and owner state, plus explicit uint64 diagnostic saturation;
 - stale write responses failing to release the current owner;
 - row-burst expiry rotating to a different eligible row before the old minimum;
 - an adversarial repeated-source pattern completing within a finite bound;
 - explicit full-row/direct4/corrected execution and charged scan barriers;
 - nonzero charged heap/rebuild/sort/token/transition work under the atomic bound;
 - 18-bit archived source-line edges, 64-bit generation/request-ID exhaustion,
-  and nonzero finite state for protocol, selector, identity, ordering, oracle,
-  exact masks, and every queue.
+  exact response-slot arithmetic, field-inventory coverage, and nonzero finite
+  state for protocol, selector, identity, ordering, oracle, exact masks, and
+  every queue.
 
 ## Reproduction
 

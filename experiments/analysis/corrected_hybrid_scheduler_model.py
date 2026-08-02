@@ -28,15 +28,17 @@ from dataclasses import (
 from pathlib import Path
 from typing import Sequence
 
-SCHEMA = "dx100-corrected-hybrid-single-owner-replay-v2"
+SCHEMA = "dx100-corrected-hybrid-single-owner-replay-v3"
 ARCHIVED_SOURCE_LINE_BITS = 18
 GENERATION_BITS = 64
 REQUEST_ID_BITS = 64
 VALUE_BITS = 64
+SOURCE_RESPONSE_PAYLOAD_WORDS = 8
 MAX_SOURCE_LINE = (1 << ARCHIVED_SOURCE_LINE_BITS) - 1
 MAX_GENERATION = (1 << GENERATION_BITS) - 1
 MAX_REQUEST_ID = (1 << REQUEST_ID_BITS) - 1
 VALUE_MASK = (1 << VALUE_BITS) - 1
+MAX_SOURCE_RESPONSE_DIAGNOSTIC = MAX_REQUEST_ID
 WORK_COUNTER_NAMES = (
     "atomic_transition_invocations",
     "descriptor_word_scans",
@@ -53,6 +55,9 @@ WORK_COUNTER_NAMES = (
     "reservation_token_walks",
     "promotion_owner_scans",
     "promotion_token_walks",
+    "response_admission_field_checks",
+    "response_admission_payload_word_checks",
+    "response_admission_diagnostic_updates",
     "response_match_probes",
     "response_payload_word_builds",
     "response_payload_word_checks",
@@ -148,6 +153,15 @@ class ReplayConfig:
             raise ValueError("logical elements must be page aligned")
         if self.cache_line_bytes % self.word_bytes:
             raise ValueError("cache line must hold an integer number of words")
+        if (
+            self.word_bytes != VALUE_BITS // 8
+            or self.cache_line_bytes
+            != SOURCE_RESPONSE_PAYLOAD_WORDS * (VALUE_BITS // 8)
+        ):
+            raise ValueError(
+                "replay requires one 64-byte cache line with exactly eight "
+                "64-bit source-response words"
+            )
         if self.combine_slots % self.combine_ways:
             raise ValueError("combiner slots must be divisible by ways")
         if self.owner_lines % self.owner_ways:
@@ -298,6 +312,7 @@ _EVENT_COUNTER_FIELDS = (
     "focus_switches",
     "stale_source_responses",
     "forged_source_responses",
+    "malformed_source_responses",
     "stale_write_responses",
     "same_bank_row_successors",
     "source_successor_pairs",
@@ -903,6 +918,7 @@ class CorrectedHybridScheduler:
         self.focus_switches = 0
         self.stale_source_responses = 0
         self.forged_source_responses = 0
+        self.malformed_source_responses = 0
         self.stale_write_responses = 0
         self.previous_source_row: tuple[int, ...] | None = None
         self.same_bank_row_successors = 0
@@ -1277,6 +1293,51 @@ class CorrectedHybridScheduler:
 
     @bounded_transition
     def inject_source_response(self, response: SourceResponse) -> bool:
+        # This is the only external SourceResponse admission boundary.  Check
+        # the exact record type before touching attributes so subclasses and
+        # arbitrary objects cannot run user-defined accessors.  Payload length
+        # is checked in O(1), and payload contents are walked only after the
+        # exact eight-word cache-line shape is established.
+        self._charge("response_admission_field_checks", 1)
+        well_formed = type(response) is SourceResponse
+        if well_formed:
+            scalar_fields = (
+                (response.request_id, MAX_REQUEST_ID, False),
+                (response.generation, MAX_GENERATION, False),
+                (response.source_line, MAX_SOURCE_LINE, True),
+            )
+            for value, maximum, allow_zero in scalar_fields:
+                self._charge("response_admission_field_checks", 1)
+                if (
+                    type(value) is not int
+                    or value < 0
+                    or (not allow_zero and value == 0)
+                    or value > maximum
+                ):
+                    well_formed = False
+                    break
+        if well_formed:
+            self._charge("response_admission_field_checks", 1)
+            well_formed = type(response.payload) is tuple
+        if well_formed:
+            self._charge("response_admission_field_checks", 1)
+            well_formed = (
+                len(response.payload) == SOURCE_RESPONSE_PAYLOAD_WORDS
+            )
+        if well_formed:
+            for word in response.payload:
+                self._charge("response_admission_payload_word_checks", 1)
+                if type(word) is not int or word < 0 or word > VALUE_MASK:
+                    well_formed = False
+                    break
+        if not well_formed:
+            self._charge("response_admission_diagnostic_updates", 1)
+            if (
+                self.malformed_source_responses
+                < MAX_SOURCE_RESPONSE_DIAGNOSTIC
+            ):
+                self.malformed_source_responses += 1
+            return False
         if len(self.source_responses) >= self.config.source_response_slots:
             return False
         self.source_responses.append(response)
@@ -1296,7 +1357,8 @@ class CorrectedHybridScheduler:
         if (
             response.generation != expected.generation
             or response.source_line != expected.source_line
-            or not 0 <= response.request_id <= MAX_REQUEST_ID
+            or not 0 < response.request_id <= MAX_REQUEST_ID
+            or not 0 < response.generation <= MAX_GENERATION
             or not 0 <= response.source_line <= MAX_SOURCE_LINE
         ):
             self.forged_source_responses += 1
@@ -1703,8 +1765,11 @@ class CorrectedHybridScheduler:
             "focus_switches": self.focus_switches,
             "stale_source_responses": self.stale_source_responses,
             "forged_source_responses": self.forged_source_responses,
+            "malformed_source_responses": self.malformed_source_responses,
             "rejected_source_responses": (
-                self.stale_source_responses + self.forged_source_responses
+                self.stale_source_responses
+                + self.forged_source_responses
+                + self.malformed_source_responses
             ),
             "stale_write_responses": self.stale_write_responses,
             "row_rotations": self.row_rotations,
@@ -1845,7 +1910,7 @@ def corrected_state_lower_bound(
         + REQUEST_ID_BITS
         + GENERATION_BITS
         + source_line_bits
-        + config.words_per_line * VALUE_BITS
+        + SOURCE_RESPONSE_PAYLOAD_WORDS * VALUE_BITS
     ) + fifo_protocol_bits(config.source_response_slots)
     write_descriptor_bits = (
         1
@@ -1971,6 +2036,7 @@ def corrected_state_lower_bound(
             "owner_state_bits": owner_state_bits,
             "row_key_bits": row_key_bits,
             "value_bits": VALUE_BITS,
+            "source_response_payload_words": SOURCE_RESPONSE_PAYLOAD_WORDS,
             "observer_counter_bits": observer_counter_bits,
         },
         "capacities": {

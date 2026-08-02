@@ -140,7 +140,7 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
         scheduler = MODULE.CorrectedHybridScheduler(
             list(range(8)), config=config, generation=9
         )
-        stale = MODULE.SourceResponse(99, 8, 0, ())
+        stale = MODULE.SourceResponse(99, 8, 0, (0,) * 8)
         self.assertTrue(scheduler.inject_source_response(stale))
         self.assertTrue(scheduler.deliver_source_response())
         self.assertEqual(scheduler.stale_source_responses, 1)
@@ -162,6 +162,228 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
             )
         )
         self.assertTrue(scheduler.done())
+
+    def test_malformed_payload_lengths_fail_before_policy_state_mutation(self):
+        config = self.small_config(logical_elements=8, page_elements=8)
+        scheduler = MODULE.CorrectedHybridScheduler(
+            list(range(8)), config=config, generation=13
+        )
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertTrue(scheduler.accept_source_request(auto_respond=False))
+        request = next(iter(scheduler.accepted_source_requests.values()))
+
+        def policy_state():
+            return {
+                "accepted": dict(scheduler.accepted_source_requests),
+                "responses": tuple(scheduler.source_responses),
+                "owners": {
+                    line: (
+                        owner.received_mask,
+                        owner.reserved_mask,
+                        dict(owner.reservation_request_ids),
+                        dict(owner.reservation_source_lines),
+                        dict(owner.payload),
+                    )
+                    for line, owner in scheduler.owners.items()
+                },
+                "tokens": tuple(scheduler.token_state),
+                "values": tuple(scheduler.destination_values),
+                "receive_counts": tuple(scheduler.destination_receive_counts),
+            }
+
+        before = policy_state()
+        work_before = scheduler.functional_work_total
+        field_checks_before = scheduler.work_counts[
+            "response_admission_field_checks"
+        ]
+        payload_checks_before = scheduler.work_counts[
+            "response_admission_payload_word_checks"
+        ]
+        diagnostic_updates_before = scheduler.work_counts[
+            "response_admission_diagnostic_updates"
+        ]
+        malformed_payloads = (
+            (),
+            (0,) * 7,
+            (0,) * 9,
+            (0,) * 100_000,
+        )
+        for payload in malformed_payloads:
+            response = MODULE.SourceResponse(
+                request.request_id,
+                request.generation,
+                request.source_line,
+                payload,
+            )
+            self.assertFalse(scheduler.inject_source_response(response))
+            self.assertEqual(policy_state(), before)
+
+        self.assertEqual(
+            scheduler.work_counts["response_admission_field_checks"]
+            - field_checks_before,
+            6 * len(malformed_payloads),
+        )
+        self.assertEqual(
+            scheduler.work_counts["response_admission_payload_word_checks"]
+            - payload_checks_before,
+            0,
+        )
+        self.assertEqual(
+            scheduler.work_counts["response_admission_diagnostic_updates"]
+            - diagnostic_updates_before,
+            len(malformed_payloads),
+        )
+        self.assertEqual(
+            scheduler.functional_work_total - work_before,
+            8 * len(malformed_payloads),
+        )
+        self.assertEqual(
+            scheduler.malformed_source_responses, len(malformed_payloads)
+        )
+
+    def test_malformed_payload_words_reject_negative_and_uint64_overflow(self):
+        scheduler = MODULE.CorrectedHybridScheduler(
+            list(range(8)),
+            config=self.small_config(logical_elements=8, page_elements=8),
+            generation=29,
+        )
+        before = (
+            tuple(scheduler.source_responses),
+            dict(scheduler.owners),
+            tuple(scheduler.token_state),
+        )
+        field_checks_before = scheduler.work_counts[
+            "response_admission_field_checks"
+        ]
+        payload_checks_before = scheduler.work_counts[
+            "response_admission_payload_word_checks"
+        ]
+        for invalid_word in (-1, 1 << MODULE.VALUE_BITS):
+            payload = (0,) * 7 + (invalid_word,)
+            self.assertFalse(
+                scheduler.inject_source_response(
+                    MODULE.SourceResponse(1, 29, 0, payload)
+                )
+            )
+        self.assertEqual(
+            scheduler.work_counts["response_admission_field_checks"]
+            - field_checks_before,
+            12,
+        )
+        self.assertEqual(
+            scheduler.work_counts["response_admission_payload_word_checks"]
+            - payload_checks_before,
+            16,
+        )
+        self.assertEqual(scheduler.malformed_source_responses, 2)
+        self.assertEqual(
+            (
+                tuple(scheduler.source_responses),
+                dict(scheduler.owners),
+                tuple(scheduler.token_state),
+            ),
+            before,
+        )
+
+    def test_source_response_scalar_widths_and_types_fail_closed(self):
+        scheduler = MODULE.CorrectedHybridScheduler(
+            list(range(8)),
+            config=self.small_config(logical_elements=8, page_elements=8),
+        )
+        huge = 1 << 1_000_000
+        malformed_scalars = (
+            (0, 1, 0),
+            (-1, 1, 0),
+            (MODULE.MAX_REQUEST_ID + 1, 1, 0),
+            (huge, 1, 0),
+            (True, 1, 0),
+            (1, 0, 0),
+            (1, MODULE.MAX_GENERATION + 1, 0),
+            (1, huge, 0),
+            (1, True, 0),
+            (1, 1, -1),
+            (1, 1, MODULE.MAX_SOURCE_LINE + 1),
+            (1, 1, huge),
+            (1, 1, False),
+        )
+        for request_id, generation, source_line in malformed_scalars:
+            work_before = scheduler.functional_work_total
+            self.assertFalse(
+                scheduler.inject_source_response(
+                    MODULE.SourceResponse(
+                        request_id,
+                        generation,
+                        source_line,
+                        (0,) * MODULE.SOURCE_RESPONSE_PAYLOAD_WORDS,
+                    )
+                )
+            )
+            self.assertLessEqual(
+                scheduler.functional_work_total - work_before,
+                6,
+            )
+
+        class AttributeBomb:
+            def __getattribute__(self, name):
+                raise AssertionError(f"unexpected attribute access: {name}")
+
+        self.assertFalse(
+            scheduler.inject_source_response(
+                MODULE.SourceResponse(1, 1, 0, [0] * 8)
+            )
+        )
+        self.assertFalse(scheduler.inject_source_response(AttributeBomb()))
+        self.assertEqual(scheduler.source_responses, MODULE.deque())
+        self.assertEqual(
+            scheduler.malformed_source_responses, len(malformed_scalars) + 2
+        )
+        self.assertEqual(
+            scheduler.work_counts["response_admission_payload_word_checks"], 0
+        )
+
+    def test_full_queue_and_repeated_malformed_responses_remain_bounded(self):
+        scheduler = MODULE.CorrectedHybridScheduler(
+            list(range(8)),
+            config=self.small_config(
+                logical_elements=8,
+                page_elements=8,
+                source_response_slots=1,
+            ),
+        )
+        boundary = MODULE.SourceResponse(
+            MODULE.MAX_REQUEST_ID,
+            MODULE.MAX_GENERATION,
+            MODULE.MAX_SOURCE_LINE,
+            (MODULE.VALUE_MASK,) * MODULE.SOURCE_RESPONSE_PAYLOAD_WORDS,
+        )
+        self.assertTrue(scheduler.inject_source_response(boundary))
+        self.assertEqual(tuple(scheduler.source_responses), (boundary,))
+        malformed = MODULE.SourceResponse(1, 1, 0, (0,) * 100_000)
+        before = tuple(scheduler.source_responses)
+        for _ in range(256):
+            work_before = scheduler.functional_work_total
+            self.assertFalse(scheduler.inject_source_response(malformed))
+            self.assertEqual(scheduler.functional_work_total - work_before, 8)
+            self.assertEqual(tuple(scheduler.source_responses), before)
+            self.assertFalse(scheduler.owners)
+        self.assertEqual(scheduler.malformed_source_responses, 256)
+
+        malformed_before = scheduler.malformed_source_responses
+        self.assertFalse(scheduler.inject_source_response(boundary))
+        self.assertEqual(
+            scheduler.malformed_source_responses, malformed_before
+        )
+        self.assertEqual(tuple(scheduler.source_responses), before)
+
+        scheduler.malformed_source_responses = (
+            MODULE.MAX_SOURCE_RESPONSE_DIAGNOSTIC - 1
+        )
+        self.assertFalse(scheduler.inject_source_response(malformed))
+        self.assertFalse(scheduler.inject_source_response(malformed))
+        self.assertEqual(
+            scheduler.malformed_source_responses,
+            MODULE.MAX_SOURCE_RESPONSE_DIAGNOSTIC,
+        )
 
     def test_forged_reordered_and_duplicate_source_responses_are_isolated(
         self,
@@ -429,6 +651,56 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
             MODULE.ceil_div(state["bit_packed_finite_ledger_bits"], 8),
         )
 
+    def test_source_response_admission_has_exact_persistent_ledger_arithmetic(
+        self,
+    ):
+        config = self.small_config()
+        state = MODULE.corrected_state_lower_bound(config)
+        pointer_bits = max(1, (config.source_response_slots - 1).bit_length())
+        count_bits = max(1, config.source_response_slots.bit_length())
+        response_slot_bits = (
+            1
+            + MODULE.REQUEST_ID_BITS
+            + MODULE.GENERATION_BITS
+            + MODULE.ARCHIVED_SOURCE_LINE_BITS
+            + MODULE.SOURCE_RESPONSE_PAYLOAD_WORDS * MODULE.VALUE_BITS
+        )
+        self.assertEqual(
+            state["components_bits"]["source_response_event_queue_bits"],
+            config.source_response_slots * response_slot_bits
+            + 2 * pointer_bits
+            + count_bits,
+        )
+        self.assertEqual(
+            state["components_bits"]["functional_work_accounting_bits"],
+            (len(MODULE.WORK_COUNTER_NAMES) + 4) * MODULE.REQUEST_ID_BITS + 6,
+        )
+        self.assertEqual(
+            state["components_bits"]["execution_event_counter_bits"],
+            len(MODULE._EVENT_COUNTER_FIELDS) * MODULE.REQUEST_ID_BITS,
+        )
+        self.assertEqual(state["widths"]["source_response_payload_words"], 8)
+        by_field = {
+            entry["field"]: entry
+            for entry in state["persistent_field_inventory"]
+        }
+        diagnostic = by_field[
+            "CorrectedHybridScheduler.malformed_source_responses"
+        ]
+        self.assertEqual(
+            diagnostic["classification"],
+            MODULE.REPLAY_EVIDENCE_OBSERVER_STATE,
+        )
+        self.assertEqual(
+            diagnostic["component"], "execution_event_counter_bits"
+        )
+        self.assertEqual(
+            state["bit_packed_finite_ledger_bits"],
+            sum(state["components_bits"].values()),
+        )
+        with self.assertRaisesRegex(ValueError, "exactly eight"):
+            self.small_config(cache_line_bytes=128).validate()
+
     def test_persistent_field_inventory_matches_scheduler_and_record_schemas(
         self,
     ):
@@ -617,7 +889,7 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
         artifact = json.loads(artifact_path.read_text())
         self.assertEqual(
             hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
-            "3c4adfe7b06e094b5bb0352369a0a378d6f00b2f1a0d0eab811b0fbc5d1e0077",
+            "b82945feea355782b5f319de2430683b223c646bd7de9cc5e76a45e54f57086f",
         )
         self.assertEqual(artifact["schema"], MODULE.SCHEMA)
         self.assertFalse(artifact["model_scope"]["timing_prediction"])
