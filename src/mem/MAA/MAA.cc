@@ -281,6 +281,7 @@ MAA::~MAA() {
         delete port;
     delete[] my_num_outstanding_indirect_pkts;
     delete[] my_num_outstanding_stream_pkts;
+    delete spd;
 }
 
 void MAA::addAddrRegion(Addr start, Addr end, int8_t id) {

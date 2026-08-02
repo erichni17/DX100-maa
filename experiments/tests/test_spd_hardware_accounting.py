@@ -16,15 +16,49 @@ SPEC.loader.exec_module(MODULE)
 class SpdHardwareAccountingTest(unittest.TestCase):
     def test_default_native_and_transparent_payloads(self) -> None:
         report = MODULE.ledger(4, 8)
+        self.assertEqual(report["configuration"]["spd_lane_tiles"], 32)
+        self.assertEqual(report["configuration"]["maas"], 4)
         payload = report["spd_payload"]
         self.assertEqual(payload["native_16k_lane_tile_bytes"], 65536)
         self.assertEqual(payload["native_16k_total_bytes"], 2097152)
         self.assertEqual(payload["native_4k_total_bytes"], 524288)
         self.assertEqual(
-            payload["transparent_16k_logical_4k_physical_total_bytes"], 524288
+            payload["transparent_visible_spd_payload_bytes"], 524288
+        )
+        self.assertEqual(
+            payload["private_logical_spd_payload_bytes_per_maa"], 65536
+        )
+        self.assertEqual(payload["private_logical_spd_payload_bytes"], 262144)
+        self.assertEqual(
+            payload["transparent_visible_plus_private_payload_bytes"],
+            786432,
+        )
+        self.assertEqual(
+            payload["transparent_payload_reduction_bytes"], 1310720
+        )
+        self.assertEqual(
+            payload["transparent_payload_reduction_percent"], 62.5
         )
         self.assertEqual(
             payload["logical_aperture_bytes_per_address_range"], 2097152
+        )
+
+    def test_private_payload_is_parameterized_by_maa_not_visible_tiles(
+        self,
+    ) -> None:
+        one_maa = MODULE.ledger(4, 8, maas=1)["spd_payload"]
+        four_maas = MODULE.ledger(4, 8, maas=4)["spd_payload"]
+        self.assertEqual(
+            one_maa["transparent_visible_spd_payload_bytes"],
+            four_maas["transparent_visible_spd_payload_bytes"],
+        )
+        self.assertEqual(one_maa["private_logical_spd_payload_bytes"], 65536)
+        self.assertEqual(
+            four_maas["private_logical_spd_payload_bytes"], 4 * 65536
+        )
+        self.assertEqual(
+            four_maas["transparent_visible_plus_private_payload_bytes"],
+            524288 + 4 * 65536,
         )
 
     def test_fp64_uses_two_lane_tiles_and_two_stages_are_64kib(self) -> None:
@@ -70,6 +104,8 @@ class SpdHardwareAccountingTest(unittest.TestCase):
     def test_bad_topology_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             MODULE.ledger(0, 8)
+        with self.assertRaises(ValueError):
+            MODULE.ledger(4, 8, maas=0)
 
 
 if __name__ == "__main__":

@@ -13,9 +13,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_SOURCE = {
     "src/mem/MAA/SPD.cc": (
-        "num_tiles * physical_tile_elements * sizeof(uint32_t)",
-        "element_finished = new bool[num_tiles * physical_tile_elements]",
-        "waiting_units_funcs = new std::vector<uint8_t>[num_tiles]",
+        "tryAllocatedPayloadBytes(",
+        "tiles_data = new uint8_t[allocated_payload_bytes]",
+        "element_finished = new bool[allocated_element_count]",
+        "new std::vector<uint8_t>[allocated_tile_count]",
+        "delete[] tiles_data",
+        "delete[] element_finished",
+    ),
+    "src/mem/MAA/LogicalSPDHiddenPayload.hh": (
+        "LogicalSlotsPerMAA = 2",
+        "FP64LanesPerSlot = 2",
+        "LaneElements = 4096",
+        "PayloadBytesPerMAA =",
+        "HiddenLanesPerMAA * LaneBytes;",
+    ),
+    "src/mem/MAA/MAA.cc": (
+        "spd = new SPD(",
+        "delete spd;",
     ),
     "configs/common/MAAConfig.py": (
         '* opts["num_tile_elements"]',
@@ -40,6 +54,10 @@ CONSUMER_EXPERIMENT = {
     "combine_slots": 384,
     "index_lines": 4,
 }
+HIDDEN_LOGICAL_SLOTS_PER_MAA = 2
+HIDDEN_FP64_LANES_PER_SLOT = 2
+HIDDEN_LANE_ELEMENTS = 4096
+SPD_LANE_BYTES = 4
 
 
 def checked_sources() -> list[str]:
@@ -103,12 +121,23 @@ def ledger(
     combine_slots: int = 16,
     index_lines: int = 1,
     indirect_units: int = 4,
+    maas: int = 4,
 ) -> dict:
-    if cores <= 0 or tiles_per_core <= 0:
-        raise ValueError("cores and tiles-per-core must be positive")
+    if cores <= 0 or tiles_per_core <= 0 or maas <= 0:
+        raise ValueError("cores, tiles-per-core, and MAAs must be positive")
     tiles = cores * tiles_per_core
     native16 = payload_bytes(16384)
     native4 = payload_bytes(4096)
+    visible_physical_spd = tiles * native4
+    private_payload_per_maa = (
+        HIDDEN_LOGICAL_SLOTS_PER_MAA
+        * HIDDEN_FP64_LANES_PER_SLOT
+        * HIDDEN_LANE_ELEMENTS
+        * SPD_LANE_BYTES
+    )
+    private_payload_total = maas * private_payload_per_maa
+    transparent_payload_total = visible_physical_spd + private_payload_total
+    native_payload_total = tiles * native16
     selected_virtual = virtual_data_capacity(
         response_slots, combine_slots, index_lines, indirect_units
     )
@@ -118,18 +147,31 @@ def ledger(
             "cores": cores,
             "tiles_per_core": tiles_per_core,
             "spd_lane_tiles": tiles,
+            "maas": maas,
             "lane_bytes": 4,
             "cache_line_bytes": 64,
         },
         "spd_payload": {
             "native_16k_lane_tile_bytes": native16,
-            "native_16k_total_bytes": tiles * native16,
+            "native_16k_total_bytes": native_payload_total,
             "native_4k_lane_tile_bytes": native4,
-            "native_4k_total_bytes": tiles * native4,
-            "transparent_16k_logical_4k_physical_total_bytes": tiles * native4,
-            "transparent_payload_reduction_bytes": tiles
-            * (native16 - native4),
-            "transparent_payload_reduction_percent": 75.0,
+            "native_4k_total_bytes": visible_physical_spd,
+            "transparent_visible_spd_payload_bytes": visible_physical_spd,
+            "private_logical_spd_payload_bytes_per_maa": (
+                private_payload_per_maa
+            ),
+            "private_logical_spd_payload_bytes": private_payload_total,
+            "transparent_visible_plus_private_payload_bytes": (
+                transparent_payload_total
+            ),
+            "transparent_payload_reduction_bytes": (
+                native_payload_total - transparent_payload_total
+            ),
+            "transparent_payload_reduction_percent": (
+                100.0
+                * (native_payload_total - transparent_payload_total)
+                / native_payload_total
+            ),
             "logical_aperture_bytes_per_address_range": tiles * native16,
             "address_ranges_for_payload": 2,
         },
@@ -159,7 +201,13 @@ def ledger(
             ),
         },
         "explicit_width_accounting": {
-            "spd_payload": "4 bytes per physical lane element (uint32_t)",
+            "spd_visible_payload": (
+                "4 bytes per physical lane element (uint32_t)"
+            ),
+            "spd_private_payload": (
+                "two FP64 slots x two uint32_t lanes x 4096 elements x "
+                "4 bytes per MAA"
+            ),
             "spd_element_finished": "one C++ bool per physical lane element; synthesis width is not fixed here",
             "spd_tile_scalars": "TileStatus:uint8_t, dirty:bool, ready:uint16_t, size:uint32_t per lane tile",
             "row_table": "Entry is Addr + int + int, plus valid and claimed bool arrays; Addr/int widths and padding are deliberately unresolved",
@@ -185,6 +233,7 @@ def main() -> int:
     parser.add_argument("--combine-slots", type=int, default=16)
     parser.add_argument("--index-lines", type=int, default=1)
     parser.add_argument("--indirect-units", type=int, default=4)
+    parser.add_argument("--maas", type=int, default=4)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = ledger(
@@ -194,6 +243,7 @@ def main() -> int:
         args.combine_slots,
         args.index_lines,
         args.indirect_units,
+        args.maas,
     )
     text = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output:

@@ -3,36 +3,37 @@
 This is a source trace, not a gem5 result. The checked ledger is
 `experiments/analysis/spd_hardware_accounting.py`; it fails if the allocation
 markers used below disappear. Values use the default topology: 4 cores x 8 SPD
-lane tiles/core = 32 lane tiles. No simulator source was changed and no gem5
-run was performed.
+visible lane tiles/core = 32 visible lane tiles, plus two private FP64 logical
+payload slots per each of 4 MAAs. No gem5 run was performed.
 
 ## Bottom line
 
 An SPD *tile* is one shared 4-byte-lane payload allocation, not a separate
 gather, compute, and store allocation. `SPD::SPD` allocates exactly one
-`tiles_data[num_tiles * physical_tile_elements * sizeof(uint32_t)]`. All SPD
-reads/writes index that array. A 64-bit access instead requires an adjacent
-tile ID; it does not allocate a second payload array for an operation phase.
-Thus a pipeline needs multiple tiles only when it needs simultaneously-live
-logical values (or FP64 pairing), not because gather/compute/store inherently
-replicate a tile.
+`tiles_data[allocated_payload_bytes]`. Its visible prefix contains the
+configured lane tiles. Its private tail contains four fixed 4K-word lanes per
+MAA: two FP64 logical slots, each represented by two adjacent 32-bit lanes.
+All public SPD reads/writes remain limited to the visible prefix; the private
+tail is separately allocated internal payload, not additional visible tiles.
 
-| case | payload per lane tile | total 32 lane tiles |
+| case | arithmetic | payload |
 | --- | ---: | ---: |
-| native 16K | 65,536 B (64 KiB) | 2,097,152 B (2 MiB) |
-| native 4K | 16,384 B (16 KiB) | 524,288 B (512 KiB) |
-| 16K-logical / 4K-physical transparent SPD | 16,384 B (16 KiB) | 524,288 B (512 KiB) |
+| native 16K visible SPD | 32 x 16,384 x 4 B | 2,097,152 B (2 MiB) |
+| transparent visible SPD | 32 x 4,096 x 4 B | 524,288 B (512 KiB) |
+| private logical-SPD tail | 4 MAAs x 2 slots x 2 lanes x 4,096 x 4 B | 262,144 B (256 KiB) |
+| transparent visible + private total | 524,288 B + 262,144 B | 786,432 B (768 KiB) |
 
-The proposed physical payload therefore saves 1,572,864 B (75%) against
-native 16K at this topology. This is payload only: it is not a complete
-hardware-area claim.
+The complete source-backed transparent SPD payload therefore saves 1,310,720 B
+(62.5%) against native 16K at this topology. The visible payload alone is 75%
+smaller, but omitting the private tail would understate implemented storage.
+This is payload only: it is not a complete hardware-area claim.
 
 For FP64, the code rejects the final tile ID and accesses adjacent tile IDs.
 One 4K FP64 logical tile consequently occupies two 4K lane tiles = 32 KiB.
-The requested two 4K FP64 staging tiles are **64 KiB** of payload (four lane
-tiles). The comparable two native-16K FP64 staging tiles are 256 KiB. These
-are dedicated staging allocations; do not add them to the 32-tile system total
-unless the design actually reserves four additional lane tile IDs.
+The two private 4K FP64 slots are **64 KiB per MAA** (four lane allocations).
+Across four MAAs they are the 256 KiB private tail charged above. The comparable
+two native-16K FP64 slots would be 256 KiB per MAA. The hidden lanes are not
+added to the public 32-tile count.
 
 ## Address aperture versus backing
 
@@ -96,6 +97,7 @@ Run:
 ```sh
 python3 experiments/analysis/spd_hardware_accounting.py
 python3 experiments/analysis/spd_hardware_accounting.py \\
-  --response-slots 96 --combine-slots 384 --index-lines 4 --indirect-units 4
+  --maas 4 --response-slots 96 --combine-slots 384 --index-lines 4 \\
+  --indirect-units 4
 python3 -m unittest experiments.tests.test_spd_hardware_accounting
 ```
