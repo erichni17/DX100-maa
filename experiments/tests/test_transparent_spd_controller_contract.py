@@ -57,6 +57,15 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertIn("OpcodeType::ALU_SCALAR", maa)
         self.assertIn("OpcodeType::STREAM_ST", maa)
 
+    def test_scheduled_issue_event_retries_controller(self):
+        maa = (ROOT / "src/mem/MAA/MAA.cc").read_text()
+        issue = maa.index("void MAA::issueInstruction()")
+        body = maa[issue : maa.index("uint8_t MAA::getTileStatus", issue)]
+        self.assertIn("tryIssueTransparentMicroOp();", body)
+        retry = maa.index("void MAA::tryIssueTransparentMicroOp()")
+        retry_body = maa[retry : maa.index("void MAA::dispatchRegister()", retry)]
+        self.assertIn("scheduleIssueInstructionEvent(1);", retry_body)
+
     def test_runner_has_fail_closed_transparent_case(self):
         runner = (
             ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"

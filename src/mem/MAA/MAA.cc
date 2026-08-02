@@ -480,6 +480,9 @@ bool MAA::getAddrRegionPermit(Instruction *instruction) {
     return invalidator->getAddrRegionPermit(instruction);
 }
 void MAA::issueInstruction() {
+    // This event is also the controller's finite lookup/backpressure retry.
+    // Dispatch the generated micro-op before selecting ready functional units.
+    tryIssueTransparentMicroOp();
     bool were_all_units_idle = allFuncUnitsIdle();
     bool are_all_units_idle = were_all_units_idle;
     bool issued = true;
