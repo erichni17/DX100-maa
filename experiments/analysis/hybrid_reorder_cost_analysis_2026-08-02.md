@@ -82,11 +82,12 @@ lower bound, not a guarantee for an arbitrary row-only selector.
 Each live input position is selected exactly once:
 `sum_p [p(i,grow_i)=p] = 1`.  The selector must be stable across retries and
 must include any predicate rule: false predicates are recorded once with their
-architectural zero result, not re-retired in every pass.  Each returned A value
-carries `i`; the C combiner writes `C[i]` and the exactly-once bitmap rejects a
-duplicate or missing retirement.  Completion requires every logical `i` to be
-accounted for, no outstanding A/read/write tag, and a final C-combiner drain.
-This makes A issue order deliberately different from C architectural order.
+architecturally defined no-write or initialized result, not re-retired in every
+pass.  Each returned A value carries `i`; the C combiner writes `C[i]` and the
+exactly-once bitmap rejects a duplicate or missing retirement.  Completion
+requires every logical `i` to be accounted for, no outstanding A/read/write
+tag, and a final C-combiner drain.  This makes A issue order deliberately
+different from C architectural order.
 
 Keeping the combiner across passes is mandatory for comparable C traffic.  The
 existing experiment demonstrates why: flushing it at each barrier alters dense
