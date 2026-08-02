@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import sys
@@ -161,6 +162,189 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
         )
         self.assertTrue(scheduler.done())
 
+    def test_forged_reordered_and_duplicate_source_responses_are_isolated(
+        self,
+    ):
+        config = self.small_config(
+            logical_elements=8,
+            page_elements=8,
+            source_request_slots=4,
+            source_response_slots=4,
+        )
+        scheduler = MODULE.CorrectedHybridScheduler(
+            [0, 8, 16, 24, 32, 40, 48, 56],
+            config=config,
+            generation=17,
+        )
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertTrue(scheduler.accept_source_request(auto_respond=False))
+        self.assertTrue(scheduler.accept_source_request(auto_respond=False))
+        accepted = list(scheduler.accepted_source_requests.values())
+        first = accepted[0]
+        second = accepted[1]
+        reserved_before = {
+            line: owner.reserved_mask
+            for line, owner in scheduler.owners.items()
+        }
+
+        forged_id = MODULE.SourceResponse(
+            MODULE.MAX_REQUEST_ID,
+            scheduler.generation,
+            first.source_line,
+            scheduler._source_payload(first.source_line),
+        )
+        forged_line = MODULE.SourceResponse(
+            first.request_id,
+            scheduler.generation,
+            first.source_line + 1,
+            scheduler._source_payload(first.source_line + 1),
+        )
+        self.assertTrue(scheduler.inject_source_response(forged_id))
+        self.assertTrue(scheduler.deliver_source_response())
+        self.assertTrue(scheduler.inject_source_response(forged_line))
+        self.assertTrue(scheduler.deliver_source_response())
+        self.assertEqual(
+            reserved_before,
+            {
+                line: owner.reserved_mask
+                for line, owner in scheduler.owners.items()
+            },
+        )
+        self.assertIn(first.request_id, scheduler.accepted_source_requests)
+
+        # Deliver the second legitimate response ahead of the first.
+        second_response = MODULE.SourceResponse(
+            second.request_id,
+            second.generation,
+            second.source_line,
+            scheduler._source_payload(second.source_line),
+        )
+        self.assertTrue(scheduler.inject_source_response(second_response))
+        self.assertTrue(scheduler.deliver_source_response())
+        self.assertNotIn(second.request_id, scheduler.accepted_source_requests)
+        duplicate = MODULE.SourceResponse(
+            second.request_id,
+            second.generation,
+            second.source_line,
+            scheduler._source_payload(second.source_line),
+        )
+        self.assertTrue(scheduler.inject_source_response(duplicate))
+        self.assertTrue(scheduler.deliver_source_response())
+        first_response = MODULE.SourceResponse(
+            first.request_id,
+            first.generation,
+            first.source_line,
+            scheduler._source_payload(first.source_line),
+        )
+        self.assertTrue(scheduler.inject_source_response(first_response))
+        self.assertTrue(scheduler.deliver_source_response())
+        self.assertEqual(scheduler.stale_source_responses, 2)
+        self.assertEqual(scheduler.forged_source_responses, 1)
+        metrics = scheduler.run()
+        self.assertEqual(metrics["rejected_source_responses"], 3)
+        self.assertEqual(metrics["payload_oracle_exact_once_failures"], 0)
+
+    def test_injected_responses_cannot_overbook_combined_source_credits(self):
+        config = self.small_config(
+            logical_elements=8,
+            page_elements=8,
+            source_request_slots=4,
+            source_response_slots=2,
+        )
+        scheduler = MODULE.CorrectedHybridScheduler(
+            [line * 8 for line in range(8)], config=config, generation=19
+        )
+        forged = MODULE.SourceResponse(999, 19, 0, (0,) * 8)
+        self.assertTrue(scheduler.inject_source_response(forged))
+        self.assertTrue(scheduler.inject_source_response(forged))
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertFalse(scheduler.issue_source_request())
+        self.assertEqual(
+            len(scheduler.source_requests)
+            + len(scheduler.accepted_source_requests),
+            config.source_response_slots,
+        )
+        self.assertFalse(scheduler.accept_source_request())
+        self.assertTrue(scheduler.deliver_source_response())
+        self.assertTrue(scheduler.accept_source_request())
+        self.assertEqual(
+            len(scheduler.source_requests)
+            + len(scheduler.accepted_source_requests),
+            config.source_response_slots,
+        )
+        self.assertFalse(scheduler.issue_source_request())
+        scheduler.assert_invariants()
+        metrics = scheduler.run()
+        self.assertEqual(metrics["source_request_issues"], 8)
+        self.assertEqual(metrics["payload_oracle_exact_once_failures"], 0)
+
+    def test_row_burst_expiry_rotates_before_same_minimum_row(self):
+        config = self.small_config(
+            logical_elements=8,
+            page_elements=8,
+            source_request_slots=4,
+            source_response_slots=4,
+            row_burst=1,
+        )
+        pattern = [0, 16, 8, 24, 32, 40, 48, 56]
+        scheduler = MODULE.CorrectedHybridScheduler(
+            pattern,
+            live=[True, True, True, False, False, False, False, False],
+            config=config,
+        )
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertEqual(
+            [request.source_line for request in scheduler.source_requests],
+            [0, 1, 2],
+        )
+        self.assertEqual(scheduler.row_rotations, 2)
+
+    def test_payload_oracle_rejects_corruption_without_partial_mutation(self):
+        scheduler = MODULE.CorrectedHybridScheduler(
+            [7, 6, 5, 4, 3, 2, 1, 0],
+            config=self.small_config(logical_elements=8, page_elements=8),
+            generation=23,
+        )
+        self.assertTrue(scheduler.issue_source_request())
+        self.assertTrue(scheduler.accept_source_request(auto_respond=False))
+        request = next(iter(scheduler.accepted_source_requests.values()))
+        payload = scheduler._source_payload(request.source_line)
+        corrupt = MODULE.SourceResponse(
+            request.request_id,
+            request.generation,
+            request.source_line,
+            tuple(reversed(payload)),
+        )
+        reserved_before = next(iter(scheduler.owners.values())).reserved_mask
+        self.assertTrue(scheduler.inject_source_response(corrupt))
+        self.assertTrue(scheduler.deliver_source_response())
+        self.assertEqual(
+            next(iter(scheduler.owners.values())).reserved_mask,
+            reserved_before,
+        )
+        self.assertEqual(scheduler.destination_receive_counts, [0] * 8)
+        legitimate = MODULE.SourceResponse(
+            request.request_id,
+            request.generation,
+            request.source_line,
+            payload,
+        )
+        self.assertTrue(scheduler.inject_source_response(legitimate))
+        self.assertTrue(scheduler.deliver_source_response())
+        metrics = scheduler.run()
+        self.assertEqual(scheduler.destination_receive_counts, [1] * 8)
+        self.assertEqual(
+            scheduler.destination_values,
+            scheduler.expected_destination_values,
+        )
+        self.assertEqual(metrics["forged_source_responses"], 1)
+        self.assertEqual(metrics["payload_oracle_live_words_verified"], 8)
+        self.assertEqual(metrics["payload_oracle_exact_once_failures"], 0)
+
     def test_adversarial_reuse_is_live_under_fair_acceptance_and_ack(self):
         pattern = [(destination % 4) * 8 for destination in range(32)]
         scheduler = MODULE.CorrectedHybridScheduler(
@@ -197,22 +381,88 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
         self,
     ):
         state = MODULE.corrected_state_lower_bound(self.small_config())
+        components = state["components_bits"]
         for component in (
-            "exact_live_mask_table_bytes",
-            "owner_metadata_bytes",
-            "source_request_queue_bytes",
-            "source_response_queue_bytes",
-            "write_request_queue_bytes",
-            "write_ack_queue_bytes",
+            "exact_live_mask_table_bits",
+            "owner_metadata_bits",
+            "source_request_queue_bits",
+            "accepted_source_ledger_bits",
+            "source_response_event_queue_bits",
+            "write_request_queue_bits",
+            "write_ack_queue_bits",
+            "focus_heap_bits",
+            "selector_state_bits",
+            "queue_protocol_state_bits",
+            "identity_state_bits",
+            "ordering_observer_state_bits",
+            "functional_work_accounting_bits",
+            "payload_oracle_observer_bits",
         ):
-            self.assertGreater(state[component], 0)
+            self.assertGreater(components[component], 0)
+        self.assertEqual(state["widths"]["source_line_bits"], 18)
+        self.assertEqual(state["widths"]["generation_bits"], 64)
+        self.assertEqual(state["widths"]["request_id_bits"], 64)
         self.assertEqual(
-            state["bit_packed_policy_state_bytes"],
-            sum(
-                value
-                for key, value in state.items()
-                if key != "bit_packed_policy_state_bytes"
-            ),
+            state["bit_packed_finite_ledger_bits"], sum(components.values())
+        )
+        self.assertEqual(
+            state["bit_packed_finite_ledger_bits"],
+            state["bit_packed_policy_state_bits"]
+            + state["bit_packed_replay_observer_state_bits"],
+        )
+        self.assertEqual(
+            state["bit_packed_finite_ledger_bytes"],
+            MODULE.ceil_div(state["bit_packed_finite_ledger_bits"], 8),
+        )
+
+    def test_archived_source_generation_and_id_widths_fail_closed(self):
+        config = self.small_config(logical_elements=8, page_elements=8)
+        edge_pattern = [MODULE.MAX_SOURCE_LINE * config.words_per_line] * 8
+        edge = MODULE.CorrectedHybridScheduler(
+            edge_pattern, config=config, generation=MODULE.MAX_GENERATION
+        )
+        edge.next_source_request_id = MODULE.MAX_REQUEST_ID
+        self.assertTrue(edge.issue_source_request())
+        with self.assertRaisesRegex(RuntimeError, "ID space exhausted"):
+            edge.issue_source_request()
+        with self.assertRaisesRegex(ValueError, "18-bit"):
+            MODULE.CorrectedHybridScheduler(
+                [(MODULE.MAX_SOURCE_LINE + 1) * config.words_per_line] * 8,
+                config=config,
+            )
+        with self.assertRaisesRegex(ValueError, "generation"):
+            MODULE.CorrectedHybridScheduler(
+                [0] * 8,
+                config=config,
+                generation=MODULE.MAX_GENERATION + 1,
+            )
+
+    def test_all_hidden_transition_work_is_charged_and_bounded(self):
+        scheduler = MODULE.CorrectedHybridScheduler(
+            [(destination % 4) * 8 for destination in range(32)],
+            config=self.small_config(),
+        )
+        metrics = scheduler.run()
+        work = {
+            key: value
+            for key, value in metrics.items()
+            if key.startswith("work_")
+        }
+        self.assertEqual(metrics["functional_work_total"], sum(work.values()))
+        for required in (
+            "work_focus_rebuild_source_scans",
+            "work_focus_heap_pops",
+            "work_sort_input_items",
+            "work_sort_comparison_bound",
+            "work_reservation_token_walks",
+            "work_response_token_prechecks",
+            "work_ready_owner_scans",
+            "work_write_token_walks",
+        ):
+            self.assertGreater(work[required], 0)
+        self.assertLessEqual(
+            metrics["atomic_transition_work_high_water"],
+            metrics["atomic_transition_work_limit"],
         )
 
     def test_rejects_invalid_predicate_and_generation(self):
@@ -231,10 +481,41 @@ class CorrectedHybridSchedulerModelTest(unittest.TestCase):
                 "frozen archive is generated after focused unit tests"
             )
         artifact = json.loads(artifact_path.read_text())
+        self.assertEqual(
+            hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            "a31b2e40432a1f35e78580d544d9a10581a7cd23f18057795383c8b220f259e7",
+        )
         self.assertEqual(artifact["schema"], MODULE.SCHEMA)
         self.assertFalse(artifact["model_scope"]["timing_prediction"])
         self.assertFalse(artifact["model_scope"]["synthesis_or_area_claim"])
+        self.assertIn(
+            "unavailable",
+            artifact["model_scope"]["measurement_domains"]["timing"],
+        )
+        self.assertEqual(
+            artifact["state_contract"]["widths"]["source_line_bits"], 18
+        )
         self.assertEqual(artifact["flag"]["case_count"], 14)
+        self.assertEqual(artifact["flag"]["max_source_line"], 222112)
+        self.assertEqual(
+            {case["sha256"] for case in artifact["flag"]["cases"]},
+            {
+                "9f344be7df05084a33d1675e1cfa29fe60e0aa3740791b9900c74066e5443919",
+                "1aea650887ee2e0424a0208039f32bd777886c6c746514fc7945b86b66c9f61c",
+                "995cd9c0e9cfc37bdde92220e832162d6a5d5dbf837060c9d3e4cf87818f65ef",
+                "5050da44959941078daa859c13420a7e83a9e0e5be2452f506e5f6fd64153cf2",
+                "fadee14ce0da8334af2a3bf7d5416fc96bf5d1b5051aa3ed0bce445d71488488",
+                "c5bad529c2dd45d23cee0bc10cfe5d109f2a971db1ade90a091a67dff641fe8c",
+                "4863bc4ad276c6a7f3021fbd002bcc37d8c7c60b91502d2fd125d63269dfd11f",
+                "549f83b4d28063b6240b4e6c1d424ee115142231017f304c26defa40d04ad471",
+                "c7f8a957edf689cf92b9bcf14707f8f0ddacbaba6d6242557582a5204f5e274a",
+                "82eb717150a0a321554788dac62bcf53b5460f87af1729dc3b72d22f61c8f2d5",
+                "e68891544be79a293fe9c35f5209209e1e3d38cefc9403613f06a83f6e3c19a9",
+                "dc2a28bfc7be88c1a99c98d8e3548d76bc569bc339abfb54831f71d43c0551e5",
+                "b16c0f8aba0bf377d429c054b426683220c9d012817d605b36b901a04a4931ed",
+                "5938c8bea649b29380e9f19b2fc70002d91ebcc72d9348dc3e9d8c7fc5cece17",
+            },
+        )
         self.assertEqual(
             set(artifact["flag"]["policies"]),
             {"full_row", "direct4", "corrected"},

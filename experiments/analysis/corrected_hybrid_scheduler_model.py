@@ -11,6 +11,7 @@ deliberately not a timing model.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import heapq
 import json
@@ -27,7 +28,76 @@ from dataclasses import (
 from pathlib import Path
 from typing import Sequence
 
-SCHEMA = "dx100-corrected-hybrid-single-owner-replay-v1"
+SCHEMA = "dx100-corrected-hybrid-single-owner-replay-v2"
+ARCHIVED_SOURCE_LINE_BITS = 18
+GENERATION_BITS = 64
+REQUEST_ID_BITS = 64
+VALUE_BITS = 64
+MAX_SOURCE_LINE = (1 << ARCHIVED_SOURCE_LINE_BITS) - 1
+MAX_GENERATION = (1 << GENERATION_BITS) - 1
+MAX_REQUEST_ID = (1 << REQUEST_ID_BITS) - 1
+VALUE_MASK = (1 << VALUE_BITS) - 1
+WORK_COUNTER_NAMES = (
+    "atomic_transition_invocations",
+    "descriptor_word_scans",
+    "focus_page_counter_scans",
+    "focus_rebuild_source_scans",
+    "focus_membership_line_scans",
+    "focus_heap_pushes",
+    "focus_heap_pops",
+    "focus_heap_reinserts",
+    "row_directory_scans",
+    "planning_line_scans",
+    "sort_input_items",
+    "sort_comparison_bound",
+    "reservation_token_walks",
+    "promotion_owner_scans",
+    "promotion_token_walks",
+    "response_match_probes",
+    "response_payload_word_builds",
+    "response_payload_word_checks",
+    "response_token_prechecks",
+    "ready_owner_scans",
+    "write_token_walks",
+    "write_ack_match_entry_scans",
+)
+
+
+def deterministic_source_value(source_word: int) -> int:
+    """Return a deterministic, bijective 64-bit value for one source word."""
+    if source_word < 0:
+        raise ValueError("source word must be non-negative")
+    return (source_word * 0x9E3779B185EBCA87 + 0xD1B54A32D192ED03) & VALUE_MASK
+
+
+def bounded_transition(method):
+    """Charge and bound one externally visible logical state transition."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        outermost = self._atomic_depth == 0
+        if outermost:
+            self._atomic_start_work = self.functional_work_total
+            self._atomic_name = method.__name__
+            self._charge("atomic_transition_invocations", 1)
+        self._atomic_depth += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._atomic_depth -= 1
+            if outermost:
+                work = self.functional_work_total - self._atomic_start_work
+                if work > self.atomic_transition_work_limit:
+                    raise AssertionError(
+                        f"{self._atomic_name} exceeded atomic work bound: "
+                        f"{work} > {self.atomic_transition_work_limit}"
+                    )
+                self.atomic_transition_work_high_water = max(
+                    self.atomic_transition_work_high_water, work
+                )
+                self._atomic_name = None
+
+    return wrapper
 
 
 def ceil_div(dividend: int, divisor: int) -> int:
@@ -100,6 +170,14 @@ class ReplayConfig:
     def owner_sets(self) -> int:
         return self.owner_lines // self.owner_ways
 
+    @property
+    def destination_lines(self) -> int:
+        return ceil_div(self.logical_elements, self.words_per_line)
+
+    @property
+    def max_response_tokens(self) -> int:
+        return self.owner_lines * self.words_per_line
+
 
 @dataclass(frozen=True)
 class SourceDescriptor:
@@ -116,6 +194,8 @@ class LineOwner:
     received_mask: int = 0
     reserved_mask: int = 0
     tokens: dict[int, int] = field(default_factory=dict)
+    reservation_request_ids: dict[int, int] = field(default_factory=dict)
+    reservation_source_lines: dict[int, int] = field(default_factory=dict)
     state: str = "collecting"
     write_request_id: int | None = None
 
@@ -133,7 +213,7 @@ class SourceResponse:
     request_id: int
     generation: int
     source_line: int
-    destinations: tuple[int, ...]
+    payload: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -169,6 +249,11 @@ def bank_row_key(
     if source_line < 0 or source_line_phase < 0:
         raise ValueError("source line and phase must be non-negative")
     line = source_line + source_line_phase
+    if line > MAX_SOURCE_LINE:
+        raise ValueError(
+            f"source line plus phase exceeds {ARCHIVED_SOURCE_LINE_BITS}-bit "
+            "archived field"
+        )
     return line & 1, (line >> 8) & 3, (line >> 10) & 3, line >> 12
 
 
@@ -399,7 +484,7 @@ def reference_metrics(
 
 
 class CorrectedHybridScheduler:
-    """Executable bounded transition model for CHSO-64.
+    """Executable bounded transition model for CHSO-384.
 
     A destination line has exactly one owner from allocation through matching
     write response.  Source issue reserves tokens and downstream response
@@ -423,13 +508,41 @@ class CorrectedHybridScheduler:
         self.pattern = list(pattern)
         self.live = list(live) if live is not None else [True] * len(pattern)
         validate_live_mask(self.pattern, self.live)
-        if generation <= 0:
-            raise ValueError("generation must be positive")
+        if not 0 < generation <= MAX_GENERATION:
+            raise ValueError(
+                f"generation must fit the nonzero {GENERATION_BITS}-bit field"
+            )
+        if not 0 <= source_line_phase <= MAX_SOURCE_LINE:
+            raise ValueError(
+                f"source-line phase must fit {ARCHIVED_SOURCE_LINE_BITS} bits"
+            )
         self.generation = generation
         self.source_line_phase = source_line_phase
+        self.work_counts = {name: 0 for name in WORK_COUNTER_NAMES}
+        self.functional_work_total = 0
+        self._atomic_depth = 0
+        self._atomic_start_work = 0
+        self._atomic_name: str | None = None
+        self.atomic_transition_work_high_water = 0
+        self.atomic_transition_work_limit = (
+            1
+            + self.config.logical_elements
+            * (self.config.destination_lines + 3)
+            + 4 * self.config.max_response_tokens
+            + self.config.owner_lines * (self.config.words_per_line + 3)
+            + 64
+        )
         self.expected_masks = exact_live_masks(
             self.live, self.config.words_per_line
         )
+        self.expected_destination_values = [
+            deterministic_source_value(source_word)
+            if self.live[destination]
+            else None
+            for destination, source_word in enumerate(self.pattern)
+        ]
+        self.destination_values: list[int | None] = [None] * len(self.pattern)
+        self.destination_receive_counts = [0] * len(self.pattern)
         self.line_destinations: dict[int, list[int]] = {}
         self.source_targets: dict[int, dict[int, list[int]]] = {}
         for destination, source_index in enumerate(self.pattern):
@@ -437,6 +550,11 @@ class CorrectedHybridScheduler:
                 continue
             destination_line = destination // self.config.words_per_line
             source_line = source_index // self.config.words_per_line
+            if source_line + self.source_line_phase > MAX_SOURCE_LINE:
+                raise ValueError(
+                    "source line plus phase does not fit the archived "
+                    f"{ARCHIVED_SOURCE_LINE_BITS}-bit field"
+                )
             self.line_destinations.setdefault(destination_line, []).append(
                 destination
             )
@@ -461,13 +579,14 @@ class CorrectedHybridScheduler:
                     destination // self.config.page_elements
                 ] += 1
         self.focus_page = 0
-        self.focus_heap: list[tuple[tuple[int, ...], int]] = []
+        self.focus_rows: dict[tuple[int, ...], list[int]] = {}
         self.focus_heap_members: set[int] = set()
         self.active_row: tuple[int, ...] | None = None
         self.active_row_remaining = 0
         self.owners: dict[int, LineOwner] = {}
         self.owner_set_counts = [0] * self.config.owner_sets
         self.source_requests: deque[SourceRequest] = deque()
+        self.accepted_source_requests: dict[int, SourceRequest] = {}
         self.source_responses: deque[SourceResponse] = deque()
         self.write_requests: deque[WriteRequest] = deque()
         self.write_acks: deque[WriteRequest] = deque()
@@ -486,22 +605,49 @@ class CorrectedHybridScheduler:
         self.owner_allocation_refusals = 0
         self.focus_switches = 0
         self.stale_source_responses = 0
+        self.forged_source_responses = 0
         self.stale_write_responses = 0
-        self.source_order: list[int] = []
+        self.previous_source_row: tuple[int, ...] | None = None
+        self.same_bank_row_successors = 0
+        self.source_successor_pairs = 0
+        self.row_rotations = 0
+        self.row_same_reselections = 0
         self.high_water = {
             "owner": 0,
             "source_request": 0,
+            "accepted_source": 0,
             "source_response": 0,
             "write_request": 0,
             "write_ack": 0,
         }
+        self._charge("descriptor_word_scans", len(self.pattern))
         self._advance_focus()
-        self._rebuild_focus_heap()
+        if not self.focus_rows and self.focus_page < len(self.page_remaining):
+            self._rebuild_focus_heap()
+
+    def _charge(self, name: str, amount: int = 1) -> None:
+        if name not in self.work_counts:
+            raise AssertionError(f"unknown functional-work category {name}")
+        if amount < 0:
+            raise AssertionError("functional work cannot be negative")
+        self.work_counts[name] += amount
+        self.functional_work_total += amount
+
+    def _charged_sorted(self, values, *, key=None):
+        materialized = list(values)
+        count = len(materialized)
+        self._charge("sort_input_items", count)
+        if count > 1:
+            self._charge(
+                "sort_comparison_bound", count * math.ceil(math.log2(count))
+            )
+        return sorted(materialized, key=key)
 
     def _update_high_water(self) -> None:
         current = {
             "owner": len(self.owners),
             "source_request": len(self.source_requests),
+            "accepted_source": len(self.accepted_source_requests),
             "source_response": len(self.source_responses),
             "write_request": len(self.write_requests),
             "write_ack": len(self.write_acks),
@@ -513,10 +659,11 @@ class CorrectedHybridScheduler:
         return (line * self.config.words_per_line) // self.config.page_elements
 
     def _source_has_focus_work(self, source_line: int) -> bool:
-        return any(
-            self._line_page(line) == self.focus_page
-            for line in self.source_pending_lines.get(source_line, set())
-        )
+        for line in self.source_pending_lines.get(source_line, set()):
+            self._charge("focus_membership_line_scans", 1)
+            if self._line_page(line) == self.focus_page:
+                return True
+        return False
 
     def _push_focus_source(self, source_line: int) -> None:
         if (
@@ -525,25 +672,29 @@ class CorrectedHybridScheduler:
         ):
             return
         key = bank_row_key(source_line, self.source_line_phase)
-        heapq.heappush(self.focus_heap, (key, source_line))
+        heapq.heappush(self.focus_rows.setdefault(key, []), source_line)
+        self._charge("focus_heap_pushes", 1)
         self.focus_heap_members.add(source_line)
 
+    @bounded_transition
     def _rebuild_focus_heap(self) -> None:
-        self.focus_heap.clear()
+        self.focus_rows.clear()
         self.focus_heap_members.clear()
         self.active_row = None
         self.active_row_remaining = 0
         if self.focus_page >= len(self.page_remaining):
             return
         for source_line in self.source_pending_lines:
+            self._charge("focus_rebuild_source_scans", 1)
             self._push_focus_source(source_line)
 
+    @bounded_transition
     def _advance_focus(self) -> bool:
         old = self.focus_page
-        while (
-            self.focus_page < len(self.page_remaining)
-            and self.page_remaining[self.focus_page] == 0
-        ):
+        while self.focus_page < len(self.page_remaining):
+            self._charge("focus_page_counter_scans", 1)
+            if self.page_remaining[self.focus_page] != 0:
+                break
             self.focus_page += 1
         if self.focus_page != old:
             self.focus_switches += self.focus_page - old
@@ -564,6 +715,8 @@ class CorrectedHybridScheduler:
     def _allocate_owner(self, line: int) -> LineOwner:
         if not self._can_allocate_owner(line):
             raise AssertionError("owner allocation was not credit checked")
+        if self.next_allocation_sequence > self.config.destination_lines:
+            raise AssertionError("finite owner-allocation sequence exhausted")
         owner = LineOwner(
             line=line,
             generation=self.generation,
@@ -577,13 +730,15 @@ class CorrectedHybridScheduler:
         self._update_high_water()
         return owner
 
-    def _reserve_line_tokens(self, source_line: int, line: int) -> list[int]:
+    def _reserve_line_tokens(
+        self, source_line: int, line: int, request_id: int
+    ) -> list[int]:
         owner = self.owners[line]
-        selected = [
-            destination
-            for destination in self.source_targets[source_line][line]
-            if self.token_state[destination] == "unconsumed"
-        ]
+        selected = []
+        for destination in self.source_targets[source_line][line]:
+            self._charge("reservation_token_walks", 1)
+            if self.token_state[destination] == "unconsumed":
+                selected.append(destination)
         if not selected:
             self.source_pending_lines[source_line].discard(line)
             return []
@@ -597,23 +752,37 @@ class CorrectedHybridScheduler:
             self.token_state[destination] = "reserved"
             owner.reserved_mask |= bit
             owner.tokens[word] = destination
+            owner.reservation_request_ids[word] = request_id
+            owner.reservation_source_lines[word] = source_line
         self.source_pending_lines[source_line].discard(line)
         return selected
 
-    def _plan_and_reserve(self, source_line: int) -> tuple[int, ...]:
+    def _plan_and_reserve(
+        self, source_line: int, request_id: int
+    ) -> tuple[int, ...]:
         pending = self.source_pending_lines.get(source_line)
         if not pending:
             return ()
         selected: list[int] = []
-        owned = sorted(
-            (line for line in pending if line in self.owners),
+        owned_candidates = []
+        new_candidates = []
+        for line in pending:
+            self._charge("planning_line_scans", 1)
+            if line in self.owners:
+                owned_candidates.append(line)
+            else:
+                new_candidates.append(line)
+        owned = self._charged_sorted(
+            owned_candidates,
             key=lambda line: self.owners[line].allocation_sequence,
         )
         for line in owned:
-            selected.extend(self._reserve_line_tokens(source_line, line))
+            selected.extend(
+                self._reserve_line_tokens(source_line, line, request_id)
+            )
 
-        new_lines = sorted(
-            (line for line in tuple(pending) if line not in self.owners),
+        new_lines = self._charged_sorted(
+            new_candidates,
             key=lambda line: (
                 self._line_page(line) != self.focus_page,
                 self._line_page(line),
@@ -643,77 +812,106 @@ class CorrectedHybridScheduler:
                 focus_allocations += 1
             else:
                 future_allocations += 1
-            selected.extend(self._reserve_line_tokens(source_line, line))
-        return tuple(sorted(selected))
+            selected.extend(
+                self._reserve_line_tokens(source_line, line, request_id)
+            )
+        return tuple(self._charged_sorted(selected))
 
     def _promotion_source(self) -> int | None:
         for owner in self.owners.values():
+            self._charge("promotion_owner_scans", 1)
             if owner.state != "collecting":
                 continue
             for destination in self.line_destinations[owner.line]:
+                self._charge("promotion_token_walks", 1)
                 if self.token_state[destination] == "unconsumed":
                     return (
                         self.pattern[destination] // self.config.words_per_line
                     )
         return None
 
-    def _pop_focus_candidates(self) -> list[int]:
+    def _pop_focus_candidate(self) -> int | None:
+        """Select one eligible source, rotating rows at quantum expiry."""
+
+        def pop_row(row: tuple[int, ...]) -> int | None:
+            sources = self.focus_rows.get(row)
+            while sources:
+                source_line = heapq.heappop(sources)
+                self._charge("focus_heap_pops", 1)
+                self.focus_heap_members.discard(source_line)
+                if self._source_has_focus_work(source_line):
+                    if not sources:
+                        del self.focus_rows[row]
+                    return source_line
+            self.focus_rows.pop(row, None)
+            return None
+
         if self.active_row is not None and self.active_row_remaining > 0:
-            deferred: list[tuple[tuple[int, ...], int]] = []
-            while self.focus_heap:
-                row, source_line = heapq.heappop(self.focus_heap)
-                if not self._source_has_focus_work(source_line):
-                    self.focus_heap_members.discard(source_line)
-                    continue
-                if row == self.active_row:
-                    self.focus_heap_members.discard(source_line)
-                    for item in deferred:
-                        heapq.heappush(self.focus_heap, item)
-                    return [source_line]
-                deferred.append((row, source_line))
-            for item in deferred:
-                heapq.heappush(self.focus_heap, item)
-            self.active_row = None
-            self.active_row_remaining = 0
+            selected_source = pop_row(self.active_row)
+            if selected_source is not None:
+                return selected_source
 
-        while self.focus_heap:
-            row, source_line = heapq.heappop(self.focus_heap)
-            self.focus_heap_members.discard(source_line)
-            if not self._source_has_focus_work(source_line):
+        previous_row = self.active_row
+        rows = self._charged_sorted(self.focus_rows)
+        if previous_row is None:
+            ordered_rows = rows
+        else:
+            greater_rows = []
+            lower_rows = []
+            same_rows = []
+            for row in rows:
+                self._charge("row_directory_scans", 1)
+                if row > previous_row:
+                    greater_rows.append(row)
+                elif row < previous_row:
+                    lower_rows.append(row)
+                else:
+                    same_rows.append(row)
+            ordered_rows = greater_rows + lower_rows + same_rows
+        for selected_row in ordered_rows:
+            selected_source = pop_row(selected_row)
+            if selected_source is None:
                 continue
-            self.active_row = row
+            if previous_row is not None:
+                if selected_row != previous_row:
+                    self.row_rotations += 1
+                else:
+                    self.row_same_reselections += 1
+            self.active_row = selected_row
             self.active_row_remaining = self.config.row_burst
-            return [source_line]
-        return []
+            return selected_source
 
+        self.active_row = None
+        self.active_row_remaining = 0
+        return None
+
+    @bounded_transition
     def issue_source_request(self) -> bool:
         if len(self.source_requests) >= self.config.source_request_slots:
             return False
         reserved_response_credits = len(self.source_requests) + len(
-            self.source_responses
+            self.accepted_source_requests
         )
         if reserved_response_credits >= self.config.source_response_slots:
             return False
+        if self.next_source_request_id > MAX_REQUEST_ID:
+            raise RuntimeError("finite source request-ID space exhausted")
+        request_id = self.next_source_request_id
 
         promotion: int | None = None
-        candidates = self._pop_focus_candidates()
-        blocked: list[int] = []
+        candidate = self._pop_focus_candidate()
         selected_source: int | None = None
         destinations: tuple[int, ...] = ()
-        for source_line in candidates:
-            if source_line is None:
-                continue
-            destinations = self._plan_and_reserve(source_line)
+        if candidate is not None:
+            destinations = self._plan_and_reserve(candidate, request_id)
             if destinations:
-                selected_source = source_line
-                break
-            blocked.append(source_line)
-        for source_line in blocked:
-            self._push_focus_source(source_line)
+                selected_source = candidate
+            else:
+                self._push_focus_source(candidate)
         if selected_source is None:
             promotion = self._promotion_source()
             if promotion is not None:
-                destinations = self._plan_and_reserve(promotion)
+                destinations = self._plan_and_reserve(promotion, request_id)
                 if destinations:
                     selected_source = promotion
         if selected_source is None:
@@ -721,7 +919,7 @@ class CorrectedHybridScheduler:
         if promotion is not None and selected_source == promotion:
             self.owner_promotions += 1
         request = SourceRequest(
-            self.next_source_request_id,
+            request_id,
             self.generation,
             selected_source,
             destinations,
@@ -729,7 +927,12 @@ class CorrectedHybridScheduler:
         self.next_source_request_id += 1
         self.source_requests.append(request)
         self.source_request_issues += 1
-        self.source_order.append(selected_source)
+        selected_row = bank_row_key(selected_source, self.source_line_phase)
+        if self.previous_source_row is not None:
+            self.source_successor_pairs += 1
+            if selected_row == self.previous_source_row:
+                self.same_bank_row_successors += 1
+        self.previous_source_row = selected_row
         if (
             self.active_row
             == bank_row_key(selected_source, self.source_line_phase)
@@ -740,24 +943,42 @@ class CorrectedHybridScheduler:
         self._update_high_water()
         return True
 
-    def accept_source_request(self) -> bool:
+    def _source_payload(self, source_line: int) -> tuple[int, ...]:
+        begin = source_line * self.config.words_per_line
+        self._charge(
+            "response_payload_word_builds", self.config.words_per_line
+        )
+        return tuple(
+            deterministic_source_value(begin + word)
+            for word in range(self.config.words_per_line)
+        )
+
+    @bounded_transition
+    def accept_source_request(self, auto_respond: bool = True) -> bool:
         if not self.source_requests:
             return False
-        if len(self.source_responses) >= self.config.source_response_slots:
+        if auto_respond and len(self.source_responses) >= (
+            self.config.source_response_slots
+        ):
             return False
         request = self.source_requests.popleft()
-        self.source_responses.append(
-            SourceResponse(
-                request.request_id,
-                request.generation,
-                request.source_line,
-                request.destinations,
+        if request.request_id in self.accepted_source_requests:
+            raise AssertionError("source request ID was not unique")
+        self.accepted_source_requests[request.request_id] = request
+        if auto_respond:
+            self.source_responses.append(
+                SourceResponse(
+                    request.request_id,
+                    request.generation,
+                    request.source_line,
+                    self._source_payload(request.source_line),
+                )
             )
-        )
         self.source_request_acceptances += 1
         self._update_high_water()
         return True
 
+    @bounded_transition
     def inject_source_response(self, response: SourceResponse) -> bool:
         if len(self.source_responses) >= self.config.source_response_slots:
             return False
@@ -765,14 +986,33 @@ class CorrectedHybridScheduler:
         self._update_high_water()
         return True
 
+    @bounded_transition
     def deliver_source_response(self) -> bool:
         if not self.source_responses:
             return False
         response = self.source_responses.popleft()
-        if response.generation != self.generation:
+        self._charge("response_match_probes", 1)
+        expected = self.accepted_source_requests.get(response.request_id)
+        if response.generation != self.generation or expected is None:
             self.stale_source_responses += 1
             return True
-        for destination in response.destinations:
+        if (
+            response.generation != expected.generation
+            or response.source_line != expected.source_line
+            or not 0 <= response.request_id <= MAX_REQUEST_ID
+            or not 0 <= response.source_line <= MAX_SOURCE_LINE
+        ):
+            self.forged_source_responses += 1
+            return True
+        expected_payload = self._source_payload(expected.source_line)
+        self._charge("response_payload_word_checks", len(expected_payload))
+        if response.payload != expected_payload:
+            self.forged_source_responses += 1
+            return True
+
+        # Preflight the complete accepted record before mutating any owner.
+        for destination in expected.destinations:
+            self._charge("response_token_prechecks", 1)
             if self.token_state[destination] != "reserved":
                 raise AssertionError("response does not own a reserved token")
             line, word = divmod(destination, self.config.words_per_line)
@@ -784,30 +1024,62 @@ class CorrectedHybridScheduler:
             bit = 1 << word
             if owner.reserved_mask & bit == 0:
                 raise AssertionError("response token was not reserved")
+            if (
+                owner.reservation_request_ids.get(word) != response.request_id
+                or owner.reservation_source_lines.get(word)
+                != response.source_line
+            ):
+                raise AssertionError(
+                    "response does not match the word reservation identity"
+                )
+
+        for destination in expected.destinations:
+            line, word = divmod(destination, self.config.words_per_line)
+            owner = self.owners[line]
+            bit = 1 << word
             owner.reserved_mask &= ~bit
             owner.received_mask |= bit
+            del owner.reservation_request_ids[word]
+            del owner.reservation_source_lines[word]
             self.token_state[destination] = "tentative"
+            value = response.payload[
+                self.pattern[destination] % self.config.words_per_line
+            ]
+            if value != self.expected_destination_values[destination]:
+                raise AssertionError(
+                    "source payload failed deterministic oracle"
+                )
+            if self.destination_receive_counts[destination] != 0:
+                raise AssertionError(
+                    "destination received a source value twice"
+                )
+            self.destination_values[destination] = value
+            self.destination_receive_counts[destination] += 1
+        del self.accepted_source_requests[response.request_id]
         self.source_response_completions += 1
         return True
 
+    @bounded_transition
     def enqueue_ready_write(self) -> bool:
         if len(self.write_requests) >= self.config.write_request_slots:
             return False
-        ready = next(
-            (
-                owner
-                for owner in self.owners.values()
-                if owner.state == "collecting"
+        ready = None
+        for owner in self.owners.values():
+            self._charge("ready_owner_scans", 1)
+            if (
+                owner.state == "collecting"
                 and owner.reserved_mask == 0
                 and owner.received_mask == owner.expected_mask
-            ),
-            None,
-        )
+            ):
+                ready = owner
+                break
         if ready is None:
             return False
-        destinations = tuple(
-            ready.tokens[word] for word in sorted(ready.tokens)
-        )
+        if self.next_write_request_id > MAX_REQUEST_ID:
+            raise RuntimeError("finite write request-ID space exhausted")
+        token_words = self._charged_sorted(ready.tokens)
+        self._charge("write_token_walks", len(token_words))
+        destinations = tuple(ready.tokens[word] for word in token_words)
         request = WriteRequest(
             self.next_write_request_id,
             self.generation,
@@ -823,6 +1095,7 @@ class CorrectedHybridScheduler:
         self._update_high_water()
         return True
 
+    @bounded_transition
     def accept_write_request(self) -> bool:
         if not self.write_requests:
             return False
@@ -843,24 +1116,24 @@ class CorrectedHybridScheduler:
         self._update_high_water()
         return True
 
+    @bounded_transition
     def complete_external_write(
         self, generation: int, line: int, request_id: int
     ) -> bool:
-        matching_index = next(
-            (
-                index
-                for index, request in enumerate(self.write_acks)
-                if request.generation == generation
+        matching_index = None
+        for index, request in enumerate(self.write_acks):
+            self._charge("write_ack_match_entry_scans", 1)
+            if (
+                request.generation == generation
                 and request.line == line
                 and request.request_id == request_id
-            ),
-            None,
-        )
+            ):
+                matching_index = index
+                break
         if generation != self.generation or matching_index is None:
             self.stale_write_responses += 1
             return False
         request = self.write_acks[matching_index]
-        del self.write_acks[matching_index]
         owner = self.owners.get(line)
         if (
             owner is None
@@ -872,9 +1145,17 @@ class CorrectedHybridScheduler:
             return False
         if request.mask != owner.expected_mask:
             raise AssertionError("corrected policy attempted a partial write")
+        del self.write_acks[matching_index]
         for destination in request.destinations:
+            self._charge("write_token_walks", 1)
             if self.token_state[destination] != "tentative":
                 raise AssertionError("write completion token is not tentative")
+            if (
+                self.destination_receive_counts[destination] != 1
+                or self.destination_values[destination]
+                != self.expected_destination_values[destination]
+            ):
+                raise AssertionError("write completion failed payload oracle")
             self.token_state[destination] = "committed"
             self.remaining_live_words -= 1
             if self.remaining_live_words < 0:
@@ -889,6 +1170,7 @@ class CorrectedHybridScheduler:
         self._advance_focus()
         return True
 
+    @bounded_transition
     def complete_oldest_write(self) -> bool:
         if not self.write_acks:
             return False
@@ -921,6 +1203,7 @@ class CorrectedHybridScheduler:
             self.remaining_live_words == 0
             and not self.owners
             and not self.source_requests
+            and not self.accepted_source_requests
             and not self.source_responses
             and not self.write_requests
             and not self.write_acks
@@ -939,16 +1222,39 @@ class CorrectedHybridScheduler:
                 raise AssertionError("owner set exceeded finite associativity")
         bounded = (
             (len(self.source_requests), self.config.source_request_slots),
+            (
+                len(self.accepted_source_requests),
+                self.config.source_response_slots,
+            ),
             (len(self.source_responses), self.config.source_response_slots),
             (len(self.write_requests), self.config.write_request_slots),
             (len(self.write_acks), self.config.write_ack_slots),
         )
         if any(used > capacity for used, capacity in bounded):
             raise AssertionError("a finite queue exceeded capacity")
-        if len(self.source_requests) + len(self.source_responses) > (
+        if len(self.source_requests) + len(self.accepted_source_requests) > (
             self.config.source_response_slots
         ):
-            raise AssertionError("source responses were not credit reserved")
+            raise AssertionError(
+                "source requests and accepted responses exceeded shared credits"
+            )
+        focus_entry_count = sum(
+            len(sources) for sources in self.focus_rows.values()
+        )
+        if focus_entry_count > len(self.source_targets):
+            raise AssertionError("focus heap exceeded the finite source bound")
+        if len(self.focus_heap_members) != focus_entry_count:
+            raise AssertionError("focus heap membership state diverged")
+        if self.atomic_transition_work_high_water > (
+            self.atomic_transition_work_limit
+        ):
+            raise AssertionError(
+                "atomic transition exceeded finite work bound"
+            )
+        if not 1 <= self.next_source_request_id <= MAX_REQUEST_ID + 1:
+            raise AssertionError("source request-ID state exceeded its width")
+        if not 1 <= self.next_write_request_id <= MAX_REQUEST_ID + 1:
+            raise AssertionError("write request-ID state exceeded its width")
         for line, owner in self.owners.items():
             if owner.line != line or owner.generation != self.generation:
                 raise AssertionError("owner tag mismatch")
@@ -958,6 +1264,32 @@ class CorrectedHybridScheduler:
                 owner.received_mask | owner.reserved_mask
             ) & ~owner.expected_mask:
                 raise AssertionError("owner contains a predicated-false word")
+            reservation_words = {
+                word
+                for word in range(self.config.words_per_line)
+                if owner.reserved_mask & (1 << word)
+            }
+            if reservation_words != set(owner.reservation_request_ids):
+                raise AssertionError("reservation request-ID ledger diverged")
+            if reservation_words != set(owner.reservation_source_lines):
+                raise AssertionError("reservation source-line ledger diverged")
+        for request_id, request in self.accepted_source_requests.items():
+            if request_id != request.request_id:
+                raise AssertionError("accepted source ledger key diverged")
+            if request.generation != self.generation:
+                raise AssertionError("accepted source generation diverged")
+            for destination in request.destinations:
+                line, word = divmod(destination, self.config.words_per_line)
+                owner = self.owners.get(line)
+                if (
+                    owner is None
+                    or owner.reservation_request_ids.get(word) != request_id
+                    or owner.reservation_source_lines.get(word)
+                    != request.source_line
+                ):
+                    raise AssertionError(
+                        "accepted source lost its exact reservation"
+                    )
         if check_all_tokens:
             observed_remaining = 0
             for destination, state in enumerate(self.token_state):
@@ -965,6 +1297,22 @@ class CorrectedHybridScheduler:
                     raise AssertionError("false predicate acquired an owner")
                 if self.live[destination] and state != "committed":
                     observed_remaining += 1
+                if self.live[destination] and state in (
+                    "tentative",
+                    "committed",
+                ):
+                    if (
+                        self.destination_receive_counts[destination] != 1
+                        or self.destination_values[destination]
+                        != self.expected_destination_values[destination]
+                    ):
+                        raise AssertionError(
+                            "live destination failed value oracle"
+                        )
+                elif self.destination_receive_counts[destination] != 0:
+                    raise AssertionError(
+                        "non-received destination has a value"
+                    )
             if observed_remaining != self.remaining_live_words:
                 raise AssertionError("remaining-live-word counter diverged")
 
@@ -991,8 +1339,16 @@ class CorrectedHybridScheduler:
         return self.metrics()
 
     def metrics(self) -> dict[str, object]:
-        order = _source_order_metrics(
-            self.source_order, self.source_line_phase
+        unique_source_lines = len(self.source_targets)
+        if self.done() and self.source_request_issues < unique_source_lines:
+            raise AssertionError(
+                "completed replay did not issue every source line"
+            )
+        same_row_rate = round(
+            self.same_bank_row_successors / self.source_successor_pairs
+            if self.source_successor_pairs
+            else 0.0,
+            9,
         )
         physical_full_mask = (1 << self.config.words_per_line) - 1
         physical_full = sum(
@@ -1006,7 +1362,22 @@ class CorrectedHybridScheduler:
             "index_scan_words": len(self.pattern),
             "preissue_barrier_words": len(self.pattern),
             "transition_steps": self.transition_steps,
-            **order,
+            "functional_work_total": self.functional_work_total,
+            **{
+                f"work_{name}": value
+                for name, value in self.work_counts.items()
+            },
+            "atomic_transition_work_high_water": (
+                self.atomic_transition_work_high_water
+            ),
+            "atomic_transition_work_limit": self.atomic_transition_work_limit,
+            "unique_source_lines": unique_source_lines,
+            "duplicate_source_reads": (
+                self.source_request_issues - unique_source_lines
+            ),
+            "same_bank_row_successors": self.same_bank_row_successors,
+            "source_successor_pairs": self.source_successor_pairs,
+            "same_bank_row_successor_rate": same_row_rate,
             "source_request_issues": self.source_request_issues,
             "source_request_acceptances": self.source_request_acceptances,
             "source_response_completions": self.source_response_completions,
@@ -1021,10 +1392,39 @@ class CorrectedHybridScheduler:
             "owner_allocation_refusals": self.owner_allocation_refusals,
             "focus_switches": self.focus_switches,
             "stale_source_responses": self.stale_source_responses,
+            "forged_source_responses": self.forged_source_responses,
+            "rejected_source_responses": (
+                self.stale_source_responses + self.forged_source_responses
+            ),
             "stale_write_responses": self.stale_write_responses,
+            "row_rotations": self.row_rotations,
+            "row_same_reselections": self.row_same_reselections,
+            "payload_oracle_live_words_verified": sum(
+                count == 1 and value == expected
+                for count, value, expected, is_live in zip(
+                    self.destination_receive_counts,
+                    self.destination_values,
+                    self.expected_destination_values,
+                    self.live,
+                )
+                if is_live
+            ),
+            "payload_oracle_exact_once_failures": sum(
+                count != 1 or value != expected
+                for count, value, expected, is_live in zip(
+                    self.destination_receive_counts,
+                    self.destination_values,
+                    self.expected_destination_values,
+                    self.live,
+                )
+                if is_live
+            ),
             "owner_high_water": self.high_water["owner"],
             "source_request_queue_high_water": self.high_water[
                 "source_request"
+            ],
+            "accepted_source_response_high_water": self.high_water[
+                "accepted_source"
             ],
             "source_response_queue_high_water": self.high_water[
                 "source_response"
@@ -1036,62 +1436,182 @@ class CorrectedHybridScheduler:
 
 def corrected_state_lower_bound(
     config: ReplayConfig | None = None,
-    generation_bits: int = 64,
-) -> dict[str, int]:
-    """Bit-packed policy-state contract; not area or synthesis evidence."""
+) -> dict[str, object]:
+    """Finite bit-packed policy/observer ledger; not synthesis evidence."""
     config = config or ReplayConfig()
     config.validate()
-    if generation_bits <= 0:
-        raise ValueError("generation width must be positive")
-    line_count = ceil_div(config.logical_elements, config.words_per_line)
+    line_count = config.destination_lines
     line_bits = max(1, math.ceil(math.log2(line_count)))
     token_bits = max(1, math.ceil(math.log2(config.logical_elements)))
-    source_line_bits = token_bits
+    source_line_bits = ARCHIVED_SOURCE_LINE_BITS
+    source_word_bits = max(1, math.ceil(math.log2(config.words_per_line)))
     mask_bits = config.words_per_line
+    allocation_sequence_bits = max(1, math.ceil(math.log2(line_count + 1)))
+    owner_state_bits = 2
+    response_count_bits = max(
+        1, math.ceil(math.log2(config.max_response_tokens + 1))
+    )
+    write_count_bits = max(1, math.ceil(math.log2(config.words_per_line + 1)))
+    row_key_bits = 1 + 2 + 2 + max(1, source_line_bits - 12)
+    page_count = config.pages_per_tile
+    page_bits = max(1, math.ceil(math.log2(page_count + 1)))
+    page_remaining_bits = max(
+        1, math.ceil(math.log2(config.page_elements + 1))
+    )
+    owner_set_count_bits = max(1, math.ceil(math.log2(config.owner_ways + 1)))
+    row_burst_bits = max(1, math.ceil(math.log2(config.row_burst + 1)))
+
     owner_metadata_bits = config.owner_lines * (
         line_bits
-        + generation_bits
+        + GENERATION_BITS
         + 3 * mask_bits
-        + 3
-        + token_bits * config.words_per_line
+        + allocation_sequence_bits
+        + owner_state_bits
+        + REQUEST_ID_BITS
+        + 1
+        + config.words_per_line
+        * (token_bits + REQUEST_ID_BITS + source_line_bits)
     )
-    live_mask_table_bits = line_count * (mask_bits + generation_bits + 1)
-    reverse_source_token_bits = config.logical_elements * token_bits
+    live_mask_table_bits = line_count * (mask_bits + GENERATION_BITS + 1)
+    source_mapping_bits = config.logical_elements * (
+        source_line_bits + source_word_bits
+    )
     token_state_bits = config.logical_elements * 2
-    max_response_tokens = config.owner_lines * config.words_per_line
     source_queue_descriptor_bits = (
-        source_line_bits + generation_bits + token_bits * max_response_tokens
+        1
+        + REQUEST_ID_BITS
+        + GENERATION_BITS
+        + source_line_bits
+        + response_count_bits
+        + token_bits * config.max_response_tokens
     )
     source_request_queue_bits = (
         config.source_request_slots * source_queue_descriptor_bits
     )
-    source_response_queue_bits = config.source_response_slots * (
-        source_queue_descriptor_bits + config.cache_line_bytes * 8
+    accepted_source_ledger_bits = (
+        config.source_response_slots * source_queue_descriptor_bits
+    )
+    source_response_event_bits = config.source_response_slots * (
+        1
+        + REQUEST_ID_BITS
+        + GENERATION_BITS
+        + source_line_bits
+        + config.words_per_line * VALUE_BITS
     )
     write_descriptor_bits = (
-        line_bits + generation_bits + mask_bits + token_bits
+        1
+        + REQUEST_ID_BITS
+        + GENERATION_BITS
+        + line_bits
+        + mask_bits
+        + write_count_bits
+        + token_bits * config.words_per_line
     )
     write_request_queue_bits = (
         config.write_request_slots * write_descriptor_bits
     )
     write_ack_queue_bits = config.write_ack_slots * write_descriptor_bits
-    parts_bits = {
+    focus_heap_bits = config.logical_elements * (1 + source_line_bits)
+    focus_membership_bits = config.logical_elements * (1 + source_line_bits)
+    focus_pointer_bits = max(
+        1, math.ceil(math.log2(config.logical_elements + 1))
+    )
+    focus_row_directory_bits = config.logical_elements * (
+        1 + row_key_bits + 2 * focus_pointer_bits
+    )
+    selector_state_bits = (
+        page_bits
+        + page_count * page_remaining_bits
+        + max(1, math.ceil(math.log2(config.logical_elements + 1)))
+        + config.owner_sets * owner_set_count_bits
+        + 1
+        + row_key_bits
+        + row_burst_bits
+        + max(1, math.ceil(math.log2(config.logical_elements + 1)))
+    )
+    identity_state_bits = (
+        GENERATION_BITS + 2 * REQUEST_ID_BITS + allocation_sequence_bits
+    )
+
+    def fifo_protocol_bits(slots: int) -> int:
+        pointer_bits = max(1, math.ceil(math.log2(slots)))
+        count_bits = max(1, math.ceil(math.log2(slots + 1)))
+        return 2 * pointer_bits + count_bits
+
+    queue_protocol_bits = sum(
+        fifo_protocol_bits(slots)
+        for slots in (
+            config.source_request_slots,
+            config.source_response_slots,
+            config.write_request_slots,
+            config.write_ack_slots,
+        )
+    ) + max(1, math.ceil(math.log2(config.source_response_slots + 1)))
+    ordering_state_bits = 1 + row_key_bits + 5 * REQUEST_ID_BITS
+    work_accounting_bits = (len(WORK_COUNTER_NAMES) + 4) * REQUEST_ID_BITS
+    payload_oracle_observer_bits = config.logical_elements * (VALUE_BITS + 1)
+
+    component_bits = {
         "owner_payload_bits": config.owner_lines * config.cache_line_bytes * 8,
         "owner_metadata_bits": owner_metadata_bits,
         "exact_live_mask_table_bits": live_mask_table_bits,
-        "reverse_source_token_bits": reverse_source_token_bits,
+        "source_mapping_table_bits": source_mapping_bits,
         "token_state_bits": token_state_bits,
         "source_request_queue_bits": source_request_queue_bits,
-        "source_response_queue_bits": source_response_queue_bits,
+        "accepted_source_ledger_bits": accepted_source_ledger_bits,
+        "source_response_event_queue_bits": source_response_event_bits,
         "write_request_queue_bits": write_request_queue_bits,
         "write_ack_queue_bits": write_ack_queue_bits,
+        "focus_heap_bits": focus_heap_bits,
+        "focus_membership_bits": focus_membership_bits,
+        "focus_row_directory_bits": focus_row_directory_bits,
+        "selector_state_bits": selector_state_bits,
+        "queue_protocol_state_bits": queue_protocol_bits,
+        "identity_state_bits": identity_state_bits,
+        "ordering_observer_state_bits": ordering_state_bits,
+        "functional_work_accounting_bits": work_accounting_bits,
+        "payload_oracle_observer_bits": payload_oracle_observer_bits,
     }
-    result = {
-        name.replace("_bits", "_bytes"): ceil_div(bits, 8)
-        for name, bits in parts_bits.items()
+    observer_components = {
+        "ordering_observer_state_bits",
+        "functional_work_accounting_bits",
+        "payload_oracle_observer_bits",
     }
-    result["bit_packed_policy_state_bytes"] = sum(result.values())
-    return result
+    observer_bits = sum(
+        bits
+        for name, bits in component_bits.items()
+        if name in observer_components
+    )
+    policy_bits = sum(component_bits.values()) - observer_bits
+    total_bits = policy_bits + observer_bits
+    return {
+        "widths": {
+            "destination_line_bits": line_bits,
+            "destination_token_bits": token_bits,
+            "source_line_bits": source_line_bits,
+            "source_word_offset_bits": source_word_bits,
+            "generation_bits": GENERATION_BITS,
+            "request_id_bits": REQUEST_ID_BITS,
+            "allocation_sequence_bits": allocation_sequence_bits,
+            "owner_state_bits": owner_state_bits,
+            "row_key_bits": row_key_bits,
+            "value_bits": VALUE_BITS,
+        },
+        "capacities": {
+            "destination_lines": line_count,
+            "maximum_source_line": MAX_SOURCE_LINE,
+            "maximum_response_tokens": config.max_response_tokens,
+            "focus_heap_entries": config.logical_elements,
+        },
+        "components_bits": component_bits,
+        "observer_components": sorted(observer_components),
+        "bit_packed_policy_state_bits": policy_bits,
+        "bit_packed_policy_state_bytes": ceil_div(policy_bits, 8),
+        "bit_packed_replay_observer_state_bits": observer_bits,
+        "bit_packed_replay_observer_state_bytes": ceil_div(observer_bits, 8),
+        "bit_packed_finite_ledger_bits": total_bits,
+        "bit_packed_finite_ledger_bytes": ceil_div(total_bits, 8),
+    }
 
 
 def analyze_tile(
@@ -1126,9 +1646,12 @@ def _aggregate_policy(
     high_water_keys = {
         "owner_high_water",
         "source_request_queue_high_water",
+        "accepted_source_response_high_water",
         "source_response_queue_high_water",
         "write_request_queue_high_water",
         "write_ack_queue_high_water",
+        "atomic_transition_work_high_water",
+        "atomic_transition_work_limit",
     }
     ignored = {"policy_kind", "same_bank_row_successor_rate"}
     for key in records[0]:
@@ -1156,9 +1679,12 @@ def _aggregate_policy_summaries(
     high_water_keys = {
         "owner_high_water",
         "source_request_queue_high_water",
+        "accepted_source_response_high_water",
         "source_response_queue_high_water",
         "write_request_queue_high_water",
         "write_ack_queue_high_water",
+        "atomic_transition_work_high_water",
+        "atomic_transition_work_limit",
     }
     ignored = {"policy_kind", "same_bank_row_successor_rate"}
     for key in records[0]:
@@ -1184,6 +1710,11 @@ def analyze_pattern(
     validate_pattern(pattern)
     config = config or ReplayConfig()
     config.validate()
+    max_source_line = max(pattern) // config.words_per_line
+    if max_source_line + source_line_phase > MAX_SOURCE_LINE:
+        raise ValueError(
+            "input source line plus phase exceeds the archived 18-bit field"
+        )
     live_values = list(live) if live is not None else [True] * len(pattern)
     validate_live_mask(pattern, live_values)
     per_policy: dict[str, list[dict[str, object]]] = {
@@ -1206,6 +1737,7 @@ def analyze_pattern(
             per_policy[policy].append(metrics)
     return {
         "pattern_words": len(pattern),
+        "max_source_line": max_source_line,
         "all_words_live": all(live_values),
         "policies": {
             policy: _aggregate_policy(records)
@@ -1269,6 +1801,20 @@ def main() -> None:
             "archived_response_ticks_available": False,
             "timing_prediction": False,
             "synthesis_or_area_claim": False,
+            "measurement_domains": {
+                "functional_work": (
+                    "exact integer counts prefixed work_ plus requests, "
+                    "writes, scans, transitions, and ordering successors"
+                ),
+                "timing": (
+                    "unavailable: no cycles, ticks, latency, throughput, "
+                    "or speedup is derived"
+                ),
+            },
+            "payload_oracle": (
+                "64-bit bijective deterministic source-word values; every "
+                "live destination must receive its mapped value exactly once"
+            ),
         },
         "config": asdict(config),
         "state_contract": corrected_state_lower_bound(config),
@@ -1302,6 +1848,9 @@ def main() -> None:
         output["flag"] = {
             "case_count": len(cases),
             "pattern_words": sum(int(case["pattern_words"]) for case in cases),
+            "max_source_line": max(
+                int(case["max_source_line"]) for case in cases
+            ),
             "policies": {
                 policy: _aggregate_policy_summaries(
                     [case["policies"][policy] for case in cases]

@@ -51,19 +51,23 @@ pages.  With FP64 data, each destination cache line has eight word positions.
 The policy state is finite:
 
 - 384 destination-line owners, 96 sets, four ways;
-- four accepted source-request slots and four reserved source-response slots;
+- four issued source-request slots, four accepted-response ledger entries, and
+  four bounded incoming response-event slots;
 - eight write-request slots and eight accepted-but-not-complete write slots;
 - a 128-request active bank-row quantum;
 - at most 384 new focus-page lines and one new future-page line reserved by one
   source request;
-- one 64-bit generation on every logical descriptor, owner, source request,
-  source response, write request, and write response match.
+- one nonzero 64-bit generation and one non-wrapping 64-bit unique request ID
+  on every request/response obligation, plus an 18-bit source-line field.  The
+  archived FLAG maximum is line 222,112, so the prior 14-bit field was invalid.
 
-The apparently large “384 focus lines per response” is a capacity bound, not a
-one-cycle datapath claim.  One response can name at most 384 owners × eight
-word tokens.  A hardware implementation would walk that finite token list at a
-declared retirement throughput.  The replay applies the bounded logical
-transition atomically and therefore provides no throughput or clock result.
+The apparently large “384 focus lines per request” is a capacity bound, not a
+one-cycle datapath claim.  One accepted-request ledger entry can name at most
+384 owners × eight word tokens.  A source response carries only one eight-word
+cache-line payload; it cannot nominate destination tokens.  A hardware
+implementation would walk the accepted request's finite token list at a
+declared retirement throughput.  The replay charges and bounds that walk but
+provides no throughput or clock result.
 
 ### Charged build barrier and exact masks
 
@@ -95,9 +99,10 @@ predicated_false
 ```
 
 Before a source request is queued, every selected Offset token reserves a word
-in the unique owner for its destination line.  Allocation probes the line's
-four-way set.  A hit always uses the existing owner, including after a focus
-change.  A miss allocates only with a free way and a reserved response credit.
+in the unique owner for its destination line and records the exact request ID
+and source line that may complete it.  Allocation probes the line's four-way
+set.  A hit always uses the existing owner, including after a focus change.  A
+miss allocates only with a free way and a reserved accepted-response credit.
 There is no eviction and no partial spill.  If allocation is refused, the
 Offset token remains unconsumed and may be selected later.
 
@@ -126,6 +131,18 @@ The promoted response fills all matching existing owners; unrelated tokens
 remain unconsumed unless they fit the stated allocation rules.  Thus a full set
 causes backpressure/refetch work, not a second owner or a partial write.
 
+The selector materializes bounded per-row source heaps, a membership CAM, and a
+finite row directory.  At quantum expiry it chooses the first eligible row
+strictly after the active row, wraps to the first different eligible row, and
+reselects the old row only when no different row remains.  Rebuild source scans,
+focus-membership scans, row-directory scans, heap pushes/pops, sort inputs and a
+comparison upper bound, allocation/planning scans, promotion walks, response
+payload/token checks, ready-owner scans, and write walks all have explicit
+`work_` counters.  Every logical transition also records a work high-water mark
+and fails if it exceeds the configuration-derived finite bound.  Diagnostic
+invariant checks are validation work outside the modeled policy transition and
+are not presented as scheduler work.
+
 Focus advances only after true write responses have committed every live word
 in the page.  Future-page owners survive that change unchanged.
 
@@ -133,11 +150,17 @@ in the page.  Future-page owners survive that change unchanged.
 
 The transition model separates the following events:
 
-1. **Source issue:** reserve owner words and a downstream response credit, then
-   enqueue a generation-tagged source request.
-2. **Source acceptance:** move that request to the bounded response queue.
-3. **Source completion:** merge the returned values into their pre-reserved
-   owners.  A response with the wrong generation is counted and ignored.
+1. **Source issue:** reserve owner words under a unique
+   `(generation, request_id, source_line)` identity and a downstream accepted-
+   response credit, then enqueue the source request.
+2. **Source acceptance:** move the exact request into the bounded authoritative
+   accepted-response ledger.  Issued requests plus accepted ledger entries may
+   never exceed the four shared credits.
+3. **Source completion:** match all three identity fields, validate the exact
+   deterministic eight-word source payload, and preflight the complete accepted
+   token list before mutating any owner.  Unknown, stale, forged, reordered, or
+   duplicate events cannot consume unrelated reservations.  Valid responses
+   may arrive in any order through the bounded event FIFO.
 4. **Write request:** once `received_mask == exact_live_mask` and no reserved
    word remains, enqueue one exact-mask write.
 5. **Write acceptance:** move the request into the eight-entry ACK/outstanding
@@ -146,17 +169,20 @@ The transition model separates the following events:
    response commits tokens, decrements page work, and frees the owner.  A stale
    or duplicate response is counted and cannot release current state.
 
-Every queue admission is credit checked.  Source request plus response
-occupancy may not exceed the four reserved response credits.  Set occupancy,
-table occupancy, and all queue capacities are asserted during replay.
+Every queue admission is credit checked.  Adversarial response events occupy
+only the bounded event FIFO and cannot create an accepted-response credit;
+issued source requests plus authoritative accepted responses remain bounded by
+four.  Set occupancy, table occupancy, every queue, request-ID exhaustion, and
+every field width are asserted during replay.
 
 ### Liveness argument
 
 Assume fair source-request acceptance, eventual source response, fair
 write-request acceptance, and eventual matching write response.
 
-- Every accepted current-generation source response moves at least one live
-  token from `reserved` to `tentative`.
+- Every exactly matched accepted source response moves at least one live token
+  from `reserved` to `tentative`, and the payload oracle proves that the mapped
+  source value is received exactly once.
 - Every matching write response moves at least one token from `tentative` to
   `committed` and frees an owner way.
 - If focus work cannot allocate, either an accepted/write pipeline transition
@@ -210,45 +236,62 @@ transparent stream-store run is true CHSO timing evidence.
 
 ## Finite state contract
 
-The executable model reports the following bit-packed state contract for its
-default dimensions:
+The executable model now reports a complete bit ledger for every finite policy
+and replay-observer structure it uses.  Its width contract is: 11-bit
+destination-line tags, 14-bit destination tokens, **18-bit source-line tags**,
+3-bit source-word offsets, 64-bit generations, 64-bit non-wrapping request IDs,
+12-bit owner allocation sequences, 11-bit bank-row keys, two-bit owner states,
+and 64-bit payload words.
 
-| Component | Bytes |
-|---|---:|
-| 384 owner payloads | 24,576 |
-| Owner tags/masks/generations/tokens/state | 10,272 |
-| Exact live-mask + generation table | 18,688 |
-| Reverse destination-to-source token table | 28,672 |
-| Two-bit live-token state | 4,096 |
-| Four source-request descriptors | 21,543 |
-| Four source-response descriptors and payloads | 21,799 |
-| Eight write-request descriptors | 97 |
-| Eight accepted-write/ACK descriptors | 97 |
-| **Bit-packed policy-state contract** | **129,840** |
+| Component | Bits | Byte ceiling |
+|---|---:|---:|
+| 384 owner payloads | 196,608 | 24,576 |
+| Owner tags, masks, reservation identities, tokens, and protocol state | 363,264 | 45,408 |
+| Exact live-mask/generation table | 149,504 | 18,688 |
+| Source mapping + two-bit token state | 376,832 | 47,104 |
+| Issued-source queue + authoritative accepted-source ledger | 345,336 | 43,168 |
+| Incoming source-response event FIFO | 2,636 | 330 |
+| Write-request + accepted-write/ACK queues | 4,224 | 528 |
+| Focus heaps, membership CAM, and row directory | 1,310,720 | 163,840 |
+| Selector, queue protocol, and global identity state | 634 | 80 |
+| **Bit-packed executable policy state** | **2,749,758** | **343,720** |
+| Ordering/work/value replay observers | 1,066,956 | 133,370 |
+| **Complete finite executable + observer ledger** | **3,816,714** | **477,090** |
 
-The source queue descriptors conservatively reserve the maximum 384 × eight
-Offset tokens.  Existing full Row/Offset/row-selection storage is not counted
-again.  Conversely, this table is not a whole-MAA storage ledger and excludes
-selector logic, ports, allocators, wiring, ECC, banking overhead, and existing
-STL capacity.  The 384 payload lines replace/repurpose the existing combiner
-role; the total must not be described as incremental area.  These byte counts
-are neither synthesized area nor energy evidence.
+The JSON preserves the exact per-component bit arithmetic; byte ceilings in
+this table are explanatory and therefore do not sum component-by-component.
+The source descriptors reserve the maximum 384 × eight Offset tokens.  Unlike
+the rejected ledger, this total includes focus heap/membership/row-directory
+selector state, active-row and page ordering state, FIFO head/tail/count state,
+accepted-response identities, global next-ID/generation/allocation state, and
+the counters required to prove bounded work.  The value and ordering observers
+are shown separately from executable policy state.
+
+This remains a finite model-state ledger, not a whole-MAA storage or physical
+cost result.  It excludes ports, allocators, wiring, ECC, banking overhead, and
+implementation margins.  The 384 payload lines replace/repurpose the existing
+combiner role; neither 343,720 nor 477,090 bytes may be described as incremental
+area, synthesis, energy, or timing evidence.
 
 ## Archived deterministic replay
 
 The frozen artifact is
 `experiments/analysis/corrected_hybrid_scheduler_replay_2026-08-02.json`
-(SHA-256 `11d34294d329f1054271579da377e1a84c9949ab3836d7eb6927908528a7fdf3`).
+(SHA-256 `a31b2e40432a1f35e78580d544d9a10581a7cd23f18057795383c8b220f259e7`).
 It uses XRAGE input SHA-256
 `1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde`
 and all 14 archived FLAG gather JSON files.  Each file hash is stored in the
-artifact.
+artifact; the aggregate FLAG maximum source line is 222,112 and is checked
+against the 18-bit contract.
 
 All three policies use static index mappings and model-selected immediate
 source-response order.  Full-row and direct4 are finite combiner ordering
 references with immediate write acceptance/completion.  Corrected is the
-executed owner/request/response/ACK transition model.  Therefore differences
-are policy work/ordering observations, not simulated latency.
+executed owner/request/response/ACK transition model.  Every integer field
+prefixed `work_`, plus request/write/scan/transition counts and row successors,
+is a **functional work or ordering count**.  The artifact has no timing domain:
+it reports no cycles, ticks, latency, throughput, or speedup.  Therefore all
+differences below are policy work/ordering observations, not simulated latency.
 
 ### Full XRAGE (128 logical tiles, 2,097,152 live words)
 
@@ -256,13 +299,16 @@ are policy work/ordering observations, not simulated latency.
 |---|---:|---:|---:|---:|---:|---:|
 | full-row | 299,046 | 0 | 98.685% | 271,221 | 17,925 | 2,097,152 |
 | direct4 | 322,188 | 23,142 | 97.981% | 262,762 | 1,235 | 524,288 |
-| corrected CHSO-384 | 318,099 | 19,053 | 79.074% | 262,144 | 0 | 2,097,152 |
+| corrected CHSO-384 | 318,160 | 19,114 | 79.058% | 262,144 | 0 | 2,097,152 |
 
-CHSO executes 115,142 owner-pressure promotions, reaches all 384 owners, and
-observes 90,313 refused owner-allocation probes.  Its A-request count lies
-between the two references and its writes reach the exact-live-line minimum in
-this all-live issue-order model.  Its lower same-row successor proxy is an
-explicit cost, not a timing conclusion.
+CHSO executes 115,188 owner-pressure promotions, reaches all 384 owners,
+observes 90,583 refused owner-allocation probes, and performs 5,260 explicit
+row rotations.  The exact-once oracle validates all 2,097,152 live destination
+values with zero failures.  Its 91,394,097 charged functional-work items have a
+10,505-item maximum atomic transition, below the derived 33,620,161-item bound.
+Its A-request count lies between the two references and its writes reach the
+exact-live-line minimum in this all-live issue-order model.  Its much lower
+same-row successor proxy is an explicit negative cost, not a timing conclusion.
 
 ### Fourteen FLAG gathers (40 logical tiles, 638,460 live words)
 
@@ -270,12 +316,17 @@ explicit cost, not a timing conclusion.
 |---|---:|---:|---:|---:|---:|---:|
 | full-row | 153,567 | 0 | 87.768% | 80,650 | 1,614 | 638,460 |
 | direct4 | 155,262 | 1,695 | 87.754% | 79,958 | 288 | 163,840 |
-| corrected CHSO-384 | 158,207 | 4,640 | 73.339% | 79,814 | 0 | 638,460 |
+| corrected CHSO-384 | 158,209 | 4,642 | 73.340% | 79,814 | 0 | 638,460 |
 
-CHSO executes 54,924 promotions, reaches 384 owners, and observes 57,527
-allocation refusals.  It removes partial-live-mask writes in this ordering
-model but performs 2,945 more A requests than direct4 and has a lower row proxy.
-This is evidence against promotion without response-timed validation.
+CHSO executes 54,900 promotions, reaches 384 owners, observes 57,677 allocation
+refusals, and performs 12,044 explicit row rotations.  The exact-once oracle
+validates all 638,460 live destination values with zero failures.  Its
+59,143,509 charged functional-work items have a 17,721-item maximum atomic
+transition, below the same derived bound.  It removes partial-live-mask writes
+in this ordering model but performs **2,947 more A requests than direct4** and
+has a substantially lower row proxy.  The repaired policy therefore remains
+negative and is not a promotion candidate; response-timed evidence is still
+absent.
 
 ## Focused validation
 
@@ -286,10 +337,20 @@ This is evidence against promotion without response-timed validation.
 - exact masks with predicated holes;
 - a full one-entry owner/write-ACK configuration retaining ownership after
   request acceptance and draining only after true completion;
-- stale source and write responses failing to mutate the current generation;
+- forged same-generation IDs/source lines, reordered legitimate responses, and
+  duplicate responses failing to mutate unrelated reservations;
+- adversarial response-event injection never increasing the combined issued +
+  accepted-response credit total;
+- corrupted/reordered payload words failing before partial owner mutation, then
+  the legitimate payload satisfying the exact-once destination oracle;
+- stale write responses failing to release the current owner;
+- row-burst expiry rotating to a different eligible row before the old minimum;
 - an adversarial repeated-source pattern completing within a finite bound;
 - explicit full-row/direct4/corrected execution and charged scan barriers;
-- nonzero finite state for exact masks, generations, and every queue.
+- nonzero charged heap/rebuild/sort/token/transition work under the atomic bound;
+- 18-bit archived source-line edges, 64-bit generation/request-ID exhaustion,
+  and nonzero finite state for protocol, selector, identity, ordering, oracle,
+  exact masks, and every queue.
 
 ## Reproduction
 
