@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "../../../include/gem5/maa_logical_spd_cache_abi.hh"
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
@@ -217,7 +218,15 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
             switch (element_id) {
             case 0: {
                 panic_if(instruction_id != -1, "Received new instruction[0] after incomplete instruction!\n");
-                current_instruction->dst2SpdID = (data & NA_UINT8) == NA_UINT8 ? -1 : (data & NA_UINT8);
+                const auto logical_header =
+                    maa::LogicalSPDCacheABI::decodeWord0(data);
+                panic_if(
+                    logical_header.kind ==
+                        maa::LogicalSPDCacheABI::HeaderKind::Unsupported,
+                    "Unsupported logical high-byte encoding in instruction "
+                    "word 0: 0x%016lx\n", data);
+                current_instruction->dst2SpdID =
+                    (data & NA_UINT8) == NA_UINT8 ? -1 : (data & NA_UINT8);
                 data = data >> 8;
                 current_instruction->dst1SpdID = (data & NA_UINT8) == NA_UINT8 ? -1 : (data & NA_UINT8);
                 data = data >> 8;
@@ -228,6 +237,21 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 data = data >> 8;
                 current_instruction->opcode = (data & NA_UINT8) == NA_UINT8 ? Instruction::OpcodeType::MAX : static_cast<Instruction::OpcodeType>(data & NA_UINT8);
                 assert(current_instruction->opcode != Instruction::OpcodeType::MAX);
+                if (logical_header.kind ==
+                    maa::LogicalSPDCacheABI::HeaderKind::LogicalALUScalar) {
+                    panic_if(
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::ALU_SCALAR,
+                        "Logical high-byte operands are only supported for "
+                        "ALU_SCALAR, got opcode %d\n",
+                        static_cast<int>(current_instruction->opcode));
+                    current_instruction->src1LogicalID =
+                        logical_header.src1LogicalID;
+                    current_instruction->src2LogicalID =
+                        logical_header.src2LogicalID;
+                    current_instruction->dst1LogicalID =
+                        logical_header.dst1LogicalID;
+                }
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::STREAM_LD ||
                     current_instruction->opcode ==
@@ -290,10 +314,21 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->state = Instruction::Status::Idle;
                 current_instruction->CID = pkt->req->contextId();
                 current_instruction->PC = pkt->req->getPC();
-                if (current_instruction->accessType != Instruction::AccessType::COMPUTE) {
-                    current_instruction->addrRangeID = getAddrRegion(current_instruction->baseAddr);
-                    current_instruction->minAddr = addrRegions[current_instruction->addrRangeID].first;
-                    current_instruction->maxAddr = addrRegions[current_instruction->addrRangeID].second;
+                if (current_instruction->isLogicalALUScalar()) {
+                    panic_if(
+                        data != maa::LogicalSPDCacheABI::NoAddress,
+                        "Logical ALU_SCALAR word 2 must use the no-address "
+                        "sentinel, got 0x%016lx\n", data);
+                    break;
+                }
+                if (current_instruction->accessType !=
+                    Instruction::AccessType::COMPUTE) {
+                    current_instruction->addrRangeID =
+                        getAddrRegion(current_instruction->baseAddr);
+                    current_instruction->minAddr =
+                        addrRegions[current_instruction->addrRangeID].first;
+                    current_instruction->maxAddr =
+                        addrRegions[current_instruction->addrRangeID].second;
                 }
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
@@ -323,9 +358,45 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_SPD_STREAM &&
                         current_instruction->opcode !=
-                            Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR,
+                            Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR &&
+                        !current_instruction->isLogicalALUScalar(),
                     "Backing address is only valid for virtual or fused "
-                    "indirect loads!\n");
+                    "indirect loads or logical ALU_SCALAR!\n");
+                if (current_instruction->isLogicalALUScalar()) {
+                    const maa::LogicalSPDCacheABI::ScalarOperandShape shape{
+                        static_cast<uint8_t>(current_instruction->datatype),
+                        static_cast<uint8_t>(current_instruction->optype),
+                        current_instruction->src1LogicalID,
+                        current_instruction->src2LogicalID,
+                        current_instruction->dst1LogicalID,
+                        current_instruction->src1SpdID,
+                        current_instruction->src2SpdID,
+                        current_instruction->dst1SpdID,
+                        current_instruction->dst2SpdID,
+                        current_instruction->src1RegID,
+                        current_instruction->src2RegID,
+                        current_instruction->src3RegID,
+                        current_instruction->dst1RegID,
+                        current_instruction->dst2RegID,
+                        current_instruction->condSpdID,
+                        current_instruction->baseAddr,
+                        data};
+                    const auto validation =
+                        maa::LogicalSPDCacheABI::validateLogicalALUScalar(
+                            shape, static_cast<uint8_t>(
+                                       current_instruction->opcode));
+                    panic_if(
+                        validation !=
+                            maa::LogicalSPDCacheABI::ScalarValidation::Valid,
+                        "Rejected logical ALU_SCALAR ABI shape (%d) before "
+                        "controller state mutation\n",
+                        static_cast<int>(validation));
+                    panic_if(
+                        true,
+                        "Logical ALU_SCALAR ABI is decoded and validated, "
+                        "but logical SPD-cache controller integration is "
+                        "not implemented in this patch\n");
+                }
                 current_instruction->backingAddr = data;
                 current_instruction->backingAddrRangeID = getAddrRegion(data);
                 panic_if(current_instruction->backingAddrRangeID < 0,

@@ -37,6 +37,11 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              dst2Status(TileStatus::WaitForInvalidation),
                              condSpdID(-1),
                              condStatus(TileStatus::WaitForInvalidation),
+                             src1LogicalID(-1),
+                             src2LogicalID(-1),
+                             dst1LogicalID(-1),
+                             src1LogicalGeneration(0),
+                             dst1LogicalGeneration(0),
                              opcode(OpcodeType::MAX),
                              optype(OPType::MAX),
                              datatype(DataType::MAX),
@@ -52,6 +57,9 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              controllerManaged(false),
                              controllerAction(
                                  TransparentSPDController::Action::None),
+                             controllerTransactionID(0),
+                             controllerSrcSlot(-1),
+                             controllerDstSlot(-1),
                              controllerPage(-1) {}
 std::string Instruction::print() const {
     char baseAddrStr[32];
@@ -80,6 +88,11 @@ std::string Instruction::print() const {
              dst2RegID == -1 ? "" : " dstREG2(" + std::to_string(dst2RegID) + ")",
              condSpdID == -1 ? "" : " condSPD(" + std::to_string(condSpdID) + "/" + tile_status_names[(uint8_t)condStatus] + ")",
              baseAddr != 0xFFFFFFFFFFFFFFFF ? " baseAddr(" + std::string(baseAddrStr) + ") minAddr(" + std::string(minAddrStr) + ") maxAddr(" + std::string(maxAddrStr) + ")" : "");
+    if (hasLogicalOperands()) {
+        str << " logicalSrc1(" << src1LogicalID << ")"
+            << " logicalSrc2(" << src2LogicalID << ")"
+            << " logicalDst1(" << dst1LogicalID << ")";
+    }
     return str.str();
 }
 int Instruction::getWordSize(int tile_id) {
