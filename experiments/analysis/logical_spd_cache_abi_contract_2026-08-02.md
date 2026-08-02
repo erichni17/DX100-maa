@@ -41,25 +41,33 @@ uses the word-2 no-address sentinel, and uses word 3 for
 condition tile, extra scalar register, or any physical SPD operand is
 rejected. Datatypes are limited to the six ordinary MAA types and operations
 to the sixteen existing `ADD` through `EQ` scalar operations; `NE_OP` and any
-otherwise unknown wire value are rejected.
+otherwise unknown wire value are rejected. The scalar-register byte is checked
+against the simulator's configured register count, including the second word
+required by a 64-bit scalar.
 
 The `Instruction` carries separate logical IDs plus future generation,
 transaction, and slot fields. This avoids overloading physical IDs before
 hidden SPD slots exist. The decoder validates the complete four-word shape
 before any controller state mutation.
 
-The public `maa_wait_logical_page` and `maa_wait_logical_tile` spell the
-future two-descriptor/four-page ready-index shape. They are ABI placeholders:
-the currently physical-token-indexed ready producer is intentionally
-unchanged, so these waits are not yet a supported synchronization mechanism.
+There are no public logical wait helpers in this patch. The existing
+`wait_virtual_page` helper remains exclusively indexed by a legacy physical
+completion-token tile. A future generation-aware logical ready range must be
+implemented before software receives a logical page or tile wait API.
 
 ## Current behavior and residual gaps
 
-Today a valid logical word sequence is decoded and shape-validated, then
-fails closed with a clear diagnostic before IF/controller admission. This is
-intentional: the patch is not connected to the cache controller, so accepting
-it would wrongly hand an all-`-1` physical ALU to the existing execution unit.
-Malformed, mixed, conditional, aliased, or unsupported forms fail at the same
+Today a logical word sequence is decoded and held until word 3. At that
+`CpuSidePort` boundary, its full shape and configured scalar-register span are
+validated. Its destination must be non-null, naturally aligned to the FP32 or
+FP64 element width, inside a registered address range, and leave room through
+the exclusive range end for all 16,384 result elements (64 KiB for FP32 or
+128 KiB for FP64). A fully valid sequence then fails closed with a clear
+diagnostic before backing fields, IF admission, controller state, or SPD state
+can change. This is intentional: the patch is not connected to the cache
+controller, so accepting it would wrongly hand an all-`-1` physical ALU to the
+existing execution unit. Malformed, mixed, conditional, aliased, unsupported,
+misaligned, unregistered, or truncated forms fail at the same admission
 boundary.
 
 This patch does not change StreamAccess or Port response semantics, does not
@@ -67,9 +75,12 @@ convert stores to `WriteReq`, does not add hidden SPD storage, does not modify
 virtual-indirect production, and does not retire opcode 16. The existing
 transparent opcode/path and its completion-token ABI remain intact.
 
-The focused host test exhaustively classifies all high-byte patterns and each
-rejected scalar-shape category, and checks that the guest helper writes the
-same wire image. Python checks bind the source and scope boundaries.
+The focused host test compiles and runs under the repository's C++11 guest
+language mode. It exhaustively classifies all high-byte patterns and register
+bytes, checks exact and truncated 16K FP32/FP64 destination spans, and verifies
+that the guest helper writes the same wire image. Python checks bind the
+`CpuSidePort` validation-before-fail-closed ordering and the absence of logical
+wait aliases.
 No gem5 simulation was run. These checks are ABI tests, not integration, timing,
 area, correctness-through-memory, or performance evidence; this patch makes
 no performance claim.

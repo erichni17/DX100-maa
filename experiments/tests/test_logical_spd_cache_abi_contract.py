@@ -10,6 +10,7 @@ API = ROOT / "benchmarks/API/MAA_gem5.hpp"
 IF_HEADER = ROOT / "src/mem/MAA/IF.hh"
 IF_SOURCE = ROOT / "src/mem/MAA/IF.cc"
 CPU_PORT = ROOT / "src/mem/MAA/CpuSidePort.cc"
+GATE = ROOT / "experiments/scripts/run_logical_spd_cache_abi_unit.sh"
 TRANSPARENT_TEST = ROOT / (
     "experiments/tests/test_transparent_spd_controller_contract.py"
 )
@@ -26,6 +27,11 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
         cls.if_header = IF_HEADER.read_text(encoding="utf-8")
         cls.if_source = IF_SOURCE.read_text(encoding="utf-8")
         cls.cpu_port = CPU_PORT.read_text(encoding="utf-8")
+        cls.gate = GATE.read_text(encoding="utf-8")
+
+    def test_focused_gate_uses_repository_guest_language_mode(self) -> None:
+        self.assertIn("-std=c++11", self.gate)
+        self.assertNotIn("-std=c++17", self.gate)
 
     def test_high_byte_audit_preserves_legacy_physical_zeroes(self) -> None:
         for evidence in (
@@ -78,10 +84,56 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "LogicalSPDCacheABI::NoAddress",
             "LogicalSPDCacheABI::ScalarOperandShape shape",
             "validateLogicalALUScalar",
+            "num_regs",
+            "getAddrRegion(data)",
+            "validateDestinationSpan",
             "Rejected logical ALU_SCALAR ABI shape",
+            "Rejected logical ALU_SCALAR destination backing",
             "controller state mutation",
         ):
             self.assertIn(evidence, self.cpu_port)
+
+        logical = self.cpu_port.index(
+            "if (current_instruction->isLogicalALUScalar())", opcode
+        )
+        shape_validation = self.cpu_port.index(
+            "validateLogicalALUScalar", logical
+        )
+        range_validation = self.cpu_port.index(
+            "const int backing_addr_range_id = getAddrRegion(data)",
+            shape_validation,
+        )
+        span_validation = self.cpu_port.index(
+            "validateDestinationSpan", range_validation
+        )
+        fail_closed = self.cpu_port.index(
+            "panic_if(\n                        true,\n"
+            '                        "Logical ALU_SCALAR ABI is decoded',
+            span_validation,
+        )
+        backing_mutation = self.cpu_port.index(
+            "current_instruction->backingAddr = data", fail_closed
+        )
+        if_admission = self.cpu_port.index(
+            "my_instruction_recvs[instruction_id] = true", fail_closed
+        )
+        dispatch = self.cpu_port.index(
+            "scheduleDispatchInstructionEvent()", fail_closed
+        )
+        self.assertLess(shape_validation, range_validation)
+        self.assertLess(range_validation, span_validation)
+        self.assertLess(span_validation, fail_closed)
+        self.assertLess(fail_closed, backing_mutation)
+        self.assertLess(fail_closed, if_admission)
+        self.assertLess(fail_closed, dispatch)
+        fail_closed_branch = self.cpu_port[shape_validation:backing_mutation]
+        for mutation in (
+            "my_instruction_recvs[instruction_id] = true",
+            "scheduleDispatchInstructionEvent()",
+            "ifile->",
+            "spd->",
+        ):
+            self.assertNotIn(mutation, fail_closed_branch)
 
     def test_scalar_shape_validation_is_complete_and_payload_free(
         self,
@@ -95,16 +147,22 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "AliasedLogicalIDs",
             "MixedPhysicalOperands",
             "MissingScalarRegister",
+            "ScalarRegisterOutOfRange",
             "ExtraRegisterOperand",
             "Conditional",
             "UnexpectedBaseAddress",
             "MissingDestinationBacking",
+            "NullDestinationBacking",
+            "MisalignedDestinationBacking",
+            "UnregisteredDestinationRange",
+            "DestinationOutsideRange",
+            "IncompleteDestinationSpan",
         ):
             self.assertIn(validation, self.abi)
         self.assertNotIn("std::vector", self.abi)
         self.assertNotIn("new ", self.abi)
 
-    def test_api_emits_ordinary_scalar_opcode_and_future_wait_shape(
+    def test_api_emits_ordinary_scalar_opcode_without_logical_wait_alias(
         self,
     ) -> None:
         begin = self.api.index("inline void maa_alu_scalar_logical")
@@ -118,9 +176,10 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "scalar_reg",
         ):
             self.assertIn(evidence, helper)
-        self.assertIn("void maa_wait_logical_page", self.api)
-        self.assertIn("void maa_wait_logical_tile", self.api)
-        self.assertIn("LOGICAL_PAGES_PER_DESCRIPTOR 4", self.api)
+        self.assertNotIn("maa_wait_logical_page", self.api)
+        self.assertNotIn("maa_wait_logical_tile", self.api)
+        self.assertNotIn("LOGICAL_PAGES_PER_DESCRIPTOR", self.api)
+        self.assertIn("void wait_virtual_page", self.api)
 
     def test_transparent_opcode_and_response_paths_remain_out_of_scope(
         self,
@@ -137,6 +196,7 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
 
     def test_note_states_the_decoder_only_boundary(self) -> None:
         note = NOTE.read_text(encoding="utf-8")
+        normalized = " ".join(note.split())
         for caveat in (
             "not connected to the cache controller",
             "not change StreamAccess or Port response semantics",
@@ -144,7 +204,7 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "No gem5 simulation",
             "no performance claim",
         ):
-            self.assertIn(caveat, note)
+            self.assertIn(caveat, normalized)
 
 
 if __name__ == "__main__":

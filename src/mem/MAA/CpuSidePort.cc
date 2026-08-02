@@ -363,34 +363,60 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     "Backing address is only valid for virtual or fused "
                     "indirect loads or logical ALU_SCALAR!\n");
                 if (current_instruction->isLogicalALUScalar()) {
-                    const maa::LogicalSPDCacheABI::ScalarOperandShape shape{
-                        static_cast<uint8_t>(current_instruction->datatype),
-                        static_cast<uint8_t>(current_instruction->optype),
-                        current_instruction->src1LogicalID,
-                        current_instruction->src2LogicalID,
-                        current_instruction->dst1LogicalID,
-                        current_instruction->src1SpdID,
-                        current_instruction->src2SpdID,
-                        current_instruction->dst1SpdID,
-                        current_instruction->dst2SpdID,
-                        current_instruction->src1RegID,
-                        current_instruction->src2RegID,
-                        current_instruction->src3RegID,
-                        current_instruction->dst1RegID,
-                        current_instruction->dst2RegID,
-                        current_instruction->condSpdID,
-                        current_instruction->baseAddr,
-                        data};
+                    maa::LogicalSPDCacheABI::ScalarOperandShape shape;
+                    shape.datatype = static_cast<uint8_t>(
+                        current_instruction->datatype);
+                    shape.optype = static_cast<uint8_t>(
+                        current_instruction->optype);
+                    shape.src1LogicalID =
+                        current_instruction->src1LogicalID;
+                    shape.src2LogicalID =
+                        current_instruction->src2LogicalID;
+                    shape.dst1LogicalID =
+                        current_instruction->dst1LogicalID;
+                    shape.src1SpdID = current_instruction->src1SpdID;
+                    shape.src2SpdID = current_instruction->src2SpdID;
+                    shape.dst1SpdID = current_instruction->dst1SpdID;
+                    shape.dst2SpdID = current_instruction->dst2SpdID;
+                    shape.src1RegID = current_instruction->src1RegID;
+                    shape.src2RegID = current_instruction->src2RegID;
+                    shape.src3RegID = current_instruction->src3RegID;
+                    shape.dst1RegID = current_instruction->dst1RegID;
+                    shape.dst2RegID = current_instruction->dst2RegID;
+                    shape.condSpdID = current_instruction->condSpdID;
+                    shape.baseAddr = current_instruction->baseAddr;
+                    shape.destinationBackingAddr = data;
                     const auto validation =
                         maa::LogicalSPDCacheABI::validateLogicalALUScalar(
                             shape, static_cast<uint8_t>(
-                                       current_instruction->opcode));
+                                       current_instruction->opcode),
+                            num_regs);
                     panic_if(
                         validation !=
                             maa::LogicalSPDCacheABI::ScalarValidation::Valid,
                         "Rejected logical ALU_SCALAR ABI shape (%d) before "
                         "controller state mutation\n",
                         static_cast<int>(validation));
+                    const int backing_addr_range_id = getAddrRegion(data);
+                    panic_if(
+                        backing_addr_range_id < 0,
+                        "Logical destination backing address 0x%lx is not "
+                        "in a registered memory region\n",
+                        data);
+                    const Addr backing_min_addr =
+                        addrRegions[backing_addr_range_id].first;
+                    const Addr backing_max_addr =
+                        addrRegions[backing_addr_range_id].second;
+                    const auto backing_validation =
+                        maa::LogicalSPDCacheABI::validateDestinationSpan(
+                            data, shape.datatype, backing_min_addr,
+                            backing_max_addr);
+                    panic_if(
+                        backing_validation != maa::LogicalSPDCacheABI::
+                            DestinationValidation::Valid,
+                        "Rejected logical ALU_SCALAR destination backing "
+                        "(%d) before controller state mutation\n",
+                        static_cast<int>(backing_validation));
                     panic_if(
                         true,
                         "Logical ALU_SCALAR ABI is decoded and validated, "
