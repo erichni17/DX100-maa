@@ -74,6 +74,7 @@ LANLMAA::UpdateEntry::clear()
     state = UpdateState::Free;
     address = 0;
     contribution = 0;
+    umtPayloadThird = 0;
     kind = UpdateKind::Uint64Add;
     spartaGroup = 0;
     packet = nullptr;
@@ -431,6 +432,12 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtResultsComputed,
                statistics::units::Count::get(),
                "Finite native UMT fused results produced"),
+      ADD_STAT(descriptorUmtSidecarWrites,
+               statistics::units::Count::get(),
+               "UMT mixed-corner 192-bit sidecar writes served"),
+      ADD_STAT(descriptorUmtSidecarReads,
+               statistics::units::Count::get(),
+               "UMT mixed-corner 192-bit sidecar reads served"),
       ADD_STAT(descriptorCycles, statistics::units::Cycle::get(),
                "Cycles from an accepted doorbell through completion"),
       ADD_STAT(engineCycles, statistics::units::Cycle::get(),
@@ -807,7 +814,8 @@ LANLMAA::controlAccess(PacketPtr packet)
             (uint64_t{1} << SpartaTallyOpcode) |
             (uint64_t{1} << SpartaFusedOpcode) |
             (uint64_t{1} << UmeGradzatpOpcode) |
-            (uint64_t{1} << UmtFusedCornerOpcode);
+            (uint64_t{1} << UmtFusedCornerOpcode) |
+            (uint64_t{1} << UmtMixedCornerOpcode);
         break;
       default:
         packet->setBadAddress();
@@ -861,7 +869,13 @@ LANLMAA::rearmDescriptorEngine()
     umeGradzatp = UmeGradzatpDescriptor{};
     umeGradzatpPhase = UmeGradzatpPhase::Inactive;
     umtFusedCorner = UmtFusedCornerDescriptor{};
+    umtMixedCorner = UmtMixedCornerDescriptor{};
     umtFusedCornerPhase = UmtFusedCornerPhase::Inactive;
+    umtMixedCornerActive = false;
+    umtMixedSidecarReadsQueued = false;
+    panic_if(umtMixedSidecarPorts.active() ||
+                 umtMixedSidecarPorts.pending() != 0,
+             "LANLMAA rearmed with an active UMT mixed sidecar");
     descriptorError = DescriptorError::None;
     descriptorAddressCursor = 0;
     descriptorResultCursor = 0;
@@ -999,6 +1013,9 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
 
     descriptorError = error;
     descriptorState = DescriptorState::EngineErrorDraining;
+    if (umtMixedCornerDescriptor()) {
+        clearUmtMixedSidecar();
+    }
     panic_if(!allUpdateEntriesFree(),
              "LANLMAA descriptor error drain cannot roll back updates");
     activeOperations = 0;
@@ -1206,8 +1223,9 @@ LANLMAA::issueCompletionWrite()
 {
     if (!completionPacket) {
         RequestPtr request = std::make_shared<Request>(
-            umtFusedCornerDescriptor() ?
-                umtFusedCorner.completionRecord :
+            umtMixedCornerDescriptor() ?
+                umtMixedCorner.completionRecord :
+            umtFusedCornerDescriptor() ? umtFusedCorner.completionRecord :
             umeGradzatpDescriptor() ? umeGradzatp.completionRecord :
             spartaFusedCellDescriptor() ?
                 spartaFusedDescriptor.completionRecord :
@@ -1222,13 +1240,15 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 0, CompletionMagic, 4);
         writeLe(
             data, 4,
-            umtFusedCornerDescriptor() ?
-                UmtFusedCornerDescriptorVersion :
+            umtMixedCornerDescriptor() ?
+                UmtMixedCornerDescriptorVersion :
+            umtFusedCornerDescriptor() ? UmtFusedCornerDescriptorVersion :
             umeGradzatpDescriptor() ? UmeGradzatpDescriptorVersion :
                                       DescriptorVersion,
             2);
         writeLe(
             data, 6,
+            umtMixedCornerDescriptor() ? UmtMixedCornerOpcode :
             umtFusedCornerDescriptor() ? UmtFusedCornerOpcode :
             umeGradzatpDescriptor() ? UmeGradzatpOpcode :
             spartaFusedCellDescriptor() ? SpartaFusedOpcode :
@@ -1474,7 +1494,7 @@ bool
 LANLMAA::activeDependentMode() const
 {
     return dependentMode || bransonEventDescriptor() ||
-        umtFusedCornerDescriptor() ||
+        umtCornerDescriptor() ||
         (spartaFusedCellDescriptor() &&
          spartaFusedPhase == SpartaFusedPhase::Traverse) ||
         (descriptorMode &&
@@ -1509,10 +1529,22 @@ LANLMAA::umeGradzatpDescriptor() const
 }
 
 bool
-LANLMAA::umtFusedCornerDescriptor() const
+LANLMAA::umtCornerDescriptor() const
 {
     return descriptorMode &&
         umtFusedCornerPhase != UmtFusedCornerPhase::Inactive;
+}
+
+bool
+LANLMAA::umtFusedCornerDescriptor() const
+{
+    return umtCornerDescriptor() && !umtMixedCornerActive;
+}
+
+bool
+LANLMAA::umtMixedCornerDescriptor() const
+{
+    return umtCornerDescriptor() && umtMixedCornerActive;
 }
 
 bool
@@ -2272,14 +2304,22 @@ LANLMAA::beginUmeGradzatpUpdatePhase()
 Addr
 LANLMAA::umtFusedCornerReadAddress(const Operation &operation) const
 {
-    panic_if(!umtFusedCornerDescriptor() ||
+    const uint8_t stages = umtMixedCornerDescriptor() ?
+        UmtMixedCornerRecordFp64Words : UmtFusedCornerRecordBytes / 8;
+    const uint64_t recordBase = umtMixedCornerDescriptor() ?
+        umtMixedCorner.recordBase : umtFusedCorner.recordBase;
+    const uint32_t recordStride = umtMixedCornerDescriptor() ?
+        umtMixedCorner.recordStride : umtFusedCorner.recordStride;
+    const uint32_t groupCount = umtMixedCornerDescriptor() ?
+        umtMixedCorner.groupCount : umtFusedCorner.groupCount;
+    panic_if(!umtCornerDescriptor() ||
                  umtFusedCornerPhase != UmtFusedCornerPhase::Read ||
-                 operation.umtFusedGroup >= umtFusedCorner.groupCount ||
-                 operation.umtFusedReadStage >= 12,
+                 operation.umtFusedGroup >= groupCount ||
+                 operation.umtFusedReadStage >= stages,
              "LANLMAA formed an invalid UMT fused input address");
-    const uint64_t raw = umtFusedCorner.recordBase +
+    const uint64_t raw = recordBase +
         static_cast<uint64_t>(operation.umtFusedGroup) *
-            umtFusedCorner.recordStride +
+            recordStride +
         static_cast<uint64_t>(operation.umtFusedReadStage) *
             sizeof(uint64_t);
     const Addr address = static_cast<Addr>(raw);
@@ -2288,13 +2328,94 @@ LANLMAA::umtFusedCornerReadAddress(const Operation &operation) const
     return address;
 }
 
+LANLMAA::UpdateEntry &
+LANLMAA::umtMixedSidecarEntry(uint32_t context, uint32_t word)
+{
+    panic_if(context >= operations.size() ||
+                 word >= UmtMixedScheduleSidecarWords ||
+                 updateEntryCount % updateBanks != 0,
+             "LANLMAA formed an invalid UMT mixed sidecar entry");
+    const uint32_t logical =
+        UmtMixedCornerSidecarPortModel::entryFor(context, word);
+    const size_t ways = updateEntryCount / updateBanks;
+    const size_t physical = (logical % updateBanks) * ways +
+        logical / updateBanks;
+    panic_if(physical >= updates.size(),
+             "LANLMAA UMT mixed sidecar exceeded the update store");
+    return updates[physical];
+}
+
+const LANLMAA::UpdateEntry &
+LANLMAA::umtMixedSidecarEntry(uint32_t context, uint32_t word) const
+{
+    return const_cast<LANLMAA *>(this)->umtMixedSidecarEntry(context, word);
+}
+
+void
+LANLMAA::clearUmtMixedSidecar()
+{
+    if (umtMixedSidecarPorts.active()) {
+        umtMixedSidecarPorts.cancel();
+    }
+    const size_t contexts = std::min(
+        operations.size(),
+        static_cast<size_t>(UmtMixedScheduleMaximumContexts));
+    for (size_t context = 0; context < contexts; ++context) {
+        for (uint32_t word = 0;
+             word < UmtMixedScheduleSidecarWords; ++word) {
+            umtMixedSidecarEntry(context, word).clear();
+        }
+    }
+    umtMixedSidecarReadsQueued = false;
+}
+
 void
 LANLMAA::progressUmtFusedCornerBatch()
 {
-    panic_if(!umtFusedCornerDescriptor(),
+    panic_if(!umtCornerDescriptor(),
              "LANLMAA progressed an inactive UMT fused descriptor");
     const uint64_t cycle = static_cast<uint64_t>(curCycle());
     if (umtFusedCornerPhase == UmtFusedCornerPhase::Read) {
+        if (umtMixedCornerDescriptor()) {
+            const auto sidecarCycle = umtMixedSidecarPorts.cycle();
+            for (const auto &request : sidecarCycle.served) {
+                if (request.access == UmtMixedOverlayAccess::Write) {
+                    ++stats.descriptorUmtSidecarWrites;
+                } else {
+                    ++stats.descriptorUmtSidecarReads;
+                }
+            }
+            const bool inputsLoaded = nextAdmission == operations.size() &&
+                std::all_of(
+                    operations.begin(), operations.end(),
+                    [](const Operation &operation) {
+                        return operation.state ==
+                            OperationState::UmtSidecarPending;
+                    });
+            if (inputsLoaded && !umtMixedSidecarReadsQueued &&
+                umtMixedSidecarPorts.pending() == 0) {
+                for (uint32_t context = 0;
+                     context < operations.size(); ++context) {
+                    for (uint32_t word = 0;
+                         word < UmtMixedScheduleSidecarWords; ++word) {
+                        const auto status = umtMixedSidecarPorts.enqueue(
+                            {static_cast<uint64_t>(context) * 2 + word,
+                             context, word, UmtMixedOverlayAccess::Read});
+                        panic_if(status != UmtMixedOverlayResult::Accepted,
+                                 "LANLMAA failed to queue a mixed sidecar "
+                                 "read");
+                    }
+                }
+                umtMixedSidecarReadsQueued = true;
+                return;
+            }
+            if (inputsLoaded && umtMixedSidecarReadsQueued &&
+                umtMixedSidecarPorts.pending() == 0) {
+                for (auto &operation : operations) {
+                    operation.state = OperationState::UmtComputeReady;
+                }
+            }
+        }
         if (nextAdmission != operations.size() ||
             !std::all_of(
                 operations.begin(), operations.end(),
@@ -2308,8 +2429,9 @@ LANLMAA::progressUmtFusedCornerBatch()
                          return line.state != LineState::Free;
                      }),
                  "LANLMAA started UMT compute with live input reads");
-        const uint64_t batchCycles =
-            umtFusedCornerBatchCycles(umtFusedCorner.groupCount);
+        const uint32_t groups = umtMixedCornerDescriptor() ?
+            umtMixedCorner.groupCount : umtFusedCorner.groupCount;
+        const uint64_t batchCycles = umtFusedCornerBatchCycles(groups);
         panic_if(batchCycles == 0 ||
                      cycle >
                          std::numeric_limits<uint64_t>::max() - batchCycles,
@@ -2344,22 +2466,54 @@ LANLMAA::progressUmtFusedCornerBatch()
     for (const auto &operation : operations) {
         panic_if(operation.state != OperationState::UmtComputePending,
                  "LANLMAA UMT fused batch lost a pending context");
-        UmtFusedCornerRetained retained;
-        retained.source = decodeDouble(operation.umtFusedValues[0]);
-        retained.crossSection = decodeDouble(operation.umtFusedValues[1]);
-        for (size_t face = 0; face < 3; ++face) {
-            retained.neighborSource[face] =
-                decodeDouble(operation.umtFusedValues[2 + face]);
-            retained.flux[face] =
-                decodeDouble(operation.umtFusedValues[5 + face]);
+        if (umtMixedCornerDescriptor()) {
+            UmtMixedCornerRetained retained;
+            retained.source = decodeDouble(operation.umtFusedValues[0]);
+            retained.crossSection =
+                decodeDouble(operation.umtFusedValues[1]);
+            for (size_t face = 0; face < 3; ++face) {
+                retained.neighborSource[face] =
+                    decodeDouble(operation.umtFusedValues[2 + face]);
+                retained.currentFaceFlux[face] =
+                    decodeDouble(operation.umtFusedValues[5 + face]);
+            }
+            const auto &first = umtMixedSidecarEntry(
+                operation.umtFusedGroup, 0);
+            const auto &second = umtMixedSidecarEntry(
+                operation.umtFusedGroup, 1);
+            retained.upstreamCornerFlux = {{
+                decodeDouble(first.address),
+                decodeDouble(first.contribution),
+                decodeDouble(first.umtPayloadThird)}};
+            retained.oppositeFlux = {{
+                decodeDouble(second.address),
+                decodeDouble(second.contribution),
+                decodeDouble(second.umtPayloadThird)}};
+            const auto result = executeUmtMixedCornerRetained(
+                umtMixedCorner.geometry, retained);
+            if (!result) {
+                beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
+                return;
+            }
+            results.push_back(encodeDouble(result.value));
+        } else {
+            UmtFusedCornerRetained retained;
+            retained.source = decodeDouble(operation.umtFusedValues[0]);
+            retained.crossSection = decodeDouble(operation.umtFusedValues[1]);
+            for (size_t face = 0; face < 3; ++face) {
+                retained.neighborSource[face] =
+                    decodeDouble(operation.umtFusedValues[2 + face]);
+                retained.flux[face] =
+                    decodeDouble(operation.umtFusedValues[5 + face]);
+            }
+            const auto result =
+                executeUmtFusedCornerRetained(umtFusedCorner, retained);
+            if (!result) {
+                beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
+                return;
+            }
+            results.push_back(encodeDouble(result.value));
         }
-        const auto result =
-            executeUmtFusedCornerRetained(umtFusedCorner, retained);
-        if (!result) {
-            beginDescriptorErrorDrain(DescriptorError::BadRecordValue);
-            return;
-        }
-        results.push_back(encodeDouble(result.value));
     }
 
     for (size_t index = 0; index < operations.size(); ++index) {
@@ -2373,6 +2527,11 @@ LANLMAA::progressUmtFusedCornerBatch()
     }
     umtFusedResultsComputed = operations.size();
     stats.descriptorUmtResultsComputed += operations.size();
+    if (umtMixedCornerDescriptor()) {
+        panic_if(umtMixedSidecarPorts.pending() != 0,
+                 "LANLMAA retired UMT mixed data with sidecar traffic");
+        clearUmtMixedSidecar();
+    }
 }
 
 void
@@ -2971,7 +3130,8 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
 
     if (descriptorFetchOffset == 0 &&
         (bytes[6] == SpartaFusedOpcode || bytes[6] == UmeGradzatpOpcode ||
-         bytes[6] == UmtFusedCornerOpcode)) {
+         bytes[6] == UmtFusedCornerOpcode ||
+         bytes[6] == UmtMixedCornerOpcode)) {
         if (descriptorSlot + 1 >= descriptorSlots) {
             rejectDescriptor(DescriptorError::UnsafeAddressRange);
             return true;
@@ -2989,6 +3149,95 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
             bytes.begin(), bytes.end(),
             descriptorFetchBuffer.begin() + DescriptorBytes);
         descriptorFetchOffset = 0;
+        if (descriptorFetchBuffer[6] == UmtMixedCornerOpcode) {
+            const auto decoded =
+                decodeUmtMixedCornerDescriptor(descriptorFetchBuffer);
+            if (!decoded) {
+                rejectDescriptor(decoded.error);
+                return true;
+            }
+            if (decoded.descriptor.groupCount > maxDescriptorItems ||
+                decoded.descriptor.groupCount > operationEntries ||
+                decoded.descriptor.groupCount > continuationEntries ||
+                static_cast<uint64_t>(decoded.descriptor.groupCount) *
+                        UmtMixedScheduleSidecarWords >
+                    updateEntryCount) {
+                rejectDescriptor(DescriptorError::TooManyItems);
+                return true;
+            }
+            umtMixedCorner = decoded.descriptor;
+            umtMixedCornerActive = true;
+            umtFusedCornerPhase = UmtFusedCornerPhase::Read;
+
+            std::array<UmtFusedCornerRange, 3> ranges;
+            const bool rangesValid = umtFusedCornerScaledRange(
+                umtMixedCorner.recordBase, umtMixedCorner.groupCount,
+                umtMixedCorner.recordStride, UmtMixedCornerRecordBytes,
+                ranges[0]) && umtFusedCornerScaledRange(
+                umtMixedCorner.resultBase, umtMixedCorner.groupCount,
+                sizeof(uint64_t), sizeof(uint64_t), ranges[1]) &&
+                umtFusedCornerScaledRange(
+                    umtMixedCorner.completionRecord, 1, 32, 32, ranges[2]);
+            panic_if(!rangesValid,
+                     "LANLMAA decoded UMT mixed descriptor lost its range "
+                     "invariant");
+
+            const uint64_t descriptorTableEnd = descriptorTableBase +
+                descriptorSlots * DescriptorBytes;
+            const auto unsafeRange = [this, descriptorTableEnd](
+                                         const UmtFusedCornerRange &range) {
+                return !rangeIsMemory(range.begin, range.end - range.begin) ||
+                    rangeOverlapsControl(
+                        range.begin, range.end - range.begin) ||
+                    descriptorRangesOverlap(
+                        range.begin, range.end, descriptorTableBase,
+                        descriptorTableEnd);
+            };
+            if (std::any_of(ranges.begin(), ranges.end(), unsafeRange)) {
+                rejectDescriptor(DescriptorError::UnsafeAddressRange);
+                return true;
+            }
+
+            SharedOverlayReservation reservation;
+            reservation.mode = SharedOverlayMode::UmtCornerSweep;
+            reservation.pairedEntries = umtMixedCorner.groupCount;
+            const DescriptorError overlayError =
+                acquireSharedOverlay(reservation);
+            if (overlayError != DescriptorError::None) {
+                rejectDescriptor(overlayError);
+                return true;
+            }
+            panic_if(umtMixedSidecarPorts.activate(
+                         umtMixedCorner.groupCount) !=
+                         UmtMixedOverlayResult::Accepted,
+                     "LANLMAA failed to activate the UMT mixed sidecar");
+
+            descriptor.itemCount = umtMixedCorner.groupCount;
+            descriptor.resultVector = umtMixedCorner.resultBase;
+            descriptor.completionRecord = umtMixedCorner.completionRecord;
+            operations.assign(umtMixedCorner.groupCount, Operation{});
+            for (size_t group = 0; group < operations.size(); ++group) {
+                auto &operation = operations[group];
+                operation.umtFusedGroup = static_cast<uint32_t>(group);
+                operation.umtFusedReadStage = 0;
+                operation.address = umtFusedCornerReadAddress(operation);
+                for (uint32_t word = 0;
+                     word < UmtMixedScheduleSidecarWords; ++word) {
+                    auto &entry = umtMixedSidecarEntry(group, word);
+                    panic_if(entry.state != UpdateState::Free,
+                             "LANLMAA UMT mixed sidecar entry was occupied");
+                    entry.state = UpdateState::Accumulating;
+                }
+            }
+            descriptorAddressCursor = operations.size();
+            descriptorResultCursor = 0;
+            umtFusedBatchReadyCycle = 0;
+            umtFusedResultsComputed = 0;
+            umtMixedSidecarReadsQueued = false;
+            beginDescriptorExecution();
+            scheduleTick();
+            return true;
+        }
         if (descriptorFetchBuffer[6] == UmtFusedCornerOpcode) {
             const auto decoded =
                 decodeUmtFusedCornerDescriptor(descriptorFetchBuffer);
@@ -3003,6 +3252,7 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
                 return true;
             }
             umtFusedCorner = decoded.descriptor;
+            umtMixedCornerActive = false;
             umtFusedCornerPhase = UmtFusedCornerPhase::Read;
 
             std::array<UmtFusedCornerRange, 3> ranges;
@@ -3879,7 +4129,7 @@ LANLMAA::completeDescriptor()
                 umeUpdatesAcknowledged != 2 * umeActiveCorners,
             "LANLMAA completed with incomplete UME gradzatp accounting");
     }
-    if (umtFusedCornerDescriptor()) {
+    if (umtCornerDescriptor()) {
         panic_if(
             umtFusedCornerPhase != UmtFusedCornerPhase::Compute ||
                 umtFusedResultsComputed != operations.size() ||
@@ -3936,7 +4186,7 @@ LANLMAA::tick()
     servicePayloadOverlayPorts();
     retireOperations();
     admitOperations();
-    if (umtFusedCornerDescriptor()) {
+    if (umtCornerDescriptor()) {
         progressUmtFusedCornerBatch();
         if (descriptorState == DescriptorState::EngineErrorDraining) {
             scheduleTick();
@@ -4871,9 +5121,14 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
         panic_if(operation.state != OperationState::DataPending,
                  "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
-        if (umtFusedCornerDescriptor()) {
+        if (umtCornerDescriptor()) {
+            const uint8_t inputStages = umtMixedCornerDescriptor() ?
+                UmtMixedCornerRecordFp64Words :
+                UmtFusedCornerRecordBytes / sizeof(uint64_t);
+            const double tau = umtMixedCornerDescriptor() ?
+                umtMixedCorner.geometry.tau : umtFusedCorner.tau;
             panic_if(umtFusedCornerPhase != UmtFusedCornerPhase::Read ||
-                         operation.umtFusedReadStage >= 12,
+                         operation.umtFusedReadStage >= inputStages,
                      "LANLMAA read an invalid UMT fused input stage");
             uint64_t bits = 0;
             std::memcpy(&bits, data + offset, sizeof(bits));
@@ -4891,7 +5146,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                     break;
                   case 1: {
                     const double source = decodeDouble(operation.value) +
-                        umtFusedCorner.tau * input;
+                        tau * input;
                     if (!std::isfinite(source)) {
                         error = DescriptorError::BadRecordValue;
                     } else {
@@ -4910,7 +5165,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                   case 6:
                   case 8: {
                     const double source = decodeDouble(operation.value) +
-                        umtFusedCorner.tau * input;
+                        tau * input;
                     if (!std::isfinite(source)) {
                         error = DescriptorError::BadRecordValue;
                     } else {
@@ -4926,6 +5181,40 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                     operation.umtFusedValues[
                         operation.umtFusedReadStage - 4] = bits;
                     break;
+                  case 12:
+                  case 13:
+                  case 14:
+                  case 15:
+                  case 16:
+                  case 17: {
+                    panic_if(!umtMixedCornerDescriptor(),
+                             "LANLMAA fused descriptor reached a mixed "
+                             "input stage");
+                    const uint32_t relative =
+                        operation.umtFusedReadStage - 12;
+                    const uint32_t word = relative / 3;
+                    const uint32_t lane = relative % 3;
+                    auto &entry = umtMixedSidecarEntry(
+                        operation.umtFusedGroup, word);
+                    panic_if(entry.state != UpdateState::Accumulating,
+                             "LANLMAA mixed sidecar entry lost ownership");
+                    if (lane == 0) {
+                        entry.address = bits;
+                    } else if (lane == 1) {
+                        entry.contribution = bits;
+                    } else {
+                        entry.umtPayloadThird = bits;
+                        const auto status = umtMixedSidecarPorts.enqueue(
+                            {static_cast<uint64_t>(
+                                 operation.umtFusedGroup) * 2 + word,
+                             operation.umtFusedGroup, word,
+                             UmtMixedOverlayAccess::Write});
+                        panic_if(status != UmtMixedOverlayResult::Accepted,
+                                 "LANLMAA failed to queue a mixed sidecar "
+                                 "write");
+                    }
+                    break;
+                  }
                   default:
                     panic("LANLMAA UMT fused input stage became invalid");
                 }
@@ -4939,8 +5228,10 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                 return true;
             }
             ++operation.umtFusedReadStage;
-            if (operation.umtFusedReadStage == 12) {
-                operation.state = OperationState::UmtComputeReady;
+            if (operation.umtFusedReadStage == inputStages) {
+                operation.state = umtMixedCornerDescriptor() ?
+                    OperationState::UmtSidecarPending :
+                    OperationState::UmtComputeReady;
                 ++stats.descriptorUmtGroupsLoaded;
             } else {
                 operation.address = umtFusedCornerReadAddress(operation);

@@ -9,6 +9,7 @@
 
 #include "mem/LANLMAA/SharedOverlayModeBarrier.hh"
 #include "mem/LANLMAA/UmtFp64DependencyModel.hh"
+#include "mem/LANLMAA/UmtMixedCornerDescriptor.hh"
 #include "mem/LANLMAA/UmtMixedCornerModel.hh"
 #include "mem/LANLMAA/UmtMixedCornerScheduleModel.hh"
 #include "umt_corner_sweep_record.hh"
@@ -228,6 +229,50 @@ testOverlayPorts()
 }
 
 void
+testLiveDescriptor()
+{
+    std::array<uint8_t, UmtMixedCornerDescriptorBytes> bytes{};
+    const auto put = [&bytes](size_t offset, uint64_t value, size_t width) {
+        for (size_t byte = 0; byte < width; ++byte) {
+            bytes[offset + byte] = (value >> (8 * byte)) & 0xff;
+        }
+    };
+    put(0, DescriptorMagic, 4);
+    put(4, UmtMixedCornerDescriptorVersion, 2);
+    put(6, UmtMixedCornerOpcode, 1);
+    put(7, UmtMixedCornerRequiredFlags, 1);
+    put(8, 32, 4);
+    put(12, UmtMixedCornerRecordBytes, 4);
+    put(16, 0x1000, 8);
+    put(24, 0x4000, 8);
+    put(32, 0x5000, 8);
+    const std::array<double, 9> geometry{{
+        2.0, 3.0, 4.0, -1.0, 1.0, -2.0, -3.0, 4.0, 5.0}};
+    for (size_t word = 0; word < geometry.size(); ++word) {
+        put(40 + word * 8, bitsOf(geometry[word]), 8);
+    }
+    put(112, UmtMixedCornerAbiFingerprint, 8);
+    put(120, 1, 1);
+    put(121, 5, 1);
+    put(122, 7, 1);
+    auto decoded = decodeUmtMixedCornerDescriptor(bytes);
+    assert(decoded);
+    assert(decoded.descriptor.groupCount == 32);
+    assert(decoded.descriptor.incomingMask == 1);
+    assert(decoded.descriptor.incidentMask == 5);
+    assert(decoded.descriptor.geometry.firstVolume ==
+           (std::array<double, 3>{{3.0, 3.0, 3.0}}));
+
+    bytes[122] = 6;
+    assert(decodeUmtMixedCornerDescriptor(bytes).error ==
+           DescriptorError::BadRecordValue);
+    bytes[122] = 7;
+    bytes[120] = 0;
+    assert(decodeUmtMixedCornerDescriptor(bytes).error ==
+           DescriptorError::BadRecordValue);
+}
+
+void
 testRealModeBarrier()
 {
     SharedOverlayModeBarrier barrier;
@@ -265,6 +310,7 @@ main(int argc, char **argv)
     testBuildRejections();
     testUnequalVolumeReuse();
     testOverlayPorts();
+    testLiveDescriptor();
     testRealModeBarrier();
 
     std::array<bool, 64> configurations{};

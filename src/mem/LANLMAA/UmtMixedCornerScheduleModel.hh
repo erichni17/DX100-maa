@@ -171,6 +171,18 @@ class UmtMixedCornerSidecarPortModel
     }
 
     size_t
+    cancel()
+    {
+        const size_t cancelled = pending();
+        for (auto &queue : queues) {
+            queue.clear();
+        }
+        umtActive = false;
+        contextCount = 0;
+        return cancelled;
+    }
+
+    size_t
     pending() const
     {
         size_t value = 0;

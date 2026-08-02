@@ -22,6 +22,8 @@
 #include "mem/LANLMAA/SpartaTallyDescriptor.hh"
 #include "mem/LANLMAA/UmeGradzatpDescriptor.hh"
 #include "mem/LANLMAA/UmtFusedCornerModel.hh"
+#include "mem/LANLMAA/UmtMixedCornerDescriptor.hh"
+#include "mem/LANLMAA/UmtMixedCornerScheduleModel.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
 #include "params/LANLMAA.hh"
@@ -54,6 +56,7 @@ class LANLMAA : public ClockedObject
         SpartaUpdateReady,
         UmeUpdateReady,
         UmtComputeReady,
+        UmtSidecarPending,
         UmtComputePending,
         FaceComputeReady,
         FaceComputePending,
@@ -235,6 +238,9 @@ class LANLMAA : public ClockedObject
         UpdateState state = UpdateState::Free;
         Addr address = 0;
         uint64_t contribution = 0;
+        // Third payload lane when two update entries/context are exclusively
+        // reinterpreted as the UMT mixed-corner 2x192-bit sidecar.
+        uint64_t umtPayloadThird = 0;
         UpdateKind kind = UpdateKind::Uint64Add;
         uint32_t spartaGroup = 0;
         PacketPtr packet = nullptr;
@@ -390,6 +396,8 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorUmtBatches;
         statistics::Scalar descriptorUmtBatchCycles;
         statistics::Scalar descriptorUmtResultsComputed;
+        statistics::Scalar descriptorUmtSidecarWrites;
+        statistics::Scalar descriptorUmtSidecarReads;
         statistics::Scalar descriptorCycles;
         statistics::Scalar engineCycles;
 
@@ -484,8 +492,12 @@ class LANLMAA : public ClockedObject
     UmeGradzatpDescriptor umeGradzatp;
     UmeGradzatpPhase umeGradzatpPhase = UmeGradzatpPhase::Inactive;
     UmtFusedCornerDescriptor umtFusedCorner;
+    UmtMixedCornerDescriptor umtMixedCorner;
     UmtFusedCornerPhase umtFusedCornerPhase =
         UmtFusedCornerPhase::Inactive;
+    bool umtMixedCornerActive = false;
+    bool umtMixedSidecarReadsQueued = false;
+    UmtMixedCornerSidecarPortModel umtMixedSidecarPorts;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
@@ -536,7 +548,9 @@ class LANLMAA : public ClockedObject
     bool spartaTallyDescriptor() const;
     bool spartaFusedCellDescriptor() const;
     bool umeGradzatpDescriptor() const;
+    bool umtCornerDescriptor() const;
     bool umtFusedCornerDescriptor() const;
+    bool umtMixedCornerDescriptor() const;
     static bool bransonTerminalKind(uint8_t kind);
     Addr bransonEventAddress(uint32_t event) const;
     Addr bransonTallyAddress(const Operation &operation) const;
@@ -574,6 +588,10 @@ class LANLMAA : public ClockedObject
     Addr umeGradzatpUpdateAddress(const Operation &operation) const;
     void beginUmeGradzatpUpdatePhase();
     Addr umtFusedCornerReadAddress(const Operation &operation) const;
+    UpdateEntry &umtMixedSidecarEntry(uint32_t context, uint32_t word);
+    const UpdateEntry &umtMixedSidecarEntry(
+        uint32_t context, uint32_t word) const;
+    void clearUmtMixedSidecar();
     void progressUmtFusedCornerBatch();
     bool faceMinMaxDescriptor() const;
     UpdateKind configuredUpdateKind() const;
