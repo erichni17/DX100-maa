@@ -116,6 +116,14 @@ paged_overlap_4k)
     reload_only=0
     overlap=1
     ;;
+transparent_4k)
+    mode=transparent
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    ;;
 paged_staged_16k)
     mode=paged_staged
     page=16384
@@ -202,13 +210,25 @@ cp -- "$ramulator" "$snapshot/ramulator.yaml"
 cp -- "$(realpath "$0")" "$snapshot/run_virtual_tile_consumer_case.sh"
 cp -- "$root/benchmarks/API/test_virtual_tile_consumer.cpp" \
     "$snapshot/test_virtual_tile_consumer.cpp"
+cp -- "$root/benchmarks/API/MAA_gem5.hpp" "$snapshot/MAA_gem5.hpp"
 cp -- "$root/src/mem/MAA/IndirectAccess.cc" "$snapshot/IndirectAccess.cc"
 cp -- "$root/src/mem/MAA/IndirectAccess.hh" "$snapshot/IndirectAccess.hh"
+cp -- "$root/src/mem/MAA/TransparentSPDController.hh" \
+    "$snapshot/TransparentSPDController.hh"
+cp -- "$root/src/mem/MAA/MAA.cc" "$snapshot/MAA.cc"
+cp -- "$root/src/mem/MAA/MAA.hh" "$snapshot/MAA.hh"
+cp -- "$root/src/mem/MAA/IF.cc" "$snapshot/IF.cc"
+cp -- "$root/src/mem/MAA/IF.hh" "$snapshot/IF.hh"
+cp -- "$root/src/mem/MAA/CpuSidePort.cc" "$snapshot/CpuSidePort.cc"
 sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/ramulator.yaml" \
     "$snapshot/run_virtual_tile_consumer_case.sh" \
     "$snapshot/test_virtual_tile_consumer.cpp" \
+    "$snapshot/MAA_gem5.hpp" \
     "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
+    "$snapshot/TransparentSPDController.hh" \
+    "$snapshot/MAA.cc" "$snapshot/MAA.hh" \
+    "$snapshot/IF.cc" "$snapshot/IF.hh" "$snapshot/CpuSidePort.cc" \
     "$out/source.diff" "$out/source_status.txt" \
     > "$out/artifact_sha256.txt"
 
@@ -420,6 +440,32 @@ elif [[ $virtual -eq 1 ]]; then
         echo "invalid virtual page trace count: $trace_pages/$expected_pages" >&2
         exit 1
     }
+    if [[ $case_name == transparent_4k ]]; then
+        transparent_submits=$(grep -c 'event=transparent_submit' "$trace" || true)
+        transparent_issues=$(grep -c 'event=transparent_issue' "$trace" || true)
+        transparent_completes=$(grep -c 'event=transparent_complete' "$trace" || true)
+        transparent_retires=$(grep -c 'event=transparent_retire' "$trace" || true)
+        [[ $transparent_submits -eq 1 && $transparent_issues -eq 12 && \
+           $transparent_completes -eq 12 && $transparent_retires -eq 1 ]] || {
+            echo "invalid transparent controller trace: submit=$transparent_submits issue=$transparent_issues complete=$transparent_completes retire=$transparent_retires" >&2
+            exit 1
+        }
+        awk '
+            /event=transparent_issue/ {
+                for (i = 2; i <= NF; ++i) {
+                    split($i, kv, "=")
+                    value[kv[1]] = kv[2]
+                }
+                print value["page"], value["action"]
+                delete value
+            }
+        ' OFS='\t' "$trace" > "$out/transparent_issue_order.tsv"
+        expected_order=$'0\t1\n0\t2\n0\t3\n1\t1\n1\t2\n1\t3\n2\t1\n2\t2\n2\t3\n3\t1\n3\t2\n3\t3'
+        [[ $(cat "$out/transparent_issue_order.tsv") == "$expected_order" ]] || {
+            echo "transparent page/action order is not fill-compute-store per page" >&2
+            exit 1
+        }
+    fi
     {
         printf 'tick\tunit\tpage\tready_count\ttotal_pages'
         printf '\tissued_words\tcompleted_words\tsources_drained\n'

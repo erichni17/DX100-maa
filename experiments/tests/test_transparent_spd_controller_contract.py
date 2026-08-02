@@ -57,6 +57,25 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertIn("OpcodeType::ALU_SCALAR", maa)
         self.assertIn("OpcodeType::STREAM_ST", maa)
 
+    def test_runner_has_fail_closed_transparent_case(self):
+        runner = (
+            ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
+        ).read_text()
+        self.assertIn("transparent_4k)", runner)
+        self.assertIn("mode=transparent", runner)
+        self.assertIn("transparent_submits -eq 1", runner)
+        self.assertIn("transparent_issues -eq 12", runner)
+        self.assertIn("transparent_completes -eq 12", runner)
+        self.assertIn("transparent_retires -eq 1", runner)
+        for artifact in (
+            "TransparentSPDController.hh",
+            "MAA.cc",
+            "IF.cc",
+            "CpuSidePort.cc",
+            "MAA_gem5.hpp",
+        ):
+            self.assertIn(artifact, runner)
+
 
 if __name__ == "__main__":
     unittest.main()
