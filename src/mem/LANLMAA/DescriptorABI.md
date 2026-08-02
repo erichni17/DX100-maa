@@ -161,7 +161,7 @@ application-speedup claim.
 
 ### UMT ordered eight-corner wave contract (opcode 11)
 
-Opcode 11 is a version-1, 512-byte contract occupying eight adjacent
+Opcode 11 is a version-2, 192-byte contract occupying three adjacent
 64-byte descriptor slots. Byte 7 must equal one and promises an exactly
 eight-corner positive UCB zone whose records and results are arranged in the
 CPU-provided topological solve order. Opcode 10 remains unchanged as the
@@ -175,15 +175,20 @@ per-corner baseline.
 | 24 | 8 | Result base |
 | 32 | 8 | 32-byte completion record |
 | 40 | 8 | Reserved, zero |
-| 48 | 8 | ABI fingerprint `0x7ad84df11b768c03` |
+| 48 | 8 | ABI fingerprint `0x215544d46139a30b` |
 | 56 | 4 | Corner count, exactly 8 |
-| 60 | 4 | Strict-upper coefficient count, exactly 28 |
-| 64 | 224 | FP64 downstream coefficients in source-major order |
-| 288 | 224 | Reserved, zero |
+| 60 | 4 | Stored nonzero edge count, 0-12 |
+| 64 | 4 | 28-bit strict-upper edge mask in source-major order |
+| 68 | 4 | Reserved, zero |
+| 72 | 0-96 | Packed nonzero FP64 coefficients in ascending mask-bit order |
+| 72+8N | through 191 | Reserved, zero |
 
 Each group record is three ordinal-major FP64 vectors:
-`source[8]`, `sum_area[8]`, and `sigma_times_volume[8]`. The shared 28-word
-coefficient triangle contains zero for absent edges. For each ordinal, the
+`source[8]`, `sum_area[8]`, and `sigma_times_volume[8]`. The 28-bit mask
+reconstructs the shared strict-upper coefficient triangle; at most twelve
+nonzero coefficients are stored and absent edges reconstruct as zero. Set bits
+with zero or nonfinite coefficients, a population/count mismatch, and nonzero
+padding are noncanonical and rejected. For each ordinal, the
 engine adds the two denominator terms, divides the current retained source,
 and applies every nonzero forward coefficient as one multiply followed by one
 add to a later retained source. It returns `flux[8]` per group and reports
@@ -202,7 +207,9 @@ it on one FP64 add/sub unit, one FP64 multiplier, eight iterative dividers
 (64-cycle latency and initiation interval), and global issue width one. Per
 group it charges eight denominator adds, eight divides, and one multiply/add
 pair per nonzero edge. Architecturally retained group state is eight mutable
-sources plus eight denominators; the 28 coefficients are descriptor-global.
+sources plus eight denominators; at most twelve coefficients are
+descriptor-global. The compact form removes five descriptor fetches per
+submission relative to the padded version-1 prototype.
 The C++ vectors used by the functional simulator are not an SRAM sizing
 claim. Synthesis, wiring, power, and physical timing remain unproven.
 

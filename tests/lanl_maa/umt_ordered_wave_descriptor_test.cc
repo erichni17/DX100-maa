@@ -7,6 +7,8 @@
 
 using namespace gem5::lanlmaa;
 
+static_assert(UmtOrderedWaveDescriptorBytes == 3 * DescriptorBytes);
+
 namespace
 {
 
@@ -42,21 +44,29 @@ validBytes()
     put(bytes, 32, 0x5000, 8);
     put(bytes, 48, UmtOrderedWaveAbiFingerprint, 8);
     put(bytes, 56, UmtOrderedWaveCorners, 4);
-    put(bytes, 60, UmtOrderedWaveCoefficients, 4);
+    std::array<double, UmtOrderedWaveDenseCoefficients> coefficients{};
     for (size_t corner = 0;
          corner + 1 < UmtOrderedWaveCorners; ++corner) {
-        put(bytes,
-            64 + 8 * umtOrderedWaveCoefficientIndex(corner, corner + 1),
-            bits(0.25 + corner), 8);
+        coefficients[
+            umtOrderedWaveCoefficientIndex(corner, corner + 1)] =
+            0.25 + corner;
     }
-    put(bytes, 64 + 8 * umtOrderedWaveCoefficientIndex(0, 3),
-        bits(0.5), 8);
-    put(bytes, 64 + 8 * umtOrderedWaveCoefficientIndex(1, 4),
-        bits(0.75), 8);
-    put(bytes, 64 + 8 * umtOrderedWaveCoefficientIndex(2, 6),
-        bits(1.25), 8);
-    put(bytes, 64 + 8 * umtOrderedWaveCoefficientIndex(3, 7),
-        bits(1.5), 8);
+    coefficients[umtOrderedWaveCoefficientIndex(0, 3)] = 0.5;
+    coefficients[umtOrderedWaveCoefficientIndex(1, 4)] = 0.75;
+    coefficients[umtOrderedWaveCoefficientIndex(2, 6)] = 1.25;
+    coefficients[umtOrderedWaveCoefficientIndex(3, 7)] = 1.5;
+    uint32_t edgeMask = 0;
+    uint32_t edgeCount = 0;
+    for (size_t index = 0; index < coefficients.size(); ++index) {
+        if (coefficients[index] == 0.0)
+            continue;
+        edgeMask |= uint32_t{1} << index;
+        put(bytes, 72 + edgeCount * sizeof(uint64_t),
+            bits(coefficients[index]), sizeof(uint64_t));
+        ++edgeCount;
+    }
+    put(bytes, 60, edgeCount, 4);
+    put(bytes, 64, edgeMask, 4);
     return bytes;
 }
 
@@ -116,11 +126,15 @@ main()
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::BadRecordGeometry);
     bytes = validBytes();
-    bytes[300] = 1;
+    bytes[180] = 1;
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::ReservedNonzero);
     bytes = validBytes();
-    put(bytes, 64, UINT64_C(0x7ff8000000000000), 8);
+    put(bytes, 72, UINT64_C(0x7ff8000000000000), 8);
+    assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
+           DescriptorError::BadRecordValue);
+    bytes = validBytes();
+    put(bytes, 60, 12, 4);
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::BadRecordValue);
     return 0;

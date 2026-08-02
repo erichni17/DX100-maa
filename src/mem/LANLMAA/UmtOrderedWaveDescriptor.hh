@@ -14,12 +14,13 @@ namespace gem5
 namespace lanlmaa
 {
 
-constexpr size_t UmtOrderedWaveDescriptorBytes = 512;
-constexpr uint16_t UmtOrderedWaveDescriptorVersion = 1;
+constexpr size_t UmtOrderedWaveDescriptorBytes = 192;
+constexpr uint16_t UmtOrderedWaveDescriptorVersion = 2;
 constexpr uint8_t UmtOrderedWaveOpcode = 11;
 constexpr uint8_t UmtOrderedWaveEightCornerFlag = 1U << 0;
 constexpr uint32_t UmtOrderedWaveCorners = 8;
-constexpr uint32_t UmtOrderedWaveCoefficients = 28;
+constexpr uint32_t UmtOrderedWaveDenseCoefficients = 28;
+constexpr uint32_t UmtOrderedWaveMaximumEdges = 12;
 constexpr uint32_t UmtOrderedWaveRecordFp64Words = 24;
 constexpr uint32_t UmtOrderedWaveRecordBytes =
     UmtOrderedWaveRecordFp64Words * sizeof(uint64_t);
@@ -27,7 +28,7 @@ constexpr uint32_t UmtOrderedWaveResultBytes =
     UmtOrderedWaveCorners * sizeof(uint64_t);
 constexpr uint32_t UmtOrderedWaveMaximumGroups = 32;
 constexpr uint64_t UmtOrderedWaveAbiFingerprint =
-    0x7ad84df11b768c03ULL;
+    0x215544d46139a30bULL;
 
 struct UmtOrderedWaveDescriptor
 {
@@ -36,7 +37,7 @@ struct UmtOrderedWaveDescriptor
     uint64_t recordBase = 0;
     uint64_t resultBase = 0;
     uint64_t completionRecord = 0;
-    std::array<double, UmtOrderedWaveCoefficients> coefficients{};
+    std::array<double, UmtOrderedWaveDenseCoefficients> coefficients{};
 };
 
 struct UmtOrderedWaveRecord
@@ -210,21 +211,40 @@ decodeUmtOrderedWaveDescriptor(
     if (descriptorReadLe64(bytes.data() + 40) != 0 ||
         descriptorReadLe64(bytes.data() + 48) !=
             UmtOrderedWaveAbiFingerprint ||
-        descriptorReadLe32(bytes.data() + 56) != UmtOrderedWaveCorners ||
-        descriptorReadLe32(bytes.data() + 60) !=
-            UmtOrderedWaveCoefficients) {
+        descriptorReadLe32(bytes.data() + 56) != UmtOrderedWaveCorners) {
         result.error = DescriptorError::BadRecordValue;
         return result;
     }
-    for (size_t index = 0; index < descriptor.coefficients.size(); ++index) {
-        descriptor.coefficients[index] =
-            umtFusedCornerDecodeFp64(bytes.data() + 64 + index * 8);
-        if (!std::isfinite(descriptor.coefficients[index])) {
+    const uint32_t edgeCount = descriptorReadLe32(bytes.data() + 60);
+    const uint32_t edgeMask = descriptorReadLe32(bytes.data() + 64);
+    if (edgeCount > UmtOrderedWaveMaximumEdges ||
+        descriptorReadLe32(bytes.data() + 68) != 0 ||
+        (edgeMask >> UmtOrderedWaveDenseCoefficients) != 0) {
+        result.error = DescriptorError::BadRecordValue;
+        return result;
+    }
+    uint32_t maskEdges = 0;
+    for (uint32_t mask = edgeMask; mask != 0; mask >>= 1)
+        maskEdges += mask & 1U;
+    if (maskEdges != edgeCount) {
+        result.error = DescriptorError::BadRecordValue;
+        return result;
+    }
+    uint32_t sparseIndex = 0;
+    for (size_t denseIndex = 0;
+         denseIndex < descriptor.coefficients.size(); ++denseIndex) {
+        if ((edgeMask & (uint32_t{1} << denseIndex)) == 0)
+            continue;
+        const double coefficient = umtFusedCornerDecodeFp64(
+            bytes.data() + 72 + sparseIndex * sizeof(uint64_t));
+        if (!std::isfinite(coefficient) || coefficient == 0.0) {
             result.error = DescriptorError::BadRecordValue;
             return result;
         }
+        descriptor.coefficients[denseIndex] = coefficient;
+        ++sparseIndex;
     }
-    for (size_t offset = 64 + UmtOrderedWaveCoefficients * 8;
+    for (size_t offset = 72 + edgeCount * sizeof(uint64_t);
          offset < bytes.size(); ++offset) {
         if (bytes[offset] != 0) {
             result.error = DescriptorError::ReservedNonzero;
