@@ -24,6 +24,7 @@
 #include "mem/LANLMAA/UmtFusedCornerModel.hh"
 #include "mem/LANLMAA/UmtMixedCornerDescriptor.hh"
 #include "mem/LANLMAA/UmtMixedCornerScheduleModel.hh"
+#include "mem/LANLMAA/UmtOrderedWaveDescriptor.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
 #include "params/LANLMAA.hh"
@@ -493,11 +494,17 @@ class LANLMAA : public ClockedObject
     UmeGradzatpPhase umeGradzatpPhase = UmeGradzatpPhase::Inactive;
     UmtFusedCornerDescriptor umtFusedCorner;
     UmtMixedCornerDescriptor umtMixedCorner;
+    UmtOrderedWaveDescriptor umtOrderedWave;
     UmtFusedCornerPhase umtFusedCornerPhase =
         UmtFusedCornerPhase::Inactive;
     bool umtMixedCornerActive = false;
+    bool umtOrderedWaveActive = false;
     bool umtMixedSidecarReadsQueued = false;
     UmtMixedCornerSidecarPortModel umtMixedSidecarPorts;
+    std::vector<UmtOrderedWaveRecord> umtOrderedWaveRecords;
+    std::vector<std::array<uint64_t, UmtOrderedWaveCorners>>
+        umtOrderedWaveResults;
+    uint8_t umtOrderedWaveResultCorner = 0;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;
@@ -523,6 +530,8 @@ class LANLMAA : public ClockedObject
     uint8_t spartaFusedWriteChannel = 0;
     size_t descriptorFetchOffset = 0;
     std::array<uint8_t, SpartaFusedDescriptorBytes> descriptorFetchBuffer{};
+    std::array<uint8_t, UmtOrderedWaveDescriptorBytes>
+        umtOrderedWaveFetchBuffer{};
     bool descriptorFaceUpdatePhase = false;
     PacketPtr descriptorPacket = nullptr;
     PacketPtr addressVectorPacket = nullptr;
@@ -551,6 +560,7 @@ class LANLMAA : public ClockedObject
     bool umtCornerDescriptor() const;
     bool umtFusedCornerDescriptor() const;
     bool umtMixedCornerDescriptor() const;
+    bool umtOrderedWaveDescriptor() const;
     static bool bransonTerminalKind(uint8_t kind);
     Addr bransonEventAddress(uint32_t event) const;
     Addr bransonTallyAddress(const Operation &operation) const;

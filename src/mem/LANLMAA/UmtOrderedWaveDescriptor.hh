@@ -1,0 +1,275 @@
+#ifndef __MEM_LANLMAA_UMT_ORDERED_WAVE_DESCRIPTOR_HH__
+#define __MEM_LANLMAA_UMT_ORDERED_WAVE_DESCRIPTOR_HH__
+
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#include "mem/LANLMAA/UmtFp64DependencyModel.hh"
+#include "mem/LANLMAA/UmtFusedCornerDescriptor.hh"
+
+namespace gem5
+{
+namespace lanlmaa
+{
+
+constexpr size_t UmtOrderedWaveDescriptorBytes = 512;
+constexpr uint16_t UmtOrderedWaveDescriptorVersion = 1;
+constexpr uint8_t UmtOrderedWaveOpcode = 11;
+constexpr uint8_t UmtOrderedWaveEightCornerFlag = 1U << 0;
+constexpr uint32_t UmtOrderedWaveCorners = 8;
+constexpr uint32_t UmtOrderedWaveCoefficients = 28;
+constexpr uint32_t UmtOrderedWaveRecordFp64Words = 24;
+constexpr uint32_t UmtOrderedWaveRecordBytes =
+    UmtOrderedWaveRecordFp64Words * sizeof(uint64_t);
+constexpr uint32_t UmtOrderedWaveResultBytes =
+    UmtOrderedWaveCorners * sizeof(uint64_t);
+constexpr uint32_t UmtOrderedWaveMaximumGroups = 32;
+constexpr uint64_t UmtOrderedWaveAbiFingerprint =
+    0x7ad84df11b768c03ULL;
+
+struct UmtOrderedWaveDescriptor
+{
+    uint32_t groupCount = 0;
+    uint32_t recordStride = 0;
+    uint64_t recordBase = 0;
+    uint64_t resultBase = 0;
+    uint64_t completionRecord = 0;
+    std::array<double, UmtOrderedWaveCoefficients> coefficients{};
+};
+
+struct UmtOrderedWaveRecord
+{
+    std::array<double, UmtOrderedWaveCorners> source{};
+    std::array<double, UmtOrderedWaveCorners> sumArea{};
+    std::array<double, UmtOrderedWaveCorners> sigtVolume{};
+};
+
+struct UmtOrderedWaveResult
+{
+    std::array<double, UmtOrderedWaveCorners> flux{};
+    DescriptorError error = DescriptorError::None;
+
+    explicit operator bool() const { return error == DescriptorError::None; }
+};
+
+struct UmtOrderedWaveDescriptorDecodeResult
+{
+    UmtOrderedWaveDescriptor descriptor;
+    DescriptorError error = DescriptorError::None;
+
+    explicit operator bool() const { return error == DescriptorError::None; }
+};
+
+inline size_t
+umtOrderedWaveCoefficientIndex(size_t source, size_t destination)
+{
+    return source * (2 * UmtOrderedWaveCorners - source - 1) / 2 +
+        destination - source - 1;
+}
+
+inline UmtOrderedWaveResult
+executeUmtOrderedWave(const UmtOrderedWaveDescriptor &descriptor,
+                      UmtOrderedWaveRecord record)
+{
+    UmtOrderedWaveResult result;
+    for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
+        if (!std::isfinite(record.source[corner]) ||
+            !std::isfinite(record.sumArea[corner]) ||
+            !std::isfinite(record.sigtVolume[corner])) {
+            result.error = DescriptorError::BadRecordValue;
+            return result;
+        }
+        const double denominator =
+            record.sumArea[corner] + record.sigtVolume[corner];
+        if (!std::isfinite(denominator) || denominator <= 0.0) {
+            result.error = DescriptorError::BadRecordValue;
+            return result;
+        }
+        const double flux = record.source[corner] / denominator;
+        if (!std::isfinite(flux)) {
+            result.error = DescriptorError::BadRecordValue;
+            return result;
+        }
+        result.flux[corner] = flux;
+        for (size_t destination = corner + 1;
+             destination < UmtOrderedWaveCorners; ++destination) {
+            const double coefficient = descriptor.coefficients[
+                umtOrderedWaveCoefficientIndex(corner, destination)];
+            if (coefficient == 0.0)
+                continue;
+            record.source[destination] += coefficient * flux;
+            if (!std::isfinite(record.source[destination])) {
+                result.error = DescriptorError::BadRecordValue;
+                return result;
+            }
+        }
+    }
+    return result;
+}
+
+inline UmtFp64DependencyDag
+umtOrderedWaveDependencyDag(const UmtOrderedWaveDescriptor &descriptor)
+{
+    UmtFp64DependencyDag dag;
+    std::array<int32_t, UmtOrderedWaveCorners> sourceReady;
+    sourceReady.fill(-1);
+    uint32_t last = 0;
+    for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
+        const uint32_t denominator = dag.nodes.size();
+        dag.nodes.push_back({UmtFp64OperationKind::AddSub, {}});
+        std::vector<uint32_t> dependencies{denominator};
+        if (sourceReady[corner] >= 0)
+            dependencies.push_back(sourceReady[corner]);
+        const uint32_t divide = dag.nodes.size();
+        dag.nodes.push_back({UmtFp64OperationKind::Divide, dependencies});
+        last = divide;
+        for (size_t destination = corner + 1;
+             destination < UmtOrderedWaveCorners; ++destination) {
+            if (descriptor.coefficients[
+                    umtOrderedWaveCoefficientIndex(corner, destination)] ==
+                0.0)
+                continue;
+            const uint32_t multiply = dag.nodes.size();
+            dag.nodes.push_back({UmtFp64OperationKind::Multiply, {divide}});
+            dependencies = {multiply};
+            if (sourceReady[destination] >= 0)
+                dependencies.push_back(sourceReady[destination]);
+            const uint32_t add = dag.nodes.size();
+            dag.nodes.push_back({UmtFp64OperationKind::AddSub, dependencies});
+            sourceReady[destination] = add;
+            last = add;
+        }
+    }
+    dag.output = last;
+    return dag;
+}
+
+inline UmtFp64Resources
+umtOrderedWaveResources()
+{
+    UmtFp64Resources resources;
+    resources.globalIssueWidth = 1;
+    resources.addSubUnits = 1;
+    resources.multiplyUnits = 1;
+    resources.divideUnits = 8;
+    resources.divideLatency = 64;
+    resources.divideInitiationInterval = 64;
+    return resources;
+}
+
+inline UmtFp64ScheduleResult
+umtOrderedWaveSchedule(const UmtOrderedWaveDescriptor &descriptor)
+{
+    return UmtFp64DependencyModel::schedule(
+        umtOrderedWaveDependencyDag(descriptor), descriptor.groupCount,
+        umtOrderedWaveResources());
+}
+
+inline UmtOrderedWaveDescriptorDecodeResult
+decodeUmtOrderedWaveDescriptor(
+    const std::array<uint8_t, UmtOrderedWaveDescriptorBytes> &bytes)
+{
+    UmtOrderedWaveDescriptorDecodeResult result;
+    if (descriptorReadLe32(bytes.data()) != DescriptorMagic) {
+        result.error = DescriptorError::BadMagic;
+        return result;
+    }
+    if (descriptorReadLe16(bytes.data() + 4) !=
+        UmtOrderedWaveDescriptorVersion) {
+        result.error = DescriptorError::BadVersion;
+        return result;
+    }
+    if (bytes[6] != UmtOrderedWaveOpcode) {
+        result.error = DescriptorError::BadOpcode;
+        return result;
+    }
+    if (bytes[7] != UmtOrderedWaveEightCornerFlag) {
+        result.error = DescriptorError::UnsupportedFlags;
+        return result;
+    }
+    auto &descriptor = result.descriptor;
+    descriptor.groupCount = descriptorReadLe32(bytes.data() + 8);
+    descriptor.recordStride = descriptorReadLe32(bytes.data() + 12);
+    descriptor.recordBase = descriptorReadLe64(bytes.data() + 16);
+    descriptor.resultBase = descriptorReadLe64(bytes.data() + 24);
+    descriptor.completionRecord = descriptorReadLe64(bytes.data() + 32);
+    if (descriptor.groupCount == 0) {
+        result.error = DescriptorError::Empty;
+        return result;
+    }
+    if (descriptor.groupCount > UmtOrderedWaveMaximumGroups) {
+        result.error = DescriptorError::TooManyItems;
+        return result;
+    }
+    if (descriptor.recordStride != UmtOrderedWaveRecordBytes) {
+        result.error = DescriptorError::BadRecordGeometry;
+        return result;
+    }
+    if (descriptorReadLe64(bytes.data() + 40) != 0 ||
+        descriptorReadLe64(bytes.data() + 48) !=
+            UmtOrderedWaveAbiFingerprint ||
+        descriptorReadLe32(bytes.data() + 56) != UmtOrderedWaveCorners ||
+        descriptorReadLe32(bytes.data() + 60) !=
+            UmtOrderedWaveCoefficients) {
+        result.error = DescriptorError::BadRecordValue;
+        return result;
+    }
+    for (size_t index = 0; index < descriptor.coefficients.size(); ++index) {
+        descriptor.coefficients[index] =
+            umtFusedCornerDecodeFp64(bytes.data() + 64 + index * 8);
+        if (!std::isfinite(descriptor.coefficients[index])) {
+            result.error = DescriptorError::BadRecordValue;
+            return result;
+        }
+    }
+    for (size_t offset = 64 + UmtOrderedWaveCoefficients * 8;
+         offset < bytes.size(); ++offset) {
+        if (bytes[offset] != 0) {
+            result.error = DescriptorError::ReservedNonzero;
+            return result;
+        }
+    }
+    if (descriptor.recordBase % alignof(uint64_t) != 0 ||
+        descriptor.resultBase % alignof(uint64_t) != 0 ||
+        descriptor.completionRecord % alignof(uint64_t) != 0) {
+        result.error = DescriptorError::MisalignedVector;
+        return result;
+    }
+    std::array<UmtFusedCornerRange, 3> ranges;
+    if (!umtFusedCornerScaledRange(
+            descriptor.recordBase, descriptor.groupCount,
+            descriptor.recordStride, UmtOrderedWaveRecordBytes, ranges[0]) ||
+        !umtFusedCornerScaledRange(
+            descriptor.resultBase, descriptor.groupCount,
+            UmtOrderedWaveResultBytes, UmtOrderedWaveResultBytes, ranges[1]) ||
+        !umtFusedCornerScaledRange(
+            descriptor.completionRecord, 1, 32, 32, ranges[2])) {
+        result.error = DescriptorError::RangeOverflow;
+        return result;
+    }
+    if (descriptorRangesOverlap(
+            ranges[0].begin, ranges[0].end,
+            ranges[1].begin, ranges[1].end) ||
+        descriptorRangesOverlap(
+            ranges[0].begin, ranges[0].end,
+            ranges[2].begin, ranges[2].end)) {
+        result.error = DescriptorError::OverlappingInput;
+        return result;
+    }
+    if (descriptorRangesOverlap(
+            ranges[1].begin, ranges[1].end,
+            ranges[2].begin, ranges[2].end)) {
+        result.error = DescriptorError::OverlappingOutput;
+        return result;
+    }
+    if (!umtOrderedWaveSchedule(descriptor))
+        result.error = DescriptorError::BadRecordGeometry;
+    return result;
+}
+
+} // namespace lanlmaa
+} // namespace gem5
+
+#endif // __MEM_LANLMAA_UMT_ORDERED_WAVE_DESCRIPTOR_HH__

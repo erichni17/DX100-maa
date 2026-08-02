@@ -1,4 +1,4 @@
-"""Run the native UMT miniapp with optional opcode-10 corner replacement."""
+"""Run native UMT with optional opcode-10 corner or opcode-11 wave offload."""
 
 import argparse
 
@@ -34,6 +34,7 @@ parser.add_argument("--app-stderr", required=True)
 parser.add_argument("--submission-report", required=True)
 parser.add_argument("--problem", choices=("1", "2"), required=True)
 parser.add_argument("--maa", action="store_true")
+parser.add_argument("--umt-mode", choices=("corner", "wave"), default="corner")
 parser.add_argument("--max-insts", type=int, default=0)
 parser.add_argument("--max-ticks", type=int, default=0)
 args = parser.parse_args()
@@ -91,7 +92,7 @@ system.memory.port = system.membus.mem_side_ports
 system.lanl_maa = LANLMAA(
     descriptor_mode=True,
     descriptor_table_base=DATA_PADDR,
-    descriptor_slots=2,
+    descriptor_slots=8,
     max_descriptor_items=32,
     control_addr=CONTROL_PADDR,
     control_size=CONTROL_BYTES,
@@ -147,10 +148,16 @@ process_environment = [
     "OMPI_MCA_shmem_mmap_backing_file_base_dir=/tmp",
 ]
 if args.maa:
+    mapping_cookie = (
+        "umt-lanl-maa-opcode11-wave-mapped-v1"
+        if args.umt_mode == "wave"
+        else "umt-lanl-maa-opcode10-mapped-v1"
+    )
     process_environment.extend(
         [
             "LANL_MAA_UMT_SUBMIT=1",
-            ("LANL_MAA_UMT_MAPPING_COOKIE=" "umt-lanl-maa-opcode10-mapped-v1"),
+            f"LANL_MAA_UMT_MODE={args.umt_mode}",
+            f"LANL_MAA_UMT_MAPPING_COOKIE={mapping_cookie}",
             f"LANL_MAA_UMT_SUBMIT_REPORT={args.submission_report}",
         ]
     )

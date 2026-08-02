@@ -159,6 +159,53 @@ arithmetic and indexing shape of EAP Patterns `inside_com3b`, not a native EAP
 mesh ABI, application-correctness result, physical FP datapath cost, or
 application-speedup claim.
 
+### UMT ordered eight-corner wave contract (opcode 11)
+
+Opcode 11 is a version-1, 512-byte contract occupying eight adjacent
+64-byte descriptor slots. Byte 7 must equal one and promises an exactly
+eight-corner positive UCB zone whose records and results are arranged in the
+CPU-provided topological solve order. Opcode 10 remains unchanged as the
+per-corner baseline.
+
+| Offset | Size | Meaning |
+| ---: | ---: | --- |
+| 8 | 4 | Group count, 1-32 |
+| 12 | 4 | Record stride, exactly 192 bytes |
+| 16 | 8 | Record base |
+| 24 | 8 | Result base |
+| 32 | 8 | 32-byte completion record |
+| 40 | 8 | Reserved, zero |
+| 48 | 8 | ABI fingerprint `0x7ad84df11b768c03` |
+| 56 | 4 | Corner count, exactly 8 |
+| 60 | 4 | Strict-upper coefficient count, exactly 28 |
+| 64 | 224 | FP64 downstream coefficients in source-major order |
+| 288 | 224 | Reserved, zero |
+
+Each group record is three ordinal-major FP64 vectors:
+`source[8]`, `sum_area[8]`, and `sigma_times_volume[8]`. The shared 28-word
+coefficient triangle contains zero for absent edges. For each ordinal, the
+engine adds the two denominator terms, divides the current retained source,
+and applies every nonzero forward coefficient as one multiply followed by one
+add to a later retained source. It returns `flux[8]` per group and reports
+`group_count * 8` acknowledged result writes. The decoder rejects nonfinite
+coefficients, bad sizes, reserved bits, range overflow, pairwise overlap, and
+a descriptor that extends beyond the configured table.
+
+The native UMT integration performs incident-face and EZ correction assembly
+on the CPU, submits the whole ordered zone once per group batch, installs all
+eight returned angular fluxes, and skips the CPU's downstream recurrence.
+Thus opcode 11 tests the synchronization and retained-dependency boundary; it
+does not claim to offload the earlier source-assembly physics.
+
+The timing contract constructs the actual sparse dependency DAG and schedules
+it on one FP64 add/sub unit, one FP64 multiplier, eight iterative dividers
+(64-cycle latency and initiation interval), and global issue width one. Per
+group it charges eight denominator adds, eight divides, and one multiply/add
+pair per nonzero edge. Architecturally retained group state is eight mutable
+sources plus eight denominators; the 28 coefficients are descriptor-global.
+The C++ vectors used by the functional simulator are not an SRAM sizing
+claim. Synthesis, wiring, power, and physical timing remain unproven.
+
 ## Completion and control records
 
 Successful descriptors write a 32-byte completion record:

@@ -815,7 +815,8 @@ LANLMAA::controlAccess(PacketPtr packet)
             (uint64_t{1} << SpartaFusedOpcode) |
             (uint64_t{1} << UmeGradzatpOpcode) |
             (uint64_t{1} << UmtFusedCornerOpcode) |
-            (uint64_t{1} << UmtMixedCornerOpcode);
+            (uint64_t{1} << UmtMixedCornerOpcode) |
+            (uint64_t{1} << UmtOrderedWaveOpcode);
         break;
       default:
         packet->setBadAddress();
@@ -870,8 +871,13 @@ LANLMAA::rearmDescriptorEngine()
     umeGradzatpPhase = UmeGradzatpPhase::Inactive;
     umtFusedCorner = UmtFusedCornerDescriptor{};
     umtMixedCorner = UmtMixedCornerDescriptor{};
+    umtOrderedWave = UmtOrderedWaveDescriptor{};
     umtFusedCornerPhase = UmtFusedCornerPhase::Inactive;
     umtMixedCornerActive = false;
+    umtOrderedWaveActive = false;
+    umtOrderedWaveRecords.clear();
+    umtOrderedWaveResults.clear();
+    umtOrderedWaveResultCorner = 0;
     umtMixedSidecarReadsQueued = false;
     panic_if(umtMixedSidecarPorts.active() ||
                  umtMixedSidecarPorts.pending() != 0,
@@ -900,6 +906,7 @@ LANLMAA::rearmDescriptorEngine()
     spartaFusedWriteChannel = 0;
     descriptorFetchOffset = 0;
     descriptorFetchBuffer.fill(0);
+    umtOrderedWaveFetchBuffer.fill(0);
     descriptorFaceUpdatePhase = false;
     nextAdmission = 0;
     nextRetirement = 0;
@@ -942,6 +949,7 @@ LANLMAA::ringDoorbell(uint32_t slot)
     descriptorError = DescriptorError::None;
     descriptorFetchOffset = 0;
     descriptorFetchBuffer.fill(0);
+    umtOrderedWaveFetchBuffer.fill(0);
     descriptorState = DescriptorState::DescriptorPending;
     ++stats.descriptorDoorbells;
     scheduleTick();
@@ -1163,6 +1171,28 @@ LANLMAA::issueAddressVectorFetch()
 void
 LANLMAA::issueResultWrite()
 {
+    if (umtOrderedWaveDescriptor()) {
+        if (descriptorResultCursor == operations.size()) {
+            descriptorState = DescriptorState::CompletionPending;
+            return;
+        }
+        if (!resultPacket) {
+            const Addr address = umtOrderedWave.resultBase +
+                (descriptorResultCursor * UmtOrderedWaveCorners +
+                 umtOrderedWaveResultCorner) * sizeof(uint64_t);
+            RequestPtr request = std::make_shared<Request>(
+                address, sizeof(uint64_t), Request::Flags(), requestorId);
+            resultPacket = new Packet(request, MemCmd::WriteReq);
+            resultPacket->allocate();
+            resultPacket->setLE<uint64_t>(
+                umtOrderedWaveResults[descriptorResultCursor]
+                    [umtOrderedWaveResultCorner]);
+            tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
+        }
+        if (sendDescriptorPacket(resultPacket))
+            descriptorState = DescriptorState::ResultInFlight;
+        return;
+    }
     if (spartaFusedCellDescriptor()) {
         while (descriptorResultCursor < operations.size() &&
                spartaFusedSummary(
@@ -1223,6 +1253,8 @@ LANLMAA::issueCompletionWrite()
 {
     if (!completionPacket) {
         RequestPtr request = std::make_shared<Request>(
+            umtOrderedWaveDescriptor() ?
+                umtOrderedWave.completionRecord :
             umtMixedCornerDescriptor() ?
                 umtMixedCorner.completionRecord :
             umtFusedCornerDescriptor() ? umtFusedCorner.completionRecord :
@@ -1240,6 +1272,8 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 0, CompletionMagic, 4);
         writeLe(
             data, 4,
+            umtOrderedWaveDescriptor() ?
+                UmtOrderedWaveDescriptorVersion :
             umtMixedCornerDescriptor() ?
                 UmtMixedCornerDescriptorVersion :
             umtFusedCornerDescriptor() ? UmtFusedCornerDescriptorVersion :
@@ -1248,6 +1282,7 @@ LANLMAA::issueCompletionWrite()
             2);
         writeLe(
             data, 6,
+            umtOrderedWaveDescriptor() ? UmtOrderedWaveOpcode :
             umtMixedCornerDescriptor() ? UmtMixedCornerOpcode :
             umtFusedCornerDescriptor() ? UmtFusedCornerOpcode :
             umeGradzatpDescriptor() ? UmeGradzatpOpcode :
@@ -1261,6 +1296,8 @@ LANLMAA::issueCompletionWrite()
         writeLe(data, 16, operations.size(), 8);
         writeLe(
             data, 24,
+            umtOrderedWaveDescriptor() ?
+                operations.size() * UmtOrderedWaveCorners :
             umeGradzatpDescriptor() ? umeUpdatesAcknowledged :
             spartaFusedCellDescriptor() ?
                 spartaFusedWritesAcknowledged :
@@ -1538,13 +1575,21 @@ LANLMAA::umtCornerDescriptor() const
 bool
 LANLMAA::umtFusedCornerDescriptor() const
 {
-    return umtCornerDescriptor() && !umtMixedCornerActive;
+    return umtCornerDescriptor() && !umtMixedCornerActive &&
+        !umtOrderedWaveActive;
 }
 
 bool
 LANLMAA::umtMixedCornerDescriptor() const
 {
-    return umtCornerDescriptor() && umtMixedCornerActive;
+    return umtCornerDescriptor() && umtMixedCornerActive &&
+        !umtOrderedWaveActive;
+}
+
+bool
+LANLMAA::umtOrderedWaveDescriptor() const
+{
+    return umtCornerDescriptor() && umtOrderedWaveActive;
 }
 
 bool
@@ -2304,13 +2349,17 @@ LANLMAA::beginUmeGradzatpUpdatePhase()
 Addr
 LANLMAA::umtFusedCornerReadAddress(const Operation &operation) const
 {
-    const uint8_t stages = umtMixedCornerDescriptor() ?
+    const uint8_t stages = umtOrderedWaveDescriptor() ?
+        UmtOrderedWaveRecordFp64Words : umtMixedCornerDescriptor() ?
         UmtMixedCornerRecordFp64Words : UmtFusedCornerRecordBytes / 8;
-    const uint64_t recordBase = umtMixedCornerDescriptor() ?
+    const uint64_t recordBase = umtOrderedWaveDescriptor() ?
+        umtOrderedWave.recordBase : umtMixedCornerDescriptor() ?
         umtMixedCorner.recordBase : umtFusedCorner.recordBase;
-    const uint32_t recordStride = umtMixedCornerDescriptor() ?
+    const uint32_t recordStride = umtOrderedWaveDescriptor() ?
+        umtOrderedWave.recordStride : umtMixedCornerDescriptor() ?
         umtMixedCorner.recordStride : umtFusedCorner.recordStride;
-    const uint32_t groupCount = umtMixedCornerDescriptor() ?
+    const uint32_t groupCount = umtOrderedWaveDescriptor() ?
+        umtOrderedWave.groupCount : umtMixedCornerDescriptor() ?
         umtMixedCorner.groupCount : umtFusedCorner.groupCount;
     panic_if(!umtCornerDescriptor() ||
                  umtFusedCornerPhase != UmtFusedCornerPhase::Read ||
@@ -2429,9 +2478,14 @@ LANLMAA::progressUmtFusedCornerBatch()
                          return line.state != LineState::Free;
                      }),
                  "LANLMAA started UMT compute with live input reads");
-        const uint32_t groups = umtMixedCornerDescriptor() ?
+        const uint32_t groups = umtOrderedWaveDescriptor() ?
+            umtOrderedWave.groupCount : umtMixedCornerDescriptor() ?
             umtMixedCorner.groupCount : umtFusedCorner.groupCount;
-        const uint64_t batchCycles = umtFusedCornerBatchCycles(groups);
+        const auto waveSchedule = umtOrderedWaveDescriptor() ?
+            umtOrderedWaveSchedule(umtOrderedWave) :
+            UmtFp64ScheduleResult{};
+        const uint64_t batchCycles = umtOrderedWaveDescriptor() ?
+            waveSchedule.makespanCycles : umtFusedCornerBatchCycles(groups);
         panic_if(batchCycles == 0 ||
                      cycle >
                          std::numeric_limits<uint64_t>::max() - batchCycles,
@@ -2443,12 +2497,23 @@ LANLMAA::progressUmtFusedCornerBatch()
         }
         ++stats.descriptorUmtBatches;
         stats.descriptorUmtBatchCycles += batchCycles;
-        stats.descriptorUmtFp64AddSubOperations +=
-            38 * operations.size();
-        stats.descriptorUmtFp64MultiplyOperations +=
-            59 * operations.size();
-        stats.descriptorUmtFp64DivideOperations +=
-            4 * operations.size();
+        if (umtOrderedWaveDescriptor()) {
+            panic_if(!waveSchedule,
+                     "LANLMAA ordered-wave schedule became invalid");
+            stats.descriptorUmtFp64AddSubOperations +=
+                waveSchedule.operations.addSub;
+            stats.descriptorUmtFp64MultiplyOperations +=
+                waveSchedule.operations.multiply;
+            stats.descriptorUmtFp64DivideOperations +=
+                waveSchedule.operations.divide;
+        } else {
+            stats.descriptorUmtFp64AddSubOperations +=
+                38 * operations.size();
+            stats.descriptorUmtFp64MultiplyOperations +=
+                59 * operations.size();
+            stats.descriptorUmtFp64DivideOperations +=
+                4 * operations.size();
+        }
         return;
     }
 
@@ -2466,7 +2531,22 @@ LANLMAA::progressUmtFusedCornerBatch()
     for (const auto &operation : operations) {
         panic_if(operation.state != OperationState::UmtComputePending,
                  "LANLMAA UMT fused batch lost a pending context");
-        if (umtMixedCornerDescriptor()) {
+        if (umtOrderedWaveDescriptor()) {
+            const auto result = executeUmtOrderedWave(
+                umtOrderedWave,
+                umtOrderedWaveRecords[operation.umtFusedGroup]);
+            if (!result) {
+                beginDescriptorErrorDrain(result.error);
+                return;
+            }
+            for (size_t corner = 0; corner < UmtOrderedWaveCorners;
+                 ++corner) {
+                umtOrderedWaveResults[operation.umtFusedGroup][corner] =
+                    encodeDouble(result.flux[corner]);
+            }
+            results.push_back(
+                umtOrderedWaveResults[operation.umtFusedGroup][0]);
+        } else if (umtMixedCornerDescriptor()) {
             UmtMixedCornerRetained retained;
             retained.source = decodeDouble(operation.umtFusedValues[0]);
             retained.crossSection =
@@ -2526,7 +2606,8 @@ LANLMAA::progressUmtFusedCornerBatch()
         --activeContexts;
     }
     umtFusedResultsComputed = operations.size();
-    stats.descriptorUmtResultsComputed += operations.size();
+    stats.descriptorUmtResultsComputed += umtOrderedWaveDescriptor() ?
+        operations.size() * UmtOrderedWaveCorners : operations.size();
     if (umtMixedCornerDescriptor()) {
         panic_if(umtMixedSidecarPorts.pending() != 0,
                  "LANLMAA retired UMT mixed data with sidecar traffic");
@@ -3127,6 +3208,107 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
     std::memcpy(bytes.data(), packet->getConstPtr<uint8_t>(), bytes.size());
     delete packet;
     descriptorPacket = nullptr;
+
+    if (descriptorFetchOffset == 0 && bytes[6] == UmtOrderedWaveOpcode) {
+        if (descriptorSlot + UmtOrderedWaveDescriptorBytes / DescriptorBytes >
+            descriptorSlots) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return true;
+        }
+        std::copy(bytes.begin(), bytes.end(),
+                  umtOrderedWaveFetchBuffer.begin());
+        descriptorFetchOffset = DescriptorBytes;
+        descriptorState = DescriptorState::DescriptorPending;
+        scheduleTick();
+        return true;
+    }
+
+    if (descriptorFetchOffset != 0 &&
+        umtOrderedWaveFetchBuffer[6] == UmtOrderedWaveOpcode) {
+        std::copy(bytes.begin(), bytes.end(),
+                  umtOrderedWaveFetchBuffer.begin() + descriptorFetchOffset);
+        descriptorFetchOffset += DescriptorBytes;
+        if (descriptorFetchOffset < UmtOrderedWaveDescriptorBytes) {
+            descriptorState = DescriptorState::DescriptorPending;
+            scheduleTick();
+            return true;
+        }
+        descriptorFetchOffset = 0;
+        const auto decoded =
+            decodeUmtOrderedWaveDescriptor(umtOrderedWaveFetchBuffer);
+        if (!decoded) {
+            rejectDescriptor(decoded.error);
+            return true;
+        }
+        if (decoded.descriptor.groupCount > maxDescriptorItems ||
+            decoded.descriptor.groupCount > operationEntries ||
+            decoded.descriptor.groupCount > continuationEntries) {
+            rejectDescriptor(DescriptorError::TooManyItems);
+            return true;
+        }
+        umtOrderedWave = decoded.descriptor;
+        umtOrderedWaveActive = true;
+        umtMixedCornerActive = false;
+        umtFusedCornerPhase = UmtFusedCornerPhase::Read;
+
+        std::array<UmtFusedCornerRange, 3> ranges;
+        const bool rangesValid = umtFusedCornerScaledRange(
+            umtOrderedWave.recordBase, umtOrderedWave.groupCount,
+            umtOrderedWave.recordStride, UmtOrderedWaveRecordBytes,
+            ranges[0]) && umtFusedCornerScaledRange(
+            umtOrderedWave.resultBase, umtOrderedWave.groupCount,
+            UmtOrderedWaveResultBytes, UmtOrderedWaveResultBytes,
+            ranges[1]) && umtFusedCornerScaledRange(
+            umtOrderedWave.completionRecord, 1, 32, 32, ranges[2]);
+        panic_if(!rangesValid,
+                 "LANLMAA decoded UMT ordered-wave descriptor lost its "
+                 "range invariant");
+        const uint64_t descriptorTableEnd = descriptorTableBase +
+            descriptorSlots * DescriptorBytes;
+        const auto unsafeRange = [this, descriptorTableEnd](
+                                     const UmtFusedCornerRange &range) {
+            return !rangeIsMemory(range.begin, range.end - range.begin) ||
+                rangeOverlapsControl(range.begin, range.end - range.begin) ||
+                descriptorRangesOverlap(
+                    range.begin, range.end, descriptorTableBase,
+                    descriptorTableEnd);
+        };
+        if (std::any_of(ranges.begin(), ranges.end(), unsafeRange)) {
+            rejectDescriptor(DescriptorError::UnsafeAddressRange);
+            return true;
+        }
+        SharedOverlayReservation reservation;
+        reservation.mode = SharedOverlayMode::UmtCornerSweep;
+        reservation.pairedEntries = umtOrderedWave.groupCount;
+        const DescriptorError overlayError = acquireSharedOverlay(reservation);
+        if (overlayError != DescriptorError::None) {
+            rejectDescriptor(overlayError);
+            return true;
+        }
+        descriptor.itemCount = umtOrderedWave.groupCount;
+        descriptor.resultVector = umtOrderedWave.resultBase;
+        descriptor.completionRecord = umtOrderedWave.completionRecord;
+        operations.assign(umtOrderedWave.groupCount, Operation{});
+        umtOrderedWaveRecords.assign(
+            umtOrderedWave.groupCount, UmtOrderedWaveRecord{});
+        umtOrderedWaveResults.assign(
+            umtOrderedWave.groupCount,
+            std::array<uint64_t, UmtOrderedWaveCorners>{});
+        for (size_t group = 0; group < operations.size(); ++group) {
+            auto &operation = operations[group];
+            operation.umtFusedGroup = group;
+            operation.umtFusedReadStage = 0;
+            operation.address = umtFusedCornerReadAddress(operation);
+        }
+        descriptorAddressCursor = operations.size();
+        descriptorResultCursor = 0;
+        umtOrderedWaveResultCorner = 0;
+        umtFusedBatchReadyCycle = 0;
+        umtFusedResultsComputed = 0;
+        beginDescriptorExecution();
+        scheduleTick();
+        return true;
+    }
 
     if (descriptorFetchOffset == 0 &&
         (bytes[6] == SpartaFusedOpcode || bytes[6] == UmeGradzatpOpcode ||
@@ -3975,7 +4157,13 @@ LANLMAA::receiveResultResponse(PacketPtr packet)
     delete packet;
     resultPacket = nullptr;
     ++stats.descriptorResultWrites;
-    if (spartaFusedCellDescriptor()) {
+    if (umtOrderedWaveDescriptor()) {
+        ++umtOrderedWaveResultCorner;
+        if (umtOrderedWaveResultCorner == UmtOrderedWaveCorners) {
+            umtOrderedWaveResultCorner = 0;
+            ++descriptorResultCursor;
+        }
+    } else if (spartaFusedCellDescriptor()) {
         ++spartaFusedWritesAcknowledged;
         ++stats.descriptorSpartaFusedWritesAcknowledged;
         ++spartaFusedWriteChannel;
@@ -5122,7 +5310,9 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                  "LANLMAA response waiter is not data-pending");
         const size_t offset = operation.address - line->lineAddress;
         if (umtCornerDescriptor()) {
-            const uint8_t inputStages = umtMixedCornerDescriptor() ?
+            const uint8_t inputStages = umtOrderedWaveDescriptor() ?
+                UmtOrderedWaveRecordFp64Words :
+                umtMixedCornerDescriptor() ?
                 UmtMixedCornerRecordFp64Words :
                 UmtFusedCornerRecordBytes / sizeof(uint64_t);
             const double tau = umtMixedCornerDescriptor() ?
@@ -5134,7 +5324,23 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
             std::memcpy(&bits, data + offset, sizeof(bits));
             const double input = decodeDouble(bits);
             DescriptorError error = DescriptorError::None;
-            if (!std::isfinite(input)) {
+            if (umtOrderedWaveDescriptor()) {
+                if (!std::isfinite(input)) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    auto &record = umtOrderedWaveRecords[
+                        operation.umtFusedGroup];
+                    const uint8_t stage = operation.umtFusedReadStage;
+                    if (stage < UmtOrderedWaveCorners) {
+                        record.source[stage] = input;
+                    } else if (stage < 2 * UmtOrderedWaveCorners) {
+                        record.sumArea[stage - UmtOrderedWaveCorners] = input;
+                    } else {
+                        record.sigtVolume[
+                            stage - 2 * UmtOrderedWaveCorners] = input;
+                    }
+                }
+            } else if (!std::isfinite(input)) {
                 error = DescriptorError::BadRecordValue;
             } else {
                 switch (operation.umtFusedReadStage) {
