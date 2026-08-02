@@ -441,6 +441,7 @@ def run(args, root):
         "problem": record["problem"],
         "corner": record["corner"],
         "groups": record["groups"],
+        "items": record["groups"],
         "record_path": str(args.record.resolve()),
         "record_sha256": record["record_sha256"],
         "record_stream_u64le_sha256": hashlib.sha256(record_bytes).hexdigest(),
