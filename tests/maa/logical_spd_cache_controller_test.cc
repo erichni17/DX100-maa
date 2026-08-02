@@ -1,7 +1,13 @@
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 
+#define private public
 #include "mem/MAA/LogicalSPDCacheController.hh"
+#undef private
 
 namespace {
 
@@ -16,6 +22,7 @@ namespace {
 
 using SingleSlot = gem5::LogicalSPDCacheController<2, 2, 1, 2, 2>;
 using TwoSlot = gem5::LogicalSPDCacheController<2, 2, 2, 3, 2>;
+using OneLease = gem5::LogicalSPDCacheController<2, 2, 1, 2, 1>;
 using DefaultController = gem5::LogicalSPDCacheController<>;
 
 template <class Controller>
@@ -362,6 +369,129 @@ testTransactionSerialRejectsReorderedDuplicateAndLateResponses()
 }
 
 void
+testTwoSlotResponsesMayReorderWithoutCrossMutation()
+{
+    TwoSlot controller;
+    const auto descriptor0 = allocate(controller, 0);
+    const auto descriptor1 = allocate(controller, 1);
+    const auto page0 = ready(controller, descriptor0, 0);
+    const auto page1 = ready(controller, descriptor0, 1);
+    const auto replacement0 = ready(controller, descriptor1, 0);
+    const auto replacement1 = ready(controller, descriptor1, 1);
+
+    CHECK(controller.access(page0) == TwoSlot::AccessResult::MissQueued);
+    CHECK(controller.access(page1) == TwoSlot::AccessResult::MissQueued);
+    const auto fill0 = controller.pendingAction();
+    CHECK(controller.acceptAction(fill0) == TwoSlot::ActionResult::Accepted);
+    const auto fill1 = controller.pendingAction();
+    CHECK(controller.acceptAction(fill1) == TwoSlot::ActionResult::Accepted);
+    CHECK(fill0.slot != fill1.slot);
+    CHECK(fill0.serial != fill1.serial);
+
+    CHECK(controller.completeFill(fill1.slot, fill1.page, fill1.serial) ==
+          TwoSlot::ResponseResult::FillInstalled);
+    CHECK(controller.completeFill(fill0.slot, fill0.page, fill1.serial) ==
+          TwoSlot::ResponseResult::Stale);
+    CHECK(controller.completeWriteback(fill0.slot, fill0.page, fill0.serial) ==
+          TwoSlot::ResponseResult::Stale);
+    CHECK(controller.slotPhase(fill0.slot) == TwoSlot::Phase::Filling);
+    CHECK(controller.completeFill(fill0.slot, fill0.page, fill0.serial) ==
+          TwoSlot::ResponseResult::FillInstalled);
+    CHECK(controller.completeFill(fill1.slot, fill1.page, fill1.serial) ==
+          TwoSlot::ResponseResult::Stale);
+
+    auto pin0 = controller.pin(page0);
+    auto pin1 = controller.pin(page1);
+    CHECK(pin0.status == TwoSlot::PinStatus::Accepted);
+    CHECK(pin1.status == TwoSlot::PinStatus::Accepted);
+    CHECK(controller.markDirty(pin0.lease) == TwoSlot::LeaseResult::Accepted);
+    CHECK(controller.markDirty(pin1.lease) == TwoSlot::LeaseResult::Accepted);
+    CHECK(controller.release(pin0.lease) == TwoSlot::LeaseResult::Accepted);
+    CHECK(controller.release(pin1.lease) == TwoSlot::LeaseResult::Accepted);
+    CHECK(controller.access(replacement0) ==
+          TwoSlot::AccessResult::MissQueued);
+    CHECK(controller.access(replacement1) ==
+          TwoSlot::AccessResult::MissQueued);
+
+    const auto writeback0 = controller.pendingAction();
+    CHECK(writeback0.kind == TwoSlot::ActionKind::Writeback);
+    CHECK(controller.acceptAction(writeback0) ==
+          TwoSlot::ActionResult::Accepted);
+    const auto writeback1 = controller.pendingAction();
+    CHECK(writeback1.kind == TwoSlot::ActionKind::Writeback);
+    CHECK(controller.acceptAction(writeback1) ==
+          TwoSlot::ActionResult::Accepted);
+    CHECK(writeback0.slot != writeback1.slot);
+    CHECK(writeback0.serial != writeback1.serial);
+
+    CHECK(controller.completeWriteback(writeback1.slot, writeback1.page,
+                                       writeback1.serial) ==
+          TwoSlot::ResponseResult::WritebackCompleted);
+    CHECK(controller.completeWriteback(writeback0.slot, writeback0.page,
+                                       writeback1.serial) ==
+          TwoSlot::ResponseResult::Stale);
+    CHECK(controller.completeFill(writeback0.slot, writeback0.page,
+                                  writeback0.serial) ==
+          TwoSlot::ResponseResult::Stale);
+    CHECK(controller.slotPhase(writeback0.slot) == TwoSlot::Phase::Writeback);
+    CHECK(controller.completeWriteback(writeback0.slot, writeback0.page,
+                                       writeback0.serial) ==
+          TwoSlot::ResponseResult::WritebackCompleted);
+    CHECK(controller.completeWriteback(writeback1.slot, writeback1.page,
+                                       writeback1.serial) ==
+          TwoSlot::ResponseResult::Stale);
+}
+
+void
+testTransactionAndLeaseSerialExhaustionFailClosed()
+{
+    SingleSlot controller;
+    const auto descriptor = allocate(controller, 0);
+    const auto page0 = ready(controller, descriptor, 0);
+    const auto page1 = ready(controller, descriptor, 1);
+    CHECK(controller.access(page0) == SingleSlot::AccessResult::MissQueued);
+
+    controller.lastMemorySerial =
+        std::numeric_limits<SingleSlot::TransactionSerial>::max() - 1;
+    const auto lastAction = controller.pendingAction();
+    CHECK(lastAction.serial ==
+          std::numeric_limits<SingleSlot::TransactionSerial>::max());
+    CHECK(lastAction == controller.pendingAction());
+    CHECK(controller.acceptAction(lastAction) ==
+          SingleSlot::ActionResult::Accepted);
+    CHECK(controller.memorySerialExhausted());
+    CHECK(controller.completeFill(lastAction.slot, page0, lastAction.serial) ==
+          SingleSlot::ResponseResult::FillInstalled);
+
+    CHECK(controller.access(page1) == SingleSlot::AccessResult::MissQueued);
+    CHECK(controller.pendingAction().kind == SingleSlot::ActionKind::None);
+    CHECK(controller.pendingAction().serial == SingleSlot::NoTransaction);
+    CHECK(controller.missQueueSize() == 1);
+    auto wrapped = lastAction;
+    wrapped.serial = SingleSlot::NoTransaction;
+    CHECK(controller.acceptAction(wrapped) ==
+          SingleSlot::ActionResult::Invalid);
+    CHECK(controller.slotIdentity(0) == page0);
+
+    OneLease leaseController;
+    const auto leaseDescriptor = allocate(leaseController, 0);
+    const auto leasePage = ready(leaseController, leaseDescriptor, 0);
+    CHECK(leaseController.access(leasePage) ==
+          OneLease::AccessResult::MissQueued);
+    acceptFill(leaseController, leasePage, 0);
+    leaseController.leases[0].serial =
+        std::numeric_limits<uint64_t>::max() - 1;
+    const auto finalLease = leaseController.pin(leasePage);
+    CHECK(finalLease.status == OneLease::PinStatus::Accepted);
+    CHECK(finalLease.lease.serial == std::numeric_limits<uint64_t>::max());
+    CHECK(leaseController.release(finalLease.lease) ==
+          OneLease::LeaseResult::Accepted);
+    CHECK(leaseController.pin(leasePage).status ==
+          OneLease::PinStatus::Backpressure);
+    CHECK(!leaseController.slotIsPinned(0));
+}
+
+void
 testWritebackFillExclusionPreservesSinglePageOwner()
 {
     TwoSlot controller;
@@ -425,6 +555,16 @@ testWritebackFillExclusionPreservesSinglePageOwner()
     CHECK(controller.slotIdentity(pageWriteback.slot) == page);
     CHECK(controller.slotIdentity(replacementFill.slot) != page);
 
+    auto forgedReplay = replacementFill;
+    forgedReplay.page = page;
+    forgedReplay.cleanVictim = replacement;
+    forgedReplay.discardsCleanVictim = true;
+    CHECK(controller.acceptAction(forgedReplay) ==
+          TwoSlot::ActionResult::Stale);
+    CHECK(controller.slotPhase(pageWriteback.slot) ==
+          TwoSlot::Phase::Writeback);
+    CHECK(controller.residentSlot(page) == TwoSlot::NoSlot);
+
     CHECK(controller.completeWriteback(pageWriteback.slot, page,
                                        pageWriteback.serial) ==
           TwoSlot::ResponseResult::WritebackCompleted);
@@ -472,6 +612,8 @@ main()
     testDeterministicCleanVictimSelection();
     testGenerationTaggedReuseAndStaleResponses();
     testTransactionSerialRejectsReorderedDuplicateAndLateResponses();
+    testTwoSlotResponsesMayReorderWithoutCrossMutation();
+    testTransactionAndLeaseSerialExhaustionFailClosed();
     testWritebackFillExclusionPreservesSinglePageOwner();
     testIndependentPageReadinessAndDescriptorCancellation();
     std::cout << "logical_spd_cache_controller_test: PASS"
