@@ -1,25 +1,26 @@
-#include "mem/MAA/ALU.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/IndirectAccess.hh"
-#include "mem/MAA/Invalidator.hh"
-#include "mem/MAA/RangeFuser.hh"
-#include "mem/MAA/SPD.hh"
-#include "mem/MAA/StreamAccess.hh"
-#include "mem/MAA/MAA.hh"
+#include <cassert>
+#include <cstdint>
+#include <limits>
 
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
+#include "debug/MAA.hh"
+#include "debug/MAACachePort.hh"
+#include "debug/MAAController.hh"
+#include "debug/MAACpuPort.hh"
+#include "debug/MAAMemPort.hh"
+#include "mem/MAA/ALU.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/IndirectAccess.hh"
+#include "mem/MAA/Invalidator.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/RangeFuser.hh"
+#include "mem/MAA/SPD.hh"
+#include "mem/MAA/StreamAccess.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
-#include "debug/MAA.hh"
-#include "debug/MAACpuPort.hh"
-#include "debug/MAACachePort.hh"
-#include "debug/MAAMemPort.hh"
-#include "debug/MAAController.hh"
 #include "sim/cur_tick.hh"
-#include <cassert>
-#include <cstdint>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -30,14 +31,22 @@ namespace gem5 {
 bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAACachePort, "%s: received %s\n", __func__, pkt->print());
-    maa->recvTimingResp(pkt, true);
-    outstandingCacheSidePackets--;
-    if (blockReason == BlockReason::MAX_XBAR_PACKETS) {
-        setUnblocked(BlockReason::MAX_XBAR_PACKETS);
-    }
-    pkt->deleteData();
-    delete pkt;
-    return true;
+    return invokeTimingResponseWrapper(
+        &outstandingCacheSidePackets,
+        [this, pkt]() { return maa->recvTimingResp(pkt, true); },
+        [this]() {
+            if (blockReason == BlockReason::MAX_XBAR_PACKETS)
+                setUnblocked(BlockReason::MAX_XBAR_PACKETS);
+        },
+        [pkt]() {
+            pkt->deleteData();
+            delete pkt;
+        },
+        [this](TimingResponseDisposition disposition, bool credit_valid) {
+            panic("%s: fail-closed response disposition %d (credit valid "
+                  "%d)\n",
+                  name(), static_cast<int>(disposition), credit_valid);
+        });
 }
 
 void MAA::recvCacheTimingSnoopReq(PacketPtr pkt) {
@@ -94,6 +103,10 @@ bool MAA::CacheSidePort::sendPacket(PacketPtr pkt) {
         DPRINTF(MAACachePort, "%s Send blocked because of %s...\n", __func__, blockReason == BlockReason::MAX_XBAR_PACKETS ? "MAX_XBAR_PACKETS" : "CACHE_FAILED");
         return false;
     }
+    panic_if(outstandingCacheSidePackets > maxOutstandingCacheSidePackets,
+             "%s: outstanding cache response credits %u exceed bound %u\n",
+             name(), outstandingCacheSidePackets,
+             maxOutstandingCacheSidePackets);
     if (outstandingCacheSidePackets == maxOutstandingCacheSidePackets) {
         // XBAR is full
         DPRINTF(MAACachePort, "%s Send failed because XBAR is full...\n", __func__);
@@ -108,8 +121,13 @@ bool MAA::CacheSidePort::sendPacket(PacketPtr pkt) {
         return false;
     }
     DPRINTF(MAACachePort, "%s Send is successfull...\n", __func__);
-    if (pkt->needsResponse() && !pkt->cacheResponding())
+    if (pkt->needsResponse() && !pkt->cacheResponding()) {
+        panic_if(outstandingCacheSidePackets ==
+                     std::numeric_limits<uint32_t>::max(),
+                 "%s: outstanding cache response credit overflow\n",
+                 name());
         outstandingCacheSidePackets++;
+    }
     return true;
 }
 bool MAA::sendPacketCache(PacketPtr pkt) {
@@ -129,10 +147,15 @@ void MAA::CacheSidePort::setUnblocked(BlockReason reason) {
 void MAA::CacheSidePort::allocate(int _core_id, int _maxOutstandingCacheSidePackets) {
     core_id = _core_id;
     DPRINTF(MAACachePort, "%s: core_id: %d\n", __func__, core_id);
-    maxOutstandingCacheSidePackets = _maxOutstandingCacheSidePackets;
+    panic_if(_maxOutstandingCacheSidePackets <= 32,
+             "%s: max outstanding cache-side packets %d must exceed 32\n",
+             name(), _maxOutstandingCacheSidePackets);
+    maxOutstandingCacheSidePackets =
+        static_cast<uint32_t>(_maxOutstandingCacheSidePackets);
     // 16384 is maximum transmitList of PacketQueue (CPU side port of LLC)
     // Taken from gem5-hpc/src/mem/packet_queue.cc (changed from 1024 to 16384)
-    maxOutstandingCacheSidePackets = std::min(maxOutstandingCacheSidePackets, 16384);
+    maxOutstandingCacheSidePackets =
+        std::min(maxOutstandingCacheSidePackets, uint32_t{16384});
     // We let it to be 32 less than the maximum
     maxOutstandingCacheSidePackets -= 32;
     blockReason = BlockReason::NOT_BLOCKED;

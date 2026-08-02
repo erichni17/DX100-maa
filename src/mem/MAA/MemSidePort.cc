@@ -30,10 +30,19 @@ namespace gem5 {
 bool MAA::MemSidePort::recvTimingResp(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAAMemPort, "%s: received %s\n", __func__, pkt->print());
-    maa->recvTimingResp(pkt, false);
-    pkt->deleteData();
-    delete pkt;
-    return true;
+    return invokeTimingResponseWrapper(
+        nullptr,
+        [this, pkt]() { return maa->recvTimingResp(pkt, false); },
+        []() {},
+        [pkt]() {
+            pkt->deleteData();
+            delete pkt;
+        },
+        [this](TimingResponseDisposition disposition, bool credit_valid) {
+            panic("%s: fail-closed response disposition %d (credit valid "
+                  "%d)\n",
+                  name(), static_cast<int>(disposition), credit_valid);
+        });
 }
 
 void MAA::recvMemTimingSnoopReq(PacketPtr pkt) {
