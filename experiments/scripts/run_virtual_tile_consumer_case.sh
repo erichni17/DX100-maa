@@ -29,6 +29,7 @@ fi
     exit 2
 }
 root=$(realpath "$DX100_RUNNER_ROOT")
+source "$root/experiments/scripts/isoarea_pingpong_layout.sh"
 gem5=$(realpath "$1")
 binary=$(realpath "$2")
 case_name=$3
@@ -375,8 +376,15 @@ printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
     exit 1
 }
 fi
-grep -Eq "VIRTUAL_TILE_CONSUMER_LAYOUT mode=${mode} page_elements=${page} logical_elements=16384 mem_size=2147483648" \
-    "$out/checkpoint.log" || {
+layout_log="$out/checkpoint.log"
+layout_mode="$mode"
+layout_page="$page"
+if [[ -n $shared_checkpoint ]]; then
+    layout_log="$(dirname "$shared_checkpoint")/shared-checkpoint.log"
+    layout_mode=deferred
+    layout_page=0
+fi
+isoarea_validate_layout "$layout_log" "$layout_mode" "$layout_page" || {
     echo "binary/config consumer contract mismatch" >&2
     exit 1
 }
