@@ -62,5 +62,15 @@ export RESTORE_TIMEOUT=0
 export CKPT_TIMEOUT=0
 export PROG_INTERVAL=0
 
-exec "$root/benchmarks/UME/run_ume_tile_smoke.sh" \
+set +e
+"$root/benchmarks/UME/run_ume_tile_smoke.sh" \
     gem5.opt.ovl_base gradzatz "$physical" 1000000 2GB 0 0 0
+rc=$?
+set -e
+
+binary="$root/benchmarks/UME/gradzatz_maa_$((physical / 1024))K"
+if [[ -f "$binary" ]]; then
+    binary_sha=$(sha256sum -- "$binary")
+    printf 'benchmark_sha256=%s\n' "${binary_sha%% *}" >> "$campaign_root/treatment.txt"
+fi
+exit "$rc"
