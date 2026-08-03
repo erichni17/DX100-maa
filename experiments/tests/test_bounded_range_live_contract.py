@@ -96,6 +96,8 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIn("event=bounded_range_complete schema=1", self.indirect)
         self.assertIn("duplicate_admissions=0", self.indirect)
         self.assertIn("missing=0", self.indirect)
+        self.assertEqual(self.indirect.count("checker_bytes=%lu"), 2)
+        self.assertNotIn("checker_bytes=%zu", self.indirect)
 
     def test_capacity_drain_gate_is_range_only(self) -> None:
         legacy_gate = re.search(
