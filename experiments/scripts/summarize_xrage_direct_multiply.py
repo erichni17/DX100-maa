@@ -85,12 +85,11 @@ def dram_totals(path: Path) -> dict[str, int]:
         )
     totals: dict[str, int] = {}
     for command in ("RD", "WR", "ACT", "PRE"):
-        try:
-            totals[command] = sum(
-                samples[(channel, command)] for channel in channels
-            )
-        except KeyError as error:
-            fail(f"{path} lacks final {error.args[0]} DRAM count")
+        # Ramulator serializes only non-zero command counters.  A missing
+        # command for an otherwise present channel is therefore exactly zero.
+        totals[command] = sum(
+            samples.get((channel, command), 0) for channel in channels
+        )
     return totals
 
 
@@ -254,7 +253,9 @@ def write_outputs(runs: dict[str, Run], tsv: Path, markdown: Path) -> None:
 
     tsv.parent.mkdir(parents=True, exist_ok=True)
     with tsv.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=columns, delimiter="\t")
+        writer = csv.DictWriter(
+            stream, fieldnames=columns, delimiter="\t", lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(rows)
 
@@ -266,32 +267,58 @@ def write_outputs(runs: dict[str, Run], tsv: Path, markdown: Path) -> None:
     ratio1, reduction1 = comparison(1)
     ratio3, reduction3 = comparison(3)
     common = runs[LABELS[0]]
-    artifact_values = list(common.artifacts.values())
-    binary_hash = artifact_values[1] if len(artifact_values) > 1 else "unknown"
-    input_hash = artifact_values[2] if len(artifact_values) > 2 else "unknown"
+    gem5_hash = common.artifacts.get("gem5.opt", "unknown")
+    binary_hash = common.artifacts.get(
+        "spatter_maa_xrage_runtime_verify_16K", "unknown"
+    )
+    input_hash = common.artifacts.get("xrage_gather0_20k.json", "unknown")
     markdown.write_text(
         "\n".join(
             [
                 "# XRAGE Direct Destination With Post-Gather Multiply",
                 "",
+                "## Answer",
+                "",
+                "The historical compact/direct result came primarily from changing where the gathered values lived and how they retired, not from collapsing API calls. Native XRAGE executes `STREAM_LD B -> INDIR_LD A[B] -> result SPD -> STREAM_ST result SPD -> C`. The compact/direct arm retains the 16K `B` SPD plus Row/Offset reorder machinery, but routes gathered responses through its bounded response/C-line combiner directly into final `C`; its named destination tile is completion-only. This bypasses the result SPD and eliminates the later stream-store instruction and its SPD reads/second retirement phase. Direct retirement still issues acknowledged writes, so it does not mean that all writes disappear.",
+                "",
+                "The accepted historical numbers were 1,312,448,438 native ticks and 1,172,528,048 compact/direct ticks. Their ratio is 1.11933x (the reported 11.93% speedup); expressed strictly as lower simTicks, the reduction is 10.66%. The prior three-arm attribution assigned only 0.36-0.80% to API/opcode fusion. Its matched traffic accounting fell from 692,576 reads + 165,965 writes to 490,582 reads + 175,095 writes: 858,541 to 665,677 total commands, or 22.46% fewer. Thus API fusion is the small component; result-SPD bypass, removal of the separate stream-store phase, and direct line-combined/overlapped retirement explain the bulk.",
+                "",
+                "Those historical raw artifacts are not available from this production checkout, and the independent source audit explicitly did not validate them. They are reported here as accepted prior documentation, not promoted as newly revalidated evidence. The measurements below are the independently validated small test.",
+                "",
+                "## Deterministic 20K experiment",
+                "",
                 "All four 20K runs used one binary and input with matched gem5/cache/DRAM/MAA configuration. Each checkpoint and restore exited zero, reached terminal `m5_exit`, produced two stats blocks, and passed exact output verification.",
                 "",
-                f"- source commit: `{common.manifest['source_commit']}`",
-                f"- gem5 SHA-256: `{artifact_values[0] if artifact_values else 'unknown'}`",
+                "Excluded evidence is kept separate: the `6d3f85f` attempt failed before ROI while decoding a new guest long option, and the `93129aef` matrix was superseded after native scale 3 exposed an overlapping FP64 tile allocation. No measurement from either directory appears below.",
+                "",
+                f"- simulator source commit: `{common.manifest['source_commit']}`",
+                f"- benchmark/runner source commit: `{common.manifest['runner_source_commit']}`",
+                f"- gem5 SHA-256: `{gem5_hash}`",
                 f"- Spatter SHA-256: `{binary_hash}`",
                 f"- input SHA-256: `{input_hash}`",
                 "",
-                "| Path | Scale | ROI simTicks | MAA ALU | MAA stream store | CPU instructions | CPU reads/writes | Virtual writes | DRAM reads/writes | Hash |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+                "| Path | Scale | ROI simTicks | Hash |",
+                "|---|---:|---:|---|",
                 *[
-                    f"| {row['label']} | {row['scale']} | {row['roi_simTicks']} | {row['maa_scalar_alu_instructions']} | {row['maa_stream_write_instructions']} | {row['cpu_committed_instructions']} | {row['cpu_data_reads']}/{row['cpu_data_writes']} | {row['virtual_write_issues']} | {row['dram_reads']}/{row['dram_writes']} | `{row['output_hash']}` |"
+                    f"| {row['label']} | {row['scale']} | {row['roi_simTicks']} | `{row['output_hash']}` |"
                     for row in rows
+                ],
+                "",
+                "| Path | MAA total | Indirect | Stream LD/ST | Scalar ALU (cycles) | CPU inst | CPU R/W | Virtual write issue/complete | DRAM R/W/A/P |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+                *[
+                    f"| {label} | {runs[label].result['maa_instructions']} | {runs[label].result['maa_indirect_instructions']} | {runs[label].result['maa_stream_read_instructions']}/{runs[label].result['maa_stream_write_instructions']} | {runs[label].result['maa_scalar_alu_instructions']} ({runs[label].result['maa_scalar_alu_cycles']}) | {runs[label].result['cpu_committed_instructions']} | {runs[label].result['cpu_data_reads']}/{runs[label].result['cpu_data_writes']} | {runs[label].result['virtual_write_issues']}/{runs[label].result['virtual_write_completions']} | {runs[label].dram['RD']}/{runs[label].dram['WR']}/{runs[label].dram['ACT']}/{runs[label].dram['PRE']} |"
+                    for label in LABELS
                 ],
                 "",
                 f"Gather-only direct versus native: `{ratio1:.6f}x`, `{reduction1:+.6f}%` native-tick reduction.",
                 f"Multiply-by-three direct+CPU versus native+MAA-ALU: `{ratio3:.6f}x`, `{reduction3:+.6f}%` native-tick reduction.",
                 "",
-                "The direct opcode remains semantically final only for scale 1. Its destination tile is completion-only, so scale 3 cannot feed ordinary MAA ALU. The tested direct equivalent waits for acknowledged direct writes and then performs the multiply on the CPUs in place. Native scale 3 instead executes `INDIR_LD -> ALU_SCALAR(FP64 MUL) -> STREAM_ST` in MAA.",
+                "## Semantic conclusion",
+                "",
+                "Direct destination write is semantically legal as the final producer for `C=A[B]`. Its completion-only destination cannot feed ordinary MAA ALU, so it is not directly legal as the producer of the multiply in `C=A[B]*3`. The exact equivalent tested here waits for acknowledged direct writes and then performs the multiply on the CPUs in place. Native scale 3 instead executes `INDIR_LD -> ALU_SCALAR(FP64 MUL) -> STREAM_ST` in MAA. A fused direct-gather-and-multiply hardware opcode would be a different design and was not assumed.",
+                "",
+                "The scale-1 direct gain survives (positive tick reduction), while the CPU postprocessing makes the scale-3 direct path slower (negative tick reduction). CPU committed/data counts in the table expose that cost; native scale 3 has two MAA scalar-ALU instructions and 14,291 scalar-ALU cycles, whereas direct scale 3 has no MAA ALU or stream store and performs the dense pass on CPU. Ramulator omits zero-valued command names, so absent `WR` records are recorded as zero rather than treated as missing evidence.",
                 "",
                 "These deterministic small runs answer this semantic/mechanism question only; they do not replace or generalize the historical full-XRAGE result.",
                 "",
