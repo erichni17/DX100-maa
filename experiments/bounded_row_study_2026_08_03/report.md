@@ -2,19 +2,28 @@
 
 ## Binding outcome
 
-Commit `62b181af75260193e36f55095d4165cd4cba0858` remains rejected as
-implementation-authorizing evidence. Independent review also rejected commit
-`82a5ce062b27f00646da02f655ed3c4c6c92da5c` because issue selection read an
-append-built line-order tuple. This repair removes that duplicate policy state.
-It remains **model evidence only** and intentionally contains no workload
-A-line/row comparison.
+The finite 4,096-active model is now grounded in 16,384 independently validated
+`dx100.physical_admission.v1` rows from both the native-direct 16K and
+transparent 4K runs. The semantic physical tuple—iteration, B value/paddr, A
+paddr/line, channel, rank, bank group, bank, row, column, native slice, grow,
+and word ID—matches exactly for every iteration. Its pair digest is
+`b15915f0...419ab`.
 
-The frozen 2026-08-02 runs do not record each B physical address and translated
-A physical line, Ramulator fields, RowTable slice, and `grow_addr`. Their
-`MAAVirtualTrace` files contain lifecycle/build counters only. Therefore the old
-`source_line_offset=17` placement and all numbers derived from it are gone.
-`extract_grounded_trace.py` fails closed on both frozen logs and states that a
-new trace run is required. No paddr, slice, row, or alignment is inferred.
+The containing pair-attribution attempt remains rejected because repeatable
+schema-v1 **nonphysical** events lacked source occurrence identity. Its frozen
+rejection manifest explicitly preserves the independently validated physical
+records. The extractor consumes only physical-admission v1; it does not parse,
+repair, or accept the rejected attribution events. Opcode, PC, operation tick,
+sim tick, trace line, controller fields, and other treatment metadata are
+validated inside each case but excluded from the physical semantic comparison.
+During coordination, the upstream owner moved the frozen attempt beneath
+`pair_evidence/rejected_schema_v1_attempt`; the original validation paths are
+accepted only by exact case/file suffix while raw, trace, validation, binary,
+and checkpoint hashes are all reverified at the preserved location.
+
+The resulting evidence accepts physical grounding and the finite model output.
+It does not authorize simulator implementation and makes no gem5 timing or
+speedup claim.
 
 No production simulator source was edited or claimed. In particular, this
 session did not request `IndirectAccess` or `Tables` ownership.
@@ -71,10 +80,12 @@ the slice is exactly `bankgroup * 4 + bank`, matching
 `IndirectAccess.cc:getRowTableIdx`. At 16 slices, `grow_addr` is the decoded DDR
 row, matching `getGrowAddr`; bank group and bank are retained in the slice.
 
-Each slice has independently frozen lower and exclusive-upper physical grow
-bounds. Four contiguous intervals are computed inside that slice. They are not
-derived from the observed B histogram. A record outside its registered slice
-aperture is rejected.
+The schema aperture is required to be exactly native slices `[0,16)` on every
+row and in both validation envelopes. Four contiguous grow intervals use the
+exact DDR4_8Gb_x8 decoder domain `[0,65536)` per slice; those bounds are not
+derived from the observed row histogram. Every paddr is independently decoded
+through the frozen RoBaRaCoCh geometry and must agree with exported column,
+bank-group, bank, row, native slice, grow, A line, and word ID.
 
 Issue creation reproduces the native constructor/traversal order: bank outer,
 bank group inner, giving
@@ -107,7 +118,7 @@ first-free row/line insertion order, linked Offset semantics, eight line slots,
 creation.
 
 The following remain prospective model behavior: 32 rather than the frozen
-control's 64 row slots per slice; four per-slice contiguous aperture intervals;
+control's 64 row slots per slice; four per-slice contiguous decoder-domain intervals;
 draining before a line chain exceeds 480 words (the current bounded source path
 would reject an oversized single response); fill-then-drain epochs; and
 immediate build-round credit return. These approximations are adequate for
@@ -136,16 +147,43 @@ checks. Their output hash is deliberately labeled
 
 ## Physical trace and output evidence
 
-The new extractor requires a strict metadata envelope with source commit, gem5
-binary hash, benchmark hash, checkpoint hash, exact oracle, all 16 registered
-slice bounds, and one record per iteration containing B paddr/index and A
-paddr/channel/rank/bank-group/bank/row/column/slice/grow/wid. Missing,
-duplicate, malformed, inconsistent, or out-of-range fields fail closed.
+`extract_grounded_trace.py` now requires the exact 33-field source schema plus
+the deterministic JSONL `sim_tick` and `trace_line` annotations. It checks
+canonical JSON ordering, exact count and ascending iteration domain, both raw
+and reconstructed source-payload hashes, trace hash, aperture, provenance,
+generation accounting, integer encoding, paddr alignment, complete physical
+decode, source commit, exact gem5/workload binaries, every shared-checkpoint
+file, wrapper exits, pass marker, final stats, the m5 terminal marker, and the
+zero-error workload oracle. Missing, duplicate, malformed, inconsistent, stale,
+or nonterminal evidence fails closed before policy state is constructed.
 
-The real frozen workload oracle remains
-`hash=7228541527853630339 errors=0`. Only `audit_gem5_controls.py` claims that
-oracle, after hashing the containing logs and all other artifacts it consumes.
-The model does not attempt to reproduce that benchmark's multiply/store hash.
+The accepted workload oracle is
+`hash=7228541527853630339 errors=0` in both arms. Native and transparent raw
+record SHA-256 values are respectively `38b94b7f...f0aa8` and
+`b8b4df9d...c5390`; their different source-payload digests are expected because
+treatment metadata differs. The exact semantic pair digest is shared. The model
+does not attempt to reproduce the benchmark's multiply/store hash.
+
+The combined compact result and provenance record is
+`grounded_physical_result_manifest.json`. Source commit
+`8bfe1dd42fcd2b0b7a2e30f512f68dcad5b36d4c`, gem5 SHA-256
+`9c98ef64...b2e82`, workload binary SHA-256 `20fe15ca...5880`, and shared
+checkpoint inventory SHA-256 `89e0ff9a...8cf1` are identical across the pair.
+
+## Grounded finite-model result
+
+The model places all 16,384 iterations exactly once with no missing or duplicate
+placements. It uses five epochs and four row-slot capacity drains; offset and
+line-word drains are zero. Peaks are 3,928 offsets, 504 row slots, 3,928 line
+slots, 96 reserved responses, and 96 reserved words. All fixed bounds hold.
+
+Issue creation emits 16,384 A-line requests in 172 build rounds, with 519
+per-slice row transitions and deterministic issue-order SHA-256
+`b4c4123e...d6ba4`; no issue-order entries are materialized as policy state.
+Four-pass traffic is 1,025 unique B lines per pass, 4,100 B-line reads, 3,075
+rereads, 262,144 semantic B bytes, and 65,536 selector words. The reported
+4,096 selector-cycle value is an arithmetic throughput lower bound inside the
+finite model, not gem5 timing performance.
 
 ## Frozen controls and B accounting
 
@@ -231,6 +269,7 @@ physical-bounded rows. Gate order is artifact/completion audit, exact output,
 finite ownership/capacity, grounded physical A-line and per-slice transition
 comparison, then—and only then—`simTicks`.
 
-Until the strict physical trace extractor succeeds and all four arms meet this
-contract, the only coherent conclusion is: **retain finite model evidence; new
-trace required; do not authorize implementation or performance claims**.
+The physical grounding gate is now satisfied for this native/transparent pair.
+The coherent conclusion is: **retain the exact physical grounding and finite
+model evidence; do not authorize implementation and do not claim gem5 timing
+performance**.

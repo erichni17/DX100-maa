@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import ast
+import hashlib
 import inspect
 import json
 import tempfile
@@ -23,9 +24,156 @@ from bounded_row_model import (
     model_report,
     storage_ledger,
 )
-from extract_grounded_trace import extract
+from extract_grounded_trace import (
+    EXPECTED_FIELD_COUNT,
+    PHYSICAL_FIELD_ORDER,
+    PHYSICAL_SCHEMA,
+    GroundingError,
+    audit_terminal_evidence,
+    compare_semantics,
+    sha256,
+    validate_records,
+)
 
 GEOMETRY = ApertureGeometry.synthetic_full_ddr4()
+
+
+def physical_json_record(itr: int, *, b_value: int | None = None) -> dict:
+    if b_value is None:
+        b_value = itr + 3
+    a_paddr = 0x100000 + b_value * 8
+    a_line = a_paddr & ~63
+    line_number = a_line >> 6
+    bank_group = (line_number >> 7) & 3
+    bank = (line_number >> 9) & 3
+    row = (line_number >> 11) & 0xFFFF
+    fields = {
+        "schema": PHYSICAL_SCHEMA,
+        "event": "physical_admission",
+        "itr": str(itr),
+        "b_paddr": hex(0x200000 + itr * 4),
+        "b_value": str(b_value),
+        "a_paddr": hex(a_paddr),
+        "a_line_paddr": hex(a_line),
+        "channel": "0",
+        "rank": "0",
+        "bank_group": str(bank_group),
+        "bank": str(bank),
+        "row": str(row),
+        "column": str(line_number & 0x7F),
+        "native_slice": str(bank_group * 4 + bank),
+        "grow_addr": hex(row),
+        "wid": str((a_paddr >> 3) & 7),
+        "generation_available": "0",
+        "generation": "0",
+        "opcode": "14",
+        "optype": "16",
+        "if_id": "0",
+        "cid": "0",
+        "pc": "0x4000",
+        "operation_tick": "100",
+        "controller_managed": "0",
+        "controller_action": "0",
+        "controller_transaction": "0",
+        "controller_page": "-1",
+        "rt_config": "3",
+        "aperture_slice_begin": "0",
+        "aperture_slice_end": "16",
+        "aperture_slices": "16",
+        "provenance": "direct_index_descriptor_admission",
+    }
+    return {"trace_line": itr + 1, "sim_tick": 1000 + itr, **fields}
+
+
+def write_physical_fixture(
+    root: Path,
+    case: str,
+    records: list[dict],
+) -> tuple[Path, Path]:
+    case_dir = root / case
+    run_dir = case_dir / "run"
+    run_dir.mkdir(parents=True)
+    records_path = case_dir / "physical_admission_records.jsonl"
+    encoded = "".join(
+        json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
+        for item in records
+    )
+    records_path.write_text(encoded)
+    trace_path = run_dir / "virtual_trace.log"
+    trace_path.write_text("frozen physical source trace\n")
+    payload = hashlib.sha256()
+    for item in sorted(records, key=lambda record: int(record["itr"], 0)):
+        payload.update(
+            (
+                " ".join(
+                    f"{field}={item[field]}" for field in PHYSICAL_FIELD_ORDER
+                )
+                + "\n"
+            ).encode()
+        )
+    validation = {
+        "aperture": {"slice_begin": 0, "slice_end": 16, "slices": 16},
+        "field_count": EXPECTED_FIELD_COUNT,
+        "generation": {
+            "available_records": sum(
+                item["generation_available"] == "1" for item in records
+            ),
+            "unavailable_is_explicit": True,
+            "unavailable_records": sum(
+                item["generation_available"] == "0" for item in records
+            ),
+        },
+        "operation_ticks": sorted(
+            {int(item["operation_tick"], 0) for item in records}
+        ),
+        "record_count": len(records),
+        "record_sha256": payload.hexdigest(),
+        "records": {
+            "format": "jsonl",
+            "order": "logical_itr_ascending",
+            "path": str(records_path),
+            "record_count": len(records),
+            "sha256": sha256(records_path),
+        },
+        "schema": PHYSICAL_SCHEMA,
+        "trace_path": str(trace_path),
+        "trace_sha256": sha256(trace_path),
+    }
+    validation_path = case_dir / "physical_validation.json"
+    validation_path.write_text(json.dumps(validation, indent=2) + "\n")
+    return records_path, validation_path
+
+
+def write_terminal_fixture(
+    case_dir: Path,
+    *,
+    case: str = "native_direct_16k",
+    mode: str = "native_direct",
+    page_elements: int = 16384,
+    errors: int = 0,
+    terminal: bool = True,
+    record_sha256: str = "a" * 64,
+) -> None:
+    (case_dir / "run").mkdir(parents=True, exist_ok=True)
+    (case_dir / "checkpoint.exit").write_text("0\n")
+    (case_dir / "restore.exit").write_text("0\n")
+    (case_dir / "virtual_tile_consumer_case.pass").write_bytes(b"")
+    log = (
+        f"VIRTUAL_TILE_CONSUMER_RESULT mode={mode} "
+        f"page_elements={page_elements} hash=123 errors={errors}\n"
+    )
+    if terminal:
+        log += "Exiting @ tick 99 because m5_exit instruction encountered\n"
+    (case_dir / "restore.log").write_text(log)
+    (case_dir / "run" / "stats.txt").write_text(
+        "---------- Begin Simulation Statistics ----------\n"
+        "x 1\n"
+        "---------- End Simulation Statistics   ----------\n"
+    )
+    (case_dir / "result.tsv").write_text(
+        "case\toutput_hash\tphysical_records\tphysical_record_sha256\n"
+        f"{case}\t123\t16384\t{record_sha256}\n"
+    )
 
 
 def record(
@@ -332,46 +480,180 @@ class ValidationAndTraversalTest(unittest.TestCase):
 
 
 class EvidenceAndLedgerTest(unittest.TestCase):
-    def test_frozen_trace_fails_closed(self) -> None:
-        frozen = Path(
-            "/data1/nier/dx100-runs/2026-08-02-transparent-spd-premeeting/"
-            "native_direct_16k_matched/run/virtual_trace.log"
-        )
-        if not frozen.exists():
-            self.skipTest("frozen external evidence is unavailable")
-        with self.assertRaisesRegex(
-            SystemExit, "new owner-run physical trace"
-        ):
-            extract(frozen)
-
-    def test_extractor_accepts_complete_physical_envelope(self) -> None:
-        hashes = "a" * 64
-        lines = [
-            "BOUNDED_ROW_META schema=1 logical=1 source=8 word_bytes=8 "
-            "index_bytes=4 source_commit="
-            + "b" * 40
-            + f" gem5_sha256={hashes} benchmark_sha256={hashes} "
-            f"checkpoint_sha256={hashes} mapping=RoBaRaCoCh slices=16 "
-            "rows_per_slice=32 lines_per_row=8 offset_entries=4096"
-        ]
-        lines.extend(
-            f"BOUNDED_ROW_APERTURE slice={slice_id} lower=0 upper=65536"
-            for slice_id in range(16)
-        )
-        lines.extend(
-            [
-                "BOUNDED_ROW_RECORD itr=0 index=3 b_paddr=0x100004 "
-                "a_paddr=0x400000 ch=0 rank=0 bg=0 bank=0 row=5 col=0 "
-                "wid=0 slice=0 grow=5",
-                "BOUNDED_ROW_ORACLE hash=7228541527853630339 errors=0",
-            ]
-        )
+    def test_jsonl_accepts_exact_33_field_physical_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "trace.log"
-            path.write_text("\n".join(lines) + "\n")
-            result = extract(path)
-        self.assertEqual(result["record_count"], 1)
-        self.assertEqual(result["workload_errors"], 0)
+            records, validation = write_physical_fixture(
+                Path(temporary),
+                "native_direct_16k",
+                [physical_json_record(0), physical_json_record(1)],
+            )
+            result = validate_records(records, validation, expected_count=2)
+        self.assertEqual(len(result.records), 2)
+
+    def test_jsonl_rejects_schema_field_count_hash_and_provenance(
+        self,
+    ) -> None:
+        mutations = (
+            ("schema", "wrong.schema"),
+            ("provenance", "inferred_not_physical"),
+            ("aperture_slices", "8"),
+        )
+        for field, value in mutations:
+            with self.subTest(
+                field=field
+            ), tempfile.TemporaryDirectory() as tmp:
+                item = physical_json_record(0)
+                item[field] = value
+                records, validation = write_physical_fixture(
+                    Path(tmp), "native_direct_16k", [item]
+                )
+                with self.assertRaises(GroundingError):
+                    validate_records(records, validation, expected_count=1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records, validation = write_physical_fixture(
+                root, "native_direct_16k", [physical_json_record(0)]
+            )
+            envelope = json.loads(validation.read_text())
+            envelope["field_count"] = 32
+            validation.write_text(json.dumps(envelope))
+            with self.assertRaisesRegex(GroundingError, "exactly 33"):
+                validate_records(records, validation, expected_count=1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records, validation = write_physical_fixture(
+                root, "native_direct_16k", [physical_json_record(0)]
+            )
+            records.write_text(
+                records.read_text().replace("0x200000", "0x200004")
+            )
+            with self.assertRaisesRegex(GroundingError, "SHA-256"):
+                validate_records(records, validation, expected_count=1)
+
+    def test_jsonl_rejects_malformed_duplicate_missing_and_unordered_itr(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records, validation = write_physical_fixture(
+                root, "native_direct_16k", [physical_json_record(0)]
+            )
+            raw = records.read_text()
+            records.write_text(raw.replace("{", '{"a_paddr":"0x0",', 1))
+            envelope = json.loads(validation.read_text())
+            envelope["records"]["sha256"] = sha256(records)
+            validation.write_text(json.dumps(envelope))
+            with self.assertRaisesRegex(GroundingError, "duplicate JSON"):
+                validate_records(records, validation, expected_count=1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records, validation = write_physical_fixture(
+                root,
+                "native_direct_16k",
+                [physical_json_record(1), physical_json_record(0)],
+            )
+            with self.assertRaises(GroundingError):
+                validate_records(records, validation, expected_count=2)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            records, validation = write_physical_fixture(
+                root,
+                "native_direct_16k",
+                [physical_json_record(0), physical_json_record(0)],
+            )
+            with self.assertRaises(GroundingError):
+                validate_records(records, validation, expected_count=2)
+
+    def test_jsonl_rejects_physical_decode_inconsistency(self) -> None:
+        for field, value in (
+            ("a_line_paddr", "0x100040"),
+            ("native_slice", "15"),
+            ("grow_addr", "99"),
+            ("column", "126"),
+        ):
+            with self.subTest(
+                field=field
+            ), tempfile.TemporaryDirectory() as tmp:
+                item = physical_json_record(0)
+                item[field] = value
+                records, validation = write_physical_fixture(
+                    Path(tmp), "native_direct_16k", [item]
+                )
+                with self.assertRaises(GroundingError):
+                    validate_records(records, validation, expected_count=1)
+
+    def test_pair_compares_semantics_but_excludes_treatment_metadata(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            native_item = physical_json_record(0)
+            transparent_item = physical_json_record(0)
+            transparent_item["opcode"] = "99"
+            transparent_item["pc"] = "0x9999"
+            transparent_item["operation_tick"] = "777"
+            transparent_item["sim_tick"] = 888
+            native_paths = write_physical_fixture(
+                root, "native_direct_16k", [native_item]
+            )
+            transparent_paths = write_physical_fixture(
+                root, "transparent_4k", [transparent_item]
+            )
+            native = validate_records(*native_paths, expected_count=1)
+            transparent = validate_records(
+                *transparent_paths, expected_count=1
+            )
+            self.assertEqual(
+                compare_semantics(native, transparent), native.semantic_sha256
+            )
+
+            changed_paths = write_physical_fixture(
+                root,
+                "transparent_changed",
+                [physical_json_record(0, b_value=4)],
+            )
+            changed = validate_records(*changed_paths, expected_count=1)
+            with self.assertRaisesRegex(
+                GroundingError, "semantic physical mismatch"
+            ):
+                compare_semantics(native, changed)
+
+    def test_terminal_evidence_rejects_errors_and_missing_m5_exit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            case_dir = Path(temporary) / "native_direct_16k"
+            write_terminal_fixture(case_dir)
+            result = audit_terminal_evidence(
+                case_dir,
+                expected_case="native_direct_16k",
+                expected_mode="native_direct",
+                expected_page_elements=16384,
+                expected_record_sha256="a" * 64,
+            )
+            self.assertEqual(result["workload_errors"], 0)
+
+        for errors, terminal in ((1, True), (0, False)):
+            with self.subTest(errors=errors, terminal=terminal):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                tmp = temporary.name
+                case_dir = Path(tmp) / "native_direct_16k"
+                write_terminal_fixture(
+                    case_dir, errors=errors, terminal=terminal
+                )
+                with self.assertRaises(GroundingError):
+                    audit_terminal_evidence(
+                        case_dir,
+                        expected_case="native_direct_16k",
+                        expected_mode="native_direct",
+                        expected_page_elements=16384,
+                        expected_record_sha256="a" * 64,
+                    )
 
     def test_ledgers_charge_every_boundary_and_control_field(self) -> None:
         small = storage_ledger(16_384, 4_096)
@@ -427,7 +709,20 @@ class EvidenceAndLedgerTest(unittest.TestCase):
             ).read_text()
         )
         self.assertEqual(committed, model_report())
-        self.assertIsNone(committed["workload_a_line_comparisons"])
+        self.assertTrue(
+            committed["workload_a_line_comparisons"]["exact_semantic_match"]
+        )
+        grounded = json.loads(
+            (
+                Path(__file__).resolve().parent
+                / "grounded_physical_result_manifest.json"
+            ).read_text()
+        )
+        self.assertEqual(grounded["status"], "grounded")
+        self.assertTrue(grounded["pair_comparison"]["exact_match"])
+        self.assertEqual(
+            grounded["claims"]["gem5_timing_performance"], "not_claimed"
+        )
 
 
 if __name__ == "__main__":
