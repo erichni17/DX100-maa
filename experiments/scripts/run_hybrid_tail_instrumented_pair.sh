@@ -90,9 +90,8 @@ sha256sum "$out/checkpoint_files.pre_treatment.sha256" \
     > "$out/checkpoint_identity.sha256"
 
 for arm in native_direct_16k transparent_4k; do
-    treatment="$out/$arm.treatment"
     DX100_SHARED_CHECKPOINT_DIR="$checkpoint" \
-    DX100_SHARED_TREATMENT_FILE="$treatment" \
+    DX100_SHARED_TREATMENT_FILE="$selector" \
     DX100_FROZEN_RAMULATOR_LIBRARY="$ramulator" \
     DX100_RAMULATOR_PROVENANCE_FILE="$provenance" \
     MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \

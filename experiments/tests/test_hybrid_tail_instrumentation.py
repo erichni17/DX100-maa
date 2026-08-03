@@ -33,6 +33,13 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         self.assertEqual(port.count("it->paddr, true);"), 2)
         self.assertIn("if (transportAccepted && my_instruction->controllerManaged", stream)
 
+    def test_shared_checkpoint_reuses_checkpointed_selector_path(self):
+        runner = (
+            ROOT / "experiments/scripts/run_hybrid_tail_instrumented_pair.sh"
+        ).read_text()
+        self.assertIn('DX100_SHARED_TREATMENT_FILE="$selector"', runner)
+        self.assertNotIn('DX100_SHARED_TREATMENT_FILE="$treatment"', runner)
+
 
 if __name__ == "__main__":
     unittest.main()
