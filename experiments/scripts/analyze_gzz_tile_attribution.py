@@ -14,6 +14,11 @@ EXPECTED_HASH = "9234467062988358067"
 EXPECTED_REFERENCE = (
     "UME_REFERENCE_PASS volume_errors=0 gradient_errors=0 elements=1180000"
 )
+ORIGINAL_SWEEP_TICKS = {
+    16384: 2387906735,
+    32768: 2542971004,
+    65536: 2522554327,
+}
 EXPECTED_COHORTS = (
     ("native_p16384", 16384, 16384, "native"),
     ("native_p32768", 32768, 32768, "native"),
@@ -243,6 +248,26 @@ def add_comparisons(rows: list[dict[str, object]]) -> dict[str, object]:
                 "fraction_recovered": recovery,
             }
         comparisons[metric] = metric_result
+    original_comparison: dict[str, object] = {}
+    if all(("native", tile) in valid for tile in ORIGINAL_SWEEP_TICKS):
+        fresh_base = int(valid[("native", 16384)]["simTicks"])
+        original_base = ORIGINAL_SWEEP_TICKS[16384]
+        for physical in (32768, 65536):
+            original_performance = (
+                original_base / ORIGINAL_SWEEP_TICKS[physical]
+            )
+            fresh_performance = fresh_base / int(
+                valid[("native", physical)]["simTicks"]
+            )
+            original_loss = 1.0 - original_performance
+            fresh_loss = 1.0 - fresh_performance
+            original_comparison[str(physical)] = {
+                "original_performance": original_performance,
+                "fresh_native_performance": fresh_performance,
+                "original_loss": original_loss,
+                "fresh_loss": fresh_loss,
+                "original_loss_remaining": fresh_loss / original_loss,
+            }
     ticks = comparisons.get("simTicks", {})
     complete = len(valid) == len(EXPECTED_COHORTS)
     recoveries = [
@@ -258,7 +283,12 @@ def add_comparisons(rows: list[dict[str, object]]) -> dict[str, object]:
         verdict = "logical feed granularity alone does not explain most of the regression"
     else:
         verdict = "pending complete valid controlled cohort"
-    return {"complete": complete, "verdict": verdict, "metrics": comparisons}
+    return {
+        "complete": complete,
+        "verdict": verdict,
+        "metrics": comparisons,
+        "original_comparison": original_comparison,
+    }
 
 
 def write_tsv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -320,6 +350,14 @@ def write_markdown(
         lines.append(
             f"- {int(physical) // 1024}K: native excess {values['native_excess']:,} ticks; "
             f"logical-16K excess {values['logical16_excess']:,}; recovered {recovery:.1%}."
+        )
+    lines += ["", "## Reproduction of the original sweep", ""]
+    for physical, values in summary["original_comparison"].items():
+        lines.append(
+            f"- {int(physical) // 1024}K: original performance "
+            f"{values['original_performance']:.3f}; fresh matched-cohort "
+            f"performance {values['fresh_native_performance']:.3f}; "
+            f"{values['original_loss_remaining']:.1%} of the original loss remains."
         )
     lines += [
         "",
