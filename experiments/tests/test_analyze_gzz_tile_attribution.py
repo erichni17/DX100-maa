@@ -13,6 +13,9 @@ def make_run(root: Path, name: str, ticks: int, idle: int, insts: int) -> None:
     cohort = root / name
     outdir = cohort / "gradzatz_n1000000_t16384_m2GB_test"
     outdir.mkdir(parents=True)
+    (cohort / "treatment.txt").write_text(
+        "source_commit=abc123\nbenchmark_sha256=benchmark-hash\n"
+    )
     (outdir / "stats.txt").write_text(
         "---------- Begin Simulation Statistics ----------\n"
         f"simTicks {ticks}\n"
@@ -68,6 +71,8 @@ class AnalyzeGzzTileAttributionTest(unittest.TestCase):
             self.assertEqual(rows[0]["trace_requests"], 2)
             self.assertEqual(rows[0]["trace_dispatch_failures"], 1)
             self.assertEqual(rows[0]["trace_interarrival_max_ticks"], 20)
+            self.assertEqual(rows[0]["source_commit"], "abc123")
+            self.assertEqual(rows[0]["benchmark_sha256"], "benchmark-hash")
             self.assertIn("explains most", summary["verdict"])
 
     def test_missing_run_remains_pending(self) -> None:

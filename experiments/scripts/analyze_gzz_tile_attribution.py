@@ -72,6 +72,17 @@ def parse_results(cohort: Path) -> dict[str, str]:
     return rows[-1] if rows else {}
 
 
+def parse_key_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for line in path.read_text(errors="replace").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = value
+    return values
+
+
 def locate_outdir(cohort: Path, result: dict[str, str]) -> Path | None:
     recorded = result.get("outdir")
     if recorded:
@@ -123,6 +134,7 @@ def collect(run_root: Path) -> list[dict[str, object]]:
     for name, physical, logical, treatment in EXPECTED_COHORTS:
         cohort = run_root / name
         result = parse_results(cohort) if cohort.is_dir() else {}
+        treatment_metadata = parse_key_values(cohort / "treatment.txt")
         outdir = locate_outdir(cohort, result) if cohort.is_dir() else None
         log_path = outdir / "run.log" if outdir else None
         stats_path = outdir / "stats.txt" if outdir else None
@@ -170,6 +182,8 @@ def collect(run_root: Path) -> list[dict[str, object]]:
             "notes": "; ".join(reasons),
             "rc": rc,
             "output_hash": output_hash,
+            "source_commit": treatment_metadata.get("source_commit", ""),
+            "benchmark_sha256": treatment_metadata.get("benchmark_sha256", ""),
             "outdir": str(outdir) if outdir else "",
         }
         row.update({key: stats.get(key, "") for key in STAT_KEYS})
@@ -269,6 +283,8 @@ def write_tsv(path: Path, rows: list[dict[str, object]]) -> None:
         "trace_interarrival_p95_ticks",
         "trace_interarrival_max_ticks",
         "output_hash",
+        "source_commit",
+        "benchmark_sha256",
         "outdir",
     ]
     with path.open("w", newline="") as handle:
