@@ -1510,13 +1510,14 @@ void IndirectAccessUnit::executeInstruction() {
                         "event=bounded_range_begin schema=1 unit=%d "
                         "operation_tick=%lu logical=%d active_offsets=%d "
                         "active_row_lines=%lu passes=%d possible_grows=%lu "
-                        "checker_bytes=%zu backing=llc_index_rescan "
+                        "checker_bytes=%lu backing=llc_index_rescan "
                         "combiner=retained\n",
                         my_indirect_id, my_decode_start_tick, my_max,
                         offset_table->capacity(), active_row_line_slots,
                         direct_index_partitions,
                         num_RT_possible_grows[my_RT_config],
-                        bounded_range_pass.chargedBytes());
+                        static_cast<unsigned long>(
+                            bounded_range_pass.chargedBytes()));
             }
         }
         my_SPD_read_finish_tick = curTick();
@@ -2221,12 +2222,13 @@ void IndirectAccessUnit::executeInstruction() {
                         "operation_tick=%lu logical=%u admitted=%u "
                         "retired=%u duplicate_admissions=0 "
                         "duplicate_retirements=0 missing=0 "
-                        "checker_bytes=%zu\n",
+                        "checker_bytes=%lu\n",
                         my_indirect_id, my_decode_start_tick,
                         bounded_range_pass.logical(),
                         bounded_range_pass.admissions(),
                         bounded_range_pass.retirements(),
-                        bounded_range_pass.chargedBytes());
+                        static_cast<unsigned long>(
+                            bounded_range_pass.chargedBytes()));
             }
         }
         if (isDirectIndexLoad()) {
