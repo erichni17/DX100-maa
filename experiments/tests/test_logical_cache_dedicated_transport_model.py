@@ -5,7 +5,9 @@ from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = ROOT / ("experiments/analysis/logical_cache_dedicated_transport_model.py")
+MODULE_PATH = ROOT / (
+    "experiments/analysis/logical_cache_dedicated_transport_model.py"
+)
 SPEC = importlib.util.spec_from_file_location(
     "logical_cache_dedicated_transport_model", MODULE_PATH
 )
@@ -41,6 +43,12 @@ def send_one(model, data=None):
     return index, model.make_response(index, data)
 
 
+def receive_on(model, packet, callback_port=None):
+    if callback_port is None:
+        callback_port = MODEL.core_port(packet.address)
+    return model.receive(packet, callback_port)
+
+
 def drain_exact(model, fill_data=True):
     responses = 0
     while not model.transport.drained():
@@ -62,7 +70,7 @@ def drain_exact(model, fill_data=True):
                 if fill_data and key.operation == MODEL.Operation.FILL
                 else b""
             )
-            model.receive(model.make_response(index, data))
+            receive_on(model, model.make_response(index, data))
             responses += 1
     return responses
 
@@ -75,8 +83,19 @@ class DedicatedTransportContractTest(unittest.TestCase):
         self.assertEqual(MODEL.NUM_PORTS, 4)
         self.assertEqual(MODEL.LINES_PER_PAGE, 512)
         self.assertEqual(len(MODEL.DedicatedTransport().records), 8)
-        self.assertEqual(sum(MODEL.PACKED_LOGICAL_STATE_BYTES.values()), 66_200)
-        self.assertEqual(sum(MODEL.ALIGNED_CPP_PROJECTION_BYTES.values()), 66_328)
+        self.assertEqual(MODEL.DESCRIPTOR_BITS_PER_ENTRY, 123)
+        self.assertEqual(MODEL.SLOT_BITS_PER_ENTRY, 82)
+        self.assertEqual(MODEL.PAGE_ACTION_BITS, 1_184)
+        self.assertEqual(MODEL.TRANSACTION_BITS_PER_RECORD, 177)
+        self.assertEqual(MODEL.REQUEST_FIFO_CONTROL_BITS, 38)
+        self.assertEqual(MODEL.GLOBAL_CONTROL_BITS, 41)
+        self.assertEqual(
+            sum(MODEL.PACKED_LOGICAL_STATE_BITS.values()), 529_441
+        )
+        self.assertEqual(MODEL.PACKED_LOGICAL_STATE_BYTES, 66_181)
+        self.assertEqual(
+            sum(MODEL.ALIGNED_CPP_PROJECTION_BYTES.values()), 66_324
+        )
 
     def test_four_credits_block_fifth_accepted_or_refused_materialization(
         self,
@@ -87,7 +106,10 @@ class DedicatedTransportContractTest(unittest.TestCase):
                 allocate_source(model)
                 start_fill(model)
                 self.assertTrue(
-                    all(record.line_buffer == b"" for record in model.transport.records)
+                    all(
+                        record.line_buffer == b""
+                        for record in model.transport.records
+                    )
                 )
                 sent = [model.try_send(True) for _ in range(4)]
                 self.assertNotIn(None, sent)
@@ -151,14 +173,16 @@ class DedicatedTransportContractTest(unittest.TestCase):
         request_packet = model.transport.records[index].packet
         request = request_packet.request
         token = request_packet.sender_stack[0]
-        model.recv_req_retry(request_packet.port)
+        model.recv_req_retry(model.transport.records[index].port)
         self.assertEqual(model.try_send(True), index)
         response = model.make_response(index, bytes([0xA5]) * MODEL.LINE_BYTES)
         self.assertIsNot(response, request_packet)
         self.assertNotEqual(response.incarnation, request_packet.incarnation)
         self.assertIs(response.request, request)
         self.assertIs(response.sender_stack[0], token)
-        self.assertEqual(model.receive(response), MODEL.ReplyStatus.ACCEPTED)
+        self.assertEqual(
+            receive_on(model, response), MODEL.ReplyStatus.ACCEPTED
+        )
         self.assertEqual(
             model.slots[0].payload[: MODEL.LINE_BYTES],
             bytes([0xA5]) * MODEL.LINE_BYTES,
@@ -172,11 +196,157 @@ class DedicatedTransportContractTest(unittest.TestCase):
                 start_fill(model)
                 _, response = send_one(model, bytes([0x5A]) * MODEL.LINE_BYTES)
                 response = replace(response, command=command)
-                self.assertEqual(model.receive(response), MODEL.ReplyStatus.ACCEPTED)
+                self.assertEqual(
+                    receive_on(model, response), MODEL.ReplyStatus.ACCEPTED
+                )
                 self.assertEqual(
                     model.slots[0].payload[: MODEL.LINE_BYTES],
                     bytes([0x5A]) * MODEL.LINE_BYTES,
                 )
+
+    def test_exact_slot_copy_precedes_every_release_and_final_action_clear(
+        self,
+    ):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        releases = []
+        original_release = model.transport._release_record
+
+        def checked_release(index):
+            record = model.transport.records[index]
+            key = record.key
+            start = key.line * MODEL.LINE_BYTES
+            self.assertEqual(
+                bytes(
+                    model.slots[key.slot].payload[
+                        start : start + MODEL.LINE_BYTES
+                    ]
+                ),
+                record.line_buffer,
+            )
+            self.assertEqual(
+                model.transport.action.state, MODEL.ActionState.ACTIVE
+            )
+            releases.append(key.line)
+            original_release(index)
+
+        model.transport._release_record = checked_release
+        self.assertEqual(drain_exact(model), MODEL.LINES_PER_PAGE)
+        self.assertEqual(len(releases), MODEL.LINES_PER_PAGE)
+        self.assertEqual(model.transport.action.state, MODEL.ActionState.FREE)
+        self.assertEqual(model.slots[0].phase, MODEL.SlotPhase.CLEAN)
+
+    def test_four_credits_and_buffers_remain_owned_through_delayed_delivery(
+        self,
+    ):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        tickets = []
+        for value in range(MODEL.RESPONSE_CREDITS):
+            index, response = send_one(
+                model, bytes([value + 1]) * MODEL.LINE_BYTES
+            )
+            result = model.begin_receive(
+                response, model.transport.records[index].port
+            )
+            self.assertEqual(result.status, MODEL.ReplyStatus.DELIVERY_PENDING)
+            tickets.append(result.ticket)
+        self.assertEqual(model.transport.credit_owner.count(-1), 0)
+        self.assertEqual(
+            sum(
+                record.state == MODEL.RecordState.DELIVERING
+                for record in model.transport.records
+            ),
+            MODEL.RESPONSE_CREDITS,
+        )
+        self.assertEqual(
+            sum(
+                len(record.line_buffer) == MODEL.LINE_BYTES
+                for record in model.transport.records
+            ),
+            MODEL.RESPONSE_CREDITS,
+        )
+        with self.assertRaisesRegex(MODEL.ContractError, "credits"):
+            model.try_send(True)
+        for ticket in tickets:
+            model.commit_delivery(ticket)
+
+    def test_delayed_failing_and_reentrant_delivery_never_false_ack_or_drain(
+        self,
+    ):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        index, response = send_one(model, bytes([0xC3]) * MODEL.LINE_BYTES)
+        result = model.begin_receive(
+            response, model.transport.records[index].port
+        )
+        ticket = result.ticket
+        self.assertEqual(result.status, MODEL.ReplyStatus.DELIVERY_PENDING)
+        self.assertEqual(model.transport.action.ack_count, 0)
+        self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
+        self.assertEqual(model.transport.credit_owner.count(-1), 3)
+
+        bad_ticket = MODEL.DeliveryTicket(
+            ticket.record, ticket.epoch, ticket.action_id + 1
+        )
+        before = model.digest()
+        with self.assertRaisesRegex(MODEL.ProductionStop, "ticket"):
+            model.commit_delivery(bad_ticket)
+        self.assertEqual(model.digest(), before)
+
+        original_copy = model._copy_delivery_line
+
+        def reenter(_index):
+            model.commit_delivery(ticket)
+
+        model._copy_delivery_line = reenter
+        before = model.digest()
+        with self.assertRaisesRegex(MODEL.ProductionStop, "reentry"):
+            model.commit_delivery(ticket)
+        self.assertEqual(model.digest(), before)
+        self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
+        self.assertEqual(model.transport.action.ack_count, 0)
+        self.assertFalse(model.transport.drained())
+        model._copy_delivery_line = original_copy
+        self.assertEqual(
+            model.commit_delivery(ticket), MODEL.ReplyStatus.ACCEPTED
+        )
+
+    def test_abort_drain_never_invokes_delivery_copy_consumer(self):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        index, response = send_one(model, bytes([0xD4]) * MODEL.LINE_BYTES)
+        calls = []
+        original_copy = model._copy_delivery_line
+
+        def observe_copy(record_index):
+            calls.append(record_index)
+            original_copy(record_index)
+
+        model._copy_delivery_line = observe_copy
+        self.assertFalse(model.abort(MODEL.AbortCode.CALLER))
+        self.assertEqual(
+            receive_on(model, response, model.transport.records[index].port),
+            MODEL.ReplyStatus.ABORT_DRAINED,
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
+        self.assertTrue(model.transport.drained())
+
+    def test_packet_shape_has_no_port_or_transaction_key_extension(self):
+        names = tuple(MODEL.PacketIncarnation.__dataclass_fields__)
+        self.assertNotIn("port", names)
+        self.assertNotIn("key", names)
+        self.assertNotIn("transaction_key", names)
+        self.assertNotIn("data", MODEL.ReceiveResult.__dataclass_fields__)
+        self.assertEqual(
+            tuple(MODEL.DeliveryTicket.__dataclass_fields__),
+            ("record", "epoch", "action_id"),
+        )
 
     def test_copied_missing_non_top_residual_and_unknown_tokens_stop_atomically(
         self,
@@ -184,7 +354,9 @@ class DedicatedTransportContractTest(unittest.TestCase):
         variants = (
             lambda packet: replace(
                 packet,
-                sender_stack=(MODEL.RouteToken(**packet.sender_stack[0].__dict__),),
+                sender_stack=(
+                    MODEL.RouteToken(**packet.sender_stack[0].__dict__),
+                ),
             ),
             lambda packet: replace(packet, sender_stack=()),
             lambda packet: replace(
@@ -193,7 +365,9 @@ class DedicatedTransportContractTest(unittest.TestCase):
             lambda packet: replace(
                 packet, sender_stack=(packet.sender_stack[0], object())
             ),
-            lambda packet: replace(packet, sender_stack=(MODEL.RouteToken(7, 9, 11),)),
+            lambda packet: replace(
+                packet, sender_stack=(MODEL.RouteToken(7, 9, 11),)
+            ),
         )
         for mutate in variants:
             with self.subTest(mutate=mutate):
@@ -204,9 +378,11 @@ class DedicatedTransportContractTest(unittest.TestCase):
                 bad = mutate(response)
                 before = model.digest()
                 with self.assertRaises(MODEL.ProductionStop):
-                    model.receive(bad)
+                    receive_on(model, bad)
                 self.assertEqual(model.digest(), before)
-                self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
+                self.assertEqual(
+                    model.slots[0].payload, bytes(MODEL.PAGE_BYTES)
+                )
 
     def test_same_request_wrong_token_stops_same_token_wrong_request_is_retained(
         self,
@@ -221,12 +397,12 @@ class DedicatedTransportContractTest(unittest.TestCase):
         )
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(wrong_token)
+            receive_on(model, wrong_token)
         self.assertEqual(model.digest(), before)
         wrong_request = replace(response, request=MODEL.RequestPtr(99))
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(wrong_request)
+            receive_on(model, wrong_request)
         self.assertEqual(model.digest(), before)
         self.assertEqual(
             model.transport.records[index].state, MODEL.RecordState.IN_FLIGHT
@@ -238,34 +414,45 @@ class DedicatedTransportContractTest(unittest.TestCase):
         allocate_source(model)
         start_fill(model)
         index, response = send_one(model, bytes([7]) * MODEL.LINE_BYTES)
-        self.assertEqual(model.receive(response), MODEL.ReplyStatus.ACCEPTED)
+        self.assertEqual(
+            receive_on(model, response), MODEL.ReplyStatus.ACCEPTED
+        )
         guard = bytes(model.slots[0].payload)
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(response)
+            receive_on(model, response)
         self.assertEqual(model.digest(), before)
         self.assertEqual(bytes(model.slots[0].payload), guard)
         # Drive until the same fixed record/token address is an in-flight owner
         # for a new epoch and an exact new RequestPtr.
-        while model.transport.records[index].state != MODEL.RecordState.IN_FLIGHT:
+        while (
+            model.transport.records[index].state != MODEL.RecordState.IN_FLIGHT
+        ):
             current = model.try_send(True)
             if current == index:
                 break
             key = model.transport.records[current].key
-            model.receive(
-                model.make_response(current, MODEL.line_pattern(key.page, key.line))
+            receive_on(
+                model,
+                model.make_response(
+                    current, MODEL.line_pattern(key.page, key.line)
+                ),
             )
         # The SenderState object is embedded: its address is intentionally
         # stable and the old response now observes the new live epoch fields.
-        self.assertIs(model.transport.records[index].token, response.sender_stack[0])
+        self.assertIs(
+            model.transport.records[index].token, response.sender_stack[0]
+        )
         self.assertEqual(
             response.sender_stack[0].epoch,
             model.transport.records[index].epoch,
         )
-        self.assertIsNot(response.request, model.transport.records[index].request)
+        self.assertIsNot(
+            response.request, model.transport.records[index].request
+        )
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(response)
+            receive_on(model, response)
         self.assertEqual(model.digest(), before)
 
     def _assert_malformed_owned_packet_stops(self, change):
@@ -276,7 +463,7 @@ class DedicatedTransportContractTest(unittest.TestCase):
         bad = change(response)
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(bad)
+            receive_on(model, bad)
         self.assertEqual(model.digest(), before)
         self.assertEqual(
             model.transport.records[index].state, MODEL.RecordState.IN_FLIGHT
@@ -287,14 +474,15 @@ class DedicatedTransportContractTest(unittest.TestCase):
         # it proves the malformed packet did not ACK or release the obligation.
         self.assertFalse(model.abort(MODEL.AbortCode.CALLER))
         self.assertEqual(
-            model.receive(model.make_response(index, bytes(MODEL.LINE_BYTES))),
+            receive_on(
+                model, model.make_response(index, bytes(MODEL.LINE_BYTES))
+            ),
             MODEL.ReplyStatus.ABORT_DRAINED,
         )
         self.assertTrue(model.transport.drained())
 
     def test_wrong_real_packet_fields_and_payload_are_fail_closed(self):
         changes = (
-            lambda packet: replace(packet, port=(packet.port + 1) % MODEL.NUM_PORTS),
             lambda packet: replace(packet, size=8),
             lambda packet: replace(packet, command="WriteResp"),
             lambda packet: replace(packet, address=packet.address + 64),
@@ -303,6 +491,25 @@ class DedicatedTransportContractTest(unittest.TestCase):
         for change in changes:
             with self.subTest(change=change):
                 self._assert_malformed_owned_packet_stops(change)
+
+    def test_wrong_callback_endpoint_stops_atomically_after_token_authentication(
+        self,
+    ):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        index, response = send_one(model, bytes(MODEL.LINE_BYTES))
+        expected = model.transport.records[index].port
+        before = model.digest()
+        with self.assertRaisesRegex(MODEL.ProductionStop, "callback port"):
+            receive_on(model, response, (expected + 1) % MODEL.NUM_PORTS)
+        self.assertEqual(model.digest(), before)
+        bad_token = replace(
+            response, sender_stack=(MODEL.RouteToken(7, 9, 11),)
+        )
+        with self.assertRaisesRegex(MODEL.ProductionStop, "token"):
+            receive_on(model, bad_token, (expected + 1) % MODEL.NUM_PORTS)
+        self.assertEqual(model.digest(), before)
 
     def test_line_identity_is_derived_from_owned_token_not_packet_extension(
         self,
@@ -317,10 +524,12 @@ class DedicatedTransportContractTest(unittest.TestCase):
         self.assertFalse(hasattr(first_response, "key"))
         # Exact token for line 1 combined with line 0's Request/address routes
         # to record 1, then fails real-field validation without mutation.
-        cross_line = replace(first_response, sender_stack=second_response.sender_stack)
+        cross_line = replace(
+            first_response, sender_stack=second_response.sender_stack
+        )
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(cross_line)
+            receive_on(model, cross_line)
         self.assertEqual(model.digest(), before)
 
     def test_abort_drain_revalidates_every_field_and_malformed_owner_cannot_drain(
@@ -334,13 +543,15 @@ class DedicatedTransportContractTest(unittest.TestCase):
         bad = replace(response, address=response.address + MODEL.LINE_BYTES)
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(bad)
+            receive_on(model, bad)
         self.assertEqual(model.digest(), before)
         self.assertEqual(model.transport.credit_owner.count(-1), 3)
         self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
         # Test-harness-only continuation after the modeled production panic.
         good = model.make_response(index, bytes([9]) * MODEL.LINE_BYTES)
-        self.assertEqual(model.receive(good), MODEL.ReplyStatus.ABORT_DRAINED)
+        self.assertEqual(
+            receive_on(model, good), MODEL.ReplyStatus.ABORT_DRAINED
+        )
         self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
 
     def test_delayed_valid_replies_after_abort_never_copy_payload(self):
@@ -351,15 +562,20 @@ class DedicatedTransportContractTest(unittest.TestCase):
         for value in range(MODEL.RESPONSE_CREDITS):
             index = model.try_send(True)
             responses.append(
-                model.make_response(index, bytes([value + 1]) * MODEL.LINE_BYTES)
+                model.make_response(
+                    index, bytes([value + 1]) * MODEL.LINE_BYTES
+                )
             )
         self.assertFalse(model.abort(MODEL.AbortCode.CALLER))
         for response in responses[:-1]:
             self.assertEqual(
-                model.receive(response), MODEL.ReplyStatus.ABORT_OWNER_DRAINED
+                receive_on(model, response),
+                MODEL.ReplyStatus.ABORT_OWNER_DRAINED,
             )
             self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
-        self.assertEqual(model.receive(responses[-1]), MODEL.ReplyStatus.ABORT_DRAINED)
+        self.assertEqual(
+            receive_on(model, responses[-1]), MODEL.ReplyStatus.ABORT_DRAINED
+        )
         self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
 
     def test_exact_fill_requires_512_unique_payload_lines(self):
@@ -383,7 +599,8 @@ class DedicatedTransportContractTest(unittest.TestCase):
             start_fill(model, page, slot)
             fill_responses += drain_exact(model)
             expected = b"".join(
-                MODEL.line_pattern(page, line) for line in range(MODEL.LINES_PER_PAGE)
+                MODEL.line_pattern(page, line)
+                for line in range(MODEL.LINES_PER_PAGE)
             )
             self.assertEqual(bytes(model.slots[slot].payload), expected)
             model.pin(slot)
@@ -411,7 +628,7 @@ class DedicatedTransportContractTest(unittest.TestCase):
                         record.line_buffer,
                         expected[offset : offset + MODEL.LINE_BYTES],
                     )
-                    model.receive(model.make_response(index, b""))
+                    receive_on(model, model.make_response(index, b""))
                     write_responses += 1
             self.assertEqual(len(seen_lines), MODEL.LINES_PER_PAGE)
         self.assertEqual(fill_responses, 2048)
@@ -488,6 +705,32 @@ class DedicatedTransportContractTest(unittest.TestCase):
                 self.assertEqual(model.digest(), before)
         model.start_writeback(0)
 
+    def test_destination_owned_page_cannot_be_republished_into_other_slot(
+        self,
+    ):
+        model = MODEL.LogicalCacheModel()
+        allocate_pair(model)
+        start_fill(model, page=0, slot=0)
+        drain_exact(model)
+        model.pin(0)
+        model.mark_dirty(0)
+        model.bind_dirty_destination(0, 1, 0)
+        before = model.digest()
+        with self.assertRaisesRegex(MODEL.ContractError, "destination-owned"):
+            model.publish_backing(1, 0)
+        self.assertEqual(model.digest(), before)
+        with self.assertRaisesRegex(MODEL.ContractError, "backing-ready"):
+            model.start_fill(1, 0, 1)
+        self.assertEqual(model.digest(), before)
+        model.assert_invariants()
+        model.unpin(0)
+        model.start_writeback(0)
+        drain_exact(model, fill_data=False)
+        acknowledged = model.digest()
+        with self.assertRaisesRegex(MODEL.ContractError, "acknowledged"):
+            model.publish_backing(1, 0)
+        self.assertEqual(model.digest(), acknowledged)
+
     def test_pin_dirty_replacement_and_writeback_abort_are_safe(self):
         model = MODEL.LogicalCacheModel()
         allocate_pair(model)
@@ -503,7 +746,9 @@ class DedicatedTransportContractTest(unittest.TestCase):
         index = model.try_send(True)
         response = model.make_response(index, b"")
         self.assertFalse(model.abort(MODEL.AbortCode.CALLER))
-        self.assertEqual(model.receive(response), MODEL.ReplyStatus.ABORT_DRAINED)
+        self.assertEqual(
+            receive_on(model, response), MODEL.ReplyStatus.ABORT_DRAINED
+        )
         self.assertEqual(model.slots[0].phase, MODEL.SlotPhase.DIRTY)
         self.assertEqual(model.slots[0].role, MODEL.SlotRole.DESTINATION)
 
@@ -521,10 +766,14 @@ class DedicatedTransportContractTest(unittest.TestCase):
         response = model.make_response(index, b"")
         before = model.digest()
         with self.assertRaises(MODEL.ProductionStop):
-            model.receive(replace(response, command="ReadRespWithInvalidate"))
+            receive_on(
+                model, replace(response, command="ReadRespWithInvalidate")
+            )
         self.assertEqual(model.digest(), before)
         # Test-harness-only inspection after the modeled production panic.
-        self.assertEqual(model.receive(response), MODEL.ReplyStatus.ACCEPTED)
+        self.assertEqual(
+            receive_on(model, response), MODEL.ReplyStatus.ACCEPTED
+        )
 
     def test_generation_epoch_action_and_incarnations_never_wrap(self):
         model = MODEL.LogicalCacheModel()
@@ -573,6 +822,40 @@ class DedicatedTransportContractTest(unittest.TestCase):
                 MODEL.Operation.FILL, 0, 1, 0, 0, 0, bytes(MODEL.PAGE_BYTES)
             )
 
+    def test_materialization_identity_exhaustion_is_full_digest_atomic(self):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        model.transport.next_incarnation_id = MODEL.INCARNATION_ID_MAX
+        model.transport.incarnation_ids_exhausted = False
+        before = model.digest()
+        with self.assertRaisesRegex(MODEL.ExhaustedError, "incarnation"):
+            model.try_send(True)
+        self.assertEqual(model.digest(), before)
+        self.assertEqual(
+            model.transport.queue_count, MODEL.TRANSACTION_CAPACITY
+        )
+        self.assertEqual(
+            model.transport.records[model.transport.queue[0]].state,
+            MODEL.RecordState.QUEUED,
+        )
+        model.assert_invariants()
+
+    def test_test_peer_responses_cannot_consume_reserved_controller_identities(
+        self,
+    ):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        index = model.try_send(True)
+        reserved_after_request = model.transport.next_incarnation_id
+        first = model.make_response(index, bytes(MODEL.LINE_BYTES))
+        second = model.make_response(index, bytes(MODEL.LINE_BYTES))
+        self.assertNotEqual(first.incarnation, second.incarnation)
+        self.assertEqual(
+            model.transport.next_incarnation_id, reserved_after_request
+        )
+
     def test_reset_teardown_and_all_public_mutators_are_terminal(self):
         model = MODEL.LogicalCacheModel()
         allocate_source(model)
@@ -591,7 +874,6 @@ class DedicatedTransportContractTest(unittest.TestCase):
             0,
             "ReadResp",
             64,
-            0,
             bytes(64),
         )
         mutators = (
@@ -601,7 +883,9 @@ class DedicatedTransportContractTest(unittest.TestCase):
             lambda: model.try_send(True),
             lambda: model.recv_req_retry(0),
             lambda: model.make_response(0),
-            lambda: model.receive(dummy),
+            lambda: model.begin_receive(dummy, 0),
+            lambda: model.commit_delivery(MODEL.DeliveryTicket(0, 0, 0)),
+            lambda: model.receive(dummy, 0),
             lambda: model.pin(0),
             lambda: model.mark_dirty(0),
             lambda: model.bind_dirty_destination(0, 1, 0),

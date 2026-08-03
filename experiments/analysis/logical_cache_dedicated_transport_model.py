@@ -37,6 +37,7 @@ U64_MAX = (1 << 64) - 1
 GENERATION_MAX = (1 << 32) - 1
 ACTION_ID_MAX = (1 << 32) - 1
 INCARNATION_ID_MAX = (1 << 32) - 1
+PEER_PACKET_ID_MAX = (1 << 64) - 1
 RECORD_EPOCH_MAX = (1 << 16) - 1
 PIN_MAX = (1 << 8) - 1
 
@@ -78,6 +79,7 @@ class RecordState(str, Enum):
     PENDING_SEND = "pending_send"
     WAIT_RETRY = "wait_retry"
     IN_FLIGHT = "in_flight"
+    DELIVERING = "delivering"
     ABORT_DRAIN = "abort_drain"
 
 
@@ -93,6 +95,7 @@ class AbortCode(str, Enum):
 
 
 class ReplyStatus(str, Enum):
+    DELIVERY_PENDING = "delivery_pending"
     ACCEPTED = "accepted"
     COMPLETED = "completed"
     ABORT_DRAINED = "abort_drained"
@@ -140,15 +143,22 @@ class PacketIncarnation:
     address: int
     command: str
     size: int
-    port: int
     data: bytes = b""
+
+
+@dataclass(frozen=True)
+class DeliveryTicket:
+    """Bounded, payload-free authority for one exact staged fill line."""
+
+    record: int
+    epoch: int
+    action_id: int
 
 
 @dataclass(frozen=True)
 class ReceiveResult:
     status: ReplyStatus
-    key: TransactionKey | None = None
-    data: bytes = b""
+    ticket: DeliveryTicket | None = None
 
 
 @dataclass
@@ -203,7 +213,9 @@ class TransactionRecord:
     def release(self) -> None:
         epoch = self.epoch
         token = self.token
-        self.__dict__.update(TransactionRecord(epoch=epoch, token=token).__dict__)
+        self.__dict__.update(
+            TransactionRecord(epoch=epoch, token=token).__dict__
+        )
         if token is not None:
             token.action_id = 0
 
@@ -264,20 +276,38 @@ class DedicatedTransport:
         self.action_ids_exhausted = False
         self.next_incarnation_id = 1
         self.incarnation_ids_exhausted = False
+        self.next_peer_packet_id = 1
+        self.peer_packet_ids_exhausted = False
         self.sealed = False
 
     def _ensure_live(self) -> None:
         if self.sealed:
             raise ContractError("transport is sealed")
 
-    def _next_incarnation(self) -> int:
-        if self.incarnation_ids_exhausted:
+    def _reserve_incarnations(self, count: int) -> tuple[int, ...]:
+        """Reserve controller-created identities without partial mutation."""
+        if count <= 0:
+            raise AssertionError("incarnation reservation must be positive")
+        available = INCARNATION_ID_MAX - self.next_incarnation_id + 1
+        if self.incarnation_ids_exhausted or available < count:
             raise ExhaustedError("packet/request incarnation exhausted")
-        value = self.next_incarnation_id
-        if value == INCARNATION_ID_MAX:
+        first = self.next_incarnation_id
+        last = first + count - 1
+        if last == INCARNATION_ID_MAX:
             self.incarnation_ids_exhausted = True
         else:
-            self.next_incarnation_id += 1
+            self.next_incarnation_id = last + 1
+        return tuple(range(first, last + 1))
+
+    def _next_peer_packet(self) -> int:
+        """Allocate a test-peer identity outside the reserved action budget."""
+        if self.peer_packet_ids_exhausted:
+            raise ExhaustedError("test-peer packet incarnation exhausted")
+        value = self.next_peer_packet_id
+        if value == PEER_PACKET_ID_MAX:
+            self.peer_packet_ids_exhausted = True
+        else:
+            self.next_peer_packet_id += 1
         return value
 
     def _queue_push(self, record: int) -> None:
@@ -298,10 +328,15 @@ class DedicatedTransport:
 
     def _allocate_record(self, action_id: int) -> int:
         for index, record in enumerate(self.records):
-            if record.state == RecordState.FREE and record.epoch < RECORD_EPOCH_MAX:
+            if (
+                record.state == RecordState.FREE
+                and record.epoch < RECORD_EPOCH_MAX
+            ):
                 record.epoch += 1
                 if record.token is None:
-                    raise AssertionError("fixed record lost its embedded token")
+                    raise AssertionError(
+                        "fixed record lost its embedded token"
+                    )
                 # The record is still FREE: this is the only legal token-field
                 # reinitialization point.  Fields remain unchanged until release.
                 record.token.record = index
@@ -320,7 +355,7 @@ class DedicatedTransport:
         page: int,
         slot: int,
         base_address: int,
-        slot_payload: bytes,
+        slot_payload: bytes | bytearray,
     ) -> int:
         """Validate a descriptor-derived page action before any mutation."""
         self._ensure_live()
@@ -350,9 +385,9 @@ class DedicatedTransport:
             raise ExhaustedError(
                 "transaction-record epochs cannot cover a complete page"
             )
-        # Each line needs a Request and a request Packet incarnation.  Legal
-        # response replacement consumes one more host identity per line.
-        needed = 3 * LINES_PER_PAGE
+        # Each line needs one controller-created Request and request Packet.
+        # Test-peer response Packets use a disjoint host-only identity space.
+        needed = 2 * LINES_PER_PAGE
         available = INCARNATION_ID_MAX - self.next_incarnation_id + 1
         if self.incarnation_ids_exhausted or available < needed:
             raise ExhaustedError(
@@ -374,11 +409,11 @@ class DedicatedTransport:
             slot=slot,
             base_address=base_address,
         )
-        self._refill_queue(slot_payload)
+        self._refill_queue()
         self.assert_invariants()
         return action_id
 
-    def _refill_queue(self, slot_payload: bytes) -> None:
+    def _refill_queue(self) -> None:
         action = self.action
         if action.state != ActionState.ACTIVE:
             return
@@ -386,7 +421,9 @@ class DedicatedTransport:
             try:
                 index = self._allocate_record(action.action_id)
             except ExhaustedError as error:
-                raise AssertionError("admission failed to reserve epochs") from error
+                raise AssertionError(
+                    "admission failed to reserve epochs"
+                ) from error
             except ContractError:
                 break
             line = action.next_line
@@ -409,7 +446,9 @@ class DedicatedTransport:
                 "ReadReq" if action.operation == Operation.FILL else "WriteReq"
             )
             record.response_command = (
-                "ReadResp" if action.operation == Operation.FILL else "WriteResp"
+                "ReadResp"
+                if action.operation == Operation.FILL
+                else "WriteResp"
             )
             record.size = LINE_BYTES
             record.port = core_port(address)
@@ -417,7 +456,9 @@ class DedicatedTransport:
             action.next_line += 1
             action.issued_bits |= 1 << line
 
-    def _materialize_pending(self, slot_payload: bytes) -> int | None:
+    def _materialize_pending(
+        self, slot_payload: bytes | bytearray
+    ) -> int | None:
         if self.pending != -1:
             return self.pending
         if self.queue_count == 0:
@@ -425,47 +466,55 @@ class DedicatedTransport:
         if -1 not in self.credit_owner:
             raise ContractError("response credits are exhausted")
 
-        # Reserve before popping or constructing anything.  A refusal retains
-        # this credit, exact Packet object, RequestPtr, token, and line buffer.
+        # All fallible identity allocation and construction precedes credit/FIFO
+        # mutation.  A failure therefore leaves the QUEUED owner in place.
         credit = self.credit_owner.index(-1)
         index = self.queue[self.queue_head]
-        self.credit_owner[credit] = index
-        popped = self._queue_pop()
-        if popped != index:
-            raise AssertionError("queue head changed during materialization")
         record = self.records[index]
         if record.state != RecordState.QUEUED or record.token is None:
             raise AssertionError("queue does not own a complete record")
-        request = RequestPtr(self._next_incarnation())
         if record.key is None:
             raise AssertionError("queued record has no key")
+        request_id, packet_id = self._reserve_incarnations(2)
+        request = RequestPtr(request_id)
         if record.key.operation == Operation.FILL:
-            record.line_buffer = bytes(LINE_BYTES)
+            line_buffer = bytes(LINE_BYTES)
         else:
             start = record.key.line * LINE_BYTES
-            record.line_buffer = bytes(slot_payload[start : start + LINE_BYTES])
+            line_buffer = bytes(
+                memoryview(slot_payload)[start : start + LINE_BYTES]
+            )
         packet = PacketIncarnation(
-            incarnation=self._next_incarnation(),
+            incarnation=packet_id,
             request=request,
             sender_stack=(record.token,),
             address=record.address,
             command=record.request_command,
             size=record.size,
-            port=record.port,
             data=(
-                record.line_buffer
+                line_buffer
                 if record.key.operation == Operation.WRITEBACK
                 else b""
             ),
         )
+
+        self.credit_owner[credit] = index
+        popped = self._queue_pop()
+        if popped != index:
+            raise AssertionError("queue head changed during materialization")
         record.request = request
         record.packet = packet
+        record.line_buffer = line_buffer
         record.credit = credit
         record.state = RecordState.PENDING_SEND
         self.pending = index
         return index
 
-    def try_send(self, accepted: bool, slot_payload: bytes) -> int | None:
+    def try_send(
+        self,
+        accepted: bool,
+        slot_payload: bytes | bytearray,
+    ) -> int | None:
         self._ensure_live()
         if len(slot_payload) != PAGE_BYTES:
             raise ContractError("slot payload must be exactly one page")
@@ -490,14 +539,14 @@ class DedicatedTransport:
         self.assert_invariants()
         return index
 
-    def recv_req_retry(self, port: int) -> None:
+    def recv_req_retry(self, callback_port: int) -> None:
         self._ensure_live()
         if self.pending == -1:
             raise ContractError("retry callback has no pending owner")
         record = self.records[self.pending]
         if record.state != RecordState.WAIT_RETRY:
             raise ContractError("retry callback is unexpected")
-        if port != record.port:
+        if callback_port != record.port:
             raise ContractError("retry callback arrived on the wrong port")
         record.state = RecordState.PENDING_SEND
         self.assert_invariants()
@@ -517,18 +566,25 @@ class DedicatedTransport:
             RecordState.ABORT_DRAIN,
         ):
             raise ContractError("record has no response obligation")
-        if record.request is None or record.token is None or record.key is None:
+        if (
+            record.request is None
+            or record.token is None
+            or record.key is None
+        ):
             raise AssertionError("owned response record is incomplete")
         if data is None:
-            data = bytes(LINE_BYTES) if record.key.operation == Operation.FILL else b""
+            data = (
+                bytes(LINE_BYTES)
+                if record.key.operation == Operation.FILL
+                else b""
+            )
         return PacketIncarnation(
-            incarnation=self._next_incarnation(),
+            incarnation=self._next_peer_packet(),
             request=record.request,
             sender_stack=(record.token,),
             address=record.address,
             command=record.response_command,
             size=record.size,
-            port=record.port,
             data=bytes(data),
         )
 
@@ -543,11 +599,18 @@ class DedicatedTransport:
         matches = [
             index
             for index, record in enumerate(self.records)
-            if record.state in (RecordState.IN_FLIGHT, RecordState.ABORT_DRAIN)
+            if record.state
+            in (
+                RecordState.IN_FLIGHT,
+                RecordState.DELIVERING,
+                RecordState.ABORT_DRAIN,
+            )
             and record.token is top
         ]
         if len(matches) != 1:
-            raise ProductionStop("unknown, copied, duplicate, or stale route token")
+            raise ProductionStop(
+                "unknown, copied, duplicate, or stale route token"
+            )
         index = matches[0]
         record = self.records[index]
         if not isinstance(top, RouteToken) or (
@@ -559,7 +622,9 @@ class DedicatedTransport:
         return index
 
     @staticmethod
-    def _wire_exact(record: TransactionRecord, packet: PacketIncarnation) -> bool:
+    def _wire_exact(
+        record: TransactionRecord, packet: PacketIncarnation
+    ) -> bool:
         if record.key is None or record.request is None:
             return False
         response_commands = (
@@ -578,10 +643,14 @@ class DedicatedTransport:
             and 0 <= packet.address <= U64_MAX
             and packet.command in response_commands
             and packet.size == LINE_BYTES
-            and packet.port == record.port
-            and packet.port == core_port(record.address)
             and payload_exact
         )
+
+    @staticmethod
+    def _callback_port_exact(
+        record: TransactionRecord, callback_port: int
+    ) -> bool:
+        return callback_port == record.port == core_port(record.address)
 
     def _release_record(self, index: int) -> None:
         record = self.records[index]
@@ -621,6 +690,7 @@ class DedicatedTransport:
                 RecordState.QUEUED,
                 RecordState.PENDING_SEND,
                 RecordState.WAIT_RETRY,
+                RecordState.DELIVERING,
             ):
                 if self.pending == index:
                     self.pending = -1
@@ -637,18 +707,26 @@ class DedicatedTransport:
         self.assert_invariants()
         return drained
 
-    def receive(self, packet: PacketIncarnation, slot_payload: bytes) -> ReceiveResult:
-        """Validate exact top token before all Request/packet-field accesses."""
+    def receive(
+        self,
+        packet: PacketIncarnation,
+        callback_port: int,
+    ) -> ReceiveResult:
+        """Authenticate token, endpoint, and wire before staging a response."""
         self._ensure_live()
-        if len(slot_payload) != PAGE_BYTES:
-            raise ContractError("slot payload must be exactly one page")
         index = self._lookup_top_token(packet)
         record = self.records[index]
+        if not self._callback_port_exact(record, callback_port):
+            raise ProductionStop(
+                "owned route token returned on wrong callback port"
+            )
         if not self._wire_exact(record, packet):
             # Production panics immediately.  The Python exception may be
             # caught only to inspect the pre-panic state: no ACK, payload copy,
             # owner release, deletion, abort transition, or recovery occurs.
-            raise ProductionStop("owned route token carries malformed response")
+            raise ProductionStop(
+                "owned route token carries malformed response"
+            )
 
         if record.state == RecordState.ABORT_DRAIN:
             self._release_record(index)
@@ -661,22 +739,62 @@ class DedicatedTransport:
             )
 
         if record.state != RecordState.IN_FLIGHT or record.key is None:
-            raise AssertionError("authorized token has no live obligation")
+            raise ProductionStop("owned response is already delivering")
         line = record.key.line
         if self.action.ack_bits & (1 << line):
             raise AssertionError("live token points at an acknowledged line")
-        key = record.key
-        if key.operation == Operation.FILL:
-            # The credit-owned fixed line buffer stages the validated response
-            # bytes before the controller copies them into the charged slot.
+        if record.key.operation == Operation.FILL:
+            # This replaces the contents of the same credit-owned fixed buffer;
+            # no result object or fifth payload owner is created.
             record.line_buffer = bytes(packet.data)
-            data = record.line_buffer
-        else:
-            data = b""
+            record.state = RecordState.DELIVERING
+            ticket = DeliveryTicket(index, record.epoch, record.action_id)
+            self.assert_invariants()
+            return ReceiveResult(ReplyStatus.DELIVERY_PENDING, ticket)
+
+        status = self._ack_release_and_refill(index)
+        return ReceiveResult(status)
+
+    def validate_delivery_ticket(self, ticket: DeliveryTicket) -> int:
+        """Validate a payload-free ticket without exposing or changing data."""
+        self._ensure_live()
+        if not isinstance(ticket, DeliveryTicket):
+            raise ProductionStop("delivery ticket type is invalid")
+        if not 0 <= ticket.record < TRANSACTION_CAPACITY:
+            raise ProductionStop("delivery ticket record is invalid")
+        record = self.records[ticket.record]
+        if (
+            record.state != RecordState.DELIVERING
+            or record.epoch != ticket.epoch
+            or record.action_id != ticket.action_id
+            or record.key is None
+            or record.key.operation != Operation.FILL
+            or self.action.state != ActionState.ACTIVE
+            or self.action.action_id != ticket.action_id
+        ):
+            raise ProductionStop("delivery ticket is stale or not exact")
+        return ticket.record
+
+    def commit_delivery(
+        self,
+        ticket: DeliveryTicket,
+    ) -> ReplyStatus:
+        """ACK/release only after the controller has committed the exact copy."""
+        index = self.validate_delivery_ticket(ticket)
+        return self._ack_release_and_refill(index)
+
+    def _ack_release_and_refill(
+        self,
+        index: int,
+    ) -> ReplyStatus:
+        record = self.records[index]
+        if record.key is None:
+            raise AssertionError("response record lost its transaction key")
+        line = record.key.line
         self.action.ack_bits |= 1 << line
         self.action.ack_count += 1
         self._release_record(index)
-        self._refill_queue(slot_payload)
+        self._refill_queue()
         completed = (
             self.action.next_line == LINES_PER_PAGE
             and self.action.ack_count == LINES_PER_PAGE
@@ -687,18 +805,16 @@ class DedicatedTransport:
         if completed:
             self.action.clear()
         self.assert_invariants()
-        return ReceiveResult(
-            ReplyStatus.COMPLETED if completed else ReplyStatus.ACCEPTED,
-            key,
-            data,
-        )
+        return ReplyStatus.COMPLETED if completed else ReplyStatus.ACCEPTED
 
     def drained(self) -> bool:
         return (
             self.action.state == ActionState.FREE
             and self.queue_count == 0
             and self.pending == -1
-            and all(record.state == RecordState.FREE for record in self.records)
+            and all(
+                record.state == RecordState.FREE for record in self.records
+            )
             and all(owner == -1 for owner in self.credit_owner)
         )
 
@@ -740,6 +856,7 @@ class DedicatedTransport:
                 buffer_owners += 1
             elif record.state in (
                 RecordState.IN_FLIGHT,
+                RecordState.DELIVERING,
                 RecordState.ABORT_DRAIN,
             ):
                 assert not in_queue and not is_pending and credits == 1
@@ -753,9 +870,16 @@ class DedicatedTransport:
         assert buffer_owners <= RESPONSE_CREDITS
         assert self.queue_count <= REQUEST_QUEUE_CAPACITY
         if self.action.state == ActionState.FREE:
-            assert not any(record.state != RecordState.FREE for record in self.records)
+            assert not any(
+                record.state != RecordState.FREE for record in self.records
+            )
         else:
-            assert 0 <= self.action.ack_count <= self.action.next_line <= LINES_PER_PAGE
+            assert (
+                0
+                <= self.action.ack_count
+                <= self.action.next_line
+                <= LINES_PER_PAGE
+            )
             assert self.action.ack_bits & ~self.action.issued_bits == 0
 
 
@@ -768,6 +892,7 @@ class LogicalCacheModel:
         self.transport = DedicatedTransport()
         self.active_slot = -1
         self.active_operation: Operation | None = None
+        self.delivery_commit_active = False
         self.last_abort = AbortCode.NONE
         self.torn_down = False
 
@@ -790,7 +915,9 @@ class LogicalCacheModel:
         for other in self.descriptors:
             if not other.allocated:
                 continue
-            other_end = checked_span_end(other.backing_base, other.backing_span)
+            other_end = checked_span_end(
+                other.backing_base, other.backing_span
+            )
             if not (end < other.backing_base or backing_base > other_end):
                 raise ContractError("live descriptor backing ranges overlap")
         item.generation += 1
@@ -805,7 +932,15 @@ class LogicalCacheModel:
     def publish_backing(self, descriptor: int, page: int) -> None:
         self._ensure_live()
         item = self._descriptor_page(descriptor, page)
+        owners = self._page_slot_owners(descriptor, item.generation, page)
+        if item.writeback_acked & (1 << page):
+            raise ContractError(
+                "acknowledged destination page cannot be republished"
+            )
+        if any(slot.role == SlotRole.DESTINATION for slot in owners):
+            raise ContractError("destination-owned page cannot be republished")
         item.backing_ready |= 1 << page
+        self.assert_invariants()
 
     def _descriptor_page(self, descriptor: int, page: int) -> Descriptor:
         if not 0 <= descriptor < DESCRIPTORS:
@@ -828,6 +963,21 @@ class LogicalCacheModel:
             raise ContractError("slot is out of range")
         return self.slots[slot]
 
+    def _page_slot_owners(
+        self,
+        descriptor: int,
+        generation: int,
+        page: int,
+    ) -> list[Slot]:
+        return [
+            slot
+            for slot in self.slots
+            if slot.phase != SlotPhase.EMPTY
+            and slot.descriptor == descriptor
+            and slot.generation == generation
+            and slot.page == page
+        ]
+
     def start_fill(
         self,
         descriptor: int,
@@ -843,11 +993,16 @@ class LogicalCacheModel:
         base = self._page_base(item, page)
         if claimed_base is not None and claimed_base != base:
             raise ContractError("claimed fill base differs from descriptor")
-        if claimed_generation is not None and claimed_generation != item.generation:
+        if (
+            claimed_generation is not None
+            and claimed_generation != item.generation
+        ):
             raise ContractError("claimed fill generation is stale")
         target = self._slot(slot)
         if target.phase != SlotPhase.EMPTY:
             raise ContractError("fill requires an empty slot")
+        if self._page_slot_owners(descriptor, item.generation, page):
+            raise ContractError("source page already has a live slot owner")
         action_id = self.transport.start_action(
             Operation.FILL,
             descriptor,
@@ -855,7 +1010,7 @@ class LogicalCacheModel:
             page,
             slot,
             base,
-            bytes(target.payload),
+            target.payload,
         )
         target.phase = SlotPhase.FILLING
         target.role = SlotRole.SOURCE
@@ -870,36 +1025,99 @@ class LogicalCacheModel:
 
     def try_send(self, accepted: bool) -> int | None:
         self._ensure_live()
-        payload = (
-            bytes(self.slots[self.active_slot].payload)
+        slot_payload = (
+            self.slots[self.active_slot].payload
             if self.active_slot >= 0
-            else bytes(PAGE_BYTES)
+            else self.slots[0].payload
         )
-        return self.transport.try_send(accepted, payload)
+        return self.transport.try_send(accepted, slot_payload)
 
-    def recv_req_retry(self, port: int) -> None:
+    def recv_req_retry(self, callback_port: int) -> None:
         self._ensure_live()
-        self.transport.recv_req_retry(port)
+        self.transport.recv_req_retry(callback_port)
 
-    def make_response(self, index: int, data: bytes | None = None) -> PacketIncarnation:
+    def make_response(
+        self, index: int, data: bytes | None = None
+    ) -> PacketIncarnation:
         self._ensure_live()
         return self.transport.make_response(index, data)
 
-    def receive(self, packet: PacketIncarnation) -> ReplyStatus:
+    def begin_receive(
+        self,
+        packet: PacketIncarnation,
+        callback_port: int,
+    ) -> ReceiveResult:
+        """Run the exact response callback without implicitly copying a fill."""
         self._ensure_live()
-        payload = (
-            bytes(self.slots[self.active_slot].payload)
-            if self.active_slot >= 0
-            else bytes(PAGE_BYTES)
-        )
-        result = self.transport.receive(packet, payload)
-        if result.key is not None and result.key.operation == Operation.FILL:
-            if len(result.data) != LINE_BYTES:
-                raise AssertionError("validated fill response lost its line")
-            slot = self.slots[result.key.slot]
-            start = result.key.line * LINE_BYTES
-            slot.payload[start : start + LINE_BYTES] = result.data
-        if result.status == ReplyStatus.COMPLETED:
+        result = self.transport.receive(packet, callback_port)
+        self._apply_terminal_status(result.status)
+        self.assert_invariants()
+        return result
+
+    def _delivery_target(self, index: int) -> tuple[Slot, int]:
+        record = self.transport.records[index]
+        key = record.key
+        if (
+            record.state != RecordState.DELIVERING
+            or key is None
+            or key.operation != Operation.FILL
+            or key.slot != self.active_slot
+        ):
+            raise ProductionStop(
+                "delivery record has no exact active fill target"
+            )
+        slot = self.slots[key.slot]
+        if (
+            slot.phase != SlotPhase.FILLING
+            or slot.role != SlotRole.SOURCE
+            or slot.descriptor != key.descriptor
+            or slot.generation != key.generation
+            or slot.page != key.page
+            or slot.action_id != record.action_id
+            or len(record.line_buffer) != LINE_BYTES
+        ):
+            raise ProductionStop("delivery target ownership is not exact")
+        start = key.line * LINE_BYTES
+        if not 0 <= start <= PAGE_BYTES - LINE_BYTES:
+            raise ProductionStop("delivery line offset is invalid")
+        return slot, start
+
+    def _copy_delivery_line(self, index: int) -> None:
+        """Fixed controller copy from the one charged buffer to exact slot bytes."""
+        slot, start = self._delivery_target(index)
+        line_buffer = self.transport.records[index].line_buffer
+        slot.payload[start : start + LINE_BYTES] = line_buffer
+
+    def commit_delivery(self, ticket: DeliveryTicket) -> ReplyStatus:
+        """Copy an exact staged line before transport ACK/release/completion."""
+        self._ensure_live()
+        index = self.transport.validate_delivery_ticket(ticket)
+        self._delivery_target(index)
+        if self.delivery_commit_active:
+            raise ProductionStop("delivery commit reentry is forbidden")
+        self.delivery_commit_active = True
+        try:
+            self._copy_delivery_line(index)
+            status = self.transport.commit_delivery(ticket)
+        finally:
+            self.delivery_commit_active = False
+        self._apply_terminal_status(status)
+        self.assert_invariants()
+        return status
+
+    def receive(
+        self,
+        packet: PacketIncarnation,
+        callback_port: int,
+    ) -> ReplyStatus:
+        """Convenience path that immediately performs the explicit copy commit."""
+        result = self.begin_receive(packet, callback_port)
+        if result.ticket is not None:
+            return self.commit_delivery(result.ticket)
+        return result.status
+
+    def _apply_terminal_status(self, status: ReplyStatus) -> None:
+        if status == ReplyStatus.COMPLETED:
             slot = self.slots[self.active_slot]
             if self.active_operation == Operation.FILL:
                 if slot.phase != SlotPhase.FILLING:
@@ -915,16 +1133,17 @@ class LogicalCacheModel:
                         "writeback completion has no destination owner"
                     )
                 descriptor = self.descriptors[slot.descriptor]
-                if not descriptor.allocated or descriptor.generation != slot.generation:
+                if (
+                    not descriptor.allocated
+                    or descriptor.generation != slot.generation
+                ):
                     raise AssertionError("writeback owner became stale")
                 descriptor.writeback_acked |= 1 << slot.page
                 slot.clear()
             self.active_slot = -1
             self.active_operation = None
-        elif result.status == ReplyStatus.ABORT_DRAINED and self.transport.drained():
+        elif status == ReplyStatus.ABORT_DRAINED and self.transport.drained():
             self._finish_aborted_slot()
-        self.assert_invariants()
-        return result.status
 
     def pin(self, slot: int) -> None:
         self._ensure_live()
@@ -956,7 +1175,9 @@ class LogicalCacheModel:
         destination = self._descriptor_page(descriptor, page)
         target = self._slot(slot)
         if target.phase != SlotPhase.DIRTY or target.pins == 0:
-            raise ContractError("destination binding requires pinned dirty payload")
+            raise ContractError(
+                "destination binding requires pinned dirty payload"
+            )
         if target.role != SlotRole.SOURCE:
             raise ContractError("only source-dirty payload may be rebound")
         if (
@@ -965,20 +1186,17 @@ class LogicalCacheModel:
         ):
             raise ContractError("claimed destination generation is stale")
         if target.descriptor == descriptor:
-            raise ContractError("source and destination descriptors must differ")
+            raise ContractError(
+                "source and destination descriptors must differ"
+            )
         if destination.backing_ready & (1 << page):
             raise ContractError("destination page is already backing-ready")
         if destination.writeback_acked & (1 << page):
             raise ContractError("destination page is already acknowledged")
-        if any(
-            other is not target
-            and other.role == SlotRole.DESTINATION
-            and other.descriptor == descriptor
-            and other.generation == destination.generation
-            and other.page == page
-            for other in self.slots
-        ):
-            raise ContractError("destination page already has a slot owner")
+        if self._page_slot_owners(descriptor, destination.generation, page):
+            raise ContractError(
+                "destination page already has a source or destination owner"
+            )
         target.descriptor = descriptor
         target.generation = destination.generation
         target.page = page
@@ -1016,8 +1234,13 @@ class LogicalCacheModel:
             raise ContractError("destination slot generation is stale")
         base = self._page_base(destination, target.page)
         if claimed_base is not None and claimed_base != base:
-            raise ContractError("claimed writeback base differs from descriptor")
-        if claimed_generation is not None and claimed_generation != target.generation:
+            raise ContractError(
+                "claimed writeback base differs from descriptor"
+            )
+        if (
+            claimed_generation is not None
+            and claimed_generation != target.generation
+        ):
             raise ContractError("claimed writeback generation is stale")
         action_id = self.transport.start_action(
             Operation.WRITEBACK,
@@ -1026,7 +1249,7 @@ class LogicalCacheModel:
             target.page,
             slot,
             base,
-            bytes(target.payload),
+            target.payload,
         )
         target.phase = SlotPhase.WRITEBACK
         target.action_id = action_id
@@ -1063,7 +1286,8 @@ class LogicalCacheModel:
             raise ContractError("descriptor is out of range")
         item = self.descriptors[descriptor]
         return (
-            item.allocated and item.writeback_acked == (1 << PAGES_PER_DESCRIPTOR) - 1
+            item.allocated
+            and item.writeback_acked == (1 << PAGES_PER_DESCRIPTOR) - 1
         )
 
     def free_descriptor(self, descriptor: int) -> None:
@@ -1086,7 +1310,8 @@ class LogicalCacheModel:
         if not self.transport.drained():
             raise ContractError("reset requires a drained transport")
         if any(
-            slot.phase in (SlotPhase.DIRTY, SlotPhase.WRITEBACK) for slot in self.slots
+            slot.phase in (SlotPhase.DIRTY, SlotPhase.WRITEBACK)
+            for slot in self.slots
         ):
             raise ContractError("reset cannot discard dirty data")
         if any(slot.pins for slot in self.slots):
@@ -1114,6 +1339,14 @@ class LogicalCacheModel:
 
     def assert_invariants(self) -> None:
         self.transport.assert_invariants()
+        if self.delivery_commit_active:
+            assert (
+                sum(
+                    record.state == RecordState.DELIVERING
+                    for record in self.transport.records
+                )
+                == 1
+            )
         action_slots = [slot for slot in self.slots if slot.action_id]
         assert len(action_slots) <= 1
         if self.transport.action.state == ActionState.FREE:
@@ -1156,6 +1389,26 @@ class LogicalCacheModel:
                 assert slot.phase in (SlotPhase.CLEAN, SlotPhase.DIRTY)
             if slot.role == SlotRole.DESTINATION:
                 assert slot.phase in (SlotPhase.DIRTY, SlotPhase.WRITEBACK)
+        for descriptor_index, descriptor in enumerate(self.descriptors):
+            if not descriptor.allocated:
+                continue
+            for page in range(PAGES_PER_DESCRIPTOR):
+                owners = self._page_slot_owners(
+                    descriptor_index,
+                    descriptor.generation,
+                    page,
+                )
+                assert len(owners) <= 1
+                ready = bool(descriptor.backing_ready & (1 << page))
+                acknowledged = bool(descriptor.writeback_acked & (1 << page))
+                assert not (ready and acknowledged)
+                if owners:
+                    if owners[0].role == SlotRole.SOURCE:
+                        assert ready and not acknowledged
+                    else:
+                        assert not ready and not acknowledged
+                if acknowledged:
+                    assert not owners
 
     def digest(self) -> str:
         """Host-only deterministic observation; never feeds a transition."""
@@ -1212,8 +1465,12 @@ class LogicalCacheModel:
                     "action": record.action_id,
                     "key": key_state(record.key),
                     "token": record.token.__dict__ if record.token else None,
-                    "request": record.request.incarnation if record.request else None,
-                    "packet": record.packet.incarnation if record.packet else None,
+                    "request": record.request.incarnation
+                    if record.request
+                    else None,
+                    "packet": record.packet.incarnation
+                    if record.packet
+                    else None,
                     "address": record.address,
                     "commands": (
                         record.request_command,
@@ -1233,10 +1490,13 @@ class LogicalCacheModel:
                 self.transport.action_ids_exhausted,
                 self.transport.next_incarnation_id,
                 self.transport.incarnation_ids_exhausted,
+                self.transport.next_peer_packet_id,
+                self.transport.peer_packet_ids_exhausted,
             ),
             "active": (
                 self.active_slot,
                 self.active_operation.value if self.active_operation else None,
+                self.delivery_commit_active,
             ),
             "last_abort": self.last_abort.value,
             "sealed": self.transport.sealed,
@@ -1247,20 +1507,31 @@ class LogicalCacheModel:
         ).hexdigest()
 
 
-# Exact logical packed-state accounting.  Python containers, big integers,
-# digests, SenderState/Request/Packet host objects, and allocator overhead are
-# executable or gem5-host representations and are intentionally not counted.
-PACKED_LOGICAL_STATE_BYTES = {
-    "private_slot_payloads": 2 * PAGE_BYTES,
-    "descriptor_correlators": 32,
-    "slot_correlators": 32,
-    "page_action_and_two_512b_sets": 148,
-    "eight_transaction_correlators": 184,
-    "request_fifo_control": 5,
-    "four_credit_owners": 2,
-    "four_line_buffers": RESPONSE_CREDITS * LINE_BYTES,
-    "bounded_global_control": 5,
+# Exact logical packed-state accounting.  State-dependent fields have no
+# sentinel bit where the record state already determines validity.  Python
+# containers, big integers, digests, tickets, SenderState/Request/Packet host
+# objects, allocator overhead, and transient callback wires are not persistent
+# hardware state.
+DESCRIPTOR_BITS_PER_ENTRY = 1 + 32 + 64 + 18 + 4 + 4
+SLOT_BITS_PER_ENTRY = 3 + 2 + 2 + 32 + 3 + 8 + 32
+PAGE_ACTION_BITS = 2 + 32 + 2 + 2 + 32 + 3 + 2 + 64 + 10 + 512 + 512 + 10 + 1
+TRANSACTION_BITS_PER_RECORD = 3 + 16 + 32 + 46 + 64 + 2 + 2 + 7 + 2 + 3
+REQUEST_FIFO_CONTROL_BITS = 8 * 3 + 3 + 3 + 4 + 4
+GLOBAL_CONTROL_BITS = 32 + 1 + 1 + 2 + 2 + 1 + 1 + 1
+PACKED_LOGICAL_STATE_BITS = {
+    "private_slot_payloads": 2 * PAGE_BYTES * 8,
+    "descriptor_correlators": DESCRIPTORS * DESCRIPTOR_BITS_PER_ENTRY,
+    "slot_correlators": SLOTS * SLOT_BITS_PER_ENTRY,
+    "page_action_and_two_512b_sets": PAGE_ACTION_BITS,
+    "eight_transaction_correlators": (
+        TRANSACTION_CAPACITY * TRANSACTION_BITS_PER_RECORD
+    ),
+    "request_fifo_control": REQUEST_FIFO_CONTROL_BITS,
+    "four_credit_owners": 16,
+    "four_line_buffers": RESPONSE_CREDITS * LINE_BYTES * 8,
+    "bounded_global_control_including_delivery_guard": GLOBAL_CONTROL_BITS,
 }
+PACKED_LOGICAL_STATE_BYTES = (sum(PACKED_LOGICAL_STATE_BITS.values()) + 7) // 8
 
 # A proposed naturally aligned fixed-width C++ hardware-state projection,
 # excluding all gem5-only polymorphic/pointer objects.  Actual production
@@ -1274,7 +1545,7 @@ ALIGNED_CPP_PROJECTION_BYTES = {
     "request_fifo_control": 16,
     "credit_owners": 8,
     "line_buffers": RESPONSE_CREDITS * LINE_BYTES,
-    "bounded_global_control": 16,
+    "bounded_global_control": 12,
 }
 
 
@@ -1305,7 +1576,7 @@ def drive_action(model: LogicalCacheModel) -> None:
                 if record.key and record.key.operation == Operation.FILL
                 else b""
             )
-            model.receive(model.make_response(index, data))
+            model.receive(model.make_response(index, data), record.port)
 
 
 def deterministic_demo() -> dict[str, object]:
@@ -1328,7 +1599,7 @@ def deterministic_demo() -> dict[str, object]:
         "destination_generation": destination_generation,
         "destination_complete": model.descriptor_complete(1),
         "digest": model.digest(),
-        "packed_state_bytes_per_maa": sum(PACKED_LOGICAL_STATE_BYTES.values()),
+        "packed_state_bytes_per_maa": PACKED_LOGICAL_STATE_BYTES,
         "aligned_cpp_projection_bytes_per_maa": sum(
             ALIGNED_CPP_PROJECTION_BYTES.values()
         ),
