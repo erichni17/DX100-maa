@@ -50,17 +50,42 @@ def physical_payload(itr: int) -> str:
     return " ".join(f"{key}={value}" for key, value in fields.items())
 
 
-def counter_summary(source_issues: int = 0) -> dict:
+def execute_line(
+    tick: int,
+    occurrence: str,
+    sequence: str,
+    *,
+    unit: str = "0",
+    operation_tick: str = "100",
+    state: str = "Request",
+    itr: str = "0",
+) -> str:
+    return (
+        f"{tick}: global: event=indirect_execute schema=2 unit={unit} "
+        f"occurrence={occurrence} operation_tick={operation_tick} "
+        f"sequence={sequence} state={state} itr={itr}\n"
+    )
+
+
+def counter_summary(
+    source_issues: int = 0,
+    *,
+    unit: str = "0",
+    operation_tick: str = "100",
+    occurrence: str = "0",
+    row_pressure: int = 0,
+    offset_pressure: int = 0,
+) -> dict:
     return {
         "schema": MODULE.ATTRIBUTION_SCHEMA,
         "event": "indirect_counter_summary",
-        "unit": "0",
-        "occurrence": "0",
-        "operation_tick": "100",
-        "row_attempts": "3",
+        "unit": unit,
+        "occurrence": occurrence,
+        "operation_tick": operation_tick,
+        "row_attempts": str(2 + row_pressure),
         "row_successes": "2",
-        "offset_pressure": "0",
-        "row_pressure": "1",
+        "offset_pressure": str(offset_pressure),
+        "row_pressure": str(row_pressure),
         "source_issues": str(source_issues),
         "source_responses": "0",
         "combiner_words": "0",
@@ -157,7 +182,7 @@ class HybridOverheadAttributionTest(unittest.TestCase):
         duplicate = self.write_trace(
             [
                 "100: global: event=indirect_execute schema=2 unit=0 unit=0 "
-                "occurrence=0 sequence=0 state=Idle itr=0\n"
+                "occurrence=0 operation_tick=100 sequence=0 state=Idle itr=0\n"
             ]
         )
         with self.assertRaisesRegex(MODULE.AuditError, "duplicate field"):
@@ -166,20 +191,26 @@ class HybridOverheadAttributionTest(unittest.TestCase):
     def test_stall_events_require_unique_execute_sequence(self):
         valid = self.write_trace(
             [
+                execute_line(100, "0", "0", state="Idle", itr="11"),
                 "100: global: event=indirect_stall schema=2 unit=0 "
-                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "occurrence=1 operation_tick=100 sequence=0 "
+                "reason=row_table_full itr=11 "
                 "slice=1 grow=0x20\n",
+                execute_line(100, "2", "1", itr="11"),
                 "100: global: event=indirect_stall schema=2 unit=0 "
-                "occurrence=1 sequence=8 reason=row_table_full itr=11 "
+                "occurrence=3 operation_tick=100 sequence=1 "
+                "reason=row_table_full itr=11 "
                 "slice=1 grow=0x20\n",
             ]
         )
-        self.assertEqual(len(MODULE.strict_events(valid)), 2)
+        self.assertEqual(len(MODULE.strict_events(valid)), 4)
 
         missing_sequence = self.write_trace(
             [
+                execute_line(100, "0", "0", state="Idle", itr="11"),
                 "100: global: event=indirect_stall schema=2 unit=0 "
-                "occurrence=0 reason=row_table_full itr=11 slice=1 grow=0x20\n"
+                "occurrence=1 operation_tick=100 reason=row_table_full "
+                "itr=11 slice=1 grow=0x20\n",
             ]
         )
         with self.assertRaisesRegex(MODULE.AuditError, "malformed stall"):
@@ -187,11 +218,14 @@ class HybridOverheadAttributionTest(unittest.TestCase):
 
         duplicate = self.write_trace(
             [
+                execute_line(100, "0", "0", state="Idle", itr="11"),
                 "100: global: event=indirect_stall schema=2 unit=0 "
-                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "occurrence=1 operation_tick=100 sequence=0 "
+                "reason=row_table_full itr=11 "
                 "slice=1 grow=0x20\n",
                 "100: global: event=indirect_stall schema=2 unit=0 "
-                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "occurrence=1 operation_tick=100 sequence=0 "
+                "reason=row_table_full itr=11 "
                 "slice=1 grow=0x20\n",
             ]
         )
@@ -200,16 +234,16 @@ class HybridOverheadAttributionTest(unittest.TestCase):
 
         changed_payload_same_occurrence = self.write_trace(
             [
+                execute_line(100, "0", "0", state="Idle", itr="11"),
                 "100: global: event=indirect_stall schema=2 unit=0 "
-                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "occurrence=1 operation_tick=100 sequence=0 "
+                "reason=row_table_full itr=11 "
                 "slice=1 grow=0x20\n",
-                "101: global: event=indirect_stall schema=2 unit=0 "
-                "occurrence=0 sequence=8 reason=row_table_full itr=12 "
-                "slice=2 grow=0x21\n",
+                execute_line(101, "1", "1", itr="12"),
             ]
         )
         with self.assertRaisesRegex(
-            MODULE.AuditError, "duplicate source event occurrence"
+            MODULE.AuditError, "occurrence discontinuity"
         ):
             MODULE.strict_events(changed_payload_same_occurrence)
 
@@ -218,11 +252,13 @@ class HybridOverheadAttributionTest(unittest.TestCase):
             if fields is None:
                 continue
             self.assertIn("occurrence", fields, name)
+            if "unit" in fields:
+                self.assertIn("operation_tick", fields, name)
 
         old_schema = self.write_trace(
             [
                 "100: global: event=indirect_execute schema=1 unit=0 "
-                "occurrence=0 sequence=0 state=Idle itr=0\n"
+                "occurrence=0 operation_tick=100 sequence=0 state=Idle itr=0\n"
             ]
         )
         with self.assertRaisesRegex(
@@ -230,19 +266,181 @@ class HybridOverheadAttributionTest(unittest.TestCase):
         ):
             MODULE.strict_events(old_schema)
 
+    def test_rejects_missing_schema_and_bad_occurrence_domains(self):
+        missing_schema = self.write_trace(
+            [
+                "100: global: event=indirect_execute unit=0 occurrence=0 "
+                "operation_tick=100 sequence=0 state=Idle itr=0\n"
+            ]
+        )
+        with self.assertRaisesRegex(
+            MODULE.AuditError, "unknown versioned schema"
+        ):
+            MODULE.strict_events(missing_schema)
+
+        bad_traces = {
+            "gap": [
+                execute_line(100, "0", "0", state="Idle"),
+                execute_line(101, "2", "1"),
+            ],
+            "reorder": [execute_line(100, "1", "0", state="Idle")],
+            "overflow": [execute_line(100, str(1 << 64), "0", state="Idle")],
+            "unit alias": [
+                execute_line(100, "0", "0", unit="00", state="Idle")
+            ],
+        }
+        for label, lines in bad_traces.items():
+            with self.subTest(label=label):
+                with self.assertRaises(MODULE.AuditError):
+                    MODULE.strict_events(self.write_trace(lines))
+
+    def test_rejects_duplicate_negative_and_unlinked_execute_sequences(self):
+        duplicate = self.write_trace(
+            [
+                execute_line(100, "0", "0", state="Idle"),
+                execute_line(101, "1", "0"),
+            ]
+        )
+        with self.assertRaisesRegex(
+            MODULE.AuditError, "sequence discontinuity"
+        ):
+            MODULE.strict_events(duplicate)
+
+        negative = self.write_trace(
+            [execute_line(100, "0", "-1", state="Idle")]
+        )
+        with self.assertRaisesRegex(MODULE.AuditError, "canonical unsigned"):
+            MODULE.strict_events(negative)
+
+        unlinked = self.write_trace(
+            [
+                execute_line(100, "0", "0", state="Idle"),
+                "100: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=1 operation_tick=100 sequence=1 "
+                "reason=row_table_full itr=0 slice=0 grow=0x0\n",
+            ]
+        )
+        with self.assertRaisesRegex(MODULE.AuditError, "owning execute"):
+            MODULE.strict_events(unlinked)
+
     def test_counter_events_reconcile_or_fail_closed(self):
         summary = counter_summary()
-        self.assertIs(MODULE.reconcile_counter_events([summary]), summary)
+        self.assertEqual(MODULE.reconcile_counter_events([summary]), [summary])
         bad = counter_summary(source_issues=1)
         with self.assertRaisesRegex(
             MODULE.AuditError, "counter/event mismatch"
         ):
             MODULE.reconcile_counter_events([bad])
 
+        pressure_summary = counter_summary(row_pressure=1, offset_pressure=1)
+        pressure_events = [
+            pressure_summary,
+            {
+                "event": "indirect_stall",
+                "unit": "0",
+                "operation_tick": "100",
+                "reason": "row_table_full",
+            },
+            {
+                "event": "indirect_stall",
+                "unit": "0",
+                "operation_tick": "100",
+                "reason": "offset_epoch_full",
+            },
+        ]
+        self.assertEqual(
+            MODULE.reconcile_counter_events(pressure_events),
+            [pressure_summary],
+        )
+        second_summary = counter_summary(
+            unit="1", operation_tick="200", occurrence="1"
+        )
+        self.assertEqual(
+            MODULE.reconcile_counter_events([second_summary, summary]),
+            [summary, second_summary],
+        )
+
+    def test_rejects_cross_unit_and_cross_operation_substitution(self):
+        for label, event in (
+            (
+                "unit",
+                {
+                    "event": "source_issue",
+                    "unit": "1",
+                    "operation_tick": "100",
+                },
+            ),
+            (
+                "operation",
+                {
+                    "event": "source_issue",
+                    "unit": "0",
+                    "operation_tick": "101",
+                },
+            ),
+        ):
+            summary = counter_summary(source_issues=1)
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    MODULE.AuditError, "same-scope summary"
+                ):
+                    MODULE.reconcile_counter_events([summary, event])
+
+        for label, other_summary, event in (
+            (
+                "unit-with-summary",
+                counter_summary(unit="1", operation_tick="100"),
+                {
+                    "event": "source_issue",
+                    "unit": "1",
+                    "operation_tick": "100",
+                },
+            ),
+            (
+                "operation-with-summary",
+                counter_summary(unit="0", operation_tick="101"),
+                {
+                    "event": "source_issue",
+                    "unit": "0",
+                    "operation_tick": "101",
+                },
+            ),
+        ):
+            summary = counter_summary(source_issues=1)
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    MODULE.AuditError, "counter/event mismatch"
+                ):
+                    MODULE.reconcile_counter_events(
+                        [summary, other_summary, event]
+                    )
+
+        issue = {
+            "sim_tick": 100,
+            "line": 1,
+            "unit": "0",
+            "operation_tick": "100",
+            "addr": "0x20",
+        }
+        for label, response in (
+            ("unit", {**issue, "sim_tick": 101, "unit": "1"}),
+            (
+                "operation",
+                {**issue, "sim_tick": 101, "operation_tick": "101"},
+            ),
+        ):
+            with self.subTest(fifo=label):
+                with self.assertRaisesRegex(
+                    MODULE.AuditError, "same-scope issue"
+                ):
+                    MODULE.fifo_latencies([issue], [response], "addr")
+
     def test_stage_cycles_and_sim_ticks_are_separate_and_reconcile(self):
         grouped = {
             "indirect_stage_interval": [
                 {
+                    "unit": "0",
+                    "operation_tick": "100",
                     "stage": "decode",
                     "start": "100",
                     "end": "412",
@@ -252,6 +450,8 @@ class HybridOverheadAttributionTest(unittest.TestCase):
             ]
         }
         summary = {
+            "unit": "0",
+            "operation_tick": "100",
             "decode_sim_ticks": "312",
             "fill_sim_ticks": "0",
             "build_sim_ticks": "0",
@@ -259,7 +459,7 @@ class HybridOverheadAttributionTest(unittest.TestCase):
             "response_sim_ticks": "0",
             "total_sim_ticks": "312",
         }
-        result = MODULE.stage_audit(grouped, summary)
+        result = MODULE.stage_audit(grouped, [summary])
         self.assertEqual(result["sim_ticks"]["decode"], 312)
         self.assertEqual(result["cycles"]["decode"], 1)
 

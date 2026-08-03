@@ -17,6 +17,7 @@ from typing import Iterable
 
 PHYSICAL_SCHEMA = "dx100.physical_admission.v1"
 ATTRIBUTION_SCHEMA = "2"
+UINT64_MAX = (1 << 64) - 1
 BASELINE_COMMIT = "d7875f99e6caf1d47bd6010b89112458384aec6c"
 PHYSICAL_FIELDS = {
     "schema",
@@ -59,6 +60,7 @@ EVENT_FIELDS = {
         "schema",
         "event",
         "unit",
+        "operation_tick",
         "sequence",
         "state",
         "itr",
@@ -100,6 +102,7 @@ EVENT_FIELDS = {
         "schema",
         "event",
         "unit",
+        "operation_tick",
         "line",
         "first_itr",
         "words",
@@ -109,6 +112,7 @@ EVENT_FIELDS = {
         "schema",
         "event",
         "unit",
+        "operation_tick",
         "line",
         "words",
         "cached",
@@ -172,6 +176,7 @@ EVENT_FIELDS = {
         "schema",
         "event",
         "unit",
+        "operation_tick",
         "page",
         "pages",
         "scanned",
@@ -274,6 +279,15 @@ def parse_int(value: str) -> int:
         raise AuditError(f"invalid integer {value!r}") from exc
 
 
+def parse_canonical_uint64(value: str, field: str) -> int:
+    if re.fullmatch(r"0|[1-9][0-9]*", value) is None:
+        raise AuditError(f"{field} is not canonical unsigned decimal")
+    number = int(value, 10)
+    if number > UINT64_MAX:
+        raise AuditError(f"{field} exceeds uint64")
+    return number
+
+
 def parse_payload(payload: str, line_no: int) -> dict[str, str]:
     fields: dict[str, str] = {}
     for token in payload.split():
@@ -290,10 +304,16 @@ def parse_payload(payload: str, line_no: int) -> dict[str, str]:
 
 def iter_trace(path: Path) -> Iterable[tuple[int, int, str, dict[str, str]]]:
     prefix = re.compile(r"^(\d+): ([^:]+): (.*)$")
+    event_token = re.compile(r"(?:^| )event=([^ ]+)(?: |$)")
     with path.open(encoding="utf-8") as stream:
         for line_no, raw in enumerate(stream, 1):
             raw = raw.rstrip("\n")
-            if "schema=" not in raw and "event=physical_admission" not in raw:
+            event_match = event_token.search(raw)
+            recognized_target = event_match is not None and (
+                event_match.group(1) in EVENT_FIELDS
+                or event_match.group(1) == "physical_admission"
+            )
+            if "schema=" not in raw and not recognized_target:
                 continue
             match = prefix.fullmatch(raw)
             if match is None:
@@ -435,7 +455,11 @@ def validate_physical(
 def strict_events(path: Path) -> list[dict]:
     events = []
     seen = set()
-    seen_occurrences = set()
+    next_occurrence = defaultdict(int)
+    last_scope_tick = {}
+    next_execute_sequence = defaultdict(int)
+    execute_ticks = {}
+    next_source_issue_sequence = defaultdict(int)
     for line_no, tick, payload, fields in iter_trace(path):
         if fields.get("schema") == PHYSICAL_SCHEMA:
             continue
@@ -453,6 +477,7 @@ def strict_events(path: Path) -> list[dict]:
                 "event",
                 "unit",
                 "occurrence",
+                "operation_tick",
                 "sequence",
                 "reason",
                 "itr",
@@ -469,48 +494,136 @@ def strict_events(path: Path) -> list[dict]:
         if identity in seen:
             raise AuditError(f"line {line_no}: duplicate versioned event")
         seen.add(identity)
-        occurrence = parse_int(fields["occurrence"])
-        if occurrence < 0:
-            raise AuditError(f"line {line_no}: negative event occurrence")
-        scope = (
-            f"indirect-unit-{fields['unit']}"
-            if "unit" in fields
-            else "transparent-controller"
-        )
-        occurrence_identity = (scope, occurrence)
-        if occurrence_identity in seen_occurrences:
-            raise AuditError(
-                f"line {line_no}: duplicate source event occurrence"
+        if "unit" in fields:
+            unit = parse_canonical_uint64(fields["unit"], "unit")
+            source_scope = ("indirect", unit)
+            operation_tick = parse_canonical_uint64(
+                fields["operation_tick"], "operation_tick"
             )
-        seen_occurrences.add(occurrence_identity)
+            if operation_tick > tick:
+                raise AuditError(
+                    f"line {line_no}: operation_tick follows event"
+                )
+            operation_scope = (unit, operation_tick)
+        else:
+            source_scope = ("transparent-controller",)
+            operation_scope = None
+        occurrence = parse_canonical_uint64(fields["occurrence"], "occurrence")
+        expected_occurrence = next_occurrence[source_scope]
+        if occurrence != expected_occurrence:
+            raise AuditError(
+                f"line {line_no}: occurrence discontinuity in "
+                f"{source_scope}: expected {expected_occurrence}, "
+                f"got {occurrence}"
+            )
+        previous_tick = last_scope_tick.get(source_scope)
+        if previous_tick is not None and tick < previous_tick:
+            raise AuditError(
+                f"line {line_no}: source events out of tick order"
+            )
+        next_occurrence[source_scope] += 1
+        last_scope_tick[source_scope] = tick
+        if name == "indirect_execute":
+            sequence = parse_canonical_uint64(fields["sequence"], "sequence")
+            expected_sequence = next_execute_sequence[operation_scope]
+            if sequence != expected_sequence:
+                raise AuditError(
+                    f"line {line_no}: execute sequence discontinuity for "
+                    f"{operation_scope}: expected {expected_sequence}, "
+                    f"got {sequence}"
+                )
+            if sequence == 0 and fields["state"] != "Idle":
+                raise AuditError(
+                    f"line {line_no}: operation does not start in Idle"
+                )
+            next_execute_sequence[operation_scope] += 1
+            execute_ticks[(operation_scope, sequence)] = tick
+        elif name == "indirect_stall":
+            sequence = parse_canonical_uint64(fields["sequence"], "sequence")
+            parent_tick = execute_ticks.get((operation_scope, sequence))
+            if parent_tick is None or parent_tick != tick:
+                raise AuditError(
+                    f"line {line_no}: stall has no same-tick owning execute"
+                )
+        elif name == "source_issue":
+            sequence = parse_canonical_uint64(fields["sequence"], "sequence")
+            expected_sequence = next_source_issue_sequence[operation_scope]
+            if sequence != expected_sequence:
+                raise AuditError(
+                    f"line {line_no}: source issue sequence discontinuity"
+                )
+            next_source_issue_sequence[operation_scope] += 1
         events.append({"line": line_no, "sim_tick": tick, **fields})
     if not events:
         raise AuditError("no versioned attribution events")
     return events
 
 
-def reconcile_counter_events(events: list[dict]) -> dict:
-    grouped = defaultdict(list)
+def indirect_scope(event: dict) -> tuple[int, int]:
+    try:
+        unit = parse_canonical_uint64(event["unit"], "unit")
+        operation_tick = parse_canonical_uint64(
+            event["operation_tick"], "operation_tick"
+        )
+    except KeyError as exc:
+        raise AuditError("indirect event lacks unit/operation scope") from exc
+    return unit, operation_tick
+
+
+def reconcile_counter_events(events: list[dict]) -> list[dict]:
+    summaries = {}
+    counts = defaultdict(Counter)
+    counted_events = {
+        "source_issue": "source_issues",
+        "source_response": "source_responses",
+        "backing_write_issue": "write_issues",
+        "backing_write_complete": "write_completions",
+    }
     for event in events:
-        grouped[event["event"]].append(event)
-    summaries = grouped["indirect_counter_summary"]
-    if len(summaries) != 1:
-        raise AuditError("expected one indirect counter summary")
-    summary = summaries[0]
-    for field, event_name in (
-        ("source_issues", "source_issue"),
-        ("source_responses", "source_response"),
-        ("write_issues", "backing_write_issue"),
-        ("write_completions", "backing_write_complete"),
-    ):
-        if parse_int(summary[field]) != len(grouped[event_name]):
-            raise AuditError(f"{field} counter/event mismatch")
-    if parse_int(summary["row_attempts"]) != (
-        parse_int(summary["row_successes"])
-        + parse_int(summary["row_pressure"])
-    ):
-        raise AuditError("row attempts do not reconcile")
-    return summary
+        name = event["event"]
+        if name == "indirect_counter_summary":
+            scope = indirect_scope(event)
+            if scope in summaries:
+                raise AuditError(f"duplicate counter summary for {scope}")
+            summaries[scope] = event
+        elif name in counted_events:
+            counts[indirect_scope(event)][counted_events[name]] += 1
+        elif name == "indirect_stall":
+            reason = event["reason"]
+            if reason == "offset_epoch_full":
+                counts[indirect_scope(event)]["offset_pressure"] += 1
+            elif reason == "row_table_full":
+                counts[indirect_scope(event)]["row_pressure"] += 1
+    if not summaries:
+        raise AuditError("missing indirect counter summaries")
+    unexpected_scopes = set(counts) - set(summaries)
+    if unexpected_scopes:
+        raise AuditError(
+            f"counter events lack same-scope summary: {sorted(unexpected_scopes)}"
+        )
+    counter_fields = (
+        "source_issues",
+        "source_responses",
+        "write_issues",
+        "write_completions",
+        "offset_pressure",
+        "row_pressure",
+    )
+    for scope, summary in summaries.items():
+        for field in counter_fields:
+            recorded = parse_canonical_uint64(summary[field], field)
+            if recorded != counts[scope][field]:
+                raise AuditError(f"{field} counter/event mismatch for {scope}")
+        attempts = parse_canonical_uint64(
+            summary["row_attempts"], "row_attempts"
+        )
+        successes = parse_canonical_uint64(
+            summary["row_successes"], "row_successes"
+        )
+        if attempts != successes + counts[scope]["row_pressure"]:
+            raise AuditError(f"row attempts do not reconcile for {scope}")
+        parse_canonical_uint64(summary["combiner_words"], "combiner_words")
+    return [summaries[scope] for scope in sorted(summaries)]
 
 
 def first_stats(path: Path) -> dict[str, int | float]:
@@ -646,45 +759,83 @@ def audit_ramulator_provenance(path: Path, library: dict[str, str]) -> dict:
     return data
 
 
-def stage_audit(grouped: dict[str, list[dict]], stage: dict) -> dict:
-    intervals = grouped["indirect_stage_interval"]
-    if not intervals:
-        raise AuditError("missing stage intervals")
-    totals = Counter()
-    ordered = sorted(
-        intervals,
-        key=lambda event: (parse_int(event["start"]), parse_int(event["end"])),
-    )
-    previous_end = None
-    for event in ordered:
-        start = parse_int(event["start"])
-        end = parse_int(event["end"])
-        sim_ticks = parse_int(event["sim_ticks"])
-        cycles = parse_int(event["cycles"])
-        if end <= start or end - start != sim_ticks or cycles < 0:
-            raise AuditError("invalid stage interval")
-        if previous_end is not None and start < previous_end:
-            raise AuditError("overlapping stage intervals")
-        previous_end = end
-        totals[event["stage"]] += sim_ticks
+def stage_audit(grouped: dict[str, list[dict]], stages: list[dict]) -> dict:
     names = ("decode", "fill", "build", "request", "response")
-    summary = {name: parse_int(stage[f"{name}_sim_ticks"]) for name in names}
-    if any(totals[name] != summary[name] for name in names):
-        raise AuditError("stage intervals do not reconcile to summary")
-    if sum(summary.values()) != parse_int(stage["total_sim_ticks"]):
-        raise AuditError("stage summary does not reconcile")
-    return {
-        "sim_ticks": summary,
-        "cycles": {
-            name: sum(
-                parse_int(event["cycles"])
-                for event in intervals
-                if event["stage"] == name
+    summaries = {}
+    for stage in stages:
+        scope = indirect_scope(stage)
+        if scope in summaries:
+            raise AuditError(f"duplicate stage summary for {scope}")
+        summaries[scope] = stage
+    if not summaries:
+        raise AuditError("missing stage summaries")
+    intervals_by_scope = defaultdict(list)
+    for event in grouped["indirect_stage_interval"]:
+        intervals_by_scope[indirect_scope(event)].append(event)
+    if set(intervals_by_scope) != set(summaries):
+        raise AuditError("stage interval/summary scopes differ")
+    aggregate_ticks = Counter()
+    aggregate_cycles = Counter()
+    operations = {}
+    total_intervals = 0
+    for scope, stage in sorted(summaries.items()):
+        intervals = intervals_by_scope[scope]
+        totals = Counter()
+        cycles_by_stage = Counter()
+        ordered = sorted(
+            intervals,
+            key=lambda event: (
+                parse_canonical_uint64(event["start"], "stage start"),
+                parse_canonical_uint64(event["end"], "stage end"),
+            ),
+        )
+        previous_end = None
+        for event in ordered:
+            if event["stage"] not in names:
+                raise AuditError("unknown stage interval name")
+            start = parse_canonical_uint64(event["start"], "stage start")
+            end = parse_canonical_uint64(event["end"], "stage end")
+            sim_ticks = parse_canonical_uint64(
+                event["sim_ticks"], "stage sim_ticks"
+            )
+            cycles = parse_canonical_uint64(event["cycles"], "stage cycles")
+            if end < start or end - start != sim_ticks:
+                raise AuditError("invalid stage interval")
+            if previous_end is not None and start < previous_end:
+                raise AuditError("overlapping stage intervals")
+            previous_end = end
+            totals[event["stage"]] += sim_ticks
+            cycles_by_stage[event["stage"]] += cycles
+        summary = {
+            name: parse_canonical_uint64(
+                stage[f"{name}_sim_ticks"], f"{name}_sim_ticks"
             )
             for name in names
-        },
-        "interval_count": len(intervals),
-        "intervals_do_not_overlap": True,
+        }
+        if any(totals[name] != summary[name] for name in names):
+            raise AuditError(
+                f"stage intervals do not reconcile to summary for {scope}"
+            )
+        total = parse_canonical_uint64(
+            stage["total_sim_ticks"], "total_sim_ticks"
+        )
+        if sum(summary.values()) != total:
+            raise AuditError(f"stage summary does not reconcile for {scope}")
+        aggregate_ticks.update(summary)
+        aggregate_cycles.update(cycles_by_stage)
+        total_intervals += len(intervals)
+        operations[f"unit={scope[0]},operation_tick={scope[1]}"] = {
+            "sim_ticks": summary,
+            "cycles": {name: cycles_by_stage[name] for name in names},
+            "interval_count": len(intervals),
+        }
+    return {
+        "sim_ticks": {name: aggregate_ticks[name] for name in names},
+        "cycles": {name: aggregate_cycles[name] for name in names},
+        "interval_count": total_intervals,
+        "operation_count": len(operations),
+        "operations": operations,
+        "intervals_do_not_overlap_within_operation": True,
     }
 
 
@@ -692,23 +843,49 @@ def fifo_latencies(
     issues: list[dict], responses: list[dict], key: str
 ) -> dict:
     pending = defaultdict(list)
-    for event in sorted(issues, key=lambda item: item["sim_tick"]):
-        pending[event[key]].append(event["sim_tick"])
+    issue_counts = Counter()
+    response_counts = Counter()
+    for event in sorted(
+        issues, key=lambda item: (item["sim_tick"], item.get("line", 0))
+    ):
+        scope = indirect_scope(event)
+        pending[(scope, event[key])].append(event["sim_tick"])
+        issue_counts[scope] += 1
     latencies = []
-    for event in sorted(responses, key=lambda item: item["sim_tick"]):
-        queue = pending[event[key]]
+    scoped_latencies = defaultdict(list)
+    for event in sorted(
+        responses, key=lambda item: (item["sim_tick"], item.get("line", 0))
+    ):
+        scope = indirect_scope(event)
+        queue = pending[(scope, event[key])]
         if not queue:
-            raise AuditError(f"response without issue for {key}={event[key]}")
+            raise AuditError(
+                f"response without same-scope issue for {scope} "
+                f"{key}={event[key]}"
+            )
         issue_tick = queue.pop(0)
         if event["sim_tick"] < issue_tick:
             raise AuditError(f"response precedes issue for {key}={event[key]}")
-        latencies.append(event["sim_tick"] - issue_tick)
+        latency = event["sim_tick"] - issue_tick
+        latencies.append(latency)
+        scoped_latencies[scope].append(latency)
+        response_counts[scope] += 1
     if any(queue for queue in pending.values()):
-        raise AuditError(f"unmatched issue for {key}")
+        raise AuditError(f"unmatched same-scope issue for {key}")
+    if issue_counts != response_counts:
+        raise AuditError(f"per-scope issue/response count mismatch for {key}")
     return {
         "count": len(latencies),
         "total_sim_ticks": sum(latencies),
         "max_sim_ticks": max(latencies, default=0),
+        "per_unit_operation": {
+            f"unit={scope[0]},operation_tick={scope[1]}": {
+                "count": len(values),
+                "total_sim_ticks": sum(values),
+                "max_sim_ticks": max(values, default=0),
+            }
+            for scope, values in sorted(scoped_latencies.items())
+        },
     }
 
 
@@ -826,15 +1003,11 @@ def audit_run(path: Path) -> dict:
     for event in events:
         grouped[event["event"]].append(event)
     try:
-        summary = reconcile_counter_events(events)
+        summaries = reconcile_counter_events(events)
     except AuditError as exc:
         raise AuditError(f"{path}: {exc}") from exc
-    stage = grouped["indirect_stage_summary"]
-    if len(stage) != 1:
-        raise AuditError(f"{path}: expected one stage summary")
-    stage = stage[0]
     try:
-        stages = stage_audit(grouped, stage)
+        stages = stage_audit(grouped, grouped["indirect_stage_summary"])
         controller = controller_audit(grouped, result["case"])
         index_lines = fifo_latencies(
             grouped["index_line_issue"], grouped["index_line_response"], "line"
@@ -926,11 +1099,17 @@ def audit_run(path: Path) -> dict:
             "source_issue_response": sources,
             "backing_write_issue_completion": writes,
             "controller": controller,
-            "counter_summary": {
-                k: parse_int(v)
-                for k, v in summary.items()
-                if k not in {"schema", "event"}
-            },
+            "counter_summaries": [
+                {
+                    k: (
+                        parse_canonical_uint64(v, k)
+                        if k not in {"schema", "event"}
+                        else v
+                    )
+                    for k, v in summary.items()
+                }
+                for summary in summaries
+            ],
             "physical_admission": physical,
         },
         "frozen_artifacts": artifacts,
