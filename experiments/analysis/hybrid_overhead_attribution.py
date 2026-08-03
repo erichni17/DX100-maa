@@ -626,6 +626,15 @@ def reconcile_counter_events(events: list[dict]) -> list[dict]:
     return [summaries[scope] for scope in sorted(summaries)]
 
 
+def normalized_counter_summary(summary: dict) -> dict[str, int]:
+    metadata = {"schema", "event", "line", "sim_tick"}
+    return {
+        key: parse_canonical_uint64(value, key)
+        for key, value in summary.items()
+        if key not in metadata
+    }
+
+
 def first_stats(path: Path) -> dict[str, int | float]:
     values: dict[str, int | float] = {}
     active = False
@@ -757,6 +766,123 @@ def audit_ramulator_provenance(path: Path, library: dict[str, str]) -> dict:
     ):
         raise AuditError(f"{path}: frozen library mismatch")
     return data
+
+
+def audit_dynamic_links(path: Path, frozen_library_path: str) -> dict:
+    lines = path.read_text().splitlines()
+    if not lines or any(not line.strip() for line in lines):
+        raise AuditError(f"{path}: malformed dynamic-link audit")
+    ramulator = [line.strip() for line in lines if "libramulator.so" in line]
+    expected = re.compile(
+        r"^libramulator\.so => "
+        + re.escape(frozen_library_path)
+        + r" \(0x[0-9a-f]+\)$"
+    )
+    if len(ramulator) != 1 or expected.fullmatch(ramulator[0]) is None:
+        raise AuditError(f"{path}: frozen Ramulator resolution mismatch")
+    normalized = []
+    for line in lines:
+        stripped = line.strip()
+        replaced, count = re.subn(
+            r" \(0x[0-9a-f]+\)$", " (LOAD_ADDRESS)", stripped
+        )
+        if count != 1:
+            raise AuditError(
+                f"{path}: malformed dynamic-link line {stripped!r}"
+            )
+        normalized.append(replaced)
+    encoded = "\n".join(normalized) + "\n"
+    return {
+        "raw_sha256": sha256(path),
+        "normalized_sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+        "normalized_lines": normalized,
+        "frozen_ramulator_resolution": frozen_library_path,
+    }
+
+
+def audit_shared_pair_input(
+    pair_root: Path,
+    checkpoint_identity_sha256: str,
+    implementation_commit: str,
+) -> dict:
+    input_root = pair_root / "input"
+    manifest_path = input_root / "frozen_input_manifest.json"
+    terminal_path = pair_root / "checkpoint_terminal.json"
+    checkpoint_manifest = pair_root / "checkpoint_files.pre_treatment.sha256"
+    manifest = json.loads(manifest_path.read_text())
+    if (
+        set(manifest)
+        != {
+            "schema",
+            "baseline_commit",
+            "implementation_commit",
+            "git_tree_clean_before_build",
+            "artifacts",
+            "ramulator",
+            "dynamic_link_check",
+        }
+        or manifest["schema"] != "dx100.hybrid_pair_frozen_input.v1"
+        or manifest["baseline_commit"] != BASELINE_COMMIT
+        or manifest["implementation_commit"] != implementation_commit
+        or manifest["git_tree_clean_before_build"] is not True
+    ):
+        raise AuditError("shared frozen-input manifest identity mismatch")
+    artifact_paths = {
+        "gem5.opt": input_root / "gem5.opt",
+        "workload": input_root
+        / "workload_build/test_virtual_tile_consumer_T16384",
+        "libramulator.so": input_root / "libramulator.so",
+        "ramulator_provenance.json": input_root / "ramulator_provenance.json",
+        "gem5.ldd.txt": input_root / "gem5.ldd.txt",
+        "create_shared_checkpoint.sh": input_root
+        / "create_shared_checkpoint.sh",
+        "source_snapshot_manifest": input_root
+        / "source_snapshot_13dc2f9.sha256",
+    }
+    if set(manifest["artifacts"]) != set(artifact_paths):
+        raise AuditError("shared frozen-input artifact fields mismatch")
+    for name, path in artifact_paths.items():
+        if not path.is_file() or sha256(path) != manifest["artifacts"][name]:
+            raise AuditError(f"shared frozen input changed: {name}")
+    terminal = json.loads(terminal_path.read_text())
+    if (
+        terminal.get("schema") != "dx100.deferred_checkpoint_terminal.v1"
+        or terminal.get("exit_code") != 0
+        or terminal.get("checkpoint_tick") != 3193723500
+        or terminal.get("checkpoint_write_markers") != 1
+        or terminal.get("terminal_markers") != 1
+        or terminal.get("populated_checkpoint_directories") != 1
+        or terminal.get("treatment_selector_absent_at_checkpoint") is not True
+        or terminal.get("checkpoint_files_manifest_sha256")
+        != checkpoint_identity_sha256
+        or sha256(checkpoint_manifest) != checkpoint_identity_sha256
+        or sha256(pair_root / "checkpoint_create.log")
+        != terminal.get("checkpoint_log_sha256")
+        or (pair_root / "checkpoint_create.exit").read_text().strip() != "0"
+    ):
+        raise AuditError(
+            "shared deferred-checkpoint terminal evidence mismatch"
+        )
+    return {
+        "frozen_input_manifest": {
+            "path": str(manifest_path.resolve()),
+            "sha256": sha256(manifest_path),
+        },
+        "checkpoint_terminal": {
+            "path": str(terminal_path.resolve()),
+            "sha256": sha256(terminal_path),
+            "checkpoint_tick": terminal["checkpoint_tick"],
+            "treatment_selector_absent_at_checkpoint": True,
+        },
+        "checkpoint_files_manifest": {
+            "path": str(checkpoint_manifest.resolve()),
+            "sha256": checkpoint_identity_sha256,
+        },
+        "frozen_source_snapshot_manifest": {
+            "path": str(artifact_paths["source_snapshot_manifest"].resolve()),
+            "sha256": manifest["artifacts"]["source_snapshot_manifest"],
+        },
+    }
 
 
 def stage_audit(grouped: dict[str, list[dict]], stages: list[dict]) -> dict:
@@ -927,7 +1053,17 @@ def controller_audit(grouped: dict[str, list[dict]], case_name: str) -> dict:
     durations = Counter()
     dependency_gaps = Counter()
     previous_complete = submits[0]["sim_tick"]
-    action_names = {1: "fill", 2: "compute", 3: "store"}
+    generation = parse_canonical_uint64(submits[0]["generation"], "generation")
+    if (
+        parse_canonical_uint64(retires[0]["generation"], "generation")
+        != generation
+        or parse_canonical_uint64(submits[0]["logical"], "logical") != 16384
+        or parse_canonical_uint64(submits[0]["page"], "page") != 4096
+        or parse_canonical_uint64(submits[0]["pages"], "pages") != 4
+        or parse_canonical_uint64(retires[0]["pages"], "pages") != 4
+    ):
+        raise AuditError("transparent descriptor identity mismatch")
+    action_names = {1: "stream_fill", 2: "compute", 3: "stream_store"}
     for event, key in zip(issues, expected_order):
         complete = completion_by_key.get(key)
         action = key[1]
@@ -935,6 +1071,14 @@ def controller_audit(grouped: dict[str, list[dict]], case_name: str) -> dict:
             complete is None
             or event["action_name"] != action_names[action]
             or complete["action_name"] != action_names[action]
+            or parse_canonical_uint64(event["generation"], "generation")
+            != generation
+            or parse_canonical_uint64(complete["generation"], "generation")
+            != generation
+            or parse_canonical_uint64(event["offset"], "offset")
+            != key[0] * 4096
+            or parse_canonical_uint64(event["elements"], "elements") != 4096
+            or event["dependency"] != "controller_order_and_tile_ready"
         ):
             raise AuditError("transparent action identity mismatch")
         issue_tick = event["sim_tick"]
@@ -1077,6 +1221,10 @@ def audit_run(path: Path) -> dict:
         Path(artifacts["ramulator_provenance"]["path"]),
         artifacts["ramulator_library"],
     )
+    dynamic_links = audit_dynamic_links(
+        Path(artifacts["dynamic_link_audit"]["path"]),
+        artifacts["ramulator_library"]["path"],
+    )
     stall_counts = Counter(
         event["reason"] for event in grouped["indirect_stall"]
     )
@@ -1100,20 +1248,13 @@ def audit_run(path: Path) -> dict:
             "backing_write_issue_completion": writes,
             "controller": controller,
             "counter_summaries": [
-                {
-                    k: (
-                        parse_canonical_uint64(v, k)
-                        if k not in {"schema", "event"}
-                        else v
-                    )
-                    for k, v in summary.items()
-                }
-                for summary in summaries
+                normalized_counter_summary(summary) for summary in summaries
             ],
             "physical_admission": physical,
         },
         "frozen_artifacts": artifacts,
         "ramulator_provenance": ramulator_provenance,
+        "dynamic_links": dynamic_links,
         "checkpoint_identity_sha256": checkpoint_identity(path),
         "hashes": {
             name: sha256(path / name)
@@ -1156,29 +1297,54 @@ def analyze_pair(native_path: Path, hybrid_path: Path) -> dict:
         != hybrid["manifest"]["source_commit"]
     ):
         raise AuditError("pair implementation commits differ")
-    comparable_artifacts = set(ARTIFACT_LABELS) - {"invocation"}
+    if native_path.parent.resolve() != hybrid_path.parent.resolve():
+        raise AuditError("pair arms do not share one evidence root")
+    shared_input = audit_shared_pair_input(
+        native_path.parent.resolve(),
+        native["checkpoint_identity_sha256"],
+        native["manifest"]["source_commit"],
+    )
+    comparable_artifacts = set(ARTIFACT_LABELS) - {
+        "dynamic_link_audit",
+        "invocation",
+    }
     for label in comparable_artifacts:
         if (
             native["frozen_artifacts"][label]["sha256"]
             != hybrid["frozen_artifacts"][label]["sha256"]
         ):
             raise AuditError(f"pair frozen artifact mismatch: {label}")
+    if (
+        native["dynamic_links"]["normalized_sha256"]
+        != hybrid["dynamic_links"]["normalized_sha256"]
+    ):
+        raise AuditError("pair normalized dynamic-link audits differ")
     native_ticks = native["simTicks"]
     hybrid_ticks = hybrid["simTicks"]
     delta = hybrid_ticks - native_ticks
-    reason_delta = {
-        key: hybrid["stats"]["request_reason_cycles"][key]
-        - native["stats"]["request_reason_cycles"][key]
-        for key in hybrid["stats"]["request_reason_cycles"]
+    hybrid_reasons = hybrid["stats"]["request_reason_cycles"]
+    largest = max(hybrid_reasons, key=hybrid_reasons.get)
+    stage_delta = {
+        key: hybrid["trace"]["stages"]["sim_ticks"][key]
+        - native["trace"]["stages"]["sim_ticks"][key]
+        for key in hybrid["trace"]["stages"]["sim_ticks"]
     }
-    largest = max(reason_delta, key=reason_delta.get)
+    stall_names = set(native["trace"]["stall_reason_events"]) | set(
+        hybrid["trace"]["stall_reason_events"]
+    )
+    stall_delta = {
+        key: hybrid["trace"]["stall_reason_events"].get(key, 0)
+        - native["trace"]["stall_reason_events"].get(key, 0)
+        for key in sorted(stall_names)
+    }
     common_artifacts = {
         label: native["frozen_artifacts"][label]
         for label in ARTIFACT_LABELS
         if label != "invocation"
     }
     return {
-        "schema": "dx100.hybrid_overhead_attribution.v1",
+        "schema": "dx100.hybrid_overhead_attribution.v2",
+        "evidence_status": "candidate_pending_independent_review",
         "units": {
             "end_to_end": "simTicks",
             "maa_stage_intervals": "simTicks",
@@ -1188,13 +1354,21 @@ def analyze_pair(native_path: Path, hybrid_path: Path) -> dict:
         "comparison": {
             "simTicks_delta": delta,
             "overhead_percent": 100.0 * delta / native_ticks,
-            "request_reason_cycle_delta": reason_delta,
-            "largest_actionable_request_category": largest,
-            "largest_actionable_request_category_delta_cycles": reason_delta[
-                largest
-            ],
-            "request_categories_are_mutually_exclusive": True,
+            "indirect_stage_simTicks_delta": stage_delta,
+            "stall_event_delta": stall_delta,
+            "hybrid_request_reason_cycles": hybrid_reasons,
+            "candidate_largest_actionable_request_category": largest,
+            "candidate_largest_actionable_request_category_cycles": (
+                hybrid_reasons[largest]
+            ),
+            "hybrid_request_categories_are_mutually_exclusive": True,
+            "hybrid_request_categories_sum_cycles": sum(
+                hybrid_reasons.values()
+            ),
+            "hybrid_request_cycle_total": hybrid["stats"]["request_cycles"],
+            "native_request_reason_categories_available": False,
             "stage_and_pipeline_views_must_not_be_added": True,
+            "timing_decomposition_promoted": False,
         },
         "provenance": {
             "baseline_commit": BASELINE_COMMIT,
@@ -1214,6 +1388,7 @@ def analyze_pair(native_path: Path, hybrid_path: Path) -> dict:
                 "native": native["hashes"],
                 "hybrid": hybrid["hashes"],
             },
+            "shared_input_evidence": shared_input,
         },
         "gates": {
             "exact_output": True,
@@ -1223,6 +1398,18 @@ def analyze_pair(native_path: Path, hybrid_path: Path) -> dict:
             "strict_versioned_trace": True,
             "strict_physical_record_domain": True,
             "first_roi_stats": True,
+            "independent_evidence_review": False,
+        },
+        "downstream_compatibility": {
+            "bounded_row_extractor_commit": ("206ebe6195ff"),
+            "bounded_row_extractor_path": (
+                "experiments/bounded_row_study_2026_08_03/"
+                "extract_grounded_trace.py"
+            ),
+            "physical_record_fields_sufficient_after_integration": True,
+            "physical_record_schema_unchanged": PHYSICAL_SCHEMA,
+            "bounded_row_timing_claim": False,
+            "bounded_row_model_modified": False,
         },
     }
 
@@ -1231,38 +1418,84 @@ def render_markdown(result: dict) -> str:
     native = result["pair"]["native"]
     hybrid = result["pair"]["hybrid"]
     comp = result["comparison"]
-    actionable_delta = comp["largest_actionable_request_category_delta_cycles"]
+    actionable_cycles = comp[
+        "candidate_largest_actionable_request_category_cycles"
+    ]
+    category = comp["candidate_largest_actionable_request_category"]
+    reason_sum = comp["hybrid_request_categories_sum_cycles"]
+    request_total = comp["hybrid_request_cycle_total"]
+    reason_total_row = (
+        f"| **sum / request total** | **{reason_sum:,} / {request_total:,}** |"
+    )
+    native_stages = native["trace"]["stages"]["sim_ticks"]
+    hybrid_stages = hybrid["trace"]["stages"]["sim_ticks"]
+    native_stalls = native["trace"]["stall_reason_events"]
+    hybrid_stalls = hybrid["trace"]["stall_reason_events"]
     lines = [
         "# Hybrid 16K-Reorder / 4K-Payload Overhead Attribution",
         "",
-        "## Result",
+        "> **Evidence status: candidate pending independent review.** Raw "
+        "measurements and strict audits pass, but the timing decomposition "
+        "is not promoted or claimed yet.",
+        "",
+        "## Candidate matched-pair observation",
         "",
         f"Native direct16: **{native['simTicks']:,} simTicks**.  Transparent "
         f"4K payload: **{hybrid['simTicks']:,} simTicks**.  Delta: "
         f"**{comp['simTicks_delta']:,} simTicks "
         f"({comp['overhead_percent']:.6f}%)**.",
         "",
-        "The largest mutually exclusive MAA request category increase is "
-        f"`{comp['largest_actionable_request_category']}` at "
-        f"{actionable_delta:,} cycles.",
+        "Within the hybrid arm, the candidate largest mutually exclusive MAA "
+        f"request category is `{category}` at {actionable_cycles:,} cycles. "
+        "Native direct16 does not emit these virtual-pipeline reason "
+        "categories, "
+        "so this is not a native-to-hybrid "
+        "category delta.",
         "",
-        "## Request-cycle reconciliation",
+        "## Hybrid request-cycle reconciliation",
         "",
-        "| Category | Native cycles | Hybrid cycles | Delta cycles |",
+        "| Category | Hybrid cycles |",
+        "|---|---:|",
+    ]
+    for key, cycles in comp["hybrid_request_reason_cycles"].items():
+        lines.append(f"| {key} | {cycles:,} |")
+    lines += [
+        reason_total_row,
+        "",
+        (
+            "The hybrid categories are mutually exclusive and reconcile "
+            "exactly. Stage and controller/dependency views are alternate "
+            "views and are not added to these cycles or to each other."
+        ),
+        "",
+        "## Indirect-stage and stall observations",
+        "",
+        "| Stage | Native simTicks | Hybrid simTicks | Delta simTicks |",
         "|---|---:|---:|---:|",
     ]
-    for key, delta in comp["request_reason_cycle_delta"].items():
+    for key, delta_ticks in comp["indirect_stage_simTicks_delta"].items():
         lines.append(
-            f"| {key} | {native['stats']['request_reason_cycles'][key]:,} | "
-            f"{hybrid['stats']['request_reason_cycles'][key]:,} | {delta:+,} |"
+            f"| {key} | {native_stages[key]:,} | "
+            f"{hybrid_stages[key]:,} | "
+            f"{delta_ticks:+,} |"
         )
     lines += [
         "",
-        (
-            "These request categories are mutually exclusive and sum to the "
-            "hybrid request-cycle total. Stage intervals and pipeline-overlap "
-            "views are alternate views and are not added to them."
-        ),
+        "| Stall reason | Native events | Hybrid events | Delta events |",
+        "|---|---:|---:|---:|",
+    ]
+    for key, delta_events in comp["stall_event_delta"].items():
+        native_count = native_stalls.get(key, 0)
+        hybrid_count = hybrid_stalls.get(key, 0)
+        lines.append(
+            f"| {key} | {native_count:,} | {hybrid_count:,} | "
+            f"{delta_events:+,} |"
+        )
+    lines += [
+        "",
+        "The hybrid controller completed 12 page actions in strict order with "
+        "zero backpressure events. Its action-duration and dependency-gap "
+        "intervals are retained in the JSON as a separate, non-additive view.",
         "",
         "## Provenance and gates",
         "",
@@ -1273,16 +1506,35 @@ def render_markdown(result: dict) -> str:
         "reconciliation, and raw hashes were checked fail closed.",
         "",
         f"Frozen gem5 SHA-256: "
-        f"`{native['frozen_artifacts']['gem5_binary']['sha256']}`  ",
+        f"`{native['frozen_artifacts']['gem5_binary']['sha256']}`",
         f"Frozen workload SHA-256: "
-        f"`{native['frozen_artifacts']['workload_binary']['sha256']}`  ",
+        f"`{native['frozen_artifacts']['workload_binary']['sha256']}`",
         f"Frozen se.py SHA-256: "
-        f"`{native['frozen_artifacts']['se_config']['sha256']}`  ",
+        f"`{native['frozen_artifacts']['se_config']['sha256']}`",
         f"Frozen Ramulator config SHA-256: "
         f"`{native['frozen_artifacts']['ramulator_config']['sha256']}`",
+        f"Normalized dynamic-link audit SHA-256: "
+        f"`{native['dynamic_links']['normalized_sha256']}`",
+        f"Native physical-record JSONL SHA-256: "
+        f"`{native['trace']['physical_admission']['records']['sha256']}`",
+        f"Hybrid physical-record JSONL SHA-256: "
+        f"`{hybrid['trace']['physical_admission']['records']['sha256']}`",
+        f"Native raw trace SHA-256: `"
+        f"{native['hashes']['run/virtual_trace.log']}`",
+        f"Hybrid raw trace SHA-256: `"
+        f"{hybrid['hashes']['run/virtual_trace.log']}`",
         "",
-        f"Native raw path: `{native['path']}`  ",
+        f"Native raw path: `{native['path']}`",
         f"Hybrid raw path: `{hybrid['path']}`",
+        "",
+        "One run was collected per arm. Independent evidence review is "
+        "required before promoting the candidate bottleneck or decomposition.",
+        "The exact 33-field physical-admission JSONL is sufficient to feed "
+        "`extract_grounded_trace.py` from commit `206ebe6195ff` after that "
+        "work is integrated; this makes no bounded-row timing claim and this "
+        "worker did not modify the bounded-row model.",
+        "Scott follow-up points are collaborative suggestions or hypotheses, "
+        "not decisions.",
         "",
     ]
     return "\n".join(lines)

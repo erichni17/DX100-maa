@@ -326,6 +326,12 @@ class HybridOverheadAttributionTest(unittest.TestCase):
     def test_counter_events_reconcile_or_fail_closed(self):
         summary = counter_summary()
         self.assertEqual(MODULE.reconcile_counter_events([summary]), [summary])
+        rendered = MODULE.normalized_counter_summary(
+            {**summary, "line": 7, "sim_tick": 100}
+        )
+        self.assertEqual(rendered["unit"], 0)
+        self.assertNotIn("line", rendered)
+        self.assertNotIn("sim_tick", rendered)
         bad = counter_summary(source_issues=1)
         with self.assertRaisesRegex(
             MODULE.AuditError, "counter/event mismatch"
@@ -463,6 +469,54 @@ class HybridOverheadAttributionTest(unittest.TestCase):
         self.assertEqual(result["sim_ticks"]["decode"], 312)
         self.assertEqual(result["cycles"]["decode"], 1)
 
+    def test_controller_audit_uses_source_action_names_and_generation(self):
+        grouped = {name: [] for name in MODULE.EVENT_FIELDS}
+        grouped["transparent_submit"] = [
+            {
+                "sim_tick": 100,
+                "generation": "1",
+                "logical": "16384",
+                "page": "4096",
+                "pages": "4",
+            }
+        ]
+        action_names = {1: "stream_fill", 2: "compute", 3: "stream_store"}
+        tick = 100
+        for page in range(4):
+            for action in range(1, 4):
+                tick += 1
+                grouped["transparent_issue"].append(
+                    {
+                        "sim_tick": tick,
+                        "generation": "1",
+                        "page": str(page),
+                        "action": str(action),
+                        "action_name": action_names[action],
+                        "offset": str(page * 4096),
+                        "elements": "4096",
+                        "dependency": "controller_order_and_tile_ready",
+                    }
+                )
+                tick += 1
+                grouped["transparent_complete"].append(
+                    {
+                        "sim_tick": tick,
+                        "generation": "1",
+                        "page": str(page),
+                        "action": str(action),
+                        "action_name": action_names[action],
+                    }
+                )
+        grouped["transparent_retire"] = [
+            {"sim_tick": tick, "generation": "1", "pages": "4"}
+        ]
+        result = MODULE.controller_audit(grouped, "transparent_4k")
+        self.assertEqual(result["action_count"], 12)
+
+        grouped["transparent_complete"][0]["generation"] = "2"
+        with self.assertRaisesRegex(MODULE.AuditError, "identity mismatch"):
+            MODULE.controller_audit(grouped, "transparent_4k")
+
     def test_ramulator_provenance_binds_one_frozen_library(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -507,6 +561,33 @@ class HybridOverheadAttributionTest(unittest.TestCase):
                     "sha256": MODULE.sha256(library),
                 },
             )
+
+    def test_dynamic_link_audit_normalizes_only_load_addresses(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        frozen = str((root / "libramulator.so").resolve())
+        first = root / "first.ldd"
+        second = root / "second.ldd"
+        first.write_text(
+            f"libramulator.so => {frozen} (0xabc0)\n"
+            "/lib/libc.so.6 => /lib/libc.so.6 (0xdef0)\n"
+        )
+        second.write_text(
+            f"libramulator.so => {frozen} (0x1110)\n"
+            "/lib/libc.so.6 => /lib/libc.so.6 (0x2220)\n"
+        )
+        a = MODULE.audit_dynamic_links(first, frozen)
+        b = MODULE.audit_dynamic_links(second, frozen)
+        self.assertNotEqual(a["raw_sha256"], b["raw_sha256"])
+        self.assertEqual(a["normalized_sha256"], b["normalized_sha256"])
+
+        wrong = root / "wrong.ldd"
+        wrong.write_text(
+            "libramulator.so => /mutable/libramulator.so (0x1230)\n"
+        )
+        with self.assertRaisesRegex(MODULE.AuditError, "resolution mismatch"):
+            MODULE.audit_dynamic_links(wrong, frozen)
 
 
 if __name__ == "__main__":
