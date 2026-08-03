@@ -232,6 +232,13 @@ def addNoISAOptions(parser):
         help="Physical elements allocated per SPD tile (0 matches logical size)",
     )
     parser.add_argument(
+        "--maa_transparent_spd_mode",
+        type=int,
+        choices=(0, 1, 2),
+        default=0,
+        help="Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=2K ping-pong",
+    )
+    parser.add_argument(
         "--maa_num_regs_per_core",
         type=int,
         default=8,

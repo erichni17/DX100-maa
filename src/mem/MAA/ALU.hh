@@ -50,6 +50,7 @@ protected:
     int my_dst_tile, my_dst_reg, my_cond_tile, my_src1_tile, my_src2_tile;
     bool my_cond_tile_ready, my_src1_tile_ready, my_src2_tile_ready;
     int my_i, my_max;
+    int my_element_base, my_element_count;
     int my_input_word_size;
     int my_input_words_per_cl;
     int my_output_word_size;

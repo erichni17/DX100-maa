@@ -90,8 +90,13 @@ void ALUUnit::executeInstruction() {
         my_cond_tile = my_instruction->condSpdID;
         my_src1_tile = my_instruction->src1SpdID;
         my_src2_tile = my_instruction->src2SpdID;
-        my_max = -1;
-        my_i = 0;
+        my_element_base = my_instruction->controllerManaged
+            ? my_instruction->controllerElementOffset : 0;
+        my_element_count = my_instruction->controllerManaged
+            ? my_instruction->controllerElements : num_tile_elements;
+        my_max = my_instruction->controllerManaged
+            ? my_element_base + my_element_count : -1;
+        my_i = my_element_base;
         my_input_word_size = my_instruction->getWordSize(my_src1_tile);
         my_output_word_size = my_dst_tile != -1 ? my_instruction->getWordSize(my_dst_tile) : 1;
         my_input_words_per_cl = 64 / my_input_word_size;
@@ -177,9 +182,11 @@ void ALUUnit::executeInstruction() {
         my_SPD_write_finish_tick = curTick();
         my_ALU_finish_tick = curTick();
         my_decode_start_tick = curTick();
-        my_cond_tile_ready = (my_cond_tile == -1) ? true : false;
-        my_src1_tile_ready = false;
-        my_src2_tile_ready = (my_instruction->opcode == Instruction::OpcodeType::ALU_SCALAR) ? true : false;
+        my_cond_tile_ready =
+            my_instruction->controllerManaged || my_cond_tile == -1;
+        my_src1_tile_ready = my_instruction->controllerManaged;
+        my_src2_tile_ready =
+            my_instruction->opcode == Instruction::OpcodeType::ALU_SCALAR;
 
         // Setting the state of the instruction and ALU unit
         DPRINTF(MAAALU, "A[%d] %s: state set to work for request %s!\n", my_alu_id, __func__, my_instruction->print());
@@ -196,8 +203,9 @@ void ALUUnit::executeInstruction() {
         int num_alu_accesses = 0;
         // Check if any of the source tiles are ready
         // Set my_max to the size of the ready tile
-        if (my_cond_tile != -1) {
-            if (maa->spd->getTileStatus(my_cond_tile) == SPD::TileStatus::Finished) {
+        if (!my_instruction->controllerManaged && my_cond_tile != -1) {
+            if (maa->spd->getTileStatus(my_cond_tile) ==
+                SPD::TileStatus::Finished) {
                 my_cond_tile_ready = true;
                 if (my_max == -1) {
                     my_max = maa->spd->getSize(my_cond_tile);
@@ -206,7 +214,9 @@ void ALUUnit::executeInstruction() {
                 panic_if(maa->spd->getSize(my_cond_tile) != my_max, "A[%d] %s: cond size (%d) != max (%d)!\n", my_alu_id, __func__, maa->spd->getSize(my_cond_tile), my_max);
             }
         }
-        if (maa->spd->getTileStatus(my_src1_tile) == SPD::TileStatus::Finished) {
+        if (!my_instruction->controllerManaged &&
+            maa->spd->getTileStatus(my_src1_tile) ==
+                SPD::TileStatus::Finished) {
             my_src1_tile_ready = true;
             if (my_max == -1) {
                 my_max = maa->spd->getSize(my_src1_tile);
@@ -245,19 +255,41 @@ void ALUUnit::executeInstruction() {
                 DPRINTF(MAAALU, "A[%d] %s: my_i (%d) >= my_max (%d), finished!\n", my_alu_id, __func__, my_i, my_max);
                 break;
             }
-            bool cond_ready = my_cond_tile == -1 || maa->spd->getElementFinished(my_cond_tile, my_i, 4, (uint8_t)FuncUnitType::ALU, my_alu_id);
-            bool src1_ready = cond_ready && maa->spd->getElementFinished(my_src1_tile, my_i, my_input_word_size, (uint8_t)FuncUnitType::ALU, my_alu_id);
-            bool src2_ready = src1_ready && (my_instruction->opcode != Instruction::OpcodeType::ALU_VECTOR ||
-                                             maa->spd->getElementFinished(my_src2_tile, my_i, my_input_word_size, (uint8_t)FuncUnitType::ALU, my_alu_id));
-            if (cond_ready == false) {
-                DPRINTF(MAAALU, "A[%d] %s: cond tile[%d] element[%d] not ready, returning!\n", my_alu_id, __func__, my_cond_tile, my_i);
-            } else if (src1_ready == false) {
-                DPRINTF(MAAALU, "A[%d] %s: src1 tile[%d] element[%d] not ready, returning!\n", my_alu_id, __func__, my_src1_tile, my_i);
-            } else if (src2_ready == false) {
-                DPRINTF(MAAALU, "A[%d] %s: src2 tile[%d] element[%d] not ready, returning!\n", my_alu_id, __func__, my_src2_tile, my_i);
+            bool cond_ready = my_instruction->controllerManaged ||
+                my_cond_tile == -1 ||
+                maa->spd->getElementFinished(my_cond_tile, my_i, 4,
+                    (uint8_t)FuncUnitType::ALU, my_alu_id);
+            bool src1_ready = cond_ready &&
+                (my_instruction->controllerManaged ||
+                 maa->spd->getElementFinished(my_src1_tile, my_i,
+                     my_input_word_size, (uint8_t)FuncUnitType::ALU,
+                     my_alu_id));
+            bool src2_ready = src1_ready &&
+                (my_instruction->opcode !=
+                     Instruction::OpcodeType::ALU_VECTOR ||
+                 maa->spd->getElementFinished(
+                     my_src2_tile, my_i, my_input_word_size,
+                     (uint8_t)FuncUnitType::ALU, my_alu_id));
+            if (!cond_ready) {
+                DPRINTF(MAAALU,
+                        "A[%d] %s: cond tile[%d] element[%d] not ready, "
+                        "returning!\n",
+                        my_alu_id, __func__, my_cond_tile, my_i);
+            } else if (!src1_ready) {
+                DPRINTF(MAAALU,
+                        "A[%d] %s: src1 tile[%d] element[%d] not ready, "
+                        "returning!\n",
+                        my_alu_id, __func__, my_src1_tile, my_i);
+            } else if (!src2_ready) {
+                DPRINTF(MAAALU,
+                        "A[%d] %s: src2 tile[%d] element[%d] not ready, "
+                        "returning!\n",
+                        my_alu_id, __func__, my_src2_tile, my_i);
             }
-            if (cond_ready == false || src1_ready == false || src2_ready == false) {
-                updateLatency(num_spd_read_data_accesses, num_spd_read_cond_accesses, num_spd_write_accesses, num_alu_accesses);
+            if (!cond_ready || !src1_ready || !src2_ready) {
+                updateLatency(num_spd_read_data_accesses,
+                              num_spd_read_cond_accesses,
+                              num_spd_write_accesses, num_alu_accesses);
                 return;
             }
             if (my_cond_tile == -1 || maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0) {
@@ -839,7 +871,9 @@ void ALUUnit::executeInstruction() {
         panic_if(my_src1_tile_ready == false, "A[%d] %s: src1 tile[%d] not ready!\n", my_alu_id, __func__, my_src1_tile);
         panic_if(my_src2_tile_ready == false, "A[%d] %s: src2 tile[%d] not ready!\n", my_alu_id, __func__, my_src2_tile);
         if (my_dst_tile != -1) {
-            maa->spd->setSize(my_dst_tile, my_i);
+            maa->spd->setSize(my_dst_tile,
+                              my_instruction->controllerManaged
+                                  ? my_element_count : my_i);
         } else {
             panic_if(my_instruction->opcode != Instruction::OpcodeType::ALU_REDUCE, "A[%d] %s: ALU_VECTOR/ALU_SCALAR without dst_tile!\n", my_alu_id, __func__);
             if (my_instruction->optype == Instruction::OPType::GT_OP ||

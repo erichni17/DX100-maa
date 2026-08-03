@@ -199,6 +199,7 @@ public:
     uint64_t controllerTransactionID;
     int16_t controllerSrcSlot, controllerDstSlot;
     int controllerPage;
+    int controllerElementOffset, controllerElements;
     bool hasLogicalOperands() const {
         return src1LogicalID != -1 || src2LogicalID != -1 ||
                dst1LogicalID != -1;

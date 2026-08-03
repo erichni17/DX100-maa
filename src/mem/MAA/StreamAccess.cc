@@ -143,10 +143,16 @@ void StreamAccessUnit::executeInstruction() {
         my_min = maa->rf->getData<int>(my_instruction->src1RegID);
         my_max = maa->rf->getData<int>(my_instruction->src2RegID);
         my_stride = maa->rf->getData<int>(my_instruction->src3RegID);
-        my_size = (my_max == my_min)
-            ? 0
-            : std::min((int)(maa->num_tile_elements),
-                       ((int)((my_max - my_min - 1) / my_stride)) + 1);
+        my_element_base = my_instruction->controllerManaged
+            ? my_instruction->controllerElementOffset : 0;
+        my_element_count = my_instruction->controllerManaged
+            ? my_instruction->controllerElements
+            : static_cast<int>(maa->num_tile_elements);
+        if (my_instruction->controllerManaged)
+            my_max = my_min + my_element_count * my_stride;
+        my_size = (my_max == my_min) ? 0 :
+            std::min(my_element_count,
+                     ((my_max - my_min - 1) / my_stride) + 1);
         if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD)
             maa->spd->setSize(my_dst_tile, my_size);
         DPRINTF(MAAStream,
@@ -179,9 +185,12 @@ void StreamAccessUnit::executeInstruction() {
         maa->stats.numInst++;
         std::vector<PageInfo> all_page_info;
         for (int i = my_min; i < my_max; i += my_words_per_page) {
-            StreamAccessUnit::PageInfo page_info = getPageInfo(i, my_base_addr, my_word_size, my_min, my_stride);
-            if (page_info.curr_idx >= maa->num_tile_elements) {
-                DPRINTF(MAAStream, "S[%d] %s: page %s is out of bounds, breaking...!\n", my_stream_id, __func__, page_info.print());
+            StreamAccessUnit::PageInfo page_info =
+                getPageInfo(i, my_base_addr, my_word_size, my_min, my_stride);
+            if (page_info.curr_idx >= my_size) {
+                DPRINTF(MAAStream,
+                        "S[%d] %s: page %s is out of bounds, breaking...!\n",
+                        my_stream_id, __func__, page_info.print());
                 break;
             } else {
                 all_page_info.push_back(page_info);
@@ -231,10 +240,19 @@ void StreamAccessUnit::executeInstruction() {
                 DPRINTF(MAAStream, "S[%d] %s: operating on page %s!\n", my_stream_id, __func__, page_it->print());
                 std::fill(channel_sent, channel_sent + maa->m_org[ADDR_CHANNEL_LEVEL], false);
                 broken = false;
-                for (; page_it->curr_itr < page_it->max_itr && page_it->curr_idx < maa->num_tile_elements; page_it->curr_itr += my_stride, page_it->curr_idx++) {
+                for (; page_it->curr_itr < page_it->max_itr &&
+                       page_it->curr_idx < my_size;
+                     page_it->curr_itr += my_stride, page_it->curr_idx++) {
+                    const int spd_idx = my_element_base + page_it->curr_idx;
                     if (my_cond_tile != -1) {
-                        if (maa->spd->getElementFinished(my_cond_tile, page_it->curr_idx, 4, (uint8_t)FuncUnitType::STREAM, my_stream_id) == false) {
-                            DPRINTF(MAAStream, "%s: cond tile[%d] element[%d] not ready, moving page %s to all!\n", __func__, my_cond_tile, page_it->curr_idx, page_it->print());
+                        if (!maa->spd->getElementFinished(
+                                my_cond_tile, spd_idx, 4,
+                                (uint8_t)FuncUnitType::STREAM, my_stream_id)) {
+                            DPRINTF(MAAStream,
+                                    "%s: cond tile[%d] element[%d] not "
+                                    "ready, moving page %s to all!\n",
+                                    __func__, my_cond_tile,
+                                    page_it->curr_idx, page_it->print());
                             my_all_page_info.insert(*page_it);
                             page_it = my_current_page_info.erase(page_it);
                             broken = true;
@@ -243,17 +261,31 @@ void StreamAccessUnit::executeInstruction() {
                         num_spd_condread_accesses++;
                     }
                     if (my_src_tile != -1) {
-                        if (maa->spd->getElementFinished(my_src_tile, page_it->curr_idx, my_word_size, (uint8_t)FuncUnitType::STREAM, my_stream_id) == false) {
-                            DPRINTF(MAAStream, "%s: src tile[%d] element[%d] not ready, moving page %s to all!\n", __func__, my_src_tile, page_it->curr_idx, page_it->print());
+                        if (!my_instruction->controllerManaged &&
+                            !maa->spd->getElementFinished(
+                                my_src_tile, spd_idx, my_word_size,
+                                (uint8_t)FuncUnitType::STREAM, my_stream_id)) {
+                            DPRINTF(MAAStream,
+                                    "%s: src tile[%d] element[%d] not "
+                                    "ready, moving page %s to all!\n",
+                                    __func__, my_src_tile,
+                                    page_it->curr_idx, page_it->print());
                             my_all_page_info.insert(*page_it);
                             page_it = my_current_page_info.erase(page_it);
                             broken = true;
                             break;
                         }
                     }
-                    if (my_cond_tile == -1 || maa->spd->getData<uint32_t>(my_cond_tile, page_it->curr_idx) != 0) {
-                        Addr vaddr = my_base_addr + my_word_size * page_it->curr_itr;
-                        panic_if(vaddr < my_min_addr || vaddr >= my_max_addr, "S[%d] %s: vaddr 0x%lx out of range [0x%lx, 0x%lx)!\n", my_stream_id, __func__, vaddr, my_min_addr, my_max_addr);
+                    if (my_cond_tile == -1 ||
+                        maa->spd->getData<uint32_t>(my_cond_tile, spd_idx) !=
+                            0) {
+                        Addr vaddr =
+                            my_base_addr + my_word_size * page_it->curr_itr;
+                        panic_if(vaddr < my_min_addr || vaddr >= my_max_addr,
+                                 "S[%d] %s: vaddr 0x%lx out of range "
+                                 "[0x%lx, 0x%lx)!\n",
+                                 my_stream_id, __func__, vaddr, my_min_addr,
+                                 my_max_addr);
                         Addr block_vaddr = addrBlockAligner(vaddr, block_size);
                         if (block_vaddr != page_it->last_block_vaddr) {
                             if (page_it->last_block_vaddr != 0) {
@@ -276,8 +308,14 @@ void StreamAccessUnit::executeInstruction() {
                             break;
                         }
                         uint16_t word_id = (vaddr - block_vaddr) / my_word_size;
-                        if (request_table->add_entry(page_it->curr_idx, paddr, word_id) == false) {
-                            DPRINTF(MAAStream, "S[%d] RequestTable: entry %d not added because request table is full! vaddr=0x%lx, paddr=0x%lx wid = %d\n", my_stream_id, page_it->curr_idx, block_vaddr, paddr, word_id);
+                        if (!request_table->add_entry(spd_idx, paddr,
+                                                      word_id)) {
+                            DPRINTF(MAAStream,
+                                    "S[%d] RequestTable: entry %d not added "
+                                    "because request table is full! "
+                                    "vaddr=0x%lx, paddr=0x%lx wid = %d\n",
+                                    my_stream_id, page_it->curr_idx,
+                                    block_vaddr, paddr, word_id);
                             (*maa->stats.STR_NumRTFull[my_stream_id])++;
                             page_it++;
                             broken = true;
@@ -288,7 +326,8 @@ void StreamAccessUnit::executeInstruction() {
                         }
                     } else if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
                         DPRINTF(MAAStream, "S[%d] %s: SPD[%d][%d] = %u (cond not taken)\n", my_stream_id, __func__, my_dst_tile, page_it->curr_idx, 0);
-                        maa->spd->setFakeData(my_dst_tile, page_it->curr_idx, my_word_size);
+                        maa->spd->setFakeData(my_dst_tile, spd_idx,
+                                              my_word_size);
                     }
                 }
                 if (broken == false) {
@@ -319,8 +358,13 @@ void StreamAccessUnit::executeInstruction() {
         } else {
             if (my_cond_tile != -1 && maa->spd->getTileStatus(my_cond_tile) != SPD::TileStatus::Finished) {
                 DPRINTF(MAAStream, "S[%d] %s: Waiting for cond tile %d to finish...\n", my_stream_id, __func__, my_cond_tile);
-            } else if (my_src_tile != -1 && maa->spd->getTileStatus(my_src_tile) != SPD::TileStatus::Finished) {
-                DPRINTF(MAAStream, "S[%d] %s: Waiting for src tile %d to finish...\n", my_stream_id, __func__, my_src_tile);
+            } else if (!my_instruction->controllerManaged &&
+                       my_src_tile != -1 &&
+                       maa->spd->getTileStatus(my_src_tile) !=
+                           SPD::TileStatus::Finished) {
+                DPRINTF(MAAStream,
+                        "S[%d] %s: Waiting for src tile %d to finish...\n",
+                        my_stream_id, __func__, my_src_tile);
             } else {
                 DPRINTF(MAAStream, "S[%d] %s: state set to respond for request %s!\n", my_stream_id, __func__, my_instruction->print());
                 state = Status::Response;

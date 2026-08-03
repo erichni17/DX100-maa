@@ -20,6 +20,10 @@ class MAA(ClockedObject):
     physical_tile_elements = Param.Unsigned(
         0, "Physical elements allocated per SPD tile (0 matches logical size)"
     )
+    transparent_spd_mode = Param.Unsigned(
+        0,
+        "Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=two-half ping-pong",
+    )
     num_regs_per_core = Param.Unsigned(
         8,
         "Number of 32-bit scalar registers per core attached to the DX100 instance",
@@ -32,7 +36,8 @@ class MAA(ClockedObject):
         64, "Number of rows in each row table slice"
     )
     num_offset_table_entries = Param.Unsigned(
-        0, "Live Offset-Table entries per indirect unit (0 matches logical tile)"
+        0,
+        "Live Offset-Table entries per indirect unit (0 matches logical tile)",
     )
     num_offset_table_epoch_entries = Param.Unsigned(
         0, "Offset entries per drain epoch (0 matches Offset-Table capacity)"
