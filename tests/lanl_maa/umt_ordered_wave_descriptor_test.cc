@@ -75,6 +75,11 @@ validBytes()
 int
 main()
 {
+    assert(umtOrderedWaveWordsToLineBoundary(0x1000, 24, 64) == 8);
+    assert(umtOrderedWaveWordsToLineBoundary(0x1038, 24, 64) == 1);
+    assert(umtOrderedWaveWordsToLineBoundary(0x1040, 7, 64) == 7);
+    assert(umtOrderedWaveWordsToLineBoundary(0x1004, 24, 64) == 0);
+
     auto bytes = validBytes();
     auto decoded = decodeUmtOrderedWaveDescriptor(bytes);
     assert(decoded);

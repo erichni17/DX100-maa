@@ -70,6 +70,20 @@ umtOrderedWaveCoefficientIndex(size_t source, size_t destination)
         destination - source - 1;
 }
 
+inline size_t
+umtOrderedWaveWordsToLineBoundary(
+    uint64_t address, size_t remainingWords, size_t lineBytes)
+{
+    if (lineBytes == 0 || address % sizeof(uint64_t) != 0 ||
+        lineBytes % sizeof(uint64_t) != 0) {
+        return 0;
+    }
+    const size_t bytesToBoundary =
+        lineBytes - static_cast<size_t>(address % lineBytes);
+    return std::min(
+        remainingWords, bytesToBoundary / sizeof(uint64_t));
+}
+
 inline UmtOrderedWaveResult
 executeUmtOrderedWave(const UmtOrderedWaveDescriptor &descriptor,
                       UmtOrderedWaveRecord record)

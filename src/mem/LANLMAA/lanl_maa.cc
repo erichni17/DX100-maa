@@ -237,7 +237,10 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorAddressesLoaded, statistics::units::Count::get(),
                "Descriptor start addresses or indices loaded and validated"),
       ADD_STAT(descriptorResultWrites, statistics::units::Count::get(),
-               "Result-vector writes acknowledged"),
+               "Logical result-vector words acknowledged"),
+      ADD_STAT(descriptorUmtResultLineWrites,
+               statistics::units::Count::get(),
+               "UMT ordered-wave physical result packets acknowledged"),
       ADD_STAT(descriptorCompletionWrites, statistics::units::Count::get(),
                "Completion-record writes acknowledged"),
       ADD_STAT(descriptorErrors, statistics::units::Count::get(),
@@ -414,6 +417,9 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtInputReads,
                statistics::units::Count::get(),
                "Native UMT fused FP64 input words consumed"),
+      ADD_STAT(descriptorUmtInputLineReads,
+               statistics::units::Count::get(),
+               "UMT ordered-wave physical input lines consumed"),
       ADD_STAT(descriptorUmtFp64AddSubOperations,
                statistics::units::Count::get(),
                "Scheduled UMT fused FP64 add/subtract operations"),
@@ -1180,13 +1186,27 @@ LANLMAA::issueResultWrite()
             const Addr address = umtOrderedWave.resultBase +
                 (descriptorResultCursor * UmtOrderedWaveCorners +
                  umtOrderedWaveResultCorner) * sizeof(uint64_t);
+            const size_t packetWords = umtOrderedWaveWordsToLineBoundary(
+                address,
+                UmtOrderedWaveCorners - umtOrderedWaveResultCorner,
+                lineBytes);
+            const size_t packetBytes = packetWords * sizeof(uint64_t);
+            panic_if(packetWords == 0,
+                     "LANLMAA formed an invalid ordered-wave result packet");
             RequestPtr request = std::make_shared<Request>(
-                address, sizeof(uint64_t), Request::Flags(), requestorId);
+                address, packetBytes, Request::Flags(), requestorId);
             resultPacket = new Packet(request, MemCmd::WriteReq);
             resultPacket->allocate();
-            resultPacket->setLE<uint64_t>(
-                umtOrderedWaveResults[descriptorResultCursor]
-                    [umtOrderedWaveResultCorner]);
+            uint8_t *data = resultPacket->getPtr<uint8_t>();
+            for (size_t byte = 0; byte < packetBytes;
+                 byte += sizeof(uint64_t)) {
+                const size_t corner = umtOrderedWaveResultCorner +
+                    byte / sizeof(uint64_t);
+                writeLe(
+                    data, byte,
+                    umtOrderedWaveResults[descriptorResultCursor][corner],
+                    sizeof(uint64_t));
+            }
             tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
         }
         if (sendDescriptorPacket(resultPacket))
@@ -4154,16 +4174,26 @@ LANLMAA::receiveResultResponse(PacketPtr packet)
              "LANLMAA result response changed packet ownership");
     panic_if(!packet->isResponse() || !packet->isWrite(),
              "LANLMAA result write did not receive a write response");
+    const size_t resultBytes = packet->getSize();
     delete packet;
     resultPacket = nullptr;
-    ++stats.descriptorResultWrites;
     if (umtOrderedWaveDescriptor()) {
-        ++umtOrderedWaveResultCorner;
+        panic_if(resultBytes == 0 ||
+                     resultBytes % sizeof(uint64_t) != 0,
+                 "LANLMAA acknowledged an invalid ordered-wave result packet");
+        const size_t resultWords = resultBytes / sizeof(uint64_t);
+        panic_if(umtOrderedWaveResultCorner + resultWords >
+                     UmtOrderedWaveCorners,
+                 "LANLMAA ordered-wave result packet crossed a group");
+        stats.descriptorResultWrites += resultWords;
+        ++stats.descriptorUmtResultLineWrites;
+        umtOrderedWaveResultCorner += resultWords;
         if (umtOrderedWaveResultCorner == UmtOrderedWaveCorners) {
             umtOrderedWaveResultCorner = 0;
             ++descriptorResultCursor;
         }
     } else if (spartaFusedCellDescriptor()) {
+        ++stats.descriptorResultWrites;
         ++spartaFusedWritesAcknowledged;
         ++stats.descriptorSpartaFusedWritesAcknowledged;
         ++spartaFusedWriteChannel;
@@ -4172,6 +4202,7 @@ LANLMAA::receiveResultResponse(PacketPtr packet)
             ++descriptorResultCursor;
         }
     } else {
+        ++stats.descriptorResultWrites;
         ++descriptorResultCursor;
     }
     descriptorState = DescriptorState::ResultPending;
@@ -5302,6 +5333,8 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
              "LANLMAA response has no in-flight line");
     panic_if(line->packet != packet,
              "LANLMAA response packet does not match its line obligation");
+    if (umtOrderedWaveDescriptor())
+        ++stats.descriptorUmtInputLineReads;
 
     const uint8_t *data = packet->getConstPtr<uint8_t>();
     for (const size_t operationIndex : line->waiters) {
@@ -5320,17 +5353,32 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
             panic_if(umtFusedCornerPhase != UmtFusedCornerPhase::Read ||
                          operation.umtFusedReadStage >= inputStages,
                      "LANLMAA read an invalid UMT fused input stage");
-            uint64_t bits = 0;
-            std::memcpy(&bits, data + offset, sizeof(bits));
-            const double input = decodeDouble(bits);
             DescriptorError error = DescriptorError::None;
+            uint8_t inputWordsConsumed = 1;
             if (umtOrderedWaveDescriptor()) {
-                if (!std::isfinite(input)) {
-                    error = DescriptorError::BadRecordValue;
-                } else {
-                    auto &record = umtOrderedWaveRecords[
-                        operation.umtFusedGroup];
-                    const uint8_t stage = operation.umtFusedReadStage;
+                inputWordsConsumed = static_cast<uint8_t>(
+                    umtOrderedWaveWordsToLineBoundary(
+                        operation.address,
+                        inputStages - operation.umtFusedReadStage,
+                        lineBytes));
+                panic_if(inputWordsConsumed == 0,
+                         "LANLMAA ordered-wave line contained no input word");
+                auto &record =
+                    umtOrderedWaveRecords[operation.umtFusedGroup];
+                for (uint8_t word = 0; word < inputWordsConsumed; ++word) {
+                    uint64_t bits = 0;
+                    std::memcpy(
+                        &bits,
+                        data + offset + word * sizeof(uint64_t),
+                        sizeof(bits));
+                    const double input = decodeDouble(bits);
+                    ++stats.descriptorUmtInputReads;
+                    if (!std::isfinite(input)) {
+                        error = DescriptorError::BadRecordValue;
+                        break;
+                    }
+                    const uint8_t stage =
+                        operation.umtFusedReadStage + word;
                     if (stage < UmtOrderedWaveCorners) {
                         record.source[stage] = input;
                     } else if (stage < 2 * UmtOrderedWaveCorners) {
@@ -5340,92 +5388,100 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                             stage - 2 * UmtOrderedWaveCorners] = input;
                     }
                 }
-            } else if (!std::isfinite(input)) {
-                error = DescriptorError::BadRecordValue;
             } else {
-                switch (operation.umtFusedReadStage) {
-                  case 0:
-                  case 3:
-                  case 5:
-                  case 7:
-                    operation.value = bits;
-                    break;
-                  case 1: {
-                    const double source = decodeDouble(operation.value) +
-                        tau * input;
-                    if (!std::isfinite(source)) {
-                        error = DescriptorError::BadRecordValue;
-                    } else {
-                        operation.umtFusedValues[0] = encodeDouble(source);
-                    }
-                    break;
-                  }
-                  case 2:
-                    if (input <= 0.0) {
-                        error = DescriptorError::BadRecordValue;
-                    } else {
-                        operation.umtFusedValues[1] = bits;
-                    }
-                    break;
-                  case 4:
-                  case 6:
-                  case 8: {
-                    const double source = decodeDouble(operation.value) +
-                        tau * input;
-                    if (!std::isfinite(source)) {
-                        error = DescriptorError::BadRecordValue;
-                    } else {
+                uint64_t bits = 0;
+                std::memcpy(&bits, data + offset, sizeof(bits));
+                const double input = decodeDouble(bits);
+                ++stats.descriptorUmtInputReads;
+                if (!std::isfinite(input)) {
+                    error = DescriptorError::BadRecordValue;
+                } else {
+                    switch (operation.umtFusedReadStage) {
+                      case 0:
+                      case 3:
+                      case 5:
+                      case 7:
+                        operation.value = bits;
+                        break;
+                      case 1: {
+                        const double source = decodeDouble(operation.value) +
+                            tau * input;
+                        if (!std::isfinite(source)) {
+                            error = DescriptorError::BadRecordValue;
+                        } else {
+                            operation.umtFusedValues[0] =
+                                encodeDouble(source);
+                        }
+                        break;
+                      }
+                      case 2:
+                        if (input <= 0.0) {
+                            error = DescriptorError::BadRecordValue;
+                        } else {
+                            operation.umtFusedValues[1] = bits;
+                        }
+                        break;
+                      case 4:
+                      case 6:
+                      case 8: {
+                        const double source = decodeDouble(operation.value) +
+                            tau * input;
+                        if (!std::isfinite(source)) {
+                            error = DescriptorError::BadRecordValue;
+                        } else {
+                            operation.umtFusedValues[
+                                operation.umtFusedReadStage / 2] =
+                                encodeDouble(source);
+                        }
+                        break;
+                      }
+                      case 9:
+                      case 10:
+                      case 11:
                         operation.umtFusedValues[
-                            operation.umtFusedReadStage / 2] =
-                            encodeDouble(source);
+                            operation.umtFusedReadStage - 4] = bits;
+                        break;
+                      case 12:
+                      case 13:
+                      case 14:
+                      case 15:
+                      case 16:
+                      case 17: {
+                        panic_if(!umtMixedCornerDescriptor(),
+                                 "LANLMAA fused descriptor reached a mixed "
+                                 "input stage");
+                        const uint32_t relative =
+                            operation.umtFusedReadStage - 12;
+                        const uint32_t word = relative / 3;
+                        const uint32_t lane = relative % 3;
+                        auto &entry = umtMixedSidecarEntry(
+                            operation.umtFusedGroup, word);
+                        panic_if(entry.state != UpdateState::Accumulating,
+                                 "LANLMAA mixed sidecar entry lost ownership");
+                        if (lane == 0) {
+                            entry.address = bits;
+                        } else if (lane == 1) {
+                            entry.contribution = bits;
+                        } else {
+                            entry.umtPayloadThird = bits;
+                            const auto status = umtMixedSidecarPorts.enqueue(
+                                {static_cast<uint64_t>(
+                                     operation.umtFusedGroup) * 2 + word,
+                                 operation.umtFusedGroup, word,
+                                 UmtMixedOverlayAccess::Write});
+                            panic_if(
+                                status != UmtMixedOverlayResult::Accepted,
+                                "LANLMAA failed to queue a mixed sidecar "
+                                "write");
+                        }
+                        break;
+                      }
+                      default:
+                        panic(
+                            "LANLMAA UMT fused input stage became invalid");
                     }
-                    break;
-                  }
-                  case 9:
-                  case 10:
-                  case 11:
-                    operation.umtFusedValues[
-                        operation.umtFusedReadStage - 4] = bits;
-                    break;
-                  case 12:
-                  case 13:
-                  case 14:
-                  case 15:
-                  case 16:
-                  case 17: {
-                    panic_if(!umtMixedCornerDescriptor(),
-                             "LANLMAA fused descriptor reached a mixed "
-                             "input stage");
-                    const uint32_t relative =
-                        operation.umtFusedReadStage - 12;
-                    const uint32_t word = relative / 3;
-                    const uint32_t lane = relative % 3;
-                    auto &entry = umtMixedSidecarEntry(
-                        operation.umtFusedGroup, word);
-                    panic_if(entry.state != UpdateState::Accumulating,
-                             "LANLMAA mixed sidecar entry lost ownership");
-                    if (lane == 0) {
-                        entry.address = bits;
-                    } else if (lane == 1) {
-                        entry.contribution = bits;
-                    } else {
-                        entry.umtPayloadThird = bits;
-                        const auto status = umtMixedSidecarPorts.enqueue(
-                            {static_cast<uint64_t>(
-                                 operation.umtFusedGroup) * 2 + word,
-                             operation.umtFusedGroup, word,
-                             UmtMixedOverlayAccess::Write});
-                        panic_if(status != UmtMixedOverlayResult::Accepted,
-                                 "LANLMAA failed to queue a mixed sidecar "
-                                 "write");
-                    }
-                    break;
-                  }
-                  default:
-                    panic("LANLMAA UMT fused input stage became invalid");
                 }
             }
-            ++stats.descriptorUmtInputReads;
             if (error != DescriptorError::None) {
                 ++stats.responses;
                 delete packet;
@@ -5433,7 +5489,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                 beginDescriptorErrorDrain(error);
                 return true;
             }
-            ++operation.umtFusedReadStage;
+            operation.umtFusedReadStage += inputWordsConsumed;
             if (operation.umtFusedReadStage == inputStages) {
                 operation.state = umtMixedCornerDescriptor() ?
                     OperationState::UmtSidecarPending :

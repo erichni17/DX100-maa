@@ -331,6 +331,7 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorAddressLineReads;
         statistics::Scalar descriptorAddressesLoaded;
         statistics::Scalar descriptorResultWrites;
+        statistics::Scalar descriptorUmtResultLineWrites;
         statistics::Scalar descriptorCompletionWrites;
         statistics::Scalar descriptorErrors;
         statistics::Scalar sharedOverlayModeAcquisitions;
@@ -391,6 +392,7 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorUmeUpdatesAcknowledged;
         statistics::Scalar descriptorUmtGroupsLoaded;
         statistics::Scalar descriptorUmtInputReads;
+        statistics::Scalar descriptorUmtInputLineReads;
         statistics::Scalar descriptorUmtFp64AddSubOperations;
         statistics::Scalar descriptorUmtFp64MultiplyOperations;
         statistics::Scalar descriptorUmtFp64DivideOperations;
