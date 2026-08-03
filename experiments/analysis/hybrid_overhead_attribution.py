@@ -19,6 +19,52 @@ PHYSICAL_SCHEMA = "dx100.physical_admission.v1"
 ATTRIBUTION_SCHEMA = "2"
 UINT64_MAX = (1 << 64) - 1
 BASELINE_COMMIT = "d7875f99e6caf1d47bd6010b89112458384aec6c"
+EXPECTED_OUTPUT_HASH = "7228541527853630339"
+EXPECTED_DYNAMIC_LINK_CHECK = (
+    "libramulator.so resolved to the single frozen input copy"
+)
+EXPECTED_CHECKPOINT_TICK = 3193723500
+EXPECTED_CHECKPOINT_TERMINAL_REASON = (
+    f"Exiting @ tick {EXPECTED_CHECKPOINT_TICK} because checkpoint"
+)
+RUN_CASE_CONTRACTS = {
+    "native_direct_16k": {
+        "mode": "native_direct",
+        "page_elements": "16384",
+    },
+    "transparent_4k": {
+        "mode": "transparent",
+        "page_elements": "4096",
+    },
+}
+RUN_TERMINAL_MARKER_COUNTS = {
+    "exact_output": 1,
+    "roi_end": 1,
+    "m5_exit": 1,
+}
+CHECKPOINT_TARGETS = (
+    "./citations.bib",
+    "./config.dot",
+    "./config.dot.pdf",
+    "./config.dot.svg",
+    "./config.ini",
+    "./config.json",
+    f"./cpt.{EXPECTED_CHECKPOINT_TICK}/m5.cpt",
+    (f"./cpt.{EXPECTED_CHECKPOINT_TICK}/" "system.physmem.store0.pmem"),
+    "./fs/proc/cpuinfo",
+    "./fs/proc/stat",
+    "./fs/sys/devices/system/cpu/online",
+    "./fs/sys/devices/system/cpu/possible",
+    "./stats.txt",
+)
+CHECKPOINT_TERMINAL_HASH_FIELDS = {
+    "./config.ini": "checkpoint_config_ini_sha256",
+    "./config.json": "checkpoint_config_json_sha256",
+    f"./cpt.{EXPECTED_CHECKPOINT_TICK}/m5.cpt": "m5_cpt_sha256",
+    (
+        f"./cpt.{EXPECTED_CHECKPOINT_TICK}/" "system.physmem.store0.pmem"
+    ): "physical_memory_sha256",
+}
 PHYSICAL_FIELDS = {
     "schema",
     "event",
@@ -328,6 +374,8 @@ def validate_physical(
     expected: int,
     aperture: int,
     records_output: Path | None = None,
+    *,
+    write_records: bool = True,
 ) -> dict:
     records = []
     canonical = hashlib.sha256()
@@ -441,12 +489,21 @@ def validate_physical(
             json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
             for record in ordered
         )
-        records_output.write_text(encoded)
+        encoded_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
+        if write_records:
+            records_output.write_text(encoded)
+        elif (
+            not records_output.is_file()
+            or sha256(records_output) != encoded_sha256
+        ):
+            raise AuditError(
+                f"{records_output}: deterministic physical records mismatch"
+            )
         result["records"] = {
             "format": "jsonl",
             "order": "logical_itr_ascending",
             "path": str(records_output.resolve()),
-            "sha256": sha256(records_output),
+            "sha256": encoded_sha256,
             "record_count": len(ordered),
         }
     return result
@@ -692,19 +749,59 @@ def read_key_values(path: Path) -> dict[str, str]:
     return values
 
 
+def validate_checkpoint_manifest(
+    path: Path, checkpoint_root: Path
+) -> dict[str, str]:
+    records: dict[str, str] = {}
+    for line_no, raw in enumerate(path.read_text().splitlines(), 1):
+        match = re.fullmatch(r"([0-9a-f]{64})  (\./.+)", raw)
+        if match is None:
+            raise AuditError(f"{path}: malformed checkpoint line {line_no}")
+        digest, target = match.groups()
+        if target in records:
+            raise AuditError(f"{path}: duplicate checkpoint target {target}")
+        records[target] = digest
+    expected = set(CHECKPOINT_TARGETS)
+    actual = set(records)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise AuditError(
+            f"{path}: checkpoint targets missing={missing} extra={extra}"
+        )
+    for target, digest in records.items():
+        artifact = checkpoint_root / target.removeprefix("./")
+        if artifact.is_symlink() or not artifact.is_file():
+            raise AuditError(f"{path}: missing checkpoint artifact {target}")
+        if sha256(artifact) != digest:
+            raise AuditError(
+                f"{path}: checkpoint artifact hash mismatch {target}"
+            )
+    return records
+
+
 def checkpoint_identity(run: Path) -> str:
     identity = run / "shared_checkpoint_identity.sha256"
-    lines = identity.read_text().split()
-    if (
-        len(lines) != 2
-        or not re.fullmatch(r"[0-9a-f]{64}", lines[0])
-        or Path(lines[1]).name != "shared_checkpoint_files.sha256"
-    ):
+    match = re.fullmatch(r"([0-9a-f]{64})  (.+)\n?", identity.read_text())
+    if match is None:
         raise AuditError(f"{identity}: malformed checkpoint identity")
     manifest = run / "shared_checkpoint_files.sha256"
-    if not manifest.is_file() or sha256(manifest) != lines[0]:
+    digest, named_manifest = match.groups()
+    if Path(named_manifest).resolve() != manifest.resolve():
+        raise AuditError(f"{identity}: checkpoint identity target mismatch")
+    if not manifest.is_file() or sha256(manifest) != digest:
         raise AuditError(f"{identity}: checkpoint manifest hash mismatch")
-    return lines[0]
+    checkpoint_path = run / "checkpoint.path"
+    if not checkpoint_path.is_file():
+        raise AuditError(f"{run}: missing checkpoint.path")
+    lines = checkpoint_path.read_text().splitlines()
+    expected_root = run.parent / "shared_checkpoint"
+    if len(lines) != 1 or Path(lines[0]).resolve() != expected_root.resolve():
+        raise AuditError(f"{checkpoint_path}: checkpoint root mismatch")
+    if not expected_root.is_dir():
+        raise AuditError(f"{checkpoint_path}: checkpoint root unavailable")
+    validate_checkpoint_manifest(manifest, expected_root)
+    return digest
 
 
 def audited_artifacts(path: Path) -> dict[str, dict[str, str]]:
@@ -837,32 +934,110 @@ def audit_shared_pair_input(
         "create_shared_checkpoint.sh": input_root
         / "create_shared_checkpoint.sh",
         "source_snapshot_manifest": input_root
-        / "source_snapshot_13dc2f9.sha256",
+        / f"source_snapshot_{implementation_commit[:7]}.sha256",
     }
     if set(manifest["artifacts"]) != set(artifact_paths):
         raise AuditError("shared frozen-input artifact fields mismatch")
     for name, path in artifact_paths.items():
         if not path.is_file() or sha256(path) != manifest["artifacts"][name]:
             raise AuditError(f"shared frozen input changed: {name}")
+    library = {
+        "path": str(artifact_paths["libramulator.so"].resolve()),
+        "sha256": manifest["artifacts"]["libramulator.so"],
+    }
+    provenance = audit_ramulator_provenance(
+        artifact_paths["ramulator_provenance.json"], library
+    )
+    ramulator_fields = {
+        key: provenance[key]
+        for key in (
+            "outer_tree",
+            "source_tree",
+            "normalized_dependency_sha256",
+            "elf_build_id",
+        )
+    }
+    if manifest["ramulator"] != ramulator_fields:
+        raise AuditError("shared frozen-input Ramulator semantics mismatch")
+    if manifest["dynamic_link_check"] != EXPECTED_DYNAMIC_LINK_CHECK:
+        raise AuditError("shared frozen-input dynamic-link semantics mismatch")
+    dynamic_links = audit_dynamic_links(
+        artifact_paths["gem5.ldd.txt"], library["path"]
+    )
+    checkpoint_root = pair_root / "shared_checkpoint"
+    checkpoint_records = validate_checkpoint_manifest(
+        checkpoint_manifest, checkpoint_root
+    )
     terminal = json.loads(terminal_path.read_text())
+    terminal_fields = {
+        "schema",
+        "exit_code",
+        "terminal_reason",
+        "checkpoint_tick",
+        "checkpoint_write_markers",
+        "terminal_markers",
+        "populated_checkpoint_directories",
+        "treatment_selector_absent_at_checkpoint",
+        "checkpoint_files_manifest_sha256",
+        "checkpoint_log_sha256",
+        *CHECKPOINT_TERMINAL_HASH_FIELDS.values(),
+    }
+    checkpoint_log = (pair_root / "checkpoint_create.log").read_text(
+        errors="replace"
+    )
+    checkpoint_write_markers = len(
+        re.findall(r"^Writing checkpoint$", checkpoint_log, re.M)
+    )
+    terminal_markers = re.findall(
+        r"^Exiting @ tick ([0-9]+) because checkpoint$",
+        checkpoint_log,
+        re.M,
+    )
+    deferred_layout_markers = len(
+        re.findall(
+            r"^VIRTUAL_TILE_CONSUMER_LAYOUT mode=deferred "
+            r"page_elements=0 logical_elements=16384 "
+            r"mem_size=2147483648$",
+            checkpoint_log,
+            re.M,
+        )
+    )
+    populated_checkpoints = [
+        path
+        for path in checkpoint_root.glob("cpt.*")
+        if path.is_dir() and any(path.iterdir())
+    ]
     if (
-        terminal.get("schema") != "dx100.deferred_checkpoint_terminal.v1"
-        or terminal.get("exit_code") != 0
-        or terminal.get("checkpoint_tick") != 3193723500
-        or terminal.get("checkpoint_write_markers") != 1
-        or terminal.get("terminal_markers") != 1
-        or terminal.get("populated_checkpoint_directories") != 1
-        or terminal.get("treatment_selector_absent_at_checkpoint") is not True
-        or terminal.get("checkpoint_files_manifest_sha256")
+        set(terminal) != terminal_fields
+        or terminal["schema"] != "dx100.deferred_checkpoint_terminal.v1"
+        or terminal["exit_code"] != 0
+        or terminal["terminal_reason"] != EXPECTED_CHECKPOINT_TERMINAL_REASON
+        or terminal["checkpoint_tick"] != EXPECTED_CHECKPOINT_TICK
+        or terminal["checkpoint_write_markers"] != checkpoint_write_markers
+        or checkpoint_write_markers != 1
+        or terminal["terminal_markers"] != len(terminal_markers)
+        or terminal_markers != [str(EXPECTED_CHECKPOINT_TICK)]
+        or terminal["populated_checkpoint_directories"]
+        != len(populated_checkpoints)
+        or len(populated_checkpoints) != 1
+        or populated_checkpoints[0].name != f"cpt.{EXPECTED_CHECKPOINT_TICK}"
+        or terminal["treatment_selector_absent_at_checkpoint"] is not True
+        or deferred_layout_markers != 1
+        or terminal["checkpoint_files_manifest_sha256"]
         != checkpoint_identity_sha256
         or sha256(checkpoint_manifest) != checkpoint_identity_sha256
         or sha256(pair_root / "checkpoint_create.log")
-        != terminal.get("checkpoint_log_sha256")
+        != terminal["checkpoint_log_sha256"]
         or (pair_root / "checkpoint_create.exit").read_text().strip() != "0"
     ):
         raise AuditError(
             "shared deferred-checkpoint terminal evidence mismatch"
         )
+    for target, field in CHECKPOINT_TERMINAL_HASH_FIELDS.items():
+        if terminal[field] != checkpoint_records[target]:
+            raise AuditError(
+                f"shared checkpoint terminal hash mismatch: {field}"
+            )
     return {
         "frozen_input_manifest": {
             "path": str(manifest_path.resolve()),
@@ -881,6 +1056,15 @@ def audit_shared_pair_input(
         "frozen_source_snapshot_manifest": {
             "path": str(artifact_paths["source_snapshot_manifest"].resolve()),
             "sha256": manifest["artifacts"]["source_snapshot_manifest"],
+        },
+        "ramulator_semantics_bound_to_provenance": True,
+        "dynamic_links": {
+            key: dynamic_links[key]
+            for key in (
+                "raw_sha256",
+                "normalized_sha256",
+                "frozen_ramulator_resolution",
+            )
         },
     }
 
@@ -1100,6 +1284,79 @@ def controller_audit(grouped: dict[str, list[dict]], case_name: str) -> dict:
     }
 
 
+def audit_run_completion(path: Path, result: dict[str, str]) -> dict:
+    case = result.get("case")
+    contract = RUN_CASE_CONTRACTS.get(case)
+    if contract is None:
+        raise AuditError(f"{path}: unknown result case {case!r}")
+    result_hash = result.get("output_hash", "")
+    parse_canonical_uint64(result_hash, "result output_hash")
+    if result_hash != EXPECTED_OUTPUT_HASH:
+        raise AuditError(f"{path}: result disagrees with exact output oracle")
+    correctness_marker = path / "virtual_tile_consumer_case.pass"
+    if (
+        not correctness_marker.is_file()
+        or correctness_marker.is_symlink()
+        or correctness_marker.read_bytes() != b""
+    ):
+        raise AuditError(f"{path}: invalid correctness marker")
+    log = (path / "restore.log").read_text(errors="replace")
+    result_markers = re.findall(
+        r"^VIRTUAL_TILE_CONSUMER_RESULT mode=([^ ]+) "
+        r"page_elements=([0-9]+) hash=([0-9]+) errors=([0-9]+)$",
+        log,
+        re.M,
+    )
+    all_result_markers = re.findall(
+        r"^VIRTUAL_TILE_CONSUMER_RESULT.*$", log, re.M
+    )
+    if (
+        len(all_result_markers) != RUN_TERMINAL_MARKER_COUNTS["exact_output"]
+        or len(result_markers) != RUN_TERMINAL_MARKER_COUNTS["exact_output"]
+    ):
+        raise AuditError(f"{path}: wrong exact-output marker count")
+    mode, page_elements, log_hash, errors = result_markers[0]
+    if (
+        mode != contract["mode"]
+        or page_elements != contract["page_elements"]
+        or log_hash != result_hash
+        or errors != "0"
+    ):
+        raise AuditError(f"{path}: run/result correctness mismatch")
+    roi_markers = re.findall(r"^ROI .+$", log, re.M)
+    if roi_markers != ["ROI Ended"]:
+        raise AuditError(f"{path}: wrong ROI marker count")
+    all_exit_markers = re.findall(r"^Exiting @ tick .+$", log, re.M)
+    m5_exit_ticks = re.findall(
+        r"^Exiting @ tick ([0-9]+) because "
+        r"m5_exit instruction encountered$",
+        log,
+        re.M,
+    )
+    if (
+        len(all_exit_markers) != RUN_TERMINAL_MARKER_COUNTS["m5_exit"]
+        or len(m5_exit_ticks) != RUN_TERMINAL_MARKER_COUNTS["m5_exit"]
+    ):
+        raise AuditError(f"{path}: wrong terminal m5_exit marker count")
+    parse_canonical_uint64(m5_exit_ticks[0], "terminal m5_exit tick")
+    if re.search(
+        r"panic|fatal|assert|abort|segmentation fault|error:", log, re.I
+    ):
+        raise AuditError(f"{path}: fatal marker")
+    return {
+        "required_marker_counts": dict(RUN_TERMINAL_MARKER_COUNTS),
+        "observed_marker_counts": {
+            "exact_output": len(result_markers),
+            "roi_end": len(roi_markers),
+            "m5_exit": len(m5_exit_ticks),
+        },
+        "m5_exit_tick": int(m5_exit_ticks[0]),
+        "output_hash": result_hash,
+        "errors": 0,
+        "correctness_marker_empty": True,
+    }
+
+
 def audit_run(path: Path) -> dict:
     for name in (
         "result.tsv",
@@ -1111,6 +1368,8 @@ def audit_run(path: Path) -> dict:
         "manifest.txt",
         "artifact_sha256.txt",
         "shared_checkpoint_identity.sha256",
+        "checkpoint.path",
+        "virtual_tile_consumer_case.pass",
     ):
         if not (path / name).is_file():
             raise AuditError(f"{path}: missing {name}")
@@ -1118,29 +1377,16 @@ def audit_run(path: Path) -> dict:
         path / "checkpoint.exit"
     ).read_text().strip() != "0":
         raise AuditError(f"{path}: nonzero checkpoint/restore exit")
-    log = (path / "restore.log").read_text(errors="replace")
-    if (
-        len(
-            re.findall(
-                r"^VIRTUAL_TILE_CONSUMER_RESULT .* errors=0$", log, re.M
-            )
-        )
-        != 1
-    ):
-        raise AuditError(f"{path}: wrong exact-output marker count")
-    if len(re.findall(r"^ROI Ended$", log, re.M)) != 1:
-        raise AuditError(f"{path}: wrong ROI marker count")
-    if re.search(
-        r"panic|fatal|assert|abort|segmentation fault|error:", log, re.I
-    ):
-        raise AuditError(f"{path}: fatal marker")
     result = read_result(path / "result.tsv")
+    completion = audit_run_completion(path, result)
     manifest = read_key_values(path / "manifest.txt")
     if manifest.get("baseline_commit") != BASELINE_COMMIT:
         raise AuditError(f"{path}: wrong baseline commit")
     if not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_commit", "")):
         raise AuditError(f"{path}: malformed implementation commit")
     stats = first_stats(path / "run/stats.txt")
+    if result.get("simTicks") != str(stats.get("simTicks")):
+        raise AuditError(f"{path}: result/stats simTicks mismatch")
     trace_path = path / "run/virtual_trace.log"
     events = strict_events(trace_path)
     grouped = defaultdict(list)
@@ -1177,7 +1423,9 @@ def audit_run(path: Path) -> dict:
     ):
         raise AuditError(f"{path}: missing deterministic physical records")
     records_path = Path(records_metadata["path"])
-    physical = validate_physical(trace_path, 16384, 16, records_path)
+    physical = validate_physical(
+        trace_path, 16384, 16, records_path, write_records=False
+    )
     for key in (
         "schema",
         "record_count",
@@ -1233,6 +1481,7 @@ def audit_run(path: Path) -> dict:
         "result": result,
         "manifest": manifest,
         "simTicks": int(stats["simTicks"]),
+        "completion": completion,
         "stats": {
             "request_cycles": request_cycles,
             "request_reason_cycles": request_reasons,
@@ -1304,6 +1553,17 @@ def analyze_pair(native_path: Path, hybrid_path: Path) -> dict:
         native["checkpoint_identity_sha256"],
         native["manifest"]["source_commit"],
     )
+    authoritative_checkpoint_manifest = (
+        native_path.parent / "checkpoint_files.pre_treatment.sha256"
+    ).read_bytes()
+    if (
+        native_path / "shared_checkpoint_files.sha256"
+    ).read_bytes() != authoritative_checkpoint_manifest or (
+        hybrid_path / "shared_checkpoint_files.sha256"
+    ).read_bytes() != authoritative_checkpoint_manifest:
+        raise AuditError(
+            "arm checkpoint manifests differ from authoritative manifest"
+        )
     comparable_artifacts = set(ARTIFACT_LABELS) - {
         "dynamic_link_audit",
         "invocation",
@@ -1317,8 +1577,10 @@ def analyze_pair(native_path: Path, hybrid_path: Path) -> dict:
     if (
         native["dynamic_links"]["normalized_sha256"]
         != hybrid["dynamic_links"]["normalized_sha256"]
+        or native["dynamic_links"]["normalized_sha256"]
+        != shared_input["dynamic_links"]["normalized_sha256"]
     ):
-        raise AuditError("pair normalized dynamic-link audits differ")
+        raise AuditError("shared/arm normalized dynamic-link audits differ")
     native_ticks = native["simTicks"]
     hybrid_ticks = hybrid["simTicks"]
     delta = hybrid_ticks - native_ticks
@@ -1398,6 +1660,7 @@ def analyze_pair(native_path: Path, hybrid_path: Path) -> dict:
             "strict_versioned_trace": True,
             "strict_physical_record_domain": True,
             "first_roi_stats": True,
+            "exact_terminal_markers": True,
             "independent_evidence_review": False,
         },
         "downstream_compatibility": {
@@ -1451,6 +1714,8 @@ def render_markdown(result: dict) -> str:
         "categories, "
         "so this is not a native-to-hybrid "
         "category delta.",
+        "`source_flight` remains an unpromoted hybrid-only hypothesis, not "
+        "an architecture conclusion.",
         "",
         "## Hybrid request-cycle reconciliation",
         "",
@@ -1504,6 +1769,9 @@ def render_markdown(result: dict) -> str:
         f"`{native['result']['output_hash']}`. Completion, first-ROI stats, "
         "versioned trace schemas, physical-record domains, event/counter "
         "reconciliation, and raw hashes were checked fail closed.",
+        "Each arm has exactly one matching result marker with `errors=0`, "
+        "one `ROI Ended`, one terminal `m5_exit`, and one empty runner "
+        "correctness sentinel.",
         "",
         f"Frozen gem5 SHA-256: "
         f"`{native['frozen_artifacts']['gem5_binary']['sha256']}`",

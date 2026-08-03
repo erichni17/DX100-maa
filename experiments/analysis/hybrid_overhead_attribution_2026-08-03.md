@@ -7,6 +7,7 @@
 Native direct16: **39,971,978 simTicks**.  Transparent 4K payload: **45,449,165 simTicks**.  Delta: **5,477,187 simTicks (13.702567%)**.
 
 Within the hybrid arm, the candidate largest mutually exclusive MAA request category is `source_flight` at 114,060 cycles. Native direct16 does not emit these virtual-pipeline reason categories, so this is not a native-to-hybrid category delta.
+`source_flight` remains an unpromoted hybrid-only hypothesis, not an architecture conclusion.
 
 ## Hybrid request-cycle reconciliation
 
@@ -42,6 +43,7 @@ The hybrid controller completed 12 page actions in strict order with zero backpr
 ## Provenance and gates
 
 Both restores use checkpoint identity `31e8420d909a1d26ad74ab7801f101d4a6b0794a5c6ca752663fe0d45c33d32b` and exact output hash `7228541527853630339`. Completion, first-ROI stats, versioned trace schemas, physical-record domains, event/counter reconciliation, and raw hashes were checked fail closed.
+Each arm has exactly one matching result marker with `errors=0`, one `ROI Ended`, one terminal `m5_exit`, and one empty runner correctness sentinel.
 
 Frozen gem5 SHA-256: `d8d1b560b24e8ad4e0b6fdbf47addc01bf0fe02b9cfda5805c4a8ecdaff3fa90`
 Frozen workload SHA-256: `20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880`

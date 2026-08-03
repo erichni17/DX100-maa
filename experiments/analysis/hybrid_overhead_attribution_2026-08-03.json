@@ -42,6 +42,7 @@
   "gates": {
     "checkpoint_manifest_byte_identical": true,
     "exact_output": true,
+    "exact_terminal_markers": true,
     "first_roi_stats": true,
     "independent_evidence_review": false,
     "one_frozen_binary_config_input_and_sources": true,
@@ -52,6 +53,22 @@
   "pair": {
     "hybrid": {
       "checkpoint_identity_sha256": "31e8420d909a1d26ad74ab7801f101d4a6b0794a5c6ca752663fe0d45c33d32b",
+      "completion": {
+        "correctness_marker_empty": true,
+        "errors": 0,
+        "m5_exit_tick": 3852852529,
+        "observed_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        },
+        "output_hash": "7228541527853630339",
+        "required_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        }
+      },
       "dynamic_links": {
         "frozen_ramulator_resolution": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
         "normalized_lines": [
@@ -488,6 +505,22 @@
     },
     "native": {
       "checkpoint_identity_sha256": "31e8420d909a1d26ad74ab7801f101d4a6b0794a5c6ca752663fe0d45c33d32b",
+      "completion": {
+        "correctness_marker_empty": true,
+        "errors": 0,
+        "m5_exit_tick": 3862585264,
+        "observed_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        },
+        "output_hash": "7228541527853630339",
+        "required_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        }
+      },
       "dynamic_links": {
         "frozen_ramulator_resolution": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
         "normalized_lines": [
@@ -1049,6 +1082,11 @@
         "sha256": "5698b3c23a5ee8dc61f6c358d0b2487d3c4b958f9c692eae8223de0b444e2a9e",
         "treatment_selector_absent_at_checkpoint": true
       },
+      "dynamic_links": {
+        "frozen_ramulator_resolution": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+        "normalized_sha256": "0840a844d3c7870fe11f4587daf94104c911d6a183f30839dd77c9b1c8b20167",
+        "raw_sha256": "c2ca214a9e089c3a21bcab7c51ab1a37ca97445dac1f83c1e5f7e62635319cba"
+      },
       "frozen_input_manifest": {
         "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/frozen_input_manifest.json",
         "sha256": "51582c319c82bc71418f5ac48f16ccecb88952da640bd11c23f37afaf66d51db"
@@ -1056,7 +1094,8 @@
       "frozen_source_snapshot_manifest": {
         "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/source_snapshot_13dc2f9.sha256",
         "sha256": "bf60ffa51cfafce1f93d08ded868b17c50eba0555b65414ce7b39ef70623c2a9"
-      }
+      },
+      "ramulator_semantics_bound_to_provenance": true
     }
   },
   "schema": "dx100.hybrid_overhead_attribution.v2",

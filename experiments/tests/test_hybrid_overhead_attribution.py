@@ -102,6 +102,141 @@ class HybridOverheadAttributionTest(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         return path
 
+    def make_shared_input_fixture(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        pair = Path(temp.name)
+        input_root = pair / "input"
+        input_root.mkdir()
+        implementation_commit = "1" * 40
+        artifact_paths = {
+            "gem5.opt": input_root / "gem5.opt",
+            "workload": input_root
+            / "workload_build/test_virtual_tile_consumer_T16384",
+            "libramulator.so": input_root / "libramulator.so",
+            "ramulator_provenance.json": input_root
+            / "ramulator_provenance.json",
+            "gem5.ldd.txt": input_root / "gem5.ldd.txt",
+            "create_shared_checkpoint.sh": input_root
+            / "create_shared_checkpoint.sh",
+            "source_snapshot_manifest": input_root
+            / f"source_snapshot_{implementation_commit[:7]}.sha256",
+        }
+        for name, path in artifact_paths.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if name not in {"ramulator_provenance.json", "gem5.ldd.txt"}:
+                path.write_bytes(f"fixture:{name}\n".encode())
+        library = artifact_paths["libramulator.so"]
+        provenance = {
+            "schema": "dx100.ramulator_provenance.v1",
+            "outer_tree": "2" * 40,
+            "source_tree": "3" * 40,
+            "nested_gitlinks": {
+                "argparse": "4" * 40,
+                "spdlog": "5" * 40,
+                "yaml-cpp": "6" * 40,
+            },
+            "normalized_dependency_sha256": "7" * 64,
+            "elf_build_id": "abcdef",
+            "frozen_library": {
+                "path": str(library.resolve()),
+                "sha256": MODULE.sha256(library),
+            },
+            "reference_worktree": "/reference",
+        }
+        artifact_paths["ramulator_provenance.json"].write_text(
+            json.dumps(provenance)
+        )
+        artifact_paths["gem5.ldd.txt"].write_text(
+            f"libramulator.so => {library.resolve()} (0x1230)\n"
+        )
+        manifest = {
+            "schema": "dx100.hybrid_pair_frozen_input.v1",
+            "baseline_commit": MODULE.BASELINE_COMMIT,
+            "implementation_commit": implementation_commit,
+            "git_tree_clean_before_build": True,
+            "artifacts": {
+                name: MODULE.sha256(path)
+                for name, path in artifact_paths.items()
+            },
+            "ramulator": {
+                key: provenance[key]
+                for key in (
+                    "outer_tree",
+                    "source_tree",
+                    "normalized_dependency_sha256",
+                    "elf_build_id",
+                )
+            },
+            "dynamic_link_check": MODULE.EXPECTED_DYNAMIC_LINK_CHECK,
+        }
+        manifest_path = input_root / "frozen_input_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+
+        checkpoint_root = pair / "shared_checkpoint"
+        checkpoint_records = {}
+        for target in MODULE.CHECKPOINT_TARGETS:
+            artifact = checkpoint_root / target.removeprefix("./")
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(f"checkpoint:{target}\n".encode())
+            checkpoint_records[target] = MODULE.sha256(artifact)
+        checkpoint_manifest = pair / "checkpoint_files.pre_treatment.sha256"
+        checkpoint_manifest.write_text(
+            "".join(
+                f"{checkpoint_records[target]}  {target}\n"
+                for target in MODULE.CHECKPOINT_TARGETS
+            )
+        )
+        identity = MODULE.sha256(checkpoint_manifest)
+        checkpoint_log = pair / "checkpoint_create.log"
+        checkpoint_log.write_text(
+            "VIRTUAL_TILE_CONSUMER_LAYOUT mode=deferred page_elements=0 "
+            "logical_elements=16384 mem_size=2147483648\n"
+            "Writing checkpoint\n"
+            f"{MODULE.EXPECTED_CHECKPOINT_TERMINAL_REASON}\n"
+        )
+        (pair / "checkpoint_create.exit").write_text("0\n")
+        terminal = {
+            "schema": "dx100.deferred_checkpoint_terminal.v1",
+            "exit_code": 0,
+            "terminal_reason": MODULE.EXPECTED_CHECKPOINT_TERMINAL_REASON,
+            "checkpoint_tick": MODULE.EXPECTED_CHECKPOINT_TICK,
+            "checkpoint_write_markers": 1,
+            "terminal_markers": 1,
+            "populated_checkpoint_directories": 1,
+            "treatment_selector_absent_at_checkpoint": True,
+            "checkpoint_files_manifest_sha256": identity,
+            "checkpoint_log_sha256": MODULE.sha256(checkpoint_log),
+        }
+        terminal.update(
+            {
+                field: checkpoint_records[target]
+                for target, field in (
+                    MODULE.CHECKPOINT_TERMINAL_HASH_FIELDS.items()
+                )
+            }
+        )
+        (pair / "checkpoint_terminal.json").write_text(json.dumps(terminal))
+        return pair, identity, implementation_commit, manifest
+
+    def make_completion_fixture(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        run = Path(temp.name)
+        (run / "virtual_tile_consumer_case.pass").touch()
+        (run / "restore.log").write_text(
+            "VIRTUAL_TILE_CONSUMER_RESULT mode=native_direct "
+            "page_elements=16384 "
+            f"hash={MODULE.EXPECTED_OUTPUT_HASH} errors=0\n"
+            "ROI Ended\n"
+            "Exiting @ tick 42 because m5_exit instruction encountered\n"
+        )
+        result = {
+            "case": "native_direct_16k",
+            "output_hash": MODULE.EXPECTED_OUTPUT_HASH,
+        }
+        return run, result
+
     def test_physical_schema_count_hash_and_explicit_unavailable_generation(
         self,
     ):
@@ -516,6 +651,129 @@ class HybridOverheadAttributionTest(unittest.TestCase):
         grouped["transparent_complete"][0]["generation"] = "2"
         with self.assertRaisesRegex(MODULE.AuditError, "identity mismatch"):
             MODULE.controller_audit(grouped, "transparent_4k")
+
+    def test_shared_input_semantics_are_bound_to_hashed_artifacts(self):
+        (
+            pair,
+            identity,
+            implementation_commit,
+            manifest,
+        ) = self.make_shared_input_fixture()
+        audited = MODULE.audit_shared_pair_input(
+            pair, identity, implementation_commit
+        )
+        self.assertTrue(audited["ramulator_semantics_bound_to_provenance"])
+
+        manifest_path = pair / "input/frozen_input_manifest.json"
+        forged_ramulator = json.loads(json.dumps(manifest))
+        forged_ramulator["ramulator"]["outer_tree"] = "f" * 40
+        manifest_path.write_text(json.dumps(forged_ramulator))
+        with self.assertRaisesRegex(MODULE.AuditError, "Ramulator semantics"):
+            MODULE.audit_shared_pair_input(
+                pair, identity, implementation_commit
+            )
+
+        forged_link_claim = json.loads(json.dumps(manifest))
+        forged_link_claim["dynamic_link_check"] = "forged semantic claim"
+        manifest_path.write_text(json.dumps(forged_link_claim))
+        with self.assertRaisesRegex(
+            MODULE.AuditError, "dynamic-link semantics"
+        ):
+            MODULE.audit_shared_pair_input(
+                pair, identity, implementation_commit
+            )
+
+    def test_checkpoint_identity_requires_complete_duplicate_free_targets(
+        self,
+    ):
+        pair, identity, _, _ = self.make_shared_input_fixture()
+        run = pair / "native_direct_16k"
+        run.mkdir()
+        manifest = run / "shared_checkpoint_files.sha256"
+        authoritative = pair / "checkpoint_files.pre_treatment.sha256"
+        manifest.write_bytes(authoritative.read_bytes())
+        (run / "checkpoint.path").write_text(
+            str((pair / "shared_checkpoint").resolve()) + "\n"
+        )
+        identity_path = run / "shared_checkpoint_identity.sha256"
+
+        def bind_current_manifest():
+            identity_path.write_text(
+                f"{MODULE.sha256(manifest)}  {manifest.resolve()}\n"
+            )
+
+        bind_current_manifest()
+        self.assertEqual(MODULE.checkpoint_identity(run), identity)
+
+        lines = authoritative.read_text().splitlines()
+        manifest.write_text("\n".join(lines[:-1]) + "\n")
+        bind_current_manifest()
+        with self.assertRaisesRegex(MODULE.AuditError, "targets missing"):
+            MODULE.checkpoint_identity(run)
+
+        manifest.write_text("\n".join(lines + [lines[0]]) + "\n")
+        bind_current_manifest()
+        with self.assertRaisesRegex(MODULE.AuditError, "duplicate"):
+            MODULE.checkpoint_identity(run)
+
+        wrong_hash = "0" * 64 + lines[0][64:]
+        manifest.write_text("\n".join([wrong_hash, *lines[1:]]) + "\n")
+        bind_current_manifest()
+        with self.assertRaisesRegex(MODULE.AuditError, "hash mismatch"):
+            MODULE.checkpoint_identity(run)
+
+    def test_run_completion_requires_exact_terminal_marker_counts(self):
+        run, result = self.make_completion_fixture()
+        audited = MODULE.audit_run_completion(run, result)
+        self.assertEqual(
+            audited["observed_marker_counts"],
+            MODULE.RUN_TERMINAL_MARKER_COUNTS,
+        )
+
+        log = run / "restore.log"
+        complete_log = log.read_text()
+        log.write_text(
+            complete_log.replace(
+                "Exiting @ tick 42 because m5_exit instruction encountered\n",
+                "",
+            )
+        )
+        with self.assertRaisesRegex(MODULE.AuditError, "terminal m5_exit"):
+            MODULE.audit_run_completion(run, result)
+
+        log.write_text(
+            complete_log
+            + "Exiting @ tick 43 because m5_exit instruction encountered\n"
+        )
+        with self.assertRaisesRegex(MODULE.AuditError, "terminal m5_exit"):
+            MODULE.audit_run_completion(run, result)
+
+        log.write_text(complete_log + "ROI Started\n")
+        with self.assertRaisesRegex(MODULE.AuditError, "ROI marker"):
+            MODULE.audit_run_completion(run, result)
+
+    def test_run_completion_binds_log_hash_errors_and_exact_oracle(self):
+        run, result = self.make_completion_fixture()
+        log = run / "restore.log"
+        log.write_text(
+            log.read_text().replace(MODULE.EXPECTED_OUTPUT_HASH, "123")
+        )
+        with self.assertRaisesRegex(
+            MODULE.AuditError, "run/result correctness mismatch"
+        ):
+            MODULE.audit_run_completion(run, result)
+
+        log.write_text(
+            log.read_text().replace("hash=123 errors=0", "hash=123 errors=1")
+        )
+        with self.assertRaisesRegex(
+            MODULE.AuditError, "run/result correctness mismatch"
+        ):
+            MODULE.audit_run_completion(run, result)
+
+        forged = {**result, "output_hash": "123"}
+        with self.assertRaisesRegex(MODULE.AuditError, "exact output oracle"):
+            MODULE.audit_run_completion(run, forged)
 
     def test_ramulator_provenance_binds_one_frozen_library(self):
         temp = tempfile.TemporaryDirectory()
