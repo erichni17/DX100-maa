@@ -174,16 +174,20 @@ if [[ -n $guest_abi ]]; then
 fi
 if [[ -n $guest_arm ]]; then
     case "$guest_arm" in
-        native16|fused16|fused4|compact16|direct4|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
+        native16|native16x3|fused16|fused4|compact16|compact16x3|direct4|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
         *)
             echo "unsupported XRAGE_GUEST_ARM: $guest_arm" >&2
             exit 2
             ;;
     esac
 fi
-if [[ $result_scale == 3 &&
-      ($guest_arm == fused16 || $guest_arm == fused4) ]]; then
-    echo "fused XRAGE guest arms cannot apply a post-gather multiply" >&2
+if [[ $result_scale == 3 ]]; then
+    [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ]] || {
+        echo "scale 3 requires native16x3 or compact16x3 guest arm" >&2
+        exit 2
+    }
+elif [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ]]; then
+    echo "x3 guest arms require XRAGE_RESULT_SCALE=3" >&2
     exit 2
 fi
 if [[ -n $debug_flags ]]; then
@@ -214,7 +218,6 @@ options="-f $input"
 if [[ -n $guest_arm ]]; then
     options+=" --maa-arm $guest_arm"
 fi
-options+=" --maa-result-scale $result_scale"
 
 {
     printf 'source_commit=%s\n' "$simulator_source_commit"

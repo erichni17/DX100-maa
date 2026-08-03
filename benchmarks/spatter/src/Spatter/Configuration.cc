@@ -596,7 +596,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             } else {
                 maa_stream_load<int>(pattern_int.data(), reg1, reg2, reg3,
                                      tile1);
-                if (maa_arm == "compact16") {
+                if (maa_arm == "compact16" || maa_arm == "compact16x3") {
                     maa_indirect_load_virtual<double>(
                         sparse.data(), tile1, tile2, dense.data() + j);
                 } else if (maa_arm == "fused16" || maa_arm == "fused4") {
@@ -640,10 +640,11 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             maa_stream_store<double>(dense.data(), reg1, reg2, reg3, tile2);
 #endif
 #endif
-            wait_ready(maa_result_scale == 3 && maa_arm == "native16" ? tile3
-                                                                      : tile2);
+            const bool native_multiply =
+                maa_result_scale == 3 && maa_arm == "native16x3";
+            wait_ready(native_multiply ? tile3 : tile2);
 #ifdef MAA_XRAGE_RUNTIME_ARMS
-            if (maa_result_scale == 3 && maa_arm != "native16") {
+            if (maa_arm == "compact16x3") {
                 for (int k = j; k < chunk_end; ++k)
                     dense[k] *= 3.0;
             }

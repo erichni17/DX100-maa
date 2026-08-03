@@ -14,8 +14,8 @@ LABELS = ("native_scale1", "direct_scale1", "native_scale3", "direct_scale3")
 EXPECTED = {
     "native_scale1": ("native", "native16", 1),
     "direct_scale1": ("compact", "compact16", 1),
-    "native_scale3": ("native", "native16", 3),
-    "direct_scale3": ("compact", "compact16", 3),
+    "native_scale3": ("native", "native16x3", 3),
+    "direct_scale3": ("compact", "compact16x3", 3),
 }
 DRAM_RE = re.compile(
     r"^\s*CH(?P<channel>[0-9]+)_num_(?P<command>RD|WR|ACT|PRE)_commands_T:"

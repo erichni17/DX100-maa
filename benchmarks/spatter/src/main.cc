@@ -78,32 +78,22 @@ int main(int argc, char **argv) {
         return -1;
 
 #ifdef MAA_XRAGE_RUNTIME_ARMS
-    if (cl.maa_result_scale != 1 && cl.maa_result_scale != 3) {
-        std::cerr << "Runtime XRAGE result scale must be 1 or 3" << std::endl;
-        return -1;
-    }
     if (cl.maa_arm != "native16" && cl.maa_arm != "fused16" &&
-        cl.maa_arm != "fused4" &&
+        cl.maa_arm != "native16x3" && cl.maa_arm != "fused4" &&
         cl.maa_arm != "compact16" && cl.maa_arm != "direct4" &&
+        cl.maa_arm != "compact16x3" &&
         cl.maa_arm != "direct4warm" && cl.maa_arm != "direct4prefetch" &&
         cl.maa_arm != "direct4fusedprefetch") {
-        std::cerr << "Runtime XRAGE arm must be native16, fused16, fused4, "
-                     "compact16, direct4, direct4warm, direct4prefetch, or "
-                     "direct4fusedprefetch"
-                  << std::endl;
-        return -1;
-    }
-    if (cl.maa_result_scale == 3 &&
-        (cl.maa_arm == "fused16" || cl.maa_arm == "fused4")) {
-        std::cerr
-            << "The fused SPD-to-memory opcode cannot apply a post-gather "
-                     "multiply"
+        std::cerr << "Runtime XRAGE arm must be native16, native16x3, "
+                     "fused16, fused4, compact16, compact16x3, direct4, "
+                     "direct4warm, direct4prefetch, or direct4fusedprefetch"
                   << std::endl;
         return -1;
     }
     for (auto &config : cl.configs) {
         config->maa_arm = cl.maa_arm;
-        config->maa_result_scale = cl.maa_result_scale;
+        config->maa_result_scale =
+            cl.maa_arm == "native16x3" || cl.maa_arm == "compact16x3" ? 3 : 1;
     }
 #endif
 
