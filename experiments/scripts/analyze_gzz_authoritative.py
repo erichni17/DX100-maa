@@ -186,6 +186,20 @@ def write_outputs(
     if issues:
         lines.extend(["", "Issues:", *[f"- {issue}" for issue in issues]])
     (run_root / "README.md").write_text("\n".join(lines) + "\n")
+    if not issues:
+        result_rows = [latest_result(run_root / f"t{tile}") for tile in TILES]
+        fields = list(result_rows[0])
+        if any(not row or list(row) != fields for row in result_rows):
+            raise ValueError("point result schemas do not match")
+        destination = run_root / "promoted_results_provenance_v2.tsv"
+        temporary = destination.with_name(f".{destination.name}.tmp")
+        with temporary.open("w", newline="") as handle:
+            writer = csv.DictWriter(
+                handle, delimiter="\t", fieldnames=fields, lineterminator="\n"
+            )
+            writer.writeheader()
+            writer.writerows(result_rows)
+        temporary.replace(destination)
 
 
 def main() -> int:
