@@ -1323,10 +1323,10 @@ def audit_run_completion(path: Path, result: dict[str, str]) -> dict:
         or errors != "0"
     ):
         raise AuditError(f"{path}: run/result correctness mismatch")
-    roi_markers = re.findall(r"^ROI .+$", log, re.M)
+    roi_markers = re.findall(r"^ROI.*$", log, re.M)
     if roi_markers != ["ROI Ended"]:
         raise AuditError(f"{path}: wrong ROI marker count")
-    all_exit_markers = re.findall(r"^Exiting @ tick .+$", log, re.M)
+    all_exit_markers = re.findall(r"^Exiting @ tick.*$", log, re.M)
     m5_exit_ticks = re.findall(
         r"^Exiting @ tick ([0-9]+) because "
         r"m5_exit instruction encountered$",

@@ -752,6 +752,14 @@ class HybridOverheadAttributionTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.AuditError, "ROI marker"):
             MODULE.audit_run_completion(run, result)
 
+        log.write_text(complete_log + "ROI\n")
+        with self.assertRaisesRegex(MODULE.AuditError, "ROI marker"):
+            MODULE.audit_run_completion(run, result)
+
+        log.write_text(complete_log + "Exiting @ tick\n")
+        with self.assertRaisesRegex(MODULE.AuditError, "terminal m5_exit"):
+            MODULE.audit_run_completion(run, result)
+
     def test_run_completion_binds_log_hash_errors_and_exact_oracle(self):
         run, result = self.make_completion_fixture()
         log = run / "restore.log"
