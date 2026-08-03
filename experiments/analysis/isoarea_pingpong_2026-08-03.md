@@ -1,5 +1,12 @@
 # Iso-area transparent-SPD ping-pong experiment
 
+> **Superseded provenance and interpretation.** This record came from a
+> mutable-binary run whose binary manifest no longer verifies.  Its numerical
+> values are retained as historical observations only and are superseded by
+> the exact-clean-`c26a082` reproduction record.  In particular, the trace
+> intersections below are issue-to-completion *interval-envelope* overlaps;
+> they do not prove cycle-aligned simultaneous useful STREAM and ALU work.
+
 This is a completed gem5 measurement, not a fixed-duration trace projection.
 All three arms ran the same four-core FP64 virtual-tile consumer, binary,
 logical geometry, producer, memory system, queues, response credits, and
@@ -7,24 +14,27 @@ completion rule. All produced hash `7228541527853630339` with zero errors.
 
 ## Result
 
-| Arm | simTicks | Descriptor interval | Fill ticks | ALU ticks | Store ticks | Real cross-unit overlap |
+| Arm | simTicks | Descriptor interval | Fill ticks | ALU ticks | Store ticks | Cross-unit interval-envelope overlap |
 |---|---:|---:|---:|---:|---:|---:|
 | serial 4K | 46,659,849 | 44,590,918 | 1,292,690 | 641,024 | 7,602,770 | 0 |
 | serial 2K | 47,193,514 | 45,124,270 | 1,292,690 | 641,024 | 8,549,282 | 0 |
 | two-half 2K ping-pong | 46,647,329 | 44,578,085 | 1,293,003 | 642,589 | 8,445,366 | 642,589 |
 
-Serial 2K regresses 1.143735% versus serial 4K. Ping-pong recovers the 2K
-chunking cost and is 1.170882% faster than serial 2K, but only 0.026840%
-faster than serial 4K. That last value is the fair headline: on this small
-workload, the professor's overlap is real but its end-to-end benefit over the
-existing 4K serialization is negligible.
+Serial 2K regresses 1.143735% versus serial 4K.  The serial-2K versus
+ping-pong-2K comparison is the treatment-only ping-pong comparison: both use
+2K chunks, with controller mode the intended treatment.  Ping-pong is
+1.170882% faster than that control.  The serial-4K comparison is iso-area
+overall-design context, not treatment-only evidence, because it also changes
+chunk size; its 0.026840% difference must be interpreted accordingly.
 
-The interval checker found eight legal ping-pong intersections: each 2K ALU
-interval overlaps either the next half's fill or the preceding half's store.
-Their total is 642,589 ticks. It found no STREAM/STREAM intersection and no
-ALU/ALU intersection. Each page obeys fill-complete <= compute-issue and
-compute-complete <= store-issue. Exact per-chunk intervals are in the adjacent
-JSON evidence file.
+The interval checker found eight legal issue-to-completion envelope
+intersections: each 2K ALU interval intersects either the next half's fill or
+the preceding half's store. Their total envelope duration is 642,589 ticks.
+It found no STREAM/STREAM or ALU/ALU interval intersection. Each page obeys
+fill-complete <= compute-issue and compute-complete <= store-issue. These
+intervals establish legal scheduling envelopes, not proven concurrent useful
+work; that would require direct dual-progress instrumentation. Exact per-chunk
+intervals are in the adjacent JSON evidence file.
 
 ## Fixed-area ledger
 

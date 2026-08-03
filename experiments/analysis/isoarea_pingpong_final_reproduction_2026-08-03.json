@@ -1,0 +1,814 @@
+{
+  "exact_output_match": true,
+  "runs": [
+    {
+      "actual_cross_unit_overlap_ticks": 0,
+      "case": "isoarea_serial_4k",
+      "chunk_elements": 4096,
+      "chunks": 4,
+      "cross_unit_overlaps": [],
+      "descriptor_interval_ticks": 44441304,
+      "intervals": [
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3156594045,
+          "page": 0,
+          "src_slot": -1,
+          "start": 3156270716,
+          "ticks": 323329
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3156754301,
+          "page": 0,
+          "src_slot": 0,
+          "start": 3156594045,
+          "ticks": 160256
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3159530924,
+          "page": 0,
+          "src_slot": 0,
+          "start": 3156754301,
+          "ticks": 2776623
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3164463491,
+          "page": 1,
+          "src_slot": -1,
+          "start": 3164140162,
+          "ticks": 323329
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3164623747,
+          "page": 1,
+          "src_slot": 0,
+          "start": 3164463491,
+          "ticks": 160256
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3167002234,
+          "page": 1,
+          "src_slot": 0,
+          "start": 3164623747,
+          "ticks": 2378487
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3167325250,
+          "page": 2,
+          "src_slot": -1,
+          "start": 3167002234,
+          "ticks": 323016
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3167485506,
+          "page": 2,
+          "src_slot": 0,
+          "start": 3167325250,
+          "ticks": 160256
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3168930314,
+          "page": 2,
+          "src_slot": 0,
+          "start": 3167485506,
+          "ticks": 1444808
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3169253330,
+          "page": 3,
+          "src_slot": -1,
+          "start": 3168930314,
+          "ticks": 323016
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3169413586,
+          "page": 3,
+          "src_slot": 0,
+          "start": 3169253330,
+          "ticks": 160256
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 4096,
+          "end": 3171246514,
+          "page": 3,
+          "src_slot": 0,
+          "start": 3169413586,
+          "ticks": 1832928
+        }
+      ],
+      "mode": 0,
+      "output_hash": "7228541527853630339",
+      "requests": {
+        "dram_reads": 26988,
+        "source_reads": 9642,
+        "write_completions": 5292,
+        "write_issues": 5292
+      },
+      "retire_tick": 3171246514,
+      "rows": {
+        "dram_activates": 5577,
+        "dram_precharges": 4486,
+        "inserted": 1395,
+        "unique": 129
+      },
+      "simTicks": 46504601,
+      "stage_ticks": {
+        "compute": 641024,
+        "fill": 1292690,
+        "store": 8432846
+      },
+      "submit_tick": 3126805210,
+      "trace_sha256": "26f546d068567ce85232eb180aa75a3d42727d90dc2e3e317f35956dc424fb59"
+    },
+    {
+      "actual_cross_unit_overlap_ticks": 0,
+      "case": "isoarea_serial_2k",
+      "chunk_elements": 2048,
+      "chunks": 8,
+      "cross_unit_overlaps": [],
+      "descriptor_interval_ticks": 44824416,
+      "intervals": [
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3156432537,
+          "page": 0,
+          "src_slot": -1,
+          "start": 3156270716,
+          "ticks": 161821
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3156512665,
+          "page": 0,
+          "src_slot": 0,
+          "start": 3156432537,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3157881414,
+          "page": 0,
+          "src_slot": 0,
+          "start": 3156512665,
+          "ticks": 1368749
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3158042922,
+          "page": 1,
+          "src_slot": -1,
+          "start": 3157881414,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3158123050,
+          "page": 1,
+          "src_slot": 0,
+          "start": 3158042922,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3159388822,
+          "page": 1,
+          "src_slot": 0,
+          "start": 3158123050,
+          "ticks": 1265772
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3164311373,
+          "page": 2,
+          "src_slot": -1,
+          "start": 3164149552,
+          "ticks": 161821
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3164391501,
+          "page": 2,
+          "src_slot": 0,
+          "start": 3164311373,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3165716117,
+          "page": 2,
+          "src_slot": 0,
+          "start": 3164391501,
+          "ticks": 1324616
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3165877625,
+          "page": 3,
+          "src_slot": -1,
+          "start": 3165716117,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3165957753,
+          "page": 3,
+          "src_slot": 0,
+          "start": 3165877625,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3167012876,
+          "page": 3,
+          "src_slot": 0,
+          "start": 3165957753,
+          "ticks": 1055123
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3167174384,
+          "page": 4,
+          "src_slot": -1,
+          "start": 3167012876,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3167254512,
+          "page": 4,
+          "src_slot": 0,
+          "start": 3167174384,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3168069251,
+          "page": 4,
+          "src_slot": 0,
+          "start": 3167254512,
+          "ticks": 814739
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3168230759,
+          "page": 5,
+          "src_slot": -1,
+          "start": 3168069251,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3168310887,
+          "page": 5,
+          "src_slot": 0,
+          "start": 3168230759,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3169125313,
+          "page": 5,
+          "src_slot": 0,
+          "start": 3168310887,
+          "ticks": 814426
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3169286821,
+          "page": 6,
+          "src_slot": -1,
+          "start": 3169125313,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3169366949,
+          "page": 6,
+          "src_slot": 0,
+          "start": 3169286821,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3170181688,
+          "page": 6,
+          "src_slot": 0,
+          "start": 3169366949,
+          "ticks": 814739
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3170343196,
+          "page": 7,
+          "src_slot": -1,
+          "start": 3170181688,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3170423324,
+          "page": 7,
+          "src_slot": 0,
+          "start": 3170343196,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3171629626,
+          "page": 7,
+          "src_slot": 0,
+          "start": 3170423324,
+          "ticks": 1206302
+        }
+      ],
+      "mode": 1,
+      "output_hash": "7228541527853630339",
+      "requests": {
+        "dram_reads": 26988,
+        "source_reads": 9642,
+        "write_completions": 5292,
+        "write_issues": 5292
+      },
+      "retire_tick": 3171629626,
+      "rows": {
+        "dram_activates": 5548,
+        "dram_precharges": 4458,
+        "inserted": 1395,
+        "unique": 129
+      },
+      "simTicks": 46900233,
+      "stage_ticks": {
+        "compute": 641024,
+        "fill": 1292690,
+        "store": 8664466
+      },
+      "submit_tick": 3126805210,
+      "trace_sha256": "0f842216c45132b6e5aec4396e8d992dc1c6442e260af057a3cc130246aaea64"
+    },
+    {
+      "actual_cross_unit_overlap_ticks": 642589,
+      "case": "isoarea_pingpong_2k",
+      "chunk_elements": 2048,
+      "chunks": 8,
+      "cross_unit_overlaps": [
+        {
+          "compute_page": 0,
+          "stream_action": 1,
+          "stream_page": 1,
+          "ticks": 80128
+        },
+        {
+          "compute_page": 1,
+          "stream_action": 3,
+          "stream_page": 0,
+          "ticks": 80441
+        },
+        {
+          "compute_page": 2,
+          "stream_action": 1,
+          "stream_page": 3,
+          "ticks": 80441
+        },
+        {
+          "compute_page": 3,
+          "stream_action": 3,
+          "stream_page": 2,
+          "ticks": 80128
+        },
+        {
+          "compute_page": 4,
+          "stream_action": 1,
+          "stream_page": 5,
+          "ticks": 80441
+        },
+        {
+          "compute_page": 5,
+          "stream_action": 3,
+          "stream_page": 4,
+          "ticks": 80128
+        },
+        {
+          "compute_page": 6,
+          "stream_action": 1,
+          "stream_page": 7,
+          "ticks": 80441
+        },
+        {
+          "compute_page": 7,
+          "stream_action": 3,
+          "stream_page": 6,
+          "ticks": 80441
+        }
+      ],
+      "descriptor_interval_ticks": 44551793,
+      "intervals": [
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3156432537,
+          "page": 0,
+          "src_slot": -1,
+          "start": 3156270716,
+          "ticks": 161821
+        },
+        {
+          "action": 1,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3156594358,
+          "page": 1,
+          "src_slot": -1,
+          "start": 3156432537,
+          "ticks": 161821
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3156512665,
+          "page": 0,
+          "src_slot": 0,
+          "start": 3156432537,
+          "ticks": 80128
+        },
+        {
+          "action": 2,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3156674799,
+          "page": 1,
+          "src_slot": 1,
+          "start": 3156594358,
+          "ticks": 80441
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3158150907,
+          "page": 0,
+          "src_slot": 0,
+          "start": 3156594358,
+          "ticks": 1556549
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3159345628,
+          "page": 1,
+          "src_slot": 1,
+          "start": 3158150907,
+          "ticks": 1194721
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3164303235,
+          "page": 2,
+          "src_slot": -1,
+          "start": 3164141414,
+          "ticks": 161821
+        },
+        {
+          "action": 1,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3164464743,
+          "page": 3,
+          "src_slot": -1,
+          "start": 3164303235,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3164383676,
+          "page": 2,
+          "src_slot": 0,
+          "start": 3164303235,
+          "ticks": 80441
+        },
+        {
+          "action": 2,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3164544871,
+          "page": 3,
+          "src_slot": 1,
+          "start": 3164464743,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3165721125,
+          "page": 2,
+          "src_slot": 0,
+          "start": 3164464743,
+          "ticks": 1256382
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3166873591,
+          "page": 3,
+          "src_slot": 1,
+          "start": 3165721125,
+          "ticks": 1152466
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3167194729,
+          "page": 4,
+          "src_slot": -1,
+          "start": 3167033221,
+          "ticks": 161508
+        },
+        {
+          "action": 1,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3167356237,
+          "page": 5,
+          "src_slot": -1,
+          "start": 3167194729,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3167275170,
+          "page": 4,
+          "src_slot": 0,
+          "start": 3167194729,
+          "ticks": 80441
+        },
+        {
+          "action": 2,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3167436365,
+          "page": 5,
+          "src_slot": 1,
+          "start": 3167356237,
+          "ticks": 80128
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3168196642,
+          "page": 4,
+          "src_slot": 0,
+          "start": 3167356237,
+          "ticks": 840405
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3169011694,
+          "page": 5,
+          "src_slot": 1,
+          "start": 3168196642,
+          "ticks": 815052
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3169173202,
+          "page": 6,
+          "src_slot": -1,
+          "start": 3169011694,
+          "ticks": 161508
+        },
+        {
+          "action": 1,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3169334710,
+          "page": 7,
+          "src_slot": -1,
+          "start": 3169173202,
+          "ticks": 161508
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3169253643,
+          "page": 6,
+          "src_slot": 0,
+          "start": 3169173202,
+          "ticks": 80441
+        },
+        {
+          "action": 2,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3169415151,
+          "page": 7,
+          "src_slot": 1,
+          "start": 3169334710,
+          "ticks": 80441
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3170149762,
+          "page": 6,
+          "src_slot": 0,
+          "start": 3169334710,
+          "ticks": 815052
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3171357003,
+          "page": 7,
+          "src_slot": 1,
+          "start": 3170149762,
+          "ticks": 1207241
+        }
+      ],
+      "mode": 2,
+      "output_hash": "7228541527853630339",
+      "requests": {
+        "dram_reads": 26987,
+        "source_reads": 9642,
+        "write_completions": 5293,
+        "write_issues": 5293
+      },
+      "retire_tick": 3171357003,
+      "rows": {
+        "dram_activates": 5552,
+        "dram_precharges": 4463,
+        "inserted": 1395,
+        "unique": 129
+      },
+      "simTicks": 46627923,
+      "stage_ticks": {
+        "compute": 642589,
+        "fill": 1293003,
+        "store": 8837868
+      },
+      "submit_tick": 3126805210,
+      "trace_sha256": "413924e0c93a74518ad423b44a1276c9aa753f013491f7617339e87b57e6bcf9"
+    }
+  ],
+  "schema": 1
+}
