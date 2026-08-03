@@ -78,6 +78,10 @@ int main(int argc, char **argv) {
         return -1;
 
 #ifdef MAA_XRAGE_RUNTIME_ARMS
+    if (cl.maa_result_scale != 1 && cl.maa_result_scale != 3) {
+        std::cerr << "Runtime XRAGE result scale must be 1 or 3" << std::endl;
+        return -1;
+    }
     if (cl.maa_arm != "native16" && cl.maa_arm != "fused16" &&
         cl.maa_arm != "fused4" &&
         cl.maa_arm != "compact16" && cl.maa_arm != "direct4" &&
@@ -89,8 +93,18 @@ int main(int argc, char **argv) {
                   << std::endl;
         return -1;
     }
-    for (auto &config : cl.configs)
+    if (cl.maa_result_scale == 3 &&
+        (cl.maa_arm == "fused16" || cl.maa_arm == "fused4")) {
+        std::cerr
+            << "The fused SPD-to-memory opcode cannot apply a post-gather "
+                     "multiply"
+                  << std::endl;
+        return -1;
+    }
+    for (auto &config : cl.configs) {
         config->maa_arm = cl.maa_arm;
+        config->maa_result_scale = cl.maa_result_scale;
+    }
 #endif
 
 #ifdef MAA_VERIFY_GATHER_POST_ROI

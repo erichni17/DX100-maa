@@ -9,6 +9,7 @@ fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
 json_source=$(realpath "$2")
+gem5_home=$(realpath "${XRAGE_GEM5_HOME:-$root}")
 build="$out/build"
 target=spatter_maa_xrage_runtime_verify_16K
 
@@ -20,7 +21,7 @@ target=spatter_maa_xrage_runtime_verify_16K
     echo "invalid offline nlohmann-json source: $json_source" >&2
     exit 2
 }
-[[ -f $root/util/m5/build/x86/abi/x86/m5op.S ]] || {
+[[ -f $gem5_home/util/m5/build/x86/abi/x86/m5op.S ]] || {
     echo "missing built m5ops assembly source" >&2
     exit 2
 }
@@ -37,7 +38,7 @@ configure_cmd=(
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_CXX_FLAGS=-I$json_source/include
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-    -DGEM5_HOME="$root"
+    -DGEM5_HOME="$gem5_home"
     -DMAA_HOME="$root/benchmarks/API"
     -DMAA_MEM_SIZE=2147483648
     -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON="$json_source"
@@ -66,6 +67,7 @@ binary="$build/$target"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'target=%s\n' "$target"
+    printf 'gem5_home=%s\n' "$gem5_home"
     printf 'maa_guest_abi_tile_elements=16384\n'
     printf 'cmake=%s\n' "$(cmake --version | head -1)"
     printf 'cxx=%s\n' "$("${CXX:-c++}" --version | head -1)"
