@@ -59,6 +59,12 @@ class AnalyzeGzzAuthoritativeTest(unittest.TestCase):
             self.assertTrue(all(row["status"] == "valid" for row in rows))
             base = next(row for row in rows if row["tile"] == 16384)
             self.assertEqual(1.0, base["performance_16k"])
+            MODULE.write_outputs(root, rows, [])
+            with (
+                root / "promoted_results_provenance_v2.tsv"
+            ).open() as handle:
+                promoted = list(MODULE.csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(7, len(promoted))
 
     def test_checkpoint_must_bind_benchmark(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -72,6 +78,11 @@ class AnalyzeGzzAuthoritativeTest(unittest.TestCase):
             rows = MODULE.collect(root)
             self.assertEqual("invalid", rows[0]["status"])
             self.assertIn("checkpoint is not keyed", rows[0]["notes"])
+            issues = MODULE.validate_cohort(rows)
+            MODULE.write_outputs(root, rows, issues)
+            self.assertFalse(
+                (root / "promoted_results_provenance_v2.tsv").exists()
+            )
 
 
 if __name__ == "__main__":
