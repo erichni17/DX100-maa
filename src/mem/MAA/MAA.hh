@@ -14,6 +14,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "mem/MAA/IF.hh"
+#include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
@@ -44,7 +45,6 @@ class Invalidator;
 class ALUUnit;
 class RangeFuserUnit;
 class Instruction;
-class LogicalSPDCacheGem5Bridge;
 typedef Instruction *InstructionPtr;
 struct Register;
 typedef Register *RegisterPtr;
@@ -510,6 +510,48 @@ protected:
     bool dispatchTransparentMicroOp(
         const TransparentSPDController::Request &request);
     void tryIssueTransparentMicroOp();
+    struct LogicalSPDSenderState : public Packet::SenderState
+    {
+        LogicalSPDCacheGem5Bridge::CallbackToken token{};
+        const LogicalSPDCacheGem5Bridge::Runtime::Transport::
+            RequestIdentity *request = nullptr;
+        const LogicalSPDCacheGem5Bridge::Runtime::Transport::RouteToken
+            *route = nullptr;
+        uint32_t packetIncarnation = 0;
+        uint32_t requestIncarnation = 0;
+        uint8_t tokenDepth = 0;
+        uint8_t tokenRecord = 0;
+        uint16_t tokenEpoch = 0;
+        uint32_t tokenActionID = 0;
+        uint8_t callbackPort = 0;
+        Addr logicalAddress = 0;
+        uint16_t size = 0;
+        LogicalSPDCacheGem5Bridge::Runtime::Transport::Command command =
+            LogicalSPDCacheGem5Bridge::Runtime::Transport::Command::ReadReq;
+    };
+    struct LogicalSPDExecution
+    {
+        bool active = false;
+        LogicalSPDCacheGem5Bridge::CallbackToken token{};
+        PacketPtr completionPacket = nullptr;
+        PacketPtr retryPacket = nullptr;
+        uint8_t retryPort = 0;
+        int coreID = -1;
+        ContextID contextID = InvalidContextID;
+        Addr pc = 0;
+    };
+    std::vector<LogicalSPDExecution> logicalSpdExecutions;
+    bool submitLogicalSPDDescriptor(
+        InstructionPtr instruction, PacketPtr completionPacket);
+    PacketPtr makeLogicalSPDPacket(
+        LogicalSPDExecution &execution,
+        const LogicalSPDCacheGem5Bridge::Runtime::Transport::RequestPacket
+            &request);
+    bool recvLogicalSPDTimingResp(PacketPtr pkt);
+    void serviceLogicalSPD();
+    void scheduleLogicalSPDEvent(int latency = 0);
+    void notifyLogicalSPDRetry();
+    EventFunctionWrapper logicalSpdEvent;
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;
     void scheduleDispatchInstructionEvent(int latency = 0);

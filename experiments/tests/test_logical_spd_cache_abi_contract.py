@@ -87,8 +87,10 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "num_regs",
             "getAddrRegion(data)",
             "validateDestinationSpan",
+            "validateSourceSpan",
             "Rejected logical ALU_SCALAR ABI shape",
-            "Rejected logical ALU_SCALAR destination backing",
+            "Rejected logical ALU_SCALAR source backing",
+            "Rejected logical ALU_SCALAR destination ",
             "controller state mutation",
         ):
             self.assertIn(evidence, self.cpu_port)
@@ -100,40 +102,39 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "validateLogicalALUScalar", logical
         )
         range_validation = self.cpu_port.index(
-            "const int backing_addr_range_id = getAddrRegion(data)",
+            "const int source_range = getAddrRegion(data)",
             shape_validation,
         )
-        span_validation = self.cpu_port.index(
-            "validateDestinationSpan", range_validation
+        source_span_validation = self.cpu_port.index(
+            "validateSourceSpan", range_validation
         )
-        fail_closed = self.cpu_port.index(
-            "panic_if(\n                        true,\n"
-            '                        "Logical ALU_SCALAR ABI is decoded',
-            span_validation,
+        destination_span_validation = self.cpu_port.index(
+            "validateDestinationSpan", source_span_validation
         )
-        backing_mutation = self.cpu_port.index(
-            "current_instruction->backingAddr = data", fail_closed
+        source_mutation = self.cpu_port.index(
+            "current_instruction->logicalSourceBackingAddr = data",
+            destination_span_validation,
         )
         if_admission = self.cpu_port.index(
-            "my_instruction_recvs[instruction_id] = true", fail_closed
+            "my_instruction_recvs[instruction_id] = true", source_mutation
         )
         dispatch = self.cpu_port.index(
-            "scheduleDispatchInstructionEvent()", fail_closed
+            "scheduleDispatchInstructionEvent()", if_admission
         )
         self.assertLess(shape_validation, range_validation)
-        self.assertLess(range_validation, span_validation)
-        self.assertLess(span_validation, fail_closed)
-        self.assertLess(fail_closed, backing_mutation)
-        self.assertLess(fail_closed, if_admission)
-        self.assertLess(fail_closed, dispatch)
-        fail_closed_branch = self.cpu_port[shape_validation:backing_mutation]
+        self.assertLess(range_validation, source_span_validation)
+        self.assertLess(source_span_validation, destination_span_validation)
+        self.assertLess(destination_span_validation, source_mutation)
+        self.assertLess(source_mutation, if_admission)
+        self.assertLess(if_admission, dispatch)
+        validation_branch = self.cpu_port[shape_validation:source_mutation]
         for mutation in (
             "my_instruction_recvs[instruction_id] = true",
             "scheduleDispatchInstructionEvent()",
             "ifile->",
             "spd->",
         ):
-            self.assertNotIn(mutation, fail_closed_branch)
+            self.assertNotIn(mutation, validation_branch)
 
     def test_scalar_shape_validation_is_complete_and_payload_free(
         self,
@@ -151,6 +152,8 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "ExtraRegisterOperand",
             "Conditional",
             "UnexpectedBaseAddress",
+            "MissingSourceBacking",
+            "NullSourceBacking",
             "MissingDestinationBacking",
             "NullDestinationBacking",
             "MisalignedDestinationBacking",
@@ -173,6 +176,8 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
             "INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc",
             "*INSTR_baseaddr = NA_UINT64",
             "*INSTR_backingaddr = (uint64_t)destination_backing",
+            "*INSTR_indexaddr = (uint64_t)source_backing",
+            "logical_backing_bytes",
             "scalar_reg",
         ):
             self.assertIn(evidence, helper)

@@ -22,6 +22,10 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         cls.maa_hh = (MAA_DIR / "MAA.hh").read_text()
         cls.maa_cc = (MAA_DIR / "MAA.cc").read_text()
         cls.sconscript = (MAA_DIR / "SConscript").read_text()
+        cls.live_runner = (
+            ROOT / "experiments" / "scripts" /
+            "run_logical_spd_cache_live_smoke.sh"
+        ).read_text()
 
     def test_runtime_owns_exact_payload(self) -> None:
         for evidence in (
@@ -67,7 +71,7 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.spd_hh + self.spd_cc)
 
-    def test_maa_owns_one_inert_bridge(self) -> None:
+    def test_maa_owns_one_authenticated_live_bridge(self) -> None:
         self.assertIn(
             "std::unique_ptr<LogicalSPDCacheGem5Bridge> logicalSpdBridge",
             self.maa_hh,
@@ -83,8 +87,19 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
             self.bridge_hh,
         )
         self.assertIn(
-            "bool admissionClosed() const { return true; }", self.bridge_hh
+            "bool admissionClosed() const { return false; }", self.bridge_hh
         )
+        for evidence in (
+            "submitLogicalSPDDescriptor",
+            "recvLogicalSPDTimingResp",
+            "serviceLogicalSPD",
+            "compute != Slice::Status::Busy",
+            "elements=%lu",
+            "static_cast<unsigned long>(LogicalElements)",
+            "logicalSpdBridge->registerSource",
+            "logicalSpdBridge->receive",
+        ):
+            self.assertIn(evidence, self.maa_hh + self.maa_cc)
         self.assertNotIn("sendTimingReq", self.bridge_hh + self.bridge_cc)
         self.assertNotIn(
             "my_outstanding_pkt_map", self.bridge_hh + self.bridge_cc
@@ -102,6 +117,15 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         self.assertIn("runtimes.reserve(numMaas)", self.bridge_cc)
         self.assertIn("maaId < numMaas", self.bridge_cc)
         self.assertIn("runtimeCount() const", self.bridge_hh)
+
+    def test_live_runner_requires_clean_source_and_unique_terminals(self) -> None:
+        for evidence in (
+            "[[ ! -s $out/source_status.txt ]]",
+            "[[ ! -s $out/source.diff ]]",
+            "^Exiting @ tick [0-9]+ because checkpoint$",
+            "^Exiting @ tick [0-9]+ because m5_exit instruction encountered$",
+        ):
+            self.assertIn(evidence, self.live_runner)
 
 
 if __name__ == "__main__":

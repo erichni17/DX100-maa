@@ -44,6 +44,29 @@ Integral_t calc_log2(Integral_t val) {
 
 namespace gem5 {
 
+namespace {
+
+class ImmediateLogicalSPDTranslation final : public BaseMMU::Translation
+{
+  public:
+    void markDelayed() override { delayed = true; }
+
+    void finish(const Fault &translationFault, const RequestPtr &req,
+                ThreadContext *, BaseMMU::Mode) override
+    {
+        fault = translationFault;
+        address = req->getPaddr();
+        finished = true;
+    }
+
+    Fault fault = NoFault;
+    Addr address = 0;
+    bool delayed = false;
+    bool finished = false;
+};
+
+} // anonymous namespace
+
 MAA::MAAResponsePort::MAAResponsePort(const std::string &_name, MAA &_maa, const std::string &_label)
     : QueuedResponsePort(_name, queue),
       maa{_maa},
@@ -108,6 +131,7 @@ MAA::MAA(const MAAParams &p)
       maxRegionID(-1),
       system(p.system),
       mmu(p.mmu),
+      logicalSpdEvent([this] { serviceLogicalSPD(); }, name()),
       issueInstructionEvent([this] { issueInstruction(); }, name()),
       dispatchInstructionEvent([this] { dispatchInstruction(); }, name()),
       dispatchRegisterEvent([this] { dispatchRegister(); }, name()),
@@ -159,6 +183,7 @@ MAA::MAA(const MAAParams &p)
     rf = new RF(num_regs);
     logicalSpdBridge =
         std::make_unique<LogicalSPDCacheGem5Bridge>(num_maas);
+    logicalSpdExecutions.resize(num_maas);
     num_instructions_per_maa = num_instructions_per_core * num_cores_per_maas;
     num_instructions_total = num_instructions_per_maa * num_maas;
     ifile = new IF(num_instructions_per_maa, num_maas, num_tiles, this);
@@ -968,6 +993,352 @@ void MAA::tryIssueTransparentMicroOp() {
     try_request(transparentController.pendingALU());
     try_request(transparentController.pendingStream());
 }
+
+bool
+MAA::submitLogicalSPDDescriptor(
+    InstructionPtr instruction, PacketPtr completionPacket)
+{
+    using Bridge = LogicalSPDCacheGem5Bridge;
+    using Slice = Bridge::Runtime::Slice;
+    constexpr std::size_t LogicalElements =
+        Slice::Pages * Slice::PageElements;
+
+    panic_if(!instruction->isLogicalALUScalar(),
+             "Cannot submit a non-logical instruction to logical SPD\n");
+    panic_if(instruction->maa_id < 0 ||
+                 instruction->maa_id >= static_cast<int>(num_maas),
+             "Logical SPD instruction has invalid MAA %d\n",
+             instruction->maa_id);
+    LogicalSPDExecution &execution =
+        logicalSpdExecutions[instruction->maa_id];
+    if (execution.active)
+        return false;
+    panic_if(num_tile_elements != LogicalElements ||
+                 physical_tile_elements != Slice::PageElements,
+             "Logical SPD live slice requires 16K logical and 4K physical "
+             "FP64 elements, got %u/%u\n", num_tile_elements,
+             physical_tile_elements);
+    panic_if(instruction->datatype != Instruction::DataType::FLOAT64_TYPE,
+             "Logical SPD live slice supports FP64 only: %s\n",
+             instruction->print());
+    const Addr sourceBase = instruction->logicalSourceBackingAddr;
+    const Addr destinationBase = instruction->backingAddr;
+    panic_if(sourceBase % Slice::BackingBytes != 0 ||
+                 destinationBase % Slice::BackingBytes != 0,
+             "Logical SPD backing must be aligned to the 16K FP64 span "
+             "(%zu bytes): source=0x%lx destination=0x%lx\n",
+             Slice::BackingBytes, sourceBase, destinationBase);
+    const bool backingOverlap =
+        sourceBase <= destinationBase
+            ? destinationBase - sourceBase < Slice::BackingBytes
+            : sourceBase - destinationBase < Slice::BackingBytes;
+    panic_if(backingOverlap,
+             "Logical SPD source and destination backing spans overlap: "
+             "source=0x%lx destination=0x%lx\n",
+             sourceBase, destinationBase);
+
+    Slice::Operation operation;
+    switch (instruction->optype) {
+      case Instruction::OPType::ADD_OP:
+        operation = Slice::Operation::Add;
+        break;
+      case Instruction::OPType::SUB_OP:
+        operation = Slice::Operation::Sub;
+        break;
+      case Instruction::OPType::MUL_OP:
+        operation = Slice::Operation::Mul;
+        break;
+      case Instruction::OPType::DIV_OP:
+        operation = Slice::Operation::Div;
+        break;
+      case Instruction::OPType::MIN_OP:
+        operation = Slice::Operation::Min;
+        break;
+      case Instruction::OPType::MAX_OP:
+        operation = Slice::Operation::Max;
+        break;
+      default:
+        panic("Logical SPD live slice does not implement operation %d\n",
+              static_cast<int>(instruction->optype));
+    }
+
+    const Bridge::CallbackClaim claim =
+        logicalSpdBridge->claimCallback(instruction->maa_id);
+    panic_if(claim.status != Bridge::LifecycleStatus::Accepted,
+             "Logical SPD callback admission failed with status %d\n",
+             static_cast<int>(claim.status));
+    const Slice::BackingSpan source = {
+        instruction->logicalSourceBackingAddr, Slice::BackingBytes};
+    panic_if(logicalSpdBridge->registerSource(
+                 claim.token, static_cast<uint8_t>(
+                                  instruction->src1LogicalID), source) !=
+                 Slice::Status::Accepted,
+             "Logical SPD source registration failed after ABI validation\n");
+    Slice::Admission admission;
+    admission.sourceLogical =
+        static_cast<uint8_t>(instruction->src1LogicalID);
+    admission.destinationLogical =
+        static_cast<uint8_t>(instruction->dst1LogicalID);
+    admission.destination = {
+        instruction->backingAddr, Slice::BackingBytes};
+    admission.operation = operation;
+    const double scalar = rf->getData<double>(instruction->src1RegID);
+    std::memcpy(&admission.scalarBits, &scalar, sizeof(scalar));
+    panic_if(logicalSpdBridge->admit(claim.token, admission) !=
+                 Slice::Status::Accepted,
+             "Logical SPD operation admission failed after source "
+             "registration\n");
+
+    execution.active = true;
+    execution.token = claim.token;
+    execution.completionPacket = completionPacket;
+    execution.retryPacket = nullptr;
+    execution.retryPort = 0;
+    execution.coreID = instruction->core_id;
+    execution.contextID = instruction->CID;
+    execution.pc = instruction->PC;
+    DPRINTF(MAAVirtualTrace,
+            "event=logical_spd_admit maa=%d generation=%lu incarnation=%lu "
+            "operation=%lu source=0x%lx destination=0x%lx elements=%lu "
+            "page_elements=%u slots=%u\n",
+            instruction->maa_id, claim.token.generation,
+            claim.token.runtimeIdentity, claim.token.identity,
+            instruction->logicalSourceBackingAddr,
+            instruction->backingAddr,
+            static_cast<unsigned long>(LogicalElements),
+            Slice::PageElements, Slice::Slots);
+    scheduleLogicalSPDEvent();
+    return true;
+}
+
+PacketPtr
+MAA::makeLogicalSPDPacket(
+    LogicalSPDExecution &execution,
+    const LogicalSPDCacheGem5Bridge::Runtime::Transport::RequestPacket
+        &logicalRequest)
+{
+    using Transport = LogicalSPDCacheGem5Bridge::Runtime::Transport;
+    panic_if(logicalRequest.request == nullptr ||
+                 logicalRequest.token == nullptr ||
+                 logicalRequest.size != Transport::LineBytes,
+             "Logical SPD transport produced an invalid request handle\n");
+    const int region = getAddrRegion(logicalRequest.address);
+    panic_if(region < 0,
+             "Logical SPD request address 0x%lx left registered regions\n",
+             logicalRequest.address);
+    RequestPtr translationRequest = std::make_shared<Request>(
+        logicalRequest.address, logicalRequest.size, Request::Flags(0),
+        requestorId, execution.pc, execution.contextID);
+    ImmediateLogicalSPDTranslation translation;
+    ThreadContext *tc = system->threads[execution.contextID];
+    const BaseMMU::Mode mode =
+        logicalRequest.command == Transport::Command::ReadReq
+            ? BaseMMU::Read
+            : BaseMMU::Write;
+    mmu->translateTiming(translationRequest, tc, &translation, mode);
+    panic_if(translation.delayed || !translation.finished ||
+                 translation.fault != NoFault,
+             "Logical SPD live slice requires immediate valid address "
+             "translation for 0x%lx\n", logicalRequest.address);
+
+    RequestPtr realRequest = std::make_shared<Request>(
+        translation.address, logicalRequest.size, Request::Flags(0),
+        requestorId);
+    realRequest->setRegion(region);
+    const MemCmd command =
+        logicalRequest.command == Transport::Command::ReadReq
+            ? MemCmd::ReadReq
+            : MemCmd::WriteReq;
+    PacketPtr packet = new Packet(realRequest, command);
+    packet->allocate();
+    if (logicalRequest.command == Transport::Command::WriteReq) {
+        panic_if(logicalRequest.data == nullptr ||
+                     logicalRequest.dataSize != Transport::LineBytes,
+                 "Logical SPD writeback lacks an exact 64-byte snapshot\n");
+        packet->setData(
+            reinterpret_cast<const uint8_t *>(logicalRequest.data));
+    }
+    auto *state = new LogicalSPDSenderState;
+    state->token = execution.token;
+    state->request = logicalRequest.request;
+    state->route = logicalRequest.token;
+    state->packetIncarnation = logicalRequest.incarnation;
+    state->requestIncarnation = logicalRequest.request->incarnation;
+    state->tokenDepth = logicalRequest.tokenDepth;
+    state->tokenRecord = logicalRequest.token->record;
+    state->tokenEpoch = logicalRequest.token->epoch;
+    state->tokenActionID = logicalRequest.token->actionID;
+    state->callbackPort = logicalRequest.callbackPort;
+    state->logicalAddress = logicalRequest.address;
+    state->size = logicalRequest.size;
+    state->command = logicalRequest.command;
+    packet->pushSenderState(state);
+    return packet;
+}
+
+bool
+MAA::recvLogicalSPDTimingResp(PacketPtr pkt)
+{
+    using Transport = LogicalSPDCacheGem5Bridge::Runtime::Transport;
+    auto *peek = dynamic_cast<LogicalSPDSenderState *>(pkt->senderState);
+    if (peek == nullptr)
+        return false;
+    auto *state = dynamic_cast<LogicalSPDSenderState *>(
+        pkt->popSenderState());
+    panic_if(state == nullptr, "Logical SPD response lost sender state\n");
+    Transport::ReturnedHandle returned;
+    returned.incarnation = state->packetIncarnation;
+    returned.request = state->request;
+    returned.requestIncarnation = state->requestIncarnation;
+    returned.token = state->route;
+    returned.tokenDepth = state->tokenDepth;
+    returned.tokenRecord = state->tokenRecord;
+    returned.tokenEpoch = state->tokenEpoch;
+    returned.tokenActionID = state->tokenActionID;
+    returned.address = state->logicalAddress;
+    returned.size = state->size;
+    if (state->command == Transport::Command::ReadReq) {
+        panic_if(pkt->cmd != MemCmd::ReadResp &&
+                     pkt->cmd != MemCmd::ReadExResp,
+                 "Logical SPD read received %s\n", pkt->cmdString());
+        returned.command = pkt->cmd == MemCmd::ReadExResp
+                               ? Transport::Command::ReadRespWithInvalidate
+                               : Transport::Command::ReadResp;
+        returned.data = reinterpret_cast<const std::byte *>(
+            pkt->getConstPtr<uint8_t>());
+        returned.dataSize = pkt->getSize();
+    } else {
+        panic_if(pkt->cmd != MemCmd::WriteResp,
+                 "Logical SPD writeback received %s\n", pkt->cmdString());
+        returned.command = Transport::Command::WriteResp;
+    }
+    const Transport::Result result = logicalSpdBridge->receive(
+        state->token, returned, state->callbackPort);
+    panic_if(!returned.disposed ||
+                 (result.status != Transport::Status::Accepted &&
+                  result.status != Transport::Status::Completed),
+             "Logical SPD rejected timed response with status %d\n",
+             static_cast<int>(result.status));
+    delete state;
+    scheduleLogicalSPDEvent();
+    return true;
+}
+
+void
+MAA::serviceLogicalSPD()
+{
+    using Bridge = LogicalSPDCacheGem5Bridge;
+    using Slice = Bridge::Runtime::Slice;
+    using Transport = Bridge::Runtime::Transport;
+    for (LogicalSPDExecution &execution : logicalSpdExecutions) {
+        if (!execution.active)
+            continue;
+        for (unsigned attempt = 0; attempt <
+             Transport::ResponseCredits + 2; ++attempt) {
+            if (logicalSpdBridge->operationComplete(execution.token)) {
+                const Bridge::CallbackToken completed = execution.token;
+                panic_if(logicalSpdBridge->completeOperation(completed) !=
+                             Bridge::LifecycleStatus::Accepted,
+                         "Logical SPD failed final retire/reset\n");
+                PacketPtr completion = execution.completionPacket;
+                const int core = execution.coreID;
+                execution = LogicalSPDExecution{};
+                completion->makeTimingResponse();
+                completion->headerDelay = completion->payloadDelay = 0;
+                cpuSidePorts[core]->schedTimingResp(
+                    completion, getClockEdge(Cycles(1)));
+                DPRINTF(MAAVirtualTrace,
+                        "event=logical_spd_complete maa=%lu generation=%lu "
+                        "incarnation=%lu operation=%lu\n",
+                        completed.maaId, completed.generation,
+                        completed.runtimeIdentity, completed.identity);
+                break;
+            }
+            if (execution.retryPacket != nullptr) {
+                panic_if(logicalSpdBridge->recvReqRetry(
+                             execution.token, execution.retryPort) !=
+                             Transport::Status::Accepted,
+                         "Logical SPD retry identity was rejected\n");
+                const bool accepted =
+                    sendPacketCache(execution.retryPacket);
+                const Transport::Result sent =
+                    logicalSpdBridge->sendPrepared(
+                        execution.token, accepted);
+                panic_if(sent.status !=
+                             (accepted ? Transport::Status::SendAccepted
+                                       : Transport::Status::SendRefused),
+                         "Logical SPD retry transition failed with %d\n",
+                         static_cast<int>(sent.status));
+                if (accepted)
+                    execution.retryPacket = nullptr;
+                break;
+            }
+            const Transport::Result prepared =
+                logicalSpdBridge->prepare(execution.token);
+            if (prepared.status == Transport::Status::Accepted) {
+                panic_if(prepared.handle == nullptr,
+                         "Logical SPD accepted a null request\n");
+                PacketPtr packet =
+                    makeLogicalSPDPacket(execution, *prepared.handle);
+                const bool accepted = sendPacketCache(packet);
+                const Transport::Result sent =
+                    logicalSpdBridge->sendPrepared(
+                        execution.token, accepted);
+                panic_if(sent.status !=
+                             (accepted ? Transport::Status::SendAccepted
+                                       : Transport::Status::SendRefused),
+                         "Logical SPD send transition failed with %d\n",
+                         static_cast<int>(sent.status));
+                if (!accepted) {
+                    execution.retryPacket = packet;
+                    execution.retryPort = prepared.handle->callbackPort;
+                    break;
+                }
+                continue;
+            }
+            if (prepared.status == Transport::Status::NoCreditAvailable)
+                break;
+            if (prepared.status == Transport::Status::NoWork) {
+                const Slice::Status compute =
+                    logicalSpdBridge->driveCompute(execution.token);
+                if (compute == Slice::Status::Accepted)
+                    continue;
+                // NoWork also covers a page whose finite records have all
+                // issued while responses remain in flight.  Its live page
+                // correlation makes compute Busy until the final response.
+                panic_if(compute != Slice::Status::NotReady &&
+                             compute != Slice::Status::Busy,
+                         "Logical SPD compute transition failed with %d\n",
+                         static_cast<int>(compute));
+                break;
+            }
+            panic("Logical SPD prepare failed with status %d\n",
+                  static_cast<int>(prepared.status));
+        }
+    }
+}
+
+void
+MAA::scheduleLogicalSPDEvent(int latency)
+{
+    const Tick when = getClockEdge(Cycles(latency));
+    if (!logicalSpdEvent.scheduled())
+        schedule(logicalSpdEvent, when);
+    else if (when < logicalSpdEvent.when())
+        reschedule(logicalSpdEvent, when);
+}
+
+void
+MAA::notifyLogicalSPDRetry()
+{
+    for (const LogicalSPDExecution &execution : logicalSpdExecutions) {
+        if (execution.active && execution.retryPacket != nullptr) {
+            scheduleLogicalSPDEvent();
+            return;
+        }
+    }
+}
+
 void MAA::dispatchRegister() {
     DPRINTF(MAAController, "%s: dispatching register...!\n", __func__);
     assert(my_register_pkts.size() == my_registers.size());
@@ -1016,6 +1387,24 @@ void MAA::dispatchInstruction() {
         if (*recv_it == true) {
             InstructionPtr instruction = *instruction_it;
             PacketPtr pkt = *pkt_it;
+            if (instruction->isLogicalALUScalar()) {
+                if (!submitLogicalSPDDescriptor(instruction, pkt)) {
+                    ++pkt_it;
+                    ++recv_it;
+                    ++rid_it;
+                    ++instruction_it;
+                    continue;
+                }
+                DPRINTF(MAAController,
+                        "%s: logical SPD descriptor %s dispatched\n",
+                        __func__, instruction->print());
+                pkt_it = my_instruction_pkts.erase(pkt_it);
+                recv_it = my_instruction_recvs.erase(recv_it);
+                rid_it = my_instruction_RIDs.erase(rid_it);
+                instruction_it = my_instructions.erase(instruction_it);
+                delete instruction;
+                continue;
+            }
             if (instruction->opcode ==
                 Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR) {
                 if (!submitTransparentDescriptor(instruction)) {

@@ -156,10 +156,12 @@ public:
         "SRV",
         "FNS",
         "MAX"};
-    Addr baseAddr, backingAddr, indexAddr;
+    Addr baseAddr, backingAddr, indexAddr, logicalSourceBackingAddr;
     Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
     Addr indexMinAddr, indexMaxAddr;
+    Addr logicalSourceMinAddr, logicalSourceMaxAddr;
     int8_t addrRangeID, backingAddrRangeID, indexAddrRangeID;
+    int8_t logicalSourceAddrRangeID;
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
     int16_t src1SpdID, src2SpdID;
     TileStatus src1Status, src2Status;

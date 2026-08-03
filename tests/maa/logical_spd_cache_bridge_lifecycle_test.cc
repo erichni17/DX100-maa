@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -148,11 +150,11 @@ runAction(Runtime &runtime, Peer &peer)
 }
 
 void
-checkConstructionAndAdmissionClosure()
+checkConstructionAndAdmissionBoundary()
 {
     Bridge bridge(4);
     CHECK(bridge.runtimeCount() == 4);
-    CHECK(bridge.admissionClosed());
+    CHECK(!bridge.admissionClosed());
     CHECK(!bridge.nativeDrainIntegrated());
     CHECK(bridge.allQuiescent());
 
@@ -171,6 +173,213 @@ checkConstructionAndAdmissionClosure()
             CHECK(authorities[left] != authorities[right]);
         }
     }
+}
+
+class LiveAdapterHarness
+{
+  public:
+    static constexpr uint64_t SourceBase = 0x100000;
+    static constexpr uint64_t DestinationBase = 0x200000;
+    static constexpr std::size_t Elements =
+        Slice::BackingBytes / sizeof(double);
+
+    LiveAdapterHarness()
+    {
+        for (std::size_t index = 0; index < Elements;
+             ++index) {
+            source[index] = 1.0 + static_cast<double>(index % 97);
+            destination[index] = -1.0;
+        }
+        claim = bridge.claimCallback(0);
+        CHECK(claim.status == Status::Accepted);
+        CHECK(bridge.registerSource(
+                  claim.token, 0, {SourceBase, Slice::BackingBytes}) ==
+              Slice::Status::Accepted);
+        Slice::Admission admission;
+        admission.sourceLogical = 0;
+        admission.destinationLogical = 1;
+        admission.destination = {DestinationBase, Slice::BackingBytes};
+        admission.operation = Slice::Operation::Mul;
+        admission.scalarBits = bits(2.0);
+        CHECK(bridge.admit(claim.token, admission) ==
+              Slice::Status::Accepted);
+    }
+
+    void run()
+    {
+        bool retryExercised = false;
+        bool staleExercised = false;
+        while (!bridge.operationComplete(claim.token)) {
+            runAction(retryExercised, staleExercised);
+            const Slice::Status computed =
+                bridge.driveCompute(claim.token);
+            CHECK(computed == Slice::Status::Accepted ||
+                  computed == Slice::Status::NotReady);
+        }
+        CHECK(retryExercised);
+        CHECK(staleExercised);
+        CHECK(fillResponses ==
+              Slice::Pages * Transport::LinesPerPage);
+        CHECK(writeResponses ==
+              Slice::Pages * Transport::LinesPerPage);
+        for (std::size_t index = 0; index < Elements;
+             ++index) {
+            CHECK(destination[index] == source[index] * 2.0);
+        }
+
+        const Bridge::CallbackToken completed = claim.token;
+        CHECK(bridge.completeOperation(completed) == Status::Accepted);
+        CHECK(bridge.generation(0) == completed.generation + 1);
+        CHECK(bridge.quiescent(0));
+        CHECK(bridge.prepare(completed).status ==
+              Transport::Status::Invalid);
+        CHECK(bridge.reset(0) == Status::Accepted);
+        CHECK(bridge.generation(0) == completed.generation + 2);
+    }
+
+  private:
+    struct Outstanding
+    {
+        bool live = false;
+        Transport::RequestPacket request{};
+    };
+
+    void issueOne(const Transport::Result &prepared,
+                  bool &retryExercised)
+    {
+        CHECK(prepared.status == Transport::Status::Accepted);
+        CHECK(prepared.handle != nullptr);
+        const Transport::RequestPacket request = *prepared.handle;
+        if (!retryExercised) {
+            CHECK(bridge.sendPrepared(claim.token, false).status ==
+                  Transport::Status::SendRefused);
+            CHECK(bridge.recvReqRetry(claim.token,
+                                      request.callbackPort) ==
+                  Transport::Status::Accepted);
+            retryExercised = true;
+        }
+        const Transport::Result sent =
+            bridge.sendPrepared(claim.token, true);
+        CHECK(sent.status == Transport::Status::SendAccepted);
+        CHECK(sent.record < Transport::RecordCount);
+        CHECK(!outstanding[sent.record].live);
+        outstanding[sent.record] = {true, request};
+    }
+
+    void respond(uint8_t record, bool &staleExercised)
+    {
+        Outstanding &entry = outstanding[record];
+        CHECK(entry.live);
+        const Transport::RequestPacket &request = entry.request;
+        const bool read = request.command == Transport::Command::ReadReq;
+        const uint64_t base = read ? SourceBase : DestinationBase;
+        CHECK(request.address >= base);
+        const std::size_t offset = request.address - base;
+        CHECK(offset <= Slice::BackingBytes - Transport::LineBytes);
+        if (!read) {
+            CHECK(request.data != nullptr);
+            CHECK(request.dataSize == Transport::LineBytes);
+            std::memcpy(reinterpret_cast<std::byte *>(destination.data()) +
+                            offset,
+                        request.data, Transport::LineBytes);
+        } else {
+            std::memcpy(responseData[record].data(),
+                        reinterpret_cast<const std::byte *>(source.data()) +
+                            offset,
+                        Transport::LineBytes);
+        }
+
+        Transport::ReturnedHandle returned;
+        returned.incarnation = ++nextResponseIdentity;
+        returned.request = request.request;
+        returned.requestIncarnation = request.request->incarnation;
+        returned.token = request.token;
+        returned.tokenDepth = request.tokenDepth;
+        returned.tokenRecord = request.token->record;
+        returned.tokenEpoch = request.token->epoch;
+        returned.tokenActionID = request.token->actionID;
+        returned.address = request.address;
+        returned.command = read ? Transport::Command::ReadResp
+                                : Transport::Command::WriteResp;
+        returned.size = request.size;
+        if (read) {
+            returned.data = responseData[record].data();
+            returned.dataSize = Transport::LineBytes;
+        }
+
+        if (!staleExercised) {
+            Bridge::CallbackToken stale = claim.token;
+            ++stale.identity;
+            Transport::ReturnedHandle rejected = returned;
+            CHECK(bridge.receive(stale, rejected,
+                                 request.callbackPort).status ==
+                  Transport::Status::Invalid);
+            CHECK(!rejected.disposed);
+            staleExercised = true;
+        }
+        const Transport::Result result = bridge.receive(
+            claim.token, returned, request.callbackPort);
+        CHECK(result.status == Transport::Status::Accepted ||
+              result.status == Transport::Status::Completed);
+        CHECK(returned.disposed);
+        entry = Outstanding{};
+        if (read)
+            ++fillResponses;
+        else
+            ++writeResponses;
+    }
+
+    void runAction(bool &retryExercised, bool &staleExercised)
+    {
+        bool actionStarted = false;
+        while (!actionStarted ||
+               bridge.runtime(0).transportActionState() !=
+                   Transport::ActionState::Free) {
+            while (bridge.runtime(0).creditsInUse() <
+                   Transport::ResponseCredits) {
+                const Transport::Result prepared =
+                    bridge.prepare(claim.token);
+                if (prepared.status != Transport::Status::Accepted) {
+                    CHECK(prepared.status ==
+                              Transport::Status::NoCreditAvailable ||
+                          prepared.status == Transport::Status::NoWork);
+                    break;
+                }
+                actionStarted = true;
+                issueOne(prepared, retryExercised);
+            }
+            bool progressed = false;
+            for (uint8_t record = 0; record < Transport::RecordCount;
+                 ++record) {
+                if (!outstanding[record].live)
+                    continue;
+                respond(record, staleExercised);
+                progressed = true;
+            }
+            CHECK(progressed ||
+                  bridge.runtime(0).transportActionState() ==
+                      Transport::ActionState::Free);
+        }
+    }
+
+    Bridge bridge{1};
+    Bridge::CallbackClaim claim{};
+    std::array<double, Elements> source{};
+    std::array<double, Elements> destination{};
+    std::array<Outstanding, Transport::RecordCount> outstanding{};
+    std::array<std::array<std::byte, Transport::LineBytes>,
+               Transport::RecordCount>
+        responseData{};
+    uint64_t nextResponseIdentity = 1000;
+    uint64_t fillResponses = 0;
+    uint64_t writeResponses = 0;
+};
+
+void
+checkLiveAdmissionFillComputeDirtyWritebackAndReset()
+{
+    LiveAdapterHarness harness;
+    harness.run();
 }
 
 void
@@ -462,7 +671,7 @@ checkImpossibleBridgeStateFailsClosed()
     CHECK(bridge.reset(0) == Status::ProductionStop);
     CHECK(bridge.requestAbort(0) == Status::ProductionStop);
     CHECK(bridge.claimCallback(0).status == Status::ProductionStop);
-    CHECK(bridge.admissionClosed());
+    CHECK(!bridge.admissionClosed());
 }
 
 } // anonymous namespace
@@ -470,7 +679,8 @@ checkImpossibleBridgeStateFailsClosed()
 int
 main()
 {
-    checkConstructionAndAdmissionClosure();
+    checkConstructionAndAdmissionBoundary();
+    checkLiveAdmissionFillComputeDirtyWritebackAndReset();
     checkPartialConstructionFailure();
     checkExactCallbackIdentityAndReset();
     checkDestroyedBridgeTokenCannotAuthenticateReconstruction();

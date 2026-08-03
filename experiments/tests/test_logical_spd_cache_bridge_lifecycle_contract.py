@@ -24,22 +24,39 @@ class LogicalSpdBridgeLifecycleContractTest(unittest.TestCase):
         cls.runner = RUNNER.read_text()
         cls.bridge = cls.hh + cls.cc
 
-    def test_admission_and_native_drain_are_explicitly_closed(self) -> None:
-        self.assertIn("bool admissionClosed() const { return true; }", self.hh)
+    def test_admission_is_live_and_native_drain_boundary_is_explicit(self) -> None:
+        self.assertIn("bool admissionClosed() const { return false; }", self.hh)
         self.assertIn(
             "bool nativeDrainIntegrated() const { return false; }", self.hh
         )
-        self.assertIn("CHECK(bridge.admissionClosed())", self.host)
+        self.assertIn("CHECK(!bridge.admissionClosed())", self.host)
         self.assertIn("CHECK(!bridge.nativeDrainIntegrated())", self.host)
+        for required in (
+            "registerSource(",
+            "admit(",
+            "sendPrepared(",
+            "recvReqRetry(",
+            "receive(",
+            "driveCompute(",
+            "completeOperation(",
+        ):
+            self.assertIn(required, self.bridge)
         for forbidden in (
             "sendTimingReq",
             "recvTimingReq",
             "PacketPtr",
             "AddrRange",
-            "registerSource(",
-            "admit(",
         ):
             self.assertNotIn(forbidden, self.bridge)
+
+        for evidence in (
+            "checkLiveAdmissionFillComputeDirtyWritebackAndReset",
+            "Transport::Status::SendRefused",
+            "Transport::Status::Invalid",
+            "Slice::Pages * Transport::LinesPerPage",
+            "bridge.completeOperation(completed)",
+        ):
+            self.assertIn(evidence, self.host)
 
     def test_one_runtime_and_finite_owner_per_maa(self) -> None:
         self.assertIn(
