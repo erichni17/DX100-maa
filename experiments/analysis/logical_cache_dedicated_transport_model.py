@@ -203,9 +203,7 @@ class TransactionRecord:
     def release(self) -> None:
         epoch = self.epoch
         token = self.token
-        self.__dict__.update(
-            TransactionRecord(epoch=epoch, token=token).__dict__
-        )
+        self.__dict__.update(TransactionRecord(epoch=epoch, token=token).__dict__)
         if token is not None:
             token.action_id = 0
 
@@ -300,15 +298,10 @@ class DedicatedTransport:
 
     def _allocate_record(self, action_id: int) -> int:
         for index, record in enumerate(self.records):
-            if (
-                record.state == RecordState.FREE
-                and record.epoch < RECORD_EPOCH_MAX
-            ):
+            if record.state == RecordState.FREE and record.epoch < RECORD_EPOCH_MAX:
                 record.epoch += 1
                 if record.token is None:
-                    raise AssertionError(
-                        "fixed record lost its embedded token"
-                    )
+                    raise AssertionError("fixed record lost its embedded token")
                 # The record is still FREE: this is the only legal token-field
                 # reinitialization point.  Fields remain unchanged until release.
                 record.token.record = index
@@ -393,9 +386,7 @@ class DedicatedTransport:
             try:
                 index = self._allocate_record(action.action_id)
             except ExhaustedError as error:
-                raise AssertionError(
-                    "admission failed to reserve epochs"
-                ) from error
+                raise AssertionError("admission failed to reserve epochs") from error
             except ContractError:
                 break
             line = action.next_line
@@ -418,9 +409,7 @@ class DedicatedTransport:
                 "ReadReq" if action.operation == Operation.FILL else "WriteReq"
             )
             record.response_command = (
-                "ReadResp"
-                if action.operation == Operation.FILL
-                else "WriteResp"
+                "ReadResp" if action.operation == Operation.FILL else "WriteResp"
             )
             record.size = LINE_BYTES
             record.port = core_port(address)
@@ -454,9 +443,7 @@ class DedicatedTransport:
             record.line_buffer = bytes(LINE_BYTES)
         else:
             start = record.key.line * LINE_BYTES
-            record.line_buffer = bytes(
-                slot_payload[start : start + LINE_BYTES]
-            )
+            record.line_buffer = bytes(slot_payload[start : start + LINE_BYTES])
         packet = PacketIncarnation(
             incarnation=self._next_incarnation(),
             request=request,
@@ -530,18 +517,10 @@ class DedicatedTransport:
             RecordState.ABORT_DRAIN,
         ):
             raise ContractError("record has no response obligation")
-        if (
-            record.request is None
-            or record.token is None
-            or record.key is None
-        ):
+        if record.request is None or record.token is None or record.key is None:
             raise AssertionError("owned response record is incomplete")
         if data is None:
-            data = (
-                bytes(LINE_BYTES)
-                if record.key.operation == Operation.FILL
-                else b""
-            )
+            data = bytes(LINE_BYTES) if record.key.operation == Operation.FILL else b""
         return PacketIncarnation(
             incarnation=self._next_incarnation(),
             request=record.request,
@@ -568,9 +547,7 @@ class DedicatedTransport:
             and record.token is top
         ]
         if len(matches) != 1:
-            raise ProductionStop(
-                "unknown, copied, duplicate, or stale route token"
-            )
+            raise ProductionStop("unknown, copied, duplicate, or stale route token")
         index = matches[0]
         record = self.records[index]
         if not isinstance(top, RouteToken) or (
@@ -582,9 +559,7 @@ class DedicatedTransport:
         return index
 
     @staticmethod
-    def _wire_exact(
-        record: TransactionRecord, packet: PacketIncarnation
-    ) -> bool:
+    def _wire_exact(record: TransactionRecord, packet: PacketIncarnation) -> bool:
         if record.key is None or record.request is None:
             return False
         response_commands = (
@@ -662,9 +637,7 @@ class DedicatedTransport:
         self.assert_invariants()
         return drained
 
-    def receive(
-        self, packet: PacketIncarnation, slot_payload: bytes
-    ) -> ReceiveResult:
+    def receive(self, packet: PacketIncarnation, slot_payload: bytes) -> ReceiveResult:
         """Validate exact top token before all Request/packet-field accesses."""
         self._ensure_live()
         if len(slot_payload) != PAGE_BYTES:
@@ -675,9 +648,7 @@ class DedicatedTransport:
             # Production panics immediately.  The Python exception may be
             # caught only to inspect the pre-panic state: no ACK, payload copy,
             # owner release, deletion, abort transition, or recovery occurs.
-            raise ProductionStop(
-                "owned route token carries malformed response"
-            )
+            raise ProductionStop("owned route token carries malformed response")
 
         if record.state == RecordState.ABORT_DRAIN:
             self._release_record(index)
@@ -727,9 +698,7 @@ class DedicatedTransport:
             self.action.state == ActionState.FREE
             and self.queue_count == 0
             and self.pending == -1
-            and all(
-                record.state == RecordState.FREE for record in self.records
-            )
+            and all(record.state == RecordState.FREE for record in self.records)
             and all(owner == -1 for owner in self.credit_owner)
         )
 
@@ -784,16 +753,9 @@ class DedicatedTransport:
         assert buffer_owners <= RESPONSE_CREDITS
         assert self.queue_count <= REQUEST_QUEUE_CAPACITY
         if self.action.state == ActionState.FREE:
-            assert not any(
-                record.state != RecordState.FREE for record in self.records
-            )
+            assert not any(record.state != RecordState.FREE for record in self.records)
         else:
-            assert (
-                0
-                <= self.action.ack_count
-                <= self.action.next_line
-                <= LINES_PER_PAGE
-            )
+            assert 0 <= self.action.ack_count <= self.action.next_line <= LINES_PER_PAGE
             assert self.action.ack_bits & ~self.action.issued_bits == 0
 
 
@@ -828,9 +790,7 @@ class LogicalCacheModel:
         for other in self.descriptors:
             if not other.allocated:
                 continue
-            other_end = checked_span_end(
-                other.backing_base, other.backing_span
-            )
+            other_end = checked_span_end(other.backing_base, other.backing_span)
             if not (end < other.backing_base or backing_base > other_end):
                 raise ContractError("live descriptor backing ranges overlap")
         item.generation += 1
@@ -883,10 +843,7 @@ class LogicalCacheModel:
         base = self._page_base(item, page)
         if claimed_base is not None and claimed_base != base:
             raise ContractError("claimed fill base differs from descriptor")
-        if (
-            claimed_generation is not None
-            and claimed_generation != item.generation
-        ):
+        if claimed_generation is not None and claimed_generation != item.generation:
             raise ContractError("claimed fill generation is stale")
         target = self._slot(slot)
         if target.phase != SlotPhase.EMPTY:
@@ -924,9 +881,7 @@ class LogicalCacheModel:
         self._ensure_live()
         self.transport.recv_req_retry(port)
 
-    def make_response(
-        self, index: int, data: bytes | None = None
-    ) -> PacketIncarnation:
+    def make_response(self, index: int, data: bytes | None = None) -> PacketIncarnation:
         self._ensure_live()
         return self.transport.make_response(index, data)
 
@@ -960,19 +915,13 @@ class LogicalCacheModel:
                         "writeback completion has no destination owner"
                     )
                 descriptor = self.descriptors[slot.descriptor]
-                if (
-                    not descriptor.allocated
-                    or descriptor.generation != slot.generation
-                ):
+                if not descriptor.allocated or descriptor.generation != slot.generation:
                     raise AssertionError("writeback owner became stale")
                 descriptor.writeback_acked |= 1 << slot.page
                 slot.clear()
             self.active_slot = -1
             self.active_operation = None
-        elif (
-            result.status == ReplyStatus.ABORT_DRAINED
-            and self.transport.drained()
-        ):
+        elif result.status == ReplyStatus.ABORT_DRAINED and self.transport.drained():
             self._finish_aborted_slot()
         self.assert_invariants()
         return result.status
@@ -1007,9 +956,7 @@ class LogicalCacheModel:
         destination = self._descriptor_page(descriptor, page)
         target = self._slot(slot)
         if target.phase != SlotPhase.DIRTY or target.pins == 0:
-            raise ContractError(
-                "destination binding requires pinned dirty payload"
-            )
+            raise ContractError("destination binding requires pinned dirty payload")
         if target.role != SlotRole.SOURCE:
             raise ContractError("only source-dirty payload may be rebound")
         if (
@@ -1018,9 +965,7 @@ class LogicalCacheModel:
         ):
             raise ContractError("claimed destination generation is stale")
         if target.descriptor == descriptor:
-            raise ContractError(
-                "source and destination descriptors must differ"
-            )
+            raise ContractError("source and destination descriptors must differ")
         if destination.backing_ready & (1 << page):
             raise ContractError("destination page is already backing-ready")
         if destination.writeback_acked & (1 << page):
@@ -1071,13 +1016,8 @@ class LogicalCacheModel:
             raise ContractError("destination slot generation is stale")
         base = self._page_base(destination, target.page)
         if claimed_base is not None and claimed_base != base:
-            raise ContractError(
-                "claimed writeback base differs from descriptor"
-            )
-        if (
-            claimed_generation is not None
-            and claimed_generation != target.generation
-        ):
+            raise ContractError("claimed writeback base differs from descriptor")
+        if claimed_generation is not None and claimed_generation != target.generation:
             raise ContractError("claimed writeback generation is stale")
         action_id = self.transport.start_action(
             Operation.WRITEBACK,
@@ -1123,8 +1063,7 @@ class LogicalCacheModel:
             raise ContractError("descriptor is out of range")
         item = self.descriptors[descriptor]
         return (
-            item.allocated
-            and item.writeback_acked == (1 << PAGES_PER_DESCRIPTOR) - 1
+            item.allocated and item.writeback_acked == (1 << PAGES_PER_DESCRIPTOR) - 1
         )
 
     def free_descriptor(self, descriptor: int) -> None:
@@ -1147,8 +1086,7 @@ class LogicalCacheModel:
         if not self.transport.drained():
             raise ContractError("reset requires a drained transport")
         if any(
-            slot.phase in (SlotPhase.DIRTY, SlotPhase.WRITEBACK)
-            for slot in self.slots
+            slot.phase in (SlotPhase.DIRTY, SlotPhase.WRITEBACK) for slot in self.slots
         ):
             raise ContractError("reset cannot discard dirty data")
         if any(slot.pins for slot in self.slots):
@@ -1274,12 +1212,8 @@ class LogicalCacheModel:
                     "action": record.action_id,
                     "key": key_state(record.key),
                     "token": record.token.__dict__ if record.token else None,
-                    "request": record.request.incarnation
-                    if record.request
-                    else None,
-                    "packet": record.packet.incarnation
-                    if record.packet
-                    else None,
+                    "request": record.request.incarnation if record.request else None,
+                    "packet": record.packet.incarnation if record.packet else None,
                     "address": record.address,
                     "commands": (
                         record.request_command,
