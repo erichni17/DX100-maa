@@ -300,8 +300,10 @@ public:
     Addr calc_Grow_addr(std::vector<int> addr_vec);
     void addRamulator(memory::Ramulator2 *_ramulator2);
     bool sendPacketMem(PacketPtr pkt);
-    bool sendPacketCache(PacketPtr pkt);
-    bool sendPacketRetirementCache(PacketPtr pkt);
+    bool sendPacketCache(PacketPtr pkt,
+                         CacheSidePort **sendingPort = nullptr);
+    bool sendPacketRetirementCache(PacketPtr pkt,
+                                   CacheSidePort **sendingPort = nullptr);
     void sendSnoopPacketCpu(PacketPtr pkt);
     bool sendSnoopInvalidateCpu(PacketPtr pkt);
 
@@ -786,6 +788,7 @@ protected:
         bool logicalResponseManaged;
         LogicalStreamTransactionTag logicalTransaction;
         SenderStateOwnership senderStateOwnership;
+        CacheSidePort *responseCreditPort;
         std::size_t expectedResponseBytes;
         bool sent;
         std::vector<int> maaIDs;
@@ -794,6 +797,7 @@ protected:
             : packet(_packet), paddr(_paddr), tick(_tick), cmd(_cmd),
               cached(false), virtualRetirement(false),
               logicalResponseManaged(false),
+              responseCreditPort(nullptr),
               expectedResponseBytes(_packet->getSize()), sent(false) {}
         OutstandingPacket() {}
         OutstandingPacket(const OutstandingPacket &other) {
@@ -809,6 +813,7 @@ protected:
             logicalResponseManaged = other.logicalResponseManaged;
             logicalTransaction = other.logicalTransaction;
             senderStateOwnership = other.senderStateOwnership;
+            responseCreditPort = other.responseCreditPort;
             expectedResponseBytes = other.expectedResponseBytes;
         }
         bool operator<(const OutstandingPacket &rhs) const {
@@ -834,6 +839,24 @@ protected:
         bool logicalResponseManaged;
         LogicalStreamTransactionTag logicalTransaction;
         SenderStateOwnership senderStateOwnership;
+        Addr paddr;
+        MemCmd cmd;
+        std::size_t expectedResponseBytes;
+    };
+    struct LogicalLedgerOwner
+    {
+        StreamAccessUnit *stream = nullptr;
+        int maaID = -1;
+    };
+    struct LogicalPacketProvenance
+    {
+        LogicalStreamTransactionTag transaction{};
+        Addr address = 0;
+        MemCmd command = MemCmd::InvalidCmd;
+        std::size_t deferredAliases = 0;
+        std::size_t sendAliases = 0;
+        bool counterOwned = false;
+        bool ambiguous = false;
     };
     struct PacketAliasCounts
     {
@@ -893,6 +916,12 @@ protected:
         const SenderStateOwnership &received) const;
     bool senderStateAliasedByOtherPacket(
         PacketPtr packet, const SenderStateOwnership &ownership) const;
+    LogicalPacketProvenance findLogicalPacketProvenance(
+        PacketPtr packet) const;
+    LogicalLedgerOwner findUniqueLogicalLedgerOwner(
+        const LogicalStreamTransactionTag &transaction,
+        Addr address) const;
+    ResponseTeardownShape responseTeardownShape() const;
     PacketAliasCounts countPacketAliases(PacketPtr packet) const;
     PacketAliasCounts erasePacketAliases(PacketPtr packet);
     EventFunctionWrapper sendCacheEvent;

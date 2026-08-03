@@ -148,13 +148,31 @@ bool MAA::CacheSidePort::sendPacket(PacketPtr pkt) {
     }
     return true;
 }
-bool MAA::sendPacketCache(PacketPtr pkt) {
-    int pkt_bus_id = core_addr(pkt->getAddr());
-    return cacheSidePorts[pkt_bus_id]->sendPacket(pkt);
+bool
+MAA::sendPacketCache(PacketPtr pkt, CacheSidePort **sendingPort)
+{
+    const int pkt_bus_id = core_addr(pkt->getAddr());
+    panic_if(pkt_bus_id < 0 ||
+                 static_cast<std::size_t>(pkt_bus_id) >= cacheSidePorts.size(),
+             "%s: packet address 0x%lx selects invalid cache port %d\n",
+             __func__, pkt->getAddr(), pkt_bus_id);
+    CacheSidePort *const port = cacheSidePorts[pkt_bus_id];
+    if (sendingPort != nullptr)
+        *sendingPort = port;
+    return port->sendPacket(pkt);
 }
-bool MAA::sendPacketRetirementCache(PacketPtr pkt) {
-    int pkt_bus_id = core_addr(pkt->getAddr());
-    return retirementSidePorts[pkt_bus_id]->sendPacket(pkt);
+bool
+MAA::sendPacketRetirementCache(PacketPtr pkt, CacheSidePort **sendingPort)
+{
+    const int pkt_bus_id = core_addr(pkt->getAddr());
+    panic_if(pkt_bus_id < 0 || static_cast<std::size_t>(pkt_bus_id) >=
+                                  retirementSidePorts.size(),
+             "%s: packet address 0x%lx selects invalid retirement port %d\n",
+             __func__, pkt->getAddr(), pkt_bus_id);
+    CacheSidePort *const port = retirementSidePorts[pkt_bus_id];
+    if (sendingPort != nullptr)
+        *sendingPort = port;
+    return port->sendPacket(pkt);
 }
 void MAA::CacheSidePort::setUnblocked(BlockReason reason) {
     assert(blockReason == reason);

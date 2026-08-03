@@ -267,10 +267,24 @@ void MAA::init() {
 }
 
 MAA::~MAA() {
-    for (auto &[paddr, packets] : my_deferred_pkt_map) {
-        for (auto &deferred : packets)
-            delete deferred.packet;
-    }
+    const ResponseTeardownShape teardown = responseTeardownShape();
+    panic_if(!canDestroyResponseSubstrate(teardown),
+             "%s: live response ownership at teardown: map=%zu deferred=%zu "
+             "cache_send=%zu memory_send=%zu ledgers=%zu counters=%lu "
+             "post_delete=%d\n",
+             name(), teardown.mapOwners, teardown.deferredOwners,
+             teardown.cacheSendOwners, teardown.memorySendOwners,
+             teardown.activeLogicalLedgers, teardown.outstandingCounters,
+             teardown.pendingPostDeleteCompletion);
+    delete[] my_outstanding_indirect_cache_read_pkts;
+    delete[] my_outstanding_indirect_cache_write_pkts;
+    delete[] my_outstanding_indirect_mem_write_pkts;
+    delete[] my_outstanding_indirect_mem_read_pkts;
+    delete[] my_writeback_last_row;
+    delete[] my_outstanding_stream_cache_read_pkts;
+    delete[] my_outstanding_stream_cache_write_pkts;
+    delete[] my_outstanding_stream_mem_write_pkts;
+    delete[] my_outstanding_stream_mem_read_pkts;
     for (auto port : memSidePorts)
         delete port;
     for (auto port : cacheSidePorts)

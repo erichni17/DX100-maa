@@ -13,6 +13,7 @@ PORT_SOURCE = ROOT / "src/mem/MAA/Port.cc"
 CACHE_PORT_SOURCE = ROOT / "src/mem/MAA/CacheSidePort.cc"
 MEM_PORT_SOURCE = ROOT / "src/mem/MAA/MemSidePort.cc"
 MAA_HEADER = ROOT / "src/mem/MAA/MAA.hh"
+MAA_SOURCE = ROOT / "src/mem/MAA/MAA.cc"
 RESPONSE_HEADER = ROOT / "src/mem/MAA/LogicalStreamResponse.hh"
 STREAM_SOURCE = ROOT / "src/mem/MAA/StreamAccess.cc"
 NOTES = (
@@ -112,7 +113,10 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             response_path,
         )
 
-        accepted_start = response_path.index("erasePacketAliases(pkt);")
+        accepted_start = response_path.index(
+            "erasePacketAliases(pkt);\n"
+            "        my_num_outstanding_stream_pkts[ledger_owner.maaID]"
+        )
         accepted_path = response_path[accepted_start:]
         accepted_pop = accepted_path.index("releaseLogicalState(true);")
         accepted_delivery = accepted_path.index(
@@ -204,6 +208,141 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             recv,
         )
         self.assertIn("removed all production aliases", recv)
+
+    def test_orphaned_queue_owner_settles_before_fatal_destruction(
+        self,
+    ) -> None:
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        recv = port[port.index("MAA::recvTimingResp(PacketPtr pkt") :]
+        foreign = recv[
+            recv.index(
+                "if (exact == my_outstanding_pkt_map.end()) {"
+            ) : recv.index("const Addr owned_address = exact->first;")
+        ]
+        for evidence in (
+            "findLogicalPacketProvenance(pkt)",
+            "findUniqueLogicalLedgerOwner(provenance.transaction",
+            "classifyOrphanedLogicalPacket(",
+            "abortOwnedLogicalResponse(",
+            "LogicalStreamCounterEvent::UnsentPacketAborted",
+            "erasePacketAliases(pkt);",
+            "return TimingResponseDisposition::FatalUnownedExtra;",
+        ):
+            self.assertIn(evidence, foreign)
+        abort = foreign.index("abortOwnedLogicalResponse(")
+        counter = foreign.index("decideLogicalStreamCounterUpdate(", abort)
+        detach = foreign.index("erasePacketAliases(pkt);", counter)
+        terminal = foreign.index(
+            "return TimingResponseDisposition::FatalUnownedExtra;", detach
+        )
+        self.assertLess(abort, counter)
+        self.assertLess(counter, detach)
+        self.assertLess(detach, terminal)
+
+    def test_deferred_validation_is_fail_atomic_before_pop(self) -> None:
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        begin = port.index("MAA::sendNextDeferredPacket(Addr paddr)")
+        end = port.index("bool MAA::scheduleNextSendMem()", begin)
+        promotion = port[begin:end]
+        for evidence in (
+            "const DeferredPacket &queued",
+            "queued.packet->req->getPaddr() == paddr",
+            "queued.packet->cmd == queued.cmd",
+            "canPromoteDeferredPacket(promotion_shape)",
+            "senderStateMatchesSnapshot(",
+            "malformed deferred packet retained",
+        ):
+            self.assertIn(evidence, promotion)
+        validate = promotion.index("canPromoteDeferredPacket(promotion_shape)")
+        copy = promotion.index("DeferredPacket deferred = queued;")
+        pop = promotion.index("pop_front();")
+        self.assertLess(validate, copy)
+        self.assertLess(copy, pop)
+        self.assertNotIn("pop_front();", promotion[:validate])
+
+    def test_actual_sending_port_provenance_survives_address_corruption(
+        self,
+    ) -> None:
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        cache = CACHE_PORT_SOURCE.read_text(encoding="utf-8")
+        header = MAA_HEADER.read_text(encoding="utf-8")
+        recv = port[port.index("const Addr owned_address = exact->first;") :]
+        self.assertIn("CacheSidePort *responseCreditPort", header)
+        self.assertIn("CacheSidePort **sendingPort", header)
+        self.assertIn("*sendingPort = port;", cache)
+        self.assertGreaterEqual(
+            port.count("responseCreditPort ="),
+            5,
+        )
+        self.assertIn("expected_response_port = tmp.responseCreditPort", recv)
+        provenance = recv[: recv.index("if (tmp.logicalResponseManaged) {")]
+        self.assertNotIn("core_addr(owned_address)", provenance)
+        self.assertIn(
+            "expected_response_port->settleOwnedResponseCredit()", recv
+        )
+
+    def test_normal_fatal_cleanup_precedes_alias_detach(self) -> None:
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        start = port.index("if (!normal_valid) {")
+        end = port.index("return fatalOwnedDisposition();", start)
+        fatal = port[start:end]
+        for evidence in (
+            "decideNormalFatalOwnerSettlement(",
+            "settleOutstandingCounter",
+            "settleRetirementWrite",
+            "retirementWriteComplete(",
+            "erasePacketAliases(pkt);",
+        ):
+            self.assertIn(evidence, fatal)
+        self.assertLess(
+            fatal.index("retirementWriteComplete("),
+            fatal.index("erasePacketAliases(pkt);"),
+        )
+
+    def test_invalid_map_owner_and_cross_stream_fallback_are_bounded(
+        self,
+    ) -> None:
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        recv = port[port.index("MAA::recvTimingResp(PacketPtr pkt") :]
+        self.assertIn(
+            "findUniqueLogicalLedgerOwner(tmp.logicalTransaction",
+            recv,
+        )
+        self.assertIn("tmp.maaIDs[0] == ledger_owner.maaID", recv)
+        self.assertIn("abortOwnedLogicalResponse(owned_address)", recv)
+        self.assertIn(
+            "my_num_outstanding_stream_pkts[ledger_owner.maaID]",
+            recv,
+        )
+        self.assertNotIn("&streamAccessUnits[received_tag.maaID]", recv)
+        self.assertIn(
+            "findUniqueLogicalLedgerOwner(received_tag,",
+            recv,
+        )
+
+    def test_teardown_requires_zero_unique_owner_substrate(self) -> None:
+        maa = MAA_SOURCE.read_text(encoding="utf-8")
+        destructor = maa[
+            maa.index("MAA::~MAA()") : maa.index("void MAA::addAddrRegion")
+        ]
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("responseTeardownShape() const", port)
+        for owner in (
+            "shape.mapOwners",
+            "shape.deferredOwners",
+            "shape.cacheSendOwners",
+            "shape.memorySendOwners",
+            "shape.activeLogicalLedgers",
+            "shape.outstandingCounters",
+            "shape.pendingPostDeleteCompletion",
+        ):
+            self.assertIn(owner, port)
+        self.assertIn("canDestroyResponseSubstrate(teardown)", destructor)
+        self.assertIn("live response ownership at teardown", destructor)
+        self.assertNotIn("delete deferred.packet", destructor)
+        self.assertGreaterEqual(
+            destructor.count("delete[] my_outstanding_"), 8
+        )
 
     def test_size_sender_shape_and_post_delete_retirement_contract(
         self,

@@ -655,6 +655,25 @@ LogicalStreamResponseResult StreamAccessUnit::abortOwnedLogicalResponse(
     return logicalResponseLedger.abortOwnedResponse(lineAddress);
 }
 
+bool
+StreamAccessUnit::ownsLogicalResponse(
+    const LogicalStreamTransactionTag &tag, Addr lineAddress) const
+{
+    if (!logicalResponseLedger.isActive() ||
+        logicalResponseLedger.tag() != tag) {
+        return false;
+    }
+    for (std::size_t index = 0;
+         index < logicalResponseLedger.issuedLineCount(); ++index) {
+        const auto &line = logicalResponseLedger.line(index);
+        if (line.address == lineAddress && !line.acknowledged &&
+            !line.aborted) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Addr StreamAccessUnit::translatePacket(Addr vaddr) {
     /**** Address translation ****/
     RequestPtr translation_req = std::make_shared<Request>(vaddr, block_size, flags, maa->requestorId, my_instruction->PC, my_instruction->CID);

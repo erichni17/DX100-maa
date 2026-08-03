@@ -381,6 +381,108 @@ struct ResponsePacketAliasDecision
     bool detachBeforeDestruction = false;
 };
 
+/**
+ * Fail-closed ownership decision for a callback whose PacketPtr is no longer
+ * present in the outstanding-address map.  Deferred entries have issued a
+ * ledger line but do not own a port counter.  An unsent send-queue entry owns
+ * both.  Any production alias makes the callback fatal rather than droppable;
+ * cleanup is authorized only when all aliases agree on one logical owner.
+ */
+struct OrphanedLogicalPacketShape
+{
+    std::size_t deferredAliases = 0;
+    std::size_t sendAliases = 0;
+    bool uniqueLogicalOwner = false;
+};
+
+struct OrphanedLogicalPacketDecision
+{
+    bool fatal = false;
+    bool detachAliases = false;
+    bool abortLedger = false;
+    bool settleCounter = false;
+};
+
+inline OrphanedLogicalPacketDecision
+classifyOrphanedLogicalPacket(const OrphanedLogicalPacketShape &shape)
+{
+    const bool hasAliases = shape.deferredAliases != 0 ||
+                            shape.sendAliases != 0;
+    const bool oneLifecycle = shape.deferredAliases == 0 ||
+                              shape.sendAliases == 0;
+    const bool settle = hasAliases && oneLifecycle &&
+                        shape.uniqueLogicalOwner;
+    return {hasAliases, hasAliases, settle,
+            settle && shape.sendAliases != 0};
+}
+
+/** Packet-free validation gate used before deferred queue ownership moves. */
+struct DeferredPromotionShape
+{
+    bool packetPresent = false;
+    bool requestPresent = false;
+    bool addressMatches = false;
+    bool commandMatches = false;
+    bool ownerValid = false;
+    bool routeValid = false;
+    bool logicalIdentityMatches = false;
+    bool senderStateMatches = false;
+};
+
+inline bool
+canPromoteDeferredPacket(const DeferredPromotionShape &shape)
+{
+    return shape.packetPresent && shape.requestPresent &&
+           shape.addressMatches && shape.commandMatches && shape.ownerValid &&
+           shape.routeValid && shape.logicalIdentityMatches &&
+           shape.senderStateMatches;
+}
+
+/**
+ * Exact fatal-response cleanup which is independent of response corruption.
+ * Reads relinquish their ordinary counter only when they never reached a
+ * port.  Response-bearing writes retain both their port counter and retirement
+ * metadata until every terminal callback, including a corrupt one.
+ */
+struct NormalFatalOwnerDecision
+{
+    bool settleOutstandingCounter = false;
+    bool settleRetirementWrite = false;
+};
+
+inline NormalFatalOwnerDecision
+decideNormalFatalOwnerSettlement(LogicalStreamResponseKind requestKind,
+                                 bool requestSent,
+                                 bool virtualRetirement)
+{
+    const bool write = requestKind == LogicalStreamResponseKind::Write;
+    return {!requestSent || write, write && requestSent && virtualRetirement};
+}
+
+/**
+ * Explicit MAA destruction boundary: live packet/ledger ownership is illegal.
+ */
+struct ResponseTeardownShape
+{
+    std::size_t mapOwners = 0;
+    std::size_t deferredOwners = 0;
+    std::size_t cacheSendOwners = 0;
+    std::size_t memorySendOwners = 0;
+    std::size_t activeLogicalLedgers = 0;
+    uint64_t outstandingCounters = 0;
+    bool pendingPostDeleteCompletion = false;
+};
+
+inline bool
+canDestroyResponseSubstrate(const ResponseTeardownShape &shape)
+{
+    return shape.mapOwners == 0 && shape.deferredOwners == 0 &&
+           shape.cacheSendOwners == 0 && shape.memorySendOwners == 0 &&
+           shape.activeLogicalLedgers == 0 &&
+           shape.outstandingCounters == 0 &&
+           !shape.pendingPostDeleteCompletion;
+}
+
 inline ResponsePacketAliasDecision
 classifyResponsePacketAliases(const ResponsePacketAliasShape &shape,
                               bool exactOwner, bool sent)

@@ -225,6 +225,117 @@ MAA::senderStateAliasedByOtherPacket(
            queueAliases(my_outstanding_indirect_mem_write_pkts, num_channels);
 }
 
+MAA::LogicalPacketProvenance
+MAA::findLogicalPacketProvenance(PacketPtr packet) const
+{
+    LogicalPacketProvenance provenance;
+    const auto record = [&](const LogicalStreamTransactionTag &transaction,
+                            Addr address, const MemCmd &command,
+                            bool deferred) {
+        const bool had_candidate = provenance.deferredAliases != 0 ||
+                                   provenance.sendAliases != 0;
+        if (deferred)
+            ++provenance.deferredAliases;
+        else
+            ++provenance.sendAliases;
+        if (!had_candidate) {
+            provenance.transaction = transaction;
+            provenance.address = address;
+            provenance.command = command;
+            provenance.counterOwned = !deferred;
+            return;
+        }
+        const bool counter_owned = !deferred;
+        if (provenance.transaction != transaction ||
+            provenance.address != address || provenance.command != command ||
+            provenance.counterOwned != counter_owned) {
+            provenance.ambiguous = true;
+        }
+    };
+
+    for (const auto &address : my_deferred_pkt_map) {
+        for (const DeferredPacket &entry : address.second) {
+            if (entry.packet == packet && entry.logicalResponseManaged) {
+                record(entry.logicalTransaction, entry.paddr, entry.cmd, true);
+            }
+        }
+    }
+    const auto scan_queue = [&](const auto *queues, unsigned count) {
+        for (unsigned queue = 0; queue < count; ++queue) {
+            for (const OutstandingPacket &entry : queues[queue]) {
+                if (entry.packet == packet && entry.logicalResponseManaged) {
+                    record(entry.logicalTransaction, entry.paddr, entry.cmd,
+                           false);
+                }
+            }
+        }
+    };
+    scan_queue(my_outstanding_indirect_cache_read_pkts, num_cores);
+    scan_queue(my_outstanding_indirect_cache_write_pkts, num_cores);
+    scan_queue(my_outstanding_stream_cache_read_pkts, num_cores);
+    scan_queue(my_outstanding_stream_cache_write_pkts, num_cores);
+    scan_queue(my_outstanding_stream_mem_read_pkts, num_cores);
+    scan_queue(my_outstanding_stream_mem_write_pkts, num_cores);
+    scan_queue(my_outstanding_indirect_mem_read_pkts, num_channels);
+    scan_queue(my_outstanding_indirect_mem_write_pkts, num_channels);
+    if (provenance.deferredAliases != 0 && provenance.sendAliases != 0)
+        provenance.ambiguous = true;
+    return provenance;
+}
+
+MAA::LogicalLedgerOwner
+MAA::findUniqueLogicalLedgerOwner(
+    const LogicalStreamTransactionTag &transaction, Addr address) const
+{
+    LogicalLedgerOwner owner;
+    if (!transaction.valid())
+        return owner;
+    for (unsigned maa_id = 0; maa_id < num_maas; ++maa_id) {
+        StreamAccessUnit *const stream = &streamAccessUnits[maa_id];
+        if (!stream->ownsLogicalResponse(transaction, address))
+            continue;
+        if (owner.stream != nullptr)
+            return {};
+        owner = {stream, static_cast<int>(maa_id)};
+    }
+    return owner;
+}
+
+ResponseTeardownShape
+MAA::responseTeardownShape() const
+{
+    ResponseTeardownShape shape;
+    shape.mapOwners = my_outstanding_pkt_map.size();
+    for (const auto &address : my_deferred_pkt_map)
+        shape.deferredOwners += address.second.size();
+    const auto count_queue = [](const auto *queues, unsigned count) {
+        std::size_t entries = 0;
+        for (unsigned queue = 0; queue < count; ++queue)
+            entries += queues[queue].size();
+        return entries;
+    };
+    shape.cacheSendOwners =
+        count_queue(my_outstanding_indirect_cache_read_pkts, num_cores) +
+        count_queue(my_outstanding_indirect_cache_write_pkts, num_cores) +
+        count_queue(my_outstanding_stream_cache_read_pkts, num_cores) +
+        count_queue(my_outstanding_stream_cache_write_pkts, num_cores) +
+        count_queue(my_outstanding_stream_mem_read_pkts, num_cores) +
+        count_queue(my_outstanding_stream_mem_write_pkts, num_cores);
+    shape.memorySendOwners =
+        count_queue(my_outstanding_indirect_mem_read_pkts, num_channels) +
+        count_queue(my_outstanding_indirect_mem_write_pkts, num_channels);
+    for (unsigned maa_id = 0; maa_id < num_maas; ++maa_id) {
+        if (streamAccessUnits[maa_id].hasActiveLogicalResponse())
+            ++shape.activeLogicalLedgers;
+        shape.outstandingCounters += my_num_outstanding_stream_pkts[maa_id];
+    }
+    for (unsigned unit = 0; unit < num_indirect_units_total; ++unit)
+        shape.outstandingCounters += my_num_outstanding_indirect_pkts[unit];
+    shape.pendingPostDeleteCompletion =
+        afterDeleteCompletion.kind != AfterDeleteCompletionKind::None;
+    return shape;
+}
+
 MAA::PacketAliasCounts
 MAA::countPacketAliases(PacketPtr packet) const
 {
@@ -405,7 +516,8 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
         my_deferred_pkt_map[paddr].push_back(
             {funcUnit, maaID, pkt, tick, force_cache,
              force_retirement_cache, logical_response_managed,
-             logical_transaction, sender_state_ownership});
+             logical_transaction, sender_state_ownership, paddr, pkt->cmd,
+             pkt->getSize()});
         stats.virtual_retirement_native_deferrals += 1;
         if (!retirement_owns_address)
             stats.virtual_retirement_queue_deferrals += 1;
@@ -600,27 +712,60 @@ void MAA::sendNextDeferredPacket(Addr paddr) {
         return;
     }
 
-    DeferredPacket deferred = deferred_it->second.front();
+    const DeferredPacket &queued = deferred_it->second.front();
+    const bool packet_present = queued.packet != nullptr;
+    const bool request_present =
+        packet_present && queued.packet->req != nullptr;
+    const bool address_matches =
+        request_present && queued.paddr == paddr &&
+        queued.packet->req->getPaddr() == paddr &&
+        queued.packet->getAddr() == paddr;
+    const bool command_matches =
+        packet_present && queued.packet->cmd == queued.cmd &&
+        queued.packet->getSize() == queued.expectedResponseBytes;
+    const bool owner_valid =
+        (queued.funcUnit == FuncUnitType::STREAM && queued.maaID >= 0 &&
+         static_cast<unsigned>(queued.maaID) < num_maas) ||
+        (queued.funcUnit == FuncUnitType::INDIRECT && queued.maaID >= 0 &&
+         static_cast<unsigned>(queued.maaID) < num_indirect_units_total);
+    const bool route_valid =
+        (!queued.forceRetirementCache || queued.forceCache) &&
+        (!queued.logicalResponseManaged ||
+         (queued.funcUnit == FuncUnitType::STREAM && queued.forceCache &&
+          (queued.logicalTransaction.action !=
+               LogicalStreamAction::Writeback ||
+           queued.forceRetirementCache)));
+    const auto *logical_state = packet_present
+        ? dynamic_cast<LogicalSPDTransactionState *>(
+              queued.packet->senderState)
+        : nullptr;
+    const bool logical_identity_matches = queued.logicalResponseManaged
+        ? logical_state != nullptr &&
+              logical_state->tag == queued.logicalTransaction &&
+              logical_state->lineAddress == paddr
+        : logical_state == nullptr && !queued.logicalTransaction.valid();
+    const SenderStateOwnership promoted_ownership =
+        inspectSenderStateChain(packet_present ? queued.packet->senderState
+                                               : nullptr);
+    const bool sender_state_matches = packet_present &&
+        senderStateMatchesSnapshot(queued.senderStateOwnership,
+                                   promoted_ownership);
+    const DeferredPromotionShape promotion_shape = {
+        packet_present, request_present, address_matches, command_matches,
+        owner_valid, route_valid, logical_identity_matches,
+        sender_state_matches};
+    panic_if(!canPromoteDeferredPacket(promotion_shape),
+             "%s: malformed deferred packet retained at 0x%lx "
+             "(pkt=%d req=%d addr=%d cmd=%d owner=%d route=%d logical=%d "
+             "sender=%d)\n",
+             __func__, paddr, packet_present, request_present,
+             address_matches, command_matches, owner_valid, route_valid,
+             logical_identity_matches, sender_state_matches);
+
+    DeferredPacket deferred = queued;
     deferred_it->second.pop_front();
     if (deferred_it->second.empty())
         my_deferred_pkt_map.erase(deferred_it);
-
-    if (deferred.logicalResponseManaged) {
-        auto *logical_state = dynamic_cast<LogicalSPDTransactionState *>(
-            deferred.packet->senderState);
-        panic_if(logical_state == nullptr ||
-                     logical_state->tag != deferred.logicalTransaction ||
-                     logical_state->lineAddress != paddr,
-                 "%s: deferred logical stream metadata lost identity at "
-                 "0x%lx\n",
-                 __func__, paddr);
-    }
-    const SenderStateOwnership promoted_ownership =
-        inspectSenderStateChain(deferred.packet->senderState);
-    panic_if(!senderStateMatchesSnapshot(deferred.senderStateOwnership,
-                                         promoted_ownership),
-             "%s: deferred sender-state predecessor changed at 0x%lx\n",
-             __func__, paddr);
     DPRINTF(MAAPort, "%s: releasing deferred packet %s at 0x%lx\n",
             __func__, deferred.packet->print(), paddr);
     sendPacket(deferred.funcUnit, deferred.maaID, deferred.packet,
@@ -877,8 +1022,10 @@ bool MAA::sendOutstandingCachePacket() {
                 break;
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
-            if (sendPacketCache(it->packet) == false) {
-                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+            CacheSidePort *sending_port = nullptr;
+            if (!sendPacketCache(it->packet, &sending_port)) {
+                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
+                        core);
                 cache_bus_blocked[core] = true;
                 break;
             } else {
@@ -899,6 +1046,8 @@ bool MAA::sendOutstandingCachePacket() {
                         panic("Invalid func unit type\n");
                     }
                 }
+                my_outstanding_pkt_map[paddr].responseCreditPort =
+                    sending_port;
                 my_outstanding_pkt_map[paddr].sent = true;
                 it = my_outstanding_indirect_cache_read_pkts[core].erase(it);
                 stats.port_cache_RD_packets += 1;
@@ -914,11 +1063,13 @@ bool MAA::sendOutstandingCachePacket() {
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
             const bool needs_response = it->packet->needsResponse();
+            CacheSidePort *sending_port = nullptr;
             const bool sent = it->virtualRetirement
-                ? sendPacketRetirementCache(it->packet)
-                : sendPacketCache(it->packet);
-            if (sent == false) {
-                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+                ? sendPacketRetirementCache(it->packet, &sending_port)
+                : sendPacketCache(it->packet, &sending_port);
+            if (!sent) {
+                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
+                        core);
                 cache_bus_blocked[core] = true;
                 break;
             } else {
@@ -927,6 +1078,8 @@ bool MAA::sendOutstandingCachePacket() {
                 panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
                 panic_if(tmp.funcUnits[0] != FuncUnitType::INDIRECT, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::INDIRECT]);
                 if (needs_response) {
+                    my_outstanding_pkt_map[paddr].responseCreditPort =
+                        sending_port;
                     my_outstanding_pkt_map[paddr].sent = true;
                 } else {
                     my_outstanding_pkt_map.erase(paddr);
@@ -948,9 +1101,10 @@ bool MAA::sendOutstandingCachePacket() {
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
             const bool needs_response = it->packet->needsResponse();
+            CacheSidePort *sending_port = nullptr;
             const bool sent = it->virtualRetirement
-                ? sendPacketRetirementCache(it->packet)
-                : sendPacketCache(it->packet);
+                ? sendPacketRetirementCache(it->packet, &sending_port)
+                : sendPacketCache(it->packet, &sending_port);
             if (!sent) {
                 DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
                         core);
@@ -980,6 +1134,8 @@ bool MAA::sendOutstandingCachePacket() {
                         my_num_outstanding_stream_pkts[tmp.maaIDs[0]],
                         tmp.cmd, LogicalStreamCounterEvent::SendAccepted,
                         paddr);
+                    my_outstanding_pkt_map[paddr].responseCreditPort =
+                        sending_port;
                     my_outstanding_pkt_map[paddr].sent = true;
                 } else {
                     panic_if(needs_response,
@@ -1004,8 +1160,10 @@ bool MAA::sendOutstandingCachePacket() {
                 break;
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
-            if (sendPacketCache(it->packet) == false) {
-                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+            CacheSidePort *sending_port = nullptr;
+            if (!sendPacketCache(it->packet, &sending_port)) {
+                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
+                        core);
                 cache_bus_blocked[core] = true;
                 break;
             } else {
@@ -1025,6 +1183,8 @@ bool MAA::sendOutstandingCachePacket() {
                         panic("Invalid func unit type\n");
                     }
                 }
+                my_outstanding_pkt_map[paddr].responseCreditPort =
+                    sending_port;
                 my_outstanding_pkt_map[paddr].sent = true;
                 it = my_outstanding_stream_cache_read_pkts[core].erase(it);
                 stats.port_cache_RD_packets += 1;
@@ -1041,7 +1201,8 @@ bool MAA::sendOutstandingCachePacket() {
                 }
                 DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
                 if (sendPacketCache(it->packet) == false) {
-                    DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+                    DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
+                            core);
                     cache_bus_blocked[core] = true;
                     break;
                 } else {
@@ -1067,8 +1228,10 @@ bool MAA::sendOutstandingCachePacket() {
                     break;
                 }
                 DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
-                if (sendPacketCache(it->packet) == false) {
-                    DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+                CacheSidePort *sending_port = nullptr;
+                if (!sendPacketCache(it->packet, &sending_port)) {
+                    DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
+                            core);
                     cache_bus_blocked[core] = true;
                     break;
                 } else {
@@ -1089,6 +1252,8 @@ bool MAA::sendOutstandingCachePacket() {
                             panic("Invalid func unit type\n");
                         }
                     }
+                    my_outstanding_pkt_map[paddr].responseCreditPort =
+                        sending_port;
                     my_outstanding_pkt_map[paddr].sent = true;
                     it = my_outstanding_stream_mem_read_pkts[core].erase(it);
                     stats.port_cache_RD_packets += 1;
@@ -1159,17 +1324,77 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
      * releasing its own state; an untagged or aliased extra is fatal.  Every
      * MAA production alias is detached before the wrapper destroys a fatal
      * packet.  Deferred/send queues are real owners, not test registries.
-     */
+    */
     if (exact == my_outstanding_pkt_map.end()) {
+        const LogicalPacketProvenance provenance =
+            findLogicalPacketProvenance(pkt);
+        const LogicalLedgerOwner orphan_owner =
+            provenance.ambiguous
+            ? LogicalLedgerOwner{}
+            : findUniqueLogicalLedgerOwner(provenance.transaction,
+                                           provenance.address);
+        const OrphanedLogicalPacketDecision orphan_decision =
+            classifyOrphanedLogicalPacket(
+                {provenance.deferredAliases, provenance.sendAliases,
+                 orphan_owner.stream != nullptr && !provenance.ambiguous});
+        if (orphan_decision.abortLedger) {
+            orphan_owner.stream->rejectLogicalResponse(
+                LogicalStreamResponseResult::Invalid);
+            const LogicalStreamResponseResult aborted =
+                orphan_owner.stream->abortOwnedLogicalResponse(
+                    provenance.address);
+            panic_if(aborted != LogicalStreamResponseResult::Accepted,
+                     "%s: discoverable orphaned logical ledger at 0x%lx "
+                     "could not be settled (%d)\n",
+                     __func__, provenance.address,
+                     static_cast<int>(aborted));
+            if (orphan_decision.settleCounter) {
+                LogicalStreamResponseKind request_kind =
+                    LogicalStreamResponseKind::Read;
+                panic_if(!decodeLogicalStreamResponseKind(
+                             provenance.command.responseCommand(),
+                             request_kind),
+                         "%s: orphaned logical owner at 0x%lx has invalid "
+                         "request command %s\n",
+                         __func__, provenance.address,
+                         provenance.command.toString());
+                const LogicalStreamCounterDecision counter =
+                    decideLogicalStreamCounterUpdate(
+                        request_kind,
+                        LogicalStreamCounterEvent::UnsentPacketAborted,
+                        my_num_outstanding_stream_pkts[
+                            orphan_owner.maaID]);
+                panic_if(!counter.valid,
+                         "%s: orphaned logical counter at 0x%lx cannot be "
+                         "settled exactly once\n",
+                         __func__, provenance.address);
+                my_num_outstanding_stream_pkts[orphan_owner.maaID] =
+                    counter.value;
+            }
+            erasePacketAliases(pkt);
+            if (logical_state_release_safe)
+                releaseLogicalState(true);
+            DPRINTF(MAAPort,
+                    "%s: orphaned logical packet at 0x%lx settled from "
+                    "deferred/send provenance before fatal destruction\n",
+                    __func__, provenance.address);
+            return TimingResponseDisposition::FatalUnownedExtra;
+        }
+
         StreamAccessUnit *received_stream = nullptr;
         LogicalStreamResponseResult ledger_result =
             response_command_valid ? LogicalStreamResponseResult::Stale
                                    : LogicalStreamResponseResult::Invalid;
-        if (logical_state != nullptr && received_tag.maaID < num_maas) {
-            received_stream = &streamAccessUnits[received_tag.maaID];
+        if (logical_state != nullptr) {
+            const LogicalLedgerOwner received_owner =
+                findUniqueLogicalLedgerOwner(received_tag,
+                                             sender_line_address);
+            received_stream = received_owner.stream;
             if (response_command_valid) {
-                ledger_result = received_stream->validateLogicalResponse(
-                    received_tag, sender_line_address, response_kind);
+                if (received_stream != nullptr) {
+                    ledger_result = received_stream->validateLogicalResponse(
+                        received_tag, sender_line_address, response_kind);
+                }
             }
         }
 
@@ -1238,21 +1463,11 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
 
     const Addr owned_address = exact->first;
     const OutstandingPacket tmp = exact->second;
-    CacheSidePort *expected_response_port = nullptr;
-    bool expected_response_port_valid = !tmp.cached;
-    if (tmp.cached) {
-        const int owner_core = core_addr(owned_address);
-        const auto &ports = tmp.virtualRetirement
-            ? retirementSidePorts
-            : cacheSidePorts;
-        if (owner_core >= 0 &&
-            static_cast<std::size_t>(owner_core) < ports.size()) {
-            expected_response_port = ports[owner_core];
-            expected_response_port_valid = expected_response_port != nullptr;
-        }
-    }
+    CacheSidePort *const expected_response_port = tmp.responseCreditPort;
     const bool response_port_matches =
-        expected_response_port_valid && responsePort == expected_response_port;
+        tmp.sent && (expected_response_port != nullptr
+                         ? responsePort == expected_response_port
+                         : responsePort == nullptr);
     const ResponsePacketAliasDecision alias_decision =
         classifyResponsePacketAliases(
             {aliases_before.outstanding, aliases_before.deferred,
@@ -1280,13 +1495,18 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
             : TimingResponseDisposition::FatalOwnedNoPortCredit;
     };
     if (tmp.logicalResponseManaged) {
-        const bool owner_valid =
+        const LogicalLedgerOwner ledger_owner =
+            findUniqueLogicalLedgerOwner(tmp.logicalTransaction,
+                                         owned_address);
+        const bool owner_metadata_valid =
             tmp.maaIDs.size() == 1 && tmp.funcUnits.size() == 1 &&
             tmp.funcUnits[0] == FuncUnitType::STREAM &&
             tmp.maaIDs[0] >= 0 &&
-            static_cast<unsigned>(tmp.maaIDs[0]) < num_maas;
-        StreamAccessUnit *stream =
-            owner_valid ? &streamAccessUnits[tmp.maaIDs[0]] : nullptr;
+            static_cast<unsigned>(tmp.maaIDs[0]) < num_maas &&
+            tmp.maaIDs[0] == ledger_owner.maaID;
+        const bool owner_valid =
+            owner_metadata_valid && ledger_owner.stream != nullptr;
+        StreamAccessUnit *const stream = ledger_owner.stream;
         LogicalStreamResponseKind expected_kind =
             LogicalStreamResponseKind::Read;
         const bool request_command_valid =
@@ -1299,11 +1519,11 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
 
         LogicalStreamCounterDecision response_counter{};
         bool response_counter_valid = false;
-        if (owner_valid && request_command_valid) {
+        if (stream != nullptr && request_command_valid) {
             response_counter = decideLogicalStreamCounterUpdate(
                 logicalStreamRequestKind(tmp.cmd),
                 LogicalStreamCounterEvent::ResponseAccepted,
-                my_num_outstanding_stream_pkts[tmp.maaIDs[0]]);
+                my_num_outstanding_stream_pkts[ledger_owner.maaID]);
             response_counter_valid = response_counter.valid;
         }
 
@@ -1353,24 +1573,30 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
                 rejected == LogicalStreamResponseResult::Completed) {
                 rejected = LogicalStreamResponseResult::Invalid;
             }
-            if (stream != nullptr)
+            if (stream != nullptr) {
                 stream->rejectLogicalResponse(rejected);
-            if (stream != nullptr)
-                stream->abortOwnedLogicalResponse(owned_address);
+                const LogicalStreamResponseResult aborted =
+                    stream->abortOwnedLogicalResponse(owned_address);
+                panic_if(aborted != LogicalStreamResponseResult::Accepted,
+                         "%s: logical map owner at 0x%lx could not be "
+                         "aborted (%d)\n",
+                         __func__, owned_address,
+                         static_cast<int>(aborted));
+            }
             LogicalStreamCounterDecision aborted_counter{};
             bool aborted_counter_valid = false;
-            if (owner_valid && request_command_valid) {
+            if (stream != nullptr && request_command_valid) {
                 const LogicalStreamCounterEvent abort_event =
                     tmp.sent ? LogicalStreamCounterEvent::ResponseAborted
                              : LogicalStreamCounterEvent::UnsentPacketAborted;
                 aborted_counter = decideLogicalStreamCounterUpdate(
                     logicalStreamRequestKind(tmp.cmd), abort_event,
-                    my_num_outstanding_stream_pkts[tmp.maaIDs[0]]);
+                    my_num_outstanding_stream_pkts[ledger_owner.maaID]);
                 aborted_counter_valid = aborted_counter.valid;
             }
             erasePacketAliases(pkt);
             if (aborted_counter_valid) {
-                my_num_outstanding_stream_pkts[tmp.maaIDs[0]] =
+                my_num_outstanding_stream_pkts[ledger_owner.maaID] =
                     aborted_counter.value;
             }
             if (sender_state_decision.releaseLogicalTop)
@@ -1384,7 +1610,7 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
         }
 
         erasePacketAliases(pkt);
-        my_num_outstanding_stream_pkts[tmp.maaIDs[0]] =
+        my_num_outstanding_stream_pkts[ledger_owner.maaID] =
             response_counter.value;
         releaseLogicalState(true);
         const LogicalStreamResponseResult accepted =
@@ -1412,18 +1638,18 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
         return TimingResponseDisposition::Retired;
     }
 
-    const bool owners_valid =
-        tmp.maaIDs.size() == tmp.funcUnits.size() && !tmp.maaIDs.empty() &&
-        std::all_of(tmp.maaIDs.begin(), tmp.maaIDs.end(),
-                    [this](int maa_id) {
-                        return maa_id >= 0 &&
-                               static_cast<unsigned>(maa_id) < num_maas;
-                    }) &&
-        std::all_of(tmp.funcUnits.begin(), tmp.funcUnits.end(),
-                    [](FuncUnitType unit) {
-                        return unit == FuncUnitType::INDIRECT ||
-                               unit == FuncUnitType::STREAM;
-                    });
+    bool owners_valid =
+        tmp.maaIDs.size() == tmp.funcUnits.size() && !tmp.maaIDs.empty();
+    for (std::size_t index = 0;
+         owners_valid && index < tmp.maaIDs.size(); ++index) {
+        const int maa_id = tmp.maaIDs[index];
+        const FuncUnitType unit = tmp.funcUnits[index];
+        owners_valid = maa_id >= 0 &&
+            ((unit == FuncUnitType::INDIRECT &&
+              static_cast<unsigned>(maa_id) < num_indirect_units_total) ||
+             (unit == FuncUnitType::STREAM &&
+              static_cast<unsigned>(maa_id) < num_maas));
+    }
     LogicalStreamResponseKind expected_kind =
         LogicalStreamResponseKind::Read;
     bool request_command_valid = true;
@@ -1465,14 +1691,34 @@ MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
         write_counters_valid &&
         afterDeleteCompletion.kind == AfterDeleteCompletionKind::None;
     if (!normal_valid) {
-        const bool settle_write_counters =
-            expected_kind == LogicalStreamResponseKind::Write &&
-            write_owners_valid && write_counters_valid;
-        erasePacketAliases(pkt);
-        if (settle_write_counters) {
-            for (int maa_id : tmp.maaIDs)
-                --my_num_outstanding_indirect_pkts[maa_id];
+        if (owners_valid && request_command_valid) {
+            const NormalFatalOwnerDecision owner_settlement =
+                decideNormalFatalOwnerSettlement(
+                    expected_kind, tmp.sent, tmp.virtualRetirement);
+            for (std::size_t index = 0; index < tmp.maaIDs.size(); ++index) {
+                const int maa_id = tmp.maaIDs[index];
+                if (owner_settlement.settleOutstandingCounter) {
+                    uint32_t &counter =
+                        tmp.funcUnits[index] == FuncUnitType::INDIRECT
+                        ? my_num_outstanding_indirect_pkts[maa_id]
+                        : my_num_outstanding_stream_pkts[maa_id];
+                    panic_if(counter == 0,
+                             "%s: fatal normal owner counter underflow at "
+                             "0x%lx\n",
+                             __func__, owned_address);
+                    --counter;
+                }
+                if (owner_settlement.settleRetirementWrite) {
+                    panic_if(tmp.funcUnits[index] != FuncUnitType::INDIRECT,
+                             "%s: retirement write at 0x%lx has non-indirect "
+                             "owner\n",
+                             __func__, owned_address);
+                    indirectAccessUnits[maa_id].retirementWriteComplete(
+                        owned_address);
+                }
+            }
         }
+        erasePacketAliases(pkt);
         if (logical_state_release_safe)
             releaseLogicalState(true);
         DPRINTF(MAAPort,

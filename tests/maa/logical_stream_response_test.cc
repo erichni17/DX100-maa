@@ -31,6 +31,9 @@ using DispositionDecision =
 using WrapperDecision = gem5::TimingResponseWrapperDecision;
 using AliasShape = gem5::ResponsePacketAliasShape;
 using SenderShape = gem5::ResponseSenderStateShape;
+using DeferredShape = gem5::DeferredPromotionShape;
+using OrphanShape = gem5::OrphanedLogicalPacketShape;
+using TeardownShape = gem5::ResponseTeardownShape;
 
 namespace {
 
@@ -867,6 +870,122 @@ testFixedLedgerCapacityAndUntaggedPathExclusion()
     checkRejectedRoute(untagged, Result::Stale);
 }
 
+void
+testOrphanedDeferredAndSendOwnersAreFatalAndSettled()
+{
+    const auto deferred = gem5::classifyOrphanedLogicalPacket(
+        OrphanShape{1, 0, true});
+    CHECK(deferred.fatal);
+    CHECK(deferred.detachAliases);
+    CHECK(deferred.abortLedger);
+    CHECK(!deferred.settleCounter);
+
+    const auto send = gem5::classifyOrphanedLogicalPacket(
+        OrphanShape{0, 2, true});
+    CHECK(send.fatal);
+    CHECK(send.detachAliases);
+    CHECK(send.abortLedger);
+    CHECK(send.settleCounter);
+
+    // Two different lifecycle owners cannot authorize a guessed settlement.
+    const auto ambiguous = gem5::classifyOrphanedLogicalPacket(
+        OrphanShape{1, 1, true});
+    CHECK(ambiguous.fatal);
+    CHECK(ambiguous.detachAliases);
+    CHECK(!ambiguous.abortLedger);
+    CHECK(!ambiguous.settleCounter);
+
+    const auto independent = gem5::classifyOrphanedLogicalPacket(
+        OrphanShape{});
+    CHECK(!independent.fatal);
+    CHECK(!independent.detachAliases);
+}
+
+void
+testNormalFatalOwnersSettleEveryRequestKind()
+{
+    for (Kind kind : {Kind::Read, Kind::ReadEx}) {
+        const auto unsent = gem5::decideNormalFatalOwnerSettlement(
+            kind, false, false);
+        CHECK(unsent.settleOutstandingCounter);
+        CHECK(!unsent.settleRetirementWrite);
+
+        const auto sent = gem5::decideNormalFatalOwnerSettlement(
+            kind, true, false);
+        CHECK(!sent.settleOutstandingCounter);
+        CHECK(!sent.settleRetirementWrite);
+    }
+
+    const auto corruptRetirement =
+        gem5::decideNormalFatalOwnerSettlement(Kind::Write, true, true);
+    CHECK(corruptRetirement.settleOutstandingCounter);
+    CHECK(corruptRetirement.settleRetirementWrite);
+    const auto unsentWrite =
+        gem5::decideNormalFatalOwnerSettlement(Kind::Write, false, true);
+    CHECK(unsentWrite.settleOutstandingCounter);
+    CHECK(!unsentWrite.settleRetirementWrite);
+}
+
+void
+testInvalidMapOwnerMetadataCannotBypassLedgerOrCounterCleanup()
+{
+    Ledger ledger;
+    const Tag discoverable = makeTag(901, Action::Fill, 1, 2, 3, 0, 7);
+    CHECK(ledger.begin(discoverable, 1) == Result::Accepted);
+    CHECK(ledger.issueLine(discoverable, 0x7100, Kind::Read) ==
+          Result::Accepted);
+
+    // Map maaID/funcUnit vectors may be corrupt; the immutable transaction tag
+    // and exact line still identify one ledger owner.
+    CHECK(ledger.abortOwnedResponse(0x7100) == Result::Accepted);
+    CHECK(ledger.abortedLineCount() == 1);
+    CHECK(ledger.abortOwnedResponse(0x7100) == Result::Duplicate);
+    const CounterDecision counter = gem5::decideLogicalStreamCounterUpdate(
+        Kind::Read, CounterEvent::UnsentPacketAborted, 1);
+    CHECK(counter.valid);
+    CHECK(counter.changed);
+    CHECK(counter.value == 0);
+}
+
+void
+testMalformedDeferredPromotionRetainsQueueOwnership()
+{
+    const DeferredShape valid{true, true, true, true, true, true, true, true};
+    CHECK(gem5::canPromoteDeferredPacket(valid));
+    for (std::size_t field = 0; field < 8; ++field) {
+        DeferredShape malformed = valid;
+        bool *const fields[] = {
+            &malformed.packetPresent,
+            &malformed.requestPresent,
+            &malformed.addressMatches,
+            &malformed.commandMatches,
+            &malformed.ownerValid,
+            &malformed.routeValid,
+            &malformed.logicalIdentityMatches,
+            &malformed.senderStateMatches,
+        };
+        *fields[field] = false;
+        CHECK(!gem5::canPromoteDeferredPacket(malformed));
+    }
+}
+
+void
+testTeardownRejectsEverySurvivingOwnerClass()
+{
+    CHECK(gem5::canDestroyResponseSubstrate(TeardownShape{}));
+    for (TeardownShape live : {
+             TeardownShape{1, 0, 0, 0, 0, 0, false},
+             TeardownShape{0, 2, 0, 0, 0, 0, false},
+             TeardownShape{0, 0, 3, 0, 0, 0, false},
+             TeardownShape{0, 0, 0, 4, 0, 0, false},
+             TeardownShape{0, 0, 0, 0, 1, 0, false},
+             TeardownShape{0, 0, 0, 0, 0, 1, false},
+             TeardownShape{0, 0, 0, 0, 0, 0, true},
+         }) {
+        CHECK(!gem5::canDestroyResponseSubstrate(live));
+    }
+}
+
 } // anonymous namespace
 
 int
@@ -886,6 +1005,11 @@ main()
     testWritebackMismatchesCannotAcknowledgeTerminalLines();
     testStaleAndOldTransactionsCannotCompleteReusedAddress();
     testFixedLedgerCapacityAndUntaggedPathExclusion();
+    testOrphanedDeferredAndSendOwnersAreFatalAndSettled();
+    testNormalFatalOwnersSettleEveryRequestKind();
+    testInvalidMapOwnerMetadataCannotBypassLedgerOrCounterCleanup();
+    testMalformedDeferredPromotionRetainsQueueOwnership();
+    testTeardownRejectsEverySurvivingOwnerClass();
     std::cout << "logical_stream_response_test: PASS" << std::endl;
     return 0;
 }

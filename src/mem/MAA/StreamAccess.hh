@@ -130,6 +130,11 @@ public:
         const LogicalStreamTransactionTag &tag, Addr lineAddress,
         LogicalStreamResponseKind kind);
     LogicalStreamResponseResult abortOwnedLogicalResponse(Addr lineAddress);
+    bool ownsLogicalResponse(const LogicalStreamTransactionTag &tag,
+                             Addr lineAddress) const;
+    bool hasActiveLogicalResponse() const {
+        return logicalResponseLedger.isActive();
+    }
     LogicalStreamResponseResult writeResponseReceived(
         const LogicalStreamTransactionTag &tag, Addr lineAddress) {
         return logicalResponseReceived(tag, lineAddress,
