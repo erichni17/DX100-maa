@@ -1562,7 +1562,7 @@ def specs(run_root, prior_gapbs, prior_hashjoin):
                 run_root / "ume_recovery2/results_provenance_v2.tsv",
                 run_root / "ume/results_oracle_v2.tsv",
                 run_root
-                / "gzz_authoritative_20260803/promoted_results_provenance_v2.tsv",
+                / "gzz_fixed_feed_20260803/promoted_results_provenance_v2.tsv",
             ],
             "filters": {"kernel": "gradzatz", "n": "1000000"},
             "oracle": "ume",
