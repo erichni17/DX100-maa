@@ -759,6 +759,13 @@ class LogicalSPDCacheController
         return slot < PhysicalSlots ? slots[slot].transaction : NoTransaction;
     }
 
+    bool canAllocateMemorySerials(std::size_t count) const
+    {
+        const TransactionSerial maximum =
+            std::numeric_limits<TransactionSerial>::max();
+        return count <= maximum - lastMemorySerial;
+    }
+
     bool memorySerialExhausted() const
     {
         return lastMemorySerial ==
