@@ -185,6 +185,23 @@ std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
     }
     return result;
 }
+bool
+OffsetTable::has_entry_chain(int first_itr, int expected_entries) const
+{
+    if (first_itr < 0 || expected_entries <= 0)
+        return false;
+    int itr = first_itr;
+    int count = 0;
+    while (itr != -1) {
+        if (itr < 0 || itr >= num_entries || !entries_valid[itr] ||
+            count >= num_entries) {
+            return false;
+        }
+        ++count;
+        itr = entries[itr].next_itr;
+    }
+    return count == expected_entries;
+}
 OffsetTableEntry OffsetTable::consume_entry(int &itr) {
     panic_if(itr < 0 || itr >= num_entries || entries_valid[itr] == false,
              "Entry %d is invalid!\n", itr);
@@ -401,6 +418,14 @@ bool RowTableEntry::release_native_claim(int entry_id, Addr addr, int head) {
             "head[%d]!\n",
             my_table_id, my_table_row_id, __func__, entry_id, addr, head);
     return true;
+}
+bool
+RowTableEntry::has_native_claim(int entry_id, Addr addr, int head) const
+{
+    return entry_id >= 0 && entry_id < num_RT_entries_per_row &&
+           entries_valid[entry_id] && entries_claimed[entry_id] &&
+           entries[entry_id].addr == addr &&
+           entries[entry_id].first_itr == head;
 }
 bool RowTableEntry::all_entries_claimed() const {
     for (int entry_id = 0; entry_id < num_RT_entries_per_row; entry_id++) {
@@ -724,6 +749,15 @@ bool RowTableSlice::release_native_claim(int row_id, int entry_id,
         entries[row_id].check_reset();
     }
     return true;
+}
+bool
+RowTableSlice::has_native_claim(int row_id, int entry_id, Addr grow_addr,
+                                Addr addr, int head) const
+{
+    return row_id >= 0 && row_id < num_RT_rows_per_slice &&
+           entries_valid[row_id] &&
+           entries[row_id].grow_addr == grow_addr &&
+           entries[row_id].has_native_claim(entry_id, addr, head);
 }
 void RowTableSlice::reset_virtual_claim_group() {
     virtual_claim_grow_addr = 0;

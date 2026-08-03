@@ -225,6 +225,10 @@ public:
     void cacheWritePacketSent(Addr addr);
     void cacheReadPacketSent(Addr addr);
     void retirementWriteComplete(Addr addr);
+    bool hasReadResponseOwner(Addr addr, bool isBlockCached);
+    bool abortReadResponse(Addr addr, bool isBlockCached);
+    bool canAbortRetirementWrite(Addr addr) const;
+    bool abortRetirementWrite(Addr addr);
     bool hasPendingDirectIndexLine(Addr addr) const {
         return direct_index_pending_lines.find(addr) !=
                direct_index_pending_lines.end();

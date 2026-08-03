@@ -262,6 +262,12 @@ class MAA : public ClockedObject {
     public:
         bool sendPacket(PacketPtr pkt);
         bool settleOwnedResponseCredit();
+        bool canSettleOwnedResponseCredit() const {
+            return outstandingCacheSidePackets != 0;
+        }
+        uint32_t responseCredits() const {
+            return outstandingCacheSidePackets;
+        }
         void allocate(int _core_id, int _maxOutstandingCacheSidePackets);
 
     public:
@@ -858,6 +864,19 @@ protected:
         bool counterOwned = false;
         bool ambiguous = false;
     };
+    struct LogicalPacketOwner
+    {
+        StreamAccessUnit *stream = nullptr;
+        int maaID = -1;
+        LogicalStreamTransactionTag transaction{};
+        Addr address = 0;
+        MemCmd command = MemCmd::InvalidCmd;
+        SenderStateOwnership senderStateOwnership{};
+        bool admitted = false;
+        bool counterOwned = false;
+        bool sent = false;
+        CacheSidePort *responseCreditPort = nullptr;
+    };
     struct PacketAliasCounts
     {
         std::size_t outstanding = 0;
@@ -873,6 +892,7 @@ protected:
     enum class AfterDeleteCompletionKind : uint8_t
     {
         None,
+        PromoteDeferred,
         RetirementWrite,
     };
     struct AfterDeleteCompletion
@@ -898,6 +918,8 @@ protected:
     std::unordered_map<Addr, OutstandingPacket> my_outstanding_pkt_map;
     std::unordered_map<Addr, std::deque<DeferredPacket>>
         my_deferred_pkt_map;
+    std::unordered_map<PacketPtr, LogicalPacketOwner>
+        my_logical_packet_owners;
     AfterDeleteCompletion afterDeleteCompletion;
     uint32_t *my_num_outstanding_indirect_pkts;
     uint32_t *my_num_outstanding_stream_pkts;
@@ -924,6 +946,8 @@ protected:
     ResponseTeardownShape responseTeardownShape() const;
     PacketAliasCounts countPacketAliases(PacketPtr packet) const;
     PacketAliasCounts erasePacketAliases(PacketPtr packet);
+    void releaseRecordedLogicalSenderState(
+        PacketPtr packet, const LogicalPacketOwner &owner);
     EventFunctionWrapper sendCacheEvent;
     EventFunctionWrapper sendMemEvent;
     bool *mem_channels_blocked;

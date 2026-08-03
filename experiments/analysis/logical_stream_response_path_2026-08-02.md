@@ -3,6 +3,7 @@
 Date: 2026-08-02
 Patch: 3 of `logical_spd_cache_gem5_integration_plan_2026-08-02.md`
 Base used for this slice: `b79f136606fddf03a93c909ed54f1f0ed836de66`
+Terminal-repair base: `8f1795c30b01f15438238b154b369184bf91c258`
 
 ## Scope
 
@@ -32,6 +33,14 @@ generation, slot}` tag:
   64-byte lines (4096 eight-byte elements). A 32-bit page uses exactly 256
   entries; an eight-byte page uses exactly 512. The ledger rejects duplicate
   issues and cannot grow.
+
+An authoritative `PacketPtr -> LogicalPacketOwner` table independently retains
+the exact stream-unit pointer, transaction, line, command, sender-state
+snapshot, counter phase, accepted sending port, and sent state. Consequently,
+corrupt map vectors/tags or a missing callback wrapper cannot make the ledger
+owner undiscoverable. The record is removed only after every packet alias,
+unit request owner, ledger line, counter, sender-state alias, and port credit
+owned by that packet has reached its one terminal transition.
 
 The port copies the full tag into both outstanding and deferred metadata. Its
 logical ownership decision is a small pure finite helper exercised by the host
@@ -94,10 +103,21 @@ recorded cache owner directly after alias detachment and returns
 `FatalOwnedNoPortCredit`, so the callback wrapper cannot debit an unrelated
 credit. Unsent and memory-side requests own no cache credit.
 
+Before an accepted response mutates any alias, ledger, counter, or unit, it
+prevalidates the exact cache-port credit, counter transition, unit metadata,
+route, response size, PacketPtr aliases, and sender-state snapshot. A zero
+credit, wrong port, duplicate/stale callback, counter boundary, or wrong size
+therefore enters terminal cleanup without partially accepting the response or
+changing unrelated owners.
+
 Accepted logical responses first detach every exact production alias and
 settle the stream count, then pop only the owned logical top while preserving
 the exact legacy predecessor, perform ledger/data delivery, and finally
-promote one same-address deferred packet. Ordinary responses require the
+arm post-delete promotion of one same-address deferred packet. A writeback
+`WriteReq` created from an accepted `ReadExResp` is the continuation of the
+same atomic request: it explicitly takes the just-released address before an
+older deferred native request. The deferred native queue itself remains FIFO
+and is promoted only after the continuation's `WriteResp`. Ordinary responses require the
 unchanged bounded predecessor snapshot and preserve it. Retirement-write
 completion is armed only after structural validation, ownership erasure, and
 counter settlement; the wrapper settles its credit and destroys the packet
@@ -159,6 +179,14 @@ increment point. Its command then determines the sole decrement point:
   cannot decrement. Exact-pointer corruption instead follows the fatal abort
   transition above.
 
+Deferred logical promotion validates its authoritative owner, exact cache or
+retirement port, map vacancy, unique deferred alias, sender snapshot, command,
+full transaction identity, and counter headroom before detaching the queue
+node. The commit directly installs one map/send-queue owner and one counter
+transition. Send backpressure retains that single retryable owner. A malformed,
+saturated, or map-aliased deferred packet is instead detached from all aliases,
+aborted in the unit and ledger, destroyed exactly once, and only then panics.
+
 The packet-free `decideLogicalStreamCounterUpdate` transition implements this
 ownership table and is called by `Port.cc` for logical enqueue, accepted send,
 and accepted or fatal exact response events. Its zero and maximum boundaries
@@ -178,36 +206,38 @@ post-reset stale callbacks, fixed 512-line capacity, wrapper deletion and
 credit lifetimes, exact response-ledger abort, real deferred/cache/memory queue
 alias shapes, legal predecessor preservation, cyclic/over-depth/arbitrary/
 logical/aliased predecessor rejection, post-delete retirement owner rejection,
-and command-specific stream counter ownership. Size tests cover zero, short,
-long, and overflow-adjacent `ReadResp`, `ReadExResp`, and `WriteResp` values on
+and command-specific stream counter ownership. The cumulative terminal
+regressions also cover mixed logical/native same-line continuation ordering,
+fatal read and retirement-write aborts, corrupt/missing provenance, deferred
+saturation/map/port/send-failure shapes, cache-credit underflow/duplicate/
+wrong-port isolation, and zero-owner teardown including port credits. Size
+tests cover zero, short, long, and overflow-adjacent `ReadResp`, `ReadExResp`,
+and `WriteResp` values on
 both wrapper forms. Counter tests exercise zero and maximum boundaries, exact
 unsent read/read-exclusive/write abort, fatal sent abort, foreign no-op, and
 explicit no-wrap checks.
 
-Production compile validation builds `build/X86/mem/MAA/{Port,
-CacheSidePort,MemSidePort}.o` only. ASan and UBSan host replays are separate;
+Production compile validation builds only the following X86 objects:
+`Port.o`, `CacheSidePort.o`, `MemSidePort.o`, `StreamAccess.o`,
+`IndirectAccess.o`, `Tables.o`, and `MAA.o`. ASan and UBSan host replays are separate;
 ASan uses `detect_leaks=0` because LeakSanitizer is not reliable under the
 ptrace-style agent/sandbox environment, so no LSan claim is made. The logical
 ABI, controller, transparent-controller, response-path scripts, and the full
 dependency-light Python virtualization suite are also replayed. No gem5
 simulation is run.
 
-Recorded validation for this repair:
-
-- Working branch: response host binary PASS plus 6/6 source contracts;
-  logical ABI PASS plus 7/7 ABI and 11/11 transparent contracts; logical
-  controller PASS plus 9/9 contracts; transparent controller PASS plus 11/11
-  contracts; full dependency-light Python discovery 200/200.
-- Production compile: `Port.o`, `CacheSidePort.o`, and `MemSidePort.o` PASS.
-- Sanitizers: ASan PASS with leak detection disabled as stated above; UBSan
-  PASS with halt-on-error and stack traces enabled.
-- Current-lead replay: response-path commits plus this repair applied cleanly
-  to detached `9fcb18c`; all seven no-gem5 virtualization gates PASS, including
-  the hidden-payload gate, full Python discovery 238/238, the dedicated ASan
-  and UBSan response replays PASS, the three production objects build cleanly,
-  and `git diff --check` PASS.
-- gem5 modification style and `git diff --check` PASS. No gem5 simulation was
-  launched.
+The final-tree terminal-repair replay passed one strict C++17 response host
+binary plus 15 response source contracts, 7 logical ABI contracts plus 11
+transparent compatibility contracts, 9 logical controller contracts, 11
+transparent controller contracts, and all 209 tests in full Python discovery.
+The same response host binary passed ASan with
+`detect_leaks=0:halt_on_error=1` and UBSan with
+`halt_on_error=1:print_stacktrace=1`. Modified-region gem5 style,
+`git diff --check`, and Python byte-compilation passed. This evidence does not
+include LeakSanitizer, a gem5 executable link, or a gem5 simulation. The
+provisional SPD-cache slice `02b6e80` remains intentionally unintegrated.
+These results are evidence for another fresh cumulative review, not an
+acceptance claim.
 
 ## Integration boundary and base status
 

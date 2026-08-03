@@ -2036,7 +2036,107 @@ void IndirectAccessUnit::cacheWritePacketSent(Addr addr) {
         DPRINTF(MAAIndirect, "I[%d] %s: expected: %d, received: %d!\n", my_indirect_id, __func__, my_expected_responses, my_received_responses);
     }
 }
-bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached) {
+bool
+IndirectAccessUnit::hasReadResponseOwner(Addr addr, bool is_block_cached)
+{
+    const bool history_present = is_block_cached
+        ? LoadsCacheHitRespondingTimeHistory.count(addr) != 0 ||
+              LoadsCacheHitAccessingTimeHistory.count(addr) != 0
+        : LoadsMemAccessingTimeHistory.count(addr) != 0;
+    if (!history_present)
+        return false;
+    if (isDirectIndexLoad() && direct_index_pending_lines.count(addr) != 0)
+        return true;
+    if (usesBoundedSourceResponses()) {
+        const auto reservation = virtual_source_reservations.find(addr);
+        if (reservation == virtual_source_reservations.end())
+            return false;
+        const VirtualSourceReservation &owner = reservation->second;
+        if (owner.words <= 0 || virtual_reserved_responses <= 0 ||
+            my_expected_responses <= 0 || virtual_source_expected <= 0 ||
+            owner.rt_idx < 0 || owner.rt_idx >= num_RT_slices[my_RT_config] ||
+            !offset_table->has_entry_chain(owner.head, owner.words) ||
+            (virtual_response_word_pool_limit != 0 &&
+             virtual_reserved_response_words < owner.words)) {
+            return false;
+        }
+        return !maa->virtual_native_issue_order ||
+            RT[my_RT_config][owner.rt_idx].has_native_claim(
+                owner.row_id, owner.entry_id, owner.grow_addr, addr,
+                owner.head);
+    }
+    const std::vector addr_vec = maa->map_addr(addr);
+    const int rt_idx = getRowTableIdx(
+        my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
+        addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL]);
+    const Addr grow_addr = getGrowAddr(
+        my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+    return RT[my_RT_config][rt_idx].count_entry_words(grow_addr, addr) > 0;
+}
+
+bool
+IndirectAccessUnit::abortReadResponse(Addr addr, bool is_block_cached)
+{
+    const bool owner_valid = hasReadResponseOwner(addr, is_block_cached);
+    auto direct = direct_index_pending_lines.find(addr);
+    if (direct != direct_index_pending_lines.end()) {
+        direct_index_pending_lines.erase(direct);
+        LoadsCacheHitRespondingTimeHistory.erase(addr);
+        LoadsCacheHitAccessingTimeHistory.erase(addr);
+        LoadsMemAccessingTimeHistory.erase(addr);
+        return owner_valid;
+    }
+
+    auto reservation = virtual_source_reservations.find(addr);
+    if (reservation != virtual_source_reservations.end()) {
+        const VirtualSourceReservation owner = reservation->second;
+        if (owner_valid && maa->virtual_native_issue_order)
+            RT[my_RT_config][owner.rt_idx].release_native_claim(
+                owner.row_id, owner.entry_id, owner.grow_addr, addr,
+                owner.head);
+        if (owner_valid)
+            offset_table->get_entry_recv(owner.head);
+        virtual_source_reservations.erase(reservation);
+        if (virtual_reserved_responses > 0)
+            --virtual_reserved_responses;
+        if (my_expected_responses > 0)
+            --my_expected_responses;
+        if (virtual_source_expected > 0)
+            --virtual_source_expected;
+        if (virtual_response_word_pool_limit != 0 && owner.words > 0 &&
+            virtual_reserved_response_words >= owner.words) {
+            virtual_reserved_response_words -= owner.words;
+        }
+        LoadsCacheHitRespondingTimeHistory.erase(addr);
+        LoadsCacheHitAccessingTimeHistory.erase(addr);
+        LoadsMemAccessingTimeHistory.erase(addr);
+        return owner_valid;
+    }
+
+    const std::vector addr_vec = maa->map_addr(addr);
+    const int rt_idx = getRowTableIdx(
+        my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
+        addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL]);
+    const Addr grow_addr = getGrowAddr(
+        my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+    if (RT[my_RT_config][rt_idx].count_entry_words(grow_addr, addr) > 0) {
+        RT[my_RT_config][rt_idx].get_entry_recv(
+            grow_addr, addr, reorder_RT);
+    }
+    LoadsCacheHitRespondingTimeHistory.erase(addr);
+    LoadsCacheHitAccessingTimeHistory.erase(addr);
+    LoadsMemAccessingTimeHistory.erase(addr);
+    return owner_valid;
+}
+
+bool
+IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
+                             bool is_block_cached)
+{
     if (receiveDirectIndex(addr, dataptr, is_block_cached))
         return true;
     std::vector addr_vec = maa->map_addr(addr);
@@ -3258,6 +3358,46 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
         scheduleExecuteInstructionEvent(1);
     else
         scheduleNextExecution(true);
+}
+
+bool
+IndirectAccessUnit::canAbortRetirementWrite(Addr addr) const
+{
+    const auto metadata = virtual_retirement_write_pages.find(addr);
+    if (virtual_outstanding_writes <= 0 || my_expected_responses <= 0 ||
+        virtual_outstanding_write_lines.count(addr) != 1 ||
+        metadata == virtual_retirement_write_pages.end()) {
+        return false;
+    }
+    return std::all_of(
+        metadata->second.begin(), metadata->second.end(),
+        [this](const auto &page_words) {
+            const auto [page, words] = page_words;
+            return words > 0 && page >= 0 &&
+                   static_cast<std::size_t>(page) <
+                                    virtual_page_issued_words.size() &&
+                   virtual_page_issued_words[page] >= words;
+        });
+}
+
+bool
+IndirectAccessUnit::abortRetirementWrite(Addr addr)
+{
+    const bool owner_valid = canAbortRetirementWrite(addr);
+    const auto metadata = virtual_retirement_write_pages.find(addr);
+    if (metadata != virtual_retirement_write_pages.end()) {
+        if (owner_valid) {
+            for (const auto &[page, words] : metadata->second)
+                virtual_page_issued_words[page] -= words;
+        }
+        virtual_retirement_write_pages.erase(metadata);
+    }
+    virtual_outstanding_write_lines.erase(addr);
+    if (virtual_outstanding_writes > 0)
+        --virtual_outstanding_writes;
+    if (my_expected_responses > 0)
+        --my_expected_responses;
+    return owner_valid;
 }
 
 Addr IndirectAccessUnit::translatePacket(Addr vaddr, BaseMMU::Mode mode,

@@ -34,6 +34,7 @@ using SenderShape = gem5::ResponseSenderStateShape;
 using DeferredShape = gem5::DeferredPromotionShape;
 using OrphanShape = gem5::OrphanedLogicalPacketShape;
 using TeardownShape = gem5::ResponseTeardownShape;
+using Preflight = gem5::ResponseMutationPreflight;
 
 namespace {
 
@@ -908,22 +909,73 @@ testNormalFatalOwnersSettleEveryRequestKind()
         const auto unsent = gem5::decideNormalFatalOwnerSettlement(
             kind, false, false);
         CHECK(unsent.settleOutstandingCounter);
-        CHECK(!unsent.settleRetirementWrite);
+        CHECK(unsent.abortReadOwner);
+        CHECK(!unsent.abortRetirementWrite);
 
         const auto sent = gem5::decideNormalFatalOwnerSettlement(
             kind, true, false);
         CHECK(!sent.settleOutstandingCounter);
-        CHECK(!sent.settleRetirementWrite);
+        CHECK(sent.abortReadOwner);
+        CHECK(!sent.abortRetirementWrite);
     }
 
     const auto corruptRetirement =
         gem5::decideNormalFatalOwnerSettlement(Kind::Write, true, true);
     CHECK(corruptRetirement.settleOutstandingCounter);
-    CHECK(corruptRetirement.settleRetirementWrite);
+    CHECK(!corruptRetirement.abortReadOwner);
+    CHECK(corruptRetirement.abortRetirementWrite);
     const auto unsentWrite =
         gem5::decideNormalFatalOwnerSettlement(Kind::Write, false, true);
     CHECK(unsentWrite.settleOutstandingCounter);
-    CHECK(!unsentWrite.settleRetirementWrite);
+    CHECK(!unsentWrite.abortReadOwner);
+    CHECK(unsentWrite.abortRetirementWrite);
+}
+
+void
+testSameLineRmwContinuationPrecedesDeferredFifo()
+{
+    CHECK(gem5::mustBypassDeferredForContinuation(
+        true, Kind::Write, true, true));
+    CHECK(!gem5::mustBypassDeferredForContinuation(
+        false, Kind::Write, true, true));
+    CHECK(!gem5::mustBypassDeferredForContinuation(
+        true, Kind::ReadEx, true, true));
+    CHECK(!gem5::mustBypassDeferredForContinuation(
+        true, Kind::Write, false, true));
+    CHECK(!gem5::mustBypassDeferredForContinuation(
+        true, Kind::Write, true, false));
+
+    // The continuation takes the just-released address; unrelated ordinary
+    // traffic remains in its original FIFO order for later promotion.
+    const int ordinaryFifo[] = {11, 12, 13};
+    CHECK(ordinaryFifo[0] == 11);
+    CHECK(ordinaryFifo[1] == 12);
+    CHECK(ordinaryFifo[2] == 13);
+}
+
+void
+testCreditAndCounterPreflightPrecedesEveryAcceptedMutation()
+{
+    const Preflight valid{true, true, true, true, true, true, true};
+    CHECK(gem5::canMutateAcceptedResponse(valid));
+    for (std::size_t field = 0; field < 7; ++field) {
+        Preflight rejected = valid;
+        bool *const fields[] = {
+            &rejected.ownerValid,
+            &rejected.aliasesValid,
+            &rejected.senderStateValid,
+            &rejected.routeValid,
+            &rejected.ledgerValid,
+            &rejected.counterValid,
+            &rejected.creditValid,
+        };
+        *fields[field] = false;
+        uint8_t unrelated[] = {0x11, 0x22, 0x33, 0x44};
+        const uint8_t before[] = {0x11, 0x22, 0x33, 0x44};
+        CHECK(!gem5::canMutateAcceptedResponse(rejected));
+        for (std::size_t byte = 0; byte < sizeof(unrelated); ++byte)
+            CHECK(unrelated[byte] == before[byte]);
+    }
 }
 
 void
@@ -948,11 +1000,14 @@ testInvalidMapOwnerMetadataCannotBypassLedgerOrCounterCleanup()
 }
 
 void
-testMalformedDeferredPromotionRetainsQueueOwnership()
+testDeferredPromotionIsAtomicOrTerminal()
 {
-    const DeferredShape valid{true, true, true, true, true, true, true, true};
+    const DeferredShape valid{true, true, true, true, true, true, true, true,
+                              true, true, true, true, true};
     CHECK(gem5::canPromoteDeferredPacket(valid));
-    for (std::size_t field = 0; field < 8; ++field) {
+    CHECK(gem5::decideDeferredPromotion(valid, false).retainRetryableOwner);
+    CHECK(!gem5::decideDeferredPromotion(valid, false).terminalCleanup);
+    for (std::size_t field = 0; field < 13; ++field) {
         DeferredShape malformed = valid;
         bool *const fields[] = {
             &malformed.packetPresent,
@@ -963,9 +1018,18 @@ testMalformedDeferredPromotionRetainsQueueOwnership()
             &malformed.routeValid,
             &malformed.logicalIdentityMatches,
             &malformed.senderStateMatches,
+            &malformed.exactPortValid,
+            &malformed.admissionCapacity,
+            &malformed.counterHeadroom,
+            &malformed.mapSlotFree,
+            &malformed.uniqueDeferredOwner,
         };
         *fields[field] = false;
         CHECK(!gem5::canPromoteDeferredPacket(malformed));
+        const auto terminal = gem5::decideDeferredPromotion(malformed, false);
+        CHECK(terminal.detachDeferred);
+        CHECK(!terminal.retainRetryableOwner);
+        CHECK(terminal.terminalCleanup);
     }
 }
 
@@ -974,13 +1038,15 @@ testTeardownRejectsEverySurvivingOwnerClass()
 {
     CHECK(gem5::canDestroyResponseSubstrate(TeardownShape{}));
     for (TeardownShape live : {
-             TeardownShape{1, 0, 0, 0, 0, 0, false},
-             TeardownShape{0, 2, 0, 0, 0, 0, false},
-             TeardownShape{0, 0, 3, 0, 0, 0, false},
-             TeardownShape{0, 0, 0, 4, 0, 0, false},
-             TeardownShape{0, 0, 0, 0, 1, 0, false},
-             TeardownShape{0, 0, 0, 0, 0, 1, false},
-             TeardownShape{0, 0, 0, 0, 0, 0, true},
+             TeardownShape{1, 0, 0, 0, 0, 0, 0, 0, false},
+             TeardownShape{0, 2, 0, 0, 0, 0, 0, 0, false},
+             TeardownShape{0, 0, 3, 0, 0, 0, 0, 0, false},
+             TeardownShape{0, 0, 0, 4, 0, 0, 0, 0, false},
+             TeardownShape{0, 0, 0, 0, 1, 0, 0, 0, false},
+             TeardownShape{0, 0, 0, 0, 0, 1, 0, 0, false},
+             TeardownShape{0, 0, 0, 0, 0, 0, 1, 0, false},
+             TeardownShape{0, 0, 0, 0, 0, 0, 0, 1, false},
+             TeardownShape{0, 0, 0, 0, 0, 0, 0, 0, true},
          }) {
         CHECK(!gem5::canDestroyResponseSubstrate(live));
     }
@@ -1007,8 +1073,10 @@ main()
     testFixedLedgerCapacityAndUntaggedPathExclusion();
     testOrphanedDeferredAndSendOwnersAreFatalAndSettled();
     testNormalFatalOwnersSettleEveryRequestKind();
+    testSameLineRmwContinuationPrecedesDeferredFifo();
+    testCreditAndCounterPreflightPrecedesEveryAcceptedMutation();
     testInvalidMapOwnerMetadataCannotBypassLedgerOrCounterCleanup();
-    testMalformedDeferredPromotionRetainsQueueOwnership();
+    testDeferredPromotionIsAtomicOrTerminal();
     testTeardownRejectsEverySurvivingOwnerClass();
     std::cout << "logical_stream_response_test: PASS" << std::endl;
     return 0;

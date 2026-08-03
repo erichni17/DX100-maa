@@ -96,7 +96,8 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
 
         recv_path = port.index("MAA::recvTimingResp(PacketPtr pkt")
         logical_path = port.index(
-            "if (tmp.logicalResponseManaged) {", recv_path
+            "if (has_authoritative_owner || tmp.logicalResponseManaged) {",
+            recv_path,
         )
         response_path = port[logical_path:]
         self.assertIn(
@@ -123,7 +124,7 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             "const LogicalStreamResponseResult accepted ="
         )
         accepted_promote = accepted_path.index(
-            "sendNextDeferredPacket(owned_address);"
+            "AfterDeleteCompletionKind::PromoteDeferred"
         )
         self.assertLess(accepted_pop, accepted_delivery)
         self.assertLess(accepted_delivery, accepted_promote)
@@ -229,14 +230,14 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             "return TimingResponseDisposition::FatalUnownedExtra;",
         ):
             self.assertIn(evidence, foreign)
-        abort = foreign.index("abortOwnedLogicalResponse(")
-        counter = foreign.index("decideLogicalStreamCounterUpdate(", abort)
-        detach = foreign.index("erasePacketAliases(pkt);", counter)
+        counter = foreign.index("decideLogicalStreamCounterUpdate(")
+        abort = foreign.index("abortOwnedLogicalResponse(", counter)
+        detach = foreign.index("erasePacketAliases(pkt);", abort)
         terminal = foreign.index(
             "return TimingResponseDisposition::FatalUnownedExtra;", detach
         )
-        self.assertLess(abort, counter)
-        self.assertLess(counter, detach)
+        self.assertLess(counter, abort)
+        self.assertLess(abort, detach)
         self.assertLess(detach, terminal)
 
     def test_deferred_validation_is_fail_atomic_before_pop(self) -> None:
@@ -250,7 +251,10 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             "queued.packet->cmd == queued.cmd",
             "canPromoteDeferredPacket(promotion_shape)",
             "senderStateMatchesSnapshot(",
-            "malformed deferred packet retained",
+            "exact_port_valid",
+            "counter_headroom",
+            "unique_deferred_owner",
+            "terminally cleaned malformed/saturated deferred packet",
         ):
             self.assertIn(evidence, promotion)
         validate = promotion.index("canPromoteDeferredPacket(promotion_shape)")
@@ -274,30 +278,81 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             port.count("responseCreditPort ="),
             5,
         )
-        self.assertIn("expected_response_port = tmp.responseCreditPort", recv)
-        provenance = recv[: recv.index("if (tmp.logicalResponseManaged) {")]
+        self.assertIn("? recorded_owner.responseCreditPort", recv)
+        provenance = recv[: recv.index("if (has_authoritative_owner ||")]
         self.assertNotIn("core_addr(owned_address)", provenance)
         self.assertIn(
             "expected_response_port->settleOwnedResponseCredit()", recv
         )
 
-    def test_normal_fatal_cleanup_precedes_alias_detach(self) -> None:
+    def test_normal_fatal_cleanup_aborts_without_false_success(self) -> None:
         port = PORT_SOURCE.read_text(encoding="utf-8")
         start = port.index("if (!normal_valid) {")
         end = port.index("return fatalOwnedDisposition();", start)
         fatal = port[start:end]
+        preflight = port[
+            port.rfind("const NormalFatalOwnerDecision", 0, start) : start
+        ]
+        self.assertIn("decideNormalFatalOwnerSettlement(", preflight)
+        self.assertIn("settlement_counters_valid", preflight)
         for evidence in (
-            "decideNormalFatalOwnerSettlement(",
             "settleOutstandingCounter",
-            "settleRetirementWrite",
-            "retirementWriteComplete(",
+            "abortReadOwner",
+            "abortRetirementWrite",
+            "abortReadResponse(",
+            "abortRetirementWrite(",
             "erasePacketAliases(pkt);",
         ):
             self.assertIn(evidence, fatal)
-        self.assertLess(
-            fatal.index("retirementWriteComplete("),
-            fatal.index("erasePacketAliases(pkt);"),
+        self.assertNotIn("retirementWriteComplete(", fatal)
+
+    def test_same_line_logical_continuation_bypasses_only_deferred_fifo(
+        self,
+    ) -> None:
+        stream = STREAM_SOURCE.read_text(encoding="utf-8")
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        response = RESPONSE_HEADER.read_text(encoding="utf-8")
+        self.assertIn("mustBypassDeferredForContinuation", response)
+        self.assertIn(
+            "maa->getClockEdge(total_latency), true, true,\n"
+            "                            true);",
+            stream,
         )
+        self.assertIn("logical same-line RMW continuation", port)
+        self.assertIn("push_back(", port)
+        self.assertNotIn("push_front(", port)
+
+    def test_packetptr_owner_record_survives_corrupt_callback_metadata(
+        self,
+    ) -> None:
+        header = MAA_HEADER.read_text(encoding="utf-8")
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("struct LogicalPacketOwner", header)
+        self.assertIn("my_logical_packet_owners", header)
+        self.assertIn("authoritative_owner", port)
+        self.assertIn("releaseRecordedLogicalSenderState", port)
+        orphan = port[
+            port.index(
+                "if (exact == my_outstanding_pkt_map.end()) {"
+            ) : port.index("const LogicalPacketProvenance provenance")
+        ]
+        self.assertIn("abortOwnedLogicalResponse", orphan)
+        self.assertIn("abortReadResponse", orphan)
+        self.assertIn("erasePacketAliases(pkt);", orphan)
+        self.assertIn("my_logical_packet_owners.erase(pkt);", orphan)
+
+    def test_credit_and_counter_preflight_precedes_accepted_mutation(
+        self,
+    ) -> None:
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        accepted = port[port.index("if (has_authoritative_owner ||") :]
+        credit = accepted.index("response_credit_valid")
+        preflight = accepted.index("ResponseMutationPreflight")
+        detach = accepted.index("erasePacketAliases(pkt);", preflight)
+        self.assertLess(credit, preflight)
+        self.assertLess(preflight, detach)
+        self.assertIn("canSettleOwnedResponseCredit", accepted[:detach])
+        self.assertIn("continuation_counter_valid", accepted[:detach])
 
     def test_invalid_map_owner_and_cross_stream_fallback_are_bounded(
         self,
@@ -309,7 +364,8 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             recv,
         )
         self.assertIn("tmp.maaIDs[0] == ledger_owner.maaID", recv)
-        self.assertIn("abortOwnedLogicalResponse(owned_address)", recv)
+        self.assertIn("abortOwnedLogicalResponse(terminal_address)", recv)
+        self.assertIn("? recorded_owner.address : owned_address", recv)
         self.assertIn(
             "my_num_outstanding_stream_pkts[ledger_owner.maaID]",
             recv,
@@ -333,7 +389,9 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             "shape.cacheSendOwners",
             "shape.memorySendOwners",
             "shape.activeLogicalLedgers",
+            "shape.logicalOwnerRecords",
             "shape.outstandingCounters",
+            "shape.cacheResponseCredits",
             "shape.pendingPostDeleteCompletion",
         ):
             self.assertIn(owner, port)
@@ -367,8 +425,9 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
         self.assertIn("expected_response_port", port)
         self.assertIn("ExpectedCachePort", port)
         self.assertIn("settleOwnedResponseCredit", port)
-        self.assertIn("afterDeleteCompletion = {", port)
-        arm = port.index("afterDeleteCompletion = {")
+        self.assertIn("AfterDeleteCompletionKind::RetirementWrite", port)
+        retirement = port.index("AfterDeleteCompletionKind::RetirementWrite")
+        arm = port.rfind("afterDeleteCompletion = {", 0, retirement)
         retire = port.index("retirementWriteComplete(", arm)
         complete = port.index("MAA::completeTimingResponseAfterDelete")
         self.assertLess(arm, complete)

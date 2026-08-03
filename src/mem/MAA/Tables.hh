@@ -28,6 +28,9 @@ public:
     bool add_entry(int itr, Addr base_addr, uint16_t wid);
     bool is_full();
     std::vector<RequestTableEntry> get_entries(Addr base_addr);
+    bool has_entries(Addr base_addr) const {
+        return addr_to_idx.find(base_addr) != addr_to_idx.end();
+    }
     void check_reset();
     void reset();
 
@@ -73,6 +76,7 @@ public:
                   bool _is_stream = false);
     int insert(int itr, int wid, int last_entry);
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
+    bool has_entry_chain(int first_itr, int expected_entries) const;
     OffsetTableEntry peek_entry(int itr) const;
     int count_entries(int itr) const;
     OffsetTableEntry consume_entry(int &itr);
@@ -128,6 +132,7 @@ public:
     bool claim_entry_send(Addr &addr, int &head, int &words, bool commit);
     bool claim_entry_send_native_order(Addr &addr, int &head, int &words,
                                        int &entry_id);
+    bool has_native_claim(int entry_id, Addr addr, int head) const;
     bool release_native_claim(int entry_id, Addr addr, int head);
     bool all_entries_claimed() const;
     std::vector<OffsetTableEntry> get_entry_recv(Addr addr);
@@ -178,6 +183,8 @@ public:
     bool claim_entry_send_native_order(Addr &addr, int &head, int &words,
                                        bool drain, int &row_id,
                                        int &entry_id);
+    bool has_native_claim(int row_id, int entry_id, Addr grow_addr,
+                          Addr addr, int head) const;
     bool release_native_claim(int row_id, int entry_id, Addr grow_addr,
                               Addr addr, int head);
     void reset_virtual_claim_group();

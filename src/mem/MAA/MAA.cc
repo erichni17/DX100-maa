@@ -270,11 +270,12 @@ MAA::~MAA() {
     const ResponseTeardownShape teardown = responseTeardownShape();
     panic_if(!canDestroyResponseSubstrate(teardown),
              "%s: live response ownership at teardown: map=%zu deferred=%zu "
-             "cache_send=%zu memory_send=%zu ledgers=%zu counters=%lu "
-             "post_delete=%d\n",
+             "cache_send=%zu memory_send=%zu ledgers=%zu records=%zu "
+             "counters=%lu cache_credits=%lu post_delete=%d\n",
              name(), teardown.mapOwners, teardown.deferredOwners,
              teardown.cacheSendOwners, teardown.memorySendOwners,
-             teardown.activeLogicalLedgers, teardown.outstandingCounters,
+             teardown.activeLogicalLedgers, teardown.logicalOwnerRecords,
+             teardown.outstandingCounters, teardown.cacheResponseCredits,
              teardown.pendingPostDeleteCompletion);
     delete[] my_outstanding_indirect_cache_read_pkts;
     delete[] my_outstanding_indirect_cache_write_pkts;

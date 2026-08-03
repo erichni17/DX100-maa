@@ -519,8 +519,13 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
         DPRINTF(MAAStream, "S[%d] %s: created %s to send in %d cycles\n",
                 my_stream_id, __func__, write_pkt->print(), total_latency);
         if (response_managed) {
+            panic_if(!mustBypassDeferredForContinuation(
+                         true, LogicalStreamResponseKind::Write, true, true),
+                     "S[%d] %s: logical RMW continuation lost ordering\n",
+                     my_stream_id, __func__);
             maa->sendPacket(FuncUnitType::STREAM, my_stream_id, write_pkt,
-                            maa->getClockEdge(total_latency), true, true);
+                            maa->getClockEdge(total_latency), true, true,
+                            true);
         } else {
             maa->sendPacket(FuncUnitType::STREAM, my_stream_id, write_pkt,
                             maa->getClockEdge(total_latency), false, false,
@@ -531,6 +536,19 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
         scheduleNextExecution(true);
     }
     return true;
+}
+bool
+StreamAccessUnit::hasReadResponseOwner(Addr addr) const
+{
+    return request_table != nullptr && request_table->has_entries(addr);
+}
+
+bool
+StreamAccessUnit::abortReadResponse(Addr addr)
+{
+    if (!hasReadResponseOwner(addr))
+        return false;
+    return !request_table->get_entries(addr).empty();
 }
 bool StreamAccessUnit::logicalResponseManaged() const {
     return my_instruction != nullptr && my_instruction->logicalResponseManaged;

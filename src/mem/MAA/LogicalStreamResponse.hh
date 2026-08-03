@@ -427,6 +427,11 @@ struct DeferredPromotionShape
     bool routeValid = false;
     bool logicalIdentityMatches = false;
     bool senderStateMatches = false;
+    bool exactPortValid = false;
+    bool admissionCapacity = false;
+    bool counterHeadroom = false;
+    bool mapSlotFree = false;
+    bool uniqueDeferredOwner = false;
 };
 
 inline bool
@@ -435,19 +440,74 @@ canPromoteDeferredPacket(const DeferredPromotionShape &shape)
     return shape.packetPresent && shape.requestPresent &&
            shape.addressMatches && shape.commandMatches && shape.ownerValid &&
            shape.routeValid && shape.logicalIdentityMatches &&
-           shape.senderStateMatches;
+           shape.senderStateMatches && shape.exactPortValid &&
+           shape.admissionCapacity && shape.counterHeadroom &&
+           shape.mapSlotFree && shape.uniqueDeferredOwner;
+}
+
+struct DeferredPromotionDecision
+{
+    bool detachDeferred = false;
+    bool retainRetryableOwner = false;
+    bool terminalCleanup = false;
+};
+
+inline DeferredPromotionDecision
+decideDeferredPromotion(const DeferredPromotionShape &shape,
+                        bool sendAccepted)
+{
+    if (!canPromoteDeferredPacket(shape))
+        return {true, false, true};
+    return {true, !sendAccepted, false};
+}
+
+/**
+ * Same-line read/modify/write continuations are part of the request which
+ * just relinquished the address.  They must acquire the free map slot before
+ * an older deferred request; ordinary requests retain deferred FIFO order.
+ */
+inline bool
+mustBypassDeferredForContinuation(bool logicalWriteback,
+                                  LogicalStreamResponseKind kind,
+                                  bool readExAccepted,
+                                  bool exactAddressReleased)
+{
+    return logicalWriteback && kind == LogicalStreamResponseKind::Write &&
+           readExAccepted && exactAddressReleased;
+}
+
+/** All fallible response state must be checked before its first mutation. */
+struct ResponseMutationPreflight
+{
+    bool ownerValid = false;
+    bool aliasesValid = false;
+    bool senderStateValid = false;
+    bool routeValid = false;
+    bool ledgerValid = false;
+    bool counterValid = false;
+    bool creditValid = false;
+};
+
+inline bool
+canMutateAcceptedResponse(const ResponseMutationPreflight &shape)
+{
+    return shape.ownerValid && shape.aliasesValid && shape.senderStateValid &&
+           shape.routeValid && shape.ledgerValid && shape.counterValid &&
+           shape.creditValid;
 }
 
 /**
  * Exact fatal-response cleanup which is independent of response corruption.
  * Reads relinquish their ordinary counter only when they never reached a
- * port.  Response-bearing writes retain both their port counter and retirement
- * metadata until every terminal callback, including a corrupt one.
+ * port. Response-bearing writes relinquish their outstanding counter while
+ * their retirement metadata is explicitly aborted on every terminal callback,
+ * including a corrupt one.
  */
 struct NormalFatalOwnerDecision
 {
     bool settleOutstandingCounter = false;
-    bool settleRetirementWrite = false;
+    bool abortReadOwner = false;
+    bool abortRetirementWrite = false;
 };
 
 inline NormalFatalOwnerDecision
@@ -456,7 +516,9 @@ decideNormalFatalOwnerSettlement(LogicalStreamResponseKind requestKind,
                                  bool virtualRetirement)
 {
     const bool write = requestKind == LogicalStreamResponseKind::Write;
-    return {!requestSent || write, write && requestSent && virtualRetirement};
+    const bool read = requestKind == LogicalStreamResponseKind::Read ||
+                      requestKind == LogicalStreamResponseKind::ReadEx;
+    return {!requestSent || write, read, write && virtualRetirement};
 }
 
 /**
@@ -469,7 +531,9 @@ struct ResponseTeardownShape
     std::size_t cacheSendOwners = 0;
     std::size_t memorySendOwners = 0;
     std::size_t activeLogicalLedgers = 0;
+    std::size_t logicalOwnerRecords = 0;
     uint64_t outstandingCounters = 0;
+    uint64_t cacheResponseCredits = 0;
     bool pendingPostDeleteCompletion = false;
 };
 
@@ -479,7 +543,9 @@ canDestroyResponseSubstrate(const ResponseTeardownShape &shape)
     return shape.mapOwners == 0 && shape.deferredOwners == 0 &&
            shape.cacheSendOwners == 0 && shape.memorySendOwners == 0 &&
            shape.activeLogicalLedgers == 0 &&
+           shape.logicalOwnerRecords == 0 &&
            shape.outstandingCounters == 0 &&
+           shape.cacheResponseCredits == 0 &&
            !shape.pendingPostDeleteCompletion;
 }
 

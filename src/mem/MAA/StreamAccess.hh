@@ -107,6 +107,8 @@ public:
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);
     bool recvData(const Addr addr, uint8_t *dataptr);
+    bool hasReadResponseOwner(Addr addr) const;
+    bool abortReadResponse(Addr addr);
     void writePacketSent(Addr addr);
     void readPacketSent(Addr addr);
 
