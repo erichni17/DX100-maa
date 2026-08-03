@@ -97,6 +97,31 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIn("duplicate_admissions=0", self.indirect)
         self.assertIn("missing=0", self.indirect)
 
+    def test_capacity_drain_gate_is_range_only(self) -> None:
+        legacy_gate = re.search(
+            r"const bool legacy_refill_allowed\s*=\s*(.*?);",
+            self.indirect,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(legacy_gate)
+        self.assertRegex(
+            legacy_gate.group(1),
+            r"!maa->virtual_native_issue_order\s*\|\|\s*"
+            r"\(!virtual_build_incomplete\s*&&\s*"
+            r"boundedSourceResponsesComplete\(\)\)",
+        )
+        refill_gate = re.search(
+            r"const bool refill_allowed\s*=\s*(.*?);",
+            self.indirect,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(refill_gate)
+        self.assertRegex(
+            refill_gate.group(1),
+            r"maa->virtual_index_range_passes\s*\?\s*"
+            r"!virtual_build_incomplete\s*:\s*legacy_refill_allowed",
+        )
+
     def test_runner_closes_exact_candidate_signature(self) -> None:
         for token in (
             "index_words -eq $expected_index_words",
