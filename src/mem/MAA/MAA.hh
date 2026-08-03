@@ -261,6 +261,7 @@ class MAA : public ClockedObject {
 
     public:
         bool sendPacket(PacketPtr pkt);
+        bool settleOwnedResponseCredit();
         void allocate(int _core_id, int _maxOutstandingCacheSidePackets);
 
     public:
@@ -315,7 +316,9 @@ protected:
      * Handles a response from the bus.
      * @param pkt The response packet
      */
-    TimingResponseDisposition recvTimingResp(PacketPtr pkt, bool cached);
+    TimingResponseDisposition recvTimingResp(PacketPtr pkt,
+                                             CacheSidePort *responsePort);
+    void completeTimingResponseAfterDelete(bool commitOwnerCompletion);
 
     /**
      * Handle a snoop response.
@@ -754,14 +757,26 @@ public:
     } stats;
 
 protected:
-    struct pair_hash {
+    struct SenderStateOwnership
+    {
+        std::array<Packet::SenderState *, MaxResponseSenderStateDepth> nodes{};
+        std::size_t depth = 0;
+        std::size_t logicalNodes = 0;
+        bool logicalAtTop = false;
+        bool boundedAcyclic = false;
+    };
+
+    struct pair_hash
+    {
         template <class T1, class T2>
-        std::size_t operator()(const std::pair<T1, T2> &p) const {
+        std::size_t operator()(const std::pair<T1, T2> &p) const
+        {
             return std::hash<T1>{}(p.first) ^ (std::hash<T2>{}(p.second) << 1);
         }
     };
-    class OutstandingPacket {
-    public:
+    class OutstandingPacket
+    {
+      public:
         PacketPtr packet;
         Addr paddr;
         Tick tick;
@@ -770,13 +785,16 @@ protected:
         bool virtualRetirement;
         bool logicalResponseManaged;
         LogicalStreamTransactionTag logicalTransaction;
+        SenderStateOwnership senderStateOwnership;
+        std::size_t expectedResponseBytes;
         bool sent;
         std::vector<int> maaIDs;
         std::vector<FuncUnitType> funcUnits;
         OutstandingPacket(PacketPtr _packet, Addr _paddr, Tick _tick, MemCmd _cmd)
             : packet(_packet), paddr(_paddr), tick(_tick), cmd(_cmd),
               cached(false), virtualRetirement(false),
-              logicalResponseManaged(false), sent(false) {}
+              logicalResponseManaged(false),
+              expectedResponseBytes(_packet->getSize()), sent(false) {}
         OutstandingPacket() {}
         OutstandingPacket(const OutstandingPacket &other) {
             packet = other.packet;
@@ -790,14 +808,19 @@ protected:
             virtualRetirement = other.virtualRetirement;
             logicalResponseManaged = other.logicalResponseManaged;
             logicalTransaction = other.logicalTransaction;
+            senderStateOwnership = other.senderStateOwnership;
+            expectedResponseBytes = other.expectedResponseBytes;
         }
         bool operator<(const OutstandingPacket &rhs) const {
             return tick < rhs.tick;
         }
         OutstandingPacket &operator=(const OutstandingPacket &other) = default;
     };
-    struct CompareByTick {
-        bool operator()(const OutstandingPacket &lhs, const OutstandingPacket &rhs) const {
+    struct CompareByTick
+    {
+        bool operator()(const OutstandingPacket &lhs,
+                        const OutstandingPacket &rhs) const
+        {
             return lhs.tick < rhs.tick;
         }
     };
@@ -810,6 +833,30 @@ protected:
         bool forceRetirementCache;
         bool logicalResponseManaged;
         LogicalStreamTransactionTag logicalTransaction;
+        SenderStateOwnership senderStateOwnership;
+    };
+    struct PacketAliasCounts
+    {
+        std::size_t outstanding = 0;
+        std::size_t deferred = 0;
+        std::size_t cacheSend = 0;
+        std::size_t memorySend = 0;
+
+        std::size_t total() const
+        {
+            return outstanding + deferred + cacheSend + memorySend;
+        }
+    };
+    enum class AfterDeleteCompletionKind : uint8_t
+    {
+        None,
+        RetirementWrite,
+    };
+    struct AfterDeleteCompletion
+    {
+        AfterDeleteCompletionKind kind = AfterDeleteCompletionKind::None;
+        int maaID = -1;
+        Addr address = 0;
     };
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_read_pkts;
     std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_write_pkts;
@@ -828,6 +875,7 @@ protected:
     std::unordered_map<Addr, OutstandingPacket> my_outstanding_pkt_map;
     std::unordered_map<Addr, std::deque<DeferredPacket>>
         my_deferred_pkt_map;
+    AfterDeleteCompletion afterDeleteCompletion;
     uint32_t *my_num_outstanding_indirect_pkts;
     uint32_t *my_num_outstanding_stream_pkts;
     bool allIndirectEmpty();
@@ -838,6 +886,15 @@ protected:
     bool sendOutstandingCachePacket();
     bool sendOutstandingMemPacket();
     void sendNextDeferredPacket(Addr paddr);
+    SenderStateOwnership inspectSenderStateChain(
+        Packet::SenderState *state) const;
+    bool senderStateMatchesSnapshot(
+        const SenderStateOwnership &expected,
+        const SenderStateOwnership &received) const;
+    bool senderStateAliasedByOtherPacket(
+        PacketPtr packet, const SenderStateOwnership &ownership) const;
+    PacketAliasCounts countPacketAliases(PacketPtr packet) const;
+    PacketAliasCounts erasePacketAliases(PacketPtr packet);
     EventFunctionWrapper sendCacheEvent;
     EventFunctionWrapper sendMemEvent;
     bool *mem_channels_blocked;

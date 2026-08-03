@@ -40,10 +40,15 @@ callback: `Port.cc` first searches the outstanding map for the exact
 map-owned `PacketPtr`, then cross-checks its response sender state against the
 full metadata tag, line address, response kind, request address, packet
 address, cached route, command, response size, owner, and active ledger.
+The port snapshots the exact sender-state predecessor chain at admission.
 Logical sender-state discovery inspects the packet stack rather than only its
-top. A state may be released only when it is the top frame, its own predecessor
-chain does not alias it, every map-owned packet's full sender-state chain is
-disjoint, and each scan terminates within the fixed 64-frame proof bound.
+top. A state may be released only when it is the top frame, the full chain is
+acyclic and unchanged within the fixed 64-frame proof bound, and no different
+packet or saved ownership snapshot in the outstanding map, deferred-address
+queues, or eight cache/memory send/retry queues aliases any node. Scheduled
+send events and blocked retry flags contain no `PacketPtr`; they rescan those
+queues. The request ports use direct `sendTimingReq` calls and do not enqueue
+these requests in their generic packet queues.
 
 ## Terminal wrapper disposition contract
 
@@ -56,30 +61,54 @@ the same `invokeTimingResponseWrapper` helper:
 | `Retired` | erased once | exact top state popped/deleted once | decremented once | wrapper deletes once | return `true` |
 | `DroppedExtra` | unchanged | extra packet's non-aliased top state popped/deleted once | unchanged | wrapper deletes once | return `true` |
 | `FatalOwnedCorruption` | exact entry erased before return | popped/deleted when non-aliased | decremented once | wrapper deletes once, then panics | no retry |
+| `FatalOwnedNoPortCredit` | every exact production alias erased | popped/deleted when non-aliased | no callback-port debit; an exact different cache owner is settled directly | wrapper deletes once, then panics | no retry |
 | `FatalUnownedExtra` | unchanged | retained when unsafe/aliased | unchanged | wrapper deletes once, then panics | no retry |
 
 A tagged packet which is not the exact map-owned pointer can therefore never
 retire or settle the active same-address request, even if it copied a valid
 tag. A stale, forged, or duplicate extra is droppable only when its logical
-sender state is the packet's current stack top and is not referenced by any
-map-owned packet. The drop may update a bounded rejection counter, but does
-not mutate the outstanding entry, stream credit, cache-side response credit,
-or deferred queue. An untagged or sender-state-aliased extra fails closed.
+sender state is the packet's current stack top and neither the packet nor any
+sender-state node is referenced by an outstanding, deferred, or pending-send
+owner. The drop may update a bounded rejection counter, but does not mutate
+the active outstanding entry, stream credit, cache-side response credit, or
+deferred queue. An untagged or aliased extra fails closed; any exact aliases
+belonging to that fatal extra are detached before wrapper destruction.
 
 An exact pointer with corrupt command, tag, address, route, response size, or
 owner cannot later receive a second valid response: gem5 mutates and returns
 the request packet itself. `Port.cc` therefore records the rejection where an
-owner can be identified, aborts response-bearing Write counter ownership,
-releases a safely owned logical sender state, erases the map entry, and returns
-`FatalOwnedCorruption`. The wrapper destroys the packet before panicking. No map
-entry can retain the pointer that the wrapper destroys, and fatal cleanup does
-not promote a same-address deferred packet.
+owner can be identified, aborts its exact response-ledger line, settles the
+command-specific counter ownership, detaches the packet from every production
+map/queue alias, and only then releases a safely owned logical sender state.
+An unsent exact `ReadReq`, `ReadExReq`, or `WriteReq` uses
+`UnsentPacketAborted`; it decrements the enqueue count after a checked nonzero
+transition but does not claim a port credit it never acquired. The wrapper
+destroys the packet before panicking. Fatal cleanup does not promote a
+same-address deferred packet.
 
-Accepted logical responses perform ledger/data delivery before popping the
-exact logical sender state, erasing the exact entry, and finally promoting one
-same-address deferred packet. Accepted ordinary responses likewise complete
-their owner callback, erase the exact entry, and only then promote. This keeps
-promotion outside all extra-packet and fatal paths.
+Cache credit authority is the exact sending `CacheSidePort`, including the
+distinction between ordinary and retirement-cache ports for the same core.
+The response callback passes its port identity into the owner check. A sent
+exact response arriving through memory or a different cache port settles its
+recorded cache owner directly after alias detachment and returns
+`FatalOwnedNoPortCredit`, so the callback wrapper cannot debit an unrelated
+credit. Unsent and memory-side requests own no cache credit.
+
+Accepted logical responses first detach every exact production alias and
+settle the stream count, then pop only the owned logical top while preserving
+the exact legacy predecessor, perform ledger/data delivery, and finally
+promote one same-address deferred packet. Ordinary responses require the
+unchanged bounded predecessor snapshot and preserve it. Retirement-write
+completion is armed only after structural validation, ownership erasure, and
+counter settlement; the wrapper settles its credit and destroys the packet
+before invoking `retirementWriteComplete`, so an internal owner rejection can
+panic only after packet lifetime has ended safely.
+
+Every `ReadResp`, `ReadExResp`, and `WriteResp` must carry the exact request
+size. Logical and line-read requests therefore require 64 bytes. Ordinary
+retirement writes may be explicit 4- or 8-byte gem5 requests, so their
+`WriteResp` must match that recorded request size exactly; zero, short, long,
+greater-than-line, and overflow-adjacent sizes are rejected.
 
 ### Why `recvTimingResp` cannot return `false`
 
@@ -120,9 +149,10 @@ increment point. Its command then determines the sole decrement point:
 - A response-bearing logical `WriteReq` relinquishes counter ownership only
   after the fail-closed route accepts its matching `WriteResp`. Its accepted
   send marks the packet sent but deliberately leaves the count unchanged.
-- A fatal exact logical `WriteResp` uses the separate `ResponseAborted`
-  transition to relinquish its retained stream count before the map pointer is
-  removed. This transition is never used for a different packet.
+- A fatal exact sent logical `WriteResp` uses the separate `ResponseAborted`
+  transition. A fatal exact unsent request of any logical kind uses
+  `UnsentPacketAborted`. Both validate before decrement and are never used for
+  a different packet.
 - Rejected send attempts retain both the queued packet and its count for retry.
   Dropped extra stale, duplicate, wrong-command, wrong-address, wrong-packet,
   or wrong-identity responses have no active-request counter authority and
@@ -145,8 +175,14 @@ nonterminal `ReadExResp` callbacks, accepted Read/ReadEx/Write dispositions,
 unowned tagged responses, same-address wrong packets, duplicate extras,
 sender-state alias rejection, exact-pointer corruption, old-tag address reuse,
 post-reset stale callbacks, fixed 512-line capacity, wrapper deletion and
-credit lifetimes, and command-specific stream counter ownership. Counter tests
-exercise zero and maximum boundaries, fatal abort, and explicit no-wrap checks.
+credit lifetimes, exact response-ledger abort, real deferred/cache/memory queue
+alias shapes, legal predecessor preservation, cyclic/over-depth/arbitrary/
+logical/aliased predecessor rejection, post-delete retirement owner rejection,
+and command-specific stream counter ownership. Size tests cover zero, short,
+long, and overflow-adjacent `ReadResp`, `ReadExResp`, and `WriteResp` values on
+both wrapper forms. Counter tests exercise zero and maximum boundaries, exact
+unsent read/read-exclusive/write abort, fatal sent abort, foreign no-op, and
+explicit no-wrap checks.
 
 Production compile validation builds `build/X86/mem/MAA/{Port,
 CacheSidePort,MemSidePort}.o` only. ASan and UBSan host replays are separate;
@@ -158,16 +194,18 @@ simulation is run.
 
 Recorded validation for this repair:
 
-- Working branch: response host binary PASS plus 5/5 source contracts;
+- Working branch: response host binary PASS plus 6/6 source contracts;
   logical ABI PASS plus 7/7 ABI and 11/11 transparent contracts; logical
   controller PASS plus 9/9 contracts; transparent controller PASS plus 11/11
-  contracts; full dependency-light Python discovery 199/199.
+  contracts; full dependency-light Python discovery 200/200.
 - Production compile: `Port.o`, `CacheSidePort.o`, and `MemSidePort.o` PASS.
 - Sanitizers: ASan PASS with leak detection disabled as stated above; UBSan
   PASS with halt-on-error and stack traces enabled.
-- Repaired-ABI replay: response-path commits plus this repair applied cleanly
-  to `a65374c`; all four unit scripts PASS, full Python discovery 220/220, and
-  `git diff --check` PASS.
+- Current-lead replay: response-path commits plus this repair applied cleanly
+  to detached `9fcb18c`; all seven no-gem5 virtualization gates PASS, including
+  the hidden-payload gate, full Python discovery 238/238, the dedicated ASan
+  and UBSan response replays PASS, the three production objects build cleanly,
+  and `git diff --check` PASS.
 - gem5 modification style and `git diff --check` PASS. No gem5 simulation was
   launched.
 
@@ -175,8 +213,8 @@ Recorded validation for this repair:
 
 This patch does not extend public ABI helpers, MMIO decoding, or logical
 scheduler policy. Compatibility is replayed by applying the response-path
-series to repaired ABI commit `a65374c`; that replay is a compatibility check,
-not release acceptance. A follow-up scheduler patch must supply monotonically
+series to current lead `9fcb18c`; that replay is a compatibility check, not
+release acceptance. A follow-up scheduler patch must supply monotonically
 increasing, never-reused transaction IDs and generation IDs for the lifetime
 in which callbacks can arrive. This transport layer does not invent a
 scheduler identity lifecycle. The scheduler must also make its final

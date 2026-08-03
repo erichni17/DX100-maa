@@ -32,11 +32,14 @@ bool MAA::MemSidePort::recvTimingResp(PacketPtr pkt) {
     DPRINTF(MAAMemPort, "%s: received %s\n", __func__, pkt->print());
     return invokeTimingResponseWrapper(
         nullptr,
-        [this, pkt]() { return maa->recvTimingResp(pkt, false); },
+        [this, pkt]() { return maa->recvTimingResp(pkt, nullptr); },
         []() {},
         [pkt]() {
             pkt->deleteData();
             delete pkt;
+        },
+        [this](TimingResponseDisposition, bool commit_owner_completion) {
+            maa->completeTimingResponseAfterDelete(commit_owner_completion);
         },
         [this](TimingResponseDisposition disposition, bool credit_valid) {
             panic("%s: fail-closed response disposition %d (credit valid "

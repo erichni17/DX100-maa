@@ -62,8 +62,6 @@ decodeLogicalStreamResponseKind(const MemCmd &command,
     return false;
 }
 
-constexpr uint32_t MaxResponseSenderStateDepth = 64;
-
 bool
 senderStateChainExcludes(const Packet::SenderState *state,
                          const Packet::SenderState *target)
@@ -130,6 +128,191 @@ settleAcceptedStreamReadCounter(uint32_t &counter, bool logical,
 
 } // anonymous namespace
 
+MAA::SenderStateOwnership
+MAA::inspectSenderStateChain(Packet::SenderState *state) const
+{
+    SenderStateOwnership ownership;
+    while (state != nullptr && ownership.depth < MaxResponseSenderStateDepth) {
+        const auto begin = ownership.nodes.begin();
+        const auto end = begin + ownership.depth;
+        if (std::find(begin, end, state) != end)
+            return ownership;
+        ownership.nodes[ownership.depth] = state;
+        if (dynamic_cast<LogicalSPDTransactionState *>(state) != nullptr) {
+            ++ownership.logicalNodes;
+            if (ownership.depth == 0)
+                ownership.logicalAtTop = true;
+        }
+        ++ownership.depth;
+        state = state->predecessor;
+    }
+    ownership.boundedAcyclic = state == nullptr;
+    return ownership;
+}
+
+bool
+MAA::senderStateMatchesSnapshot(const SenderStateOwnership &expected,
+                                const SenderStateOwnership &received) const
+{
+    if (!expected.boundedAcyclic || !received.boundedAcyclic ||
+        expected.depth > MaxResponseSenderStateDepth ||
+        received.depth > MaxResponseSenderStateDepth ||
+        expected.depth != received.depth ||
+        expected.logicalNodes != received.logicalNodes ||
+        expected.logicalAtTop != received.logicalAtTop) {
+        return false;
+    }
+    return std::equal(expected.nodes.begin(),
+                      expected.nodes.begin() + expected.depth,
+                      received.nodes.begin());
+}
+
+bool
+MAA::senderStateAliasedByOtherPacket(
+    PacketPtr packet, const SenderStateOwnership &ownership) const
+{
+    const auto aliasesOwnership = [&](
+        PacketPtr candidate, const SenderStateOwnership *snapshot) {
+        if (candidate == nullptr || candidate == packet)
+            return false;
+        if (snapshot != nullptr &&
+            snapshot->depth > MaxResponseSenderStateDepth) {
+            return true;
+        }
+        for (std::size_t index = 0; index < ownership.depth; ++index) {
+            if (snapshot != nullptr &&
+                std::find(snapshot->nodes.begin(),
+                          snapshot->nodes.begin() + snapshot->depth,
+                          ownership.nodes[index]) !=
+                    snapshot->nodes.begin() + snapshot->depth) {
+                return true;
+            }
+            if (!senderStateChainExcludes(candidate->senderState,
+                                          ownership.nodes[index])) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const auto &entry : my_outstanding_pkt_map) {
+        if (aliasesOwnership(entry.second.packet,
+                             &entry.second.senderStateOwnership))
+            return true;
+    }
+    for (const auto &address : my_deferred_pkt_map) {
+        for (const DeferredPacket &entry : address.second) {
+            if (aliasesOwnership(entry.packet, &entry.senderStateOwnership))
+                return true;
+        }
+    }
+    const auto queueAliases = [&](const auto *queues, unsigned count) {
+        for (unsigned queue = 0; queue < count; ++queue) {
+            for (const OutstandingPacket &entry : queues[queue]) {
+                if (aliasesOwnership(entry.packet,
+                                     &entry.senderStateOwnership))
+                    return true;
+            }
+        }
+        return false;
+    };
+    return queueAliases(my_outstanding_indirect_cache_read_pkts, num_cores) ||
+           queueAliases(my_outstanding_indirect_cache_write_pkts, num_cores) ||
+           queueAliases(my_outstanding_stream_cache_read_pkts, num_cores) ||
+           queueAliases(my_outstanding_stream_cache_write_pkts, num_cores) ||
+           queueAliases(my_outstanding_stream_mem_read_pkts, num_cores) ||
+           queueAliases(my_outstanding_stream_mem_write_pkts, num_cores) ||
+           queueAliases(my_outstanding_indirect_mem_read_pkts, num_channels) ||
+           queueAliases(my_outstanding_indirect_mem_write_pkts, num_channels);
+}
+
+MAA::PacketAliasCounts
+MAA::countPacketAliases(PacketPtr packet) const
+{
+    PacketAliasCounts aliases;
+    for (const auto &entry : my_outstanding_pkt_map) {
+        if (entry.second.packet == packet)
+            ++aliases.outstanding;
+    }
+    for (const auto &address : my_deferred_pkt_map) {
+        for (const DeferredPacket &entry : address.second) {
+            if (entry.packet == packet)
+                ++aliases.deferred;
+        }
+    }
+    const auto countQueue = [packet](const auto *queues, unsigned count) {
+        std::size_t aliases = 0;
+        for (unsigned queue = 0; queue < count; ++queue) {
+            for (const OutstandingPacket &entry : queues[queue]) {
+                if (entry.packet == packet)
+                    ++aliases;
+            }
+        }
+        return aliases;
+    };
+    aliases.cacheSend =
+        countQueue(my_outstanding_indirect_cache_read_pkts, num_cores) +
+        countQueue(my_outstanding_indirect_cache_write_pkts, num_cores) +
+        countQueue(my_outstanding_stream_cache_read_pkts, num_cores) +
+        countQueue(my_outstanding_stream_cache_write_pkts, num_cores) +
+        countQueue(my_outstanding_stream_mem_read_pkts, num_cores) +
+        countQueue(my_outstanding_stream_mem_write_pkts, num_cores);
+    aliases.memorySend =
+        countQueue(my_outstanding_indirect_mem_read_pkts, num_channels) +
+        countQueue(my_outstanding_indirect_mem_write_pkts, num_channels);
+    return aliases;
+}
+
+MAA::PacketAliasCounts
+MAA::erasePacketAliases(PacketPtr packet)
+{
+    const PacketAliasCounts aliases = countPacketAliases(packet);
+    for (auto entry = my_outstanding_pkt_map.begin();
+         entry != my_outstanding_pkt_map.end();) {
+        if (entry->second.packet == packet)
+            entry = my_outstanding_pkt_map.erase(entry);
+        else
+            ++entry;
+    }
+    for (auto address = my_deferred_pkt_map.begin();
+         address != my_deferred_pkt_map.end();) {
+        auto &queue = address->second;
+        for (auto entry = queue.begin(); entry != queue.end();) {
+            if (entry->packet == packet)
+                entry = queue.erase(entry);
+            else
+                ++entry;
+        }
+        if (queue.empty())
+            address = my_deferred_pkt_map.erase(address);
+        else
+            ++address;
+    }
+    const auto eraseQueue = [packet](auto *queues, unsigned count) {
+        for (unsigned queue = 0; queue < count; ++queue) {
+            for (auto entry = queues[queue].begin();
+                 entry != queues[queue].end();) {
+                if (entry->packet == packet)
+                    entry = queues[queue].erase(entry);
+                else
+                    ++entry;
+            }
+        }
+    };
+    eraseQueue(my_outstanding_indirect_cache_read_pkts, num_cores);
+    eraseQueue(my_outstanding_indirect_cache_write_pkts, num_cores);
+    eraseQueue(my_outstanding_stream_cache_read_pkts, num_cores);
+    eraseQueue(my_outstanding_stream_cache_write_pkts, num_cores);
+    eraseQueue(my_outstanding_stream_mem_read_pkts, num_cores);
+    eraseQueue(my_outstanding_stream_mem_write_pkts, num_cores);
+    eraseQueue(my_outstanding_indirect_mem_read_pkts, num_channels);
+    eraseQueue(my_outstanding_indirect_mem_write_pkts, num_channels);
+
+    // sendCacheEvent/sendMemEvent and the blocked retry flags carry no
+    // PacketPtr; they rescan the queues above.  The RequestPort packet queues
+    // are likewise unused because these paths call sendTimingReq directly.
+    return aliases;
+}
+
 bool
 MAA::canCoalesceOutstandingRead(Addr paddr, FuncUnitType func_unit,
                                 int maa_id) const
@@ -159,10 +342,22 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
     const LogicalSenderStateSearch sender_state_search =
         findLogicalSenderStateBounded(pkt->senderState);
     auto *logical_state = sender_state_search.state;
-    panic_if(!sender_state_search.complete,
+    const SenderStateOwnership sender_state_ownership =
+        inspectSenderStateChain(pkt->senderState);
+    panic_if(!sender_state_search.complete ||
+                 !sender_state_ownership.boundedAcyclic,
              "%s: sender-state stack exceeds bounded ownership proof\n",
              __func__);
     const bool logical_response_managed = logical_state != nullptr;
+    const ResponseSenderStateDecision sender_state_decision =
+        classifyResponseSenderState(
+            {sender_state_ownership.boundedAcyclic, true,
+             sender_state_ownership.logicalNodes,
+             sender_state_ownership.logicalAtTop, false},
+            logical_response_managed);
+    panic_if(!sender_state_decision.valid,
+             "%s: invalid initial sender-state ownership shape at 0x%lx\n",
+             __func__, paddr);
     const LogicalStreamTransactionTag logical_transaction =
         logical_response_managed ? logical_state->tag
                                  : LogicalStreamTransactionTag{};
@@ -210,7 +405,7 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
         my_deferred_pkt_map[paddr].push_back(
             {funcUnit, maaID, pkt, tick, force_cache,
              force_retirement_cache, logical_response_managed,
-             logical_transaction});
+             logical_transaction, sender_state_ownership});
         stats.virtual_retirement_native_deferrals += 1;
         if (!retirement_owns_address)
             stats.virtual_retirement_queue_deferrals += 1;
@@ -314,6 +509,8 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
             logical_response_managed;
         my_outstanding_pkt_map[paddr].logicalTransaction =
             logical_transaction;
+        my_outstanding_pkt_map[paddr].senderStateOwnership =
+            sender_state_ownership;
         bool hit_cache = true;
         if (force_cache_access == false && force_cache == false) {
             RequestPtr snoop_req = std::make_shared<Request>(pkt->req->getPaddr(), pkt->req->getSize(), pkt->req->getFlags(), pkt->req->requestorId());
@@ -418,6 +615,12 @@ void MAA::sendNextDeferredPacket(Addr paddr) {
                  "0x%lx\n",
                  __func__, paddr);
     }
+    const SenderStateOwnership promoted_ownership =
+        inspectSenderStateChain(deferred.packet->senderState);
+    panic_if(!senderStateMatchesSnapshot(deferred.senderStateOwnership,
+                                         promoted_ownership),
+             "%s: deferred sender-state predecessor changed at 0x%lx\n",
+             __func__, paddr);
     DPRINTF(MAAPort, "%s: releasing deferred packet %s at 0x%lx\n",
             __func__, deferred.packet->print(), paddr);
     sendPacket(deferred.funcUnit, deferred.maaID, deferred.packet,
@@ -900,7 +1103,7 @@ bool MAA::sendOutstandingCachePacket() {
     return true;
 }
 TimingResponseDisposition
-MAA::recvTimingResp(PacketPtr pkt, bool cached)
+MAA::recvTimingResp(PacketPtr pkt, CacheSidePort *responsePort)
 {
     DPRINTF(MAAPort, "%s: received %s, cmd: %s, size: %d\n", __func__,
             pkt->print(), pkt->cmdString(), pkt->getSize());
@@ -911,6 +1114,8 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
         LogicalStreamResponseKind::Read;
     const bool response_command_valid =
         decodeLogicalStreamResponseKind(pkt->cmd, response_kind);
+    const SenderStateOwnership received_ownership =
+        inspectSenderStateChain(pkt->senderState);
     const LogicalSenderStateSearch sender_state_search =
         findLogicalSenderStateBounded(pkt->senderState);
     auto *logical_state = sender_state_search.state;
@@ -925,23 +1130,16 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
         [pkt](const auto &entry) { return entry.second.packet == pkt; });
     const auto address_outstanding =
         my_outstanding_pkt_map.find(response_paddr);
-    const bool sender_state_release_safe = [&]() {
-        if (logical_state == nullptr || pkt->senderState != logical_state ||
-            !senderStateChainExcludes(logical_state->predecessor,
-                                      logical_state)) {
-            return false;
-        }
-        for (const auto &entry : my_outstanding_pkt_map) {
-            if (entry.second.packet != pkt &&
-                !senderStateChainExcludes(entry.second.packet->senderState,
-                                          logical_state)) {
-                return false;
-            }
-        }
-        return true;
-    }();
-    auto releaseLogicalState = [&]() {
-        panic_if(logical_state == nullptr || !sender_state_release_safe,
+    const PacketAliasCounts aliases_before = countPacketAliases(pkt);
+    const bool sender_state_aliased = senderStateAliasedByOtherPacket(
+        pkt, received_ownership);
+    const bool logical_state_release_safe =
+        received_ownership.boundedAcyclic &&
+        received_ownership.logicalNodes == 1 &&
+        received_ownership.logicalAtTop && !sender_state_aliased &&
+        logical_state != nullptr && pkt->senderState == logical_state;
+    auto releaseLogicalState = [&](bool authorized) {
+        panic_if(!authorized || logical_state == nullptr,
                  "%s: attempted unsafe logical sender-state release\n",
                  __func__);
         panic_if(pkt->senderState != logical_state,
@@ -958,8 +1156,9 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
     /*
      * No packet other than the exact map-owned PacketPtr can settle the
      * active address.  A separately owned tagged callback is consumed after
-     * releasing its own state; an untagged or aliased extra is fatal because
-     * it cannot be safely retried or destroyed as an ordinary duplicate.
+     * releasing its own state; an untagged or aliased extra is fatal.  Every
+     * MAA production alias is detached before the wrapper destroys a fatal
+     * packet.  Deferred/send queues are real owners, not test registries.
      */
     if (exact == my_outstanding_pkt_map.end()) {
         StreamAccessUnit *received_stream = nullptr;
@@ -1006,16 +1205,28 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
             expected_kind,
             response_kind,
             ledger_result};
+        const ResponsePacketAliasDecision extra_alias_decision =
+            classifyResponsePacketAliases(
+                {aliases_before.outstanding, aliases_before.deferred,
+                 aliases_before.cacheSend, aliases_before.memorySend},
+                false, false);
+        const bool locally_unaliased = extra_alias_decision.droppableExtra;
         const LogicalStreamResponseDispositionDecision decision =
             classifyLogicalStreamResponseDisposition(
-                route, false, sender_state_release_safe);
+                route, false,
+                logical_state_release_safe && locally_unaliased);
         if (received_stream != nullptr &&
             decision.result != LogicalStreamResponseResult::Accepted &&
             decision.result != LogicalStreamResponseResult::Completed) {
             received_stream->rejectLogicalResponse(decision.result);
         }
-        if (decision.popSenderState)
-            releaseLogicalState();
+        if (extra_alias_decision.detachBeforeDestruction)
+            erasePacketAliases(pkt);
+        if (decision.popSenderState ||
+            (extra_alias_decision.detachBeforeDestruction &&
+             logical_state_release_safe)) {
+            releaseLogicalState(true);
+        }
         DPRINTF(MAAPort,
                 "%s: non-owning response at 0x%lx classified %d with "
                 "disposition %d; active map entry unchanged\n",
@@ -1027,11 +1238,53 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
 
     const Addr owned_address = exact->first;
     const OutstandingPacket tmp = exact->second;
+    CacheSidePort *expected_response_port = nullptr;
+    bool expected_response_port_valid = !tmp.cached;
+    if (tmp.cached) {
+        const int owner_core = core_addr(owned_address);
+        const auto &ports = tmp.virtualRetirement
+            ? retirementSidePorts
+            : cacheSidePorts;
+        if (owner_core >= 0 &&
+            static_cast<std::size_t>(owner_core) < ports.size()) {
+            expected_response_port = ports[owner_core];
+            expected_response_port_valid = expected_response_port != nullptr;
+        }
+    }
+    const bool response_port_matches =
+        expected_response_port_valid && responsePort == expected_response_port;
+    const ResponsePacketAliasDecision alias_decision =
+        classifyResponsePacketAliases(
+            {aliases_before.outstanding, aliases_before.deferred,
+             aliases_before.cacheSend, aliases_before.memorySend},
+            true, tmp.sent);
+    const bool exact_sender_snapshot = senderStateMatchesSnapshot(
+        tmp.senderStateOwnership, received_ownership);
+    const ResponseSenderStateDecision sender_state_decision =
+        classifyResponseSenderState(
+            {received_ownership.boundedAcyclic, exact_sender_snapshot,
+             received_ownership.logicalNodes,
+             received_ownership.logicalAtTop, sender_state_aliased},
+            tmp.logicalResponseManaged);
+    const auto fatalOwnedDisposition = [&]() {
+        const TimingResponseCreditOwner credit_owner =
+            classifyTimingResponseCreditOwner(
+                tmp.sent, expected_response_port != nullptr,
+                responsePort == expected_response_port);
+        if (credit_owner ==
+            TimingResponseCreditOwner::ExpectedCachePort) {
+            expected_response_port->settleOwnedResponseCredit();
+        }
+        return credit_owner == TimingResponseCreditOwner::CallbackPort
+            ? TimingResponseDisposition::FatalOwnedCorruption
+            : TimingResponseDisposition::FatalOwnedNoPortCredit;
+    };
     if (tmp.logicalResponseManaged) {
         const bool owner_valid =
             tmp.maaIDs.size() == 1 && tmp.funcUnits.size() == 1 &&
             tmp.funcUnits[0] == FuncUnitType::STREAM &&
-            tmp.maaIDs[0] >= 0 && tmp.maaIDs[0] < num_maas;
+            tmp.maaIDs[0] >= 0 &&
+            static_cast<unsigned>(tmp.maaIDs[0]) < num_maas;
         StreamAccessUnit *stream =
             owner_valid ? &streamAccessUnits[tmp.maaIDs[0]] : nullptr;
         LogicalStreamResponseKind expected_kind =
@@ -1055,14 +1308,16 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
         }
 
         const bool response_size_valid =
-            response_kind == LogicalStreamResponseKind::Write ||
-            pkt->getSize() == 64;
+            tmp.expectedResponseBytes == ExpectedLogicalStreamResponseBytes &&
+            hasExpectedLogicalStreamResponseSize(
+                pkt->getSize(), tmp.expectedResponseBytes);
         const bool structure_valid =
             owner_valid && request_command_valid && response_command_valid &&
-            response_size_valid && tmp.sent && cached == tmp.cached &&
+            response_size_valid && tmp.sent && response_port_matches &&
             tmp.paddr == owned_address && response_paddr == owned_address &&
-            response_address == owned_address && logical_state != nullptr &&
-            sender_state_release_safe && response_counter_valid;
+            response_address == owned_address &&
+            alias_decision.acceptedExactOwner && sender_state_decision.valid &&
+            response_counter_valid;
         LogicalStreamResponseResult ledger_result =
             logical_state == nullptr ? LogicalStreamResponseResult::Stale
                                      : LogicalStreamResponseResult::Invalid;
@@ -1084,12 +1339,11 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
             ledger_result};
         LogicalStreamResponseDispositionDecision decision =
             classifyLogicalStreamResponseDisposition(
-                route, true, sender_state_release_safe);
+                route, true, sender_state_decision.valid);
         if (!structure_valid && decision.accepts()) {
             decision = {LogicalStreamResponseResult::Invalid,
                         TimingResponseDisposition::FatalOwnedCorruption, true,
-                        logical_state != nullptr &&
-                            sender_state_release_safe,
+                        sender_state_decision.releaseLogicalTop,
                         true};
         }
 
@@ -1101,29 +1355,38 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
             }
             if (stream != nullptr)
                 stream->rejectLogicalResponse(rejected);
+            if (stream != nullptr)
+                stream->abortOwnedLogicalResponse(owned_address);
+            LogicalStreamCounterDecision aborted_counter{};
+            bool aborted_counter_valid = false;
             if (owner_valid && request_command_valid) {
-                const LogicalStreamCounterDecision aborted_counter =
-                    decideLogicalStreamCounterUpdate(
-                        logicalStreamRequestKind(tmp.cmd),
-                        LogicalStreamCounterEvent::ResponseAborted,
-                        my_num_outstanding_stream_pkts[tmp.maaIDs[0]]);
-                if (aborted_counter.valid) {
-                    my_num_outstanding_stream_pkts[tmp.maaIDs[0]] =
-                        aborted_counter.value;
-                }
+                const LogicalStreamCounterEvent abort_event =
+                    tmp.sent ? LogicalStreamCounterEvent::ResponseAborted
+                             : LogicalStreamCounterEvent::UnsentPacketAborted;
+                aborted_counter = decideLogicalStreamCounterUpdate(
+                    logicalStreamRequestKind(tmp.cmd), abort_event,
+                    my_num_outstanding_stream_pkts[tmp.maaIDs[0]]);
+                aborted_counter_valid = aborted_counter.valid;
             }
-            if (decision.popSenderState)
-                releaseLogicalState();
-            my_outstanding_pkt_map.erase(exact);
+            erasePacketAliases(pkt);
+            if (aborted_counter_valid) {
+                my_num_outstanding_stream_pkts[tmp.maaIDs[0]] =
+                    aborted_counter.value;
+            }
+            if (sender_state_decision.releaseLogicalTop)
+                releaseLogicalState(true);
             DPRINTF(MAAPort,
                     "%s: exact logical packet at 0x%lx is corrupt (%d); "
-                    "removed map ownership before wrapper destruction\n",
+                    "removed all production aliases before wrapper "
+                    "destruction\n",
                     __func__, owned_address, static_cast<int>(rejected));
-            return TimingResponseDisposition::FatalOwnedCorruption;
+            return fatalOwnedDisposition();
         }
 
+        erasePacketAliases(pkt);
         my_num_outstanding_stream_pkts[tmp.maaIDs[0]] =
             response_counter.value;
+        releaseLogicalState(true);
         const LogicalStreamResponseResult accepted =
             tmp.cmd == MemCmd::WriteReq
                 ? stream->writeResponseReceived(received_tag,
@@ -1139,16 +1402,12 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
                                               pkt->getPtr<uint8_t>());
         }
         if (!delivery_valid) {
-            releaseLogicalState();
-            my_outstanding_pkt_map.erase(exact);
             DPRINTF(MAAPort,
                     "%s: validated logical response at 0x%lx failed owner "
-                    "delivery; removed ownership before fatal destruction\n",
+                    "delivery after complete ownership detachment\n",
                     __func__, owned_address);
-            return TimingResponseDisposition::FatalOwnedCorruption;
+            return fatalOwnedDisposition();
         }
-        releaseLogicalState();
-        my_outstanding_pkt_map.erase(exact);
         sendNextDeferredPacket(owned_address);
         return TimingResponseDisposition::Retired;
     }
@@ -1157,7 +1416,8 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
         tmp.maaIDs.size() == tmp.funcUnits.size() && !tmp.maaIDs.empty() &&
         std::all_of(tmp.maaIDs.begin(), tmp.maaIDs.end(),
                     [this](int maa_id) {
-                        return maa_id >= 0 && maa_id < num_maas;
+                        return maa_id >= 0 &&
+                               static_cast<unsigned>(maa_id) < num_maas;
                     }) &&
         std::all_of(tmp.funcUnits.begin(), tmp.funcUnits.end(),
                     [](FuncUnitType unit) {
@@ -1177,14 +1437,16 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
         request_command_valid = false;
     }
     const bool response_size_valid =
-        response_kind == LogicalStreamResponseKind::Write ||
-        pkt->getSize() == 64;
+        hasExpectedLogicalStreamResponseSize(pkt->getSize(),
+                                             tmp.expectedResponseBytes);
+    const bool read_size_contract =
+        expected_kind == LogicalStreamResponseKind::Write ||
+        tmp.expectedResponseBytes == ExpectedLogicalStreamResponseBytes;
     const bool write_owners_valid =
         expected_kind != LogicalStreamResponseKind::Write ||
-        std::all_of(tmp.funcUnits.begin(), tmp.funcUnits.end(),
-                    [](FuncUnitType unit) {
-                        return unit == FuncUnitType::INDIRECT;
-                    });
+        (tmp.virtualRetirement && tmp.maaIDs.size() == 1 &&
+         tmp.funcUnits.size() == 1 &&
+         tmp.funcUnits[0] == FuncUnitType::INDIRECT);
     const bool write_counters_valid =
         expected_kind != LogicalStreamResponseKind::Write ||
         (owners_valid &&
@@ -1194,35 +1456,47 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
                      }));
     const bool normal_valid =
         owners_valid && request_command_valid && response_command_valid &&
-        response_size_valid && response_kind == expected_kind && tmp.sent &&
-        cached == tmp.cached && tmp.paddr == owned_address &&
+        response_size_valid && read_size_contract &&
+        response_kind == expected_kind && tmp.sent &&
+        response_port_matches && tmp.paddr == owned_address &&
         response_paddr == owned_address && response_address == owned_address &&
-        sender_state_search.complete && logical_state == nullptr &&
-        write_owners_valid &&
-        write_counters_valid;
+        alias_decision.acceptedExactOwner &&
+        sender_state_decision.valid && write_owners_valid &&
+        write_counters_valid &&
+        afterDeleteCompletion.kind == AfterDeleteCompletionKind::None;
     if (!normal_valid) {
-        if (logical_state != nullptr && sender_state_release_safe)
-            releaseLogicalState();
-        my_outstanding_pkt_map.erase(exact);
+        const bool settle_write_counters =
+            expected_kind == LogicalStreamResponseKind::Write &&
+            write_owners_valid && write_counters_valid;
+        erasePacketAliases(pkt);
+        if (settle_write_counters) {
+            for (int maa_id : tmp.maaIDs)
+                --my_num_outstanding_indirect_pkts[maa_id];
+        }
+        if (logical_state_release_safe)
+            releaseLogicalState(true);
         DPRINTF(MAAPort,
-                "%s: exact normal packet at 0x%lx is corrupt; removed map "
-                "ownership before wrapper destruction\n",
+                "%s: exact normal packet at 0x%lx is corrupt; removed all "
+                "production aliases before wrapper destruction\n",
                 __func__, owned_address);
-        return TimingResponseDisposition::FatalOwnedCorruption;
+        return fatalOwnedDisposition();
+    }
+
+    erasePacketAliases(pkt);
+    if (response_kind == LogicalStreamResponseKind::Write) {
+        const int maa_id = tmp.maaIDs[0];
+        --my_num_outstanding_indirect_pkts[maa_id];
+        afterDeleteCompletion = {
+            AfterDeleteCompletionKind::RetirementWrite, maa_id,
+            owned_address};
+        return TimingResponseDisposition::Retired;
     }
 
     bool delivery_valid = true;
     for (std::size_t i = 0; i < tmp.maaIDs.size(); ++i) {
         if (tmp.funcUnits[i] == FuncUnitType::INDIRECT) {
-            if (response_kind == LogicalStreamResponseKind::Write) {
-                --my_num_outstanding_indirect_pkts[tmp.maaIDs[i]];
-                indirectAccessUnits[tmp.maaIDs[i]].retirementWriteComplete(
-                    owned_address);
-            } else {
-                delivery_valid =
-                    indirectAccessUnits[tmp.maaIDs[i]].recvData(
-                        response_address, pkt->getPtr<uint8_t>(), tmp.cached);
-            }
+            delivery_valid = indirectAccessUnits[tmp.maaIDs[i]].recvData(
+                response_address, pkt->getPtr<uint8_t>(), tmp.cached);
         } else {
             delivery_valid = streamAccessUnits[tmp.maaIDs[i]].recvData(
                 response_address, pkt->getPtr<uint8_t>());
@@ -1231,16 +1505,32 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
             break;
     }
     if (!delivery_valid) {
-        my_outstanding_pkt_map.erase(exact);
         DPRINTF(MAAPort,
                 "%s: exact normal response at 0x%lx was rejected by its "
-                "owner; removed map ownership before fatal destruction\n",
+                "owner after complete ownership detachment\n",
                 __func__, owned_address);
-        return TimingResponseDisposition::FatalOwnedCorruption;
+        return fatalOwnedDisposition();
     }
-    my_outstanding_pkt_map.erase(exact);
     sendNextDeferredPacket(owned_address);
     return TimingResponseDisposition::Retired;
+}
+
+void
+MAA::completeTimingResponseAfterDelete(bool commitOwnerCompletion)
+{
+    const AfterDeleteCompletion completion = afterDeleteCompletion;
+    afterDeleteCompletion = {};
+    if (!commitOwnerCompletion ||
+        completion.kind == AfterDeleteCompletionKind::None) {
+        return;
+    }
+    panic_if(completion.kind != AfterDeleteCompletionKind::RetirementWrite ||
+                 completion.maaID < 0 ||
+                 static_cast<unsigned>(completion.maaID) >= num_maas,
+             "%s: invalid post-delete response completion\n", __func__);
+    indirectAccessUnits[completion.maaID].retirementWriteComplete(
+        completion.address);
+    sendNextDeferredPacket(completion.address);
 }
 void MAA::scheduleSendCacheEvent(int latency) {
     DPRINTF(MAAPort, "%s: scheduling send cache packet in the next %d cycles!\n", __func__, latency);

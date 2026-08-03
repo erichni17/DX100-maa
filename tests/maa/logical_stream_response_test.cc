@@ -25,9 +25,12 @@ using RouteDecision = gem5::LogicalStreamResponseRouteDecision;
 using CounterEvent = gem5::LogicalStreamCounterEvent;
 using CounterDecision = gem5::LogicalStreamCounterDecision;
 using Disposition = gem5::TimingResponseDisposition;
+using CreditOwner = gem5::TimingResponseCreditOwner;
 using DispositionDecision =
     gem5::LogicalStreamResponseDispositionDecision;
 using WrapperDecision = gem5::TimingResponseWrapperDecision;
+using AliasShape = gem5::ResponsePacketAliasShape;
+using SenderShape = gem5::ResponseSenderStateShape;
 
 namespace {
 
@@ -162,6 +165,92 @@ testCommandSpecificCounterOwnershipAndRetries()
     CHECK(!abortedUnderflow.valid);
     CHECK(!abortedUnderflow.changed);
     CHECK(abortedUnderflow.value == 0);
+
+    // An exact fatal callback can own a request that never reached a port.
+    // Every such request kind still owns its enqueue count exactly once.
+    for (Kind kind : {Kind::Read, Kind::ReadEx, Kind::Write}) {
+        const CounterDecision unsentAbort =
+            gem5::decideLogicalStreamCounterUpdate(
+                kind, CounterEvent::UnsentPacketAborted, 1);
+        CHECK(unsentAbort.valid);
+        CHECK(unsentAbort.changed);
+        CHECK(unsentAbort.value == 0);
+        const CounterDecision unsentUnderflow =
+            gem5::decideLogicalStreamCounterUpdate(
+                kind, CounterEvent::UnsentPacketAborted, 0);
+        CHECK(!unsentUnderflow.valid);
+        CHECK(!unsentUnderflow.changed);
+        CHECK(unsentUnderflow.value == 0);
+    }
+    const CounterDecision sentReadAbort =
+        gem5::decideLogicalStreamCounterUpdate(
+            Kind::Read, CounterEvent::ResponseAborted, 0);
+    CHECK(sentReadAbort.valid);
+    CHECK(!sentReadAbort.changed);
+}
+
+void
+testProductionAliasAndSenderStateProofs()
+{
+    const auto exact = gem5::classifyResponsePacketAliases(
+        AliasShape{1, 0, 0, 0}, true, true);
+    CHECK(exact.acceptedExactOwner);
+    CHECK(!exact.droppableExtra);
+    CHECK(exact.detachBeforeDestruction);
+
+    for (AliasShape retained : {
+             AliasShape{1, 1, 0, 0},  // deferred address queue
+             AliasShape{1, 0, 1, 0},  // cache send/retry queue
+             AliasShape{1, 0, 0, 1},  // memory send/retry queue
+             AliasShape{0, 1, 1, 1},  // corrupt ownerless pending aliases
+         }) {
+        const auto decision = gem5::classifyResponsePacketAliases(
+            retained, retained.outstanding == 1, true);
+        CHECK(!decision.acceptedExactOwner);
+        CHECK(!decision.droppableExtra);
+        CHECK(decision.detachBeforeDestruction);
+    }
+    const auto unsent = gem5::classifyResponsePacketAliases(
+        AliasShape{1, 0, 1, 0}, true, false);
+    CHECK(!unsent.acceptedExactOwner);
+    CHECK(unsent.detachBeforeDestruction);
+    const auto independentExtra = gem5::classifyResponsePacketAliases(
+        AliasShape{}, false, false);
+    CHECK(independentExtra.droppableExtra);
+    CHECK(!independentExtra.detachBeforeDestruction);
+
+    const auto legalNormal = gem5::classifyResponseSenderState(
+        SenderShape{true, true, 0, false, false}, false);
+    CHECK(legalNormal.valid);
+    CHECK(legalNormal.preservePredecessor);
+    CHECK(!legalNormal.releaseLogicalTop);
+    const auto legalLegacyPredecessor = gem5::classifyResponseSenderState(
+        SenderShape{true, true, 0, false, false}, false);
+    CHECK(legalLegacyPredecessor.valid);
+    CHECK(legalLegacyPredecessor.preservePredecessor);
+    const auto legalLogical = gem5::classifyResponseSenderState(
+        SenderShape{true, true, 1, true, false}, true);
+    CHECK(legalLogical.valid);
+    CHECK(legalLogical.releaseLogicalTop);
+    CHECK(legalLogical.preservePredecessor);
+
+    for (SenderShape rejected : {
+             SenderShape{false, true, 0, false, false}, // cycle/over-depth
+             SenderShape{true, false, 0, false, false}, // arbitrary node
+             SenderShape{true, true, 1, true, false},   // logical in normal
+             SenderShape{true, true, 0, false, true},  // aliased node
+         }) {
+        CHECK(!gem5::classifyResponseSenderState(rejected, false).valid);
+    }
+    for (SenderShape rejected : {
+             SenderShape{false, true, 1, true, false},
+             SenderShape{true, false, 1, true, false},
+             SenderShape{true, true, 1, false, false},
+             SenderShape{true, true, 2, true, false},
+             SenderShape{true, true, 1, true, true},
+         }) {
+        CHECK(!gem5::classifyResponseSenderState(rejected, true).valid);
+    }
 }
 
 void
@@ -244,6 +333,15 @@ testRealWrapperInvocationAndCreditLifetime()
                         int &receiveCount, int &settleCount,
                         int &deleteCount, int &fatalCount,
                         bool &deletePrecededFatal) {
+        const bool fatalDisposition =
+            disposition == Disposition::FatalOwnedCorruption ||
+            disposition == Disposition::FatalOwnedNoPortCredit ||
+            disposition == Disposition::FatalUnownedExtra;
+        const bool creditUnderflow =
+            credit != nullptr &&
+            (disposition == Disposition::Retired ||
+             disposition == Disposition::FatalOwnedCorruption) &&
+            *credit == 0;
         return gem5::invokeTimingResponseWrapper(
             credit,
             [&]() {
@@ -252,11 +350,14 @@ testRealWrapperInvocationAndCreditLifetime()
             },
             [&]() { ++settleCount; },
             [&]() { ++deleteCount; },
+            [&](Disposition received, bool commitOwnerCompletion) {
+                CHECK(received == disposition);
+                CHECK(deleteCount == 1);
+                CHECK(commitOwnerCompletion ==
+                      (!fatalDisposition && !creditUnderflow));
+            },
             [&](Disposition received, bool valid) {
                 CHECK(received == disposition);
-                const bool fatalDisposition =
-                    disposition == Disposition::FatalOwnedCorruption ||
-                    disposition == Disposition::FatalUnownedExtra;
                 CHECK(!valid || fatalDisposition);
                 deletePrecededFatal = deleteCount == 1;
                 ++fatalCount;
@@ -295,6 +396,19 @@ testRealWrapperInvocationAndCreditLifetime()
     CHECK(credit == 0);
     CHECK(receives == 1);
     CHECK(settles == 1);
+    CHECK(deletions == 1);
+    CHECK(fatals == 1);
+    CHECK(deletePrecededFatal);
+
+    // Exact unsent corruption owns its map/stream count but no accepted port
+    // credit, so it must not debit an unrelated live cache credit.
+    credit = 1;
+    receives = settles = deletions = fatals = 0;
+    deletePrecededFatal = false;
+    CHECK(run(Disposition::FatalOwnedNoPortCredit, &credit, receives,
+              settles, deletions, fatals, deletePrecededFatal));
+    CHECK(credit == 1);
+    CHECK(settles == 0);
     CHECK(deletions == 1);
     CHECK(fatals == 1);
     CHECK(deletePrecededFatal);
@@ -352,6 +466,108 @@ testRealWrapperInvocationAndCreditLifetime()
     CHECK(settles == 0);
     CHECK(deletions == 1);
     CHECK(fatals == 0);
+}
+
+void
+testExactResponseCreditOwnerRouting()
+{
+    const auto classify = gem5::classifyTimingResponseCreditOwner;
+
+    // Unsent packets and memory-side requests never debit a cache wrapper.
+    CHECK(classify(false, true, true) == CreditOwner::None);
+    CHECK(classify(false, true, false) == CreditOwner::None);
+    CHECK(classify(true, false, true) == CreditOwner::None);
+    CHECK(classify(true, false, false) == CreditOwner::None);
+
+    // A callback on the exact cache port settles locally. A cache-owned
+    // response arriving through memory or another cache port settles the
+    // recorded owner instead and cannot debit the callback's foreign credit.
+    CHECK(classify(true, true, true) == CreditOwner::CallbackPort);
+    CHECK(classify(true, true, false) ==
+          CreditOwner::ExpectedCachePort);
+}
+
+void
+testExactResponseSizeOnCacheAndMemoryWrappers()
+{
+    const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+    for (Kind kind : {Kind::Read, Kind::ReadEx, Kind::Write}) {
+        for (std::size_t expected : {std::size_t{64}, std::size_t{8}}) {
+            Route route = makeRoute();
+            route.expectedKind = kind;
+            route.receivedKind = kind;
+            CHECK(gem5::classifyLogicalStreamResponseRoute(route).accepts());
+            CHECK(gem5::hasExpectedLogicalStreamResponseSize(expected,
+                                                             expected));
+            for (std::size_t wrong : {std::size_t{0}, std::size_t{1},
+                                      expected - 1, expected + 1,
+                                      maximum - 1, maximum}) {
+                CHECK(!gem5::hasExpectedLogicalStreamResponseSize(wrong,
+                                                                  expected));
+                for (bool cacheWrapper : {false, true}) {
+                    uint32_t credit = 1;
+                    uint32_t *tracked = cacheWrapper ? &credit : nullptr;
+                    int deleted = 0;
+                    int fatal = 0;
+                    CHECK(gem5::invokeTimingResponseWrapper(
+                        tracked,
+                        []() {
+                            return Disposition::FatalOwnedCorruption;
+                        },
+                        []() {},
+                        [&]() { ++deleted; },
+                        [&](Disposition, bool commitOwnerCompletion) {
+                            CHECK(deleted == 1);
+                            CHECK(!commitOwnerCompletion);
+                        },
+                        [&](Disposition, bool valid) {
+                            CHECK(valid);
+                            CHECK(deleted == 1);
+                            ++fatal;
+                        }));
+                    CHECK(deleted == 1);
+                    CHECK(fatal == 1);
+                    CHECK(credit == (cacheWrapper ? 0U : 1U));
+                }
+            }
+        }
+    }
+    CHECK(!gem5::hasExpectedLogicalStreamResponseSize(64, 0));
+    CHECK(!gem5::hasExpectedLogicalStreamResponseSize(65, 65));
+}
+
+void
+testRetirementOwnerRejectionOccursAfterDestruction()
+{
+    struct OwnerRejected
+    {};
+    uint32_t credit = 1;
+    int deleted = 0;
+    int ownerChecks = 0;
+    int failClosed = 0;
+    bool rejected = false;
+    try {
+        gem5::invokeTimingResponseWrapper(
+            &credit,
+            []() { return Disposition::Retired; },
+            []() {},
+            [&]() { ++deleted; },
+            [&](Disposition, bool commitOwnerCompletion) {
+                CHECK(commitOwnerCompletion);
+                CHECK(credit == 0);
+                CHECK(deleted == 1);
+                ++ownerChecks;
+                throw OwnerRejected{};
+            },
+            [&](Disposition, bool) { ++failClosed; });
+    } catch (const OwnerRejected &) {
+        rejected = true;
+    }
+    CHECK(rejected);
+    CHECK(credit == 0);
+    CHECK(deleted == 1);
+    CHECK(ownerChecks == 1);
+    CHECK(failClosed == 0);
 }
 
 void
@@ -446,6 +662,53 @@ testFillDelayedReorderedDuplicateCallbacks()
     CHECK(ledger.acceptResponse(tag, 0x1040, Kind::Read) == Result::Duplicate);
     CHECK(ledger.acknowledgedLineCount() == acknowledgements);
     CHECK(ledger.counters().duplicate == 1);
+}
+
+void
+testFatalOwnedLedgerEntriesAreSettled()
+{
+    Ledger fill;
+    const Tag fillTag = makeTag(73, Action::Fill);
+    CHECK(fill.begin(fillTag, 1) == Result::Accepted);
+    CHECK(fill.issueLine(fillTag, 0x1800, Kind::Read) == Result::Accepted);
+    CHECK(fill.abortResponse(fillTag, 0x1800, Kind::Read) ==
+          Result::Accepted);
+    CHECK(fill.abortedLineCount() == 1);
+    CHECK(fill.acknowledgedLineCount() == 0);
+    CHECK(fill.validateResponse(fillTag, 0x1800, Kind::Read) ==
+          Result::Duplicate);
+
+    Ledger ownedFill;
+    CHECK(ownedFill.begin(fillTag, 1) == Result::Accepted);
+    CHECK(ownedFill.issueLine(fillTag, 0x1840, Kind::Read) ==
+          Result::Accepted);
+    CHECK(ownedFill.abortOwnedResponse(0x1840) == Result::Accepted);
+    CHECK(ownedFill.abortedLineCount() == 1);
+
+    Ledger writebackRead;
+    const Tag writeTag = makeTag(74, Action::Writeback);
+    CHECK(writebackRead.begin(writeTag, 1) == Result::Accepted);
+    CHECK(writebackRead.issueLine(writeTag, 0x1c00, Kind::ReadEx) ==
+          Result::Accepted);
+    CHECK(writebackRead.abortResponse(writeTag, 0x1c00, Kind::ReadEx) ==
+          Result::Accepted);
+    CHECK(writebackRead.abortedLineCount() == 1);
+    CHECK(writebackRead.validateResponse(writeTag, 0x1c00, Kind::ReadEx) ==
+          Result::Duplicate);
+
+    Ledger writebackWrite;
+    CHECK(writebackWrite.begin(writeTag, 1) == Result::Accepted);
+    CHECK(writebackWrite.issueLine(writeTag, 0x2000, Kind::ReadEx) ==
+          Result::Accepted);
+    CHECK(writebackWrite.acceptResponse(writeTag, 0x2000, Kind::ReadEx) ==
+          Result::Accepted);
+    CHECK(writebackWrite.issueLine(writeTag, 0x2000, Kind::Write) ==
+          Result::Accepted);
+    CHECK(writebackWrite.abortResponse(writeTag, 0x2000, Kind::Write) ==
+          Result::Accepted);
+    CHECK(writebackWrite.abortedLineCount() == 1);
+    CHECK(writebackWrite.validateResponse(writeTag, 0x2000, Kind::Write) ==
+          Result::Duplicate);
 }
 
 void
@@ -610,10 +873,15 @@ int
 main()
 {
     testCommandSpecificCounterOwnershipAndRetries();
+    testProductionAliasAndSenderStateProofs();
     testExactPointerDispositionAndExtraPacketIsolation();
     testRealWrapperInvocationAndCreditLifetime();
+    testExactResponseCreditOwnerRouting();
+    testExactResponseSizeOnCacheAndMemoryWrappers();
+    testRetirementOwnerRejectionOccursAfterDestruction();
     testPortRouteOwnershipIsPureAndFailClosed();
     testFillDelayedReorderedDuplicateCallbacks();
+    testFatalOwnedLedgerEntriesAreSettled();
     testWritebackReadExCallbacksAreExactlyOnce();
     testWritebackMismatchesCannotAcknowledgeTerminalLines();
     testStaleAndOldTransactionsCannotCompleteReusedAddress();

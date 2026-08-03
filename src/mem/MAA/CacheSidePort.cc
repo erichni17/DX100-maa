@@ -33,7 +33,7 @@ bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
     DPRINTF(MAACachePort, "%s: received %s\n", __func__, pkt->print());
     return invokeTimingResponseWrapper(
         &outstandingCacheSidePackets,
-        [this, pkt]() { return maa->recvTimingResp(pkt, true); },
+        [this, pkt]() { return maa->recvTimingResp(pkt, this); },
         [this]() {
             if (blockReason == BlockReason::MAX_XBAR_PACKETS)
                 setUnblocked(BlockReason::MAX_XBAR_PACKETS);
@@ -42,11 +42,29 @@ bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
             pkt->deleteData();
             delete pkt;
         },
+        [this](TimingResponseDisposition, bool commit_owner_completion) {
+            maa->completeTimingResponseAfterDelete(commit_owner_completion);
+        },
         [this](TimingResponseDisposition disposition, bool credit_valid) {
             panic("%s: fail-closed response disposition %d (credit valid "
                   "%d)\n",
                   name(), static_cast<int>(disposition), credit_valid);
         });
+}
+
+bool
+MAA::CacheSidePort::settleOwnedResponseCredit()
+{
+    const TimingResponseWrapperDecision decision =
+        decideTimingResponseWrapperUpdate(
+            TimingResponseDisposition::FatalOwnedCorruption,
+            outstandingCacheSidePackets, true);
+    if (!decision.valid)
+        return false;
+    outstandingCacheSidePackets = decision.creditValue;
+    if (blockReason == BlockReason::MAX_XBAR_PACKETS)
+        setUnblocked(BlockReason::MAX_XBAR_PACKETS);
+    return true;
 }
 
 void MAA::recvCacheTimingSnoopReq(PacketPtr pkt) {

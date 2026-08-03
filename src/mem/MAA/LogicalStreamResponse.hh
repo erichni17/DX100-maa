@@ -93,17 +93,47 @@ enum class LogicalStreamResponseResult : uint8_t
  * exact map-owned packet and settles its port credit.  DroppedExtra consumes
  * a different, safely releasable tagged packet without touching the active
  * map entry or its credit.  FatalOwnedCorruption consumes and settles an
- * exact packet after Port.cc removes every owned pointer.  FatalUnownedExtra
- * consumes an unsafe non-exact packet without settling the active port
- * credit. Both fatal dispositions terminate after wrapper destruction.
+ * exact sent packet after Port.cc removes every owned pointer.
+ * FatalOwnedNoPortCredit consumes an exact packet which never acquired the
+ * callback port's credit (or arrived through the wrong wrapper).
+ * FatalUnownedExtra consumes an unsafe non-exact packet without settling the
+ * active port credit. All fatal dispositions terminate after wrapper
+ * destruction.
  */
 enum class TimingResponseDisposition : uint8_t
 {
     Retired,
     DroppedExtra,
     FatalOwnedCorruption,
+    FatalOwnedNoPortCredit,
     FatalUnownedExtra,
 };
+
+enum class TimingResponseCreditOwner : uint8_t
+{
+    None,
+    CallbackPort,
+    ExpectedCachePort,
+};
+
+/**
+ * Select the sole port credit which an exact owned fatal response may settle.
+ * An unsent packet and a memory-side request own no cache-port credit.  A
+ * response on the expected cache port lets its wrapper settle locally; a
+ * response on any other wrapper must settle the recorded cache port directly
+ * and leave the callback wrapper's unrelated credit untouched.
+ */
+inline TimingResponseCreditOwner
+classifyTimingResponseCreditOwner(bool requestSent,
+                                  bool expectedCacheCredit,
+                                  bool callbackIsExpectedPort)
+{
+    if (!requestSent || !expectedCacheCredit)
+        return TimingResponseCreditOwner::None;
+    return callbackIsExpectedPort
+        ? TimingResponseCreditOwner::CallbackPort
+        : TimingResponseCreditOwner::ExpectedCachePort;
+}
 
 struct TimingResponseWrapperDecision
 {
@@ -130,6 +160,7 @@ decideTimingResponseWrapperUpdate(TimingResponseDisposition disposition,
         disposition == TimingResponseDisposition::FatalOwnedCorruption;
     const bool fatal =
         disposition == TimingResponseDisposition::FatalOwnedCorruption ||
+        disposition == TimingResponseDisposition::FatalOwnedNoPortCredit ||
         disposition == TimingResponseDisposition::FatalUnownedExtra;
     if (tracksCredit && settles && currentCredit == 0) {
         return {currentCredit, false, true, true, false, true, false};
@@ -147,11 +178,12 @@ decideTimingResponseWrapperUpdate(TimingResponseDisposition disposition,
  * make the ResponsePort retain the packet indefinitely pending recvRespRetry.
  */
 template <typename Receive, typename CreditSettled, typename DeletePacket,
-          typename FailClosed>
+          typename AfterDelete, typename FailClosed>
 inline bool
 invokeTimingResponseWrapper(uint32_t *outstandingCredit, Receive &&receive,
                             CreditSettled &&creditSettled,
                             DeletePacket &&deletePacket,
+                            AfterDelete &&afterDelete,
                             FailClosed &&failClosed)
 {
     const TimingResponseDisposition disposition = receive();
@@ -167,6 +199,7 @@ invokeTimingResponseWrapper(uint32_t *outstandingCredit, Receive &&receive,
     }
     if (decision.deletePacket)
         deletePacket();
+    afterDelete(disposition, decision.valid && !decision.failClosed);
     if (!decision.valid || decision.failClosed)
         failClosed(disposition, decision.valid);
     return true;
@@ -249,6 +282,7 @@ enum class LogicalStreamCounterEvent : uint8_t
     ResponseRejected,
     ResponseAccepted,
     ResponseAborted,
+    UnsentPacketAborted,
 };
 
 struct LogicalStreamCounterDecision
@@ -285,6 +319,7 @@ decideLogicalStreamCounterUpdate(LogicalStreamResponseKind requestKind,
                              requestKind == LogicalStreamResponseKind::ReadEx;
     const bool relinquishes =
         (readRequest && event == LogicalStreamCounterEvent::SendAccepted) ||
+        event == LogicalStreamCounterEvent::UnsentPacketAborted ||
         (!readRequest &&
          (event == LogicalStreamCounterEvent::ResponseAccepted ||
           event == LogicalStreamCounterEvent::ResponseAborted));
@@ -293,6 +328,84 @@ decideLogicalStreamCounterUpdate(LogicalStreamResponseKind requestKind,
     if (currentValue == 0)
         return {currentValue, false, false};
     return {currentValue - 1, true, true};
+}
+
+constexpr std::size_t ExpectedLogicalStreamResponseBytes = 64;
+constexpr std::size_t MaxResponseSenderStateDepth = 64;
+
+inline bool
+hasExpectedLogicalStreamResponseSize(std::size_t responseBytes,
+                                     std::size_t expectedBytes)
+{
+    return expectedBytes != 0 &&
+           expectedBytes <= ExpectedLogicalStreamResponseBytes &&
+           responseBytes == expectedBytes;
+}
+
+/**
+ * Packet-free sender-state ownership proof shared by production and the host
+ * replay.  Production records the exact predecessor chain when a request is
+ * admitted.  A response may preserve precisely that bounded chain, with one
+ * logical node at the top only for a logical request; it may not introduce,
+ * remove, reorder, cycle, overrun, or share any node with another live MAA
+ * packet.
+ */
+struct ResponseSenderStateShape
+{
+    bool boundedAcyclic = false;
+    bool exactSnapshot = false;
+    std::size_t logicalNodeCount = 0;
+    bool logicalNodeAtTop = false;
+    bool aliasedByOtherPacket = false;
+};
+
+struct ResponseSenderStateDecision
+{
+    bool valid = false;
+    bool releaseLogicalTop = false;
+    bool preservePredecessor = false;
+};
+
+struct ResponsePacketAliasShape
+{
+    std::size_t outstanding = 0;
+    std::size_t deferred = 0;
+    std::size_t cacheSend = 0;
+    std::size_t memorySend = 0;
+};
+
+struct ResponsePacketAliasDecision
+{
+    bool acceptedExactOwner = false;
+    bool droppableExtra = false;
+    bool detachBeforeDestruction = false;
+};
+
+inline ResponsePacketAliasDecision
+classifyResponsePacketAliases(const ResponsePacketAliasShape &shape,
+                              bool exactOwner, bool sent)
+{
+    const std::size_t total = shape.outstanding + shape.deferred +
+                              shape.cacheSend + shape.memorySend;
+    const bool exactAlias = exactOwner && shape.outstanding == 1;
+    const bool pendingAlias = shape.deferred != 0 || shape.cacheSend != 0 ||
+                              shape.memorySend != 0;
+    return {exactAlias && sent && !pendingAlias,
+            !exactOwner && total == 0,
+            total != 0};
+}
+
+inline ResponseSenderStateDecision
+classifyResponseSenderState(const ResponseSenderStateShape &shape,
+                            bool logicalOwner)
+{
+    const std::size_t expectedLogicalNodes = logicalOwner ? 1 : 0;
+    const bool logicalShapeValid =
+        shape.logicalNodeCount == expectedLogicalNodes &&
+        (!logicalOwner || shape.logicalNodeAtTop);
+    const bool valid = shape.boundedAcyclic && shape.exactSnapshot &&
+                       logicalShapeValid && !shape.aliasedByOtherPacket;
+    return {valid, valid && logicalOwner, valid};
 }
 
 inline LogicalStreamResponseResult
@@ -428,6 +541,7 @@ class LogicalStreamResponseLedger
         bool readExResponseReceived = false;
         bool terminalIssued = false;
         bool acknowledged = false;
+        bool aborted = false;
     };
 
     struct Counters
@@ -455,6 +569,7 @@ class LogicalStreamResponseLedger
         expectedLines = lineCount;
         issuedLines = 0;
         acknowledgedLines = 0;
+        abortedLines = 0;
         for (LineState &line : lines)
             line = LineState{};
         return LogicalStreamResponseResult::Accepted;
@@ -468,6 +583,7 @@ class LogicalStreamResponseLedger
         expectedLines = 0;
         issuedLines = 0;
         acknowledgedLines = 0;
+        abortedLines = 0;
         for (LineState &line : lines)
             line = LineState{};
     }
@@ -478,6 +594,7 @@ class LogicalStreamResponseLedger
     std::size_t expectedLineCount() const { return expectedLines; }
     std::size_t issuedLineCount() const { return issuedLines; }
     std::size_t acknowledgedLineCount() const { return acknowledgedLines; }
+    std::size_t abortedLineCount() const { return abortedLines; }
     const Counters &counters() const { return responseCounters; }
     const LineState &line(std::size_t index) const { return lines.at(index); }
 
@@ -540,6 +657,8 @@ class LogicalStreamResponseLedger
         const std::size_t index = findLine(address);
         if (index == expectedLines)
             return LogicalStreamResponseResult::WrongAddress;
+        if (lines[index].aborted)
+            return LogicalStreamResponseResult::Duplicate;
 
         if (transaction.action == LogicalStreamAction::Fill) {
             if (kind != LogicalStreamResponseKind::Read)
@@ -563,6 +682,52 @@ class LogicalStreamResponseLedger
             return LogicalStreamResponseResult::Invalid;
         if (lines[index].acknowledged)
             return LogicalStreamResponseResult::Duplicate;
+        return LogicalStreamResponseResult::Accepted;
+    }
+
+    /** Settle one exact issued ledger entry without accepting its response. */
+    LogicalStreamResponseResult abortResponse(
+        const LogicalStreamTransactionTag &tag, Addr address,
+        LogicalStreamResponseKind kind)
+    {
+        const LogicalStreamResponseResult result =
+            validateResponse(tag, address, kind);
+        if (result != LogicalStreamResponseResult::Accepted)
+            return reject(result);
+
+        const std::size_t index = findLine(address);
+        assert(index != expectedLines);
+        assert(!lines[index].aborted);
+        lines[index].aborted = true;
+        ++abortedLines;
+        return LogicalStreamResponseResult::Accepted;
+    }
+
+    /** Abort the unique active response owner at an exact line address. */
+    LogicalStreamResponseResult abortOwnedResponse(Addr address)
+    {
+        if (!active)
+            return reject(LogicalStreamResponseResult::Stale);
+        const std::size_t index = findLine(address);
+        if (index == expectedLines)
+            return reject(LogicalStreamResponseResult::WrongAddress);
+        LineState &lineState = lines[index];
+        if (lineState.aborted || lineState.acknowledged)
+            return reject(LogicalStreamResponseResult::Duplicate);
+
+        const bool fillPending =
+            transaction.action == LogicalStreamAction::Fill &&
+            lineState.terminalIssued;
+        const bool readExPending =
+            transaction.action == LogicalStreamAction::Writeback &&
+            !lineState.readExResponseReceived;
+        const bool writePending =
+            transaction.action == LogicalStreamAction::Writeback &&
+            lineState.readExResponseReceived && lineState.terminalIssued;
+        if (!fillPending && !readExPending && !writePending)
+            return reject(LogicalStreamResponseResult::Invalid);
+        lineState.aborted = true;
+        ++abortedLines;
         return LogicalStreamResponseResult::Accepted;
     }
 
@@ -679,6 +844,7 @@ class LogicalStreamResponseLedger
     std::size_t expectedLines = 0;
     std::size_t issuedLines = 0;
     std::size_t acknowledgedLines = 0;
+    std::size_t abortedLines = 0;
     bool active = false;
     bool completed = false;
     Counters responseCounters{};

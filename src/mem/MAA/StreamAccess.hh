@@ -126,6 +126,10 @@ public:
     LogicalStreamResponseResult logicalResponseReceived(
         const LogicalStreamTransactionTag &tag, Addr lineAddress,
         LogicalStreamResponseKind kind);
+    LogicalStreamResponseResult abortLogicalResponse(
+        const LogicalStreamTransactionTag &tag, Addr lineAddress,
+        LogicalStreamResponseKind kind);
+    LogicalStreamResponseResult abortOwnedLogicalResponse(Addr lineAddress);
     LogicalStreamResponseResult writeResponseReceived(
         const LogicalStreamTransactionTag &tag, Addr lineAddress) {
         return logicalResponseReceived(tag, lineAddress,

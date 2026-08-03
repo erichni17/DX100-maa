@@ -642,6 +642,19 @@ LogicalStreamResponseResult StreamAccessUnit::logicalResponseReceived(
     return result;
 }
 
+LogicalStreamResponseResult StreamAccessUnit::abortLogicalResponse(
+    const LogicalStreamTransactionTag &tag, Addr lineAddress,
+    LogicalStreamResponseKind kind)
+{
+    return logicalResponseLedger.abortResponse(tag, lineAddress, kind);
+}
+
+LogicalStreamResponseResult StreamAccessUnit::abortOwnedLogicalResponse(
+    Addr lineAddress)
+{
+    return logicalResponseLedger.abortOwnedResponse(lineAddress);
+}
+
 Addr StreamAccessUnit::translatePacket(Addr vaddr) {
     /**** Address translation ****/
     RequestPtr translation_req = std::make_shared<Request>(vaddr, block_size, flags, maa->requestorId, my_instruction->PC, my_instruction->CID);

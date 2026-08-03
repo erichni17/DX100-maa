@@ -70,13 +70,28 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
         self.assertIn("LogicalStreamCounterEvent::SendAccepted", port)
         self.assertIn("LogicalStreamCounterEvent::ResponseAccepted", port)
         self.assertIn("LogicalStreamCounterEvent::ResponseAborted", port)
+        self.assertIn("LogicalStreamCounterEvent::UnsentPacketAborted", port)
         self.assertIn("entry.second.packet == pkt", port)
         self.assertIn("classifyLogicalStreamResponseDisposition(", port)
-        self.assertIn("MaxResponseSenderStateDepth = 64", port)
         self.assertIn(
-            "senderStateChainExcludes(entry.second.packet->senderState,",
-            port,
+            "MaxResponseSenderStateDepth = 64", RESPONSE_HEADER.read_text()
         )
+        self.assertIn("MAA::countPacketAliases(PacketPtr packet) const", port)
+        self.assertIn("MAA::erasePacketAliases(PacketPtr packet)", port)
+        self.assertIn("my_deferred_pkt_map", port)
+        for queue in (
+            "my_outstanding_indirect_cache_read_pkts",
+            "my_outstanding_indirect_cache_write_pkts",
+            "my_outstanding_stream_cache_read_pkts",
+            "my_outstanding_stream_cache_write_pkts",
+            "my_outstanding_stream_mem_read_pkts",
+            "my_outstanding_stream_mem_write_pkts",
+            "my_outstanding_indirect_mem_read_pkts",
+            "my_outstanding_indirect_mem_write_pkts",
+        ):
+            self.assertIn(queue, port)
+        self.assertIn("sendCacheEvent/sendMemEvent", port)
+        self.assertIn("sendTimingReq directly", port)
 
         recv_path = port.index("MAA::recvTimingResp(PacketPtr pkt")
         logical_path = port.index(
@@ -97,22 +112,19 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             response_path,
         )
 
-        accepted_path = response_path[
-            response_path.index(
-                "const LogicalStreamResponseResult accepted ="
-            ) : response_path.index(
-                "return TimingResponseDisposition::Retired;"
-            )
-        ]
-        accepted_pop = accepted_path.rindex("releaseLogicalState();")
-        accepted_erase = accepted_path.index(
-            "my_outstanding_pkt_map.erase(exact);", accepted_pop
+        accepted_start = response_path.index("erasePacketAliases(pkt);")
+        accepted_path = response_path[accepted_start:]
+        accepted_pop = accepted_path.index("releaseLogicalState(true);")
+        accepted_delivery = accepted_path.index(
+            "const LogicalStreamResponseResult accepted ="
         )
         accepted_promote = accepted_path.index(
-            "sendNextDeferredPacket(owned_address);", accepted_erase
+            "sendNextDeferredPacket(owned_address);"
         )
-        self.assertLess(accepted_pop, accepted_erase)
-        self.assertLess(accepted_erase, accepted_promote)
+        self.assertLess(accepted_pop, accepted_delivery)
+        self.assertLess(accepted_delivery, accepted_promote)
+        self.assertIn("senderStateMatchesSnapshot(", port[recv_path:])
+        self.assertIn("senderStateAliasedByOtherPacket(", port)
 
     def test_both_real_wrappers_invoke_shared_terminal_contract(self) -> None:
         cache = CACHE_PORT_SOURCE.read_text(encoding="utf-8")
@@ -121,19 +133,22 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
         response = RESPONSE_HEADER.read_text(encoding="utf-8")
 
         self.assertIn(
-            "TimingResponseDisposition recvTimingResp(PacketPtr pkt, "
-            "bool cached);",
+            "TimingResponseDisposition recvTimingResp(PacketPtr pkt,\n"
+            "                                             CacheSidePort "
+            "*responsePort);",
             maa,
         )
         self.assertIn("return invokeTimingResponseWrapper(", cache)
         self.assertIn("&outstandingCacheSidePackets", cache)
-        self.assertIn("return maa->recvTimingResp(pkt, true);", cache)
+        self.assertIn("return maa->recvTimingResp(pkt, this);", cache)
+        self.assertIn("settleOwnedResponseCredit", cache)
         self.assertIn("return invokeTimingResponseWrapper(", memory)
         self.assertIn("nullptr,", memory)
-        self.assertIn("return maa->recvTimingResp(pkt, false);", memory)
+        self.assertIn("return maa->recvTimingResp(pkt, nullptr);", memory)
         for wrapper in (cache, memory):
             self.assertIn("pkt->deleteData();", wrapper)
             self.assertIn("delete pkt;", wrapper)
+            self.assertIn("completeTimingResponseAfterDelete", wrapper)
             self.assertIn("fail-closed response disposition", wrapper)
 
         self.assertIn(
@@ -141,6 +156,7 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
             response,
         )
         self.assertIn("deletePacket();", response)
+        self.assertIn("afterDelete(disposition", response)
         self.assertIn("failClosed(disposition, decision.valid);", response)
         self.assertIn("return true;", response)
         self.assertIn("bool sendRetry = false;", response)
@@ -164,28 +180,62 @@ class LogicalStreamResponseContractTest(unittest.TestCase):
                 "if (exact == my_outstanding_pkt_map.end()) {"
             ) : recv.index("const Addr owned_address = exact->first;")
         ]
-        self.assertIn("releaseLogicalState();", foreign)
+        self.assertIn("releaseLogicalState(true);", foreign)
+        self.assertIn("classifyResponsePacketAliases(", foreign)
+        self.assertIn("erasePacketAliases(pkt);", foreign)
         self.assertIn("return decision.disposition;", foreign)
         self.assertNotIn("my_outstanding_pkt_map.erase", foreign)
         self.assertNotIn("sendNextDeferredPacket", foreign)
         self.assertNotIn("applyLogicalStreamCounterEvent", foreign)
 
         fatal_start = recv.index("if (!decision.accepts()) {")
-        fatal = recv[
-            fatal_start : recv.index(
-                "\n\n        my_num_outstanding_stream_pkts", fatal_start
-            )
-        ]
+        fatal_end = recv.index(
+            "\n\n        erasePacketAliases(pkt);", fatal_start
+        )
+        fatal = recv[fatal_start:fatal_end]
         self.assertIn("ResponseAborted", fatal)
-        self.assertIn("releaseLogicalState();", fatal)
-        self.assertIn("my_outstanding_pkt_map.erase(exact);", fatal)
-        self.assertIn("TimingResponseDisposition::FatalOwnedCorruption", fatal)
+        self.assertIn("UnsentPacketAborted", fatal)
+        self.assertIn("abortOwnedLogicalResponse", fatal)
+        self.assertIn("erasePacketAliases(pkt);", fatal)
+        self.assertIn("releaseLogicalState(true);", fatal)
         self.assertNotIn("sendNextDeferredPacket", fatal)
         self.assertIn(
-            "delivery; removed ownership before fatal destruction",
+            "delivery after complete ownership detachment",
             recv,
         )
-        self.assertIn("removed map ownership before fatal destruction", recv)
+        self.assertIn("removed all production aliases", recv)
+
+    def test_size_sender_shape_and_post_delete_retirement_contract(
+        self,
+    ) -> None:
+        port = PORT_SOURCE.read_text(encoding="utf-8")
+        response = RESPONSE_HEADER.read_text(encoding="utf-8")
+        maa = MAA_HEADER.read_text(encoding="utf-8")
+        self.assertIn("ExpectedLogicalStreamResponseBytes = 64", response)
+        self.assertIn("responseBytes == expectedBytes", response)
+        self.assertIn("classifyTimingResponseCreditOwner", response)
+        self.assertGreaterEqual(
+            port.count("hasExpectedLogicalStreamResponseSize("), 2
+        )
+        self.assertNotIn(
+            "response_kind == LogicalStreamResponseKind::Write ||\n"
+            "            pkt->getSize() == 64",
+            port,
+        )
+        self.assertIn("SenderStateOwnership senderStateOwnership", maa)
+        self.assertIn("expectedResponseBytes", maa)
+        self.assertIn("classifyResponseSenderState(", port)
+        self.assertIn("expected_response_port", port)
+        self.assertIn("ExpectedCachePort", port)
+        self.assertIn("settleOwnedResponseCredit", port)
+        self.assertIn("afterDeleteCompletion = {", port)
+        arm = port.index("afterDeleteCompletion = {")
+        retire = port.index("retirementWriteComplete(", arm)
+        complete = port.index("MAA::completeTimingResponseAfterDelete")
+        self.assertLess(arm, complete)
+        self.assertGreater(retire, complete)
+        pre_arm = port[port.rfind("erasePacketAliases(pkt);", 0, arm) : arm]
+        self.assertIn("--my_num_outstanding_indirect_pkts", pre_arm)
 
     def test_ordinary_writebackdirty_and_documented_ownership_survive(
         self,
