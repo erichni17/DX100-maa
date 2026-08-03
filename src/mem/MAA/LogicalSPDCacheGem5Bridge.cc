@@ -12,11 +12,19 @@ LogicalSPDCacheGem5Bridge::LogicalSPDCacheGem5Bridge(std::size_t numMaas)
           numMaas,
           [](std::size_t) {
               return std::make_unique<LogicalSPDCacheRuntime>();
-          })
+          },
+          productionIncarnations())
 {}
 
 LogicalSPDCacheGem5Bridge::LogicalSPDCacheGem5Bridge(
     std::size_t numMaas, RuntimeFactory factory)
+    : LogicalSPDCacheGem5Bridge(
+          numMaas, std::move(factory), productionIncarnations())
+{}
+
+LogicalSPDCacheGem5Bridge::LogicalSPDCacheGem5Bridge(
+    std::size_t numMaas, RuntimeFactory factory,
+    IncarnationSource &incarnations)
 {
     if (numMaas == 0)
         throw std::invalid_argument(
@@ -43,11 +51,41 @@ LogicalSPDCacheGem5Bridge::LogicalSPDCacheGem5Bridge(
             throw std::runtime_error(
                 "Logical SPD Runtime factory returned initialized authority");
         }
+        const uint64_t identity = reserveRuntimeIdentity(incarnations);
+        if (identity == 0)
+            throw std::overflow_error(
+                "Logical SPD Runtime incarnation identity exhausted");
         runtimes.emplace_back(std::move(runtime));
         LifecycleState state;
-        state.runtimeIdentity = nextIdentity++;
+        state.runtimeIdentity = identity;
         lifecycle.emplace_back(state);
     }
+}
+
+LogicalSPDCacheGem5Bridge::IncarnationSource &
+LogicalSPDCacheGem5Bridge::productionIncarnations()
+{
+    static IncarnationSource incarnations(1);
+    return incarnations;
+}
+
+uint64_t
+LogicalSPDCacheGem5Bridge::reserveRuntimeIdentity(
+    IncarnationSource &incarnations)
+{
+    uint64_t candidate = incarnations.next.load(std::memory_order_relaxed);
+    while (candidate != 0) {
+        const uint64_t successor =
+            candidate == std::numeric_limits<uint64_t>::max()
+                ? 0
+                : candidate + 1;
+        if (incarnations.next.compare_exchange_weak(
+                candidate, successor, std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return candidate;
+        }
+    }
+    return 0;
 }
 
 LogicalSPDCacheGem5Bridge::~LogicalSPDCacheGem5Bridge() noexcept
@@ -120,7 +158,9 @@ LogicalSPDCacheGem5Bridge::abortPending(std::size_t maaId) const
 bool
 LogicalSPDCacheGem5Bridge::dirtyFlushPending(std::size_t maaId) const
 {
-    return validMaa(maaId) && lifecycle[maaId].dirtyFlush;
+    return validMaa(maaId) &&
+           (lifecycle[maaId].callbackDirtyFlush ||
+            runtimes[maaId]->correlationSnapshot().abortFlush);
 }
 
 bool
@@ -162,12 +202,18 @@ LogicalSPDCacheGem5Bridge::claimCallback(
         return {LifecycleStatus::Busy, {}};
     if (kind != CallbackKind::Ordinary && kind != CallbackKind::DirtyFlush)
         return {failClosed(maaId), {}};
-    if (nextIdentity == 0)
+    if (nextCallbackIdentity == 0)
         return {failClosed(maaId), {}};
 
-    state.owner = {maaId, state.generation, nextIdentity++};
+    const uint64_t identity = nextCallbackIdentity;
+    nextCallbackIdentity =
+        identity == std::numeric_limits<uint64_t>::max()
+            ? 0
+            : identity + 1;
+    state.owner = {
+        maaId, state.generation, state.runtimeIdentity, identity};
     state.ownerActive = true;
-    state.dirtyFlush = kind == CallbackKind::DirtyFlush;
+    state.callbackDirtyFlush = kind == CallbackKind::DirtyFlush;
     return {LifecycleStatus::Accepted, state.owner};
 }
 
@@ -181,6 +227,8 @@ LogicalSPDCacheGem5Bridge::acknowledgeCallback(const CallbackToken &token)
         return failClosed(token.maaId);
     if (!token.valid() || !state.ownerActive ||
         token.generation != state.owner.generation ||
+        token.runtimeIdentity != state.runtimeIdentity ||
+        token.runtimeIdentity != state.owner.runtimeIdentity ||
         token.identity != state.owner.identity ||
         token.maaId != state.owner.maaId) {
         return LifecycleStatus::Stale;
@@ -188,7 +236,7 @@ LogicalSPDCacheGem5Bridge::acknowledgeCallback(const CallbackToken &token)
 
     state.owner = CallbackToken{};
     state.ownerActive = false;
-    state.dirtyFlush = false;
+    state.callbackDirtyFlush = false;
     return state.abortRequested ? finishAbortIfReady(token.maaId)
                                 : LifecycleStatus::Accepted;
 }
@@ -221,8 +269,6 @@ LogicalSPDCacheGem5Bridge::requestAbort(std::size_t maaId)
         return mapped;
     }
     state.abortRequested = true;
-    state.dirtyFlush =
-        runtimes[maaId]->correlationSnapshot().abortFlush;
     if (state.ownerActive)
         return LifecycleStatus::Busy;
     return finishAbortIfReady(maaId);
@@ -250,19 +296,16 @@ LogicalSPDCacheGem5Bridge::finishAbortIfReady(std::size_t maaId)
     Runtime &authority = *runtimes[maaId];
     if (authority.drained()) {
         state.abortRequested = false;
-        state.dirtyFlush = false;
         return LifecycleStatus::Accepted;
     }
     if (authority.abortCompleted()) {
         state.abortRequested = false;
-        state.dirtyFlush = false;
         return LifecycleStatus::Accepted;
     }
     const LifecycleStatus mapped =
         mapRuntimeStatus(maaId, authority.progressAbort(), true);
     if (mapped == LifecycleStatus::Accepted) {
         state.abortRequested = false;
-        state.dirtyFlush = false;
     }
     return mapped;
 }

@@ -1,6 +1,7 @@
 #ifndef __MEM_MAA_LOGICAL_SPD_CACHE_GEM5_BRIDGE_HH__
 #define __MEM_MAA_LOGICAL_SPD_CACHE_GEM5_BRIDGE_HH__
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -46,9 +47,13 @@ class LogicalSPDCacheGem5Bridge
     {
         std::size_t maaId = 0;
         uint64_t generation = 0;
+        uint64_t runtimeIdentity = 0;
         uint64_t identity = 0;
 
-        bool valid() const { return generation != 0 && identity != 0; }
+        bool valid() const
+        {
+            return generation != 0 && runtimeIdentity != 0 && identity != 0;
+        }
     };
 
     struct CallbackClaim
@@ -96,11 +101,25 @@ class LogicalSPDCacheGem5Bridge
         uint64_t runtimeIdentity = 0;
         CallbackToken owner{};
         bool ownerActive = false;
-        bool dirtyFlush = false;
+        bool callbackDirtyFlush = false;
         bool abortRequested = false;
         bool isSealed = false;
         bool failClosed = false;
     };
+
+    struct IncarnationSource
+    {
+        explicit IncarnationSource(uint64_t first) : next(first) {}
+
+        std::atomic<uint64_t> next;
+    };
+
+    LogicalSPDCacheGem5Bridge(
+        std::size_t numMaas, RuntimeFactory factory,
+        IncarnationSource &incarnations);
+
+    static IncarnationSource &productionIncarnations();
+    static uint64_t reserveRuntimeIdentity(IncarnationSource &incarnations);
 
     LifecycleStatus failClosed(std::size_t maaId);
     LifecycleStatus mapRuntimeStatus(
@@ -114,7 +133,9 @@ class LogicalSPDCacheGem5Bridge
 
     std::vector<std::unique_ptr<LogicalSPDCacheRuntime>> runtimes;
     std::vector<LifecycleState> lifecycle;
-    uint64_t nextIdentity = 1;
+    uint64_t nextCallbackIdentity = 1;
+
+    friend struct LogicalSPDCacheGem5BridgeTestAccess;
 };
 
 } // namespace gem5
