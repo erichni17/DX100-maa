@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "command": "python3 bounded_row_model.py",
+  "configuration": {
+    "logical_elements": 16384,
+    "active_elements": 4096,
+    "partitions": 4,
+    "filter_words_per_cycle": 16
+  },
+  "columns": [
+    "trace",
+    "policy",
+    "a_line_requests",
+    "row_transitions",
+    "epochs",
+    "capacity_drains",
+    "b_scan_bytes",
+    "b_reread_bytes",
+    "reorder_metadata_bytes",
+    "output_hash",
+    "issue_order_sha256"
+  ],
+  "rows": [
+    ["tile_consumer_fp64", "native16", 9523, 128, 1, 0, 65536, 0, 254464, 17984100384237602611, "34d9bd54dda2f7e4a358e4be295a2403333819d06b6453be53e10055a8281d53"],
+    ["tile_consumer_fp64", "native4k", 16384, 515, 4, 0, 65536, 0, 66688, 17984100384237602611, "b6bd7ab0a8940043d3f4404d1d9f1fa92f78842c9b99b89795ad1b24f4d743c9"],
+    ["tile_consumer_fp64", "bounded_rows", 9670, 152, 5, 1, 262144, 196608, 66688, 17984100384237602611, "b0d9dd4cabd50327ebfe95e89d0dd4c3bc017816238472cc67ae74fdfc2ed81d"],
+    ["virtual_index_random_fp32", "native16", 4096, 32, 1, 0, 65536, 0, 256512, 1782858901698472045, "8524bbdaf0e67c01785625dd7e3d65583c36430e17dda4455fe798fe4625cba9"],
+    ["virtual_index_random_fp32", "native4k", 13436, 131, 4, 0, 65536, 0, 67200, 1782858901698472045, "c49ebf729e169354918ce25685a5efd26ad474519a132f8d19c9775c0b3cc97b"],
+    ["virtual_index_random_fp32", "bounded_rows", 4659, 41, 5, 1, 262144, 196608, 67200, 1782858901698472045, "5ea56474ceb683acb27d370f7f00d2304cac87f55736b7d904ccd5e7675e600e"],
+    ["virtual_index_fanout_fp32", "native16", 1, 0, 1, 0, 65536, 0, 256512, 7221120122736935811, "35e3a6176b50da27fcb868bf840f0e76290bd9bf55c40545e67bac66353d0674"],
+    ["virtual_index_fanout_fp32", "native4k", 4, 0, 4, 0, 65536, 0, 67200, 7221120122736935811, "fb666b7c87eca2c861a9ee49efeb336e22383dc2e11d59a09e5b61650b2df41b"],
+    ["virtual_index_fanout_fp32", "bounded_rows", 4, 0, 4, 3, 262144, 196608, 67200, 7221120122736935811, "fb666b7c87eca2c861a9ee49efeb336e22383dc2e11d59a09e5b61650b2df41b"],
+    ["virtual_index_same_line_fp32", "native16", 1, 0, 1, 0, 65536, 0, 256512, 1607654179229352835, "35e3a6176b50da27fcb868bf840f0e76290bd9bf55c40545e67bac66353d0674"],
+    ["virtual_index_same_line_fp32", "native4k", 4, 0, 4, 0, 65536, 0, 67200, 1607654179229352835, "fb666b7c87eca2c861a9ee49efeb336e22383dc2e11d59a09e5b61650b2df41b"],
+    ["virtual_index_same_line_fp32", "bounded_rows", 4, 0, 4, 3, 262144, 196608, 67200, 1607654179229352835, "fb666b7c87eca2c861a9ee49efeb336e22383dc2e11d59a09e5b61650b2df41b"],
+    ["virtual_index_line_revisit_fp32", "native16", 7379, 256, 1, 0, 65536, 0, 256512, 13525424540701157262, "fd8420ae45ee2fffc8cf103be911d58d5f8a36b4cf4129ec2340756e3fa7904c"],
+    ["virtual_index_line_revisit_fp32", "native4k", 16129, 782, 4, 0, 65536, 0, 67200, 13525424540701157262, "76d19100b4d9863da14c16cee6f6cd316d210ce43a0fbe0f5618c8ce675752be"],
+    ["virtual_index_line_revisit_fp32", "bounded_rows", 7626, 272, 5, 1, 262144, 196608, 67200, 13525424540701157262, "bcaa3dcb203d4bf7409b0965368a366411a599e472da4f01cd6bef346411e515"]
+  ],
+  "gate": {
+    "pass": ["tile_consumer_fp64", "virtual_index_random_fp32", "virtual_index_line_revisit_fp32"],
+    "reject": ["virtual_index_fanout_fp32", "virtual_index_same_line_fp32"],
+    "rule": "strictly reduce both A-line requests and row transitions versus native4k"
+  }
+}

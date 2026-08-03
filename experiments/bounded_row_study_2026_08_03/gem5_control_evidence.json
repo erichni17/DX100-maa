@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "evidence_root": "/data1/nier/dx100-runs/2026-08-02-transparent-spd-premeeting",
+  "shared_artifacts": {
+    "gem5_sha256": "978e746a074cd9f661bf355f4a043d3a86b43034c6a4a6cf3bdff369b488c0f2",
+    "benchmark_sha256": "6c2e7ab2690e9ffda0f582b4f6c6ac42a65c91ffb66be5803160e88932046533",
+    "benchmark_source_sha256": "faf7e103c56c9af0c1b3ade58c3330383e44166ba7e9988b0ee7a2f1db200d96",
+    "indirect_access_source_sha256": "3da2cc84975b90950a3dd7425820b27ce58fb068807bfdc4e251d6e9158a1a6b",
+    "ramulator_config_sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"
+  },
+  "controls": [
+    {
+      "name": "native_direct_16k",
+      "directory": "native_direct_16k_matched",
+      "treatment": {"logical_elements": 16384, "physical_elements": 16384, "native_call_elements": 16384},
+      "wrapper_exit": 0,
+      "terminal_marker": "Exiting @ tick 3744612121 because m5_exit instruction encountered",
+      "exact_output": "VIRTUAL_TILE_CONSUMER_RESULT mode=native_direct page_elements=16384 hash=7228541527853630339 errors=0",
+      "simTicks": 40874044,
+      "a_line_descriptors": 9858,
+      "unique_a_lines": 9523,
+      "row_descriptors": 1458,
+      "unique_rows": 129,
+      "stats_sha256": "a75b040506610c083f33b12bbd41629a74e7ba81ddd07b22f09547817c24a6db",
+      "restore_log_sha256": "f1baeda0c59af3e670434b7fc4f716033776aeca15a2a5be0e18dff2e63bdddf"
+    },
+    {
+      "name": "native_direct_4k",
+      "directory": "native_direct_4k_matched",
+      "treatment": {"logical_elements": 16384, "physical_elements": 4096, "native_call_elements": 4096, "calls": 4},
+      "wrapper_exit": 0,
+      "terminal_marker": "Exiting @ tick 3764252558 because m5_exit instruction encountered",
+      "exact_output": "VIRTUAL_TILE_CONSUMER_RESULT mode=native_direct page_elements=4096 hash=7228541527853630339 errors=0",
+      "simTicks": 60408687,
+      "a_line_descriptors": 16384,
+      "unique_a_lines": 16384,
+      "row_descriptors": 2108,
+      "unique_rows": 516,
+      "stats_sha256": "f314a9a25d26eb32ef37c92471ae953df5eb3e00cf824acb89f60dbe72437454",
+      "restore_log_sha256": "06d066edae260f343d999281911c99e0ec3d8c3d950b6640d50cff0320af3518"
+    }
+  ],
+  "comparison": {
+    "native4k_ticks_over_native16_pct": 47.79229331944743,
+    "performance_status": "control context only; no gem5 bounded-row treatment exists",
+    "repetitions": 1,
+    "caveat": "Deterministic exact controls share simulator, benchmark, source, and DRAM hashes, but use treatment-specific checkpoints and call/physical geometry. Do not attribute their tick delta solely to reorder metadata."
+  }
+}
