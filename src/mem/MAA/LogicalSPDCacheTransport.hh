@@ -8,12 +8,11 @@
 
 namespace gem5 {
 
-class LogicalSPDCacheTransportTestAccess;
+class LogicalSPDCacheRuntime;
 
 class LogicalSPDCacheTransport
 {
-    friend class LogicalSPDCacheTransportTestAccess;
-
+    friend class LogicalSPDCacheRuntime;
   public:
     static constexpr std::size_t DescriptorCount = 2;
     static constexpr std::size_t PagesPerDescriptor = 4;
@@ -28,27 +27,6 @@ class LogicalSPDCacheTransport
     static constexpr std::size_t ResponseCredits = 4;
     static constexpr uint8_t NoRecord = std::numeric_limits<uint8_t>::max();
     static constexpr uint8_t NoCredit = std::numeric_limits<uint8_t>::max();
-
-    static constexpr std::size_t PrivateSlotPayloadBits =
-        SlotCount * PageBytes * 8;
-    static constexpr std::size_t DescriptorCorrelatorBits =
-        DescriptorCount * 123;
-    static constexpr std::size_t SlotCorrelatorBits = SlotCount * 82;
-    static constexpr std::size_t PageActionBits = 1184;
-    static constexpr std::size_t TransactionCorrelatorBits =
-        RecordCount * 177;
-    static constexpr std::size_t RequestFifoControlBits = 38;
-    static constexpr std::size_t CreditOwnerBits = 16;
-    static constexpr std::size_t FixedLineBufferBits =
-        ResponseCredits * LineBytes * 8;
-    static constexpr std::size_t GlobalControlBits = 41;
-    static constexpr std::size_t PackedLogicalStateBits =
-        PrivateSlotPayloadBits + DescriptorCorrelatorBits +
-        SlotCorrelatorBits + PageActionBits +
-        TransactionCorrelatorBits + RequestFifoControlBits +
-        CreditOwnerBits + FixedLineBufferBits + GlobalControlBits;
-    static constexpr std::size_t PackedLogicalStateBytes = 66181;
-    static constexpr std::size_t AlignedHardwareProjectionBytes = 66324;
 
     enum class Operation : uint8_t
     {
@@ -115,12 +93,25 @@ class LogicalSPDCacheTransport
         InvalidGeometry,
         Exhausted,
         FaultInjected,
-        WrongRetryPort,
-        Stale,
         ProductionStop,
-        CopyActive,
         CopyFailed,
         Sealed,
+        Poisoned,
+    };
+
+    struct IdBudget
+    {
+        uint32_t actionIDs = std::numeric_limits<uint32_t>::max();
+        uint32_t incarnationIDs = std::numeric_limits<uint32_t>::max();
+        uint32_t recordEpochs =
+            RecordCount * std::numeric_limits<uint16_t>::max();
+
+        bool operator==(const IdBudget &other) const
+        {
+            return actionIDs == other.actionIDs &&
+                   incarnationIDs == other.incarnationIDs &&
+                   recordEpochs == other.recordEpochs;
+        }
     };
 
     struct PageSpan
@@ -194,12 +185,54 @@ class LogicalSPDCacheTransport
         bool operator==(const DeliveryTicket &other) const;
     };
 
+    class CompletionIdentity
+    {
+      public:
+        CompletionIdentity() = default;
+        CompletionIdentity(const CompletionIdentity &) = default;
+        CompletionIdentity &operator=(const CompletionIdentity &) = delete;
+
+        bool valid() const { return isValid; }
+        Operation kind() const { return operation; }
+        uint32_t id() const { return actionID; }
+        uint8_t descriptorID() const { return descriptor; }
+        uint32_t descriptorGeneration() const { return generation; }
+        uint8_t pageID() const { return page; }
+        uint8_t slotID() const { return slot; }
+        uint64_t controllerSerial() const { return serial; }
+        bool operator==(const CompletionIdentity &other) const;
+
+      private:
+        friend class LogicalSPDCacheTransport;
+
+        CompletionIdentity(Operation completionKind, uint32_t completionID,
+                           uint8_t completionDescriptor,
+                           uint32_t completionGeneration,
+                           uint8_t completionPage, uint8_t completionSlot,
+                           uint64_t completionSerial)
+            : isValid(true), operation(completionKind),
+              actionID(completionID), descriptor(completionDescriptor),
+              generation(completionGeneration), page(completionPage),
+              slot(completionSlot), serial(completionSerial)
+        {}
+
+        bool isValid = false;
+        Operation operation = Operation::Fill;
+        uint32_t actionID = 0;
+        uint8_t descriptor = 0;
+        uint32_t generation = 0;
+        uint8_t page = 0;
+        uint8_t slot = 0;
+        uint64_t serial = 0;
+    };
+
     struct Result
     {
         Status status = Status::Invalid;
         uint8_t record = NoRecord;
         const RequestPacket *handle = nullptr;
         DeliveryTicket ticket{};
+        CompletionIdentity completion{};
     };
 
     struct AuditSnapshot
@@ -218,6 +251,17 @@ class LogicalSPDCacheTransport
         bool incarnationIDsExhausted = false;
         bool copyActive = false;
         bool sealed = false;
+        bool poisoned = false;
+        bool geometryValid = false;
+        Operation operation = Operation::Fill;
+        AbortCode abortCode = AbortCode::None;
+        uint8_t descriptor = 0;
+        uint32_t generation = 0;
+        uint8_t page = 0;
+        uint8_t slot = 0;
+        uint64_t baseAddress = 0;
+        uint64_t controllerSerial = 0;
+        IdBudget remainingBudget{};
         std::array<uint8_t, FifoEntries> fifo{};
         std::array<uint8_t, ResponseCredits> credits{};
         std::array<RecordState, RecordCount> states{};
@@ -243,6 +287,8 @@ class LogicalSPDCacheTransport
 
     explicit LogicalSPDCacheTransport(std::size_t ports = PortCount,
                                       std::size_t lineBytes = LineBytes);
+    LogicalSPDCacheTransport(std::size_t ports, std::size_t lineBytes,
+                             IdBudget budget);
     ~LogicalSPDCacheTransport();
 
     LogicalSPDCacheTransport(const LogicalSPDCacheTransport &) = delete;
@@ -251,7 +297,8 @@ class LogicalSPDCacheTransport
 
     Status startAction(Operation operation, uint8_t descriptor,
                        uint32_t generation, uint8_t page, uint8_t slot,
-                       uint64_t baseAddress, PageSpan slotSpan,
+                       uint64_t baseAddress, uint64_t controllerSerial,
+                       PageSpan slotSpan,
                        uint32_t *actionID = nullptr);
     Result prepare(PageSpan slotSpan, FaultPoint fault = FaultPoint::None);
     Result sendPrepared(bool accepted);
@@ -259,7 +306,7 @@ class LogicalSPDCacheTransport
                    FaultPoint fault = FaultPoint::None);
     Status recvReqRetry(uint8_t callbackPort);
     Result receive(ReturnedHandle &returned, uint8_t callbackPort);
-    Status commitDelivery(const DeliveryTicket &ticket, PageSpan destination,
+    Result commitDelivery(const DeliveryTicket &ticket, PageSpan destination,
                           CopyHook hook = nullptr, void *context = nullptr);
     Status abortAction(AbortCode code);
     Status reset();
@@ -270,6 +317,7 @@ class LogicalSPDCacheTransport
     bool geometryValid() const { return geometryIsValid; }
     bool copyActive() const { return deliveryCopyActive; }
     bool sealed() const { return isSealed; }
+    bool poisoned() const { return terminalPoisoned; }
     ActionState actionState() const { return action.state; }
     uint32_t actionID() const { return action.actionID; }
     uint16_t ackCount() const { return action.ackCount; }
@@ -323,6 +371,7 @@ class LogicalSPDCacheTransport
         uint8_t page = 0;
         uint8_t slot = 0;
         uint64_t baseAddress = 0;
+        uint64_t controllerSerial = 0;
         PageSpan slotSpan{};
         uint16_t nextLine = 0;
         std::array<uint64_t, LinesPerPage / 64> issued{};
@@ -339,80 +388,15 @@ class LogicalSPDCacheTransport
         uint8_t count = 0;
     };
 
-    struct DescriptorProjection
-    {
-        uint64_t backingBase;
-        uint32_t generation;
-        uint32_t backingSpan;
-        std::array<uint8_t, 4> flags;
-    };
-
-    struct SlotProjection
-    {
-        uint32_t generation;
-        uint32_t actionID;
-        std::array<uint8_t, 8> fields;
-    };
-
-    struct ActionProjection
-    {
-        std::array<uint64_t, 16> sets;
-        uint64_t baseAddress;
-        uint32_t actionID;
-        uint32_t generation;
-        std::array<uint8_t, 16> fields;
-    };
-
-    struct TransactionProjection
-    {
-        uint64_t address;
-        uint32_t actionID;
-        uint32_t generation;
-        uint16_t epoch;
-        std::array<uint8_t, 14> fields;
-    };
-
-    struct FifoProjection
-    {
-        std::array<uint8_t, 12> fields;
-        uint32_t reserved;
-    };
-
-    struct CreditProjection
-    {
-        std::array<uint8_t, 4> owners;
-        uint32_t reserved;
-    };
-
-    struct GlobalProjection
-    {
-        uint32_t nextActionID;
-        std::array<uint8_t, 8> fields;
-    };
-
-    static_assert(sizeof(DescriptorProjection) == 24);
-    static_assert(sizeof(SlotProjection) == 16);
-    static_assert(sizeof(ActionProjection) == 160);
-    static_assert(sizeof(TransactionProjection) == 32);
-    static_assert(sizeof(FifoProjection) == 16);
-    static_assert(sizeof(CreditProjection) == 8);
-    static_assert(sizeof(GlobalProjection) == 12);
-    static_assert(PackedLogicalStateBytes ==
-                  (PackedLogicalStateBits + 7) / 8);
-    static_assert(PrivateSlotPayloadBits == 524288);
-    static_assert(DescriptorCorrelatorBits == 246);
-    static_assert(SlotCorrelatorBits == 164);
-    static_assert(TransactionCorrelatorBits == 1416);
-    static_assert(FixedLineBufferBits == 2048);
-    static_assert(AlignedHardwareProjectionBytes ==
-                  2 * PageBytes + 2 * sizeof(DescriptorProjection) +
-                      2 * sizeof(SlotProjection) + sizeof(ActionProjection) +
-                      RecordCount * sizeof(TransactionProjection) +
-                      sizeof(FifoProjection) + sizeof(CreditProjection) +
-                      ResponseCredits * LineBytes +
-                      sizeof(GlobalProjection));
-
-    Status publicMutationStatus() const;
+    Status publicMutationStatus();
+    Status productionStop();
+    void poisonFromAuthority() { terminalPoisoned = true; }
+    Result productionStopResult();
+    static bool validOperation(Operation operation);
+    static bool validCommand(Command command);
+    static bool validAbortCode(AbortCode code);
+    static bool validFaultPoint(FaultPoint fault);
+    static bool validPageSpan(PageSpan span);
     bool previewIncarnations(uint32_t count, uint32_t &first,
                              uint32_t &committedNext,
                              bool &committedExhausted) const;
@@ -428,7 +412,7 @@ class LogicalSPDCacheTransport
     bool wireExact(const TransactionRecord &record,
                    const ReturnedHandle &returned) const;
     bool ticketExact(const DeliveryTicket &ticket, uint8_t &record) const;
-    Status ackReleaseAndRefill(uint8_t record);
+    Result ackReleaseAndRefill(uint8_t record);
     static void setBit(std::array<uint64_t, LinesPerPage / 64> &bits,
                        std::size_t line);
     static bool getBit(const std::array<uint64_t, LinesPerPage / 64> &bits,
@@ -449,6 +433,8 @@ class LogicalSPDCacheTransport
     bool deliveryCopyActive = false;
     bool isSealed = false;
     bool geometryIsValid = true;
+    bool terminalPoisoned = false;
+    IdBudget remainingBudget{};
 };
 
 static_assert(LogicalSPDCacheTransport::DescriptorCount == 2);

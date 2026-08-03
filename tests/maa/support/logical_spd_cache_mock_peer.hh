@@ -7,6 +7,7 @@
 #include <cstring>
 #include <limits>
 
+#include "mem/MAA/LogicalSPDCacheRuntime.hh"
 #include "mem/MAA/LogicalSPDCacheTransport.hh"
 
 namespace gem5 {
@@ -21,6 +22,12 @@ class LogicalSPDCacheMockPeer
         bool valid = false;
         Transport::ReturnedHandle handle{};
     };
+
+    explicit LogicalSPDCacheMockPeer(
+        uint64_t replacementPacketBudget =
+            std::numeric_limits<uint64_t>::max())
+        : remainingPeerPacketIDs(replacementPacketBudget)
+    {}
 
     bool registerBacking(uint64_t base, std::byte *data, std::size_t size)
     {
@@ -74,13 +81,21 @@ class LogicalSPDCacheMockPeer
         return result;
     }
 
+    Transport::Result send(LogicalSPDCacheRuntime &runtime, bool accepted,
+                           Transport::FaultPoint fault =
+                               Transport::FaultPoint::None)
+    {
+        const Transport::Result result = runtime.trySend(accepted, fault);
+        return retainAccepted(result);
+    }
+
     ResponseBuild makeResponse(uint8_t record, bool replacement = true)
     {
         Outstanding *entry = findOutstanding(record);
         if (entry == nullptr || entry->request.request == nullptr ||
             entry->request.token == nullptr)
             return {};
-        if (replacement && peerPacketIDsExhausted)
+        if (replacement && remainingPeerPacketIDs == 0)
             return {};
 
         const std::size_t buffer =
@@ -132,26 +147,48 @@ class LogicalSPDCacheMockPeer
                         Transport::LineBytes);
         }
 
-        const Transport::Result result =
-            transport.receive(returned, callbackPort);
-        const bool consumed =
-            result.status == Transport::Status::DeliveryPending ||
-            result.status == Transport::Status::Accepted ||
-            result.status == Transport::Status::Completed ||
-            result.status == Transport::Status::AbortDrained ||
-            result.status == Transport::Status::AbortOwnerDrained;
-        if (!consumed)
-            return result;
-
-        if (write && (result.status == Transport::Status::Accepted ||
-                      result.status == Transport::Status::Completed)) {
+        if (write) {
             std::byte *destination = backingAddress(entry->request.address);
             if (destination == nullptr)
                 return {Transport::Status::ProductionStop};
             std::memcpy(destination, writeSnapshot.data(),
                         Transport::LineBytes);
         }
+        const Transport::Result result =
+            transport.receive(returned, callbackPort);
+        if (!returned.disposed)
+            return result;
         *entry = Outstanding{};
+        return result;
+    }
+
+    Transport::Result deliver(LogicalSPDCacheRuntime &runtime,
+                              uint8_t record,
+                              Transport::ReturnedHandle &returned,
+                              uint8_t callbackPort)
+    {
+        Outstanding *entry = findOutstanding(record);
+        if (entry == nullptr)
+            return {Transport::Status::ProductionStop};
+        std::array<std::byte, Transport::LineBytes> writeSnapshot{};
+        const bool write =
+            entry->request.command == Transport::Command::WriteReq;
+        if (write) {
+            if (entry->request.data == nullptr ||
+                entry->request.dataSize != Transport::LineBytes)
+                return {Transport::Status::ProductionStop};
+            std::memcpy(writeSnapshot.data(), entry->request.data,
+                        Transport::LineBytes);
+            std::byte *destination = backingAddress(entry->request.address);
+            if (destination == nullptr)
+                return {Transport::Status::ProductionStop};
+            std::memcpy(destination, writeSnapshot.data(),
+                        Transport::LineBytes);
+        }
+        const Transport::Result result =
+            runtime.receive(returned, callbackPort);
+        if (returned.disposed)
+            *entry = Outstanding{};
         return result;
     }
 
@@ -165,6 +202,19 @@ class LogicalSPDCacheMockPeer
         if (entry == nullptr)
             return {Transport::Status::ProductionStop};
         return deliver(transport, record, response.handle,
+                       entry->request.callbackPort);
+    }
+
+    Transport::Result respond(LogicalSPDCacheRuntime &runtime,
+                              uint8_t record, bool replacement = true)
+    {
+        ResponseBuild response = makeResponse(record, replacement);
+        if (!response.valid)
+            return {Transport::Status::Exhausted};
+        const Outstanding *entry = findOutstanding(record);
+        if (entry == nullptr)
+            return {Transport::Status::ProductionStop};
+        return deliver(runtime, record, response.handle,
                        entry->request.callbackPort);
     }
 
@@ -196,13 +246,29 @@ class LogicalSPDCacheMockPeer
         return entry == nullptr ? nullptr : &entry->request;
     }
 
-    void setNextPeerPacketIDForTest(uint64_t value, bool exhausted = false)
+  private:
+    Transport::Result retainAccepted(const Transport::Result &result)
     {
-        nextPeerPacketID = value;
-        peerPacketIDsExhausted = exhausted;
+        if (result.status != Transport::Status::SendAccepted)
+            return result;
+        if (result.record >= Transport::RecordCount ||
+            result.handle == nullptr)
+            return {Transport::Status::ProductionStop};
+        Outstanding *entry = nullptr;
+        for (Outstanding &candidate : outstanding) {
+            if (!candidate.live) {
+                entry = &candidate;
+                break;
+            }
+        }
+        if (entry == nullptr)
+            return {Transport::Status::ProductionStop};
+        entry->live = true;
+        entry->record = result.record;
+        entry->request = *result.handle;
+        return result;
     }
 
-  private:
     struct Backing
     {
         bool valid = false;
@@ -250,12 +316,12 @@ class LogicalSPDCacheMockPeer
 
     uint64_t allocatePeerPacketID()
     {
+        if (remainingPeerPacketIDs == 0)
+            return 0;
+        --remainingPeerPacketIDs;
         const uint64_t allocated = nextPeerPacketID;
-        if (allocated == std::numeric_limits<uint64_t>::max()) {
-            peerPacketIDsExhausted = true;
-        } else {
+        if (allocated != std::numeric_limits<uint64_t>::max())
             ++nextPeerPacketID;
-        }
         return allocated;
     }
 
@@ -265,7 +331,8 @@ class LogicalSPDCacheMockPeer
                Transport::ResponseCredits>
         responseBuffers{};
     uint64_t nextPeerPacketID = 1;
-    bool peerPacketIDsExhausted = false;
+    uint64_t remainingPeerPacketIDs =
+        std::numeric_limits<uint64_t>::max();
 };
 
 } // namespace gem5

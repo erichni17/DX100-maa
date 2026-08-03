@@ -4,17 +4,18 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
 
 #include "mem/MAA/LogicalSPDCacheController.hh"
 
 namespace gem5 {
 
-class LogicalSPDCacheSliceTestAccess;
+class LogicalSPDCacheRuntime;
 
 class LogicalSPDCacheSlice
 {
-    friend class LogicalSPDCacheSliceTestAccess;
+    friend class LogicalSPDCacheRuntime;
 
   public:
     using Controller = LogicalSPDCacheController<>;
@@ -30,7 +31,6 @@ class LogicalSPDCacheSlice
     static constexpr std::size_t LinesPerPage = PageBytes / CacheLineBytes;
     static constexpr std::size_t OperationMemorySerials = Pages * 3;
     static constexpr uint8_t Float64DataType = 5;
-    static constexpr uint8_t MaxScalarOperation = 5;
 
     enum class DescriptorRole : uint8_t
     {
@@ -47,6 +47,7 @@ class LogicalSPDCacheSlice
         Computing,
         WaitingWriteback,
         Complete,
+        Aborted,
         Faulted,
     };
 
@@ -61,6 +62,23 @@ class LogicalSPDCacheSlice
         Exhausted,
         Draining,
         Sealed,
+        ProductionStop,
+        Poisoned,
+    };
+
+    enum class Operation : uint8_t
+    {
+        Add,
+        Sub,
+        Mul,
+        Div,
+        Min,
+        Max,
+    };
+
+    enum class AbortCode : uint8_t
+    {
+        Caller,
     };
 
     enum class PageOperation : uint8_t
@@ -97,7 +115,7 @@ class LogicalSPDCacheSlice
         uint8_t destinationLogical = 0;
         BackingSpan destination{};
         uint8_t dataType = Float64DataType;
-        uint8_t operation = 0;
+        Operation operation = Operation::Add;
         uint64_t scalarBits = 0;
     };
 
@@ -132,7 +150,7 @@ class LogicalSPDCacheSlice
         PageIdentity destination{};
         uint8_t sourceSlot = 0;
         uint8_t destinationSlot = 0;
-        uint8_t operation = 0;
+        Operation operation = Operation::Add;
         uint64_t scalarBits = 0;
 
         bool operator==(const ComputeAction &other) const
@@ -166,6 +184,43 @@ class LogicalSPDCacheSlice
 
     static_assert(sizeof(Counters) == 12 * sizeof(uint64_t));
 
+    struct AuditSnapshot
+    {
+        bool initialized = false;
+        bool draining = false;
+        bool sealed = false;
+        bool poisoned = false;
+        bool abortRequested = false;
+        bool abortCompleted = false;
+        bool active = false;
+        bool refillPending = false;
+        bool memoryActionActive = false;
+        uint16_t maaID = 0;
+        uint32_t operationID = 0;
+        uint32_t lastOperationID = 0;
+        uint64_t lastProducerTransaction = 0;
+        Operation operation = Operation::Add;
+        uint64_t scalarBits = 0;
+        uint8_t page = 0;
+        Stage stage = Stage::Idle;
+        AbortCode abortCode = AbortCode::Caller;
+        Controller::DescriptorHandle source{};
+        Controller::DescriptorHandle destination{};
+        Controller::OverwriteReservation reservation{};
+        PageAction acceptedPageAction{};
+        PageIdentity refillIdentity{};
+        std::array<DescriptorRecord, LogicalDescriptors> descriptors{};
+        std::array<Controller::Phase, Slots> slotPhases{};
+        std::array<PageIdentity, Slots> slotIdentities{};
+        std::array<uint64_t, Slots> slotTransactions{};
+        std::array<uint64_t, Slots> slotWritebackTransactions{};
+        std::array<bool, Slots> slotPublishOnWriteback{};
+        std::array<PageIdentity, Controller::QueueCapacity> missQueue{};
+        std::size_t missQueueSize = 0;
+        std::size_t activeLeases = 0;
+        Counters counters{};
+    };
+
     Status initialize(uint16_t maaID);
     Status registerSource(uint8_t logical, BackingSpan backing,
                           uint8_t dataType = Float64DataType);
@@ -177,6 +232,9 @@ class LogicalSPDCacheSlice
     Status acceptCompute(const ComputeAction &compute);
     Status completeCompute(const ComputeAction &compute);
     Status queueRefill(uint8_t logical, uint8_t page);
+    Status beginAbort(AbortCode code);
+    Status cancelUnacceptedForAbort();
+    Status cancelAcceptedPageAction(const PageAction &pageAction);
     Status retireCompletedOperation();
     Status cleanupDescriptor(uint8_t logical);
     Status requestDrain();
@@ -193,9 +251,14 @@ class LogicalSPDCacheSlice
     Stage stage() const { return active.stage; }
     uint8_t currentPage() const { return active.page; }
     uint32_t operationID() const { return active.operationID; }
+    bool aborting() const { return abortRequested; }
+    bool abortCompleted() const { return abortCompletion; }
+    bool poisoned() const { return isPoisoned; }
+    bool destructionSafe() const;
     const DescriptorRecord &descriptor(uint8_t logical) const;
     const Controller &cacheController() const { return controller; }
     const Counters &counters() const { return stats; }
+    AuditSnapshot auditSnapshot() const;
 
   private:
     struct ActiveOperation
@@ -204,7 +267,7 @@ class LogicalSPDCacheSlice
         uint32_t operationID = 0;
         Controller::DescriptorHandle source{};
         Controller::DescriptorHandle destination{};
-        uint8_t operation = 0;
+        Operation operation = Operation::Add;
         uint64_t scalarBits = 0;
         uint8_t page = 0;
         Stage stage = Stage::Idle;
@@ -213,7 +276,12 @@ class LogicalSPDCacheSlice
 
     static bool validBacking(BackingSpan backing);
     static bool overlaps(BackingSpan left, BackingSpan right);
+    static bool validOperation(Operation operation);
+    static bool validPageOperation(PageOperation operation);
+    static bool validAbortCode(AbortCode code);
     static void increment(uint64_t &counter);
+    Status publicMutationStatus() const;
+    Status productionStop();
     Status reject(Status status);
     bool allPagesReady(const Controller::DescriptorHandle &handle) const;
     PageIdentity sourcePage() const;
@@ -222,6 +290,10 @@ class LogicalSPDCacheSlice
     Status reserveOverwrite();
     PageAction makePageAction(const Controller::MemoryAction &action) const;
     ComputeAction makeComputeAction() const;
+    Status finishAbortWithoutDirtyData();
+
+    LogicalSPDCacheSlice() = default;
+    ~LogicalSPDCacheSlice();
 
     Controller controller{};
     std::array<DescriptorRecord, LogicalDescriptors> descriptors{};
@@ -236,6 +308,10 @@ class LogicalSPDCacheSlice
     bool initialized = false;
     bool draining = false;
     bool isSealed = false;
+    bool isPoisoned = false;
+    bool abortRequested = false;
+    bool abortCompletion = false;
+    AbortCode activeAbortCode = AbortCode::Caller;
     Counters stats{};
 };
 
@@ -244,6 +320,57 @@ LogicalSPDCacheSlice::increment(uint64_t &counter)
 {
     if (counter != std::numeric_limits<uint64_t>::max())
         ++counter;
+}
+
+inline LogicalSPDCacheSlice::~LogicalSPDCacheSlice()
+{
+    if (!destructionSafe())
+        std::terminate();
+}
+
+inline bool
+LogicalSPDCacheSlice::validOperation(Operation operation)
+{
+    switch (operation) {
+      case Operation::Add:
+      case Operation::Sub:
+      case Operation::Mul:
+      case Operation::Div:
+      case Operation::Min:
+      case Operation::Max:
+        return true;
+    }
+    return false;
+}
+
+inline bool
+LogicalSPDCacheSlice::validPageOperation(PageOperation operation)
+{
+    return operation == PageOperation::Fill ||
+           operation == PageOperation::Writeback;
+}
+
+inline bool
+LogicalSPDCacheSlice::validAbortCode(AbortCode code)
+{
+    return code == AbortCode::Caller;
+}
+
+inline LogicalSPDCacheSlice::Status
+LogicalSPDCacheSlice::publicMutationStatus() const
+{
+    if (isPoisoned)
+        return Status::Poisoned;
+    if (isSealed)
+        return Status::Sealed;
+    return Status::Accepted;
+}
+
+inline LogicalSPDCacheSlice::Status
+LogicalSPDCacheSlice::productionStop()
+{
+    isPoisoned = true;
+    return Status::ProductionStop;
 }
 
 inline LogicalSPDCacheSlice::Status
@@ -271,8 +398,9 @@ LogicalSPDCacheSlice::overlaps(BackingSpan left, BackingSpan right)
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::initialize(uint16_t id)
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (initialized)
         return maaID == id ? Status::Accepted : Status::Busy;
     maaID = id;
@@ -284,8 +412,9 @@ inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::registerSource(uint8_t logical, BackingSpan backing,
                                     uint8_t dataType)
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (draining)
         return reject(Status::Draining);
     if (!initialized || logical >= LogicalDescriptors ||
@@ -315,8 +444,7 @@ LogicalSPDCacheSlice::registerSource(uint8_t logical, BackingSpan backing,
         if (controller.notifyPageReady(
                 controller.identity(allocation.descriptor, page)) !=
             Controller::ReadyResult::Accepted) {
-            (void)controller.freeDescriptor(allocation.descriptor);
-            return reject(Status::Invalid);
+            return productionStop();
         }
     }
     DescriptorRecord record;
@@ -345,20 +473,21 @@ LogicalSPDCacheSlice::allPagesReady(
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::admit(const Admission &request)
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (draining)
         return reject(Status::Draining);
-    if (!initialized || active.valid || refillPending || memoryActionActive)
-        return reject(Status::Busy);
     if (request.sourceLogical >= LogicalDescriptors ||
         request.destinationLogical >= LogicalDescriptors ||
         request.sourceLogical == request.destinationLogical ||
         request.dataType != Float64DataType ||
-        request.operation > MaxScalarOperation ||
+        !validOperation(request.operation) ||
         !validBacking(request.destination)) {
         return reject(Status::Invalid);
     }
+    if (!initialized || active.valid || refillPending || memoryActionActive)
+        return reject(Status::Busy);
     const DescriptorRecord &source = descriptors[request.sourceLogical];
     if (source.role != DescriptorRole::Source ||
         source.dataType != request.dataType ||
@@ -397,11 +526,10 @@ LogicalSPDCacheSlice::admit(const Admission &request)
     active.operation = request.operation;
     active.scalarBits = request.scalarBits;
     active.stage = Stage::WaitingFill;
+    abortCompletion = false;
     increment(stats.admissions);
     const Status queued = queueSourcePage();
-    if (queued != Status::Accepted)
-        active.stage = Stage::Faulted;
-    return queued;
+    return queued == Status::Accepted ? queued : productionStop();
 }
 
 inline LogicalSPDCacheSlice::PageIdentity
@@ -490,16 +618,18 @@ LogicalSPDCacheSlice::pendingPageAction() const
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::acceptPageAction(const PageAction &pageAction)
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     const PageAction expected = pendingPageAction();
-    if (!pageAction.valid || !expected.valid)
+    if (!pageAction.valid || !validPageOperation(pageAction.operation) ||
+        !expected.valid)
         return Status::Invalid;
     if (!(pageAction == expected))
-        return Status::Stale;
+        return productionStop();
     if (controller.acceptAction(pageAction.controller) !=
         Controller::ActionResult::Accepted) {
-        return Status::Stale;
+        return productionStop();
     }
     acceptedMemoryAction = pageAction;
     memoryActionActive = true;
@@ -509,23 +639,25 @@ LogicalSPDCacheSlice::acceptPageAction(const PageAction &pageAction)
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::completePageAction(const PageAction &pageAction)
 {
-    if (isSealed)
-        return Status::Sealed;
-    if (!memoryActionActive || !(pageAction == acceptedMemoryAction))
-        return Status::Stale;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
+    if (!pageAction.valid || !validPageOperation(pageAction.operation) ||
+        !memoryActionActive || !(pageAction == acceptedMemoryAction))
+        return productionStop();
     Controller::ResponseResult response;
     if (pageAction.operation == PageOperation::Fill) {
         response = controller.completeFill(
             pageAction.controller.slot, pageAction.controller.page,
             pageAction.controller.serial);
         if (response != Controller::ResponseResult::FillInstalled)
-            return Status::Stale;
+            return productionStop();
     } else {
         response = controller.completeWriteback(
             pageAction.controller.slot, pageAction.controller.page,
             pageAction.controller.serial);
         if (response != Controller::ResponseResult::WritebackCompleted)
-            return Status::Stale;
+            return productionStop();
     }
     memoryActionActive = false;
     acceptedMemoryAction = PageAction{};
@@ -539,11 +671,9 @@ LogicalSPDCacheSlice::completePageAction(const PageAction &pageAction)
             return Status::Accepted;
         }
         if (!active.valid || active.stage != Stage::WaitingFill)
-            return Status::Invalid;
+            return productionStop();
         const Status reserved = reserveOverwrite();
-        if (reserved != Status::Accepted)
-            active.stage = Stage::Faulted;
-        return reserved;
+        return reserved == Status::Accepted ? reserved : productionStop();
     }
 
     increment(stats.writebacksCompleted);
@@ -554,7 +684,9 @@ LogicalSPDCacheSlice::completePageAction(const PageAction &pageAction)
     destination.writebackAcked |= bit;
     increment(stats.pagesCompleted);
     if (!active.valid || active.stage != Stage::WaitingWriteback)
-        return Status::Invalid;
+        return productionStop();
+    if (abortRequested)
+        return finishAbortWithoutDirtyData();
     ++active.page;
     if (active.page == Pages) {
         active.stage = Stage::Complete;
@@ -563,9 +695,7 @@ LogicalSPDCacheSlice::completePageAction(const PageAction &pageAction)
     }
     active.stage = Stage::WaitingFill;
     const Status queued = queueSourcePage();
-    if (queued != Status::Accepted)
-        active.stage = Stage::Faulted;
-    return queued;
+    return queued == Status::Accepted ? queued : productionStop();
 }
 
 inline LogicalSPDCacheSlice::ComputeAction
@@ -598,16 +728,17 @@ LogicalSPDCacheSlice::pendingCompute() const
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::acceptCompute(const ComputeAction &compute)
 {
-    if (isSealed)
-        return Status::Sealed;
-    if (!compute.valid || active.stage != Stage::ComputeReady)
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
+    if (!compute.valid || !validOperation(compute.operation) ||
+        active.stage != Stage::ComputeReady)
         return Status::Invalid;
     if (!(compute == makeComputeAction()))
-        return Status::Stale;
+        return productionStop();
     if (controller.beginOverwriteCompute(active.reservation) !=
         Controller::OverwriteResult::Accepted) {
-        active.stage = Stage::Faulted;
-        return Status::Stale;
+        return productionStop();
     }
     active.stage = Stage::Computing;
     increment(stats.computesStarted);
@@ -617,16 +748,17 @@ LogicalSPDCacheSlice::acceptCompute(const ComputeAction &compute)
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::completeCompute(const ComputeAction &compute)
 {
-    if (isSealed)
-        return Status::Sealed;
-    if (!compute.valid || active.stage != Stage::Computing)
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
+    if (!compute.valid || !validOperation(compute.operation) ||
+        active.stage != Stage::Computing)
         return Status::Invalid;
     if (!(compute == makeComputeAction()))
-        return Status::Stale;
+        return productionStop();
     if (controller.completeOverwrite(active.reservation) !=
         Controller::OverwriteResult::Accepted) {
-        active.stage = Stage::Faulted;
-        return Status::Stale;
+        return productionStop();
     }
     active.stage = Stage::WaitingWriteback;
     increment(stats.computesCompleted);
@@ -636,8 +768,9 @@ LogicalSPDCacheSlice::completeCompute(const ComputeAction &compute)
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::queueRefill(uint8_t logical, uint8_t page)
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (draining)
         return Status::Draining;
     if (active.valid || refillPending || memoryActionActive)
@@ -655,7 +788,115 @@ LogicalSPDCacheSlice::queueRefill(uint8_t logical, uint8_t page)
         return Status::NotReady;
     refillIdentity = identity;
     refillPending = true;
+    abortCompletion = false;
     return Status::Accepted;
+}
+
+inline LogicalSPDCacheSlice::Status
+LogicalSPDCacheSlice::beginAbort(AbortCode code)
+{
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
+    if (!validAbortCode(code))
+        return Status::Invalid;
+    if ((!active.valid && !refillPending && !memoryActionActive) ||
+        operationComplete()) {
+        return Status::Stale;
+    }
+    abortRequested = true;
+    abortCompletion = false;
+    activeAbortCode = code;
+    return Status::Accepted;
+}
+
+inline LogicalSPDCacheSlice::Status
+LogicalSPDCacheSlice::finishAbortWithoutDirtyData()
+{
+    if (active.valid) {
+        DescriptorRecord &destination =
+            descriptors[active.destination.logical];
+        if (destination.role != DescriptorRole::Destination ||
+            !(destination.handle == active.destination) ||
+            controller.freeDescriptor(active.destination) !=
+                Controller::FreeResult::Accepted) {
+            return productionStop();
+        }
+        destination = DescriptorRecord{};
+        active = ActiveOperation{};
+    }
+    refillIdentity = PageIdentity{};
+    refillPending = false;
+    abortRequested = false;
+    abortCompletion = true;
+    return Status::Accepted;
+}
+
+inline LogicalSPDCacheSlice::Status
+LogicalSPDCacheSlice::cancelUnacceptedForAbort()
+{
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
+    if (!abortRequested)
+        return Status::Invalid;
+    if (memoryActionActive)
+        return Status::Busy;
+    if (refillPending) {
+        if (controller.cancelQueuedMiss(refillIdentity) !=
+            Controller::CancelResult::Accepted) {
+            return productionStop();
+        }
+        return finishAbortWithoutDirtyData();
+    }
+    if (!active.valid)
+        return productionStop();
+    switch (active.stage) {
+      case Stage::WaitingFill:
+        if (controller.cancelQueuedMiss(sourcePage()) !=
+            Controller::CancelResult::Accepted) {
+            return productionStop();
+        }
+        break;
+      case Stage::ComputeReady:
+      case Stage::Computing:
+        if (controller.cancelOverwrite(active.reservation) !=
+            Controller::OverwriteResult::Accepted) {
+            return productionStop();
+        }
+        break;
+      case Stage::WaitingWriteback:
+        return Status::Busy;
+      case Stage::Idle:
+      case Stage::Complete:
+      case Stage::Aborted:
+      case Stage::Faulted:
+        return productionStop();
+    }
+    return finishAbortWithoutDirtyData();
+}
+
+inline LogicalSPDCacheSlice::Status
+LogicalSPDCacheSlice::cancelAcceptedPageAction(
+    const PageAction &pageAction)
+{
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
+    if (!abortRequested || !pageAction.valid ||
+        !validPageOperation(pageAction.operation) || !memoryActionActive ||
+        !(pageAction == acceptedMemoryAction)) {
+        return productionStop();
+    }
+    if (controller.cancelAcceptedAction(pageAction.controller) !=
+        Controller::CancelResult::Accepted) {
+        return productionStop();
+    }
+    memoryActionActive = false;
+    acceptedMemoryAction = PageAction{};
+    if (pageAction.operation == PageOperation::Writeback)
+        return Status::Accepted;
+    return finishAbortWithoutDirtyData();
 }
 
 inline bool
@@ -667,6 +908,9 @@ LogicalSPDCacheSlice::operationComplete() const
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::retireCompletedOperation()
 {
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (!operationComplete())
         return Status::Stale;
     active = ActiveOperation{};
@@ -685,8 +929,9 @@ LogicalSPDCacheSlice::descriptorComplete(uint8_t logical) const
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::cleanupDescriptor(uint8_t logical)
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (logical >= LogicalDescriptors)
         return Status::Invalid;
     DescriptorRecord &record = descriptors[logical];
@@ -698,7 +943,7 @@ LogicalSPDCacheSlice::cleanupDescriptor(uint8_t logical)
     if (result == Controller::FreeResult::Busy)
         return Status::Busy;
     if (result != Controller::FreeResult::Accepted)
-        return Status::Stale;
+        return productionStop();
     record = DescriptorRecord{};
     return Status::Accepted;
 }
@@ -706,8 +951,9 @@ LogicalSPDCacheSlice::cleanupDescriptor(uint8_t logical)
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::requestDrain()
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     draining = true;
     increment(stats.drains);
     return Status::Accepted;
@@ -730,9 +976,33 @@ LogicalSPDCacheSlice::drained() const
     return true;
 }
 
+inline bool
+LogicalSPDCacheSlice::destructionSafe() const
+{
+    if (active.valid || refillPending || memoryActionActive ||
+        controller.missQueueSize() != 0 ||
+        controller.activeLeaseCount() != 0) {
+        return false;
+    }
+    for (std::size_t slot = 0; slot < Slots; ++slot) {
+        const Controller::Phase phase = controller.slotPhase(slot);
+        if (phase == Controller::Phase::Filling ||
+            phase == Controller::Phase::Reserved ||
+            phase == Controller::Phase::Computing ||
+            phase == Controller::Phase::Dirty ||
+            phase == Controller::Phase::Writeback) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::resumeAfterDrain()
 {
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (!drained())
         return Status::Busy;
     draining = false;
@@ -742,25 +1012,29 @@ LogicalSPDCacheSlice::resumeAfterDrain()
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::reset()
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (!drained())
         return Status::Busy;
     for (uint8_t logical = 0; logical < LogicalDescriptors; ++logical) {
         if (descriptors[logical].role != DescriptorRole::Free) {
             if (cleanupDescriptor(logical) != Status::Accepted)
-                return Status::Busy;
+                return productionStop();
         }
     }
     draining = false;
+    abortRequested = false;
+    abortCompletion = false;
     return Status::Accepted;
 }
 
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::teardown()
 {
-    if (isSealed)
-        return Status::Sealed;
+    const Status mutation = publicMutationStatus();
+    if (mutation != Status::Accepted)
+        return mutation;
     if (!drained())
         return Status::Busy;
     for (const DescriptorRecord &record : descriptors) {
@@ -776,6 +1050,52 @@ LogicalSPDCacheSlice::descriptor(uint8_t logical) const
 {
     static const DescriptorRecord invalid{};
     return logical < LogicalDescriptors ? descriptors[logical] : invalid;
+}
+
+inline LogicalSPDCacheSlice::AuditSnapshot
+LogicalSPDCacheSlice::auditSnapshot() const
+{
+    AuditSnapshot snapshot;
+    snapshot.initialized = initialized;
+    snapshot.draining = draining;
+    snapshot.sealed = isSealed;
+    snapshot.poisoned = isPoisoned;
+    snapshot.abortRequested = abortRequested;
+    snapshot.abortCompleted = abortCompletion;
+    snapshot.active = active.valid;
+    snapshot.refillPending = refillPending;
+    snapshot.memoryActionActive = memoryActionActive;
+    snapshot.maaID = maaID;
+    snapshot.operationID = active.operationID;
+    snapshot.lastOperationID = lastOperationID;
+    snapshot.lastProducerTransaction = lastProducerTransaction;
+    snapshot.operation = active.operation;
+    snapshot.scalarBits = active.scalarBits;
+    snapshot.page = active.page;
+    snapshot.stage = active.stage;
+    snapshot.abortCode = activeAbortCode;
+    snapshot.source = active.source;
+    snapshot.destination = active.destination;
+    snapshot.reservation = active.reservation;
+    snapshot.acceptedPageAction = acceptedMemoryAction;
+    snapshot.refillIdentity = refillIdentity;
+    snapshot.descriptors = descriptors;
+    snapshot.missQueueSize = controller.missQueueSize();
+    snapshot.activeLeases = controller.activeLeaseCount();
+    snapshot.counters = stats;
+    for (std::size_t slot = 0; slot < Slots; ++slot) {
+        snapshot.slotPhases[slot] = controller.slotPhase(slot);
+        snapshot.slotIdentities[slot] = controller.slotIdentity(slot);
+        snapshot.slotTransactions[slot] =
+            controller.slotTransaction(slot);
+        snapshot.slotWritebackTransactions[slot] =
+            controller.slotWritebackTransaction(slot);
+        snapshot.slotPublishOnWriteback[slot] =
+            controller.slotPublishesOnWriteback(slot);
+    }
+    for (std::size_t index = 0; index < snapshot.missQueueSize; ++index)
+        snapshot.missQueue[index] = controller.queuedMiss(index);
+    return snapshot;
 }
 
 static_assert(LogicalSPDCacheSlice::LogicalDescriptors == 2);

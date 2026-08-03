@@ -1,5 +1,9 @@
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -8,13 +12,7 @@
 #include <limits>
 #include <new>
 
-#include "mem/MAA/LogicalSPDCacheDatapath.hh"
-
-#define private public
-#include "mem/MAA/LogicalSPDCacheSlice.hh"
-
-#undef private
-#include "mem/MAA/LogicalSPDCacheTransport.hh"
+#include "mem/MAA/LogicalSPDCacheRuntime.hh"
 #include "tests/maa/support/logical_spd_cache_mock_peer.hh"
 
 namespace {
@@ -28,10 +26,27 @@ namespace {
         }                                                                    \
     } while (false)
 
-using Slice = gem5::LogicalSPDCacheSlice;
-using Datapath = gem5::LogicalSPDCacheDatapath;
-using Transport = gem5::LogicalSPDCacheTransport;
+using Runtime = gem5::LogicalSPDCacheRuntime;
+using Slice = Runtime::Slice;
+using Transport = Runtime::Transport;
+using Datapath = Runtime::Datapath;
 using Peer = gem5::LogicalSPDCacheMockPeer;
+
+template <class Function>
+void
+expectChildSuccess(Function function)
+{
+    const pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        function();
+        std::_Exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+}
 
 uint64_t
 bits(double value)
@@ -43,24 +58,23 @@ bits(double value)
 }
 
 double
-apply(uint8_t operation, double left, double right)
+apply(Slice::Operation operation, double left, double right)
 {
     switch (operation) {
-      case 0:
+      case Slice::Operation::Add:
         return left + right;
-      case 1:
+      case Slice::Operation::Sub:
         return left - right;
-      case 2:
+      case Slice::Operation::Mul:
         return left * right;
-      case 3:
+      case Slice::Operation::Div:
         return left / right;
-      case 4:
+      case Slice::Operation::Min:
         return std::min(left, right);
-      case 5:
+      case Slice::Operation::Max:
         return std::max(left, right);
-      default:
-        std::abort();
     }
+    std::abort();
 }
 
 class GuardedAlignedSpan
@@ -74,7 +88,8 @@ class GuardedAlignedSpan
 
     GuardedAlignedSpan()
     {
-        allocation = std::aligned_alloc(Slice::BackingBytes, AllocationBytes);
+        allocation = std::aligned_alloc(Slice::BackingBytes,
+                                        AllocationBytes);
         CHECK(allocation != nullptr);
         auto *raw = static_cast<std::byte *>(allocation);
         payload = raw + Slice::BackingBytes;
@@ -86,10 +101,7 @@ class GuardedAlignedSpan
         CHECK(reinterpret_cast<uintptr_t>(payload) % Slice::BackingBytes == 0);
     }
 
-    ~GuardedAlignedSpan()
-    {
-        std::free(allocation);
-    }
+    ~GuardedAlignedSpan() { std::free(allocation); }
 
     GuardedAlignedSpan(const GuardedAlignedSpan &) = delete;
     GuardedAlignedSpan &operator=(const GuardedAlignedSpan &) = delete;
@@ -111,29 +123,21 @@ class GuardedAlignedSpan
     double *values = nullptr;
 };
 
-struct VerticalHarness
+struct Harness
 {
     static constexpr uint64_t SourceBase = 0x100000;
     static constexpr uint64_t DestinationBase = 0x200000;
 
-    Slice slice;
-    Transport transport;
+    Runtime runtime;
     Peer peer;
     GuardedAlignedSpan source;
     GuardedAlignedSpan destination;
-    alignas(64)
-        std::array<std::array<double, Slice::PageElements>, Slice::Slots>
-            slots{};
     std::array<uint64_t, GuardedAlignedSpan::Elements> sourceBits{};
-    std::array<uint8_t, Slice::Pages> fillSlots{};
-    std::array<uint8_t, Slice::Pages> computeSourceSlots{};
-    std::array<uint8_t, Slice::Pages> computeDestinationSlots{};
-    std::array<uint8_t, Slice::Pages> writebackSlots{};
     uint64_t fillResponses = 0;
-    uint64_t writeAcks = 0;
+    uint64_t writeResponses = 0;
     const double scalar = 2.5;
 
-    VerticalHarness()
+    Harness()
     {
         for (std::size_t index = 0; index < GuardedAlignedSpan::Elements;
              ++index) {
@@ -142,58 +146,69 @@ struct VerticalHarness
             destination.doubles()[index] = -9000.0;
             sourceBits[index] = bits(source.doubles()[index]);
         }
-        const uintptr_t sourceAddress =
-            reinterpret_cast<uintptr_t>(source.data());
-        const uintptr_t destinationAddress =
-            reinterpret_cast<uintptr_t>(destination.data());
-        CHECK(sourceAddress + Slice::BackingBytes <= destinationAddress ||
-              destinationAddress + Slice::BackingBytes <= sourceAddress);
         CHECK(peer.registerBacking(SourceBase, source.data(),
                                    Slice::BackingBytes));
         CHECK(peer.registerBacking(DestinationBase, destination.data(),
                                    Slice::BackingBytes));
-        CHECK(slice.initialize(0) == Slice::Status::Accepted);
-        CHECK(slice.registerSource(0, {SourceBase, Slice::BackingBytes}) ==
+        CHECK(runtime.initialize(0) == Slice::Status::Accepted);
+        CHECK(runtime.registerSource(
+                  0, {SourceBase, Slice::BackingBytes}) ==
               Slice::Status::Accepted);
         Slice::Admission admission;
         admission.sourceLogical = 0;
         admission.destinationLogical = 1;
         admission.destination = {DestinationBase, Slice::BackingBytes};
-        admission.operation = 0;
+        admission.operation = Slice::Operation::Add;
         admission.scalarBits = bits(scalar);
-        CHECK(slice.admit(admission) == Slice::Status::Accepted);
+        CHECK(runtime.admit(admission) == Slice::Status::Accepted);
     }
 
-    Transport::PageSpan slotSpan(uint8_t slot)
+    void completeResponse(uint8_t record, bool expectFinal = false)
     {
-        CHECK(slot < slots.size());
-        return {reinterpret_cast<std::byte *>(slots[slot].data()),
-                Transport::PageBytes};
+        const Transport::TransactionKey key = runtime.recordKey(record);
+        auto response = peer.makeResponse(record, true);
+        CHECK(response.valid);
+        const auto *request = peer.request(record);
+        CHECK(request != nullptr);
+        const Transport::Result delivered = peer.deliver(
+            runtime, record, response.handle, request->callbackPort);
+        if (key.operation == Transport::Operation::Fill) {
+            CHECK(delivered.status == Transport::Status::DeliveryPending);
+            const Transport::Result committed =
+                runtime.commitDelivery(delivered.ticket);
+            CHECK(committed.status == Transport::Status::Accepted ||
+                  committed.status == Transport::Status::Completed);
+            if (expectFinal) {
+                CHECK(committed.status == Transport::Status::Completed);
+                CHECK(committed.completion.valid());
+                CHECK(committed.completion.controllerSerial() != 0);
+            }
+            ++fillResponses;
+        } else {
+            CHECK(delivered.status == Transport::Status::Accepted ||
+                  delivered.status == Transport::Status::Completed);
+            ++writeResponses;
+            if (expectFinal) {
+                CHECK(delivered.status == Transport::Status::Completed);
+                CHECK(delivered.completion.valid());
+                CHECK(delivered.completion.controllerSerial() != 0);
+            }
+        }
     }
 
-    void runPageAction(bool delayFinalWrite)
+    void runPageAction(bool delayFinalWrite = false)
     {
-        const Slice::PageAction action = slice.pendingPageAction();
-        CHECK(action.valid);
-        CHECK(slice.acceptPageAction(action) == Slice::Status::Accepted);
-        const auto operation = action.operation == Slice::PageOperation::Fill
-                                   ? Transport::Operation::Fill
-                                   : Transport::Operation::Writeback;
-        CHECK(transport.startAction(operation, action.descriptor,
-                                    action.generation, action.page,
-                                    action.slot, action.baseAddress,
-                                    slotSpan(action.slot)) ==
-              Transport::Status::Accepted);
-        if (operation == Transport::Operation::Fill)
-            fillSlots[action.page] = action.slot;
-        else
-            writebackSlots[action.page] = action.slot;
-
-        uint8_t delayedRecord = Transport::NoRecord;
-        while (transport.actionState() != Transport::ActionState::Free) {
-            while (transport.creditsInUse() < Transport::ResponseCredits) {
-                const auto sent =
-                    peer.send(transport, slotSpan(action.slot), true);
+        const auto first = runtime.prepare();
+        CHECK(first.status == Transport::Status::Accepted);
+        const auto correlation = runtime.correlationSnapshot();
+        CHECK(correlation.pageActive);
+        const bool write = correlation.pageAction.operation ==
+                           Slice::PageOperation::Writeback;
+        uint8_t delayed = Transport::NoRecord;
+        while (runtime.transportActionState() !=
+               Transport::ActionState::Free) {
+            while (runtime.creditsInUse() < Transport::ResponseCredits) {
+                const Transport::Result sent = peer.send(runtime, true);
                 if (sent.status != Transport::Status::SendAccepted)
                     break;
             }
@@ -204,270 +219,481 @@ struct VerticalHarness
                     Transport::RecordCount - 1 - offset);
                 if (!peer.hasOutstanding(record))
                     continue;
-                const auto key = transport.recordKey(record);
-                if (delayFinalWrite &&
-                    operation == Transport::Operation::Writeback &&
+                const auto key = runtime.recordKey(record);
+                if (delayFinalWrite && write &&
                     key.line == Transport::LinesPerPage - 1) {
-                    delayedRecord = record;
+                    delayed = record;
                     continue;
                 }
-                const auto response = peer.respond(transport, record, true);
-                if (operation == Transport::Operation::Fill) {
-                    CHECK(response.status ==
-                          Transport::Status::DeliveryPending);
-                    ++fillResponses;
-                    const auto completion = transport.commitDelivery(
-                        response.ticket, slotSpan(action.slot));
-                    CHECK(completion == Transport::Status::Accepted ||
-                          completion == Transport::Status::Completed);
-                } else {
-                    CHECK(response.status == Transport::Status::Accepted ||
-                          response.status == Transport::Status::Completed);
-                    ++writeAcks;
-                }
+                completeResponse(record);
                 progressed = true;
             }
-
-            if (delayedRecord != Transport::NoRecord &&
-                transport.ackCount() == Transport::LinesPerPage - 1) {
-                CHECK(transport.issuedSetComplete());
-                CHECK(!transport.ackSetComplete());
-                CHECK(!transport.lineAcked(Transport::LinesPerPage - 1));
-                CHECK(!slice.cacheController().pageIsReady(
-                    action.controller.page));
-                CHECK(slice.cacheController().slotPhase(action.slot) ==
-                      Slice::Controller::Phase::Writeback);
-                CHECK(slice.queueRefill(action.descriptor, action.page) ==
-                      Slice::Status::Busy);
-                CHECK(transport.startAction(
-                          Transport::Operation::Fill, action.descriptor,
-                          action.generation, action.page, action.slot,
-                          action.baseAddress, slotSpan(action.slot)) ==
-                      Transport::Status::Busy);
-                CHECK(!slice.operationComplete());
-                const auto finalResponse =
-                    peer.respond(transport, delayedRecord, false);
-                CHECK(finalResponse.status == Transport::Status::Completed);
-                ++writeAcks;
+            if (delayed != Transport::NoRecord &&
+                runtime.ackCount() == Transport::LinesPerPage - 1) {
+                CHECK(!runtime.operationComplete());
+                completeResponse(delayed, true);
+                delayed = Transport::NoRecord;
                 progressed = true;
             }
-            CHECK(progressed ||
-                  transport.actionState() == Transport::ActionState::Free);
-        }
-        CHECK(transport.drained());
-        CHECK(slice.completePageAction(action) == Slice::Status::Accepted);
-        if (operation == Transport::Operation::Writeback) {
-            CHECK(slice.cacheController().pageIsReady(action.controller.page));
+            CHECK(progressed || runtime.transportActionState() ==
+                                     Transport::ActionState::Free);
         }
     }
 
-    void runCompute()
+    void finishOnePage(bool delayedWrite = false)
     {
-        const Slice::ComputeAction compute = slice.pendingCompute();
-        CHECK(compute.valid);
-        CHECK(compute.sourceSlot != compute.destinationSlot);
-        CHECK(slice.cacheController().slotIsPinned(compute.sourceSlot));
-        CHECK(slice.cacheController().slotIsPinned(compute.destinationSlot));
-        computeSourceSlots[compute.source.page] = compute.sourceSlot;
-        computeDestinationSlots[compute.source.page] = compute.destinationSlot;
-        auto stale = compute;
-        ++stale.computeSerial;
-        CHECK(slice.acceptCompute(stale) == Slice::Status::Stale);
-        CHECK(slice.acceptCompute(compute) == Slice::Status::Accepted);
-        CHECK(slice.cacheController().slotPhase(compute.destinationSlot) ==
-              Slice::Controller::Phase::Computing);
-        CHECK(Datapath::transform(
-                  static_cast<Datapath::Operation>(compute.operation),
-                  {slots[compute.sourceSlot].data(), Slice::PageElements},
-                  {slots[compute.destinationSlot].data(), Slice::PageElements},
-                  compute.scalarBits) == Datapath::Result::Accepted);
-        CHECK(slice.completeCompute(stale) == Slice::Status::Stale);
-        CHECK(slice.completeCompute(compute) == Slice::Status::Accepted);
-        CHECK(!slice.cacheController().slotIsPinned(compute.sourceSlot));
-        CHECK(!slice.cacheController().slotIsPinned(compute.destinationSlot));
-        CHECK(slice.cacheController().slotPhase(compute.sourceSlot) ==
-              Slice::Controller::Phase::Clean);
-        CHECK(slice.cacheController().slotPhase(compute.destinationSlot) ==
-              Slice::Controller::Phase::Dirty);
+        runPageAction();
+        CHECK(runtime.driveCompute() == Slice::Status::Accepted);
+        runPageAction(delayedWrite);
     }
 
-    void runPositiveOperation()
+    void checkSourceExact() const
     {
-        for (uint8_t page = 0; page < Slice::Pages; ++page) {
-            CHECK(slice.stage() == Slice::Stage::WaitingFill);
-            runPageAction(false);
-            CHECK(slice.stage() == Slice::Stage::ComputeReady);
-            runCompute();
-            CHECK(slice.stage() == Slice::Stage::WaitingWriteback);
-            runPageAction(true);
-        }
-        CHECK(slice.operationComplete());
-        CHECK(slice.descriptorComplete(1));
-        CHECK(fillResponses == Slice::Pages * Slice::LinesPerPage);
-        CHECK(writeAcks == Slice::Pages * Slice::LinesPerPage);
-        CHECK(slice.counters().highLevelCompletions == 1);
-        CHECK(slice.counters().pagesCompleted == Slice::Pages);
-        CHECK(slice.counters().fillsCompleted == Slice::Pages);
-        CHECK(slice.counters().writebacksCompleted == Slice::Pages);
-        CHECK(slice.counters().computesStarted == Slice::Pages);
-        CHECK(slice.counters().computesCompleted == Slice::Pages);
-        CHECK((fillSlots == std::array<uint8_t, Slice::Pages>{0, 1, 0, 1}));
-        CHECK((computeSourceSlots ==
-               std::array<uint8_t, Slice::Pages>{0, 1, 0, 1}));
-        CHECK((computeDestinationSlots ==
-               std::array<uint8_t, Slice::Pages>{1, 0, 1, 0}));
-        CHECK(computeDestinationSlots == writebackSlots);
-
-        for (std::size_t index = 0; index < GuardedAlignedSpan::Elements;
-             ++index) {
+        for (std::size_t index = 0; index < sourceBits.size(); ++index)
             CHECK(bits(source.doubles()[index]) == sourceBits[index]);
-            CHECK(bits(destination.doubles()[index]) ==
-                  bits(source.doubles()[index] + scalar));
-        }
         CHECK(source.guardsExact());
-        CHECK(destination.guardsExact());
-    }
-
-    void refillDestinationWithoutRepublish()
-    {
-        CHECK(slice.retireCompletedOperation() == Slice::Status::Accepted);
-        const uint64_t highLevelCompletions =
-            slice.counters().highLevelCompletions;
-        for (uint8_t page = 0; page < Slice::Pages; ++page) {
-            CHECK(slice.queueRefill(1, page) == Slice::Status::Accepted);
-            const Slice::PageAction refill = slice.pendingPageAction();
-            CHECK(refill.valid);
-            CHECK(refill.operation == Slice::PageOperation::Fill);
-            runPageAction(false);
-            CHECK(!slice.refillActive());
-            CHECK(std::memcmp(
-                      slots[refill.slot].data(),
-                      destination.doubles() +
-                          static_cast<std::size_t>(page) * Slice::PageElements,
-                      Slice::PageBytes) == 0);
-        }
-        CHECK(slice.counters().highLevelCompletions == highLevelCompletions);
-        CHECK(slice.counters().refillCompletions == Slice::Pages);
     }
 };
 
 void
-testExactFourPageVerticalSliceAndDestinationRefill()
+checkAbortClean(const Harness &harness)
 {
-    VerticalHarness harness;
-    harness.runPositiveOperation();
-    harness.refillDestinationWithoutRepublish();
+    const auto state = harness.runtime.sliceSnapshot();
+    CHECK(harness.runtime.abortCompleted());
+    CHECK(!harness.runtime.operationComplete());
+    CHECK(!state.active);
+    CHECK(!state.refillPending);
+    CHECK(!state.memoryActionActive);
+    CHECK(state.missQueueSize == 0);
+    CHECK(state.activeLeases == 0);
+    CHECK(state.descriptors[1].role == Slice::DescriptorRole::Free);
+    CHECK(state.counters.highLevelCompletions == 0);
+    for (const auto phase : state.slotPhases) {
+        CHECK(phase == Slice::Controller::Phase::Empty ||
+              phase == Slice::Controller::Phase::Clean);
+    }
+    CHECK(!harness.runtime.poisoned());
+    CHECK(harness.destination.guardsExact());
+    harness.checkSourceExact();
 }
 
 void
-testDatapathAllOperationsAndAliasing()
+testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill()
 {
-    const std::array<double, 8> source{
-        -4.0, -1.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0};
-    std::array<double, 8> destination{};
-    for (uint8_t operation = 0; operation <= Slice::MaxScalarOperation;
-         ++operation) {
-        const double scalar = operation == 3 ? 2.0 : 2.5;
-        CHECK(Datapath::transform(
-                  static_cast<Datapath::Operation>(operation),
-                  {source.data(), source.size()},
-                  {destination.data(), destination.size()}, bits(scalar)) ==
-              Datapath::Result::Accepted);
-        for (std::size_t index = 0; index < source.size(); ++index) {
-            CHECK(bits(destination[index]) ==
-                  bits(apply(operation, source[index], scalar)));
+    Harness harness;
+    for (uint8_t page = 0; page < Slice::Pages; ++page)
+        harness.finishOnePage(page == Slice::Pages - 1);
+
+    CHECK(harness.runtime.operationComplete());
+    CHECK(harness.runtime.descriptorComplete(1));
+    CHECK(harness.fillResponses == Slice::Pages * Transport::LinesPerPage);
+    CHECK(harness.writeResponses ==
+          Slice::Pages * Transport::LinesPerPage);
+    const auto completed = harness.runtime.sliceSnapshot();
+    CHECK(completed.counters.highLevelCompletions == 1);
+    CHECK(completed.counters.pagesCompleted == Slice::Pages);
+    for (std::size_t index = 0; index < GuardedAlignedSpan::Elements;
+         ++index) {
+        CHECK(bits(harness.destination.doubles()[index]) ==
+              bits(apply(Slice::Operation::Add,
+                         harness.source.doubles()[index], harness.scalar)));
+    }
+    CHECK(harness.destination.guardsExact());
+    harness.checkSourceExact();
+
+    CHECK(harness.runtime.retireCompletedOperation() ==
+          Slice::Status::Accepted);
+    CHECK(harness.runtime.queueRefill(1, 3) == Slice::Status::Accepted);
+    const uint64_t fillsBefore = harness.fillResponses;
+    harness.runPageAction();
+    CHECK(harness.fillResponses == fillsBefore + Transport::LinesPerPage);
+    const auto refill = harness.runtime.sliceSnapshot();
+    CHECK(refill.counters.refillCompletions == 1);
+    const uint16_t slot = refill.slotIdentities[0].logical == 1 &&
+                                  refill.slotIdentities[0].page == 3
+                              ? 0
+                              : 1;
+    CHECK(refill.slotIdentities[slot].logical == 1);
+    CHECK(refill.slotIdentities[slot].page == 3);
+    const auto payload = harness.runtime.slotPayload(
+        static_cast<uint8_t>(slot));
+    CHECK(payload.size == Slice::PageBytes);
+    CHECK(std::memcmp(payload.data,
+                      harness.destination.data() + 3 * Slice::PageBytes,
+                      Slice::PageBytes) == 0);
+}
+
+void
+testAbortQueuedPendingRetryInflightAndDelivering()
+{
+    {
+        Harness queued;
+        CHECK(queued.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Accepted);
+        checkAbortClean(queued);
+    }
+    {
+        Harness pending;
+        CHECK(pending.runtime.prepare().status ==
+              Transport::Status::Accepted);
+        CHECK(pending.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Accepted);
+        checkAbortClean(pending);
+    }
+    {
+        Harness retry;
+        CHECK(retry.runtime.prepare().status == Transport::Status::Accepted);
+        CHECK(retry.runtime.sendPrepared(false).status ==
+              Transport::Status::SendRefused);
+        CHECK(retry.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Accepted);
+        checkAbortClean(retry);
+    }
+    {
+        Harness inflight;
+        const auto sent = inflight.peer.send(inflight.runtime, true);
+        CHECK(sent.status == Transport::Status::SendAccepted);
+        CHECK(inflight.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Busy);
+        CHECK(!inflight.runtime.transportDrained());
+        CHECK(inflight.runtime.reset() == Slice::Status::Busy);
+        CHECK(inflight.runtime.teardown() == Slice::Status::Busy);
+        CHECK(inflight.peer.respond(inflight.runtime, sent.record).status ==
+              Transport::Status::AbortDrained);
+        checkAbortClean(inflight);
+    }
+    {
+        Harness delivering;
+        const auto sent = delivering.peer.send(delivering.runtime, true);
+        CHECK(sent.status == Transport::Status::SendAccepted);
+        auto response = delivering.peer.makeResponse(sent.record, true);
+        CHECK(response.valid);
+        const auto *request = delivering.peer.request(sent.record);
+        CHECK(request != nullptr);
+        const auto staged = delivering.peer.deliver(
+            delivering.runtime, sent.record, response.handle,
+            request->callbackPort);
+        CHECK(staged.status == Transport::Status::DeliveryPending);
+        CHECK(delivering.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Accepted);
+        checkAbortClean(delivering);
+    }
+}
+
+void
+testAbortReservedComputingDirtyWritebackAndBetweenPages()
+{
+    {
+        Harness reserved;
+        reserved.runPageAction();
+        CHECK(reserved.runtime.sliceSnapshot().stage ==
+              Slice::Stage::ComputeReady);
+        CHECK(reserved.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Accepted);
+        checkAbortClean(reserved);
+    }
+    {
+        Harness computing;
+        computing.runPageAction();
+        CHECK(computing.runtime.beginCompute() == Slice::Status::Accepted);
+        CHECK(computing.runtime.sliceSnapshot().stage ==
+              Slice::Stage::Computing);
+        CHECK(computing.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Accepted);
+        checkAbortClean(computing);
+    }
+    {
+        Harness dirty;
+        dirty.runPageAction();
+        CHECK(dirty.runtime.driveCompute() == Slice::Status::Accepted);
+        CHECK(dirty.runtime.sliceSnapshot().stage ==
+              Slice::Stage::WaitingWriteback);
+        CHECK(dirty.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Busy);
+        CHECK(dirty.runtime.correlationSnapshot().abortFlush);
+        dirty.runPageAction();
+        checkAbortClean(dirty);
+        for (std::size_t index = 0; index < Slice::PageElements; ++index) {
+            CHECK(bits(dirty.destination.doubles()[index]) ==
+                  bits(dirty.source.doubles()[index] + dirty.scalar));
         }
     }
-    std::array<double, 8> alias{};
-    CHECK(Datapath::transform(Datapath::Operation::Add,
-                              {alias.data(), alias.size()},
-                              {alias.data(), alias.size()}, bits(1.0)) ==
-          Datapath::Result::Aliased);
-    CHECK(Datapath::transform(Datapath::Operation::Add,
-                              {source.data(), source.size()},
-                              {destination.data(), destination.size() - 1},
-                              bits(1.0)) == Datapath::Result::Invalid);
-}
-
-Slice::Admission
-admission(uint64_t destinationBase)
-{
-    Slice::Admission request;
-    request.sourceLogical = 0;
-    request.destinationLogical = 1;
-    request.destination = {destinationBase, Slice::BackingBytes};
-    request.operation = 0;
-    request.scalarBits = bits(1.5);
-    return request;
+    {
+        Harness writeback;
+        writeback.runPageAction();
+        CHECK(writeback.runtime.driveCompute() == Slice::Status::Accepted);
+        const auto sent = writeback.peer.send(writeback.runtime, true);
+        CHECK(sent.status == Transport::Status::SendAccepted);
+        CHECK(writeback.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Busy);
+        CHECK(writeback.peer.respond(writeback.runtime, sent.record).status ==
+              Transport::Status::AbortDrained);
+        CHECK(writeback.runtime.correlationSnapshot().abortFlush);
+        writeback.runPageAction();
+        checkAbortClean(writeback);
+    }
+    {
+        Harness betweenPages;
+        betweenPages.finishOnePage();
+        CHECK(betweenPages.runtime.sliceSnapshot().page == 1);
+        CHECK(betweenPages.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Accepted);
+        checkAbortClean(betweenPages);
+        for (std::size_t index = 0; index < Slice::PageElements; ++index) {
+            CHECK(bits(betweenPages.destination.doubles()[index]) ==
+                  bits(betweenPages.source.doubles()[index] +
+                       betweenPages.scalar));
+        }
+    }
 }
 
 void
-testAdmissionExhaustionResetAndTeardown()
+testDatapathRejectsBeforeMutationAndSpecialValues()
 {
-    Slice slice;
-    CHECK(slice.initialize(0) == Slice::Status::Accepted);
-    CHECK(slice.registerSource(0, {0x100000, Slice::BackingBytes}) ==
+    alignas(double)
+        std::array<double, Datapath::PageElements> source{};
+    alignas(double)
+        std::array<double, Datapath::PageElements> destination{};
+    for (std::size_t index = 0; index < source.size(); ++index) {
+        source[index] = static_cast<double>(index) / 13.0;
+        destination[index] = -static_cast<double>(index) - 7.0;
+    }
+    const auto exact = destination;
+    const auto expectUnchanged = [&](Datapath::Operation operation,
+                                     Datapath::ConstSpan input,
+                                     Datapath::Span output) {
+        CHECK(Datapath::transform(operation, input, output, bits(2.0)) !=
+              Datapath::Result::Accepted);
+        CHECK(destination == exact);
+    };
+    expectUnchanged(Datapath::Operation::Add,
+                    {nullptr, Datapath::PageElements},
+                    {destination.data(), Datapath::PageElements});
+    expectUnchanged(Datapath::Operation::Add,
+                    {source.data(), Datapath::PageElements},
+                    {nullptr, Datapath::PageElements});
+    expectUnchanged(Datapath::Operation::Add,
+                    {source.data(), Datapath::PageElements - 1},
+                    {destination.data(), Datapath::PageElements});
+    expectUnchanged(Datapath::Operation::Add,
+                    {source.data(), Datapath::PageElements + 1},
+                    {destination.data(), Datapath::PageElements});
+    expectUnchanged(Datapath::Operation::Add,
+                    {source.data(), Datapath::PageElements},
+                    {destination.data(), Datapath::PageElements - 1});
+    expectUnchanged(Datapath::Operation::Add,
+                    {source.data(), Datapath::PageElements},
+                    {destination.data(), Datapath::PageElements + 1});
+    expectUnchanged(static_cast<Datapath::Operation>(0xff),
+                    {source.data(), Datapath::PageElements},
+                    {destination.data(), Datapath::PageElements});
+    expectUnchanged(Datapath::Operation::Add,
+                    {destination.data(), Datapath::PageElements},
+                    {destination.data(), Datapath::PageElements});
+    const auto *misalignedSource = reinterpret_cast<const double *>(
+        reinterpret_cast<const std::byte *>(source.data()) + 1);
+    expectUnchanged(Datapath::Operation::Add,
+                    {misalignedSource, Datapath::PageElements},
+                    {destination.data(), Datapath::PageElements});
+    auto *misalignedDestination = reinterpret_cast<double *>(
+        reinterpret_cast<std::byte *>(destination.data()) + 1);
+    CHECK(Datapath::transform(
+              Datapath::Operation::Add,
+              {source.data(), Datapath::PageElements},
+              {misalignedDestination, Datapath::PageElements}, bits(2.0)) ==
+          Datapath::Result::Invalid);
+    CHECK(destination == exact);
+    const auto *overflowSource = reinterpret_cast<const double *>(
+        std::numeric_limits<uintptr_t>::max() - sizeof(double));
+    expectUnchanged(Datapath::Operation::Add,
+                    {overflowSource, Datapath::PageElements},
+                    {destination.data(), Datapath::PageElements});
+    auto *overflowDestination = reinterpret_cast<double *>(
+        std::numeric_limits<uintptr_t>::max() - sizeof(double));
+    expectUnchanged(Datapath::Operation::Add,
+                    {source.data(), Datapath::PageElements},
+                    {overflowDestination, Datapath::PageElements});
+
+    source.fill(1.0);
+    destination.fill(7.0);
+    source[0] = std::numeric_limits<double>::quiet_NaN();
+    source[1] = std::numeric_limits<double>::infinity();
+    source[2] = -std::numeric_limits<double>::infinity();
+    source[3] = -0.0;
+    source[4] = 0.0;
+    CHECK(Datapath::transform(
+              Datapath::Operation::Add,
+              {source.data(), source.size()},
+              {destination.data(), destination.size()}, bits(0.0)) ==
+          Datapath::Result::Accepted);
+    CHECK(std::isnan(destination[0]));
+    CHECK(std::isinf(destination[1]) && destination[1] > 0.0);
+    CHECK(std::isinf(destination[2]) && destination[2] < 0.0);
+    CHECK(!std::signbit(destination[3]));
+
+    source.fill(1.0);
+    source[0] = std::numeric_limits<double>::quiet_NaN();
+    source[1] = -0.0;
+    source[2] = 0.0;
+    CHECK(Datapath::transform(
+              Datapath::Operation::Min,
+              {source.data(), source.size()},
+              {destination.data(), destination.size()}, bits(0.0)) ==
+          Datapath::Result::Accepted);
+    CHECK(std::isnan(destination[0]));
+    CHECK(std::signbit(destination[1]));
+    CHECK(!std::signbit(destination[2]));
+    CHECK(Datapath::transform(
+              Datapath::Operation::Max,
+              {source.data(), source.size()},
+              {destination.data(), destination.size()},
+              bits(std::numeric_limits<double>::quiet_NaN())) ==
+          Datapath::Result::Accepted);
+    CHECK(std::isnan(destination[0]));
+    CHECK(std::signbit(destination[1]));
+}
+
+void
+testGeometryEnumAndJointLifecycleGates()
+{
+    Runtime wrongGeometry(8, Transport::LineBytes);
+    CHECK(!wrongGeometry.geometryValid());
+    CHECK(wrongGeometry.initialize(0) == Slice::Status::Invalid);
+
+    Runtime spans;
+    CHECK(spans.initialize(1) == Slice::Status::Accepted);
+    CHECK(spans.registerSource(
+              0, {Harness::SourceBase, Slice::BackingBytes - 1}) ==
+          Slice::Status::Invalid);
+    CHECK(spans.registerSource(
+              0, {Harness::SourceBase + Transport::LineBytes,
+                  Slice::BackingBytes}) == Slice::Status::Invalid);
+    CHECK(spans.registerSource(
+              0, {std::numeric_limits<uint64_t>::max() -
+                          Slice::BackingBytes + 2,
+                  Slice::BackingBytes}) == Slice::Status::Invalid);
+    CHECK(spans.registerSource(
+              0, {Harness::SourceBase, Slice::BackingBytes}) ==
           Slice::Status::Accepted);
-    const auto beforeDestination = slice.descriptor(1);
-    auto malformed = admission(0x100000);
-    CHECK(slice.admit(malformed) == Slice::Status::Invalid);
-    CHECK(slice.descriptor(1).role == beforeDestination.role);
-    malformed = admission(0x200000 + Slice::CacheLineBytes);
-    CHECK(slice.admit(malformed) == Slice::Status::Invalid);
-    malformed = admission(0x200000);
-    malformed.operation = Slice::MaxScalarOperation + 1;
-    CHECK(slice.admit(malformed) == Slice::Status::Invalid);
-    malformed = admission(0x200000);
-    malformed.dataType = 4;
-    CHECK(slice.admit(malformed) == Slice::Status::Invalid);
-    CHECK(!slice.activeOperation());
+    Slice::Admission invalidSpan;
+    invalidSpan.sourceLogical = 0;
+    invalidSpan.destinationLogical = 1;
+    invalidSpan.destination =
+        {Harness::DestinationBase, Slice::BackingBytes + 1};
+    CHECK(spans.admit(invalidSpan) == Slice::Status::Invalid);
+    invalidSpan.destination = {Harness::SourceBase, Slice::BackingBytes};
+    CHECK(spans.admit(invalidSpan) == Slice::Status::Invalid);
 
-    Slice operationExhausted;
-    CHECK(operationExhausted.initialize(0) == Slice::Status::Accepted);
-    CHECK(operationExhausted.registerSource(
-              0, {0x100000, Slice::BackingBytes}) == Slice::Status::Accepted);
-    operationExhausted.lastOperationID =
-        std::numeric_limits<uint32_t>::max();
-    CHECK(operationExhausted.admit(admission(0x200000)) ==
-          Slice::Status::Exhausted);
-    CHECK(operationExhausted.descriptor(1).role ==
-          Slice::DescriptorRole::Free);
-
-    Slice serialExhausted;
-    CHECK(serialExhausted.initialize(0) == Slice::Status::Accepted);
-    CHECK(serialExhausted.registerSource(
-              0, {0x100000, Slice::BackingBytes}) == Slice::Status::Accepted);
-    serialExhausted.controller.lastMemorySerial =
-        std::numeric_limits<uint64_t>::max() -
-        Slice::OperationMemorySerials + 1;
-    CHECK(serialExhausted.admit(admission(0x200000)) ==
-          Slice::Status::Exhausted);
-    CHECK(serialExhausted.descriptor(1).role ==
-          Slice::DescriptorRole::Free);
-
-    Slice generationExhausted;
-    CHECK(generationExhausted.initialize(0) == Slice::Status::Accepted);
-    CHECK(generationExhausted.registerSource(
-              0, {0x100000, Slice::BackingBytes}) == Slice::Status::Accepted);
-    generationExhausted.controller.descriptors[1].generation =
-        std::numeric_limits<uint32_t>::max();
-    CHECK(generationExhausted.admit(admission(0x200000)) ==
-          Slice::Status::Exhausted);
-    CHECK(generationExhausted.descriptor(1).role ==
-          Slice::DescriptorRole::Free);
-
-    Slice lifecycle;
-    CHECK(lifecycle.initialize(3) == Slice::Status::Accepted);
-    CHECK(lifecycle.registerSource(0, {0x100000, Slice::BackingBytes}) ==
+    Harness enumHarness;
+    Slice::Admission forged;
+    forged.sourceLogical = 0;
+    forged.destinationLogical = 1;
+    forged.destination = {Harness::DestinationBase, Slice::BackingBytes};
+    forged.operation = static_cast<Slice::Operation>(0xff);
+    CHECK(enumHarness.runtime.admit(forged) == Slice::Status::Invalid);
+    CHECK(enumHarness.runtime.abort(static_cast<Slice::AbortCode>(0xff)) ==
+          Slice::Status::Invalid);
+    CHECK(!enumHarness.runtime.poisoned());
+    CHECK(enumHarness.runtime.requestDrain() == Slice::Status::Accepted);
+    CHECK(enumHarness.runtime.reset() == Slice::Status::Busy);
+    CHECK(enumHarness.runtime.teardown() == Slice::Status::Busy);
+    CHECK(enumHarness.runtime.abort(Slice::AbortCode::Caller) ==
           Slice::Status::Accepted);
-    const uint32_t generation = lifecycle.descriptor(0).handle.generation;
-    CHECK(lifecycle.reset() == Slice::Status::Accepted);
-    CHECK(lifecycle.registerSource(0, {0x100000, Slice::BackingBytes}) ==
-          Slice::Status::Accepted);
-    CHECK(lifecycle.descriptor(0).handle.generation == generation + 1);
-    CHECK(lifecycle.cleanupDescriptor(0) == Slice::Status::Accepted);
-    CHECK(lifecycle.teardown() == Slice::Status::Accepted);
-    CHECK(lifecycle.initialize(3) == Slice::Status::Sealed);
+    CHECK(enumHarness.runtime.drained());
+    CHECK(enumHarness.runtime.reset() == Slice::Status::Accepted);
+    CHECK(enumHarness.runtime.teardown() == Slice::Status::Accepted);
+    CHECK(enumHarness.runtime.prepare().status ==
+          Transport::Status::Sealed);
+    CHECK(enumHarness.runtime.registerSource(
+              0, {Harness::SourceBase, Slice::BackingBytes}) ==
+          Slice::Status::Sealed);
+}
+
+void
+testPackedSemanticLedgerIndependently()
+{
+    using Ledger = Runtime::PackedSemanticLedger;
+    static_assert(Ledger::ControllerDescriptors == 74);
+    static_assert(Ledger::ControllerSlots == 334);
+    static_assert(Ledger::ControllerMissQueue == 140);
+    static_assert(Ledger::ControllerLeases == 672);
+    static_assert(Ledger::ControllerBits ==
+                  74 + 334 + 140 + 672 + 3 + 64);
+    static_assert(Ledger::SliceDescriptors == 438);
+    static_assert(Ledger::SliceOverwriteReservation == 336);
+    static_assert(Ledger::SliceActiveOperation == 508);
+    static_assert(Ledger::SliceControllerMemoryAction == 139);
+    static_assert(Ledger::SlicePageAction == 305);
+    static_assert(Ledger::SliceBits ==
+                  1287 + 438 + 508 + 305 + 1 + 35 + 1 + 32 + 64 + 16 +
+                      7);
+    static_assert(Ledger::SliceInstrumentationCounterBits == 768);
+    static_assert(Ledger::TransportTransactionKey == 46);
+    static_assert(Ledger::TransportRequestPacket == 143);
+    static_assert(Ledger::TransportRecords == 3192);
+    static_assert(Ledger::TransportFifo == 42);
+    static_assert(Ledger::TransportLineBuffers == 2048);
+    static_assert(Ledger::TransportPageAction == 1247);
+    static_assert(Ledger::TransportBits == 6715);
+    static_assert(Ledger::RuntimePageCorrelation == 339);
+    static_assert(Ledger::SliceComputeAction == 236);
+    static_assert(Ledger::RuntimeComputeCorrelation == 237);
+    static_assert(Ledger::RuntimeCorrelationBits == 579);
+    static_assert(Ledger::PrivatePayloadBits == 524288);
+    static_assert(Ledger::PackedBits == 2694 + 6715 + 579 + 524288);
+    static_assert(Ledger::PackedBytes == 66785);
+    static_assert(Ledger::PythonReferenceLowerBoundBytes == 66181);
+    CHECK(sizeof(Runtime) >= Ledger::PackedBytes);
+}
+
+struct RuntimeCopyHookContext
+{
+    Runtime *runtime = nullptr;
+    Slice::Status abortStatus = Slice::Status::Invalid;
+};
+
+bool
+runtimeCopyHook(void *opaque)
+{
+    auto &context = *static_cast<RuntimeCopyHookContext *>(opaque);
+    context.abortStatus = context.runtime->abort(Slice::AbortCode::Caller);
+    return true;
+}
+
+void
+testCompositionCopyReentryPoisonsBeforeOuterCopy()
+{
+    expectChildSuccess([] {
+        Harness harness;
+        const auto sent = harness.peer.send(harness.runtime, true);
+        CHECK(sent.status == Transport::Status::SendAccepted);
+        auto response = harness.peer.makeResponse(sent.record, true);
+        CHECK(response.valid);
+        const auto *request = harness.peer.request(sent.record);
+        CHECK(request != nullptr);
+        const auto staged = harness.peer.deliver(
+            harness.runtime, sent.record, response.handle,
+            request->callbackPort);
+        CHECK(staged.status == Transport::Status::DeliveryPending);
+        const auto correlation = harness.runtime.correlationSnapshot();
+        const auto payload = harness.runtime.slotPayload(
+            correlation.pageAction.slot);
+        std::array<std::byte, Slice::PageBytes> before{};
+        std::memcpy(before.data(), payload.data, payload.size);
+        const uint16_t ackBefore = harness.runtime.ackCount();
+        RuntimeCopyHookContext hook{&harness.runtime};
+        CHECK(harness.runtime.commitDelivery(
+                  staged.ticket, runtimeCopyHook, &hook)
+                  .status == Transport::Status::Poisoned);
+        CHECK(hook.abortStatus == Slice::Status::ProductionStop);
+        CHECK(harness.runtime.poisoned());
+        CHECK(harness.runtime.ackCount() == ackBefore);
+        CHECK(std::memcmp(before.data(), payload.data, payload.size) == 0);
+        CHECK(!harness.runtime.operationComplete());
+        CHECK(harness.runtime.abort(Slice::AbortCode::Caller) ==
+              Slice::Status::Poisoned);
+        std::_Exit(0);
+    });
 }
 
 } // namespace
@@ -475,16 +701,20 @@ testAdmissionExhaustionResetAndTeardown()
 int
 main()
 {
-    static_assert(Slice::LogicalDescriptors == 2);
-    static_assert(Slice::Pages == 4);
-    static_assert(Slice::Slots == 2);
-    static_assert(Slice::LinesPerPage == 512);
-    testExactFourPageVerticalSliceAndDestinationRefill();
-    testDatapathAllOperationsAndAliasing();
-    testAdmissionExhaustionResetAndTeardown();
+    testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill();
+    testAbortQueuedPendingRetryInflightAndDelivering();
+    testAbortReservedComputingDirtyWritebackAndBetweenPages();
+    testDatapathRejectsBeforeMutationAndSpecialValues();
+    testGeometryEnumAndJointLifecycleGates();
+    testPackedSemanticLedgerIndependently();
+    testCompositionCopyReentryPoisonsBeforeOuterCopy();
     std::cout << "logical_spd_cache_vertical_slice_test: PASS"
-              << " host_slice_size=" << sizeof(Slice)
-              << " host_transport_size=" << sizeof(Transport)
-              << " (host sizeof; not synthesized hardware)" << std::endl;
+              << " packed_semantic_lower_bound="
+              << Runtime::PackedSemanticLedger::PackedBytes
+              << " python_reference_lower_bound="
+              << Runtime::PackedSemanticLedger::PythonReferenceLowerBoundBytes
+              << " host_runtime_size=" << sizeof(Runtime)
+              << " (host sizeof; not synthesized hardware size)"
+              << std::endl;
     return 0;
 }

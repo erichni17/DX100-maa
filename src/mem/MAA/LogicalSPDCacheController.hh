@@ -223,6 +223,13 @@ class LogicalSPDCacheController
         Invalid,
     };
 
+    enum class CancelResult : uint8_t
+    {
+        Accepted,
+        Stale,
+        Invalid,
+    };
+
     enum class ResponseResult : uint8_t
     {
         FillInstalled,
@@ -580,7 +587,9 @@ class LogicalSPDCacheController
     ActionResult
     acceptAction(const MemoryAction &action)
     {
-        if (action.kind == ActionKind::None || action.slot >= PhysicalSlots ||
+        if ((action.kind != ActionKind::Fill &&
+             action.kind != ActionKind::Writeback) ||
+            action.slot >= PhysicalSlots ||
             action.serial == NoTransaction) {
             return ActionResult::Invalid;
         }
@@ -610,6 +619,59 @@ class LogicalSPDCacheController
         if (action.serial > lastMemorySerial)
             lastMemorySerial = action.serial;
         return ActionResult::Accepted;
+    }
+
+    /**
+     * Cancel one exact, not-yet-accepted miss without disturbing its peers.
+     */
+    CancelResult
+    cancelQueuedMiss(const PageIdentity &page)
+    {
+        if (!validCoordinates(page))
+            return CancelResult::Invalid;
+        for (std::size_t index = 0; index < queueSize; ++index) {
+            if (missQueue[index] != page)
+                continue;
+            for (std::size_t next = index + 1; next < queueSize; ++next)
+                missQueue[next - 1] = missQueue[next];
+            missQueue[--queueSize] = PageIdentity{};
+            return CancelResult::Accepted;
+        }
+        return CancelResult::Stale;
+    }
+
+    /**
+     * Cancel an exact accepted physical action after its transport has proved
+     * that no responder owns a request.  A fill releases Filling.  A
+     * writeback reverts to Dirty and retains its exact preallocated serial so
+     * an abort-flush can be reissued without losing dirty ownership.
+     */
+    CancelResult
+    cancelAcceptedAction(const MemoryAction &action)
+    {
+        if ((action.kind != ActionKind::Fill &&
+             action.kind != ActionKind::Writeback) ||
+            action.slot >= PhysicalSlots || action.serial == NoTransaction ||
+            !validCoordinates(action.page)) {
+            return CancelResult::Invalid;
+        }
+        Slot &slot = slots[action.slot];
+        if (slot.page != action.page || slot.transaction != action.serial ||
+            pageOwnerCount(action.page) != 1) {
+            return CancelResult::Stale;
+        }
+        if (action.kind == ActionKind::Fill) {
+            if (slot.phase != Phase::Filling)
+                return CancelResult::Stale;
+            slot = Slot{};
+            return CancelResult::Accepted;
+        }
+        if (slot.phase != Phase::Writeback)
+            return CancelResult::Stale;
+        slot.phase = Phase::Dirty;
+        slot.transaction = NoTransaction;
+        slot.writebackTransaction = action.serial;
+        return CancelResult::Accepted;
     }
 
     ResponseResult
@@ -757,6 +819,17 @@ class LogicalSPDCacheController
     TransactionSerial slotTransaction(std::size_t slot) const
     {
         return slot < PhysicalSlots ? slots[slot].transaction : NoTransaction;
+    }
+
+    TransactionSerial slotWritebackTransaction(std::size_t slot) const
+    {
+        return slot < PhysicalSlots ? slots[slot].writebackTransaction
+                                    : NoTransaction;
+    }
+
+    bool slotPublishesOnWriteback(std::size_t slot) const
+    {
+        return slot < PhysicalSlots && slots[slot].publishOnWriteback;
     }
 
     bool canAllocateMemorySerials(std::size_t count) const
