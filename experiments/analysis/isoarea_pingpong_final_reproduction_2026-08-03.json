@@ -2,33 +2,33 @@
   "exact_output_match": true,
   "runs": [
     {
-      "actual_cross_unit_overlap_ticks": 0,
       "case": "isoarea_serial_4k",
       "chunk_elements": 4096,
       "chunks": 4,
-      "cross_unit_overlaps": [],
-      "descriptor_interval_ticks": 44441304,
+      "descriptor_interval_ticks": 44394667,
+      "interval_envelope_overlap_ticks": 0,
+      "interval_envelope_overlaps": [],
       "intervals": [
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3156594045,
+          "end": 3217219015,
           "page": 0,
           "src_slot": -1,
-          "start": 3156270716,
-          "ticks": 323329
+          "start": 3216881288,
+          "ticks": 337727
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3156754301,
+          "end": 3217379271,
           "page": 0,
           "src_slot": 0,
-          "start": 3156594045,
+          "start": 3217219015,
           "ticks": 160256
         },
         {
@@ -36,32 +36,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3159530924,
+          "end": 3220034763,
           "page": 0,
           "src_slot": 0,
-          "start": 3156754301,
-          "ticks": 2776623
+          "start": 3217379271,
+          "ticks": 2655492
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3164463491,
+          "end": 3226773966,
           "page": 1,
           "src_slot": -1,
-          "start": 3164140162,
-          "ticks": 323329
+          "start": 3226436239,
+          "ticks": 337727
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3164623747,
+          "end": 3226934222,
           "page": 1,
           "src_slot": 0,
-          "start": 3164463491,
+          "start": 3226773966,
           "ticks": 160256
         },
         {
@@ -69,32 +69,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3167002234,
+          "end": 3228986563,
           "page": 1,
           "src_slot": 0,
-          "start": 3164623747,
-          "ticks": 2378487
+          "start": 3226934222,
+          "ticks": 2052341
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3167325250,
+          "end": 3229323977,
           "page": 2,
           "src_slot": -1,
-          "start": 3167002234,
-          "ticks": 323016
+          "start": 3228986563,
+          "ticks": 337414
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3167485506,
+          "end": 3229484233,
           "page": 2,
           "src_slot": 0,
-          "start": 3167325250,
+          "start": 3229323977,
           "ticks": 160256
         },
         {
@@ -102,32 +102,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3168930314,
+          "end": 3231326551,
           "page": 2,
           "src_slot": 0,
-          "start": 3167485506,
-          "ticks": 1444808
+          "start": 3229484233,
+          "ticks": 1842318
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3169253330,
+          "end": 3231663965,
           "page": 3,
           "src_slot": -1,
-          "start": 3168930314,
-          "ticks": 323016
+          "start": 3231326551,
+          "ticks": 337414
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3169413586,
+          "end": 3231824221,
           "page": 3,
           "src_slot": 0,
-          "start": 3169253330,
+          "start": 3231663965,
           "ticks": 160256
         },
         {
@@ -135,65 +135,65 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 4096,
-          "end": 3171246514,
+          "end": 3233265273,
           "page": 3,
           "src_slot": 0,
-          "start": 3169413586,
-          "ticks": 1832928
+          "start": 3231824221,
+          "ticks": 1441052
         }
       ],
       "mode": 0,
       "output_hash": "7228541527853630339",
       "requests": {
-        "dram_reads": 26988,
-        "source_reads": 9642,
-        "write_completions": 5292,
-        "write_issues": 5292
+        "dram_reads": 26726,
+        "source_reads": 9657,
+        "write_completions": 5331,
+        "write_issues": 5331
       },
-      "retire_tick": 3171246514,
+      "retire_tick": 3233265273,
       "rows": {
-        "dram_activates": 5577,
-        "dram_precharges": 4486,
-        "inserted": 1395,
+        "dram_activates": 5593,
+        "dram_precharges": 4539,
+        "inserted": 1427,
         "unique": 129
       },
-      "simTicks": 46504601,
+      "simTicks": 45364029,
       "stage_ticks": {
         "compute": 641024,
-        "fill": 1292690,
-        "store": 8432846
+        "fill": 1350282,
+        "store": 7991203
       },
-      "submit_tick": 3126805210,
-      "trace_sha256": "26f546d068567ce85232eb180aa75a3d42727d90dc2e3e317f35956dc424fb59"
+      "submit_tick": 3188870606,
+      "trace_sha256": "792ecda327dc2cc13293019200be063eeafb9e99135c68891934314161b2c36d"
     },
     {
-      "actual_cross_unit_overlap_ticks": 0,
       "case": "isoarea_serial_2k",
       "chunk_elements": 2048,
       "chunks": 8,
-      "cross_unit_overlaps": [],
-      "descriptor_interval_ticks": 44824416,
+      "descriptor_interval_ticks": 44875748,
+      "interval_envelope_overlap_ticks": 0,
+      "interval_envelope_overlaps": [],
       "intervals": [
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3156432537,
+          "end": 3217057507,
           "page": 0,
           "src_slot": -1,
-          "start": 3156270716,
-          "ticks": 161821
+          "start": 3216881288,
+          "ticks": 176219
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3156512665,
+          "end": 3217137635,
           "page": 0,
           "src_slot": 0,
-          "start": 3156432537,
+          "start": 3217057507,
           "ticks": 80128
         },
         {
@@ -201,32 +201,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3157881414,
+          "end": 3218657563,
           "page": 0,
           "src_slot": 0,
-          "start": 3156512665,
-          "ticks": 1368749
+          "start": 3217137635,
+          "ticks": 1519928
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3158042922,
+          "end": 3218833469,
           "page": 1,
           "src_slot": -1,
-          "start": 3157881414,
-          "ticks": 161508
+          "start": 3218657563,
+          "ticks": 175906
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3158123050,
+          "end": 3218913597,
           "page": 1,
           "src_slot": 0,
-          "start": 3158042922,
+          "start": 3218833469,
           "ticks": 80128
         },
         {
@@ -234,32 +234,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3159388822,
+          "end": 3220386575,
           "page": 1,
           "src_slot": 0,
-          "start": 3158123050,
-          "ticks": 1265772
+          "start": 3218913597,
+          "ticks": 1472978
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3164311373,
+          "end": 3226567699,
           "page": 2,
           "src_slot": -1,
-          "start": 3164149552,
-          "ticks": 161821
+          "start": 3226391480,
+          "ticks": 176219
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3164391501,
+          "end": 3226647827,
           "page": 2,
           "src_slot": 0,
-          "start": 3164311373,
+          "start": 3226567699,
           "ticks": 80128
         },
         {
@@ -267,32 +267,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3165716117,
+          "end": 3227970565,
           "page": 2,
           "src_slot": 0,
-          "start": 3164391501,
-          "ticks": 1324616
+          "start": 3226647827,
+          "ticks": 1322738
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3165877625,
+          "end": 3228146471,
           "page": 3,
           "src_slot": -1,
-          "start": 3165716117,
-          "ticks": 161508
+          "start": 3227970565,
+          "ticks": 175906
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3165957753,
+          "end": 3228226599,
           "page": 3,
           "src_slot": 0,
-          "start": 3165877625,
+          "start": 3228146471,
           "ticks": 80128
         },
         {
@@ -300,32 +300,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3167012876,
+          "end": 3229071073,
           "page": 3,
           "src_slot": 0,
-          "start": 3165957753,
-          "ticks": 1055123
+          "start": 3228226599,
+          "ticks": 844474
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3167174384,
+          "end": 3229246979,
           "page": 4,
           "src_slot": -1,
-          "start": 3167012876,
-          "ticks": 161508
+          "start": 3229071073,
+          "ticks": 175906
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3167254512,
+          "end": 3229327107,
           "page": 4,
           "src_slot": 0,
-          "start": 3167174384,
+          "start": 3229246979,
           "ticks": 80128
         },
         {
@@ -333,32 +333,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3168069251,
+          "end": 3230142159,
           "page": 4,
           "src_slot": 0,
-          "start": 3167254512,
-          "ticks": 814739
+          "start": 3229327107,
+          "ticks": 815052
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3168230759,
+          "end": 3230318065,
           "page": 5,
           "src_slot": -1,
-          "start": 3168069251,
-          "ticks": 161508
+          "start": 3230142159,
+          "ticks": 175906
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3168310887,
+          "end": 3230398193,
           "page": 5,
           "src_slot": 0,
-          "start": 3168230759,
+          "start": 3230318065,
           "ticks": 80128
         },
         {
@@ -366,32 +366,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3169125313,
+          "end": 3231610129,
           "page": 5,
           "src_slot": 0,
-          "start": 3168310887,
-          "ticks": 814426
+          "start": 3230398193,
+          "ticks": 1211936
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3169286821,
+          "end": 3231786035,
           "page": 6,
           "src_slot": -1,
-          "start": 3169125313,
-          "ticks": 161508
+          "start": 3231610129,
+          "ticks": 175906
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3169366949,
+          "end": 3231866163,
           "page": 6,
           "src_slot": 0,
-          "start": 3169286821,
+          "start": 3231786035,
           "ticks": 80128
         },
         {
@@ -399,32 +399,32 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3170181688,
+          "end": 3232678085,
           "page": 6,
           "src_slot": 0,
-          "start": 3169366949,
-          "ticks": 814739
+          "start": 3231866163,
+          "ticks": 811922
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3170343196,
+          "end": 3232853991,
           "page": 7,
           "src_slot": -1,
-          "start": 3170181688,
-          "ticks": 161508
+          "start": 3232678085,
+          "ticks": 175906
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3170423324,
+          "end": 3232934119,
           "page": 7,
           "src_slot": 0,
-          "start": 3170343196,
+          "start": 3232853991,
           "ticks": 80128
         },
         {
@@ -432,43 +432,44 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3171629626,
+          "end": 3233746354,
           "page": 7,
           "src_slot": 0,
-          "start": 3170423324,
-          "ticks": 1206302
+          "start": 3232934119,
+          "ticks": 812235
         }
       ],
       "mode": 1,
       "output_hash": "7228541527853630339",
       "requests": {
-        "dram_reads": 26988,
-        "source_reads": 9642,
-        "write_completions": 5292,
-        "write_issues": 5292
+        "dram_reads": 26726,
+        "source_reads": 9657,
+        "write_completions": 5331,
+        "write_issues": 5331
       },
-      "retire_tick": 3171629626,
+      "retire_tick": 3233746354,
       "rows": {
-        "dram_activates": 5548,
-        "dram_precharges": 4458,
-        "inserted": 1395,
+        "dram_activates": 5565,
+        "dram_precharges": 4506,
+        "inserted": 1427,
         "unique": 129
       },
-      "simTicks": 46900233,
+      "simTicks": 45844797,
       "stage_ticks": {
         "compute": 641024,
-        "fill": 1292690,
-        "store": 8664466
+        "fill": 1407874,
+        "store": 8811263
       },
-      "submit_tick": 3126805210,
-      "trace_sha256": "0f842216c45132b6e5aec4396e8d992dc1c6442e260af057a3cc130246aaea64"
+      "submit_tick": 3188870606,
+      "trace_sha256": "590a8c653a6ec08b259c5abef124e041e7d0211637ef954a6539d11774e7ac2f"
     },
     {
-      "actual_cross_unit_overlap_ticks": 642589,
       "case": "isoarea_pingpong_2k",
       "chunk_elements": 2048,
       "chunks": 8,
-      "cross_unit_overlaps": [
+      "descriptor_interval_ticks": 44499522,
+      "interval_envelope_overlap_ticks": 641963,
+      "interval_envelope_overlaps": [
         {
           "compute_page": 0,
           "stream_action": 1,
@@ -485,7 +486,7 @@
           "compute_page": 2,
           "stream_action": 1,
           "stream_page": 3,
-          "ticks": 80441
+          "ticks": 80128
         },
         {
           "compute_page": 3,
@@ -497,19 +498,19 @@
           "compute_page": 4,
           "stream_action": 1,
           "stream_page": 5,
-          "ticks": 80441
+          "ticks": 80128
         },
         {
           "compute_page": 5,
           "stream_action": 3,
           "stream_page": 4,
-          "ticks": 80128
+          "ticks": 80441
         },
         {
           "compute_page": 6,
           "stream_action": 1,
           "stream_page": 7,
-          "ticks": 80441
+          "ticks": 80128
         },
         {
           "compute_page": 7,
@@ -518,39 +519,38 @@
           "ticks": 80441
         }
       ],
-      "descriptor_interval_ticks": 44551793,
       "intervals": [
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3156432537,
+          "end": 3217057507,
           "page": 0,
           "src_slot": -1,
-          "start": 3156270716,
-          "ticks": 161821
+          "start": 3216881288,
+          "ticks": 176219
         },
         {
           "action": 1,
           "dst_slot": 1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3156594358,
+          "end": 3217233726,
           "page": 1,
           "src_slot": -1,
-          "start": 3156432537,
-          "ticks": 161821
+          "start": 3217057507,
+          "ticks": 176219
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3156512665,
+          "end": 3217137635,
           "page": 0,
           "src_slot": 0,
-          "start": 3156432537,
+          "start": 3217057507,
           "ticks": 80128
         },
         {
@@ -558,10 +558,10 @@
           "dst_slot": 1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3156674799,
+          "end": 3217314167,
           "page": 1,
           "src_slot": 1,
-          "start": 3156594358,
+          "start": 3217233726,
           "ticks": 80441
         },
         {
@@ -569,65 +569,65 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3158150907,
+          "end": 3218648799,
           "page": 0,
           "src_slot": 0,
-          "start": 3156594358,
-          "ticks": 1556549
+          "start": 3217233726,
+          "ticks": 1415073
         },
         {
           "action": 3,
           "dst_slot": -1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3159345628,
+          "end": 3220028503,
           "page": 1,
           "src_slot": 1,
-          "start": 3158150907,
-          "ticks": 1194721
+          "start": 3218648799,
+          "ticks": 1379704
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3164303235,
+          "end": 3226560187,
           "page": 2,
           "src_slot": -1,
-          "start": 3164141414,
-          "ticks": 161821
+          "start": 3226383968,
+          "ticks": 176219
         },
         {
           "action": 1,
           "dst_slot": 1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3164464743,
+          "end": 3226736406,
           "page": 3,
           "src_slot": -1,
-          "start": 3164303235,
-          "ticks": 161508
+          "start": 3226560187,
+          "ticks": 176219
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3164383676,
+          "end": 3226640315,
           "page": 2,
           "src_slot": 0,
-          "start": 3164303235,
-          "ticks": 80441
+          "start": 3226560187,
+          "ticks": 80128
         },
         {
           "action": 2,
           "dst_slot": 1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3164544871,
+          "end": 3226816534,
           "page": 3,
           "src_slot": 1,
-          "start": 3164464743,
+          "start": 3226736406,
           "ticks": 80128
         },
         {
@@ -635,131 +635,65 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3165721125,
+          "end": 3227963053,
           "page": 2,
           "src_slot": 0,
-          "start": 3164464743,
-          "ticks": 1256382
+          "start": 3226736406,
+          "ticks": 1226647
         },
         {
           "action": 3,
           "dst_slot": -1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3166873591,
+          "end": 3229019741,
           "page": 3,
           "src_slot": 1,
-          "start": 3165721125,
-          "ticks": 1152466
+          "start": 3227963053,
+          "ticks": 1056688
         },
         {
           "action": 1,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3167194729,
+          "end": 3229195647,
           "page": 4,
           "src_slot": -1,
-          "start": 3167033221,
-          "ticks": 161508
+          "start": 3229019741,
+          "ticks": 175906
         },
         {
           "action": 1,
           "dst_slot": 1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3167356237,
+          "end": 3229371866,
           "page": 5,
           "src_slot": -1,
-          "start": 3167194729,
-          "ticks": 161508
+          "start": 3229195647,
+          "ticks": 176219
         },
         {
           "action": 2,
           "dst_slot": 0,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3167275170,
+          "end": 3229275775,
           "page": 4,
           "src_slot": 0,
-          "start": 3167194729,
-          "ticks": 80441
-        },
-        {
-          "action": 2,
-          "dst_slot": 1,
-          "element_offset": 2048,
-          "elements": 2048,
-          "end": 3167436365,
-          "page": 5,
-          "src_slot": 1,
-          "start": 3167356237,
+          "start": 3229195647,
           "ticks": 80128
         },
         {
-          "action": 3,
-          "dst_slot": -1,
-          "element_offset": 0,
-          "elements": 2048,
-          "end": 3168196642,
-          "page": 4,
-          "src_slot": 0,
-          "start": 3167356237,
-          "ticks": 840405
-        },
-        {
-          "action": 3,
-          "dst_slot": -1,
+          "action": 2,
+          "dst_slot": 1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3169011694,
+          "end": 3229452307,
           "page": 5,
           "src_slot": 1,
-          "start": 3168196642,
-          "ticks": 815052
-        },
-        {
-          "action": 1,
-          "dst_slot": 0,
-          "element_offset": 0,
-          "elements": 2048,
-          "end": 3169173202,
-          "page": 6,
-          "src_slot": -1,
-          "start": 3169011694,
-          "ticks": 161508
-        },
-        {
-          "action": 1,
-          "dst_slot": 1,
-          "element_offset": 2048,
-          "elements": 2048,
-          "end": 3169334710,
-          "page": 7,
-          "src_slot": -1,
-          "start": 3169173202,
-          "ticks": 161508
-        },
-        {
-          "action": 2,
-          "dst_slot": 0,
-          "element_offset": 0,
-          "elements": 2048,
-          "end": 3169253643,
-          "page": 6,
-          "src_slot": 0,
-          "start": 3169173202,
-          "ticks": 80441
-        },
-        {
-          "action": 2,
-          "dst_slot": 1,
-          "element_offset": 2048,
-          "elements": 2048,
-          "end": 3169415151,
-          "page": 7,
-          "src_slot": 1,
-          "start": 3169334710,
+          "start": 3229371866,
           "ticks": 80441
         },
         {
@@ -767,47 +701,113 @@
           "dst_slot": -1,
           "element_offset": 0,
           "elements": 2048,
-          "end": 3170149762,
-          "page": 6,
+          "end": 3230186605,
+          "page": 4,
           "src_slot": 0,
-          "start": 3169334710,
-          "ticks": 815052
+          "start": 3229371866,
+          "ticks": 814739
         },
         {
           "action": 3,
           "dst_slot": -1,
           "element_offset": 2048,
           "elements": 2048,
-          "end": 3171357003,
-          "page": 7,
+          "end": 3231393846,
+          "page": 5,
           "src_slot": 1,
-          "start": 3170149762,
+          "start": 3230186605,
           "ticks": 1207241
+        },
+        {
+          "action": 1,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3231569752,
+          "page": 6,
+          "src_slot": -1,
+          "start": 3231393846,
+          "ticks": 175906
+        },
+        {
+          "action": 1,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3231745971,
+          "page": 7,
+          "src_slot": -1,
+          "start": 3231569752,
+          "ticks": 176219
+        },
+        {
+          "action": 2,
+          "dst_slot": 0,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3231649880,
+          "page": 6,
+          "src_slot": 0,
+          "start": 3231569752,
+          "ticks": 80128
+        },
+        {
+          "action": 2,
+          "dst_slot": 1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3231826412,
+          "page": 7,
+          "src_slot": 1,
+          "start": 3231745971,
+          "ticks": 80441
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 0,
+          "elements": 2048,
+          "end": 3232558206,
+          "page": 6,
+          "src_slot": 0,
+          "start": 3231745971,
+          "ticks": 812235
+        },
+        {
+          "action": 3,
+          "dst_slot": -1,
+          "element_offset": 2048,
+          "elements": 2048,
+          "end": 3233370128,
+          "page": 7,
+          "src_slot": 1,
+          "start": 3232558206,
+          "ticks": 811922
         }
       ],
       "mode": 2,
       "output_hash": "7228541527853630339",
       "requests": {
-        "dram_reads": 26987,
-        "source_reads": 9642,
-        "write_completions": 5293,
-        "write_issues": 5293
+        "dram_reads": 26726,
+        "source_reads": 9657,
+        "write_completions": 5331,
+        "write_issues": 5331
       },
-      "retire_tick": 3171357003,
+      "retire_tick": 3233370128,
       "rows": {
-        "dram_activates": 5552,
-        "dram_precharges": 4463,
-        "inserted": 1395,
+        "dram_activates": 5569,
+        "dram_precharges": 4515,
+        "inserted": 1427,
         "unique": 129
       },
-      "simTicks": 46627923,
+      "simTicks": 45468571,
       "stage_ticks": {
-        "compute": 642589,
-        "fill": 1293003,
-        "store": 8837868
+        "compute": 641963,
+        "fill": 1409126,
+        "store": 8724249
       },
-      "submit_tick": 3126805210,
-      "trace_sha256": "413924e0c93a74518ad423b44a1276c9aa753f013491f7617339e87b57e6bcf9"
+      "submit_tick": 3188870606,
+      "trace_sha256": "270e184f15d7346490ad90c2c8a6bcf1f5096a607b6200e4805a8641948d2870"
     }
   ],
   "schema": 1
