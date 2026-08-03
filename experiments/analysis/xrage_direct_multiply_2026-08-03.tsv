@@ -1,0 +1,5 @@
+label	scale	output_hash	roi_simTicks	maa_instructions	maa_indirect_instructions	maa_stream_read_instructions	maa_stream_write_instructions	maa_scalar_alu_instructions	maa_scalar_alu_cycles	cpu_committed_instructions	cpu_data_reads	cpu_data_writes	virtual_write_issues	dram_reads	dram_writes	dram_activates	dram_precharges	run
+native_scale1	1	10990373302566333699	22064622	6	2	2	2	0	0	382893	58561	1928	0	9482	0	419	158	/data1/nier/dx100-runs/2026-08-03-xrage-direct-multiply-8e8be555/native_scale1
+direct_scale1	1	10990373302566333699	20644541	4	2	2	0	0	0	370374	56680	1887	3611	7989	0	852	585	/data1/nier/dx100-runs/2026-08-03-xrage-direct-multiply-8e8be555/direct_scale1
+native_scale3	3	16942094529479519491	22080272	8	2	2	2	2	14291	383238	58730	1943	0	9463	0	418	158	/data1/nier/dx100-runs/2026-08-03-xrage-direct-multiply-8e8be555/native_scale3
+direct_scale3	3	16942094529479519491	41788004	4	2	2	0	0	0	687037	133508	21915	3609	7969	0	855	578	/data1/nier/dx100-runs/2026-08-03-xrage-direct-multiply-8e8be555/direct_scale3
