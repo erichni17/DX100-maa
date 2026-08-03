@@ -1149,6 +1149,18 @@ MAA::recvTimingResp(PacketPtr pkt, bool cached)
         }
         releaseLogicalState();
         my_outstanding_pkt_map.erase(exact);
+        const LogicalStreamResponseResult controller_result =
+            logicalStreamResponseReceived(received_tag,
+                                          sender_line_address,
+                                          response_kind);
+        if (controller_result != LogicalStreamResponseResult::Accepted &&
+            controller_result != LogicalStreamResponseResult::Completed) {
+            DPRINTF(MAAPort,
+                    "%s: retired logical response was rejected by "
+                    "controller (%d) after owned-state cleanup\n",
+                    __func__, static_cast<int>(controller_result));
+            return TimingResponseDisposition::FatalOwnedCorruption;
+        }
         sendNextDeferredPacket(owned_address);
         return TimingResponseDisposition::Retired;
     }

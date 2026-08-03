@@ -14,6 +14,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "mem/MAA/IF.hh"
+#include "mem/MAA/LogicalSPDCacheSlice.hh"
 #include "mem/MAA/StreamAccess.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
@@ -447,6 +448,7 @@ public:
 
 public:
     static constexpr int MaxVirtualPages = 16;
+    static constexpr int MaxLogicalSPDCacheMAAs = 4;
 
     /** System we are currently operating in. */
     System *system;
@@ -472,6 +474,18 @@ public:
     bool transparentControllerOwnsTile(int maaID, int tileID) const;
     bool transparentControllerUsesRegister(int maaID, int firstRegister,
                                            int registerWords) const;
+    bool registerLogicalSPDSource(int maaID, uint16_t logicalID,
+                                  Addr backingAddr, uint8_t dataType);
+    LogicalSPDCacheSlice::PendingLine logicalStreamPendingLine(
+        int maaID) const;
+    LogicalStreamResponseResult logicalStreamLineIssued(
+        const LogicalStreamTransactionTag &tag, std::size_t line,
+        Addr lineAddress, LogicalStreamResponseKind kind);
+    std::size_t logicalStreamLineIndex(
+        const LogicalStreamTransactionTag &tag, Addr lineAddress) const;
+    LogicalStreamResponseResult logicalStreamResponseReceived(
+        const LogicalStreamTransactionTag &tag, Addr lineAddress,
+        LogicalStreamResponseKind kind);
     void finishInstructionCompute(InstructionPtr instruction);
     void finishInstructionInvalidate(InstructionPtr instruction, int tileID);
     bool sentMemSidePacket(PacketPtr pkt);
@@ -498,6 +512,19 @@ protected:
     std::vector<int> virtualPageWordSize;
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
+    struct LogicalSPDRuntime
+    {
+        InstructionPtr highLevel = nullptr;
+        PacketPtr completionPacket = nullptr;
+        Instruction microInstruction{};
+        LogicalSPDCacheSlice::ComputeAction computeAction{};
+        LogicalStreamTransactionTag memoryTag{};
+        bool microActive = false;
+    };
+    std::array<LogicalSPDCacheSlice, MaxLogicalSPDCacheMAAs>
+        logicalSPDSlices{};
+    std::array<LogicalSPDRuntime, MaxLogicalSPDCacheMAAs>
+        logicalSPDRuntimes{};
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();
@@ -507,6 +534,10 @@ protected:
     bool dispatchTransparentMicroOp(
         const TransparentSPDController::Request &request);
     void tryIssueTransparentMicroOp();
+    bool submitLogicalSPDDescriptor(InstructionPtr instruction,
+                                    PacketPtr packet);
+    void tryIssueLogicalSPDAction();
+    void finishLogicalSPDMicroOp(InstructionPtr instruction);
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;
     void scheduleDispatchInstructionEvent(int latency = 0);

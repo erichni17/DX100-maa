@@ -168,8 +168,7 @@ public:
     TileStatus dst1Status, dst2Status;
     int16_t condSpdID;
     TileStatus condStatus;
-    // Software-visible logical descriptor IDs.  Generation and controller
-    // lifecycle fields remain inert until the logical controller is wired.
+    // Software-visible descriptor identity; generated ALUs stay physical.
     int16_t src1LogicalID, src2LogicalID, dst1LogicalID;
     uint64_t src1LogicalGeneration, dst1LogicalGeneration;
     // {STREAM_LD, INDIR_LD, INDIR_ST, INDIR_RMW, RANGE_LOOP, CONDITION}
@@ -195,8 +194,6 @@ public:
     int maa_id;
     int func_unit_id;
     bool controllerManaged;
-    // Set only by the future logical-cache scheduler.  Legacy transparent
-    // controller stores remain response-less WritebackDirty transactions.
     bool logicalResponseManaged;
     TransparentSPDController::Action controllerAction;
     uint64_t controllerTransactionID;
@@ -209,6 +206,15 @@ public:
     bool isLogicalALUScalar() const {
         return opcode == OpcodeType::ALU_SCALAR && src1LogicalID != -1 &&
                src2LogicalID == -1 && dst1LogicalID != -1;
+    }
+    bool isLogicalControllerMicroOp() const {
+        return controllerTransactionID != 0 &&
+               (logicalResponseManaged ||
+                (controllerAction ==
+                     TransparentSPDController::Action::Compute &&
+                 opcode == OpcodeType::ALU_SCALAR &&
+                 !hasLogicalOperands() && src1SpdID != -1 &&
+                 dst1SpdID != -1));
     }
 };
 

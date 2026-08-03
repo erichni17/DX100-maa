@@ -9,6 +9,7 @@
 #include "arch/generic/mmu.hh"
 #include "base/types.hh"
 #include "mem/MAA/IF.hh"
+#include "mem/MAA/LogicalSPDCacheSlice.hh"
 #include "mem/MAA/LogicalStreamResponse.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
@@ -170,6 +171,10 @@ protected:
     bool my_translation_done;
 
     void createReadPacket(Addr addr, int latency);
+    void createLogicalPacket(
+        const LogicalSPDCacheSlice::PendingLine &line);
+    void executeLogicalInstruction();
+    bool recvLogicalData(Addr addr, uint8_t *dataptr);
     bool logicalResponseManaged() const;
     LogicalStreamTransactionTag logicalResponseTag() const;
     void beginLogicalResponseTransaction();

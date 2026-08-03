@@ -106,34 +106,28 @@ class LogicalSpdCacheAbiContractTest(unittest.TestCase):
         span_validation = self.cpu_port.index(
             "validateDestinationSpan", range_validation
         )
-        fail_closed = self.cpu_port.index(
-            "panic_if(\n                        true,\n"
-            '                        "Logical ALU_SCALAR ABI is decoded',
-            span_validation,
-        )
         backing_mutation = self.cpu_port.index(
-            "current_instruction->backingAddr = data", fail_closed
+            "current_instruction->backingAddr = data", span_validation
         )
         if_admission = self.cpu_port.index(
-            "my_instruction_recvs[instruction_id] = true", fail_closed
+            "my_instruction_recvs[instruction_id] = true", backing_mutation
         )
         dispatch = self.cpu_port.index(
-            "scheduleDispatchInstructionEvent()", fail_closed
+            "scheduleDispatchInstructionEvent()", backing_mutation
         )
         self.assertLess(shape_validation, range_validation)
         self.assertLess(range_validation, span_validation)
-        self.assertLess(span_validation, fail_closed)
-        self.assertLess(fail_closed, backing_mutation)
-        self.assertLess(fail_closed, if_admission)
-        self.assertLess(fail_closed, dispatch)
-        fail_closed_branch = self.cpu_port[shape_validation:backing_mutation]
+        self.assertLess(span_validation, backing_mutation)
+        self.assertLess(backing_mutation, if_admission)
+        self.assertLess(backing_mutation, dispatch)
+        validation_branch = self.cpu_port[shape_validation:backing_mutation]
         for mutation in (
             "my_instruction_recvs[instruction_id] = true",
             "scheduleDispatchInstructionEvent()",
             "ifile->",
             "spd->",
         ):
-            self.assertNotIn(mutation, fail_closed_branch)
+            self.assertNotIn(mutation, validation_branch)
 
     def test_scalar_shape_validation_is_complete_and_payload_free(
         self,

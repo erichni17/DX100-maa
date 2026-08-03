@@ -525,6 +525,23 @@ class LogicalStreamResponseLedger
         return LogicalStreamResponseResult::Accepted;
     }
 
+    LogicalStreamResponseResult issueDirectWriteLine(
+        const LogicalStreamTransactionTag &tag, Addr address)
+    {
+        const LogicalStreamResponseResult tagResult = validateTag(tag);
+        if (tagResult != LogicalStreamResponseResult::Accepted)
+            return reject(tagResult);
+        if (transaction.action != LogicalStreamAction::Writeback)
+            return reject(LogicalStreamResponseResult::WrongKind);
+        if (issuedLines == expectedLines)
+            return reject(LogicalStreamResponseResult::Invalid);
+        if (findLine(address) != expectedLines)
+            return reject(LogicalStreamResponseResult::Duplicate);
+        lines[issuedLines] = {address, true, true, true, false};
+        ++issuedLines;
+        return LogicalStreamResponseResult::Accepted;
+    }
+
     /**
      * Check a response without mutating the ledger.  Port routing calls this
      * before retiring its outstanding entry; acceptResponse performs the

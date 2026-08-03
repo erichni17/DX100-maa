@@ -1,11 +1,15 @@
 #include "mem/MAA/ALU.hh"
-#include "mem/MAA/MAA.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/SPD.hh"
+
+#include <algorithm>
+#include <cassert>
+#include <cstring>
+
 #include "base/trace.hh"
 #include "debug/MAAALU.hh"
 #include "debug/MAATrace.hh"
-#include <cassert>
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/SPD.hh"
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -46,7 +50,16 @@ void ALUUnit::updateLatency(int num_spd_read_data_accesses,
     }
     if (num_spd_write_accesses != 0) {
         // XByte -- 64/X bytes per SPD access
-        Cycles set_data_latency = maa->spd->setDataLatency(my_dst_tile, getCeiling(num_spd_write_accesses, my_output_words_per_cl));
+        Cycles set_data_latency =
+            my_instruction->isLogicalControllerMicroOp()
+            ? maa->spd->setLogicalSpdDataLatency(
+                  my_instruction->maa_id, my_dst_tile,
+                  getCeiling(num_spd_write_accesses,
+                             my_output_words_per_cl))
+            : maa->spd->setDataLatency(
+                  my_dst_tile,
+                  getCeiling(num_spd_write_accesses,
+                             my_output_words_per_cl));
         my_SPD_write_finish_tick = maa->getClockEdge(set_data_latency);
         (*maa->stats.ALU_CyclesSPDWriteAccess[my_alu_id]) += set_data_latency;
     }
@@ -72,6 +85,11 @@ bool ALUUnit::scheduleNextExecution(bool force) {
     return false;
 }
 void ALUUnit::executeInstruction() {
+    if (my_instruction != nullptr &&
+        my_instruction->isLogicalControllerMicroOp()) {
+        executeLogicalInstruction();
+        return;
+    }
     switch (state) {
     case Status::Idle: {
         assert(my_instruction != nullptr);
@@ -880,6 +898,113 @@ void ALUUnit::executeInstruction() {
     }
     default:
         assert(false);
+    }
+}
+
+void
+ALUUnit::executeLogicalInstruction()
+{
+    switch (state) {
+      case Status::Idle:
+        panic_if(my_instruction == nullptr,
+                 "A[%d] logical ALU has no instruction\n", my_alu_id);
+        state = Status::Decode;
+        [[fallthrough]];
+      case Status::Decode: {
+        panic_if(my_instruction->opcode !=
+                         Instruction::OpcodeType::ALU_SCALAR ||
+                     my_instruction->datatype !=
+                         Instruction::DataType::FLOAT64_TYPE ||
+                     my_instruction->optype < Instruction::OPType::ADD_OP ||
+                     my_instruction->optype > Instruction::OPType::MAX_OP ||
+                     my_instruction->condSpdID != -1 ||
+                     my_instruction->src2SpdID != -1 ||
+                     my_instruction->src1SpdID ==
+                         my_instruction->dst1SpdID ||
+                     my_instruction->controllerTransactionID == 0 ||
+                     my_instruction->indexAddr == 0,
+                 "A[%d] invalid logical FP64 scalar micro-op\n", my_alu_id);
+        my_src1_tile = my_instruction->src1SpdID;
+        my_dst_tile = my_instruction->dst1SpdID;
+        my_i = 0;
+        my_max = LogicalSPDCacheSlice::PageElements;
+        my_input_word_size = sizeof(uint64_t);
+        my_output_word_size = sizeof(uint64_t);
+        my_input_words_per_cl = 64 / my_input_word_size;
+        my_output_words_per_cl = 64 / my_output_word_size;
+        my_SPD_read_finish_tick = curTick();
+        my_SPD_write_finish_tick = curTick();
+        my_ALU_finish_tick = curTick();
+        my_decode_start_tick = curTick();
+        my_cond_tile_ready = true;
+        my_src1_tile_ready = true;
+        my_src2_tile_ready = true;
+        my_instruction->state = Instruction::Status::Service;
+        maa->stats.numInst++;
+        maa->stats.numInst_ALUS++;
+        (*maa->stats.ALU_NumInsts[my_alu_id])++;
+        (*maa->stats.ALU_NumInstsCompute[my_alu_id])++;
+        state = Status::Work;
+        [[fallthrough]];
+      }
+      case Status::Work: {
+        double scalar = 0;
+        std::memcpy(&scalar, &my_instruction->backingAddr,
+                    sizeof(scalar));
+        for (; my_i < my_max; ++my_i) {
+            const double source = maa->spd->getLogicalSpdData<double>(
+                my_instruction->maa_id, my_src1_tile, my_i);
+            double result = 0;
+            switch (my_instruction->optype) {
+              case Instruction::OPType::ADD_OP:
+                result = source + scalar;
+                break;
+              case Instruction::OPType::SUB_OP:
+                result = source - scalar;
+                break;
+              case Instruction::OPType::MUL_OP:
+                result = source * scalar;
+                break;
+              case Instruction::OPType::DIV_OP:
+                result = source / scalar;
+                break;
+              case Instruction::OPType::MIN_OP:
+                result = std::min(source, scalar);
+                break;
+              case Instruction::OPType::MAX_OP:
+                result = std::max(source, scalar);
+                break;
+              default:
+                panic("A[%d] unsupported logical scalar operation\n",
+                      my_alu_id);
+            }
+            maa->spd->setLogicalSpdData<double>(
+                my_instruction->maa_id, my_dst_tile, my_i, result);
+        }
+        updateLatency(my_max, 0, my_max, my_max);
+        state = Status::Finish;
+        scheduleNextExecution(true);
+        break;
+      }
+      case Status::Finish: {
+        panic_if(scheduleNextExecution(),
+                 "A[%d] logical ALU finished before latency elapsed\n",
+                 my_alu_id);
+        maa->spd->setLogicalSpdSize(
+            my_instruction->maa_id, my_dst_tile, my_max);
+        my_instruction->state = Instruction::Status::Finish;
+        state = Status::Idle;
+        maa->finishInstructionCompute(my_instruction);
+        const Cycles cycles =
+            maa->getTicksToCycles(curTick() - my_decode_start_tick);
+        maa->stats.cycles += cycles;
+        maa->stats.cycles_ALUS += cycles;
+        my_instruction = nullptr;
+        break;
+      }
+      default:
+        panic("A[%d] invalid logical ALU state %d\n", my_alu_id,
+              static_cast<int>(state));
     }
 }
 void ALUUnit::setInstruction(Instruction *_instruction) {

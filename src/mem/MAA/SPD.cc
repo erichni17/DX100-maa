@@ -51,6 +51,13 @@ Cycles SPD::getDataLatency(int num_accesses) {
 }
 Cycles SPD::setDataLatency(int tile_id, int num_accesses) {
     check_tile_id(tile_id, sizeof(uint32_t));
+    if (num_accesses == 0)
+        return Cycles(0);
+    const Cycles latency = setDataLatencyUnchecked(num_accesses);
+    wakeup_waiting_units(tile_id);
+    return latency;
+}
+Cycles SPD::setDataLatencyUnchecked(int num_accesses) {
     if (num_accesses == 0) {
         return Cycles(0);
     }
@@ -66,13 +73,15 @@ Cycles SPD::setDataLatency(int tile_id, int num_accesses) {
     if (write_port_busy_until[min_busy_port] < curTick()) {
         write_port_busy_until[min_busy_port] = curTick();
     }
-    write_port_busy_until[min_busy_port] += maa->getCyclesToTicks(Cycles(write_latency * num_accesses));
+    write_port_busy_until[min_busy_port] +=
+        maa->getCyclesToTicks(Cycles(write_latency * num_accesses));
     panic_if(write_port_busy_until[min_busy_port] < curTick(),
              "Scheduled write at %lu, but current tick is %lu!\n",
              write_port_busy_until[min_busy_port], curTick());
-    DPRINTF(SPD, "%s: write_port_busy_until[%d] = %lu\n", __func__, min_busy_port, write_port_busy_until[min_busy_port]);
-    wakeup_waiting_units(tile_id);
-    return maa->getTicksToCycles(write_port_busy_until[min_busy_port] - curTick());
+    DPRINTF(SPD, "%s: write_port_busy_until[%d] = %lu\n", __func__,
+            min_busy_port, write_port_busy_until[min_busy_port]);
+    return maa->getTicksToCycles(
+        write_port_busy_until[min_busy_port] - curTick());
 }
 SPD::TileStatus SPD::getTileStatus(int tile_id) {
     check_tile_id(tile_id, sizeof(uint32_t));
@@ -255,6 +264,71 @@ SPD::logicalSpdHiddenLaneTileID(int maa_id, int logical_slot,
              "Invalid logical SPD hidden lane: maa=%d slot=%d lane=%d\n",
              maa_id, logical_slot, fp64_lane);
     return tile_id;
+}
+
+void
+SPD::checkLogicalSpdHiddenTileID(int maa_id, int tile_id, int element_id,
+                                 int word_size) const
+{
+    panic_if(physical_tile_elements !=
+                 LogicalSPDHiddenPayloadLayout::LaneElements ||
+                 word_size != static_cast<int>(sizeof(uint64_t)) ||
+                 element_id < 0 ||
+                 element_id >= static_cast<int>(physical_tile_elements),
+             "Invalid logical SPD element maa=%d tile=%d element=%d "
+             "bytes=%d\n",
+             maa_id, tile_id, element_id, word_size);
+    bool owned = false;
+    for (int slot = 0;
+         slot < static_cast<int>(
+                    LogicalSPDHiddenPayloadLayout::LogicalSlotsPerMAA);
+         ++slot) {
+        owned = owned ||
+            tile_id == static_cast<int>(
+                           logicalSpdHiddenSlotBaseTileID(maa_id, slot));
+    }
+    panic_if(!owned || tile_id < static_cast<int>(visible_tile_count) ||
+                 tile_id + 1 >= static_cast<int>(allocated_tile_count),
+             "Tile %d is not an FP64 logical SPD slot owned by MAA %d\n",
+             tile_id, maa_id);
+}
+
+void
+SPD::prepareLogicalSpdSlot(int maa_id, int logical_slot)
+{
+    const unsigned int tile =
+        logicalSpdHiddenSlotBaseTileID(maa_id, logical_slot);
+    checkLogicalSpdHiddenTileID(maa_id, tile, 0, sizeof(uint64_t));
+    for (unsigned int lane = 0; lane < 2; ++lane) {
+        tiles_status[tile + lane] = TileStatus::Service;
+        tiles_dirty[tile + lane] = false;
+        tiles_ready[tile + lane] = 0;
+        tiles_size[tile + lane] = 0;
+    }
+    for (unsigned int element = 0;
+         element < physical_tile_elements * 2; ++element) {
+        element_finished[tile * physical_tile_elements + element] = false;
+    }
+}
+
+void
+SPD::setLogicalSpdSize(int maa_id, int tile_id, uint32_t size)
+{
+    checkLogicalSpdHiddenTileID(maa_id, tile_id, 0, sizeof(uint64_t));
+    panic_if(size > physical_tile_elements,
+             "Logical SPD size %u exceeds %u elements\n", size,
+             physical_tile_elements);
+    tiles_size[tile_id] = size;
+    tiles_size[tile_id + 1] = size;
+    tiles_status[tile_id] = TileStatus::Finished;
+    tiles_status[tile_id + 1] = TileStatus::Finished;
+}
+
+Cycles
+SPD::setLogicalSpdDataLatency(int maa_id, int tile_id, int num_accesses)
+{
+    checkLogicalSpdHiddenTileID(maa_id, tile_id, 0, sizeof(uint64_t));
+    return setDataLatencyUnchecked(num_accesses);
 }
 
 SPD::SPD(MAA *_maa,

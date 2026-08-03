@@ -8,6 +8,8 @@
 
 namespace gem5 {
 
+class LogicalSPDCacheSliceTestAccess;
+
 /**
  * A simulator-independent, payload-free logical SPD page-cache controller.
  *
@@ -41,6 +43,8 @@ template <std::size_t LogicalDescriptors = 2,
           std::size_t LeaseEntries = 4>
 class LogicalSPDCacheController
 {
+    friend class LogicalSPDCacheSliceTestAccess;
+
   public:
     using Generation = uint32_t;
     using TransactionSerial = uint64_t;
@@ -763,6 +767,12 @@ class LogicalSPDCacheController
     {
         return lastMemorySerial ==
                std::numeric_limits<TransactionSerial>::max();
+    }
+
+    bool canAllocateMemorySerials(std::size_t count) const
+    {
+        return count <= std::numeric_limits<TransactionSerial>::max() -
+                            lastMemorySerial;
     }
 
     uint16_t residentSlot(const PageIdentity &page) const

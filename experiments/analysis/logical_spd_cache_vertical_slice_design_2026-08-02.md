@@ -2,8 +2,84 @@
 
 Date: 2026-08-02
 Audited basis: `a65374c` (`mem: repair logical SPD ABI admission`)
-Status: implementation design only. This document changes no simulator or
-benchmark source and authorizes no gem5 run.
+Implementation lead: `9fcb18c`
+Status: provisional implementation evidence. This is not an acceptance,
+timing, area, or performance claim, and it authorizes no gem5 run.
+
+## Provisional implementation and evidence
+
+The narrow host/controller/datapath slice is implemented in this worktree:
+
+- `LogicalSPDCacheSlice` owns two descriptors, four pages per descriptor, two
+  physical slots, one operation, one memory action, an eight-line issue
+  window, fixed response storage, fixed nonwrapping allocators, and twenty
+  saturating 64-bit counters per supported MAA. Source registration validates
+  the complete backing span and allocates a nonzero producer transaction;
+  consumer admission prevalidates the destination, overlap, type, operation,
+  generations, and all operation serial capacity before allocation.
+- The accepted high-byte opcode-8 path now admits only the FP64 scalar form
+  after CPU-side validation. It captures the scalar, generates physical
+  hidden-slot stream/ALU micro-ops, and withholds the high-level response until
+  page 3's final exact write response. Ordinary physical opcode 8, every other
+  opcode, and public hidden-tile checks remain on their legacy paths.
+- Logical fills use `ReadReq`; logical destination retirement uses direct
+  response-bearing `WriteReq`, never `WritebackDirty` or a destination
+  `ReadExReq`. Both the stream transport and slice controller validate the
+  full tag plus exact line address and response kind. The controller lease
+  keeps source and destination slots distinct through compute and prevents
+  dirty destination reuse before the 512th exact write response.
+- The internally tagged ALU micro-op names only two physical hidden slots.
+  Its dedicated captured-scalar branch performs one ordinary page-sized FP64
+  `ALU_SCALAR` operation; completion is checked against the runtime-owned
+  operation, transaction, page, slot, opcode, and scalar identity before the
+  controller transition.
+- The source declaration is currently a C++ integration hook for an already
+  coherent range. It is not an MMIO operation or an indirect/gather producer,
+  and it does not claim producer retirement ordering.
+
+Validated without a gem5 simulation:
+
+- The focused optimized host test covers all six operations over four pages,
+  bit-exact 16K FP64 output and guards, deterministic slot identities, four
+  fills, four computes, four 512-line acknowledged writebacks, delayed final
+  responses, no early reuse/completion, stale/duplicate/out-of-order and
+  wrong-field responses, underflow, admission atomicity, overlap, all allocator
+  exhaustion cases, bounded backpressure, drain, and cleanup. It reports
+  `sizeof(LogicalSPDCacheSlice) == 9232` and
+  `sizeof(LogicalSPDCacheController<>) == 312` on this host. These are C++
+  layout observations, not synthesized-area estimates.
+- The same focused test passes ASan/UBSan. LeakSanitizer cannot initialize
+  under the coordination session's ptrace wrapper, so that run uses
+  `ASAN_OPTIONS=detect_leaks=0`; optimized execution and undefined/address
+  checks remain enabled.
+- Existing response, controller, hidden-payload, ABI, and transparent
+  unit/contract gates pass. Full Python discovery passes 244 tests.
+- `scons --ignore-style -j2` passes for the explicit X86 objects `IF.o`,
+  `SPD.o`, `ALU.o`, `StreamAccess.o`, `MAA.o`, `Port.o`, `CpuSidePort.o`,
+  `CacheSidePort.o`, and `MemSidePort.o`. The RISCV target is inapplicable:
+  the existing `MAA.py` imports `X86MMU`. No gem5 executable was linked or
+  run.
+
+The implementation remains provisional for these exact reasons:
+
+1. The replayed response commits `08dc106`, `c5dd636`, `fdbce2a`, and
+   `4787925` (local cherry-picks `531fbf3`, `42e38a9`, `90822c0`, and
+   `0c3710a`) were independently rejected despite green unit gates. The
+   blocking defects are incomplete deferred/pending-send alias release proof,
+   an unsent `ReadReq`/`ReadExReq` fatal path that leaks the stream count,
+   unchecked `WriteResp` size, a normal-retirement owner panic before wrapper
+   erase/delete, and acceptance of arbitrary residual normal sender-state
+   chains. The separate response repair must be replayed and this slice's
+   post-retirement controller callback reconciled, then independently reviewed,
+   before merge.
+2. The slice exposes fail-closed drain/cleanup rules and tests them, but live
+   MAA drain notification, quiescent checkpoint serialization, and logical
+   ready waiters are not integrated. No live checkpoint claim is made.
+3. The fixed production owner currently covers at most four MAAs. Logical
+   admission beyond that bound fails closed; legacy operation is unchanged.
+4. A linked gem5 build, gem5 SE execution, retry/fault injection in the live
+   ports, and legacy simulation regressions remain pending and were not
+   authorized for this task.
 
 ## Decision and narrow boundary
 

@@ -12,6 +12,8 @@
 
 namespace gem5 {
 class MAA;
+class ALUUnit;
+class StreamAccessUnit;
 
 class SPD {
 public:
@@ -48,11 +50,39 @@ protected:
 
 private:
     friend class MAA;
+    friend class ALUUnit;
+    friend class StreamAccessUnit;
 
     unsigned int logicalSpdHiddenSlotBaseTileID(int maa_id,
                                                 int logical_slot) const;
     unsigned int logicalSpdHiddenLaneTileID(int maa_id, int logical_slot,
                                             int fp64_lane) const;
+    void checkLogicalSpdHiddenTileID(int maa_id, int tile_id,
+                                     int element_id, int word_size) const;
+    template <typename T>
+    T getLogicalSpdData(int maa_id, int tile_id, int element_id)
+    {
+        checkLogicalSpdHiddenTileID(maa_id, tile_id, element_id, sizeof(T));
+        return *reinterpret_cast<T *>(
+            tiles_data + tile_id * physical_tile_elements * sizeof(uint32_t) +
+            element_id * sizeof(T));
+    }
+    template <typename T>
+    void setLogicalSpdData(int maa_id, int tile_id, int element_id, T data)
+    {
+        checkLogicalSpdHiddenTileID(maa_id, tile_id, element_id, sizeof(T));
+        *reinterpret_cast<T *>(
+            tiles_data + tile_id * physical_tile_elements * sizeof(uint32_t) +
+            element_id * sizeof(T)) = data;
+        const int state = tile_id * physical_tile_elements +
+            element_id * sizeof(T) / sizeof(uint32_t);
+        element_finished[state] = true;
+    }
+    void prepareLogicalSpdSlot(int maa_id, int logical_slot);
+    void setLogicalSpdSize(int maa_id, int tile_id, uint32_t size);
+    Cycles setLogicalSpdDataLatency(int maa_id, int tile_id,
+                                    int num_accesses);
+    Cycles setDataLatencyUnchecked(int num_accesses);
 
 public:
     void check_tile_id(int tile_id, int word_size) {

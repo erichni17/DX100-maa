@@ -417,11 +417,6 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         "Rejected logical ALU_SCALAR destination backing "
                         "(%d) before controller state mutation\n",
                         static_cast<int>(backing_validation));
-                    panic_if(
-                        true,
-                        "Logical ALU_SCALAR ABI is decoded and validated, "
-                        "but logical SPD-cache controller integration is "
-                        "not implemented in this patch\n");
                 }
                 current_instruction->backingAddr = data;
                 current_instruction->backingAddrRangeID = getAddrRegion(data);

@@ -69,6 +69,7 @@ protected:
     double my_red_f64;
 
     void executeInstruction();
+    void executeLogicalInstruction();
     void updateLatency(int num_spd_read_data_accesses,
                        int num_spd_read_cond_accesses,
                        int num_spd_write_accesses,

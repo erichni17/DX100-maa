@@ -1,13 +1,17 @@
 #include "mem/MAA/StreamAccess.hh"
-#include "base/types.hh"
-#include "mem/MAA/MAA.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/SPD.hh"
+
+#include <array>
+#include <cassert>
+#include <cstring>
+
 #include "base/trace.hh"
+#include "base/types.hh"
 #include "debug/MAAStream.hh"
 #include "debug/MAATrace.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/SPD.hh"
 #include "sim/cur_tick.hh"
-#include <cassert>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -124,6 +128,11 @@ bool StreamAccessUnit::fillCurrentPageInfos() {
     return inserted;
 }
 void StreamAccessUnit::executeInstruction() {
+    if (my_instruction != nullptr &&
+        my_instruction->isLogicalControllerMicroOp()) {
+        executeLogicalInstruction();
+        return;
+    }
     switch (state) {
     case Status::Idle: {
         assert(my_instruction != nullptr);
@@ -382,6 +391,143 @@ void StreamAccessUnit::executeInstruction() {
         assert(false);
     }
 }
+void
+StreamAccessUnit::executeLogicalInstruction()
+{
+    switch (state) {
+      case Status::Idle:
+        panic_if(my_instruction == nullptr,
+                 "S[%d] logical stream has no instruction\n", my_stream_id);
+        state = Status::Decode;
+        [[fallthrough]];
+      case Status::Decode:
+        panic_if(!my_instruction->logicalResponseManaged ||
+                     my_instruction->datatype !=
+                         Instruction::DataType::FLOAT64_TYPE ||
+                     (my_instruction->opcode !=
+                          Instruction::OpcodeType::STREAM_LD &&
+                      my_instruction->opcode !=
+                          Instruction::OpcodeType::STREAM_ST) ||
+                     my_instruction->baseAddr % block_size != 0,
+                 "S[%d] invalid logical page stream micro-op\n",
+                 my_stream_id);
+        my_base_addr = my_instruction->baseAddr;
+        my_dst_tile = my_instruction->dst1SpdID;
+        my_src_tile = my_instruction->src1SpdID;
+        my_cond_tile = -1;
+        my_min = 0;
+        my_max = LogicalSPDCacheSlice::PageElements;
+        my_stride = 1;
+        my_size = LogicalSPDCacheSlice::PageElements;
+        my_word_size = sizeof(uint64_t);
+        my_words_per_cl = block_size / my_word_size;
+        my_words_per_page = page_size / my_word_size;
+        my_min_addr = my_instruction->minAddr;
+        my_max_addr = my_instruction->maxAddr;
+        my_addr_range_id = my_instruction->addrRangeID;
+        my_is_load = my_instruction->opcode ==
+                     Instruction::OpcodeType::STREAM_LD;
+        my_received_responses = 0;
+        my_sent_requests = 0;
+        my_decode_start_tick = curTick();
+        my_request_start_tick = curTick();
+        beginLogicalResponseTransaction();
+        my_instruction->state = Instruction::Status::Service;
+        (*maa->stats.STR_NumInsts[my_stream_id])++;
+        maa->stats.numInst++;
+        if (my_is_load)
+            maa->stats.numInst_STRRD++;
+        else
+            maa->stats.numInst_STRWR++;
+        state = Status::Request;
+        [[fallthrough]];
+      case Status::Request: {
+        while (true) {
+            const auto line = maa->logicalStreamPendingLine(my_stream_id);
+            if (!line.valid)
+                break;
+            createLogicalPacket(line);
+        }
+        if (my_received_responses !=
+            static_cast<int>(LogicalSPDCacheSlice::LinesPerPage)) {
+            return;
+        }
+        panic_if(my_sent_requests != my_received_responses ||
+                     !logicalResponseLedger.isComplete() ||
+                     !maa->allStreamPacketsSent(my_stream_id),
+                 "S[%d] logical page ended with sent=%d received=%d "
+                 "ledger=%d\n",
+                 my_stream_id, my_sent_requests, my_received_responses,
+                 logicalResponseLedger.isComplete());
+        state = Status::Response;
+        scheduleNextExecution(true);
+        break;
+      }
+      case Status::Response: {
+        panic_if(scheduleNextExecution(),
+                 "S[%d] logical stream finished before latency elapsed\n",
+                 my_stream_id);
+        if (my_is_load) {
+            maa->spd->setLogicalSpdSize(my_instruction->maa_id,
+                                         my_dst_tile, my_size);
+        }
+        my_instruction->state = Instruction::Status::Finish;
+        state = Status::Idle;
+        const Cycles cycles =
+            maa->getTicksToCycles(curTick() - my_decode_start_tick);
+        maa->stats.cycles += cycles;
+        if (my_is_load)
+            maa->stats.cycles_STRRD += cycles;
+        else
+            maa->stats.cycles_STRWR += cycles;
+        maa->finishInstructionCompute(my_instruction);
+        my_instruction = nullptr;
+        logicalResponseLedger.reset();
+        break;
+      }
+      default:
+        panic("S[%d] invalid logical stream state %d\n", my_stream_id,
+              static_cast<int>(state));
+    }
+}
+
+void
+StreamAccessUnit::createLogicalPacket(
+    const LogicalSPDCacheSlice::PendingLine &line)
+{
+    panic_if(!line.valid || line.index >= LogicalSPDCacheSlice::LinesPerPage,
+             "S[%d] invalid logical line issue\n", my_stream_id);
+    const Addr paddr = translatePacket(line.virtualAddress);
+    panic_if(paddr % block_size != 0,
+             "S[%d] logical line translated to unaligned 0x%lx\n",
+             my_stream_id, paddr);
+    RequestPtr request = std::make_shared<Request>(
+        paddr, block_size, flags, maa->requestorId);
+    request->setRegion(my_addr_range_id);
+    PacketPtr packet = new Packet(
+        request, my_is_load ? MemCmd::ReadReq : MemCmd::WriteReq);
+    packet->allocate();
+    if (!my_is_load) {
+        std::array<double,
+                   LogicalSPDCacheSlice::CacheLineBytes / sizeof(double)>
+            data{};
+        const std::size_t first = line.index * data.size();
+        for (std::size_t index = 0; index < data.size(); ++index) {
+            data[index] = maa->spd->getLogicalSpdData<double>(
+                my_instruction->maa_id, my_src_tile, first + index);
+        }
+        packet->setData(reinterpret_cast<const uint8_t *>(data.data()));
+    }
+    attachLogicalSenderState(packet, paddr, line.kind);
+    const auto issued = maa->logicalStreamLineIssued(
+        logicalResponseTag(), line.index, paddr, line.kind);
+    panic_if(issued != LogicalStreamResponseResult::Accepted,
+             "S[%d] controller rejected logical line %zu (%d)\n",
+             my_stream_id, line.index, static_cast<int>(issued));
+    ++my_sent_requests;
+    maa->sendPacket(FuncUnitType::STREAM, my_stream_id, packet,
+                    maa->getClockEdge(), true, !my_is_load);
+}
 void StreamAccessUnit::createReadPacket(Addr addr, int latency) {
     /**** Packet generation ****/
     RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
@@ -436,6 +582,10 @@ void StreamAccessUnit::writePacketSent(Addr addr) {
     }
 }
 bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
+    if (my_instruction != nullptr &&
+        my_instruction->isLogicalControllerMicroOp()) {
+        return recvLogicalData(addr, dataptr);
+    }
     bool was_request_table_full = request_table->is_full();
     std::vector<RequestTableEntry> entries = request_table->get_entries(addr);
     if (entries.empty()) {
@@ -532,6 +682,28 @@ bool StreamAccessUnit::recvData(const Addr addr, uint8_t *dataptr) {
     }
     return true;
 }
+bool
+StreamAccessUnit::recvLogicalData(Addr addr, uint8_t *dataptr)
+{
+    panic_if(!my_is_load || dataptr == nullptr,
+             "S[%d] invalid logical fill response\n", my_stream_id);
+    const LogicalStreamTransactionTag tag = logicalResponseTag();
+    const std::size_t line = maa->logicalStreamLineIndex(tag, addr);
+    if (line >= LogicalSPDCacheSlice::LinesPerPage)
+        return false;
+    const std::size_t first =
+        line * (block_size / static_cast<int>(sizeof(double)));
+    for (std::size_t index = 0;
+         index < block_size / sizeof(double); ++index) {
+        double value = 0;
+        std::memcpy(&value, dataptr + index * sizeof(double), sizeof(value));
+        maa->spd->setLogicalSpdData<double>(
+            my_instruction->maa_id, my_dst_tile, first + index, value);
+    }
+    ++my_received_responses;
+    scheduleNextExecution(true);
+    return true;
+}
 bool StreamAccessUnit::logicalResponseManaged() const {
     return my_instruction != nullptr && my_instruction->logicalResponseManaged;
 }
@@ -583,7 +755,11 @@ void StreamAccessUnit::beginLogicalResponseTransaction() {
                  my_max != static_cast<int>(
                                LogicalStreamResponseLedger::PageElements) ||
                  my_stride != 1 || my_cond_tile != -1 ||
-                 my_base_addr % page_size != 0 ||
+                 my_base_addr %
+                         (my_instruction->isLogicalControllerMicroOp()
+                              ? block_size
+                              : page_size) !=
+                     0 ||
                  (my_word_size != 4 && my_word_size != 8),
              "S[%d] %s: response-managed stream action must cover exactly "
              "one aligned 4096-element page\n",
@@ -603,7 +779,10 @@ void StreamAccessUnit::attachLogicalSenderState(
     assert(logicalResponseManaged());
     const LogicalStreamTransactionTag tag = logicalResponseTag();
     const LogicalStreamResponseResult result =
-        logicalResponseLedger.issueLine(tag, lineAddress, kind);
+        my_instruction->isLogicalControllerMicroOp() &&
+                kind == LogicalStreamResponseKind::Write
+            ? logicalResponseLedger.issueDirectWriteLine(tag, lineAddress)
+            : logicalResponseLedger.issueLine(tag, lineAddress, kind);
     panic_if(result != LogicalStreamResponseResult::Accepted,
              "S[%d] %s: logical line 0x%lx could not be issued (%d)\n",
              my_stream_id, __func__, lineAddress,
@@ -638,6 +817,8 @@ LogicalStreamResponseResult StreamAccessUnit::logicalResponseReceived(
             my_received_responses == my_sent_requests) {
             scheduleNextExecution(true);
         }
+        if (my_instruction->isLogicalControllerMicroOp())
+            scheduleNextExecution(true);
     }
     return result;
 }

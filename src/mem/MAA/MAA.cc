@@ -137,6 +137,13 @@ MAA::MAA(const MAAParams &p)
              "Logical/physical tile ratio needs %u virtual pages, "
              "exceeding token limit %d\n",
              max_virtual_pages, MaxVirtualPages);
+    for (unsigned int maa_id = 0;
+         maa_id < std::min(num_maas,
+                           static_cast<unsigned int>(
+                               MaxLogicalSPDCacheMAAs));
+         ++maa_id) {
+        logicalSPDSlices[maa_id].initialize(maa_id);
+    }
     virtualPageReady.resize(num_tiles);
     for (auto &pages : virtualPageReady)
         pages.fill(false);
@@ -488,6 +495,7 @@ bool MAA::getAddrRegionPermit(Instruction *instruction) {
 void MAA::issueInstruction() {
     // This event is also the controller's finite lookup/backpressure retry.
     // Dispatch the generated micro-op before selecting ready functional units.
+    tryIssueLogicalSPDAction();
     tryIssueTransparentMicroOp();
     bool were_all_units_idle = allFuncUnitsIdle();
     bool are_all_units_idle = were_all_units_idle;
@@ -646,6 +654,129 @@ bool MAA::transparentControllerUsesRegister(int maaID, int firstRegister,
     return transparentController.usesRegister(maaID, firstRegister,
                                               registerWords);
 }
+bool
+MAA::registerLogicalSPDSource(int maaID, uint16_t logicalID,
+                              Addr backingAddr, uint8_t dataType)
+{
+    if (maaID < 0 || maaID >= static_cast<int>(num_maas) ||
+        maaID >= MaxLogicalSPDCacheMAAs ||
+        num_tile_elements !=
+            LogicalSPDCacheSlice::Pages *
+                LogicalSPDCacheSlice::PageElements ||
+        physical_tile_elements != LogicalSPDCacheSlice::PageElements) {
+        return false;
+    }
+    const int range_id = getAddrRegion(backingAddr);
+    if (range_id < 0)
+        return false;
+    const LogicalSPDCacheSlice::BackingSpan span = {
+        backingAddr, addrRegions[range_id].first,
+        addrRegions[range_id].second, static_cast<int8_t>(range_id)};
+    return logicalSPDSlices[maaID].registerSource(logicalID, span, dataType) ==
+           LogicalSPDCacheSlice::RegisterResult::Accepted;
+}
+
+LogicalSPDCacheSlice::PendingLine
+MAA::logicalStreamPendingLine(int maaID) const
+{
+    if (maaID < 0 || maaID >= static_cast<int>(num_maas) ||
+        maaID >= MaxLogicalSPDCacheMAAs) {
+        return {};
+    }
+    return logicalSPDSlices[maaID].pendingLine();
+}
+
+LogicalStreamResponseResult
+MAA::logicalStreamLineIssued(const LogicalStreamTransactionTag &tag,
+                             std::size_t line, Addr lineAddress,
+                             LogicalStreamResponseKind kind)
+{
+    if (tag.maaID >= num_maas || tag.maaID >= MaxLogicalSPDCacheMAAs ||
+        !logicalSPDSlices[tag.maaID].ownsMemoryTag(tag)) {
+        return LogicalStreamResponseResult::Stale;
+    }
+    return logicalSPDSlices[tag.maaID].issueLine(line, lineAddress, kind);
+}
+
+std::size_t
+MAA::logicalStreamLineIndex(const LogicalStreamTransactionTag &tag,
+                            Addr lineAddress) const
+{
+    if (tag.maaID >= num_maas || tag.maaID >= MaxLogicalSPDCacheMAAs ||
+        !logicalSPDSlices[tag.maaID].ownsMemoryTag(tag)) {
+        return LogicalSPDCacheSlice::LinesPerPage;
+    }
+    return logicalSPDSlices[tag.maaID].lineIndex(lineAddress);
+}
+
+LogicalStreamResponseResult
+MAA::logicalStreamResponseReceived(const LogicalStreamTransactionTag &tag,
+                                   Addr lineAddress,
+                                   LogicalStreamResponseKind kind)
+{
+    if (tag.maaID >= num_maas || tag.maaID >= MaxLogicalSPDCacheMAAs ||
+        !logicalSPDSlices[tag.maaID].ownsMemoryTag(tag)) {
+        return LogicalStreamResponseResult::Stale;
+    }
+    const auto result = logicalSPDSlices[tag.maaID].response(
+        tag, lineAddress, kind);
+    if (result == LogicalStreamResponseResult::Accepted ||
+        result == LogicalStreamResponseResult::Completed) {
+        streamAccessUnits[tag.maaID].scheduleExecuteInstructionEvent();
+    }
+    return result;
+}
+
+bool
+MAA::submitLogicalSPDDescriptor(InstructionPtr instruction, PacketPtr packet)
+{
+    panic_if(!instruction->isLogicalALUScalar(),
+             "Cannot submit non-logical descriptor %s\n",
+             instruction->print());
+    const int maa_id = instruction->maa_id;
+    if (maa_id < 0 || maa_id >= static_cast<int>(num_maas) ||
+        maa_id >= MaxLogicalSPDCacheMAAs) {
+        panic("Logical SPD-cache MAA ID %d is outside the fixed slice\n",
+              maa_id);
+    }
+    panic_if(num_tile_elements !=
+                     LogicalSPDCacheSlice::Pages *
+                         LogicalSPDCacheSlice::PageElements ||
+                 physical_tile_elements !=
+                     LogicalSPDCacheSlice::PageElements,
+             "Logical SPD-cache requires 16K logical and 4K physical "
+             "FP64 slots\n");
+    auto &slice = logicalSPDSlices[maa_id];
+    auto &runtime = logicalSPDRuntimes[maa_id];
+    if (runtime.highLevel != nullptr || slice.activeOperation())
+        return false;
+
+    LogicalSPDCacheSlice::Admission request;
+    request.sourceLogical = instruction->src1LogicalID;
+    request.destinationLogical = instruction->dst1LogicalID;
+    request.destination = {
+        instruction->backingAddr, instruction->backingMinAddr,
+        instruction->backingMaxAddr, instruction->backingAddrRangeID};
+    request.dataType = static_cast<uint8_t>(instruction->datatype);
+    request.operation = static_cast<uint8_t>(instruction->optype);
+    request.scalarBits = rf->getData<uint64_t>(instruction->src1RegID);
+    const auto result = slice.admit(request);
+    if (result == LogicalSPDCacheSlice::AdmitResult::Busy)
+        return false;
+    panic_if(result != LogicalSPDCacheSlice::AdmitResult::Accepted,
+             "Logical SPD-cache admission rejected %s with status %d\n",
+             instruction->print(), static_cast<int>(result));
+
+    instruction->src1LogicalGeneration =
+        slice.descriptor(instruction->src1LogicalID).handle.generation;
+    instruction->dst1LogicalGeneration =
+        slice.descriptor(instruction->dst1LogicalID).handle.generation;
+    runtime.highLevel = instruction;
+    runtime.completionPacket = packet;
+    tryIssueLogicalSPDAction();
+    return true;
+}
+
 bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     panic_if(instruction->opcode !=
                  Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR,
@@ -910,6 +1041,130 @@ bool MAA::dispatchTransparentMicroOp(
     scheduleIssueInstructionEvent(1);
     return true;
 }
+void
+MAA::tryIssueLogicalSPDAction()
+{
+    using LogicalActionResult =
+        LogicalSPDCacheSlice::Controller::ActionResult;
+    const int logical_maas = std::min(
+        static_cast<int>(num_maas), MaxLogicalSPDCacheMAAs);
+    for (int maa_id = 0; maa_id < logical_maas; ++maa_id) {
+        auto &slice = logicalSPDSlices[maa_id];
+        auto &runtime = logicalSPDRuntimes[maa_id];
+        if (runtime.highLevel == nullptr || runtime.microActive)
+            continue;
+
+        const auto memory = slice.pendingMemoryAction();
+        if (memory.valid) {
+            if (!streamAccessIdle[maa_id] ||
+                streamAccessUnits[maa_id].getState() !=
+                    StreamAccessUnit::Status::Idle) {
+                slice.noteActionBackpressure();
+                continue;
+            }
+            panic_if(slice.acceptMemoryAction(memory) !=
+                         LogicalActionResult::Accepted,
+                     "Logical SPD-cache rejected advertised memory action\n");
+
+            Instruction &micro = runtime.microInstruction;
+            micro = Instruction();
+            micro.core_id = runtime.highLevel->core_id;
+            micro.maa_id = maa_id;
+            micro.func_unit_id = maa_id;
+            micro.funcUniType = FuncUnitType::STREAM;
+            micro.CID = runtime.highLevel->CID;
+            micro.PC = runtime.highLevel->PC;
+            micro.datatype = Instruction::DataType::FLOAT64_TYPE;
+            micro.baseAddr = memory.backingBase;
+            micro.minAddr = memory.rangeBegin;
+            micro.maxAddr = memory.rangeEnd;
+            micro.addrRangeID = memory.rangeID;
+            micro.controllerTransactionID = memory.tag.transactionID;
+            micro.indexAddr = slice.operationID();
+            micro.controllerPage = memory.controller.page.page;
+            micro.logicalResponseManaged = true;
+            micro.controllerSrcSlot = memory.controller.slot;
+            micro.controllerDstSlot = memory.controller.slot;
+            const int hidden_tile = spd->logicalSpdHiddenSlotBaseTileID(
+                maa_id, memory.controller.slot);
+            panic_if(hidden_tile > std::numeric_limits<int16_t>::max(),
+                     "Logical SPD hidden tile %d exceeds instruction field\n",
+                     hidden_tile);
+
+            if (memory.controller.kind ==
+                LogicalSPDCacheSlice::Controller::ActionKind::Fill) {
+                micro.opcode = Instruction::OpcodeType::STREAM_LD;
+                micro.accessType = Instruction::AccessType::READ;
+                micro.dst1SpdID = hidden_tile;
+                micro.src1LogicalID = memory.controller.page.logical;
+                micro.src1LogicalGeneration =
+                    memory.controller.page.generation;
+                micro.controllerAction =
+                    TransparentSPDController::Action::Fill;
+                spd->prepareLogicalSpdSlot(maa_id,
+                                           memory.controller.slot);
+            } else {
+                micro.opcode = Instruction::OpcodeType::STREAM_ST;
+                micro.accessType = Instruction::AccessType::WRITE;
+                micro.src1SpdID = hidden_tile;
+                micro.dst1LogicalID = memory.controller.page.logical;
+                micro.dst1LogicalGeneration =
+                    memory.controller.page.generation;
+                micro.controllerAction =
+                    TransparentSPDController::Action::Store;
+            }
+            runtime.microActive = true;
+            runtime.memoryTag = memory.tag;
+            streamAccessIdle[maa_id] = false;
+            streamAccessUnits[maa_id].setInstruction(&micro);
+            streamAccessUnits[maa_id].scheduleExecuteInstructionEvent();
+            continue;
+        }
+
+        const auto compute = slice.pendingCompute();
+        if (!compute.valid)
+            continue;
+        if (!aluUnitsIdle[maa_id] ||
+            aluUnits[maa_id].getState() != ALUUnit::Status::Idle) {
+            slice.noteActionBackpressure();
+            continue;
+        }
+        panic_if(slice.acceptCompute(compute) !=
+                     LogicalSPDCacheSlice::ComputeResult::Accepted,
+                 "Logical SPD-cache rejected advertised compute\n");
+
+        Instruction &micro = runtime.microInstruction;
+        micro = Instruction();
+        micro.core_id = runtime.highLevel->core_id;
+        micro.maa_id = maa_id;
+        micro.func_unit_id = maa_id;
+        micro.funcUniType = FuncUnitType::ALU;
+        micro.CID = runtime.highLevel->CID;
+        micro.PC = runtime.highLevel->PC;
+        micro.opcode = Instruction::OpcodeType::ALU_SCALAR;
+        micro.optype = static_cast<Instruction::OPType>(compute.operation);
+        micro.datatype = Instruction::DataType::FLOAT64_TYPE;
+        micro.accessType = Instruction::AccessType::COMPUTE;
+        micro.src1SpdID = spd->logicalSpdHiddenSlotBaseTileID(
+            maa_id, compute.sourceSlot);
+        micro.dst1SpdID = spd->logicalSpdHiddenSlotBaseTileID(
+            maa_id, compute.destinationSlot);
+        micro.controllerTransactionID = compute.transactionID;
+        micro.indexAddr = compute.operationID;
+        micro.backingAddr = compute.scalarBits;
+        micro.controllerSrcSlot = compute.sourceSlot;
+        micro.controllerDstSlot = compute.destinationSlot;
+        micro.controllerPage = compute.source.page;
+        micro.controllerAction = TransparentSPDController::Action::Compute;
+        runtime.computeAction = compute;
+        runtime.microActive = true;
+        spd->prepareLogicalSpdSlot(maa_id, compute.destinationSlot);
+        aluUnitsIdle[maa_id] = false;
+        aluUnits[maa_id].setInstruction(&micro);
+        aluUnits[maa_id].scheduleExecuteInstructionEvent();
+    }
+}
+
 void MAA::tryIssueTransparentMicroOp() {
     if (transparentController.controllerCyclesRemaining() != 0) {
         if (curTick() < transparentControllerLookupReadyTick) {
@@ -991,6 +1246,20 @@ void MAA::dispatchInstruction() {
         if (*recv_it == true) {
             InstructionPtr instruction = *instruction_it;
             PacketPtr pkt = *pkt_it;
+            if (instruction->isLogicalALUScalar()) {
+                if (!submitLogicalSPDDescriptor(instruction, pkt)) {
+                    ++pkt_it;
+                    ++recv_it;
+                    ++rid_it;
+                    ++instruction_it;
+                    continue;
+                }
+                pkt_it = my_instruction_pkts.erase(pkt_it);
+                recv_it = my_instruction_recvs.erase(recv_it);
+                rid_it = my_instruction_RIDs.erase(rid_it);
+                instruction_it = my_instructions.erase(instruction_it);
+                continue;
+            }
             if (instruction->opcode ==
                 Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR) {
                 if (!submitTransparentDescriptor(instruction)) {
@@ -1100,8 +1369,102 @@ void MAA::dispatchInstruction() {
         }
     }
 }
+void
+MAA::finishLogicalSPDMicroOp(InstructionPtr instruction)
+{
+    const int maa_id = instruction->maa_id;
+    panic_if(maa_id < 0 || maa_id >= static_cast<int>(num_maas) ||
+                 maa_id >= MaxLogicalSPDCacheMAAs,
+             "Logical SPD micro-op has invalid MAA ID %d\n", maa_id);
+    auto &slice = logicalSPDSlices[maa_id];
+    auto &runtime = logicalSPDRuntimes[maa_id];
+    panic_if(!runtime.microActive ||
+                 instruction != &runtime.microInstruction ||
+                 runtime.highLevel == nullptr,
+             "Logical SPD micro-op lost runtime ownership\n");
+
+    if (instruction->funcUniType == FuncUnitType::ALU) {
+        const auto &compute = runtime.computeAction;
+        panic_if(!compute.valid ||
+                     instruction->controllerAction !=
+                         TransparentSPDController::Action::Compute ||
+                     instruction->controllerTransactionID !=
+                         compute.transactionID ||
+                     instruction->indexAddr != compute.operationID ||
+                     instruction->controllerPage != compute.source.page ||
+                     instruction->controllerSrcSlot != compute.sourceSlot ||
+                     instruction->controllerDstSlot !=
+                         compute.destinationSlot ||
+                     instruction->src1SpdID !=
+                         static_cast<int>(
+                             spd->logicalSpdHiddenSlotBaseTileID(
+                                 maa_id, compute.sourceSlot)) ||
+                     instruction->dst1SpdID !=
+                         static_cast<int>(
+                             spd->logicalSpdHiddenSlotBaseTileID(
+                                 maa_id, compute.destinationSlot)) ||
+                     instruction->optype !=
+                         static_cast<Instruction::OPType>(
+                             compute.operation) ||
+                     instruction->backingAddr != compute.scalarBits,
+                 "Logical SPD ALU completion tag does not match owner\n");
+        panic_if(slice.completeCompute(runtime.computeAction) !=
+                     LogicalSPDCacheSlice::ComputeResult::Accepted,
+                 "Logical SPD-cache rejected tagged ALU completion\n");
+        aluUnitsIdle[maa_id] = true;
+    } else {
+        panic_if(instruction->funcUniType != FuncUnitType::STREAM,
+                 "Logical SPD-cache micro-op used unit %d\n",
+                 static_cast<int>(instruction->funcUniType));
+        const auto &tag = runtime.memoryTag;
+        const bool fill = tag.action == LogicalStreamAction::Fill;
+        const int logical_id =
+            fill ? instruction->src1LogicalID
+                 : instruction->dst1LogicalID;
+        const uint64_t generation =
+            fill ? instruction->src1LogicalGeneration
+                 : instruction->dst1LogicalGeneration;
+        panic_if(!tag.valid() || !instruction->logicalResponseManaged ||
+                     instruction->controllerTransactionID !=
+                         tag.transactionID ||
+                     instruction->controllerPage != tag.page ||
+                     instruction->controllerSrcSlot != tag.slot ||
+                     instruction->controllerDstSlot != tag.slot ||
+                     logical_id != tag.logicalID ||
+                     generation != tag.generation,
+                 "Logical SPD stream completion tag does not match owner\n");
+        runtime.memoryTag = {};
+        streamAccessIdle[maa_id] = true;
+    }
+    runtime.microActive = false;
+
+    if (slice.operationComplete()) {
+        PacketPtr packet = runtime.completionPacket;
+        InstructionPtr high_level = runtime.highLevel;
+        panic_if(packet == nullptr || high_level == nullptr ||
+                     !slice.retireCompletedOperation(),
+                 "Logical SPD-cache completion lost high-level owner\n");
+        packet->makeTimingResponse();
+        packet->headerDelay = packet->payloadDelay = 0;
+        cpuSidePorts[0]->schedTimingResp(packet, getClockEdge(Cycles(1)));
+        runtime.completionPacket = nullptr;
+        runtime.highLevel = nullptr;
+        runtime.computeAction = {};
+        runtime.memoryTag = {};
+        delete high_level;
+    }
+
+    scheduleIssueInstructionEvent();
+    scheduleDispatchInstructionEvent();
+    scheduleDispatchRegisterEvent();
+}
+
 void MAA::finishInstructionCompute(Instruction *instruction) {
     DPRINTF(MAAController, "%s: %s finishing!\n", __func__, instruction->print());
+    if (instruction->isLogicalControllerMicroOp()) {
+        finishLogicalSPDMicroOp(instruction);
+        return;
+    }
     const bool controller_managed = instruction->controllerManaged;
     const auto controller_action = instruction->controllerAction;
     const int controller_page = instruction->controllerPage;
