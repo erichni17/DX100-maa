@@ -5,10 +5,10 @@ Date: 2026-08-03
 Accepted standalone baseline: `46f36d632b8af9b20e365962656d089feaec9262`
 (`mem: finalize standalone logical SPD cache contract`)
 
-Reviewed report commit: `66564b83500b6d28df134136cc9ec37ca271cc5d`
+Repair base/report commit: `8615ea8ca32581d2ecf2a7d086c5f18b25e5127c`
 
-Independent verdict:
-`/data1/nier/worktrees/codex-coordination/sessions/logical-spd-cache-gem5-bridge-design-review-20260803-054226-6424724c/session.json`
+Final independent STOP repaired by this candidate:
+`/data1/nier/worktrees/codex-coordination/sessions/logical-spd-cache-gem5-bridge-design-final-revie-20260803-063750-b0fc9a1c/session.json`
 
 Scope: repaired implementation design only. No production source was changed,
 built, or run while repairing this report.
@@ -38,18 +38,27 @@ accepted 66,785-byte Runtime semantic lower bound.
 | Review issue | Repaired v1 closure |
 |---|---|
 | 1. Translation/MMU lifecycle | SE-only; resolve the command owner through `Request::contextId()` and `System::threads`, use that `ThreadContext`'s `Process::pTable`, retranslate and authenticate every data Packet, and treat any changed lookup/owner/region as stale. FS is rejected. |
-| 2. Retry/fairness | One per-cache-port `DownstreamState` owns a refused request or granted retry for exactly one native or logical Packet. Local capacity is a separate condition. Class and `maa_id` round-robin cursors advance only on accepted sends. |
+| 2. Retry/fairness | Inventory both `num_cores`-wide `cacheSidePorts` and `retirementSidePorts`. Logical traffic uses only the four coherent cache-side ports. Every physical port owns its own role-specific retry state and native/logical counters; no class or port shares a retry token or mutable aggregate counter. Local capacity is derived separately, and round-robin cursors advance only on accepted sends. |
 | 3. Checkpoints | `MAA::serialize`/`unserialize` chain `ClockedObject`; v1 accepts only construction-pristine MAA/logical state, matching the checkpoint-before-`alloc_MAA()` workflow. Every non-pristine checkpoint fails closed; no Runtime image is claimed to restore native MAA/SPD/RF state. |
-| 4. Lifecycle ordering | SConscript/build closure, single storage ownership, drain, pristine-checkpoint guard, teardown, ProductionStop mapping, and lifecycle host tests land while the guest logical path remains fail-closed. Admission is enabled only in the penultimate implementation commit. |
-| 5. MMIO/range/RF hazards | One command slot and one held completion-bearing operation per `maa_id`; one registration waiter per `maa_id`, never concurrent with its operation waiter; command-range IDs and guest region IDs are kept distinct; CPU request-retry/response ownership is finite; owner tuple and the complete two-word RF span are checked before scalar capture. |
+| 4. Lifecycle ordering | SConscript/build closure, single storage ownership, full native/logical drain, one MAA-owned `maybeSignalLogicalDrainDone()` signal point, pristine-checkpoint guard, teardown, ProductionStop mapping, and lifecycle host tests land while the guest logical path remains fail-closed. Admission is enabled only after those gates. |
+| 5. MMIO/range/RF hazards | One command slot and one held completion-bearing operation per `maa_id`; one registration waiter per `maa_id`, never concurrent with its operation waiter; command-range IDs and guest region IDs are distinct; CPU request-retry/response ownership is finite. Because RF is global, v1 closes new native producer admission, drains every IF/FU/transparent-controller and register/instruction queue across every `maa_id`, then checks and captures both FP64 words atomically in one MAA event callback. |
 | 6. Timing/hidden state | Every adapter pool, waiter, event field, retry slot, timing port, and stat is bounded in a separate bridge-state ledger. The synchronous host datapath executes only at the modeled compute-completion event after explicit private read, ALU, and private write reservations. |
 | 7. Payload transition | Hidden SPD allocation removal and Runtime instantiation are one atomic commit. All allocator, object, source-contract, accounting, optimized, and sanitizer gates change in that same commit. No intermediate tree has zero or two logical payloads. |
-| 8. Performance matrix | Only a 4Kx4 native/logical pair with equal SRAM, ports, credits, traffic, setup boundary, final durability, software work, hashes, and oracle is timing-eligible. `native16` remains a capacity-unmatched diagnostic. Mechanism counters precede timing, and the first gem5 run still requires explicit user approval. |
+| 8. Performance matrix | The correctness smoke does not authorize comparative timing. No arm is timing-eligible until a separately reviewed production matched-native shim lands before timing and gives native4Kx4 and logical4Kx4 equal SRAM, throttle/credits, four cache-side ports/bandwidth, traffic, setup, final destination, response-bearing WriteResp durability, software work, hashes, and oracle. `native16` remains a capacity-unmatched diagnostic. |
+
+The four final STOP blockers are therefore closed at design level by one global
+RF capture gate, an eight-physical-port role/accounting ledger with logical data
+confined to four ordinary ports, one exhaustive MAA drain predicate and signal
+owner, and a hard performance lock until the separately reviewed production
+matched-native shim exists. These additions refine rows 2, 4, 5, and 8 without
+weakening the other four repaired closures.
 
 **REJECT.** Do not begin implementation if any closure above is weakened into
 an assumption, an unbounded host container, or a comparison with a different
-completion boundary. Nothing in this report is live correctness, performance,
-energy, or area evidence.
+completion boundary. The global RF gate deliberately sacrifices cross-MAA
+overlap at scalar capture, and Gate D remains locked behind a later production
+shim. Nothing in this report is live correctness, performance, energy, or area
+evidence.
 
 ## Evidence convention and accepted baseline
 
@@ -259,6 +268,18 @@ changes it to `WaitRetry` (`src/mem/MAA/LogicalSPDCacheTransport.cc:494-520`). T
 not satisfy the stricter bridge rule that downstream refusal must not mutate
 logical state.
 
+**FACT.** Production has two distinct vectors of `CacheSidePort` objects:
+`cacheSidePorts` and `retirementSidePorts` (`src/mem/MAA/MAA.hh:228-275`). The
+constructor creates both vectors independently (`src/mem/MAA/MAA.cc:188-199`),
+and `addRamulator` requires each vector to contain exactly `num_cores` ports
+(`src/mem/MAA/MAA.cc:381-384`). The default is four cores
+(`src/mem/MAA/MAA.py:132-155`); configuration connects four ordinary ports to
+`tol3bus` and four retirement ports through per-core retirement caches
+(`configs/common/MAAConfig.py:335-360,413-422`). Native virtual-retirement
+writes select `sendPacketRetirementCache`, while other cache traffic selects
+`sendPacketCache` (`src/mem/MAA/Port.cc:539-569`). These are eight physical
+RequestPorts in the required four-core v1 configuration, not four aliases.
+
 **DECISION.** Extend Runtime/Transport with a fixed, two-phase adapter seam:
 
 - `previewLine()` is non-mutating and returns one by-value candidate tied to a
@@ -296,68 +317,98 @@ into the already-accounted Transport record. No adapter Packet uses
 `MAA::sendPacket`, native Request/Row/Offset tables, native maps, or native
 aggregate response counters.
 
-### 2.2 One exact per-port state machine
+### 2.2 Exact topology, ownership, and per-port state
 
-**DECISION.** Replace cache-side `BlockReason` as protocol authority with one
-state per physical cache RequestPort:
+**DECISION.** Give every physical `CacheSidePort` an immutable `PortRole` and
+independent state. V1 requires `num_cores == 4`, so the topology ledger is:
+
+| Physical vector | Count | Legal traffic | Logical state |
+|---|---:|---|---|
+| `cacheSidePorts` | `num_cores == 4` | native ordinary cache traffic plus logical data | native and logical states/counters are independently present |
+| `retirementSidePorts` | `num_cores == 4` | native virtual-retirement traffic only | no logical token, queue, cursor, or counter is instantiated; source audits report logical occupancy zero |
+
+Logical address-to-port selection uses the existing `core_addr(paddr)` mapping
+over only `cacheSidePorts[0..3]`. It never calls `sendPacketRetirementCache`,
+never consumes retirement-cache bandwidth, and never changes retirement retry,
+outstanding, response, or statistics state. Native routing and response behavior
+on all eight ports is preserved, including the `virtualRetirement` selection in
+`Port.cc`.
+
+Each ordinary cache-side port owns separate class objects:
 
 ```
-DownstreamState = Open
-                | WaitNative(nativePacketIdentity)
-                | GrantNative(nativePacketIdentity)
-                | WaitLogical(maaID, adapterSlot, adapterEpoch)
-                | GrantLogical(maaID, adapterSlot, adapterEpoch)
+NativeRetryState  = Open | Wait(nativePresentToken) | Grant(nativePresentToken)
+LogicalRetryState = Open | Wait(maaID, adapterSlot, adapterEpoch)
+                         | Grant(maaID, adapterSlot, adapterEpoch)
 ```
 
-It contains exactly one discriminated owner; it cannot encode two waiters.
-`acceptedOutstanding < maxOutstandingCacheSidePackets` is a separate derived
-local-capacity predicate. Per-port state also contains one class round-robin bit
-and one `nextLogicalMaa` cursor.
+The invariant is that at most one class state is non-Open because a physical
+RequestPort cannot issue a second request after downstream refusal. The two
+classes do not share token storage, identity generation, accepted counter, or
+statistics. `recvReqRetry` selects the unique non-Open class or panics. Every
+retirement port instead owns one independent `NativeRetirementRetryState`; it
+has no logical variant. No token or mutable counter is shared by two physical
+ports.
+
+Local capacity is the derived expression
+`nativeAcceptedOutstanding + logicalAcceptedOutstanding <
+maxOutstandingCacheSidePackets`; there is no mutable combined-outstanding
+counter. Per-class counters increment only on a true `sendTimingReq` whose
+Packet needs a response, and decrement only when that class authenticates its
+response. Per-port audit asserts that the derived sum equals the number of
+accepted response-bearing Packets owned by that port. The port also contains
+one class round-robin bit and one `nextLogicalMaa` cursor; retirement ports have
+neither because they admit only native-retirement traffic.
 
 | Event/state | Required transition and ownership |
 |---|---|
-| Native or logical ready, `Open`, capacity available | Present one candidate selected by class RR; within logical, scan at most `num_maas` from `nextLogicalMaa`. No other caller may invoke `sendTimingReq` on that port. |
-| Local capacity full | Do not call downstream, do not create a retry owner, and do not mutate the logical preview. Leave the native candidate in its existing native owner or the logical work unpreviewed; response progress schedules arbitration. |
-| Native downstream false | `Open -> WaitNative(exact Packet)`. The port takes Packet custody; the FU retains correlation but no send right and no accepted-outstanding entry exists. All sends on the port stop. |
-| Logical downstream false | `Open -> WaitLogical(exact provisional slot)`. Runtime/Transport remains unchanged; bridge retains the exact Packet, Request, sender state, and preview. |
-| `recvReqRetry` in `WaitNative` | `WaitNative -> GrantNative`; schedule the port arbiter. Only that exact Packet may retry. |
-| `recvReqRetry` in `WaitLogical` | `WaitLogical -> GrantLogical`; schedule the port arbiter. Do not call Runtime `recvReqRetry`, because Runtime was never mutated by refusal. |
-| Retry attempt false | `Grant* -> Wait*` with the same owner/identity. |
-| Retry attempt true | Atomically commit the corresponding native sent bit or logical preview, increment the combined accepted-outstanding count, clear to `Open`, advance RR cursors, and schedule another arbitration edge. |
-| Fresh attempt true | Same commit/count/cursor transition as an accepted retry. |
-| Response | Authenticate class first, decrement the combined count once and its class count once, enqueue to the bounded class response owner, and schedule both response progress and port arbitration. It never manufactures `recvReqRetry`. |
-| Spurious/duplicate `recvReqRetry` | Internal panic; state must be `WaitNative` or `WaitLogical`. |
+| Native or logical ready, both class states Open, derived capacity available | Present one candidate selected by class RR; within logical, scan at most `num_maas` from `nextLogicalMaa`. No other caller invokes `sendTimingReq` on that port. Increment only that class's present-attempt counter. |
+| Local capacity full | Do not call downstream, create a retry owner, or mutate a logical preview. Leave native work in its existing bounded `Port.cc` queue or logical work unpreviewed; response progress schedules arbitration. Increment only the stalled class's local-capacity counter. |
+| Native downstream false | `NativeRetryState: Open -> Wait(exact nativePresentToken)`; the exact existing `Port.cc` queue entry retains Packet storage and correlation, while the port token becomes the sole send entitlement. Mark that entry non-presentable to every other scheduler. No sent bit or accepted counter changes. |
+| Logical downstream false | `LogicalRetryState: Open -> Wait(exact provisional slot)`; Runtime/Transport remains unchanged and the bridge retains the exact Packet, Request, sender state, and preview. No accepted counter changes. |
+| `recvReqRetry` for native | `NativeRetryState: Wait -> Grant`; increment only `nativeRetryGrants` and schedule the port arbiter. Only the token's Packet may retry. |
+| `recvReqRetry` for logical | `LogicalRetryState: Wait -> Grant`; increment only `logicalRetryGrants` and schedule the port arbiter. Do not call Runtime `recvReqRetry`, because refusal did not mutate Runtime. |
+| Retry attempt false | That class's `Grant -> Wait` with the same identity; the other class remains Open and ineligible to send. |
+| Retry attempt true | Atomically commit only that class: for native, call `Port.cc::commitNativeAccepted(token)`; for logical, call `commitAcceptedLine(preview)`. Increment that class's accepted/outstanding counters, clear only its retry state, advance RR cursors, and schedule another arbitration edge. |
+| Fresh attempt true | The same class-specific commit/count transition as accepted retry; no retry-grant counter changes. |
+| Response | Authenticate port and class before access. Decrement exactly that class's accepted-outstanding counter once, transfer to that class's bounded response owner, and schedule response plus arbitration progress. It never manufactures `recvReqRetry`. |
+| Spurious/duplicate `recvReqRetry` | Internal panic unless exactly one class on that exact physical port is in Wait. Grant state, Open/Open, two non-Open states, or a token from another port are all fatal. |
 
-Native issue must expose the same present/accepted boundary: the existing FU
-issue owner may retain correlation, but the port's `WaitNative`/`GrantNative`
-state is the sole retry entitlement, and no accepted-outstanding map entry,
-counter, or sent bit changes until `sendTimingReq` returns true. A false native
-send transfers Packet custody to that one port state; the FU correlation has
-no independent send right. The bridge adds no native FIFO. Native outstanding
-and deferred owners remain capped by their configured limits; limit exhaustion
-is local capacity, not downstream retry.
+**DECISION.** `Port.cc` remains the sole native candidate owner. Its existing
+bounded native queues and `my_outstanding_pkt_map` may hold correlation before
+send, but an entry with `sent == false` is **present, not accepted**. A fixed
+`NativePresentToken` identifies `{physicalPortRole, portIndex, queueKind,
+PacketPtr, paddr, entryGeneration}`. `presentNativeCandidate()` borrows one
+exact entry without erasing it. `commitNativeAccepted()` runs only after true,
+sets `sent` for response-bearing work, performs the exact current queue erase/FU
+notification, and updates only native counters. False leaves the entry and all
+accepted accounting unchanged and installs the class-specific retry token.
+Source-contract tests reject any direct `sendPacketCache` or
+`sendPacketRetirementCache` caller that bypasses this boundary.
 
-The combined outstanding bound is the existing configured port maximum. The
-port itself holds at most one refused Packet. Logical response queues hold at
-most eight Packet-slot indices per Runtime; delivery queues hold at most four
-tickets per Runtime, matching Transport credits. No new unbounded queue, map,
-list, or allocation is permitted in the bridge.
+The ordinary port has at most one refused native or logical Packet entitlement;
+the retirement port has at most one refused native-retirement entitlement.
+Logical response queues hold at most eight Packet-slot indices per Runtime;
+delivery queues hold at most four tickets per Runtime. No new unbounded queue,
+map, list, or allocation is permitted.
 
-**DECISION.** Fairness is deterministic. If both classes remain eligible, the
-class RR bit alternates after each accepted fresh send. Logical grants rotate
-`nextLogicalMaa` after each accepted logical send. A granted retry preempts fresh
-work until that exact Packet is accepted, because gem5 issued the retry for the
-refused owner. Response and local-capacity wakeups cannot change retry owner.
-Under recurring downstream acceptance and response progress, an eligible class
-receives a grant within two accepted fresh sends and an eligible logical
-context within `2 * num_maas` accepted fresh sends. No bounded latency is
-claimed while downstream never retries or accepted requests never respond.
+**DECISION.** Fairness is deterministic on ordinary cache ports. If both
+classes remain eligible, the class RR bit alternates after each accepted fresh
+send. Logical grants rotate `nextLogicalMaa` after each accepted logical send.
+A granted retry preempts fresh work until that exact Packet is accepted because
+gem5 issued the retry for the refused owner. Response and local-capacity wakeups
+cannot change retry owner. Under recurring downstream acceptance and response
+progress, an eligible class receives a fresh grant within two accepted fresh
+sends and an eligible logical context within `2 * num_maas` accepted fresh
+sends. No bounded latency is claimed while downstream never retries or accepted
+requests never respond.
 
-**REJECT.** Any direct native caller bypassing the arbiter, two fields that can
-simultaneously await one `recvReqRetry`, RR movement on refusal/stall, a retry
-callback delivered to a different Packet, polling at zero time, logical
-Runtime/Transport mutation on false send, or a ninth response/Packet/sender
-slot fails review.
+**REJECT.** Reject a direct native caller bypassing the arbiter; any logical
+state on a retirement port; a token/counter shared by classes or ports; a
+mutable aggregate outstanding counter; two simultaneous retry owners on one
+RequestPort; RR movement on refusal/stall; a retry delivered to another Packet
+or port; polling at zero time; logical Runtime/Transport mutation on false; or
+a ninth response/Packet/sender slot.
 
 ### 2.3 Response and delivery ordering
 
@@ -474,6 +525,7 @@ retry fields (`src/mem/MAA/MAA.hh:61-140`;
 CpuReqRetry = Open
             | WaitNativeTile(tileID)
             | WaitLogical(maaID, mmioSlotEpoch)
+            | WaitGlobalRfCapture(captureEpoch)
             | GrantOutstanding
 ```
 
@@ -483,10 +535,11 @@ changes that exact state to `GrantOutstanding` and calls `sendRetryReq()` once.
 The next `recvTimingReq` consumes the generic gem5 grant before independently
 authenticating whatever Request the source retries; if it is still blocked it
 installs exactly one new wait reason. Native tile wakeup uses the same token.
-No CpuSidePort can record native and logical retry reasons simultaneously,
-issue two grants, or poll capacity. A retry while not `GrantOutstanding`, a
-second refusal while not Open, or teardown with a live token is an internal
-panic.
+No CpuSidePort can record native, logical-slot, and global-RF retry reasons
+simultaneously, issue two grants, or poll capacity. The RF-capture owner releases
+each `WaitGlobalRfCapture` exactly once after capture/rollback. A retry while
+not `GrantOutstanding`, a second refusal while not Open, or teardown with a
+live token is an internal panic.
 
 `MAA::drain` waits for all logical MMIO slots, the bounded response arbiter, and
 its retry owner, plus every CPU request-retry token, to empty. Queue overflow,
@@ -506,35 +559,94 @@ different CPU/requestor/context is an internal panic.
 4. the complete two-word FP64 scalar dependency and value capture; and
 5. one atomic `registerSource` or `admit`, followed by fingerprint commit.
 
-**FACT.** Current RF writes are first held in `my_registers`/`my_register_pkts`
-and dispatch later (`src/mem/MAA/CpuSidePort.cc:143-180`;
-`src/mem/MAA/MAA.cc:946-978`). Current `IF::canPushRegister` checks only one
-register word (`src/mem/MAA/IF.cc:451-467`). Valid IF entries remain present
-while issued (`src/mem/MAA/IF.cc:644-712`) and functional units read/write RF
-directly (`src/mem/MAA/ALU.cc:707-776,851-861`). Checking only current RF
-contents or one IF word cannot prove a two-word FP64 value ready. The
-transparent controller also exposes an existing register-span ownership query
-(`src/mem/MAA/MAA.cc:641-647`).
+**FACT.** RF is one global byte array: MAA constructs exactly one `RF` from the
+global `num_regs` (`src/mem/MAA/MAA.cc:60,149-157`; storage/access at
+`src/mem/MAA/SPD.hh:153-182`). It is not indexed by `maa_id`. Current RF writes
+are first held in the global `my_registers`/`my_register_pkts` vectors and later
+committed by `MAA::dispatchRegister` (`src/mem/MAA/MAA.hh:485-511`;
+`src/mem/MAA/CpuSidePort.cc:143-180`; `src/mem/MAA/MAA.cc:946-978`). Native ALU
+reduction writes 32- or 64-bit RF results at Finish
+(`src/mem/MAA/ALU.cc:830-866`), and RangeFuser writes two RF words at Finish
+(`src/mem/MAA/RangeFuser.cc:225-238`). These are all current direct
+`rf->setData` call sites; a source allowlist must fail when a future writer is
+added without joining the gate.
 
-**DECISION.** Add read-only `IF::usesRegisterSpan(maa_id, first, words)` and
-`MAA::registerSpanQuiescent(owner, first, words)`. The latter requires:
+**FACT.** Current `IF::canPushRegister` checks only one `maa_id` and one word
+(`src/mem/MAA/IF.cc:451-467`), while IF storage contains every valid entry for
+every `maa_id` (`src/mem/MAA/IF.hh:212-261`). `allFuncUnitsIdle()` does scan the
+global Invalidator, every Stream/ALU/Range unit, and every Indirect unit
+(`src/mem/MAA/MAA.cc:463-484`), but it does not close pending command queues,
+IF entries, transparent-controller work, or new producer admission. The one
+MAA-owned transparent controller filters register use by descriptor `maaID`
+(`src/mem/MAA/TransparentSPDController.hh:282-312`; owner at
+`src/mem/MAA/MAA.hh:499-513`). A per-`maa_id` span query is therefore not a safe
+global RF guard.
 
-- `words == 2` and the full span in RF bounds;
-- no valid IF entry for that `maa_id` names either word as source or
-  destination, including active Service entries;
-- no pending `my_registers` write from any owner overlaps either word;
-- `transparentControllerUsesRegister(maa_id, first, 2)` is false;
-- no logical MMIO assembly has already captured the span; and
-- the command owner tuple matches the RF-producing requestor/context policy.
+**DECISION.** V1 uses the smallest honest solution: one finite **global RF
+capture gate**, not a per-`maa_id` guard. `MAA` owns one fixed
+`GlobalRfCaptureOwner {pending, active, maaID, mmioSlotEpoch, firstWord,
+words}` plus one capture-ready bit per `maa_id` and a round-robin cursor. When
+a validated first slice reaches scalar capture, the gate closes acceptance of
+new native register writes, new native instruction word zero, and every other
+logical operation admission across all CPU ports. Exact continuation words for
+already assembled native commands may finish; new producers receive the one
+bounded per-CPU request-retry reason `WaitGlobalRfCapture`. Existing native work
+then drains. Registration and unrelated responses may progress, but no RF
+producer may enter behind the gate.
 
-Only then read the 64 bits once and place `scalarBits` by value in Runtime
-Admission (`src/mem/MAA/LogicalSPDCacheSlice.hh:112-120,522-529`). Later RF
-writes cannot change the operation. Busy returns bounded NotReady and leaves
-Runtime unchanged; no polling occurs at zero time.
+Add const `IF::usesRegisterSpanAnyMaa(first, words)`, per-FU
+`quiescentForGlobalRfCapture()` queries, and
+`MAA::globalRfQuiescentForCapture(first, words)`. The last predicate requires
+all of the following at the same event-queue point:
 
-**REJECT.** If a complete producer query cannot cover pending RF writes plus all
-valid/active IF entries, remove the RF operand from v1 and place scalar bits in
-a newly reviewed command field. Reading RF speculatively is not an option.
+- `words == 2`, `first >= 0`, and both FP64 words are within the one global RF;
+- every valid IF entry in every row of `instructions[maa_id]`, including issued
+  Service entries, is absent; the span query also proves neither word is named
+  as any source or destination before the final empty result;
+- the global Invalidator and **every** Stream, Indirect, ALU, and Range FU for
+  every `maa_id` are Idle, their instruction/correlation owners are null, and
+  their execute/finish events cannot still perform a write; in particular this
+  closes ALU reduction and RangeFuser Finish writes to either word;
+- the transparent controller is inactive, and
+  `transparentControllerUsesRegister(id, first, 2)` is false for every
+  `id in [0,num_maas)`; no controller-generated micro-op remains queued;
+- `my_registers` and `my_register_pkts` are both empty; the native instruction
+  assembly vectors `my_instructions`, `my_instruction_pkts`,
+  `my_instruction_recvs`, and `my_instruction_RIDs` contain no producer; and
+  the register/instruction dispatch events have no producer-bearing work;
+- every fixed bridge/MMIO context other than the selected owner is outside RF
+  capture, and the global owner/generation still matches the selected held
+  word-three Packet; and
+- a source-contract scan over all of `src/mem/MAA` finds no RF write path other
+  than register dispatch, ALU Finish, and RangeFuser Finish unless its owner is
+  explicitly added to this predicate and the cross-`maa_id` tests.
+
+**DECISION.** The check and capture are one non-reentrant critical section in
+the selected `logicalValidateEvent`. It changes `pending -> active`, asserts
+all native/other-logical admission entry points observe the gate, evaluates the
+complete predicate, reads `rf->getData<double>(firstWord)` exactly once, copies
+the bits by value into Runtime Admission, calls `admit`, and commits the page
+fingerprints before clearing the gate. It does not send a Packet, schedule an
+event, call an external timing peer, or return between the final predicate and
+the by-value capture. MAA event callbacks execute serially, so no CPU callback,
+IF issue, FU Finish, transparent micro-op, or other `maa_id` can interleave.
+Writers admitted after the critical section cannot change the captured value
+(`src/mem/MAA/LogicalSPDCacheSlice.hh:112-120,522-529`).
+
+This gate is bounded in storage but intentionally coarse in throughput. A
+scalar capture waits for global native quiescence and temporarily blocks new
+producer commands for every `maa_id`; simultaneous logical captures serialize
+in round-robin order. No bound is claimed if an already accepted native
+operation, incomplete native command, downstream retry, or response never
+progresses. Busy returns bounded NotReady/retry ownership and leaves Runtime
+unchanged; there is no zero-time polling.
+
+**REJECT.** A per-`maa_id` IF/FU/controller query, checking only the two RF
+bytes, allowing a new producer through while the gate is pending/active,
+capturing in a different callback from the final check, or an unallowlisted RF
+writer fails v1. If the complete global producer closure cannot be implemented,
+remove the RF operand and add scalar bits to a newly reviewed command field;
+speculative RF reads are forbidden.
 
 ## 4. Scheduling, modeled timing, and the bridge-state ledger
 
@@ -552,8 +664,8 @@ the stated work and returns:
 
 | Event role | Maximum work per invocation |
 |---|---|
-| `logicalValidateEvent` | One 4-KiB PTE fingerprint or one 64-byte line revalidation. |
-| `logicalPortArbiterEvent[4]` | One native or logical downstream send attempt for that port. |
+| `logicalValidateEvent` | One 4-KiB PTE fingerprint, one 64-byte line revalidation, or one global-RF gate transition/final atomic capture-admit. |
+| `logicalPortArbiterEvent[4]` | One native-ordinary or logical downstream send attempt on one of the four `cacheSidePorts`; never a retirement port. |
 | `logicalDriveEvent` | Select one Runtime RR, make at most one Runtime state transition, and expose at most one preview. |
 | `logicalResponseEvent` | Authenticate/receive at most `logical_response_width` Packets. |
 | `logicalCopyEvent` | Commit at most `logical_slot_write_ports` ready delivery tickets. |
@@ -620,17 +732,20 @@ the accepted 66,785-byte Runtime lower bound.
 | Logical response queue entries | `8 / maa_id` |
 | Logical delivery ticket entries | `4 / maa_id` |
 | Copy permits | `4 / maa_id`, at most one armed per active copy event |
-| Cache-port downstream retry owners | `1 / physical cache port`, four total |
-| Cache-port RR state | one class bit and one `maa_id` cursor per port |
-| CPU request-retry state | one discriminated native/logical token per physical `CpuSidePort` |
+| Ordinary cache physical ports | `num_cores == 4`; each owns distinct native and logical retry-state storage, with at most one non-Open |
+| Retirement cache physical ports | `num_cores == 4`; each owns one native-retirement retry state and zero logical state |
+| Accepted-outstanding accounting | separate native/logical counters per ordinary port; separate native-retirement counter per retirement port; capacity uses a derived sum only |
+| Ordinary cache RR state | one class bit and one `maa_id` cursor per `cacheSidePorts` entry; none on retirement ports |
+| CPU request-retry state | one discriminated native-tile/logical-slot/global-RF token per physical `CpuSidePort` |
 | CPU-response logical entries | `4 * num_maas` total |
 | CPU-response retry owner/RR | one owner and one class bit total on command port 0 |
+| Global RF capture owner | one fixed pending/active owner total, one ready bit per `maa_id`, and one RR cursor |
 | Event generation/scheduled/ready triples | validate, drive, response, copy, compute, completion per `maa_id`; one CPU-response triple; four port-arbiter triples |
 | Private read busy ticks | `num_spd_read_ports_per_maa / maa_id` |
 | Private write busy ticks | `num_spd_write_ports_per_maa / maa_id` |
 | ALU completion reservation | `1 / maa_id` |
 | Waiters | included in the one MMIO slot: registration or operation, never both |
-| MAA lifecycle/checkpoint flags | one each: `admissionClosed`, `draining`, `teardown`, `checkpointDirtyV1` |
+| MAA lifecycle/checkpoint flags | one each: `admissionClosed`, `draining`, `drainSignalPending`, `drainSignalIssued`, `teardown`, `checkpointDirtyV1` |
 
 Runtime's own eight Transport records, FIFO, four credits/line buffers, Slice,
 Controller, and two payload slots remain in its accepted semantic ledger and
@@ -644,6 +759,7 @@ bits.
 registrationAttempts, registrationAccepted, registrationRejected,
 admissionAttempts, admissionAccepted, admissionRejected,
 sePreflightLookups, seLineRevalidations, staleMapRejects, ownerRejects,
+globalRfCaptureWaits, globalRfCaptures, globalRfBlockedProducerRequests,
 logicalReadReqAccepted, logicalReadResponses,
 logicalWriteReqAccepted, logicalWriteResponses,
 downstreamRefusals, downstreamRetryGrants, localCapacityStalls,
@@ -655,13 +771,22 @@ aluReservations, aluBusyCycles, aborts, poisons,
 packetSlotsHighWater, responseQueueHighWater, deliveryQueueHighWater
 ```
 
-Add per physical cache port `rrNativeGrants`, `rrLogicalGrants`,
-`nativeDownstreamRefusals`, `logicalDownstreamRefusals`, `retryGrants`, and
-`acceptedOutstandingHighWater`; add command-port
+Add per ordinary physical cache port separate `nativePresentAttempts`,
+`logicalPresentAttempts`, `rrNativeGrants`, `rrLogicalGrants`,
+`nativeDownstreamRefusals`, `logicalDownstreamRefusals`, `nativeRetryGrants`,
+`logicalRetryGrants`, `nativeAccepted`, `logicalAccepted`,
+`nativeAcceptedOutstandingHighWater`, and
+`logicalAcceptedOutstandingHighWater`. Add per retirement physical port only
+`nativeRetirementPresentAttempts`, `nativeRetirementDownstreamRefusals`,
+`nativeRetirementRetryGrants`, `nativeRetirementAccepted`, and
+`nativeRetirementAcceptedOutstandingHighWater`; its logical values are
+source-audited constants zero, not shared counters. Add command-port
 `logicalCpuResponseQueueHighWater` and `logicalCpuResponseRetries`. Also retain
 zero-delta audit counters for native map inserts, native deferred inserts,
 Request/Row/Offset claims, and native logical-response counter increments.
-Counters are instrumentation excluded from 66,785 bytes.
+Capacity checks derive a sum from the class counters but do not store or report
+a mutable aggregate counter. Counters are instrumentation excluded from 66,785
+bytes.
 
 **REJECT.** No area, SRAM-overhead, or total-hardware-byte claim is allowed
 until these production fields exist and a source-checked post-implementation
@@ -760,22 +885,80 @@ predicate is the conjunction of:
    pending/records/credits/copy empty; Slice no operation/action/miss/lease and
    slots Empty or Clean; no page/compute correlation or abort;
 2. no PTE validation/revalidation, provisional fingerprint, adapter Packet,
-   Request, sender state, response, delivery ticket, CopyPermit, retry owner,
-   MMIO waiter/assembly, or CPU response/retry owner;
-3. all logical/native response queues empty; all logical events unscheduled;
-   no private port/ALU busy tick after `curTick()`;
-4. native IF/FU/register/instruction/ready/transparent-controller ownership
-   empty; native outstanding/deferred maps, per-unit sets/counters, Request/Row/
-   Offset tables, port blocks, and issue/send/dispatch events empty; and
+   Request, sender state, response, delivery ticket, CopyPermit, cache-port
+   native/logical/retirement retry owner, MMIO waiter/assembly, global RF
+   capture owner, or CPU response/request-retry owner;
+3. all four ordinary and all four retirement physical ports have zero
+   class-specific accepted-outstanding counts; every CPU/cache/retirement/memory
+   request, response, and snoop `PacketQueue` is empty, not waiting on retry, and
+   has no send event; all logical/native response queues are empty; all logical
+   events are unscheduled; and no private port/ALU busy tick exceeds `curTick()`;
+4. native IF/FU/register/instruction/ready/transparent-controller ownership is
+   empty across every `maa_id`; native outstanding/deferred maps and every
+   per-core/per-channel send queue are empty; per-unit packet sets/counters and
+   Request/Row/Offset tables are empty; `cache_bus_blocked` and
+   `mem_channels_blocked` are false; and issue, send-cache, send-memory,
+   dispatch-instruction, dispatch-register, FU, invalidator, and transparent
+   controller events are unscheduled; and
 5. no teardown/reset in progress.
 
 Explicit const `quiescent()` queries prove each term. `allFuncUnitsIdle()` alone
 is insufficient because it does not cover maps/waiters/events
 (`src/mem/MAA/MAA.cc:463-484`; native ownership at
-`src/mem/MAA/MAA.hh:485-519,756-839`). `drainResume` verifies the same predicate,
-calls Runtime `resumeAfterDrain`, and reopens admission.
+`src/mem/MAA/MAA.hh:485-519,756-839`). The port query inventories both vectors
+at `src/mem/MAA/MAA.hh:272-275`, including logically-zero retirement state.
 
-MAA owns the four lifecycle flags inventoried in section 4.3. In particular,
+**DECISION — exact signal owner.** `MAA` is the only owner allowed to invoke
+its inherited `signalDrainDone()`, and it does so only inside
+`MAA::maybeSignalLogicalDrainDone()`. `drain()` first closes admission and
+requests child drain. If the full predicate is already true it returns Drained
+and leaves `drainSignalPending=false`. Otherwise it sets
+`drainSignalPending=true`, `drainSignalIssued=false`, records one drain epoch,
+and returns Draining. The helper performs exactly:
+
+```
+if (!drainSignalPending)
+    return;
+panic_if(drainState() != DrainState::Draining || drainSignalIssued);
+if (!maaFullDrainPredicate())
+    return;
+drainSignalPending = false;
+drainSignalIssued = true;
+signalDrainDone();
+```
+
+Thus the MAA signal occurs exactly once, only after this MAA's `drain()` returned
+Draining, and only after native **and** logical state satisfy the same full
+predicate. The generic `Drainable::signalDrainDone()` is itself state-aware
+(`src/sim/drain.hh:295-315`), but that does not replace the explicit MAA pending/
+issued invariant.
+
+Call `maybeSignalLogicalDrainDone()` after every transition that can remove the
+last predicate owner: at the tail of every MAA issue/dispatch/send and logical
+validate/drive/port-arbiter/response/copy/compute/completion/CPU-response event;
+after every cache-side, retirement-side, memory-side, and CPU-side timing or
+snoop response; after every request/response retry grant or accepted retry;
+after SE translation/fingerprint completion; after MMIO waiter, CPU-response,
+delivery ticket, and CopyPermit release; after Runtime response/retire/reset and
+abort-flush WriteResp ACK; and after a drain-aware MAA PacketQueue send-event or
+retry wake removes its final Packet. MAA-specific Request/Response/Snoop queue
+subclasses call the helper after their base `sendDeferredPacket()` path; the
+PacketQueue remains an independently registered Drainable and may also signal
+its own drain. PacketQueue emptiness and send/retry state are source-audited by
+MAA because a child queue's signal does not signal MAA
+(`src/mem/packet_queue.cc:62-67,143-218`; queued port ownership at
+`src/mem/qport.hh:60-66,102-113`).
+
+`drainResume` is legal only while Drainable is Resuming and the full predicate
+is still true, every Runtime is drained/unpoisoned/unsealed, both signal flags
+show `drainSignalPending == false` and `drainSignalIssued` equals whether that
+epoch returned Draining, and teardown/reset is absent. It then calls each
+Runtime `resumeAfterDrain`; only after every call succeeds does it clear the
+completed epoch/issued flag and reopen native/logical admission. A poisoned
+Runtime, newly nonempty native queue/event, or residual port/PacketQueue owner
+is fatal and leaves admission closed.
+
+MAA owns the lifecycle flags inventoried in section 4.3. In particular,
 `checkpointDirtyV1` is initialized false, set **before** the first
 simulator-visible guest mutation of regions, RF, SPD, IF, native units, virtual
 metadata, logical registration/admission, or bridge state, and never cleared by
@@ -907,17 +1090,30 @@ Paths:
 
 - bridge files; `src/mem/MAA/MAA.hh`, `src/mem/MAA/MAA.cc`
 - `src/mem/MAA/IF.hh`, `src/mem/MAA/IF.cc`
-- cache/CPU/memory port sources and native FU headers for const queries
+- `src/mem/MAA/Port.cc`, `src/mem/MAA/CacheSidePort.cc`,
+  `src/mem/MAA/CpuSidePort.cc`, `src/mem/MAA/MemSidePort.cc`
+- `src/mem/MAA/ALU.hh`, `src/mem/MAA/ALU.cc`,
+  `src/mem/MAA/RangeFuser.hh`, `src/mem/MAA/RangeFuser.cc`,
+  `src/mem/MAA/StreamAccess.hh`, `src/mem/MAA/StreamAccess.cc`,
+  `src/mem/MAA/IndirectAccess.hh`, `src/mem/MAA/IndirectAccess.cc`,
+  `src/mem/MAA/Invalidator.hh`, `src/mem/MAA/Invalidator.cc`,
+  `src/mem/MAA/Tables.hh`, `src/mem/MAA/Tables.cc`, and
+  `src/mem/MAA/TransparentSPDController.hh` for exact const quiescence queries
 - new `tests/maa/logical_spd_cache_bridge_lifecycle_test.cc`
 
 Add owner containers, guarded constructor/destructor, drain/resume, exact
 quiescence/pristine queries, ClockedObject checkpoint chaining, fail-closed
 non-pristine policy and irreversible `checkpointDirtyV1` seam, reset/abort/
 teardown, bounded CPU-response skeleton, and ProductionStop/Poisoned panic
-conversion. Host tests cover construction,
-partial-failure cleanup, every drain term, pristine round trip, rejection after
-one mutation in every persistent class, reset, abort flush, and teardown. Guest
-logical decode remains at the accepted panic.
+conversion. `MAA::maybeSignalLogicalDrainDone()` is the sole MAA signal owner;
+drain-aware MAA PacketQueues and every named port/event/response/retry release
+call it. Host tests cover construction, partial-failure cleanup, every native
+and logical drain term, a last-owner transition for each callback family,
+spurious pre-drain calls, duplicate post-completion calls, a deliberately
+omitted-notification negative seam, exact one-signal accounting, resume refusal
+from poisoned/nonempty state, pristine round trip, rejection after one mutation
+in every persistent class, reset, abort flush, and teardown. Guest logical
+decode remains at the accepted panic.
 
 ### Commit 3 — SE ownership, range, registration, and RF queries, admission closed
 
@@ -929,35 +1125,56 @@ Paths:
 - `src/mem/MAA/IF.hh`, `src/mem/MAA/IF.cc`
 - `src/mem/MAA/CpuSidePort.cc`, `src/mem/MAA/MAA.hh`,
   `src/mem/MAA/MAA.cc`, bridge files
+- `src/mem/MAA/ALU.hh`, `src/mem/MAA/ALU.cc`,
+  `src/mem/MAA/RangeFuser.hh`, `src/mem/MAA/RangeFuser.cc`,
+  `src/mem/MAA/StreamAccess.hh`, `src/mem/MAA/StreamAccess.cc`,
+  `src/mem/MAA/IndirectAccess.hh`, `src/mem/MAA/IndirectAccess.cc`,
+  `src/mem/MAA/Invalidator.hh`, `src/mem/MAA/Invalidator.cc`, and
+  `src/mem/MAA/TransparentSPDController.hh`
 - `tests/maa/logical_spd_cache_abi_test.cc`
 - new `tests/maa/logical_spd_cache_bridge_host_test.cc`
+- new `tests/maa/logical_spd_cache_bridge_global_rf_test.cc`
 - `experiments/tests/test_logical_spd_cache_abi_contract.py`
+- new `experiments/tests/test_logical_spd_cache_global_rf_contract.py`
 
 Add the ordered eighth MMIO range, explicit `maa_id` helpers, fixed MMIO slots,
 owner-tuple validation, one-PTE-per-event SE fingerprint/revalidation seam, and
-complete RF-span queries. Permit source registration only after lifecycle is
-present; keep operation admission fail-closed. Tests cover range/name/vector
-order, guest region IDs 8-31, wrong owner/context/requestor/process, immediate
-and changed PTEs, flags/faults/alias, lifetime, all RF producers, finite Packet
-ownership, and no Runtime mutation on validation failure.
+the finite global RF capture gate. Permit source registration only after
+lifecycle is present; keep operation admission fail-closed. Tests cover range/
+name/vector order, guest region IDs 8-31, wrong owner/context/requestor/process,
+immediate and changed PTEs, flags/faults/alias, lifetime, finite Packet
+ownership, and no Runtime mutation on validation failure. The dedicated global
+RF test uses at least two `maa_id`s and covers a producer in another IF row,
+another MAA's ALU reduction and RangeFuser Finish targeting each FP64 word, an
+active transparent descriptor for every `maa_id`, register writes queued from
+every CPU port, partial/native instruction queues, simultaneous logical capture
+serialization, post-capture RF mutation stability, and source rejection of a
+new unregistered `rf->setData` call site.
 
 ### Commit 4 — shared cache-port and CPU-response arbiters, admission closed
 
 Paths:
 
 - bridge files; `src/mem/MAA/MAA.hh`, `src/mem/MAA/MAA.cc`
-- `src/mem/MAA/CacheSidePort.cc`, `src/mem/MAA/CpuSidePort.cc`
+- `src/mem/MAA/Port.cc`, `src/mem/MAA/CacheSidePort.cc`,
+  `src/mem/MAA/CpuSidePort.cc`, and `src/mem/MAA/MemSidePort.cc`
 - Runtime/Transport files for `previewLine`/`commitAcceptedLine`
 - bridge host test and new
   `experiments/tests/test_logical_spd_cache_bridge_contract.py`
 
-Implement the exact state machines, fixed Packet/Request/sender/response/
-delivery pools, two-phase no-mutation refusal seam, response authentication,
-and CopyPermit. The logical operation path is still closed. Tests cover native
-and logical false sends, repeated/spurious retries, local capacity, class and
-`maa_id` fairness, response progress/reordering/replacement, wrong owner/paddr/
-region/port, all fixed bounds, discriminated CPU request and response retry,
-and zero native-contamination deltas.
+Implement the exact ordinary-cache and native-retirement state machines,
+`Port.cc` native present/accepted boundary, immutable physical role, separate
+per-class/per-port retry storage and counters, fixed Packet/Request/sender/
+response/delivery pools, two-phase no-mutation refusal seam, response
+authentication, and CopyPermit. The logical operation path is still closed.
+Tests instantiate both `num_cores`-wide vectors and cover logical traffic on
+exactly four ordinary ports, permanently zero logical state on all retirement
+ports, preserved native retirement routing, native present-versus-accepted
+counts, native/logical/retirement false sends, repeated/spurious/cross-port
+retries, local capacity derived from separate counters, class and `maa_id`
+fairness, response progress/reordering/replacement, wrong owner/paddr/region/
+port, all fixed bounds, discriminated CPU request and response retry, and zero
+native-contamination deltas.
 
 ### Commit 5 — timing ports, events, ledger fields, and mechanism stats, admission closed
 
@@ -985,13 +1202,14 @@ Paths:
 - bridge lifecycle/host tests
 - one exact-output smoke source under `benchmarks/`
 
-Only now replace the accepted fail-closed operation panic. Admission captures
-the scalar after all validation, holds exactly one word-three Packet per
-`maa_id`, drives four ordered pages, and completes only after the final
-destination WriteResp and CPU-response acceptance. Rollback restores one panic
-without removing safe inert registration/lifecycle.
+Only now replace the accepted fail-closed operation panic. Admission acquires
+the global RF capture gate and captures the scalar only at the section-3 atomic
+point after all validation, holds exactly one word-three Packet per `maa_id`,
+drives four ordered pages, and completes only after the final destination
+WriteResp and CPU-response acceptance. Rollback restores one panic without
+removing safe inert registration/lifecycle.
 
-### Commit 7 — matched validation assets, no timing claim
+### Commit 7 — correctness/mechanism validation assets, timing locked
 
 Paths:
 
@@ -999,13 +1217,75 @@ Paths:
 - exact-output runner under `experiments/scripts/`
 - parser/oracle tests under `experiments/analysis/` and `experiments/tests/`
 
-Add hashes, manifests, common configuration, matched-arm enforcement, counter
-parser, and reject diagnostics. No gem5 execution or performance conclusion is
-part of this commit.
+Add correctness hashes, manifests, common configuration, counter parser, and
+reject diagnostics for Gate C. This commit may prepare but must reject any
+comparative timing manifest because the production matched-native mechanism is
+not present. No gem5 execution or performance conclusion is part of this
+commit.
+
+### Commit 8 — production matched-native4Kx4 shim, separately reviewed
+
+Expected paths (the follow-up design review may add a path, but may not omit a
+listed owner):
+
+- `src/mem/MAA/SConscript`
+- new `src/mem/MAA/LogicalSPDCacheMatchedNativeShim.hh`
+- new `src/mem/MAA/LogicalSPDCacheMatchedNativeShim.cc`
+- bridge files; `src/mem/MAA/MAA.py`, `src/mem/MAA/MAA.hh`,
+  `src/mem/MAA/MAA.cc`
+- `src/mem/MAA/Port.cc`, `src/mem/MAA/CacheSidePort.cc`, and
+  `src/mem/MAA/CpuSidePort.cc`
+- `src/mem/MAA/SPD.hh`, `src/mem/MAA/SPD.cc`, `src/mem/MAA/ALU.hh`, and
+  `src/mem/MAA/ALU.cc` for matched native staging/compute reservations
+- `configs/common/Options.py`, `configs/common/MAAConfig.py`, and
+  `benchmarks/API/MAA_gem5.hpp` for the opt-in backend selector without a
+  different workload binary
+- new `tests/maa/logical_spd_cache_matched_native_shim_test.cc`
+- new `experiments/tests/test_logical_spd_cache_matched_native_contract.py`
+
+This atomic, default-off production commit supplies the mechanism specified by
+Gate D: the same authenticated high-level operation selects a native4Kx4
+backend which owns two 32-KiB staging tiles, uses the shared eight-record/four-
+credit throttle and the same four ordinary cache-side arbiters, reserves the
+same read/write/ALU bandwidth, issues exactly 2048 source ReadReqs and 2048
+full-line destination WriteReqs, and retains fixed sender/response ownership
+until every final WriteResp. It holds the same completion-bearing word-three
+Packet from admission through the 2048th authenticated WriteResp and bounded
+CPU-response acceptance; dispatch or hierarchy request acceptance is not
+completion. The state joins the full MAA drain/abort/teardown predicate and
+`maybeSignalLogicalDrainDone()` calls. Separate review must approve its exact
+state transitions, identity fields, configuration freeze, and tests before the
+commit may land.
+
+Host tests must cover every budget boundary, shared-port arbitration,
+refusal/retry/reorder/wrong-response identity, no retirement/memory-side use,
+no destination read-for-ownership, exactly 16,384 FP64 multiplies, response
+ownership through the last WriteResp, early/duplicate completion rejection,
+drain at each shim state, abort flush, teardown, and zero cross-backend counter
+contamination. Rollback is the entire Commit 8: restore the default-off selector
+to absent, remove shim ownership/routing/tests, and leave Commit 6 logical
+correctness intact and all timing ineligible.
+
+### Commit 9 — matched timing assets and eligibility enforcement
+
+Paths:
+
+- exact paired runner under `experiments/scripts/`
+- manifest/parser/oracle logic under `experiments/analysis/` and
+  `experiments/tests/`
+- no production source unless a new mechanism gap restarts Commit 8 review
+
+Only after Commit 8 passes separate design/source/host review may this commit
+enable a Gate-D manifest. It freezes the common binary/config/checkpoint/input,
+requires all shim lifecycle and mechanism counters, and rejects native command
+dispatch or request-acceptance timestamps as completion. Rollback removes only
+timing assets; it cannot make a failed/missing shim eligible.
 
 **REJECT.** Commits 1-5 must compile with guest operation admission closed.
 Commit 6 is forbidden unless every lifecycle, storage, retry, translation,
-timing, and finite-ownership host gate already exists and passes.
+timing, and finite-ownership host gate already exists and passes. Commit 7 does
+not unlock timing. Comparative timing is forbidden until the separately
+reviewed Commit 8 mechanism and Commit 9 enforcement both exist and pass.
 
 ## 8. Validation and the matched performance matrix
 
@@ -1020,16 +1300,25 @@ fake seams cover:
 - owner/context/process/page-table lifetime and every Request metadata field;
 - 32-page preflight plus every-line revalidation, PTE flags, fault, remap,
   region generation, offset, alias, and FS rejection;
-- one MMIO slot/`maa_id`, range IDs/names/order, user regions 8-31, RF pending
-  and IF/FU hazards, CPU request-token and response bounds/retry;
-- native/logical local capacity, false send, exact/repeated/spurious retry,
-  class/context fairness, response progress/reorder/replacement, and all pool
-  limits;
+- one MMIO slot/`maa_id`, range IDs/names/order, user regions 8-31, and the
+  finite global RF capture gate: every IF entry/FU/transparent controller/
+  register and instruction queue across at least two `maa_id`s, both FP64
+  words, atomic check/capture, producer-admission closure, cross-MAA RR, and the
+  direct-RF-writer source allowlist;
+- both `num_cores` ordinary and retirement port vectors; logical traffic and
+  counters on exactly four ordinary ports and zero on retirement ports;
+  preserved native retirement routing; separate native/logical/retirement
+  present, accepted, refusal, retry, and response accounting; local capacity
+  from derived class counts; exact/repeated/spurious/cross-port retry; class/
+  context fairness; response progress/reorder/replacement; and all pool limits;
 - read/write data lifetime, CopyPermit misuse, exact Runtime precommit, and
   zero native map/table/counter contamination;
 - private read/write/ALU reservations and no early host datapath commit; and
-- drain at every adapter state, pristine-only checkpoint accept/reject,
-  ClockedObject chain, abort dirty flush, reset, panic mapping, and teardown.
+- drain at every logical and native owner including all physical ports,
+  PacketQueues, events, tables, and abort-flush ACK; exactly one MAA signal
+  after Draining; spurious/duplicate/missed-signal seams; resume only from full
+  unpoisoned quiescence; pristine-only checkpoint accept/reject, ClockedObject
+  chain, reset, panic mapping, and teardown.
 
 ### Gate B — per-commit object compile
 
@@ -1057,11 +1346,13 @@ Before timing is inspected, require:
 | logical write requests/responses | `2048 / 2048` |
 | preflight lookups | `64` total source+destination |
 | line revalidations | one before each of 4096 requests plus one for each response, as configured and reported separately |
+| global RF capture | exactly `1`; all cross-maa producer terms clear at the atomic capture point |
 | faults / stale maps / owner rejects / aborts / poisons | all `0` |
 | max Runtime credits / records / FIFO | `<=4 / <=8 / <=8` |
 | adapter Packet/sender/response/delivery high-water | `<=8 / <=8 / <=8 / <=4` |
-| cache-port retry ownership | every false has exactly one grant before the exact retry; end state Open |
-| live adapter/MMIO/CPU-response/event/timing owners at end | all `0` |
+| physical-port topology/accounting | four ordinary plus four retirement; logical activity only on ordinary; separate class present/accepted/retry/response identities reconcile; all end Open/zero |
+| cache-port retry ownership | every false has exactly one same-class/same-port grant before the exact retry; no shared token or aggregate counter |
+| live adapter/MMIO/global-RF/CPU-response/event/timing owners at end | all `0` |
 | page order | `0,1,2,3`; no page advance before exact final action ACK |
 | completion | final CPU response no earlier than the edge after final destination WriteResp authentication |
 | native contamination | all audited native map/deferred/table/response deltas `0` |
@@ -1070,56 +1361,113 @@ The response-time lookup count is deliberately separate from request-time
 lookup count; a matrix manifest must freeze the selected policy rather than
 silently omit it.
 
-### Gate D — resource- and protocol-matched timing matrix
+### Gate D — LOCKED resource- and protocol-matched timing matrix
 
-**DECISION.** Only these timing arms are admissible:
+**FACT.** Current production native completion is not matched. A native
+instruction Packet becomes a timing response when the instruction is pushed at
+dispatch (`src/mem/MAA/MAA.cc:1035-1087`), before its data operation finishes.
+Native stream store constructs `WritebackDirty`, which does not require a
+response (`src/mem/MAA/StreamAccess.cc:465-475`); `Port.cc` erases that work and
+notifies `writePacketSent` after hierarchy request acceptance
+(`src/mem/MAA/Port.cc:573-595`), and `writePacketSent` counts that notification
+as a received response (`src/mem/MAA/StreamAccess.cc:385-396`). Neither native
+command response-at-dispatch nor non-response hierarchy acceptance equals the
+logical final destination WriteResp boundary.
+
+**DECISION — performance lock.** Gate C correctness/mechanism smoke may proceed
+after Commit 6 with fresh user approval, but no comparative timing, bandwidth,
+speedup, or energy-proxy parsing may proceed from Commits 1-7. Gate D opens only
+after the separately reviewed production Commit 8 shim and Commit 9 eligibility
+enforcement both exist, pass their source/host gates, and are frozen in the
+manifest. A runner must fail closed when the shim build flag, backend identity,
+mechanism counters, or durability owner is absent. The current native path can
+never be grandfathered in as `native4kx4-matched`.
+
+**DECISION — required Commit 8 lifecycle and response contract.** The default-
+off `LogicalSPDCacheMatchedNativeShim` is MAA/bridge-owned, bounded one per
+`maa_id`, and entered through the same authenticated registration/admission,
+global RF capture, held word-three Packet, and PTE policy as the logical arm.
+Only one backend is active in an arm. Native4Kx4 owns exactly two visible
+32-KiB staging tiles, four ordered pages, eight fixed request records, four
+response credits, fixed sender/data slots, and the same named read/write/ALU
+reservations used to throttle logical4Kx4. It sends logical and matched-native
+data only through the same four `cacheSidePorts`, the same class arbiter width,
+and the same cache hierarchy; retirement and memory-side ports must remain zero.
+
+For each of four pages the shim accepts 512 full-line source ReadReq/ReadResp
+pairs into the source tile, reserves 4096 FP64 multiplies and destination-tile
+writes, then emits 512 full-line destination `WriteReq`s directly from the
+staged result. Full-line stores perform no destination read-for-ownership in
+the matched mechanism. Each WriteReq carries fixed matched-native sender state
+and retains its request/Packet/line data/credit until an authenticated WriteResp
+returns from the same final hierarchy used by logical traffic. The held MMIO
+Packet remains owned through all four pages and all 2048 WriteResps, then enters
+the same bounded CPU-response arbiter. The response after the 2048th WriteResp
+is the modeled durability boundary for **both** arms; it is not a claim of
+off-chip media persistence. Dispatch, tile-ready, Packet presentation, retry
+grant, or true `sendTimingReq` cannot release it.
+
+Shim validation, response, abort-flush ACK, CPU-response release, retry, and
+PacketQueue wake paths join the full drain predicate and call
+`maybeSignalLogicalDrainDone()`. Drain cannot complete with a shim record,
+credit, Packet, sender, staging/ALU reservation, held MMIO response, or accepted
+WriteReq alive. Abort retains dirty destination ownership until exact WriteResp
+ACK; teardown requires the shim sealed/destruction-safe. Rollback is the atomic
+Commit 8 boundary in section 7 and restores timing-ineligible state, never the
+current native completion shortcut.
+
+**DECISION.** Once Gate D is unlocked, only these arms are admissible:
 
 1. `logical4kx4-matched`: the v1 Runtime, two private 32-KiB slots, four ordered
-   pages, and the bridge path.
-2. `native4kx4-matched`: four ordered native 4K FP64 load/multiply/store phases,
-   using exactly two 32-KiB FP64 staging tiles (64 KiB total), throttled to the
-   same eight request records, four response credits, four coherent cache
-   ports, issue/response widths, and SPD read/write/ALU port counts/latencies.
-   A native durability shim holds its final command response until the same
-   2048 destination WriteResp acknowledgements are authenticated.
+   pages, and the bridge path through the shared matched throttle/resources.
+2. `native4kx4-matched`: the reviewed Commit 8 backend, four ordered 4K FP64
+   load/multiply/store phases, exactly two 32-KiB staging tiles, the same eight
+   records/four credits/four ordinary cache ports and issue/response widths,
+   the same read/write/ALU port counts/latencies, and final response only after
+   all 2048 destination WriteResps.
 3. `host-oracle`: exact output/canary hash only; never timed against gem5.
 
 `native16` may be recorded as a capacity-unmatched diagnostic, but is not in a
 speedup denominator: a 16K FP64 source plus destination has four times the
 staging payload and may fuse/end at a different point.
 
-**DECISION.** The two timing arms use the same workload source and binary hash,
-simulator commit/binary hash, input bytes/hash, 128-KiB source/destination
-addresses, scalar bits, FP64 multiply, four page boundaries/order, output and
-canary oracle, CPU model/count, clocks, cache hierarchy/state, memory model,
-channel mapping, requestor/context/region metadata, construction-pristine
-checkpoint hash, restore tick, stats reset point, and warm/cold policy.
+**DECISION.** The two timing arms use the same workload source **and binary
+hash** (the host configuration selects a backend), simulator commit/binary
+hash, input bytes/hash, 128-KiB source/destination addresses, scalar bits, FP64
+multiply, four page boundaries/order, output and canary oracle, CPU model/count,
+clocks, cache hierarchy/state, memory model, channel mapping, requestor/context/
+region metadata, construction-pristine checkpoint hash, restore tick, stats
+reset point, and warm/cold policy.
 
-Both arms execute exactly 2048 source-line reads, 4096 FP64 multiplies, and 2048
-destination-line writes. Both end only after the same final destination array
-is globally durable at the modeled WriteResp boundary and the
-completion-bearing MMIO response is accepted. Cross-page fusion, prefetch,
-coalescing, extra overlap, different final tile readiness, or private-only
-completion is disabled unless implemented identically in both arms.
+Both arms execute exactly 2048 source-line reads, **16,384 FP64 multiplies**,
+and 2048 destination-line writes. Both use the same port/throttle/resource
+reservations and end only after the same guest destination array reaches the
+modeled final WriteResp boundary and the completion-bearing MMIO response is
+accepted. Cross-page fusion, prefetch, coalescing, destination RFO, extra
+overlap, different final tile readiness, or private-only completion is disabled
+unless implemented identically in both arms.
 
 Report the same three intervals for both:
 
 - `setup`: first completion-bearing command word through all owner/region/PTE/
-  RF validation, with lookup counts/cycles;
-- `data_motion_compute`: first accepted source request through final destination
-  WriteResp authentication; and
+  global-RF validation and atomic scalar capture, with lookup/gate counts and
+  cycles;
+- `data_motion_compute`: first accepted source request through the 2048th
+  authenticated destination WriteResp; and
 - `end_to_end`: first source registration request through accepted final MMIO
   response.
 
-Actual setup/translation/revalidation work is included in end-to-end and
-reported separately with identical boundaries; no arm may receive unreported
-pretranslation. Mechanism/oracle gates must pass before cycles, bandwidth,
-speedup, or energy proxies are parsed.
+Actual setup/translation/revalidation/global-RF-gate work is included in end-
+to-end and reported separately with identical boundaries; no arm may receive
+unreported pretranslation. Mechanism/oracle gates must pass before cycles,
+bandwidth, speedup, or energy proxies are parsed.
 
-**REJECT.** Reject an arm for unequal payload, ports/credits/widths, software
-work, scalar operation, fusion, destination/durability boundary, setup boundary,
-translation policy, cache/checkpoint state, hashes, line counts, output, retry
-balance, or native contamination. Do not relabel a mismatched run “slow.”
+**REJECT.** Reject timing if Commit 8 or 9 lacks separate approval; if the
+current dispatch/WritebackDirty path supplies native completion; or for unequal
+payload, throttle, ports/credits/widths, software work/binary, scalar operation,
+fusion, final destination/durability, setup, translation/global-RF policy,
+cache/checkpoint state, hashes, line/multiply counts, output, retry balance, or
+native contamination. Do not relabel a mismatched run “slow.”
 
 ## 9. Consolidated reject criteria and remaining questions
 
@@ -1131,7 +1479,9 @@ balance, or native contamination. Do not relabel a mismatched run “slow.”
    4 KiB, or any Packet metadata field cannot be authenticated;
 2. a mapping is assumed stable, a committed fingerprint is used without fresh
    per-Packet translation, or remap/fault can continue silently;
-3. a cache port can have two retry owners, local capacity creates a fake retry,
+3. either physical port vector is not `num_cores`, logical state appears on a
+   retirement port, a class/port shares a retry token or mutable counter,
+   native present is counted as accepted, local capacity creates a fake retry,
    RR can starve one class/context, or refusal mutates Runtime/Transport;
 4. any Packet/Request/sender/response/delivery/MMIO/CPU-request-retry/
    CPU-response/event/timing owner exceeds the section-4 bound or uses an
@@ -1139,20 +1489,26 @@ balance, or native contamination. Do not relabel a mismatched run “slow.”
 5. Runtime arrays and SPD hidden lanes both exist, neither exists, or any
    allocator/accounting/object gate describes a different tree;
 6. MAA lifecycle/checkpoint/panic/teardown tests are absent when registration or
-   admission becomes reachable;
+   admission becomes reachable, the full predicate omits a native queue/event/
+   PacketQueue/physical port, or any path other than the one guarded MAA helper
+   calls `signalDrainDone()`;
 7. `serialize` omits ClockedObject chaining, accepts non-pristine MAA state, or
    claims logical-only restoration covers native SPD/RF/IF/regions/FUs;
 8. range types/names/vector/helper order disagree, `8 + 2 * num_maas > 32`, a
    source/destination region is outside `[8,32)` or reused while live, or
    requestor/context maps to a different `maa_id`;
-9. scalar capture ignores either RF word, pending register writes, or a valid/
-   active IF/FU/transparent-controller producer;
+9. scalar capture uses a per-`maa_id` guard; ignores either RF word, any IF row,
+   FU/controller/command queue or direct RF writer in any `maa_id`; admits a
+   new producer while pending; or separates final check from by-value capture;
 10. synchronous Datapath mutation occurs before all private read/ALU/write
     reservations reach the compute-completion event;
 11. ProductionStop/Poisoned can return to guest-visible success, or a finite ID
     wraps; or
-12. mechanism counters or exact output are missing before timing, or the matrix
-    differs in resources/protocol/boundaries/hashes.
+12. a correctness smoke is described as comparative timing; Commit 8/9 or their
+    separate review is absent; native dispatch/WritebackDirty acceptance is
+    treated as completion; mechanism counters or exact output are missing; or
+    the matrix differs in throttle/resources/ports/protocol/final destination/
+    WriteResp boundary/software/binary/hashes.
 
 ### Beyond-v1 questions
 
@@ -1163,8 +1519,9 @@ FS legal?
 of fatal-on-post-admission SE mapping failure?
 
 **QUESTION.** Should private Runtime slots eventually share architectural SPD
-ports/banks? V1 models separate named ports and matches the native timing arm;
-changing contention requires a new study.
+ports/banks? V1 models separate named ports; the required Commit 8 shim must
+match their reservations before any timing arm is eligible. Changing contention
+requires a new study.
 
 **QUESTION.** What complete serializer covers native SPD, RF, IF, FUs, tables,
 regions, virtual metadata, bridge, and Runtime for non-pristine checkpoints?
@@ -1175,16 +1532,24 @@ operation's mechanism/overhead and cannot claim multi-operation cache benefit.
 
 ## Implementation-ready acceptance checklist
 
-The candidate is ready for the first separately approved gem5 smoke only when
-all boxes are true:
+The future implementation is ready for the first separately approved gem5
+correctness smoke when every Gate-C box below is true. The later Gate-D boxes
+do not block that smoke; they block all comparative timing.
+
+**Gate C correctness/smoke (Commits 1-7):**
 
 - [ ] SE-only gate is explicit; FS fails before registration.
 - [ ] Every command and data Packet authenticates vaddr, fresh paddr, region,
   requestor, context, process/pTable identity, owner generation, and `maa_id`.
 - [ ] A fingerprint is never called stable; all stale/fault/lifetime transitions
   fail closed exactly as section 1 specifies.
-- [ ] Each cache RequestPort implements the one-owner state machine, exact retry,
-  local-capacity separation, native/logical and logical-context RR fairness.
+- [ ] `cacheSidePorts` and `retirementSidePorts` each contain `num_cores == 4`
+  physical ports; logical traffic/state is confined to the four ordinary ports;
+  retirement behavior is preserved and its logical audit is zero.
+- [ ] Each physical RequestPort has exact same-port retry ownership; native,
+  logical, and native-retirement present/accepted/retry/response tokens and
+  counters are separate; local capacity uses only a derived sum; ordinary class
+  and logical-context RR fairness holds.
 - [ ] A downstream false leaves all Runtime/Transport audit fields unchanged.
 - [ ] All logical queues/pools/events/waiters and CPU responses obey section-4
   cardinalities; each CPU request port has one discriminated retry token; all
@@ -1192,24 +1557,40 @@ all boxes are true:
 - [ ] Exactly one completion-bearing operation and one MMIO slot exist per
   `maa_id`; ranges/names/vector order, `num_maas <= 12`, and unique live user
   region IDs are source-tested.
-- [ ] Both RF words, pending writes, and every valid/active IF/FU/transparent-
-  controller producer are clear before scalar capture.
+- [ ] `tests/maa/logical_spd_cache_bridge_global_rf_test.cc` proves the finite
+  global gate over both RF words, every IF entry/native FU/transparent controller
+  and register/instruction queue in every `maa_id`, global producer-admission
+  closure, serialized cross-MAA captures, and one-callback atomic check/capture;
+  the source allowlist covers every direct RF writer.
 - [ ] Runtime is the sole 64-KiB payload owner per `maa_id`; every named hidden-
   payload/accounting/object/sanitizer test changed atomically.
 - [ ] Lifecycle, guarded teardown, ProductionStop panic, and construction-
-  pristine checkpoint accept/reject tests land before guest admission.
+  pristine checkpoint accept/reject tests land before guest admission;
+  `MAA::maybeSignalLogicalDrainDone()` is the sole MAA signal owner and
+  spurious/duplicate/missed-signal plus poisoned/nonempty-resume tests pass.
 - [ ] `MAA::serialize`/`unserialize` chain ClockedObject and every non-pristine
   MAA/logical checkpoint fails closed through the irreversible v1 dirty latch.
 - [ ] The host datapath commits only at the modeled event after explicit private
   read, ALU, and private write reservations.
 - [ ] The separate bridge-state production ledger exists; no area claim derives
   from 66,785 bytes.
-- [ ] Exact mechanism/output gates pass before timing; only the matched 4Kx4
-  matrix is timing-eligible.
-- [ ] Simulator/workload/config/checkpoint/input hashes and final durability
-  boundary are identical across timing arms.
+- [ ] Gate C exact mechanism/output smoke may run without Commit 8, but its
+  artifacts and language contain no comparative timing claim.
 - [ ] The first gem5 build/run has fresh, explicit user approval.
 
+**Gate D timing only (Commits 8-9):**
+
+- [ ] Before any timing, the separately reviewed Commit 8 production shim and
+  `tests/maa/logical_spd_cache_matched_native_shim_test.cc` prove shared eight-
+  record/four-credit throttling, four ordinary ports/bandwidth, two 32-KiB
+  slots, 2048 reads, 16,384 multiplies, 2048 response-bearing final stores, full
+  lifecycle ownership, and completion only after the 2048th WriteResp.
+- [ ] Commit 9 enforcement rejects missing shim identity/counters and freezes
+  identical simulator/workload binary/config/checkpoint/input hashes, final
+  guest destination, and WriteResp durability boundary across timing arms.
+
 **DECISION — final status.** This document is a repaired bridge design
-candidate. It authorizes neither implementation nor a gem5 run and supplies no
-live correctness/performance evidence.
+candidate only. It authorizes neither implementation nor a gem5 run and
+supplies no live correctness/performance evidence. The temporary review may
+close on document consistency, but Gate D remains locked until the separately
+reviewed production matched-native shim exists.
