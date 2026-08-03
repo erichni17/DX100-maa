@@ -42,9 +42,10 @@ The fair fixed payload budget is 589,824 bytes for the measured one-MAA,
 four-core configuration:
 
 - visible SPD: 32 lanes x 4096 elements x 4 bytes = 524,288 bytes;
-- existing logical-SPD private tail: 1 MAA x 2 FP64 slots x 2 lanes x 4096
-  x 4 bytes = 65,536 bytes (allocated but unused by this path);
-- total: 36 lanes = 589,824 bytes.
+- logical-SPD Runtime payload: 1 MAA x 2 FP64 slots x 4096 x 8 bytes =
+  65,536 bytes (Runtime-owned and unused by this path; it is not an SPD tail);
+- total MAA-local payload: 32 visible SPD lanes plus two Runtime FP64 slots =
+  589,824 bytes.
 
 Within the visible total, the transparent descriptor owns three disjoint FP64
 spans: a 32 KiB completion-token span, a 32 KiB physical-input span, and a
@@ -73,10 +74,11 @@ claimed bits represented as bytes, row grow/cursor state, slice row valid/sent
 state, and per-slice request state total 616,734 core array bytes. None changes
 between arms.
 
-Exact allocated SPD model metadata is 147,808 bytes: 36 one-byte tile states,
-36 dirty bits represented as bytes, 72 ready bytes, 144 size bytes, 147,456
-per-element completion bytes, and 64 port-busy timestamp bytes. The finite
-controller's semantic state is 183 bytes; the measured x86-64 C++ object is
+Exact allocated SPD model metadata is 131,392 bytes: 32 one-byte tile states,
+32 dirty bits represented as bytes, 64 ready bytes, 128 size bytes, 131,072
+per-element completion bytes, and 64 port-busy timestamp bytes. The logical
+Runtime owns its private 65,536-byte payload without appending SPD lanes. The
+finite controller's semantic state is 183 bytes; the measured x86-64 C++ object is
 208 bytes including ABI padding. Existing MAA virtual-page state is 1,408
 semantic bytes. Its MMIO metadata apertures total 1,344 bytes (64 size, 64
 ready, 1,024 page-ready, 128 scalar registers, 64 IF). The virtual response,

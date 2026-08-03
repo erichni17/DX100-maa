@@ -15,11 +15,22 @@ class IsoAreaLedgerTest(unittest.TestCase):
         ledger = MODULE.build_ledger()
         self.assertEqual(ledger["payload"]["visible_spd"]["bytes"], 524288)
         self.assertEqual(
-            ledger["payload"]["hidden_private_spd"]["bytes"], 65536
+            ledger["payload"]["private_logical_spd_runtime"]["bytes"],
+            65536,
         )
         self.assertEqual(
-            ledger["payload"]["total_allocated_spd"]["bytes"], 589824
+            ledger["payload"]["total_maa_local_payload"]["bytes"], 589824
         )
+        self.assertEqual(
+            ledger["payload"]["private_logical_spd_runtime"]["storage_owner"],
+            "LogicalSPDCacheRuntime",
+        )
+
+    def test_spd_metadata_excludes_runtime_owned_payload(self):
+        metadata = MODULE.build_ledger()["metadata"]["spd_arrays"]
+        self.assertEqual(metadata["tile_status_u8"], 32)
+        self.assertEqual(metadata["element_finished_bool"], 32 * 4096)
+        self.assertEqual(metadata["total_bytes"], 131392)
 
     def test_all_arms_have_identical_resources(self):
         arms = MODULE.build_ledger()["arms"]

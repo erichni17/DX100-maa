@@ -21,24 +21,25 @@ def build_ledger() -> dict:
     physical_elements = 4096
     lane_bytes = physical_elements * 4
     visible_lanes = cores * visible_lanes_per_core
-    hidden_lanes = (
-        maas * 2 * 2
-    )  # two private FP64 slots, two 32-bit lanes each
-    allocated_lanes = visible_lanes + hidden_lanes
+    runtime_slots = maas * 2
+    runtime_payload_bytes = runtime_slots * physical_elements * 8
 
     payload = {
         "visible_spd": {
             "lanes": visible_lanes,
             "bytes": visible_lanes * lane_bytes,
         },
-        "hidden_private_spd": {
-            "lanes": hidden_lanes,
-            "bytes": hidden_lanes * lane_bytes,
+        "private_logical_spd_runtime": {
+            "fp64_slots": runtime_slots,
+            "spd_lane_tiles": 0,
+            "bytes": runtime_payload_bytes,
+            "storage_owner": "LogicalSPDCacheRuntime",
             "used_by_this_path": False,
         },
-        "total_allocated_spd": {
-            "lanes": allocated_lanes,
-            "bytes": allocated_lanes * lane_bytes,
+        "total_maa_local_payload": {
+            "visible_spd_lane_tiles": visible_lanes,
+            "logical_runtime_fp64_slots": runtime_slots,
+            "bytes": visible_lanes * lane_bytes + runtime_payload_bytes,
         },
         "descriptor_spans_within_visible_spd": {
             "producer_token_fp64": 2 * lane_bytes,
@@ -54,11 +55,11 @@ def build_ledger() -> dict:
 
     # Exact arrays allocated by SPD.cc for the configured physical capacity.
     spd_metadata = {
-        "tile_status_u8": allocated_lanes,
-        "tile_dirty_bool": allocated_lanes,
-        "tile_ready_u16": allocated_lanes * 2,
-        "tile_size_u32": allocated_lanes * 4,
-        "element_finished_bool": allocated_lanes * physical_elements,
+        "tile_status_u8": visible_lanes,
+        "tile_dirty_bool": visible_lanes,
+        "tile_ready_u16": visible_lanes * 2,
+        "tile_size_u32": visible_lanes * 4,
+        "element_finished_bool": visible_lanes * physical_elements,
         "read_write_port_busy_tick_u64": (4 + 4) * 8,
     }
     spd_metadata["total_bytes"] = sum(spd_metadata.values())
@@ -173,7 +174,11 @@ def build_ledger() -> dict:
     mmio["total_bytes"] = sum(mmio.values())
 
     common = {
-        "allocated_spd_bytes": allocated_lanes * lane_bytes,
+        "allocated_visible_spd_bytes": visible_lanes * lane_bytes,
+        "allocated_logical_spd_runtime_bytes": runtime_payload_bytes,
+        "allocated_maa_local_payload_bytes": (
+            visible_lanes * lane_bytes + runtime_payload_bytes
+        ),
         "stream_units": maas,
         "alu_units": maas,
         "alu_lanes_per_unit": 16,
@@ -253,8 +258,18 @@ def verify_sources(root: Path) -> None:
         ],
         "src/mem/MAA/LogicalSPDHiddenPayload.hh": [
             "LogicalSlotsPerMAA = 2",
-            "FP64LanesPerSlot = 2",
-            "LaneElements = 4096",
+            "PageElements = 4096",
+            "FP64Bytes = 8",
+            "Accounting-only compatibility constants",
+        ],
+        "src/mem/MAA/LogicalSPDCacheRuntime.hh": [
+            "std::array<PayloadSlot, Slice::Slots> slots{}",
+            "PrivatePayloadBits =",
+            "2 * 32 * 1024 * 8",
+        ],
+        "src/mem/MAA/LogicalSPDCacheGem5Bridge.cc": [
+            "std::make_unique<LogicalSPDCacheRuntime>()",
+            "runtimes.reserve(numMaas)",
         ],
     }
     for relative, needles in checks.items():
