@@ -333,6 +333,24 @@ class RunRecord:
     line: int
     wid: int
 
+    def validate(self) -> None:
+        fields = (
+            ("issue_serial", self.issue_serial),
+            ("i", self.i),
+            ("line", self.line),
+            ("wid", self.wid),
+        )
+        if any(type(value) is not int for _name, value in fields):
+            raise ValueError("RunRecord fields must be exact integers")
+        if not (0 <= self.issue_serial < N):
+            raise ValueError("RunRecord issue_serial is outside 14-bit scope")
+        if not (0 <= self.i < N):
+            raise ValueError("RunRecord i is outside the 16K operation")
+        if not (0 <= self.line < (1 << 64)) or self.line % LINE_BYTES:
+            raise ValueError("RunRecord line is not a 64-bit aligned line")
+        if not (0 <= self.wid < LINE_BYTES // VALUE_BYTES):
+            raise ValueError("RunRecord wid is outside an FP64 cache line")
+
 
 def oracle_materialize_native_records(
     descriptors: Sequence[Descriptor], issues: Sequence[SourceIssue]
@@ -363,6 +381,10 @@ def immutable_runs(
 ) -> list[tuple[RunRecord, ...]]:
     if chunk <= 0:
         raise ValueError("chunk must be positive")
+    for record in records:
+        if not isinstance(record, RunRecord):
+            raise ValueError("malformed RunRecord shape")
+        record.validate()
     return [
         tuple(sorted(records[start : start + chunk]))
         for start in range(0, len(records), chunk)
@@ -372,38 +394,57 @@ def immutable_runs(
 def checked_merge(
     runs: Sequence[Sequence[RunRecord]], expected_records: int
 ) -> Iterator[RunRecord]:
-    """Merge immutable runs and fail closed on truncation/duplication/order."""
+    """Preflight the complete image, then expose an immutable merge iterator."""
 
-    if expected_records < 0:
-        raise ValueError("expected_records cannot be negative")
-    heap: list[tuple[RunRecord, int, int]] = []
-    for run_id, run in enumerate(runs):
-        if any(run[pos] > run[pos + 1] for pos in range(len(run) - 1)):
-            raise AssertionError("run is not immutable sorted input")
-        if run:
-            heapq.heappush(heap, (run[0], run_id, 0))
+    if type(expected_records) is not int or expected_records < 0:
+        raise ValueError("expected_records must be a nonnegative integer")
+    frozen_runs: list[tuple[RunRecord, ...]] = []
     seen: set[int] = set()
-    count = 0
-    previous: RunRecord | None = None
-    while heap:
-        record, run_id, position = heapq.heappop(heap)
-        if previous is not None and record < previous:
-            raise AssertionError("merge order regressed")
-        if record.i in seen:
-            raise AssertionError("duplicate logical i in immutable runs")
-        seen.add(record.i)
-        previous = record
-        count += 1
-        yield record
-        next_position = position + 1
-        if next_position < len(runs[run_id]):
-            heapq.heappush(
-                heap, (runs[run_id][next_position], run_id, next_position)
-            )
-    if count != expected_records:
+    total = 0
+    for run in runs:
+        frozen = tuple(run)
+        for record in frozen:
+            if not isinstance(record, RunRecord):
+                raise ValueError("malformed RunRecord shape")
+            record.validate()
+            if record.i in seen:
+                raise AssertionError("duplicate logical i in immutable runs")
+            seen.add(record.i)
+        if any(
+            frozen[pos] > frozen[pos + 1] for pos in range(len(frozen) - 1)
+        ):
+            raise AssertionError("run is not immutable sorted input")
+        total += len(frozen)
+        frozen_runs.append(frozen)
+    if total != expected_records:
         raise AssertionError(
-            f"iterator exhausted after {count}, expected {expected_records}"
+            f"immutable image has {total} records, expected {expected_records}"
         )
+
+    def merge_validated_image() -> Iterator[RunRecord]:
+        heap: list[tuple[RunRecord, int, int]] = []
+        for run_id, run in enumerate(frozen_runs):
+            if run:
+                heapq.heappush(heap, (run[0], run_id, 0))
+        previous: RunRecord | None = None
+        while heap:
+            record, run_id, position = heapq.heappop(heap)
+            if previous is not None and record < previous:
+                raise AssertionError("merge order regressed")
+            previous = record
+            yield record
+            next_position = position + 1
+            if next_position < len(frozen_runs[run_id]):
+                heapq.heappush(
+                    heap,
+                    (
+                        frozen_runs[run_id][next_position],
+                        run_id,
+                        next_position,
+                    ),
+                )
+
+    return merge_validated_image()
 
 
 def serial_range_spool(
@@ -415,34 +456,51 @@ def serial_range_spool(
     rescan the immutable input many times; the capacity assertion is the point.
     """
 
-    if capacity <= 0:
-        raise ValueError("capacity must be positive")
-    max_serial = max((record.issue_serial for record in records), default=-1)
-    start = 0
-    emitted: set[int] = set()
-    while start <= max_serial:
-        selected = tuple(
-            sorted(
-                record
-                for record in records
-                if start <= record.issue_serial < start + capacity
-            )
+    if type(capacity) is not int or capacity <= 0:
+        raise ValueError("capacity must be a positive integer")
+    frozen = tuple(records)
+    seen: set[int] = set()
+    for record in frozen:
+        if not isinstance(record, RunRecord):
+            raise ValueError("malformed RunRecord shape")
+        record.validate()
+        if record.i in seen:
+            raise AssertionError("spool input duplicates a logical i")
+        seen.add(record.i)
+    max_serial = max((record.issue_serial for record in frozen), default=-1)
+    starts = tuple(range(0, max_serial + 1, capacity))
+    for start in starts:
+        selected_count = sum(
+            start <= record.issue_serial < start + capacity
+            for record in frozen
         )
-        if len(selected) > capacity:
+        if selected_count > capacity:
             # Equal-line fanout can exceed K records.  An exact implementation
             # streams that group from backing under one A response instead of
             # pretending all destinations are resident descriptors.
             raise AssertionError(
                 "serial range exceeds finite descriptor spool"
             )
-        for record in selected:
-            if record.i in emitted:
-                raise AssertionError("spool emitted an i twice")
-            emitted.add(record.i)
-        yield selected
-        start += capacity
-    if len(emitted) != len(records):
-        raise AssertionError("spool missed a record")
+
+    def spool_validated_image() -> Iterator[tuple[RunRecord, ...]]:
+        emitted: set[int] = set()
+        for start in starts:
+            selected = tuple(
+                sorted(
+                    record
+                    for record in frozen
+                    if start <= record.issue_serial < start + capacity
+                )
+            )
+            for record in selected:
+                if record.i in emitted:
+                    raise AssertionError("spool emitted an i twice")
+                emitted.add(record.i)
+            yield selected
+        if len(emitted) != len(frozen):
+            raise AssertionError("spool missed a record")
+
+    return spool_validated_image()
 
 
 @dataclass(frozen=True)
@@ -465,12 +523,16 @@ class Lifecycle:
         self.next_serial = 0
         self.active_descriptors = 0
         self.backing_writes: dict[Transaction, bool] = {}
+        self.backing_write_slots: dict[Transaction, int] = {}
         self.backing_reads: dict[Transaction, bool] = {}
         self.frozen = False
         self.a_pending: dict[Transaction, tuple[int, ...]] = {}
         self.a_accepted: set[Transaction] = set()
+        self.a_destination_owner: dict[int, Transaction] = {}
+        self.a_returned: set[int] = set()
         self.completed_i: set[int] = set()
         self.c_writes: dict[Transaction, bool] = {}
+        self.c_write_by_line: dict[int, Transaction] = {}
         self.page_counts = [0] * ceil_div(logical_elements, K)
 
     def _transaction(self, kind: str, line: int) -> Transaction:
@@ -493,13 +555,19 @@ class Lifecycle:
     def write_backing_line(self, line: int) -> Transaction:
         if self.frozen:
             raise AssertionError("immutable run modified after freeze")
+        if len(self.backing_write_slots) >= RUNS:
+            raise AssertionError("all four run-write buffer owners are busy")
         if any(
             item.line == line and not acked
             for item, acked in self.backing_writes.items()
         ):
             raise AssertionError("run buffer reused before matching write ACK")
+        free_slots = set(range(RUNS)) - set(self.backing_write_slots.values())
+        if not free_slots:
+            raise AssertionError("run-write owner accounting is inconsistent")
         transaction = self._transaction("run-write", line)
         self.backing_writes[transaction] = False
+        self.backing_write_slots[transaction] = min(free_slots)
         return transaction
 
     def ack_backing(self, transaction: Transaction) -> None:
@@ -510,6 +578,9 @@ class Lifecycle:
         if self.backing_writes[transaction]:
             raise AssertionError("duplicate backing ACK")
         self.backing_writes[transaction] = True
+        if transaction not in self.backing_write_slots:
+            raise AssertionError("backing ACK has no live buffer owner")
+        del self.backing_write_slots[transaction]
 
     def freeze_runs(self) -> None:
         if not self.backing_writes or not all(self.backing_writes.values()):
@@ -567,11 +638,19 @@ class Lifecycle:
         if len(set(destinations)) != len(destinations):
             raise AssertionError("duplicate destination in one A owner")
         if any(
-            i < 0 or i >= self.n or i in self.completed_i for i in destinations
+            i < 0
+            or i >= self.n
+            or i in self.completed_i
+            or i in self.a_destination_owner
+            for i in destinations
         ):
-            raise AssertionError("invalid or already completed destination")
+            raise AssertionError(
+                "invalid, completed, or outstanding A destination"
+            )
         transaction = self._transaction("a-read", line)
         self.a_pending[transaction] = tuple(destinations)
+        for i in destinations:
+            self.a_destination_owner[i] = transaction
         return transaction
 
     def retry_a(self, transaction: Transaction) -> Transaction:
@@ -598,26 +677,40 @@ class Lifecycle:
             raise AssertionError("A response remapped to the wrong line")
         destinations = self.a_pending.pop(transaction)
         self.a_accepted.remove(transaction)
+        self.a_returned.update(destinations)
         return destinations
 
     def complete_i(self, i: int) -> None:
-        if i < 0 or i >= self.n or i in self.completed_i:
+        if (
+            i < 0
+            or i >= self.n
+            or i in self.completed_i
+            or i not in self.a_destination_owner
+            or i not in self.a_returned
+        ):
             raise AssertionError(
-                "logical result is missing identity or duplicated"
+                "logical result lacks returned A ownership or is duplicated"
             )
+        del self.a_destination_owner[i]
+        self.a_returned.remove(i)
         self.completed_i.add(i)
         self.page_counts[i // K] += 1
         if self.page_counts[i // K] > min(K, self.n - (i // K) * K):
             raise AssertionError("page completion count overflow")
 
     def publish_c_line(self, line: int) -> Transaction:
+        expected_lines = {
+            (i * VALUE_BYTES // LINE_BYTES) * LINE_BYTES for i in range(self.n)
+        }
+        if line not in expected_lines:
+            raise AssertionError("C write is outside the expected image")
+        if any(not acked for acked in self.c_writes.values()):
+            raise AssertionError("global C owner reused before matching ACK")
+        if line in self.c_write_by_line:
+            raise AssertionError("duplicate C write identity")
         transaction = self._transaction("c-write", line)
-        if any(
-            item.line == line and not acked
-            for item, acked in self.c_writes.items()
-        ):
-            raise AssertionError("C owner reused before matching response")
         self.c_writes[transaction] = False
+        self.c_write_by_line[line] = transaction
         return transaction
 
     def ack_c(self, transaction: Transaction) -> None:
@@ -628,17 +721,37 @@ class Lifecycle:
         self.c_writes[transaction] = True
 
     def page_ready(self, page: int) -> bool:
+        if page < 0 or page >= len(self.page_counts):
+            raise ValueError("page is outside the logical result")
+        first_i = page * K
         target = min(K, self.n - page * K)
-        return self.page_counts[page] == target and all(
-            acked
-            for transaction, acked in self.c_writes.items()
-            if transaction.line // (K * VALUE_BYTES) == page
+        expected_i = set(range(first_i, first_i + target))
+        expected_lines = {
+            (i * VALUE_BYTES // LINE_BYTES) * LINE_BYTES for i in expected_i
+        }
+        observed_lines = {
+            line
+            for line in self.c_write_by_line
+            if line // (K * VALUE_BYTES) == page
+        }
+        if self.completed_i.intersection(expected_i) != expected_i:
+            return False
+        if (
+            self.page_counts[page] != target
+            or observed_lines != expected_lines
+        ):
+            return False
+        return all(
+            self.c_writes.get(self.c_write_by_line[line], False)
+            for line in expected_lines
         )
 
     def checkpoint(self) -> dict[str, object]:
         if (
             self.backing_reads
             or self.a_pending
+            or self.a_destination_owner
+            or self.a_returned
             or any(not acked for acked in self.c_writes.values())
         ):
             raise AssertionError("checkpoint with volatile response ownership")
@@ -661,10 +774,14 @@ class Lifecycle:
         self.page_counts = list(checkpoint["page_counts"])
         self.frozen = bool(checkpoint["frozen"])
         self.backing_writes.clear()
+        self.backing_write_slots.clear()
         self.backing_reads.clear()
         self.a_pending.clear()
         self.a_accepted.clear()
+        self.a_destination_owner.clear()
+        self.a_returned.clear()
         self.c_writes.clear()
+        self.c_write_by_line.clear()
 
 
 class ProfessorRetainSpillContractTest(unittest.TestCase):
@@ -743,10 +860,11 @@ class ProfessorRetainSpillContractTest(unittest.TestCase):
             [0x2000, 0x2040, 0x2080, 0x20C0, 0x2100],
         )
 
-    def test_minimal_future_slice_counterexample_to_greedy_drain(self) -> None:
-        # K=2, N=3 is minimal: with at most K records no eviction/issue choice
-        # is forced.  The unseen slice-1 head must interleave before slice-0's
-        # second head in the full native epoch.
+    def test_full_first_chunk_drain_changes_k2_n3_structural_order(
+        self,
+    ) -> None:
+        # This disproves only the policy that drains the whole first chunk.
+        # It is not a lower bound against every bounded online policy.
         records = [
             Descriptor(0, 0, 0, 0x1000),
             Descriptor(1, 0, 0, 0x1040),
@@ -762,7 +880,40 @@ class ProfessorRetainSpillContractTest(unittest.TestCase):
         )
         self.assertNotEqual(greedy, native)
 
-    def test_keep_top_half_without_external_image_loses_work(self) -> None:
+    def test_k2_n3_issue_retain_admit_counterstrategy_is_valid(self) -> None:
+        records = [
+            Descriptor(0, 0, 0, 0x1000),  # a0
+            Descriptor(1, 0, 0, 0x1040),  # a1
+            Descriptor(2, 1, 0, 0x2000),  # b0
+        ]
+        native = native_issue_trace(records, 3, [0, 1], 3, 3)
+        resident = {records[0], records[1]}
+        issued = [native[0]]  # issue a0
+        resident.remove(records[0])
+        self.assertEqual(resident, {records[1]})  # retain a1
+        resident.add(records[2])  # admit b0 into the freed K=2 slot
+        self.assertEqual(len(resident), 2)
+        issued.extend((native[1], native[2]))  # then b0, a1
+        self.assertEqual(
+            [item.line for item in issued], [0x1000, 0x2000, 0x1040]
+        )
+        self.assertEqual(issued, native)
+
+    def test_information_loss_requires_actual_discard_without_replay(
+        self,
+    ) -> None:
+        # Issue, retain, and admit preserve representation in this K=2/N=3
+        # counterstrategy.  Only the explicit discard below loses an owner.
+        all_i = {0, 1, 2}
+        issued_i = {0}
+        resident_i = {1, 2}
+        self.assertEqual(issued_i | resident_i, all_i)
+        resident_i.remove(1)  # no replayable B and no durable descriptor image
+        self.assertEqual(all_i - (issued_i | resident_i), {1})
+
+    def test_keep_top_half_discard_without_external_image_loses_work(
+        self,
+    ) -> None:
         records = [
             RunRecord(serial, serial, 0x1000 + serial * 64, 0)
             for serial in range(4)
@@ -773,8 +924,49 @@ class ProfessorRetainSpillContractTest(unittest.TestCase):
             {item.i for item in records} - {item.i for item in retained},
             {0, 1},
         )
-        with self.assertRaisesRegex(AssertionError, "iterator exhausted"):
+        with self.assertRaisesRegex(AssertionError, "immutable image has"):
             list(checked_merge([sorted(retained)], expected_records=4))
+
+    def test_run_record_fields_are_validated_before_merge_and_spool(
+        self,
+    ) -> None:
+        bad_records = {
+            "issue_serial": RunRecord(-1, 0, 0x1000, 0),
+            "i": RunRecord(0, N, 0x1000, 0),
+            "line": RunRecord(0, 0, 0x1001, 0),
+            "wid": RunRecord(0, 0, 0x1000, 8),
+            "issue_serial_type": RunRecord(0.0, 0, 0x1000, 0),  # type: ignore[arg-type]
+            "i_type": RunRecord(0, True, 0x1000, 0),
+            "line_type": RunRecord(0, 0, "0x1000", 0),  # type: ignore[arg-type]
+            "wid_type": RunRecord(0, 0, 0x1000, None),  # type: ignore[arg-type]
+        }
+        for name, record in bad_records.items():
+            with self.subTest(name=name, path="merge"):
+                with self.assertRaises(ValueError):
+                    checked_merge([[record]], 1)
+            with self.subTest(name=name, path="spool"):
+                with self.assertRaises(ValueError):
+                    serial_range_spool([record], 1)
+
+    def test_checked_merge_preflight_fails_before_any_record_is_exposed(
+        self,
+    ) -> None:
+        r0 = RunRecord(0, 0, 0x1000, 0)
+        r1 = RunRecord(1, 1, 0x1040, 0)
+        invalid_images: dict[str, tuple[object, int]] = {
+            "truncated": ([[r0]], 2),
+            "extra": ([[r0, r1]], 1),
+            "duplicate": ([[r0], [RunRecord(1, 0, 0x1040, 0)]], 2),
+            "shape": ([[r0], [(1, 1, 0x1040, 0)]], 2),
+            "ordering": ([[r1, r0]], 2),
+        }
+        for name, (runs, expected) in invalid_images.items():
+            exposed: list[RunRecord] = []
+            with self.subTest(name=name):
+                with self.assertRaises((AssertionError, ValueError)):
+                    iterator = checked_merge(runs, expected)  # type: ignore[arg-type]
+                    exposed.extend(iterator)
+                self.assertEqual(exposed, [])
 
     def test_immutable_runs_recover_exact_order_and_fail_on_exhaustion(
         self,
@@ -791,7 +983,7 @@ class ProfessorRetainSpillContractTest(unittest.TestCase):
         self.assertEqual({item.i for item in merged}, set(range(12)))
         truncated = [run for run in runs]
         truncated[-1] = truncated[-1][:-1]
-        with self.assertRaisesRegex(AssertionError, "iterator exhausted"):
+        with self.assertRaisesRegex(AssertionError, "immutable image has"):
             list(checked_merge(truncated, len(records)))
 
     def test_finite_range_spool_capacity_and_skew(self) -> None:
@@ -859,18 +1051,75 @@ class ProfessorRetainSpillContractTest(unittest.TestCase):
         ):
             life.respond_a(stale, 0x4000)
 
-    def test_page_publication_requires_all_results_and_write_acks(
-        self,
-    ) -> None:
+    def test_a_destination_ownership_persists_until_completion(self) -> None:
         life = Lifecycle(4, 4)
         write = life.write_backing_line(0x8000)
         life.ack_backing(write)
         life.freeze_runs()
-        for i in range(4):
+        read = life.issue_a(0x1000, [0])
+        life.accept_a(read)
+        life.respond_a(read, 0x1000)
+        serial_before_failure = life.next_serial
+        with self.assertRaisesRegex(AssertionError, "outstanding A"):
+            life.issue_a(0x1000, [0])
+        self.assertEqual(life.next_serial, serial_before_failure)
+        life.complete_i(0)
+        with self.assertRaisesRegex(AssertionError, "completed"):
+            life.issue_a(0x1000, [0])
+        self.assertEqual(life.next_serial, serial_before_failure)
+        next_read = life.issue_a(0x1040, [1])
+        serial_with_owner = life.next_serial
+        with self.assertRaisesRegex(AssertionError, "owner unavailable"):
+            life.issue_a(0x1080, [2])
+        self.assertEqual(life.next_serial, serial_with_owner)
+        self.assertEqual(next_read.serial + 1, serial_with_owner)
+
+    def test_single_global_c_owner_and_side_effect_free_failure(self) -> None:
+        life = Lifecycle(16, 4)
+        first = life.publish_c_line(0)
+        serial_before_failure = life.next_serial
+        with self.assertRaisesRegex(AssertionError, "global C owner"):
+            life.publish_c_line(LINE_BYTES)
+        self.assertEqual(life.next_serial, serial_before_failure)
+        life.ack_c(first)
+        second = life.publish_c_line(LINE_BYTES)
+        self.assertEqual(second.serial, serial_before_failure)
+
+    def test_exactly_four_run_write_owners_and_ack_release(self) -> None:
+        life = Lifecycle(8, 4)
+        writes = [life.write_backing_line(0x8000 + i * 64) for i in range(4)]
+        self.assertEqual(set(life.backing_write_slots.values()), set(range(4)))
+        serial_before_failure = life.next_serial
+        with self.assertRaisesRegex(AssertionError, "four run-write"):
+            life.write_backing_line(0x9000)
+        self.assertEqual(life.next_serial, serial_before_failure)
+        life.ack_backing(writes[0])
+        replacement = life.write_backing_line(0x9000)
+        self.assertEqual(replacement.serial, serial_before_failure)
+        for transaction in writes[1:] + [replacement]:
+            life.ack_backing(transaction)
+        life.freeze_runs()
+
+    def test_page_publication_requires_all_results_and_write_acks(
+        self,
+    ) -> None:
+        life = Lifecycle(16, 16)
+        write = life.write_backing_line(0x8000)
+        life.ack_backing(write)
+        life.freeze_runs()
+        read = life.issue_a(0x1000, list(range(16)))
+        life.accept_a(read)
+        life.respond_a(read, 0x1000)
+        for i in range(16):
             life.complete_i(i)
-        c_write = life.publish_c_line(0)
+        self.assertFalse(life.page_ready(0))  # no-write vacuity is forbidden
+        first_c_write = life.publish_c_line(0)
         self.assertFalse(life.page_ready(0))
-        life.ack_c(c_write)
+        life.ack_c(first_c_write)
+        self.assertFalse(life.page_ready(0))  # exact line 64 is still missing
+        second_c_write = life.publish_c_line(LINE_BYTES)
+        self.assertFalse(life.page_ready(0))
+        life.ack_c(second_c_write)
         self.assertTrue(life.page_ready(0))
 
 

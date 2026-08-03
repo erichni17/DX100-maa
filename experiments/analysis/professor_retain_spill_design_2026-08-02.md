@@ -11,12 +11,19 @@ correctness and storage contract.  No gem5 executable or simulation was run.
 
 ## Decision
 
-The spoken retain-half/spill-half idea can be made **architecturally correct**,
-but a future-blind greedy “keep top half” rule cannot reproduce native 16K A
-request issue order for every B stream while holding only 4K descriptors and
-having neither a durable external descriptor image nor permission to rescan B.
-It fails first on information conservation, and then on native cross-slice
-round-robin order.
+The spoken retain-half/spill-half idea can be made **architecturally correct**.
+The K=2/N=3 witness in this artifact establishes only that draining the whole
+first admitted chunk changes the stated structural native order.  It is not a
+lower bound against every bounded online keep-half policy: issue `a0`, retain
+`a1`, admit `b0`, and then issue `b0,a1` is a valid bounded counter-strategy for
+that trace.  Whether some bounded online policy can preserve the structural
+order for every suffix remains an open proof problem here.
+
+There is a separate, narrower information-conservation fact.  If a live
+descriptor is actually discarded, exact completion requires either replayable
+B from which it can be reconstructed or a durable external representation of
+its identity and scheduling data.  Retaining, admitting, or issuing a
+descriptor is not discard and does not by itself trigger that argument.
 
 The weakest sufficient contract is not “choose the right half.”  It is:
 
@@ -205,24 +212,25 @@ later descriptor reconstruction is a **B rescan**.  If derived records remain,
 it is an **external descriptor image**.  If neither remains, the deferred work
 does not exist and exact completion is impossible.
 
-## 3. Why greedy keep-top-half cannot be exact
+## 3. Exact scope of the counterexamples
 
 “Top” is underspecified because native order is not one static numeric key.
-Even granting a perfect comparator for all descriptors already seen, two
-independent failures remain.
+The two witnesses below establish different, deliberately limited facts.
 
 ### Counterexample A: minimal information loss
 
-Let K=1 and admit two distinct logical descriptors.  Keeping one and discarding
-the other with no external record and no B rescan leaves no state from which to
-issue and map the discarded result.  At most one of `C[0]` and `C[1]` can be
-published.  This is the minimal conservation counterexample, N=K+1=2.
+Let K=1 and admit two distinct logical descriptors.  Keeping one and actually
+discarding the other with no external record and no B rescan leaves no state
+from which to issue and map the discarded result.  At most one of `C[0]` and
+`C[1]` can be published.  This is the minimal conservation counterexample,
+N=K+1=2.  It says nothing against a policy that issues one owner, retains the
+other, or otherwise keeps every live owner represented.
 
 For the spoken K=4K/N=16K case, retaining K leaves 12,288 destinations with no
 owner unless they are rescanned or materialized.  A policy name cannot encode
 those missing `(line,i,wid)` relations.
 
-### Counterexample B: minimal native-order failure
+### Counterexample B: whole-first-chunk drain changes structural order
 
 Let K=2, slice permutation `[S0,S1]`, and sequential admission be:
 
@@ -232,16 +240,22 @@ chunk 1: S1:b0
 ```
 
 All lines have one destination and fit one row.  Full native Fill followed by
-round-robin Build issues `a0,b0,a1`.  A future-blind policy forced to drain the
-full first chunk issues `a0,a1,b0`.  N=3 is minimal because with N<=K it can
-wait without freeing a descriptor.  The focused test checks these exact traces.
+round-robin Build issues `a0,b0,a1`.  The particular policy that drains the
+whole first chunk issues `a0,a1,b0`, so that policy changes this structural
+order.
 
-The indistinguishability argument is general.  After observing chunk 0, the
-controller sees the same state for two possible suffixes: one with no S1 head
-and one with an S1 head.  Issuing `a1` is correct for the first suffix and wrong
-for the second; waiting preserves order but cannot admit more B without an
-external place for something.  No greedy choice resolves missing future
-information.
+This K=2/N=3 trace does **not** prove every bounded greedy keep-half policy
+impossible.  A valid bounded strategy is:
+
+```text
+resident {a0,a1}; issue a0
+resident {a1};    retain a1 and admit b0
+resident {a1,b0}; issue b0, then a1
+observed order:   a0,b0,a1
+```
+
+The broader online lower bound, if one exists under a fully specified policy
+and progress contract, requires another proof.  This artifact leaves it open.
 
 ### Duplicates and skew do not rescue it
 
@@ -349,11 +363,13 @@ generations.  Serial plus generation disambiguates both.
 
 ### Retry rules
 
-Allocate a serial and reserve its owner before the first send attempt.  Port
-retry reuses the identical transaction and does not increment expected counts,
-allocate another descriptor range, or create another C owner.  Acceptance
-changes `reserved -> in_flight`; it is not completion.  Only the matching
-response changes `in_flight -> completed/free`.
+Validate the entire requested identity and capacity first.  A successful
+reservation atomically commits its owner and allocates one serial before the
+first send attempt.  Any failed reservation is side-effect free: it consumes
+neither an owner nor a serial.  Port retry reuses the identical transaction and
+does not increment expected counts, allocate another descriptor range, or
+create another C owner.  Acceptance changes `reserved -> in_flight`; it is not
+completion.  Only the matching response changes `in_flight -> completed/free`.
 
 Unknown, duplicate, stale-generation, wrong-line, wrong-kind, or remapped
 responses are fatal contract violations.  They must not free capacity or
@@ -362,25 +378,48 @@ response rejection, stale generation rejection, and duplicate ACK rejection.
 
 ### Backing ACK and immutable-run rules
 
-Active run buffers remain owned through the matching coherent write response.
-They cannot be reused merely because a `WriteReq` was accepted.  Merge cannot
-read a run until all of that run's writes have matching responses.  Once
-frozen, a run is immutable.  Each reader has an exact record count; early
-iterator exhaustion, an extra record, duplicate i, or a decreasing key fails
-closed.
+There are exactly four global run-write buffer owners, matching the four
+64-byte buffers charged by the ledger.  Allocation takes the lowest free owner;
+the owner remains busy through the matching coherent write response and is
+released only by that ACK.  A fifth outstanding allocation, or reuse of a line
+whose write remains outstanding, fails without consuming a serial.  An
+accepted `WriteReq` does not release its owner.  Reuse after the matching ACK is
+allowed under this explicit lowest-free-owner policy.
+
+Merge cannot read a run until all of that run's writes have matching responses.
+Once frozen, a run is immutable.  Before `checked_merge` exposes its first
+record, it snapshots and validates the complete image: exact total count,
+unique logical i, exact `RunRecord` shape, every field range/type, and
+nondecreasing order within every run.  Truncation, an extra record, a malformed
+record, duplication, or decreasing per-run order therefore fails closed with
+zero records observed.  `issue_serial` and `i` are exact integers in
+`[0,16384)`, `line` is an exact unsigned 64-bit integer aligned to 64 B, and
+`wid` is an exact integer in `[0,8)`.  The range spool applies the same record
+validation before selecting a range.
 
 ### A response and C publication
 
-One issued A request owns its descriptor group until the response.  On a
-matching response, each destination record selects `payload[wid]` and reserves
-exactly one C position.  A completion bitmap rejects duplicate i.  A C-line
-owner remains unique while dirty; no second owner may reserve that line.
+One issued A request owns its descriptor group until the response.  Its
+individual destination ownership remains live after the response and is
+released only when each destination completes.  A second reservation naming
+any such outstanding i is rejected, including after the A response but before
+C completion; a failed attempt consumes no serial.  On a matching response,
+each destination record selects `payload[wid]` and reserves exactly one C
+position.  A completion bitmap rejects duplicate i.
+
+The ledger provisions one C-line owner globally, not one per address.  While
+any C write is unacknowledged, allocation of a second owner for either the same
+or a different line fails without consuming a serial.  The owner is reusable
+for the next expected line only after its matching ACK; each expected C line is
+registered exactly once with its transaction identity.
 
 For dense C, the owner ultimately sends one full 64-byte line for each eight
-FP64 results.  Page p becomes publishable only when all its logical positions
-are accounted and every C write touching the page has a matching response.
-The page notification is a credit, not payload storage.  Final completion also
-requires empty A/run/C owners and exact ACK conservation.
+FP64 results.  Page p becomes publishable only when its exact logical-i set is
+complete, its exact expected C-line identity set has been registered, and each
+registered transaction has its matching ACK.  An empty observed write set
+cannot satisfy this condition by vacuous truth.  The page notification is a
+credit, not payload storage.  Final completion also requires empty A/run/C
+owners and exact ACK conservation.
 
 ### Drain, checkpoint, and restart
 
@@ -522,7 +561,7 @@ a validated replacement for native serial derivation.
 | Four immutable sorted runs | one scan, 65,536 B after serial derivation | 262,144-B full wire image, 524,288-B record R+W | Replay yes only with a valid canonical native serial/event contract; this artifact has only an oracle, and address-key sort alone is insufficient | Exact replay relocates 16K metadata; complete derivation cost remains open |
 | Full 16K on-chip metadata | one scan | native Row/Offset state on chip | Yes by definition for the implemented event scheduler | Simplest exact reference; costs the full metadata lifetime |
 | Two-slot SPD payload cache | consumer-dependent; four 4K pages | no A reorder image | No | Caches 65,536 B of values; payload caching does not map responses to original i |
-| Greedy retain/spill without replay/image | one partial admission until forced | only K records | Impossible | Loses destinations or issues before unseen slice heads |
+| Discard nonresident owners without replay/image | one partial admission until forced | only K represented records | Impossible to complete exactly because discarded destinations have no representation | This information-conservation claim does not cover issue/retain/admit policies that preserve every owner |
 
 Four sorted runs can deliberately implement a *new* global
 `(bank,row,line,i)` order, often a sensible design.  It should then be compared
@@ -561,16 +600,31 @@ Python standard library.  It checks:
 - first-insertion row/line order and cross-slice round robin;
 - Offset- and Row-capacity early drains;
 - duplicates and response-to-original-i mapping under reversed responses;
-- the minimal K=2/N=3 greedy issue-order counterexample;
-- information loss and iterator exhaustion for keep-top-half;
-- oracle-labelled immutable-run exact merge, truncation, finite range-spool
-  bounds, and skew (not bounded serial-derivation evidence);
-- retry identity, remap/stale-generation rejection, ACK conservation, page
-  publication, and no owner reuse before matching response.
+- the exact K=2/N=3 whole-first-chunk order change and the valid
+  `issue a0, retain a1, admit b0 -> a0,b0,a1` counter-strategy, without
+  claiming a broader online lower bound;
+- information loss only after explicit discard with neither replayable B nor a
+  durable descriptor representation;
+- all four `RunRecord` field contracts before merge and range-spool use;
+- zero-output merge preflight failures for truncated, extra, duplicate,
+  malformed, and per-run-unsorted images;
+- oracle-labelled immutable-run exact merge, finite range-spool bounds, and
+  skew (not bounded serial-derivation evidence);
+- destination ownership from A reservation through completion, including
+  side-effect-free duplicate and full-owner failures;
+- one global C owner, side-effect-free second-owner failure, and ACK-gated
+  reuse;
+- page readiness from the exact expected C-line identities and ACKs, including
+  rejection of the no-write vacuous case;
+- exactly four outstanding run-write owners, side-effect-free fifth allocation,
+  and explicit matching-ACK release/reuse; and
+- retained retry identity, remap/stale-generation rejection, and ACK
+  conservation coverage.
 
 The model intentionally omits clocks, cache timing, DRAM timing, and gem5.
 Its `NativeEpoch` reference covers complete fill/forced-drain structural epochs;
 it does not reproduce cycle-level response-driven refill.  Consequently its
 oracle serials are conditional on that stated schedule and are not a universal
 gem5 trace oracle.  Passing the tests is not cycle, speedup, energy, area,
-synthesis, or complete serial-derivation evidence.
+synthesis, or complete serial-derivation evidence.  It also is not an
+acceptance verdict; the repaired artifact requires another fresh review.
