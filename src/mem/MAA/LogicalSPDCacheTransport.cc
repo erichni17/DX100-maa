@@ -148,7 +148,8 @@ LogicalSPDCacheTransport::validFaultPoint(FaultPoint fault)
     return fault == FaultPoint::None ||
            fault == FaultPoint::RequestIdentity ||
            fault == FaultPoint::LineSnapshot ||
-           fault == FaultPoint::RequestPacket;
+           fault == FaultPoint::RequestPacket ||
+           fault == FaultPoint::FinalCompletionIdentity;
 }
 
 bool
@@ -242,11 +243,15 @@ LogicalSPDCacheTransport::startAction(
     Operation operation, uint8_t descriptor, uint32_t generation, uint8_t page,
     uint8_t slot, uint64_t baseAddress, uint64_t controllerSerial,
     PageSpan slotSpan,
-    uint32_t *actionID)
+    uint32_t *actionID, FaultPoint constructionFault)
 {
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return mutation;
+    if (constructionFault != FaultPoint::None &&
+        constructionFault != FaultPoint::FinalCompletionIdentity) {
+        return Status::Invalid;
+    }
     if (!geometryIsValid)
         return Status::InvalidGeometry;
     if (!validOperation(operation) || descriptor >= DescriptorCount ||
@@ -298,6 +303,12 @@ LogicalSPDCacheTransport::startAction(
     action.slot = slot;
     action.baseAddress = baseAddress;
     action.controllerSerial = controllerSerial;
+    if (constructionFault == FaultPoint::FinalCompletionIdentity) {
+        action.controllerSerial =
+            controllerSerial == std::numeric_limits<uint64_t>::max()
+                ? controllerSerial - 1
+                : controllerSerial + 1;
+    }
     action.slotSpan = slotSpan;
     refillQueue();
     if (actionID != nullptr)
@@ -387,8 +398,11 @@ LogicalSPDCacheTransport::prepare(PageSpan slotSpan, FaultPoint fault)
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return {mutation};
-    if (!validFaultPoint(fault) || !validPageSpan(slotSpan))
+    if (!validFaultPoint(fault) ||
+        fault == FaultPoint::FinalCompletionIdentity ||
+        !validPageSpan(slotSpan)) {
         return {Status::Invalid};
+    }
     if (action.state != ActionState::Active)
         return {Status::NoWork};
     if (slotSpan.data != action.slotSpan.data ||
@@ -595,6 +609,42 @@ LogicalSPDCacheTransport::Result
 LogicalSPDCacheTransport::receive(ReturnedHandle &returned,
                                   uint8_t callbackPort)
 {
+    return receiveInternal(returned, callbackPort, nullptr);
+}
+
+LogicalSPDCacheTransport::Result
+LogicalSPDCacheTransport::receiveAuthorized(
+    ReturnedHandle &returned, uint8_t callbackPort,
+    const CompletionAuthority &authority)
+{
+    return receiveInternal(returned, callbackPort, &authority);
+}
+
+LogicalSPDCacheTransport::CompletionIdentity
+LogicalSPDCacheTransport::precommitReceive(
+    const ReturnedHandle &returned, uint8_t callbackPort) const
+{
+    const int found = lookupToken(returned);
+    if (found < 0)
+        return {};
+    const uint8_t index = static_cast<uint8_t>(found);
+    const TransactionRecord &record = records[index];
+    if (callbackPort != record.port ||
+        callbackPort != portForAddress(record.address) ||
+        !wireExact(record, returned) ||
+        record.state != RecordState::InFlight ||
+        record.key.operation != Operation::Writeback ||
+        getBit(action.acked, record.key.line)) {
+        return {};
+    }
+    return completionCandidate(index);
+}
+
+LogicalSPDCacheTransport::Result
+LogicalSPDCacheTransport::receiveInternal(
+    ReturnedHandle &returned, uint8_t callbackPort,
+    const CompletionAuthority *authority)
+{
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return {mutation};
@@ -608,6 +658,14 @@ LogicalSPDCacheTransport::receive(ReturnedHandle &returned,
         !wireExact(record, returned)) {
         return productionStopResult();
     }
+
+    const CompletionIdentity candidate =
+        record.state == RecordState::InFlight &&
+                record.key.operation == Operation::Writeback
+            ? completionCandidate(index)
+            : CompletionIdentity{};
+    if (!authorityExact(candidate, authority))
+        return productionStopResult();
 
     if (record.state == RecordState::AbortDrain) {
         returned.disposed = true;
@@ -638,7 +696,7 @@ LogicalSPDCacheTransport::receive(ReturnedHandle &returned,
     }
 
     returned.disposed = true;
-    Result result = ackReleaseAndRefill(index);
+    Result result = ackReleaseAndRefill(index, authority);
     result.record = index;
     return result;
 }
@@ -667,6 +725,40 @@ LogicalSPDCacheTransport::commitDelivery(const DeliveryTicket &ticket,
                                          PageSpan destination, CopyHook hook,
                                          void *context)
 {
+    return commitDeliveryInternal(ticket, destination, hook, context,
+                                  nullptr);
+}
+
+LogicalSPDCacheTransport::Result
+LogicalSPDCacheTransport::commitDeliveryAuthorized(
+    const DeliveryTicket &ticket, PageSpan destination, CopyHook hook,
+    void *context, const CompletionAuthority &authority)
+{
+    return commitDeliveryInternal(ticket, destination, hook, context,
+                                  &authority);
+}
+
+LogicalSPDCacheTransport::CompletionIdentity
+LogicalSPDCacheTransport::precommitDelivery(
+    const DeliveryTicket &ticket, PageSpan destination) const
+{
+    uint8_t index = NoRecord;
+    if (!ticketExact(ticket, index) || !validPageSpan(destination) ||
+        destination.data != action.slotSpan.data) {
+        return {};
+    }
+    const TransactionRecord &record = records[index];
+    const std::size_t offset =
+        static_cast<std::size_t>(record.key.line) * LineBytes;
+    return offset <= PageBytes - LineBytes ? completionCandidate(index)
+                                           : CompletionIdentity{};
+}
+
+LogicalSPDCacheTransport::Result
+LogicalSPDCacheTransport::commitDeliveryInternal(
+    const DeliveryTicket &ticket, PageSpan destination, CopyHook hook,
+    void *context, const CompletionAuthority *authority)
+{
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return {mutation};
@@ -682,9 +774,19 @@ LogicalSPDCacheTransport::commitDelivery(const DeliveryTicket &ticket,
         static_cast<std::size_t>(record.key.line) * LineBytes;
     if (offset > PageBytes - LineBytes)
         return productionStopResult();
+    const CompletionIdentity candidate = completionCandidate(index);
+    if (!authorityExact(candidate, authority))
+        return productionStopResult();
 
     deliveryCopyActive = true;
-    if (hook != nullptr && !hook(context)) {
+    bool copyApproved = true;
+    try {
+        copyApproved = hook == nullptr || hook(context);
+    } catch (...) {
+        deliveryCopyActive = false;
+        return productionStopResult();
+    }
+    if (!copyApproved) {
         if (terminalPoisoned)
             return {Status::Poisoned};
         deliveryCopyActive = false;
@@ -700,7 +802,7 @@ LogicalSPDCacheTransport::commitDelivery(const DeliveryTicket &ticket,
                 lineBuffers[record.credit].data(),
                 LineBytes);
     deliveryCopyActive = false;
-    return ackReleaseAndRefill(index);
+    return ackReleaseAndRefill(index, authority);
 }
 
 void
@@ -733,8 +835,53 @@ LogicalSPDCacheTransport::actionHasRecords() const
     return false;
 }
 
+LogicalSPDCacheTransport::CompletionIdentity
+LogicalSPDCacheTransport::completionCandidate(uint8_t index) const
+{
+    if (index >= RecordCount || action.state != ActionState::Active)
+        return {};
+    const TransactionRecord &record = records[index];
+    if ((record.state != RecordState::InFlight &&
+         record.state != RecordState::Delivering) ||
+        !record.keyValid || record.actionID != action.actionID ||
+        record.key.operation != action.operation ||
+        record.key.descriptor != action.descriptor ||
+        record.key.generation != action.generation ||
+        record.key.page != action.page || record.key.slot != action.slot ||
+        getBit(action.acked, record.key.line) ||
+        action.nextLine != LinesPerPage ||
+        action.ackCount != LinesPerPage - 1 || !allBits(action.issued) ||
+        fifo.count != 0 || pending != NoRecord) {
+        return {};
+    }
+
+    std::array<uint64_t, LinesPerPage / 64> completedAcks = action.acked;
+    setBit(completedAcks, record.key.line);
+    if (completedAcks != action.issued)
+        return {};
+    for (std::size_t other = 0; other < records.size(); ++other) {
+        if (other != index && records[other].state != RecordState::Free &&
+            records[other].actionID == action.actionID) {
+            return {};
+        }
+    }
+    return CompletionIdentity(
+        action.operation, action.actionID, action.descriptor,
+        action.generation, action.page, action.slot,
+        action.controllerSerial);
+}
+
+bool
+LogicalSPDCacheTransport::authorityExact(
+    const CompletionIdentity &candidate,
+    const CompletionAuthority *authority) const
+{
+    return authority == nullptr || authority->completion == candidate;
+}
+
 LogicalSPDCacheTransport::Result
-LogicalSPDCacheTransport::ackReleaseAndRefill(uint8_t index)
+LogicalSPDCacheTransport::ackReleaseAndRefill(
+    uint8_t index, const CompletionAuthority *authority)
 {
     TransactionRecord &record = records[index];
     if (!record.keyValid || action.state != ActionState::Active ||
@@ -742,6 +889,9 @@ LogicalSPDCacheTransport::ackReleaseAndRefill(uint8_t index)
         getBit(action.acked, record.key.line)) {
         return productionStopResult();
     }
+    const CompletionIdentity candidate = completionCandidate(index);
+    if (!authorityExact(candidate, authority))
+        return productionStopResult();
     setBit(action.acked, record.key.line);
     ++action.ackCount;
     releaseRecord(index);
@@ -750,15 +900,13 @@ LogicalSPDCacheTransport::ackReleaseAndRefill(uint8_t index)
         action.nextLine == LinesPerPage && action.ackCount == LinesPerPage &&
         allBits(action.issued) && action.acked == action.issued &&
         fifo.count == 0 && pending == NoRecord && !actionHasRecords();
+    if (complete != candidate.valid())
+        return productionStopResult();
     if (complete) {
-        const CompletionIdentity completion(
-            action.operation, action.actionID, action.descriptor,
-            action.generation, action.page, action.slot,
-            action.controllerSerial);
         action = PageAction{};
         if (!assertInvariants())
             return productionStopResult();
-        return {Status::Completed, index, nullptr, {}, completion};
+        return {Status::Completed, index, nullptr, {}, candidate};
     }
     if (!assertInvariants())
         return productionStopResult();

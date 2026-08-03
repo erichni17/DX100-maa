@@ -385,14 +385,15 @@ LogicalSPDCacheSlice::validBacking(BackingSpan backing)
 {
     return backing.bytes == BackingBytes && backing.base % BackingBytes == 0 &&
            backing.base <= std::numeric_limits<uint64_t>::max() -
-                               (BackingBytes - 1);
+                               static_cast<uint64_t>(backing.bytes);
 }
 
 inline bool
 LogicalSPDCacheSlice::overlaps(BackingSpan left, BackingSpan right)
 {
-    return left.base < right.base + right.bytes &&
-           right.base < left.base + left.bytes;
+    return left.base <= right.base
+               ? right.base - left.base < left.bytes
+               : left.base - right.base < right.bytes;
 }
 
 inline LogicalSPDCacheSlice::Status

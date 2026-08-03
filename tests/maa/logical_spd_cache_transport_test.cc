@@ -434,6 +434,12 @@ passiveCopyFailure(void *)
     return false;
 }
 
+bool
+throwingCopyHook(void *)
+{
+    throw 17;
+}
+
 void
 testCopyGuardFailureAndOrdinaryPreCopyAbort()
 {
@@ -451,6 +457,38 @@ testCopyGuardFailureAndOrdinaryPreCopyAbort()
                   Transport::AbortCode::Caller) ==
               Transport::Status::AbortDrained);
     }
+    expectChildSuccess([] {
+        Fixture throwing;
+        const uint8_t record = throwing.sendOne();
+        const auto staged = throwing.stage(record);
+        CHECK(staged.status == Transport::Status::DeliveryPending);
+        const auto slotBefore = throwing.slot;
+        const auto stateBefore = throwing.transport.auditSnapshot();
+        const std::size_t creditsBefore =
+            throwing.transport.creditsInUse();
+        Transport::Status resultStatus = Transport::Status::Invalid;
+        bool escaped = false;
+        try {
+            const auto result = throwing.transport.commitDelivery(
+                staged.ticket, throwing.span(), throwingCopyHook, nullptr);
+            resultStatus = result.status;
+        } catch (...) {
+            escaped = true;
+        }
+        CHECK(!escaped);
+        CHECK(resultStatus == Transport::Status::ProductionStop);
+        CHECK(throwing.transport.poisoned());
+        CHECK(!throwing.transport.copyActive());
+        CHECK(throwing.slot == slotBefore);
+        CHECK(throwing.transport.recordState(record) ==
+              Transport::RecordState::Delivering);
+        CHECK(throwing.transport.ackCount() == stateBefore.ackCount);
+        CHECK(throwing.transport.creditsInUse() == creditsBefore);
+        CHECK(throwing.transport.abortAction(
+                  Transport::AbortCode::Caller) ==
+              Transport::Status::Poisoned);
+        std::_Exit(0);
+    });
     for (const bool hookResult : {false, true}) {
         expectChildSuccess([hookResult] {
             Fixture fixture;
@@ -643,6 +681,17 @@ testEnumSpanAndMockWriteAcceptanceOrder()
             raw{};
     Transport transport;
     const auto before = transport.auditSnapshot();
+    CHECK(transport.startAction(
+              Transport::Operation::Fill, 0, 1, 0, 0, Fixture::Base, 17,
+              {raw.data(), Transport::PageBytes}, nullptr,
+              static_cast<Transport::FaultPoint>(0xff)) ==
+          Transport::Status::Invalid);
+    CHECK(transport.startAction(
+              Transport::Operation::Fill, 0, 1, 0, 0, Fixture::Base, 17,
+              {raw.data(), Transport::PageBytes}, nullptr,
+              Transport::FaultPoint::RequestPacket) ==
+          Transport::Status::Invalid);
+    CHECK(transport.auditSnapshot() == before);
     CHECK(transport.startAction(
               static_cast<Transport::Operation>(0xff), 0, 1, 0, 0,
               Fixture::Base, 17, {raw.data(), Transport::PageBytes}) ==
