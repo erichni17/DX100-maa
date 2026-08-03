@@ -33,7 +33,7 @@ fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 runtime_root=/data1/nier/DX100
-run_root=/data1/nier/dx100-runs/2026-08-03-gzz-tile-attribution
+run_root=${GZZ_ATTRIBUTION_RUN_ROOT:-/data1/nier/dx100-runs/2026-08-03-gzz-tile-attribution-v2}
 campaign_root="$run_root/$cohort"
 mkdir -p "$campaign_root"
 
@@ -50,6 +50,11 @@ mkdir -p "$campaign_root"
 export DX100_SOURCE_ROOT="$root"
 export DX100_RUNTIME_ROOT="$runtime_root"
 export CAMPAIGN_ROOT="$campaign_root"
+# A gem5 SE checkpoint contains the loaded executable image.  A checkpoint
+# produced by a differently-built GZZ binary can restore successfully and then
+# fault in unrelated libc instructions.  Keep checkpoints cohort-local so a
+# treatment can never restore a checkpoint made from another executable.
+export CHECKPOINT_ROOT="$campaign_root/checkpoints"
 export GZZ_EXTRA_CXX_FLAGS="$extra_flags"
 export GZZ_DEBUG_FLAGS=MAAController
 export GZZ_DEBUG_FILE=maa_controller.trace

@@ -2,8 +2,9 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-run_root=/data1/nier/dx100-runs/2026-08-03-gzz-tile-attribution
+run_root=${GZZ_ATTRIBUTION_RUN_ROOT:-/data1/nier/dx100-runs/2026-08-03-gzz-tile-attribution-v2}
 mkdir -p "$run_root"
+export GZZ_ATTRIBUTION_RUN_ROOT="$run_root"
 
 available_gib() {
     awk '/^MemAvailable:/ {printf "%d\n", $2 / 1024 / 1024}' /proc/meminfo
@@ -20,7 +21,7 @@ launch_wave() {
 
     local units=()
     for physical in 16384 32768 65536; do
-        local unit="dx100-gzz-${wave}-p${physical}-20260803"
+        local unit="dx100-gzz-${wave}-p${physical}-20260803-v2"
         units+=("$unit.service")
         systemd-run --user --no-block \
             --unit="$unit" \
