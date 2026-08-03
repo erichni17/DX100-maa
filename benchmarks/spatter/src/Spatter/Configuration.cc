@@ -492,7 +492,7 @@ void setup_MAA() {
         {
             int tid = omp_get_thread_num();
             tile1s[tid] = get_new_tile<int>();
-            tile2s[tid] = get_new_tile<int>();
+            tile2s[tid] = get_new_tile<double>();
             tile3s[tid] = get_new_tile<double>();
             reg1s[tid] = get_new_reg<int>();
             reg2s[tid] = get_new_reg<int>();
