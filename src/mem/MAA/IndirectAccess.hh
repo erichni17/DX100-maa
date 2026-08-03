@@ -15,6 +15,7 @@
 #include "base/types.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
+#include "mem/MAA/BoundedRangePass.hh"
 #include "sim/system.hh"
 #include "arch/generic/mmu.hh"
 #include "mem/MAA/Tables.hh"
@@ -288,6 +289,7 @@ protected:
     int direct_index_filter_words_per_cycle = 0;
     int direct_index_partition = 0;
     bool direct_index_partition_barrier = false;
+    BoundedRangePassTracker bounded_range_pass;
     int direct_index_next_prefetch_itr = 0;
     std::map<Addr, std::vector<std::pair<int, uint16_t>>>
         direct_index_pending_lines;
@@ -337,6 +339,9 @@ protected:
     void fillDirectIndexWindow();
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
+    uint32_t directIndexPassForGrow(Addr grow_addr) const;
+    int directIndexRetirementPass() const;
+    void finishBoundedRangePass(int pass, const char *reason);
     void discardDirectIndex(int itr, uint32_t expected_value,
                             DirectIndexDiscardReason reason);
     bool receiveDirectIndex(Addr addr, uint8_t *dataptr,

@@ -107,6 +107,10 @@ class MAA(ClockedObject):
     virtual_index_partitions = Param.Unsigned(
         1, "Modulo DRAM-grow partitions scanned by a direct virtual-index load"
     )
+    virtual_index_range_passes = Param.Bool(
+        False,
+        "Select contiguous DRAM-grow ranges with explicit exact-once tracking",
+    )
     virtual_index_filter_words_per_cycle = Param.Unsigned(
         0,
         "Partition-filter index words examined per cycle (0 is unlimited)",
