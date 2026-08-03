@@ -145,6 +145,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_index_partitions"
         )
 
+    if hasattr(options, "maa_virtual_index_range_passes"):
+        opts["virtual_index_range_passes"] = getattr(
+            options, "maa_virtual_index_range_passes"
+        )
+
     if hasattr(options, "maa_virtual_index_filter_words_per_cycle"):
         opts["virtual_index_filter_words_per_cycle"] = getattr(
             options, "maa_virtual_index_filter_words_per_cycle"

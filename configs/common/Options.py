@@ -375,6 +375,14 @@ def addNoISAOptions(parser):
         help="Modulo DRAM-grow partitions scanned by a direct virtual-index load",
     )
     parser.add_argument(
+        "--maa_virtual_index_range_passes",
+        action="store_true",
+        help=(
+            "Use contiguous DRAM-grow range passes with exact-once tracking "
+            "for a bounded direct virtual-index load"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_filter_words_per_cycle",
         type=int,
         default=0,

@@ -291,6 +291,22 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                  my_indirect_id, num_initial_RT_slices);
     DPRINTF(MAAIndirect, "I[%d] %s: initial_RT_config(%d)!\n",
             my_indirect_id, __func__, initial_RT_config);
+    if (maa->virtual_index_range_passes) {
+        const uint64_t active_row_line_slots =
+            static_cast<uint64_t>(num_RT_slices[initial_RT_config]) *
+            num_RT_rows_per_slice *
+            num_RT_slice_columns[initial_RT_config];
+        panic_if(offset_table->capacity() >
+                     BoundedRangePassTracker::MaxActiveEntries,
+                 "I[%d] bounded range OffsetTable has %d entries (max %u)\n",
+                 my_indirect_id, offset_table->capacity(),
+                 BoundedRangePassTracker::MaxActiveEntries);
+        panic_if(active_row_line_slots >
+                     BoundedRangePassTracker::MaxActiveEntries,
+                 "I[%d] bounded range RowTable has %lu active line slots "
+                 "(max %u)\n", my_indirect_id, active_row_line_slots,
+                 BoundedRangePassTracker::MaxActiveEntries);
+    }
 }
 int IndirectAccessUnit::getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank) {
     int RT_index = 0;
@@ -698,6 +714,45 @@ uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
              my_indirect_id, itr);
     return entry->second.value;
 }
+uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
+    if (!maa->virtual_index_range_passes)
+        return grow_addr % direct_index_partitions;
+    const uint32_t pass = bounded_range_pass.passForGrow(grow_addr);
+    panic_if(pass >= static_cast<uint32_t>(direct_index_partitions),
+             "I[%d] grow 0x%lx has no bounded range pass\n",
+             my_indirect_id, grow_addr);
+    return pass;
+}
+int IndirectAccessUnit::directIndexRetirementPass() const {
+    const int pass = direct_index_partition_barrier
+        ? direct_index_partition - 1 : direct_index_partition;
+    panic_if(pass < 0 || pass >= direct_index_partitions,
+             "I[%d] invalid retirement pass %d (current=%d barrier=%d)\n",
+             my_indirect_id, pass, direct_index_partition,
+             direct_index_partition_barrier);
+    return pass;
+}
+void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
+    if (!maa->virtual_index_range_passes)
+        return;
+    const auto result = bounded_range_pass.finishPass(pass);
+    panic_if(result != BoundedRangePassTracker::Result::Accepted,
+             "I[%d] bounded range pass %d failed closure: %s\n",
+             my_indirect_id, pass,
+             BoundedRangePassTracker::resultName(result));
+    const auto range = bounded_range_pass.range(pass);
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_range_pass_complete schema=1 unit=%d "
+            "operation_tick=%lu pass=%d passes=%d lower=0x%lx upper=0x%lx "
+            "admitted=%u retired=%u admitted_total=%u retired_total=%u "
+            "reason=%s\n",
+            my_indirect_id, my_decode_start_tick, pass,
+            direct_index_partitions, range.lower, range.upper,
+            bounded_range_pass.admissionsForPass(pass),
+            bounded_range_pass.retirementsForPass(pass),
+            bounded_range_pass.admissions(), bounded_range_pass.retirements(),
+            reason);
+}
 void IndirectAccessUnit::discardDirectIndex(
     int itr, uint32_t expected_value, DirectIndexDiscardReason reason) {
     auto word = direct_index_words.find(itr);
@@ -927,15 +982,18 @@ void IndirectAccessUnit::fillRowTable(
                          "I[%d] direct-index partition %d ended with buffered "
                          "index data\n",
                          my_indirect_id, direct_index_partition);
-                direct_index_partition++;
+                const int completed_partition = direct_index_partition++;
                 my_i = 0;
                 direct_index_next_prefetch_itr = 0;
                 direct_index_partition_barrier = true;
                 needDrain = true;
                 DPRINTF(MAAVirtualTrace,
-                        "event=index_partition unit=%d next=%d total=%d\n",
-                        my_indirect_id, direct_index_partition,
-                        direct_index_partitions);
+                        "event=index_partition unit=%d completed=%d next=%d "
+                        "total=%d policy=%s\n", my_indirect_id,
+                        completed_partition, direct_index_partition,
+                        direct_index_partitions,
+                        maa->virtual_index_range_passes ? "grow_range" :
+                                                         "grow_modulo");
                 break;
             }
             if (my_dst_tile != -1) {
@@ -1004,7 +1062,7 @@ void IndirectAccessUnit::fillRowTable(
             virtual_iteration_selected =
                 !isVirtualLoad() || !isDirectIndexLoad() ||
                 direct_index_partitions == 1 ||
-                static_cast<int>(grow_addr % direct_index_partitions) ==
+                static_cast<int>(directIndexPassForGrow(grow_addr)) ==
                     direct_index_partition;
             if (isDirectIndexLoad() && !virtual_iteration_selected)
                 direct_index_partition_rejected = true;
@@ -1061,6 +1119,16 @@ void IndirectAccessUnit::fillRowTable(
                     break;
                 } else {
                     attribution_row_insert_successes++;
+                    if (maa->virtual_index_range_passes) {
+                        const auto result = bounded_range_pass.recordAdmission(
+                            my_i, grow_addr, direct_index_partition);
+                        panic_if(
+                            result != BoundedRangePassTracker::Result::Accepted,
+                            "I[%d] bounded range admission itr=%d grow=0x%lx "
+                            "pass=%d failed: %s\n", my_indirect_id, my_i,
+                            grow_addr, direct_index_partition,
+                            BoundedRangePassTracker::resultName(result));
+                    }
                     if (isDirectIndexLoad())
                         direct_index_descriptor_inserted = true;
                     if (isDirectIndexLoad()) {
@@ -1388,6 +1456,7 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_next_prefetch_itr = 0;
         direct_index_partition = 0;
         direct_index_partition_barrier = false;
+        bounded_range_pass.reset();
         offset_table_drain = false;
         direct_index_pending_lines.clear();
         direct_index_ready_lines.clear();
@@ -1421,6 +1490,34 @@ void IndirectAccessUnit::executeInstruction() {
                      "capacity %d\n",
                      my_indirect_id, my_max, num_tile_elements);
             my_idx_tile_ready = true;
+            if (maa->virtual_index_range_passes) {
+                panic_if(!isVirtualLoad(),
+                         "I[%d] bounded range passes require a virtual load\n",
+                         my_indirect_id);
+                const auto result = bounded_range_pass.configure(
+                    my_max, offset_table->capacity(), direct_index_partitions,
+                    num_RT_possible_grows[my_RT_config]);
+                panic_if(
+                    result != BoundedRangePassTracker::Result::Accepted,
+                    "I[%d] cannot configure bounded range passes: %s\n",
+                    my_indirect_id,
+                    BoundedRangePassTracker::resultName(result));
+                const uint64_t active_row_line_slots =
+                    static_cast<uint64_t>(num_RT_slices[my_RT_config]) *
+                    num_RT_rows_per_slice *
+                    num_RT_slice_columns[my_RT_config];
+                DPRINTF(MAAVirtualTrace,
+                        "event=bounded_range_begin schema=1 unit=%d "
+                        "operation_tick=%lu logical=%d active_offsets=%d "
+                        "active_row_lines=%lu passes=%d possible_grows=%lu "
+                        "checker_bytes=%zu backing=llc_index_rescan "
+                        "combiner=retained\n",
+                        my_indirect_id, my_decode_start_tick, my_max,
+                        offset_table->capacity(), active_row_line_slots,
+                        direct_index_partitions,
+                        num_RT_possible_grows[my_RT_config],
+                        bounded_range_pass.chargedBytes());
+            }
         }
         my_SPD_read_finish_tick = curTick();
         my_SPD_write_finish_tick = curTick();
@@ -1950,6 +2047,8 @@ void IndirectAccessUnit::executeInstruction() {
                                            "request_rebuild");
                 virtual_build_incomplete = false;
             } else if (direct_index_partition_barrier) {
+                finishBoundedRangePass(direct_index_partition - 1,
+                                       "barrier_drained");
                 state = Status::Fill;
                 transitionAttributionStage(AttributionStage::Fill,
                                            "partition_advance");
@@ -2096,6 +2195,31 @@ void IndirectAccessUnit::executeInstruction() {
                 (*maa->stats.IND_VirtPageReadySpanCycles[my_indirect_id]) +=
                     maa->getTicksToCycles(virtual_all_pages_ready_tick -
                                           virtual_first_page_ready_tick);
+            }
+            if (maa->virtual_index_range_passes) {
+                finishBoundedRangePass(direct_index_partition,
+                                       "final_drained");
+                const auto result = bounded_range_pass.finish();
+                panic_if(
+                    result != BoundedRangePassTracker::Result::Accepted,
+                    "I[%d] bounded range exact-once closure failed: %s "
+                    "admitted=%u/%u retired=%u/%u\n", my_indirect_id,
+                    BoundedRangePassTracker::resultName(result),
+                    bounded_range_pass.admissions(),
+                    bounded_range_pass.logical(),
+                    bounded_range_pass.retirements(),
+                    bounded_range_pass.logical());
+                DPRINTF(MAAVirtualTrace,
+                        "event=bounded_range_complete schema=1 unit=%d "
+                        "operation_tick=%lu logical=%u admitted=%u "
+                        "retired=%u duplicate_admissions=0 "
+                        "duplicate_retirements=0 missing=0 "
+                        "checker_bytes=%zu\n",
+                        my_indirect_id, my_decode_start_tick,
+                        bounded_range_pass.logical(),
+                        bounded_range_pass.admissions(),
+                        bounded_range_pass.retirements(),
+                        bounded_range_pass.chargedBytes());
             }
         }
         if (isDirectIndexLoad()) {
@@ -3259,6 +3383,14 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     target->valid_words |= word_bit;
     virtual_combine_words++;
     attribution_combiner_words++;
+    if (maa->virtual_index_range_passes) {
+        const int pass = directIndexRetirementPass();
+        const auto result = bounded_range_pass.recordRetirement(itr, pass);
+        panic_if(result != BoundedRangePassTracker::Result::Accepted,
+                 "I[%d] bounded range retirement itr=%d pass=%d failed: %s\n",
+                 my_indirect_id, itr, pass,
+                 BoundedRangePassTracker::resultName(result));
+    }
     panic_if(virtual_combine_words > virtual_combine_words_limit,
              "I[%d] virtual combiner exceeded word capacity: %d/%d\n",
              my_indirect_id, virtual_combine_words,

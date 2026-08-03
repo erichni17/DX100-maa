@@ -47,6 +47,8 @@ grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
 row_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 row_entries=${MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW:-8}
+offset_entries=${MAA_OFFSET_TABLE_ENTRIES:-0}
+offset_epoch_entries=${MAA_OFFSET_TABLE_EPOCH_ENTRIES:-0}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-96}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
@@ -55,6 +57,9 @@ combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
 combine_victim_policy=${MAA_VIRTUAL_COMBINE_VICTIM_POLICY:-0}
 combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
+index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
+index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
+partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
 require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
 [[ $grow_order == 0 || $grow_order == 1 ]] || {
@@ -69,6 +74,30 @@ require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
     echo "virtual index partitions must be in [1,64]" >&2
     exit 2
 }
+[[ $index_range_passes == 0 || $index_range_passes == 1 ]] || {
+    echo "MAA_VIRTUAL_INDEX_RANGE_PASSES must be 0 or 1" >&2
+    exit 2
+}
+[[ $index_force_cache == 0 || $index_force_cache == 1 ]] || {
+    echo "MAA_VIRTUAL_INDEX_FORCE_CACHE must be 0 or 1" >&2
+    exit 2
+}
+[[ $partition_keep_combiner == 0 || $partition_keep_combiner == 1 ]] || {
+    echo "MAA_VIRTUAL_PARTITION_KEEP_COMBINER must be 0 or 1" >&2
+    exit 2
+}
+[[ $offset_entries -ge 0 && $offset_epoch_entries -ge 0 ]] || {
+    echo "OffsetTable capacities must be nonnegative" >&2
+    exit 2
+}
+resolved_offset_entries=$offset_entries
+if [[ $resolved_offset_entries -eq 0 ]]; then
+    resolved_offset_entries=16384
+fi
+resolved_offset_epoch_entries=$offset_epoch_entries
+if [[ $resolved_offset_epoch_entries -eq 0 ]]; then
+    resolved_offset_epoch_entries=$resolved_offset_entries
+fi
 [[ $index_filter_words_per_cycle -ge 0 ]] || {
     echo "virtual index filter words per cycle must be nonnegative" >&2
     exit 2
@@ -119,6 +148,27 @@ fi
 grow_order_args=()
 if [[ $grow_order == 1 ]]; then
     grow_order_args+=(--maa_virtual_grow_order)
+fi
+index_range_args=()
+if [[ $index_range_passes == 1 ]]; then
+    index_range_args+=(--maa_virtual_index_range_passes)
+fi
+index_cache_args=()
+if [[ $index_force_cache == 1 ]]; then
+    index_cache_args+=(--maa_virtual_index_force_cache)
+fi
+partition_combiner_args=()
+if [[ $partition_keep_combiner == 1 ]]; then
+    partition_combiner_args+=(--maa_virtual_partition_keep_combiner)
+fi
+offset_args=()
+if [[ $offset_entries -ne 0 ]]; then
+    offset_args+=(--maa_num_offset_table_entries "$offset_entries")
+fi
+if [[ $offset_epoch_entries -ne 0 ]]; then
+    offset_args+=(
+        --maa_num_offset_table_epoch_entries "$offset_epoch_entries"
+    )
 fi
 
 case "$case_name" in
@@ -352,6 +402,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'row_table_slices=%s\n' "$row_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_rows"
     printf 'row_table_entries_per_subslice_row=%s\n' "$row_entries"
+    printf 'offset_table_entries=%s\n' "$offset_entries"
+    printf 'offset_table_epoch_entries=%s\n' "$offset_epoch_entries"
     printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
@@ -361,6 +413,10 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_combine_victim_policy=%s\n' "$combine_victim_policy"
     printf 'virtual_combine_banks=%s\n' "$combine_banks"
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
+    printf 'virtual_index_range_passes=%s\n' "$index_range_passes"
+    printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
+    printf 'virtual_partition_keep_combiner=%s\n' \
+        "$partition_keep_combiner"
     printf 'virtual_index_filter_words_per_cycle=%s\n' \
         "$index_filter_words_per_cycle"
     printf 'require_index_filter_wait=%s\n' "$require_index_filter_wait"
@@ -388,6 +444,8 @@ cp -- "$root/benchmarks/API/test_virtual_tile_consumer.cpp" \
 cp -- "$root/benchmarks/API/MAA_gem5.hpp" "$snapshot/MAA_gem5.hpp"
 cp -- "$root/src/mem/MAA/IndirectAccess.cc" "$snapshot/IndirectAccess.cc"
 cp -- "$root/src/mem/MAA/IndirectAccess.hh" "$snapshot/IndirectAccess.hh"
+cp -- "$root/src/mem/MAA/BoundedRangePass.hh" \
+    "$snapshot/BoundedRangePass.hh"
 cp -- "$root/src/mem/MAA/TransparentSPDController.hh" \
     "$snapshot/TransparentSPDController.hh"
 cp -- "$root/src/mem/MAA/MAA.cc" "$snapshot/MAA.cc"
@@ -421,6 +479,7 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/test_virtual_tile_consumer.cpp" \
     "$snapshot/MAA_gem5.hpp" \
     "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
+    "$snapshot/BoundedRangePass.hh" \
     "$snapshot/TransparentSPDController.hh" \
     "$snapshot/MAA.cc" "$snapshot/MAA.hh" \
     "$snapshot/IF.cc" "$snapshot/IF.hh" \
@@ -506,6 +565,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_num_initial_row_table_slices="$row_slices" \
     --maa_num_row_table_rows_per_slice="$row_rows" \
     --maa_num_row_table_entries_per_subslice_row="$row_entries" \
+    "${offset_args[@]}" \
     "${grow_order_args[@]}" \
     --maa_virtual_combine_slots="$combine_slots" \
     --maa_virtual_combine_words="$combine_words" \
@@ -518,6 +578,9 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
     --maa_virtual_index_buffer_lines=4 \
     --maa_virtual_index_partitions="$index_partitions" \
+    "${index_range_args[@]}" \
+    "${index_cache_args[@]}" \
+    "${partition_combiner_args[@]}" \
     --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle" \
     --cmd "$binary" --options "$workload_options" \
     > "$out/restore.log" 2>&1
@@ -535,7 +598,12 @@ for expected in \
     "num_initial_row_table_slices=$row_slices" \
     "num_row_table_rows_per_slice=$row_rows" \
     "num_row_table_entries_per_subslice_row=$row_entries" \
+    "num_offset_table_entries=$resolved_offset_entries" \
+    "num_offset_table_epoch_entries=$resolved_offset_epoch_entries" \
     "virtual_index_partitions=$index_partitions" \
+    "virtual_index_range_passes=$([[ $index_range_passes -eq 1 ]] && echo true || echo false)" \
+    "virtual_index_force_cache=$([[ $index_force_cache -eq 1 ]] && echo true || echo false)" \
+    "virtual_partition_keep_combiner=$([[ $partition_keep_combiner -eq 1 ]] && echo true || echo false)" \
     "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
     "reconfigure_row_table=false"; do
     grep -Fqx "$expected" "$config_ini" || {
@@ -904,7 +972,9 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     page_wait_deferrals page_wait_responses l3_read_hits_maa
     l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
     row_table_rows_per_slice row_table_entries_per_subslice_row
-    virtual_grow_order virtual_index_partitions
+    virtual_grow_order virtual_index_partitions virtual_index_range_passes
+    virtual_index_force_cache virtual_partition_keep_combiner
+    offset_table_entries offset_table_epoch_entries
     transparent_spd_mode
     virtual_index_filter_words_per_cycle require_index_filter_wait
     response_slots response_word_pool
@@ -926,7 +996,9 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$page_ready_signals" "$page_wait_reads" "$page_wait_deferrals"
     "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
     "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
-    "$row_entries" "$grow_order" "$index_partitions"
+    "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
+    "$index_force_cache" "$partition_keep_combiner" \
+    "$resolved_offset_entries" "$resolved_offset_epoch_entries"
     "$transparent_spd_mode"
     "$index_filter_words_per_cycle" "$require_index_filter_wait"
     "$response_slots" "$response_word_pool"
@@ -934,6 +1006,40 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$source_reads" "$response_slot_hwm" "$response_word_hwm"
     "$response_pool_stalls" "$rt_full" "$build_rounds" "$dram_reads"
     "$dram_acts" "$dram_pres")
+if [[ $index_range_passes -eq 1 ]]; then
+    expected_index_words=$((16384 * index_partitions))
+    expected_partition_discards=$((16384 * (index_partitions - 1)))
+    range_begin_count=$(grep -Ec \
+        'event=bounded_range_begin schema=1 .* logical=16384 active_offsets=[1-9][0-9]* .* backing=llc_index_rescan combiner=retained$' \
+        "$out/run/virtual_trace.log" || true)
+    range_pass_count=$(grep -Ec \
+        'event=bounded_range_pass_complete schema=1 ' \
+        "$out/run/virtual_trace.log" || true)
+    range_complete_count=$(grep -Ec \
+        'event=bounded_range_complete schema=1 .* logical=16384 admitted=16384 retired=16384 duplicate_admissions=0 duplicate_retirements=0 missing=0 ' \
+        "$out/run/virtual_trace.log" || true)
+    uncached_index_responses=$(grep -Ec \
+        'event=index_line_response schema=2 .* cached=0$' \
+        "$out/run/virtual_trace.log" || true)
+    [[ $resolved_offset_entries -gt 0 &&
+       $resolved_offset_entries -le 4096 &&
+       $resolved_offset_epoch_entries -gt 0 &&
+       $resolved_offset_epoch_entries -le 4096 &&
+       $((row_slices * row_rows * row_entries)) -le 4096 &&
+       $index_force_cache -eq 1 && $partition_keep_combiner -eq 1 &&
+       $grow_order -eq 1 &&
+       $index_words -eq $expected_index_words &&
+       $feeder_descriptor_discards -eq 16384 &&
+       $feeder_predicate_discards -eq 0 &&
+       $feeder_partition_discards -eq $expected_partition_discards &&
+       $range_begin_count -eq 1 &&
+       $range_pass_count -eq $index_partitions &&
+       $range_complete_count -eq 1 &&
+       $uncached_index_responses -eq 0 ]] || {
+        echo "bounded range-pass closure failed" >&2
+        exit 1
+    }
+fi
 [[ ${#headers[@]} -eq ${#values[@]} ]] || {
     echo "result schema/value length mismatch" >&2
     exit 1

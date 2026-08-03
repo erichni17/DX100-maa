@@ -111,6 +111,7 @@ MAA::MAA(const MAAParams &p)
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
       virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
+      virtual_index_range_passes(p.virtual_index_range_passes),
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
       virtual_partition_keep_combiner(p.virtual_partition_keep_combiner),
@@ -152,6 +153,31 @@ MAA::MAA(const MAAParams &p)
                  num_offset_table_epoch_entries > num_offset_table_entries,
              "Offset Table epoch capacity %u must be in [1,%u]\n",
              num_offset_table_epoch_entries, num_offset_table_entries);
+    if (virtual_index_range_passes) {
+        const unsigned int minimum_passes =
+            (num_tile_elements + num_offset_table_entries - 1) /
+            num_offset_table_entries;
+        panic_if(num_offset_table_entries > 4096,
+                 "Bounded range passes allow at most 4096 Offset entries, "
+                 "got %u\n", num_offset_table_entries);
+        panic_if(virtual_index_partitions < minimum_passes,
+                 "Bounded range passes need at least %u passes for %u/%u "
+                 "logical/active entries, got %u\n", minimum_passes,
+                 num_tile_elements, num_offset_table_entries,
+                 virtual_index_partitions);
+        panic_if(!virtual_index_force_cache,
+                 "Bounded range passes require LLC-visible index rescans\n");
+        panic_if(virtual_index_filter_words_per_cycle == 0,
+                 "Bounded range passes require a finite index-filter rate\n");
+        panic_if(!virtual_partition_keep_combiner,
+                 "Bounded range passes require a retained destination "
+                 "combiner across passes\n");
+        panic_if(!virtual_grow_order,
+                 "Bounded range passes require grow-grouped source issue\n");
+        panic_if(virtual_native_issue_order,
+                 "Bounded range passes cannot use attribution-only native "
+                 "issue order\n");
+    }
     panic_if(virtual_grow_order && virtual_native_issue_order,
              "Virtual grow grouping and native issue-order attribution "
              "cannot both be enabled\n");
