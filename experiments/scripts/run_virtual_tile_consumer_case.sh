@@ -33,6 +33,8 @@ gem5=$(realpath "$1")
 binary=$(realpath "$2")
 case_name=$3
 out=$(realpath -m "$4")
+shared_checkpoint=${DX100_SHARED_CHECKPOINT_DIR:-}
+shared_treatment=${DX100_SHARED_TREATMENT_FILE:-}
 overlap=0
 polluted=0
 transparent_spd_mode=0
@@ -271,6 +273,9 @@ if [[ $index_partitions -ne 1 &&
     exit 2
 fi
 
+if [[ -n $shared_checkpoint || -n $shared_treatment ]]; then
+    [[ -n $shared_checkpoint && -n $shared_treatment && -d $shared_checkpoint ]] || exit 2
+fi
 if [[ -e $out ]]; then
     echo "refusing to overwrite existing output path: $out" >&2
     exit 2
@@ -348,6 +353,14 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$out/source.diff" "$out/source_status.txt" \
     > "$out/artifact_sha256.txt"
 
+checkpoint_dir="$out/checkpoint"
+workload_options="$mode $page"
+if [[ -n $shared_checkpoint ]]; then
+    checkpoint_dir=$(realpath "$shared_checkpoint")
+    printf '%s %s\n' "$mode" "$page" > "$shared_treatment"
+    workload_options="deferred $shared_treatment"
+    printf '0\n' > "$out/checkpoint.exit"
+else
 set +e
 /usr/bin/time -f 'checkpoint_wall=%e checkpoint_rss_kb=%M' \
     "$gem5" --listener-mode=off --outdir="$out/checkpoint" \
@@ -361,6 +374,7 @@ printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
     echo "checkpoint failed with rc=$checkpoint_rc" >&2
     exit 1
 }
+fi
 grep -Eq "VIRTUAL_TILE_CONSUMER_LAYOUT mode=${mode} page_elements=${page} logical_elements=16384 mem_size=2147483648" \
     "$out/checkpoint.log" || {
     echo "binary/config consumer contract mismatch" >&2
@@ -373,7 +387,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "$gem5" --listener-mode=off --outdir="$out/run" \
     --debug-flags="$debug_flags" --debug-file=virtual_trace.log "$config" \
     --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB \
-    --checkpoint-dir="$out/checkpoint" \
+    --checkpoint-dir="$checkpoint_dir" \
     --sys-clock 3.2GHz --cpu-clock 3.2GHz \
     --caches --l1d_size=32kB --l1d_assoc=8 \
     --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \
@@ -403,7 +417,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_index_buffer_lines=4 \
     --maa_virtual_index_partitions="$index_partitions" \
     --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle" \
-    --cmd "$binary" --options "$mode $page" > "$out/restore.log" 2>&1
+    --cmd "$binary" --options "$workload_options" > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e
 printf '%s\n' "$restore_rc" > "$out/restore.exit"

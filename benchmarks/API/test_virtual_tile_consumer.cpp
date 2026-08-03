@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -36,8 +37,14 @@ hashValue(uint64_t hash, double value)
 int
 main(int argc, char **argv)
 {
-    const std::string mode = argc > 1 ? argv[1] : "native";
-    const int page_elements = argc > 2 ? std::atoi(argv[2]) : total_elements;
+    std::string mode = argc > 1 ? argv[1] : "native";
+    int page_elements = argc > 2 ? std::atoi(argv[2]) : total_elements;
+    const bool deferred_treatment = mode == "deferred";
+    const std::string treatment_path =
+        deferred_treatment && argc > 2 ? argv[2] : "";
+    if (deferred_treatment)
+        page_elements = 0;
+    auto validate_treatment = [&]() -> bool {
     if (mode != "native" && mode != "native_direct" &&
         mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_staged_conditional" &&
@@ -55,12 +62,12 @@ main(int argc, char **argv)
                      "transparent_reload_cold, or paged_reload_warm/"
                      "paged_reload_cold"
                   << std::endl;
-        return 2;
+        return false;
     }
     if ((page_elements != 4096 && page_elements != total_elements) ||
         total_elements % page_elements != 0) {
         std::cerr << "page_elements must be 4096 or 16384" << std::endl;
-        return 2;
+        return false;
     }
     if ((mode == "transparent" || mode == "transparent_ready" ||
          mode == "transparent_displaced" || mode == "paged_displaced" ||
@@ -69,8 +76,12 @@ main(int argc, char **argv)
         page_elements != 4096) {
         std::cerr << "cache-residency controls require four 4096-element pages"
                   << std::endl;
-        return 2;
+        return false;
     }
+    return true;
+    };
+    if (!deferred_treatment && !validate_treatment())
+        return 2;
     if (TILE_SIZE != total_elements) {
         std::cerr << "test requires a 16K logical tile" << std::endl;
         return 2;
@@ -117,6 +128,16 @@ main(int argc, char **argv)
               << " mem_size=" << static_cast<uint64_t>(MEM_SIZE)
               << std::endl;
     m5_checkpoint(0, 0);
+    if (deferred_treatment) {
+        std::ifstream treatment(treatment_path);
+        std::string extra;
+        if (!(treatment >> mode >> page_elements) || treatment >> extra ||
+            !validate_treatment())
+            return 2;
+        std::cout << "VIRTUAL_TILE_CONSUMER_TREATMENT mode=" << mode
+                  << " page_elements=" << page_elements
+                  << " source=deferred_file_v1" << std::endl;
+    }
 
     alloc_MAA();
     init_MAA();

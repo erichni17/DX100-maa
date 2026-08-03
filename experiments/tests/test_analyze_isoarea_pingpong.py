@@ -13,7 +13,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 class AnalyzeIsoAreaTest(unittest.TestCase):
-    def test_detects_real_cross_unit_overlap(self):
+    def test_detects_interval_envelope_overlap(self):
         with tempfile.TemporaryDirectory() as directory:
             run = Path(directory)
             (run / "run").mkdir()
@@ -41,7 +41,7 @@ class AnalyzeIsoAreaTest(unittest.TestCase):
             ]
             (run / "run/virtual_trace.log").write_text("\n".join(lines) + "\n")
             result = MODULE.analyze_run(run)
-            self.assertEqual(result["actual_cross_unit_overlap_ticks"], 4)
+            self.assertEqual(result["interval_envelope_overlap_ticks"], 4)
 
 
 if __name__ == "__main__":

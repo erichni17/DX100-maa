@@ -159,10 +159,10 @@ def analyze_run(run: Path) -> dict:
             "compute": sum(i["ticks"] for i in intervals if i["action"] == 2),
             "store": sum(i["ticks"] for i in intervals if i["action"] == 3),
         },
-        "actual_cross_unit_overlap_ticks": sum(
+        "interval_envelope_overlap_ticks": sum(
             i["ticks"] for i in cross_overlaps
         ),
-        "cross_unit_overlaps": cross_overlaps,
+        "interval_envelope_overlaps": cross_overlaps,
         "intervals": sorted(
             intervals, key=lambda item: (item["start"], item["action"])
         ),
