@@ -203,12 +203,11 @@ BIN="$UME/$BIN_BASENAME"
 OPTS="$N"
 MAA_MEM_HEX=$(mem_size_to_hex "$MEM_SIZE")
 MEM_TAG=$(echo "$MEM_SIZE" | tr -cd '[:alnum:]')
-CKPT="$CHECKPOINT_ROOT/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
+CKPT_BASE="$CHECKPOINT_ROOT/ume_${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}"
 OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}"
 LEGACY_OUT="$CAMPAIGN_ROOT/${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${LEGACY_TAG}"
 RUN_LOCK="$CAMPAIGN_ROOT/.${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${TAG}.run.lock"
 LEGACY_RUN_LOCK="$CAMPAIGN_ROOT/.${KERNEL}_n${N}_t${TILE}_m${MEM_TAG}_${LEGACY_TAG}.run.lock"
-CKPT_LOCK="${CKPT}.publish.lock"
 
 # A speculative lane and the primary workflow may reach the same far-end
 # point. Serialize that exact output directory and re-check reuse under the
@@ -272,6 +271,15 @@ echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeo
     > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
 } 200>"$BUILD_LOCK"
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
+BENCHMARK_SHA256=$(sha256sum -- "$BIN")
+BENCHMARK_SHA256=${BENCHMARK_SHA256%% *}
+# gem5 SE checkpoints contain the loaded executable image. Keying only on the
+# workload dimensions can silently restore code from an older benchmark build,
+# producing invalid execution or misleading performance while the simulator
+# binary itself still has matching provenance.
+CKPT="${CKPT_BASE}_binsha_${BENCHMARK_SHA256}"
+CKPT_LOCK="${CKPT}.publish.lock"
+echo "[benchmark] path=$BIN sha256=$BENCHMARK_SHA256 checkpoint=$CKPT"
 
 # --- step 1: checkpoint ---
 mkdir -p "$CHECKPOINT_ROOT"
@@ -312,6 +320,12 @@ ls "$CKPT"/cpt.* >/dev/null 2>&1 || { echo "checkpoint missing for $KERNEL t$TIL
 rm -rf "$OUT"
 mkdir -p "$OUT"
 write_gem5_provenance "$OUT"
+{
+  printf 'schema_version\t1\n'
+  printf 'path\t%s\n' "$BIN"
+  printf 'sha256\t%s\n' "$BENCHMARK_SHA256"
+  printf 'checkpoint\t%s\n' "$CKPT"
+} > "$OUT/benchmark_provenance.tsv"
 cp -r "$CKPT"/cpt.* "$OUT"/
 echo "[restore] running $KERNEL tile=$TILE n=$N"
 PROGRESS_ARGS=()

@@ -114,6 +114,10 @@ def test_fresh_tile_runners_use_immutable_sha_identity_and_publication():
         assert "gem5_resolved_path" in runner
         assert "gem5_sha256" in runner
         assert "gem5_output_tag" in runner
+    ume_runner = (ROOT / "benchmarks/UME/run_ume_tile_smoke.sh").read_text()
+    assert 'BENCHMARK_SHA256=$(sha256sum -- "$BIN")' in ume_runner
+    assert 'CKPT="${CKPT_BASE}_binsha_${BENCHMARK_SHA256}"' in ume_runner
+    assert '"$OUT/benchmark_provenance.tsv"' in ume_runner
 
 
 def install_fake_gapbs_make(fake_bin):
