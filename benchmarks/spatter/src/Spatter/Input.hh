@@ -51,6 +51,7 @@ const option longargs[] = {{"aggregate", no_argument, nullptr, 'a'},
     {"omp-threads", required_argument, nullptr, 't'},
     {"pattern-scatter", required_argument, nullptr, 'u'},
     {"maa-arm", required_argument, nullptr, 0},
+    {"maa-result-scale", required_argument, nullptr, 0},
     {"verbosity", required_argument, nullptr, 'v'},
     {"wrap", required_argument, nullptr, 'w'},
     {"delta-gather", required_argument, nullptr, 'x'},
@@ -76,6 +77,7 @@ struct ClArgs {
   bool atomic;
   bool compress;
   std::string maa_arm;
+  size_t maa_result_scale;
   unsigned long verbosity;
 
   void report_header() {
@@ -158,6 +160,9 @@ void help(char *progname) {
             << std::left << "\n";
   std::cout << std::left << std::setw(10) << "   (--maa-arm)"
             << std::setw(40) << "Select the runtime XRAGE MAA arm"
+            << std::left << "\n";
+  std::cout << std::left << std::setw(10) << "   (--maa-result-scale)"
+            << std::setw(40) << "Scale each XRAGE gather result (1 or 3)"
             << std::left << "\n";
   std::cout << std::left << std::setw(10) << "-n (--name)" << std::setw(40)
             << "Specify the Configuration Name" << std::left << "\n";
@@ -269,6 +274,7 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
   cl.atomic = false;
   cl.compress = false;
   cl.maa_arm = "";
+  cl.maa_result_scale = 1;
   cl.verbosity = 1;
 
   // In flag alphabetical order
@@ -277,6 +283,7 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
   std::string backend = cl.backend;
   bool compress = cl.compress;
   std::string maa_arm = cl.maa_arm;
+  size_t maa_result_scale = cl.maa_result_scale;
   size_t delta = 8;
   size_t boundary = 0;
 
@@ -331,6 +338,11 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
         atomic = (atomic_val > 0) ? true : false;
       } else if (strcmp(longargs[option_index].name, "maa-arm") == 0) {
         maa_arm = optarg;
+      } else if (strcmp(longargs[option_index].name,
+                     "maa-result-scale") == 0) {
+        if (read_ul_arg(optarg, maa_result_scale,
+                "Parsing Error: Invalid MAA result scale") == -1)
+          return -1;
       }
       break;
 
@@ -521,6 +533,7 @@ int parse_input(const int argc, char **argv, ClArgs &cl) {
   cl.aggregate = aggregate;
   cl.compress = compress;
   cl.maa_arm = maa_arm;
+  cl.maa_result_scale = maa_result_scale;
   cl.verbosity = verbosity;
 
 #ifdef USE_OPENMP

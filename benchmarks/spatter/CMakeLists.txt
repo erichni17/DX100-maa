@@ -33,15 +33,19 @@ if(MAA_MEM_SIZE)
     add_compile_definitions(MAA_MEM_SIZE=${MAA_MEM_SIZE})
 endif()
 
-# Set paths for GEM5 and MAA
-get_filename_component(GEM5_HOME "${CMAKE_CURRENT_LIST_DIR}/../.." REALPATH)
+# Set paths for GEM5 and MAA. A separately generated m5ops tree may be supplied
+# when the source worktree intentionally contains no build artifacts.
+if(NOT DEFINED GEM5_HOME OR GEM5_HOME STREQUAL "")
+    get_filename_component(GEM5_HOME "${CMAKE_CURRENT_LIST_DIR}/../.." REALPATH)
+endif()
 set(GEM5_HOME "${GEM5_HOME}" CACHE PATH "Path to GEM5 home")
 message(STATUS "GEM5_HOME set to ${GEM5_HOME}")
 set(MAA_HOME "${GEM5_HOME}/benchmarks/API/" CACHE PATH "Path to MAA home")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -g")
 
 # Include directories for GEM5 and MAA
-include_directories(${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
+include_directories(${CMAKE_CURRENT_LIST_DIR}/../../include/
+                    ${GEM5_HOME}/include/ ${GEM5_HOME}/util/m5/src/ ${MAA_HOME})
 
 if(BUILD_FUNC)
     add_definitions(-DFUNC)

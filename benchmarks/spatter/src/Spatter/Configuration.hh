@@ -100,6 +100,7 @@ public:
 
     std::string kernel;
     std::string maa_arm;
+    size_t maa_result_scale = 1;
     const aligned_vector<size_t> pattern;
     const aligned_vector<size_t> pattern_gather;
     const aligned_vector<size_t> pattern_scatter;

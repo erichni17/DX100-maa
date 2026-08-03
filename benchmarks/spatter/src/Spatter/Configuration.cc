@@ -431,6 +431,9 @@ std::ostream &operator<<(std::ostream &out, const ConfigurationBase &config) {
 #ifdef MAA
 int tile1s[NUM_CORES], tile2s[NUM_CORES], tile3s[NUM_CORES];
 int reg1s[NUM_CORES], reg2s[NUM_CORES], reg3s[NUM_CORES];
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+int reg4s[NUM_CORES];
+#endif
 #endif
 #include <omp.h>
 
@@ -494,6 +497,9 @@ void setup_MAA() {
             reg1s[tid] = get_new_reg<int>();
             reg2s[tid] = get_new_reg<int>();
             reg3s[tid] = get_new_reg<int>(1);
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+            reg4s[tid] = get_new_reg<double>(3.0);
+#endif
         }
     }
 }
@@ -521,6 +527,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
     if (maa_arm == "fused4")
         maa_tile_size = 4096;
     std::cout << "MAA XRAGE arm " << maa_arm << std::endl;
+    std::cout << "MAA XRAGE result scale " << maa_result_scale << std::endl;
 #endif
     std::cout << "MAA gather execution " << pattern_length << "/"
               << maa_tile_size << std::endl;
@@ -548,6 +555,9 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         require_maa_team("gather");
         int tile1, tile2, tile3;
         int reg1, reg2, reg3;
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+        int reg4;
+#endif
         int tid = omp_get_thread_num();
         tile1 = tile1s[tid];
         tile2 = tile2s[tid];
@@ -555,6 +565,9 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         reg1 = reg1s[tid];
         reg2 = reg2s[tid];
         reg3 = reg3s[tid];
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+        reg4 = reg4s[tid];
+#endif
         maa_const(pattern_length, reg2);
 #pragma omp for
         for (int j = 0; j < pattern_length; j += maa_tile_size) {
@@ -592,8 +605,15 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
                         reg2, reg3);
                 } else {
                     maa_indirect_load<double>(sparse.data(), tile1, tile2);
-                    maa_stream_store<double>(dense.data(), reg1, reg2, reg3,
-                                             tile2);
+                    if (maa_result_scale == 3) {
+                        maa_alu_scalar<double>(tile2, reg4, tile3,
+                                               Operation_t::MUL_OP);
+                        maa_stream_store<double>(dense.data(), reg1, reg2,
+                                                 reg3, tile3);
+                    } else {
+                        maa_stream_store<double>(dense.data(), reg1, reg2,
+                                                 reg3, tile2);
+                    }
                 }
             }
 #elif defined(MAA_VIRTUAL_INDEX_GATHER)
@@ -620,7 +640,14 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             maa_stream_store<double>(dense.data(), reg1, reg2, reg3, tile2);
 #endif
 #endif
-            wait_ready(tile2);
+            wait_ready(maa_result_scale == 3 && maa_arm == "native16" ? tile3
+                                                                      : tile2);
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+            if (maa_result_scale == 3 && maa_arm != "native16") {
+                for (int k = j; k < chunk_end; ++k)
+                    dense[k] *= 3.0;
+            }
+#endif
 #ifdef MAA_VIRTUAL_BACKED_GATHER
             const int chunk_end = std::min(j + TILE_SIZE, pattern_length);
             for (int k = j; k < chunk_end; ++k)
@@ -645,7 +672,8 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 #ifdef MAA_VERIFY_GATHER
     uint64_t hash = 1469598103934665603ULL;
     for (int j = 0; j < pattern_length; ++j) {
-        const double expected = sparse[pattern_int[j]];
+        const double expected =
+            sparse[pattern_int[j]] * (maa_result_scale == 3 ? 3.0 : 1.0);
         if (dense[j] != expected) {
             std::cerr << "MAA_GATHER_VERIFY_FAIL index=" << j
                       << " actual=" << dense[j] << " expected=" << expected

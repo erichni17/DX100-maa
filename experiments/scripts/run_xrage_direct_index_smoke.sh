@@ -39,6 +39,7 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
+result_scale=${XRAGE_RESULT_SCALE:-1}
 debug_args=()
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
@@ -116,6 +117,10 @@ debug_args=()
     echo "MAA_NUM_INDIRECT_UNITS_PER_MAA must be in [1,4]" >&2
     exit 2
 }
+[[ $result_scale == 1 || $result_scale == 3 ]] || {
+    echo "XRAGE_RESULT_SCALE must be 1 or 3" >&2
+    exit 2
+}
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
     echo "XRAGE_SIMULATOR_SOURCE_COMMIT must be a full Git commit" >&2
     exit 2
@@ -176,6 +181,11 @@ if [[ -n $guest_arm ]]; then
             ;;
     esac
 fi
+if [[ $result_scale == 3 &&
+      ($guest_arm == fused16 || $guest_arm == fused4) ]]; then
+    echo "fused XRAGE guest arms cannot apply a post-gather multiply" >&2
+    exit 2
+fi
 if [[ -n $debug_flags ]]; then
     [[ $debug_flags =~ ^[A-Za-z0-9_,]+$ ]] || {
         echo "XRAGE_DEBUG_FLAGS contains unsupported characters" >&2
@@ -204,12 +214,14 @@ options="-f $input"
 if [[ -n $guest_arm ]]; then
     options+=" --maa-arm $guest_arm"
 fi
+options+=" --maa-result-scale $result_scale"
 
 {
     printf 'source_commit=%s\n' "$simulator_source_commit"
     printf 'runner_source_commit=%s\n' "$runner_source_commit"
     printf 'arm=%s\n' "$arm"
     printf 'guest_arm=%s\n' "$guest_arm"
+    printf 'result_scale=%s\n' "$result_scale"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
@@ -335,6 +347,10 @@ grep -q '^MAA_GATHER_VERIFY_PASS ' "$log" || {
     echo "XRAGE exact gather verifier did not pass" >&2
     exit 1
 }
+grep -q "^MAA XRAGE result scale $result_scale$" "$log" || {
+    echo "XRAGE result-scale marker is missing" >&2
+    exit 1
+}
 grep -q 'Exiting @ tick .* because m5_exit instruction encountered' "$log" || {
     echo "XRAGE restore lacks terminal m5_exit" >&2
     exit 1
@@ -408,6 +424,40 @@ index_outstanding_wait_cycles=$(
     sum_indirect_stat IND_VirtIndexOutstandingWaitCycles
 )
 indirect_spd_reads=$(sum_indirect_stat IND_CyclesSPDReadAccess)
+first_roi_stat() {
+    awk -v name="$1" '
+        /^---------- Begin Simulation Statistics/ { active = 1; next }
+        /^---------- End Simulation Statistics/ && active { exit }
+        active && $1 == name { print $2; found = 1; exit }
+        END { if (!found) print 0 }
+    ' "$stats"
+}
+sum_first_roi_matching() {
+    awk -v pattern="$1" '
+        /^---------- Begin Simulation Statistics/ { active = 1; next }
+        /^---------- End Simulation Statistics/ && active { exit }
+        active && $1 ~ pattern { sum += $2; found = 1 }
+        END { print found ? sum : 0 }
+    ' "$stats"
+}
+maa_instructions=$(first_roi_stat system.maa.numInst)
+maa_indirect_instructions=$(first_roi_stat system.maa.numInst_INDRD)
+maa_stream_read_instructions=$(first_roi_stat system.maa.numInst_STRRD)
+maa_stream_write_instructions=$(first_roi_stat system.maa.numInst_STRWR)
+maa_scalar_alu_instructions=$(first_roi_stat system.maa.numInst_ALUS)
+maa_scalar_alu_cycles=$(first_roi_stat system.maa.cycles_ALUS)
+cpu_committed_instructions=$(
+    sum_first_roi_matching \
+        '^system\.switch_cpus[0-9]+\.commitStats0\.numInsts$'
+)
+cpu_data_reads=$(
+    sum_first_roi_matching \
+        '^system\.cpu[0-9]+\.dcache\.ReadReq_T\.accesses::switch_cpus[0-9]+\.data$'
+)
+cpu_data_writes=$(
+    sum_first_roi_matching \
+        '^system\.cpu[0-9]+\.dcache\.WriteReq_T\.accesses::switch_cpus[0-9]+\.data$'
+)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
@@ -459,8 +509,12 @@ fi
     printf '\tvirtual_build_rounds\tfill_cycles\tall_pages_ready_cycles'
     printf '\tdirect_index_outstanding_merges'
     printf '\tdirect_index_outstanding_wait_cycles'
-    printf '\tindirect_spd_read_cycles\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tindirect_spd_read_cycles\tmaa_instructions'
+    printf '\tmaa_indirect_instructions\tmaa_stream_read_instructions'
+    printf '\tmaa_stream_write_instructions\tmaa_scalar_alu_instructions'
+    printf '\tmaa_scalar_alu_cycles\tcpu_committed_instructions'
+    printf '\tcpu_data_reads\tcpu_data_writes\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
         "$index_words" "$index_partitions" "$index_filter_words" \
@@ -470,7 +524,11 @@ fi
         "$offset_table_epoch_drains" \
         "$virtual_build_rounds" "$fill_cycles" "$all_pages_ready_cycles" \
         "$index_outstanding_merges" \
-        "$index_outstanding_wait_cycles" "$indirect_spd_reads"
+        "$index_outstanding_wait_cycles" "$indirect_spd_reads" \
+        "$maa_instructions" "$maa_indirect_instructions" \
+        "$maa_stream_read_instructions" "$maa_stream_write_instructions" \
+        "$maa_scalar_alu_instructions" "$maa_scalar_alu_cycles" \
+        "$cpu_committed_instructions" "$cpu_data_reads" "$cpu_data_writes"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '
