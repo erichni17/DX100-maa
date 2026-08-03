@@ -43,6 +43,26 @@ Integral_t calc_log2(Integral_t val) {
 
 namespace gem5 {
 
+namespace {
+
+const char *
+transparentActionName(TransparentSPDController::Action action)
+{
+    switch (action) {
+      case TransparentSPDController::Action::None:
+        return "none";
+      case TransparentSPDController::Action::Fill:
+        return "stream_fill";
+      case TransparentSPDController::Action::Compute:
+        return "compute";
+      case TransparentSPDController::Action::Store:
+        return "stream_store";
+    }
+    panic("invalid transparent-controller action\n");
+}
+
+} // anonymous namespace
+
 MAA::MAAResponsePort::MAAResponsePort(const std::string &_name, MAA &_maa, const std::string &_label)
     : QueuedResponsePort(_name, queue),
       maa{_maa},
@@ -807,7 +827,7 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
                  descriptor.tokenTile);
     }
     DPRINTF(MAAVirtualTrace,
-            "event=transparent_submit token=%d physical=%d output=%d "
+            "event=transparent_submit schema=1 token=%d physical=%d output=%d "
             "generation=%lu logical=%d page=%d pages=%d\n",
             descriptor.tokenTile, descriptor.physicalTile,
             descriptor.outputTile, descriptor.generation,
@@ -930,17 +950,22 @@ void MAA::tryIssueTransparentMicroOp() {
         return;
     if (!dispatchTransparentMicroOp(request)) {
         DPRINTF(MAAVirtualTrace,
-                "event=transparent_backpressure page=%d action=%d\n",
-                request.page, static_cast<int>(request.action));
+                "event=transparent_backpressure schema=1 page=%d action=%d "
+                "action_name=%s reason=instruction_file_full\n",
+                request.page, static_cast<int>(request.action),
+                transparentActionName(request.action));
         return;
     }
     panic_if(!transparentController.accept(request),
              "Transparent controller rejected dispatched page %d action %d\n",
              request.page, static_cast<int>(request.action));
     DPRINTF(MAAVirtualTrace,
-            "event=transparent_issue page=%d action=%d offset=%d "
-            "elements=%d\n",
+            "event=transparent_issue schema=1 generation=%lu page=%d "
+            "action=%d action_name=%s offset=%d elements=%d "
+            "dependency=controller_order_and_tile_ready\n",
+            transparentController.descriptor().generation,
             request.page, static_cast<int>(request.action),
+            transparentActionName(request.action),
             request.logicalOffset, request.elements);
 }
 void MAA::dispatchRegister() {
@@ -1150,8 +1175,11 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                  "action %d\n",
                  controller_page, static_cast<int>(controller_action));
         DPRINTF(MAAVirtualTrace,
-                "event=transparent_complete page=%d action=%d\n",
-                controller_page, static_cast<int>(controller_action));
+                "event=transparent_complete schema=1 generation=%lu page=%d "
+                "action=%d action_name=%s\n",
+                transparentController.descriptor().generation,
+                controller_page, static_cast<int>(controller_action),
+                transparentActionName(controller_action));
         if (transparentController.complete()) {
             const auto descriptor = transparentController.descriptor();
             // Return the descriptor-lifetime credits only after the final
@@ -1168,7 +1196,9 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                      "Completed transparent descriptor did not retire\n");
             transparentControllerLookupReadyTick = 0;
             DPRINTF(MAAVirtualTrace,
-                    "event=transparent_retire pages=%d\n",
+                    "event=transparent_retire schema=1 generation=%lu "
+                    "pages=%d\n",
+                    descriptor.generation,
                     TransparentSPDController::NumPages);
         }
     } else if (transparentController.active()) {

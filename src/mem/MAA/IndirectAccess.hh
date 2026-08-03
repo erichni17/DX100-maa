@@ -183,6 +183,26 @@ protected:
     Tick virtual_pipeline_tick = 0;
     Tick virtual_pipeline_attributed_ticks = 0;
     std::array<Tick, 4> virtual_pipeline_ticks{};
+    enum class AttributionStage : uint8_t
+    {
+        None,
+        Decode,
+        Fill,
+        Build,
+        Request,
+        Response,
+    };
+    AttributionStage attribution_stage = AttributionStage::None;
+    Tick attribution_stage_tick = 0;
+    std::array<Tick, 5> attribution_stage_ticks{};
+    uint64_t attribution_row_insert_attempts = 0;
+    uint64_t attribution_row_insert_successes = 0;
+    uint64_t attribution_offset_pressure_events = 0;
+    uint64_t attribution_row_pressure_events = 0;
+    uint64_t attribution_combiner_words = 0;
+    uint64_t attribution_write_issues = 0;
+    uint64_t attribution_write_completions = 0;
+    uint64_t attribution_execute_sequence = 0;
 
 public:
     MAA *maa;
@@ -253,6 +273,7 @@ protected:
     {
         uint32_t value = 0;
         Addr line_addr = 0;
+        Addr word_paddr = 0;
     };
     enum class DirectIndexDiscardReason : uint8_t
     {
@@ -344,6 +365,8 @@ protected:
     void accountVirtualRequestInterval();
     void startVirtualRequestInterval();
     void finishVirtualRequestInterval();
+    void transitionAttributionStage(AttributionStage next,
+                                    const char *reason);
     bool checkAndResetAllRowTablesSent();
     int getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank);
     Addr getGrowAddr(int RT_config, int bankgroup, int bank, int row);
