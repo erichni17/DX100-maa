@@ -217,6 +217,116 @@ LogicalSPDCacheGem5Bridge::claimCallback(
     return {LifecycleStatus::Accepted, state.owner};
 }
 
+LogicalSPDCacheGem5Bridge::Runtime::Slice::Status
+LogicalSPDCacheGem5Bridge::registerSource(
+    const CallbackToken &token, uint8_t logical,
+    Runtime::Slice::BackingSpan backing, uint8_t dataType)
+{
+    if (!authentic(token))
+        return Runtime::Slice::Status::Stale;
+    return runtimes[token.maaId]->registerSource(
+        logical, backing, dataType);
+}
+
+LogicalSPDCacheGem5Bridge::Runtime::Slice::Status
+LogicalSPDCacheGem5Bridge::admit(
+    const CallbackToken &token,
+    const Runtime::Slice::Admission &request)
+{
+    if (!authentic(token))
+        return Runtime::Slice::Status::Stale;
+    return runtimes[token.maaId]->admit(request);
+}
+
+LogicalSPDCacheGem5Bridge::Runtime::Transport::Result
+LogicalSPDCacheGem5Bridge::prepare(const CallbackToken &token)
+{
+    if (!authentic(token))
+        return {Runtime::Transport::Status::Invalid};
+    return runtimes[token.maaId]->prepare();
+}
+
+LogicalSPDCacheGem5Bridge::Runtime::Transport::Result
+LogicalSPDCacheGem5Bridge::sendPrepared(
+    const CallbackToken &token, bool accepted)
+{
+    if (!authentic(token))
+        return {Runtime::Transport::Status::Invalid};
+    return runtimes[token.maaId]->sendPrepared(accepted);
+}
+
+LogicalSPDCacheGem5Bridge::Runtime::Transport::Status
+LogicalSPDCacheGem5Bridge::recvReqRetry(
+    const CallbackToken &token, uint8_t callbackPort)
+{
+    if (!authentic(token))
+        return Runtime::Transport::Status::Invalid;
+    return runtimes[token.maaId]->recvReqRetry(callbackPort);
+}
+
+LogicalSPDCacheGem5Bridge::Runtime::Transport::Result
+LogicalSPDCacheGem5Bridge::receive(
+    const CallbackToken &token, Runtime::Transport::ReturnedHandle &returned,
+    uint8_t callbackPort)
+{
+    if (!authentic(token))
+        return {Runtime::Transport::Status::Invalid};
+    Runtime::Transport::Result result =
+        runtimes[token.maaId]->receive(returned, callbackPort);
+    if (result.status == Runtime::Transport::Status::DeliveryPending)
+        return runtimes[token.maaId]->commitDelivery(result.ticket);
+    return result;
+}
+
+LogicalSPDCacheGem5Bridge::Runtime::Slice::Status
+LogicalSPDCacheGem5Bridge::driveCompute(const CallbackToken &token)
+{
+    if (!authentic(token))
+        return Runtime::Slice::Status::Stale;
+    return runtimes[token.maaId]->driveCompute();
+}
+
+bool
+LogicalSPDCacheGem5Bridge::operationComplete(
+    const CallbackToken &token) const
+{
+    return authentic(token) &&
+           runtimes[token.maaId]->operationComplete();
+}
+
+LogicalSPDCacheGem5Bridge::LifecycleStatus
+LogicalSPDCacheGem5Bridge::completeOperation(const CallbackToken &token)
+{
+    if (!authentic(token))
+        return LifecycleStatus::Stale;
+    Runtime &authority = *runtimes[token.maaId];
+    if (!authority.operationComplete())
+        return LifecycleStatus::Busy;
+    if (authority.retireCompletedOperation() !=
+        Runtime::Slice::Status::Accepted) {
+        return failClosed(token.maaId);
+    }
+    const LifecycleStatus acknowledged = acknowledgeCallback(token);
+    if (acknowledged != LifecycleStatus::Accepted)
+        return acknowledged;
+    return reset(token.maaId);
+}
+
+bool
+LogicalSPDCacheGem5Bridge::authentic(const CallbackToken &token) const
+{
+    if (!token.valid() || !validMaa(token.maaId))
+        return false;
+    const LifecycleState &state = lifecycle[token.maaId];
+    return !state.failClosed && !state.isSealed && state.ownerActive &&
+           token.maaId == state.owner.maaId &&
+           token.generation == state.generation &&
+           token.generation == state.owner.generation &&
+           token.runtimeIdentity == state.runtimeIdentity &&
+           token.runtimeIdentity == state.owner.runtimeIdentity &&
+           token.identity == state.owner.identity;
+}
+
 LogicalSPDCacheGem5Bridge::LifecycleStatus
 LogicalSPDCacheGem5Bridge::acknowledgeCallback(const CallbackToken &token)
 {

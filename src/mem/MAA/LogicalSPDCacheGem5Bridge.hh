@@ -15,9 +15,9 @@ namespace gem5 {
 /**
  * MAA-owned adapter boundary for the logical SPD-cache Runtime.
  *
- * The initial lifecycle slice deliberately keeps admission closed.  It makes
- * Runtime payload ownership live in the simulator without exposing an MMIO,
- * cache-packet, or native-map path before those owners are implemented.
+ * Admission and response mutation are authenticated by one finite callback
+ * token for the complete guest operation.  Transport records remain the
+ * exact per-line authority beneath that bridge token.
  */
 class LogicalSPDCacheGem5Bridge
 {
@@ -71,7 +71,7 @@ class LogicalSPDCacheGem5Bridge
         const LogicalSPDCacheGem5Bridge &) = delete;
 
     std::size_t runtimeCount() const { return runtimes.size(); }
-    bool admissionClosed() const { return true; }
+    bool admissionClosed() const { return false; }
     bool nativeDrainIntegrated() const { return false; }
 
     const Runtime &runtime(std::size_t maaId) const;
@@ -88,6 +88,25 @@ class LogicalSPDCacheGem5Bridge
 
     CallbackClaim claimCallback(
         std::size_t maaId, CallbackKind kind = CallbackKind::Ordinary);
+    Runtime::Slice::Status registerSource(
+        const CallbackToken &token, uint8_t logical,
+        Runtime::Slice::BackingSpan backing,
+        uint8_t dataType = Runtime::Slice::Float64DataType);
+    Runtime::Slice::Status admit(
+        const CallbackToken &token,
+        const Runtime::Slice::Admission &request);
+    Runtime::Transport::Result prepare(const CallbackToken &token);
+    Runtime::Transport::Result sendPrepared(
+        const CallbackToken &token, bool accepted);
+    Runtime::Transport::Status recvReqRetry(
+        const CallbackToken &token, uint8_t callbackPort);
+    Runtime::Transport::Result receive(
+        const CallbackToken &token,
+        Runtime::Transport::ReturnedHandle &returned,
+        uint8_t callbackPort);
+    Runtime::Slice::Status driveCompute(const CallbackToken &token);
+    bool operationComplete(const CallbackToken &token) const;
+    LifecycleStatus completeOperation(const CallbackToken &token);
     LifecycleStatus acknowledgeCallback(const CallbackToken &token);
     LifecycleStatus requestAbort(std::size_t maaId);
     LifecycleStatus progressAbort(std::size_t maaId);
@@ -126,6 +145,7 @@ class LogicalSPDCacheGem5Bridge
         std::size_t maaId, Runtime::Slice::Status status,
         bool busyAllowed);
     LifecycleStatus finishAbortIfReady(std::size_t maaId);
+    bool authentic(const CallbackToken &token) const;
     bool validMaa(std::size_t maaId) const
     {
         return maaId < runtimes.size();

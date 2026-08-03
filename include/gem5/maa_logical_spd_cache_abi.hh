@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Shared wire-format helpers for the non-integrated logical SPD-cache ABI.
+ * Shared wire-format helpers for the logical SPD-cache ABI.
  * This header deliberately has no simulator dependencies so guest API and
  * host ABI tests can use the exact same header layout.
  */
@@ -68,6 +68,8 @@ class LogicalSPDCacheABI
         ExtraRegisterOperand,
         Conditional,
         UnexpectedBaseAddress,
+        MissingSourceBacking,
+        NullSourceBacking,
         MissingDestinationBacking,
         NullDestinationBacking,
     };
@@ -102,6 +104,7 @@ class LogicalSPDCacheABI
         int16_t dst2RegID;
         int16_t condSpdID;
         uint64_t baseAddr;
+        uint64_t sourceBackingAddr;
         uint64_t destinationBackingAddr;
 
         ScalarOperandShape()
@@ -110,7 +113,8 @@ class LogicalSPDCacheABI
               src2SpdID(-1), dst1SpdID(-1), dst2SpdID(-1),
               src1RegID(-1), src2RegID(-1), src3RegID(-1),
               dst1RegID(-1), dst2RegID(-1), condSpdID(-1),
-              baseAddr(NoAddress), destinationBackingAddr(NoAddress)
+              baseAddr(NoAddress), sourceBackingAddr(NoAddress),
+              destinationBackingAddr(NoAddress)
         {
         }
     };
@@ -214,6 +218,10 @@ class LogicalSPDCacheABI
             return ScalarValidation::Conditional;
         if (shape.baseAddr != NoAddress)
             return ScalarValidation::UnexpectedBaseAddress;
+        if (shape.sourceBackingAddr == NoAddress)
+            return ScalarValidation::MissingSourceBacking;
+        if (shape.sourceBackingAddr == 0)
+            return ScalarValidation::NullSourceBacking;
         if (shape.destinationBackingAddr == NoAddress)
             return ScalarValidation::MissingDestinationBacking;
         if (shape.destinationBackingAddr == 0)
@@ -226,30 +234,45 @@ class LogicalSPDCacheABI
      * The range end is exclusive, matching MAA's registered address regions.
      */
     static DestinationValidation
-    validateDestinationSpan(uint64_t destinationBackingAddr,
-                            uint8_t datatype, uint64_t rangeBegin,
-                            uint64_t rangeEnd)
+    validateBackingSpan(uint64_t backingAddr, uint8_t datatype,
+                        uint64_t rangeBegin, uint64_t rangeEnd)
     {
-        if (destinationBackingAddr == NoAddress)
+        if (backingAddr == NoAddress)
             return DestinationValidation::MissingDestinationBacking;
-        if (destinationBackingAddr == 0)
+        if (backingAddr == 0)
             return DestinationValidation::NullDestinationBacking;
         const uint8_t wordBytes = dataTypeBytes(datatype);
         if (wordBytes == 0)
             return DestinationValidation::UnsupportedDataType;
-        if (destinationBackingAddr % wordBytes != 0)
+        const uint64_t payloadBytes =
+            static_cast<uint64_t>(LogicalElements) * wordBytes;
+        if (backingAddr % payloadBytes != 0)
             return DestinationValidation::MisalignedDestinationBacking;
         if (rangeBegin >= rangeEnd)
             return DestinationValidation::UnregisteredDestinationRange;
-        if (destinationBackingAddr < rangeBegin ||
-            destinationBackingAddr >= rangeEnd) {
+        if (backingAddr < rangeBegin || backingAddr >= rangeEnd) {
             return DestinationValidation::DestinationOutsideRange;
         }
-        const uint64_t payloadBytes =
-            static_cast<uint64_t>(LogicalElements) * wordBytes;
-        if (payloadBytes > rangeEnd - destinationBackingAddr)
+        if (payloadBytes > rangeEnd - backingAddr)
             return DestinationValidation::IncompleteDestinationSpan;
         return DestinationValidation::Valid;
+    }
+
+    static DestinationValidation
+    validateDestinationSpan(uint64_t destinationBackingAddr,
+                            uint8_t datatype, uint64_t rangeBegin,
+                            uint64_t rangeEnd)
+    {
+        return validateBackingSpan(destinationBackingAddr, datatype,
+                                   rangeBegin, rangeEnd);
+    }
+
+    static DestinationValidation
+    validateSourceSpan(uint64_t sourceBackingAddr, uint8_t datatype,
+                       uint64_t rangeBegin, uint64_t rangeEnd)
+    {
+        return validateBackingSpan(sourceBackingAddr, datatype, rangeBegin,
+                                   rangeEnd);
     }
 };
 

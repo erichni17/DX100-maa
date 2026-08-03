@@ -46,6 +46,7 @@ validShape()
     shape.src1LogicalID = 0;
     shape.dst1LogicalID = 1;
     shape.src1RegID = 3;
+    shape.sourceBackingAddr = 0x20000;
     shape.destinationBackingAddr = 0x1000;
     return shape;
 }
@@ -216,6 +217,12 @@ testLogicalScalarValidationMatrix()
     CHECK(validate(shape) ==
           ABI::ScalarValidation::UnexpectedBaseAddress);
     shape = valid;
+    shape.sourceBackingAddr = ABI::NoAddress;
+    CHECK(validate(shape) == ABI::ScalarValidation::MissingSourceBacking);
+    shape = valid;
+    shape.sourceBackingAddr = 0;
+    CHECK(validate(shape) == ABI::ScalarValidation::NullSourceBacking);
+    shape = valid;
     shape.destinationBackingAddr = ABI::NoAddress;
     CHECK(validate(shape) ==
           ABI::ScalarValidation::MissingDestinationBacking);
@@ -228,10 +235,10 @@ void
 testDestinationBackingValidation()
 {
     using Result = ABI::DestinationValidation;
-    const uint64_t fp32Addr = 0x1000;
+    const uint64_t fp32Addr = 0x10000;
     const uint64_t fp32Bytes =
         static_cast<uint64_t>(ABI::LogicalElements) * 4;
-    const uint64_t fp64Addr = 0x2000;
+    const uint64_t fp64Addr = 0x20000;
     const uint64_t fp64Bytes =
         static_cast<uint64_t>(ABI::LogicalElements) * 8;
 
@@ -249,7 +256,7 @@ testDestinationBackingValidation()
     CHECK(ABI::validateDestinationSpan(
               0, 2, 0, fp32Bytes) == Result::NullDestinationBacking);
     CHECK(ABI::validateDestinationSpan(
-              fp32Addr + 2, 2, fp32Addr,
+              fp32Addr + 4, 2, fp32Addr,
               fp32Addr + fp32Bytes + 4) ==
           Result::MisalignedDestinationBacking);
     CHECK(ABI::validateDestinationSpan(fp32Addr, 2, 0x2000, 0x2000) ==
@@ -267,7 +274,8 @@ testDestinationBackingValidation()
               fp64Addr + fp64Bytes - 1) ==
           Result::IncompleteDestinationSpan);
     CHECK(ABI::validateDestinationSpan(
-              UINT64_MAX - 7, 5, UINT64_MAX - 7, UINT64_MAX) ==
+              UINT64_MAX - fp64Bytes + 1, 5,
+              UINT64_MAX - fp64Bytes + 1, UINT64_MAX) ==
           Result::IncompleteDestinationSpan);
     CHECK(ABI::validateDestinationSpan(
               fp32Addr, ABI::DataTypeCount, fp32Addr,
@@ -281,13 +289,16 @@ testGuestAPIWritesTheSharedWireImage()
     uint64_t word1 = 0;
     uint64_t word2 = 0;
     uint64_t word3 = 0;
-    uint32_t destination[1]{};
+    uint64_t word4 = 0;
+    auto *source = reinterpret_cast<uint32_t *>(0x10000);
+    auto *destination = reinterpret_cast<uint32_t *>(0x20000);
     INSTR_opcode_datatype_optype_tdst1_tdst2 = &word0;
     INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc = &word1;
     INSTR_baseaddr = &word2;
     INSTR_backingaddr = &word3;
+    INSTR_indexaddr = &word4;
 
-    maa_alu_scalar_logical<uint32_t>(0, 1, destination, 3,
+    maa_alu_scalar_logical<uint32_t>(0, 1, source, destination, 3,
                                      Operation_t::MIN_OP);
 
     CHECK(word0 == ABI::encodeLogicalALUScalarHeader(
@@ -302,6 +313,7 @@ testGuestAPIWritesTheSharedWireImage()
                     (static_cast<uint64_t>(0xff) << 8) | 0xff));
     CHECK(word2 == ABI::NoAddress);
     CHECK(word3 == reinterpret_cast<uint64_t>(destination));
+    CHECK(word4 == reinterpret_cast<uint64_t>(source));
 
     maa_alu_scalar<uint32_t>(7, 3, 5, Operation_t::ADD_OP);
     CHECK((word0 >> 40) == 0);

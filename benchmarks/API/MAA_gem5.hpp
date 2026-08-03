@@ -237,15 +237,16 @@ inline void maa_alu_scalar(int src1_tile, int src2_reg, int dst_tile, Operation_
 /**
  * Encode the controller-owned logical form of ordinary ALU_SCALAR.  It does
  * not name a physical SPD tile: source and destination descriptor IDs occupy
- * word zero's high bytes, word two is the no-address sentinel, and word three
- * carries the destination backing address.  The simulator decodes and
- * validates this ABI but deliberately rejects admission until the logical
- * controller is connected in a later patch.
+ * word zero's high bytes, word two is the no-address sentinel, word three
+ * carries the destination backing, and word four carries the source backing.
+ * The instruction write completes only after the controller has filled,
+ * computed, and written back the complete 16K-element destination.
  */
 template <class T1>
 inline void maa_alu_scalar_logical(int src_logical, int dst_logical,
-                                   T1 *destination_backing, int scalar_reg,
-                                   Operation_t op) {
+                                   const T1 *source_backing,
+                                   T1 *destination_backing,
+                                   int scalar_reg, Operation_t op) {
     assert(src_logical >= 0 && src_logical < LOGICAL_DESCRIPTOR_COUNT);
     assert(dst_logical >= 0 && dst_logical < LOGICAL_DESCRIPTOR_COUNT);
     assert(src_logical != dst_logical);
@@ -255,8 +256,14 @@ inline void maa_alu_scalar_logical(int src_logical, int dst_logical,
         static_cast<int>(sizeof(T1) / sizeof(uint32_t));
     assert(scalar_reg >= 0 && scalar_register_words <= NUM_SCALAR_REGS &&
            scalar_reg <= NUM_SCALAR_REGS - scalar_register_words);
+    assert(source_backing != nullptr);
     assert(destination_backing != nullptr);
-    assert(reinterpret_cast<uintptr_t>(destination_backing) % sizeof(T1) == 0);
+    const uintptr_t logical_backing_bytes =
+        gem5::maa::LogicalSPDCacheABI::LogicalElements * sizeof(T1);
+    assert(reinterpret_cast<uintptr_t>(source_backing) %
+               logical_backing_bytes == 0);
+    assert(reinterpret_cast<uintptr_t>(destination_backing) %
+               logical_backing_bytes == 0);
     assert(static_cast<uint8_t>(op) <
            gem5::maa::LogicalSPDCacheABI::ScalarOperationCount);
     *INSTR_opcode_datatype_optype_tdst1_tdst2 =
@@ -274,6 +281,7 @@ inline void maa_alu_scalar_logical(int src_logical, int dst_logical,
         ((uint64_t)NA_UINT8 << 8) | (uint64_t)NA_UINT8;
     *INSTR_baseaddr = NA_UINT64;
     *INSTR_backingaddr = (uint64_t)destination_backing;
+    *INSTR_indexaddr = (uint64_t)source_backing;
     __asm__ __volatile__("mfence;");
 }
 template <class T1>

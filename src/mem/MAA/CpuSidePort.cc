@@ -363,65 +363,17 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     "Backing address is only valid for virtual or fused "
                     "indirect loads or logical ALU_SCALAR!\n");
                 if (current_instruction->isLogicalALUScalar()) {
-                    maa::LogicalSPDCacheABI::ScalarOperandShape shape;
-                    shape.datatype = static_cast<uint8_t>(
-                        current_instruction->datatype);
-                    shape.optype = static_cast<uint8_t>(
-                        current_instruction->optype);
-                    shape.src1LogicalID =
-                        current_instruction->src1LogicalID;
-                    shape.src2LogicalID =
-                        current_instruction->src2LogicalID;
-                    shape.dst1LogicalID =
-                        current_instruction->dst1LogicalID;
-                    shape.src1SpdID = current_instruction->src1SpdID;
-                    shape.src2SpdID = current_instruction->src2SpdID;
-                    shape.dst1SpdID = current_instruction->dst1SpdID;
-                    shape.dst2SpdID = current_instruction->dst2SpdID;
-                    shape.src1RegID = current_instruction->src1RegID;
-                    shape.src2RegID = current_instruction->src2RegID;
-                    shape.src3RegID = current_instruction->src3RegID;
-                    shape.dst1RegID = current_instruction->dst1RegID;
-                    shape.dst2RegID = current_instruction->dst2RegID;
-                    shape.condSpdID = current_instruction->condSpdID;
-                    shape.baseAddr = current_instruction->baseAddr;
-                    shape.destinationBackingAddr = data;
-                    const auto validation =
-                        maa::LogicalSPDCacheABI::validateLogicalALUScalar(
-                            shape, static_cast<uint8_t>(
-                                       current_instruction->opcode),
-                            num_regs);
-                    panic_if(
-                        validation !=
-                            maa::LogicalSPDCacheABI::ScalarValidation::Valid,
-                        "Rejected logical ALU_SCALAR ABI shape (%d) before "
-                        "controller state mutation\n",
-                        static_cast<int>(validation));
-                    const int backing_addr_range_id = getAddrRegion(data);
-                    panic_if(
-                        backing_addr_range_id < 0,
-                        "Logical destination backing address 0x%lx is not "
-                        "in a registered memory region\n",
-                        data);
-                    const Addr backing_min_addr =
-                        addrRegions[backing_addr_range_id].first;
-                    const Addr backing_max_addr =
-                        addrRegions[backing_addr_range_id].second;
-                    const auto backing_validation =
-                        maa::LogicalSPDCacheABI::validateDestinationSpan(
-                            data, shape.datatype, backing_min_addr,
-                            backing_max_addr);
-                    panic_if(
-                        backing_validation != maa::LogicalSPDCacheABI::
-                            DestinationValidation::Valid,
-                        "Rejected logical ALU_SCALAR destination backing "
-                        "(%d) before controller state mutation\n",
-                        static_cast<int>(backing_validation));
-                    panic_if(
-                        true,
-                        "Logical ALU_SCALAR ABI is decoded and validated, "
-                        "but logical SPD-cache controller integration is "
-                        "not implemented in this patch\n");
+                    current_instruction->backingAddr = data;
+                    current_instruction->backingAddrRangeID =
+                        getAddrRegion(data);
+                    panic_if(current_instruction->backingAddrRangeID < 0,
+                             "Logical destination backing address 0x%lx is "
+                             "not in a registered memory region\n", data);
+                    current_instruction->backingMinAddr = addrRegions[
+                        current_instruction->backingAddrRangeID].first;
+                    current_instruction->backingMaxAddr = addrRegions[
+                        current_instruction->backingAddrRangeID].second;
+                    break;
                 }
                 current_instruction->backingAddr = data;
                 current_instruction->backingAddrRangeID = getAddrRegion(data);
@@ -454,9 +406,85 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                         current_instruction->opcode !=
-                            Instruction::OpcodeType::INDIR_LD_INDEX,
-                         "Index address is only valid for direct-index "
-                         "loads!\n");
+                            Instruction::OpcodeType::INDIR_LD_INDEX &&
+                        !current_instruction->isLogicalALUScalar(),
+                    "Instruction word four is only valid for direct-index "
+                    "loads or logical ALU_SCALAR source backing!\n");
+                if (current_instruction->isLogicalALUScalar()) {
+                    maa::LogicalSPDCacheABI::ScalarOperandShape shape;
+                    shape.datatype = static_cast<uint8_t>(
+                        current_instruction->datatype);
+                    shape.optype = static_cast<uint8_t>(
+                        current_instruction->optype);
+                    shape.src1LogicalID = current_instruction->src1LogicalID;
+                    shape.src2LogicalID = current_instruction->src2LogicalID;
+                    shape.dst1LogicalID = current_instruction->dst1LogicalID;
+                    shape.src1SpdID = current_instruction->src1SpdID;
+                    shape.src2SpdID = current_instruction->src2SpdID;
+                    shape.dst1SpdID = current_instruction->dst1SpdID;
+                    shape.dst2SpdID = current_instruction->dst2SpdID;
+                    shape.src1RegID = current_instruction->src1RegID;
+                    shape.src2RegID = current_instruction->src2RegID;
+                    shape.src3RegID = current_instruction->src3RegID;
+                    shape.dst1RegID = current_instruction->dst1RegID;
+                    shape.dst2RegID = current_instruction->dst2RegID;
+                    shape.condSpdID = current_instruction->condSpdID;
+                    shape.baseAddr = current_instruction->baseAddr;
+                    shape.sourceBackingAddr = data;
+                    shape.destinationBackingAddr =
+                        current_instruction->backingAddr;
+                    const auto validation =
+                        maa::LogicalSPDCacheABI::validateLogicalALUScalar(
+                            shape, static_cast<uint8_t>(
+                                       current_instruction->opcode),
+                            num_regs);
+                    panic_if(validation != maa::LogicalSPDCacheABI::
+                                               ScalarValidation::Valid,
+                             "Rejected logical ALU_SCALAR ABI shape (%d) "
+                             "before controller state mutation\n",
+                             static_cast<int>(validation));
+                    const int source_range = getAddrRegion(data);
+                    panic_if(source_range < 0,
+                             "Logical source backing address 0x%lx is not "
+                             "in a registered memory region\n", data);
+                    const auto source_validation =
+                        maa::LogicalSPDCacheABI::validateSourceSpan(
+                            data, shape.datatype,
+                            addrRegions[source_range].first,
+                            addrRegions[source_range].second);
+                    const auto destination_validation =
+                        maa::LogicalSPDCacheABI::validateDestinationSpan(
+                            current_instruction->backingAddr, shape.datatype,
+                            current_instruction->backingMinAddr,
+                            current_instruction->backingMaxAddr);
+                    panic_if(source_validation != maa::LogicalSPDCacheABI::
+                                                      DestinationValidation::Valid,
+                             "Rejected logical ALU_SCALAR source backing "
+                             "(%d) before controller state mutation\n",
+                             static_cast<int>(source_validation));
+                    panic_if(destination_validation !=
+                                 maa::LogicalSPDCacheABI::
+                                     DestinationValidation::Valid,
+                             "Rejected logical ALU_SCALAR destination "
+                             "backing (%d) before controller state mutation\n",
+                             static_cast<int>(destination_validation));
+                    current_instruction->logicalSourceBackingAddr = data;
+                    current_instruction->logicalSourceAddrRangeID =
+                        source_range;
+                    current_instruction->logicalSourceMinAddr =
+                        addrRegions[source_range].first;
+                    current_instruction->logicalSourceMaxAddr =
+                        addrRegions[source_range].second;
+                    my_instruction_recvs[instruction_id] = true;
+                    DPRINTF(MAAController,
+                            "%s: %s received with logical source backing "
+                            "0x%lx and destination backing 0x%lx!\n",
+                            __func__, current_instruction->print(), data,
+                            current_instruction->backingAddr);
+                    respond_immediately = false;
+                    scheduleDispatchInstructionEvent();
+                    break;
+                }
                 current_instruction->indexAddr = data;
                 current_instruction->indexAddrRangeID = getAddrRegion(data);
                 panic_if(current_instruction->indexAddrRangeID < 0,
