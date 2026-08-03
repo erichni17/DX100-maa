@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import re
+import statistics
 from pathlib import Path
 
 EXPECTED_HASH = "9234467062988358067"
@@ -81,6 +82,42 @@ def locate_outdir(cohort: Path, result: dict[str, str]) -> Path | None:
     return candidates[-1] if candidates else None
 
 
+def trace_metrics(path: Path) -> dict[str, int]:
+    request_ticks: list[int] = []
+    dispatch_failures = 0
+    for line in path.read_text(errors="replace").splitlines():
+        if "failed to dipatch!" in line:
+            dispatch_failures += 1
+        if "recvTimingReq: INSTR[" not in line:
+            continue
+        tick, separator, _ = line.partition(":")
+        if separator and tick.isdigit():
+            request_ticks.append(int(tick))
+    gaps = [
+        right - left for left, right in zip(request_ticks, request_ticks[1:])
+    ]
+    metrics = {
+        "trace_requests": len(request_ticks),
+        "trace_dispatch_failures": dispatch_failures,
+        "trace_span_ticks": (
+            request_ticks[-1] - request_ticks[0]
+            if len(request_ticks) > 1
+            else 0
+        ),
+        "trace_interarrival_p50_ticks": int(statistics.median(gaps))
+        if gaps
+        else 0,
+        "trace_interarrival_p95_ticks": 0,
+        "trace_interarrival_max_ticks": max(gaps) if gaps else 0,
+    }
+    if gaps:
+        ordered = sorted(gaps)
+        metrics["trace_interarrival_p95_ticks"] = ordered[
+            min(len(ordered) - 1, int(0.95 * len(ordered)))
+        ]
+    return metrics
+
+
 def collect(run_root: Path) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name, physical, logical, treatment in EXPECTED_COHORTS:
@@ -89,6 +126,7 @@ def collect(run_root: Path) -> list[dict[str, object]]:
         outdir = locate_outdir(cohort, result) if cohort.is_dir() else None
         log_path = outdir / "run.log" if outdir else None
         stats_path = outdir / "stats.txt" if outdir else None
+        trace_path = outdir / "maa_controller.trace" if outdir else None
         log = (
             log_path.read_text(errors="replace")
             if log_path and log_path.is_file()
@@ -135,6 +173,18 @@ def collect(run_root: Path) -> list[dict[str, object]]:
             "outdir": str(outdir) if outdir else "",
         }
         row.update({key: stats.get(key, "") for key in STAT_KEYS})
+        row.update(
+            trace_metrics(trace_path)
+            if trace_path and trace_path.is_file()
+            else {
+                "trace_requests": "",
+                "trace_dispatch_failures": "",
+                "trace_span_ticks": "",
+                "trace_interarrival_p50_ticks": "",
+                "trace_interarrival_p95_ticks": "",
+                "trace_interarrival_max_ticks": "",
+            }
+        )
         rows.append(row)
     return rows
 
@@ -212,6 +262,12 @@ def write_tsv(path: Path, rows: list[dict[str, object]]) -> None:
         "system.maa.cycles_BUSY",
         "system.maa.cycles_IDLE",
         "system.maa.numInst",
+        "trace_requests",
+        "trace_dispatch_failures",
+        "trace_span_ticks",
+        "trace_interarrival_p50_ticks",
+        "trace_interarrival_p95_ticks",
+        "trace_interarrival_max_ticks",
         "output_hash",
         "outdir",
     ]

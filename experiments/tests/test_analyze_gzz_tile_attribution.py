@@ -28,6 +28,11 @@ def make_run(root: Path, name: str, ticks: int, idle: int, insts: int) -> None:
         "UME_REFERENCE_PASS volume_errors=0 gradient_errors=0 elements=1180000\n"
         "Exiting @ tick 1 because m5_exit instruction encountered\n"
     )
+    (outdir / "maa_controller.trace").write_text(
+        "10: system.maa: recvTimingReq: INSTR[one] received!\n"
+        "20: system.maa: dispatchInstruction: INSTR[one] failed to dipatch!\n"
+        "30: system.maa: recvTimingReq: INSTR[two] received!\n"
+    )
     with (cohort / "results.tsv").open("w", newline="") as handle:
         writer = csv.DictWriter(
             handle, delimiter="\t", fieldnames=("rc", "outdir", "output_hash")
@@ -60,6 +65,9 @@ class AnalyzeGzzTileAttributionTest(unittest.TestCase):
                 summary["metrics"]["simTicks"]["32768"]["fraction_recovered"],
                 0.8,
             )
+            self.assertEqual(rows[0]["trace_requests"], 2)
+            self.assertEqual(rows[0]["trace_dispatch_failures"], 1)
+            self.assertEqual(rows[0]["trace_interarrival_max_ticks"], 20)
             self.assertIn("explains most", summary["verdict"])
 
     def test_missing_run_remains_pending(self) -> None:
