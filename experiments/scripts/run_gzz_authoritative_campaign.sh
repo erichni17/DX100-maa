@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-run_root=${GZZ_AUTHORITATIVE_RUN_ROOT:-/data1/nier/dx100-runs/2026-07-20-full-tile-sweep/gzz_authoritative_20260803}
+run_root=${GZZ_AUTHORITATIVE_RUN_ROOT:-/data1/nier/dx100-runs/2026-07-20-full-tile-sweep/gzz_fixed_feed_20260803}
 tiles=(1024 2048 4096 8192 16384 32768 65536)
 mkdir -p "$run_root"
 
@@ -13,7 +13,8 @@ if ! flock -n 9; then
 fi
 
 if [[ -f "$run_root/campaign.complete" ]] &&
-   python3 "$root/experiments/scripts/analyze_gzz_authoritative.py" --run-root "$run_root"; then
+   python3 "$root/experiments/scripts/analyze_gzz_authoritative.py" \
+       --run-root "$run_root" --logical-cap 16384; then
     echo "authoritative GZZ campaign is already complete"
     exit 0
 fi
@@ -78,7 +79,8 @@ wait "$telemetry_pid" 2>/dev/null || true
 trap - TERM INT EXIT
 
 set +e
-python3 "$root/experiments/scripts/analyze_gzz_authoritative.py" --run-root "$run_root"
+python3 "$root/experiments/scripts/analyze_gzz_authoritative.py" \
+    --run-root "$run_root" --logical-cap 16384
 analysis_rc=$?
 set -e
 if (( failed == 0 && analysis_rc == 0 )); then

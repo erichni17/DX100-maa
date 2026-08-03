@@ -16,15 +16,7 @@ using namespace std;
 
 #define DATATYPE float
 
-#ifdef GZZ_LOGICAL_CHUNK_SIZE
-static_assert(GZZ_LOGICAL_CHUNK_SIZE > 0,
-              "GZZ logical chunk size must be positive");
-static_assert(GZZ_LOGICAL_CHUNK_SIZE <= TILE_SIZE,
-              "GZZ logical chunks must fit in one physical tile");
-#define GZZ_LOOP_CHUNK_SIZE GZZ_LOGICAL_CHUNK_SIZE
-#else
-#define GZZ_LOOP_CHUNK_SIZE TILE_SIZE
-#endif
+#include "gzz_chunk_policy.h"
 
 // #define VERIFY
 

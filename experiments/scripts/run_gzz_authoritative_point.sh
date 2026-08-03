@@ -14,9 +14,13 @@ esac
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 runtime_root=${DX100_RUNTIME_ROOT:-/data1/nier/DX100}
-run_root=${GZZ_AUTHORITATIVE_RUN_ROOT:-/data1/nier/dx100-runs/2026-07-20-full-tile-sweep/gzz_authoritative_20260803}
+run_root=${GZZ_AUTHORITATIVE_RUN_ROOT:-/data1/nier/dx100-runs/2026-07-20-full-tile-sweep/gzz_fixed_feed_20260803}
 point_root="$run_root/t${tile}"
 mkdir -p "$point_root"
+logical=$tile
+if (( logical > 16384 )); then
+    logical=16384
+fi
 
 {
     printf 'schema_version=1\n'
@@ -24,8 +28,8 @@ mkdir -p "$point_root"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'runtime_root=%s\n' "$runtime_root"
     printf 'physical_tile=%s\n' "$tile"
-    printf 'logical_chunk=%s\n' "$tile"
-    printf 'treatment=native\n'
+    printf 'logical_chunk=%s\n' "$logical"
+    printf 'treatment=production-fixed-feed\n'
     printf 'started_at=%s\n' "$(date -Ins)"
 } > "$point_root/treatment.txt"
 

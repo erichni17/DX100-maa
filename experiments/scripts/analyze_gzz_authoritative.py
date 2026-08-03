@@ -121,6 +121,8 @@ def collect(run_root: Path) -> list[dict[str, object]]:
                 "performance_16k": "",
                 "output_hash": output_hash,
                 "source_commit": treatment.get("source_commit", ""),
+                "logical_chunk": treatment.get("logical_chunk", ""),
+                "treatment": treatment.get("treatment", ""),
                 "benchmark_sha256": benchmark_sha,
                 "checkpoint": checkpoint,
                 "gem5_sha256": gem5_sha,
@@ -142,7 +144,9 @@ def collect(run_root: Path) -> list[dict[str, object]]:
     return rows
 
 
-def validate_cohort(rows: list[dict[str, object]]) -> list[str]:
+def validate_cohort(
+    rows: list[dict[str, object]], logical_cap: int | None = None
+) -> list[str]:
     issues: list[str] = []
     if any(row["status"] != "valid" for row in rows):
         issues.append("not all seven GZZ points are valid")
@@ -152,6 +156,17 @@ def validate_cohort(rows: list[dict[str, object]]) -> list[str]:
             issues.append(f"cohort does not share one {field}")
     if any(not row["benchmark_sha256"] for row in rows):
         issues.append("one or more benchmark binaries lack SHA binding")
+    if logical_cap is not None:
+        for row in rows:
+            expected = min(int(row["tile"]), logical_cap)
+            if str(row["logical_chunk"]) != str(expected):
+                issues.append(
+                    f"tile {row['tile']} logical chunk is not {expected}"
+                )
+            if row["treatment"] != "production-fixed-feed":
+                issues.append(
+                    f"tile {row['tile']} is not the production fixed-feed treatment"
+                )
     return issues
 
 
@@ -205,9 +220,12 @@ def write_outputs(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument("--logical-cap", type=int)
     args = parser.parse_args()
+    if args.logical_cap is not None and args.logical_cap <= 0:
+        parser.error("--logical-cap must be positive")
     rows = collect(args.run_root)
-    issues = validate_cohort(rows)
+    issues = validate_cohort(rows, args.logical_cap)
     write_outputs(args.run_root, rows, issues)
     print("complete" if not issues else "; ".join(issues))
     return 0 if not issues else 2

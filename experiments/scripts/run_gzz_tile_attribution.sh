@@ -16,6 +16,7 @@ esac
 extra_flags=
 if [[ "$treatment" == native ]]; then
     logical=$physical
+    extra_flags="-DGZZ_LEGACY_TILE_COUPLED_CHUNKS=1"
     cohort="native_p${physical}"
 else
     logical=$treatment

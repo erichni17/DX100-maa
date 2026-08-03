@@ -22,6 +22,8 @@ class AnalyzeGzzAuthoritativeTest(unittest.TestCase):
             gem5_sha = "a" * 64
             (point / "treatment.txt").write_text(
                 "source_commit=test-commit\n"
+                f"logical_chunk={min(tile, 16384)}\n"
+                "treatment=production-fixed-feed\n"
                 f"benchmark_sha256={benchmark_sha}\n"
             )
             (outdir / "run.log").write_text(
@@ -55,7 +57,7 @@ class AnalyzeGzzAuthoritativeTest(unittest.TestCase):
             root = Path(temporary)
             self.populate(root)
             rows = MODULE.collect(root)
-            self.assertEqual([], MODULE.validate_cohort(rows))
+            self.assertEqual([], MODULE.validate_cohort(rows, 16384))
             self.assertTrue(all(row["status"] == "valid" for row in rows))
             base = next(row for row in rows if row["tile"] == 16384)
             self.assertEqual(1.0, base["performance_16k"])
@@ -83,6 +85,20 @@ class AnalyzeGzzAuthoritativeTest(unittest.TestCase):
             self.assertFalse(
                 (root / "promoted_results_provenance_v2.tsv").exists()
             )
+
+    def test_fixed_feed_contract_rejects_coupled_large_tile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.populate(root)
+            treatment = root / "t65536/treatment.txt"
+            treatment.write_text(
+                treatment.read_text().replace(
+                    "logical_chunk=16384", "logical_chunk=65536"
+                )
+            )
+            rows = MODULE.collect(root)
+            issues = MODULE.validate_cohort(rows, 16384)
+            self.assertIn("tile 65536 logical chunk is not 16384", issues)
 
 
 if __name__ == "__main__":

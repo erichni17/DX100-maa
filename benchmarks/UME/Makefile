@@ -54,6 +54,13 @@ FUNC: all
 GEM5: CXX_FLAGS += -DGEM5
 GEM5: m5op.o all
 
+gradzatz_base gradzatz_maa gradzatz_maa_1K gradzatz_maa_2K \
+gradzatz_maa_4K gradzatz_maa_8K gradzatz_maa_16K gradzatz_maa_32K \
+gradzatz_maa_64K gradzatz_maa_4C gradzatz_maa_8C gradzatz_maa_16C \
+gradzatz_maa_1K_verify gradzatz_maa_1K_virtual_verify \
+gradzatz_maa_16K_fixed_fp gradzatz_maa_16K_virtual_fixed_fp: \
+	gzz_chunk_policy.h
+
 # Rule for building baseline binaries
 %_base: %.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) $(GEM5_LIB) m5op.o $< -o $@
