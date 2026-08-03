@@ -25,17 +25,30 @@ from bounded_row_model import (
     storage_ledger,
 )
 from extract_grounded_trace import (
+    DDR4_MODELED_ADDRESS_LIMIT,
     EXPECTED_FIELD_COUNT,
     PHYSICAL_FIELD_ORDER,
     PHYSICAL_SCHEMA,
+    REJECTION_REASON,
+    REJECTION_SCHEMA,
     GroundingError,
+    _verify_declared_artifacts,
     audit_terminal_evidence,
     compare_semantics,
+    encode_grounded_result,
+    ground_pair,
     sha256,
+    validate_evidence_inventory,
     validate_records,
+    validate_rejection_contract,
 )
 
 GEOMETRY = ApertureGeometry.synthetic_full_ddr4()
+FROZEN_EVIDENCE_ROOT = Path(
+    "/data1/nier/worktrees/codex-coordination/sessions/"
+    "hybrid-overhead-attribution-20260803-145457-f54ef7d1/"
+    "pair_evidence/rejected_schema_v1_attempt"
+)
 
 
 def physical_json_record(itr: int, *, b_value: int | None = None) -> dict:
@@ -83,6 +96,27 @@ def physical_json_record(itr: int, *, b_value: int | None = None) -> dict:
         "provenance": "direct_index_descriptor_admission",
     }
     return {"trace_line": itr + 1, "sim_tick": 1000 + itr, **fields}
+
+
+def set_a_address(item: dict, a_paddr: int) -> None:
+    a_line = a_paddr & ~63
+    line_number = a_line >> 6
+    bank_group = (line_number >> 7) & 3
+    bank = (line_number >> 9) & 3
+    row = (line_number >> 11) & 0xFFFF
+    item.update(
+        {
+            "a_paddr": hex(a_paddr),
+            "a_line_paddr": hex(a_line),
+            "bank_group": str(bank_group),
+            "bank": str(bank),
+            "row": str(row),
+            "column": str(line_number & 0x7F),
+            "native_slice": str(bank_group * 4 + bank),
+            "grow_addr": hex(row),
+            "wid": str((a_paddr >> 3) & 7),
+        }
+    )
 
 
 def write_physical_fixture(
@@ -586,6 +620,148 @@ class EvidenceAndLedgerTest(unittest.TestCase):
                 with self.assertRaises(GroundingError):
                     validate_records(records, validation, expected_count=1)
 
+    def test_jsonl_enforces_exact_33_bit_ddr_address_domain(self) -> None:
+        for address in (0, DDR4_MODELED_ADDRESS_LIMIT - 1):
+            with self.subTest(
+                address=address
+            ), tempfile.TemporaryDirectory() as tmp:
+                item = physical_json_record(0)
+                set_a_address(item, address)
+                paths = write_physical_fixture(
+                    Path(tmp), "native_direct_16k", [item]
+                )
+                validated = validate_records(*paths, expected_count=1)
+                self.assertEqual(len(validated.records), 1)
+
+        base = physical_json_record(0)
+        base_address = int(base["a_paddr"], 0)
+        for address in (
+            DDR4_MODELED_ADDRESS_LIMIT,
+            base_address + DDR4_MODELED_ADDRESS_LIMIT,
+        ):
+            with self.subTest(
+                address=address
+            ), tempfile.TemporaryDirectory() as tmp:
+                item = physical_json_record(0)
+                set_a_address(item, address)
+                paths = write_physical_fixture(
+                    Path(tmp), "native_direct_16k", [item]
+                )
+                with self.assertRaisesRegex(GroundingError, "modeled 33-bit"):
+                    validate_records(*paths, expected_count=1)
+
+    def test_rejection_contract_is_mandatory_and_exact(self) -> None:
+        source_commit = "1" * 40
+        gem5_hash = "2" * 64
+        rejection = {
+            "schema": REJECTION_SCHEMA,
+            "status": "rejected",
+            "implementation_commit": source_commit,
+            "gem5_sha256": gem5_hash,
+            "reason": REJECTION_REASON,
+            "publication_allowed": False,
+            "physical_admission_schema": PHYSICAL_SCHEMA,
+            "physical_records_preserved": True,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rejection.json"
+            with self.assertRaisesRegex(GroundingError, "mandatory"):
+                validate_rejection_contract(
+                    path, source_commit=source_commit, gem5_hash=gem5_hash
+                )
+            path.write_text(json.dumps(rejection) + "\n")
+            self.assertEqual(
+                validate_rejection_contract(
+                    path, source_commit=source_commit, gem5_hash=gem5_hash
+                ),
+                sha256(path),
+            )
+            mutations = {
+                "schema": "wrong.schema",
+                "status": "accepted",
+                "reason": "different reason",
+                "physical_admission_schema": "wrong.physical.schema",
+                "physical_records_preserved": False,
+            }
+            for field, value in mutations.items():
+                with self.subTest(field=field):
+                    changed = {**rejection, field: value}
+                    path.write_text(json.dumps(changed) + "\n")
+                    with self.assertRaises(GroundingError):
+                        validate_rejection_contract(
+                            path,
+                            source_commit=source_commit,
+                            gem5_hash=gem5_hash,
+                        )
+            for changed in (
+                {
+                    key: value
+                    for key, value in rejection.items()
+                    if key != "reason"
+                },
+                {**rejection, "unexpected": True},
+            ):
+                path.write_text(json.dumps(changed) + "\n")
+                with self.assertRaisesRegex(GroundingError, "fields missing"):
+                    validate_rejection_contract(
+                        path, source_commit=source_commit, gem5_hash=gem5_hash
+                    )
+
+    def test_legacy_inventory_semantic_labels_and_content_fail_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            case_dir = root / "native_direct_16k"
+            case_dir.mkdir()
+            inventory = case_dir / "artifact_sha256.txt"
+            inventory.write_text(f"{'0' * 64}  /unknown/artifact\n")
+            with self.assertRaisesRegex(GroundingError, "semantic label"):
+                _verify_declared_artifacts(
+                    case_dir, root, root / "input", inventory
+                )
+
+            gem5 = root / "gem5.opt"
+            gem5.write_bytes(b"frozen gem5")
+            inventory.write_text(f"{'0' * 64}  /input/gem5.opt\n")
+            with self.assertRaisesRegex(GroundingError, "content mismatch"):
+                _verify_declared_artifacts(
+                    case_dir, root, root / "input", inventory
+                )
+
+    def test_inventory_digest_and_labels_fail_closed(self) -> None:
+        entry = {
+            "label": "case:manifest.txt",
+            "path": "case/manifest.txt",
+            "sha256": "3" * 64,
+            "size_bytes": 10,
+        }
+        unsigned = {
+            "case": "native_direct_16k",
+            "entries": [entry],
+            "schema": "dx100.bounded_row_evidence_inventory.v1",
+        }
+        inventory = {
+            **unsigned,
+            "digest_sha256": hashlib.sha256(
+                json.dumps(
+                    unsigned, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest(),
+        }
+        validate_evidence_inventory(inventory)
+        for field, value in (
+            ("label", "case:wrong-label"),
+            ("path", "case/wrong-path"),
+            ("sha256", "4" * 64),
+        ):
+            changed = json.loads(json.dumps(inventory))
+            changed["entries"][0][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(
+                GroundingError, "digest"
+            ):
+                validate_evidence_inventory(changed)
+
     def test_pair_compares_semantics_but_excludes_treatment_metadata(
         self,
     ) -> None:
@@ -703,26 +879,46 @@ class EvidenceAndLedgerTest(unittest.TestCase):
         self.assertIn("TERMINAL_ERROR", contract["states"])
 
     def test_committed_summary_matches_executable_report(self) -> None:
+        study_dir = Path(__file__).resolve().parent
         committed = json.loads(
-            (
-                Path(__file__).resolve().parent / "results_summary.json"
-            ).read_text()
+            (study_dir / "results_summary.json").read_text()
         )
         self.assertEqual(committed, model_report())
         self.assertTrue(
             committed["workload_a_line_comparisons"]["exact_semantic_match"]
         )
-        grounded = json.loads(
-            (
-                Path(__file__).resolve().parent
-                / "grounded_physical_result_manifest.json"
-            ).read_text()
-        )
+
+    def test_committed_manifest_regenerates_byte_for_byte(self) -> None:
+        study_dir = Path(__file__).resolve().parent
+        grounded_path = study_dir / "grounded_physical_result_manifest.json"
+        grounded = json.loads(grounded_path.read_text())
         self.assertEqual(grounded["status"], "grounded")
         self.assertTrue(grounded["pair_comparison"]["exact_match"])
         self.assertEqual(
             grounded["claims"]["gem5_timing_performance"], "not_claimed"
         )
+
+        regenerated = ground_pair(
+            FROZEN_EVIDENCE_ROOT
+            / "native_direct_16k/physical_admission_records.jsonl",
+            FROZEN_EVIDENCE_ROOT
+            / "native_direct_16k/physical_validation.json",
+            FROZEN_EVIDENCE_ROOT
+            / "transparent_4k/physical_admission_records.jsonl",
+            FROZEN_EVIDENCE_ROOT / "transparent_4k/physical_validation.json",
+        )
+        self.assertEqual(
+            encode_grounded_result(regenerated), grounded_path.read_bytes()
+        )
+        for case in ("native", "transparent"):
+            inventory = regenerated["provenance"]["cases"][case][
+                "evidence_inventory"
+            ]
+            self.assertGreater(len(inventory["entries"]), 50)
+            self.assertEqual(
+                inventory["digest_sha256"],
+                regenerated["provenance"]["case_inventory_sha256"][case],
+            )
 
 
 if __name__ == "__main__":

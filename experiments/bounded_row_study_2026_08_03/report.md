@@ -12,8 +12,12 @@ and word ID—matches exactly for every iteration. Its pair digest is
 The containing pair-attribution attempt remains rejected because repeatable
 schema-v1 **nonphysical** events lacked source occurrence identity. Its frozen
 rejection manifest explicitly preserves the independently validated physical
-records. The extractor consumes only physical-admission v1; it does not parse,
-repair, or accept the rejected attribution events. Opcode, PC, operation tick,
+records. That `rejection.json` is mandatory: its exact eight-field schema,
+rejected status, full reviewed reason, publication prohibition, implementation
+and gem5 identities, physical schema, and physical-preservation boolean are
+checked before the preservation claim is emitted. The extractor consumes only
+physical-admission v1; it does not parse, repair, or accept the rejected
+attribution events. Opcode, PC, operation tick,
 sim tick, trace line, controller fields, and other treatment metadata are
 validated inside each case but excluded from the physical semantic comparison.
 During coordination, the upstream owner moved the frozen attempt beneath
@@ -86,6 +90,10 @@ exact DDR4_8Gb_x8 decoder domain `[0,65536)` per slice; those bounds are not
 derived from the observed row histogram. Every paddr is independently decoded
 through the frozen RoBaRaCoCh geometry and must agree with exported column,
 bank-group, bank, row, native slice, grow, A line, and word ID.
+The decoder accepts only byte addresses in `[0, 2^33)`, the exact width formed
+by the six transaction-offset bits and 27 modeled decoder bits. It rejects bit
+33 and above before field extraction, so adding `1<<33` cannot alias a valid
+row through the 16-bit row mask.
 
 Issue creation reproduces the native constructor/traversal order: bank outer,
 bank group inner, giving
@@ -139,6 +147,10 @@ The executable unit suite covers the binding cases:
 | exact 4,096 Offset boundary | one epoch, no capacity drain |
 | 4,097 Offset boundary | one Offset drain, two epochs |
 | malformed/bool/out-of-range B index | rejected before policy table construction |
+| exact DDR boundary: paddr `0` and `(1<<33)-1` | accepted with exact RoBaRaCoCh decode |
+| paddr `1<<33` and valid paddr plus `1<<33` | rejected before masked decode |
+| missing/mutated/extra rejection fields | rejected before physical-preservation claim |
+| mutated inventory content, path, or semantic label | rejected by content/digest or committed-byte comparison |
 
 Every successful case has exactly one placement per logical iteration and
 never exceeds its fixed arrays. These are synthetic geometry and semantic
@@ -157,6 +169,17 @@ file, wrapper exits, pass marker, final stats, the m5 terminal marker, and the
 zero-error workload oracle. Missing, duplicate, malformed, inconsistent, stale,
 or nonterminal evidence fails closed before policy state is constructed.
 
+Each case now carries a canonical cryptographic inventory in the committed
+result: 64 entries for native and 66 for transparent. The exact case-package
+file set is closed, and every legacy `artifact_sha256.txt` entry must map to one
+known semantic label and match the relocated frozen content. The inventory
+binds raw trace, physical JSONL/validation, restore log, final stats, result TSV,
+case manifest, wrapper terminals, run configs, all source snapshots, invocation,
+linkage/runtime provenance, frozen gem5/workload binaries, `rejection.json`,
+checkpoint identity/inventory, and every checkpoint file. Native inventory
+SHA-256 is `8e7ce83a...e1ab26`; transparent is `9726101d...96bcb`. Their full
+entries and digests are committed, not merely summarized.
+
 The accepted workload oracle is
 `hash=7228541527853630339 errors=0` in both arms. Native and transparent raw
 record SHA-256 values are respectively `38b94b7f...f0aa8` and
@@ -169,6 +192,9 @@ The combined compact result and provenance record is
 `8bfe1dd42fcd2b0b7a2e30f512f68dcad5b36d4c`, gem5 SHA-256
 `9c98ef64...b2e82`, workload binary SHA-256 `20fe15ca...5880`, and shared
 checkpoint inventory SHA-256 `89e0ff9a...8cf1` are identical across the pair.
+The scoped test regenerates this manifest directly from those frozen artifacts
+and compares bytes, including its final newline. The repaired committed
+manifest SHA-256 is `31c60015...c51fa`.
 
 ## Grounded finite-model result
 
