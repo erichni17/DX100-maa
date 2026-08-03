@@ -2,7 +2,7 @@
 
 Date: 2026-08-02
 
-Checkpoint repaired: `f455a4e978c531802f47fc2678b3f2fa893c24fa`
+Exact reviewed base repaired: `b2dadb58e89368183499fffa7a9fcc1ee530a3f4`
 
 Status: executable architecture/safety contract only. No production C++ was
 changed, gem5 was not built or run, and this work supplies no latency, area,
@@ -11,12 +11,10 @@ energy, or performance evidence.
 ## Verdict
 
 **READY FOR FRESH REVIEW, NOT APPROVED.** The executable contract now addresses
-the prior review's four STOP classes: callback endpoint identity is separate
-from `Packet`; fill delivery retains its record, credit, and charged buffer
-through exact slot-copy commit; each logical page has one authoritative role;
-and materialization allocates both controller-created identities before FIFO or
-credit mutation. This is repair evidence that still requires independent
-review.
+the final independent review's STOP classes: an authoritative transport copy
+guard, returned-`Packet` endpoint disposition, reusable acknowledged pages,
+fail-atomic materialization, and a hard four-core/64-byte bridge gate. This is
+repair evidence that still requires a new independent review.
 
 This is not approval to integrate or simulate. The prototype remains gated on
 real gem5 token/RequestPtr lifetime across snoop copies, unknown-token panic
@@ -53,10 +51,17 @@ equal copied token, or tolerate an unpopped wrapper.
 The clean MAA baseline maps a cache packet to `core_addr(pkt->getAddr())`
 ([CacheSidePort.cc:115](../../src/mem/MAA/CacheSidePort.cc#L115)); `core_addr`
 removes the transaction/line offset and selects the low configured core bits
-([MAA.cc:459](../../src/mem/MAA/MAA.cc#L459)). The executable point fixes the
-baseline four ports (`num_cores = 4` at
+([MAA.cc:459](../../src/mem/MAA/MAA.cc#L459)). Baseline `num_cores` is
+configurable even though its default is four. The first bridge is therefore
+admitted only when production config/constructor wiring observes exactly
+`num_cores == 4` (`num_cores = 4` at
 [MAA.py:139](../../src/mem/MAA/MAA.py#L139)) and implements
-`port = (address >> 6) & 3` independently for every 64-byte line.
+`port = (address >> 6) & 3` independently for every line, and only when both
+the MAA transaction line and cache line are exactly 64 bytes. Any other core
+count or line size fails before descriptor, slot, FIFO, credit, record, or ID
+mutation. Future parameterization must recompute port bits and routing plus
+every dependent FIFO/record field and packed/aligned ledger; this checkpoint
+does not silently support a general baseline geometry.
 
 ## Isolation boundary
 
@@ -102,7 +107,9 @@ Empty/None
   -> Filling/Source --512 exact legal read responses/copies--> Clean/Source
   -> pinned Dirty/Source
   -> explicit atomic destination binding -> Dirty/Destination
-  -> unpinned Writeback/Destination --512 exact WriteResp--> Empty/None
+  -> unpinned Writeback/Destination --512 exact WriteResp-->
+     Empty/None plus backingReady+writebackAcked
+  -> later Filling/Source without republish
 ```
 
 A source-filled slot cannot be written back. Binding must name a different
@@ -113,19 +120,25 @@ be evicted or reused. Aborted writeback returns to destination-dirty; aborted
 fill clears the slot only after drain.
 
 For each exact `{descriptor, generation, page}`, at most one live slot owner
-exists. A Source owner requires `backingReady=1` and `writebackAcked=0`; a
-Destination owner requires both bits zero; an acknowledged page has no slot
-owner and cannot be republished. `publish_backing`, source fill, and destination
-binding validate this rule before mutation. In particular a destination-bound
-page cannot be published and filled as Source into the other slot.
+exists. A Source owner requires `backingReady=1` and may retain
+`writebackAcked=1` as completion provenance. A Destination owner requires both
+bits zero. Exact final `WriteResp` atomically sets both `backingReady=1` and
+`writebackAcked=1` before clearing the destination slot. The acknowledged page
+cannot be republished, but it is immediately reusable: a later operation may
+fill it into one slot as Source without caller publication. `publish_backing`,
+source fill, and destination binding validate this rule before mutation. In
+particular, before final ACK a destination-bound, dirty, or writeback page
+cannot be published or filled as Source into the other slot.
 
 Each slot contains its charged fixed 32-KiB payload array. Both legal read
-response commands carry exactly one transient 64-byte Packet payload. After
-authority and wire validation, the response replaces the contents of the same
-credit-owned fixed line buffer and the record enters `DELIVERING`. The callback
-returns a bounded payload-free `{record, epoch, actionID}` ticket. The
-controller validates that ticket and the record-derived slot identity, copies
-directly from that charged buffer to
+response commands carry exactly one transient 64-byte fabric `Packet` payload;
+it is never a persistent fifth buffer. After authority and wire validation,
+the response replaces the contents of the same credit-owned fixed line buffer
+and the record enters `DELIVERING`. The dedicated endpoint destroys the
+returned `Packet` before the callback returns a bounded payload-free
+`{record, epoch, actionID}` ticket. The controller validates that ticket and
+the record-derived destination before atomically entering the transport-owned
+one-bit copy guard, copies directly from that charged buffer to
 `slot.payload[line * 64 : (line + 1) * 64]`, and only then commits ACK,
 record/credit/buffer release, refill, and possible action completion. There is
 no `ReceiveResult.data` or fifth line representation. Malformed, unknown,
@@ -133,8 +146,24 @@ copied-token, stale, duplicate, failed/reentrant ticket, and abort-drain paths
 never commit a payload copy. Writeback copies one exact slot line into a
 credit-owned line buffer only when that line is materialized.
 
-The lifetime guarantee comes from the explicit `DELIVERING` state and ownership
-checks, not from Python's atomic call sequencing. The model's convenience
+While that exact fixed 64-byte slot copy is active, every public mutating model
+or transport entry rejects: abort, reset, teardown, response/retry callback,
+send/issue/materialization, allocation, publication, pin/role/slot mutation,
+response construction, nested commit, and direct transport mutation cannot
+release, drain, copy, or otherwise change state. Only the same ticket's
+internal finish/cancel path may cross the guard. Finish clears the guard and
+commits ACK/release only after copy success. An injected pre-copy failure uses
+cancel to clear only the guard; the exact `DELIVERING` record, credit,
+`RequestPtr`, token, line buffer, ticket, and unacknowledged action remain
+intact. Ordinary abort after `begin_receive` but before `commit_delivery`
+remains legal because no copy is active; it cancels the locally owned
+`DELIVERING` record without copying.
+
+The lifetime guarantee comes from the explicit `DELIVERING` state, endpoint
+owner disposition, and transport guard, not from Python's atomic call
+sequencing. `ReturnedPacketOwner` is a bounded host-only abstraction whose
+single pointer is cleared on every valid fill, write, or abort-drain callback
+before the ticket or ACK/release transition escapes. The model's convenience
 `receive` method immediately invokes the separate commit, while
 `begin_receive`/`commit_delivery` expose delayed and failed delivery. A
 production implementation must preserve the same state boundary across its
@@ -192,7 +221,9 @@ only when it carries:
 4. callback on the exact address-derived `LogicalCacheSidePort`, followed by
    command in exactly `{ReadResp, ReadRespWithInvalidate}` for fill or exactly
    `WriteResp` for writeback, exact u64 address, 64-byte size, and payload
-   shape. Exact address plus the authenticated record proves its line.
+   shape. A replacement `WriteResp` has no payload; the original write Packet
+   may still have static data pointing at the exact record line buffer. Exact
+   address plus the authenticated record proves its line.
 
 An equal copied token fails. Missing token, token under a wrapper, token with a
 residual predecessor/wrapper, reused stale token, duplicate returned token, or
@@ -209,16 +240,38 @@ and inject a later good response only to inspect the pre-panic proof that the
 malformed callback caused no ACK, payload copy, owner release, or false drain;
 that continuation is not a production recovery path.
 
+gem5 transfers ownership of the returned `PacketPtr` to
+`LogicalCacheSidePort::recvTimingResp`. After exact token, callback-port,
+`RequestPtr`, command/address/size, and data validation, a valid fill copies
+exactly 64 bytes into the same credit-owned fixed line buffer and the endpoint
+deletes the returned Packet before a payload-free delivery ticket can outlive
+the callback. A valid `WriteResp`, or a valid response draining an exact abort
+owner, is deleted before its ACK/release transition. If the returned object is
+the original write Packet, `makeResponse()` does not remove its allocation:
+its static data still points to the record-owned line buffer, so Packet
+destruction must not free that buffer. The record releases the buffer only in
+the subsequent exact ACK/release tail. Malformed, unknown, copied-token, stale,
+duplicate, or staging-copy ownership is an immediate production panic;
+termination owns cleanup and the endpoint makes no recovery/deletion guess.
+The Python owner abstraction proves disposition and transition order, but
+actual destructor/static-data behavior remains an explicit standalone C++
+mock/bridge gate.
+
 ## Fail-atomic issue, ownership, and deletion
 
-Credit availability is checked without mutation. The two controller-created
-host identities and exact `Request`/request `Packet` plus line-buffer contents
-are then prepared before the credit owner or FIFO changes. Only an infallible
-commit reserves the selected credit and pops the exact FIFO head. Identity
-exhaustion therefore leaves the queued record, FIFO, credit ledger, and all
-counters bit-identical. With no free credit, accepted and refused attempts are
-also bit-identical no-ops. Pending, in-flight, and delivering records together
-own at most four 64-byte buffers; queued records own none.
+Credit availability is checked without mutation. Materialization then previews
+and validates the exact next Request and request-Packet IDs without advancing
+either identity field. Fallible `RequestPtr` construction, exact zero-line or
+write-line snapshot construction, and request `Packet` construction all finish
+before mutation. One assignment-only, no-throw tail commits the identity
+counter/exhaustion bit, selected credit, exact FIFO pop, pending register, and
+record objects/state. A failure injected at any of the three post-preview
+construction points therefore leaves the full digest and invariants
+bit-identical: no ID is burned and the queued record, FIFO, credit ledger, and
+all counters remain unchanged. Identity exhaustion has the same result. With
+no free credit, accepted and refused attempts are also bit-identical no-ops.
+Pending, in-flight, and delivering records together own at most four 64-byte
+buffers; queued records own none.
 
 The state and ownership transitions are:
 
@@ -228,7 +281,7 @@ The state and ownership transitions are:
 | `PENDING_SEND` | dedicated transport owns exact Request, Packet, credit, buffer | call `sendTimingReq` |
 | `WAIT_RETRY` | dedicated transport retains the identical objects and credit | exact rejected-line port retry only |
 | `IN_FLIGHT` | memory system owns Packet incarnation; fixed record owns RequestPtr, token, response obligation, credit, buffer | exact response or abort-drain |
-| `DELIVERING` | fixed record retains RequestPtr, token, credit, and the same charged buffer; bounded ticket carries no payload | exact controller slot-copy commit, reentry STOP, or local abort |
+| `DELIVERING` | fixed record retains RequestPtr, token, credit, and the same charged buffer; bounded ticket carries no payload | guarded exact controller slot-copy finish/cancel, reentry STOP, or pre-copy local abort |
 | `ABORT_DRAIN` | same split ownership; no payload/ACK side effect | exact fully validated response only |
 
 Deletion/lifetime rules are explicit:
@@ -239,9 +292,12 @@ Deletion/lifetime rules are explicit:
 - accepted original packet: memory system owns it; if a cache creates a new
   response, that cache/path deletes the replaced original under gem5's normal
   convention;
-- valid returned fill packet: dedicated callback validates and stages into the
-  same buffer, then the exact controller copy commits before ACK/release; a
-  valid write response has no payload-copy stage;
+- valid returned fill packet: dedicated callback validates, stages into the
+  same buffer, and deletes the returned Packet before issuing its ticket; the
+  exact controller copy later commits before ACK/release;
+- valid write or exact abort-drain packet: dedicated callback deletes the
+  returned Packet after validation and before exact ACK/release; destruction of
+  an original write Packet does not free its static record-owned line buffer;
 - malformed packet bearing an owned token: immediate production panic after
   mutation-free validation; no quarantine or recovery storage is modeled;
 - duplicate, stale, copied-token, missing-token, and unknown-token packet:
@@ -285,7 +341,10 @@ top token and RequestPtr, plus command, address, size, payload shape, and exact
 callback port for the token-derived record line. A malformed abort callback
 immediately panics and cannot make drain true. Delayed valid active fills remain
 `DELIVERING` with their record, credit, and buffer owned and unacknowledged.
-Abort cancels such locally owned delivery without invoking the controller copy.
+When the copy guard is inactive, abort cancels such locally owned delivery
+without invoking the controller copy. While the exact copy is active, both
+model abort and direct transport abort reject without changing the abort code,
+record, credit, drain result, slot, ACK sets, or any other digest field.
 Delayed callbacks for records already in flight when abort began release exact
 abort-drain obligations without entering `DELIVERING` or writing slot data.
 
@@ -302,10 +361,12 @@ The executable Python shapes are bounded representations, not synthesized
 objects: descriptor/slot/record lists have lengths 2/2/8; FIFO and credits have
 lengths 8/4; Python big integers represent exactly two 512-bit sets; every
 payload/line buffer is exactly 32 KiB/64 B. `RouteToken`, `RequestPtr`,
-`PacketIncarnation`, `DeliveryTicket`, and `ReceiveResult` are bounded host
-objects. The ticket is a transient 51-bit control value and contains no
-payload. `TransactionKey` exists only in a fixed record. The SHA-256 digest is
-transient host-only observation and never feeds a transition. No event history,
+`PacketIncarnation`, `ReturnedPacketOwner`, `DeliveryTicket`, and
+`ReceiveResult` are bounded host objects. The returned Packet and its fabric
+payload are transient; endpoint disposition adds no persistent bit or buffer.
+The ticket is a transient 51-bit control value and contains no payload.
+`TransactionKey` exists only in a fixed record. The SHA-256 digest is transient
+host-only observation and never feeds a transition. No event history,
 tombstones, strings, maps, vectors, or growing diagnostic lists exist.
 
 ### Packed logical hardware state
@@ -316,7 +377,7 @@ tombstones, strings, maps, vectors, or growing diagnostic lists exist.
 | Two descriptor correlators | 246 | `2 * 123` from the explicit formula below |
 | Two slot correlators | 164 | `2 * 82` from the explicit formula below |
 | Page action plus two 512-bit sets | 1,184 | bounded fields including both sets |
-| Eight transaction correlators | 1,416 | `8 * 177` including 3-bit eight-state record field |
+| Eight transaction correlators | 1,416 | `8 * 177`; seven record states use a 3-bit field with one spare encoding |
 | Request FIFO/control | 38 | eight 3-bit indices, head/tail/count, pending sentinel |
 | Four credit owners | 16 | four 4-bit record/sentinel owners |
 | Four 64-byte line buffers | 2,048 | shared across pending, in-flight, and delivering |
@@ -348,7 +409,7 @@ FIFO/control = 8 * recordIndex:3 + head:3 + tail:3 + count{0..8}:4
              + pending{none,0..7}:4 = 38 bits
 Global = nextActionID:32 + actionIDsExhausted:1 + sealed:1
        + activeSlot{none,0,1}:2 + activeOperation{none,fill,writeback}:2
-       + deliveryCommitActive:1 + lastAbort:1 + tornDown:1 = 41 bits
+       + transportDeliveryCopyActive:1 + lastAbort:1 + tornDown:1 = 41 bits
 ```
 
 The FIFO's unused array positions are don't-care under `count`, and a record's
@@ -358,7 +419,11 @@ and still fits the 3-bit state field. The fixed record index is physical and the
 record-side epoch/action fields above back the host SenderState token; the
 gem5 polymorphic token object itself is in the host-object category, not counted
 again. The payload-free 51-bit ticket is a transient callback wire, not stored
-state. The persistent one-bit reentry guard is counted in `Global`.
+state. `DELIVERING` is the seventh record state; 3 bits provide eight possible
+encodings. The sole persistent one-bit reentry guard is authoritative in the
+transport and counted once in `Global`; moving it out of the model does not add
+a bit. Packet disposition/destruction is transient host behavior and adds no
+persistent hardware state.
 
 ### Representation categories that must not be conflated
 
@@ -366,7 +431,7 @@ state. The persistent one-bit reentry guard is counted in `Global`.
 | --- | ---: | --- |
 | Packed logical hardware | 66,181 B/MAA | exact 529,441-bit state and whole-state byte ceiling above |
 | Proposed naturally aligned fixed-width C++ hardware projection | 66,324 B/MAA | explicit fixed-width projection excluding gem5 objects; production `sizeof`/`static_assert` still required |
-| gem5-only host objects | no claimed byte total | eight embedded polymorphic SenderState tokens, bounded `RequestPtr`/`PacketPtr` objects, copied response packets, vptr/shared_ptr/allocator overhead |
+| gem5-only host objects | no claimed byte total | eight embedded polymorphic SenderState tokens, bounded `RequestPtr`/`PacketPtr` objects, returned/replacement response packets, vptr/shared_ptr/allocator overhead |
 | Python-only host representation | no claimed byte total | lists, Enum/dataclass objects, arbitrary-precision 512-bit integers, JSON/SHA helpers |
 | Synthesized area/timing | **not measured** | no RTL synthesis, clock, area, latency, energy, or throughput result |
 
@@ -405,9 +470,12 @@ lines and at least
 ## Pre-simulation production gates
 
 1. C++ unit tests and `static_assert`s reproduce token identity, finite arrays,
-   packed/aligned ledgers, allocation failure atomicity, and all terminal paths
-   under ASan/UBSan/LSan.
-2. A mock timing peer proves same-Packet and replacement-Packet responses,
+   packed/aligned ledgers, three-point construction failure atomicity, the hard
+   `num_cores==4`/64-byte constructor gate, and all terminal paths under
+   ASan/UBSan/LSan.
+2. A standalone C++ mock timing peer proves same-Packet and
+   replacement-Packet responses, immediate endpoint destruction after fill
+   staging or write/abort validation, original-write static-data non-freeing,
    exact copied `senderState`/RequestPtr lifetime, refusal/retry on all four
    ports, response reorder, malformed abort callbacks, duplicate/stale/unknown
    panic ownership, and responder silence blocking drain.
@@ -432,13 +500,17 @@ retry, legal Packet replacement, both legal read response commands,
 copied/missing/non-top/residual/reused tokens, same RequestPtr with wrong token,
 same token with wrong RequestPtr, wrong wire/data fields, mutation-free wrong
 callback endpoint, four retained credits/buffers through delayed delivery,
-copy-before-release/final-clear ordering, failed/reentrant delivery,
-abort-without-consumer, fifth materialization refusal, exact four-page payload,
-exactly 512 responses/page and 2,048 write ACKs, descriptor
+copy-before-release/final-clear ordering, transport-guarded model/direct abort
+and every public mutator, pre-copy cancel, ordinary pre-copy abort,
+returned-Packet disposition ordering, abort-without-consumer, fifth
+materialization refusal, exact four-page payload, exactly 512 responses/page
+and 2,048 write ACKs, acknowledged-destination refill without republish,
+descriptor
 base/page/generation/overlap/u64 atomicity, single per-page role ownership, the
-conflicting two-slot publication sequence, near-exhaustion materialization
-atomicity, disjoint peer-response identities, reset, terminal teardown,
-non-wrapping identities, and deterministic replay.
+conflicting pre-ACK two-slot publication sequence, all three post-preview
+construction faults, near-exhaustion materialization atomicity, disjoint
+peer-response identities, fixed constructor geometry, reset, terminal
+teardown, non-wrapping identities, and deterministic replay.
 
 The checkpoint modifies only this document, its executable model, and its
 Python test. It does not authorize or perform a gem5 build, link, or run.

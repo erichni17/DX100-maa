@@ -41,6 +41,12 @@ PEER_PACKET_ID_MAX = (1 << 64) - 1
 RECORD_EPOCH_MAX = (1 << 16) - 1
 PIN_MAX = (1 << 8) - 1
 
+MATERIALIZATION_FAULT_POINTS = (
+    "request_ptr",
+    "line_snapshot",
+    "request_packet",
+)
+
 
 class ContractError(ValueError):
     """A caller requested a transition that the contract does not enable."""
@@ -146,6 +152,25 @@ class PacketIncarnation:
     data: bytes = b""
 
 
+@dataclass
+class ReturnedPacketOwner:
+    """Transient callback ownership of exactly one returned Packet object."""
+
+    packet: PacketIncarnation | None
+    destroyed: bool = False
+
+    def exact_packet(self) -> PacketIncarnation:
+        if self.destroyed or not isinstance(self.packet, PacketIncarnation):
+            raise ProductionStop("returned Packet ownership is stale")
+        return self.packet
+
+    def destroy_exact(self, packet: PacketIncarnation) -> None:
+        if self.destroyed or self.packet is not packet:
+            raise ProductionStop("returned Packet ownership is not exact")
+        self.packet = None
+        self.destroyed = True
+
+
 @dataclass(frozen=True)
 class DeliveryTicket:
     """Bounded, payload-free authority for one exact staged fill line."""
@@ -248,6 +273,14 @@ def checked_span_end(base: int, span: int) -> int:
     return base + span - 1
 
 
+def validate_bridge_geometry(num_cores: int, maa_line_bytes: int) -> None:
+    """Admit only the bounded first-bridge geometry before state exists."""
+    if num_cores != NUM_PORTS:
+        raise ContractError("first bridge requires exactly four cores/ports")
+    if maa_line_bytes != LINE_BYTES:
+        raise ContractError("first bridge requires exactly 64-byte lines")
+
+
 def core_port(address: int) -> int:
     """Clean-baseline core_addr: low core bits after the 64-byte offset."""
     if not 0 <= address <= U64_MAX:
@@ -260,7 +293,12 @@ def core_port(address: int) -> int:
 class DedicatedTransport:
     """One-action transport with fixed records, FIFO, credits, and buffers."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        num_cores: int = NUM_PORTS,
+        maa_line_bytes: int = LINE_BYTES,
+    ) -> None:
+        validate_bridge_geometry(num_cores, maa_line_bytes)
         self.records = [
             TransactionRecord(token=RouteToken(index, 0, 0))
             for index in range(TRANSACTION_CAPACITY)
@@ -278,14 +316,22 @@ class DedicatedTransport:
         self.incarnation_ids_exhausted = False
         self.next_peer_packet_id = 1
         self.peer_packet_ids_exhausted = False
+        self.delivery_copy_active = False
         self.sealed = False
 
     def _ensure_live(self) -> None:
         if self.sealed:
             raise ContractError("transport is sealed")
 
-    def _reserve_incarnations(self, count: int) -> tuple[int, ...]:
-        """Reserve controller-created identities without partial mutation."""
+    def _ensure_public_mutation_allowed(self) -> None:
+        self._ensure_live()
+        if self.delivery_copy_active:
+            raise ProductionStop("mutation during delivery copy is forbidden")
+
+    def _preview_incarnations(
+        self, count: int
+    ) -> tuple[tuple[int, ...], int, bool]:
+        """Validate exact controller identities without changing the ledger."""
         if count <= 0:
             raise AssertionError("incarnation reservation must be positive")
         available = INCARNATION_ID_MAX - self.next_incarnation_id + 1
@@ -293,11 +339,15 @@ class DedicatedTransport:
             raise ExhaustedError("packet/request incarnation exhausted")
         first = self.next_incarnation_id
         last = first + count - 1
-        if last == INCARNATION_ID_MAX:
-            self.incarnation_ids_exhausted = True
-        else:
-            self.next_incarnation_id = last + 1
-        return tuple(range(first, last + 1))
+        exhausted = last == INCARNATION_ID_MAX
+        next_id = self.next_incarnation_id if exhausted else last + 1
+        return tuple(range(first, last + 1)), next_id, exhausted
+
+    @staticmethod
+    def _materialization_fault(point: str) -> None:
+        """Host-only fault hook; production leaves this no-op unchanged."""
+        if point not in MATERIALIZATION_FAULT_POINTS:
+            raise AssertionError("unknown materialization fault point")
 
     def _next_peer_packet(self) -> int:
         """Allocate a test-peer identity outside the reserved action budget."""
@@ -358,7 +408,7 @@ class DedicatedTransport:
         slot_payload: bytes | bytearray,
     ) -> int:
         """Validate a descriptor-derived page action before any mutation."""
-        self._ensure_live()
+        self._ensure_public_mutation_allowed()
         if self.action.state != ActionState.FREE:
             raise ContractError("another page action owns the transport")
         if not isinstance(operation, Operation):
@@ -466,8 +516,8 @@ class DedicatedTransport:
         if -1 not in self.credit_owner:
             raise ContractError("response credits are exhausted")
 
-        # All fallible identity allocation and construction precedes credit/FIFO
-        # mutation.  A failure therefore leaves the QUEUED owner in place.
+        # Preview the exact identities without mutation.  Every fallible host
+        # construction then precedes one assignment-only, no-throw commit tail.
         credit = self.credit_owner.index(-1)
         index = self.queue[self.queue_head]
         record = self.records[index]
@@ -475,8 +525,14 @@ class DedicatedTransport:
             raise AssertionError("queue does not own a complete record")
         if record.key is None:
             raise AssertionError("queued record has no key")
-        request_id, packet_id = self._reserve_incarnations(2)
+        (
+            (request_id, packet_id),
+            committed_next_id,
+            committed_exhausted,
+        ) = self._preview_incarnations(2)
+        self._materialization_fault("request_ptr")
         request = RequestPtr(request_id)
+        self._materialization_fault("line_snapshot")
         if record.key.operation == Operation.FILL:
             line_buffer = bytes(LINE_BYTES)
         else:
@@ -484,6 +540,7 @@ class DedicatedTransport:
             line_buffer = bytes(
                 memoryview(slot_payload)[start : start + LINE_BYTES]
             )
+        self._materialization_fault("request_packet")
         packet = PacketIncarnation(
             incarnation=packet_id,
             request=request,
@@ -498,10 +555,14 @@ class DedicatedTransport:
             ),
         )
 
+        # Infallible commit tail: the validated identities and all constructed
+        # objects become owned atomically with the credit/FIFO/record state.
+        self.next_incarnation_id = committed_next_id
+        self.incarnation_ids_exhausted = committed_exhausted
         self.credit_owner[credit] = index
-        popped = self._queue_pop()
-        if popped != index:
-            raise AssertionError("queue head changed during materialization")
+        self.queue[self.queue_head] = -1
+        self.queue_head = (self.queue_head + 1) % REQUEST_QUEUE_CAPACITY
+        self.queue_count -= 1
         record.request = request
         record.packet = packet
         record.line_buffer = line_buffer
@@ -515,7 +576,7 @@ class DedicatedTransport:
         accepted: bool,
         slot_payload: bytes | bytearray,
     ) -> int | None:
-        self._ensure_live()
+        self._ensure_public_mutation_allowed()
         if len(slot_payload) != PAGE_BYTES:
             raise ContractError("slot payload must be exactly one page")
         index = self._materialize_pending(slot_payload)
@@ -540,7 +601,7 @@ class DedicatedTransport:
         return index
 
     def recv_req_retry(self, callback_port: int) -> None:
-        self._ensure_live()
+        self._ensure_public_mutation_allowed()
         if self.pending == -1:
             raise ContractError("retry callback has no pending owner")
         record = self.records[self.pending]
@@ -557,7 +618,7 @@ class DedicatedTransport:
         data: bytes | None = None,
     ) -> PacketIncarnation:
         """Model a legal new response Packet carrying RequestPtr/token."""
-        self._ensure_live()
+        self._ensure_public_mutation_allowed()
         if not 0 <= index < TRANSACTION_CAPACITY:
             raise ContractError("record is out of range")
         record = self.records[index]
@@ -635,7 +696,7 @@ class DedicatedTransport:
         payload_exact = (
             len(packet.data) == LINE_BYTES
             if record.key.operation == Operation.FILL
-            else packet.data == b""
+            else (packet.data == b"" or packet.data is record.line_buffer)
         )
         return (
             packet.request is record.request
@@ -676,7 +737,7 @@ class DedicatedTransport:
         return False
 
     def abort_action(self, code: AbortCode) -> bool:
-        self._ensure_live()
+        self._ensure_public_mutation_allowed()
         if not isinstance(code, AbortCode) or code == AbortCode.NONE:
             raise ContractError("abort code is invalid")
         if self.action.state == ActionState.FREE:
@@ -709,11 +770,14 @@ class DedicatedTransport:
 
     def receive(
         self,
-        packet: PacketIncarnation,
+        returned: ReturnedPacketOwner,
         callback_port: int,
     ) -> ReceiveResult:
         """Authenticate token, endpoint, and wire before staging a response."""
-        self._ensure_live()
+        self._ensure_public_mutation_allowed()
+        if not isinstance(returned, ReturnedPacketOwner):
+            raise ProductionStop("callback lacks returned Packet ownership")
+        packet = returned.exact_packet()
         index = self._lookup_top_token(packet)
         record = self.records[index]
         if not self._callback_port_exact(record, callback_port):
@@ -729,6 +793,7 @@ class DedicatedTransport:
             )
 
         if record.state == RecordState.ABORT_DRAIN:
+            returned.destroy_exact(packet)
             self._release_record(index)
             drained = self._finish_abort_if_drained()
             self.assert_invariants()
@@ -746,12 +811,20 @@ class DedicatedTransport:
         if record.key.operation == Operation.FILL:
             # This replaces the contents of the same credit-owned fixed buffer;
             # no result object or fifth payload owner is created.
-            record.line_buffer = bytes(packet.data)
+            try:
+                staged_line = bytes(memoryview(packet.data))
+            except Exception as error:
+                raise ProductionStop(
+                    "returned Packet staging copy failed"
+                ) from error
+            record.line_buffer = staged_line
             record.state = RecordState.DELIVERING
+            returned.destroy_exact(packet)
             ticket = DeliveryTicket(index, record.epoch, record.action_id)
             self.assert_invariants()
             return ReceiveResult(ReplyStatus.DELIVERY_PENDING, ticket)
 
+        returned.destroy_exact(packet)
         status = self._ack_release_and_refill(index)
         return ReceiveResult(status)
 
@@ -775,12 +848,34 @@ class DedicatedTransport:
             raise ProductionStop("delivery ticket is stale or not exact")
         return ticket.record
 
-    def commit_delivery(
+    def _begin_delivery_copy(self, ticket: DeliveryTicket) -> int:
+        """Enter the sole transport-authoritative copy guard."""
+        self._ensure_public_mutation_allowed()
+        index = self.validate_delivery_ticket(ticket)
+        self.delivery_copy_active = True
+        self.assert_invariants()
+        return index
+
+    def _cancel_delivery_copy(self, ticket: DeliveryTicket) -> None:
+        """Clear only the guard after a failed controller copy."""
+        if not self.delivery_copy_active:
+            raise ProductionStop("delivery copy cancel has no active owner")
+        self.validate_delivery_ticket(ticket)
+        self.delivery_copy_active = False
+        self.assert_invariants()
+
+    def _finish_delivery_copy(
         self,
         ticket: DeliveryTicket,
     ) -> ReplyStatus:
-        """ACK/release only after the controller has committed the exact copy."""
+        """Leave the guard and ACK only after the exact copy succeeded."""
+        if not self.delivery_copy_active:
+            raise ProductionStop("delivery copy finish has no active owner")
         index = self.validate_delivery_ticket(ticket)
+        # The exact internal finish path contains no callback or fallible host
+        # construction.  Once the copy returned successfully, it alone may
+        # clear the guard and commit ACK/release/refill.
+        self.delivery_copy_active = False
         return self._ack_release_and_refill(index)
 
     def _ack_release_and_refill(
@@ -809,7 +904,8 @@ class DedicatedTransport:
 
     def drained(self) -> bool:
         return (
-            self.action.state == ActionState.FREE
+            not self.delivery_copy_active
+            and self.action.state == ActionState.FREE
             and self.queue_count == 0
             and self.pending == -1
             and all(
@@ -819,7 +915,7 @@ class DedicatedTransport:
         )
 
     def seal(self) -> None:
-        self._ensure_live()
+        self._ensure_public_mutation_allowed()
         if not self.drained():
             raise ContractError("transport must drain before teardown")
         self.sealed = True
@@ -869,6 +965,11 @@ class DedicatedTransport:
         assert buffer_owners == sum(owner != -1 for owner in self.credit_owner)
         assert buffer_owners <= RESPONSE_CREDITS
         assert self.queue_count <= REQUEST_QUEUE_CAPACITY
+        if self.delivery_copy_active:
+            assert any(
+                record.state == RecordState.DELIVERING
+                for record in self.records
+            )
         if self.action.state == ActionState.FREE:
             assert not any(
                 record.state != RecordState.FREE for record in self.records
@@ -886,19 +987,24 @@ class DedicatedTransport:
 class LogicalCacheModel:
     """Two descriptors and two charged 32-KiB private payload slots."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        num_cores: int = NUM_PORTS,
+        maa_line_bytes: int = LINE_BYTES,
+    ) -> None:
+        validate_bridge_geometry(num_cores, maa_line_bytes)
         self.descriptors = [Descriptor() for _ in range(DESCRIPTORS)]
         self.slots = [Slot() for _ in range(SLOTS)]
-        self.transport = DedicatedTransport()
+        self.transport = DedicatedTransport(num_cores, maa_line_bytes)
         self.active_slot = -1
         self.active_operation: Operation | None = None
-        self.delivery_commit_active = False
         self.last_abort = AbortCode.NONE
         self.torn_down = False
 
     def _ensure_live(self) -> None:
         if self.torn_down:
             raise ContractError("model is torn down")
+        self.transport._ensure_public_mutation_allowed()
 
     def allocate(self, descriptor: int, backing_base: int) -> int:
         self._ensure_live()
@@ -1044,12 +1150,12 @@ class LogicalCacheModel:
 
     def begin_receive(
         self,
-        packet: PacketIncarnation,
+        returned: ReturnedPacketOwner,
         callback_port: int,
     ) -> ReceiveResult:
         """Run the exact response callback without implicitly copying a fill."""
         self._ensure_live()
-        result = self.transport.receive(packet, callback_port)
+        result = self.transport.receive(returned, callback_port)
         self._apply_terminal_status(result.status)
         self.assert_invariants()
         return result
@@ -1093,25 +1199,26 @@ class LogicalCacheModel:
         self._ensure_live()
         index = self.transport.validate_delivery_ticket(ticket)
         self._delivery_target(index)
-        if self.delivery_commit_active:
-            raise ProductionStop("delivery commit reentry is forbidden")
-        self.delivery_commit_active = True
+        guarded_index = self.transport._begin_delivery_copy(ticket)
+        if guarded_index != index:
+            raise AssertionError("delivery owner changed before copy guard")
         try:
             self._copy_delivery_line(index)
-            status = self.transport.commit_delivery(ticket)
-        finally:
-            self.delivery_commit_active = False
+        except BaseException:
+            self.transport._cancel_delivery_copy(ticket)
+            raise
+        status = self.transport._finish_delivery_copy(ticket)
         self._apply_terminal_status(status)
         self.assert_invariants()
         return status
 
     def receive(
         self,
-        packet: PacketIncarnation,
+        returned: ReturnedPacketOwner,
         callback_port: int,
     ) -> ReplyStatus:
         """Convenience path that immediately performs the explicit copy commit."""
-        result = self.begin_receive(packet, callback_port)
+        result = self.begin_receive(returned, callback_port)
         if result.ticket is not None:
             return self.commit_delivery(result.ticket)
         return result.status
@@ -1138,6 +1245,7 @@ class LogicalCacheModel:
                     or descriptor.generation != slot.generation
                 ):
                     raise AssertionError("writeback owner became stale")
+                descriptor.backing_ready |= 1 << slot.page
                 descriptor.writeback_acked |= 1 << slot.page
                 slot.clear()
             self.active_slot = -1
@@ -1339,14 +1447,6 @@ class LogicalCacheModel:
 
     def assert_invariants(self) -> None:
         self.transport.assert_invariants()
-        if self.delivery_commit_active:
-            assert (
-                sum(
-                    record.state == RecordState.DELIVERING
-                    for record in self.transport.records
-                )
-                == 1
-            )
         action_slots = [slot for slot in self.slots if slot.action_id]
         assert len(action_slots) <= 1
         if self.transport.action.state == ActionState.FREE:
@@ -1401,14 +1501,12 @@ class LogicalCacheModel:
                 assert len(owners) <= 1
                 ready = bool(descriptor.backing_ready & (1 << page))
                 acknowledged = bool(descriptor.writeback_acked & (1 << page))
-                assert not (ready and acknowledged)
+                assert not acknowledged or ready
                 if owners:
                     if owners[0].role == SlotRole.SOURCE:
-                        assert ready and not acknowledged
+                        assert ready
                     else:
                         assert not ready and not acknowledged
-                if acknowledged:
-                    assert not owners
 
     def digest(self) -> str:
         """Host-only deterministic observation; never feeds a transition."""
@@ -1496,7 +1594,7 @@ class LogicalCacheModel:
             "active": (
                 self.active_slot,
                 self.active_operation.value if self.active_operation else None,
-                self.delivery_commit_active,
+                self.transport.delivery_copy_active,
             ),
             "last_abort": self.last_abort.value,
             "sealed": self.transport.sealed,
@@ -1576,7 +1674,10 @@ def drive_action(model: LogicalCacheModel) -> None:
                 if record.key and record.key.operation == Operation.FILL
                 else b""
             )
-            model.receive(model.make_response(index, data), record.port)
+            model.receive(
+                ReturnedPacketOwner(model.make_response(index, data)),
+                record.port,
+            )
 
 
 def deterministic_demo() -> dict[str, object]:

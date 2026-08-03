@@ -8,6 +8,10 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / (
     "experiments/analysis/logical_cache_dedicated_transport_model.py"
 )
+DESIGN_PATH = ROOT / (
+    "experiments/analysis/"
+    "logical_cache_dedicated_transport_design_2026-08-02.md"
+)
 SPEC = importlib.util.spec_from_file_location(
     "logical_cache_dedicated_transport_model", MODULE_PATH
 )
@@ -46,7 +50,11 @@ def send_one(model, data=None):
 def receive_on(model, packet, callback_port=None):
     if callback_port is None:
         callback_port = MODEL.core_port(packet.address)
-    return model.receive(packet, callback_port)
+    returned = MODEL.ReturnedPacketOwner(packet)
+    status = model.receive(returned, callback_port)
+    if not returned.destroyed or returned.packet is not None:
+        raise AssertionError("valid callback retained its returned Packet")
+    return status
 
 
 def drain_exact(model, fill_data=True):
@@ -96,6 +104,31 @@ class DedicatedTransportContractTest(unittest.TestCase):
         self.assertEqual(
             sum(MODEL.ALIGNED_CPP_PROJECTION_BYTES.values()), 66_324
         )
+        self.assertEqual(4 * MODEL.PACKED_LOGICAL_STATE_BYTES, 264_724)
+
+    def test_first_bridge_rejects_non_four_core_or_non_64_byte_geometry(self):
+        for factory in (MODEL.LogicalCacheModel, MODEL.DedicatedTransport):
+            for num_cores, line_bytes, pattern in (
+                (1, 64, "four"),
+                (8, 64, "four"),
+                (4, 32, "64-byte"),
+                (4, 128, "64-byte"),
+            ):
+                with self.subTest(
+                    factory=factory.__name__,
+                    num_cores=num_cores,
+                    line_bytes=line_bytes,
+                ):
+                    with self.assertRaisesRegex(MODEL.ContractError, pattern):
+                        factory(num_cores, line_bytes)
+
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        design = DESIGN_PATH.read_text(encoding="utf-8")
+        self.assertIn("if num_cores != NUM_PORTS:", source)
+        self.assertIn("if maa_line_bytes != LINE_BYTES:", source)
+        self.assertIn("num_cores == 4", design)
+        self.assertIn("MAA transaction line and cache line", design)
+        self.assertIn("Future parameterization must recompute", design)
 
     def test_four_credits_block_fifth_accepted_or_refused_materialization(
         self,
@@ -248,9 +281,11 @@ class DedicatedTransportContractTest(unittest.TestCase):
             index, response = send_one(
                 model, bytes([value + 1]) * MODEL.LINE_BYTES
             )
+            returned = MODEL.ReturnedPacketOwner(response)
             result = model.begin_receive(
-                response, model.transport.records[index].port
+                returned, model.transport.records[index].port
             )
+            self.assertTrue(returned.destroyed)
             self.assertEqual(result.status, MODEL.ReplyStatus.DELIVERY_PENDING)
             tickets.append(result.ticket)
         self.assertEqual(model.transport.credit_owner.count(-1), 0)
@@ -280,9 +315,11 @@ class DedicatedTransportContractTest(unittest.TestCase):
         allocate_source(model)
         start_fill(model)
         index, response = send_one(model, bytes([0xC3]) * MODEL.LINE_BYTES)
+        returned = MODEL.ReturnedPacketOwner(response)
         result = model.begin_receive(
-            response, model.transport.records[index].port
+            returned, model.transport.records[index].port
         )
+        self.assertTrue(returned.destroyed)
         ticket = result.ticket
         self.assertEqual(result.status, MODEL.ReplyStatus.DELIVERY_PENDING)
         self.assertEqual(model.transport.action.ack_count, 0)
@@ -304,7 +341,7 @@ class DedicatedTransportContractTest(unittest.TestCase):
 
         model._copy_delivery_line = reenter
         before = model.digest()
-        with self.assertRaisesRegex(MODEL.ProductionStop, "reentry"):
+        with self.assertRaisesRegex(MODEL.ProductionStop, "delivery copy"):
             model.commit_delivery(ticket)
         self.assertEqual(model.digest(), before)
         self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
@@ -314,6 +351,174 @@ class DedicatedTransportContractTest(unittest.TestCase):
         self.assertEqual(
             model.commit_delivery(ticket), MODEL.ReplyStatus.ACCEPTED
         )
+
+    def _assert_abort_reentry_is_guarded(self, direct_transport):
+        payload = bytes([0xE7]) * MODEL.LINE_BYTES
+        model = MODEL.LogicalCacheModel()
+        control = MODEL.LogicalCacheModel()
+        tickets = []
+        for target in (model, control):
+            allocate_source(target)
+            start_fill(target)
+            index, response = send_one(target, payload)
+            returned = MODEL.ReturnedPacketOwner(response)
+            result = target.begin_receive(
+                returned, target.transport.records[index].port
+            )
+            self.assertTrue(returned.destroyed)
+            tickets.append(result.ticket)
+
+        original_copy = model._copy_delivery_line
+
+        def reject_abort_then_copy(index):
+            guarded = model.digest()
+            mutate = (
+                (lambda: model.transport.abort_action(MODEL.AbortCode.CALLER))
+                if direct_transport
+                else (lambda: model.abort(MODEL.AbortCode.CALLER))
+            )
+            with self.assertRaisesRegex(MODEL.ProductionStop, "delivery copy"):
+                mutate()
+            self.assertEqual(model.digest(), guarded)
+            self.assertFalse(model.transport.drained())
+            record = model.transport.records[index]
+            self.assertEqual(record.state, MODEL.RecordState.DELIVERING)
+            self.assertEqual(
+                model.transport.credit_owner[record.credit], index
+            )
+            original_copy(index)
+
+        model._copy_delivery_line = reject_abort_then_copy
+        self.assertEqual(
+            model.commit_delivery(tickets[0]), MODEL.ReplyStatus.ACCEPTED
+        )
+        self.assertEqual(
+            control.commit_delivery(tickets[1]), MODEL.ReplyStatus.ACCEPTED
+        )
+        self.assertEqual(model.digest(), control.digest())
+        self.assertEqual(model.transport.action.ack_count, 1)
+        self.assertEqual(model.transport.credit_owner.count(-1), 4)
+        self.assertEqual(model.slots[0].payload[: MODEL.LINE_BYTES], payload)
+        model.assert_invariants()
+
+    def test_model_abort_reentry_during_exact_copy_is_guarded(self):
+        self._assert_abort_reentry_is_guarded(direct_transport=False)
+
+    def test_direct_transport_abort_reentry_during_exact_copy_is_guarded(self):
+        self._assert_abort_reentry_is_guarded(direct_transport=True)
+
+    def test_pre_copy_failure_clears_only_guard_and_preserves_delivery_owner(
+        self,
+    ):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        payload = bytes([0xB6]) * MODEL.LINE_BYTES
+        index, response = send_one(model, payload)
+        returned = MODEL.ReturnedPacketOwner(response)
+        ticket = model.begin_receive(
+            returned, model.transport.records[index].port
+        ).ticket
+        before = model.digest()
+
+        def fail_before_copy(_index):
+            raise RuntimeError("injected pre-copy failure")
+
+        original_copy = model._copy_delivery_line
+        model._copy_delivery_line = fail_before_copy
+        with self.assertRaisesRegex(RuntimeError, "pre-copy"):
+            model.commit_delivery(ticket)
+        self.assertEqual(model.digest(), before)
+        self.assertFalse(model.transport.delivery_copy_active)
+        self.assertEqual(
+            model.transport.records[index].state,
+            MODEL.RecordState.DELIVERING,
+        )
+        self.assertEqual(model.transport.action.ack_count, 0)
+        self.assertEqual(model.transport.credit_owner.count(-1), 3)
+        self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
+        self.assertFalse(model.transport.drained())
+        model.assert_invariants()
+        model._copy_delivery_line = original_copy
+        self.assertEqual(
+            model.commit_delivery(ticket), MODEL.ReplyStatus.ACCEPTED
+        )
+
+    def test_copy_guard_rejects_all_public_model_and_transport_mutators(self):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        index, response = send_one(model, bytes(MODEL.LINE_BYTES))
+        returned = MODEL.ReturnedPacketOwner(response)
+        ticket = model.begin_receive(
+            returned, model.transport.records[index].port
+        ).ticket
+        dummy = MODEL.PacketIncarnation(
+            99,
+            MODEL.RequestPtr(99),
+            (),
+            0,
+            "ReadResp",
+            MODEL.LINE_BYTES,
+            bytes(MODEL.LINE_BYTES),
+        )
+        page = bytes(MODEL.PAGE_BYTES)
+        original_copy = model._copy_delivery_line
+
+        def check_every_entry(record_index):
+            model_mutators = (
+                lambda: model.allocate(1, DST_BASE),
+                lambda: model.publish_backing(0, 0),
+                lambda: model.start_fill(0, 0, 1),
+                lambda: model.try_send(True),
+                lambda: model.recv_req_retry(0),
+                lambda: model.make_response(record_index),
+                lambda: model.begin_receive(
+                    MODEL.ReturnedPacketOwner(dummy), 0
+                ),
+                lambda: model.commit_delivery(ticket),
+                lambda: model.receive(MODEL.ReturnedPacketOwner(dummy), 0),
+                lambda: model.pin(0),
+                lambda: model.mark_dirty(0),
+                lambda: model.bind_dirty_destination(0, 1, 0),
+                lambda: model.unpin(0),
+                lambda: model.evict_clean(0),
+                lambda: model.start_writeback(0),
+                lambda: model.abort(MODEL.AbortCode.CALLER),
+                lambda: model.free_descriptor(0),
+                model.reset,
+                model.teardown,
+            )
+            transport_mutators = (
+                lambda: model.transport.start_action(
+                    MODEL.Operation.FILL, 0, 1, 0, 0, 0, page
+                ),
+                lambda: model.transport.try_send(True, page),
+                lambda: model.transport.recv_req_retry(0),
+                lambda: model.transport.make_response(record_index),
+                lambda: model.transport.abort_action(MODEL.AbortCode.CALLER),
+                lambda: model.transport.receive(
+                    MODEL.ReturnedPacketOwner(dummy), 0
+                ),
+                model.transport.seal,
+            )
+            for mutate in model_mutators + transport_mutators:
+                guarded = model.digest()
+                with self.subTest(mutate=mutate):
+                    with self.assertRaisesRegex(
+                        MODEL.ProductionStop, "delivery copy"
+                    ):
+                        mutate()
+                    self.assertEqual(model.digest(), guarded)
+            self.assertFalse(model.transport.drained())
+            original_copy(record_index)
+
+        model._copy_delivery_line = check_every_entry
+        self.assertEqual(
+            model.commit_delivery(ticket), MODEL.ReplyStatus.ACCEPTED
+        )
+        self.assertEqual(model.transport.action.ack_count, 1)
+        model.assert_invariants()
 
     def test_abort_drain_never_invokes_delivery_copy_consumer(self):
         model = MODEL.LogicalCacheModel()
@@ -337,16 +542,121 @@ class DedicatedTransportContractTest(unittest.TestCase):
         self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
         self.assertTrue(model.transport.drained())
 
+    def test_abort_between_begin_receive_and_commit_cancels_without_copy(self):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        index, response = send_one(model, bytes([0xD5]) * MODEL.LINE_BYTES)
+        returned = MODEL.ReturnedPacketOwner(response)
+        result = model.begin_receive(
+            returned, model.transport.records[index].port
+        )
+        self.assertEqual(result.status, MODEL.ReplyStatus.DELIVERY_PENDING)
+        self.assertTrue(returned.destroyed)
+        self.assertTrue(model.abort(MODEL.AbortCode.CALLER))
+        self.assertTrue(model.transport.drained())
+        self.assertEqual(model.slots[0].phase, MODEL.SlotPhase.EMPTY)
+        self.assertEqual(model.slots[0].payload, bytes(MODEL.PAGE_BYTES))
+        with self.assertRaisesRegex(MODEL.ProductionStop, "ticket"):
+            model.commit_delivery(result.ticket)
+        model.assert_invariants()
+
     def test_packet_shape_has_no_port_or_transaction_key_extension(self):
         names = tuple(MODEL.PacketIncarnation.__dataclass_fields__)
         self.assertNotIn("port", names)
         self.assertNotIn("key", names)
         self.assertNotIn("transaction_key", names)
         self.assertNotIn("data", MODEL.ReceiveResult.__dataclass_fields__)
+        self.assertNotIn("packet", MODEL.ReceiveResult.__dataclass_fields__)
+        self.assertNotIn("returned", MODEL.ReceiveResult.__dataclass_fields__)
         self.assertEqual(
             tuple(MODEL.DeliveryTicket.__dataclass_fields__),
             ("record", "epoch", "action_id"),
         )
+
+    def test_returned_packet_owner_is_destroyed_before_ticket_or_release(self):
+        fill = MODEL.LogicalCacheModel()
+        allocate_source(fill)
+        start_fill(fill)
+        index, response = send_one(fill, bytes([0xA9]) * MODEL.LINE_BYTES)
+        returned = MODEL.ReturnedPacketOwner(response)
+        result = fill.begin_receive(
+            returned, fill.transport.records[index].port
+        )
+        self.assertTrue(returned.destroyed)
+        self.assertIsNone(returned.packet)
+        self.assertEqual(result.status, MODEL.ReplyStatus.DELIVERY_PENDING)
+        self.assertIsNotNone(result.ticket)
+        self.assertEqual(
+            fill.transport.records[index].line_buffer,
+            bytes([0xA9]) * MODEL.LINE_BYTES,
+        )
+
+        write = MODEL.LogicalCacheModel()
+        allocate_pair(write)
+        start_fill(write)
+        drain_exact(write)
+        write.pin(0)
+        write.mark_dirty(0)
+        write.bind_dirty_destination(0, 1, 0)
+        write.unpin(0)
+        write.start_writeback(0)
+        self.assertIsNone(write.try_send(False))
+        index = write.transport.pending
+        record = write.transport.records[index]
+        request_packet = record.packet
+        retained_line = record.line_buffer
+        self.assertIs(request_packet.data, retained_line)
+        write.recv_req_retry(record.port)
+        self.assertEqual(write.try_send(True), index)
+        # A gem5 makeResponse() mutates and may return the original WriteReq
+        # Packet.  This test-only mutation preserves exact Python object
+        # identity and its static-data pointer.
+        object.__setattr__(request_packet, "command", "WriteResp")
+        returned = MODEL.ReturnedPacketOwner(request_packet)
+        original_release = write.transport._release_record
+
+        def release_after_destroy(record_index):
+            self.assertTrue(returned.destroyed)
+            self.assertIsNone(returned.packet)
+            self.assertIs(
+                write.transport.records[record_index].line_buffer,
+                retained_line,
+            )
+            original_release(record_index)
+
+        write.transport._release_record = release_after_destroy
+        result = write.begin_receive(returned, record.port)
+        self.assertEqual(result.status, MODEL.ReplyStatus.ACCEPTED)
+        self.assertTrue(returned.destroyed)
+
+        aborted = MODEL.LogicalCacheModel()
+        allocate_source(aborted)
+        start_fill(aborted)
+        index, response = send_one(aborted, bytes(MODEL.LINE_BYTES))
+        self.assertFalse(aborted.abort(MODEL.AbortCode.CALLER))
+        returned = MODEL.ReturnedPacketOwner(response)
+        result = aborted.begin_receive(
+            returned, aborted.transport.records[index].port
+        )
+        self.assertEqual(result.status, MODEL.ReplyStatus.ABORT_DRAINED)
+        self.assertTrue(returned.destroyed)
+        self.assertIsNone(returned.packet)
+
+    def test_malformed_returned_packet_is_not_destroyed_or_recovered(self):
+        model = MODEL.LogicalCacheModel()
+        allocate_source(model)
+        start_fill(model)
+        index, response = send_one(model, bytes(MODEL.LINE_BYTES))
+        returned = MODEL.ReturnedPacketOwner(
+            replace(response, size=MODEL.LINE_BYTES - 1)
+        )
+        before = model.digest()
+        with self.assertRaises(MODEL.ProductionStop):
+            model.begin_receive(returned, model.transport.records[index].port)
+        self.assertFalse(returned.destroyed)
+        self.assertIsNotNone(returned.packet)
+        self.assertEqual(model.digest(), before)
 
     def test_copied_missing_non_top_residual_and_unknown_tokens_stop_atomically(
         self,
@@ -634,6 +944,9 @@ class DedicatedTransportContractTest(unittest.TestCase):
         self.assertEqual(fill_responses, 2048)
         self.assertEqual(write_responses, 2048)
         self.assertTrue(model.descriptor_complete(1))
+        complete_bits = (1 << MODEL.PAGES_PER_DESCRIPTOR) - 1
+        self.assertEqual(model.descriptors[1].writeback_acked, complete_bits)
+        self.assertEqual(model.descriptors[1].backing_ready, complete_bits)
 
     def test_wrong_base_page_generation_overlap_and_u64_fail_atomically(self):
         model = MODEL.LogicalCacheModel()
@@ -726,10 +1039,26 @@ class DedicatedTransportContractTest(unittest.TestCase):
         model.unpin(0)
         model.start_writeback(0)
         drain_exact(model, fill_data=False)
+        bit = 1 << 0
+        self.assertEqual(model.descriptors[1].writeback_acked & bit, bit)
+        self.assertEqual(model.descriptors[1].backing_ready & bit, bit)
+        self.assertEqual(model.slots[0].phase, MODEL.SlotPhase.EMPTY)
+        self.assertFalse(model.descriptor_complete(1))
         acknowledged = model.digest()
         with self.assertRaisesRegex(MODEL.ContractError, "acknowledged"):
             model.publish_backing(1, 0)
         self.assertEqual(model.digest(), acknowledged)
+        model.start_fill(1, 0, 1)
+        drain_exact(model)
+        expected = b"".join(
+            MODEL.line_pattern(0, line) for line in range(MODEL.LINES_PER_PAGE)
+        )
+        self.assertEqual(model.slots[1].phase, MODEL.SlotPhase.CLEAN)
+        self.assertEqual(model.slots[1].role, MODEL.SlotRole.SOURCE)
+        self.assertEqual(bytes(model.slots[1].payload), expected)
+        self.assertEqual(model.descriptors[1].writeback_acked & bit, bit)
+        self.assertEqual(model.descriptors[1].backing_ready & bit, bit)
+        model.assert_invariants()
 
     def test_pin_dirty_replacement_and_writeback_abort_are_safe(self):
         model = MODEL.LogicalCacheModel()
@@ -841,6 +1170,42 @@ class DedicatedTransportContractTest(unittest.TestCase):
         )
         model.assert_invariants()
 
+    def test_every_post_preview_host_construction_failure_is_digest_atomic(
+        self,
+    ):
+        self.assertEqual(
+            MODEL.MATERIALIZATION_FAULT_POINTS,
+            ("request_ptr", "line_snapshot", "request_packet"),
+        )
+        for fault_point in MODEL.MATERIALIZATION_FAULT_POINTS:
+            with self.subTest(fault_point=fault_point):
+                model = MODEL.LogicalCacheModel()
+                allocate_pair(model)
+                start_fill(model)
+                drain_exact(model)
+                model.pin(0)
+                model.mark_dirty(0)
+                model.bind_dirty_destination(0, 1, 0)
+                model.unpin(0)
+                model.start_writeback(0)
+
+                def inject(point):
+                    if point == fault_point:
+                        raise RuntimeError(f"injected {point} failure")
+
+                model.transport._materialization_fault = inject
+                before = model.digest()
+                with self.assertRaisesRegex(RuntimeError, fault_point):
+                    model.try_send(True)
+                self.assertEqual(model.digest(), before)
+                self.assertEqual(
+                    model.transport.queue_count,
+                    MODEL.TRANSACTION_CAPACITY,
+                )
+                self.assertEqual(model.transport.credit_owner.count(-1), 4)
+                self.assertEqual(model.transport.pending, -1)
+                model.assert_invariants()
+
     def test_test_peer_responses_cannot_consume_reserved_controller_identities(
         self,
     ):
@@ -883,9 +1248,9 @@ class DedicatedTransportContractTest(unittest.TestCase):
             lambda: model.try_send(True),
             lambda: model.recv_req_retry(0),
             lambda: model.make_response(0),
-            lambda: model.begin_receive(dummy, 0),
+            lambda: model.begin_receive(MODEL.ReturnedPacketOwner(dummy), 0),
             lambda: model.commit_delivery(MODEL.DeliveryTicket(0, 0, 0)),
-            lambda: model.receive(dummy, 0),
+            lambda: model.receive(MODEL.ReturnedPacketOwner(dummy), 0),
             lambda: model.pin(0),
             lambda: model.mark_dirty(0),
             lambda: model.bind_dirty_destination(0, 1, 0),
