@@ -1,0 +1,1013 @@
+{
+  "authorization": {
+    "performance": false,
+    "production": false,
+    "requires_new_physical_trace": true
+  },
+  "evidence_class": "model_only",
+  "finite_geometry": {
+    "issue_selection": {
+      "materialized_order_entries": 0,
+      "mechanism": "direct_fixed_array_cursor_walk",
+      "native_slice_cursor_entries": 1,
+      "per_slice_cursor_sets": 16,
+      "row_sent_entries": 512,
+      "validation_order_storage": "streaming_digest_only"
+    },
+    "line_slots": 4096,
+    "lines_per_row": 8,
+    "native_slice_traversal": [
+      0,
+      4,
+      8,
+      12,
+      1,
+      5,
+      9,
+      13,
+      2,
+      6,
+      10,
+      14,
+      3,
+      7,
+      11,
+      15
+    ],
+    "offset_entries": 4096,
+    "response_slots": 96,
+    "response_word_pool": 480,
+    "row_slots": 512,
+    "rows_per_slice": 32,
+    "slices": 16
+  },
+  "ledgers": {
+    "logical16k_active4k": {
+      "active_elements": 4096,
+      "charged_total_bytes": 132236,
+      "fields": [
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 8192,
+          "count": 4096,
+          "field_bits": 14,
+          "name": "offset.iteration"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 4096,
+          "count": 4096,
+          "field_bits": 3,
+          "name": "offset.word_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 8192,
+          "count": 4096,
+          "field_bits": 13,
+          "name": "offset.next_or_sentinel"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 4096,
+          "count": 4096,
+          "field_bits": 1,
+          "name": "offset.valid"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 1024,
+          "count": 512,
+          "field_bits": 16,
+          "name": "row.grow"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 512,
+          "count": 512,
+          "field_bits": 1,
+          "name": "row.valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 512,
+          "count": 512,
+          "field_bits": 1,
+          "name": "row.sent"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 32768,
+          "count": 4096,
+          "field_bits": 58,
+          "name": "line.paddr_line"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 8192,
+          "count": 4096,
+          "field_bits": 13,
+          "name": "line.head"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 8192,
+          "count": 4096,
+          "field_bits": 13,
+          "name": "line.tail"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 8192,
+          "count": 4096,
+          "field_bits": 9,
+          "name": "line.word_count"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 4096,
+          "count": 4096,
+          "field_bits": 1,
+          "name": "line.valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 4096,
+          "count": 4096,
+          "field_bits": 1,
+          "name": "line.claimed"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 16,
+          "name": "response.generation"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 96,
+          "count": 96,
+          "field_bits": 4,
+          "name": "response.slice"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 9,
+          "name": "response.row_slot"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 12,
+          "name": "response.line_slot"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 768,
+          "count": 96,
+          "field_bits": 58,
+          "name": "response.paddr_line"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 13,
+          "name": "response.offset_head"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 9,
+          "name": "response.offset_count"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 96,
+          "count": 96,
+          "field_bits": 1,
+          "name": "response.valid"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 3840,
+          "count": 480,
+          "field_bits": 64,
+          "name": "response_word.payload"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 480,
+          "count": 480,
+          "field_bits": 7,
+          "name": "response_word.owner_slot"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 480,
+          "count": 480,
+          "field_bits": 1,
+          "name": "response_word.valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 32768,
+          "count": 32768,
+          "field_bits": 1,
+          "name": "invalidator.logical_line_bits"
+        },
+        {
+          "bytes_per_element": 3,
+          "charged_bytes": 192,
+          "count": 64,
+          "field_bits": 17,
+          "name": "partition.lower_grow"
+        },
+        {
+          "bytes_per_element": 3,
+          "charged_bytes": 192,
+          "count": 64,
+          "field_bits": 17,
+          "name": "partition.upper_exclusive_grow"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 64,
+          "count": 64,
+          "field_bits": 1,
+          "name": "partition.bound_valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 6,
+          "name": "cursor.row"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 6,
+          "name": "cursor.grow_row"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 4,
+          "name": "cursor.line"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 32,
+          "count": 16,
+          "field_bits": 16,
+          "name": "cursor.active_grow"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 1,
+          "name": "cursor.active_grow_valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.partition_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 15,
+          "name": "control.scan_iteration"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 13,
+          "name": "control.epoch_occupancy"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 5,
+          "name": "control.selector_credit"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.drain_reason"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 3,
+          "name": "control.state"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 5,
+          "name": "control.native_slice_cursor"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 7,
+          "name": "control.response_slots_used"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 9,
+          "name": "control.response_words_used"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.owner_indirect_unit_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 16,
+          "name": "control.owner_instruction_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 16,
+          "name": "control.owner_generation"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 8,
+          "count": 1,
+          "field_bits": 64,
+          "name": "control.b_base_paddr"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 8,
+          "count": 1,
+          "field_bits": 64,
+          "name": "control.a_base_vaddr"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 15,
+          "name": "control.logical_count"
+        },
+        {
+          "bytes_per_element": 4,
+          "charged_bytes": 4,
+          "count": 1,
+          "field_bits": 32,
+          "name": "control.source_elements"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.word_size_code"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 5,
+          "name": "control.destination_tile_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 15,
+          "name": "control.placements_completed"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 7,
+          "name": "control.pending_writes"
+        }
+      ],
+      "line_slots": 4096,
+      "lines_per_row": 8,
+      "logical_elements": 16384,
+      "packing_rule": "each field array element rounds independently to bytes; no cross-entry or cross-field optimistic packing",
+      "response_slots": 96,
+      "response_word_pool": 480,
+      "row_slots": 512,
+      "rows_per_slice": 32,
+      "slices": 16
+    },
+    "logical64k_active16k_arithmetic_only": {
+      "active_elements": 16384,
+      "charged_total_bytes": 507023,
+      "fields": [
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 32768,
+          "count": 16384,
+          "field_bits": 16,
+          "name": "offset.iteration"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16384,
+          "count": 16384,
+          "field_bits": 3,
+          "name": "offset.word_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 32768,
+          "count": 16384,
+          "field_bits": 15,
+          "name": "offset.next_or_sentinel"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16384,
+          "count": 16384,
+          "field_bits": 1,
+          "name": "offset.valid"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 4096,
+          "count": 2048,
+          "field_bits": 16,
+          "name": "row.grow"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 2048,
+          "count": 2048,
+          "field_bits": 1,
+          "name": "row.valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 2048,
+          "count": 2048,
+          "field_bits": 1,
+          "name": "row.sent"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 131072,
+          "count": 16384,
+          "field_bits": 58,
+          "name": "line.paddr_line"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 32768,
+          "count": 16384,
+          "field_bits": 15,
+          "name": "line.head"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 32768,
+          "count": 16384,
+          "field_bits": 15,
+          "name": "line.tail"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 32768,
+          "count": 16384,
+          "field_bits": 9,
+          "name": "line.word_count"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16384,
+          "count": 16384,
+          "field_bits": 1,
+          "name": "line.valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16384,
+          "count": 16384,
+          "field_bits": 1,
+          "name": "line.claimed"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 16,
+          "name": "response.generation"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 96,
+          "count": 96,
+          "field_bits": 4,
+          "name": "response.slice"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 11,
+          "name": "response.row_slot"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 14,
+          "name": "response.line_slot"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 768,
+          "count": 96,
+          "field_bits": 58,
+          "name": "response.paddr_line"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 15,
+          "name": "response.offset_head"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 192,
+          "count": 96,
+          "field_bits": 9,
+          "name": "response.offset_count"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 96,
+          "count": 96,
+          "field_bits": 1,
+          "name": "response.valid"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 3840,
+          "count": 480,
+          "field_bits": 64,
+          "name": "response_word.payload"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 480,
+          "count": 480,
+          "field_bits": 7,
+          "name": "response_word.owner_slot"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 480,
+          "count": 480,
+          "field_bits": 1,
+          "name": "response_word.valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 131072,
+          "count": 131072,
+          "field_bits": 1,
+          "name": "invalidator.logical_line_bits"
+        },
+        {
+          "bytes_per_element": 3,
+          "charged_bytes": 192,
+          "count": 64,
+          "field_bits": 17,
+          "name": "partition.lower_grow"
+        },
+        {
+          "bytes_per_element": 3,
+          "charged_bytes": 192,
+          "count": 64,
+          "field_bits": 17,
+          "name": "partition.upper_exclusive_grow"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 64,
+          "count": 64,
+          "field_bits": 1,
+          "name": "partition.bound_valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 8,
+          "name": "cursor.row"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 8,
+          "name": "cursor.grow_row"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 4,
+          "name": "cursor.line"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 32,
+          "count": 16,
+          "field_bits": 16,
+          "name": "cursor.active_grow"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 16,
+          "count": 16,
+          "field_bits": 1,
+          "name": "cursor.active_grow_valid"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.partition_id"
+        },
+        {
+          "bytes_per_element": 3,
+          "charged_bytes": 3,
+          "count": 1,
+          "field_bits": 17,
+          "name": "control.scan_iteration"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 15,
+          "name": "control.epoch_occupancy"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 5,
+          "name": "control.selector_credit"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.drain_reason"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 3,
+          "name": "control.state"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 5,
+          "name": "control.native_slice_cursor"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 7,
+          "name": "control.response_slots_used"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 9,
+          "name": "control.response_words_used"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.owner_indirect_unit_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 16,
+          "name": "control.owner_instruction_id"
+        },
+        {
+          "bytes_per_element": 2,
+          "charged_bytes": 2,
+          "count": 1,
+          "field_bits": 16,
+          "name": "control.owner_generation"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 8,
+          "count": 1,
+          "field_bits": 64,
+          "name": "control.b_base_paddr"
+        },
+        {
+          "bytes_per_element": 8,
+          "charged_bytes": 8,
+          "count": 1,
+          "field_bits": 64,
+          "name": "control.a_base_vaddr"
+        },
+        {
+          "bytes_per_element": 3,
+          "charged_bytes": 3,
+          "count": 1,
+          "field_bits": 17,
+          "name": "control.logical_count"
+        },
+        {
+          "bytes_per_element": 4,
+          "charged_bytes": 4,
+          "count": 1,
+          "field_bits": 32,
+          "name": "control.source_elements"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 2,
+          "name": "control.word_size_code"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 5,
+          "name": "control.destination_tile_id"
+        },
+        {
+          "bytes_per_element": 3,
+          "charged_bytes": 3,
+          "count": 1,
+          "field_bits": 17,
+          "name": "control.placements_completed"
+        },
+        {
+          "bytes_per_element": 1,
+          "charged_bytes": 1,
+          "count": 1,
+          "field_bits": 7,
+          "name": "control.pending_writes"
+        }
+      ],
+      "line_slots": 16384,
+      "lines_per_row": 8,
+      "logical_elements": 65536,
+      "packing_rule": "each field array element rounds independently to bytes; no cross-entry or cross-field optimistic packing",
+      "response_slots": 96,
+      "response_word_pool": 480,
+      "row_slots": 2048,
+      "rows_per_slice": 128,
+      "slices": 16
+    }
+  },
+  "output_evidence": {
+    "frozen_oracle_verified_by": "audit_gem5_controls.py",
+    "frozen_workload_oracle": 7228541527853630339,
+    "model_hash": "synthetic semantic check only"
+  },
+  "reason": "frozen MAAVirtualTrace logs contain lifecycle counters but no per-iteration B paddr and translated A paddr/slice/grow records",
+  "schema": 3,
+  "synthetic_adversarial_results": {
+    "distinct_4096_rows": {
+      "a_line_requests": 4096,
+      "capacity_drains": 7,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 0,
+        "row_slot_limit": 7
+      },
+      "duplicate_placements": 0,
+      "epochs": 8,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "df9192d312897f18c4403f632f2abd65fb9459f30e22b082dfd276289b121693",
+      "line_slot_rollovers": 0,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 512,
+      "peak_offsets": 512,
+      "peak_reserved_responses": 96,
+      "peak_reserved_words": 96,
+      "peak_row_slots": 512,
+      "placements": 4096,
+      "selector_words": 16384
+    },
+    "exact_4096_offsets": {
+      "a_line_requests": 256,
+      "capacity_drains": 0,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 0,
+        "row_slot_limit": 0
+      },
+      "duplicate_placements": 0,
+      "epochs": 1,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "9088745897881e4643154d1b52ad6c32ec13bab3d9aa3a448d8578785c9c33f5",
+      "line_slot_rollovers": 0,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 256,
+      "peak_offsets": 4096,
+      "peak_reserved_responses": 30,
+      "peak_reserved_words": 480,
+      "peak_row_slots": 256,
+      "placements": 4096,
+      "selector_words": 16384
+    },
+    "full_4096_line_occupancy": {
+      "a_line_requests": 4096,
+      "capacity_drains": 0,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 0,
+        "row_slot_limit": 0
+      },
+      "duplicate_placements": 0,
+      "epochs": 1,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "b0e2fa19cb09eabd737219a18c65402e2a141da875fede28838f694898c538ff",
+      "line_slot_rollovers": 0,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 4096,
+      "peak_offsets": 4096,
+      "peak_reserved_responses": 96,
+      "peak_reserved_words": 96,
+      "peak_row_slots": 512,
+      "placements": 4096,
+      "selector_words": 16384
+    },
+    "nine_lines_one_grow": {
+      "a_line_requests": 9,
+      "capacity_drains": 0,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 0,
+        "row_slot_limit": 0
+      },
+      "duplicate_placements": 0,
+      "epochs": 1,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "102038995011b16cc7d30464cc7213b579a7389dd43009b27380841581d16bda",
+      "line_slot_rollovers": 1,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 9,
+      "peak_offsets": 9,
+      "peak_reserved_responses": 9,
+      "peak_reserved_words": 9,
+      "peak_row_slots": 2,
+      "placements": 9,
+      "selector_words": 36
+    },
+    "one_line_fanout": {
+      "a_line_requests": 9,
+      "capacity_drains": 8,
+      "drain_reasons": {
+        "line_word_limit": 8,
+        "offset_limit": 0,
+        "row_slot_limit": 0
+      },
+      "duplicate_placements": 0,
+      "epochs": 9,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "b7c72a465a45700f14902b51c74618b21c33367a7105670cfacdd9d33ef10c2c",
+      "line_slot_rollovers": 0,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 1,
+      "peak_offsets": 480,
+      "peak_reserved_responses": 1,
+      "peak_reserved_words": 480,
+      "peak_row_slots": 1,
+      "placements": 4096,
+      "selector_words": 16384
+    },
+    "one_past_4097_offsets": {
+      "a_line_requests": 257,
+      "capacity_drains": 1,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 1,
+        "row_slot_limit": 0
+      },
+      "duplicate_placements": 0,
+      "epochs": 2,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "db48c49f00df0abec80024c9223a1ec538568cb802d43b24f946cf3ea83c3aaa",
+      "line_slot_rollovers": 0,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 256,
+      "peak_offsets": 4096,
+      "peak_reserved_responses": 30,
+      "peak_reserved_words": 480,
+      "peak_row_slots": 256,
+      "placements": 4097,
+      "selector_words": 16388
+    },
+    "partition_skew": {
+      "a_line_requests": 256,
+      "capacity_drains": 0,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 0,
+        "row_slot_limit": 0
+      },
+      "duplicate_placements": 0,
+      "epochs": 1,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "96f38045be7727892821b20a96586b9725cfa8fb34e45ea30eae6670388718ac",
+      "line_slot_rollovers": 0,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 256,
+      "peak_offsets": 4096,
+      "peak_reserved_responses": 30,
+      "peak_reserved_words": 480,
+      "peak_row_slots": 256,
+      "placements": 4096,
+      "selector_words": 16384
+    },
+    "row_slot_exhaustion": {
+      "a_line_requests": 257,
+      "capacity_drains": 1,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 0,
+        "row_slot_limit": 1
+      },
+      "duplicate_placements": 0,
+      "epochs": 2,
+      "geometry_bound_respected": true,
+      "issue_order_sha256": "e8ebdcb34fafe849a4b2e02124ac76216507df5b4236c8a5a373354a767e0201",
+      "line_slot_rollovers": 31,
+      "materialized_issue_order_entries": 0,
+      "missing_placements": 0,
+      "peak_line_slots": 256,
+      "peak_offsets": 256,
+      "peak_reserved_responses": 96,
+      "peak_reserved_words": 96,
+      "peak_row_slots": 32,
+      "placements": 257,
+      "selector_words": 1028
+    }
+  },
+  "workload_a_line_comparisons": null,
+  "workload_trace_status": "blocked_new_gem5_physical_trace_required"
+}
