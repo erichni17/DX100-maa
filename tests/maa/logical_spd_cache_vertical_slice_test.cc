@@ -278,6 +278,33 @@ checkAbortClean(const Harness &harness)
 }
 
 void
+testTypedFP64PayloadGeometryAndInitialObjects()
+{
+    static_assert(Slice::PageElements == 4096);
+    static_assert(Slice::PageBytes ==
+                  Slice::PageElements * sizeof(double));
+    Runtime runtime;
+    const auto first = runtime.slotPayload(0);
+    const auto second = runtime.slotPayload(1);
+    CHECK(first.data != nullptr);
+    CHECK(second.data != nullptr);
+    CHECK(first.size == Slice::PageBytes);
+    CHECK(second.size == Slice::PageBytes);
+    CHECK(reinterpret_cast<uintptr_t>(first.data) % alignof(double) == 0);
+    CHECK(reinterpret_cast<uintptr_t>(second.data) % alignof(double) == 0);
+    CHECK(reinterpret_cast<uintptr_t>(first.data) %
+              Transport::LineBytes ==
+          0);
+    CHECK(reinterpret_cast<uintptr_t>(second.data) -
+              reinterpret_cast<uintptr_t>(first.data) ==
+          Slice::PageBytes);
+    std::array<std::byte, Slice::PageBytes> positiveZeroBits{};
+    CHECK(std::memcmp(first.data, positiveZeroBits.data(), first.size) == 0);
+    CHECK(std::memcmp(second.data, positiveZeroBits.data(), second.size) ==
+          0);
+}
+
+void
 testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill()
 {
     Harness harness;
@@ -318,6 +345,10 @@ testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill()
     const auto payload = harness.runtime.slotPayload(
         static_cast<uint8_t>(slot));
     CHECK(payload.size == Slice::PageBytes);
+    CHECK(reinterpret_cast<uintptr_t>(payload.data) % alignof(double) == 0);
+    CHECK(reinterpret_cast<uintptr_t>(payload.data) %
+              Transport::LineBytes ==
+          0);
     CHECK(std::memcmp(payload.data,
                       harness.destination.data() + 3 * Slice::PageBytes,
                       Slice::PageBytes) == 0);
@@ -581,6 +612,17 @@ testGeometryEnumAndJointLifecycleGates()
     invalidSpan.destination =
         {Harness::DestinationBase, Slice::BackingBytes + 1};
     CHECK(spans.admit(invalidSpan) == Slice::Status::Invalid);
+
+    const auto transportBeforeFault = spans.transportSnapshot();
+    const auto correlationBeforeFault = spans.correlationSnapshot();
+    CHECK(spans.prepare(static_cast<Transport::FaultPoint>(0xff)).status ==
+          Transport::Status::Invalid);
+    CHECK(spans.transportSnapshot() == transportBeforeFault);
+    const auto correlationAfterFault = spans.correlationSnapshot();
+    CHECK(correlationAfterFault.pageActive ==
+          correlationBeforeFault.pageActive);
+    CHECK(correlationAfterFault.transportActionID ==
+          correlationBeforeFault.transportActionID);
     invalidSpan.destination = {Harness::SourceBase, Slice::BackingBytes};
     CHECK(spans.admit(invalidSpan) == Slice::Status::Invalid);
 
@@ -610,6 +652,78 @@ testGeometryEnumAndJointLifecycleGates()
 }
 
 void
+testBackingRangeArithmeticBeforeMutation()
+{
+    const uint64_t maximum = std::numeric_limits<uint64_t>::max();
+    const uint64_t bytes = Slice::BackingBytes;
+    const uint64_t terminalBase = maximum - (bytes - 1);
+    CHECK(terminalBase % bytes == 0);
+
+    Runtime terminal;
+    CHECK(terminal.initialize(9) == Slice::Status::Accepted);
+    const auto terminalBefore = terminal.sliceSnapshot();
+    CHECK(terminal.registerSource(
+              0, {terminalBase, static_cast<uint32_t>(bytes)}) ==
+          Slice::Status::Invalid);
+    Slice::Admission terminalSameSpan;
+    terminalSameSpan.sourceLogical = 0;
+    terminalSameSpan.destinationLogical = 1;
+    terminalSameSpan.destination =
+        {terminalBase, static_cast<uint32_t>(bytes)};
+    CHECK(terminal.admit(terminalSameSpan) == Slice::Status::Invalid);
+    const auto terminalAfter = terminal.sliceSnapshot();
+    CHECK(!terminalAfter.active);
+    CHECK(!terminalAfter.memoryActionActive);
+    CHECK(terminalAfter.lastOperationID == terminalBefore.lastOperationID);
+    CHECK(terminalAfter.lastProducerTransaction ==
+          terminalBefore.lastProducerTransaction);
+    CHECK(terminalAfter.descriptors[0].role ==
+          Slice::DescriptorRole::Free);
+    CHECK(terminalAfter.descriptors[1].role ==
+          Slice::DescriptorRole::Free);
+    CHECK(terminalAfter.counters.sourceRegistrations ==
+          terminalBefore.counters.sourceRegistrations);
+    CHECK(terminalAfter.counters.admissions ==
+          terminalBefore.counters.admissions);
+
+    Runtime adjacent;
+    CHECK(adjacent.initialize(10) == Slice::Status::Accepted);
+    CHECK(adjacent.registerSource(
+              0, {Harness::SourceBase, Slice::BackingBytes}) ==
+          Slice::Status::Accepted);
+    Slice::Admission adjacentAdmission;
+    adjacentAdmission.sourceLogical = 0;
+    adjacentAdmission.destinationLogical = 1;
+    adjacentAdmission.destination =
+        {Harness::SourceBase + bytes, Slice::BackingBytes};
+    CHECK(adjacent.admit(adjacentAdmission) == Slice::Status::Accepted);
+    CHECK(adjacent.abort(Slice::AbortCode::Caller) ==
+          Slice::Status::Accepted);
+    CHECK(adjacent.drained());
+
+    Runtime overlap;
+    CHECK(overlap.initialize(11) == Slice::Status::Accepted);
+    CHECK(overlap.registerSource(
+              0, {Harness::SourceBase, Slice::BackingBytes}) ==
+          Slice::Status::Accepted);
+    const auto overlapBefore = overlap.sliceSnapshot();
+    Slice::Admission overlappingAdmission;
+    overlappingAdmission.sourceLogical = 0;
+    overlappingAdmission.destinationLogical = 1;
+    overlappingAdmission.destination =
+        {Harness::SourceBase, Slice::BackingBytes};
+    CHECK(overlap.admit(overlappingAdmission) == Slice::Status::Invalid);
+    const auto overlapAfter = overlap.sliceSnapshot();
+    CHECK(!overlapAfter.active);
+    CHECK(!overlapAfter.memoryActionActive);
+    CHECK(overlapAfter.lastOperationID == overlapBefore.lastOperationID);
+    CHECK(overlapAfter.descriptors[1].role ==
+          Slice::DescriptorRole::Free);
+    CHECK(overlapAfter.counters.admissions ==
+          overlapBefore.counters.admissions);
+}
+
+void
 testPackedSemanticLedgerIndependently()
 {
     using Ledger = Runtime::PackedSemanticLedger;
@@ -621,11 +735,12 @@ testPackedSemanticLedgerIndependently()
                   74 + 334 + 140 + 672 + 3 + 64);
     static_assert(Ledger::SliceDescriptors == 438);
     static_assert(Ledger::SliceOverwriteReservation == 336);
-    static_assert(Ledger::SliceActiveOperation == 508);
+    static_assert(Ledger::SliceStage == 3);
+    static_assert(Ledger::SliceActiveOperation == 507);
     static_assert(Ledger::SliceControllerMemoryAction == 139);
     static_assert(Ledger::SlicePageAction == 305);
     static_assert(Ledger::SliceBits ==
-                  1287 + 438 + 508 + 305 + 1 + 35 + 1 + 32 + 64 + 16 +
+                  1287 + 438 + 507 + 305 + 1 + 35 + 1 + 32 + 64 + 16 +
                       7);
     static_assert(Ledger::SliceInstrumentationCounterBits == 768);
     static_assert(Ledger::TransportTransactionKey == 46);
@@ -640,10 +755,112 @@ testPackedSemanticLedgerIndependently()
     static_assert(Ledger::RuntimeComputeCorrelation == 237);
     static_assert(Ledger::RuntimeCorrelationBits == 579);
     static_assert(Ledger::PrivatePayloadBits == 524288);
-    static_assert(Ledger::PackedBits == 2694 + 6715 + 579 + 524288);
+    static_assert(Ledger::PackedBits == 2693 + 6715 + 579 + 524288);
     static_assert(Ledger::PackedBytes == 66785);
     static_assert(Ledger::PythonReferenceLowerBoundBytes == 66181);
     CHECK(sizeof(Runtime) >= Ledger::PackedBytes);
+}
+
+bool
+markCopyHook(void *opaque)
+{
+    *static_cast<bool *>(opaque) = true;
+    return true;
+}
+
+void
+testFinalCompletionAuthenticatedBeforeSideEffects()
+{
+    expectChildSuccess([] {
+        Harness harness;
+        CHECK(harness.runtime.prepare(
+                  Transport::FaultPoint::FinalCompletionIdentity)
+                  .status == Transport::Status::Accepted);
+
+        uint8_t finalRecord = Transport::NoRecord;
+        while (harness.runtime.ackCount() <
+               Transport::LinesPerPage - 1) {
+            while (harness.runtime.creditsInUse() <
+                   Transport::ResponseCredits) {
+                const auto sent = harness.peer.send(harness.runtime, true);
+                if (sent.status != Transport::Status::SendAccepted)
+                    break;
+            }
+            bool progressed = false;
+            for (std::size_t record = 0;
+                 record < Transport::RecordCount; ++record) {
+                const uint8_t index = static_cast<uint8_t>(record);
+                if (!harness.peer.hasOutstanding(index))
+                    continue;
+                if (harness.runtime.recordKey(index).line ==
+                    Transport::LinesPerPage - 1) {
+                    finalRecord = index;
+                    continue;
+                }
+                harness.completeResponse(index);
+                progressed = true;
+            }
+            CHECK(progressed ||
+                  harness.runtime.ackCount() ==
+                      Transport::LinesPerPage - 1);
+        }
+        CHECK(finalRecord != Transport::NoRecord);
+        CHECK(harness.peer.hasOutstanding(finalRecord));
+        CHECK(harness.runtime.ackCount() ==
+              Transport::LinesPerPage - 1);
+
+        auto response = harness.peer.makeResponse(finalRecord, true);
+        CHECK(response.valid);
+        const auto *request = harness.peer.request(finalRecord);
+        CHECK(request != nullptr);
+        const auto staged = harness.peer.deliver(
+            harness.runtime, finalRecord, response.handle,
+            request->callbackPort);
+        CHECK(staged.status == Transport::Status::DeliveryPending);
+
+        const auto correlationBefore =
+            harness.runtime.correlationSnapshot();
+        const auto sliceBefore = harness.runtime.sliceSnapshot();
+        const auto transportBefore = harness.runtime.transportSnapshot();
+        CHECK(correlationBefore.pageActive);
+        CHECK(transportBefore.ackCount ==
+              Transport::LinesPerPage - 1);
+        CHECK(transportBefore.states[finalRecord] ==
+              Transport::RecordState::Delivering);
+        const auto payload = harness.runtime.slotPayload(
+            correlationBefore.pageAction.slot);
+        std::array<std::byte, Slice::PageBytes> payloadBefore{};
+        std::memcpy(payloadBefore.data(), payload.data, payload.size);
+        bool copyHookCalled = false;
+
+        const auto rejected = harness.runtime.commitDelivery(
+            staged.ticket, markCopyHook, &copyHookCalled);
+        CHECK(rejected.status == Transport::Status::ProductionStop);
+        CHECK(harness.runtime.poisoned());
+        CHECK(!copyHookCalled);
+        CHECK(std::memcmp(payloadBefore.data(), payload.data,
+                          payload.size) == 0);
+        const auto correlationAfter =
+            harness.runtime.correlationSnapshot();
+        CHECK(correlationAfter.pageActive);
+        CHECK(correlationAfter.transportActionID ==
+              correlationBefore.transportActionID);
+        CHECK(correlationAfter.pageAction == correlationBefore.pageAction);
+        auto expectedTransport = transportBefore;
+        expectedTransport.poisoned = true;
+        CHECK(harness.runtime.transportSnapshot() == expectedTransport);
+        const auto sliceAfter = harness.runtime.sliceSnapshot();
+        CHECK(sliceAfter.poisoned);
+        CHECK(sliceAfter.memoryActionActive ==
+              sliceBefore.memoryActionActive);
+        CHECK(sliceAfter.acceptedPageAction ==
+              sliceBefore.acceptedPageAction);
+        CHECK(sliceAfter.stage == sliceBefore.stage);
+        CHECK(sliceAfter.counters.fillsCompleted ==
+              sliceBefore.counters.fillsCompleted);
+        CHECK(!harness.runtime.operationComplete());
+        std::_Exit(0);
+    });
 }
 
 struct RuntimeCopyHookContext
@@ -658,6 +875,56 @@ runtimeCopyHook(void *opaque)
     auto &context = *static_cast<RuntimeCopyHookContext *>(opaque);
     context.abortStatus = context.runtime->abort(Slice::AbortCode::Caller);
     return true;
+}
+
+bool
+throwingRuntimeCopyHook(void *)
+{
+    throw 23;
+}
+
+void
+testCopyHookExceptionPoisonsRuntimeImmediately()
+{
+    expectChildSuccess([] {
+        Harness harness;
+        const auto sent = harness.peer.send(harness.runtime, true);
+        CHECK(sent.status == Transport::Status::SendAccepted);
+        auto response = harness.peer.makeResponse(sent.record, true);
+        CHECK(response.valid);
+        const auto *request = harness.peer.request(sent.record);
+        CHECK(request != nullptr);
+        const auto staged = harness.peer.deliver(
+            harness.runtime, sent.record, response.handle,
+            request->callbackPort);
+        CHECK(staged.status == Transport::Status::DeliveryPending);
+        const auto correlation = harness.runtime.correlationSnapshot();
+        const auto payload = harness.runtime.slotPayload(
+            correlation.pageAction.slot);
+        std::array<std::byte, Slice::PageBytes> before{};
+        std::memcpy(before.data(), payload.data, payload.size);
+        const uint16_t ackBefore = harness.runtime.ackCount();
+        const std::size_t creditsBefore = harness.runtime.creditsInUse();
+        bool escaped = false;
+        Transport::Status status = Transport::Status::Invalid;
+        try {
+            const auto result = harness.runtime.commitDelivery(
+                staged.ticket, throwingRuntimeCopyHook, nullptr);
+            status = result.status;
+        } catch (...) {
+            escaped = true;
+        }
+        CHECK(!escaped);
+        CHECK(status == Transport::Status::ProductionStop);
+        CHECK(harness.runtime.poisoned());
+        CHECK(!harness.runtime.transportSnapshot().copyActive);
+        CHECK(harness.runtime.recordState(sent.record) ==
+              Transport::RecordState::Delivering);
+        CHECK(harness.runtime.ackCount() == ackBefore);
+        CHECK(harness.runtime.creditsInUse() == creditsBefore);
+        CHECK(std::memcmp(before.data(), payload.data, payload.size) == 0);
+        std::_Exit(0);
+    });
 }
 
 void
@@ -701,12 +968,16 @@ testCompositionCopyReentryPoisonsBeforeOuterCopy()
 int
 main()
 {
+    testTypedFP64PayloadGeometryAndInitialObjects();
     testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill();
     testAbortQueuedPendingRetryInflightAndDelivering();
     testAbortReservedComputingDirtyWritebackAndBetweenPages();
     testDatapathRejectsBeforeMutationAndSpecialValues();
     testGeometryEnumAndJointLifecycleGates();
+    testBackingRangeArithmeticBeforeMutation();
     testPackedSemanticLedgerIndependently();
+    testFinalCompletionAuthenticatedBeforeSideEffects();
+    testCopyHookExceptionPoisonsRuntimeImmediately();
     testCompositionCopyReentryPoisonsBeforeOuterCopy();
     std::cout << "logical_spd_cache_vertical_slice_test: PASS"
               << " packed_semantic_lower_bound="

@@ -34,15 +34,17 @@ class LogicalSPDCacheMockPeer
         if (data == nullptr || size != Transport::PagesPerDescriptor *
                                         Transport::PageBytes ||
             base % size != 0 ||
-            base > std::numeric_limits<uint64_t>::max() - (size - 1)) {
+            base > std::numeric_limits<uint64_t>::max() - size) {
             return false;
         }
         for (const Backing &backing : backings) {
             if (!backing.valid)
                 continue;
-            const uint64_t end = base + size;
-            const uint64_t otherEnd = backing.base + backing.size;
-            if (base < otherEnd && backing.base < end)
+            const bool overlap =
+                base <= backing.base
+                    ? backing.base - base < size
+                    : base - backing.base < backing.size;
+            if (overlap)
                 return false;
         }
         for (Backing &backing : backings) {

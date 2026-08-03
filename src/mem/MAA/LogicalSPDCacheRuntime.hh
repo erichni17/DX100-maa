@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
+#include <type_traits>
 
 #include "mem/MAA/LogicalSPDCacheDatapath.hh"
 #include "mem/MAA/LogicalSPDCacheSlice.hh"
@@ -103,9 +105,10 @@ class LogicalSPDCacheRuntime
             3 + 64 + ControllerPageIdentity;
         static constexpr std::size_t SliceOverwriteReservation =
             2 * SliceLease + 2 + 2 + 64 + 64;
+        static constexpr std::size_t SliceStage = 3;
         static constexpr std::size_t SliceActiveOperation =
-            1 + 32 + 2 * SliceDescriptorHandle + 3 + 64 + 2 + 4 +
-            SliceOverwriteReservation;
+            1 + 32 + 2 * SliceDescriptorHandle + 3 + 64 + 2 +
+            SliceStage + SliceOverwriteReservation;
 
         // acceptedMemoryAction stores PageAction plus MemoryAction duplicate.
         static constexpr std::size_t SliceControllerMemoryAction =
@@ -244,10 +247,11 @@ class LogicalSPDCacheRuntime
     };
 
     static_assert(PackedSemanticLedger::ControllerBits == 1287);
-    static_assert(PackedSemanticLedger::SliceBits == 2694);
+    static_assert(PackedSemanticLedger::SliceActiveOperation == 507);
+    static_assert(PackedSemanticLedger::SliceBits == 2693);
     static_assert(PackedSemanticLedger::TransportBits == 6715);
     static_assert(PackedSemanticLedger::RuntimeCorrelationBits == 579);
-    static_assert(PackedSemanticLedger::PackedBits == 534276);
+    static_assert(PackedSemanticLedger::PackedBits == 534275);
     static_assert(PackedSemanticLedger::PackedBytes == 66785);
 
     struct ConstPageSpan
@@ -327,9 +331,17 @@ class LogicalSPDCacheRuntime
     Transport::Result prepare(
         Transport::FaultPoint fault = Transport::FaultPoint::None)
     {
+        if (!Transport::validFaultPoint(fault))
+            return {Transport::Status::Invalid};
         const Transport::Status mutation = networkMutationStatus();
         if (mutation != Transport::Status::Accepted)
             return {mutation};
+        const bool completionFault =
+            fault == Transport::FaultPoint::FinalCompletionIdentity;
+        if (completionFault &&
+            (runtimeAbortRequested || pageCorrelation.active)) {
+            return {Transport::Status::Invalid};
+        }
         if (runtimeAbortRequested && !pageCorrelation.active) {
             const Slice::Status progressed = progressAbort();
             if (progressed == Slice::Status::ProductionStop ||
@@ -339,11 +351,13 @@ class LogicalSPDCacheRuntime
             if (!pageCorrelation.active)
                 return {Transport::Status::NoWork};
         }
-        const Transport::Status ready = ensurePageAction(false);
+        const Transport::Status ready = ensurePageAction(
+            false, completionFault ? fault : Transport::FaultPoint::None);
         if (ready != Transport::Status::Accepted)
             return {ready};
         Transport::Result result = transport.prepare(
-            slotSpan(pageCorrelation.action.slot), fault);
+            slotSpan(pageCorrelation.action.slot),
+            completionFault ? Transport::FaultPoint::None : fault);
         if (transport.poisoned())
             poisonAuthority();
         return result;
@@ -390,7 +404,13 @@ class LogicalSPDCacheRuntime
         const Transport::Status mutation = networkMutationStatus();
         if (mutation != Transport::Status::Accepted)
             return {mutation};
-        Transport::Result result = transport.receive(returned, callbackPort);
+        const Transport::CompletionIdentity completion =
+            transport.precommitReceive(returned, callbackPort);
+        if (completion.valid() && !completionExact(completion))
+            return poisonTransportResult();
+        const Transport::CompletionAuthority authority(completion);
+        Transport::Result result = transport.receiveAuthorized(
+            returned, callbackPort, authority);
         if (transport.poisoned()) {
             poisonAuthority();
             return result;
@@ -413,8 +433,15 @@ class LogicalSPDCacheRuntime
             return {mutation};
         if (!pageCorrelation.active)
             return poisonTransportResult();
-        Transport::Result result = transport.commitDelivery(
-            ticket, slotSpan(pageCorrelation.action.slot), hook, context);
+        const Transport::PageSpan destination =
+            slotSpan(pageCorrelation.action.slot);
+        const Transport::CompletionIdentity completion =
+            transport.precommitDelivery(ticket, destination);
+        if (completion.valid() && !completionExact(completion))
+            return poisonTransportResult();
+        const Transport::CompletionAuthority authority(completion);
+        Transport::Result result = transport.commitDeliveryAuthorized(
+            ticket, destination, hook, context, authority);
         if (transport.poisoned()) {
             poisonAuthority();
             if (result.status != Transport::Status::ProductionStop)
@@ -480,10 +507,8 @@ class LogicalSPDCacheRuntime
           default:
             return poisonSliceStatus();
         }
-        auto *source = reinterpret_cast<const double *>(
-            slots[action.sourceSlot].data());
-        auto *destination = reinterpret_cast<double *>(
-            slots[action.destinationSlot].data());
+        const double *source = slots[action.sourceSlot].data();
+        double *destination = slots[action.destinationSlot].data();
         if (datapath.transform(
                 operation, {source, Slice::PageElements},
                 {destination, Slice::PageElements}, action.scalarBits) !=
@@ -590,7 +615,7 @@ class LogicalSPDCacheRuntime
         if (status != Slice::Status::Accepted)
             return status;
         for (auto &slot : slots)
-            slot.fill(std::byte{0});
+            slot.fill(0.0);
         return Slice::Status::Accepted;
     }
 
@@ -673,7 +698,8 @@ class LogicalSPDCacheRuntime
     ConstPageSpan slotPayload(uint8_t slot) const
     {
         return slot < Slice::Slots
-                   ? ConstPageSpan{slots[slot].data(), slots[slot].size()}
+                   ? ConstPageSpan{byteView(slots[slot]),
+                                   sizeof(PayloadSlot)}
                    : ConstPageSpan{};
     }
 
@@ -698,6 +724,23 @@ class LogicalSPDCacheRuntime
     bool transportDrained() const { return transport.drained(); }
 
   private:
+    using PayloadSlot = std::array<double, Slice::PageElements>;
+
+    static_assert(sizeof(PayloadSlot) == Slice::PageBytes);
+    static_assert(alignof(PayloadSlot) == alignof(double));
+    static_assert(std::is_trivially_copyable<double>::value);
+    static_assert(std::numeric_limits<double>::is_iec559);
+
+    static std::byte *byteView(PayloadSlot &slot)
+    {
+        return reinterpret_cast<std::byte *>(slot.data());
+    }
+
+    static const std::byte *byteView(const PayloadSlot &slot)
+    {
+        return reinterpret_cast<const std::byte *>(slot.data());
+    }
+
     struct PageCorrelation
     {
         bool active = false;
@@ -716,7 +759,7 @@ class LogicalSPDCacheRuntime
     {
         if (slot >= Slice::Slots)
             return {};
-        return {slots[slot].data(), slots[slot].size()};
+        return {byteView(slots[slot]), sizeof(PayloadSlot)};
     }
 
     Slice::Status controlMutationStatus()
@@ -764,12 +807,18 @@ class LogicalSPDCacheRuntime
         return {Transport::Status::ProductionStop};
     }
 
-    Transport::Status ensurePageAction(bool abortFlush)
+    Transport::Status ensurePageAction(
+        bool abortFlush,
+        Transport::FaultPoint constructionFault =
+            Transport::FaultPoint::None)
     {
         if (terminalPoisoned)
             return Transport::Status::Poisoned;
-        if (pageCorrelation.active)
-            return Transport::Status::Accepted;
+        if (pageCorrelation.active) {
+            return constructionFault == Transport::FaultPoint::None
+                       ? Transport::Status::Accepted
+                       : Transport::Status::Invalid;
+        }
         if (!transport.drained())
             return Transport::Status::Busy;
         const Slice::PageAction action = slice.pendingPageAction();
@@ -783,7 +832,7 @@ class LogicalSPDCacheRuntime
         const Transport::Status started = transport.startAction(
             operation, action.descriptor, action.generation, action.page,
             action.slot, action.baseAddress, action.serial,
-            slotSpan(action.slot), &actionID);
+            slotSpan(action.slot), &actionID, constructionFault);
         if (started != Transport::Status::Accepted) {
             if (transport.poisoned())
                 poisonAuthority();
@@ -869,9 +918,8 @@ class LogicalSPDCacheRuntime
     LogicalSPDCacheSlice slice{};
     LogicalSPDCacheTransport transport;
     LogicalSPDCacheDatapath datapath{};
-    alignas(64)
-        std::array<std::array<std::byte, Slice::PageBytes>, Slice::Slots>
-            slots{};
+    alignas(Transport::LineBytes)
+        std::array<PayloadSlot, Slice::Slots> slots{};
     PageCorrelation pageCorrelation{};
     ComputeCorrelation computeCorrelation{};
     bool runtimeAbortRequested = false;

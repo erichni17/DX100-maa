@@ -73,6 +73,9 @@ class LogicalSPDCacheTransport
         RequestIdentity,
         LineSnapshot,
         RequestPacket,
+        // Consumed only while constructing a fresh Runtime-owned action.
+        // Transport::prepare rejects it, so it cannot alter live state.
+        FinalCompletionIdentity,
     };
 
     enum class Status : uint8_t
@@ -299,7 +302,8 @@ class LogicalSPDCacheTransport
                        uint32_t generation, uint8_t page, uint8_t slot,
                        uint64_t baseAddress, uint64_t controllerSerial,
                        PageSpan slotSpan,
-                       uint32_t *actionID = nullptr);
+                       uint32_t *actionID = nullptr,
+                       FaultPoint constructionFault = FaultPoint::None);
     Result prepare(PageSpan slotSpan, FaultPoint fault = FaultPoint::None);
     Result sendPrepared(bool accepted);
     Result trySend(bool accepted, PageSpan slotSpan,
@@ -343,6 +347,25 @@ class LogicalSPDCacheTransport
     static Command responseCommand(Operation operation);
 
   private:
+    /**
+     * A one-call precommit authority created only by Runtime after it has
+     * compared Transport's immutable candidate with the accepted Slice
+     * correlation.  It is stack-local, carries no forgeable public token,
+     * and is checked again at the Transport mutation boundary.
+     */
+    class CompletionAuthority
+    {
+        friend class LogicalSPDCacheRuntime;
+        friend class LogicalSPDCacheTransport;
+
+        explicit CompletionAuthority(
+            const CompletionIdentity &completionIdentity)
+            : completion(completionIdentity)
+        {}
+
+        CompletionIdentity completion{};
+    };
+
     struct TransactionRecord
     {
         RecordState state = RecordState::Free;
@@ -412,7 +435,26 @@ class LogicalSPDCacheTransport
     bool wireExact(const TransactionRecord &record,
                    const ReturnedHandle &returned) const;
     bool ticketExact(const DeliveryTicket &ticket, uint8_t &record) const;
-    Result ackReleaseAndRefill(uint8_t record);
+    CompletionIdentity completionCandidate(uint8_t record) const;
+    bool authorityExact(
+        const CompletionIdentity &candidate,
+        const CompletionAuthority *authority) const;
+    CompletionIdentity precommitReceive(
+        const ReturnedHandle &returned, uint8_t callbackPort) const;
+    CompletionIdentity precommitDelivery(
+        const DeliveryTicket &ticket, PageSpan destination) const;
+    Result receiveAuthorized(ReturnedHandle &returned, uint8_t callbackPort,
+                             const CompletionAuthority &authority);
+    Result commitDeliveryAuthorized(
+        const DeliveryTicket &ticket, PageSpan destination, CopyHook hook,
+        void *context, const CompletionAuthority &authority);
+    Result receiveInternal(ReturnedHandle &returned, uint8_t callbackPort,
+                           const CompletionAuthority *authority);
+    Result commitDeliveryInternal(
+        const DeliveryTicket &ticket, PageSpan destination, CopyHook hook,
+        void *context, const CompletionAuthority *authority);
+    Result ackReleaseAndRefill(
+        uint8_t record, const CompletionAuthority *authority = nullptr);
     static void setBit(std::array<uint64_t, LinesPerPage / 64> &bits,
                        std::size_t line);
     static bool getBit(const std::array<uint64_t, LinesPerPage / 64> &bits,
