@@ -1,12 +1,78 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
 
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "tests/maa/support/logical_spd_cache_mock_peer.hh"
+
+namespace gem5 {
+
+struct LogicalSPDCacheGem5BridgeTestAccess
+{
+    using Bridge = LogicalSPDCacheGem5Bridge;
+
+    struct IncarnationBoundary
+    {
+        uint64_t penultimate = 0;
+        uint64_t final = 0;
+        bool exhausted = false;
+        bool partialConstructionExhausted = false;
+        std::size_t partialConstructionAttempts = 0;
+    };
+
+    static void
+    setNextCallbackIdentity(Bridge &bridge, uint64_t identity)
+    {
+        bridge.nextCallbackIdentity = identity;
+    }
+
+    static void
+    setGeneration(Bridge &bridge, std::size_t maaId, uint64_t generation)
+    {
+        bridge.lifecycle.at(maaId).generation = generation;
+    }
+
+    static IncarnationBoundary
+    exerciseIncarnationBoundary()
+    {
+        const auto factory = [](std::size_t) {
+            return std::make_unique<Bridge::Runtime>();
+        };
+        IncarnationBoundary result;
+        Bridge::IncarnationSource boundary(
+            std::numeric_limits<uint64_t>::max() - 1);
+        {
+            Bridge bridge(2, factory, boundary);
+            result.penultimate = bridge.runtimeIdentity(0);
+            result.final = bridge.runtimeIdentity(1);
+        }
+        try {
+            Bridge bridge(1, factory, boundary);
+            (void)bridge;
+        } catch (const std::overflow_error &) {
+            result.exhausted = true;
+        }
+
+        Bridge::IncarnationSource partial(
+            std::numeric_limits<uint64_t>::max());
+        try {
+            Bridge bridge(2, [&result](std::size_t) {
+                ++result.partialConstructionAttempts;
+                return std::make_unique<Bridge::Runtime>();
+            }, partial);
+            (void)bridge;
+        } catch (const std::overflow_error &) {
+            result.partialConstructionExhausted = true;
+        }
+        return result;
+    }
+};
+
+} // namespace gem5
 
 namespace {
 
@@ -155,6 +221,9 @@ checkExactCallbackIdentityAndReset()
     Bridge::CallbackToken wrongIdentity = claim.token;
     ++wrongIdentity.identity;
     CHECK(bridge.acknowledgeCallback(wrongIdentity) == Status::Stale);
+    Bridge::CallbackToken wrongRuntime = claim.token;
+    ++wrongRuntime.runtimeIdentity;
+    CHECK(bridge.acknowledgeCallback(wrongRuntime) == Status::Stale);
     CHECK(!bridge.quiescent(0));
 
     CHECK(bridge.acknowledgeCallback(claim.token) == Status::Accepted);
@@ -169,6 +238,65 @@ checkExactCallbackIdentityAndReset()
     CHECK(successor.token.generation == 2);
     CHECK(successor.token.identity > claim.token.identity);
     CHECK(bridge.acknowledgeCallback(successor.token) == Status::Accepted);
+}
+
+void
+checkDestroyedBridgeTokenCannotAuthenticateReconstruction()
+{
+    Bridge::CallbackToken stale;
+    {
+        Bridge bridge(1);
+        const Bridge::CallbackClaim first = bridge.claimCallback(0);
+        CHECK(first.status == Status::Accepted);
+        stale = first.token;
+        CHECK(bridge.acknowledgeCallback(first.token) == Status::Accepted);
+    }
+
+    Bridge reconstructed(1);
+    const Bridge::CallbackClaim successor = reconstructed.claimCallback(0);
+    CHECK(successor.status == Status::Accepted);
+    CHECK(successor.token.maaId == stale.maaId);
+    CHECK(successor.token.generation == stale.generation);
+    CHECK(successor.token.identity == stale.identity);
+    CHECK(successor.token.runtimeIdentity != stale.runtimeIdentity);
+    CHECK(reconstructed.acknowledgeCallback(stale) == Status::Stale);
+    CHECK(!reconstructed.quiescent(0));
+    CHECK(reconstructed.acknowledgeCallback(successor.token) ==
+          Status::Accepted);
+}
+
+void
+checkFiniteIdentityBoundariesFailClosed()
+{
+    const auto boundary =
+        gem5::LogicalSPDCacheGem5BridgeTestAccess::
+            exerciseIncarnationBoundary();
+    CHECK(boundary.penultimate ==
+          std::numeric_limits<uint64_t>::max() - 1);
+    CHECK(boundary.final == std::numeric_limits<uint64_t>::max());
+    CHECK(boundary.exhausted);
+    CHECK(boundary.partialConstructionExhausted);
+    CHECK(boundary.partialConstructionAttempts == 2);
+
+    Bridge callbackBoundary(1);
+    gem5::LogicalSPDCacheGem5BridgeTestAccess::setNextCallbackIdentity(
+        callbackBoundary, std::numeric_limits<uint64_t>::max());
+    const Bridge::CallbackClaim finalCallback =
+        callbackBoundary.claimCallback(0);
+    CHECK(finalCallback.status == Status::Accepted);
+    CHECK(finalCallback.token.identity ==
+          std::numeric_limits<uint64_t>::max());
+    CHECK(callbackBoundary.acknowledgeCallback(finalCallback.token) ==
+          Status::Accepted);
+    CHECK(callbackBoundary.claimCallback(0).status ==
+          Status::ProductionStop);
+    CHECK(callbackBoundary.productionStopped(0));
+
+    Bridge generationBoundary(1);
+    gem5::LogicalSPDCacheGem5BridgeTestAccess::setGeneration(
+        generationBoundary, 0, std::numeric_limits<uint64_t>::max());
+    CHECK(generationBoundary.reset(0) == Status::ProductionStop);
+    CHECK(generationBoundary.productionStopped(0));
 }
 
 void
@@ -240,10 +368,17 @@ checkRuntimeDirtyFlushRetainedUntilExactAck()
 
         runAction(*authority, peer);
         CHECK(authority->driveCompute() == Slice::Status::Accepted);
+        const Bridge::CallbackClaim callback = bridge.claimCallback(0);
+        CHECK(callback.status == Status::Accepted);
         CHECK(bridge.requestAbort(0) == Status::Busy);
         CHECK(bridge.abortPending(0));
         CHECK(bridge.dirtyFlushPending(0));
         CHECK(authority->correlationSnapshot().abortFlush);
+        CHECK(bridge.acknowledgeCallback(callback.token) == Status::Busy);
+        CHECK(bridge.abortPending(0));
+        CHECK(bridge.dirtyFlushPending(0));
+        CHECK(authority->correlationSnapshot().abortFlush);
+        CHECK(bridge.acknowledgeCallback(callback.token) == Status::Stale);
 
         CHECK(authority->prepare().status == Transport::Status::Accepted);
         uint8_t delayed = Transport::NoRecord;
@@ -338,6 +473,8 @@ main()
     checkConstructionAndAdmissionClosure();
     checkPartialConstructionFailure();
     checkExactCallbackIdentityAndReset();
+    checkDestroyedBridgeTokenCannotAuthenticateReconstruction();
+    checkFiniteIdentityBoundariesFailClosed();
     checkAbortRetainsDirtyOwnerUntilExactAck();
     checkRuntimeDirtyFlushRetainedUntilExactAck();
     checkGuardedTeardown();
