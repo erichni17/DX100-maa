@@ -1,0 +1,1107 @@
+{
+  "comparison": {
+    "candidate_largest_actionable_request_category": "source_flight",
+    "candidate_largest_actionable_request_category_cycles": 114060,
+    "hybrid_request_categories_are_mutually_exclusive": true,
+    "hybrid_request_categories_sum_cycles": 114452,
+    "hybrid_request_cycle_total": 114452,
+    "hybrid_request_reason_cycles": {
+      "build": 0,
+      "final_drain": 391,
+      "retained": 0,
+      "runnable": 0,
+      "source_flight": 114060,
+      "writes": 1
+    },
+    "indirect_stage_simTicks_delta": {
+      "build": 0,
+      "decode": 0,
+      "fill": 15024,
+      "request": 2462684,
+      "response": 0
+    },
+    "native_request_reason_categories_available": false,
+    "overhead_percent": 13.702566833194995,
+    "simTicks_delta": 5477187,
+    "stage_and_pipeline_views_must_not_be_added": true,
+    "stall_event_delta": {
+      "row_table_full": 6,
+      "source_index_or_tile_wait": 0
+    },
+    "timing_decomposition_promoted": false
+  },
+  "downstream_compatibility": {
+    "bounded_row_extractor_commit": "206ebe6195ff",
+    "bounded_row_extractor_path": "experiments/bounded_row_study_2026_08_03/extract_grounded_trace.py",
+    "bounded_row_model_modified": false,
+    "bounded_row_timing_claim": false,
+    "physical_record_fields_sufficient_after_integration": true,
+    "physical_record_schema_unchanged": "dx100.physical_admission.v1"
+  },
+  "evidence_status": "candidate_pending_independent_review",
+  "gates": {
+    "checkpoint_manifest_byte_identical": true,
+    "exact_output": true,
+    "exact_terminal_markers": true,
+    "first_roi_stats": true,
+    "independent_evidence_review": false,
+    "one_frozen_binary_config_input_and_sources": true,
+    "one_identical_checkpoint": true,
+    "strict_physical_record_domain": true,
+    "strict_versioned_trace": true
+  },
+  "pair": {
+    "hybrid": {
+      "checkpoint_identity_sha256": "31e8420d909a1d26ad74ab7801f101d4a6b0794a5c6ca752663fe0d45c33d32b",
+      "completion": {
+        "correctness_marker_empty": true,
+        "errors": 0,
+        "m5_exit_tick": 3852852529,
+        "observed_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        },
+        "output_hash": "7228541527853630339",
+        "required_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        }
+      },
+      "dynamic_links": {
+        "frozen_ramulator_resolution": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+        "normalized_lines": [
+          "linux-vdso.so.1 (LOAD_ADDRESS)",
+          "libpython3.10.so.1.0 => /lib/x86_64-linux-gnu/libpython3.10.so.1.0 (LOAD_ADDRESS)",
+          "libz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (LOAD_ADDRESS)",
+          "libtcmalloc_minimal.so.4 => /lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 (LOAD_ADDRESS)",
+          "libprotobuf.so.23 => /lib/x86_64-linux-gnu/libprotobuf.so.23 (LOAD_ADDRESS)",
+          "libhdf5_serial.so.103 => /lib/x86_64-linux-gnu/libhdf5_serial.so.103 (LOAD_ADDRESS)",
+          "libhdf5_serial_cpp.so.103 => /lib/x86_64-linux-gnu/libhdf5_serial_cpp.so.103 (LOAD_ADDRESS)",
+          "libramulator.so => /data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so (LOAD_ADDRESS)",
+          "libpng16.so.16 => /lib/x86_64-linux-gnu/libpng16.so.16 (LOAD_ADDRESS)",
+          "libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (LOAD_ADDRESS)",
+          "libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (LOAD_ADDRESS)",
+          "libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (LOAD_ADDRESS)",
+          "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (LOAD_ADDRESS)",
+          "libexpat.so.1 => /lib/x86_64-linux-gnu/libexpat.so.1 (LOAD_ADDRESS)",
+          "/lib64/ld-linux-x86-64.so.2 (LOAD_ADDRESS)",
+          "libcrypto.so.3 => /lib/x86_64-linux-gnu/libcrypto.so.3 (LOAD_ADDRESS)",
+          "libcurl.so.4 => /lib/x86_64-linux-gnu/libcurl.so.4 (LOAD_ADDRESS)",
+          "libsz.so.2 => /lib/x86_64-linux-gnu/libsz.so.2 (LOAD_ADDRESS)",
+          "libnghttp2.so.14 => /lib/x86_64-linux-gnu/libnghttp2.so.14 (LOAD_ADDRESS)",
+          "libidn2.so.0 => /lib/x86_64-linux-gnu/libidn2.so.0 (LOAD_ADDRESS)",
+          "librtmp.so.1 => /lib/x86_64-linux-gnu/librtmp.so.1 (LOAD_ADDRESS)",
+          "libssh.so.4 => /lib/x86_64-linux-gnu/libssh.so.4 (LOAD_ADDRESS)",
+          "libpsl.so.5 => /lib/x86_64-linux-gnu/libpsl.so.5 (LOAD_ADDRESS)",
+          "libssl.so.3 => /lib/x86_64-linux-gnu/libssl.so.3 (LOAD_ADDRESS)",
+          "libgssapi_krb5.so.2 => /lib/x86_64-linux-gnu/libgssapi_krb5.so.2 (LOAD_ADDRESS)",
+          "libldap-2.5.so.0 => /lib/x86_64-linux-gnu/libldap-2.5.so.0 (LOAD_ADDRESS)",
+          "liblber-2.5.so.0 => /lib/x86_64-linux-gnu/liblber-2.5.so.0 (LOAD_ADDRESS)",
+          "libzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (LOAD_ADDRESS)",
+          "libbrotlidec.so.1 => /lib/x86_64-linux-gnu/libbrotlidec.so.1 (LOAD_ADDRESS)",
+          "libaec.so.0 => /lib/x86_64-linux-gnu/libaec.so.0 (LOAD_ADDRESS)",
+          "libunistring.so.2 => /lib/x86_64-linux-gnu/libunistring.so.2 (LOAD_ADDRESS)",
+          "libgnutls.so.30 => /lib/x86_64-linux-gnu/libgnutls.so.30 (LOAD_ADDRESS)",
+          "libhogweed.so.6 => /lib/x86_64-linux-gnu/libhogweed.so.6 (LOAD_ADDRESS)",
+          "libnettle.so.8 => /lib/x86_64-linux-gnu/libnettle.so.8 (LOAD_ADDRESS)",
+          "libgmp.so.10 => /lib/x86_64-linux-gnu/libgmp.so.10 (LOAD_ADDRESS)",
+          "libkrb5.so.3 => /lib/x86_64-linux-gnu/libkrb5.so.3 (LOAD_ADDRESS)",
+          "libk5crypto.so.3 => /lib/x86_64-linux-gnu/libk5crypto.so.3 (LOAD_ADDRESS)",
+          "libcom_err.so.2 => /lib/x86_64-linux-gnu/libcom_err.so.2 (LOAD_ADDRESS)",
+          "libkrb5support.so.0 => /lib/x86_64-linux-gnu/libkrb5support.so.0 (LOAD_ADDRESS)",
+          "libsasl2.so.2 => /lib/x86_64-linux-gnu/libsasl2.so.2 (LOAD_ADDRESS)",
+          "libbrotlicommon.so.1 => /lib/x86_64-linux-gnu/libbrotlicommon.so.1 (LOAD_ADDRESS)",
+          "libp11-kit.so.0 => /lib/x86_64-linux-gnu/libp11-kit.so.0 (LOAD_ADDRESS)",
+          "libtasn1.so.6 => /lib/x86_64-linux-gnu/libtasn1.so.6 (LOAD_ADDRESS)",
+          "libkeyutils.so.1 => /lib/x86_64-linux-gnu/libkeyutils.so.1 (LOAD_ADDRESS)",
+          "libresolv.so.2 => /lib/x86_64-linux-gnu/libresolv.so.2 (LOAD_ADDRESS)",
+          "libffi.so.8 => /lib/x86_64-linux-gnu/libffi.so.8 (LOAD_ADDRESS)"
+        ],
+        "normalized_sha256": "0840a844d3c7870fe11f4587daf94104c911d6a183f30839dd77c9b1c8b20167",
+        "raw_sha256": "bd41e690d50c6f56eb667ce2f6960b495249138b2d0c92a9cb1b041d78a28b75"
+      },
+      "frozen_artifacts": {
+        "cpu_side_port_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/CpuSidePort.cc",
+          "sha256": "1449cf25215ca5a4bfba8259344a7919dc83d5522ee4ae82782857cf636867d7"
+        },
+        "dynamic_link_audit": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/gem5.ldd.txt",
+          "sha256": "bd41e690d50c6f56eb667ce2f6960b495249138b2d0c92a9cb1b041d78a28b75"
+        },
+        "gem5_binary": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/gem5.opt",
+          "sha256": "d8d1b560b24e8ad4e0b6fdbf47addc01bf0fe02b9cfda5805c4a8ecdaff3fa90"
+        },
+        "if_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/IF.cc",
+          "sha256": "57764db2d0185e29e0480479c51c79a28e04a33a167a70d530df9adb7e42a243"
+        },
+        "if_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/IF.hh",
+          "sha256": "d8a216b0d71984e75436ed1f93b93112ebdcc2107d30a2bf72c422985b32bd67"
+        },
+        "indirect_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/IndirectAccess.cc",
+          "sha256": "37ef219778490a8da126c23b520f1510eaa89143cb8015d17c10f52e6fca3d53"
+        },
+        "indirect_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/IndirectAccess.hh",
+          "sha256": "5a3be9644e86e63b3a80fea75b0e29339199440e2aa3bd8dcff122e6ebc6063d"
+        },
+        "invocation": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/invocation.sh.txt",
+          "sha256": "16f8e096b368f8ff66f23e17e01d274ab6a1e58313f54a1ae74b084cf4ed55a5"
+        },
+        "maa_api": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/MAA_gem5.hpp",
+          "sha256": "1b3b377185695add3f8f3d3ca235deb64f7fd42e95717cbbe7851c202c1d48d5"
+        },
+        "maa_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/MAA.cc",
+          "sha256": "847126bd8fccdced0aebe1394868fb5eb9852246ef67da86351bada93871bccf"
+        },
+        "maa_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/MAA.hh",
+          "sha256": "f38b1daa114c4e78a1ee8825ab208c9d83e86063915f52165fcee11f8dc02875"
+        },
+        "parser": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/hybrid_overhead_attribution.py",
+          "sha256": "c46958771dce830801d2ec2a8f89c55abe22b4c0bf312519b7a50785d651db53"
+        },
+        "ramulator_config": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/ramulator.yaml",
+          "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"
+        },
+        "ramulator_library": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+          "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+        },
+        "ramulator_provenance": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/ramulator_provenance.json",
+          "sha256": "9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66"
+        },
+        "runner": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/run_virtual_tile_consumer_case.sh",
+          "sha256": "979ee5887350391fac436d0217e5d3b50b329a02e6b841c335be0910f6d63dde"
+        },
+        "se_config": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/se.py",
+          "sha256": "aacc6e624b7ab0e7b032d5cb913974fa790efdca84598bf468c11f14b9575d0f"
+        },
+        "source_diff": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source.diff",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "source_status": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_status.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "transparent_controller_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/TransparentSPDController.hh",
+          "sha256": "f4f3209e79ebf0e002ff12cb5d836ca5d197675e964ca6463e978e2a03358f06"
+        },
+        "workload_binary": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/workload_build/test_virtual_tile_consumer_T16384",
+          "sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880"
+        },
+        "workload_source": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/source_snapshot/test_virtual_tile_consumer.cpp",
+          "sha256": "bd75877a818c5e3ffaf587a99b54c65d7c9f6a665b180b7d8620edeb1728a181"
+        }
+      },
+      "hashes": {
+        "artifact_sha256.txt": "5c6499da71c6d007a2a19984c3fd725e759b7b0052f37d9f5a9d44fbbf429071",
+        "manifest.txt": "5531ce2827ff101e7df26535e504d860cec73ae3b53d8329ff25f16efec663df",
+        "physical_admission_records.jsonl": "b8b4df9d232114fdf95782e3cef182e313206237fc7891102887d7ec687c5390",
+        "physical_validation.json": "7c03144af36b96e1dea9661e0a0f8dbcbd80292c8c70b38980808dc14a72d264",
+        "restore.log": "ceed46c5e7a67a02072704f535b503e7fdb08e438fe550455c31d0937106ea99",
+        "result.tsv": "c6325a8bf5c0d05c8f6ddacda2d01a9ff1a3ce968db319910765c3d8fcccb8d3",
+        "run/stats.txt": "188ea3d453e89077d02af00c19b1abec1e2d93ec7d3fdb03161f67877f44460d",
+        "run/virtual_trace.log": "5f9b75ad74c283520518d9f45518fe41d958c8d9eaa2be10cda40f6521ccb10c",
+        "treatment.txt": "fa8b90eac7baf74a68c7de06713f7502fb3a908af3579cc6770a9053920c6661"
+      },
+      "manifest": {
+        "baseline_commit": "d7875f99e6caf1d47bd6010b89112458384aec6c",
+        "cache_pollution_bytes": "0",
+        "case": "transparent_4k",
+        "created_utc": "2026-08-03T21:01:24Z",
+        "frozen_ramulator_library": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+        "logical_tile_elements": "16384",
+        "mode": "transparent",
+        "page_elements": "4096",
+        "physical_record_schema": "dx100.physical_admission.v1",
+        "physical_tile_elements": "4096",
+        "ramulator_provenance": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/ramulator_provenance.json",
+        "require_index_filter_wait": "0",
+        "row_table_entries_per_subslice_row": "8",
+        "row_table_rows_per_slice": "64",
+        "row_table_slices": "16",
+        "shared_checkpoint": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/shared_checkpoint",
+        "shared_treatment_file": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/shared_treatment.txt",
+        "source_commit": "13dc2f94c6a936adad18a95b7022e56d14a45b0a",
+        "timeout": "none",
+        "virtual_combine_banks": "0",
+        "virtual_combine_slots": "384",
+        "virtual_combine_victim_policy": "0",
+        "virtual_combine_ways": "4",
+        "virtual_combine_words": "4096",
+        "virtual_grow_order": "0",
+        "virtual_index_filter_words_per_cycle": "4",
+        "virtual_index_partitions": "1",
+        "virtual_response_slots": "96",
+        "virtual_response_word_pool": "480"
+      },
+      "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k",
+      "ramulator_provenance": {
+        "elf_build_id": "11302ea5a975fd6a8737915c11e06bd5ccede7f4",
+        "frozen_library": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+          "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+        },
+        "nested_gitlinks": {
+          "argparse": "997da9255618311d1fcb0135ce86022729d1f1cb",
+          "spdlog": "ad0e89cbfb4d0c1ce4d097e134eb7be67baebb36",
+          "yaml-cpp": "0579ae3d976091d7d664aa9d2527e0d0cff25763"
+        },
+        "normalized_dependency_sha256": "68583f08ffc54383f36f38a6ab03c59a3a21043f7fdf6e31416aa7c26c2bf0fb",
+        "outer_tree": "fcf82e8844ce04e41f5930e0346b75d0fbdc0118",
+        "reference_worktree": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725",
+        "schema": "dx100.ramulator_provenance.v1",
+        "source_tree": "c979ac9e3f7bc847ad16108324ef07c38b3755bf"
+      },
+      "result": {
+        "all_pages_ready_cycles": "127766",
+        "alu_compute_cycles": "1024",
+        "case": "transparent_4k",
+        "cpu_cycles": "145205",
+        "dram_activates": "5489",
+        "dram_precharges": "4417",
+        "dram_reads": "26741",
+        "feeder_descriptor_discards": "16384",
+        "feeder_partition_discards": "0",
+        "feeder_predicate_discards": "0",
+        "first_page_ready_cycles": "89703",
+        "index_filter_cycles": "0",
+        "index_filter_wait_cycles": "0",
+        "index_filter_wait_events": "0",
+        "index_filter_words": "0",
+        "index_hwm": "64",
+        "index_line_reads": "1025",
+        "index_words": "16384",
+        "indirect_spd_reads": "0",
+        "l3_read_hits_maa": "2036",
+        "l3_read_misses_maa": "1",
+        "memory_bytes_read_maa": "928640",
+        "output_hash": "7228541527853630339",
+        "page_ready_signals": "4",
+        "page_ready_span_cycles": "38063",
+        "page_wait_deferrals": "0",
+        "page_wait_reads": "0",
+        "page_wait_responses": "0",
+        "pages_ready": "4",
+        "pages_ready_before_source_drain": "2",
+        "physical_record_sha256": "7734ed276337d1bccc2a52efaba1187949c5696a3fdd377e55c4f7adf787d074",
+        "physical_records": "16384",
+        "require_index_filter_wait": "0",
+        "response_pool_stalls": "0",
+        "response_slot_hwm": "96",
+        "response_slots": "96",
+        "response_word_hwm": "197",
+        "response_word_pool": "480",
+        "row_table_cache_lines": "9679",
+        "row_table_entries_per_subslice_row": "8",
+        "row_table_full_events": "852",
+        "row_table_rows_inserted": "1368",
+        "row_table_rows_per_slice": "64",
+        "row_table_slices": "16",
+        "row_table_unique_cache_lines": "9523",
+        "row_table_unique_rows": "129",
+        "simInsts": "32420",
+        "simTicks": "45449165",
+        "source_reads": "9679",
+        "stream_spd_reads": "2052",
+        "stream_writes": "4",
+        "virtual_build_rounds": "101",
+        "virtual_grow_order": "0",
+        "virtual_index_filter_words_per_cycle": "4",
+        "virtual_index_partitions": "1",
+        "write_completions": "5274",
+        "write_issues": "5274"
+      },
+      "simTicks": 45449165,
+      "stats": {
+        "request_cycles": 114452,
+        "request_reason_cycles": {
+          "build": 0,
+          "final_drain": 391,
+          "retained": 0,
+          "runnable": 0,
+          "source_flight": 114060,
+          "writes": 1
+        }
+      },
+      "trace": {
+        "backing_write_issue_completion": {
+          "count": 5274,
+          "max_sim_ticks": 610976,
+          "per_unit_operation": {
+            "unit=0,operation_tick=3253586172": {
+              "count": 5274,
+              "max_sim_ticks": 610976,
+              "total_sim_ticks": 332653257
+            }
+          },
+          "total_sim_ticks": 332653257
+        },
+        "controller": {
+          "action_count": 12,
+          "action_duration_sim_ticks": {
+            "compute": 641024,
+            "stream_fill": 1350282,
+            "stream_store": 7980561
+          },
+          "active": true,
+          "backpressure_events": 0,
+          "dependency_gap_sim_ticks": {
+            "compute": 0,
+            "stream_fill": 34638770,
+            "stream_store": 0
+          },
+          "strict_page_action_order": true
+        },
+        "counter_summaries": [
+          {
+            "combiner_words": 16384,
+            "occurrence": 50876,
+            "offset_pressure": 0,
+            "operation_tick": 3253586172,
+            "row_attempts": 17236,
+            "row_pressure": 852,
+            "row_successes": 16384,
+            "source_issues": 9679,
+            "source_responses": 9679,
+            "unit": 0,
+            "write_completions": 5274,
+            "write_issues": 5274
+          }
+        ],
+        "event_counts": {
+          "backing_write_complete": 5274,
+          "backing_write_issue": 5274,
+          "index_line_issue": 1025,
+          "index_line_response": 1025,
+          "indirect_counter_summary": 1,
+          "indirect_execute": 16936,
+          "indirect_stage_begin": 205,
+          "indirect_stage_interval": 205,
+          "indirect_stage_summary": 1,
+          "indirect_stall": 1571,
+          "page_ready": 4,
+          "source_issue": 9679,
+          "source_response": 9679,
+          "transparent_complete": 12,
+          "transparent_issue": 12,
+          "transparent_retire": 1,
+          "transparent_submit": 1
+        },
+        "index_line_issue_response": {
+          "count": 1025,
+          "max_sim_ticks": 766850,
+          "per_unit_operation": {
+            "unit=0,operation_tick=3253586172": {
+              "count": 1025,
+              "max_sim_ticks": 766850,
+              "total_sim_ticks": 99512097
+            }
+          },
+          "total_sim_ticks": 99512097
+        },
+        "physical_admission": {
+          "aperture": {
+            "slice_begin": 0,
+            "slice_end": 16,
+            "slices": 16
+          },
+          "field_count": 33,
+          "generation": {
+            "available_records": 0,
+            "unavailable_is_explicit": true,
+            "unavailable_records": 16384
+          },
+          "operation_ticks": [
+            3253586172
+          ],
+          "record_count": 16384,
+          "record_sha256": "7734ed276337d1bccc2a52efaba1187949c5696a3fdd377e55c4f7adf787d074",
+          "records": {
+            "format": "jsonl",
+            "order": "logical_itr_ascending",
+            "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/physical_admission_records.jsonl",
+            "record_count": 16384,
+            "sha256": "b8b4df9d232114fdf95782e3cef182e313206237fc7891102887d7ec687c5390"
+          },
+          "schema": "dx100.physical_admission.v1",
+          "trace_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/run/virtual_trace.log",
+          "trace_sha256": "5f9b75ad74c283520518d9f45518fe41d958c8d9eaa2be10cda40f6521ccb10c"
+        },
+        "source_issue_response": {
+          "count": 9679,
+          "max_sim_ticks": 768102,
+          "per_unit_operation": {
+            "unit=0,operation_tick=3253586172": {
+              "count": 9679,
+              "max_sim_ticks": 768102,
+              "total_sim_ticks": 1747320963
+            }
+          },
+          "total_sim_ticks": 1747320963
+        },
+        "stages": {
+          "cycles": {
+            "build": 1,
+            "decode": 0,
+            "fill": 13313,
+            "request": 114452,
+            "response": 0
+          },
+          "interval_count": 205,
+          "intervals_do_not_overlap_within_operation": true,
+          "operation_count": 1,
+          "operations": {
+            "unit=0,operation_tick=3253586172": {
+              "cycles": {
+                "build": 1,
+                "decode": 0,
+                "fill": 13313,
+                "request": 114452,
+                "response": 0
+              },
+              "interval_count": 205,
+              "sim_ticks": {
+                "build": 313,
+                "decode": 0,
+                "fill": 4166969,
+                "request": 35823476,
+                "response": 0
+              }
+            }
+          },
+          "sim_ticks": {
+            "build": 313,
+            "decode": 0,
+            "fill": 4166969,
+            "request": 35823476,
+            "response": 0
+          }
+        },
+        "stall_reason_events": {
+          "row_table_full": 852,
+          "source_index_or_tile_wait": 719
+        }
+      }
+    },
+    "native": {
+      "checkpoint_identity_sha256": "31e8420d909a1d26ad74ab7801f101d4a6b0794a5c6ca752663fe0d45c33d32b",
+      "completion": {
+        "correctness_marker_empty": true,
+        "errors": 0,
+        "m5_exit_tick": 3862585264,
+        "observed_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        },
+        "output_hash": "7228541527853630339",
+        "required_marker_counts": {
+          "exact_output": 1,
+          "m5_exit": 1,
+          "roi_end": 1
+        }
+      },
+      "dynamic_links": {
+        "frozen_ramulator_resolution": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+        "normalized_lines": [
+          "linux-vdso.so.1 (LOAD_ADDRESS)",
+          "libpython3.10.so.1.0 => /lib/x86_64-linux-gnu/libpython3.10.so.1.0 (LOAD_ADDRESS)",
+          "libz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (LOAD_ADDRESS)",
+          "libtcmalloc_minimal.so.4 => /lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 (LOAD_ADDRESS)",
+          "libprotobuf.so.23 => /lib/x86_64-linux-gnu/libprotobuf.so.23 (LOAD_ADDRESS)",
+          "libhdf5_serial.so.103 => /lib/x86_64-linux-gnu/libhdf5_serial.so.103 (LOAD_ADDRESS)",
+          "libhdf5_serial_cpp.so.103 => /lib/x86_64-linux-gnu/libhdf5_serial_cpp.so.103 (LOAD_ADDRESS)",
+          "libramulator.so => /data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so (LOAD_ADDRESS)",
+          "libpng16.so.16 => /lib/x86_64-linux-gnu/libpng16.so.16 (LOAD_ADDRESS)",
+          "libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (LOAD_ADDRESS)",
+          "libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (LOAD_ADDRESS)",
+          "libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (LOAD_ADDRESS)",
+          "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (LOAD_ADDRESS)",
+          "libexpat.so.1 => /lib/x86_64-linux-gnu/libexpat.so.1 (LOAD_ADDRESS)",
+          "/lib64/ld-linux-x86-64.so.2 (LOAD_ADDRESS)",
+          "libcrypto.so.3 => /lib/x86_64-linux-gnu/libcrypto.so.3 (LOAD_ADDRESS)",
+          "libcurl.so.4 => /lib/x86_64-linux-gnu/libcurl.so.4 (LOAD_ADDRESS)",
+          "libsz.so.2 => /lib/x86_64-linux-gnu/libsz.so.2 (LOAD_ADDRESS)",
+          "libnghttp2.so.14 => /lib/x86_64-linux-gnu/libnghttp2.so.14 (LOAD_ADDRESS)",
+          "libidn2.so.0 => /lib/x86_64-linux-gnu/libidn2.so.0 (LOAD_ADDRESS)",
+          "librtmp.so.1 => /lib/x86_64-linux-gnu/librtmp.so.1 (LOAD_ADDRESS)",
+          "libssh.so.4 => /lib/x86_64-linux-gnu/libssh.so.4 (LOAD_ADDRESS)",
+          "libpsl.so.5 => /lib/x86_64-linux-gnu/libpsl.so.5 (LOAD_ADDRESS)",
+          "libssl.so.3 => /lib/x86_64-linux-gnu/libssl.so.3 (LOAD_ADDRESS)",
+          "libgssapi_krb5.so.2 => /lib/x86_64-linux-gnu/libgssapi_krb5.so.2 (LOAD_ADDRESS)",
+          "libldap-2.5.so.0 => /lib/x86_64-linux-gnu/libldap-2.5.so.0 (LOAD_ADDRESS)",
+          "liblber-2.5.so.0 => /lib/x86_64-linux-gnu/liblber-2.5.so.0 (LOAD_ADDRESS)",
+          "libzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (LOAD_ADDRESS)",
+          "libbrotlidec.so.1 => /lib/x86_64-linux-gnu/libbrotlidec.so.1 (LOAD_ADDRESS)",
+          "libaec.so.0 => /lib/x86_64-linux-gnu/libaec.so.0 (LOAD_ADDRESS)",
+          "libunistring.so.2 => /lib/x86_64-linux-gnu/libunistring.so.2 (LOAD_ADDRESS)",
+          "libgnutls.so.30 => /lib/x86_64-linux-gnu/libgnutls.so.30 (LOAD_ADDRESS)",
+          "libhogweed.so.6 => /lib/x86_64-linux-gnu/libhogweed.so.6 (LOAD_ADDRESS)",
+          "libnettle.so.8 => /lib/x86_64-linux-gnu/libnettle.so.8 (LOAD_ADDRESS)",
+          "libgmp.so.10 => /lib/x86_64-linux-gnu/libgmp.so.10 (LOAD_ADDRESS)",
+          "libkrb5.so.3 => /lib/x86_64-linux-gnu/libkrb5.so.3 (LOAD_ADDRESS)",
+          "libk5crypto.so.3 => /lib/x86_64-linux-gnu/libk5crypto.so.3 (LOAD_ADDRESS)",
+          "libcom_err.so.2 => /lib/x86_64-linux-gnu/libcom_err.so.2 (LOAD_ADDRESS)",
+          "libkrb5support.so.0 => /lib/x86_64-linux-gnu/libkrb5support.so.0 (LOAD_ADDRESS)",
+          "libsasl2.so.2 => /lib/x86_64-linux-gnu/libsasl2.so.2 (LOAD_ADDRESS)",
+          "libbrotlicommon.so.1 => /lib/x86_64-linux-gnu/libbrotlicommon.so.1 (LOAD_ADDRESS)",
+          "libp11-kit.so.0 => /lib/x86_64-linux-gnu/libp11-kit.so.0 (LOAD_ADDRESS)",
+          "libtasn1.so.6 => /lib/x86_64-linux-gnu/libtasn1.so.6 (LOAD_ADDRESS)",
+          "libkeyutils.so.1 => /lib/x86_64-linux-gnu/libkeyutils.so.1 (LOAD_ADDRESS)",
+          "libresolv.so.2 => /lib/x86_64-linux-gnu/libresolv.so.2 (LOAD_ADDRESS)",
+          "libffi.so.8 => /lib/x86_64-linux-gnu/libffi.so.8 (LOAD_ADDRESS)"
+        ],
+        "normalized_sha256": "0840a844d3c7870fe11f4587daf94104c911d6a183f30839dd77c9b1c8b20167",
+        "raw_sha256": "370d0e3a4c512f13c7990d57117dd84a749136c061ebd901258e62bce567d6eb"
+      },
+      "frozen_artifacts": {
+        "cpu_side_port_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/CpuSidePort.cc",
+          "sha256": "1449cf25215ca5a4bfba8259344a7919dc83d5522ee4ae82782857cf636867d7"
+        },
+        "dynamic_link_audit": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/gem5.ldd.txt",
+          "sha256": "370d0e3a4c512f13c7990d57117dd84a749136c061ebd901258e62bce567d6eb"
+        },
+        "gem5_binary": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/gem5.opt",
+          "sha256": "d8d1b560b24e8ad4e0b6fdbf47addc01bf0fe02b9cfda5805c4a8ecdaff3fa90"
+        },
+        "if_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IF.cc",
+          "sha256": "57764db2d0185e29e0480479c51c79a28e04a33a167a70d530df9adb7e42a243"
+        },
+        "if_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IF.hh",
+          "sha256": "d8a216b0d71984e75436ed1f93b93112ebdcc2107d30a2bf72c422985b32bd67"
+        },
+        "indirect_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IndirectAccess.cc",
+          "sha256": "37ef219778490a8da126c23b520f1510eaa89143cb8015d17c10f52e6fca3d53"
+        },
+        "indirect_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IndirectAccess.hh",
+          "sha256": "5a3be9644e86e63b3a80fea75b0e29339199440e2aa3bd8dcff122e6ebc6063d"
+        },
+        "invocation": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/invocation.sh.txt",
+          "sha256": "1230422739d1149abbd9958e9567a00dc2f900e0d947a2ba925a579979d14e5a"
+        },
+        "maa_api": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/MAA_gem5.hpp",
+          "sha256": "1b3b377185695add3f8f3d3ca235deb64f7fd42e95717cbbe7851c202c1d48d5"
+        },
+        "maa_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/MAA.cc",
+          "sha256": "847126bd8fccdced0aebe1394868fb5eb9852246ef67da86351bada93871bccf"
+        },
+        "maa_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/MAA.hh",
+          "sha256": "f38b1daa114c4e78a1ee8825ab208c9d83e86063915f52165fcee11f8dc02875"
+        },
+        "parser": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/hybrid_overhead_attribution.py",
+          "sha256": "c46958771dce830801d2ec2a8f89c55abe22b4c0bf312519b7a50785d651db53"
+        },
+        "ramulator_config": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/ramulator.yaml",
+          "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"
+        },
+        "ramulator_library": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+          "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+        },
+        "ramulator_provenance": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/ramulator_provenance.json",
+          "sha256": "9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66"
+        },
+        "runner": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/run_virtual_tile_consumer_case.sh",
+          "sha256": "979ee5887350391fac436d0217e5d3b50b329a02e6b841c335be0910f6d63dde"
+        },
+        "se_config": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/se.py",
+          "sha256": "aacc6e624b7ab0e7b032d5cb913974fa790efdca84598bf468c11f14b9575d0f"
+        },
+        "source_diff": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source.diff",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "source_status": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_status.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "transparent_controller_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/TransparentSPDController.hh",
+          "sha256": "f4f3209e79ebf0e002ff12cb5d836ca5d197675e964ca6463e978e2a03358f06"
+        },
+        "workload_binary": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/workload_build/test_virtual_tile_consumer_T16384",
+          "sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880"
+        },
+        "workload_source": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/test_virtual_tile_consumer.cpp",
+          "sha256": "bd75877a818c5e3ffaf587a99b54c65d7c9f6a665b180b7d8620edeb1728a181"
+        }
+      },
+      "hashes": {
+        "artifact_sha256.txt": "be4bf6cdecffe4655d28634fcb30b8ba38a6b7017d045dbb15e7de831d3d44e8",
+        "manifest.txt": "a0ae7d3052996b3bf98acc31e8444ba987bb726aaa4ea68c4648d29d10a6fd64",
+        "physical_admission_records.jsonl": "38b94b7f523a544919094c490f1ffb0b9c64d0f009b528895312f891cbff0aa8",
+        "physical_validation.json": "c690b41946096aaa4c06ffd9d5648b6714a0653a03c68859beff965f07d196e5",
+        "restore.log": "f1fa266d1a89ccad96f0689e1f694ef7bcf6f302a2a8d8c44c65760c2f37b8a7",
+        "result.tsv": "8921a11d0a11317656d6e351bfa3e2b40f11a3b467753ab785c19ce61bb83a1f",
+        "run/stats.txt": "95fa62f5642fb94ad4c5e379554b741262b68207f30ffb4473625995e8ad7c40",
+        "run/virtual_trace.log": "28b2da387a7e89892a6c49e599a4ea196c076964fc9fdb01f8985eb17d37699d",
+        "treatment.txt": "a37ee3a612b129042f304f033fca5875baca471049f3079475c37f0516b2bd8d"
+      },
+      "manifest": {
+        "baseline_commit": "d7875f99e6caf1d47bd6010b89112458384aec6c",
+        "cache_pollution_bytes": "0",
+        "case": "native_direct_16k",
+        "created_utc": "2026-08-03T20:58:45Z",
+        "frozen_ramulator_library": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+        "logical_tile_elements": "16384",
+        "mode": "native_direct",
+        "page_elements": "16384",
+        "physical_record_schema": "dx100.physical_admission.v1",
+        "physical_tile_elements": "16384",
+        "ramulator_provenance": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/ramulator_provenance.json",
+        "require_index_filter_wait": "0",
+        "row_table_entries_per_subslice_row": "8",
+        "row_table_rows_per_slice": "64",
+        "row_table_slices": "16",
+        "shared_checkpoint": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/shared_checkpoint",
+        "shared_treatment_file": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/shared_treatment.txt",
+        "source_commit": "13dc2f94c6a936adad18a95b7022e56d14a45b0a",
+        "timeout": "none",
+        "virtual_combine_banks": "0",
+        "virtual_combine_slots": "384",
+        "virtual_combine_victim_policy": "0",
+        "virtual_combine_ways": "4",
+        "virtual_combine_words": "4096",
+        "virtual_grow_order": "0",
+        "virtual_index_filter_words_per_cycle": "4",
+        "virtual_index_partitions": "1",
+        "virtual_response_slots": "96",
+        "virtual_response_word_pool": "480"
+      },
+      "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k",
+      "ramulator_provenance": {
+        "elf_build_id": "11302ea5a975fd6a8737915c11e06bd5ccede7f4",
+        "frozen_library": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+          "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+        },
+        "nested_gitlinks": {
+          "argparse": "997da9255618311d1fcb0135ce86022729d1f1cb",
+          "spdlog": "ad0e89cbfb4d0c1ce4d097e134eb7be67baebb36",
+          "yaml-cpp": "0579ae3d976091d7d664aa9d2527e0d0cff25763"
+        },
+        "normalized_dependency_sha256": "68583f08ffc54383f36f38a6ab03c59a3a21043f7fdf6e31416aa7c26c2bf0fb",
+        "outer_tree": "fcf82e8844ce04e41f5930e0346b75d0fbdc0118",
+        "reference_worktree": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725",
+        "schema": "dx100.ramulator_provenance.v1",
+        "source_tree": "c979ac9e3f7bc847ad16108324ef07c38b3755bf"
+      },
+      "result": {
+        "all_pages_ready_cycles": "0",
+        "alu_compute_cycles": "1441",
+        "case": "native_direct_16k",
+        "cpu_cycles": "127706",
+        "dram_activates": "4655",
+        "dram_precharges": "3568",
+        "dram_reads": "25181",
+        "feeder_descriptor_discards": "16384",
+        "feeder_partition_discards": "0",
+        "feeder_predicate_discards": "0",
+        "first_page_ready_cycles": "0",
+        "index_filter_cycles": "0",
+        "index_filter_wait_cycles": "0",
+        "index_filter_wait_events": "0",
+        "index_filter_words": "0",
+        "index_hwm": "61",
+        "index_line_reads": "1025",
+        "index_words": "16384",
+        "indirect_spd_reads": "0",
+        "l3_read_hits_maa": "0",
+        "l3_read_misses_maa": "1",
+        "memory_bytes_read_maa": "827712",
+        "output_hash": "7228541527853630339",
+        "page_ready_signals": "0",
+        "page_ready_span_cycles": "0",
+        "page_wait_deferrals": "0",
+        "page_wait_reads": "0",
+        "page_wait_responses": "0",
+        "pages_ready": "0",
+        "pages_ready_before_source_drain": "0",
+        "physical_record_sha256": "0738a50ed98d173d31a54409211e887bcb69f43fa33379a9eb6c545cbfb43d89",
+        "physical_records": "16384",
+        "require_index_filter_wait": "0",
+        "response_pool_stalls": "0",
+        "response_slot_hwm": "96",
+        "response_slots": "96",
+        "response_word_hwm": "196",
+        "response_word_pool": "480",
+        "row_table_cache_lines": "9858",
+        "row_table_entries_per_subslice_row": "8",
+        "row_table_full_events": "846",
+        "row_table_rows_inserted": "1453",
+        "row_table_rows_per_slice": "64",
+        "row_table_slices": "16",
+        "row_table_unique_cache_lines": "9523",
+        "row_table_unique_rows": "129",
+        "simInsts": "32192",
+        "simTicks": "39971978",
+        "source_reads": "9858",
+        "stream_spd_reads": "2049",
+        "stream_writes": "1",
+        "virtual_build_rounds": "103",
+        "virtual_grow_order": "0",
+        "virtual_index_filter_words_per_cycle": "4",
+        "virtual_index_partitions": "1",
+        "write_completions": "0",
+        "write_issues": "0"
+      },
+      "simTicks": 39971978,
+      "stats": {
+        "request_cycles": 106578,
+        "request_reason_cycles": {
+          "build": 0,
+          "final_drain": 0,
+          "retained": 0,
+          "runnable": 0,
+          "source_flight": 0,
+          "writes": 0
+        }
+      },
+      "trace": {
+        "backing_write_issue_completion": {
+          "count": 0,
+          "max_sim_ticks": 0,
+          "per_unit_operation": {},
+          "total_sim_ticks": 0
+        },
+        "controller": {
+          "active": false
+        },
+        "counter_summaries": [
+          {
+            "combiner_words": 0,
+            "occurrence": 35587,
+            "offset_pressure": 0,
+            "operation_tick": 3253827495,
+            "row_attempts": 17230,
+            "row_pressure": 846,
+            "row_successes": 16384,
+            "source_issues": 9858,
+            "source_responses": 9858,
+            "unit": 0,
+            "write_completions": 0,
+            "write_issues": 0
+          }
+        ],
+        "event_counts": {
+          "index_line_issue": 1025,
+          "index_line_response": 1025,
+          "indirect_counter_summary": 1,
+          "indirect_execute": 11839,
+          "indirect_stage_begin": 209,
+          "indirect_stage_interval": 209,
+          "indirect_stage_summary": 1,
+          "indirect_stall": 1565,
+          "source_issue": 9858,
+          "source_response": 9858
+        },
+        "index_line_issue_response": {
+          "count": 1025,
+          "max_sim_ticks": 696425,
+          "per_unit_operation": {
+            "unit=0,operation_tick=3253827495": {
+              "count": 1025,
+              "max_sim_ticks": 696425,
+              "total_sim_ticks": 104816504
+            }
+          },
+          "total_sim_ticks": 104816504
+        },
+        "physical_admission": {
+          "aperture": {
+            "slice_begin": 0,
+            "slice_end": 16,
+            "slices": 16
+          },
+          "field_count": 33,
+          "generation": {
+            "available_records": 0,
+            "unavailable_is_explicit": true,
+            "unavailable_records": 16384
+          },
+          "operation_ticks": [
+            3253827495
+          ],
+          "record_count": 16384,
+          "record_sha256": "0738a50ed98d173d31a54409211e887bcb69f43fa33379a9eb6c545cbfb43d89",
+          "records": {
+            "format": "jsonl",
+            "order": "logical_itr_ascending",
+            "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/physical_admission_records.jsonl",
+            "record_count": 16384,
+            "sha256": "38b94b7f523a544919094c490f1ffb0b9c64d0f009b528895312f891cbff0aa8"
+          },
+          "schema": "dx100.physical_admission.v1",
+          "trace_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/run/virtual_trace.log",
+          "trace_sha256": "28b2da387a7e89892a6c49e599a4ea196c076964fc9fdb01f8985eb17d37699d"
+        },
+        "source_issue_response": {
+          "count": 9858,
+          "max_sim_ticks": 835397,
+          "per_unit_operation": {
+            "unit=0,operation_tick=3253827495": {
+              "count": 9858,
+              "max_sim_ticks": 835397,
+              "total_sim_ticks": 1741638448
+            }
+          },
+          "total_sim_ticks": 1741638448
+        },
+        "stages": {
+          "cycles": {
+            "build": 1,
+            "decode": 0,
+            "fill": 13265,
+            "request": 106584,
+            "response": 0
+          },
+          "interval_count": 209,
+          "intervals_do_not_overlap_within_operation": true,
+          "operation_count": 1,
+          "operations": {
+            "unit=0,operation_tick=3253827495": {
+              "cycles": {
+                "build": 1,
+                "decode": 0,
+                "fill": 13265,
+                "request": 106584,
+                "response": 0
+              },
+              "interval_count": 209,
+              "sim_ticks": {
+                "build": 313,
+                "decode": 0,
+                "fill": 4151945,
+                "request": 33360792,
+                "response": 0
+              }
+            }
+          },
+          "sim_ticks": {
+            "build": 313,
+            "decode": 0,
+            "fill": 4151945,
+            "request": 33360792,
+            "response": 0
+          }
+        },
+        "stall_reason_events": {
+          "row_table_full": 846,
+          "source_index_or_tile_wait": 719
+        }
+      }
+    }
+  },
+  "provenance": {
+    "baseline_commit": "d7875f99e6caf1d47bd6010b89112458384aec6c",
+    "checkpoint_identity_sha256": "31e8420d909a1d26ad74ab7801f101d4a6b0794a5c6ca752663fe0d45c33d32b",
+    "common_frozen_artifacts": {
+      "cpu_side_port_cc": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/CpuSidePort.cc",
+        "sha256": "1449cf25215ca5a4bfba8259344a7919dc83d5522ee4ae82782857cf636867d7"
+      },
+      "dynamic_link_audit": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/gem5.ldd.txt",
+        "sha256": "370d0e3a4c512f13c7990d57117dd84a749136c061ebd901258e62bce567d6eb"
+      },
+      "gem5_binary": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/gem5.opt",
+        "sha256": "d8d1b560b24e8ad4e0b6fdbf47addc01bf0fe02b9cfda5805c4a8ecdaff3fa90"
+      },
+      "if_cc": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IF.cc",
+        "sha256": "57764db2d0185e29e0480479c51c79a28e04a33a167a70d530df9adb7e42a243"
+      },
+      "if_hh": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IF.hh",
+        "sha256": "d8a216b0d71984e75436ed1f93b93112ebdcc2107d30a2bf72c422985b32bd67"
+      },
+      "indirect_cc": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IndirectAccess.cc",
+        "sha256": "37ef219778490a8da126c23b520f1510eaa89143cb8015d17c10f52e6fca3d53"
+      },
+      "indirect_hh": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/IndirectAccess.hh",
+        "sha256": "5a3be9644e86e63b3a80fea75b0e29339199440e2aa3bd8dcff122e6ebc6063d"
+      },
+      "maa_api": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/MAA_gem5.hpp",
+        "sha256": "1b3b377185695add3f8f3d3ca235deb64f7fd42e95717cbbe7851c202c1d48d5"
+      },
+      "maa_cc": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/MAA.cc",
+        "sha256": "847126bd8fccdced0aebe1394868fb5eb9852246ef67da86351bada93871bccf"
+      },
+      "maa_hh": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/MAA.hh",
+        "sha256": "f38b1daa114c4e78a1ee8825ab208c9d83e86063915f52165fcee11f8dc02875"
+      },
+      "parser": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/hybrid_overhead_attribution.py",
+        "sha256": "c46958771dce830801d2ec2a8f89c55abe22b4c0bf312519b7a50785d651db53"
+      },
+      "ramulator_config": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/ramulator.yaml",
+        "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"
+      },
+      "ramulator_library": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+        "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+      },
+      "ramulator_provenance": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/ramulator_provenance.json",
+        "sha256": "9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66"
+      },
+      "runner": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/run_virtual_tile_consumer_case.sh",
+        "sha256": "979ee5887350391fac436d0217e5d3b50b329a02e6b841c335be0910f6d63dde"
+      },
+      "se_config": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/se.py",
+        "sha256": "aacc6e624b7ab0e7b032d5cb913974fa790efdca84598bf468c11f14b9575d0f"
+      },
+      "source_diff": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source.diff",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "source_status": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_status.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "transparent_controller_hh": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/TransparentSPDController.hh",
+        "sha256": "f4f3209e79ebf0e002ff12cb5d836ca5d197675e964ca6463e978e2a03358f06"
+      },
+      "workload_binary": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/workload_build/test_virtual_tile_consumer_T16384",
+        "sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880"
+      },
+      "workload_source": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/source_snapshot/test_virtual_tile_consumer.cpp",
+        "sha256": "bd75877a818c5e3ffaf587a99b54c65d7c9f6a665b180b7d8620edeb1728a181"
+      }
+    },
+    "exact_output_oracle_hash": "7228541527853630339",
+    "implementation_commit": "13dc2f94c6a936adad18a95b7022e56d14a45b0a",
+    "invocations": {
+      "hybrid": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/invocation.sh.txt",
+        "sha256": "16f8e096b368f8ff66f23e17e01d274ab6a1e58313f54a1ae74b084cf4ed55a5"
+      },
+      "native": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/invocation.sh.txt",
+        "sha256": "1230422739d1149abbd9958e9567a00dc2f900e0d947a2ba925a579979d14e5a"
+      }
+    },
+    "physical_admission_records": {
+      "hybrid": {
+        "format": "jsonl",
+        "order": "logical_itr_ascending",
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/transparent_4k/physical_admission_records.jsonl",
+        "record_count": 16384,
+        "sha256": "b8b4df9d232114fdf95782e3cef182e313206237fc7891102887d7ec687c5390"
+      },
+      "native": {
+        "format": "jsonl",
+        "order": "logical_itr_ascending",
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/native_direct_16k/physical_admission_records.jsonl",
+        "record_count": 16384,
+        "sha256": "38b94b7f523a544919094c490f1ffb0b9c64d0f009b528895312f891cbff0aa8"
+      }
+    },
+    "raw_hashes": {
+      "hybrid": {
+        "artifact_sha256.txt": "5c6499da71c6d007a2a19984c3fd725e759b7b0052f37d9f5a9d44fbbf429071",
+        "manifest.txt": "5531ce2827ff101e7df26535e504d860cec73ae3b53d8329ff25f16efec663df",
+        "physical_admission_records.jsonl": "b8b4df9d232114fdf95782e3cef182e313206237fc7891102887d7ec687c5390",
+        "physical_validation.json": "7c03144af36b96e1dea9661e0a0f8dbcbd80292c8c70b38980808dc14a72d264",
+        "restore.log": "ceed46c5e7a67a02072704f535b503e7fdb08e438fe550455c31d0937106ea99",
+        "result.tsv": "c6325a8bf5c0d05c8f6ddacda2d01a9ff1a3ce968db319910765c3d8fcccb8d3",
+        "run/stats.txt": "188ea3d453e89077d02af00c19b1abec1e2d93ec7d3fdb03161f67877f44460d",
+        "run/virtual_trace.log": "5f9b75ad74c283520518d9f45518fe41d958c8d9eaa2be10cda40f6521ccb10c",
+        "treatment.txt": "fa8b90eac7baf74a68c7de06713f7502fb3a908af3579cc6770a9053920c6661"
+      },
+      "native": {
+        "artifact_sha256.txt": "be4bf6cdecffe4655d28634fcb30b8ba38a6b7017d045dbb15e7de831d3d44e8",
+        "manifest.txt": "a0ae7d3052996b3bf98acc31e8444ba987bb726aaa4ea68c4648d29d10a6fd64",
+        "physical_admission_records.jsonl": "38b94b7f523a544919094c490f1ffb0b9c64d0f009b528895312f891cbff0aa8",
+        "physical_validation.json": "c690b41946096aaa4c06ffd9d5648b6714a0653a03c68859beff965f07d196e5",
+        "restore.log": "f1fa266d1a89ccad96f0689e1f694ef7bcf6f302a2a8d8c44c65760c2f37b8a7",
+        "result.tsv": "8921a11d0a11317656d6e351bfa3e2b40f11a3b467753ab785c19ce61bb83a1f",
+        "run/stats.txt": "95fa62f5642fb94ad4c5e379554b741262b68207f30ffb4473625995e8ad7c40",
+        "run/virtual_trace.log": "28b2da387a7e89892a6c49e599a4ea196c076964fc9fdb01f8985eb17d37699d",
+        "treatment.txt": "a37ee3a612b129042f304f033fca5875baca471049f3079475c37f0516b2bd8d"
+      }
+    },
+    "shared_input_evidence": {
+      "checkpoint_files_manifest": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/checkpoint_files.pre_treatment.sha256",
+        "sha256": "31e8420d909a1d26ad74ab7801f101d4a6b0794a5c6ca752663fe0d45c33d32b"
+      },
+      "checkpoint_terminal": {
+        "checkpoint_tick": 3193723500,
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/checkpoint_terminal.json",
+        "sha256": "5698b3c23a5ee8dc61f6c358d0b2487d3c4b958f9c692eae8223de0b444e2a9e",
+        "treatment_selector_absent_at_checkpoint": true
+      },
+      "dynamic_links": {
+        "frozen_ramulator_resolution": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+        "normalized_sha256": "0840a844d3c7870fe11f4587daf94104c911d6a183f30839dd77c9b1c8b20167",
+        "raw_sha256": "c2ca214a9e089c3a21bcab7c51ab1a37ca97445dac1f83c1e5f7e62635319cba"
+      },
+      "frozen_input_manifest": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/frozen_input_manifest.json",
+        "sha256": "51582c319c82bc71418f5ac48f16ccecb88952da640bd11c23f37afaf66d51db"
+      },
+      "frozen_source_snapshot_manifest": {
+        "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/source_snapshot_13dc2f9.sha256",
+        "sha256": "bf60ffa51cfafce1f93d08ded868b17c50eba0555b65414ce7b39ef70623c2a9"
+      },
+      "ramulator_semantics_bound_to_provenance": true
+    }
+  },
+  "schema": "dx100.hybrid_overhead_attribution.v2",
+  "units": {
+    "end_to_end": "simTicks",
+    "maa_request_categories": "cycles",
+    "maa_stage_intervals": "simTicks"
+  }
+}

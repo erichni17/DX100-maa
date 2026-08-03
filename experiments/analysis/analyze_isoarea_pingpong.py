@@ -41,12 +41,18 @@ def analyze_run(run: Path) -> dict:
     starts: dict[tuple[int, int], tuple[int, dict]] = {}
     intervals: list[dict] = []
     submit = retire = None
-    for line in trace_path.read_text(errors="replace").splitlines():
+    lines = trace_path.read_text(errors="replace").splitlines()
+    use_ping_events = any("event=transparent_ping_" in line for line in lines)
+    for line in lines:
         match = EVENT_RE.match(line)
         if not match:
             continue
         tick = int(match.group("tick"))
         event = match.group("event")
+        if use_ping_events:
+            if not event.startswith("transparent_ping_"):
+                continue
+            event = "transparent_" + event.removeprefix("transparent_ping_")
         values = fields(match.group("body"))
         if event == "transparent_submit":
             if submit is not None:

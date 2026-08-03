@@ -43,6 +43,25 @@ class AnalyzeIsoAreaTest(unittest.TestCase):
             result = MODULE.analyze_run(run)
             self.assertEqual(result["interval_envelope_overlap_ticks"], 4)
 
+            dual_lines = [
+                "0: x event=transparent_submit schema=2 occurrence=0 "
+                "token=0 physical=1 output=2 generation=1 logical=16384 "
+                "page=4096 pages=4",
+                *[
+                    line.replace(
+                        "event=transparent_", "event=transparent_ping_"
+                    )
+                    for line in lines
+                ],
+                "19: x event=transparent_retire schema=2 occurrence=1 "
+                "generation=1 pages=4",
+            ]
+            (run / "run/virtual_trace.log").write_text(
+                "\n".join(dual_lines) + "\n"
+            )
+            dual_result = MODULE.analyze_run(run)
+            self.assertEqual(dual_result["intervals"], result["intervals"])
+
 
 if __name__ == "__main__":
     unittest.main()

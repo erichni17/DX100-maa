@@ -94,22 +94,6 @@ main(int argc, char **argv)
     std::vector<double> destination_storage(
         total_elements + 2 * guard_elements, -1.0);
     std::vector<double> fence_storage(1, 0.0);
-    const bool reload_only = mode == "paged_reload_warm" ||
-                             mode == "paged_reload_cold" ||
-                             mode == "transparent_reload_warm" ||
-                             mode == "transparent_reload_cold";
-    const bool cache_displaced = mode == "transparent_displaced" ||
-                                 mode == "paged_displaced";
-    const bool reload_cold = mode == "paged_reload_cold" ||
-                             mode == "transparent_reload_cold";
-    const bool pollute_cache = cache_displaced || reload_cold;
-    std::vector<uint64_t> cache_pollution(
-        pollute_cache ? cache_pollution_bytes / sizeof(uint64_t) : 1,
-        1);
-    const bool conditional_staged = mode == "paged_staged_conditional";
-    std::vector<uint32_t> conditions;
-    if (conditional_staged)
-        conditions.resize(total_elements);
     double *backing = backing_storage.data() + guard_elements;
     double *destination = destination_storage.data() + guard_elements;
 
@@ -117,11 +101,6 @@ main(int argc, char **argv)
         source[i] = static_cast<double>(i * 17 + 3);
     for (int i = 0; i < total_elements; ++i)
         indices[i] = (i * 97 + 13) % source.size();
-    if (conditional_staged) {
-        for (int i = 0; i < total_elements; ++i)
-            conditions[i] = i % 5 != 0;
-    }
-
     std::cout << "VIRTUAL_TILE_CONSUMER_LAYOUT mode=" << mode
               << " page_elements=" << page_elements
               << " logical_elements=" << TILE_SIZE
@@ -131,12 +110,34 @@ main(int argc, char **argv)
     if (deferred_treatment) {
         std::ifstream treatment(treatment_path);
         std::string extra;
-        if (!(treatment >> mode >> page_elements) || treatment >> extra ||
-            !validate_treatment())
+        if (!(treatment >> mode >> page_elements) || treatment >> extra) {
+            std::cerr << "deferred treatment must contain exactly MODE PAGE"
+                      << std::endl;
+            return 2;
+        }
+        if (!validate_treatment())
             return 2;
         std::cout << "VIRTUAL_TILE_CONSUMER_TREATMENT mode=" << mode
                   << " page_elements=" << page_elements
                   << " source=deferred_file_v1" << std::endl;
+    }
+    const bool reload_only = mode == "paged_reload_warm" ||
+                             mode == "paged_reload_cold" ||
+                             mode == "transparent_reload_warm" ||
+                             mode == "transparent_reload_cold";
+    const bool cache_displaced = mode == "transparent_displaced" ||
+                                 mode == "paged_displaced";
+    const bool reload_cold = mode == "paged_reload_cold" ||
+                             mode == "transparent_reload_cold";
+    const bool pollute_cache = cache_displaced || reload_cold;
+    const bool conditional_staged = mode == "paged_staged_conditional";
+    std::vector<uint64_t> cache_pollution(
+        pollute_cache ? cache_pollution_bytes / sizeof(uint64_t) : 1, 1);
+    std::vector<uint32_t> conditions;
+    if (conditional_staged) {
+        conditions.resize(total_elements);
+        for (int i = 0; i < total_elements; ++i)
+            conditions[i] = i % 5 != 0;
     }
 
     alloc_MAA();

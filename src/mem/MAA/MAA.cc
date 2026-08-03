@@ -44,6 +44,26 @@ Integral_t calc_log2(Integral_t val) {
 
 namespace gem5 {
 
+namespace {
+
+const char *
+transparentActionName(TransparentSPDController::Action action)
+{
+    switch (action) {
+      case TransparentSPDController::Action::None:
+        return "none";
+      case TransparentSPDController::Action::Fill:
+        return "stream_fill";
+      case TransparentSPDController::Action::Compute:
+        return "compute";
+      case TransparentSPDController::Action::Store:
+        return "stream_store";
+    }
+    panic("invalid transparent-controller action\n");
+}
+
+} // anonymous namespace
+
 MAA::MAAResponsePort::MAAResponsePort(const std::string &_name, MAA &_maa, const std::string &_label)
     : QueuedResponsePort(_name, queue),
       maa{_maa},
@@ -816,13 +836,17 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
                  descriptor.tokenTile);
     }
     DPRINTF(MAAVirtualTrace,
-            "event=transparent_submit token=%d physical=%d output=%d "
-            "generation=%lu logical=%d page=%d pages=%d mode=%u chunks=%d "
-            "chunk_elements=%d\n",
-            descriptor.tokenTile, descriptor.physicalTile,
+            "event=transparent_submit schema=2 occurrence=%lu token=%d "
+            "physical=%d output=%d "
+            "generation=%lu logical=%d page=%d pages=%d\n",
+            transparentTraceOccurrence++, descriptor.tokenTile,
+            descriptor.physicalTile,
             descriptor.outputTile, descriptor.generation,
             descriptor.logicalElements, descriptor.pageElements,
-            TransparentSPDController::NumPages,
+            TransparentSPDController::NumPages);
+    DPRINTF(MAAVirtualTrace,
+            "event=transparent_ping_submit mode=%u chunks=%d "
+            "chunk_elements=%d\n",
             static_cast<unsigned>(descriptor.mode),
             transparentController.chunks(),
             transparentController.elementsPerChunk());
@@ -946,8 +970,12 @@ void MAA::tryIssueTransparentMicroOp() {
             return;
         if (!dispatchTransparentMicroOp(request)) {
             DPRINTF(MAAVirtualTrace,
-                    "event=transparent_backpressure page=%d action=%d\n",
-                    request.page, static_cast<int>(request.action));
+                    "event=transparent_backpressure schema=2 occurrence=%lu "
+                    "page=%d action=%d "
+                    "action_name=%s reason=instruction_file_full\n",
+                    transparentTraceOccurrence++, request.page,
+                    static_cast<int>(request.action),
+                    transparentActionName(request.action));
             return;
         }
         panic_if(!transparentController.accept(request),
@@ -955,7 +983,17 @@ void MAA::tryIssueTransparentMicroOp() {
                  "action %d\n",
                  request.page, static_cast<int>(request.action));
         DPRINTF(MAAVirtualTrace,
-                "event=transparent_issue page=%d action=%d offset=%d "
+                "event=transparent_issue schema=2 occurrence=%lu "
+                "generation=%lu page=%d "
+                "action=%d action_name=%s offset=%d elements=%d "
+                "dependency=controller_order_and_tile_ready\n",
+                transparentTraceOccurrence++,
+                transparentController.descriptor().generation,
+                request.page, static_cast<int>(request.action),
+                transparentActionName(request.action), request.logicalOffset,
+                request.elements);
+        DPRINTF(MAAVirtualTrace,
+                "event=transparent_ping_issue page=%d action=%d offset=%d "
                 "elements=%d element_offset=%d src_slot=%d dst_slot=%d "
                 "transaction=%lu\n",
                 request.page, static_cast<int>(request.action),
@@ -1184,7 +1222,15 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                  "action %d\n",
                  controller_page, static_cast<int>(controller_action));
         DPRINTF(MAAVirtualTrace,
-                "event=transparent_complete page=%d action=%d "
+                "event=transparent_complete schema=2 occurrence=%lu "
+                "generation=%lu page=%d "
+                "action=%d action_name=%s\n",
+                transparentTraceOccurrence++,
+                transparentController.descriptor().generation,
+                controller_page, static_cast<int>(controller_action),
+                transparentActionName(controller_action));
+        DPRINTF(MAAVirtualTrace,
+                "event=transparent_ping_complete page=%d action=%d "
                 "element_offset=%d transaction=%lu\n",
                 controller_page, static_cast<int>(controller_action),
                 controller_request.elementOffset,
@@ -1205,7 +1251,14 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                      "Completed transparent descriptor did not retire\n");
             transparentControllerLookupReadyTick = 0;
             DPRINTF(MAAVirtualTrace,
-                    "event=transparent_retire pages=%d chunks=%d mode=%u\n",
+                    "event=transparent_retire schema=2 occurrence=%lu "
+                    "generation=%lu "
+                    "pages=%d\n",
+                    transparentTraceOccurrence++, descriptor.generation,
+                    TransparentSPDController::NumPages);
+            DPRINTF(MAAVirtualTrace,
+                    "event=transparent_ping_retire pages=%d chunks=%d "
+                    "mode=%u\n",
                     TransparentSPDController::NumPages,
                     TransparentSPDController::LogicalElements /
                         controller_request.elements,

@@ -34,12 +34,15 @@ gem5=$(realpath "$1")
 binary=$(realpath "$2")
 case_name=$3
 out=$(realpath -m "$4")
-shared_checkpoint=${DX100_SHARED_CHECKPOINT_DIR:-}
-shared_treatment=${DX100_SHARED_TREATMENT_FILE:-}
 overlap=0
 polluted=0
 transparent_spd_mode=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
+require_physical_trace=${MAA_REQUIRE_PHYSICAL_RECORD_TRACE:-0}
+shared_checkpoint=${DX100_SHARED_CHECKPOINT_DIR:-}
+shared_selector=${DX100_SHARED_TREATMENT_FILE:-}
+frozen_ramulator_library=${DX100_FROZEN_RAMULATOR_LIBRARY:-}
+ramulator_provenance=${DX100_RAMULATOR_PROVENANCE_FILE:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
 row_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
@@ -74,6 +77,31 @@ require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
     echo "MAA_REQUIRE_INDEX_FILTER_WAIT must be 0 or 1" >&2
     exit 2
 }
+[[ $require_physical_trace == 0 || $require_physical_trace == 1 ]] || {
+    echo "MAA_REQUIRE_PHYSICAL_RECORD_TRACE must be 0 or 1" >&2
+    exit 2
+}
+if [[ $require_physical_trace == 1 &&
+      ",$debug_flags," != *,MAAPhysicalRecordTrace,* ]]; then
+    echo "physical-record validation requires MAAPhysicalRecordTrace" >&2
+    exit 2
+fi
+if [[ -n $shared_checkpoint || -n $shared_selector ]]; then
+    [[ -n $shared_checkpoint && -n $shared_selector ]] || {
+        echo "shared checkpoint directory and treatment file are both required" >&2
+        exit 2
+    }
+    shared_checkpoint=$(realpath "$shared_checkpoint")
+    shared_selector=$(realpath -m "$shared_selector")
+    [[ -d $shared_checkpoint ]] || {
+        echo "shared checkpoint directory does not exist" >&2
+        exit 2
+    }
+    [[ -n $frozen_ramulator_library && -n $ramulator_provenance ]] || {
+        echo "shared evidence requires frozen Ramulator library/provenance" >&2
+        exit 2
+    }
+fi
 [[ $response_slots -gt 0 && $response_word_pool -gt 0 ]] || {
     echo "virtual response capacities must be positive" >&2
     exit 2
@@ -274,17 +302,47 @@ if [[ $index_partitions -ne 1 &&
     exit 2
 fi
 
-if [[ -n $shared_checkpoint || -n $shared_treatment ]]; then
-    [[ -n $shared_checkpoint && -n $shared_treatment && -d $shared_checkpoint ]] || exit 2
-fi
 if [[ -e $out ]]; then
     echo "refusing to overwrite existing output path: $out" >&2
     exit 2
 fi
+source_status=$(git -C "$root" status --short)
+[[ -z $source_status ]] || {
+    echo "refusing evidence run from a dirty tracked/untracked source tree" >&2
+    printf '%s\n' "$source_status" >&2
+    exit 1
+}
 mkdir -p "$out"
 
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
+ramulator_root="$root/ext/ramulator2/ramulator2"
+ramulator_library=${frozen_ramulator_library:-$ramulator_root/libramulator.so}
+ramulator_library=$(realpath "$ramulator_library")
+[[ -f $ramulator_library ]] || {
+    echo "missing Ramulator library: $ramulator_library" >&2
+    exit 1
+}
+if [[ -n $ramulator_provenance ]]; then
+    ramulator_provenance=$(realpath "$ramulator_provenance")
+else
+    ramulator_provenance="$out/ramulator_provenance_fallback.txt"
+    sha256sum "$ramulator_library" > "$ramulator_provenance"
+fi
+[[ -f $ramulator_provenance ]] || {
+    echo "missing Ramulator provenance: $ramulator_provenance" >&2
+    exit 1
+}
+ramulator_library_dir=$(dirname "$ramulator_library")
+LD_LIBRARY_PATH="$ramulator_library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    ldd "$gem5" > "$out/gem5.ldd.txt"
+loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
+    "$out/gem5.ldd.txt")
+[[ -n $loaded_ramulator && $(realpath "$loaded_ramulator") == \
+    "$ramulator_library" ]] || {
+    echo "gem5 does not resolve the requested frozen libramulator.so" >&2
+    exit 1
+}
 {
     printf 'case=%s\n' "$case_name"
     printf 'mode=%s\n' "$mode"
@@ -309,8 +367,14 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     printf 'cache_pollution_bytes=%s\n' \
         "$((polluted * 32 * 1024 * 1024))"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'baseline_commit=d7875f99e6caf1d47bd6010b89112458384aec6c\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
+    printf 'shared_checkpoint=%s\n' "${shared_checkpoint:-none}"
+    printf 'shared_treatment_file=%s\n' "${shared_selector:-none}"
+    printf 'physical_record_schema=dx100.physical_admission.v1\n'
+    printf 'frozen_ramulator_library=%s\n' "$ramulator_library"
+    printf 'ramulator_provenance=%s\n' "$ramulator_provenance"
 } > "$out/manifest.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
@@ -338,8 +402,21 @@ cp -- "$root/src/mem/MAA/MAA.py" "$snapshot/MAA.py"
 cp -- "$root/configs/common/MAAConfig.py" "$snapshot/MAAConfig.py"
 cp -- "$root/configs/common/Options.py" "$snapshot/Options.py"
 cp -- "$root/src/mem/MAA/CpuSidePort.cc" "$snapshot/CpuSidePort.cc"
+cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
+    "$snapshot/hybrid_overhead_attribution.py"
+{
+    printf 'MAA_DEBUG_FLAGS=%q ' "$debug_flags"
+    printf 'MAA_REQUIRE_PHYSICAL_RECORD_TRACE=%q ' "$require_physical_trace"
+    printf 'DX100_SHARED_CHECKPOINT_DIR=%q ' "${shared_checkpoint:-}"
+    printf 'DX100_SHARED_TREATMENT_FILE=%q ' "${shared_selector:-}"
+    printf 'DX100_FROZEN_RAMULATOR_LIBRARY=%q ' "$ramulator_library"
+    printf 'DX100_RAMULATOR_PROVENANCE_FILE=%q ' "$ramulator_provenance"
+    printf '%q %q %q %q %q\n' "${DX100_FROZEN_RUNNER_PATH:-$0}" \
+        "$gem5" "$binary" "$case_name" "$out"
+} > "$out/invocation.sh.txt"
 sha256sum "$gem5" "$binary" "$snapshot/se.py" \
-    "$snapshot/ramulator.yaml" \
+    "$snapshot/ramulator.yaml" "$ramulator_library" \
+    "$ramulator_provenance" "$out/gem5.ldd.txt" \
     "$snapshot/run_virtual_tile_consumer_case.sh" \
     "$snapshot/test_virtual_tile_consumer.cpp" \
     "$snapshot/MAA_gem5.hpp" \
@@ -350,32 +427,48 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/StreamAccess.cc" "$snapshot/StreamAccess.hh" \
     "$snapshot/ALU.cc" "$snapshot/ALU.hh" \
     "$snapshot/MAA.py" "$snapshot/MAAConfig.py" "$snapshot/Options.py" \
+    "$snapshot/hybrid_overhead_attribution.py" \
     "$snapshot/CpuSidePort.cc" \
-    "$out/source.diff" "$out/source_status.txt" \
+    "$out/source.diff" "$out/source_status.txt" "$out/invocation.sh.txt" \
     > "$out/artifact_sha256.txt"
 
 checkpoint_dir="$out/checkpoint"
 workload_options="$mode $page"
-if [[ -n $shared_checkpoint ]]; then
-    checkpoint_dir=$(realpath "$shared_checkpoint")
-    printf '%s %s\n' "$mode" "$page" > "$shared_treatment"
-    workload_options="deferred $shared_treatment"
-    printf '0\n' > "$out/checkpoint.exit"
+if [[ -z $shared_checkpoint ]]; then
+    set +e
+    LD_LIBRARY_PATH="$ramulator_library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    /usr/bin/time -f 'checkpoint_wall=%e checkpoint_rss_kb=%M' \
+        "$gem5" --listener-mode=off --outdir="$checkpoint_dir" \
+        "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB \
+        --max-checkpoints=1 --cmd "$binary" --options "$workload_options" \
+        > "$out/checkpoint.log" 2>&1
+    checkpoint_rc=$?
+    set -e
+    printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
+    [[ $checkpoint_rc -eq 0 ]] || {
+        echo "checkpoint failed with rc=$checkpoint_rc" >&2
+        exit 1
+    }
+    grep -Eq "VIRTUAL_TILE_CONSUMER_LAYOUT mode=${mode} page_elements=${page} logical_elements=16384 mem_size=2147483648" \
+        "$out/checkpoint.log" || {
+        echo "binary/config consumer contract mismatch" >&2
+        exit 1
+    }
 else
-set +e
-/usr/bin/time -f 'checkpoint_wall=%e checkpoint_rss_kb=%M' \
-    "$gem5" --listener-mode=off --outdir="$out/checkpoint" \
-    "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB \
-    --max-checkpoints=1 --cmd "$binary" --options "$mode $page" \
-    > "$out/checkpoint.log" 2>&1
-checkpoint_rc=$?
-set -e
-printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
-[[ $checkpoint_rc -eq 0 ]] || {
-    echo "checkpoint failed with rc=$checkpoint_rc" >&2
-    exit 1
-}
+    checkpoint_dir="$shared_checkpoint"
+    workload_options="deferred $shared_selector"
+    printf '%s %s\n' "$mode" "$page" > "$shared_selector"
+    cp -- "$shared_selector" "$out/treatment.txt"
+    (
+        cd "$shared_checkpoint"
+        find . -type f -print0 | sort -z | xargs -0 sha256sum
+    ) > "$out/shared_checkpoint_files.sha256"
+    sha256sum "$out/shared_checkpoint_files.sha256" \
+        > "$out/shared_checkpoint_identity.sha256"
+    printf '%s\n' "$shared_checkpoint" > "$out/checkpoint.path"
+    printf '0\n' > "$out/checkpoint.exit"
 fi
+
 layout_log="$out/checkpoint.log"
 layout_mode="$mode"
 layout_page="$page"
@@ -390,6 +483,7 @@ isoarea_validate_layout "$layout_log" "$layout_mode" "$layout_page" || {
 }
 
 set +e
+LD_LIBRARY_PATH="$ramulator_library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
 /usr/bin/time -f 'restore_wall=%e restore_rss_kb=%M' \
     "$gem5" --listener-mode=off --outdir="$out/run" \
@@ -425,7 +519,8 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_index_buffer_lines=4 \
     --maa_virtual_index_partitions="$index_partitions" \
     --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle" \
-    --cmd "$binary" --options "$workload_options" > "$out/restore.log" 2>&1
+    --cmd "$binary" --options "$workload_options" \
+    > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e
 printf '%s\n' "$restore_rc" > "$out/restore.exit"
@@ -461,6 +556,15 @@ fatal_count=$(grep -Eic \
         "$result_count" "$roi_count" "$fatal_count" >&2
     exit 1
 }
+if [[ -n $shared_checkpoint ]]; then
+    treatment_count=$(grep -Fxc \
+        "VIRTUAL_TILE_CONSUMER_TREATMENT mode=${mode} page_elements=${page} source=deferred_file_v1" \
+        "$out/restore.log" || true)
+    [[ $treatment_count -eq 1 ]] || {
+        echo "shared checkpoint did not consume the exact treatment" >&2
+        exit 1
+    }
+fi
 pollution_count=$(grep -Fxc 'VIRTUAL_TILE_CONSUMER_POLLUTION bytes=33554432' \
     "$out/restore.log" || true)
 [[ $pollution_count -eq $polluted ]] || {
@@ -731,6 +835,48 @@ else
     }
 fi
 
+feeder_descriptor_discards=0
+feeder_predicate_discards=0
+feeder_partition_discards=0
+if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
+    trace="$out/run/virtual_trace.log"
+    feeder_descriptor_discards=$(grep -c \
+        'event=index_feeder_discard .*poisoned=1 poison=0xd15ca4d reason=descriptor_inserted private=direct_index_words' \
+        "$trace" || true)
+    feeder_partition_discards=$(grep -c \
+        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=partition_rejected private=direct_index_words' \
+        "$trace" || true)
+    feeder_predicate_discards=$(grep -c \
+        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=predicate_rejected private=direct_index_words' \
+        "$trace" || true)
+    expected_descriptor_discards=16384
+    expected_partition_discards=$((index_words - expected_descriptor_discards))
+    [[ $feeder_descriptor_discards -eq $expected_descriptor_discards && \
+       $feeder_predicate_discards -eq 0 && \
+       $feeder_partition_discards -eq $expected_partition_discards ]] || {
+        echo "invalid private index-feeder discard evidence: inserted=$feeder_descriptor_discards/$expected_descriptor_discards predicate=$feeder_predicate_discards/0 partition=$feeder_partition_discards/$expected_partition_discards" >&2
+        exit 1
+    }
+fi
+
+physical_records=0
+physical_record_sha256=none
+if [[ $require_physical_trace -eq 1 ]]; then
+    python3 "$root/experiments/analysis/hybrid_overhead_attribution.py" \
+        validate-physical "$out/run/virtual_trace.log" \
+        --expected-records 16384 --aperture-slices 16 \
+        --records-output "$out/physical_admission_records.jsonl" \
+        --output "$out/physical_validation.json"
+    physical_records=16384
+    physical_record_sha256=$(sed -nE \
+        's/^  "record_sha256": "([0-9a-f]{64})",$/\1/p' \
+        "$out/physical_validation.json")
+    [[ ${#physical_record_sha256} -eq 64 ]] || {
+        echo "physical-record validator did not emit a hash" >&2
+        exit 1
+    }
+fi
+
 if [[ $overlap -eq 1 ]]; then
     [[ $page_wait_reads -eq $pages_ready && \
        $page_wait_responses -eq $pages_ready && \
@@ -747,7 +893,9 @@ else
 fi
 
 headers=(case output_hash simTicks simInsts index_line_reads index_words
-    index_hwm index_filter_words index_filter_cycles index_filter_wait_events
+    index_hwm feeder_descriptor_discards feeder_predicate_discards
+    feeder_partition_discards physical_records physical_record_sha256
+    index_filter_words index_filter_cycles index_filter_wait_events
     index_filter_wait_cycles write_issues
     write_completions indirect_spd_reads pages_ready
     pages_ready_before_source_drain first_page_ready_cycles
@@ -766,7 +914,10 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     response_pool_stalls row_table_full_events virtual_build_rounds dram_reads
     dram_activates dram_precharges)
 values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
-    "$index_words" "$index_hwm" "$index_filter_words" "$index_filter_cycles"
+    "$index_words" "$index_hwm" "$feeder_descriptor_discards"
+    "$feeder_predicate_discards" "$feeder_partition_discards"
+    "$physical_records" "$physical_record_sha256"
+    "$index_filter_words" "$index_filter_cycles"
     "$index_filter_wait_events" "$index_filter_wait_cycles"
     "$write_issues" "$write_completions"
     "$indirect_spd_reads" "$pages_ready" "$pages_ready_early"
