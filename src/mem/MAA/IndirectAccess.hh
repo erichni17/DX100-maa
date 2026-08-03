@@ -203,6 +203,7 @@ protected:
     uint64_t attribution_write_issues = 0;
     uint64_t attribution_write_completions = 0;
     uint64_t attribution_execute_sequence = 0;
+    uint64_t attribution_event_occurrence = 0;
 
 public:
     MAA *maa;

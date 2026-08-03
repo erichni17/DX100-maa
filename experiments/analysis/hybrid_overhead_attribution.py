@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 PHYSICAL_SCHEMA = "dx100.physical_admission.v1"
+ATTRIBUTION_SCHEMA = "2"
 BASELINE_COMMIT = "d7875f99e6caf1d47bd6010b89112458384aec6c"
 PHYSICAL_FIELDS = {
     "schema",
@@ -219,6 +220,14 @@ EVENT_FIELDS = {
     },
     "transparent_retire": {"schema", "event", "generation", "pages"},
 }
+
+# Every repeatable attribution event carries a source-generated occurrence
+# number. Indirect-unit and transparent-controller counters have independent
+# namespaces; neither trace line order nor neighboring records supplies
+# identity.
+for _event_fields in EVENT_FIELDS.values():
+    if _event_fields is not None:
+        _event_fields.add("occurrence")
 
 ARTIFACT_LABELS = (
     "gem5_binary",
@@ -426,10 +435,11 @@ def validate_physical(
 def strict_events(path: Path) -> list[dict]:
     events = []
     seen = set()
+    seen_occurrences = set()
     for line_no, tick, payload, fields in iter_trace(path):
         if fields.get("schema") == PHYSICAL_SCHEMA:
             continue
-        if fields.get("schema") != "1":
+        if fields.get("schema") != ATTRIBUTION_SCHEMA:
             raise AuditError(f"line {line_no}: unknown versioned schema")
         name = fields.get("event")
         if name not in EVENT_FIELDS:
@@ -438,7 +448,15 @@ def strict_events(path: Path) -> list[dict]:
             )
         expected = EVENT_FIELDS[name]
         if expected is None:
-            required = {"schema", "event", "unit", "reason", "itr"}
+            required = {
+                "schema",
+                "event",
+                "unit",
+                "occurrence",
+                "sequence",
+                "reason",
+                "itr",
+            }
             allowed = required | {"occupancy", "limit", "slice", "grow"}
             if not required <= set(fields) or not set(fields) <= allowed:
                 raise AuditError(f"line {line_no}: malformed stall fields")
@@ -451,6 +469,20 @@ def strict_events(path: Path) -> list[dict]:
         if identity in seen:
             raise AuditError(f"line {line_no}: duplicate versioned event")
         seen.add(identity)
+        occurrence = parse_int(fields["occurrence"])
+        if occurrence < 0:
+            raise AuditError(f"line {line_no}: negative event occurrence")
+        scope = (
+            f"indirect-unit-{fields['unit']}"
+            if "unit" in fields
+            else "transparent-controller"
+        )
+        occurrence_identity = (scope, occurrence)
+        if occurrence_identity in seen_occurrences:
+            raise AuditError(
+                f"line {line_no}: duplicate source event occurrence"
+            )
+        seen_occurrences.add(occurrence_identity)
         events.append({"line": line_no, "sim_tick": tick, **fields})
     if not events:
         raise AuditError("no versioned attribution events")

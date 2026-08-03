@@ -498,6 +498,7 @@ protected:
     std::vector<int> virtualPageWordSize;
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
+    uint64_t transparentTraceOccurrence = 0;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();

@@ -674,9 +674,11 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             static_cast<int>(direct_index_pending_lines.size() +
                              direct_index_ready_lines.size()));
         DPRINTF(MAAVirtualTrace,
-                "event=index_line_issue schema=1 unit=%d line=0x%lx "
+                "event=index_line_issue schema=2 unit=%d occurrence=%lu "
+                "line=0x%lx "
                 "first_itr=%d words=%d merged=%d\n",
-                my_indirect_id, block_paddr, itr,
+                my_indirect_id, attribution_event_occurrence++, block_paddr,
+                itr,
                 pending_word_count, merge_outstanding);
         if (merge_outstanding)
             (*maa->stats.IND_VirtIndexOutstandingMerges[my_indirect_id])++;
@@ -783,9 +785,11 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
     (*maa->stats.IND_VirtIndexWords[my_indirect_id]) +=
         pending_words.size();
     DPRINTF(MAAVirtualTrace,
-            "event=index_line_response schema=1 unit=%d line=0x%lx "
+            "event=index_line_response schema=2 unit=%d occurrence=%lu "
+            "line=0x%lx "
             "words=%d cached=%d\n",
-            my_indirect_id, addr, static_cast<int>(pending_words.size()),
+            my_indirect_id, attribution_event_occurrence++, addr,
+            static_cast<int>(pending_words.size()),
             is_block_cached);
     direct_index_max_lines = std::max(
         direct_index_max_lines,
@@ -1008,10 +1012,13 @@ void IndirectAccessUnit::fillRowTable(
                     maa->num_offset_table_epoch_entries) {
                     attribution_offset_pressure_events++;
                     DPRINTF(MAAVirtualTrace,
-                            "event=indirect_stall schema=1 unit=%d "
-                            "reason=offset_epoch_full itr=%d occupancy=%d "
-                            "limit=%d\n",
-                            my_indirect_id, my_i, offset_table->occupancy(),
+                            "event=indirect_stall schema=2 unit=%d "
+                            "occurrence=%lu sequence=%lu "
+                            "reason=offset_epoch_full itr=%d "
+                            "occupancy=%d limit=%d\n",
+                            my_indirect_id, attribution_event_occurrence++,
+                            attribution_execute_sequence - 1, my_i,
+                            offset_table->occupancy(),
                             maa->num_offset_table_epoch_entries);
                     offset_table_drain = true;
                     needDrain = true;
@@ -1039,10 +1046,13 @@ void IndirectAccessUnit::fillRowTable(
                 if (!inserted) {
                     attribution_row_pressure_events++;
                     DPRINTF(MAAVirtualTrace,
-                            "event=indirect_stall schema=1 unit=%d "
-                            "reason=row_table_full itr=%d slice=%d "
-                            "grow=0x%lx\n",
-                            my_indirect_id, my_i, my_RT_idx, grow_addr);
+                            "event=indirect_stall schema=2 unit=%d "
+                            "occurrence=%lu sequence=%lu "
+                            "reason=row_table_full itr=%d "
+                            "slice=%d grow=0x%lx\n",
+                            my_indirect_id, attribution_event_occurrence++,
+                            attribution_execute_sequence - 1, my_i,
+                            my_RT_idx, grow_addr);
                     needDrain = true;
                     (*maa->stats.IND_NumRTFull[my_indirect_id])++;
                     break;
@@ -1188,9 +1198,11 @@ void IndirectAccessUnit::executeInstruction() {
     if (state == Status::Idle)
         attribution_execute_sequence = 0;
     DPRINTF(MAAVirtualTrace,
-            "event=indirect_execute schema=1 unit=%d sequence=%lu "
+            "event=indirect_execute schema=2 unit=%d occurrence=%lu "
+            "sequence=%lu "
             "state=%s itr=%d\n",
-            my_indirect_id, attribution_execute_sequence++,
+            my_indirect_id, attribution_event_occurrence++,
+            attribution_execute_sequence++,
             status_names[static_cast<int>(state)], my_i);
     switch (state) {
     case Status::Idle: {
@@ -1481,9 +1493,10 @@ void IndirectAccessUnit::executeInstruction() {
         bool buildReady = false;
         if (waitForFinish) {
             DPRINTF(MAAVirtualTrace,
-                    "event=indirect_stall schema=1 unit=%d "
-                    "reason=fill_wait_finish itr=%d\n",
-                    my_indirect_id, my_i);
+                    "event=indirect_stall schema=2 unit=%d occurrence=%lu "
+                    "sequence=%lu reason=fill_wait_finish itr=%d\n",
+                    my_indirect_id, attribution_event_occurrence++,
+                    attribution_execute_sequence - 1, my_i);
             DPRINTF(MAAIndirect,
                     "I[%d] %s: waiting for fill finish %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
@@ -1494,9 +1507,10 @@ void IndirectAccessUnit::executeInstruction() {
             buildReady = true;
         } else if (waitForElement) {
             DPRINTF(MAAVirtualTrace,
-                    "event=indirect_stall schema=1 unit=%d "
-                    "reason=source_index_or_tile_wait itr=%d\n",
-                    my_indirect_id, my_i);
+                    "event=indirect_stall schema=2 unit=%d occurrence=%lu "
+                    "sequence=%lu reason=source_index_or_tile_wait itr=%d\n",
+                    my_indirect_id, attribution_event_occurrence++,
+                    attribution_execute_sequence - 1, my_i);
             DPRINTF(MAAIndirect,
                     "I[%d] %s: waiting for fill element %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
@@ -2089,13 +2103,15 @@ void IndirectAccessUnit::executeInstruction() {
                 source_issue_sequence, source_issue_digest,
                 source_issue_digest_secondary);
         DPRINTF(MAAVirtualTrace,
-                "event=indirect_counter_summary schema=1 unit=%d "
+                "event=indirect_counter_summary schema=2 unit=%d "
+                "occurrence=%lu "
                 "operation_tick=%lu row_attempts=%lu row_successes=%lu "
                 "offset_pressure=%lu row_pressure=%lu "
                 "source_issues=%lu source_responses=%d "
                 "combiner_words=%lu write_issues=%lu "
                 "write_completions=%lu\n",
-                my_indirect_id, my_decode_start_tick,
+                my_indirect_id, attribution_event_occurrence++,
+                my_decode_start_tick,
                 attribution_row_insert_attempts,
                 attribution_row_insert_successes,
                 attribution_offset_pressure_events,
@@ -2206,9 +2222,11 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
             sequence, addr, usesBoundedSourceResponses(),
             isVirtualLoad(), isDirectIndexLoad());
     DPRINTF(MAAVirtualTrace,
-            "event=source_issue schema=1 unit=%d operation_tick=%lu "
+            "event=source_issue schema=2 unit=%d occurrence=%lu "
+            "operation_tick=%lu "
             "sequence=%lu addr=0x%lx bounded=%d virtual=%d\n",
-            my_indirect_id, my_decode_start_tick, sequence, addr,
+            my_indirect_id, attribution_event_occurrence++,
+            my_decode_start_tick, sequence, addr,
             usesBoundedSourceResponses(), isVirtualLoad());
     /**** Packet generation ****/
     RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
@@ -2324,10 +2342,11 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
     if (bounded_response_load) {
         accountVirtualRequestInterval();
         DPRINTF(MAAVirtualTrace,
-                "event=source_response schema=1 unit=%d "
+                "event=source_response schema=2 unit=%d occurrence=%lu "
                 "operation_tick=%lu addr=0x%lx head=%d words=%d "
                 "cached=%d\n",
-                my_indirect_id, my_decode_start_tick, addr, virtual_head,
+                my_indirect_id, attribution_event_occurrence++,
+                my_decode_start_tick, addr, virtual_head,
                 virtual_reserved_words, is_block_cached);
         auto slot = std::find_if(virtual_response_slots.begin(),
                                  virtual_response_slots.end(),
@@ -2794,9 +2813,11 @@ void IndirectAccessUnit::markVirtualPageReadyIfComplete(int page) {
     if (!sources_drained)
         virtual_pages_ready_before_source_drain++;
     DPRINTF(MAAVirtualTrace,
-            "event=page_ready schema=1 unit=%d page=%d pages=%d/%d scanned=%d "
+            "event=page_ready schema=2 unit=%d occurrence=%lu page=%d "
+            "pages=%d/%d scanned=%d "
             "expected=%d issued=%d completed=%d sources_drained=%d\n",
-            my_indirect_id, page, virtual_pages_ready,
+            my_indirect_id, attribution_event_occurrence++, page,
+            virtual_pages_ready,
             static_cast<int>(virtual_page_ready.size()),
             virtual_page_scanned_words[page],
             virtual_page_expected_words[page],
@@ -2912,10 +2933,11 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     (*maa->stats.IND_VirtWriteIssues[my_indirect_id])++;
     attribution_write_issues++;
     DPRINTF(MAAVirtualTrace,
-            "event=backing_write_issue schema=1 unit=%d "
+            "event=backing_write_issue schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu key=0x%lx vaddr=0x%lx paddr=0x%lx "
             "bytes=%u valid_words=0x%x outstanding=%d\n",
-            my_indirect_id, my_decode_start_tick, write_key, vaddr, paddr,
+            my_indirect_id, attribution_event_occurrence++,
+            my_decode_start_tick, write_key, vaddr, paddr,
             size, valid_words, virtual_outstanding_writes);
     virtual_max_outstanding_writes = std::max(
         virtual_max_outstanding_writes, virtual_outstanding_writes);
@@ -3497,10 +3519,12 @@ void IndirectAccessUnit::transitionAttributionStage(
         const Tick elapsed = now - attribution_stage_tick;
         attribution_stage_ticks[index] += elapsed;
         DPRINTF(MAAVirtualTrace,
-                "event=indirect_stage_interval schema=1 unit=%d "
+                "event=indirect_stage_interval schema=2 unit=%d "
+                "occurrence=%lu "
                 "operation_tick=%lu stage=%s start=%lu end=%lu "
                 "sim_ticks=%lu cycles=%lu reason=%s\n",
-                my_indirect_id, my_decode_start_tick,
+                my_indirect_id, attribution_event_occurrence++,
+                my_decode_start_tick,
                 stage_names[static_cast<size_t>(attribution_stage)],
                 attribution_stage_tick, now, elapsed,
                 static_cast<uint64_t>(maa->getTicksToCycles(elapsed)),
@@ -3512,12 +3536,14 @@ void IndirectAccessUnit::transitionAttributionStage(
         for (const Tick ticks : attribution_stage_ticks)
             total += ticks;
         DPRINTF(MAAVirtualTrace,
-                "event=indirect_stage_summary schema=1 unit=%d "
+                "event=indirect_stage_summary schema=2 unit=%d "
+                "occurrence=%lu "
                 "operation_tick=%lu decode_sim_ticks=%lu "
                 "fill_sim_ticks=%lu build_sim_ticks=%lu "
                 "request_sim_ticks=%lu response_sim_ticks=%lu "
                 "total_sim_ticks=%lu\n",
-                my_indirect_id, my_decode_start_tick,
+                my_indirect_id, attribution_event_occurrence++,
+                my_decode_start_tick,
                 attribution_stage_ticks[0], attribution_stage_ticks[1],
                 attribution_stage_ticks[2], attribution_stage_ticks[3],
                 attribution_stage_ticks[4], total);
@@ -3527,9 +3553,10 @@ void IndirectAccessUnit::transitionAttributionStage(
     }
     attribution_stage_tick = now;
     DPRINTF(MAAVirtualTrace,
-            "event=indirect_stage_begin schema=1 unit=%d "
+            "event=indirect_stage_begin schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu stage=%s reason=%s\n",
-            my_indirect_id, my_decode_start_tick,
+            my_indirect_id, attribution_event_occurrence++,
+            my_decode_start_tick,
             stage_names[static_cast<size_t>(next)], reason);
 }
 
@@ -3549,9 +3576,10 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     attribution_write_completions++;
     DPRINTF(MAAVirtualTrace,
-            "event=backing_write_complete schema=1 unit=%d "
+            "event=backing_write_complete schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu key=0x%lx outstanding=%d\n",
-            my_indirect_id, my_decode_start_tick, addr,
+            my_indirect_id, attribution_event_occurrence++,
+            my_decode_start_tick, addr,
             virtual_outstanding_writes);
     const bool response_throttled = drainVirtualResponses();
     if (virtual_final_flush ||

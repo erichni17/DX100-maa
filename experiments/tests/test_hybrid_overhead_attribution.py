@@ -52,9 +52,10 @@ def physical_payload(itr: int) -> str:
 
 def counter_summary(source_issues: int = 0) -> dict:
     return {
-        "schema": "1",
+        "schema": MODULE.ATTRIBUTION_SCHEMA,
         "event": "indirect_counter_summary",
         "unit": "0",
+        "occurrence": "0",
         "operation_tick": "100",
         "row_attempts": "3",
         "row_successes": "2",
@@ -147,7 +148,7 @@ class HybridOverheadAttributionTest(unittest.TestCase):
 
     def test_versioned_trace_rejects_unknown_event_and_duplicate_field(self):
         unknown = self.write_trace(
-            ["100: global: event=surprise schema=1 value=3\n"]
+            ["100: global: event=surprise schema=2 occurrence=0 value=3\n"]
         )
         with self.assertRaisesRegex(
             MODULE.AuditError, "unknown versioned event"
@@ -155,12 +156,79 @@ class HybridOverheadAttributionTest(unittest.TestCase):
             MODULE.strict_events(unknown)
         duplicate = self.write_trace(
             [
-                "100: global: event=indirect_execute schema=1 unit=0 unit=0 "
-                "sequence=0 state=Idle itr=0\n"
+                "100: global: event=indirect_execute schema=2 unit=0 unit=0 "
+                "occurrence=0 sequence=0 state=Idle itr=0\n"
             ]
         )
         with self.assertRaisesRegex(MODULE.AuditError, "duplicate field"):
             MODULE.strict_events(duplicate)
+
+    def test_stall_events_require_unique_execute_sequence(self):
+        valid = self.write_trace(
+            [
+                "100: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "slice=1 grow=0x20\n",
+                "100: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=1 sequence=8 reason=row_table_full itr=11 "
+                "slice=1 grow=0x20\n",
+            ]
+        )
+        self.assertEqual(len(MODULE.strict_events(valid)), 2)
+
+        missing_sequence = self.write_trace(
+            [
+                "100: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=0 reason=row_table_full itr=11 slice=1 grow=0x20\n"
+            ]
+        )
+        with self.assertRaisesRegex(MODULE.AuditError, "malformed stall"):
+            MODULE.strict_events(missing_sequence)
+
+        duplicate = self.write_trace(
+            [
+                "100: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "slice=1 grow=0x20\n",
+                "100: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "slice=1 grow=0x20\n",
+            ]
+        )
+        with self.assertRaisesRegex(MODULE.AuditError, "duplicate versioned"):
+            MODULE.strict_events(duplicate)
+
+        changed_payload_same_occurrence = self.write_trace(
+            [
+                "100: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=0 sequence=7 reason=row_table_full itr=11 "
+                "slice=1 grow=0x20\n",
+                "101: global: event=indirect_stall schema=2 unit=0 "
+                "occurrence=0 sequence=8 reason=row_table_full itr=12 "
+                "slice=2 grow=0x21\n",
+            ]
+        )
+        with self.assertRaisesRegex(
+            MODULE.AuditError, "duplicate source event occurrence"
+        ):
+            MODULE.strict_events(changed_payload_same_occurrence)
+
+    def test_every_repeatable_event_schema_has_source_occurrence(self):
+        for name, fields in MODULE.EVENT_FIELDS.items():
+            if fields is None:
+                continue
+            self.assertIn("occurrence", fields, name)
+
+        old_schema = self.write_trace(
+            [
+                "100: global: event=indirect_execute schema=1 unit=0 "
+                "occurrence=0 sequence=0 state=Idle itr=0\n"
+            ]
+        )
+        with self.assertRaisesRegex(
+            MODULE.AuditError, "unknown versioned schema"
+        ):
+            MODULE.strict_events(old_schema)
 
     def test_counter_events_reconcile_or_fail_closed(self):
         summary = counter_summary()
