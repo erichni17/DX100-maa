@@ -2,9 +2,9 @@
   "authorization": {
     "performance": false,
     "production": false,
-    "requires_new_physical_trace": true
+    "requires_new_physical_trace": false
   },
-  "evidence_class": "model_only",
+  "evidence_class": "finite_model_core_with_external_grounding",
   "finite_geometry": {
     "issue_selection": {
       "materialized_order_entries": 0,
@@ -816,12 +816,13 @@
     }
   },
   "output_evidence": {
-    "frozen_oracle_verified_by": "audit_gem5_controls.py",
+    "frozen_oracle_verified_by": "grounded_physical_result_manifest.json terminal audit",
     "frozen_workload_oracle": 7228541527853630339,
+    "gem5_timing_performance": "not claimed",
     "model_hash": "synthetic semantic check only"
   },
-  "reason": "frozen MAAVirtualTrace logs contain lifecycle counters but no per-iteration B paddr and translated A paddr/slice/grow records",
-  "schema": 3,
+  "reason": "paired physical-admission v1 records match exactly on semantic physical fields; rejected nonphysical attribution is excluded",
+  "schema": 4,
   "synthetic_adversarial_results": {
     "distinct_4096_rows": {
       "a_line_requests": 4096,
@@ -1008,6 +1009,11 @@
       "selector_words": 1028
     }
   },
-  "workload_a_line_comparisons": null,
-  "workload_trace_status": "blocked_new_gem5_physical_trace_required"
+  "workload_a_line_comparisons": {
+    "exact_semantic_match": true,
+    "manifest": "grounded_physical_result_manifest.json",
+    "record_count": 16384,
+    "semantic_sha256": "b15915f0dd065aa0c414186dddcba5d38097b4ee401dad1a9bb69c83700419ab"
+  },
+  "workload_trace_status": "grounded_physical_admission_v1"
 }

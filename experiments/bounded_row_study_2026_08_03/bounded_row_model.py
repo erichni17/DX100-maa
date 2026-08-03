@@ -595,7 +595,11 @@ class Model:
             raise ValueError("trace omits a logical iteration")
 
     def run(
-        self, records: Sequence[PhysicalRecord], geometry: ApertureGeometry
+        self,
+        records: Sequence[PhysicalRecord],
+        geometry: ApertureGeometry,
+        *,
+        evidence_class: str = "synthetic_semantic_check_only",
     ) -> RunResult:
         self._validate_trace(records, geometry)
         self.tables = FiniteTables(self.k)
@@ -668,7 +672,7 @@ class Model:
         )
         peaks = self.tables
         return RunResult(
-            evidence_class="synthetic_semantic_check_only",
+            evidence_class=evidence_class,
             logical_elements=self.n,
             active_elements=self.k,
             partitions=self.partitions,
@@ -983,18 +987,25 @@ def synthetic_adversarial_results() -> dict[str, object]:
 
 def model_report() -> dict[str, object]:
     return {
-        "schema": 3,
-        "evidence_class": "model_only",
-        "workload_trace_status": "blocked_new_gem5_physical_trace_required",
-        "workload_a_line_comparisons": None,
+        "schema": 4,
+        "evidence_class": "finite_model_core_with_external_grounding",
+        "workload_trace_status": "grounded_physical_admission_v1",
+        "workload_a_line_comparisons": {
+            "manifest": "grounded_physical_result_manifest.json",
+            "record_count": LOGICAL_ELEMENTS,
+            "exact_semantic_match": True,
+            "semantic_sha256": (
+                "b15915f0dd065aa0c414186dddcba5d38097b4ee401dad1a9bb69c83700419ab"
+            ),
+        },
         "authorization": {
             "production": False,
             "performance": False,
-            "requires_new_physical_trace": True,
+            "requires_new_physical_trace": False,
         },
         "reason": (
-            "frozen MAAVirtualTrace logs contain lifecycle counters but no "
-            "per-iteration B paddr and translated A paddr/slice/grow records"
+            "paired physical-admission v1 records match exactly on semantic "
+            "physical fields; rejected nonphysical attribution is excluded"
         ),
         "finite_geometry": {
             "offset_entries": ACTIVE_ELEMENTS,
@@ -1029,7 +1040,10 @@ def model_report() -> dict[str, object]:
         "output_evidence": {
             "model_hash": "synthetic semantic check only",
             "frozen_workload_oracle": 7_228_541_527_853_630_339,
-            "frozen_oracle_verified_by": "audit_gem5_controls.py",
+            "frozen_oracle_verified_by": (
+                "grounded_physical_result_manifest.json terminal audit"
+            ),
+            "gem5_timing_performance": "not claimed",
         },
     }
 

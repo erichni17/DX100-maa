@@ -1,0 +1,168 @@
+{
+  "claims": {
+    "finite_model": "model_output_on_exact_paired_physical_records",
+    "gem5_timing_performance": "not_claimed",
+    "implementation_authorization": false,
+    "physical_grounding": "accepted"
+  },
+  "evidence_boundary": {
+    "accepted": "dx100.physical_admission.v1",
+    "physical_records_preserved_by_upstream_rejection": true,
+    "rejected_nonphysical_attribution_consumed": false,
+    "timing_performance_claim": null
+  },
+  "finite_model": {
+    "active_elements": 4096,
+    "capacity": {
+      "capacity_drains": 4,
+      "drain_reasons": {
+        "line_word_limit": 0,
+        "offset_limit": 0,
+        "row_slot_limit": 4
+      },
+      "epochs": 5,
+      "geometry_bound_respected": true,
+      "line_slot_rollovers": 1563,
+      "peak_line_slots": 3928,
+      "peak_offsets": 3928,
+      "peak_reserved_responses": 96,
+      "peak_reserved_words": 96,
+      "peak_row_slots": 504
+    },
+    "evidence_class": "grounded_gem5_physical_admission_v1",
+    "grow_aperture": {
+      "per_slice_lower": 0,
+      "per_slice_upper_exclusive": 65536,
+      "source": "DDR4_8Gb_x8_decoder_domain_not_observed_histogram"
+    },
+    "issue_order": {
+      "a_line_requests": 16384,
+      "build_rounds": 172,
+      "materialized_entries": 0,
+      "per_slice_row_transitions": 519,
+      "sha256": "b4c4123e58da08d6bb6dde4d501415204caf338a84c09d6bd7abedd4523d6ba4"
+    },
+    "logical_elements": 16384,
+    "partitions": 4,
+    "placement_check": {
+      "duplicates": 0,
+      "missing": 0,
+      "placements": 16384
+    },
+    "traffic": {
+      "a_line_requests": 16384,
+      "b_line_reads": 4100,
+      "b_reread_lines": 3075,
+      "b_semantic_bytes": 262144,
+      "b_unique_lines_per_pass": 1025,
+      "selector_cycles_arithmetic_lower_bound": 4096,
+      "selector_words": 65536
+    }
+  },
+  "pair_comparison": {
+    "exact_match": true,
+    "excluded_treatment_metadata": [
+      "aperture_slice_begin",
+      "aperture_slice_end",
+      "aperture_slices",
+      "cid",
+      "controller_action",
+      "controller_managed",
+      "controller_page",
+      "controller_transaction",
+      "event",
+      "generation",
+      "generation_available",
+      "if_id",
+      "opcode",
+      "operation_tick",
+      "optype",
+      "pc",
+      "provenance",
+      "rt_config",
+      "schema",
+      "sim_tick",
+      "trace_line"
+    ],
+    "record_count": 16384,
+    "semantic_fields": [
+      "itr",
+      "b_value",
+      "b_paddr",
+      "a_paddr",
+      "a_line_paddr",
+      "channel",
+      "rank",
+      "bank_group",
+      "bank",
+      "row",
+      "column",
+      "native_slice",
+      "grow_addr",
+      "wid"
+    ],
+    "semantic_sha256": "b15915f0dd065aa0c414186dddcba5d38097b4ee401dad1a9bb69c83700419ab"
+  },
+  "provenance": {
+    "benchmark_sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880",
+    "cases": {
+      "native": {
+        "actual_records_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/rejected_schema_v1_attempt/native_direct_16k/physical_admission_records.jsonl",
+        "benchmark_sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880",
+        "boundary": {
+          "nonphysical_attribution_accepted": false,
+          "physical_records_preserved": true,
+          "rejected_attempt_manifest_sha256": "d1f43e1ed36f50e0e2c8f9aed5fe57bfb76d3f1582d8ea69c114ef3ce355590d"
+        },
+        "case": "native_direct_16k",
+        "checkpoint_inventory_sha256": "89e0ff9a807f6b423dab8e2fef08475f5a0bc9de696a4c209e46d42b3c028cf1",
+        "gem5_sha256": "9c98ef64d1fe096df1bde98502ba1003f36550c4612ae3647e47c01a104b2e82",
+        "records_sha256": "38b94b7f523a544919094c490f1ffb0b9c64d0f009b528895312f891cbff0aa8",
+        "source_commit": "8bfe1dd42fcd2b0b7a2e30f512f68dcad5b36d4c",
+        "source_record_sha256": "0738a50ed98d173d31a54409211e887bcb69f43fa33379a9eb6c545cbfb43d89",
+        "terminal": {
+          "checkpoint_exit": 0,
+          "final_stats_present": true,
+          "gem5_terminal": "m5_exit_instruction_encountered",
+          "restore_exit": 0,
+          "workload_errors": 0,
+          "workload_oracle_hash": 7228541527853630339
+        },
+        "trace_sha256": "f94dc33ce9f33038782b938611553f98b09e290316df597eb6291fcccf137949",
+        "validation_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/rejected_schema_v1_attempt/native_direct_16k/physical_validation.json",
+        "validation_sha256": "fe069920b78530174401cfc5103e96b39bc3841125f95dffb9a8cbf421144165"
+      },
+      "transparent": {
+        "actual_records_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/rejected_schema_v1_attempt/transparent_4k/physical_admission_records.jsonl",
+        "benchmark_sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880",
+        "boundary": {
+          "nonphysical_attribution_accepted": false,
+          "physical_records_preserved": true,
+          "rejected_attempt_manifest_sha256": "d1f43e1ed36f50e0e2c8f9aed5fe57bfb76d3f1582d8ea69c114ef3ce355590d"
+        },
+        "case": "transparent_4k",
+        "checkpoint_inventory_sha256": "89e0ff9a807f6b423dab8e2fef08475f5a0bc9de696a4c209e46d42b3c028cf1",
+        "gem5_sha256": "9c98ef64d1fe096df1bde98502ba1003f36550c4612ae3647e47c01a104b2e82",
+        "records_sha256": "b8b4df9d232114fdf95782e3cef182e313206237fc7891102887d7ec687c5390",
+        "source_commit": "8bfe1dd42fcd2b0b7a2e30f512f68dcad5b36d4c",
+        "source_record_sha256": "7734ed276337d1bccc2a52efaba1187949c5696a3fdd377e55c4f7adf787d074",
+        "terminal": {
+          "checkpoint_exit": 0,
+          "final_stats_present": true,
+          "gem5_terminal": "m5_exit_instruction_encountered",
+          "restore_exit": 0,
+          "workload_errors": 0,
+          "workload_oracle_hash": 7228541527853630339
+        },
+        "trace_sha256": "2640001dac08c3e7d137481cafca6ac4e75112fd769f16a7ec9a190411c45271",
+        "validation_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/rejected_schema_v1_attempt/transparent_4k/physical_validation.json",
+        "validation_sha256": "8141b5d9e7f72357521a2762e70cf5ed7dafb75c104a5d3df5eb8368aaa7502c"
+      }
+    },
+    "checkpoint_inventory_sha256": "89e0ff9a807f6b423dab8e2fef08475f5a0bc9de696a4c209e46d42b3c028cf1",
+    "gem5_sha256": "9c98ef64d1fe096df1bde98502ba1003f36550c4612ae3647e47c01a104b2e82",
+    "source_commit": "8bfe1dd42fcd2b0b7a2e30f512f68dcad5b36d4c"
+  },
+  "schema": "dx100.bounded_row_physical_grounding.v1",
+  "status": "grounded"
+}
