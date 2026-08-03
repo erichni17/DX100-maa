@@ -235,31 +235,8 @@ void SPD::setVirtualSize(int tile_id, int size) {
              size, num_tile_elements, tile_id);
     tiles_size[tile_id] = size;
 }
-unsigned int
-SPD::logicalSpdHiddenSlotBaseTileID(int maa_id, int logical_slot) const
-{
-    return logicalSpdHiddenLaneTileID(maa_id, logical_slot, 0);
-}
-
-unsigned int
-SPD::logicalSpdHiddenLaneTileID(int maa_id, int logical_slot,
-                                int fp64_lane) const
-{
-    const uint32_t num_maas =
-        (allocated_tile_count - visible_tile_count) /
-        LogicalSPDHiddenPayloadLayout::HiddenLanesPerMAA;
-    uint32_t tile_id = 0;
-    panic_if(!LogicalSPDHiddenPayloadLayout::tryHiddenLaneTileID(
-                 visible_tile_count, num_maas, maa_id, logical_slot,
-                 fp64_lane, &tile_id),
-             "Invalid logical SPD hidden lane: maa=%d slot=%d lane=%d\n",
-             maa_id, logical_slot, fp64_lane);
-    return tile_id;
-}
-
 SPD::SPD(MAA *_maa,
          unsigned int _visible_tile_count,
-         unsigned int _num_maas,
          unsigned int _num_tile_elements,
          unsigned int _physical_tile_elements,
          Cycles _read_latency,
@@ -267,7 +244,6 @@ SPD::SPD(MAA *_maa,
          int _num_read_ports,
          int _num_write_ports)
     : visible_tile_count(_visible_tile_count),
-      allocated_tile_count(0),
       num_tile_elements(_num_tile_elements),
       physical_tile_elements(_physical_tile_elements),
       read_latency(_read_latency),
@@ -280,37 +256,28 @@ SPD::SPD(MAA *_maa,
                  physical_tile_elements > num_tile_elements,
              "Invalid physical/logical SPD capacities: %u/%u\n",
              physical_tile_elements, num_tile_elements);
-    panic_if(!LogicalSPDHiddenPayloadLayout::tryAllocatedTileCount(
-                 visible_tile_count, _num_maas, &allocated_tile_count),
-             "Invalid logical SPD hidden payload geometry: visible=%u "
-             "maas=%u\n",
-             visible_tile_count, _num_maas);
-
-    std::size_t allocated_payload_bytes = 0;
-    panic_if(!LogicalSPDHiddenPayloadLayout::tryAllocatedPayloadBytes(
-                 visible_tile_count, physical_tile_elements, _num_maas,
-                 &allocated_payload_bytes),
-             "Logical SPD payload allocation overflows: visible=%u "
-             "elements=%u maas=%u\n",
-             visible_tile_count, physical_tile_elements, _num_maas);
-    const std::size_t visible_payload_bytes =
+    panic_if(visible_tile_count == 0,
+             "SPD must expose at least one architectural tile\n");
+    const std::size_t payload_bytes_per_tile =
+        static_cast<std::size_t>(physical_tile_elements) * sizeof(uint32_t);
+    panic_if(visible_tile_count >
+                 std::numeric_limits<std::size_t>::max() /
+                     payload_bytes_per_tile,
+             "SPD payload size overflows host accounting: %u tiles x %zu "
+             "bytes\n",
+             visible_tile_count, payload_bytes_per_tile);
+    const std::size_t allocated_payload_bytes =
+        static_cast<std::size_t>(visible_tile_count) * payload_bytes_per_tile;
+    const std::size_t allocated_element_count =
         static_cast<std::size_t>(visible_tile_count) *
-        physical_tile_elements * sizeof(uint32_t);
-
-    std::size_t allocated_element_count = 0;
-    panic_if(!LogicalSPDHiddenPayloadLayout::tryAllocatedElementStateCount(
-                 visible_tile_count, physical_tile_elements, _num_maas,
-                 &allocated_element_count),
-             "Logical SPD element-state allocation overflows: visible=%u "
-             "elements=%u maas=%u\n",
-             visible_tile_count, physical_tile_elements, _num_maas);
+        physical_tile_elements;
 
     tiles_data = new uint8_t[allocated_payload_bytes];
-    tiles_status = new SPD::TileStatus[allocated_tile_count];
-    tiles_dirty = new bool[allocated_tile_count];
-    tiles_ready = new uint16_t[allocated_tile_count];
-    tiles_size = new uint32_t[allocated_tile_count];
-    for (unsigned int i = 0; i < allocated_tile_count; i++) {
+    tiles_status = new SPD::TileStatus[visible_tile_count];
+    tiles_dirty = new bool[visible_tile_count];
+    tiles_ready = new uint16_t[visible_tile_count];
+    tiles_size = new uint32_t[visible_tile_count];
+    for (unsigned int i = 0; i < visible_tile_count; i++) {
         tiles_status[i] = SPD::TileStatus::Finished;
         tiles_size[i] = 0;
         tiles_dirty[i] = false;
@@ -321,13 +288,9 @@ SPD::SPD(MAA *_maa,
         element_finished[i] = true;
     }
     waiting_units_funcs =
-        new std::vector<uint8_t>[allocated_tile_count];
-    waiting_units_ids = new std::vector<int>[allocated_tile_count];
-    memset(tiles_data, 0, visible_payload_bytes);
-    panic_if(!LogicalSPDHiddenPayloadLayout::initializeHiddenPayload(
-                 tiles_data, allocated_payload_bytes, visible_tile_count,
-                 physical_tile_elements, _num_maas),
-             "Could not initialize logical SPD hidden payload\n");
+        new std::vector<uint8_t>[visible_tile_count];
+    waiting_units_ids = new std::vector<int>[visible_tile_count];
+    memset(tiles_data, 0, allocated_payload_bytes);
     read_port_busy_until = new Tick[num_read_ports];
     write_port_busy_until = new Tick[num_write_ports];
     for (int i = 0; i < num_read_ports; i++) {

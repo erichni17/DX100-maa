@@ -13,19 +13,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_SOURCE = {
     "src/mem/MAA/SPD.cc": (
-        "tryAllocatedPayloadBytes(",
         "tiles_data = new uint8_t[allocated_payload_bytes]",
         "element_finished = new bool[allocated_element_count]",
-        "new std::vector<uint8_t>[allocated_tile_count]",
+        "new std::vector<uint8_t>[visible_tile_count]",
         "delete[] tiles_data",
         "delete[] element_finished",
     ),
     "src/mem/MAA/LogicalSPDHiddenPayload.hh": (
         "LogicalSlotsPerMAA = 2",
-        "FP64LanesPerSlot = 2",
-        "LaneElements = 4096",
+        "PageElements = 4096",
+        "FP64Bytes = 8",
         "PayloadBytesPerMAA =",
-        "HiddenLanesPerMAA * LaneBytes;",
+        "Accounting-only compatibility constants",
+    ),
+    "src/mem/MAA/LogicalSPDCacheRuntime.hh": (
+        "std::array<PayloadSlot, Slice::Slots> slots{}",
+        "PrivatePayloadBits =",
+        "2 * 32 * 1024 * 8",
+    ),
+    "src/mem/MAA/LogicalSPDCacheGem5Bridge.cc": (
+        "std::make_unique<LogicalSPDCacheRuntime>()",
+        "runtimes.reserve(numMaas)",
     ),
     "src/mem/MAA/MAA.cc": (
         "spd = new SPD(",
@@ -54,10 +62,9 @@ CONSUMER_EXPERIMENT = {
     "combine_slots": 384,
     "index_lines": 4,
 }
-HIDDEN_LOGICAL_SLOTS_PER_MAA = 2
-HIDDEN_FP64_LANES_PER_SLOT = 2
-HIDDEN_LANE_ELEMENTS = 4096
-SPD_LANE_BYTES = 4
+RUNTIME_LOGICAL_SLOTS_PER_MAA = 2
+RUNTIME_PAGE_ELEMENTS = 4096
+FP64_BYTES = 8
 
 
 def checked_sources() -> list[str]:
@@ -130,10 +137,7 @@ def ledger(
     native4 = payload_bytes(4096)
     visible_physical_spd = tiles * native4
     private_payload_per_maa = (
-        HIDDEN_LOGICAL_SLOTS_PER_MAA
-        * HIDDEN_FP64_LANES_PER_SLOT
-        * HIDDEN_LANE_ELEMENTS
-        * SPD_LANE_BYTES
+        RUNTIME_LOGICAL_SLOTS_PER_MAA * RUNTIME_PAGE_ELEMENTS * FP64_BYTES
     )
     private_payload_total = maas * private_payload_per_maa
     transparent_payload_total = visible_physical_spd + private_payload_total
@@ -205,8 +209,8 @@ def ledger(
                 "4 bytes per physical lane element (uint32_t)"
             ),
             "spd_private_payload": (
-                "two FP64 slots x two uint32_t lanes x 4096 elements x "
-                "4 bytes per MAA"
+                "two Runtime-owned FP64 slots x 4096 elements x "
+                "8 bytes per MAA"
             ),
             "spd_element_finished": "one C++ bool per physical lane element; synthesis width is not fixed here",
             "spd_tile_scalars": "TileStatus:uint8_t, dirty:bool, ready:uint16_t, size:uint32_t per lane tile",

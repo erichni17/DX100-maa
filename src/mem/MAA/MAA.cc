@@ -19,6 +19,7 @@
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/Invalidator.hh"
+#include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/MAA/RangeFuser.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/StreamAccess.hh"
@@ -146,12 +147,14 @@ MAA::MAA(const MAAParams &p)
     virtualPageWordSize.assign(num_tiles, 0);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
-    spd = new SPD(this, num_tiles, num_maas, num_tile_elements,
+    spd = new SPD(this, num_tiles, num_tile_elements,
                   physical_tile_elements, p.spd_read_latency,
                   p.spd_write_latency,
                   p.num_spd_read_ports_per_maa * num_maas,
                   p.num_spd_write_ports_per_maa * num_maas);
     rf = new RF(num_regs);
+    logicalSpdBridge =
+        std::make_unique<LogicalSPDCacheGem5Bridge>(num_maas);
     num_instructions_per_maa = num_instructions_per_core * num_cores_per_maas;
     num_instructions_total = num_instructions_per_maa * num_maas;
     ifile = new IF(num_instructions_per_maa, num_maas, num_tiles, this);

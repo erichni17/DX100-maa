@@ -44,6 +44,7 @@ class Invalidator;
 class ALUUnit;
 class RangeFuserUnit;
 class Instruction;
+class LogicalSPDCacheGem5Bridge;
 typedef Instruction *InstructionPtr;
 struct Register;
 typedef Register *RegisterPtr;
@@ -283,6 +284,7 @@ public:
     Invalidator *invalidator;
     ALUUnit *aluUnits;
     RangeFuserUnit *rangeUnits;
+    std::unique_ptr<LogicalSPDCacheGem5Bridge> logicalSpdBridge;
 
     // Ramulator related variables for address mapping
     std::vector<int> m_org;
