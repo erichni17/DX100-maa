@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "status": "future_owner_screen_only_not_implementation_authority",
+  "production_source_edit": false,
+  "ownership": {
+    "required_owner": "current IndirectAccess/Tables owner after explicit transfer",
+    "this_session_claims_production_paths": false,
+    "single_operation_identity": ["indirect_unit_id", "instruction_id", "generation"],
+    "indirect_unit_id_bits": 2,
+    "instruction_id_bits": 16,
+    "generation_bits": 16,
+    "admission_owner": "one indirect unit from validated B word through terminal completion",
+    "forbidden": [
+      "shared mutable ownership",
+      "N-sized selector or completion store",
+      "descriptor spill outside charged arrays",
+      "reusing a generation before terminal drain"
+    ]
+  },
+  "finite_state": {
+    "offset_entries": 4096,
+    "slices": 16,
+    "rows_per_slice": 32,
+    "row_slots": 512,
+    "lines_per_row": 8,
+    "line_slots": 4096,
+    "response_slots": 96,
+    "response_word_pool": 480,
+    "partitions": 4,
+    "filter_words_per_cycle": 16
+  },
+  "charged_operation_fields": {
+    "b_base_paddr_bits": 64,
+    "a_base_vaddr_bits": 64,
+    "logical_count_bits_16k": 15,
+    "source_elements_bits": 32,
+    "word_size_code_bits": 2,
+    "destination_tile_id_bits": 5,
+    "placements_completed_bits_16k": 15,
+    "pending_writes_bits": 7
+  },
+  "states": [
+    "IDLE",
+    "PREFLIGHT",
+    "SCAN",
+    "DRAIN_TABLES",
+    "WAIT_RESPONSES",
+    "ADVANCE_PARTITION",
+    "COMPLETE",
+    "TERMINAL_ERROR"
+  ],
+  "admission": {
+    "order": [
+      "read one B word",
+      "validate integer width and B index range",
+      "translate A target and export physical mapping",
+      "validate registered per-slice aperture",
+      "select static partition",
+      "reserve all required finite slots atomically",
+      "mutate Offset/Row/line arrays"
+    ],
+    "malformed_action": "TERMINAL_ERROR before any policy mutation for that word",
+    "capacity_action": "stop scan, drain issued work and responses, reset finite tables, retry same validated word"
+  },
+  "issue": {
+    "slice_order": [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15],
+    "within_slice": "native first valid row slot, same-grow row slots, then valid line slots in slot order",
+    "response_reservation": "reserve one generation-tagged response slot and exact Offset-chain word count before request creation",
+    "line_chain_limit": "drain before a line chain would exceed 480 words",
+    "request_identity": ["generation", "slice", "row_slot", "line_slot", "a_line_paddr", "offset_head", "offset_count"]
+  },
+  "completion": {
+    "response_match": "all request identity fields must match a live reservation",
+    "placement": "each Offset iteration receives exactly one returned word at its recorded wid",
+    "release": "release Offset chain, response words, and response slot only after response consumption",
+    "partition_advance": "allowed only with zero live Offset/row/line entries, zero response reservations, and zero pending writes",
+    "operation_complete": "allowed only after partition 3, exact logical placement count, exact output oracle, and all ownership counts are zero",
+    "error_drain": "reject new work, retain generation ownership until every accepted request is retired, then enter TERMINAL_ERROR"
+  },
+  "required_trace": {
+    "extractor": "extract_grounded_trace.py",
+    "per_operation": ["source commit", "gem5 hash", "benchmark hash", "checkpoint hash", "exact output oracle"],
+    "per_slice": ["registered grow lower", "registered grow upper exclusive"],
+    "per_iteration": ["B paddr", "B index", "A line paddr", "channel", "rank", "bankgroup", "bank", "row", "column", "slice", "grow", "wid"],
+    "fail_closed": "missing, duplicate, inconsistent, or unhashed fields invalidate the screen"
+  },
+  "screen_arms": [
+    "native direct 16K",
+    "four native direct 4K calls",
+    "one-pass 16K logical with finite 4K tables",
+    "four-pass physical bounded-row treatment"
+  ],
+  "gate_order": [
+    "artifact path/hash and completion audit",
+    "exact output",
+    "finite ownership and capacity counters",
+    "physical A request and per-slice row-transition comparison",
+    "simTicks only after all prior gates"
+  ]
+}

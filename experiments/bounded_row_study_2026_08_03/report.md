@@ -1,264 +1,222 @@
-# Bounded contiguous-row reorder study (2026-08-03)
+# Finite bounded-row model repair (2026-08-03)
 
-## Outcome
+## Binding outcome
 
-The standalone experiment supports a **workload-scoped** contiguous decoded-row
-policy, not a general replacement for the native 16K reorder lifetime.
+Commit `62b181af75260193e36f55095d4165cd4cba0858` remains rejected as
+implementation-authorizing evidence. This successor is **model evidence only**.
+It closes the finite-state, validation, accounting, provenance, and handoff
+defects, but it intentionally removes the prior workload A-line/row comparison.
 
-On the existing deterministic FP64 tile-consumer trace, the 16K-logical/4K-active
-treatment reduces modeled A-line requests from 16,384 (`native4k`) to 9,670
-(-40.979%) and decoded-row transitions from 515 to 152 (-70.485%).  It remains
-close to the one-epoch trace control (9,523 lines and 128 transitions), places
-all 16,384 results exactly once, and never exceeds 4,096 live descriptors.
+The frozen 2026-08-02 runs do not record each B physical address and translated
+A physical line, Ramulator fields, RowTable slice, and `grow_addr`. Their
+`MAAVirtualTrace` files contain lifecycle/build counters only. Therefore the old
+`source_line_offset=17` placement and all numbers derived from it are gone.
+`extract_grounded_trace.py` fails closed on both frozen logs and states that a
+new trace run is required. No paddr, slice, row, or alignment is inferred.
 
-That recovery is not free: four full B scans move 262,144 semantic bytes, of
-which 196,608 bytes / 3,072 cache lines are rereads; a 16-word/cycle selector
-has a 4,096-cycle serialization lower bound; and a slightly overweight row
-interval causes one additional capacity drain (five active epochs total).
+No production simulator source was edited or claimed. In particular, this
+session did not request `IndirectAccess` or `Tables` ownership.
 
-The static policy is deliberately fail-closed under skew.  `fanout` and
-`same_line` place all 16K records in one row interval, drain it in four bounded
-epochs, and issue the same four A requests as `native4k`.  They therefore fail
-the strict recovery gate.  No overflow, hidden N-entry state, or oracle order is
-used to turn those cases into wins.
+## What is now executable
 
-This evidence justifies a later gem5 **screen**, after ownership transfer, only
-for traces with wide decoded-row dispersion.  It does not justify promotion,
-and no simulator source was modified here.
+`bounded_row_model.py` implements the prospective 4K mechanism with fixed
+arrays constructed at initialization:
 
-## Native source grounding
-
-Source revision: `9393bf09f9318d31b1f8406d839cc2510690e47d`.
-
-### Insertion and row matching
-
-The native OffsetTable entry is exactly three C++ `int` fields: logical
-iteration, word ID, and next pointer (`Tables.hh:52-55`).  Allocation creates
-one entry and one validity flag per configured entry and reserves a free-index
-vector of the same capacity (`Tables.cc:123-140`).  Insert pops a real free
-slot, writes `(itr,wid)`, and links the previous line-chain tail to it; full
-capacity is a fatal error rather than an implicit spill (`Tables.cc:143-166`).
-
-For each B element, `fillRowTable` reads the index, computes/translates the A
-cache line, decodes it with Ramulator's RoBaRaCoCh map, derives the RowTable
-slice and `grow_addr`, and records the logical iteration and word offset
-(`IndirectAccess.cc:920-956`).  The epoch-capacity check occurs before insert
-and forces a drain at the configured limit (`:933-941`).  A RowTable slice then
-matches in this order:
-
-1. an unsent identical `(grow row, cache line)`;
-2. an unsent identical grow row with a free line entry;
-3. the first free row slot;
-4. otherwise insertion fails and the indirect unit drains.
-
-Those cases are directly implemented at `Tables.cc:489-535`.  Within a row,
-an identical line appends another Offset entry; a new line stores its address
-and the chain's first/last Offset IDs (`Tables.cc:278-306`).  B itself is not
-copied into RowTable state.
-
-### Issue selection
-
-The current issue path is deterministic but is not a global sort oracle.
-RowTable construction precomputes a bank/slice traversal; Build visits that
-slice order and asks each slice for its next entry
-(`IndirectAccess.cc:1452-1489`).  The native RowTable cursor selects the first
-valid row slot, groups other slots with the same `grow_addr`, and walks valid
-cache-line entries in slot order (`Tables.cc:573-609`, `:676-715`).  The
-bounded virtual path similarly scans finite rows/entries and reserves a finite
-response slot/word budget before creating the read (`IndirectAccess.cc:
-1455-1605`).  This is insertion/slice order constrained by decoded rows; it is
-not knowledge of future B values.
-
-The standalone model keeps that non-oracle property: partition bounds are
-equal contiguous row-key intervals derived solely from the registered A
-aperture and DDR geometry.  Inside an active epoch it issues first-seen rows,
-then first-seen lines.  Validation hashes record the resulting order but never
-feed it back into selection.
-
-### Response placement
-
-A native response is decoded again to `(slice,grow)`, matched by returned
-cache-line address, and its linked Offset chain is removed
-(`IndirectAccess.cc:2039-2087`; `Tables.cc:412-418`; `Tables.cc:168-186`).
-Every recovered `(itr,wid)` extracts that word from the returned line and
-writes it to destination `SPD[dst][itr]` (`IndirectAccess.cc:2143-2162`).
-
-The bounded virtual path reserves the Offset-chain head with the request,
-places a returned line/packed words in a finite response slot, and retires the
-chain through the bounded destination mechanism (`IndirectAccess.cc:
-2056-2141`).  The model checks the same semantic contract: each logical `i` is
-placed once at C[i], every policy produces the same output hash, and no missing
-or duplicate placement is tolerated.  Its Python output list and exact-once
-counts are validation oracles only; policy selection and issue never read them.
-
-### Total native table storage
-
-Zero-valued Offset capacity/epoch parameters resolve to the logical tile size,
-so the default 16K configuration really allocates 16K Offset slots
-(`MAA.cc:55-71`).  Each indirect unit receives that capacity independently
-(`MAA.cc:392-400`).  RowTable allocation is separate: every supported
-organization is constructed, not only the active organization
-(`IndirectAccess.cc:205-280`), and every row allocates line entries plus valid
-and claimed flags (`Tables.cc:455-487`, `:260-268`).
-
-For the frozen one-channel DDR4 controls (organizations 2/4/8/16), the checked
-source ledger reports:
-
-| Native table view | Amount | Boundary |
-|---|---:|---|
-| Offset C++ entry + valid arrays | 212,992 B/unit | `16,384 * (12 + 1)`; excludes container/object overhead |
-| Offset free-index backing | at least 65,536 B/unit | 16,384 reserved `int` IDs |
-| Active bit-packed Row/Offset/invalidator lower bound | 148,736 B | active 16-slice, 64-row, 8-line geometry |
-| All allocated RowTable organizations | 32,768 line entries, 1,920 rows | arrays for 2/4/8/16 slices coexist |
-| All-organization bit-packed descriptor lower bound | 452,064 B | includes validity/claim and invalidator lower bounds |
-
-The C++ RowTable raw-array formula is
-`32768 * (sizeof(RowTableEntry::Entry) + 2*sizeof(bool)) +
-1920 * 2*sizeof(bool)`, before the `RowTableEntry`/`RowTableSlice` objects,
-vectors, alignment, and allocators.  These source/C++ counts are not a
-synthesized SRAM area claim.
-
-## Implemented policy
-
-For a registered A aperture, linearize each decoded
-`(row, bank-group, bank)` tuple into a monotonic row key.  Split the aperture's
-row-key interval into four equal contiguous ranges.  For partition `p=0..3`:
-
-1. sequentially read every B line from coherent memory;
-2. decode A[B[i]] and discard the temporary descriptor unless its row key is
-   in range p;
-3. admit at most K=4,096 `(i,wid,line,row)` records;
-4. group/issue first-seen rows and lines, place responses by `i`, and drain;
-5. if a range contains more than K records, repeat step 3 within the same scan;
-6. advance only after the bounded epoch is empty.
-
-The bounds depend on the registered A range and DRAM geometry, not a histogram
-of B.  Thus there is no discovery pass, N-entry selector array, descriptor
-spill, or oracle issue list.  B values not admitted are not retained on chip;
-later partitions reread them through the coherent hierarchy.  The worst case
-is four DRAM fetches if the 64 KiB B stream is not LLC-resident.
-
-## Hardware and traffic ledger
-
-The default FP64 K=4K bit-packed lower bound is reproduced from the same field
-formulas as `experiments/scripts/report_maa_storage.py`:
-
-| State | Formula | Bytes |
-|---|---:|---:|
-| Offset records | `4096 * (15-bit i + 3-bit wid + valid)` | 9,728 |
-| Row/line entries | `4096 * (64-bit line + 2*15-bit heads + valid)` | 48,640 |
-| Row headers | `512 * (64-bit grow + valid + sent)` | 4,224 |
-| Logical invalidator lower bound | fixed 16K aperture | 4,096 |
-| **Reorder/invalidator subtotal** |  | **66,688** |
-| pass/cursor/count/drain control | 31 bits rounded once | 4 |
-
-The comparable full bounded-mechanism ledger charges every previously defined
-finite buffer rather than counting only the tables:
-
-| Component | Bytes |
+| State | Exact bound |
 |---|---:|
-| 32-tile, 4K-physical SPD | 524,288 |
-| bounded B feeder | 8,192 |
-| finite A response pool | 3,840 |
-| finite C combiner | 24,576 |
-| readiness, tags, write tracking, and other bounded control | 25,554 |
-| 4K Row/Offset/invalidator | 66,688 |
-| new partition control | 4 |
-| **Total lower bound** | **653,142** |
+| Offset entries | 4,096 |
+| RowTable slices | 16 |
+| Rows per slice | 32 |
+| Row slots | 512 |
+| Lines per row slot | 8 |
+| Line slots | 4,096 |
+| Response descriptors | 96 |
+| Response words | 480 |
 
-The corresponding 16K-active metadata is 254,464 B.  A frozen 4K-physical but
-full-16K-metadata mechanism ledger is 842,482 B.  Moving to this treatment
-removes 189,340 B from that lower-bound total, while replacing it with three B
-rereads and finite selector work.  A genuinely full-physical native16 ledger
-also contains 1,572,864 additional SPD bytes (32 tiles times 12,288 saved
-elements times four bytes), yielding 2,415,346 B under the same comparison.
-These are capacity lower bounds, not area, timing, or energy estimates.
+Policy admission and issue selection use no `dict`, `set`, `OrderedDict`, or
+append-only container. Offset, row, line, cursor, response-count, and drain
+state have fixed charged sizes. Lists/sets used to collect test results,
+preflight an evidence envelope, or hash the emitted issue stream are explicitly
+validation oracles; policy never reads them to admit or order a request.
 
-Per 16K operation:
+### Admission and drains
 
-| Traffic/work | native16 | native4k | bounded rows |
-|---|---:|---:|---:|
-| B passes | 1 | 1 across four calls | 4 |
-| B semantic bytes | 65,536 | 65,536 | 262,144 |
-| B line requests | 1,024 | 1,024 | 4,096 |
-| B reread bytes/lines | 0 / 0 | 0 / 0 | 196,608 / 3,072 |
-| Selector words/cycle lower bound | 0 / 0 | 0 / 0 | 65,536 / 4,096 |
-| Reorder backing records/traffic | 0 / 0 | 0 / 0 | 0 / 0 |
+All fields of a physical record are checked before the model constructs its
+policy tables. A B index must be an actual integer (a Python `bool` is rejected)
+and must be in `[0, source_elements)`. B paddr alignment, A line alignment,
+channel/rank/bank-group/bank/row/column/wid ranges, slice aperture, duplicate
+iteration IDs, and missing iterations are also rejected before mutation.
 
-## Deterministic trace comparison
+Insertion mirrors the native finite search:
 
-The trace formulas are taken directly from
-`benchmarks/API/test_virtual_tile_consumer.cpp:79-109` and
-`benchmarks/API/test_virtual_index_gather.cpp:31-54`.  Full order/output hashes
-are in `results_summary.json`; the complete report is reproducible with
-`python3 bounded_row_model.py`.
+1. append to an identical unsent `(slice, grow, A line)`;
+2. use a free line slot in an existing row slot with that grow;
+3. use the first free row slot in that slice;
+4. otherwise drain and retry the same validated B word.
 
-| Trace | Policy | A-line requests | Row transitions | Epochs / skew drains | Gate |
-|---|---|---:|---:|---:|---|
-| tile-consumer FP64 | native16 | 9,523 | 128 | 1 / 0 | control |
-|  | native4k | 16,384 | 515 | 4 / 0 | control |
-|  | bounded rows | 9,670 | 152 | 5 / 1 | pass |
-| virtual-index random FP32 | native16 | 4,096 | 32 | 1 / 0 | control |
-|  | native4k | 13,436 | 131 | 4 / 0 | control |
-|  | bounded rows | 4,659 | 41 | 5 / 1 | pass |
-| fanout FP32 | native16 / native4k / bounded | 1 / 4 / 4 | 0 / 0 / 0 | 1 / 4 / 4; bounded drains 3 | **reject** |
-| same-line FP32 | native16 / native4k / bounded | 1 / 4 / 4 | 0 / 0 / 0 | 1 / 4 / 4; bounded drains 3 | **reject** |
-| line-revisit FP32 | native16 / native4k / bounded | 7,379 / 16,129 / 7,626 | 256 / 782 / 272 | 1 / 4 / 5 | pass |
+The ninth distinct line for one grow uses a second finite row slot, matching
+native `RowTableSlice::insert`; no line container grows past eight. When all 32
+row slots in one slice are occupied, the model drains. Offset 4,097 drains at
+exactly 4,096. A line chain drains at 480 offsets so that the frozen 480-word
+response descriptor can represent it. All drain causes are separately counted.
 
-`native16` and `native4k` in this table are trace-model controls: one N-sized
-first-seen row/line grouping versus four sequential K-sized groupings.  They
-are not cycle-exact emulations of native slice arbitration or row-capacity
-drain timing.  The executable model makes no simTicks claim.
+### Real slice and issue order
 
-## Frozen gem5 controls
+For the frozen one-channel, one-rank, four-bank-group, four-bank organization,
+the slice is exactly `bankgroup * 4 + bank`, matching
+`IndirectAccess.cc:getRowTableIdx`. At 16 slices, `grow_addr` is the decoded DDR
+row, matching `getGrowAddr`; bank group and bank are retained in the slice.
 
-No new gem5 job was launched while the hybrid worker owned live validation.
-Instead, the frozen matched controls were re-audited in evidence-checklist
-order.  They share the exact gem5 binary, benchmark binary, benchmark source,
-IndirectAccess source, and Ramulator config hashes recorded in
-`gem5_control_evidence.json`; both wrappers returned zero, reached `m5_exit`,
-contain final stats, and match exact output:
+Each slice has independently frozen lower and exclusive-upper physical grow
+bounds. Four contiguous intervals are computed inside that slice. They are not
+derived from the observed B histogram. A record outside its registered slice
+aperture is rejected.
 
-| Control | Exact output | ROI simTicks | A-line descriptors / unique | Row descriptors / unique |
-|---|---|---:|---:|---:|
-| native direct 16K | `hash=7228541527853630339 errors=0` | 40,874,044 | 9,858 / 9,523 | 1,458 / 129 |
-| four native direct 4K calls | same hash, `errors=0` | 60,408,687 | 16,384 / 16,384 | 2,108 / 516 |
+Issue creation reproduces the native constructor/traversal order: bank outer,
+bank group inner, giving
+`[0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15]`. Within a slice it uses the first
+valid row slot, other row slots with the same grow, and valid line slots in slot
+order. One line per live slice is selected per traversal round. Per-slice grow
+changes, rather than a misleading global cross-bank row sequence, are counted
+as row transitions.
 
-The 4K control is 47.792% more ROI ticks in this one deterministic observation,
-but that delta combines physical capacity, call boundaries, and reorder scope.
-It is context, not a timing estimate for the unimplemented bounded-row
-treatment.  There is one repetition and no candidate gem5 result, so no
-speedup or promotion claim follows.
+The exact source grounding is repository parent
+`9393bf09f9318d31b1f8406d839cc2510690e47d` plus frozen snapshots. The audit
+verifies `Tables.cc` SHA-256
+`48befc4a8185cd9fea0e9032e805301eb58e08eb54d8b2fbd6b8f469eeac8659`,
+`Tables.hh` SHA-256
+`90b8cc8429f9fc68a46b55dae06d896cebcb51460d6be45beb962eb0d2de4a46`,
+and the per-control `IndirectAccess`/MAA snapshots listed in
+`gem5_control_evidence.json`.
 
-## 64K logical over 16K active mapping (not implemented)
+### Source-equivalent versus prospective behavior
 
-The same ratio uses four aperture-derived row intervals and a 16,384-entry
-active epoch.  With 4-byte B and FP64 A:
+The following are source-equivalent: slice derivation, 16-slice traversal,
+first-free row/line insertion order, linked Offset semantics, eight line slots,
+96 response slots, 480 response words, and response reservation before request
+creation.
 
-- four B scans = 1,048,576 B and 16,384 line requests;
-- rereads = 786,432 B / 12,288 lines;
-- selector work = 262,144 words, at least 16,384 cycles at 16 words/cycle;
-- FP64 Row/Offset/headers/invalidator lower bound = 279,040 B;
-- partition control = 35 bits, rounded once to 5 B.
+The following remain prospective model behavior: 32 rather than the frozen
+control's 64 row slots per slice; four per-slice contiguous aperture intervals;
+draining before a line chain exceeds 480 words (the current bounded source path
+would reject an oversized single response); fill-then-drain epochs; and
+immediate build-round credit return. These approximations are adequate for
+finite geometry/adversarial checks, not gem5 timing or workload traffic claims.
 
-An overweight interval still drains; it does not gain a hidden 64K mapping.
-The physical SPD, response, combiner, readiness, and write-tracking ledger must
-be rescaled and revalidated before implementation.  Full 64K is explicitly
-out of scope this week.
+## Required adversarial results
 
-## Handoff and gate
+The executable unit suite covers the binding cases:
 
-Keep this result as model evidence only.  A later gem5 implementation should be
-requested from the owner of `IndirectAccess.cc`/`Tables.cc` after the live
-hybrid work ends.  The screen must freeze the same binary/input/mapping and run:
+| Case | Result |
+|---|---|
+| 4,096 distinct rows, round-robin across 16 slices | peak 512 rows; 7 row-capacity drains; 8 epochs |
+| 9 lines in one grow | 2 row slots, 9 line slots; no overflow |
+| 257 lines in one grow/slice | peak 32 rows and 256 lines; 1 row-capacity drain |
+| 4,096 offsets on one line | 480-word peak; 8 descriptor drains; 9 A requests/epochs |
+| all 4,096 records in one partition | exact 65,536 selector words; no hidden selector state |
+| exact 4,096 Offset boundary | one epoch, no capacity drain |
+| 4,097 Offset boundary | one Offset drain, two epochs |
+| malformed/bool/out-of-range B index | rejected before policy table construction |
 
-1. native direct 16K;
-2. four native direct 4K calls;
-3. one-pass 16K logical with 4K Offset/Row epoch;
-4. arm 3 with four contiguous decoded-row intervals and a finite selector.
+Every successful case has exactly one placement per logical iteration and
+never exceeds its fixed arrays. These are synthetic geometry and semantic
+checks. Their output hash is deliberately labeled
+`synthetic_semantic_check_only`; it is not the workload oracle.
 
-Reject the candidate unless exact output and lifecycle checks pass, peak live
-descriptors remain <=4,096, all 65,536 selector words are charged, and both A
-source-line descriptors and inserted decoded rows strictly decrease versus arm
-3.  Reject any N-sized selector/completion/issue-order store or uncharged
-backing transfer.  Only then inspect simTicks.
+## Physical trace and output evidence
+
+The new extractor requires a strict metadata envelope with source commit, gem5
+binary hash, benchmark hash, checkpoint hash, exact oracle, all 16 registered
+slice bounds, and one record per iteration containing B paddr/index and A
+paddr/channel/rank/bank-group/bank/row/column/slice/grow/wid. Missing,
+duplicate, malformed, inconsistent, or out-of-range fields fail closed.
+
+The real frozen workload oracle remains
+`hash=7228541527853630339 errors=0`. Only `audit_gem5_controls.py` claims that
+oracle, after hashing the containing logs and all other artifacts it consumes.
+The model does not attempt to reproduce that benchmark's multiply/store hash.
+
+## Frozen controls and B accounting
+
+The schema-2 control manifest records exact paths and SHA-256 hashes for both
+gem5 runs' `restore.exit`, `restore.log`, `result.tsv`, final `stats.txt`, run
+config, checkpoint config, run manifest, lifecycle trace, source snapshots, and
+Ramulator config. It also verifies the exact gem5 and benchmark binary paths and
+hashes. Claimed TSV values are accepted only after `result.tsv` itself hashes.
+
+The controls have identical consumed MAA/IndirectAccess/benchmark/Ramulator
+snapshot hashes, but their recorded Git commits are honestly different:
+`a9d3821d...` for native16 and `d17fe737...` for native4K.
+
+| Control | Exact output | ROI simTicks | observed B lines | A lines / unique | rows / unique |
+|---|---|---:|---:|---:|---:|
+| native direct 16K | frozen hash, errors=0 | 40,874,044 | 1,025 | 9,858 / 9,523 | 1,458 / 129 |
+| four native direct 4K calls | same hash, errors=0 | 60,408,687 | 1,028 | 16,384 / 16,384 | 2,108 / 516 |
+
+The 64 KiB B stream is not line-aligned: one whole-stream call touches 1,025
+lines, while four 16 KiB calls touch `4 * 257 = 1,028`. The exact byte offset is
+not present and is not invented. A prospective four-pass scan of that same
+whole physical stream therefore projects `4 * 1,025 = 4,100` B-line touches,
+including 3,075 rereads, and 262,144 semantic bytes. This is alignment-correct
+projected work, not an observed candidate counter. The old 4,096/3,072-line
+claim is removed.
+
+The two controls have one repetition, treatment-specific checkpoints and
+physical/call geometry, and no bounded-row candidate. Their tick difference is
+context only; no speedup or promotion claim is made.
+
+## Complete byte-addressable ledger
+
+`storage_ledger()` computes every subtotal from field widths. Each field array
+element rounds independently to a byte width; fields are not optimistically
+packed across entries. Offset `next`, line head/tail/count/claim bits, response
+descriptor identity, response payload ownership, invalidator state, all 128
+partition boundary fields, per-slice cursors, selector/drain/state counters,
+response occupancies, unit/instruction/generation ownership, A/B bases, logical
+and source bounds, word-size/destination fields, placement count, and pending
+writes are charged.
+
+| Component | 16K logical / 4K active | 64K logical / 16K active arithmetic |
+|---|---:|---:|
+| Offset arrays | 24,576 | 98,304 |
+| Row arrays | 2,048 | 8,192 |
+| Line arrays | 65,536 | 262,144 |
+| 96 descriptors + 480 response words/owners | 6,720 | 6,720 |
+| Logical invalidator | 32,768 | 131,072 |
+| Per-slice partition bounds/valid | 448 | 448 |
+| Per-slice traversal cursors | 96 | 96 |
+| Operation controls | 44 | 47 |
+| **Charged total** | **132,236** | **507,023** |
+
+The 64K/16K column is arithmetic only: it uses 2,048 rows (128/slice) and
+16,384 line/Offset slots. It is not an implemented configuration. The old
+66,688/67,200 optimistic metadata values, hardcoded four/five-byte partition
+control, 279,040-byte 64K subtotal, and 653,142/842,482 full-mechanism totals
+are removed. A full SPD/combiner/readiness/writeback total is withheld until
+all of those components are separately rescaled and field-complete.
+
+## Finite future gem5 ownership/completion contract
+
+`future_gem5_screen_contract.json` is non-authorizing but concrete. A future
+owner must bind one operation by `(indirect_unit_id, instruction_id,
+generation)` from validated B admission through terminal completion. Slot
+reservation is atomic. Every source request owns a generation-tagged tuple of
+slice, row slot, line slot, paddr, Offset head, and count. A response must match
+that full identity. Response slots/words and Offset chains release only after
+consumption.
+
+Partition advance requires zero live table entries, zero response reservations,
+and zero pending writes. Success additionally requires partition 3 complete,
+the exact logical placement count, the exact workload oracle, and zero ownership
+counts. An error rejects new admission but retains ownership until all accepted
+requests drain, then enters `TERMINAL_ERROR`.
+
+After explicit ownership transfer, the four required screen arms are native
+16K, four native 4K calls, one-pass logical16K/finite4K, and four-pass
+physical-bounded rows. Gate order is artifact/completion audit, exact output,
+finite ownership/capacity, grounded physical A-line and per-slice transition
+comparison, then—and only then—`simTicks`.
+
+Until the strict physical trace extractor succeeds and all four arms meet this
+contract, the only coherent conclusion is: **retain finite model evidence; new
+trace required; do not authorize implementation or performance claims**.

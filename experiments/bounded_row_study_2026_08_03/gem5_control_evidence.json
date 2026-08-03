@@ -1,49 +1,127 @@
 {
-  "schema": 1,
+  "schema": 2,
   "evidence_root": "/data1/nier/dx100-runs/2026-08-02-transparent-spd-premeeting",
-  "shared_artifacts": {
-    "gem5_sha256": "978e746a074cd9f661bf355f4a043d3a86b43034c6a4a6cf3bdff369b488c0f2",
-    "benchmark_sha256": "6c2e7ab2690e9ffda0f582b4f6c6ac42a65c91ffb66be5803160e88932046533",
-    "benchmark_source_sha256": "faf7e103c56c9af0c1b3ade58c3330383e44166ba7e9988b0ee7a2f1db200d96",
-    "indirect_access_source_sha256": "3da2cc84975b90950a3dd7425820b27ce58fb068807bfdc4e251d6e9158a1a6b",
-    "ramulator_config_sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"
-  },
+  "shared_artifacts": [
+    {
+      "role": "gem5_binary",
+      "base": "absolute",
+      "path": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725/build/X86/gem5.opt",
+      "sha256": "978e746a074cd9f661bf355f4a043d3a86b43034c6a4a6cf3bdff369b488c0f2"
+    },
+    {
+      "role": "benchmark_binary",
+      "base": "evidence_root",
+      "path": "binaries/test_virtual_tile_consumer_T16384",
+      "sha256": "6c2e7ab2690e9ffda0f582b4f6c6ac42a65c91ffb66be5803160e88932046533"
+    },
+    {
+      "role": "model_grounding_tables_source",
+      "base": "repo_root",
+      "path": "src/mem/MAA/Tables.cc",
+      "sha256": "48befc4a8185cd9fea0e9032e805301eb58e08eb54d8b2fbd6b8f469eeac8659"
+    },
+    {
+      "role": "model_grounding_tables_header",
+      "base": "repo_root",
+      "path": "src/mem/MAA/Tables.hh",
+      "sha256": "90b8cc8429f9fc68a46b55dae06d896cebcb51460d6be45beb962eb0d2de4a46"
+    }
+  ],
   "controls": [
     {
       "name": "native_direct_16k",
       "directory": "native_direct_16k_matched",
-      "treatment": {"logical_elements": 16384, "physical_elements": 16384, "native_call_elements": 16384},
       "wrapper_exit": 0,
       "terminal_marker": "Exiting @ tick 3744612121 because m5_exit instruction encountered",
       "exact_output": "VIRTUAL_TILE_CONSUMER_RESULT mode=native_direct page_elements=16384 hash=7228541527853630339 errors=0",
-      "simTicks": 40874044,
-      "a_line_descriptors": 9858,
-      "unique_a_lines": 9523,
-      "row_descriptors": 1458,
-      "unique_rows": 129,
-      "stats_sha256": "a75b040506610c083f33b12bbd41629a74e7ba81ddd07b22f09547817c24a6db",
-      "restore_log_sha256": "f1baeda0c59af3e670434b7fc4f716033776aeca15a2a5be0e18dff2e63bdddf"
+      "artifacts": {
+        "restore_exit": {"path": "restore.exit", "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"},
+        "restore_log": {"path": "restore.log", "sha256": "f1baeda0c59af3e670434b7fc4f716033776aeca15a2a5be0e18dff2e63bdddf"},
+        "result_tsv": {"path": "result.tsv", "sha256": "c249ac5aa8d9987a479a19f30c9b53db2d895a46c3aaad42346b6ec757173add"},
+        "stats": {"path": "run/stats.txt", "sha256": "a75b040506610c083f33b12bbd41629a74e7ba81ddd07b22f09547817c24a6db"},
+        "config": {"path": "run/config.ini", "sha256": "c1efa5223cc4ef8e10fbd37bd70a547806dfeec1de84e179565d4caffae162c8"},
+        "checkpoint_config": {"path": "checkpoint/config.json", "sha256": "6598d153f8435a30a74c65d960756af4aaf55d76f2774d062a0ce640bd8b24c4"},
+        "run_manifest": {"path": "manifest.txt", "sha256": "cd6ddc88d150469948eceac2c38b7313173fe4225b51dbf7cbcdd78ba3276d07"},
+        "virtual_trace": {"path": "run/virtual_trace.log", "sha256": "fab67937e743c9be4e060c46247e39fdba36b280927658e76c202ec5e3e41706"},
+        "indirect_source": {"path": "source_snapshot/IndirectAccess.cc", "sha256": "3da2cc84975b90950a3dd7425820b27ce58fb068807bfdc4e251d6e9158a1a6b"},
+        "indirect_header": {"path": "source_snapshot/IndirectAccess.hh", "sha256": "c5a9d0ac5f86c04dd11ef364d3bc117be191934bd4915b0e3dd254160f2fa413"},
+        "maa_source": {"path": "source_snapshot/MAA.cc", "sha256": "0d697f1d66701f479526ef458f72aa151db4446ec5b6e80503602a4db002fc13"},
+        "maa_header": {"path": "source_snapshot/MAA.hh", "sha256": "4756d8b817ad3621184276fcffd047a9ec1de090db74bf9251e92bb5529aaabb"},
+        "benchmark_source": {"path": "source_snapshot/test_virtual_tile_consumer.cpp", "sha256": "faf7e103c56c9af0c1b3ade58c3330383e44166ba7e9988b0ee7a2f1db200d96"},
+        "ramulator_config": {"path": "source_snapshot/ramulator.yaml", "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"}
+      },
+      "run_manifest_fields": {
+        "case": "native_direct_16k",
+        "mode": "native_direct",
+        "logical_tile_elements": 16384,
+        "page_elements": 16384,
+        "physical_tile_elements": 16384,
+        "row_table_slices": 16,
+        "row_table_rows_per_slice": 64,
+        "row_table_entries_per_subslice_row": 8,
+        "source_commit": "a9d3821d3291cf9bd019a4f6b3964e30711b96df"
+      },
+      "result_fields": {
+        "output_hash": 7228541527853630339,
+        "simTicks": 40874044,
+        "index_line_reads": 1025,
+        "index_words": 16384,
+        "row_table_cache_lines": 9858,
+        "row_table_unique_cache_lines": 9523,
+        "row_table_rows_inserted": 1458,
+        "row_table_unique_rows": 129
+      }
     },
     {
       "name": "native_direct_4k",
       "directory": "native_direct_4k_matched",
-      "treatment": {"logical_elements": 16384, "physical_elements": 4096, "native_call_elements": 4096, "calls": 4},
       "wrapper_exit": 0,
       "terminal_marker": "Exiting @ tick 3764252558 because m5_exit instruction encountered",
       "exact_output": "VIRTUAL_TILE_CONSUMER_RESULT mode=native_direct page_elements=4096 hash=7228541527853630339 errors=0",
-      "simTicks": 60408687,
-      "a_line_descriptors": 16384,
-      "unique_a_lines": 16384,
-      "row_descriptors": 2108,
-      "unique_rows": 516,
-      "stats_sha256": "f314a9a25d26eb32ef37c92471ae953df5eb3e00cf824acb89f60dbe72437454",
-      "restore_log_sha256": "06d066edae260f343d999281911c99e0ec3d8c3d950b6640d50cff0320af3518"
+      "artifacts": {
+        "restore_exit": {"path": "restore.exit", "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"},
+        "restore_log": {"path": "restore.log", "sha256": "06d066edae260f343d999281911c99e0ec3d8c3d950b6640d50cff0320af3518"},
+        "result_tsv": {"path": "result.tsv", "sha256": "1b143cd5ee0982223446a4538571b6db87de7f36dac5110a02b63bf1d6c9252b"},
+        "stats": {"path": "run/stats.txt", "sha256": "f314a9a25d26eb32ef37c92471ae953df5eb3e00cf824acb89f60dbe72437454"},
+        "config": {"path": "run/config.ini", "sha256": "6bcd4e6af9ac245df7b8fe89779c9274d75ca8cceb03e2d5c491f5666708d0c4"},
+        "checkpoint_config": {"path": "checkpoint/config.json", "sha256": "225cde98b93c4c76c60fb51dc72fbecede20b8326d2cea72e9444e5b4358e6ea"},
+        "run_manifest": {"path": "manifest.txt", "sha256": "93e964af8112c4828a48c4fdf1727a623cd0474ee84be85ebe3b79538f33f1f9"},
+        "virtual_trace": {"path": "run/virtual_trace.log", "sha256": "27f78626dbf7ba68b7661694f2f42b69279b0aa0bdd1b86148a490c3a525596a"},
+        "indirect_source": {"path": "source_snapshot/IndirectAccess.cc", "sha256": "3da2cc84975b90950a3dd7425820b27ce58fb068807bfdc4e251d6e9158a1a6b"},
+        "indirect_header": {"path": "source_snapshot/IndirectAccess.hh", "sha256": "c5a9d0ac5f86c04dd11ef364d3bc117be191934bd4915b0e3dd254160f2fa413"},
+        "maa_source": {"path": "source_snapshot/MAA.cc", "sha256": "0d697f1d66701f479526ef458f72aa151db4446ec5b6e80503602a4db002fc13"},
+        "maa_header": {"path": "source_snapshot/MAA.hh", "sha256": "4756d8b817ad3621184276fcffd047a9ec1de090db74bf9251e92bb5529aaabb"},
+        "benchmark_source": {"path": "source_snapshot/test_virtual_tile_consumer.cpp", "sha256": "faf7e103c56c9af0c1b3ade58c3330383e44166ba7e9988b0ee7a2f1db200d96"},
+        "ramulator_config": {"path": "source_snapshot/ramulator.yaml", "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"}
+      },
+      "run_manifest_fields": {
+        "case": "native_direct_4k",
+        "mode": "native_direct",
+        "logical_tile_elements": 16384,
+        "page_elements": 4096,
+        "physical_tile_elements": 4096,
+        "row_table_slices": 16,
+        "row_table_rows_per_slice": 64,
+        "row_table_entries_per_subslice_row": 8,
+        "source_commit": "d17fe7378b2771b471c19d35e5b7b183ca7ac18b"
+      },
+      "result_fields": {
+        "output_hash": 7228541527853630339,
+        "simTicks": 60408687,
+        "index_line_reads": 1028,
+        "index_words": 16384,
+        "row_table_cache_lines": 16384,
+        "row_table_unique_cache_lines": 16384,
+        "row_table_rows_inserted": 2108,
+        "row_table_unique_rows": 516
+      }
     }
   ],
   "comparison": {
     "native4k_ticks_over_native16_pct": 47.79229331944743,
-    "performance_status": "control context only; no gem5 bounded-row treatment exists",
+    "performance_status": "control context only; no bounded-row gem5 treatment or physical trace exists",
     "repetitions": 1,
-    "caveat": "Deterministic exact controls share simulator, benchmark, source, and DRAM hashes, but use treatment-specific checkpoints and call/physical geometry. Do not attribute their tick delta solely to reorder metadata."
+    "b_line_observation": "one 64KiB call touched 1025 lines; four 16KiB calls touched 1028 total, proving non-line-aligned B placement",
+    "physical_trace_status": "new run required"
   }
 }
