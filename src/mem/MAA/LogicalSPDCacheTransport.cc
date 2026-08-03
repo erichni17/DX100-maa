@@ -23,6 +23,16 @@ LogicalSPDCacheTransport::DeliveryTicket::operator==(
 }
 
 bool
+LogicalSPDCacheTransport::CompletionIdentity::operator==(
+    const CompletionIdentity &other) const
+{
+    return isValid == other.isValid && operation == other.operation &&
+           actionID == other.actionID && descriptor == other.descriptor &&
+           generation == other.generation && page == other.page &&
+           slot == other.slot && serial == other.serial;
+}
+
+bool
 LogicalSPDCacheTransport::AuditSnapshot::operator==(
     const AuditSnapshot &other) const
 {
@@ -35,6 +45,14 @@ LogicalSPDCacheTransport::AuditSnapshot::operator==(
            actionIDsExhausted == other.actionIDsExhausted &&
            incarnationIDsExhausted == other.incarnationIDsExhausted &&
            copyActive == other.copyActive && sealed == other.sealed &&
+           poisoned == other.poisoned &&
+           geometryValid == other.geometryValid &&
+           operation == other.operation && abortCode == other.abortCode &&
+           descriptor == other.descriptor && generation == other.generation &&
+           page == other.page && slot == other.slot &&
+           baseAddress == other.baseAddress &&
+           controllerSerial == other.controllerSerial &&
+           remainingBudget == other.remainingBudget &&
            fifo == other.fifo && credits == other.credits &&
            states == other.states && epochs == other.epochs &&
            recordActionIDs == other.recordActionIDs && keys == other.keys &&
@@ -49,7 +67,14 @@ LogicalSPDCacheTransport::AuditSnapshot::operator==(
 
 LogicalSPDCacheTransport::LogicalSPDCacheTransport(std::size_t ports,
                                                    std::size_t lineBytes)
-    : geometryIsValid(ports == PortCount && lineBytes == LineBytes)
+    : LogicalSPDCacheTransport(ports, lineBytes, IdBudget{})
+{}
+
+LogicalSPDCacheTransport::LogicalSPDCacheTransport(std::size_t ports,
+                                                   std::size_t lineBytes,
+                                                   IdBudget budget)
+    : geometryIsValid(ports == PortCount && lineBytes == LineBytes),
+      remainingBudget(budget)
 {
     fifo.entries.fill(NoRecord);
     creditOwners.fill(NoRecord);
@@ -67,13 +92,73 @@ LogicalSPDCacheTransport::~LogicalSPDCacheTransport()
 }
 
 LogicalSPDCacheTransport::Status
-LogicalSPDCacheTransport::publicMutationStatus() const
+LogicalSPDCacheTransport::publicMutationStatus()
 {
+    if (terminalPoisoned)
+        return Status::Poisoned;
+    if (deliveryCopyActive)
+        return productionStop();
     if (isSealed)
         return Status::Sealed;
-    if (deliveryCopyActive)
-        return Status::CopyActive;
     return Status::Accepted;
+}
+
+LogicalSPDCacheTransport::Status
+LogicalSPDCacheTransport::productionStop()
+{
+    terminalPoisoned = true;
+    return Status::ProductionStop;
+}
+
+LogicalSPDCacheTransport::Result
+LogicalSPDCacheTransport::productionStopResult()
+{
+    return {productionStop()};
+}
+
+bool
+LogicalSPDCacheTransport::validOperation(Operation operation)
+{
+    return operation == Operation::Fill || operation == Operation::Writeback;
+}
+
+bool
+LogicalSPDCacheTransport::validCommand(Command command)
+{
+    switch (command) {
+      case Command::ReadReq:
+      case Command::WriteReq:
+      case Command::ReadResp:
+      case Command::ReadRespWithInvalidate:
+      case Command::WriteResp:
+        return true;
+    }
+    return false;
+}
+
+bool
+LogicalSPDCacheTransport::validAbortCode(AbortCode code)
+{
+    return code == AbortCode::Caller;
+}
+
+bool
+LogicalSPDCacheTransport::validFaultPoint(FaultPoint fault)
+{
+    return fault == FaultPoint::None ||
+           fault == FaultPoint::RequestIdentity ||
+           fault == FaultPoint::LineSnapshot ||
+           fault == FaultPoint::RequestPacket;
+}
+
+bool
+LogicalSPDCacheTransport::validPageSpan(PageSpan span)
+{
+    if (span.data == nullptr || span.size != PageBytes)
+        return false;
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(span.data);
+    return begin % LineBytes == 0 &&
+           begin <= UINTPTR_MAX - PageBytes;
 }
 
 uint8_t
@@ -85,15 +170,25 @@ LogicalSPDCacheTransport::portForAddress(uint64_t address)
 LogicalSPDCacheTransport::Command
 LogicalSPDCacheTransport::requestCommand(Operation operation)
 {
-    return operation == Operation::Fill ? Command::ReadReq
-                                        : Command::WriteReq;
+    switch (operation) {
+      case Operation::Fill:
+        return Command::ReadReq;
+      case Operation::Writeback:
+        return Command::WriteReq;
+    }
+    return Command::ReadReq;
 }
 
 LogicalSPDCacheTransport::Command
 LogicalSPDCacheTransport::responseCommand(Operation operation)
 {
-    return operation == Operation::Fill ? Command::ReadResp
-                                        : Command::WriteResp;
+    switch (operation) {
+      case Operation::Fill:
+        return Command::ReadResp;
+      case Operation::Writeback:
+        return Command::WriteResp;
+    }
+    return Command::ReadResp;
 }
 
 void
@@ -145,7 +240,8 @@ LogicalSPDCacheTransport::previewIncarnations(
 LogicalSPDCacheTransport::Status
 LogicalSPDCacheTransport::startAction(
     Operation operation, uint8_t descriptor, uint32_t generation, uint8_t page,
-    uint8_t slot, uint64_t baseAddress, PageSpan slotSpan,
+    uint8_t slot, uint64_t baseAddress, uint64_t controllerSerial,
+    PageSpan slotSpan,
     uint32_t *actionID)
 {
     const Status mutation = publicMutationStatus();
@@ -153,17 +249,18 @@ LogicalSPDCacheTransport::startAction(
         return mutation;
     if (!geometryIsValid)
         return Status::InvalidGeometry;
-    if (action.state != ActionState::Free)
-        return Status::Busy;
-    if (descriptor >= DescriptorCount || generation == 0 ||
+    if (!validOperation(operation) || descriptor >= DescriptorCount ||
+        generation == 0 ||
         page >= PagesPerDescriptor || slot >= SlotCount ||
-        slotSpan.data == nullptr || slotSpan.size != PageBytes ||
+        controllerSerial == 0 || !validPageSpan(slotSpan) ||
         baseAddress % PageBytes != 0 ||
         baseAddress > std::numeric_limits<uint64_t>::max() -
                           (PageBytes - 1)) {
         return Status::Invalid;
     }
-    if (actionIDsExhausted)
+    if (action.state != ActionState::Free)
+        return Status::Busy;
+    if (actionIDsExhausted || remainingBudget.actionIDs == 0)
         return Status::Exhausted;
 
     uint64_t remainingEpochs = 0;
@@ -171,18 +268,21 @@ LogicalSPDCacheTransport::startAction(
         remainingEpochs +=
             std::numeric_limits<uint16_t>::max() - record.epoch;
     }
-    if (remainingEpochs < LinesPerPage)
+    if (remainingEpochs < LinesPerPage ||
+        remainingBudget.recordEpochs < LinesPerPage)
         return Status::Exhausted;
 
     const uint64_t requiredIncarnations = 2 * LinesPerPage;
     const uint64_t availableIncarnations =
         std::numeric_limits<uint32_t>::max() - nextIncarnationID + 1ULL;
     if (incarnationIDsExhausted ||
-        availableIncarnations < requiredIncarnations) {
+        availableIncarnations < requiredIncarnations ||
+        remainingBudget.incarnationIDs < requiredIncarnations) {
         return Status::Exhausted;
     }
 
     const uint32_t allocated = nextActionID;
+    --remainingBudget.actionIDs;
     if (allocated == std::numeric_limits<uint32_t>::max()) {
         actionIDsExhausted = true;
     } else {
@@ -197,16 +297,19 @@ LogicalSPDCacheTransport::startAction(
     action.page = page;
     action.slot = slot;
     action.baseAddress = baseAddress;
+    action.controllerSerial = controllerSerial;
     action.slotSpan = slotSpan;
     refillQueue();
     if (actionID != nullptr)
         *actionID = allocated;
-    return assertInvariants() ? Status::Accepted : Status::ProductionStop;
+    return assertInvariants() ? Status::Accepted : productionStop();
 }
 
 int
 LogicalSPDCacheTransport::allocateRecord(uint32_t actionID)
 {
+    if (remainingBudget.recordEpochs == 0)
+        return -1;
     for (std::size_t index = 0; index < records.size(); ++index) {
         TransactionRecord &record = records[index];
         if (record.state != RecordState::Free ||
@@ -214,6 +317,7 @@ LogicalSPDCacheTransport::allocateRecord(uint32_t actionID)
             continue;
         }
         ++record.epoch;
+        --remainingBudget.recordEpochs;
         record.token.record = static_cast<uint8_t>(index);
         record.token.epoch = record.epoch;
         record.token.actionID = actionID;
@@ -283,6 +387,8 @@ LogicalSPDCacheTransport::prepare(PageSpan slotSpan, FaultPoint fault)
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return {mutation};
+    if (!validFaultPoint(fault) || !validPageSpan(slotSpan))
+        return {Status::Invalid};
     if (action.state != ActionState::Active)
         return {Status::NoWork};
     if (slotSpan.data != action.slotSpan.data ||
@@ -291,6 +397,10 @@ LogicalSPDCacheTransport::prepare(PageSpan slotSpan, FaultPoint fault)
     }
     if (pending != NoRecord) {
         const TransactionRecord &record = records[pending];
+        if (record.state != RecordState::WaitRetry &&
+            record.state != RecordState::PendingSend) {
+            return productionStopResult();
+        }
         return {record.state == RecordState::WaitRetry
                     ? Status::RetryRequired
                     : Status::Accepted,
@@ -304,15 +414,17 @@ LogicalSPDCacheTransport::prepare(PageSpan slotSpan, FaultPoint fault)
 
     const uint8_t index = fifo.entries[fifo.head];
     if (index >= RecordCount)
-        return {Status::ProductionStop};
+        return productionStopResult();
     TransactionRecord &record = records[index];
-    if (record.state != RecordState::Queued || !record.keyValid)
-        return {Status::ProductionStop};
+    if (record.state != RecordState::Queued || !record.keyValid ||
+        !validOperation(record.key.operation))
+        return productionStopResult();
 
     uint32_t firstID = 0;
     uint32_t committedNext = 0;
     bool committedExhausted = false;
-    if (!previewIncarnations(2, firstID, committedNext,
+    if (remainingBudget.incarnationIDs < 2 ||
+        !previewIncarnations(2, firstID, committedNext,
                              committedExhausted)) {
         return {Status::Exhausted};
     }
@@ -342,10 +454,11 @@ LogicalSPDCacheTransport::prepare(PageSpan slotSpan, FaultPoint fault)
 
     nextIncarnationID = committedNext;
     incarnationIDsExhausted = committedExhausted;
+    remainingBudget.incarnationIDs -= 2;
     const uint8_t credit = static_cast<uint8_t>(availableCredit);
     creditOwners[credit] = index;
     if (fifoPop() != index)
-        return {Status::ProductionStop};
+        return productionStopResult();
     record.request = request;
     record.requestValid = true;
     lineBuffers[credit] = snapshot;
@@ -360,7 +473,7 @@ LogicalSPDCacheTransport::prepare(PageSpan slotSpan, FaultPoint fault)
     record.state = RecordState::PendingSend;
     pending = index;
     if (!assertInvariants())
-        return {Status::ProductionStop};
+        return productionStopResult();
     return {Status::Accepted, index, &record.packet, {}};
 }
 
@@ -376,21 +489,21 @@ LogicalSPDCacheTransport::sendPrepared(bool accepted)
     if (record.state == RecordState::WaitRetry)
         return {Status::RetryRequired, pending, &record.packet, {}};
     if (record.state != RecordState::PendingSend || !record.packetOwned)
-        return {Status::ProductionStop};
+        return productionStopResult();
     const uint8_t index = pending;
     const RequestPacket *handle = &record.packet;
     if (!accepted) {
         record.state = RecordState::WaitRetry;
-        return {assertInvariants() ? Status::SendRefused
-                                  : Status::ProductionStop,
-                index, handle, {}};
+        if (!assertInvariants())
+            return productionStopResult();
+        return {Status::SendRefused, index, handle, {}};
     }
     record.packetOwned = false;
     record.state = RecordState::InFlight;
     pending = NoRecord;
-    return {assertInvariants() ? Status::SendAccepted
-                              : Status::ProductionStop,
-            index, handle, {}};
+    if (!assertInvariants())
+        return productionStopResult();
+    return {Status::SendAccepted, index, handle, {}};
 }
 
 LogicalSPDCacheTransport::Result
@@ -410,14 +523,14 @@ LogicalSPDCacheTransport::recvReqRetry(uint8_t callbackPort)
     if (mutation != Status::Accepted)
         return mutation;
     if (pending == NoRecord)
-        return Status::Stale;
+        return productionStop();
     TransactionRecord &record = records[pending];
     if (record.state != RecordState::WaitRetry)
-        return Status::Stale;
+        return productionStop();
     if (record.port != callbackPort)
-        return Status::WrongRetryPort;
+        return productionStop();
     record.state = RecordState::PendingSend;
-    return assertInvariants() ? Status::Accepted : Status::ProductionStop;
+    return assertInvariants() ? Status::Accepted : productionStop();
 }
 
 int
@@ -458,6 +571,8 @@ LogicalSPDCacheTransport::wireExact(
     const TransactionRecord &record, const ReturnedHandle &returned) const
 {
     if (!record.keyValid || !record.requestValid ||
+        !validOperation(record.key.operation) ||
+        !validCommand(returned.command) ||
         returned.request != &record.request ||
         returned.requestIncarnation != record.request.incarnation ||
         returned.address != record.address || returned.size != LineBytes) {
@@ -485,13 +600,13 @@ LogicalSPDCacheTransport::receive(ReturnedHandle &returned,
         return {mutation};
     const int found = lookupToken(returned);
     if (found < 0)
-        return {Status::ProductionStop};
+        return productionStopResult();
     const uint8_t index = static_cast<uint8_t>(found);
     TransactionRecord &record = records[index];
     if (callbackPort != record.port ||
         callbackPort != portForAddress(record.address) ||
         !wireExact(record, returned)) {
-        return {Status::ProductionStop};
+        return productionStopResult();
     }
 
     if (record.state == RecordState::AbortDrain) {
@@ -499,32 +614,33 @@ LogicalSPDCacheTransport::receive(ReturnedHandle &returned,
         releaseRecord(index);
         const bool complete = finishAbortIfDrained();
         if (!assertInvariants())
-            return {Status::ProductionStop};
+            return productionStopResult();
         return {complete ? Status::AbortDrained
                          : Status::AbortOwnerDrained,
                 index, nullptr, {}};
     }
     if (record.state != RecordState::InFlight)
-        return {Status::ProductionStop};
+        return productionStopResult();
     if (getBit(action.acked, record.key.line))
-        return {Status::ProductionStop};
+        return productionStopResult();
 
     if (record.key.operation == Operation::Fill) {
         if (record.credit >= ResponseCredits)
-            return {Status::ProductionStop};
+            return productionStopResult();
         std::memcpy(lineBuffers[record.credit].data(), returned.data,
                     LineBytes);
         record.state = RecordState::Delivering;
         returned.disposed = true;
         const DeliveryTicket ticket{index, record.epoch, record.actionID};
         if (!assertInvariants())
-            return {Status::ProductionStop};
+            return productionStopResult();
         return {Status::DeliveryPending, index, nullptr, ticket};
     }
 
     returned.disposed = true;
-    const Status status = ackReleaseAndRefill(index);
-    return {status, index, nullptr, {}};
+    Result result = ackReleaseAndRefill(index);
+    result.record = index;
+    return result;
 }
 
 bool
@@ -546,35 +662,40 @@ LogicalSPDCacheTransport::ticketExact(const DeliveryTicket &ticket,
     return true;
 }
 
-LogicalSPDCacheTransport::Status
+LogicalSPDCacheTransport::Result
 LogicalSPDCacheTransport::commitDelivery(const DeliveryTicket &ticket,
                                          PageSpan destination, CopyHook hook,
                                          void *context)
 {
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
-        return mutation;
+        return {mutation};
     uint8_t index = NoRecord;
     if (!ticketExact(ticket, index))
-        return Status::ProductionStop;
-    if (destination.data != action.slotSpan.data ||
-        destination.size != PageBytes) {
-        return Status::ProductionStop;
+        return productionStopResult();
+    if (!validPageSpan(destination) ||
+        destination.data != action.slotSpan.data) {
+        return productionStopResult();
     }
     TransactionRecord &record = records[index];
     const std::size_t offset =
         static_cast<std::size_t>(record.key.line) * LineBytes;
     if (offset > PageBytes - LineBytes)
-        return Status::ProductionStop;
+        return productionStopResult();
 
     deliveryCopyActive = true;
     if (hook != nullptr && !hook(context)) {
+        if (terminalPoisoned)
+            return {Status::Poisoned};
         deliveryCopyActive = false;
-        return assertInvariants() ? Status::CopyFailed
-                                  : Status::ProductionStop;
+        if (!assertInvariants())
+            return productionStopResult();
+        return {Status::CopyFailed};
     }
+    if (terminalPoisoned)
+        return {Status::Poisoned};
     if (record.credit >= ResponseCredits)
-        return Status::ProductionStop;
+        return productionStopResult();
     std::memcpy(destination.data + offset,
                 lineBuffers[record.credit].data(),
                 LineBytes);
@@ -612,14 +733,14 @@ LogicalSPDCacheTransport::actionHasRecords() const
     return false;
 }
 
-LogicalSPDCacheTransport::Status
+LogicalSPDCacheTransport::Result
 LogicalSPDCacheTransport::ackReleaseAndRefill(uint8_t index)
 {
     TransactionRecord &record = records[index];
     if (!record.keyValid || action.state != ActionState::Active ||
         record.actionID != action.actionID ||
         getBit(action.acked, record.key.line)) {
-        return Status::ProductionStop;
+        return productionStopResult();
     }
     setBit(action.acked, record.key.line);
     ++action.ackCount;
@@ -629,11 +750,19 @@ LogicalSPDCacheTransport::ackReleaseAndRefill(uint8_t index)
         action.nextLine == LinesPerPage && action.ackCount == LinesPerPage &&
         allBits(action.issued) && action.acked == action.issued &&
         fifo.count == 0 && pending == NoRecord && !actionHasRecords();
-    if (complete)
+    if (complete) {
+        const CompletionIdentity completion(
+            action.operation, action.actionID, action.descriptor,
+            action.generation, action.page, action.slot,
+            action.controllerSerial);
         action = PageAction{};
+        if (!assertInvariants())
+            return productionStopResult();
+        return {Status::Completed, index, nullptr, {}, completion};
+    }
     if (!assertInvariants())
-        return Status::ProductionStop;
-    return complete ? Status::Completed : Status::Accepted;
+        return productionStopResult();
+    return {Status::Accepted, index, nullptr, {}, {}};
 }
 
 bool
@@ -652,7 +781,7 @@ LogicalSPDCacheTransport::abortAction(AbortCode code)
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return mutation;
-    if (code == AbortCode::None)
+    if (!validAbortCode(code))
         return Status::Invalid;
     if (action.state == ActionState::Free)
         return Status::AlreadyDrained;
@@ -677,6 +806,8 @@ LogicalSPDCacheTransport::abortAction(AbortCode code)
           case RecordState::AbortDrain:
           case RecordState::Free:
             break;
+          default:
+            return productionStop();
         }
     }
     fifo.entries.fill(NoRecord);
@@ -685,7 +816,7 @@ LogicalSPDCacheTransport::abortAction(AbortCode code)
     fifo.count = 0;
     const bool complete = finishAbortIfDrained();
     if (!assertInvariants())
-        return Status::ProductionStop;
+        return productionStop();
     return complete ? Status::AbortDrained : Status::Accepted;
 }
 
@@ -829,6 +960,17 @@ LogicalSPDCacheTransport::auditSnapshot() const
     snapshot.incarnationIDsExhausted = incarnationIDsExhausted;
     snapshot.copyActive = deliveryCopyActive;
     snapshot.sealed = isSealed;
+    snapshot.poisoned = terminalPoisoned;
+    snapshot.geometryValid = geometryIsValid;
+    snapshot.operation = action.operation;
+    snapshot.abortCode = action.abortCode;
+    snapshot.descriptor = action.descriptor;
+    snapshot.generation = action.generation;
+    snapshot.page = action.page;
+    snapshot.slot = action.slot;
+    snapshot.baseAddress = action.baseAddress;
+    snapshot.controllerSerial = action.controllerSerial;
+    snapshot.remainingBudget = remainingBudget;
     snapshot.fifo = fifo.entries;
     snapshot.credits = creditOwners;
     snapshot.issued = action.issued;
@@ -917,7 +1059,11 @@ LogicalSPDCacheTransport::assertInvariants() const
                 return false;
             ++bufferOwners;
             break;
+          default:
+            return false;
         }
+        if (record.keyValid && !validOperation(record.key.operation))
+            return false;
         if (record.state != RecordState::Free &&
             (record.actionID == 0 ||
              record.token.actionID != record.actionID ||
@@ -945,7 +1091,19 @@ LogicalSPDCacheTransport::assertInvariants() const
                 return false;
         }
     } else {
-        if (action.actionID == 0 || action.ackCount > action.nextLine ||
+        if ((action.state != ActionState::Active &&
+             action.state != ActionState::AbortDrain) ||
+            action.actionID == 0 || !validOperation(action.operation) ||
+            action.descriptor >= DescriptorCount || action.generation == 0 ||
+            action.page >= PagesPerDescriptor || action.slot >= SlotCount ||
+            action.baseAddress % PageBytes != 0 ||
+            action.controllerSerial == 0 ||
+            !validPageSpan(action.slotSpan) ||
+            (action.state == ActionState::Active &&
+             action.abortCode != AbortCode::None) ||
+            (action.state == ActionState::AbortDrain &&
+             !validAbortCode(action.abortCode)) ||
+            action.ackCount > action.nextLine ||
             action.nextLine > LinesPerPage)
             return false;
         for (std::size_t word = 0; word < action.acked.size(); ++word) {

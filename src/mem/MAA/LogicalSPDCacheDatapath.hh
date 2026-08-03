@@ -46,16 +46,31 @@ class LogicalSPDCacheDatapath
     transform(Operation operation, ConstSpan source, Span destination,
               uint64_t capturedScalarBits)
     {
+        switch (operation) {
+          case Operation::Add:
+          case Operation::Sub:
+          case Operation::Mul:
+          case Operation::Div:
+          case Operation::Min:
+          case Operation::Max:
+            break;
+          default:
+            return Result::Invalid;
+        }
         if (source.data == nullptr || destination.data == nullptr ||
-            source.size == 0 || source.size != destination.size ||
-            source.size > PageElements) {
+            source.size != PageElements ||
+            destination.size != PageElements) {
             return Result::Invalid;
         }
         const uintptr_t sourceBegin =
             reinterpret_cast<uintptr_t>(source.data);
         const uintptr_t destinationBegin =
             reinterpret_cast<uintptr_t>(destination.data);
-        const std::size_t bytes = source.size * sizeof(double);
+        if (sourceBegin % alignof(double) != 0 ||
+            destinationBegin % alignof(double) != 0) {
+            return Result::Invalid;
+        }
+        constexpr std::size_t bytes = PageElements * sizeof(double);
         if (sourceBegin > UINTPTR_MAX - bytes ||
             destinationBegin > UINTPTR_MAX - bytes) {
             return Result::Invalid;
