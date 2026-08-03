@@ -1,0 +1,352 @@
+{
+  "accepted_reference": {
+    "all_ready_minus_native_finalTick": 298915,
+    "causal_decomposition": false,
+    "delta_simTicks": 5477187,
+    "hybrid_simTicks": 45449165,
+    "native_simTicks": 39971978
+  },
+  "failed_attempt": {
+    "completed_arms": 0,
+    "failure_class": "checkpointed_selector_path_mismatch",
+    "pair_exit": 1,
+    "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence",
+    "restore_log_sha256": "02c908a8d56e0174913c56bea7016c35939dc4fed3f45a3dddb222d3969fc369"
+  },
+  "falsifiable_next_test": "Hold the accepted workload binary and instrumented gem5 fixed, then intervene on one consumer service constraint only. The intervention must reduce STREAM-busy residency by the same simTick amount without creating producer-not-ready, IF-full, output, or provenance changes.",
+  "fresh_pair": {
+    "arms": {
+      "native_direct_16k": {
+        "completion": {
+          "correctness_marker_empty": true,
+          "errors": 0,
+          "m5_exit_tick": 3863696414,
+          "observed_marker_counts": {
+            "exact_output": 1,
+            "m5_exit": 1,
+            "roi_end": 1
+          },
+          "output_hash": "7228541527853630339",
+          "required_marker_counts": {
+            "exact_output": 1,
+            "m5_exit": 1,
+            "roi_end": 1
+          }
+        },
+        "finalTick": 3293453608,
+        "result_sha256": "6671f54bb850191ab7d34a5268e8dcc47c7db2639af9f8180f51e8ab787ab046",
+        "simTicks": 40153518,
+        "trace_sha256": "cafdce58d358d569d1b952599360fe957404a74b4915da6221e36a29fb3d8e04"
+      },
+      "transparent_4k": {
+        "completion": {
+          "correctness_marker_empty": true,
+          "errors": 0,
+          "m5_exit_tick": 3892135281,
+          "observed_marker_counts": {
+            "exact_output": 1,
+            "m5_exit": 1,
+            "roi_end": 1
+          },
+          "output_hash": "7228541527853630339",
+          "required_marker_counts": {
+            "exact_output": 1,
+            "m5_exit": 1,
+            "roi_end": 1
+          }
+        },
+        "finalTick": 3298424048,
+        "result_sha256": "f2968f49ea754f818188a49388433589700220a04adb682de2a4498860798998",
+        "simTicks": 45122080,
+        "trace_sha256": "3e2094ca438d9c5e2f7cd509e09cf623afb4a7e157baa25080c5b14f76e5bbea"
+      }
+    },
+    "checkpoint_identity_sha256": "f80a6b337f31e22abc8393bd13c19a907bab438097c911e9bc008e4e0f9535ec",
+    "delta_simTicks": 4968562,
+    "exact_output_hash": "7228541527853630339",
+    "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2",
+    "provenance": {
+      "checkpoint_manifest_sha256": "f80a6b337f31e22abc8393bd13c19a907bab438097c911e9bc008e4e0f9535ec",
+      "dynamic_links": {
+        "frozen_ramulator_resolution": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/input/libramulator.so",
+        "normalized_lines": [
+          "linux-vdso.so.1 (LOAD_ADDRESS)",
+          "libpython3.10.so.1.0 => /lib/x86_64-linux-gnu/libpython3.10.so.1.0 (LOAD_ADDRESS)",
+          "libz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (LOAD_ADDRESS)",
+          "libtcmalloc_minimal.so.4 => /lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 (LOAD_ADDRESS)",
+          "libprotobuf.so.23 => /lib/x86_64-linux-gnu/libprotobuf.so.23 (LOAD_ADDRESS)",
+          "libhdf5_serial.so.103 => /lib/x86_64-linux-gnu/libhdf5_serial.so.103 (LOAD_ADDRESS)",
+          "libhdf5_serial_cpp.so.103 => /lib/x86_64-linux-gnu/libhdf5_serial_cpp.so.103 (LOAD_ADDRESS)",
+          "libramulator.so => /data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/input/libramulator.so (LOAD_ADDRESS)",
+          "libpng16.so.16 => /lib/x86_64-linux-gnu/libpng16.so.16 (LOAD_ADDRESS)",
+          "libstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (LOAD_ADDRESS)",
+          "libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (LOAD_ADDRESS)",
+          "libgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (LOAD_ADDRESS)",
+          "libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (LOAD_ADDRESS)",
+          "libexpat.so.1 => /lib/x86_64-linux-gnu/libexpat.so.1 (LOAD_ADDRESS)",
+          "/lib64/ld-linux-x86-64.so.2 (LOAD_ADDRESS)",
+          "libcrypto.so.3 => /lib/x86_64-linux-gnu/libcrypto.so.3 (LOAD_ADDRESS)",
+          "libcurl.so.4 => /lib/x86_64-linux-gnu/libcurl.so.4 (LOAD_ADDRESS)",
+          "libsz.so.2 => /lib/x86_64-linux-gnu/libsz.so.2 (LOAD_ADDRESS)",
+          "libnghttp2.so.14 => /lib/x86_64-linux-gnu/libnghttp2.so.14 (LOAD_ADDRESS)",
+          "libidn2.so.0 => /lib/x86_64-linux-gnu/libidn2.so.0 (LOAD_ADDRESS)",
+          "librtmp.so.1 => /lib/x86_64-linux-gnu/librtmp.so.1 (LOAD_ADDRESS)",
+          "libssh.so.4 => /lib/x86_64-linux-gnu/libssh.so.4 (LOAD_ADDRESS)",
+          "libpsl.so.5 => /lib/x86_64-linux-gnu/libpsl.so.5 (LOAD_ADDRESS)",
+          "libssl.so.3 => /lib/x86_64-linux-gnu/libssl.so.3 (LOAD_ADDRESS)",
+          "libgssapi_krb5.so.2 => /lib/x86_64-linux-gnu/libgssapi_krb5.so.2 (LOAD_ADDRESS)",
+          "libldap-2.5.so.0 => /lib/x86_64-linux-gnu/libldap-2.5.so.0 (LOAD_ADDRESS)",
+          "liblber-2.5.so.0 => /lib/x86_64-linux-gnu/liblber-2.5.so.0 (LOAD_ADDRESS)",
+          "libzstd.so.1 => /lib/x86_64-linux-gnu/libzstd.so.1 (LOAD_ADDRESS)",
+          "libbrotlidec.so.1 => /lib/x86_64-linux-gnu/libbrotlidec.so.1 (LOAD_ADDRESS)",
+          "libaec.so.0 => /lib/x86_64-linux-gnu/libaec.so.0 (LOAD_ADDRESS)",
+          "libunistring.so.2 => /lib/x86_64-linux-gnu/libunistring.so.2 (LOAD_ADDRESS)",
+          "libgnutls.so.30 => /lib/x86_64-linux-gnu/libgnutls.so.30 (LOAD_ADDRESS)",
+          "libhogweed.so.6 => /lib/x86_64-linux-gnu/libhogweed.so.6 (LOAD_ADDRESS)",
+          "libnettle.so.8 => /lib/x86_64-linux-gnu/libnettle.so.8 (LOAD_ADDRESS)",
+          "libgmp.so.10 => /lib/x86_64-linux-gnu/libgmp.so.10 (LOAD_ADDRESS)",
+          "libkrb5.so.3 => /lib/x86_64-linux-gnu/libkrb5.so.3 (LOAD_ADDRESS)",
+          "libk5crypto.so.3 => /lib/x86_64-linux-gnu/libk5crypto.so.3 (LOAD_ADDRESS)",
+          "libcom_err.so.2 => /lib/x86_64-linux-gnu/libcom_err.so.2 (LOAD_ADDRESS)",
+          "libkrb5support.so.0 => /lib/x86_64-linux-gnu/libkrb5support.so.0 (LOAD_ADDRESS)",
+          "libsasl2.so.2 => /lib/x86_64-linux-gnu/libsasl2.so.2 (LOAD_ADDRESS)",
+          "libbrotlicommon.so.1 => /lib/x86_64-linux-gnu/libbrotlicommon.so.1 (LOAD_ADDRESS)",
+          "libp11-kit.so.0 => /lib/x86_64-linux-gnu/libp11-kit.so.0 (LOAD_ADDRESS)",
+          "libtasn1.so.6 => /lib/x86_64-linux-gnu/libtasn1.so.6 (LOAD_ADDRESS)",
+          "libkeyutils.so.1 => /lib/x86_64-linux-gnu/libkeyutils.so.1 (LOAD_ADDRESS)",
+          "libresolv.so.2 => /lib/x86_64-linux-gnu/libresolv.so.2 (LOAD_ADDRESS)",
+          "libffi.so.8 => /lib/x86_64-linux-gnu/libffi.so.8 (LOAD_ADDRESS)"
+        ],
+        "normalized_sha256": "51e9ca4f58e801b5d6614db2b151965338fcf7ef6cc5572f0e9f53ac66f3bdfe",
+        "raw_sha256": "d2f070ef47269317a11911113108b502b4e663844b2fcbc4b85f8b76dafd7c6f"
+      },
+      "frozen_artifacts": {
+        "alu_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/ALU.cc",
+          "sha256": "3d4b2eaf765b50168d245d8b4c9446ff7da25632ede37b9a1d11aec653cd851a"
+        },
+        "alu_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/ALU.hh",
+          "sha256": "985eebc1ff0ae077ad0defe7ef410609e8897a9198a2f074dac77e53d70b6190"
+        },
+        "cpu_side_port_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/CpuSidePort.cc",
+          "sha256": "1449cf25215ca5a4bfba8259344a7919dc83d5522ee4ae82782857cf636867d7"
+        },
+        "dynamic_link_audit": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/gem5.ldd.txt",
+          "sha256": "d2f070ef47269317a11911113108b502b4e663844b2fcbc4b85f8b76dafd7c6f"
+        },
+        "gem5_binary": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/input/gem5.opt",
+          "sha256": "122f6819d9e9b589a91b1a3dc00714770ec2aad29581183545cd22a183026fb1"
+        },
+        "if_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/IF.cc",
+          "sha256": "524715f8bde4e02ee6fe5b91f11f34a8da77f4f7dee1d209f68144dadea0ed80"
+        },
+        "if_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/IF.hh",
+          "sha256": "74d6e73ea74c89fd431f9c311700ed822243079bd36617664fd3adbd3509e306"
+        },
+        "indirect_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/IndirectAccess.cc",
+          "sha256": "37ef219778490a8da126c23b520f1510eaa89143cb8015d17c10f52e6fca3d53"
+        },
+        "indirect_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/IndirectAccess.hh",
+          "sha256": "5a3be9644e86e63b3a80fea75b0e29339199440e2aa3bd8dcff122e6ebc6063d"
+        },
+        "invocation": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/invocation.sh.txt",
+          "sha256": "a7eacea335b574b2457bb3d1308cd9439df56cfa0f6aea8172b61066672923fb"
+        },
+        "maa_api": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/MAA_gem5.hpp",
+          "sha256": "1b3b377185695add3f8f3d3ca235deb64f7fd42e95717cbbe7851c202c1d48d5"
+        },
+        "maa_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/MAA.cc",
+          "sha256": "a8debe3f431e76ba3f7aff45a079ea6ce1c294052ca6cabf123312941b398475"
+        },
+        "maa_config_py": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/MAAConfig.py",
+          "sha256": "c3222369a6e65fe48615d0225078d218b4ee1644cdaf9565c387725c1a91b309"
+        },
+        "maa_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/MAA.hh",
+          "sha256": "2b783e265b284bd422f6aaeb97db6fc7539e1a61fdc97ad42b0a0f567cdc4e97"
+        },
+        "maa_py": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/MAA.py",
+          "sha256": "585562802ef74b5d187dd1f5c97b98710097ec405ead3fa78cf88922563ccc94"
+        },
+        "options_py": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/Options.py",
+          "sha256": "06d7f21957f946875bf2a6f4314746d6745254dabd0e8f70b452fb1472dbac54"
+        },
+        "parser": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/hybrid_overhead_attribution.py",
+          "sha256": "90b84594f2756db3b92bad135e5b1ca4d74cec03882559354afb29136b1a5569"
+        },
+        "ramulator_config": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/ramulator.yaml",
+          "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"
+        },
+        "ramulator_library": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/input/libramulator.so",
+          "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+        },
+        "ramulator_provenance": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/input/ramulator_provenance.json",
+          "sha256": "9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66"
+        },
+        "runner": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/run_virtual_tile_consumer_case.sh",
+          "sha256": "76cce93bd94507e76a130b5267e797b4476b1d380203d59aefb756169fea8566"
+        },
+        "se_config": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/se.py",
+          "sha256": "aacc6e624b7ab0e7b032d5cb913974fa790efdca84598bf468c11f14b9575d0f"
+        },
+        "source_diff": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source.diff",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "source_status": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_status.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stream_access_cc": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/StreamAccess.cc",
+          "sha256": "c93eeb5bdf1af8aeb768384621e20605c9bbc5acc7a1105c2a00e23363d9345d"
+        },
+        "stream_access_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/StreamAccess.hh",
+          "sha256": "32a99d5714584131ecbd8f5bf651bbafd1690c7faee846cd62bbd79ae85147da"
+        },
+        "transparent_controller_hh": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/TransparentSPDController.hh",
+          "sha256": "0784813c41b9f4f62ad1bfe0ff16cd36187864d070e4d46c3a341773ee4086bd"
+        },
+        "workload_binary": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/input/workload",
+          "sha256": "8b8ec304c2be9b8ce8cee62eb7f8122f9361e426f24ec27e60f8f234ca405469"
+        },
+        "workload_source": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/transparent_4k/source_snapshot/test_virtual_tile_consumer.cpp",
+          "sha256": "aef4e188c9353998524f99e9ee5fbdaf6d4aa689fb97caabc7a9e04589b27739"
+        }
+      },
+      "ramulator": {
+        "elf_build_id": "11302ea5a975fd6a8737915c11e06bd5ccede7f4",
+        "frozen_library": {
+          "path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so",
+          "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+        },
+        "nested_gitlinks": {
+          "argparse": "997da9255618311d1fcb0135ce86022729d1f1cb",
+          "spdlog": "ad0e89cbfb4d0c1ce4d097e134eb7be67baebb36",
+          "yaml-cpp": "0579ae3d976091d7d664aa9d2527e0d0cff25763"
+        },
+        "normalized_dependency_sha256": "68583f08ffc54383f36f38a6ab03c59a3a21043f7fdf6e31416aa7c26c2bf0fb",
+        "outer_tree": "fcf82e8844ce04e41f5930e0346b75d0fbdc0118",
+        "reference_worktree": "/data1/nier/worktrees/DX100-transparent-virtual-tile-20260725",
+        "relocation_audit": {
+          "identical_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+          "loaded_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/instrumented_pair_evidence_attempt2/input/libramulator.so",
+          "recorded_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/input/libramulator.so"
+        },
+        "schema": "dx100.ramulator_provenance.v1",
+        "source_tree": "c979ac9e3f7bc847ad16108324ef07c38b3755bf"
+      }
+    },
+    "source_commit": "e92abeab6d66248fd7b2c9902ba02a975cbb9ccb",
+    "tail": {
+      "all_pages_ready_tick": 3293139982,
+      "all_ready_minus_native_finalTick": -313626,
+      "alu_busy_percent": 6.109785202863962,
+      "blocker_summary_tick": 3298385862,
+      "consumer_acceptance": {
+        "expected_field_semantics": "issued_packets_at_acceptance",
+        "packets": 2052,
+        "pages": {
+          "0": {
+            "accepted_packets": 513,
+            "final_issued_packets": 513,
+            "first_tick": 3283548723,
+            "last_tick": 3286192634,
+            "transaction": 65539
+          },
+          "1": {
+            "accepted_packets": 513,
+            "final_issued_packets": 513,
+            "first_tick": 3292338389,
+            "last_tick": 3294110282,
+            "transaction": 65795
+          },
+          "2": {
+            "accepted_packets": 513,
+            "final_issued_packets": 513,
+            "first_tick": 3294653337,
+            "last_tick": 3296447140,
+            "transaction": 66051
+          },
+          "3": {
+            "accepted_packets": 513,
+            "final_issued_packets": 513,
+            "first_tick": 3296990195,
+            "last_tick": 3298385862,
+            "transaction": 66307
+          }
+        }
+      },
+      "controller_backpressure_events": 0,
+      "hybrid_finalTick": 3298424048,
+      "native_finalTick": 3293453608,
+      "post_ready_blocker_ticks": {
+        "alu_busy_ticks": 320512,
+        "if_full_ticks": 0,
+        "inactive_ticks": 0,
+        "other_ticks": 0,
+        "producer_not_ready_ticks": 0,
+        "runnable_ticks": 0,
+        "serialization_ticks": 0,
+        "slot_owned_ticks": 0,
+        "stream_busy_ticks": 4925368,
+        "transition_ticks": 0
+      },
+      "post_ready_total_ticks": 5245880,
+      "producer_backing_writes": {
+        "completions": 5306,
+        "last_completion_tick": 3293139982,
+        "post_ready_completions": 0
+      },
+      "retire_tick": 3298385862,
+      "retire_to_hybrid_finalTick": 38186,
+      "stream_busy_percent": 93.89021479713604
+    }
+  },
+  "hypothesis_separation": {
+    "backing_store_writes": "no_direct_post_ready_completion: all recorded producer writes complete by all-ready; indirect perturbation unresolved",
+    "final_retirement": "zero controller bookkeeping gap; only the ROI epilogue remains",
+    "lost_a_request_reordering": "not_treated; accepted geometry does not support loss, but ordering quality remains unresolved",
+    "page_fill_backpressure": "not_a_post_ready_blocker: producer-not-ready and controller backpressure are zero after all-ready",
+    "per_page_consumer_serialization": "residency_supported_not_speedup_proven: post-ready time reconciles exactly to STREAM and ALU busy"
+  },
+  "limitations": [
+    "One completed observation per arm; no variance estimate.",
+    "Residency counters identify occupied states but do not estimate an eliminable causal speedup.",
+    "The fresh all-ready/native alignment differs from the accepted pair, so cross-arm endpoint alignment is not treated as causal or replicated.",
+    "The consumer acceptance expected field records issued packets at each acceptance; terminal continuity is validated at 513 packets per page."
+  ],
+  "run_counts": {
+    "accepted_arms_reaudited": 5,
+    "fresh_completed_arms": 2,
+    "fresh_failed_arms": 1,
+    "fresh_failed_attempts": 1,
+    "observations_per_completed_arm": 1
+  },
+  "schema": "dx100.hybrid_tail_instrumented_pair.v1",
+  "status": "completed_fail_closed"
+}

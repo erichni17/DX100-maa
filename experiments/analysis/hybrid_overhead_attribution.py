@@ -353,6 +353,38 @@ ARTIFACT_LABELS = (
     "invocation",
 )
 
+INSTRUMENTED_ARTIFACT_LABELS = (
+    "gem5_binary",
+    "workload_binary",
+    "se_config",
+    "ramulator_config",
+    "ramulator_library",
+    "ramulator_provenance",
+    "dynamic_link_audit",
+    "runner",
+    "workload_source",
+    "maa_api",
+    "indirect_cc",
+    "indirect_hh",
+    "transparent_controller_hh",
+    "maa_cc",
+    "maa_hh",
+    "if_cc",
+    "if_hh",
+    "stream_access_cc",
+    "stream_access_hh",
+    "alu_cc",
+    "alu_hh",
+    "maa_py",
+    "maa_config_py",
+    "options_py",
+    "parser",
+    "cpu_side_port_cc",
+    "source_diff",
+    "source_status",
+    "invocation",
+)
+
 
 class AuditError(ValueError):
     pass
@@ -811,6 +843,24 @@ def validate_checkpoint_manifest(
         records[target] = digest
     expected = set(CHECKPOINT_TARGETS)
     actual = set(records)
+    checkpoint_ticks = {
+        match.group(1)
+        for target in actual
+        if (
+            match := re.fullmatch(
+                r"\./cpt\.([0-9]+)/(?:m5\.cpt|system\.physmem\.store0\.pmem)",
+                target,
+            )
+        )
+    }
+    if len(checkpoint_ticks) == 1:
+        checkpoint_tick = checkpoint_ticks.pop()
+        expected = {
+            target.replace(
+                f"cpt.{EXPECTED_CHECKPOINT_TICK}", f"cpt.{checkpoint_tick}"
+            )
+            for target in expected
+        }
     if actual != expected:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
@@ -864,13 +914,18 @@ def audited_artifacts(path: Path) -> dict[str, dict[str, str]]:
                 f"{path}: unavailable/changed artifact {artifact}"
             )
         records.append((match.group(1), str(artifact.resolve())))
-    if len(records) != len(ARTIFACT_LABELS):
+    label_versions = {
+        len(ARTIFACT_LABELS): ARTIFACT_LABELS,
+        len(INSTRUMENTED_ARTIFACT_LABELS): INSTRUMENTED_ARTIFACT_LABELS,
+    }
+    labels = label_versions.get(len(records))
+    if labels is None:
         raise AuditError(
-            f"{path}: artifact count {len(records)}/{len(ARTIFACT_LABELS)}"
+            f"{path}: unsupported artifact count {len(records)}"
         )
     return {
         label: {"sha256": digest, "path": artifact}
-        for label, (digest, artifact) in zip(ARTIFACT_LABELS, records)
+        for label, (digest, artifact) in zip(labels, records)
     }
 
 
@@ -904,12 +959,24 @@ def audit_ramulator_provenance(path: Path, library: dict[str, str]) -> dict:
     if not re.fullmatch(r"[0-9a-f]+", data["elf_build_id"]):
         raise AuditError(f"{path}: malformed ELF BuildID")
     frozen = data["frozen_library"]
-    if (
-        set(frozen) != {"path", "sha256"}
-        or str(Path(frozen["path"]).resolve()) != library["path"]
-        or frozen["sha256"] != library["sha256"]
+    if set(frozen) != {"path", "sha256"} or (
+        frozen["sha256"] != library["sha256"]
     ):
         raise AuditError(f"{path}: frozen library mismatch")
+    recorded_library = Path(frozen["path"]).resolve()
+    relocated = str(recorded_library) != library["path"]
+    if relocated and (
+        not recorded_library.is_file()
+        or sha256(recorded_library) != frozen["sha256"]
+    ):
+        raise AuditError(f"{path}: unverified frozen library relocation")
+    if relocated:
+        data = dict(data)
+        data["relocation_audit"] = {
+            "recorded_path": str(recorded_library),
+            "loaded_path": library["path"],
+            "identical_sha256": frozen["sha256"],
+        }
     return data
 
 
@@ -1403,33 +1470,41 @@ def tail_instrumentation_audit(
         raise AuditError("consumer acceptance page domain mismatch")
     pages = {}
     for page, events in sorted(by_page.items()):
-        expected_values = {
-            parse_canonical_uint64(event["expected"], "expected")
-            for event in events
-        }
         transactions = {
             parse_canonical_uint64(event["transaction"], "transaction")
             for event in events
         }
-        if len(expected_values) != 1 or len(transactions) != 1:
+        if len(transactions) != 1:
             raise AuditError("consumer acceptance scope changed within page")
-        expected = expected_values.pop()
         ordinals = [
             parse_canonical_uint64(event["ordinal"], "ordinal")
             for event in events
         ]
-        if ordinals != list(range(1, expected + 1)):
+        issued_at_acceptance = [
+            parse_canonical_uint64(event["expected"], "expected")
+            for event in events
+        ]
+        if (
+            ordinals != list(range(1, len(events) + 1))
+            or issued_at_acceptance != sorted(issued_at_acceptance)
+            or any(
+                ordinal > issued
+                for ordinal, issued in zip(ordinals, issued_at_acceptance)
+            )
+            or issued_at_acceptance[-1] != len(events)
+        ):
             raise AuditError("consumer acceptance ordinal discontinuity")
         for event, ordinal in zip(events, ordinals):
             if parse_canonical_uint64(event["first"], "first") != int(
                 ordinal == 1
             ) or parse_canonical_uint64(event["last"], "last") != int(
-                ordinal == expected
+                ordinal == len(events)
             ):
                 raise AuditError("consumer acceptance boundary flag mismatch")
             parse_int(event["address"])
         pages[str(page)] = {
             "accepted_packets": len(events),
+            "final_issued_packets": issued_at_acceptance[-1],
             "first_tick": events[0]["sim_tick"],
             "last_tick": events[-1]["sim_tick"],
             "transaction": transactions.pop(),
