@@ -3,9 +3,11 @@
 ## Binding outcome
 
 Commit `62b181af75260193e36f55095d4165cd4cba0858` remains rejected as
-implementation-authorizing evidence. This successor is **model evidence only**.
-It closes the finite-state, validation, accounting, provenance, and handoff
-defects, but it intentionally removes the prior workload A-line/row comparison.
+implementation-authorizing evidence. Independent review also rejected commit
+`82a5ce062b27f00646da02f655ed3c4c6c92da5c` because issue selection read an
+append-built line-order tuple. This repair removes that duplicate policy state.
+It remains **model evidence only** and intentionally contains no workload
+A-line/row comparison.
 
 The frozen 2026-08-02 runs do not record each B physical address and translated
 A physical line, Ramulator fields, RowTable slice, and `grow_addr`. Their
@@ -35,9 +37,11 @@ arrays constructed at initialization:
 
 Policy admission and issue selection use no `dict`, `set`, `OrderedDict`, or
 append-only container. Offset, row, line, cursor, response-count, and drain
-state have fixed charged sizes. Lists/sets used to collect test results,
-preflight an evidence envelope, or hash the emitted issue stream are explicitly
-validation oracles; policy never reads them to admit or order a request.
+state have fixed charged sizes. The issue stream is observed one event at a
+time by a separate validation digest; no issue-event list is materialized.
+Lists/sets used for test stimuli, exact-placement checks, or evidence preflight
+remain validation oracles and policy never reads them to admit or order a
+request.
 
 ### Admission and drains
 
@@ -80,6 +84,12 @@ order. One line per live slice is selected per traversal round. Per-slice grow
 changes, rather than a misleading global cross-bank row sequence, are counted
 as row transitions.
 
+Selection now walks the fixed row and line arrays directly. It retains 512
+charged row-sent bits, five charged 16-entry per-slice cursor/state arrays, and
+one scalar native traversal cursor. It does not construct the former per-slice
+line tuples or any other request-count-sized order container. A full epoch with
+4,096 live lines therefore still has zero materialized policy-order entries.
+
 The exact source grounding is repository parent
 `9393bf09f9318d31b1f8406d839cc2510690e47d` plus frozen snapshots. The audit
 verifies `Tables.cc` SHA-256
@@ -109,6 +119,7 @@ The executable unit suite covers the binding cases:
 
 | Case | Result |
 |---|---|
+| all fixed arrays saturated: 4,096 line/Offset and 512 row slots | one epoch; 4,096 requests; zero issue-order-vector entries; deterministic SHA-256 `b0e2fa19...c538ff` |
 | 4,096 distinct rows, round-robin across 16 slices | peak 512 rows; 7 row-capacity drains; 8 epochs |
 | 9 lines in one grow | 2 row slots, 9 line slots; no overflow |
 | 257 lines in one grow/slice | peak 32 rows and 256 lines; 1 row-capacity drain |
@@ -169,12 +180,15 @@ context only; no speedup or promotion claim is made.
 
 `storage_ledger()` computes every subtotal from field widths. Each field array
 element rounds independently to a byte width; fields are not optimistically
-packed across entries. Offset `next`, line head/tail/count/claim bits, response
-descriptor identity, response payload ownership, invalidator state, all 128
-partition boundary fields, per-slice cursors, selector/drain/state counters,
+packed across entries. Offset `next`, row-sent bits, line head/tail/count/claim
+bits, response descriptor identity, response payload ownership, invalidator
+state, all 128 partition boundary fields, per-slice row/grow/line/active-grow
+cursors, the scalar native-slice cursor, selector/drain/state counters,
 response occupancies, unit/instruction/generation ownership, A/B bases, logical
 and source bounds, word-size/destination fields, placement count, and pending
-writes are charged.
+writes are charged. The repaired executable selector now uses those charged
+cursor fields directly; no ledger subtotal is needed for a duplicate order
+vector because no such vector exists.
 
 | Component | 16K logical / 4K active | 64K logical / 16K active arithmetic |
 |---|---:|---:|

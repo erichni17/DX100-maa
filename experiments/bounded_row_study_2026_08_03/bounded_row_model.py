@@ -163,6 +163,7 @@ class RunResult:
     peak_reserved_responses: int
     peak_reserved_words: int
     a_line_requests: int
+    materialized_issue_order_entries: int
     per_slice_row_transitions: int
     issue_order_sha256: str
     b_unique_lines_per_pass: int
@@ -180,6 +181,30 @@ class RunResult:
         return asdict(self)
 
 
+class IssueValidationOracle:
+    """Streaming issue-order oracle that policy emits to but never reads."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self._last_grow = [-1] * NUM_SLICES
+        self.requests = 0
+        self.per_slice_row_transitions = 0
+
+    def observe(self, event: IssueEvent) -> None:
+        self._digest.update(event.slice_id.to_bytes(1, "little"))
+        self._digest.update(event.grow.to_bytes(2, "little"))
+        self._digest.update(event.a_line_paddr.to_bytes(8, "little"))
+        if self._last_grow[event.slice_id] != -1 and (
+            self._last_grow[event.slice_id] != event.grow
+        ):
+            self.per_slice_row_transitions += 1
+        self._last_grow[event.slice_id] = event.grow
+        self.requests += 1
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
+
+
 class FiniteTables:
     """Fixed prospective hardware arrays; none grows after construction."""
 
@@ -195,6 +220,7 @@ class FiniteTables:
 
         self.row_valid = [False] * ROW_SLOTS
         self.row_grow = [0] * ROW_SLOTS
+        self.row_sent = [False] * ROW_SLOTS
 
         self.line_valid = [False] * LINE_SLOTS
         self.line_addr = [0] * LINE_SLOTS
@@ -208,6 +234,23 @@ class FiniteTables:
         self.peak_offsets = 0
         self.peak_rows = 0
         self.peak_lines = 0
+
+        # Fixed issue-selection state.  These arrays and scalars correspond
+        # exactly to the charged row.sent, cursor.*, and control native-slice
+        # fields in storage_ledger(); no line-order vector is constructed.
+        self.issue_row_cursor = [0] * NUM_SLICES
+        self.issue_grow_row_cursor = [0] * NUM_SLICES
+        self.issue_line_cursor = [0] * NUM_SLICES
+        self.issue_active_grow = [0] * NUM_SLICES
+        self.issue_active_grow_valid = [False] * NUM_SLICES
+        self.issue_native_slice_cursor = 0
+        self.issue_remaining = 0
+        self.issue_build_round = 0
+        self.issue_reserved_slots = 0
+        self.issue_reserved_words = 0
+        self.issue_peak_slots = 0
+        self.issue_peak_words = 0
+        self.issue_started = False
 
     def is_empty(self) -> bool:
         return self.offset_occupancy == 0
@@ -312,106 +355,141 @@ class FiniteTables:
         self.line_words[line_slot] = 1
         return True, None, rolled_over
 
-    def _native_slice_lines(self, slice_id: int) -> tuple[int, ...]:
-        """Native row/grow/line slot order for one slice.
-
-        The returned tuple is an external issue oracle bounded by 256 line
-        slots.  It is never used by admission and cannot exceed charged slice
-        geometry.
-        """
-        result: list[int] = []
-        sent_rows = [False] * ROWS_PER_SLICE
+    def _next_native_line(self, slice_id: int) -> int | None:
+        """Select one line directly from fixed row/line arrays and cursors."""
         base = self._row_base(slice_id)
         while True:
-            first = -1
-            for local_row in range(ROWS_PER_SLICE):
-                if (
-                    self.row_valid[base + local_row]
-                    and not sent_rows[local_row]
-                ):
-                    first = local_row
-                    break
-            if first == -1:
-                break
-            grow = self.row_grow[base + first]
-            for local_row in range(ROWS_PER_SLICE):
+            if not self.issue_active_grow_valid[slice_id]:
+                first = self.issue_row_cursor[slice_id]
+                while first < ROWS_PER_SLICE:
+                    row_slot = base + first
+                    if (
+                        self.row_valid[row_slot]
+                        and not self.row_sent[row_slot]
+                    ):
+                        break
+                    first += 1
+                self.issue_row_cursor[slice_id] = first
+                if first == ROWS_PER_SLICE:
+                    return None
+                self.issue_active_grow[slice_id] = self.row_grow[base + first]
+                self.issue_active_grow_valid[slice_id] = True
+                self.issue_grow_row_cursor[slice_id] = first
+                self.issue_line_cursor[slice_id] = 0
+                self.issue_row_cursor[slice_id] = first + 1
+
+            local_row = self.issue_grow_row_cursor[slice_id]
+            while local_row < ROWS_PER_SLICE:
                 row_slot = base + local_row
                 if (
-                    not self.row_valid[row_slot]
-                    or sent_rows[local_row]
-                    or self.row_grow[row_slot] != grow
+                    self.row_valid[row_slot]
+                    and not self.row_sent[row_slot]
+                    and self.row_grow[row_slot]
+                    == self.issue_active_grow[slice_id]
                 ):
-                    continue
-                line_base = self._line_base(row_slot)
-                for line_slot in range(line_base, line_base + LINES_PER_ROW):
-                    if self.line_valid[line_slot]:
-                        result.append(line_slot)
-                sent_rows[local_row] = True
-        return tuple(result)
+                    line_cursor = self.issue_line_cursor[slice_id]
+                    line_base = self._line_base(row_slot)
+                    while line_cursor < LINES_PER_ROW:
+                        line_slot = line_base + line_cursor
+                        line_cursor += 1
+                        self.issue_line_cursor[slice_id] = line_cursor
+                        if self.line_valid[line_slot]:
+                            return line_slot
+                    self.row_sent[row_slot] = True
+                    self.issue_line_cursor[slice_id] = 0
+                local_row += 1
+                self.issue_grow_row_cursor[slice_id] = local_row
 
-    def issue_native_round_robin(
-        self, epoch: int, first_build_round: int
-    ) -> tuple[list[IssueEvent], int, int, int]:
-        """Mirror native bank-outer/BG-inner slice traversal and finite builds."""
-        # Source constructor traversal for 16 slices:
-        # bank outer, bankgroup inner => BG*4+bank.
-        slice_order = tuple(
-            bankgroup * NUM_BANKS + bank
-            for bank in range(NUM_BANKS)
-            for bankgroup in range(NUM_BANK_GROUPS)
-        )
-        per_slice = tuple(
-            self._native_slice_lines(s) for s in range(NUM_SLICES)
-        )
-        cursors = [0] * NUM_SLICES
-        remaining = self.line_occupancy
-        events: list[IssueEvent] = []  # validation output, not policy state
-        build_round = first_build_round
-        reserved_slots = 0
-        reserved_words = 0
-        peak_slots = 0
-        peak_words = 0
+            self.issue_active_grow_valid[slice_id] = False
+            self.issue_grow_row_cursor[slice_id] = 0
+            self.issue_line_cursor[slice_id] = 0
 
-        while remaining:
-            progress = False
-            for slice_id in slice_order:
-                cursor = cursors[slice_id]
-                if cursor == len(per_slice[slice_id]):
-                    continue
-                line_slot = per_slice[slice_id][cursor]
-                words = self.line_words[line_slot]
-                if words <= 0 or words > RESPONSE_WORD_POOL:
-                    raise AssertionError(
-                        "line violates finite response descriptor"
-                    )
-                if (
-                    reserved_slots == RESPONSE_SLOTS
-                    or reserved_words + words > RESPONSE_WORD_POOL
-                ):
-                    build_round += 1
-                    reserved_slots = 0
-                    reserved_words = 0
-                row_slot = line_slot // LINES_PER_ROW
-                events.append(
-                    IssueEvent(
-                        epoch=epoch,
-                        build_round=build_round,
-                        slice_id=slice_id,
-                        grow=self.row_grow[row_slot],
-                        a_line_paddr=self.line_addr[line_slot],
-                        words=words,
-                    )
+    def begin_issue(self, first_build_round: int) -> None:
+        """Initialize finite issue state for the current nonempty epoch."""
+        if self.issue_started:
+            raise AssertionError("issue traversal is already active")
+        if self.is_empty() or self.line_occupancy <= 0:
+            raise AssertionError("cannot issue empty tables")
+        for row_slot in range(ROW_SLOTS):
+            self.row_sent[row_slot] = False
+        for slice_id in range(NUM_SLICES):
+            self.issue_row_cursor[slice_id] = 0
+            self.issue_grow_row_cursor[slice_id] = 0
+            self.issue_line_cursor[slice_id] = 0
+            self.issue_active_grow[slice_id] = 0
+            self.issue_active_grow_valid[slice_id] = False
+        self.issue_native_slice_cursor = 0
+        self.issue_remaining = self.line_occupancy
+        self.issue_build_round = first_build_round
+        self.issue_reserved_slots = 0
+        self.issue_reserved_words = 0
+        self.issue_peak_slots = 0
+        self.issue_peak_words = 0
+        self.issue_started = True
+
+    def issue_next(self, epoch: int) -> IssueEvent | None:
+        """Issue one request using native bank-outer/BG-inner traversal."""
+        if not self.issue_started:
+            raise AssertionError("issue traversal was not initialized")
+        if self.issue_remaining == 0:
+            return None
+
+        for _ in range(NUM_SLICES):
+            traversal_slot = self.issue_native_slice_cursor
+            self.issue_native_slice_cursor = (
+                self.issue_native_slice_cursor + 1
+            ) % NUM_SLICES
+            bank = traversal_slot // NUM_BANK_GROUPS
+            bankgroup = traversal_slot % NUM_BANK_GROUPS
+            slice_id = bankgroup * NUM_BANKS + bank
+            line_slot = self._next_native_line(slice_id)
+            if line_slot is None:
+                continue
+
+            words = self.line_words[line_slot]
+            if words <= 0 or words > RESPONSE_WORD_POOL:
+                raise AssertionError(
+                    "line violates finite response descriptor"
                 )
-                cursors[slice_id] += 1
-                remaining -= 1
-                reserved_slots += 1
-                reserved_words += words
-                peak_slots = max(peak_slots, reserved_slots)
-                peak_words = max(peak_words, reserved_words)
-                progress = True
-            if not progress:
-                raise AssertionError("native slice traversal made no progress")
-        return events, build_round + 1, peak_slots, peak_words
+            if (
+                self.issue_reserved_slots == RESPONSE_SLOTS
+                or self.issue_reserved_words + words > RESPONSE_WORD_POOL
+            ):
+                self.issue_build_round += 1
+                self.issue_reserved_slots = 0
+                self.issue_reserved_words = 0
+            row_slot = line_slot // LINES_PER_ROW
+            event = IssueEvent(
+                epoch=epoch,
+                build_round=self.issue_build_round,
+                slice_id=slice_id,
+                grow=self.row_grow[row_slot],
+                a_line_paddr=self.line_addr[line_slot],
+                words=words,
+            )
+            self.issue_remaining -= 1
+            self.issue_reserved_slots += 1
+            self.issue_reserved_words += words
+            self.issue_peak_slots = max(
+                self.issue_peak_slots, self.issue_reserved_slots
+            )
+            self.issue_peak_words = max(
+                self.issue_peak_words, self.issue_reserved_words
+            )
+            return event
+
+        raise AssertionError("native slice traversal made no progress")
+
+    def finish_issue(self) -> tuple[int, int, int]:
+        """Finish an exhausted traversal and return next-round/peak counters."""
+        if not self.issue_started or self.issue_remaining != 0:
+            raise AssertionError("issue traversal is not exhausted")
+        self.issue_started = False
+        return (
+            self.issue_build_round + 1,
+            self.issue_peak_slots,
+            self.issue_peak_words,
+        )
 
     def placements(self, counts: list[int]) -> None:
         for slot in range(self.offset_occupancy):
@@ -432,6 +510,7 @@ class FiniteTables:
                 self.line_words[slot] = 0
         for slot in range(ROW_SLOTS):
             self.row_valid[slot] = False
+            self.row_sent[slot] = False
         self.offset_occupancy = 0
         self.row_occupancy = 0
         self.line_occupancy = 0
@@ -522,7 +601,7 @@ class Model:
         self.tables = FiniteTables(self.k)
 
         placements = [0] * self.n  # validation oracle only
-        issue_events: list[IssueEvent] = []  # validation output only
+        issue_oracle = IssueValidationOracle()
         drain_counts = [0, 0, 0]
         epochs = 0
         capacity_drains = 0
@@ -536,13 +615,13 @@ class Model:
             nonlocal peak_reserved_slots, peak_reserved_words
             if self.tables is None or self.tables.is_empty():
                 return
-            (
-                events,
-                next_round,
-                peak_slots,
-                peak_words,
-            ) = self.tables.issue_native_round_robin(epochs, build_rounds)
-            issue_events.extend(events)
+            self.tables.begin_issue(build_rounds)
+            while True:
+                event = self.tables.issue_next(epochs)
+                if event is None:
+                    break
+                issue_oracle.observe(event)
+            next_round, peak_slots, peak_words = self.tables.finish_issue()
             build_rounds = next_round
             peak_reserved_slots = max(peak_reserved_slots, peak_slots)
             peak_reserved_words = max(peak_reserved_words, peak_words)
@@ -573,19 +652,6 @@ class Model:
                 if rolled_over:
                     rollovers += 1
             drain()
-
-        digest = hashlib.sha256()
-        last_grow = [-1] * NUM_SLICES
-        transitions = 0
-        for event in issue_events:
-            digest.update(event.slice_id.to_bytes(1, "little"))
-            digest.update(event.grow.to_bytes(2, "little"))
-            digest.update(event.a_line_paddr.to_bytes(8, "little"))
-            if last_grow[event.slice_id] != -1 and (
-                last_grow[event.slice_id] != event.grow
-            ):
-                transitions += 1
-            last_grow[event.slice_id] = event.grow
 
         # This hash deliberately checks only the synthetic semantic formula;
         # it is never represented as the frozen workload oracle.
@@ -624,9 +690,10 @@ class Model:
             build_rounds=build_rounds,
             peak_reserved_responses=peak_reserved_slots,
             peak_reserved_words=peak_reserved_words,
-            a_line_requests=len(issue_events),
-            per_slice_row_transitions=transitions,
-            issue_order_sha256=digest.hexdigest(),
+            a_line_requests=issue_oracle.requests,
+            materialized_issue_order_entries=0,
+            per_slice_row_transitions=(issue_oracle.per_slice_row_transitions),
+            issue_order_sha256=issue_oracle.hexdigest(),
             b_unique_lines_per_pass=b_lines,
             b_line_reads=b_lines * self.partitions,
             b_reread_lines=b_lines * (self.partitions - 1),
@@ -822,6 +889,24 @@ def _synthetic_exact_capacity(
     return records
 
 
+def _synthetic_full_line_capacity() -> list[PhysicalRecord]:
+    """Fill every fixed Offset, row, and line slot exactly once."""
+    records: list[PhysicalRecord] = []
+    for itr in range(ACTIVE_ELEMENTS):
+        slice_id = itr % NUM_SLICES
+        local_line = itr // NUM_SLICES
+        records.append(
+            _synthetic_record(
+                itr,
+                slice_id=slice_id,
+                grow=local_line // LINES_PER_ROW,
+                line=itr,
+                wid=itr % (CACHE_LINE_BYTES // WORD_BYTES),
+            )
+        )
+    return records
+
+
 def synthetic_adversarial_results() -> dict[str, object]:
     geometry = ApertureGeometry.synthetic_full_ddr4()
     cases: dict[str, RunResult] = {}
@@ -867,6 +952,9 @@ def synthetic_adversarial_results() -> dict[str, object]:
     cases["partition_skew"] = Model(
         logical_elements=4096, source_elements=8192
     ).run(_synthetic_exact_capacity(4096, grow_base=50_000), geometry)
+    cases["full_4096_line_occupancy"] = Model(
+        logical_elements=4096, source_elements=8192
+    ).run(_synthetic_full_line_capacity(), geometry)
 
     fields = (
         "epochs",
@@ -879,6 +967,8 @@ def synthetic_adversarial_results() -> dict[str, object]:
         "peak_reserved_responses",
         "peak_reserved_words",
         "a_line_requests",
+        "materialized_issue_order_entries",
+        "issue_order_sha256",
         "selector_words",
         "placements",
         "missing_placements",
@@ -893,10 +983,15 @@ def synthetic_adversarial_results() -> dict[str, object]:
 
 def model_report() -> dict[str, object]:
     return {
-        "schema": 2,
+        "schema": 3,
         "evidence_class": "model_only",
         "workload_trace_status": "blocked_new_gem5_physical_trace_required",
         "workload_a_line_comparisons": None,
+        "authorization": {
+            "production": False,
+            "performance": False,
+            "requires_new_physical_trace": True,
+        },
         "reason": (
             "frozen MAAVirtualTrace logs contain lifecycle counters but no "
             "per-iteration B paddr and translated A paddr/slice/grow records"
@@ -910,6 +1005,14 @@ def model_report() -> dict[str, object]:
             "line_slots": LINE_SLOTS,
             "response_slots": RESPONSE_SLOTS,
             "response_word_pool": RESPONSE_WORD_POOL,
+            "issue_selection": {
+                "mechanism": "direct_fixed_array_cursor_walk",
+                "materialized_order_entries": 0,
+                "row_sent_entries": ROW_SLOTS,
+                "per_slice_cursor_sets": NUM_SLICES,
+                "native_slice_cursor_entries": 1,
+                "validation_order_storage": "streaming_digest_only",
+            },
             "native_slice_traversal": [
                 bg * NUM_BANKS + bank
                 for bank in range(NUM_BANKS)

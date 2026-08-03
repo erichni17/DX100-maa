@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
+import ast
+import inspect
 import json
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -65,6 +68,24 @@ def exact_capacity_records(
                 slice_id=line_id % NUM_SLICES,
                 grow=grow_base + line_id // NUM_SLICES,
                 line=line_id,
+                wid=itr % 8,
+            )
+        )
+    return records
+
+
+def full_line_capacity_records() -> list[PhysicalRecord]:
+    """Fill every fixed Offset, row, and line slot exactly once."""
+    records = []
+    for itr in range(ACTIVE_ELEMENTS):
+        slice_id = itr % NUM_SLICES
+        local_line = itr // NUM_SLICES
+        records.append(
+            record(
+                itr,
+                slice_id=slice_id,
+                grow=local_line // 8,
+                line=itr,
                 wid=itr % 8,
             )
         )
@@ -158,6 +179,93 @@ class FiniteGeometryTest(unittest.TestCase):
         self.assertEqual(len(tables.row_valid), ROW_SLOTS)
         self.assertEqual(len(tables.line_valid), LINE_SLOTS)
 
+    def test_full_line_occupancy_has_no_issue_order_policy_vector(
+        self,
+    ) -> None:
+        records = full_line_capacity_records()
+        models = [
+            Model(logical_elements=ACTIVE_ELEMENTS, source_elements=8192)
+            for _ in range(2)
+        ]
+        results = [model.run(records, GEOMETRY) for model in models]
+        for result in results:
+            self.assertEqual(result.peak_offsets, ACTIVE_ELEMENTS)
+            self.assertEqual(result.peak_row_slots, ROW_SLOTS)
+            self.assertEqual(result.peak_line_slots, LINE_SLOTS)
+            self.assertEqual(result.a_line_requests, LINE_SLOTS)
+            self.assertEqual(result.materialized_issue_order_entries, 0)
+            self.assertEqual(result.capacity_drains, 0)
+            self.assertEqual(
+                result.issue_order_sha256,
+                "b0e2fa19cb09eabd737219a18c65402e2a141da875fede28838f694898c538ff",
+            )
+        self.assertEqual(results[0].summary(), results[1].summary())
+
+        tables = models[0].tables
+        self.assertIsNotNone(tables)
+        sequence_lengths = {
+            name: len(value)
+            for name, value in vars(tables).items()
+            if isinstance(value, (list, tuple))
+        }
+        self.assertEqual(
+            sequence_lengths,
+            {
+                "offset_valid": ACTIVE_ELEMENTS,
+                "offset_itr": ACTIVE_ELEMENTS,
+                "offset_wid": ACTIVE_ELEMENTS,
+                "offset_next": ACTIVE_ELEMENTS,
+                "row_valid": ROW_SLOTS,
+                "row_grow": ROW_SLOTS,
+                "row_sent": ROW_SLOTS,
+                "line_valid": LINE_SLOTS,
+                "line_addr": LINE_SLOTS,
+                "line_head": LINE_SLOTS,
+                "line_tail": LINE_SLOTS,
+                "line_words": LINE_SLOTS,
+                "issue_row_cursor": NUM_SLICES,
+                "issue_grow_row_cursor": NUM_SLICES,
+                "issue_line_cursor": NUM_SLICES,
+                "issue_active_grow": NUM_SLICES,
+                "issue_active_grow_valid": NUM_SLICES,
+            },
+        )
+
+        self.assertFalse(hasattr(FiniteTables, "_native_slice_lines"))
+        for method_name in ("_next_native_line", "begin_issue", "issue_next"):
+            tree = ast.parse(
+                textwrap.dedent(
+                    inspect.getsource(getattr(FiniteTables, method_name))
+                )
+            )
+            self.assertFalse(
+                any(
+                    isinstance(
+                        node,
+                        (
+                            ast.List,
+                            ast.ListComp,
+                            ast.Set,
+                            ast.SetComp,
+                            ast.Dict,
+                            ast.DictComp,
+                            ast.GeneratorExp,
+                        ),
+                    )
+                    for node in ast.walk(tree)
+                ),
+                method_name,
+            )
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                if isinstance(node.func, ast.Name):
+                    self.assertNotIn(
+                        node.func.id, {"list", "tuple", "set", "dict"}
+                    )
+                if isinstance(node.func, ast.Attribute):
+                    self.assertNotIn(node.func.attr, {"append", "extend"})
+
 
 class ValidationAndTraversalTest(unittest.TestCase):
     def test_out_of_range_index_rejected_before_policy_construction(
@@ -197,9 +305,14 @@ class ValidationAndTraversalTest(unittest.TestCase):
                 )
             )
             self.assertTrue(inserted, reason)
-        events, _, peak_slots, peak_words = tables.issue_native_round_robin(
-            0, 0
-        )
+        tables.begin_issue(0)
+        events = []
+        while True:
+            event = tables.issue_next(0)
+            if event is None:
+                break
+            events.append(event)
+        _, peak_slots, peak_words = tables.finish_issue()
         self.assertEqual(
             [event.slice_id for event in events],
             [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15],
