@@ -105,6 +105,10 @@
   },
   "provenance": {
     "benchmark_sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880",
+    "case_inventory_sha256": {
+      "native": "8e7ce83ae4f41bf01255a8e922f386dad122c63b2634823b0db284e98de1ab26",
+      "transparent": "9726101d726ef0288a465346ce953b842298e7cdfc9cd1939f2ad7bc7cd96bcb"
+    },
     "cases": {
       "native": {
         "actual_records_path": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-overhead-attribution-20260803-145457-f54ef7d1/pair_evidence/rejected_schema_v1_attempt/native_direct_16k/physical_admission_records.jsonl",
@@ -116,6 +120,397 @@
         },
         "case": "native_direct_16k",
         "checkpoint_inventory_sha256": "89e0ff9a807f6b423dab8e2fef08475f5a0bc9de696a4c209e46d42b3c028cf1",
+        "evidence_inventory": {
+          "case": "native_direct_16k",
+          "digest_sha256": "8e7ce83ae4f41bf01255a8e922f386dad122c63b2634823b0db284e98de1ab26",
+          "entries": [
+            {
+              "label": "case:artifact_sha256.txt",
+              "path": "case/artifact_sha256.txt",
+              "sha256": "e93a971c44bfc3a5838d307697098673e846b732c3a7ebc57af3c27b97aee71e",
+              "size_bytes": 4994
+            },
+            {
+              "label": "case:checkpoint.exit",
+              "path": "case/checkpoint.exit",
+              "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+              "size_bytes": 2
+            },
+            {
+              "label": "case:checkpoint.path",
+              "path": "case/checkpoint.path",
+              "sha256": "d60baabfcedd3306f3dfcd5db7cfc76a06ee34ef7a4eb0c6a679343571d78c39",
+              "size_bytes": 135
+            },
+            {
+              "label": "case:gem5.ldd.txt",
+              "path": "case/gem5.ldd.txt",
+              "sha256": "a8bbdcd0deb7dbb41b21b064c0e2e3f94e376a816cf5b1cf8be1c2413c8da20e",
+              "size_bytes": 3625
+            },
+            {
+              "label": "case:invocation.sh.txt",
+              "path": "case/invocation.sh.txt",
+              "sha256": "78ed6f386cefc2fdc7d69352ca8c3c4a404d1f1cacdefa042135f5cff6783334",
+              "size_bytes": 1269
+            },
+            {
+              "label": "case:manifest.txt",
+              "path": "case/manifest.txt",
+              "sha256": "b595af2eaf6047649adb82c1619f60643481745c646c9dfad2bdb39468e45475",
+              "size_bytes": 1388
+            },
+            {
+              "label": "case:physical_admission_records.jsonl",
+              "path": "case/physical_admission_records.jsonl",
+              "sha256": "38b94b7f523a544919094c490f1ffb0b9c64d0f009b528895312f891cbff0aa8",
+              "size_bytes": 11736378
+            },
+            {
+              "label": "case:physical_validation.json",
+              "path": "case/physical_validation.json",
+              "sha256": "fe069920b78530174401cfc5103e96b39bc3841125f95dffb9a8cbf421144165",
+              "size_bytes": 1058
+            },
+            {
+              "label": "case:restore.exit",
+              "path": "case/restore.exit",
+              "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+              "size_bytes": 2
+            },
+            {
+              "label": "case:restore.log",
+              "path": "case/restore.log",
+              "sha256": "a5beaa81e8ccc226023a600c8a88870fb4cecdd0b566038003c70e669838a73e",
+              "size_bytes": 18436
+            },
+            {
+              "label": "case:result.tsv",
+              "path": "case/result.tsv",
+              "sha256": "8921a11d0a11317656d6e351bfa3e2b40f11a3b467753ab785c19ce61bb83a1f",
+              "size_bytes": 1400
+            },
+            {
+              "label": "case:run/citations.bib",
+              "path": "case/run/citations.bib",
+              "sha256": "fdc8f17efa3fbc1401cc7e2abef63bcc3b99c38297ee69e4a39ed578be1bc8c0",
+              "size_bytes": 3951
+            },
+            {
+              "label": "case:run/config.dot",
+              "path": "case/run/config.dot",
+              "sha256": "5c15fec66b3a78a757c4568654c410acf51b486a54cd14c4e0a2e97845ebcdca",
+              "size_bytes": 304196
+            },
+            {
+              "label": "case:run/config.dot.pdf",
+              "path": "case/run/config.dot.pdf",
+              "sha256": "e146f023da97868dc98310ae35f35193c4bdf46d88ebeedf661227aecae8610b",
+              "size_bytes": 33550
+            },
+            {
+              "label": "case:run/config.dot.svg",
+              "path": "case/run/config.dot.svg",
+              "sha256": "145f4725d04734029ef1723ae8ce7dbf35e58695e3e024e7d37885d4dd0eb9bf",
+              "size_bytes": 167225
+            },
+            {
+              "label": "case:run/config.ini",
+              "path": "case/run/config.ini",
+              "sha256": "b6dc15fdf2b0c3d242823ad579040087eb9b3875da196b8d93e646c62b698430",
+              "size_bytes": 151087
+            },
+            {
+              "label": "case:run/config.json",
+              "path": "case/run/config.json",
+              "sha256": "d641d9879b50e50424061dd5942cae9446f4a639a86bdcf080161fdf41a757a7",
+              "size_bytes": 422998
+            },
+            {
+              "label": "case:run/fs/proc/cpuinfo",
+              "path": "case/run/fs/proc/cpuinfo",
+              "sha256": "6a3bb84922536b0d0c374a7e29f19497ff167cb62b315ace0c4757a28237686f",
+              "size_bytes": 1576
+            },
+            {
+              "label": "case:run/fs/proc/stat",
+              "path": "case/run/fs/proc/stat",
+              "sha256": "77f984b7e5466538244ea688c0225d6ce4be8c9571c181dd59f63990e028ea51",
+              "size_bytes": 94
+            },
+            {
+              "label": "case:run/fs/sys/devices/system/cpu/online",
+              "path": "case/run/fs/sys/devices/system/cpu/online",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "case:run/fs/sys/devices/system/cpu/possible",
+              "path": "case/run/fs/sys/devices/system/cpu/possible",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "case:run/stats.txt",
+              "path": "case/run/stats.txt",
+              "sha256": "0f012d54b6d48e0613e0b75669a72d92d4e7828e84c98237f53063cb589d5fde",
+              "size_bytes": 1486837
+            },
+            {
+              "label": "case:run/virtual_trace.log",
+              "path": "case/run/virtual_trace.log",
+              "sha256": "f94dc33ce9f33038782b938611553f98b09e290316df597eb6291fcccf137949",
+              "size_bytes": 15992647
+            },
+            {
+              "label": "case:shared_checkpoint_files.sha256",
+              "path": "case/shared_checkpoint_files.sha256",
+              "sha256": "89e0ff9a807f6b423dab8e2fef08475f5a0bc9de696a4c209e46d42b3c028cf1",
+              "size_bytes": 1133
+            },
+            {
+              "label": "case:shared_checkpoint_identity.sha256",
+              "path": "case/shared_checkpoint_identity.sha256",
+              "sha256": "02e58da469fd1fb628483995f1b380e6bff39e84ad27e7ba35766767fe160eb2",
+              "size_bytes": 232
+            },
+            {
+              "label": "case:source.diff",
+              "path": "case/source.diff",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            {
+              "label": "case:source_snapshot/CpuSidePort.cc",
+              "path": "case/source_snapshot/CpuSidePort.cc",
+              "sha256": "1449cf25215ca5a4bfba8259344a7919dc83d5522ee4ae82782857cf636867d7",
+              "size_bytes": 37206
+            },
+            {
+              "label": "case:source_snapshot/IF.cc",
+              "path": "case/source_snapshot/IF.cc",
+              "sha256": "57764db2d0185e29e0480479c51c79a28e04a33a167a70d530df9adb7e42a243",
+              "size_bytes": 35790
+            },
+            {
+              "label": "case:source_snapshot/IF.hh",
+              "path": "case/source_snapshot/IF.hh",
+              "sha256": "d8a216b0d71984e75436ed1f93b93112ebdcc2107d30a2bf72c422985b32bd67",
+              "size_bytes": 7991
+            },
+            {
+              "label": "case:source_snapshot/IndirectAccess.cc",
+              "path": "case/source_snapshot/IndirectAccess.cc",
+              "sha256": "3ab1dc34f9786c08e0039cd3a071f165cd97553033c461c383fd2e354bc3cfc6",
+              "size_bytes": 183079
+            },
+            {
+              "label": "case:source_snapshot/IndirectAccess.hh",
+              "path": "case/source_snapshot/IndirectAccess.hh",
+              "sha256": "0993fd02d6dbf99f66df4a0f9d2ee4f4400f91a6093f002cef91140324c878db",
+              "size_bytes": 14760
+            },
+            {
+              "label": "case:source_snapshot/MAA.cc",
+              "path": "case/source_snapshot/MAA.cc",
+              "sha256": "f1d6992b4d7d430754da97ce4177b02ea3d39706a0f558ca7b0786628cd60cc1",
+              "size_bytes": 117187
+            },
+            {
+              "label": "case:source_snapshot/MAA.hh",
+              "path": "case/source_snapshot/MAA.hh",
+              "sha256": "4756d8b817ad3621184276fcffd047a9ec1de090db74bf9251e92bb5529aaabb",
+              "size_bytes": 33691
+            },
+            {
+              "label": "case:source_snapshot/MAA_gem5.hpp",
+              "path": "case/source_snapshot/MAA_gem5.hpp",
+              "sha256": "1b3b377185695add3f8f3d3ca235deb64f7fd42e95717cbbe7851c202c1d48d5",
+              "size_bytes": 38460
+            },
+            {
+              "label": "case:source_snapshot/TransparentSPDController.hh",
+              "path": "case/source_snapshot/TransparentSPDController.hh",
+              "sha256": "f4f3209e79ebf0e002ff12cb5d836ca5d197675e964ca6463e978e2a03358f06",
+              "size_bytes": 11224
+            },
+            {
+              "label": "case:source_snapshot/hybrid_overhead_attribution.py",
+              "path": "case/source_snapshot/hybrid_overhead_attribution.py",
+              "sha256": "9bd723b40418f6446db078a84d06c9b579ff4bbacea0a68f2c63d9cb40b7c2f3",
+              "size_bytes": 38583
+            },
+            {
+              "label": "case:source_snapshot/ramulator.yaml",
+              "path": "case/source_snapshot/ramulator.yaml",
+              "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b",
+              "size_bytes": 380
+            },
+            {
+              "label": "case:source_snapshot/run_virtual_tile_consumer_case.sh",
+              "path": "case/source_snapshot/run_virtual_tile_consumer_case.sh",
+              "sha256": "979ee5887350391fac436d0217e5d3b50b329a02e6b841c335be0910f6d63dde",
+              "size_bytes": 35348
+            },
+            {
+              "label": "case:source_snapshot/se.py",
+              "path": "case/source_snapshot/se.py",
+              "sha256": "aacc6e624b7ab0e7b032d5cb913974fa790efdca84598bf468c11f14b9575d0f",
+              "size_bytes": 10134
+            },
+            {
+              "label": "case:source_snapshot/test_virtual_tile_consumer.cpp",
+              "path": "case/source_snapshot/test_virtual_tile_consumer.cpp",
+              "sha256": "bd75877a818c5e3ffaf587a99b54c65d7c9f6a665b180b7d8620edeb1728a181",
+              "size_bytes": 14966
+            },
+            {
+              "label": "case:source_status.txt",
+              "path": "case/source_status.txt",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            {
+              "label": "case:treatment.txt",
+              "path": "case/treatment.txt",
+              "sha256": "a37ee3a612b129042f304f033fca5875baca471049f3079475c37f0516b2bd8d",
+              "size_bytes": 20
+            },
+            {
+              "label": "case:virtual_tile_consumer_case.pass",
+              "path": "case/virtual_tile_consumer_case.pass",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            {
+              "label": "checkpoint:citations.bib",
+              "path": "checkpoint/citations.bib",
+              "sha256": "107591e44a9aaf00921aa25e1ff6542570e2a7eb81536764c828f6646f2a8dd5",
+              "size_bytes": 4664
+            },
+            {
+              "label": "checkpoint:config.dot",
+              "path": "checkpoint/config.dot",
+              "sha256": "67b295c91a97157b8fd341af28441b3a7296d21f9e2dcee2b94d7ea170cf04ed",
+              "size_bytes": 44872
+            },
+            {
+              "label": "checkpoint:config.dot.pdf",
+              "path": "checkpoint/config.dot.pdf",
+              "sha256": "75fc85eca938dbfa6742cca356b3b82e5edbbf98e42fe50d77d0f54214fa326b",
+              "size_bytes": 20091
+            },
+            {
+              "label": "checkpoint:config.dot.svg",
+              "path": "checkpoint/config.dot.svg",
+              "sha256": "4b58197d03737f9059a95b073332c449150d5b504687001b5f46a9453e208876",
+              "size_bytes": 59747
+            },
+            {
+              "label": "checkpoint:config.ini",
+              "path": "checkpoint/config.ini",
+              "sha256": "aa370cbabd69a4315a3786b0749612ea4d56ea336b52a7c6d4e3b3e923d3cf42",
+              "size_bytes": 21317
+            },
+            {
+              "label": "checkpoint:config.json",
+              "path": "checkpoint/config.json",
+              "sha256": "cff2b43bd6dd29edcd12615db3c491df9d7da8eda9ecbd1be75edb843954c369",
+              "size_bytes": 63579
+            },
+            {
+              "label": "checkpoint:cpt.3193723500/m5.cpt",
+              "path": "checkpoint/cpt.3193723500/m5.cpt",
+              "sha256": "0882688efccdf0af4484191a1c0564274049ebbb1dc50592dec11419f518aec3",
+              "size_bytes": 157360
+            },
+            {
+              "label": "checkpoint:cpt.3193723500/system.physmem.store0.pmem",
+              "path": "checkpoint/cpt.3193723500/system.physmem.store0.pmem",
+              "sha256": "9bec4a64e0445092e8392e7a7bafa02fc6383d35d546c4660685555da680479d",
+              "size_bytes": 2958893
+            },
+            {
+              "label": "checkpoint:fs/proc/cpuinfo",
+              "path": "checkpoint/fs/proc/cpuinfo",
+              "sha256": "dd54b96851250c297b943eda4273783818507a6dd6fcd2fa34fa62b70f2d00c4",
+              "size_bytes": 1580
+            },
+            {
+              "label": "checkpoint:fs/proc/stat",
+              "path": "checkpoint/fs/proc/stat",
+              "sha256": "77f984b7e5466538244ea688c0225d6ce4be8c9571c181dd59f63990e028ea51",
+              "size_bytes": 94
+            },
+            {
+              "label": "checkpoint:fs/sys/devices/system/cpu/online",
+              "path": "checkpoint/fs/sys/devices/system/cpu/online",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "checkpoint:fs/sys/devices/system/cpu/possible",
+              "path": "checkpoint/fs/sys/devices/system/cpu/possible",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "checkpoint:stats.txt",
+              "path": "checkpoint/stats.txt",
+              "sha256": "b11bd5c9381a9d7c0344e56fa96746527ba42e1c05d7ec59cfa0b50dd119012d",
+              "size_bytes": 110231
+            },
+            {
+              "label": "checkpoint_creation_script",
+              "path": "shared/create_shared_checkpoint.sh",
+              "sha256": "25288946dd6e1d588ec009564143cb4f083a2b3113e496180afa821c76dd00be",
+              "size_bytes": 681
+            },
+            {
+              "label": "checkpoint_creation_time",
+              "path": "shared/checkpoint.time.txt",
+              "sha256": "7c5922912633bb071efeda407a1b2f76e5c855b6b5238806304c332bfd355e8e",
+              "size_bytes": 47
+            },
+            {
+              "label": "frozen_gem5_binary",
+              "path": "shared/gem5.opt",
+              "sha256": "9c98ef64d1fe096df1bde98502ba1003f36550c4612ae3647e47c01a104b2e82",
+              "size_bytes": 865072552
+            },
+            {
+              "label": "ramulator_library",
+              "path": "input/libramulator.so",
+              "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+              "size_bytes": 177154544
+            },
+            {
+              "label": "ramulator_provenance",
+              "path": "input/ramulator_provenance.json",
+              "sha256": "9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66",
+              "size_bytes": 889
+            },
+            {
+              "label": "rejected_attempt_contract",
+              "path": "shared/rejection.json",
+              "sha256": "d1f43e1ed36f50e0e2c8f9aed5fe57bfb76d3f1582d8ea69c114ef3ce355590d",
+              "size_bytes": 582
+            },
+            {
+              "label": "shared_treatment",
+              "path": "shared/shared_treatment.txt",
+              "sha256": "fa8b90eac7baf74a68c7de06713f7502fb3a908af3579cc6770a9053920c6661",
+              "size_bytes": 17
+            },
+            {
+              "label": "workload_binary",
+              "path": "input/workload_build/test_virtual_tile_consumer_T16384",
+              "sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880",
+              "size_bytes": 429200
+            }
+          ],
+          "schema": "dx100.bounded_row_evidence_inventory.v1"
+        },
         "gem5_sha256": "9c98ef64d1fe096df1bde98502ba1003f36550c4612ae3647e47c01a104b2e82",
         "records_sha256": "38b94b7f523a544919094c490f1ffb0b9c64d0f009b528895312f891cbff0aa8",
         "source_commit": "8bfe1dd42fcd2b0b7a2e30f512f68dcad5b36d4c",
@@ -142,6 +537,409 @@
         },
         "case": "transparent_4k",
         "checkpoint_inventory_sha256": "89e0ff9a807f6b423dab8e2fef08475f5a0bc9de696a4c209e46d42b3c028cf1",
+        "evidence_inventory": {
+          "case": "transparent_4k",
+          "digest_sha256": "9726101d726ef0288a465346ce953b842298e7cdfc9cd1939f2ad7bc7cd96bcb",
+          "entries": [
+            {
+              "label": "case:artifact_sha256.txt",
+              "path": "case/artifact_sha256.txt",
+              "sha256": "5859f6c6ad7c8d1aca46369ff282b4f7f3069f759188362d41a7a44588c9fbc3",
+              "size_bytes": 4940
+            },
+            {
+              "label": "case:checkpoint.exit",
+              "path": "case/checkpoint.exit",
+              "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+              "size_bytes": 2
+            },
+            {
+              "label": "case:checkpoint.path",
+              "path": "case/checkpoint.path",
+              "sha256": "d60baabfcedd3306f3dfcd5db7cfc76a06ee34ef7a4eb0c6a679343571d78c39",
+              "size_bytes": 135
+            },
+            {
+              "label": "case:gem5.ldd.txt",
+              "path": "case/gem5.ldd.txt",
+              "sha256": "d8f7d92c2fd321b060711dc99bf98ab87ef3ee81d4796c91c18fda909c070014",
+              "size_bytes": 3625
+            },
+            {
+              "label": "case:invocation.sh.txt",
+              "path": "case/invocation.sh.txt",
+              "sha256": "6115191b4949b54337669b07a9628b1c3c25814dde1cc4dcff542a0d6999e448",
+              "size_bytes": 1263
+            },
+            {
+              "label": "case:manifest.txt",
+              "path": "case/manifest.txt",
+              "sha256": "8ba52379dc078f9c2814f6c7764919120aba1ad835b3da47c513a1a991144427",
+              "size_bytes": 1381
+            },
+            {
+              "label": "case:page_readiness.tsv",
+              "path": "case/page_readiness.tsv",
+              "sha256": "c77449c22ea58c2ffb6eefa8d003a3cae1487b22c84afe03f164547fc806ae02",
+              "size_bytes": 208
+            },
+            {
+              "label": "case:physical_admission_records.jsonl",
+              "path": "case/physical_admission_records.jsonl",
+              "sha256": "b8b4df9d232114fdf95782e3cef182e313206237fc7891102887d7ec687c5390",
+              "size_bytes": 11736378
+            },
+            {
+              "label": "case:physical_validation.json",
+              "path": "case/physical_validation.json",
+              "sha256": "8141b5d9e7f72357521a2762e70cf5ed7dafb75c104a5d3df5eb8368aaa7502c",
+              "size_bytes": 1052
+            },
+            {
+              "label": "case:restore.exit",
+              "path": "case/restore.exit",
+              "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+              "size_bytes": 2
+            },
+            {
+              "label": "case:restore.log",
+              "path": "case/restore.log",
+              "sha256": "e08e87cb7b93af39652fac7220afece2fa14845f0d5fad76c010fc51568a24b9",
+              "size_bytes": 19364
+            },
+            {
+              "label": "case:result.tsv",
+              "path": "case/result.tsv",
+              "sha256": "c6325a8bf5c0d05c8f6ddacda2d01a9ff1a3ce968db319910765c3d8fcccb8d3",
+              "size_bytes": 1419
+            },
+            {
+              "label": "case:run/citations.bib",
+              "path": "case/run/citations.bib",
+              "sha256": "fdc8f17efa3fbc1401cc7e2abef63bcc3b99c38297ee69e4a39ed578be1bc8c0",
+              "size_bytes": 3951
+            },
+            {
+              "label": "case:run/config.dot",
+              "path": "case/run/config.dot",
+              "sha256": "f8afae2ffc1bc8133eb8502f9df32358f47aaa3b2546f2b820bc877f51c158ba",
+              "size_bytes": 304186
+            },
+            {
+              "label": "case:run/config.dot.pdf",
+              "path": "case/run/config.dot.pdf",
+              "sha256": "4f4fafc08a82e17bca5c687a8f1ac0c50b0eb68468e93b9ebf4699f93f91f144",
+              "size_bytes": 33550
+            },
+            {
+              "label": "case:run/config.dot.svg",
+              "path": "case/run/config.dot.svg",
+              "sha256": "0f4d65087f7316194ece02af299c4fa88dd7b0bf7a5b3b0f9d1a376435132e18",
+              "size_bytes": 167224
+            },
+            {
+              "label": "case:run/config.ini",
+              "path": "case/run/config.ini",
+              "sha256": "3ddd86fdbc3fc45bf50850905d3f290a4c032f5ff19dff674957131897be03a4",
+              "size_bytes": 151077
+            },
+            {
+              "label": "case:run/config.json",
+              "path": "case/run/config.json",
+              "sha256": "f3553b0dfa2d2e8f061c9128b4bc7e919aedb8ac751fdbf5db6655d6dd04b382",
+              "size_bytes": 422988
+            },
+            {
+              "label": "case:run/fs/proc/cpuinfo",
+              "path": "case/run/fs/proc/cpuinfo",
+              "sha256": "6a3bb84922536b0d0c374a7e29f19497ff167cb62b315ace0c4757a28237686f",
+              "size_bytes": 1576
+            },
+            {
+              "label": "case:run/fs/proc/stat",
+              "path": "case/run/fs/proc/stat",
+              "sha256": "77f984b7e5466538244ea688c0225d6ce4be8c9571c181dd59f63990e028ea51",
+              "size_bytes": 94
+            },
+            {
+              "label": "case:run/fs/sys/devices/system/cpu/online",
+              "path": "case/run/fs/sys/devices/system/cpu/online",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "case:run/fs/sys/devices/system/cpu/possible",
+              "path": "case/run/fs/sys/devices/system/cpu/possible",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "case:run/stats.txt",
+              "path": "case/run/stats.txt",
+              "sha256": "5fb78c16a5db13f2ec2b23e4b98b625c9a6c84db4259bd68947378e4ded8e1e4",
+              "size_bytes": 1703854
+            },
+            {
+              "label": "case:run/virtual_trace.log",
+              "path": "case/run/virtual_trace.log",
+              "sha256": "2640001dac08c3e7d137481cafca6ac4e75112fd769f16a7ec9a190411c45271",
+              "size_bytes": 17973390
+            },
+            {
+              "label": "case:shared_checkpoint_files.sha256",
+              "path": "case/shared_checkpoint_files.sha256",
+              "sha256": "89e0ff9a807f6b423dab8e2fef08475f5a0bc9de696a4c209e46d42b3c028cf1",
+              "size_bytes": 1133
+            },
+            {
+              "label": "case:shared_checkpoint_identity.sha256",
+              "path": "case/shared_checkpoint_identity.sha256",
+              "sha256": "dc3b9b6c3ee35d7992f267c9c543ba3579c2f57391ea652bde8382cb164b06ee",
+              "size_bytes": 229
+            },
+            {
+              "label": "case:source.diff",
+              "path": "case/source.diff",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            {
+              "label": "case:source_snapshot/CpuSidePort.cc",
+              "path": "case/source_snapshot/CpuSidePort.cc",
+              "sha256": "1449cf25215ca5a4bfba8259344a7919dc83d5522ee4ae82782857cf636867d7",
+              "size_bytes": 37206
+            },
+            {
+              "label": "case:source_snapshot/IF.cc",
+              "path": "case/source_snapshot/IF.cc",
+              "sha256": "57764db2d0185e29e0480479c51c79a28e04a33a167a70d530df9adb7e42a243",
+              "size_bytes": 35790
+            },
+            {
+              "label": "case:source_snapshot/IF.hh",
+              "path": "case/source_snapshot/IF.hh",
+              "sha256": "d8a216b0d71984e75436ed1f93b93112ebdcc2107d30a2bf72c422985b32bd67",
+              "size_bytes": 7991
+            },
+            {
+              "label": "case:source_snapshot/IndirectAccess.cc",
+              "path": "case/source_snapshot/IndirectAccess.cc",
+              "sha256": "3ab1dc34f9786c08e0039cd3a071f165cd97553033c461c383fd2e354bc3cfc6",
+              "size_bytes": 183079
+            },
+            {
+              "label": "case:source_snapshot/IndirectAccess.hh",
+              "path": "case/source_snapshot/IndirectAccess.hh",
+              "sha256": "0993fd02d6dbf99f66df4a0f9d2ee4f4400f91a6093f002cef91140324c878db",
+              "size_bytes": 14760
+            },
+            {
+              "label": "case:source_snapshot/MAA.cc",
+              "path": "case/source_snapshot/MAA.cc",
+              "sha256": "f1d6992b4d7d430754da97ce4177b02ea3d39706a0f558ca7b0786628cd60cc1",
+              "size_bytes": 117187
+            },
+            {
+              "label": "case:source_snapshot/MAA.hh",
+              "path": "case/source_snapshot/MAA.hh",
+              "sha256": "4756d8b817ad3621184276fcffd047a9ec1de090db74bf9251e92bb5529aaabb",
+              "size_bytes": 33691
+            },
+            {
+              "label": "case:source_snapshot/MAA_gem5.hpp",
+              "path": "case/source_snapshot/MAA_gem5.hpp",
+              "sha256": "1b3b377185695add3f8f3d3ca235deb64f7fd42e95717cbbe7851c202c1d48d5",
+              "size_bytes": 38460
+            },
+            {
+              "label": "case:source_snapshot/TransparentSPDController.hh",
+              "path": "case/source_snapshot/TransparentSPDController.hh",
+              "sha256": "f4f3209e79ebf0e002ff12cb5d836ca5d197675e964ca6463e978e2a03358f06",
+              "size_bytes": 11224
+            },
+            {
+              "label": "case:source_snapshot/hybrid_overhead_attribution.py",
+              "path": "case/source_snapshot/hybrid_overhead_attribution.py",
+              "sha256": "9bd723b40418f6446db078a84d06c9b579ff4bbacea0a68f2c63d9cb40b7c2f3",
+              "size_bytes": 38583
+            },
+            {
+              "label": "case:source_snapshot/ramulator.yaml",
+              "path": "case/source_snapshot/ramulator.yaml",
+              "sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b",
+              "size_bytes": 380
+            },
+            {
+              "label": "case:source_snapshot/run_virtual_tile_consumer_case.sh",
+              "path": "case/source_snapshot/run_virtual_tile_consumer_case.sh",
+              "sha256": "979ee5887350391fac436d0217e5d3b50b329a02e6b841c335be0910f6d63dde",
+              "size_bytes": 35348
+            },
+            {
+              "label": "case:source_snapshot/se.py",
+              "path": "case/source_snapshot/se.py",
+              "sha256": "aacc6e624b7ab0e7b032d5cb913974fa790efdca84598bf468c11f14b9575d0f",
+              "size_bytes": 10134
+            },
+            {
+              "label": "case:source_snapshot/test_virtual_tile_consumer.cpp",
+              "path": "case/source_snapshot/test_virtual_tile_consumer.cpp",
+              "sha256": "bd75877a818c5e3ffaf587a99b54c65d7c9f6a665b180b7d8620edeb1728a181",
+              "size_bytes": 14966
+            },
+            {
+              "label": "case:source_status.txt",
+              "path": "case/source_status.txt",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            {
+              "label": "case:transparent_issue_order.tsv",
+              "path": "case/transparent_issue_order.tsv",
+              "sha256": "fc0f60b7b8e63797e502fbccf445c11c6ad4532bdc4b0789ba72a0e2cd0fea31",
+              "size_bytes": 48
+            },
+            {
+              "label": "case:treatment.txt",
+              "path": "case/treatment.txt",
+              "sha256": "fa8b90eac7baf74a68c7de06713f7502fb3a908af3579cc6770a9053920c6661",
+              "size_bytes": 17
+            },
+            {
+              "label": "case:virtual_tile_consumer_case.pass",
+              "path": "case/virtual_tile_consumer_case.pass",
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size_bytes": 0
+            },
+            {
+              "label": "checkpoint:citations.bib",
+              "path": "checkpoint/citations.bib",
+              "sha256": "107591e44a9aaf00921aa25e1ff6542570e2a7eb81536764c828f6646f2a8dd5",
+              "size_bytes": 4664
+            },
+            {
+              "label": "checkpoint:config.dot",
+              "path": "checkpoint/config.dot",
+              "sha256": "67b295c91a97157b8fd341af28441b3a7296d21f9e2dcee2b94d7ea170cf04ed",
+              "size_bytes": 44872
+            },
+            {
+              "label": "checkpoint:config.dot.pdf",
+              "path": "checkpoint/config.dot.pdf",
+              "sha256": "75fc85eca938dbfa6742cca356b3b82e5edbbf98e42fe50d77d0f54214fa326b",
+              "size_bytes": 20091
+            },
+            {
+              "label": "checkpoint:config.dot.svg",
+              "path": "checkpoint/config.dot.svg",
+              "sha256": "4b58197d03737f9059a95b073332c449150d5b504687001b5f46a9453e208876",
+              "size_bytes": 59747
+            },
+            {
+              "label": "checkpoint:config.ini",
+              "path": "checkpoint/config.ini",
+              "sha256": "aa370cbabd69a4315a3786b0749612ea4d56ea336b52a7c6d4e3b3e923d3cf42",
+              "size_bytes": 21317
+            },
+            {
+              "label": "checkpoint:config.json",
+              "path": "checkpoint/config.json",
+              "sha256": "cff2b43bd6dd29edcd12615db3c491df9d7da8eda9ecbd1be75edb843954c369",
+              "size_bytes": 63579
+            },
+            {
+              "label": "checkpoint:cpt.3193723500/m5.cpt",
+              "path": "checkpoint/cpt.3193723500/m5.cpt",
+              "sha256": "0882688efccdf0af4484191a1c0564274049ebbb1dc50592dec11419f518aec3",
+              "size_bytes": 157360
+            },
+            {
+              "label": "checkpoint:cpt.3193723500/system.physmem.store0.pmem",
+              "path": "checkpoint/cpt.3193723500/system.physmem.store0.pmem",
+              "sha256": "9bec4a64e0445092e8392e7a7bafa02fc6383d35d546c4660685555da680479d",
+              "size_bytes": 2958893
+            },
+            {
+              "label": "checkpoint:fs/proc/cpuinfo",
+              "path": "checkpoint/fs/proc/cpuinfo",
+              "sha256": "dd54b96851250c297b943eda4273783818507a6dd6fcd2fa34fa62b70f2d00c4",
+              "size_bytes": 1580
+            },
+            {
+              "label": "checkpoint:fs/proc/stat",
+              "path": "checkpoint/fs/proc/stat",
+              "sha256": "77f984b7e5466538244ea688c0225d6ce4be8c9571c181dd59f63990e028ea51",
+              "size_bytes": 94
+            },
+            {
+              "label": "checkpoint:fs/sys/devices/system/cpu/online",
+              "path": "checkpoint/fs/sys/devices/system/cpu/online",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "checkpoint:fs/sys/devices/system/cpu/possible",
+              "path": "checkpoint/fs/sys/devices/system/cpu/possible",
+              "sha256": "f0e7dd3ebbfd0bb1bfeca50048635775fe0cc4eae4280a9a924de9450351064b",
+              "size_bytes": 3
+            },
+            {
+              "label": "checkpoint:stats.txt",
+              "path": "checkpoint/stats.txt",
+              "sha256": "b11bd5c9381a9d7c0344e56fa96746527ba42e1c05d7ec59cfa0b50dd119012d",
+              "size_bytes": 110231
+            },
+            {
+              "label": "checkpoint_creation_script",
+              "path": "shared/create_shared_checkpoint.sh",
+              "sha256": "25288946dd6e1d588ec009564143cb4f083a2b3113e496180afa821c76dd00be",
+              "size_bytes": 681
+            },
+            {
+              "label": "checkpoint_creation_time",
+              "path": "shared/checkpoint.time.txt",
+              "sha256": "7c5922912633bb071efeda407a1b2f76e5c855b6b5238806304c332bfd355e8e",
+              "size_bytes": 47
+            },
+            {
+              "label": "frozen_gem5_binary",
+              "path": "shared/gem5.opt",
+              "sha256": "9c98ef64d1fe096df1bde98502ba1003f36550c4612ae3647e47c01a104b2e82",
+              "size_bytes": 865072552
+            },
+            {
+              "label": "ramulator_library",
+              "path": "input/libramulator.so",
+              "sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+              "size_bytes": 177154544
+            },
+            {
+              "label": "ramulator_provenance",
+              "path": "input/ramulator_provenance.json",
+              "sha256": "9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66",
+              "size_bytes": 889
+            },
+            {
+              "label": "rejected_attempt_contract",
+              "path": "shared/rejection.json",
+              "sha256": "d1f43e1ed36f50e0e2c8f9aed5fe57bfb76d3f1582d8ea69c114ef3ce355590d",
+              "size_bytes": 582
+            },
+            {
+              "label": "shared_treatment",
+              "path": "shared/shared_treatment.txt",
+              "sha256": "fa8b90eac7baf74a68c7de06713f7502fb3a908af3579cc6770a9053920c6661",
+              "size_bytes": 17
+            },
+            {
+              "label": "workload_binary",
+              "path": "input/workload_build/test_virtual_tile_consumer_T16384",
+              "sha256": "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880",
+              "size_bytes": 429200
+            }
+          ],
+          "schema": "dx100.bounded_row_evidence_inventory.v1"
+        },
         "gem5_sha256": "9c98ef64d1fe096df1bde98502ba1003f36550c4612ae3647e47c01a104b2e82",
         "records_sha256": "b8b4df9d232114fdf95782e3cef182e313206237fc7891102887d7ec687c5390",
         "source_commit": "8bfe1dd42fcd2b0b7a2e30f512f68dcad5b36d4c",

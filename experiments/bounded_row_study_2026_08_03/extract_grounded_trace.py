@@ -29,9 +29,18 @@ from bounded_row_model import (
 
 PHYSICAL_SCHEMA = "dx100.physical_admission.v1"
 GROUNDING_SCHEMA = "dx100.bounded_row_physical_grounding.v1"
+INVENTORY_SCHEMA = "dx100.bounded_row_evidence_inventory.v1"
+REJECTION_SCHEMA = "dx100.rejected_attribution_attempt.v1"
+REJECTION_REASON = (
+    "Attribution event schema 1 lacked source-generated occurrence identity; "
+    "consecutive indirect_execute sequences 721 and 722 emitted "
+    "indistinguishable row_table_full stall records at the same simTick."
+)
 EXPECTED_RECORDS = LOGICAL_ELEMENTS
 SOURCE_ELEMENTS = LOGICAL_ELEMENTS * 8
 EXPECTED_FIELD_COUNT = 33
+DDR4_MODELED_ADDRESS_BITS = 33
+DDR4_MODELED_ADDRESS_LIMIT = 1 << DDR4_MODELED_ADDRESS_BITS
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -107,6 +116,68 @@ VALIDATION_KEYS = {
     "trace_path",
     "trace_sha256",
 }
+REJECTION_KEYS = {
+    "gem5_sha256",
+    "implementation_commit",
+    "physical_admission_schema",
+    "physical_records_preserved",
+    "publication_allowed",
+    "reason",
+    "schema",
+    "status",
+}
+
+SOURCE_SNAPSHOT_FILES = (
+    "CpuSidePort.cc",
+    "IF.cc",
+    "IF.hh",
+    "IndirectAccess.cc",
+    "IndirectAccess.hh",
+    "MAA.cc",
+    "MAA.hh",
+    "MAA_gem5.hpp",
+    "TransparentSPDController.hh",
+    "hybrid_overhead_attribution.py",
+    "ramulator.yaml",
+    "run_virtual_tile_consumer_case.sh",
+    "se.py",
+    "test_virtual_tile_consumer.cpp",
+)
+COMMON_CASE_FILES = {
+    "artifact_sha256.txt",
+    "checkpoint.exit",
+    "checkpoint.path",
+    "gem5.ldd.txt",
+    "invocation.sh.txt",
+    "manifest.txt",
+    "physical_admission_records.jsonl",
+    "physical_validation.json",
+    "restore.exit",
+    "restore.log",
+    "result.tsv",
+    "run/citations.bib",
+    "run/config.dot",
+    "run/config.dot.pdf",
+    "run/config.dot.svg",
+    "run/config.ini",
+    "run/config.json",
+    "run/fs/proc/cpuinfo",
+    "run/fs/proc/stat",
+    "run/fs/sys/devices/system/cpu/online",
+    "run/fs/sys/devices/system/cpu/possible",
+    "run/stats.txt",
+    "run/virtual_trace.log",
+    "shared_checkpoint_files.sha256",
+    "shared_checkpoint_identity.sha256",
+    "source.diff",
+    "source_status.txt",
+    "treatment.txt",
+    "virtual_tile_consumer_case.pass",
+} | {f"source_snapshot/{name}" for name in SOURCE_SNAPSHOT_FILES}
+CASE_ONLY_FILES = {
+    "native_direct_16k": set(),
+    "transparent_4k": {"page_readiness.tsv", "transparent_issue_order.tsv"},
+}
 
 
 class GroundingError(ValueError):
@@ -175,6 +246,28 @@ def _path_has_case_suffix(recorded: object, case: str, suffix: str) -> bool:
         return False
     normalized = recorded.replace("\\", "/")
     return normalized.endswith(f"/{case}/{suffix}")
+
+
+def validate_rejection_contract(
+    path: Path, *, source_commit: str, gem5_hash: str
+) -> str:
+    if not path.is_file() or path.is_symlink():
+        fail("mandatory rejection.json is missing or a symlink")
+    rejection = _require_exact_keys(
+        _read_json_object(path), REJECTION_KEYS, "rejection.json"
+    )
+    if (
+        rejection["schema"] != REJECTION_SCHEMA
+        or rejection["status"] != "rejected"
+        or rejection["reason"] != REJECTION_REASON
+        or rejection["publication_allowed"] is not False
+        or rejection["physical_admission_schema"] != PHYSICAL_SCHEMA
+        or rejection["physical_records_preserved"] is not True
+        or rejection["implementation_commit"] != source_commit
+        or rejection["gem5_sha256"] != gem5_hash
+    ):
+        fail("rejection/physical-preservation boundary is inconsistent")
+    return sha256(path)
 
 
 @dataclass(frozen=True)
@@ -385,6 +478,13 @@ def validate_records(
 
             # Exact DDR4_8Gb_x8 RoBaRaCoCh decode after the 64-byte transaction
             # offset: 7 column, 0 channel, 0 rank, 2 BG, 2 bank, 16 row bits.
+            # Reject, rather than mask, bits outside that 33-bit byte-address
+            # domain.  Otherwise +1<<33 aliases a valid decoded row.
+            if not (
+                0 <= a_paddr < DDR4_MODELED_ADDRESS_LIMIT
+                and 0 <= a_line < DDR4_MODELED_ADDRESS_LIMIT
+            ):
+                fail("A address is outside the modeled 33-bit DDR4 domain")
             line_number = a_line >> 6
             decoded_column = line_number & 0x7F
             decoded_bank_group = (line_number >> 7) & 0x3
@@ -490,11 +590,251 @@ def _parse_hash_inventory(path: Path) -> list[tuple[str, str]]:
     return entries
 
 
-def _inventory_hash(entries: list[tuple[str, str]], suffix: str) -> str:
-    matches = [digest for digest, path in entries if path.endswith(suffix)]
-    if len(matches) != 1:
-        fail(f"hash inventory does not contain exactly one {suffix}")
-    return matches[0]
+def _verify_declared_artifacts(
+    case_dir: Path,
+    evidence_root: Path,
+    input_root: Path,
+    inventory_path: Path,
+) -> dict[str, str]:
+    """Verify every legacy inventory entry with an exact semantic mapping."""
+    expected: dict[str, tuple[str, Path]] = {
+        "/input/gem5.opt": ("gem5_binary", evidence_root / "gem5.opt"),
+        "/input/workload_build/test_virtual_tile_consumer_T16384": (
+            "workload_binary",
+            input_root
+            / "workload_build"
+            / "test_virtual_tile_consumer_T16384",
+        ),
+        "/input/libramulator.so": (
+            "ramulator_library",
+            input_root / "libramulator.so",
+        ),
+        "/input/ramulator_provenance.json": (
+            "ramulator_provenance",
+            input_root / "ramulator_provenance.json",
+        ),
+        f"/{case_dir.name}/gem5.ldd.txt": (
+            "gem5_linkage",
+            case_dir / "gem5.ldd.txt",
+        ),
+        f"/{case_dir.name}/source.diff": (
+            "source_diff",
+            case_dir / "source.diff",
+        ),
+        f"/{case_dir.name}/source_status.txt": (
+            "source_status",
+            case_dir / "source_status.txt",
+        ),
+        f"/{case_dir.name}/invocation.sh.txt": (
+            "run_invocation",
+            case_dir / "invocation.sh.txt",
+        ),
+    }
+    for name in SOURCE_SNAPSHOT_FILES:
+        expected[f"/{case_dir.name}/source_snapshot/{name}"] = (
+            f"source_snapshot:{name}",
+            case_dir / "source_snapshot" / name,
+        )
+
+    declared = _parse_hash_inventory(inventory_path)
+    observed: dict[str, str] = {}
+    for digest, recorded_path in declared:
+        matches = [
+            suffix for suffix in expected if recorded_path.endswith(suffix)
+        ]
+        if len(matches) != 1:
+            fail(
+                f"{case_dir.name}: artifact inventory path has no exact "
+                f"semantic label: {recorded_path}"
+            )
+        suffix = matches[0]
+        label, artifact = expected[suffix]
+        if label in observed:
+            fail(f"{case_dir.name}: duplicate semantic artifact label {label}")
+        if artifact.is_symlink() or not artifact.is_file():
+            fail(f"{case_dir.name}: artifact is missing or a symlink: {label}")
+        if sha256(artifact) != digest:
+            fail(f"{case_dir.name}: artifact content mismatch: {label}")
+        observed[label] = digest
+    expected_labels = {label for label, _ in expected.values()}
+    if set(observed) != expected_labels:
+        fail(
+            f"{case_dir.name}: artifact semantic labels missing="
+            f"{sorted(expected_labels - set(observed))} extra="
+            f"{sorted(set(observed) - expected_labels)}"
+        )
+    return observed
+
+
+def _evidence_entry(
+    label: str, logical_path: str, path: Path
+) -> dict[str, object]:
+    if not label or not logical_path or logical_path.startswith("/"):
+        fail("evidence inventory label/path is malformed")
+    if path.is_symlink() or not path.is_file():
+        fail(f"evidence inventory artifact is missing or a symlink: {label}")
+    return {
+        "label": label,
+        "path": logical_path,
+        "sha256": sha256(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def validate_evidence_inventory(value: object) -> dict[str, object]:
+    inventory = _require_exact_keys(
+        value,
+        {"case", "digest_sha256", "entries", "schema"},
+        "evidence inventory",
+    )
+    if inventory["schema"] != INVENTORY_SCHEMA:
+        fail("evidence inventory schema is inconsistent")
+    if type(inventory["case"]) is not str or not inventory["case"]:
+        fail("evidence inventory case is malformed")
+    if type(inventory["entries"]) is not list or not inventory["entries"]:
+        fail("evidence inventory entries are missing")
+    labels: list[str] = []
+    paths: list[str] = []
+    for index, raw in enumerate(inventory["entries"]):
+        entry = _require_exact_keys(
+            raw,
+            {"label", "path", "sha256", "size_bytes"},
+            f"evidence inventory entry {index}",
+        )
+        if (
+            type(entry["label"]) is not str
+            or not entry["label"]
+            or type(entry["path"]) is not str
+            or not entry["path"]
+            or entry["path"].startswith("/")
+            or type(entry["sha256"]) is not str
+            or HEX64_RE.fullmatch(entry["sha256"]) is None
+            or type(entry["size_bytes"]) is not int
+            or entry["size_bytes"] < 0
+        ):
+            fail(f"evidence inventory entry {index} is malformed")
+        labels.append(entry["label"])
+        paths.append(entry["path"])
+    if labels != sorted(labels) or len(labels) != len(set(labels)):
+        fail("evidence inventory labels are unordered or duplicated")
+    if len(paths) != len(set(paths)):
+        fail("evidence inventory paths are duplicated")
+    unsigned = {
+        "case": inventory["case"],
+        "entries": inventory["entries"],
+        "schema": inventory["schema"],
+    }
+    digest = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if inventory["digest_sha256"] != digest:
+        fail("evidence inventory digest is inconsistent")
+    return inventory
+
+
+def _build_evidence_inventory(
+    case_dir: Path,
+    evidence_root: Path,
+    input_root: Path,
+    checkpoint_entries: list[tuple[str, str]],
+) -> dict[str, object]:
+    expected_case_files = COMMON_CASE_FILES | CASE_ONLY_FILES[case_dir.name]
+    actual_case_files = {
+        path.relative_to(case_dir).as_posix()
+        for path in case_dir.rglob("*")
+        if path.is_file()
+    }
+    if actual_case_files != expected_case_files:
+        fail(
+            f"{case_dir.name}: case package files missing="
+            f"{sorted(expected_case_files - actual_case_files)} extra="
+            f"{sorted(actual_case_files - expected_case_files)}"
+        )
+
+    entries = [
+        _evidence_entry(
+            f"case:{relative}",
+            f"case/{relative}",
+            case_dir / relative,
+        )
+        for relative in sorted(expected_case_files)
+    ]
+    shared = {
+        "checkpoint_creation_script": (
+            "shared/create_shared_checkpoint.sh",
+            evidence_root / "create_shared_checkpoint.sh",
+        ),
+        "checkpoint_creation_time": (
+            "shared/checkpoint.time.txt",
+            evidence_root / "checkpoint.time.txt",
+        ),
+        "frozen_gem5_binary": ("shared/gem5.opt", evidence_root / "gem5.opt"),
+        "rejected_attempt_contract": (
+            "shared/rejection.json",
+            evidence_root / "rejection.json",
+        ),
+        "shared_treatment": (
+            "shared/shared_treatment.txt",
+            evidence_root / "shared_treatment.txt",
+        ),
+        "workload_binary": (
+            "input/workload_build/test_virtual_tile_consumer_T16384",
+            input_root
+            / "workload_build"
+            / "test_virtual_tile_consumer_T16384",
+        ),
+        "ramulator_library": (
+            "input/libramulator.so",
+            input_root / "libramulator.so",
+        ),
+        "ramulator_provenance": (
+            "input/ramulator_provenance.json",
+            input_root / "ramulator_provenance.json",
+        ),
+    }
+    entries.extend(
+        _evidence_entry(label, logical, path)
+        for label, (logical, path) in shared.items()
+    )
+
+    checkpoint_root = evidence_root / "shared_checkpoint"
+    declared_checkpoint_files = {
+        relative[2:] for _, relative in checkpoint_entries
+    }
+    actual_checkpoint_files = {
+        path.relative_to(checkpoint_root).as_posix()
+        for path in checkpoint_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_checkpoint_files != declared_checkpoint_files:
+        fail(
+            f"{case_dir.name}: checkpoint files missing="
+            f"{sorted(declared_checkpoint_files - actual_checkpoint_files)} "
+            f"extra={sorted(actual_checkpoint_files - declared_checkpoint_files)}"
+        )
+    entries.extend(
+        _evidence_entry(
+            f"checkpoint:{relative}",
+            f"checkpoint/{relative}",
+            checkpoint_root / relative,
+        )
+        for relative in sorted(declared_checkpoint_files)
+    )
+    entries.sort(key=lambda entry: entry["label"])
+    unsigned = {
+        "case": case_dir.name,
+        "entries": entries,
+        "schema": INVENTORY_SCHEMA,
+    }
+    result = {
+        **unsigned,
+        "digest_sha256": hashlib.sha256(
+            json.dumps(
+                unsigned, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest(),
+    }
+    return validate_evidence_inventory(result)
 
 
 def audit_terminal_evidence(
@@ -600,47 +940,63 @@ def audit_case_provenance(
     source_commit = manifest.get("source_commit", "")
     if not HEX40_RE.fullmatch(source_commit):
         fail(f"{case.name}: source commit is malformed")
+    required_provenance_suffixes = {
+        "shared_checkpoint": "/pair_evidence/shared_checkpoint",
+        "shared_treatment_file": "/pair_evidence/shared_treatment.txt",
+        "frozen_ramulator_library": "/pair_evidence/input/libramulator.so",
+        "ramulator_provenance": "/pair_evidence/input/ramulator_provenance.json",
+    }
+    for key, suffix in required_provenance_suffixes.items():
+        recorded = manifest.get(key)
+        if type(recorded) is not str or not recorded.replace(
+            "\\", "/"
+        ).endswith(suffix):
+            fail(f"{case.name}: manifest {key} provenance is inconsistent")
     if (case_dir / "source.diff").read_bytes() or (
         case_dir / "source_status.txt"
     ).read_bytes():
         fail(f"{case.name}: source snapshot was not clean")
 
-    inventory = _parse_hash_inventory(inventory_path)
-    gem5_hash = _inventory_hash(inventory, "/input/gem5.opt")
-    benchmark_hash = _inventory_hash(
-        inventory, "/input/workload_build/test_virtual_tile_consumer_T16384"
-    )
     evidence_root = case_dir.parent
     input_root = evidence_root.parent / "input"
-    # The rejected attempt kept its exact binary locally; the shared input was
-    # subsequently advanced for the repaired nonphysical attribution schema.
-    gem5_path = evidence_root / "gem5.opt"
-    benchmark_path = (
-        input_root / "workload_build" / "test_virtual_tile_consumer_T16384"
+    declared_artifacts = _verify_declared_artifacts(
+        case_dir, evidence_root, input_root, inventory_path
     )
-    if not gem5_path.is_file() or sha256(gem5_path) != gem5_hash:
-        fail(f"{case.name}: gem5 binary hash/provenance mismatch")
-    if (
-        not benchmark_path.is_file()
-        or sha256(benchmark_path) != benchmark_hash
-    ):
-        fail(f"{case.name}: workload binary hash/provenance mismatch")
+    gem5_hash = declared_artifacts["gem5_binary"]
+    benchmark_hash = declared_artifacts["workload_binary"]
 
     checkpoint_inventory = case_dir / "shared_checkpoint_files.sha256"
     identity_path = case_dir / "shared_checkpoint_identity.sha256"
     identity_entries = _parse_hash_inventory(identity_path)
-    if len(identity_entries) != 1:
+    if len(identity_entries) != 1 or not identity_entries[0][1].replace(
+        "\\", "/"
+    ).endswith(f"/{case.name}/shared_checkpoint_files.sha256"):
         fail(f"{case.name}: checkpoint identity must contain one entry")
     checkpoint_identity = identity_entries[0][0]
     if sha256(checkpoint_inventory) != checkpoint_identity:
         fail(f"{case.name}: checkpoint inventory identity mismatch")
     checkpoint_root = evidence_root / "shared_checkpoint"
-    for digest, relative in _parse_hash_inventory(checkpoint_inventory):
+    checkpoint_entries = _parse_hash_inventory(checkpoint_inventory)
+    for digest, relative in checkpoint_entries:
         if not relative.startswith("./") or ".." in Path(relative).parts:
             fail(f"{case.name}: unsafe checkpoint inventory path")
         artifact = checkpoint_root / relative[2:]
-        if not artifact.is_file() or sha256(artifact) != digest:
+        if (
+            artifact.is_symlink()
+            or not artifact.is_file()
+            or sha256(artifact) != digest
+        ):
             fail(f"{case.name}: checkpoint artifact hash mismatch: {relative}")
+
+    rejection_path = evidence_root / "rejection.json"
+    try:
+        rejection_sha = validate_rejection_contract(
+            rejection_path,
+            source_commit=source_commit,
+            gem5_hash=gem5_hash,
+        )
+    except GroundingError as exc:
+        raise GroundingError(f"{case.name}: {exc}") from exc
 
     terminal = audit_terminal_evidence(
         case_dir,
@@ -652,29 +1008,18 @@ def audit_case_provenance(
     boundary: dict[str, object] = {
         "nonphysical_attribution_accepted": False,
         "physical_records_preserved": True,
+        "rejected_attempt_manifest_sha256": rejection_sha,
     }
-    rejection_path = evidence_root / "rejection.json"
-    if rejection_path.is_file():
-        rejection = _read_json_object(rejection_path)
-        if (
-            rejection.get("status") != "rejected"
-            or rejection.get("publication_allowed") is not False
-            or rejection.get("physical_admission_schema") != PHYSICAL_SCHEMA
-            or rejection.get("physical_records_preserved") is not True
-            or rejection.get("implementation_commit") != source_commit
-            or rejection.get("gem5_sha256") != gem5_hash
-        ):
-            fail(
-                f"{case.name}: rejection/physical-preservation boundary "
-                "is inconsistent"
-            )
-        boundary["rejected_attempt_manifest_sha256"] = sha256(rejection_path)
+    evidence_inventory = _build_evidence_inventory(
+        case_dir, evidence_root, input_root, checkpoint_entries
+    )
 
     return {
         "source_commit": source_commit,
         "gem5_sha256": gem5_hash,
         "benchmark_sha256": benchmark_hash,
         "checkpoint_inventory_sha256": checkpoint_identity,
+        "evidence_inventory": evidence_inventory,
         "terminal": terminal,
         "boundary": boundary,
     }
@@ -823,6 +1168,13 @@ def ground_pair(
     ):
         if native.provenance[field] != transparent.provenance[field]:
             fail(f"pair provenance mismatch: {field}")
+    if (
+        native.provenance["boundary"]["rejected_attempt_manifest_sha256"]
+        != transparent.provenance["boundary"][
+            "rejected_attempt_manifest_sha256"
+        ]
+    ):
+        fail("pair provenance mismatch: rejected attempt manifest")
     native_terminal = native.provenance["terminal"]
     transparent_terminal = transparent.provenance["terminal"]
     if (
@@ -854,6 +1206,14 @@ def ground_pair(
             "checkpoint_inventory_sha256": native.provenance[
                 "checkpoint_inventory_sha256"
             ],
+            "case_inventory_sha256": {
+                "native": native.provenance["evidence_inventory"][
+                    "digest_sha256"
+                ],
+                "transparent": transparent.provenance["evidence_inventory"][
+                    "digest_sha256"
+                ],
+            },
             "cases": {
                 "native": _case_manifest(native),
                 "transparent": _case_manifest(transparent),
@@ -867,6 +1227,10 @@ def ground_pair(
             "implementation_authorization": False,
         },
     }
+
+
+def encode_grounded_result(result: dict[str, object]) -> bytes:
+    return (json.dumps(result, indent=2, sort_keys=True) + "\n").encode()
 
 
 def main() -> None:
@@ -883,11 +1247,11 @@ def main() -> None:
         args.transparent_records,
         args.transparent_validation,
     )
-    encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    encoded = encode_grounded_result(result)
     if args.output is not None:
-        args.output.write_text(encoded)
+        args.output.write_bytes(encoded)
     else:
-        print(encoded, end="")
+        print(encoded.decode(), end="")
 
 
 if __name__ == "__main__":
