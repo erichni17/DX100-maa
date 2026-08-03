@@ -22,6 +22,9 @@ from hybrid_overhead_attribution import (  # noqa: E402
 
 
 ARMS = ("native_direct_16k", "transparent_4k")
+ACCEPTED_WORKLOAD_SHA256 = (
+    "20fe15ca32cf6e307801fda427ac430bd99148be500647acf4cefb0959635880"
+)
 
 
 def require_exact(path: Path, value: bytes) -> None:
@@ -53,7 +56,7 @@ def audit_failed_attempt(path: Path | None) -> dict | None:
     }
 
 
-def audit_pair(root: Path) -> dict:
+def audit_pair(root: Path, require_accepted_workload: bool = True) -> dict:
     require_exact(root / "pair.exit", b"0\n")
     require_exact(root / "pair.complete", b"")
     require_exact(root / "shared-checkpoint.exit", b"0\n")
@@ -94,6 +97,9 @@ def audit_pair(root: Path) -> dict:
         "dynamic_links"
     ]["normalized_sha256"]:
         raise AuditError("fresh dynamic-link resolutions differ")
+    workload_sha256 = native["frozen_artifacts"]["workload_binary"]["sha256"]
+    if require_accepted_workload and workload_sha256 != ACCEPTED_WORKLOAD_SHA256:
+        raise AuditError("primary pair did not reuse accepted workload binary")
 
     if native["trace"]["tail_instrumentation"] != {"active": False}:
         raise AuditError("tail instrumentation unexpectedly active in native")
@@ -155,6 +161,8 @@ def audit_pair(root: Path) -> dict:
         "source_commit": source_commit,
         "checkpoint_identity_sha256": native["checkpoint_identity_sha256"],
         "exact_output_hash": EXPECTED_OUTPUT_HASH,
+        "accepted_workload_reused": workload_sha256 == ACCEPTED_WORKLOAD_SHA256,
+        "workload_sha256": workload_sha256,
         "arms": {
             arm: {
                 "simTicks": runs[arm]["simTicks"],
@@ -164,6 +172,18 @@ def audit_pair(root: Path) -> dict:
                 "result_sha256": runs[arm]["hashes"]["result.tsv"],
                 "trace_sha256": runs[arm]["hashes"]["run/virtual_trace.log"],
                 "completion": runs[arm]["completion"],
+                "stream_instructions": {
+                    "STRRD": int(
+                        first_stats(root / arm / "run/stats.txt")[
+                            "system.maa.numInst_STRRD"
+                        ]
+                    ),
+                    "STRWR": int(
+                        first_stats(root / arm / "run/stats.txt")[
+                            "system.maa.numInst_STRWR"
+                        ]
+                    ),
+                },
             }
             for arm in ARMS
         },
@@ -205,7 +225,12 @@ def audit_pair(root: Path) -> dict:
     }
 
 
-def build_report(pair: dict, accepted: dict, failed: dict | None) -> dict:
+def build_report(
+    pair: dict,
+    accepted: dict,
+    failed: dict | None,
+    superseded_pair: dict | None = None,
+) -> dict:
     accepted_tail = accepted["accepted_pair_tail"]
     return {
         "schema": "dx100.hybrid_tail_instrumented_pair.v1",
@@ -215,6 +240,11 @@ def build_report(pair: dict, accepted: dict, failed: dict | None) -> dict:
                 "accepted_gem5_arms_audited"
             ],
             "fresh_completed_arms": 2,
+            "all_fresh_completed_arms": 2 if superseded_pair is None else 4,
+            "fresh_completed_pairs": 1 if superseded_pair is None else 2,
+            "fresh_arm_launches": (
+                2 if superseded_pair is None else 4
+            ) + (0 if failed is None else 1),
             "fresh_failed_arms": 0 if failed is None else 1,
             "fresh_failed_attempts": 0 if failed is None else 1,
             "observations_per_completed_arm": 1,
@@ -229,6 +259,7 @@ def build_report(pair: dict, accepted: dict, failed: dict | None) -> dict:
             "causal_decomposition": False,
         },
         "fresh_pair": pair,
+        "superseded_rebuilt_workload_pair": superseded_pair,
         "failed_attempt": failed,
         "hypothesis_separation": {
             "lost_a_request_reordering": (
@@ -241,7 +272,8 @@ def build_report(pair: dict, accepted: dict, failed: dict | None) -> dict:
             ),
             "per_page_consumer_serialization": (
                 "residency_supported_not_speedup_proven: post-ready time "
-                "reconciles exactly to STREAM and ALU busy"
+                "reconciles exactly to STREAM and ALU busy; direct instruction "
+                "counts are native STRRD/STRWR=1/1 and transparent=5/4"
             ),
             "backing_store_writes": (
                 "no_direct_post_ready_completion: all recorded producer "
@@ -259,6 +291,8 @@ def build_report(pair: dict, accepted: dict, failed: dict | None) -> dict:
             "so cross-arm endpoint alignment is not treated as causal or replicated.",
             "The consumer acceptance expected field records issued packets at each "
             "acceptance; terminal continuity is validated at 513 packets per page.",
+            "The STREAM instruction counts support concentration of page refill/drain "
+            "work in STREAM-busy residency, but do not make that counter causal.",
         ],
         "falsifiable_next_test": (
             "Hold the accepted workload binary and instrumented gem5 fixed, then "
@@ -273,6 +307,8 @@ def render_markdown(report: dict) -> str:
     pair = report["fresh_pair"]
     tail = pair["tail"]
     counts = report["run_counts"]
+    native_stream = pair["arms"]["native_direct_16k"]["stream_instructions"]
+    hybrid_stream = pair["arms"]["transparent_4k"]["stream_instructions"]
     return f"""# Instrumented hybrid-tail pair
 
 ## Outcome
@@ -283,9 +319,11 @@ After all four pages were ready, **{tail['post_ready_total_ticks']:,}** ticks re
 
 All **{tail['producer_backing_writes']['completions']:,}** recorded producer backing writes completed by all-ready, controller backpressure was **{tail['controller_backpressure_events']}**, **{tail['consumer_acceptance']['packets']:,}** consumer packets were accepted (513/page), controller bookkeeping retirement took zero ticks, and the remaining ROI epilogue was **{tail['retire_to_hybrid_finalTick']:,}** ticks.
 
+The directly observed STREAM instruction counts were native STRRD/STRWR **{native_stream['STRRD']}/{native_stream['STRWR']}** and transparent **{hybrid_stream['STRRD']}/{hybrid_stream['STRWR']}**. This supports the interpretation that page refill/drain work is concentrated in STREAM-busy residency, but it does not make the residency counter causal.
+
 ## Evidence boundary
 
-Accepted arms reaudited: **{counts['accepted_arms_reaudited']}**. Fresh completed arms: **{counts['fresh_completed_arms']}**. Preserved failed launch attempts: **{counts['fresh_failed_attempts']}** (configuration failure before any completed arm). There is one observation per completed arm and no variance claim.
+Accepted arms reaudited: **{counts['accepted_arms_reaudited']}**. Fresh arm launches: **{counts['fresh_arm_launches']}** (**{counts['all_fresh_completed_arms']}** completed across {counts['fresh_completed_pairs']} pairs, **{counts['fresh_failed_arms']}** failed before result). The primary reported pair has **{counts['fresh_completed_arms']}** arms and reuses the accepted workload binary; the first completed pair used a rebuilt binary and is retained as superseded evidence. There is one observation per completed arm and no variance claim.
 
 The accepted pair's all-ready point was 298,915 ticks after the native endpoint; in the fresh pair it was {abs(tail['all_ready_minus_native_finalTick']):,} ticks {'after' if tail['all_ready_minus_native_finalTick'] >= 0 else 'before'} it. That alignment is not replicated and is not used as causal evidence.
 
@@ -300,14 +338,21 @@ def main() -> int:
     parser.add_argument("pair_root", type=Path)
     parser.add_argument("--accepted-audit", type=Path, required=True)
     parser.add_argument("--failed-attempt", type=Path)
+    parser.add_argument("--superseded-pair", type=Path)
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--markdown-output", type=Path, required=True)
     args = parser.parse_args()
     accepted = json.loads(args.accepted_audit.read_text())
+    superseded = None
+    if args.superseded_pair is not None:
+        superseded = audit_pair(
+            args.superseded_pair, require_accepted_workload=False
+        )
+        if superseded["accepted_workload_reused"]:
+            raise AuditError("superseded pair unexpectedly used accepted workload")
     report = build_report(
-        audit_pair(args.pair_root),
-        accepted,
-        audit_failed_attempt(args.failed_attempt),
+        audit_pair(args.pair_root), accepted,
+        audit_failed_attempt(args.failed_attempt), superseded,
     )
     args.json_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     args.markdown_output.write_text(render_markdown(report))
