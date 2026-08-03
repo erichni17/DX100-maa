@@ -268,7 +268,8 @@ echo "[run] omp_threads=$OMP_THREADS ckpt_timeout=${CKPT_TIMEOUT}s restore_timeo
 {
   flock -x 200
   rm -f "$BIN"
-  make -C "$UME" MAA_MEM_SIZE="$MAA_MEM_HEX" EXTRA_CXX_FLAGS="$VERIFY_FLAGS" "$BIN_BASENAME" \
+  make -C "$UME" GEM5_HOME="$RUNTIME_ROOT" MAA_MEM_SIZE="$MAA_MEM_HEX" \
+    EXTRA_CXX_FLAGS="$VERIFY_FLAGS ${GZZ_EXTRA_CXX_FLAGS:-}" "$BIN_BASENAME" \
     > "$CAMPAIGN_ROOT/build_${KERNEL}_t${TILE}.log" 2>&1
 } 200>"$BUILD_LOCK"
 [[ -f "$BIN" ]] || { echo "missing binary after build: $BIN" >&2; exit 3; }
@@ -318,8 +319,15 @@ PROGRESS_ARGS=()
 if [[ "$PROG_INTERVAL" != 0 && "$PROG_INTERVAL" != 0Hz && "$PROG_INTERVAL" != 10000000 ]]; then
   PROGRESS_ARGS=(--prog-interval="$PROG_INTERVAL")
 fi
+DEBUG_ARGS=()
+if [[ -n "${GZZ_DEBUG_FLAGS:-}" ]]; then
+  DEBUG_ARGS=(--debug-flags="$GZZ_DEBUG_FLAGS")
+  if [[ -n "${GZZ_DEBUG_FILE:-}" ]]; then
+    DEBUG_ARGS+=(--debug-file="$GZZ_DEBUG_FILE")
+  fi
+fi
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" --outdir="$OUT" "$SE" \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$OMP_THREADS" run_with_optional_timeout "$RESTORE_TIMEOUT" "$GEM5_BIN" "${DEBUG_ARGS[@]}" --outdir="$OUT" "$SE" \
   --cpu-type X86O3CPU -r 1 -n 4 --mem-size "$MEM_SIZE" \
   --sys-clock 3.2GHz --cpu-clock 3.2GHz \
   --caches --l1d_size=32kB --l1d_assoc=8 --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \

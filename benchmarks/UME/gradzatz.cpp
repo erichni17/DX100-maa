@@ -16,6 +16,16 @@ using namespace std;
 
 #define DATATYPE float
 
+#ifdef GZZ_LOGICAL_CHUNK_SIZE
+static_assert(GZZ_LOGICAL_CHUNK_SIZE > 0,
+              "GZZ logical chunk size must be positive");
+static_assert(GZZ_LOGICAL_CHUNK_SIZE <= TILE_SIZE,
+              "GZZ logical chunks must fit in one physical tile");
+#define GZZ_LOOP_CHUNK_SIZE GZZ_LOGICAL_CHUNK_SIZE
+#else
+#define GZZ_LOOP_CHUNK_SIZE TILE_SIZE
+#endif
+
 // #define VERIFY
 
 #define DISTANCE_OTEHRS 85000
@@ -124,6 +134,9 @@ static ReferenceErrors check_scalar_reference() {
 int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
 int tiles3[NUM_CORES], tiles4[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
+#ifdef GZZ_LOGICAL_CHUNK_SIZE
+int regs3[NUM_CORES];
+#endif
 #ifdef MAA_VIRTUAL_GATHER
 int backing_start_regs[NUM_CORES], backing_end_regs[NUM_CORES];
 #endif
@@ -204,6 +217,9 @@ void gradzatz_MAA() {
 #pragma omp parallel
     {
         int reg0, reg1, reg2;
+#ifdef GZZ_LOGICAL_CHUNK_SIZE
+        int chunk_end_reg;
+#endif
 #ifdef MAA_VIRTUAL_GATHER
         int backing_start_reg, backing_end_reg;
 #endif
@@ -212,6 +228,9 @@ void gradzatz_MAA() {
         reg0 = regs0[omp_thread_id];
         reg1 = regs1[omp_thread_id];
         reg2 = regs2[omp_thread_id];
+#ifdef GZZ_LOGICAL_CHUNK_SIZE
+        chunk_end_reg = regs3[omp_thread_id];
+#endif
 #ifdef MAA_VIRTUAL_GATHER
         backing_start_reg = backing_start_regs[omp_thread_id];
         backing_end_reg = backing_end_regs[omp_thread_id];
@@ -228,17 +247,27 @@ void gradzatz_MAA() {
         maa_const<int>(0, backing_start_reg);
 #endif
 #pragma omp for
-        for (int c = 0; c < num_corners; c += TILE_SIZE) {
+        for (int c = 0; c < num_corners; c += GZZ_LOOP_CHUNK_SIZE) {
             maa_const<int>(c, reg0);
+#ifdef GZZ_LOGICAL_CHUNK_SIZE
+            maa_const<int>(std::min(c + GZZ_LOOP_CHUNK_SIZE, num_corners),
+                           chunk_end_reg);
+#define GZZ_END_REG chunk_end_reg
+#else
+#define GZZ_END_REG reg1
+#endif
             // Step1: Load corner_type
-            maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2, tile0);
+            maa_stream_load<int>(corner_type.data(), reg0, GZZ_END_REG, reg2,
+                                 tile0);
             // Step2: Perform comparison
             maa_alu_scalar<int>(tile0, reg2, tileCond, Operation_t::GTE_OP);
             // Step3: Load c_to_z_map
-            maa_stream_load<int>(c_to_z_map.data(), reg0, reg1, reg2, tile3);
+            maa_stream_load<int>(c_to_z_map.data(), reg0, GZZ_END_REG, reg2,
+                                 tile3);
             // Transfer tile3
             // Step4: Load corner_volume[c]
-            maa_stream_load<DATATYPE>(corner_volume.data(), reg0, reg1, reg2, tile0);
+            maa_stream_load<DATATYPE>(corner_volume.data(), reg0, GZZ_END_REG,
+                                      reg2, tile0);
             // Step5: Accumulate the local zone volume
             maa_indirect_rmw_vector<DATATYPE>(zone_volume.data(), tile3, tile0, Operation_t::ADD_OP, tileCond);
             wait_ready(tile0);
@@ -263,19 +292,24 @@ void gradzatz_MAA() {
         uint64_t local_gather_lanes = 0;
 #endif
 #pragma omp for
-        for (int c = 0; c < num_corners; c += TILE_SIZE) {
-            const int gather_size = std::min(num_corners - c, TILE_SIZE);
+        for (int c = 0; c < num_corners; c += GZZ_LOOP_CHUNK_SIZE) {
+            const int gather_size =
+                std::min(num_corners - c, GZZ_LOOP_CHUNK_SIZE);
             maa_const<int>(c, reg0);
+#ifdef GZZ_LOGICAL_CHUNK_SIZE
+            maa_const<int>(c + gather_size, chunk_end_reg);
+#endif
             // Step1: Load corner_type
-            maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2, tile0);
+            maa_stream_load<int>(corner_type.data(), reg0, GZZ_END_REG, reg2,
+                                 tile0);
             // Step2: Perform comparison
             maa_alu_scalar<int>(tile0, reg2, tileCond, Operation_t::GTE_OP);
             // Step3: Load c_to_z_map
-            maa_stream_load<int>(c_to_z_map.data(), reg0, reg1, reg2, tile3,
-                                 tileCond); // tile3 -> z
+            maa_stream_load<int>(c_to_z_map.data(), reg0, GZZ_END_REG, reg2,
+                                 tile3, tileCond); // tile3 -> z
             // Step4: Load c_to_p_map
-            maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2, tile5,
-                                 tileCond); // tile5 -> p
+            maa_stream_load<int>(c_to_p_map.data(), reg0, GZZ_END_REG, reg2,
+                                 tile5, tileCond); // tile5 -> p
             // Step5: Load point_gradient[p]
 #ifdef MAA_VIRTUAL_GATHER
             maa_indirect_load_virtual<DATATYPE>(
@@ -558,6 +592,9 @@ int main(int argc, char *argv[]) {
             regs0[thread_id] = get_new_reg<int>();
             regs1[thread_id] = get_new_reg<int>();
             regs2[thread_id] = get_new_reg<int>();
+#ifdef GZZ_LOGICAL_CHUNK_SIZE
+            regs3[thread_id] = get_new_reg<int>();
+#endif
 #ifdef MAA_VIRTUAL_GATHER
             backing_start_regs[thread_id] = get_new_reg<int>();
             backing_end_regs[thread_id] = get_new_reg<int>();
