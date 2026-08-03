@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "evidence_kind": "completed exact-output gem5 measurement",
+  "output_hash": "7228541527853630339",
+  "exact_output_match": true,
+  "gem5_sha256": "4c87311804fcbbef4b861945b403392e3861d87b010f9de88fae6d97c966ecb8",
+  "benchmark_sha256": "c25d9a55520a6d9bacedae67089d9b6611603381cf0af2db3e0de2566d1977db",
+  "common_area_config_sha256": "6faa119dbf304c669a50409c289372d2d87b1a158d30e5de7b5cdae21375fea0",
+  "raw_evidence_root": "/tmp/dx100-isoarea-pingpong-20260803",
+  "runs": [
+    {
+      "case": "isoarea_serial_4k",
+      "mode": 0,
+      "simTicks": 46659849,
+      "descriptor_interval_ticks": 44590918,
+      "stage_ticks": {"fill": 1292690, "compute": 641024, "store": 7602770},
+      "actual_cross_unit_overlap_ticks": 0,
+      "requests": {"source_reads": 9634, "dram_reads": 26997, "write_issues": 5298, "write_completions": 5298},
+      "rows": {"inserted": 1403, "unique": 129, "dram_activates": 5599, "dram_precharges": 4515},
+      "trace_sha256": "21c942d31bdba97407b6fc6a4563e065192e3d702751ce9dbd2b2d1b21f5bbfa",
+      "intervals": [
+        [0, "fill", 3156375884, 3156699213], [0, "compute", 3156699213, 3156859469], [0, "store", 3156859469, 3159615747],
+        [1, "fill", 3165092621, 3165415950], [1, "compute", 3165415950, 3165576206], [1, "store", 3165576206, 3167140267],
+        [2, "fill", 3167140267, 3167463283], [2, "compute", 3167463283, 3167623539], [2, "store", 3167623539, 3169068973],
+        [3, "fill", 3169068973, 3169391989], [3, "compute", 3169391989, 3169552245], [3, "store", 3169552245, 3171389242]
+      ]
+    },
+    {
+      "case": "isoarea_serial_2k",
+      "mode": 1,
+      "simTicks": 47193514,
+      "descriptor_interval_ticks": 45124270,
+      "stage_ticks": {"fill": 1292690, "compute": 641024, "store": 8549282},
+      "actual_cross_unit_overlap_ticks": 0,
+      "requests": {"source_reads": 9634, "dram_reads": 27006, "write_issues": 5298, "write_completions": 5298},
+      "rows": {"inserted": 1403, "unique": 129, "dram_activates": 5600, "dram_precharges": 4517},
+      "trace_sha256": "65aa778eb35415a40ff28f666e4a997e9e1ab1b39c7c870af49184a96af06eb8",
+      "intervals": [
+        [0, "fill", 3156375884, 3156537705], [0, "compute", 3156537705, 3156617833], [0, "store", 3156617833, 3158282680],
+        [1, "fill", 3158282680, 3158444188], [1, "compute", 3158444188, 3158524316], [1, "store", 3158524316, 3159978827],
+        [2, "fill", 3165042541, 3165204362], [2, "compute", 3165204362, 3165284490], [2, "store", 3165284490, 3166335544],
+        [3, "fill", 3166335544, 3166497052], [3, "compute", 3166497052, 3166577180], [3, "store", 3166577180, 3167392232],
+        [4, "fill", 3167392232, 3167553740], [4, "compute", 3167553740, 3167633868], [4, "store", 3167633868, 3168448607],
+        [5, "fill", 3168448607, 3168610115], [5, "compute", 3168610115, 3168690243], [5, "store", 3168690243, 3169504669],
+        [6, "fill", 3169504669, 3169666177], [6, "compute", 3169666177, 3169746305], [6, "store", 3169746305, 3170561044],
+        [7, "fill", 3170561044, 3170722552], [7, "compute", 3170722552, 3170802680], [7, "store", 3170802680, 3171922594]
+      ]
+    },
+    {
+      "case": "isoarea_pingpong_2k",
+      "mode": 2,
+      "simTicks": 46647329,
+      "descriptor_interval_ticks": 44578085,
+      "stage_ticks": {"fill": 1293003, "compute": 642589, "store": 8445366},
+      "actual_cross_unit_overlap_ticks": 642589,
+      "requests": {"source_reads": 9634, "dram_reads": 26996, "write_issues": 5299, "write_completions": 5299},
+      "rows": {"inserted": 1403, "unique": 129, "dram_activates": 5604, "dram_precharges": 4515},
+      "trace_sha256": "6a7f3f6464b191a8c528e92ff97b8ec200b2149f56bb3bbaade8042bd0b919ac",
+      "intervals": [
+        [0, "fill", 3156375884, 3156537705], [0, "compute", 3156537705, 3156617833], [1, "fill", 3156537705, 3156699526],
+        [1, "compute", 3156699526, 3156779967], [0, "store", 3156699526, 3158282680], [1, "store", 3158282680, 3159736878],
+        [2, "fill", 3164999034, 3165160855], [2, "compute", 3165160855, 3165241296], [3, "fill", 3165160855, 3165322363],
+        [3, "compute", 3165322363, 3165402491], [2, "store", 3165322363, 3166266058], [3, "store", 3166266058, 3167081110],
+        [4, "fill", 3167081110, 3167242618], [4, "compute", 3167242618, 3167323059], [5, "fill", 3167242618, 3167404126],
+        [5, "compute", 3167404126, 3167484567], [4, "store", 3167404126, 3168219178], [5, "store", 3168219178, 3169034230],
+        [6, "fill", 3169034230, 3169195738], [6, "compute", 3169195738, 3169276179], [7, "fill", 3169195738, 3169357246],
+        [7, "compute", 3169357246, 3169437374], [6, "store", 3169357246, 3170172298], [7, "store", 3170172298, 3171376409]
+      ]
+    }
+  ],
+  "comparisons": {
+    "serial_2k_regression_vs_serial_4k_percent": 1.143735,
+    "pingpong_2k_speedup_vs_serial_4k_percent": 0.026840,
+    "pingpong_2k_speedup_vs_serial_2k_percent": 1.170882
+  }
+}

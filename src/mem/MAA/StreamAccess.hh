@@ -122,6 +122,8 @@ protected:
     Tick my_decode_start_tick;
     Tick my_request_start_tick;
     int my_size;
+    int my_element_base;
+    int my_element_count;
 
     Addr my_translated_addr;
     bool my_translation_done;

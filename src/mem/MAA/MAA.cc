@@ -58,6 +58,7 @@ MAA::MAA(const MAAParams &p)
       physical_tile_elements(p.physical_tile_elements == 0
                                  ? p.num_tile_elements
                                  : p.physical_tile_elements),
+      transparent_spd_mode(p.transparent_spd_mode),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -120,6 +121,9 @@ MAA::MAA(const MAAParams &p)
     panic_if(physical_tile_elements > num_tile_elements,
              "Physical tile capacity %u exceeds logical capacity %u\n",
              physical_tile_elements, num_tile_elements);
+    panic_if(transparent_spd_mode > 2,
+             "Invalid transparent SPD mode %u (expected 0..2)\n",
+             transparent_spd_mode);
     panic_if(num_offset_table_entries == 0 ||
                  num_offset_table_entries > num_tile_elements,
              "Offset Table capacity %u must be in [1,%u]\n",
@@ -786,6 +790,8 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     descriptor.destinationMinAddr = instruction->backingMinAddr;
     descriptor.destinationMaxAddr = instruction->backingMaxAddr;
     descriptor.destinationRangeID = instruction->backingAddrRangeID;
+    descriptor.mode = static_cast<TransparentSPDController::Mode>(
+        transparent_spd_mode);
 
     const char *validation =
         TransparentSPDController::validate(descriptor);
@@ -811,11 +817,15 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     }
     DPRINTF(MAAVirtualTrace,
             "event=transparent_submit token=%d physical=%d output=%d "
-            "generation=%lu logical=%d page=%d pages=%d\n",
+            "generation=%lu logical=%d page=%d pages=%d mode=%u chunks=%d "
+            "chunk_elements=%d\n",
             descriptor.tokenTile, descriptor.physicalTile,
             descriptor.outputTile, descriptor.generation,
             descriptor.logicalElements, descriptor.pageElements,
-            TransparentSPDController::NumPages);
+            TransparentSPDController::NumPages,
+            static_cast<unsigned>(descriptor.mode),
+            transparentController.chunks(),
+            transparentController.elementsPerChunk());
     tryIssueTransparentMicroOp();
     return true;
 }
@@ -832,6 +842,11 @@ bool MAA::dispatchTransparentMicroOp(
     instruction.controllerManaged = true;
     instruction.controllerAction = request.action;
     instruction.controllerPage = request.page;
+    instruction.controllerTransactionID = request.transactionID;
+    instruction.controllerSrcSlot = request.srcSlot;
+    instruction.controllerDstSlot = request.dstSlot;
+    instruction.controllerElementOffset = request.elementOffset;
+    instruction.controllerElements = request.elements;
 
     const Addr byte_offset =
         static_cast<Addr>(request.logicalOffset) * descriptor.wordSize;
@@ -873,16 +888,13 @@ bool MAA::dispatchTransparentMicroOp(
         panic("Cannot dispatch empty transparent-controller action\n");
     }
 
-    instruction.src1Status = static_cast<Instruction::TileStatus>(
-        getTileStatus(&instruction, instruction.src1SpdID, false));
-    instruction.src2Status = static_cast<Instruction::TileStatus>(
-        getTileStatus(&instruction, instruction.src2SpdID, false));
-    instruction.condStatus = static_cast<Instruction::TileStatus>(
-        getTileStatus(&instruction, instruction.condSpdID, false));
-    instruction.dst1Status = static_cast<Instruction::TileStatus>(
-        getTileStatus(&instruction, instruction.dst1SpdID, true));
-    instruction.dst2Status = static_cast<Instruction::TileStatus>(
-        getTileStatus(&instruction, instruction.dst2SpdID, true));
+    // The finite controller is the readiness authority for its subspans.
+    // Whole-tile SPD status cannot distinguish the two 2K owners.
+    instruction.src1Status = Instruction::TileStatus::Finished;
+    instruction.src2Status = Instruction::TileStatus::Finished;
+    instruction.condStatus = Instruction::TileStatus::Finished;
+    instruction.dst1Status = Instruction::TileStatus::WaitForService;
+    instruction.dst2Status = Instruction::TileStatus::WaitForService;
     if (!ifile->pushInstruction(instruction))
         return false;
 
@@ -928,23 +940,33 @@ void MAA::tryIssueTransparentMicroOp() {
         }
         transparentController.advanceControllerCycle();
     }
-    const auto request = transparentController.pending();
-    if (request.action == TransparentSPDController::Action::None)
-        return;
-    if (!dispatchTransparentMicroOp(request)) {
+    auto try_request = [this](
+                           const TransparentSPDController::Request &request) {
+        if (request.action == TransparentSPDController::Action::None)
+            return;
+        if (!dispatchTransparentMicroOp(request)) {
+            DPRINTF(MAAVirtualTrace,
+                    "event=transparent_backpressure page=%d action=%d\n",
+                    request.page, static_cast<int>(request.action));
+            return;
+        }
+        panic_if(!transparentController.accept(request),
+                 "Transparent controller rejected dispatched page %d "
+                 "action %d\n",
+                 request.page, static_cast<int>(request.action));
         DPRINTF(MAAVirtualTrace,
-                "event=transparent_backpressure page=%d action=%d\n",
-                request.page, static_cast<int>(request.action));
-        return;
-    }
-    panic_if(!transparentController.accept(request),
-             "Transparent controller rejected dispatched page %d action %d\n",
-             request.page, static_cast<int>(request.action));
-    DPRINTF(MAAVirtualTrace,
-            "event=transparent_issue page=%d action=%d offset=%d "
-            "elements=%d\n",
-            request.page, static_cast<int>(request.action),
-            request.logicalOffset, request.elements);
+                "event=transparent_issue page=%d action=%d offset=%d "
+                "elements=%d element_offset=%d src_slot=%d dst_slot=%d "
+                "transaction=%lu\n",
+                request.page, static_cast<int>(request.action),
+                request.logicalOffset, request.elements,
+                request.elementOffset, request.srcSlot, request.dstSlot,
+                request.transactionID);
+    };
+    // ALU and STREAM are distinct real units.  The controller admits at most
+    // one request to each; STREAM still serializes fills and stores.
+    try_request(transparentController.pendingALU());
+    try_request(transparentController.pendingStream());
 }
 void MAA::dispatchRegister() {
     DPRINTF(MAAController, "%s: dispatching register...!\n", __func__);
@@ -1108,6 +1130,16 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     const bool controller_managed = instruction->controllerManaged;
     const auto controller_action = instruction->controllerAction;
     const int controller_page = instruction->controllerPage;
+    TransparentSPDController::Request controller_request;
+    controller_request.action = controller_action;
+    controller_request.page = controller_page;
+    controller_request.elements = instruction->controllerElements;
+    controller_request.logicalOffset =
+        controller_page * instruction->controllerElements;
+    controller_request.srcSlot = instruction->controllerSrcSlot;
+    controller_request.dstSlot = instruction->controllerDstSlot;
+    controller_request.elementOffset = instruction->controllerElementOffset;
+    controller_request.transactionID = instruction->controllerTransactionID;
     if (instruction->dst1SpdID != -1) {
         spd->setTileFinished(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
         setTileReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
@@ -1147,14 +1179,16 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     }
     }
     if (controller_managed) {
-        panic_if(!transparentController.complete(controller_action,
-                                                  controller_page),
+        panic_if(!transparentController.complete(controller_request),
                  "Transparent controller rejected completion of page %d "
                  "action %d\n",
                  controller_page, static_cast<int>(controller_action));
         DPRINTF(MAAVirtualTrace,
-                "event=transparent_complete page=%d action=%d\n",
-                controller_page, static_cast<int>(controller_action));
+                "event=transparent_complete page=%d action=%d "
+                "element_offset=%d transaction=%lu\n",
+                controller_page, static_cast<int>(controller_action),
+                controller_request.elementOffset,
+                controller_request.transactionID);
         if (transparentController.complete()) {
             const auto descriptor = transparentController.descriptor();
             // Return the descriptor-lifetime credits only after the final
@@ -1171,8 +1205,11 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                      "Completed transparent descriptor did not retire\n");
             transparentControllerLookupReadyTick = 0;
             DPRINTF(MAAVirtualTrace,
-                    "event=transparent_retire pages=%d\n",
-                    TransparentSPDController::NumPages);
+                    "event=transparent_retire pages=%d chunks=%d mode=%u\n",
+                    TransparentSPDController::NumPages,
+                    TransparentSPDController::LogicalElements /
+                        controller_request.elements,
+                    transparent_spd_mode);
         }
     } else if (transparentController.active()) {
         // The scheduled issue event below is the finite retry opportunity for

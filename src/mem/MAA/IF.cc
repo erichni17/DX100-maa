@@ -60,7 +60,9 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              controllerTransactionID(0),
                              controllerSrcSlot(-1),
                              controllerDstSlot(-1),
-                             controllerPage(-1) {}
+                             controllerPage(-1),
+                             controllerElementOffset(0),
+                             controllerElements(0) {}
 std::string Instruction::print() const {
     char baseAddrStr[32];
     std::sprintf(baseAddrStr, "0x%lx", baseAddr);
@@ -387,6 +389,44 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         } else {
             if (i == ignored_hazard_slot)
                 continue;
+            if (_instruction.controllerManaged &&
+                instructions[maa_id][i].controllerManaged) {
+                const Instruction &other = instructions[maa_id][i];
+                const int lhs_tiles[] = {
+                    _instruction.src1SpdID, _instruction.src2SpdID,
+                    _instruction.dst1SpdID, _instruction.dst2SpdID,
+                    _instruction.condSpdID,
+                };
+                const int rhs_tiles[] = {
+                    other.src1SpdID, other.src2SpdID, other.dst1SpdID,
+                    other.dst2SpdID, other.condSpdID,
+                };
+                bool shares_tile = false;
+                bool overlaps_subspan = false;
+                for (const int lhs : lhs_tiles) {
+                    if (lhs == -1)
+                        continue;
+                    for (const int rhs : rhs_tiles) {
+                        if (lhs != rhs)
+                            continue;
+                        shares_tile = true;
+                        const int lhs_begin =
+                            _instruction.controllerElementOffset;
+                        const int lhs_end = lhs_begin +
+                            _instruction.controllerElements;
+                        const int rhs_begin = other.controllerElementOffset;
+                        const int rhs_end = rhs_begin +
+                            other.controllerElements;
+                        if (lhs_begin < rhs_end && rhs_begin < lhs_end)
+                            overlaps_subspan = true;
+                    }
+                }
+                // Controller ownership is exact below tile granularity.  Two
+                // accepted operations on disjoint halves are intentionally
+                // invisible to the legacy whole-tile hazard scoreboard.
+                if (shares_tile && !overlaps_subspan)
+                    continue;
+            }
             if (_instruction.opcode ==
                     Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                 _instruction.src1SpdID != -1 &&

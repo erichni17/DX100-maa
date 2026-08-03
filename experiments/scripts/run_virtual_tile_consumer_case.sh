@@ -35,6 +35,7 @@ case_name=$3
 out=$(realpath -m "$4")
 overlap=0
 polluted=0
+transparent_spd_mode=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
@@ -154,6 +155,33 @@ transparent_4k)
     virtual=1
     direct=1
     reload_only=0
+    ;;
+isoarea_serial_4k)
+    mode=transparent
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    transparent_spd_mode=0
+    ;;
+isoarea_serial_2k)
+    mode=transparent
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    transparent_spd_mode=1
+    ;;
+isoarea_pingpong_2k)
+    mode=transparent
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    transparent_spd_mode=2
     ;;
 transparent_ready_4k)
     mode=transparent_ready
@@ -296,6 +324,13 @@ cp -- "$root/src/mem/MAA/MAA.cc" "$snapshot/MAA.cc"
 cp -- "$root/src/mem/MAA/MAA.hh" "$snapshot/MAA.hh"
 cp -- "$root/src/mem/MAA/IF.cc" "$snapshot/IF.cc"
 cp -- "$root/src/mem/MAA/IF.hh" "$snapshot/IF.hh"
+cp -- "$root/src/mem/MAA/StreamAccess.cc" "$snapshot/StreamAccess.cc"
+cp -- "$root/src/mem/MAA/StreamAccess.hh" "$snapshot/StreamAccess.hh"
+cp -- "$root/src/mem/MAA/ALU.cc" "$snapshot/ALU.cc"
+cp -- "$root/src/mem/MAA/ALU.hh" "$snapshot/ALU.hh"
+cp -- "$root/src/mem/MAA/MAA.py" "$snapshot/MAA.py"
+cp -- "$root/configs/common/MAAConfig.py" "$snapshot/MAAConfig.py"
+cp -- "$root/configs/common/Options.py" "$snapshot/Options.py"
 cp -- "$root/src/mem/MAA/CpuSidePort.cc" "$snapshot/CpuSidePort.cc"
 sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/ramulator.yaml" \
@@ -305,7 +340,11 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
     "$snapshot/TransparentSPDController.hh" \
     "$snapshot/MAA.cc" "$snapshot/MAA.hh" \
-    "$snapshot/IF.cc" "$snapshot/IF.hh" "$snapshot/CpuSidePort.cc" \
+    "$snapshot/IF.cc" "$snapshot/IF.hh" \
+    "$snapshot/StreamAccess.cc" "$snapshot/StreamAccess.hh" \
+    "$snapshot/ALU.cc" "$snapshot/ALU.hh" \
+    "$snapshot/MAA.py" "$snapshot/MAAConfig.py" "$snapshot/Options.py" \
+    "$snapshot/CpuSidePort.cc" \
     "$out/source.diff" "$out/source_status.txt" \
     > "$out/artifact_sha256.txt"
 
@@ -347,6 +386,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --mem-type Ramulator2 --ramulator-config "$ramulator" --mem-channels=1 \
     --maa --maa_num_tile_elements=16384 \
     --maa_physical_tile_elements="$physical" \
+    --maa_transparent_spd_mode="$transparent_spd_mode" \
     --maa_num_initial_row_table_slices="$row_slices" \
     --maa_num_row_table_rows_per_slice="$row_rows" \
     --maa_num_row_table_entries_per_subslice_row="$row_entries" \
@@ -374,6 +414,7 @@ printf '%s\n' "$restore_rc" > "$out/restore.exit"
 
 config_ini="$out/run/config.ini"
 for expected in \
+    "transparent_spd_mode=$transparent_spd_mode" \
     "num_initial_row_table_slices=$row_slices" \
     "num_row_table_rows_per_slice=$row_rows" \
     "num_row_table_entries_per_subslice_row=$row_entries" \
@@ -538,13 +579,21 @@ elif [[ $virtual -eq 1 ]]; then
     }
     if [[ $case_name == transparent_4k ||
           $case_name == transparent_ready_4k ||
-          $case_name == transparent_displaced_4k ]]; then
+          $case_name == transparent_displaced_4k ||
+          $case_name == isoarea_serial_4k ||
+          $case_name == isoarea_serial_2k ||
+          $case_name == isoarea_pingpong_2k ]]; then
+        expected_chunks=4
+        [[ $transparent_spd_mode -eq 0 ]] || expected_chunks=8
+        expected_actions=$((expected_chunks * 3))
         transparent_submits=$(grep -c 'event=transparent_submit' "$trace" || true)
         transparent_issues=$(grep -c 'event=transparent_issue' "$trace" || true)
         transparent_completes=$(grep -c 'event=transparent_complete' "$trace" || true)
         transparent_retires=$(grep -c 'event=transparent_retire' "$trace" || true)
-        [[ $transparent_submits -eq 1 && $transparent_issues -eq 12 && \
-           $transparent_completes -eq 12 && $transparent_retires -eq 1 ]] || {
+        [[ $transparent_submits -eq 1 && \
+           $transparent_issues -eq $expected_actions && \
+           $transparent_completes -eq $expected_actions && \
+           $transparent_retires -eq 1 ]] || {
             echo "invalid transparent controller trace: submit=$transparent_submits issue=$transparent_issues complete=$transparent_completes retire=$transparent_retires" >&2
             exit 1
         }
@@ -558,9 +607,16 @@ elif [[ $virtual -eq 1 ]]; then
                 delete value
             }
         ' OFS='\t' "$trace" > "$out/transparent_issue_order.tsv"
-        expected_order=$'0\t1\n0\t2\n0\t3\n1\t1\n1\t2\n1\t3\n2\t1\n2\t2\n2\t3\n3\t1\n3\t2\n3\t3'
-        [[ $(cat "$out/transparent_issue_order.tsv") == "$expected_order" ]] || {
-            echo "transparent page/action order is not fill-compute-store per page" >&2
+        awk -v chunks="$expected_chunks" '
+            { seen[$1 ":" $2]++ }
+            END {
+                for (p = 0; p < chunks; ++p)
+                    for (a = 1; a <= 3; ++a)
+                        if (seen[p ":" a] != 1)
+                            exit 1
+            }
+        ' "$out/transparent_issue_order.tsv" || {
+            echo "transparent page/action set is incomplete or duplicated" >&2
             exit 1
         }
     fi
@@ -679,6 +735,7 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
     row_table_rows_per_slice row_table_entries_per_subslice_row
     virtual_grow_order virtual_index_partitions
+    transparent_spd_mode
     virtual_index_filter_words_per_cycle require_index_filter_wait
     response_slots response_word_pool
     row_table_cache_lines
@@ -697,6 +754,7 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
     "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
     "$row_entries" "$grow_order" "$index_partitions"
+    "$transparent_spd_mode"
     "$index_filter_words_per_cycle" "$require_index_filter_wait"
     "$response_slots" "$response_word_pool"
     "$rt_cache_lines" "$rt_rows" "$rt_unique_cache_lines" "$rt_unique_rows"

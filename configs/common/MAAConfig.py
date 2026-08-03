@@ -21,6 +21,11 @@ def _get_maa_opts(options):
             options, "maa_physical_tile_elements"
         )
 
+    if hasattr(options, "maa_transparent_spd_mode"):
+        opts["transparent_spd_mode"] = getattr(
+            options, "maa_transparent_spd_mode"
+        )
+
     if hasattr(options, "maa_num_regs_per_core"):
         opts["num_regs_per_core"] = getattr(options, "maa_num_regs_per_core")
 
