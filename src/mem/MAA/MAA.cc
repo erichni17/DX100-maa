@@ -835,6 +835,7 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
                  "Failed to import ready page %d for token %d\n", page,
                  descriptor.tokenTile);
     }
+    startTransparentBlockerTracking();
     DPRINTF(MAAVirtualTrace,
             "event=transparent_submit schema=2 occurrence=%lu token=%d "
             "physical=%d output=%d "
@@ -852,6 +853,100 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
             transparentController.elementsPerChunk());
     tryIssueTransparentMicroOp();
     return true;
+}
+void MAA::startTransparentBlockerTracking() {
+    transparentBlockerTicks.fill(0);
+    transparentInstructionFileBlocked = false;
+    transparentBlockerTracking = true;
+    transparentBlockerLastTick = curTick();
+    transparentLastBlocker = transparentController.blocker();
+}
+void MAA::updateTransparentBlockerTracking() {
+    if (!transparentBlockerTracking)
+        return;
+    panic_if(curTick() < transparentBlockerLastTick,
+             "Transparent blocker clock moved backwards\n");
+    transparentBlockerTicks[static_cast<size_t>(transparentLastBlocker)] +=
+        curTick() - transparentBlockerLastTick;
+    transparentBlockerLastTick = curTick();
+    transparentLastBlocker = transparentInstructionFileBlocked
+        ? TransparentSPDController::Blocker::InstructionFileFull
+        : transparentController.blocker();
+}
+void MAA::snapshotTransparentBlockerTracking(uint64_t generation) {
+    updateTransparentBlockerTracking();
+    Tick total = 0;
+    for (Tick ticks : transparentBlockerTicks)
+        total += ticks;
+    using Blocker = TransparentSPDController::Blocker;
+    DPRINTF(MAAVirtualTrace,
+            "event=transparent_blocker_snapshot schema=2 occurrence=%lu "
+            "generation=%lu point=all_pages_ready total_ticks=%lu "
+            "runnable_ticks=%lu producer_not_ready_ticks=%lu "
+            "stream_busy_ticks=%lu alu_busy_ticks=%lu "
+            "slot_owned_ticks=%lu serialization_ticks=%lu "
+            "transition_ticks=%lu if_full_ticks=%lu other_ticks=%lu "
+            "inactive_ticks=%lu\n",
+            transparentTraceOccurrence++, generation, total,
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Runnable)],
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::ProducerNotReady)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::StreamBusy)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::ALUBusy)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::SlotOwned)],
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::Serialization)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Transition)],
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::InstructionFileFull)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Other)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Inactive)]);
+}
+void MAA::finishTransparentBlockerTracking(uint64_t generation) {
+    updateTransparentBlockerTracking();
+    Tick total = 0;
+    for (Tick ticks : transparentBlockerTicks)
+        total += ticks;
+    using Blocker = TransparentSPDController::Blocker;
+    DPRINTF(MAAVirtualTrace,
+            "event=transparent_blocker_summary schema=2 occurrence=%lu "
+            "generation=%lu total_ticks=%lu runnable_ticks=%lu "
+            "producer_not_ready_ticks=%lu stream_busy_ticks=%lu "
+            "alu_busy_ticks=%lu slot_owned_ticks=%lu "
+            "serialization_ticks=%lu transition_ticks=%lu "
+            "if_full_ticks=%lu other_ticks=%lu inactive_ticks=%lu\n",
+            transparentTraceOccurrence++, generation, total,
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Runnable)],
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::ProducerNotReady)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::StreamBusy)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::ALUBusy)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::SlotOwned)],
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::Serialization)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Transition)],
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::InstructionFileFull)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Other)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::Inactive)]);
+    transparentBlockerTracking = false;
+    transparentInstructionFileBlocked = false;
+}
+void MAA::recordTransparentConsumerAcceptance(
+    int page, uint64_t transaction, Addr address, int ordinal, int expected) {
+    panic_if(!transparentController.active() || ordinal <= 0 ||
+                 expected <= 0 || ordinal > expected,
+             "Invalid transparent consumer acceptance page=%d "
+             "ordinal=%d/%d\n",
+             page, ordinal, expected);
+    DPRINTF(MAAVirtualTrace,
+            "event=transparent_consumer_accept schema=2 occurrence=%lu "
+            "generation=%lu page=%d transaction=%lu address=0x%lx "
+            "ordinal=%d expected=%d first=%d last=%d\n",
+            transparentTraceOccurrence++,
+            transparentController.descriptor().generation, page,
+            transaction, address, ordinal, expected, ordinal == 1,
+            ordinal == expected);
 }
 bool MAA::dispatchTransparentMicroOp(
     const TransparentSPDController::Request &request) {
@@ -950,6 +1045,7 @@ bool MAA::dispatchTransparentMicroOp(
     return true;
 }
 void MAA::tryIssueTransparentMicroOp() {
+    updateTransparentBlockerTracking();
     if (transparentController.controllerCyclesRemaining() != 0) {
         if (curTick() < transparentControllerLookupReadyTick) {
             if (!issueInstructionEvent.scheduled()) {
@@ -963,12 +1059,16 @@ void MAA::tryIssueTransparentMicroOp() {
             return;
         }
         transparentController.advanceControllerCycle();
+        updateTransparentBlockerTracking();
     }
     auto try_request = [this](
                            const TransparentSPDController::Request &request) {
         if (request.action == TransparentSPDController::Action::None)
             return;
         if (!dispatchTransparentMicroOp(request)) {
+            updateTransparentBlockerTracking();
+            transparentInstructionFileBlocked = true;
+            updateTransparentBlockerTracking();
             DPRINTF(MAAVirtualTrace,
                     "event=transparent_backpressure schema=2 occurrence=%lu "
                     "page=%d action=%d "
@@ -978,10 +1078,13 @@ void MAA::tryIssueTransparentMicroOp() {
                     transparentActionName(request.action));
             return;
         }
+        updateTransparentBlockerTracking();
+        transparentInstructionFileBlocked = false;
         panic_if(!transparentController.accept(request),
                  "Transparent controller rejected dispatched page %d "
                  "action %d\n",
                  request.page, static_cast<int>(request.action));
+        updateTransparentBlockerTracking();
         DPRINTF(MAAVirtualTrace,
                 "event=transparent_issue schema=2 occurrence=%lu "
                 "generation=%lu page=%d "
@@ -1217,10 +1320,12 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     }
     }
     if (controller_managed) {
+        updateTransparentBlockerTracking();
         panic_if(!transparentController.complete(controller_request),
                  "Transparent controller rejected completion of page %d "
                  "action %d\n",
                  controller_page, static_cast<int>(controller_action));
+        updateTransparentBlockerTracking();
         DPRINTF(MAAVirtualTrace,
                 "event=transparent_complete schema=2 occurrence=%lu "
                 "generation=%lu page=%d "
@@ -1247,6 +1352,7 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                      descriptor.tokenTile);
             virtualPageConsumedGeneration[descriptor.tokenTile] =
                 descriptor.generation;
+            finishTransparentBlockerTracking(descriptor.generation);
             panic_if(!transparentController.retire(),
                      "Completed transparent descriptor did not retire\n");
             transparentControllerLookupReadyTick = 0;
@@ -1347,6 +1453,7 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
     if (transparentController.active() &&
         transparentController.descriptor().tokenTile == tokenTileID &&
         pageID < TransparentSPDController::NumPages) {
+        updateTransparentBlockerTracking();
         panic_if(transparentController.descriptor().generation !=
                      virtualPageGeneration[tokenTileID],
                  "Transparent token %d received stale page %d generation\n",
@@ -1354,6 +1461,17 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
         panic_if(!transparentController.notifyPageReady(tokenTileID, pageID),
                  "Transparent controller rejected ready token=%d page=%d\n",
                  tokenTileID, pageID);
+        updateTransparentBlockerTracking();
+        bool allPagesReady = true;
+        for (int page = 0; page < TransparentSPDController::NumPages;
+             ++page) {
+            allPagesReady = allPagesReady &&
+                virtualPageReady[tokenTileID][page];
+        }
+        if (allPagesReady) {
+            snapshotTransparentBlockerTracking(
+                transparentController.descriptor().generation);
+        }
         tryIssueTransparentMicroOp();
     }
 

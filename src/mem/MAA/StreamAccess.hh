@@ -94,7 +94,7 @@ public:
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);
     bool recvData(const Addr addr, uint8_t *dataptr);
-    void writePacketSent(Addr addr);
+    void writePacketSent(Addr addr, bool transportAccepted = false);
     void readPacketSent(Addr addr);
 
     /* Related to BaseMMU::Translation Inheretance */

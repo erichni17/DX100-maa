@@ -475,6 +475,9 @@ public:
     bool transparentControllerOwnsTile(int maaID, int tileID) const;
     bool transparentControllerUsesRegister(int maaID, int firstRegister,
                                            int registerWords) const;
+    void recordTransparentConsumerAcceptance(int page, uint64_t transaction,
+                                             Addr address, int ordinal,
+                                             int expected);
     void finishInstructionCompute(InstructionPtr instruction);
     void finishInstructionInvalidate(InstructionPtr instruction, int tileID);
     bool sentMemSidePacket(PacketPtr pkt);
@@ -502,6 +505,14 @@ protected:
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
     uint64_t transparentTraceOccurrence = 0;
+    bool transparentBlockerTracking = false;
+    bool transparentInstructionFileBlocked = false;
+    Tick transparentBlockerLastTick = 0;
+    TransparentSPDController::Blocker transparentLastBlocker =
+        TransparentSPDController::Blocker::Inactive;
+    std::array<Tick, static_cast<size_t>(
+                         TransparentSPDController::Blocker::Count)>
+        transparentBlockerTicks{};
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();
@@ -511,6 +522,10 @@ protected:
     bool dispatchTransparentMicroOp(
         const TransparentSPDController::Request &request);
     void tryIssueTransparentMicroOp();
+    void startTransparentBlockerTracking();
+    void updateTransparentBlockerTracking();
+    void snapshotTransparentBlockerTracking(uint64_t generation);
+    void finishTransparentBlockerTracking(uint64_t generation);
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;
     void scheduleDispatchInstructionEvent(int latency = 0);

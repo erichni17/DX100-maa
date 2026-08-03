@@ -429,9 +429,16 @@ void StreamAccessUnit::createReadPacket(Addr addr, int latency) {
 void StreamAccessUnit::readPacketSent(Addr addr) {
     DPRINTF(MAAStream, "S[%d] %s: cache read packet 0x%lx sent!\n", my_stream_id, __func__, addr);
 }
-void StreamAccessUnit::writePacketSent(Addr addr) {
+void StreamAccessUnit::writePacketSent(Addr addr, bool transportAccepted) {
     DPRINTF(MAAStream, "S[%d] %s: cache write packet 0x%lx sent!\n", my_stream_id, __func__, addr);
     my_received_responses++;
+    if (transportAccepted && my_instruction->controllerManaged &&
+        my_instruction->opcode == Instruction::OpcodeType::STREAM_ST) {
+        maa->recordTransparentConsumerAcceptance(
+            my_instruction->controllerPage,
+            my_instruction->controllerTransactionID, addr,
+            my_received_responses, my_sent_requests);
+    }
     if (maa->allStreamPacketsSent(my_stream_id) && (my_received_responses == my_sent_requests)) {
         DPRINTF(MAAStream, "S[%d] %s: all responses received, calling execution again in state %s!\n", my_stream_id, __func__, status_names[(int)state]);
         scheduleNextExecution(true);

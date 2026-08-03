@@ -1,0 +1,314 @@
+{
+  "accepted_pair_manifest": {
+    "path": "/data1/nier/worktrees/codex-sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/DX100-transparent-virtual-tile-20260725/experiments/analysis/hybrid_overhead_attribution_2026-08-03.json",
+    "sha256": "135fcd7de41df4f299508e162e60318093ab06bff54acc7637f0a8249c4212c4"
+  },
+  "accepted_pair_tail": {
+    "page_and_controller": {
+      "controller_backpressure_events": 0,
+      "intervals": [
+        {
+          "action": "fill",
+          "end_tick": 3282000938,
+          "page": 0,
+          "start_tick": 3281663211,
+          "ticks": 337727
+        },
+        {
+          "action": "compute",
+          "end_tick": 3282161194,
+          "page": 0,
+          "start_tick": 3282000938,
+          "ticks": 160256
+        },
+        {
+          "action": "store",
+          "end_tick": 3284790081,
+          "page": 0,
+          "start_tick": 3282161194,
+          "ticks": 2628887
+        },
+        {
+          "action": "fill",
+          "end_tick": 3292052307,
+          "page": 1,
+          "start_tick": 3291714580,
+          "ticks": 337727
+        },
+        {
+          "action": "compute",
+          "end_tick": 3292212563,
+          "page": 1,
+          "start_tick": 3292052307,
+          "ticks": 160256
+        },
+        {
+          "action": "store",
+          "end_tick": 3294283997,
+          "page": 1,
+          "start_tick": 3292212563,
+          "ticks": 2071434
+        },
+        {
+          "action": "fill",
+          "end_tick": 3294621411,
+          "page": 2,
+          "start_tick": 3294283997,
+          "ticks": 337414
+        },
+        {
+          "action": "compute",
+          "end_tick": 3294781667,
+          "page": 2,
+          "start_tick": 3294621411,
+          "ticks": 160256
+        },
+        {
+          "action": "store",
+          "end_tick": 3296620855,
+          "page": 2,
+          "start_tick": 3294781667,
+          "ticks": 1839188
+        },
+        {
+          "action": "fill",
+          "end_tick": 3296958269,
+          "page": 3,
+          "start_tick": 3296620855,
+          "ticks": 337414
+        },
+        {
+          "action": "compute",
+          "end_tick": 3297118525,
+          "page": 3,
+          "start_tick": 3296958269,
+          "ticks": 160256
+        },
+        {
+          "action": "store",
+          "end_tick": 3298559577,
+          "page": 3,
+          "start_tick": 3297118525,
+          "ticks": 1441052
+        }
+      ],
+      "page_ready_events": 4,
+      "strict_serial_page_action_order": true
+    },
+    "producer_backing_writes": {
+      "completions": 5274,
+      "issues": 5274,
+      "last_completion_at_or_before_all_ready": true,
+      "last_completion_tick": 3293576930,
+      "outstanding_after_last_completion": 0,
+      "post_ready_producer_write_events": 0
+    },
+    "roi": {
+      "delta_simTicks": 5477187,
+      "hybrid_finalTick": 3298657233,
+      "hybrid_simTicks": 45449165,
+      "native_finalTick": 3293278015,
+      "native_simTicks": 39971978
+    },
+    "source_request_geometry": {
+      "common_prefix_issues": 192,
+      "hybrid_counter_is_submultiset_of_native": true,
+      "hybrid_issue_count": 9679,
+      "hybrid_repeat_issue_excess": 0,
+      "hybrid_unique_lines": 9523,
+      "native_issue_count": 9858,
+      "native_repeat_issue_excess": 179,
+      "native_unique_lines": 9523,
+      "same_position_issues": 1421,
+      "sequence_lengths_equal": false,
+      "unique_line_sets_equal": true
+    },
+    "timeline": {
+      "all_pages_ready_minus_native_roi_end_ticks": 298915,
+      "all_pages_ready_tick": 3293576930,
+      "all_pages_ready_to_hybrid_roi_end_ticks": 5080303,
+      "causal_decomposition": false,
+      "controller_retire_tick": 3298559577,
+      "final_action_complete_tick": 3298559577,
+      "final_action_to_retire_ticks": 0,
+      "post_ready_controller_action_ticks": {
+        "compute": 320512,
+        "fill": 674828,
+        "store": 3987307
+      },
+      "post_ready_serialized_action_ticks": 4982647,
+      "post_ready_ticks_as_percent_of_pair_delta": 92.75387164980856,
+      "reconciles_exactly": true,
+      "retire_to_roi_end_ticks": 97656
+    }
+  },
+  "accepted_pingpong_control": {
+    "accepted_summary": {
+      "path": "/data1/nier/worktrees/codex-sessions/hybrid-overhead-causal-test-20260803-183016-aeee3e49/DX100-transparent-virtual-tile-20260725/experiments/analysis/isoarea_pingpong_final_reproduction_2026-08-03.json",
+      "sha256": "a307c8cc84d1ffe8bc5f844d6e40faf912e2b78d23b4e655a2a960328b9deea8"
+    },
+    "arms": [
+      {
+        "case": "isoarea_serial_4k",
+        "completion": {
+          "checkpoint_exit": 0,
+          "clean_source_snapshot": true,
+          "empty_correctness_sentinel": true,
+          "errors": 0,
+          "exact_output_hash": "7228541527853630339",
+          "m5_exit_tick": 3776532800,
+          "restore_exit": 0
+        },
+        "event_schema": {
+          "event_counts": {
+            "transparent_complete": 12,
+            "transparent_issue": 12,
+            "transparent_retire": 1,
+            "transparent_submit": 1
+          },
+          "exact_field_sets": true,
+          "observed_schema": "unversioned_transparent_schedule"
+        },
+        "simTicks": 45364029,
+        "trace_sha256": "792ecda327dc2cc13293019200be063eeafb9e99135c68891934314161b2c36d"
+      },
+      {
+        "case": "isoarea_serial_2k",
+        "completion": {
+          "checkpoint_exit": 0,
+          "clean_source_snapshot": true,
+          "empty_correctness_sentinel": true,
+          "errors": 0,
+          "exact_output_hash": "7228541527853630339",
+          "m5_exit_tick": 3776943769,
+          "restore_exit": 0
+        },
+        "event_schema": {
+          "event_counts": {
+            "transparent_complete": 24,
+            "transparent_issue": 24,
+            "transparent_retire": 1,
+            "transparent_submit": 1
+          },
+          "exact_field_sets": true,
+          "observed_schema": "unversioned_transparent_schedule"
+        },
+        "simTicks": 45844797,
+        "trace_sha256": "590a8c653a6ec08b259c5abef124e041e7d0211637ef954a6539d11774e7ac2f"
+      },
+      {
+        "case": "isoarea_pingpong_2k",
+        "completion": {
+          "checkpoint_exit": 0,
+          "clean_source_snapshot": true,
+          "empty_correctness_sentinel": true,
+          "errors": 0,
+          "exact_output_hash": "7228541527853630339",
+          "m5_exit_tick": 3776538434,
+          "restore_exit": 0
+        },
+        "event_schema": {
+          "event_counts": {
+            "transparent_complete": 24,
+            "transparent_issue": 24,
+            "transparent_retire": 1,
+            "transparent_submit": 1
+          },
+          "exact_field_sets": true,
+          "observed_schema": "unversioned_transparent_schedule"
+        },
+        "simTicks": 45468571,
+        "trace_sha256": "270e184f15d7346490ad90c2c8a6bcf1f5096a607b6200e4805a8641948d2870"
+      }
+    ],
+    "inner_matrix_terminal": true,
+    "input_hashes": {
+      "gem5": "edad388fa34bb7aa288f40e90aa6f4e8a7dec19d449991ab9545ce4a43966d7c",
+      "ramulator": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+      "workload": "84062d31e627721bfdbe0501d0454c2474ff7e05494d6a3e0db64e4996ef2a94"
+    },
+    "outer_launch_wrapper_terminal_proven": false,
+    "raw_root": "/data1/nier/dx100-runs/2026-08-03-isoarea-pingpong-repair-c26a082",
+    "source_commit": "68edb9e786c9cc0104400a619208e35579e74aee",
+    "treatment_only_pingpong_speedup": 1.0082744188287773,
+    "treatment_only_serial2k_minus_pingpong2k_ticks": 376226
+  },
+  "current_event_schema_audit": {
+    "accepted_pair_schema": "versioned transparent schema=2",
+    "accepted_pingpong_schema": "unversioned enriched transparent schedule",
+    "current_source_hashes": {
+      "controller": "0784813c41b9f4f62ad1bfe0ff16cd36187864d070e4d46c3a341773ee4086bd",
+      "maa_cc": "a8debe3f431e76ba3f7aff45a079ea6ce1c294052ca6cabf123312941b398475",
+      "ping_analyzer": "f6c918ab8869904480b64b8778a2df03106c219f67bb0bb88b506649248e8fad"
+    },
+    "dual_versioned_transparent_and_unversioned_ping_streams_present": true,
+    "limitation": "no accepted raw run in this audit emits the current merge commit's dual stream",
+    "source_only_not_live_run_evidence": true
+  },
+  "evidence_status": "observational_separation_with_one_bounded_causal_control",
+  "falsifiable_next_test": {
+    "prediction": "If serial consumer service dominates, post-ready blocker residency must reconcile to STREAM/ALU/slot ownership and consumer packet acceptance; producer-not-ready and producer backing-write outstanding counters must remain zero after 4/4 readiness. A nonzero unexplained residual or post-ready producer-write count falsifies that explanation.",
+    "test": "Add treatment-neutral blocker-residency counters to the existing controller schedule points (producer-not-ready, STREAM busy, ALU busy, slot-owned, IF-full), plus first/last consumer STREAM packet acceptance ticks; run native16K and transparent4K from one new shared deferred checkpoint with one instrumented binary and the same exact-output oracle.",
+    "why_no_4k_ablation_now": "Two simultaneous 4K input/output slots require additional visible SPD payload; suppressing producer or consumer writes changes the functional/memory-traffic contract. Either intervention confounds the mechanism being isolated."
+  },
+  "hypothesis_separation": {
+    "final_retirement": {
+      "limit": "stream-store completion means accepted completion in this model, not a DRAM persistence fence",
+      "observations": {
+        "final_action_to_retire_ticks": 0,
+        "post_ready_store_ticks": 3987307,
+        "retire_to_roi_end_ticks": 97656
+      },
+      "status": "controller_bookkeeping_gap_zero_final_store_transport_present"
+    },
+    "lost_a_request_reordering": {
+      "limit": "same request universe and fewer repeats do not prove equal DRAM scheduling quality",
+      "observations": {
+        "hybrid_counter_is_submultiset_of_native": true,
+        "issue_sequence_common_prefix": 192,
+        "native_repeat_issue_excess": 179,
+        "unique_line_sets_equal": true
+      },
+      "status": "not_supported_by_request_geometry_order_quality_unresolved"
+    },
+    "page_fill_or_backpressure": {
+      "observations": {
+        "controller_backpressure_events": 0,
+        "post_ready_fill_ticks": 674828
+      },
+      "status": "fill_present_controller_backpressure_absent_causality_unisolated"
+    },
+    "per_page_consumer_serialization": {
+      "limit": "the clean ping-pong treatment is 2K-vs-2K; a 4K double buffer would increase visible payload",
+      "observations": {
+        "post_ready_serial_action_chain_ticks": 4982647,
+        "separate_2k_schedule_treatment_recovery_ticks": 376226
+      },
+      "status": "mechanism_present_4k_causal_magnitude_unresolved"
+    },
+    "producer_backing_store_writes": {
+      "observations": {
+        "outstanding_after_last_completion": 0,
+        "post_ready_producer_write_events": 0,
+        "write_completions": 5274
+      },
+      "status": "no_direct_post_ready_outstanding_write_tail_indirect_perturbation_unresolved"
+    }
+  },
+  "limitations": [
+    "Timeline alignment is not causal attribution.",
+    "One deterministic observation exists per accepted arm.",
+    "Source-request equality does not establish equal DRAM scheduling quality.",
+    "Producer write completion is model completion, not a persistence fence.",
+    "The clean ping-pong control changes scheduling only within 2K chunking."
+  ],
+  "run_counts": {
+    "accepted_gem5_arms_audited": 5,
+    "accepted_pair_arms": 2,
+    "accepted_pingpong_arms": 3,
+    "new_gem5_arms_launched": 0,
+    "raw_observations_per_arm": 1
+  },
+  "schema": "dx100.hybrid_tail_causal_audit.v1",
+  "source_merge_commit": "5d0215da84864b423cb50f2f3fc2734f5c8be06f"
+}

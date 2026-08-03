@@ -73,6 +73,21 @@ class TransparentSPDController
         Done,
     };
 
+    enum class Blocker : uint8_t
+    {
+        Runnable,
+        ProducerNotReady,
+        StreamBusy,
+        ALUBusy,
+        SlotOwned,
+        Serialization,
+        Transition,
+        InstructionFileFull,
+        Other,
+        Inactive,
+        Count,
+    };
+
     struct Descriptor
     {
         int tokenTile = -1;
@@ -369,6 +384,39 @@ class TransparentSPDController
     int chunks() const { return numChunks(); }
     int elementsPerChunk() const { return chunkElements(); }
     int completedChunks() const { return doneChunks; }
+
+    Blocker blocker() const
+    {
+        if (state == State::Idle || state == State::Complete ||
+            state == State::Failed)
+            return Blocker::Inactive;
+        if (transitionCycles != 0)
+            return Blocker::Transition;
+        if (pendingStream().action != Action::None ||
+            pendingALU().action != Action::None)
+            return Blocker::Runnable;
+        if (streamInFlight)
+            return Blocker::StreamBusy;
+        if (aluInFlight)
+            return Blocker::ALUBusy;
+        if (nextFill < numChunks() && !chunkReady[nextFill])
+            return Blocker::ProducerNotReady;
+        if (nextFill < numChunks()) {
+            const int slot = slotFor(nextFill);
+            if (inputOwner[slot] != -1)
+                return Blocker::SlotOwned;
+            if (desc.mode != Mode::PingPong2K && nextFill != doneChunks)
+                return Blocker::Serialization;
+        }
+        if (nextCompute < numChunks()) {
+            const int slot = slotFor(nextCompute);
+            if (inputOwner[slot] != nextCompute || outputOwner[slot] != -1)
+                return Blocker::SlotOwned;
+            if (desc.mode != Mode::PingPong2K && nextCompute != doneChunks)
+                return Blocker::Serialization;
+        }
+        return Blocker::Other;
+    }
 
     bool ownsTile(int maa_id, int tile_id) const
     {

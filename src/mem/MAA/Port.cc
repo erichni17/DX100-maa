@@ -590,7 +590,8 @@ bool MAA::sendOutstandingCachePacket() {
                 panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::STREAM]);
                 my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
                 sendNextDeferredPacket(paddr);
-                streamAccessUnits[tmp.maaIDs[0]].writePacketSent(it->paddr);
+                streamAccessUnits[tmp.maaIDs[0]].writePacketSent(
+                    it->paddr, true);
                 it = my_outstanding_stream_cache_write_pkts[core].erase(it);
                 stats.port_cache_WR_packets += 1;
             }
@@ -650,7 +651,8 @@ bool MAA::sendOutstandingCachePacket() {
                     panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::STREAM]);
                     my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
                     sendNextDeferredPacket(paddr);
-                    streamAccessUnits[tmp.maaIDs[0]].writePacketSent(it->paddr);
+                    streamAccessUnits[tmp.maaIDs[0]].writePacketSent(
+                        it->paddr, true);
                     it = my_outstanding_stream_mem_write_pkts[core].erase(it);
                     stats.port_cache_WR_packets += 1;
                 }

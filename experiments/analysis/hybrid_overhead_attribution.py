@@ -270,6 +270,54 @@ EVENT_FIELDS = {
         "action_name",
     },
     "transparent_retire": {"schema", "event", "generation", "pages"},
+    "transparent_consumer_accept": {
+        "schema",
+        "event",
+        "occurrence",
+        "generation",
+        "page",
+        "transaction",
+        "address",
+        "ordinal",
+        "expected",
+        "first",
+        "last",
+    },
+    "transparent_blocker_summary": {
+        "schema",
+        "event",
+        "occurrence",
+        "generation",
+        "total_ticks",
+        "runnable_ticks",
+        "producer_not_ready_ticks",
+        "stream_busy_ticks",
+        "alu_busy_ticks",
+        "slot_owned_ticks",
+        "serialization_ticks",
+        "transition_ticks",
+        "if_full_ticks",
+        "other_ticks",
+        "inactive_ticks",
+    },
+    "transparent_blocker_snapshot": {
+        "schema",
+        "event",
+        "occurrence",
+        "generation",
+        "point",
+        "total_ticks",
+        "runnable_ticks",
+        "producer_not_ready_ticks",
+        "stream_busy_ticks",
+        "alu_busy_ticks",
+        "slot_owned_ticks",
+        "serialization_ticks",
+        "transition_ticks",
+        "if_full_ticks",
+        "other_ticks",
+        "inactive_ticks",
+    },
 }
 
 # Every repeatable attribution event carries a source-generated occurrence
@@ -1284,6 +1332,121 @@ def controller_audit(grouped: dict[str, list[dict]], case_name: str) -> dict:
     }
 
 
+def tail_instrumentation_audit(
+    grouped: dict[str, list[dict]], case_name: str
+) -> dict:
+    accepts = grouped["transparent_consumer_accept"]
+    summaries = grouped["transparent_blocker_summary"]
+    snapshots = grouped["transparent_blocker_snapshot"]
+    if not accepts and not summaries and not snapshots:
+        return {"active": False}
+    if (
+        case_name != "transparent_4k"
+        or len(summaries) != 1
+        or len(snapshots) != 1
+        or not accepts
+    ):
+        raise AuditError("partial/unexpected transparent tail instrumentation")
+    summary = summaries[0]
+    snapshot = snapshots[0]
+    tick_fields = (
+        "runnable_ticks",
+        "producer_not_ready_ticks",
+        "stream_busy_ticks",
+        "alu_busy_ticks",
+        "slot_owned_ticks",
+        "serialization_ticks",
+        "transition_ticks",
+        "if_full_ticks",
+        "other_ticks",
+        "inactive_ticks",
+    )
+    ticks = {
+        field: parse_canonical_uint64(summary[field], field)
+        for field in tick_fields
+    }
+    total = parse_canonical_uint64(summary["total_ticks"], "total_ticks")
+    if sum(ticks.values()) != total:
+        raise AuditError("transparent blocker ticks do not reconcile")
+
+    snapshot_ticks = {
+        field: parse_canonical_uint64(snapshot[field], field)
+        for field in tick_fields
+    }
+    snapshot_total = parse_canonical_uint64(
+        snapshot["total_ticks"], "snapshot total_ticks"
+    )
+    if (
+        snapshot["point"] != "all_pages_ready"
+        or sum(snapshot_ticks.values()) != snapshot_total
+        or any(snapshot_ticks[field] > ticks[field] for field in tick_fields)
+    ):
+        raise AuditError("transparent blocker snapshot is not cumulative")
+    post_ready_ticks = {
+        field: ticks[field] - snapshot_ticks[field] for field in tick_fields
+    }
+    if sum(post_ready_ticks.values()) != total - snapshot_total:
+        raise AuditError("post-ready blocker ticks do not reconcile")
+
+    by_page = defaultdict(list)
+    generation = parse_canonical_uint64(summary["generation"], "generation")
+    if parse_canonical_uint64(snapshot["generation"], "generation") != generation:
+        raise AuditError("blocker snapshot generation mismatch")
+    for event in accepts:
+        page = parse_canonical_uint64(event["page"], "page")
+        if page >= 4 or parse_canonical_uint64(
+            event["generation"], "generation"
+        ) != generation:
+            raise AuditError("consumer acceptance identity mismatch")
+        by_page[page].append(event)
+    if set(by_page) != set(range(4)):
+        raise AuditError("consumer acceptance page domain mismatch")
+    pages = {}
+    for page, events in sorted(by_page.items()):
+        expected_values = {
+            parse_canonical_uint64(event["expected"], "expected")
+            for event in events
+        }
+        transactions = {
+            parse_canonical_uint64(event["transaction"], "transaction")
+            for event in events
+        }
+        if len(expected_values) != 1 or len(transactions) != 1:
+            raise AuditError("consumer acceptance scope changed within page")
+        expected = expected_values.pop()
+        ordinals = [
+            parse_canonical_uint64(event["ordinal"], "ordinal")
+            for event in events
+        ]
+        if ordinals != list(range(1, expected + 1)):
+            raise AuditError("consumer acceptance ordinal discontinuity")
+        for event, ordinal in zip(events, ordinals):
+            if parse_canonical_uint64(event["first"], "first") != int(
+                ordinal == 1
+            ) or parse_canonical_uint64(event["last"], "last") != int(
+                ordinal == expected
+            ):
+                raise AuditError("consumer acceptance boundary flag mismatch")
+            parse_int(event["address"])
+        pages[str(page)] = {
+            "accepted_packets": len(events),
+            "first_tick": events[0]["sim_tick"],
+            "last_tick": events[-1]["sim_tick"],
+            "transaction": transactions.pop(),
+        }
+    return {
+        "active": True,
+        "blocker_ticks": ticks,
+        "total_ticks": total,
+        "all_ready_snapshot_ticks": snapshot_ticks,
+        "all_ready_snapshot_total_ticks": snapshot_total,
+        "post_ready_blocker_ticks": post_ready_ticks,
+        "post_ready_total_ticks": total - snapshot_total,
+        "accepted_packets": len(accepts),
+        "pages": pages,
+    }
+
+
 def audit_run_completion(path: Path, result: dict[str, str]) -> dict:
     case = result.get("case")
     contract = RUN_CASE_CONTRACTS.get(case)
@@ -1399,6 +1562,9 @@ def audit_run(path: Path) -> dict:
     try:
         stages = stage_audit(grouped, grouped["indirect_stage_summary"])
         controller = controller_audit(grouped, result["case"])
+        tail_instrumentation = tail_instrumentation_audit(
+            grouped, result["case"]
+        )
         index_lines = fifo_latencies(
             grouped["index_line_issue"], grouped["index_line_response"], "line"
         )
@@ -1496,6 +1662,7 @@ def audit_run(path: Path) -> dict:
             "source_issue_response": sources,
             "backing_write_issue_completion": writes,
             "controller": controller,
+            "tail_instrumentation": tail_instrumentation,
             "counter_summaries": [
                 normalized_counter_summary(summary) for summary in summaries
             ],
