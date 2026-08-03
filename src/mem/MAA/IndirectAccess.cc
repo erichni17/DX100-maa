@@ -683,12 +683,55 @@ uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
              my_indirect_id, itr);
     return entry->second.value;
 }
-void IndirectAccessUnit::consumeDirectIndex(int itr) {
+void IndirectAccessUnit::discardDirectIndex(
+    int itr, uint32_t expected_value, DirectIndexDiscardReason reason) {
     auto word = direct_index_words.find(itr);
     panic_if(word == direct_index_words.end(),
              "I[%d] streamed index %d cannot be consumed\n",
              my_indirect_id, itr);
+    panic_if(word->second.value != expected_value,
+             "I[%d] streamed index %d changed from %u to %u before discard\n",
+             my_indirect_id, itr, expected_value, word->second.value);
     const Addr line_addr = word->second.line_addr;
+
+    // direct_index_words is a private feeder copy populated from the B memory
+    // stream.  For a selected iteration, the Row/Offset insertion has already
+    // retained the A cache-line address, logical destination iteration, and
+    // response word ID.  Poison only this private copy before erasing it.  The
+    // architectural index memory and the ordinary SPD index-tile path are
+    // deliberately outside this operation.
+    constexpr uint32_t feeder_poison = 0xd15ca4dU;
+    const char *reason_name = nullptr;
+    uint32_t observed_poison = 0;
+    switch (reason) {
+      case DirectIndexDiscardReason::DescriptorInserted:
+        word->second.value = feeder_poison;
+        observed_poison = word->second.value;
+        panic_if(observed_poison != feeder_poison,
+                 "I[%d] streamed index %d private poison did not stick\n",
+                 my_indirect_id, itr);
+        reason_name = "descriptor_inserted";
+        break;
+      case DirectIndexDiscardReason::PredicateRejected:
+        reason_name = "predicate_rejected";
+        break;
+      case DirectIndexDiscardReason::PartitionRejected:
+        reason_name = "partition_rejected";
+        break;
+    }
+    panic_if(reason_name == nullptr,
+             "I[%d] streamed index %d has an invalid discard reason\n",
+             my_indirect_id, itr);
+    DPRINTF(MAAVirtualTrace,
+            "event=index_feeder_discard unit=%d itr=%d value=%u "
+            "poisoned=%d poison=0x%x reason=%s "
+            "private=direct_index_words\n",
+            my_indirect_id, itr, expected_value,
+            reason == DirectIndexDiscardReason::DescriptorInserted
+                ? 1
+                : 0,
+            observed_poison,
+            reason_name);
     direct_index_words.erase(word);
     auto line = direct_index_ready_lines.find(line_addr);
     panic_if(line == direct_index_ready_lines.end() || line->second <= 0,
@@ -904,13 +947,21 @@ void IndirectAccessUnit::fillRowTable(
         const bool condition_taken =
             my_cond_tile == -1 ||
             maa->spd->getData<uint32_t>(my_cond_tile, my_i) != 0;
+        bool direct_index_descriptor_inserted = false;
+        bool direct_index_predicate_rejected = false;
+        bool direct_index_partition_rejected = false;
+        const uint32_t direct_index_value = isDirectIndexLoad()
+            ? peekDirectIndex(my_i)
+            : 0;
+        if (isDirectIndexLoad() && !condition_taken)
+            direct_index_predicate_rejected = true;
         if (isVirtualLoad() && isDirectIndexLoad() &&
             direct_index_partitions > 1)
             num_direct_index_filter_words++;
         bool virtual_iteration_selected = condition_taken;
         if (condition_taken) {
             uint32_t idx = isDirectIndexLoad()
-                ? peekDirectIndex(my_i)
+                ? direct_index_value
                 : maa->spd->getData<uint32_t>(my_idx_tile, my_i);
             if (!isDirectIndexLoad())
                 num_spd_read_condidx_accesses++;
@@ -930,6 +981,8 @@ void IndirectAccessUnit::fillRowTable(
                 direct_index_partitions == 1 ||
                 static_cast<int>(grow_addr % direct_index_partitions) ==
                     direct_index_partition;
+            if (isDirectIndexLoad() && !virtual_iteration_selected)
+                direct_index_partition_rejected = true;
             if (virtual_iteration_selected) {
                 if (offset_table->occupancy() >=
                     maa->num_offset_table_epoch_entries) {
@@ -960,6 +1013,8 @@ void IndirectAccessUnit::fillRowTable(
                     (*maa->stats.IND_NumRTFull[my_indirect_id])++;
                     break;
                 } else {
+                    if (isDirectIndexLoad())
+                        direct_index_descriptor_inserted = true;
                     if (usesBoundedSourceResponses())
                         my_RT_req_sent[my_RT_config][my_RT_idx] = false;
                     my_unique_WORD_addrs.insert(vaddr);
@@ -997,8 +1052,27 @@ void IndirectAccessUnit::fillRowTable(
              (!isDirectIndexLoad() || direct_index_partition == 0));
         if (isVirtualLoad() && track_virtual_iteration)
             trackVirtualIteration(my_i, condition_taken);
-        if (isDirectIndexLoad())
-            consumeDirectIndex(my_i);
+        if (isDirectIndexLoad()) {
+            const int terminal_decisions =
+                static_cast<int>(direct_index_descriptor_inserted) +
+                static_cast<int>(direct_index_predicate_rejected) +
+                static_cast<int>(direct_index_partition_rejected);
+            panic_if(terminal_decisions != 1,
+                     "I[%d] direct index %d must be discarded after exactly "
+                     "one terminal fill decision (inserted=%d predicate=%d "
+                     "partition=%d)\n",
+                     my_indirect_id, my_i,
+                     direct_index_descriptor_inserted,
+                     direct_index_predicate_rejected,
+                     direct_index_partition_rejected);
+            discardDirectIndex(
+                my_i, direct_index_value,
+                direct_index_descriptor_inserted
+                    ? DirectIndexDiscardReason::DescriptorInserted
+                    : direct_index_predicate_rejected
+                        ? DirectIndexDiscardReason::PredicateRejected
+                        : DirectIndexDiscardReason::PartitionRejected);
+        }
         my_i++;
     }
 }

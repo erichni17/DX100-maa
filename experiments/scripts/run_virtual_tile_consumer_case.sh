@@ -653,6 +653,30 @@ else
     }
 fi
 
+feeder_descriptor_discards=0
+feeder_predicate_discards=0
+feeder_partition_discards=0
+if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
+    trace="$out/run/virtual_trace.log"
+    feeder_descriptor_discards=$(grep -c \
+        'event=index_feeder_discard .*poisoned=1 poison=0xd15ca4d reason=descriptor_inserted private=direct_index_words' \
+        "$trace" || true)
+    feeder_partition_discards=$(grep -c \
+        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=partition_rejected private=direct_index_words' \
+        "$trace" || true)
+    feeder_predicate_discards=$(grep -c \
+        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=predicate_rejected private=direct_index_words' \
+        "$trace" || true)
+    expected_descriptor_discards=16384
+    expected_partition_discards=$((index_words - expected_descriptor_discards))
+    [[ $feeder_descriptor_discards -eq $expected_descriptor_discards && \
+       $feeder_predicate_discards -eq 0 && \
+       $feeder_partition_discards -eq $expected_partition_discards ]] || {
+        echo "invalid private index-feeder discard evidence: inserted=$feeder_descriptor_discards/$expected_descriptor_discards predicate=$feeder_predicate_discards/0 partition=$feeder_partition_discards/$expected_partition_discards" >&2
+        exit 1
+    }
+fi
+
 if [[ $overlap -eq 1 ]]; then
     [[ $page_wait_reads -eq $pages_ready && \
        $page_wait_responses -eq $pages_ready && \
@@ -669,7 +693,9 @@ else
 fi
 
 headers=(case output_hash simTicks simInsts index_line_reads index_words
-    index_hwm index_filter_words index_filter_cycles index_filter_wait_events
+    index_hwm feeder_descriptor_discards feeder_predicate_discards
+    feeder_partition_discards
+    index_filter_words index_filter_cycles index_filter_wait_events
     index_filter_wait_cycles write_issues
     write_completions indirect_spd_reads pages_ready
     pages_ready_before_source_drain first_page_ready_cycles
@@ -687,7 +713,9 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     response_pool_stalls row_table_full_events virtual_build_rounds dram_reads
     dram_activates dram_precharges)
 values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
-    "$index_words" "$index_hwm" "$index_filter_words" "$index_filter_cycles"
+    "$index_words" "$index_hwm" "$feeder_descriptor_discards"
+    "$feeder_predicate_discards" "$feeder_partition_discards"
+    "$index_filter_words" "$index_filter_cycles"
     "$index_filter_wait_events" "$index_filter_wait_cycles"
     "$write_issues" "$write_completions"
     "$indirect_spd_reads" "$pages_ready" "$pages_ready_early"

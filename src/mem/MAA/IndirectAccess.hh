@@ -254,6 +254,12 @@ protected:
         uint32_t value = 0;
         Addr line_addr = 0;
     };
+    enum class DirectIndexDiscardReason : uint8_t
+    {
+        DescriptorInserted,
+        PredicateRejected,
+        PartitionRejected,
+    };
     int direct_index_buffer_lines = 1;
     bool direct_index_force_cache = false;
     int direct_index_partitions = 1;
@@ -309,7 +315,8 @@ protected:
     void fillDirectIndexWindow();
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
-    void consumeDirectIndex(int itr);
+    void discardDirectIndex(int itr, uint32_t expected_value,
+                            DirectIndexDiscardReason reason);
     bool receiveDirectIndex(Addr addr, uint8_t *dataptr,
                             bool is_block_cached);
     void createDirectIndexReadPacket(Addr addr, int latency);
