@@ -8,7 +8,6 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "debug/SPD.hh"
-#include "mem/MAA/LogicalSPDHiddenPayload.hh"
 
 namespace gem5 {
 class MAA;
@@ -37,7 +36,6 @@ protected:
     std::vector<uint8_t> *waiting_units_funcs;
     std::vector<int> *waiting_units_ids;
     unsigned int visible_tile_count;
-    unsigned int allocated_tile_count;
     unsigned int num_tile_elements;
     unsigned int physical_tile_elements;
     Tick *read_port_busy_until;
@@ -45,14 +43,6 @@ protected:
     const Cycles read_latency, write_latency;
     const int num_read_ports, num_write_ports;
     MAA *maa;
-
-private:
-    friend class MAA;
-
-    unsigned int logicalSpdHiddenSlotBaseTileID(int maa_id,
-                                                int logical_slot) const;
-    unsigned int logicalSpdHiddenLaneTileID(int maa_id, int logical_slot,
-                                            int fp64_lane) const;
 
 public:
     void check_tile_id(int tile_id, int word_size) {
@@ -129,7 +119,6 @@ public:
 public:
     SPD(MAA *_maa,
         unsigned int _visible_tile_count,
-        unsigned int _num_maas,
         unsigned int _num_tile_elements,
         unsigned int _physical_tile_elements,
         Cycles _read_latency,

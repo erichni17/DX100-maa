@@ -3,6 +3,8 @@ Import('*')
 SimObject('MAA.py', sim_objects=['MAA'])
 
 Source('SPD.cc')
+Source('LogicalSPDCacheTransport.cc')
+Source('LogicalSPDCacheGem5Bridge.cc')
 Source('IF.cc')
 Source('Tables.cc')
 Source('IndirectAccess.cc')
