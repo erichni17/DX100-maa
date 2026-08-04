@@ -1,0 +1,184 @@
+{
+  "schema": "dx100.bounded_row_live_candidate.v1",
+  "date": "2026-08-03",
+  "classification": "functional_but_poorly_calibrated_candidate",
+  "decision_boundary": {
+    "final_design": false,
+    "performance_evidence": false,
+    "promotion_recommendation": false,
+    "scott_decision": false,
+    "supported_claim": "bounded exact execution and liveness for one 16K logical paged gather",
+    "unsupported_claim": "useful four-way reordering"
+  },
+  "identity": {
+    "requested_base_commit": "5d0215da84864b423cb50f2f3fc2734f5c8be06f",
+    "evidence_source_commit": "8a3a1e6050315a745f4857251c7528dc604b043c",
+    "implementation_commits": [
+      "415ad845b5ab8e468f3b2f0d8792020a55d278e7",
+      "e2e0e6dcbbf66cf956994e45a5ea952b70f2bd78",
+      "8a3a1e6050315a745f4857251c7528dc604b043c"
+    ],
+    "gem5_sha256": "e4ad9750862f4198ca5a8a3aac7880aa374b4a5a054750a708a879920303ed9b",
+    "workload_sha256": "2abec459dc16041ce5d65cc98d76e5bdf9359afea7249c50982ed65ac9323925",
+    "runner_sha256": "f4ffed0751049eb492341fb2c145a869e28b6f022fe7e6b8a0e853af1fd5719b",
+    "tracker_sha256": "e1a0ce3136414c894b3db676bc614809a085d975ee892f9b2b5cf507a6c01783",
+    "indirect_access_sha256": "1a1f9a6c709c1109ae77fb7ee5688bc087190cd59e5c7e1a8dd309da9c83e63f"
+  },
+  "mechanism": {
+    "opt_in": true,
+    "logical_elements": 16384,
+    "active_offset_entries": 4096,
+    "active_offset_epoch_entries": 4096,
+    "row_table": {
+      "slices": 16,
+      "rows_per_slice": 32,
+      "lines_per_row": 8,
+      "row_slots": 512,
+      "line_slots": 4096
+    },
+    "passes": 4,
+    "range_space": 65536,
+    "range_policy": "fixed_equal_global_grow_ranges",
+    "ranges": [
+      [0, 16384],
+      [16384, 32768],
+      [32768, 49152],
+      [49152, 65536]
+    ],
+    "backing": "llc_visible_full_B_index_rescan",
+    "combiner": "retained_4096_word_combiner_with_paged_destination_backing",
+    "hidden_16k_row_offset_payload": false,
+    "exactness_fail_closed": true
+  },
+  "storage_bytes": {
+    "accounting_kind": "grounded_byte_rounded_model_not_synthesized_area_or_cpp_heap",
+    "offset": 24576,
+    "row": 2048,
+    "line": 65536,
+    "response": 6720,
+    "invalidator": 32768,
+    "partition_cursor_scalar_control": 588,
+    "candidate_model_ledger": 132236,
+    "verifier_only_simulation_state": {
+      "architectural_cost": false,
+      "production_hardware_required": false,
+      "logical_bitmaps": 4096,
+      "pass_counters": 512,
+      "pass_flags": 64,
+      "total": 4672
+    },
+    "excludes": [
+      "architectural_destination_payload",
+      "coherent_B_backing",
+      "cache_capacity",
+      "scalar_cpp_object_and_allocator_overhead"
+    ]
+  },
+  "accepted_smoke": {
+    "case": "paged_4k",
+    "evidence_root": "/data1/nier/worktrees/codex-coordination/sessions/bounded-row-live-candidate-20260803-182833-c48e5161/evidence/paged_4k_range_8a3a1e60",
+    "checkpoint_exit": 0,
+    "restore_exit": 0,
+    "terminal_cause": "m5_exit",
+    "terminal_tick": 3872115488,
+    "sim_ticks": 77016154,
+    "sim_insts": 2859,
+    "output": {
+      "mode": "paged",
+      "page_elements": 4096,
+      "hash": "7228541527853630339",
+      "errors": 0
+    },
+    "exactness": {
+      "admissions": 16384,
+      "retirements": 16384,
+      "duplicate_admissions": 0,
+      "duplicate_retirements": 0,
+      "missing": 0,
+      "physical_records": 16384,
+      "physical_record_digest": "b756ee96179d3ae0d497a65f43f329cde02df07059b3967aa47b5f9be6957e15",
+      "physical_jsonl_sha256": "9fc07a140db7815c938f393fd215e2ec2aa1f853fad0b5540bcaf7f2a6c080a7",
+      "trace_sha256": "caacd5dc1dc0570ce87a57fb64422f3e8f2c55783a2989bf991bb2e34a3e8396",
+      "generation_available_records": 0,
+      "generation_explicitly_unavailable_records": 16384
+    },
+    "pass_counts": [
+      {"pass": 0, "lower": 0, "upper": 16384, "admitted": 16384, "retired": 16384},
+      {"pass": 1, "lower": 16384, "upper": 32768, "admitted": 0, "retired": 0},
+      {"pass": 2, "lower": 32768, "upper": 49152, "admitted": 0, "retired": 0},
+      {"pass": 3, "lower": 49152, "upper": 65536, "admitted": 0, "retired": 0}
+    ],
+    "bounded_liveness": {
+      "row_table_full_events": 1,
+      "virtual_build_rounds": 242,
+      "response_slot_hwm": 96,
+      "response_word_hwm": 96,
+      "response_pool_stalls": 0,
+      "direct_index_hwm_words": 64
+    }
+  },
+  "traffic": {
+    "B_index_words": 65536,
+    "B_semantic_bytes": 262144,
+    "B_line_requests": 4100,
+    "B_line_request_bytes": 262400,
+    "one_scan_line_requests": 1025,
+    "extra_empty_pass_words": 49152,
+    "extra_empty_pass_semantic_bytes": 196608,
+    "extra_empty_pass_line_requests": 3075,
+    "extra_empty_pass_line_request_bytes": 196800,
+    "filter_words_including_retry": 65537,
+    "filter_cycles": 4101,
+    "filter_wait_events": 5,
+    "filter_wait_cycles": 5,
+    "source_reads": 16384,
+    "row_table_cache_line_insertions": 16384,
+    "aggregate_l3_read_hits_maa": 5107,
+    "aggregate_l3_read_misses_maa": 1026,
+    "aggregate_memory_bytes_read_maa": 1245376,
+    "aggregate_warning": "aggregate MAA counters are not B-only"
+  },
+  "validation": {
+    "bounded_range_cpp_unit": "PASS",
+    "focused_python_contract_tests": {"result": "PASS", "count": 30},
+    "grounded_model_tests": {"result": "PASS", "count": 26},
+    "shell_syntax": "PASS",
+    "git_diff_check": "PASS",
+    "build": {"result": "PASS", "command": "scons --ignore-style build/X86/gem5.opt -j4", "max_jobs": 4},
+    "lightweight_gem5_smoke": "PASS",
+    "full_workload_launched": false
+  },
+  "review_fixes": {
+    "offset_sentinel": "zero-valued environment sentinels do not override SimObject defaults",
+    "refill_scope": "stricter no-refill gate applies only to virtual_index_range_passes; legacy expression is preserved off-mode",
+    "trace_format": "size values are parseable and external validation fails closed"
+  },
+  "ramulator": {
+    "copy_source": "/data1/nier/worktrees/DX100-integrate-hybrid-pingpong-20260803/ext/ramulator2/ramulator2",
+    "local_paths_are_symlinks": false,
+    "ignored_untracked": true,
+    "previous_links_and_copy_source_byte_identical": true,
+    "full_rebuild_required_only_for_copy": false,
+    "libramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753"
+  },
+  "interpretation": {
+    "functional": true,
+    "well_calibrated": false,
+    "useful_four_way_reorder_observed": false,
+    "reason": "all 16384 admissions were in pass 0 and passes 1-3 were empty B rescans",
+    "next_policy": "anchor ranges to the source region or an explicitly bounded observed min_max_or_histogram before performance claims"
+  },
+  "limitations": [
+    "one synthetic paged consumer only",
+    "no paired baseline or speedup claim",
+    "no balanced range-distribution workload",
+    "LLC-visible requests are not guaranteed LLC hits",
+    "checker is an explicitly charged verification abstraction",
+    "integration overlaps active MAA, live SPD cache, and runner work"
+  ],
+  "adjacent_not_merged": {
+    "live_spd_cache": "14feab56f6aa",
+    "hybrid_tail_instrumentation": "d307b2317fc5",
+    "hybrid_tail_report": "b34d1f859217"
+  }
+}
