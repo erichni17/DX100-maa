@@ -1178,17 +1178,17 @@ void
 LANLMAA::issueResultWrite()
 {
     if (umtOrderedWaveDescriptor()) {
-        if (descriptorResultCursor == operations.size()) {
+        if (umtOrderedWaveResultCorner == UmtOrderedWaveCorners) {
             descriptorState = DescriptorState::CompletionPending;
             return;
         }
         if (!resultPacket) {
             const Addr address = umtOrderedWave.resultBase +
-                (descriptorResultCursor * UmtOrderedWaveCorners +
-                 umtOrderedWaveResultCorner) * sizeof(uint64_t);
+                umtOrderedWaveResultCorner * umtOrderedWave.recordStride +
+                descriptorResultCursor * sizeof(uint64_t);
             const size_t packetWords = umtOrderedWaveWordsToLineBoundary(
                 address,
-                UmtOrderedWaveCorners - umtOrderedWaveResultCorner,
+                operations.size() - descriptorResultCursor,
                 lineBytes);
             const size_t packetBytes = packetWords * sizeof(uint64_t);
             panic_if(packetWords == 0,
@@ -1200,11 +1200,11 @@ LANLMAA::issueResultWrite()
             uint8_t *data = resultPacket->getPtr<uint8_t>();
             for (size_t byte = 0; byte < packetBytes;
                  byte += sizeof(uint64_t)) {
-                const size_t corner = umtOrderedWaveResultCorner +
+                const size_t group = descriptorResultCursor +
                     byte / sizeof(uint64_t);
                 writeLe(
                     data, byte,
-                    umtOrderedWaveResults[descriptorResultCursor][corner],
+                    umtOrderedWaveResults[group][umtOrderedWaveResultCorner],
                     sizeof(uint64_t));
             }
             tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
@@ -2386,11 +2386,17 @@ LANLMAA::umtFusedCornerReadAddress(const Operation &operation) const
                  operation.umtFusedGroup >= groupCount ||
                  operation.umtFusedReadStage >= stages,
              "LANLMAA formed an invalid UMT fused input address");
-    const uint64_t raw = recordBase +
-        static_cast<uint64_t>(operation.umtFusedGroup) *
-            recordStride +
-        static_cast<uint64_t>(operation.umtFusedReadStage) *
-            sizeof(uint64_t);
+    const uint64_t raw = umtOrderedWaveDescriptor() ?
+        recordBase +
+            static_cast<uint64_t>(operation.umtFusedReadStage) *
+                recordStride +
+            static_cast<uint64_t>(operation.umtFusedGroup) *
+                sizeof(uint64_t) :
+        recordBase +
+            static_cast<uint64_t>(operation.umtFusedGroup) *
+                recordStride +
+            static_cast<uint64_t>(operation.umtFusedReadStage) *
+                sizeof(uint64_t);
     const Addr address = static_cast<Addr>(raw);
     panic_if(static_cast<uint64_t>(address) != raw,
              "LANLMAA UMT fused input address overflowed Addr");
@@ -3273,11 +3279,13 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
 
         std::array<UmtFusedCornerRange, 3> ranges;
         const bool rangesValid = umtFusedCornerScaledRange(
-            umtOrderedWave.recordBase, umtOrderedWave.groupCount,
-            umtOrderedWave.recordStride, UmtOrderedWaveRecordBytes,
+            umtOrderedWave.recordBase, UmtOrderedWaveRecordFp64Words,
+            umtOrderedWave.recordStride,
+            umtOrderedWave.groupCount * sizeof(uint64_t),
             ranges[0]) && umtFusedCornerScaledRange(
-            umtOrderedWave.resultBase, umtOrderedWave.groupCount,
-            UmtOrderedWaveResultBytes, UmtOrderedWaveResultBytes,
+            umtOrderedWave.resultBase, UmtOrderedWaveCorners,
+            umtOrderedWave.recordStride,
+            umtOrderedWave.groupCount * sizeof(uint64_t),
             ranges[1]) && umtFusedCornerScaledRange(
             umtOrderedWave.completionRecord, 1, 32, 32, ranges[2]);
         panic_if(!rangesValid,
@@ -4182,15 +4190,14 @@ LANLMAA::receiveResultResponse(PacketPtr packet)
                      resultBytes % sizeof(uint64_t) != 0,
                  "LANLMAA acknowledged an invalid ordered-wave result packet");
         const size_t resultWords = resultBytes / sizeof(uint64_t);
-        panic_if(umtOrderedWaveResultCorner + resultWords >
-                     UmtOrderedWaveCorners,
-                 "LANLMAA ordered-wave result packet crossed a group");
+        panic_if(descriptorResultCursor + resultWords > operations.size(),
+                 "LANLMAA ordered-wave result packet crossed a plane");
         stats.descriptorResultWrites += resultWords;
         ++stats.descriptorUmtResultLineWrites;
-        umtOrderedWaveResultCorner += resultWords;
-        if (umtOrderedWaveResultCorner == UmtOrderedWaveCorners) {
-            umtOrderedWaveResultCorner = 0;
-            ++descriptorResultCursor;
+        descriptorResultCursor += resultWords;
+        if (descriptorResultCursor == operations.size()) {
+            descriptorResultCursor = 0;
+            ++umtOrderedWaveResultCorner;
         }
     } else if (spartaFusedCellDescriptor()) {
         ++stats.descriptorResultWrites;
@@ -5356,35 +5363,21 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
             DescriptorError error = DescriptorError::None;
             uint8_t inputWordsConsumed = 1;
             if (umtOrderedWaveDescriptor()) {
-                inputWordsConsumed = static_cast<uint8_t>(
-                    umtOrderedWaveWordsToLineBoundary(
-                        operation.address,
-                        inputStages - operation.umtFusedReadStage,
-                        lineBytes));
-                panic_if(inputWordsConsumed == 0,
-                         "LANLMAA ordered-wave line contained no input word");
                 auto &record =
                     umtOrderedWaveRecords[operation.umtFusedGroup];
-                for (uint8_t word = 0; word < inputWordsConsumed; ++word) {
-                    uint64_t bits = 0;
-                    std::memcpy(
-                        &bits,
-                        data + offset + word * sizeof(uint64_t),
-                        sizeof(bits));
-                    const double input = decodeDouble(bits);
-                    ++stats.descriptorUmtInputReads;
-                    if (!std::isfinite(input)) {
-                        error = DescriptorError::BadRecordValue;
-                        break;
-                    }
-                    const uint8_t stage =
-                        operation.umtFusedReadStage + word;
-                    if (stage < UmtOrderedWaveCorners) {
-                        record.source[stage] = input;
-                    } else {
-                        record.sigtVolume[
-                            stage - UmtOrderedWaveCorners] = input;
-                    }
+                uint64_t bits = 0;
+                std::memcpy(&bits, data + offset, sizeof(bits));
+                const double input = decodeDouble(bits);
+                ++stats.descriptorUmtInputReads;
+                if (!std::isfinite(input)) {
+                    error = DescriptorError::BadRecordValue;
+                } else if (operation.umtFusedReadStage <
+                               UmtOrderedWaveCorners) {
+                    record.source[operation.umtFusedReadStage] = input;
+                } else {
+                    record.sigtVolume[
+                        operation.umtFusedReadStage -
+                            UmtOrderedWaveCorners] = input;
                 }
             } else {
                 uint64_t bits = 0;

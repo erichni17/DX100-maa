@@ -15,9 +15,12 @@ namespace lanlmaa
 {
 
 constexpr size_t UmtOrderedWaveDescriptorBytes = 256;
-constexpr uint16_t UmtOrderedWaveDescriptorVersion = 3;
+constexpr uint16_t UmtOrderedWaveDescriptorVersion = 4;
 constexpr uint8_t UmtOrderedWaveOpcode = 11;
 constexpr uint8_t UmtOrderedWaveEightCornerFlag = 1U << 0;
+constexpr uint8_t UmtOrderedWaveStructureOfArraysFlag = 1U << 1;
+constexpr uint8_t UmtOrderedWaveFlags =
+    UmtOrderedWaveEightCornerFlag | UmtOrderedWaveStructureOfArraysFlag;
 constexpr uint32_t UmtOrderedWaveCorners = 8;
 constexpr uint32_t UmtOrderedWaveDenseCoefficients = 28;
 constexpr uint32_t UmtOrderedWaveMaximumEdges = 12;
@@ -27,8 +30,10 @@ constexpr uint32_t UmtOrderedWaveRecordBytes =
 constexpr uint32_t UmtOrderedWaveResultBytes =
     UmtOrderedWaveCorners * sizeof(uint64_t);
 constexpr uint32_t UmtOrderedWaveMaximumGroups = 32;
+constexpr uint32_t UmtOrderedWavePlaneStride =
+    UmtOrderedWaveMaximumGroups * sizeof(uint64_t);
 constexpr uint64_t UmtOrderedWaveAbiFingerprint =
-    0x4e8ab3e43be5b7f3ULL;
+    0x9bafe2c1186d4075ULL;
 constexpr size_t UmtOrderedWaveSumAreaOffset = 168;
 
 struct UmtOrderedWaveDescriptor
@@ -201,7 +206,7 @@ decodeUmtOrderedWaveDescriptor(
         result.error = DescriptorError::BadOpcode;
         return result;
     }
-    if (bytes[7] != UmtOrderedWaveEightCornerFlag) {
+    if (bytes[7] != UmtOrderedWaveFlags) {
         result.error = DescriptorError::UnsupportedFlags;
         return result;
     }
@@ -219,7 +224,7 @@ decodeUmtOrderedWaveDescriptor(
         result.error = DescriptorError::TooManyItems;
         return result;
     }
-    if (descriptor.recordStride != UmtOrderedWaveRecordBytes) {
+    if (descriptor.recordStride != UmtOrderedWavePlaneStride) {
         result.error = DescriptorError::BadRecordGeometry;
         return result;
     }
@@ -291,11 +296,13 @@ decodeUmtOrderedWaveDescriptor(
     }
     std::array<UmtFusedCornerRange, 3> ranges;
     if (!umtFusedCornerScaledRange(
-            descriptor.recordBase, descriptor.groupCount,
-            descriptor.recordStride, UmtOrderedWaveRecordBytes, ranges[0]) ||
+            descriptor.recordBase, UmtOrderedWaveRecordFp64Words,
+            descriptor.recordStride,
+            descriptor.groupCount * sizeof(uint64_t), ranges[0]) ||
         !umtFusedCornerScaledRange(
-            descriptor.resultBase, descriptor.groupCount,
-            UmtOrderedWaveResultBytes, UmtOrderedWaveResultBytes, ranges[1]) ||
+            descriptor.resultBase, UmtOrderedWaveCorners,
+            descriptor.recordStride,
+            descriptor.groupCount * sizeof(uint64_t), ranges[1]) ||
         !umtFusedCornerScaledRange(
             descriptor.completionRecord, 1, 32, 32, ranges[2])) {
         result.error = DescriptorError::RangeOverflow;

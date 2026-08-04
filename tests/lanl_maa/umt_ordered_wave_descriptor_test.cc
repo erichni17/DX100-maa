@@ -36,9 +36,9 @@ validBytes()
     put(bytes, 0, DescriptorMagic, 4);
     put(bytes, 4, UmtOrderedWaveDescriptorVersion, 2);
     put(bytes, 6, UmtOrderedWaveOpcode, 1);
-    put(bytes, 7, UmtOrderedWaveEightCornerFlag, 1);
+    put(bytes, 7, UmtOrderedWaveFlags, 1);
     put(bytes, 8, 32, 4);
-    put(bytes, 12, UmtOrderedWaveRecordBytes, 4);
+    put(bytes, 12, UmtOrderedWavePlaneStride, 4);
     put(bytes, 16, 0x1000, 8);
     put(bytes, 24, 0x4000, 8);
     put(bytes, 32, 0x5000, 8);
@@ -132,7 +132,7 @@ main()
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::Empty);
     bytes = validBytes();
-    put(bytes, 12, 192, 4);
+    put(bytes, 12, UmtOrderedWaveRecordBytes, 4);
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::BadRecordGeometry);
     bytes = validBytes();
