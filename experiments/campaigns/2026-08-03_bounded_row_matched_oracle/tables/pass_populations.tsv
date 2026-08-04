@@ -1,0 +1,14 @@
+arm	pass	lower_grow	upper_grow	admitted	retired
+bounded_range_4k	0	0x0	0x4000	16384	16384
+bounded_range_4k	1	0x4000	0x8000	0	0
+bounded_range_4k	2	0x8000	0xc000	0	0
+bounded_range_4k	3	0xc000	0x10000	0	0
+bounded_source_range_4k	0	0xd	0x10	5743	5743
+bounded_source_range_4k	1	0x10	0x12	4053	4053
+bounded_source_range_4k	2	0x12	0x14	4054	4054
+bounded_source_range_4k	3	0x14	0x16	2534	2534
+bounded_oracle_range_4k	0	0xd	0xf	3716	3716
+bounded_oracle_range_4k	1	0xf	0x11	4055	4055
+bounded_oracle_range_4k	2	0x11	0x13	4053	4053
+bounded_oracle_range_4k	3	0x13	0x16	4560	4560
+

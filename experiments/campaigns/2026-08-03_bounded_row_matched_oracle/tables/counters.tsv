@@ -1,0 +1,7 @@
+arm	simTicks	dram_reads	dram_activates	dram_precharges	source_reads	row_table_cache_lines	row_table_rows_inserted	virtual_build_rounds	index_words	index_filter_cycles	index_filter_wait_cycles	memory_bytes_read_maa	cpu_cycles
+hybrid_full_metadata	51504776	25287	5073	3854	9729	9729	1307	102	16384	0	0	940032	164552
+bounded_modulo_4k	62456646	23953	3799	2605	9577	9577	1258	104	65536	4101	7	855040	199542
+bounded_range_4k	77111619	30032	3612	2336	16384	16384	2942	240	65536	4101	12	1245312	246363
+bounded_source_range_4k	63918356	24478	3230	1978	10550	10550	1492	214	65536	4101	12	891776	204212
+bounded_oracle_range_4k	62045990	23889	3395	2170	9813	9813	1313	160	65536	4101	15	853376	198230
+

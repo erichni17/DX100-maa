@@ -1,0 +1,22 @@
+campaign: bounded-row-matched-oracle
+date: 2026-08-03
+status: complete
+source_commit: f28163724c1d1f1e2303c5995272a3db32e32b6c
+artifacts:
+  gem5_sha256: 90858e29506525ea0ab4af88130c212ff8f4d3ae32842a7dfe322f8221ee9295
+  workload_sha256: f87d7206c91d5d48235da13a90ad08f2fb8c8f58ae25311758ebe4094ca6dfc5
+  ramulator_sha256: 76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
+  checkpoint_file_manifest_sha256: ef629a79c0df482aa416c9e9d9084c871776e469829b4de567de171fbb890c63
+evidence_root: /data1/nier/dx100-runs/2026-08-03-virtualization-integration/bounded-matched-oracle-f281637
+replica_root: /data1/nier/dx100-runs/2026-08-03-virtualization-integration/bounded-oracle-replicas-f281637
+correctness:
+  output_hash: 7228541527853630339
+  exact_output_all_arms: true
+  exact_once_range_closure: true
+  shared_checkpoint_all_arms: true
+oracle:
+  provenance: offline_profile
+  boundaries: [0xd, 0xf, 0x11, 0x13, 0x16]
+  online_implementation: false
+  same_checkpoint_replicas_per_arm: 3
+
