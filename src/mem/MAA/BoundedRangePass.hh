@@ -57,18 +57,49 @@ class BoundedRangePassTracker
                           uint32_t passes, uint64_t grow_lower,
                           uint64_t grow_upper)
     {
+        if (passes == 0 || passes > MaxPasses || grow_lower >= grow_upper)
+            return Result::InvalidConfiguration;
+        std::vector<Range> ranges;
+        ranges.reserve(passes);
+        const uint64_t span = grow_upper - grow_lower;
+        for (uint32_t pass = 0; pass < passes; ++pass) {
+            ranges.push_back({
+                grow_lower +
+                    ceilDiv(static_cast<uint64_t>(pass) * span,
+                            static_cast<uint64_t>(passes)),
+                grow_lower +
+                    ceilDiv(static_cast<uint64_t>(pass + 1) * span,
+                            static_cast<uint64_t>(passes))});
+        }
+        return configureRanges(logical_entries, active_entries, ranges);
+    }
+
+    Result configureRanges(uint32_t logical_entries,
+                           uint32_t active_entries,
+                           const std::vector<Range> &ranges)
+    {
         reset();
+        const uint32_t passes = ranges.size();
         if (logical_entries == 0 || active_entries == 0 ||
             active_entries > MaxActiveEntries || passes == 0 ||
-            passes > MaxPasses || grow_lower >= grow_upper ||
+            passes > MaxPasses ||
             passes < ceilDiv(logical_entries, active_entries)) {
             return Result::InvalidConfiguration;
+        }
+        for (uint32_t pass = 0; pass < passes; ++pass) {
+            if (ranges[pass].lower >= ranges[pass].upper ||
+                (pass != 0 &&
+                 ranges[pass - 1].upper != ranges[pass].lower)) {
+                return Result::InvalidConfiguration;
+            }
         }
         logicalEntries = logical_entries;
         activeEntries = active_entries;
         numPasses = passes;
-        growLower = grow_lower;
-        growUpper = grow_upper;
+        growLower = ranges.front().lower;
+        growUpper = ranges.back().upper;
+        for (uint32_t pass = 0; pass < passes; ++pass)
+            passRanges[pass] = ranges[pass];
         const size_t words = ceilDiv(logicalEntries, uint32_t(64));
         admitted.assign(words, 0);
         retired.assign(words, 0);
@@ -91,6 +122,7 @@ class BoundedRangePassTracker
         passAdmissions.fill(0);
         passRetirements.fill(0);
         passFinished.fill(false);
+        passRanges.fill({});
     }
 
     bool configured() const { return configuredFlag; }
@@ -107,21 +139,18 @@ class BoundedRangePassTracker
     {
         if (!configuredFlag || pass >= numPasses)
             return {};
-        const uint64_t span = growUpper - growLower;
-        return {growLower +
-                    ceilDiv(static_cast<uint64_t>(pass) * span,
-                            static_cast<uint64_t>(numPasses)),
-                growLower +
-                    ceilDiv(static_cast<uint64_t>(pass + 1) * span,
-                            static_cast<uint64_t>(numPasses))};
+        return passRanges[pass];
     }
 
     uint32_t passForGrow(uint64_t grow) const
     {
         if (!configuredFlag || grow < growLower || grow >= growUpper)
             return MaxPasses;
-        return static_cast<uint32_t>((grow - growLower) * numPasses /
-                                     (growUpper - growLower));
+        for (uint32_t pass = 0; pass < numPasses; ++pass) {
+            if (grow < passRanges[pass].upper)
+                return pass;
+        }
+        return MaxPasses;
     }
 
     Result recordAdmission(uint32_t iteration, uint64_t grow, uint32_t pass)
@@ -264,6 +293,7 @@ class BoundedRangePassTracker
     std::array<uint32_t, MaxPasses> passAdmissions{};
     std::array<uint32_t, MaxPasses> passRetirements{};
     std::array<bool, MaxPasses> passFinished{};
+    std::array<Range, MaxPasses> passRanges{};
 };
 
 } // namespace gem5

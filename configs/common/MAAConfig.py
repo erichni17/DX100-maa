@@ -155,6 +155,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_index_range_policy"
         )
 
+    if hasattr(options, "maa_virtual_index_range_boundaries"):
+        opts["virtual_index_range_boundaries"] = getattr(
+            options, "maa_virtual_index_range_boundaries"
+        )
+
     if hasattr(options, "maa_virtual_index_filter_words_per_cycle"):
         opts["virtual_index_filter_words_per_cycle"] = getattr(
             options, "maa_virtual_index_filter_words_per_cycle"

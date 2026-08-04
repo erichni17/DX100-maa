@@ -386,7 +386,14 @@ def addNoISAOptions(parser):
         "--maa_virtual_index_range_policy",
         type=int,
         default=0,
-        help="Range bounds: 0=full grow space, 1=A source endpoints",
+        help="Range bounds: 0=full grow space, 1=A endpoints, 2=oracle",
+    )
+    parser.add_argument(
+        "--maa_virtual_index_range_boundaries",
+        type=lambda value: int(value, 0),
+        nargs="*",
+        default=[],
+        help="Explicit grow boundaries for range policy 2",
     )
     parser.add_argument(
         "--maa_virtual_index_filter_words_per_cycle",

@@ -46,6 +46,17 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIn("source-relative grow range", self.indirect)
         self.assertIn("MAA_VIRTUAL_INDEX_RANGE_POLICY=1", self.matrix)
 
+    def test_explicit_ranges_are_labeled_as_oracle_only(self) -> None:
+        param = (ROOT / "src/mem/MAA/MAA.py").read_text()
+        self.assertIn("explicit oracle", param)
+        self.assertIn("configureRanges", self.tracker + self.indirect)
+        self.assertIn("provenance=offline_profile", self.indirect)
+        self.assertIn("MAA_ORACLE_RANGE_BOUNDARIES", self.matrix)
+        self.assertIn("bounded_oracle_range_4k", self.matrix)
+        self.assertIn(
+            "oracle policy requires partitions+1 boundaries", self.runner
+        )
+
     def test_candidate_caps_native_active_tables(self) -> None:
         self.assertIn("MaxActiveEntries = 4096", self.tracker)
         self.assertIn("offset_table->capacity()", self.indirect)

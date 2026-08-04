@@ -105,6 +105,28 @@ testSourceRelativeRange()
 }
 
 void
+testExplicitBalancedRanges()
+{
+    BoundedRangePassTracker tracker;
+    const std::vector<BoundedRangePassTracker::Range> ranges{
+        {13, 15}, {15, 17}, {17, 19}, {19, 22}};
+    assert(tracker.configureRanges(16384, 4096, ranges) ==
+           Result::Accepted);
+    for (uint32_t pass = 0; pass < ranges.size(); ++pass) {
+        assert(tracker.range(pass).lower == ranges[pass].lower);
+        assert(tracker.range(pass).upper == ranges[pass].upper);
+        for (uint64_t grow = ranges[pass].lower;
+             grow < ranges[pass].upper; ++grow) {
+            assert(tracker.passForGrow(grow) == pass);
+        }
+    }
+    auto broken = ranges;
+    broken[2].lower++;
+    assert(tracker.configureRanges(16384, 4096, broken) ==
+           Result::InvalidConfiguration);
+}
+
+void
 testFailuresAreClosed()
 {
     BoundedRangePassTracker tracker;
@@ -136,6 +158,7 @@ main()
     testExactOnceOutOfOrderRetirement();
     testSkewRemainsExactAndExplicit();
     testSourceRelativeRange();
+    testExplicitBalancedRanges();
     testFailuresAreClosed();
     std::cout << "bounded_range_pass_test: PASS\n";
     return 0;

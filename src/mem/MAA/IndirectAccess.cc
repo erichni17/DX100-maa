@@ -1525,9 +1525,26 @@ void IndirectAccessUnit::executeInstruction() {
                     0, num_RT_possible_grows[my_RT_config]};
                 if (maa->virtual_index_range_policy == 1)
                     grow_range = directIndexSourceGrowRange();
-                const auto result = bounded_range_pass.configureRange(
-                    my_max, offset_table->capacity(), direct_index_partitions,
-                    grow_range.lower, grow_range.upper);
+                BoundedRangePassTracker::Result result;
+                if (maa->virtual_index_range_policy == 2) {
+                    std::vector<BoundedRangePassTracker::Range> ranges;
+                    ranges.reserve(direct_index_partitions);
+                    for (int pass = 0; pass < direct_index_partitions;
+                         ++pass) {
+                        ranges.push_back({
+                            maa->virtual_index_range_boundaries[pass],
+                            maa->virtual_index_range_boundaries[pass + 1]});
+                    }
+                    grow_range = {ranges.front().lower,
+                                  ranges.back().upper};
+                    result = bounded_range_pass.configureRanges(
+                        my_max, offset_table->capacity(), ranges);
+                } else {
+                    result = bounded_range_pass.configureRange(
+                        my_max, offset_table->capacity(),
+                        direct_index_partitions, grow_range.lower,
+                        grow_range.upper);
+                }
                 panic_if(
                     result != BoundedRangePassTracker::Result::Accepted,
                     "I[%d] cannot configure bounded range passes: %s\n",
@@ -1552,6 +1569,19 @@ void IndirectAccessUnit::executeInstruction() {
                         grow_range.upper,
                         static_cast<unsigned long>(
                             bounded_range_pass.chargedBytes()));
+                if (maa->virtual_index_range_policy == 2) {
+                    for (int pass = 0; pass < direct_index_partitions;
+                         ++pass) {
+                        const auto range = bounded_range_pass.range(pass);
+                        DPRINTF(MAAVirtualTrace,
+                                "event=bounded_range_oracle schema=1 "
+                                "unit=%d operation_tick=%lu pass=%d "
+                                "lower=0x%lx upper=0x%lx "
+                                "provenance=offline_profile\n",
+                                my_indirect_id, my_decode_start_tick, pass,
+                                range.lower, range.upper);
+                    }
+                }
             }
         }
         my_SPD_read_finish_tick = curTick();

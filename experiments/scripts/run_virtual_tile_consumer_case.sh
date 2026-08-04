@@ -59,6 +59,7 @@ combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
 index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
+index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
@@ -79,14 +80,42 @@ require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
     echo "MAA_VIRTUAL_INDEX_RANGE_PASSES must be 0 or 1" >&2
     exit 2
 }
-[[ $index_range_policy -ge 0 && $index_range_policy -le 1 ]] || {
-    echo "MAA_VIRTUAL_INDEX_RANGE_POLICY must be 0 or 1" >&2
+[[ $index_range_policy -ge 0 && $index_range_policy -le 2 ]] || {
+    echo "MAA_VIRTUAL_INDEX_RANGE_POLICY must be in [0,2]" >&2
     exit 2
 }
 [[ $index_range_passes == 1 || $index_range_policy == 0 ]] || {
     echo "nonzero range policy requires range passes" >&2
     exit 2
 }
+index_range_boundary_values=()
+if [[ -n $index_range_boundaries ]]; then
+    IFS=',' read -r -a index_range_boundary_values \
+        <<< "$index_range_boundaries"
+fi
+if [[ $index_range_policy == 2 ]]; then
+    [[ ${#index_range_boundary_values[@]} -eq \
+       $((index_partitions + 1)) ]] || {
+        echo "oracle policy requires partitions+1 boundaries" >&2
+        exit 2
+    }
+    for ((i = 0; i < ${#index_range_boundary_values[@]}; ++i)); do
+        [[ ${index_range_boundary_values[$i]} =~ ^(0[xX][0-9a-fA-F]+|[0-9]+)$ ]] || {
+            echo "invalid oracle boundary: ${index_range_boundary_values[$i]}" >&2
+            exit 2
+        }
+        if ((i > 0)); then
+            ((index_range_boundary_values[i - 1] <
+              index_range_boundary_values[i])) || {
+                echo "oracle boundaries must be strictly increasing" >&2
+                exit 2
+            }
+        fi
+    done
+elif [[ ${#index_range_boundary_values[@]} -ne 0 ]]; then
+    echo "explicit boundaries require range policy 2" >&2
+    exit 2
+fi
 [[ $index_force_cache == 0 || $index_force_cache == 1 ]] || {
     echo "MAA_VIRTUAL_INDEX_FORCE_CACHE must be 0 or 1" >&2
     exit 2
@@ -161,6 +190,11 @@ fi
 index_range_args=()
 if [[ $index_range_passes == 1 ]]; then
     index_range_args+=(--maa_virtual_index_range_passes)
+fi
+index_range_boundary_args=()
+if [[ $index_range_policy == 2 ]]; then
+    index_range_boundary_args+=(--maa_virtual_index_range_boundaries)
+    index_range_boundary_args+=("${index_range_boundary_values[@]}")
 fi
 index_cache_args=()
 if [[ $index_force_cache == 1 ]]; then
@@ -424,6 +458,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
     printf 'virtual_index_range_passes=%s\n' "$index_range_passes"
     printf 'virtual_index_range_policy=%s\n' "$index_range_policy"
+    printf 'virtual_index_range_boundaries=%s\n' \
+        "${index_range_boundaries:-none}"
     printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
     printf 'virtual_partition_keep_combiner=%s\n' \
         "$partition_keep_combiner"
@@ -591,6 +627,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_index_buffer_lines=4 \
     --maa_virtual_index_partitions="$index_partitions" \
     --maa_virtual_index_range_policy="$index_range_policy" \
+    "${index_range_boundary_args[@]}" \
     "${index_range_args[@]}" \
     "${index_cache_args[@]}" \
     "${partition_combiner_args[@]}" \
@@ -989,6 +1026,7 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     row_table_rows_per_slice row_table_entries_per_subslice_row
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
     virtual_index_range_policy
+    virtual_index_range_boundaries
     virtual_index_force_cache virtual_partition_keep_combiner
     offset_table_entries offset_table_epoch_entries
     transparent_spd_mode
@@ -1014,6 +1052,7 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
     "$index_range_policy"
+    "${index_range_boundaries:-none}"
     "$index_force_cache" "$partition_keep_combiner" \
     "$resolved_offset_entries" "$resolved_offset_epoch_entries"
     "$transparent_spd_mode"

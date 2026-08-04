@@ -113,7 +113,11 @@ class MAA(ClockedObject):
     )
     virtual_index_range_policy = Param.Unsigned(
         0,
-        "Range bounds: 0=full hardware grow space, 1=A source endpoints",
+        "Range bounds: 0=full grow space, 1=A endpoints, 2=explicit oracle",
+    )
+    virtual_index_range_boundaries = VectorParam.Addr(
+        [],
+        "Explicit contiguous grow boundaries for policy 2",
     )
     virtual_index_filter_words_per_cycle = Param.Unsigned(
         0,

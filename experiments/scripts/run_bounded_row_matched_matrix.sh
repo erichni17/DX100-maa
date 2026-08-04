@@ -11,6 +11,7 @@ out=$(realpath -m "$1")
 gem5_source=$(realpath "$2")
 workload_source=$(realpath "$3")
 ramulator_source=$(realpath "$4")
+oracle_boundaries=${MAA_ORACLE_RANGE_BOUNDARIES:-}
 
 [[ ! -e $out ]] || {
     echo "refusing to overwrite evidence root: $out" >&2
@@ -159,6 +160,23 @@ run_arm bounded_source_range_4k \
 arm_pids+=("$!")
 arm_names+=(bounded_source_range_4k)
 
+if [[ -n $oracle_boundaries ]]; then
+    run_arm bounded_oracle_range_4k \
+        MAA_ROW_TABLE_SLICES=16 \
+        MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
+        MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
+        MAA_OFFSET_TABLE_ENTRIES=4096 \
+        MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 \
+        MAA_VIRTUAL_INDEX_PARTITIONS=4 \
+        MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
+        MAA_VIRTUAL_INDEX_RANGE_POLICY=2 \
+        MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES="$oracle_boundaries" \
+        MAA_REQUIRE_INDEX_FILTER_WAIT=1 \
+        > "$out/bounded_oracle_range_4k.launch.log" 2>&1 &
+    arm_pids+=("$!")
+    arm_names+=(bounded_oracle_range_4k)
+fi
+
 arm_failure=0
 for index in "${!arm_pids[@]}"; do
     if wait "${arm_pids[$index]}"; then
@@ -177,8 +195,7 @@ done
 reference_hash=$(awk -F '\t' 'NR == 2 { print $2 }' \
     "$out/hybrid_full_metadata/result.tsv")
 [[ -n $reference_hash ]]
-arms=(hybrid_full_metadata bounded_modulo_4k bounded_range_4k
-      bounded_source_range_4k)
+arms=("${arm_names[@]}")
 for arm in "${arms[@]}"; do
     hash=$(awk -F '\t' 'NR == 2 { print $2 }' "$out/$arm/result.tsv")
     [[ $hash == "$reference_hash" ]]
