@@ -526,7 +526,9 @@ if [[ -z $shared_checkpoint ]]; then
 else
     checkpoint_dir="$shared_checkpoint"
     workload_options="deferred $shared_selector"
-    printf '%s %s\n' "$mode" "$page" > "$shared_selector"
+    selector_tmp="$shared_selector.tmp.$$"
+    printf '%s %s\n' "$mode" "$page" > "$selector_tmp"
+    mv -- "$selector_tmp" "$shared_selector"
     cp -- "$shared_selector" "$out/treatment.txt"
     (
         cd "$shared_checkpoint"

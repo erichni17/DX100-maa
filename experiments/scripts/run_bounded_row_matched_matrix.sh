@@ -102,6 +102,9 @@ run_arm() {
         "$out/checkpoint_files.pre_treatment.sha256"
 }
 
+arm_pids=()
+arm_names=()
+
 # Established hybrid: 4K payload pages, existing row metadata, 16K OffsetTable.
 run_arm hybrid_full_metadata \
     MAA_ROW_TABLE_SLICES=16 \
@@ -109,7 +112,10 @@ run_arm hybrid_full_metadata \
     MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
     MAA_OFFSET_TABLE_ENTRIES=16384 \
     MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384 \
-    MAA_VIRTUAL_INDEX_PARTITIONS=1
+    MAA_VIRTUAL_INDEX_PARTITIONS=1 \
+    > "$out/hybrid_full_metadata.launch.log" 2>&1 &
+arm_pids+=("$!")
+arm_names+=(hybrid_full_metadata)
 
 # Same 4K metadata bounds, but assign rows to four passes by grow-address modulo.
 run_arm bounded_modulo_4k \
@@ -119,7 +125,10 @@ run_arm bounded_modulo_4k \
     MAA_OFFSET_TABLE_ENTRIES=4096 \
     MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 \
     MAA_VIRTUAL_INDEX_PARTITIONS=4 \
-    MAA_REQUIRE_INDEX_FILTER_WAIT=1
+    MAA_REQUIRE_INDEX_FILTER_WAIT=1 \
+    > "$out/bounded_modulo_4k.launch.log" 2>&1 &
+arm_pids+=("$!")
+arm_names+=(bounded_modulo_4k)
 
 # Collaborative range-pass candidate: rescan cached B values for four fixed ranges.
 run_arm bounded_range_4k \
@@ -130,7 +139,10 @@ run_arm bounded_range_4k \
     MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 \
     MAA_VIRTUAL_INDEX_PARTITIONS=4 \
     MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
-    MAA_REQUIRE_INDEX_FILTER_WAIT=1
+    MAA_REQUIRE_INDEX_FILTER_WAIT=1 \
+    > "$out/bounded_range_4k.launch.log" 2>&1 &
+arm_pids+=("$!")
+arm_names+=(bounded_range_4k)
 
 # Same range-pass mechanism, but bound ranges to the instruction's A interval.
 run_arm bounded_source_range_4k \
@@ -142,7 +154,25 @@ run_arm bounded_source_range_4k \
     MAA_VIRTUAL_INDEX_PARTITIONS=4 \
     MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
     MAA_VIRTUAL_INDEX_RANGE_POLICY=1 \
-    MAA_REQUIRE_INDEX_FILTER_WAIT=1
+    MAA_REQUIRE_INDEX_FILTER_WAIT=1 \
+    > "$out/bounded_source_range_4k.launch.log" 2>&1 &
+arm_pids+=("$!")
+arm_names+=(bounded_source_range_4k)
+
+arm_failure=0
+for index in "${!arm_pids[@]}"; do
+    if wait "${arm_pids[$index]}"; then
+        printf '0\n' > "$out/${arm_names[$index]}.launch.exit"
+    else
+        rc=$?
+        printf '%s\n' "$rc" > "$out/${arm_names[$index]}.launch.exit"
+        arm_failure=1
+    fi
+done
+[[ $arm_failure -eq 0 ]] || {
+    echo "one or more matched arms failed" >&2
+    exit 1
+}
 
 reference_hash=$(awk -F '\t' 'NR == 2 { print $2 }' \
     "$out/hybrid_full_metadata/result.tsv")
