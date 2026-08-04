@@ -141,6 +141,13 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.runner)
 
+    def test_filter_retry_accounting_includes_offset_epoch_drains(self) -> None:
+        self.assertIn("IND_NumOTEpochDrain", self.runner)
+        self.assertIn(
+            "expected_index_words + rt_full + offset_epoch_drains",
+            self.runner,
+        )
+
     def test_runner_does_not_forward_zero_offset_sentinels(self) -> None:
         self.assertIn("offset_args=()", self.runner)
         self.assertIn("if [[ $offset_entries -ne 0 ]]; then", self.runner)

@@ -265,7 +265,14 @@ def validate_stats(
             if any((filter_words, filter_cycles, wait_events, wait_cycles)):
                 raise ValueError("single-pass case activated partition filter")
         else:
-            expected = direct["index_words"] + direct["row_table_full_events"]
+            offset_epoch_drains = sum_suffix(
+                stats, "IND_NumOTEpochDrain", required=False
+            )
+            expected = (
+                direct["index_words"]
+                + direct["row_table_full_events"]
+                + offset_epoch_drains
+            )
             if filter_words != expected:
                 raise ValueError(
                     f"partition-filter words {filter_words} do not match "

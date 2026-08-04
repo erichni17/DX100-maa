@@ -709,13 +709,14 @@ read -r ticks insts index_line_reads index_words index_hwm \
         }
     ' "$out/run/stats.txt"
 )
-read -r rt_full build_rounds < <(
+read -r rt_full offset_epoch_drains build_rounds < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 ~ /IND_NumRTFull$/ { rf += $2 }
+        section == 1 && $1 ~ /IND_NumOTEpochDrain$/ { od += $2 }
         section == 1 && $1 ~ /IND_VirtBuildRounds$/ { br += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
-            print rf + 0, br + 0
+            print rf + 0, od + 0, br + 0
             exit
         }
     ' "$out/run/stats.txt"
@@ -844,7 +845,7 @@ elif [[ $virtual -eq 1 ]]; then
             exit 1
         }
         if [[ $index_partitions -gt 1 ]]; then
-            expected_filter_words=$((expected_index_words + rt_full))
+            expected_filter_words=$((expected_index_words + rt_full + offset_epoch_drains))
             [[ $index_filter_words -eq $expected_filter_words ]] || {
                 echo "invalid partition-filter inspections: $index_filter_words/$expected_filter_words" >&2
                 exit 1
