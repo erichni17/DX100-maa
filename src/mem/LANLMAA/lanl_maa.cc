@@ -5381,11 +5381,9 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                         operation.umtFusedReadStage + word;
                     if (stage < UmtOrderedWaveCorners) {
                         record.source[stage] = input;
-                    } else if (stage < 2 * UmtOrderedWaveCorners) {
-                        record.sumArea[stage - UmtOrderedWaveCorners] = input;
                     } else {
                         record.sigtVolume[
-                            stage - 2 * UmtOrderedWaveCorners] = input;
+                            stage - UmtOrderedWaveCorners] = input;
                     }
                 }
             } else {

@@ -7,7 +7,7 @@
 
 using namespace gem5::lanlmaa;
 
-static_assert(UmtOrderedWaveDescriptorBytes == 3 * DescriptorBytes);
+static_assert(UmtOrderedWaveDescriptorBytes == 4 * DescriptorBytes);
 
 namespace
 {
@@ -67,6 +67,11 @@ validBytes()
     }
     put(bytes, 60, edgeCount, 4);
     put(bytes, 64, edgeMask, 4);
+    for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
+        put(bytes, UmtOrderedWaveSumAreaOffset +
+                corner * sizeof(uint64_t),
+            bits(2.0), sizeof(uint64_t));
+    }
     return bytes;
 }
 
@@ -75,8 +80,8 @@ validBytes()
 int
 main()
 {
-    assert(umtOrderedWaveWordsToLineBoundary(0x1000, 24, 64) == 8);
-    assert(umtOrderedWaveWordsToLineBoundary(0x1038, 24, 64) == 1);
+    assert(umtOrderedWaveWordsToLineBoundary(0x1000, 16, 64) == 8);
+    assert(umtOrderedWaveWordsToLineBoundary(0x1038, 16, 64) == 1);
     assert(umtOrderedWaveWordsToLineBoundary(0x1040, 7, 64) == 7);
     assert(umtOrderedWaveWordsToLineBoundary(0x1004, 24, 64) == 0);
 
@@ -97,14 +102,14 @@ main()
     UmtOrderedWaveRecord record;
     for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
         record.source[corner] = 1.0 + corner;
-        record.sumArea[corner] = 2.0;
         record.sigtVolume[corner] = 3.0;
     }
     auto scalar = record;
     std::array<double, UmtOrderedWaveCorners> expected{};
     for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
         expected[corner] = scalar.source[corner] /
-            (scalar.sumArea[corner] + scalar.sigtVolume[corner]);
+            (decoded.descriptor.sumArea[corner] +
+             scalar.sigtVolume[corner]);
         for (size_t destination = corner + 1;
              destination < UmtOrderedWaveCorners; ++destination) {
             scalar.source[destination] +=
@@ -127,15 +132,20 @@ main()
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::Empty);
     bytes = validBytes();
-    put(bytes, 12, 128, 4);
+    put(bytes, 12, 192, 4);
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::BadRecordGeometry);
     bytes = validBytes();
-    bytes[180] = 1;
+    bytes[240] = 1;
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::ReservedNonzero);
     bytes = validBytes();
     put(bytes, 72, UINT64_C(0x7ff8000000000000), 8);
+    assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
+           DescriptorError::BadRecordValue);
+    bytes = validBytes();
+    put(bytes, UmtOrderedWaveSumAreaOffset,
+        UINT64_C(0x7ff8000000000000), 8);
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::BadRecordValue);
     bytes = validBytes();

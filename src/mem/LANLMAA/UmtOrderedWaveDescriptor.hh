@@ -14,21 +14,22 @@ namespace gem5
 namespace lanlmaa
 {
 
-constexpr size_t UmtOrderedWaveDescriptorBytes = 192;
-constexpr uint16_t UmtOrderedWaveDescriptorVersion = 2;
+constexpr size_t UmtOrderedWaveDescriptorBytes = 256;
+constexpr uint16_t UmtOrderedWaveDescriptorVersion = 3;
 constexpr uint8_t UmtOrderedWaveOpcode = 11;
 constexpr uint8_t UmtOrderedWaveEightCornerFlag = 1U << 0;
 constexpr uint32_t UmtOrderedWaveCorners = 8;
 constexpr uint32_t UmtOrderedWaveDenseCoefficients = 28;
 constexpr uint32_t UmtOrderedWaveMaximumEdges = 12;
-constexpr uint32_t UmtOrderedWaveRecordFp64Words = 24;
+constexpr uint32_t UmtOrderedWaveRecordFp64Words = 16;
 constexpr uint32_t UmtOrderedWaveRecordBytes =
     UmtOrderedWaveRecordFp64Words * sizeof(uint64_t);
 constexpr uint32_t UmtOrderedWaveResultBytes =
     UmtOrderedWaveCorners * sizeof(uint64_t);
 constexpr uint32_t UmtOrderedWaveMaximumGroups = 32;
 constexpr uint64_t UmtOrderedWaveAbiFingerprint =
-    0x215544d46139a30bULL;
+    0x4e8ab3e43be5b7f3ULL;
+constexpr size_t UmtOrderedWaveSumAreaOffset = 168;
 
 struct UmtOrderedWaveDescriptor
 {
@@ -38,12 +39,12 @@ struct UmtOrderedWaveDescriptor
     uint64_t resultBase = 0;
     uint64_t completionRecord = 0;
     std::array<double, UmtOrderedWaveDenseCoefficients> coefficients{};
+    std::array<double, UmtOrderedWaveCorners> sumArea{};
 };
 
 struct UmtOrderedWaveRecord
 {
     std::array<double, UmtOrderedWaveCorners> source{};
-    std::array<double, UmtOrderedWaveCorners> sumArea{};
     std::array<double, UmtOrderedWaveCorners> sigtVolume{};
 };
 
@@ -91,13 +92,13 @@ executeUmtOrderedWave(const UmtOrderedWaveDescriptor &descriptor,
     UmtOrderedWaveResult result;
     for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
         if (!std::isfinite(record.source[corner]) ||
-            !std::isfinite(record.sumArea[corner]) ||
+            !std::isfinite(descriptor.sumArea[corner]) ||
             !std::isfinite(record.sigtVolume[corner])) {
             result.error = DescriptorError::BadRecordValue;
             return result;
         }
         const double denominator =
-            record.sumArea[corner] + record.sigtVolume[corner];
+            descriptor.sumArea[corner] + record.sigtVolume[corner];
         if (!std::isfinite(denominator) || denominator <= 0.0) {
             result.error = DescriptorError::BadRecordValue;
             return result;
@@ -259,6 +260,23 @@ decodeUmtOrderedWaveDescriptor(
         ++sparseIndex;
     }
     for (size_t offset = 72 + edgeCount * sizeof(uint64_t);
+         offset < UmtOrderedWaveSumAreaOffset; ++offset) {
+        if (bytes[offset] != 0) {
+            result.error = DescriptorError::ReservedNonzero;
+            return result;
+        }
+    }
+    for (size_t corner = 0; corner < descriptor.sumArea.size(); ++corner) {
+        descriptor.sumArea[corner] = umtFusedCornerDecodeFp64(
+            bytes.data() + UmtOrderedWaveSumAreaOffset +
+            corner * sizeof(uint64_t));
+        if (!std::isfinite(descriptor.sumArea[corner])) {
+            result.error = DescriptorError::BadRecordValue;
+            return result;
+        }
+    }
+    for (size_t offset = UmtOrderedWaveSumAreaOffset +
+             UmtOrderedWaveCorners * sizeof(uint64_t);
          offset < bytes.size(); ++offset) {
         if (bytes[offset] != 0) {
             result.error = DescriptorError::ReservedNonzero;

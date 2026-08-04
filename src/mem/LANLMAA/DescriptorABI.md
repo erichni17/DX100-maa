@@ -161,7 +161,7 @@ application-speedup claim.
 
 ### UMT ordered eight-corner wave contract (opcode 11)
 
-Opcode 11 is a version-2, 192-byte contract occupying three adjacent
+Opcode 11 is a version-3, 256-byte contract occupying four adjacent
 64-byte descriptor slots. Byte 7 must equal one and promises an exactly
 eight-corner positive UCB zone whose records and results are arranged in the
 CPU-provided topological solve order. Opcode 10 remains unchanged as the
@@ -170,21 +170,24 @@ per-corner baseline.
 | Offset | Size | Meaning |
 | ---: | ---: | --- |
 | 8 | 4 | Group count, 1-32 |
-| 12 | 4 | Record stride, exactly 192 bytes |
+| 12 | 4 | Record stride, exactly 128 bytes |
 | 16 | 8 | Record base |
 | 24 | 8 | Result base |
 | 32 | 8 | 32-byte completion record |
 | 40 | 8 | Reserved, zero |
-| 48 | 8 | ABI fingerprint `0x215544d46139a30b` |
+| 48 | 8 | ABI fingerprint `0x4e8ab3e43be5b7f3` |
 | 56 | 4 | Corner count, exactly 8 |
 | 60 | 4 | Stored nonzero edge count, 0-12 |
 | 64 | 4 | 28-bit strict-upper edge mask in source-major order |
 | 68 | 4 | Reserved, zero |
 | 72 | 0-96 | Packed nonzero FP64 coefficients in ascending mask-bit order |
-| 72+8N | through 191 | Reserved, zero |
+| 72+8N | through 167 | Reserved, zero |
+| 168 | 64 | Eight finite FP64 `sum_area` values in solve order |
+| 232 | 24 | Reserved, zero |
 
-Each group record is three ordinal-major FP64 vectors:
-`source[8]`, `sum_area[8]`, and `sigma_times_volume[8]`. The 28-bit mask
+Each group record is two ordinal-major FP64 vectors: `source[8]` and
+`sigma_times_volume[8]`; descriptor-global `sum_area[8]` is reused by every
+group. The 28-bit mask
 reconstructs the shared strict-upper coefficient triangle; at most twelve
 nonzero coefficients are stored and absent edges reconstruct as zero. Set bits
 with zero or nonfinite coefficients, a population/count mismatch, and nonzero
@@ -207,9 +210,11 @@ it on one FP64 add/sub unit, one FP64 multiplier, eight iterative dividers
 (64-cycle latency and initiation interval), and global issue width one. Per
 group it charges eight denominator adds, eight divides, and one multiply/add
 pair per nonzero edge. Architecturally retained group state is eight mutable
-sources plus eight denominators; at most twelve coefficients are
-descriptor-global. The compact form removes five descriptor fetches per
-submission relative to the padded version-1 prototype.
+sources plus eight denominators; at most twelve coefficients and eight
+sum-area constants are descriptor-global. Hoisting sum area adds one descriptor
+fetch and 64 bytes of descriptor-global state while removing one 64-byte input
+line per group. For a full 32-group descriptor, it replaces 32 input reads with
+one descriptor read relative to version 2.
 The C++ vectors used by the functional simulator are not an SRAM sizing
 claim. Synthesis, wiring, power, and physical timing remain unproven.
 

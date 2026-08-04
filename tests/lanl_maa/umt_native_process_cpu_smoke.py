@@ -149,7 +149,7 @@ process_environment = [
 ]
 if args.maa:
     mapping_cookie = (
-        "umt-lanl-maa-opcode11-wave-mapped-v2"
+        "umt-lanl-maa-opcode11-wave-sumarea-hoist-v3"
         if args.umt_mode == "wave"
         else "umt-lanl-maa-opcode10-mapped-v1"
     )
