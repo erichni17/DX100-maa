@@ -2079,11 +2079,13 @@ void IndirectAccessUnit::executeInstruction() {
             !maa->virtual_native_issue_order ||
             (!virtual_build_incomplete &&
              boundedSourceResponsesComplete());
-        // In range-pass mode a capacity drain owns the current Row/Offset
-        // contents until source responses release them.  Refilling while the
-        // drain is incomplete can rediscover the same full table at the same
-        // tick.  Preserve the established overlap policy for every off-mode.
-        const bool refill_allowed = maa->virtual_index_range_passes
+        // A finite direct-index pass owns the current Row/Offset contents
+        // while a capacity drain is incomplete.  Refilling sooner can
+        // rediscover the same full table forever at the same tick.  Keep the
+        // established overlap policy for ordinary single-pass operations.
+        const bool finite_direct_index_pass =
+            isDirectIndexLoad() && direct_index_partitions > 1;
+        const bool refill_allowed = finite_direct_index_pass
             ? !virtual_build_incomplete
             : legacy_refill_allowed;
         if (!my_fill_finished && !direct_index_partition_barrier &&

@@ -99,7 +99,7 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertEqual(self.indirect.count("checker_bytes=%lu"), 2)
         self.assertNotIn("checker_bytes=%zu", self.indirect)
 
-    def test_capacity_drain_gate_is_range_only(self) -> None:
+    def test_capacity_drain_gate_covers_finite_direct_index_passes(self) -> None:
         legacy_gate = re.search(
             r"const bool legacy_refill_allowed\s*=\s*(.*?);",
             self.indirect,
@@ -120,8 +120,14 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIsNotNone(refill_gate)
         self.assertRegex(
             refill_gate.group(1),
-            r"maa->virtual_index_range_passes\s*\?\s*"
+            r"finite_direct_index_pass\s*\?\s*"
             r"!virtual_build_incomplete\s*:\s*legacy_refill_allowed",
+        )
+        self.assertRegex(
+            self.indirect,
+            r"const bool finite_direct_index_pass\s*=\s*"
+            r"isDirectIndexLoad\(\)\s*&&\s*"
+            r"direct_index_partitions\s*>\s*1",
         )
 
     def test_runner_closes_exact_candidate_signature(self) -> None:
