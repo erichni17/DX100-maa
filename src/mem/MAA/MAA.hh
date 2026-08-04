@@ -425,6 +425,7 @@ public:
     bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
     bool virtual_index_range_passes;
+    unsigned int virtual_index_range_policy;
     unsigned int virtual_index_filter_words_per_cycle;
     bool virtual_partition_keep_combiner;
     bool virtual_grow_order;

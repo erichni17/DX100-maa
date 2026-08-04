@@ -111,6 +111,10 @@ class MAA(ClockedObject):
         False,
         "Select contiguous DRAM-grow ranges with explicit exact-once tracking",
     )
+    virtual_index_range_policy = Param.Unsigned(
+        0,
+        "Range bounds: 0=full hardware grow space, 1=A source endpoints",
+    )
     virtual_index_filter_words_per_cycle = Param.Unsigned(
         0,
         "Partition-filter index words examined per cycle (0 is unlimited)",

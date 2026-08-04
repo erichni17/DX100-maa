@@ -86,6 +86,25 @@ testSkewRemainsExactAndExplicit()
 }
 
 void
+testSourceRelativeRange()
+{
+    BoundedRangePassTracker tracker;
+    assert(tracker.configureRange(16384, 4096, 4, 13, 22) ==
+           Result::Accepted);
+    assert(tracker.lowerGrow() == 13);
+    assert(tracker.upperGrow() == 22);
+    assert(tracker.range(0).lower == 13);
+    assert(tracker.range(3).upper == 22);
+    assert(tracker.passForGrow(12) == BoundedRangePassTracker::MaxPasses);
+    assert(tracker.passForGrow(22) == BoundedRangePassTracker::MaxPasses);
+    for (uint64_t grow = 13; grow < 22; ++grow) {
+        const uint32_t pass = tracker.passForGrow(grow);
+        const auto range = tracker.range(pass);
+        assert(range.lower <= grow && grow < range.upper);
+    }
+}
+
+void
 testFailuresAreClosed()
 {
     BoundedRangePassTracker tracker;
@@ -116,6 +135,7 @@ main()
     testRangesCoverGrowSpaceExactly();
     testExactOnceOutOfOrderRetirement();
     testSkewRemainsExactAndExplicit();
+    testSourceRelativeRange();
     testFailuresAreClosed();
     std::cout << "bounded_range_pass_test: PASS\n";
     return 0;

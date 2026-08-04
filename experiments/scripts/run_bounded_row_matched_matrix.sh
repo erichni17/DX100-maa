@@ -132,10 +132,24 @@ run_arm bounded_range_4k \
     MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
     MAA_REQUIRE_INDEX_FILTER_WAIT=1
 
+# Same range-pass mechanism, but bound ranges to the instruction's A interval.
+run_arm bounded_source_range_4k \
+    MAA_ROW_TABLE_SLICES=16 \
+    MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
+    MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
+    MAA_OFFSET_TABLE_ENTRIES=4096 \
+    MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 \
+    MAA_VIRTUAL_INDEX_PARTITIONS=4 \
+    MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
+    MAA_VIRTUAL_INDEX_RANGE_POLICY=1 \
+    MAA_REQUIRE_INDEX_FILTER_WAIT=1
+
 reference_hash=$(awk -F '\t' 'NR == 2 { print $2 }' \
     "$out/hybrid_full_metadata/result.tsv")
 [[ -n $reference_hash ]]
-for arm in hybrid_full_metadata bounded_modulo_4k bounded_range_4k; do
+arms=(hybrid_full_metadata bounded_modulo_4k bounded_range_4k
+      bounded_source_range_4k)
+for arm in "${arms[@]}"; do
     hash=$(awk -F '\t' 'NR == 2 { print $2 }' "$out/$arm/result.tsv")
     [[ $hash == "$reference_hash" ]]
     [[ $(<"$out/$arm/restore.exit") == 0 ]]
@@ -144,7 +158,7 @@ done
 printf 'arm\toutput_hash\tsimTicks\tdelta_vs_hybrid_pct\n' > "$out/matrix.tsv"
 reference_ticks=$(awk -F '\t' 'NR == 2 { print $3 }' \
     "$out/hybrid_full_metadata/result.tsv")
-for arm in hybrid_full_metadata bounded_modulo_4k bounded_range_4k; do
+for arm in "${arms[@]}"; do
     read -r hash ticks < <(awk -F '\t' 'NR == 2 { print $2, $3 }' \
         "$out/$arm/result.tsv")
     delta=$(awk -v value="$ticks" -v reference="$reference_ticks" \

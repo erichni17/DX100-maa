@@ -723,6 +723,33 @@ uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
              my_indirect_id, grow_addr);
     return pass;
 }
+BoundedRangePassTracker::Range
+IndirectAccessUnit::directIndexSourceGrowRange()
+{
+    panic_if(my_instruction->maxAddr <= my_instruction->minAddr,
+             "I[%d] source-relative range has an empty A interval\n",
+             my_indirect_id);
+    const auto growForAddress = [this](Addr vaddr) {
+        const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+        const Addr block_paddr = addrBlockAligner(
+            translatePacket(block_vaddr), block_size);
+        const std::vector<int> address = maa->map_addr(block_paddr);
+        return getGrowAddr(my_RT_config,
+                           address[ADDR_BANKGROUP_LEVEL],
+                           address[ADDR_BANK_LEVEL],
+                           address[ADDR_ROW_LEVEL]);
+    };
+    const Addr first = growForAddress(my_instruction->minAddr);
+    const Addr last = growForAddress(my_instruction->maxAddr - 1);
+    const Addr lower = std::min(first, last);
+    const Addr upper = std::max(first, last) + 1;
+    panic_if(upper > num_RT_possible_grows[my_RT_config],
+             "I[%d] source-relative grow range [0x%lx,0x%lx) exceeds "
+             "hardware grow space 0x%lx\n",
+             my_indirect_id, lower, upper,
+             num_RT_possible_grows[my_RT_config]);
+    return {lower, upper};
+}
 int IndirectAccessUnit::directIndexRetirementPass() const {
     const int pass = direct_index_partition_barrier
         ? direct_index_partition - 1 : direct_index_partition;
@@ -1494,9 +1521,13 @@ void IndirectAccessUnit::executeInstruction() {
                 panic_if(!isVirtualLoad(),
                          "I[%d] bounded range passes require a virtual load\n",
                          my_indirect_id);
-                const auto result = bounded_range_pass.configure(
+                BoundedRangePassTracker::Range grow_range{
+                    0, num_RT_possible_grows[my_RT_config]};
+                if (maa->virtual_index_range_policy == 1)
+                    grow_range = directIndexSourceGrowRange();
+                const auto result = bounded_range_pass.configureRange(
                     my_max, offset_table->capacity(), direct_index_partitions,
-                    num_RT_possible_grows[my_RT_config]);
+                    grow_range.lower, grow_range.upper);
                 panic_if(
                     result != BoundedRangePassTracker::Result::Accepted,
                     "I[%d] cannot configure bounded range passes: %s\n",
@@ -1510,12 +1541,15 @@ void IndirectAccessUnit::executeInstruction() {
                         "event=bounded_range_begin schema=1 unit=%d "
                         "operation_tick=%lu logical=%d active_offsets=%d "
                         "active_row_lines=%lu passes=%d possible_grows=%lu "
+                        "range_policy=%u lower=0x%lx upper=0x%lx "
                         "checker_bytes=%lu backing=llc_index_rescan "
                         "combiner=retained\n",
                         my_indirect_id, my_decode_start_tick, my_max,
                         offset_table->capacity(), active_row_line_slots,
                         direct_index_partitions,
                         num_RT_possible_grows[my_RT_config],
+                        maa->virtual_index_range_policy, grow_range.lower,
+                        grow_range.upper,
                         static_cast<unsigned long>(
                             bounded_range_pass.chargedBytes()));
             }

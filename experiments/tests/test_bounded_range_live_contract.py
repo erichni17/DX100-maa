@@ -15,6 +15,9 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         cls.runner = (
             ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
         ).read_text()
+        cls.matrix = (
+            ROOT / "experiments/scripts/run_bounded_row_matched_matrix.sh"
+        ).read_text()
 
     def test_candidate_is_opt_in_and_wired_end_to_end(self) -> None:
         sources = [
@@ -31,6 +34,17 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             (ROOT / "src/mem/MAA/MAA.py").read_text(),
             r"virtual_index_range_passes\s*=\s*Param\.Bool\(\s*False,",
         )
+
+    def test_source_relative_policy_is_optional_and_fail_closed(self) -> None:
+        param = (ROOT / "src/mem/MAA/MAA.py").read_text()
+        self.assertRegex(
+            param,
+            r"virtual_index_range_policy\s*=\s*Param\.Unsigned\(\s*0,",
+        )
+        self.assertIn("configureRange", self.tracker + self.indirect)
+        self.assertIn("directIndexSourceGrowRange", self.indirect)
+        self.assertIn("source-relative grow range", self.indirect)
+        self.assertIn("MAA_VIRTUAL_INDEX_RANGE_POLICY=1", self.matrix)
 
     def test_candidate_caps_native_active_tables(self) -> None:
         self.assertIn("MaxActiveEntries = 4096", self.tracker)

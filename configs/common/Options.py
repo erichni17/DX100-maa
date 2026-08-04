@@ -383,6 +383,12 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_index_range_policy",
+        type=int,
+        default=0,
+        help="Range bounds: 0=full grow space, 1=A source endpoints",
+    )
+    parser.add_argument(
         "--maa_virtual_index_filter_words_per_cycle",
         type=int,
         default=0,

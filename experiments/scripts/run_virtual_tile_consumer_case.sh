@@ -58,6 +58,7 @@ combine_victim_policy=${MAA_VIRTUAL_COMBINE_VICTIM_POLICY:-0}
 combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
+index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
@@ -76,6 +77,14 @@ require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
 }
 [[ $index_range_passes == 0 || $index_range_passes == 1 ]] || {
     echo "MAA_VIRTUAL_INDEX_RANGE_PASSES must be 0 or 1" >&2
+    exit 2
+}
+[[ $index_range_policy -ge 0 && $index_range_policy -le 1 ]] || {
+    echo "MAA_VIRTUAL_INDEX_RANGE_POLICY must be 0 or 1" >&2
+    exit 2
+}
+[[ $index_range_passes == 1 || $index_range_policy == 0 ]] || {
+    echo "nonzero range policy requires range passes" >&2
     exit 2
 }
 [[ $index_force_cache == 0 || $index_force_cache == 1 ]] || {
@@ -414,6 +423,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_combine_banks=%s\n' "$combine_banks"
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
     printf 'virtual_index_range_passes=%s\n' "$index_range_passes"
+    printf 'virtual_index_range_policy=%s\n' "$index_range_policy"
     printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
     printf 'virtual_partition_keep_combiner=%s\n' \
         "$partition_keep_combiner"
@@ -578,6 +588,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
     --maa_virtual_index_buffer_lines=4 \
     --maa_virtual_index_partitions="$index_partitions" \
+    --maa_virtual_index_range_policy="$index_range_policy" \
     "${index_range_args[@]}" \
     "${index_cache_args[@]}" \
     "${partition_combiner_args[@]}" \
@@ -602,6 +613,7 @@ for expected in \
     "num_offset_table_epoch_entries=$resolved_offset_epoch_entries" \
     "virtual_index_partitions=$index_partitions" \
     "virtual_index_range_passes=$([[ $index_range_passes -eq 1 ]] && echo true || echo false)" \
+    "virtual_index_range_policy=$index_range_policy" \
     "virtual_index_force_cache=$([[ $index_force_cache -eq 1 ]] && echo true || echo false)" \
     "virtual_partition_keep_combiner=$([[ $partition_keep_combiner -eq 1 ]] && echo true || echo false)" \
     "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
@@ -974,6 +986,7 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
     row_table_rows_per_slice row_table_entries_per_subslice_row
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
+    virtual_index_range_policy
     virtual_index_force_cache virtual_partition_keep_combiner
     offset_table_entries offset_table_epoch_entries
     transparent_spd_mode
@@ -998,6 +1011,7 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
     "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
+    "$index_range_policy"
     "$index_force_cache" "$partition_keep_combiner" \
     "$resolved_offset_entries" "$resolved_offset_epoch_entries"
     "$transparent_spd_mode"

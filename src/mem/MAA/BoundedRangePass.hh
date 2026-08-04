@@ -49,17 +49,26 @@ class BoundedRangePassTracker
     Result configure(uint32_t logical_entries, uint32_t active_entries,
                      uint32_t passes, uint64_t possible_grows)
     {
+        return configureRange(logical_entries, active_entries, passes, 0,
+                              possible_grows);
+    }
+
+    Result configureRange(uint32_t logical_entries, uint32_t active_entries,
+                          uint32_t passes, uint64_t grow_lower,
+                          uint64_t grow_upper)
+    {
         reset();
         if (logical_entries == 0 || active_entries == 0 ||
             active_entries > MaxActiveEntries || passes == 0 ||
-            passes > MaxPasses || possible_grows == 0 ||
+            passes > MaxPasses || grow_lower >= grow_upper ||
             passes < ceilDiv(logical_entries, active_entries)) {
             return Result::InvalidConfiguration;
         }
         logicalEntries = logical_entries;
         activeEntries = active_entries;
         numPasses = passes;
-        possibleGrows = possible_grows;
+        growLower = grow_lower;
+        growUpper = grow_upper;
         const size_t words = ceilDiv(logicalEntries, uint32_t(64));
         admitted.assign(words, 0);
         retired.assign(words, 0);
@@ -73,7 +82,8 @@ class BoundedRangePassTracker
         logicalEntries = 0;
         activeEntries = 0;
         numPasses = 0;
-        possibleGrows = 0;
+        growLower = 0;
+        growUpper = 0;
         admitted.clear();
         retired.clear();
         admissionCount = 0;
@@ -87,7 +97,9 @@ class BoundedRangePassTracker
     uint32_t logical() const { return logicalEntries; }
     uint32_t active() const { return activeEntries; }
     uint32_t passes() const { return numPasses; }
-    uint64_t grows() const { return possibleGrows; }
+    uint64_t grows() const { return growUpper; }
+    uint64_t lowerGrow() const { return growLower; }
+    uint64_t upperGrow() const { return growUpper; }
     uint32_t admissions() const { return admissionCount; }
     uint32_t retirements() const { return retirementCount; }
 
@@ -95,18 +107,21 @@ class BoundedRangePassTracker
     {
         if (!configuredFlag || pass >= numPasses)
             return {};
-        return {
-            ceilDiv(static_cast<uint64_t>(pass) * possibleGrows,
-                    static_cast<uint64_t>(numPasses)),
-            ceilDiv(static_cast<uint64_t>(pass + 1) * possibleGrows,
-                    static_cast<uint64_t>(numPasses))};
+        const uint64_t span = growUpper - growLower;
+        return {growLower +
+                    ceilDiv(static_cast<uint64_t>(pass) * span,
+                            static_cast<uint64_t>(numPasses)),
+                growLower +
+                    ceilDiv(static_cast<uint64_t>(pass + 1) * span,
+                            static_cast<uint64_t>(numPasses))};
     }
 
     uint32_t passForGrow(uint64_t grow) const
     {
-        if (!configuredFlag || grow >= possibleGrows)
+        if (!configuredFlag || grow < growLower || grow >= growUpper)
             return MaxPasses;
-        return static_cast<uint32_t>(grow * numPasses / possibleGrows);
+        return static_cast<uint32_t>((grow - growLower) * numPasses /
+                                     (growUpper - growLower));
     }
 
     Result recordAdmission(uint32_t iteration, uint64_t grow, uint32_t pass)
@@ -115,7 +130,7 @@ class BoundedRangePassTracker
             return Result::NotConfigured;
         if (iteration >= logicalEntries)
             return Result::IterationOutOfRange;
-        if (grow >= possibleGrows)
+        if (grow < growLower || grow >= growUpper)
             return Result::GrowOutOfRange;
         if (pass >= numPasses)
             return Result::PassOutOfRange;
@@ -240,7 +255,8 @@ class BoundedRangePassTracker
     uint32_t logicalEntries = 0;
     uint32_t activeEntries = 0;
     uint32_t numPasses = 0;
-    uint64_t possibleGrows = 0;
+    uint64_t growLower = 0;
+    uint64_t growUpper = 0;
     std::vector<uint64_t> admitted;
     std::vector<uint64_t> retired;
     uint32_t admissionCount = 0;

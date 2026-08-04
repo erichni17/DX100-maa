@@ -131,6 +131,7 @@ MAA::MAA(const MAAParams &p)
       virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
       virtual_index_range_passes(p.virtual_index_range_passes),
+      virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
       virtual_partition_keep_combiner(p.virtual_partition_keep_combiner),
@@ -198,6 +199,12 @@ MAA::MAA(const MAAParams &p)
                  "Bounded range passes cannot use attribution-only native "
                  "issue order\n");
     }
+    panic_if(virtual_index_range_policy > 1,
+             "Invalid virtual index range policy %u (expected 0..1)\n",
+             virtual_index_range_policy);
+    panic_if(!virtual_index_range_passes && virtual_index_range_policy != 0,
+             "Virtual index range policy %u requires range passes\n",
+             virtual_index_range_policy);
     panic_if(virtual_grow_order && virtual_native_issue_order,
              "Virtual grow grouping and native issue-order attribution "
              "cannot both be enabled\n");

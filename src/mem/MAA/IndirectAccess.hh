@@ -340,6 +340,7 @@ protected:
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
     uint32_t directIndexPassForGrow(Addr grow_addr) const;
+    BoundedRangePassTracker::Range directIndexSourceGrowRange();
     int directIndexRetirementPass() const;
     void finishBoundedRangePass(int pass, const char *reason);
     void discardDirectIndex(int itr, uint32_t expected_value,
