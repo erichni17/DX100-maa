@@ -109,10 +109,13 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         self.assertLess(priority, full_line)
         self.assertIn("Retire non-forwardable fragments first", drain)
         self.assertIn("constexpr int issue_ready_reserve_lines = 4", drain)
-        self.assertIn("full_lines_to_drain - issue_ready_reserve_lines", drain)
-        self.assertIn("configured 384-line", drain)
+        self.assertIn(
+            "tail_full_lines_to_drain - issue_ready_reserve_lines", drain
+        )
+        self.assertIn("Pages 0-1 keep the control schedule", drain)
         insert = source[source.index("insertVirtualCombineWord") :]
-        self.assertIn("candidate_fragment &&", insert)
+        self.assertIn("candidate_evictable &&", insert)
+        self.assertIn("candidate_page < 2", insert)
         self.assertIn("victim.valid_words == full_mask", insert)
         self.assertIn(
             "createRetirementWrite(victim.line_vaddr, block_size,", insert

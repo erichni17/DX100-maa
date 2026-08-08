@@ -3438,16 +3438,25 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                 continue;
             const int candidate_words =
                 __builtin_popcount(candidate.valid_words);
-            const bool candidate_fragment =
-                candidate.valid_words != full_mask;
-            const bool victim_fragment =
-                victim_idx != -1 &&
-                virtual_combine_slots[victim_idx].valid_words != full_mask;
+            const int candidate_page =
+                (candidate.line_vaddr - my_backing_addr) /
+                (maa->physical_tile_elements * my_word_size);
+            const bool candidate_evictable =
+                candidate.valid_words != full_mask || candidate_page < 2;
+            bool victim_evictable = false;
+            if (victim_idx != -1) {
+                const auto &current = virtual_combine_slots[victim_idx];
+                const int current_page =
+                    (current.line_vaddr - my_backing_addr) /
+                    (maa->physical_tile_elements * my_word_size);
+                victim_evictable =
+                    current.valid_words != full_mask || current_page < 2;
+            }
             if (victim_idx == -1 ||
-                (maa->virtual_page_ready_on_issue && candidate_fragment &&
-                 !victim_fragment) ||
+                (maa->virtual_page_ready_on_issue && candidate_evictable &&
+                 !victim_evictable) ||
                 ((!maa->virtual_page_ready_on_issue ||
-                  candidate_fragment == victim_fragment) &&
+                  candidate_evictable == victim_evictable) &&
                  ((virtual_combine_victim_policy == 1 &&
                    candidate_words < victim_words) ||
                   (virtual_combine_victim_policy == 2 &&
@@ -3456,7 +3465,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                 victim_words = candidate_words;
                 if (virtual_combine_victim_policy == 0 &&
                     (!maa->virtual_page_ready_on_issue ||
-                     candidate_fragment)) {
+                     candidate_evictable)) {
                     break;
                 }
             }
@@ -3599,29 +3608,39 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                 slot = VirtualCombineSlot();
         }
     }
-    int full_lines_to_drain = std::count_if(
+    int tail_full_lines_to_drain = std::count_if(
         virtual_combine_slots.begin(), virtual_combine_slots.end(),
-        [full_mask](const VirtualCombineSlot &slot) {
-            return slot.valid && slot.valid_words == full_mask;
+        [this, full_mask](const VirtualCombineSlot &slot) {
+            if (!slot.valid || slot.valid_words != full_mask)
+                return false;
+            const int page = (slot.line_vaddr - my_backing_addr) /
+                (maa->physical_tile_elements * my_word_size);
+            return page >= 2;
         });
     if (!flush_partial && maa->virtual_page_ready_on_issue) {
-        // Keep a finite tail of complete lines in the already-accounted
-        // combiner. The four-line reserve is below its configured 384-line and
-        // 4096-word limits, so admission can continue while older lines drain.
-        full_lines_to_drain =
-            std::max(0, full_lines_to_drain - issue_ready_reserve_lines);
+        // Keep a finite tail of complete lines from pages 2-3 in the already
+        // accounted combiner. Pages 0-1 keep the control schedule, while the
+        // four-line reserve is far below the configured capacity.
+        tail_full_lines_to_drain = std::max(
+            0, tail_full_lines_to_drain - issue_ready_reserve_lines);
     }
     for (auto &slot : virtual_combine_slots) {
         if (!slot.valid)
             continue;
         if (slot.valid_words == full_mask &&
             virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
-            if (full_lines_to_drain == 0)
+            const int page = (slot.line_vaddr - my_backing_addr) /
+                (maa->physical_tile_elements * my_word_size);
+            const bool tail_line = page >= 2;
+            if (!flush_partial && maa->virtual_page_ready_on_issue &&
+                tail_line && tail_full_lines_to_drain == 0) {
                 continue;
+            }
             if (!createRetirementWrite(slot.line_vaddr, block_size,
                                        slot.data.data()))
                 continue;
-            --full_lines_to_drain;
+            if (tail_line)
+                --tail_full_lines_to_drain;
             virtual_full_line_writes++;
             panic_if(virtual_combine_words < my_words_per_cl,
                      "I[%d] virtual full-line accounting underflow\n",
