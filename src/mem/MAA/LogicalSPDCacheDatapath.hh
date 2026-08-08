@@ -11,7 +11,8 @@ namespace gem5 {
 class LogicalSPDCacheDatapath
 {
   public:
-    static constexpr std::size_t PageElements = 4096;
+    static constexpr std::size_t PageElements = 2048;
+    static constexpr std::size_t MaxPageElements = PageElements;
 
     enum class Operation : uint8_t
     {
@@ -58,8 +59,8 @@ class LogicalSPDCacheDatapath
             return Result::Invalid;
         }
         if (source.data == nullptr || destination.data == nullptr ||
-            source.size != PageElements ||
-            destination.size != PageElements) {
+            source.size == 0 || source.size > MaxPageElements ||
+            destination.size != source.size) {
             return Result::Invalid;
         }
         const uintptr_t sourceBegin =
@@ -70,7 +71,7 @@ class LogicalSPDCacheDatapath
             destinationBegin % alignof(double) != 0) {
             return Result::Invalid;
         }
-        constexpr std::size_t bytes = PageElements * sizeof(double);
+        const std::size_t bytes = source.size * sizeof(double);
         if (sourceBegin > UINTPTR_MAX - bytes ||
             destinationBegin > UINTPTR_MAX - bytes) {
             return Result::Invalid;
@@ -110,7 +111,8 @@ class LogicalSPDCacheDatapath
     }
 };
 
-static_assert(LogicalSPDCacheDatapath::PageElements == 4096);
+static_assert(LogicalSPDCacheDatapath::PageElements == 2048);
+static_assert(LogicalSPDCacheDatapath::MaxPageElements == 2048);
 
 } // namespace gem5
 

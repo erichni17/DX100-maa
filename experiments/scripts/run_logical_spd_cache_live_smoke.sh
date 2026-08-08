@@ -46,15 +46,16 @@ restore_cmd=(
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=1
     --maa --maa_num_maas=1 --maa_num_tile_elements=16384
-    --maa_physical_tile_elements=4096
+    --maa_physical_tile_elements=2048
     --maa_num_initial_row_table_slices=16 --cmd "$binary"
 )
 
 {
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'logical_elements=16384\nphysical_page_elements=4096\n'
-    printf 'private_slots=2\nprivate_slot_bytes=32768\n'
+    printf 'logical_elements=16384\nphysical_page_elements=2048\n'
+    printf 'private_slots=2\nprivate_slot_bytes=16384\nprivate_payload_bytes=32768\n'
+    printf 'hardware_bytes=32768\nmetadata_bytes=0\n'
     printf 'isoarea_timing_claim=0\n'
     printf 'checkpoint_command='
     printf '%q ' "${checkpoint_cmd[@]}"
@@ -104,7 +105,7 @@ printf '%s\n' "$restore_rc" > "$out/restore.exit"
     exit 1
 }
 
-expected='LOGICAL_SPD_CACHE_LIVE_RESULT elements=16384 pages=4 expected_hash=7303085050985348899 output_hash=7303085050985348899 errors=0'
+expected='LOGICAL_SPD_CACHE_LIVE_RESULT elements=16384 pages=8 expected_hash=7303085050985348899 output_hash=7303085050985348899 errors=0'
 [[ $(grep -Fxc "$expected" "$out/restore.log" || true) -eq 1 ]] || {
     echo "missing exact logical SPD result" >&2
     exit 1
@@ -130,7 +131,7 @@ grep -Eq '^simTicks[[:space:]]+[1-9][0-9]*' "$out/run/stats.txt" || {
 for resolved in \
     'num_maas=1' \
     'num_tile_elements=16384' \
-    'physical_tile_elements=4096' \
+    'physical_tile_elements=2048' \
     'num_initial_row_table_slices=16'; do
     grep -Fqx "$resolved" "$out/run/config.ini" || {
         echo "missing resolved MAA geometry: $resolved" >&2
