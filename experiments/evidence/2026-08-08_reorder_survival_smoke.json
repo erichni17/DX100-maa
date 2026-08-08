@@ -1,0 +1,167 @@
+{
+  "schema": "dx100.reorder_survival_smoke.v1",
+  "status": "PASS",
+  "date": "2026-08-08",
+  "source": {
+    "branch": "codex/session-reorder-survival-20260808-20260808-101115-0af366dd",
+    "instrumentation_commit": "fbc0cd781b1375a8c8a32dcf41745e002e608720",
+    "live_visibility_fix_commit": "54be6daf3464bb5466f601282cfe14d1d69fb19d"
+  },
+  "frozen_inputs": {
+    "raw_root": "/data1/nier/dx100-runs/2026-08-08-reorder-survival-54be6daf",
+    "raw_artifacts_manifest_sha256": "688500b071c29a90772d7e631240a0c1033a1fa8b8897a1f3fa7dfb53456dcd4",
+    "gem5": {
+      "path": "build/X86/gem5.opt",
+      "sha256": "e70247395b8c3233b4c5379ea5f6953fb652a09948292d00189d35047f33f3ef"
+    },
+    "workload": {
+      "path": "/data1/nier/dx100-runs/2026-08-03-isoarea-pingpong-repair-c26a082/inputs/workload/test_virtual_tile_consumer_T16384",
+      "sha256": "84062d31e627721bfdbe0501d0454c2474ff7e05494d6a3e0db64e4996ef2a94"
+    },
+    "runner": {
+      "path": "experiments/scripts/run_virtual_tile_consumer_case.sh",
+      "sha256": "31e72598abcd97b075d6ee72a2233832848e974e517532be0e4fea467b6e801b"
+    },
+    "analyzer": {
+      "path": "experiments/analysis/analyze_reorder_survival.py",
+      "sha256": "342b491814c6abacc793e648837fe3f19b5120a73f9b5370f16fedfb3b7562c9"
+    },
+    "checkpoint": {
+      "path": "/data1/nier/dx100-runs/2026-08-08-reorder-survival-54be6daf/shared-checkpoint",
+      "files_manifest_sha256": "3a326ffec2a7ad34279f0544d7e3d19d8fed5f62a345fe50e18cf83fe3f4c586",
+      "creation_log_sha256": "97a83ba4cb7d586084f62fc5c1531f6687e416558759c8bc7ffcbcf43b7da266",
+      "exit_code": 0,
+      "layout": "deferred 16K logical consumer",
+      "tick": 3129357000
+    },
+    "ramulator": {
+      "library_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+      "authenticated_donor": "/data1/nier/worktrees/DX100-integrate-virtualization-week-20260803/ext/ramulator2",
+      "local_and_donor_dependency_manifest_sha256": "1fa7e1f4ed5a82afa62028b66f3fbc3623f19165d2d487c08a931a87681e485a",
+      "downloaded": false
+    }
+  },
+  "common_configuration": {
+    "case": "native_direct_16k",
+    "logical_descriptors": 16384,
+    "row_table_slices": 16,
+    "row_table_entries_per_subslice_row": 8,
+    "offset_table_entries": 16384,
+    "offset_table_epoch_entries": 16384,
+    "predicate_present": false,
+    "virtual_index_partitions": 1
+  },
+  "row64_neutrality": {
+    "trace_off": {
+      "raw_path": "/data1/nier/dx100-runs/2026-08-08-reorder-survival-54be6daf/row64_trace_off",
+      "debug_flags": "MAAVirtualTrace,MAAIssueDigest",
+      "reorder_records": 0,
+      "restore_exit": 0
+    },
+    "trace_on": {
+      "raw_path": "/data1/nier/dx100-runs/2026-08-08-reorder-survival-54be6daf/row64_trace_on",
+      "debug_flags": "MAAVirtualTrace,MAAIssueDigest,MAAReorderTrace",
+      "audit_sha256": "508e3d20b7fbbb5a06c64724f0f8c6d090c31725e2469c20edff8ed5c9daa264",
+      "restore_exit": 0
+    },
+    "result_tsv_byte_identical": true,
+    "result_tsv_sha256": "4fdca4bff584f7642c8abcd5986d87e2aa2220cc3d76910a47afc56cb70c45ac",
+    "output_hash": "7228541527853630339",
+    "simTicks": 40246479,
+    "simInsts": 31107,
+    "issue_digest": {
+      "count": 9858,
+      "fnv": "0xbf33d13be55871f4",
+      "mix": "0x4f1997886ed98f98"
+    },
+    "measured_reorder_survival": {
+      "selected_descriptors": 16384,
+      "total_admitted": 16384,
+      "total_issued_entries": 16384,
+      "offset_partition_epochs": 1,
+      "max_joint_admissions": 11487,
+      "rt_full_drains": 845,
+      "offset_drains": 0,
+      "partition_drains": 0,
+      "total_issued_lines": 9858,
+      "row_transitions": 9856,
+      "classification": "inherited/partitioned"
+    }
+  },
+  "row128_diagnostic": {
+    "label": "high-cost/no-drain reference; not the native baseline",
+    "raw_path": "/data1/nier/dx100-runs/2026-08-08-reorder-survival-54be6daf/row128_high_cost_reference",
+    "rows_per_slice": 128,
+    "restore_exit": 0,
+    "audit_sha256": "f6aa01c212712f979ee75c941d594705a4da7d25548b05f2fd69932d595a654d",
+    "output_hash": "7228541527853630339",
+    "simTicks": 40643989,
+    "simTicks_delta_vs_row64": 397510,
+    "simTicks_delta_percent_vs_row64": 0.9876888857780486,
+    "issue_digest": {
+      "count": 9523,
+      "fnv": "0x21f0e181cd818a97",
+      "mix": "0x6f1607869fc2071d"
+    },
+    "measured_reorder_survival": {
+      "selected_descriptors": 16384,
+      "total_admitted": 16384,
+      "total_issued_entries": 16384,
+      "offset_partition_epochs": 1,
+      "max_joint_admissions": 16384,
+      "rt_full_drains": 0,
+      "offset_drains": 0,
+      "partition_drains": 0,
+      "total_issued_lines": 9523,
+      "row_transitions": 9522,
+      "classification": "preserved"
+    },
+    "comparison_vs_row64": {
+      "max_joint_admissions_delta": 4897,
+      "rt_full_drains_delta": -845,
+      "issued_lines_delta": -335,
+      "row_transitions_delta": -334,
+      "virtual_build_rounds": {
+        "row64": 103,
+        "row128": 100
+      },
+      "exact_output_match": true,
+      "issue_digest_match": false
+    },
+    "bounded_storage_delta": {
+      "scope": "one configured indirect unit; all four simulator-allocated RowTable organizations",
+      "row_counts": {
+        "row64": 1920,
+        "row128": 3840
+      },
+      "entry_counts": {
+        "row64": 32768,
+        "row128": 65536
+      },
+      "semantic_core_array_bytes": 616704,
+      "semantic_core_array_bits": 4933632,
+      "active_16_slice_organization_delta_bytes": 161792,
+      "caveat": "C++ object padding and allocator overhead are excluded; this is bounded semantic array accounting, not synthesized area."
+    }
+  },
+  "claim_boundary": "A 16K reorder-preservation claim requires exactly 16384 admitted selected descriptors in one Offset/partition epoch, no predicate, zero RT-full/Offset/partition mid-instruction drains, max_joint_admissions=16384, and exact admitted-issued reconciliation. Otherwise the measured result is inherited/partitioned.",
+  "interpretation_guard": "Issued A-line row transitions and issue digests describe the observed order but do not by themselves establish global reorder preservation.",
+  "excluded_attempt": {
+    "raw_root": "/data1/nier/dx100-runs/2026-08-08-reorder-survival-fbc0cd78",
+    "reason": "The first shared restore used an August 3 checkpoint whose process embedded its original absolute treatment path; a later trace exposed and the analyzer rejected an incorrect RT-full epoch aggregation. It is preserved but excluded from findings."
+  },
+  "validation": {
+    "tracker_unit": "PASS",
+    "python_tests": 15,
+    "incremental_optimized_build": "PASS",
+    "runner_exact_output_and_terminal_checks": "PASS for all three final arms",
+    "analyzer": "PASS for row64 trace-on and row128; trace-off contains zero reorder records"
+  },
+  "commands": {
+    "build": "scons build/X86/gem5.opt -j8",
+    "unit": "experiments/scripts/run_reorder_survival_tracker_unit.sh",
+    "python_tests": "python3 -m unittest experiments.tests.test_analyze_reorder_survival experiments.tests.test_reorder_survival_contract",
+    "analyze": "python3 experiments/analysis/analyze_reorder_survival.py TRACE --output AUDIT_JSON",
+    "runner_shape": "MAA_DEBUG_FLAGS=FLAGS MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=ROWS MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 MAA_OFFSET_TABLE_ENTRIES=16384 MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384 DX100_SHARED_CHECKPOINT_DIR=RAW/shared-checkpoint DX100_SHARED_TREATMENT_FILE=RAW/matched_checkpoint.treatment DX100_FROZEN_RAMULATOR_LIBRARY=FROZEN_LIB DX100_RAMULATOR_PROVENANCE_FILE=FROZEN_PROVENANCE experiments/scripts/run_virtual_tile_consumer_case.sh build/X86/gem5.opt WORKLOAD native_direct_16k OUTDIR"
+  }
+}
