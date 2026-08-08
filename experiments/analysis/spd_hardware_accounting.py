@@ -21,18 +21,18 @@ REQUIRED_SOURCE = {
     ),
     "src/mem/MAA/LogicalSPDHiddenPayload.hh": (
         "LogicalSlotsPerMAA = 2",
-        "PageElements = 4096",
+        "PageElements = 2048",
         "FP64Bytes = 8",
         "PayloadBytesPerMAA =",
         "Accounting-only compatibility constants",
     ),
     "src/mem/MAA/LogicalSPDCacheRuntime.hh": (
-        "std::array<PayloadSlot, Slice::Slots> slots{}",
+        "std::array<double, Slice::PayloadElements> payload{}",
         "PrivatePayloadBits =",
-        "2 * 32 * 1024 * 8",
+        "Slice::PayloadBytes * 8",
     ),
     "src/mem/MAA/LogicalSPDCacheGem5Bridge.cc": (
-        "std::make_unique<LogicalSPDCacheRuntime>()",
+        "std::make_unique<LogicalSPDCacheRuntime>(mode)",
         "runtimes.reserve(numMaas)",
     ),
     "src/mem/MAA/MAA.cc": (
@@ -63,7 +63,7 @@ CONSUMER_EXPERIMENT = {
     "index_lines": 4,
 }
 RUNTIME_LOGICAL_SLOTS_PER_MAA = 2
-RUNTIME_PAGE_ELEMENTS = 4096
+RUNTIME_PAGE_ELEMENTS = 2048
 FP64_BYTES = 8
 
 

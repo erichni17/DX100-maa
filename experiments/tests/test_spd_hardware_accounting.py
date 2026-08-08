@@ -26,18 +26,18 @@ class SpdHardwareAccountingTest(unittest.TestCase):
             payload["transparent_visible_spd_payload_bytes"], 524288
         )
         self.assertEqual(
-            payload["private_logical_spd_payload_bytes_per_maa"], 65536
+            payload["private_logical_spd_payload_bytes_per_maa"], 32768
         )
-        self.assertEqual(payload["private_logical_spd_payload_bytes"], 262144)
+        self.assertEqual(payload["private_logical_spd_payload_bytes"], 131072)
         self.assertEqual(
             payload["transparent_visible_plus_private_payload_bytes"],
-            786432,
+            655360,
         )
         self.assertEqual(
-            payload["transparent_payload_reduction_bytes"], 1310720
+            payload["transparent_payload_reduction_bytes"], 1441792
         )
         self.assertEqual(
-            payload["transparent_payload_reduction_percent"], 62.5
+            payload["transparent_payload_reduction_percent"], 68.75
         )
         self.assertEqual(
             payload["logical_aperture_bytes_per_address_range"], 2097152
@@ -52,13 +52,13 @@ class SpdHardwareAccountingTest(unittest.TestCase):
             one_maa["transparent_visible_spd_payload_bytes"],
             four_maas["transparent_visible_spd_payload_bytes"],
         )
-        self.assertEqual(one_maa["private_logical_spd_payload_bytes"], 65536)
+        self.assertEqual(one_maa["private_logical_spd_payload_bytes"], 32768)
         self.assertEqual(
-            four_maas["private_logical_spd_payload_bytes"], 4 * 65536
+            four_maas["private_logical_spd_payload_bytes"], 4 * 32768
         )
         self.assertEqual(
             four_maas["transparent_visible_plus_private_payload_bytes"],
-            524288 + 4 * 65536,
+            524288 + 4 * 32768,
         )
 
     def test_fp64_uses_two_lane_tiles_and_two_stages_are_64kib(self) -> None:
