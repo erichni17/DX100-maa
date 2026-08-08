@@ -142,6 +142,14 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Maximum simultaneously allocated operation entries"),
       ADD_STAT(lineTableHighWaterMark, statistics::units::Count::get(),
                "Maximum simultaneously allocated or in-flight line entries"),
+      ADD_STAT(controlReadRequests, statistics::units::Count::get(),
+               "In-range aligned CPU-visible descriptor-control reads"),
+      ADD_STAT(controlStatusReads, statistics::units::Count::get(),
+               "CPU-visible descriptor-state polling reads"),
+      ADD_STAT(controlOpcodeReads, statistics::units::Count::get(),
+               "CPU-visible supported-opcode capability reads"),
+      ADD_STAT(controlErrorReads, statistics::units::Count::get(),
+               "CPU-visible descriptor-error detail reads"),
       ADD_STAT(bransonContextThrottleCycles,
                statistics::units::Cycle::get(),
                "Branson context-blocked cycles below physical capacity"),
@@ -784,6 +792,7 @@ LANLMAA::controlAccess(PacketPtr packet)
         return controlLatency;
     }
 
+    ++stats.controlReadRequests;
     uint64_t value = 0;
     switch (offset) {
       case ControlDeviceId:
@@ -795,6 +804,7 @@ LANLMAA::controlAccess(PacketPtr packet)
                 descriptorSlots;
         break;
       case ControlStatus:
+        ++stats.controlStatusReads;
         if (descriptorState == DescriptorState::Idle) {
             value = 1U << 0;
         } else if (descriptorState == DescriptorState::Completed) {
@@ -809,9 +819,11 @@ LANLMAA::controlAccess(PacketPtr packet)
         value = descriptorSlot;
         break;
       case ControlError:
+        ++stats.controlErrorReads;
         value = static_cast<uint8_t>(descriptorError);
         break;
       case ControlOpcodes:
+        ++stats.controlOpcodeReads;
         value =
             (uint64_t{1} <<
              static_cast<uint8_t>(DescriptorOpcode::DirectGather)) |

@@ -108,7 +108,20 @@ def validate(stats, group_counts):
             "UMT64 poison-tail line-table high-water is absent or outside "
             f"the 32-entry capacity: {line_high_water}"
         )
-    return expected, {"lineTableHighWaterMark": line_high_water}
+    bounded = {"lineTableHighWaterMark": line_high_water}
+    for name in (
+        "controlReadRequests",
+        "controlStatusReads",
+        "controlOpcodeReads",
+    ):
+        value = stats.get(name)
+        if value is None or value <= 0:
+            raise RuntimeError(
+                f"UMT64 poison-tail control-read counter is absent or zero: "
+                f"{name}={value}"
+            )
+        bounded[name] = value
+    return expected, bounded
 
 
 def main():

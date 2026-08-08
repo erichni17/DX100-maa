@@ -288,6 +288,10 @@ class LANLMAA : public ClockedObject
         statistics::Scalar contextWouldBlockCycles;
         statistics::Scalar operationTableHighWaterMark;
         statistics::Scalar lineTableHighWaterMark;
+        statistics::Scalar controlReadRequests;
+        statistics::Scalar controlStatusReads;
+        statistics::Scalar controlOpcodeReads;
+        statistics::Scalar controlErrorReads;
         statistics::Scalar bransonContextThrottleCycles;
         statistics::Scalar portSendFailures;
         statistics::Scalar portRetryNotifications;
