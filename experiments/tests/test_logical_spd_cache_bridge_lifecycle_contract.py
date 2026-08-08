@@ -24,12 +24,21 @@ class LogicalSpdBridgeLifecycleContractTest(unittest.TestCase):
         cls.runner = RUNNER.read_text()
         cls.bridge = cls.hh + cls.cc
 
-    def test_admission_is_live_and_native_drain_boundary_is_explicit(self) -> None:
-        self.assertIn("bool admissionClosed() const { return false; }", self.hh)
+    def test_admission_is_live_and_native_drain_boundary_is_explicit(
+        self,
+    ) -> None:
+        self.assertIn(
+            "bool admissionClosed() const { return admissionsClosed; }",
+            self.hh,
+        )
+        self.assertIn("void closeAdmission()", self.hh)
+        self.assertIn("void reopenAdmission()", self.hh)
         self.assertIn(
             "bool nativeDrainIntegrated() const { return false; }", self.hh
         )
         self.assertIn("CHECK(!bridge.admissionClosed())", self.host)
+        self.assertIn("bridge.closeAdmission()", self.host)
+        self.assertIn("bridge.reopenAdmission()", self.host)
         self.assertIn("CHECK(!bridge.nativeDrainIntegrated())", self.host)
         for required in (
             "registerSource(",

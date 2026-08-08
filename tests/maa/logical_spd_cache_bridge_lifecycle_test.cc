@@ -157,6 +157,12 @@ checkConstructionAndAdmissionBoundary()
     CHECK(!bridge.admissionClosed());
     CHECK(!bridge.nativeDrainIntegrated());
     CHECK(bridge.allQuiescent());
+    bridge.closeAdmission();
+    CHECK(bridge.admissionClosed());
+    CHECK(bridge.claimCallback(0).status == Status::Sealed);
+    bridge.reopenAdmission();
+    CHECK(!bridge.admissionClosed());
+    CHECK(bridge.allQuiescent());
 
     std::vector<const Bridge::Runtime *> authorities;
     for (std::size_t maaId = 0; maaId < bridge.runtimeCount(); ++maaId) {

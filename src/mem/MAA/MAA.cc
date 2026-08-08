@@ -1200,6 +1200,8 @@ MAA::submitLogicalSPDDescriptor(
                  instruction->maa_id >= static_cast<int>(num_maas),
              "Logical SPD instruction has invalid MAA %d\n",
              instruction->maa_id);
+    panic_if(num_maas != 1,
+             "Logical SPD live adapter is validated only for one MAA\n");
     LogicalSPDExecution &execution =
         logicalSpdExecutions[instruction->maa_id];
     if (execution.active)
@@ -1296,7 +1298,7 @@ MAA::submitLogicalSPDDescriptor(
             "operation=%lu source=0x%lx destination=0x%lx elements=%lu "
             "mode=%u page_elements=%lu pages=%lu slots=%lu "
             "payload_bytes=%lu packed_metadata_bytes=%lu "
-            "reorder_contract=producer_supplied\n",
+            "source_contract=pre_materialized_backing\n",
             instruction->maa_id, claim.token.generation,
             claim.token.runtimeIdentity, claim.token.identity,
             instruction->logicalSourceBackingAddr,
@@ -1462,6 +1464,9 @@ MAA::serviceLogicalSPD()
                 break;
             }
             if (execution.retryPacket != nullptr) {
+                if (!execution.retryAuthority.consumeRetry(
+                        execution.retryPort))
+                    break;
                 panic_if(logicalSpdBridge->recvReqRetry(
                              execution.token, execution.retryPort) !=
                              Transport::Status::Accepted,
@@ -1478,6 +1483,8 @@ MAA::serviceLogicalSPD()
                          static_cast<int>(sent.status));
                 if (accepted)
                     execution.retryPacket = nullptr;
+                if (accepted)
+                    execution.retryAuthority.clearRetry();
                 break;
             }
             const Transport::Result prepared =
@@ -1499,6 +1506,7 @@ MAA::serviceLogicalSPD()
                 if (!accepted) {
                     execution.retryPacket = packet;
                     execution.retryPort = prepared.handle->callbackPort;
+                    execution.retryAuthority.armRetry(execution.retryPort);
                     break;
                 }
                 continue;
@@ -1538,14 +1546,33 @@ MAA::scheduleLogicalSPDEvent(int latency)
 void
 MAA::notifyLogicalSPDRetry(uint8_t retryingPort)
 {
-    for (const LogicalSPDExecution &execution : logicalSpdExecutions) {
+    for (LogicalSPDExecution &execution : logicalSpdExecutions) {
         if (execution.active && execution.retryPacket != nullptr &&
             LogicalSPDCachePortProvenance::retryMatches(
                 execution.retryPort, retryingPort)) {
+            execution.retryAuthority.notifyRetry(retryingPort);
             scheduleLogicalSPDEvent();
             return;
         }
     }
+}
+
+DrainState
+MAA::drain()
+{
+    logicalSpdBridge->closeAdmission();
+    panic_if(!logicalSpdBridge->allQuiescent(),
+             "Logical SPD checkpoint/drain requested with live state; "
+             "serialization is unsupported\n");
+    return DrainState::Drained;
+}
+
+void
+MAA::drainResume()
+{
+    panic_if(!logicalSpdBridge->allQuiescent(),
+             "Logical SPD drain resumed with non-quiescent live state\n");
+    logicalSpdBridge->reopenAdmission();
 }
 
 void MAA::dispatchRegister() {

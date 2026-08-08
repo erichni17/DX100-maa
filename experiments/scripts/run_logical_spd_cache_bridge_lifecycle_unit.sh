@@ -31,4 +31,13 @@ ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
     "$work/logical_spd_port_sanitize"
 
+adapter_test="$root/tests/maa/logical_spd_cache_live_adapter_state_test.cc"
+"$cxx" "${common[@]}" -O2 "$adapter_test" -o "$work/logical_spd_adapter_opt"
+"$work/logical_spd_adapter_opt"
+"$cxx" "${common[@]}" -O1 -g -fno-omit-frame-pointer \
+    -fsanitize=address,undefined "$adapter_test" -o "$work/logical_spd_adapter_sanitize"
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+    "$work/logical_spd_adapter_sanitize"
+
 python3 "$root/experiments/tests/test_logical_spd_cache_bridge_lifecycle_contract.py"
