@@ -21,13 +21,17 @@ def epoch(
     partition: int = 0,
     final: int = 0,
     transitions: int = 0,
+    max_joint: int | None = None,
 ) -> str:
+    if max_joint is None:
+        max_joint = admissions
     return (
         "100: maa: schema=dx100.reorder_epoch.v1 event=reorder_epoch "
         "unit=0 instruction_id=3 operation_tick=100 pc=0x400 cid=0 "
         f"if_id=2 opcode=13 epoch_id={epoch_id} admissions={admissions} "
         f"issued_lines={issued_lines} issued_entries={issued_entries} "
-        f"row_transitions={transitions} rt_full_drains={rt} "
+        f"max_joint_admissions={max_joint} row_transitions={transitions} "
+        f"rt_full_drains={rt} "
         f"offset_drains={offset} partition_drains={partition} final={final}"
     )
 
@@ -112,6 +116,39 @@ class AnalyzeReorderSurvivalTest(unittest.TestCase):
         instruction = result["instructions"][0]
         self.assertEqual(instruction["max_joint_admissions"], 4096)
         self.assertEqual(instruction["mid_instruction_drains"], 3)
+
+    def test_accepts_one_offset_epoch_with_finite_rt_drains(self):
+        result = self.analyze(
+            [
+                epoch(
+                    0,
+                    16384,
+                    9858,
+                    16384,
+                    rt=845,
+                    final=1,
+                    transitions=9856,
+                    max_joint=512,
+                ),
+                summary(
+                    selected=16384,
+                    epochs=1,
+                    admitted=16384,
+                    max_joint=512,
+                    rt=845,
+                    lines=9858,
+                    entries=16384,
+                    transitions=9856,
+                    classification="inherited/partitioned",
+                ),
+            ]
+        )
+        instruction = result["instructions"][0]
+        self.assertEqual(instruction["epochs"], 1)
+        self.assertEqual(instruction["rt_full_drains"], 845)
+        self.assertEqual(
+            instruction["classification"], "inherited/partitioned"
+        )
 
     def test_predicated_16k_is_measured_but_not_preservation(self):
         result = self.analyze(

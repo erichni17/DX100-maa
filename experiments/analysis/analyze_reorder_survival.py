@@ -32,6 +32,7 @@ EPOCH_FIELDS = IDENTITY_FIELDS | {
     "admissions",
     "issued_lines",
     "issued_entries",
+    "max_joint_admissions",
     "row_transitions",
     "rt_full_drains",
     "offset_drains",
@@ -164,19 +165,27 @@ def analyze(trace: Path) -> dict[str, object]:
             final = int(epoch["final"])
             if final not in (0, 1) or final != (index == len(epoch_rows) - 1):
                 raise AuditError(f"line {line_no}: invalid final epoch marker")
-            drains = sum(
+            boundary_drains = sum(
                 int(epoch[field])
                 for field in (
-                    "rt_full_drains",
                     "offset_drains",
                     "partition_drains",
                 )
             )
-            if (index != len(epoch_rows) - 1 and drains != 1) or (
-                index == len(epoch_rows) - 1 and drains != 0
+            if (index != len(epoch_rows) - 1 and boundary_drains != 1) or (
+                index == len(epoch_rows) - 1 and boundary_drains != 0
             ):
                 raise AuditError(
-                    f"line {line_no}: epoch boundary has {drains} drain reasons"
+                    f"line {line_no}: epoch boundary has "
+                    f"{boundary_drains} Offset/partition drain reasons"
+                )
+            if int(epoch["admissions"]) != int(epoch["issued_entries"]):
+                raise AuditError(
+                    f"line {line_no}: epoch admitted/issued mismatch"
+                )
+            if int(epoch["max_joint_admissions"]) > int(epoch["admissions"]):
+                raise AuditError(
+                    f"line {line_no}: epoch joint visibility exceeds admissions"
                 )
 
         def epoch_sum(field: str) -> int:
@@ -192,7 +201,7 @@ def analyze(trace: Path) -> dict[str, object]:
             "offset_drains": epoch_sum("offset_drains"),
             "partition_drains": epoch_sum("partition_drains"),
             "max_joint_admissions": max(
-                int(item[1]["admissions"]) for item in epoch_rows
+                int(item[1]["max_joint_admissions"]) for item in epoch_rows
             ),
         }
         for field, value in reconciliations.items():

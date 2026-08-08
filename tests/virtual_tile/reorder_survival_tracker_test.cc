@@ -84,7 +84,7 @@ testPartitionedEpochsAndTransitions()
 }
 
 void
-testRepeatedPressureIsOneDrainAndMismatchFailsClosed()
+testRTFullEventsRemainWithinOffsetEpochAndMismatchFailsClosed()
 {
     ReorderSurvivalTracker tracker;
     tracker.begin(11);
@@ -102,11 +102,15 @@ testRepeatedPressureIsOneDrainAndMismatchFailsClosed()
     assert(tracker.markDrain(
         ReorderSurvivalTracker::DrainReason::RowTableFull));
     ReorderSurvivalTracker::Epoch epoch;
-    assert(tracker.closeEpoch(false, epoch));
-    assert(epoch.rtFullDrains == 1);
-    assert(tracker.totalSelectedDescriptors == 2);
+    assert(!tracker.drainPending());
+    assert(!tracker.closeEpoch(false, epoch));
+    assert(!tracker.closeEpoch(true, epoch));
+    assert(tracker.issueEntries(1));
     assert(tracker.closeEpoch(true, epoch));
-    assert(!tracker.reconciled());
+    assert(epoch.rtFullDrains == 2);
+    assert(epoch.maxJointAdmissions == 2);
+    assert(tracker.totalSelectedDescriptors == 2);
+    assert(tracker.reconciled());
     assert(!tracker.issueEntries(1));
 }
 
@@ -118,7 +122,7 @@ main()
     testOne16KVisibilityDomain();
     testIssueLineThenResponseEntriesCreditedExactlyOnce();
     testPartitionedEpochsAndTransitions();
-    testRepeatedPressureIsOneDrainAndMismatchFailsClosed();
+    testRTFullEventsRemainWithinOffsetEpochAndMismatchFailsClosed();
     std::cout << "reorder_survival_tracker_test: PASS\n";
     return 0;
 }
