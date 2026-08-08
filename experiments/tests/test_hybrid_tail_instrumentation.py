@@ -108,7 +108,7 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
 
         self.assertLess(priority, full_line)
         self.assertIn("Retire non-forwardable fragments first", drain)
-        self.assertIn("constexpr int issue_ready_reserve_lines = 32", drain)
+        self.assertIn("constexpr int issue_ready_reserve_lines = 4", drain)
         self.assertIn("full_lines_to_drain - issue_ready_reserve_lines", drain)
         self.assertIn("configured 384-line", drain)
         insert = source[source.index("insertVirtualCombineWord") :]

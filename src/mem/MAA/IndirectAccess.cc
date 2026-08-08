@@ -3555,7 +3555,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
 
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
-    constexpr int issue_ready_reserve_lines = 32;
+    constexpr int issue_ready_reserve_lines = 4;
     if (flush_partial && maa->virtual_page_ready_on_issue) {
         // Retire non-forwardable fragments first. Once acknowledged, later
         // full-line writes can remain in the bounded retirement map and feed
@@ -3606,7 +3606,7 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         });
     if (!flush_partial && maa->virtual_page_ready_on_issue) {
         // Keep a finite tail of complete lines in the already-accounted
-        // combiner. The 32-line reserve is below its configured 384-line and
+        // combiner. The four-line reserve is below its configured 384-line and
         // 4096-word limits, so admission can continue while older lines drain.
         full_lines_to_drain =
             std::max(0, full_lines_to_drain - issue_ready_reserve_lines);
