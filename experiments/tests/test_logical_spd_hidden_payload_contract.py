@@ -21,6 +21,10 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         cls.spd_cc = (MAA_DIR / "SPD.cc").read_text()
         cls.maa_hh = (MAA_DIR / "MAA.hh").read_text()
         cls.maa_cc = (MAA_DIR / "MAA.cc").read_text()
+        cls.cache_port_cc = (MAA_DIR / "CacheSidePort.cc").read_text()
+        cls.live_boundary = (
+            MAA_DIR / "LogicalSPDCacheLiveAdapterState.hh"
+        ).read_text()
         cls.sconscript = (MAA_DIR / "SConscript").read_text()
         cls.live_runner = (
             ROOT
@@ -89,8 +93,11 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
             self.bridge_hh,
         )
         self.assertIn(
-            "bool admissionClosed() const { return false; }", self.bridge_hh
+            "bool admissionClosed() const { return admissionsClosed; }",
+            self.bridge_hh,
         )
+        self.assertIn("void closeAdmission()", self.bridge_hh)
+        self.assertIn("void reopenAdmission()", self.bridge_hh)
         for evidence in (
             "submitLogicalSPDDescriptor",
             "recvLogicalSPDTimingResp",
@@ -113,6 +120,31 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         )
         self.assertEqual(
             self.sconscript.count("Source('LogicalSPDCacheGem5Bridge.cc')"), 1
+        )
+
+    def test_live_boundary_is_typed_owned_and_topology_guarded(self) -> None:
+        guard = self.maa_cc.index(
+            "num_cores != LogicalSPDCacheLiveAdapterState::PortCount"
+        )
+        claim = self.maa_cc.index("logicalSpdBridge->claimCallback")
+        self.assertLess(guard, claim)
+        for evidence in (
+            "cacheSidePorts.size() !=",
+            "system->cacheLineSize() != Transport::LineBytes",
+            "WaitAuthority::LocalResponseCapacity",
+            "WaitAuthority::DownstreamRequestRetry",
+            "logicalSpdBridge->resumeLocalCapacity",
+            "logicalSpdBridge->recvReqRetry",
+            "std::array<Slot, PortCount> slots{}",
+            "slot.armed && slot.owner != owner",
+        ):
+            self.assertIn(
+                evidence,
+                self.maa_cc + self.cache_port_cc + self.live_boundary,
+            )
+        self.assertLess(
+            self.cache_port_cc.index("maa->unblockCache(core_id)"),
+            self.cache_port_cc.index("maa->notifyLogicalSPDPortEvent"),
         )
 
     def test_runtime_count_follows_maa_count(self) -> None:

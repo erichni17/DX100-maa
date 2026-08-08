@@ -262,7 +262,10 @@ class MAA : public ClockedObject {
         int core_id;
 
     public:
-        bool sendPacket(PacketPtr pkt);
+        bool sendPacket(
+            PacketPtr pkt,
+            LogicalSPDCacheLiveAdapterState::WaitAuthority *refusal =
+                nullptr);
         void allocate(int _core_id, int _maxOutstandingCacheSidePackets);
 
     public:
@@ -302,7 +305,9 @@ public:
     Addr calc_Grow_addr(std::vector<int> addr_vec);
     void addRamulator(memory::Ramulator2 *_ramulator2);
     bool sendPacketMem(PacketPtr pkt);
-    bool sendPacketCache(PacketPtr pkt);
+    bool sendPacketCache(
+        PacketPtr pkt, uint8_t *actualPort = nullptr,
+        LogicalSPDCacheLiveAdapterState::WaitAuthority *refusal = nullptr);
     bool sendPacketRetirementCache(PacketPtr pkt);
     void sendSnoopPacketCpu(PacketPtr pkt);
     bool sendSnoopInvalidateCpu(PacketPtr pkt);
@@ -557,12 +562,16 @@ protected:
         PacketPtr completionPacket = nullptr;
         PacketPtr retryPacket = nullptr;
         uint8_t retryPort = 0;
-        LogicalSPDCacheLiveAdapterState retryAuthority{};
+        LogicalSPDCacheLiveAdapterState::Owner liveOwner =
+            LogicalSPDCacheLiveAdapterState::NoOwner;
+        LogicalSPDCacheLiveAdapterState::WaitAuthority retryAuthority =
+            LogicalSPDCacheLiveAdapterState::WaitAuthority::None;
         int coreID = -1;
         ContextID contextID = InvalidContextID;
         Addr pc = 0;
     };
     std::vector<LogicalSPDExecution> logicalSpdExecutions;
+    LogicalSPDCacheLiveAdapterState logicalSpdLiveBoundary;
     bool submitLogicalSPDDescriptor(
         InstructionPtr instruction, PacketPtr completionPacket);
     PacketPtr makeLogicalSPDPacket(
@@ -572,7 +581,10 @@ protected:
     bool recvLogicalSPDTimingResp(PacketPtr pkt, uint8_t respondingPort);
     void serviceLogicalSPD();
     void scheduleLogicalSPDEvent(int latency = 0);
-    void notifyLogicalSPDRetry(uint8_t retryingPort);
+    void notifyLogicalSPDPortEvent(
+        uint8_t actualPort,
+        LogicalSPDCacheLiveAdapterState::PortEvent event);
+    void notifyLogicalSPDResponse();
     DrainState drain() override;
     void drainResume() override;
     EventFunctionWrapper logicalSpdEvent;

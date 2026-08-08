@@ -553,6 +553,18 @@ LogicalSPDCacheTransport::trySend(bool accepted, PageSpan slotSpan,
 LogicalSPDCacheTransport::Status
 LogicalSPDCacheTransport::recvReqRetry(uint8_t callbackPort)
 {
+    return resumeRefused(callbackPort);
+}
+
+LogicalSPDCacheTransport::Status
+LogicalSPDCacheTransport::resumeLocalCapacity(uint8_t callbackPort)
+{
+    return resumeRefused(callbackPort);
+}
+
+LogicalSPDCacheTransport::Status
+LogicalSPDCacheTransport::resumeRefused(uint8_t callbackPort)
+{
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return mutation;

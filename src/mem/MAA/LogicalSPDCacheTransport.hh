@@ -321,6 +321,7 @@ class LogicalSPDCacheTransport
     Result trySend(bool accepted, PageSpan slotSpan,
                    FaultPoint fault = FaultPoint::None);
     Status recvReqRetry(uint8_t callbackPort);
+    Status resumeLocalCapacity(uint8_t callbackPort);
     Result receive(ReturnedHandle &returned, uint8_t callbackPort);
     Result commitDelivery(const DeliveryTicket &ticket, PageSpan destination,
                           CopyHook hook = nullptr, void *context = nullptr);
@@ -427,6 +428,7 @@ class LogicalSPDCacheTransport
     };
 
     Status publicMutationStatus();
+    Status resumeRefused(uint8_t callbackPort);
     Status productionStop();
     void poisonFromAuthority() { terminalPoisoned = true; }
     Result productionStopResult();

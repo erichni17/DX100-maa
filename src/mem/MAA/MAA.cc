@@ -1191,6 +1191,7 @@ MAA::submitLogicalSPDDescriptor(
 {
     using Bridge = LogicalSPDCacheGem5Bridge;
     using Slice = Bridge::Runtime::Slice;
+    using Transport = Bridge::Runtime::Transport;
     constexpr std::size_t LogicalElements =
         Slice::Pages * Slice::PageElements;
 
@@ -1202,6 +1203,14 @@ MAA::submitLogicalSPDDescriptor(
              instruction->maa_id);
     panic_if(num_maas != 1,
              "Logical SPD live adapter is validated only for one MAA\n");
+    panic_if(num_cores != LogicalSPDCacheLiveAdapterState::PortCount ||
+                 cacheSidePorts.size() !=
+                     LogicalSPDCacheLiveAdapterState::PortCount ||
+                 system->cacheLineSize() != Transport::LineBytes,
+             "Logical SPD live adapter requires exactly four cores/cache "
+             "ports and 64-byte lines, got %u/%zu/%lu\n",
+             num_cores, cacheSidePorts.size(),
+             static_cast<unsigned long>(system->cacheLineSize()));
     LogicalSPDExecution &execution =
         logicalSpdExecutions[instruction->maa_id];
     if (execution.active)
@@ -1290,6 +1299,9 @@ MAA::submitLogicalSPDDescriptor(
     execution.completionPacket = completionPacket;
     execution.retryPacket = nullptr;
     execution.retryPort = 0;
+    execution.liveOwner = claim.token.identity;
+    execution.retryAuthority =
+        LogicalSPDCacheLiveAdapterState::WaitAuthority::None;
     execution.coreID = instruction->core_id;
     execution.contextID = instruction->CID;
     execution.pc = instruction->PC;
@@ -1429,7 +1441,6 @@ MAA::recvLogicalSPDTimingResp(PacketPtr pkt, uint8_t respondingPort)
              "Logical SPD rejected timed response with status %d\n",
              static_cast<int>(result.status));
     delete state;
-    scheduleLogicalSPDEvent();
     return true;
 }
 
@@ -1451,6 +1462,7 @@ MAA::serviceLogicalSPD()
                          "Logical SPD failed final retire/reset\n");
                 PacketPtr completion = execution.completionPacket;
                 const int core = execution.coreID;
+                logicalSpdLiveBoundary.release(execution.liveOwner);
                 execution = LogicalSPDExecution{};
                 completion->makeTimingResponse();
                 completion->headerDelay = completion->payloadDelay = 0;
@@ -1464,15 +1476,34 @@ MAA::serviceLogicalSPD()
                 break;
             }
             if (execution.retryPacket != nullptr) {
-                if (!execution.retryAuthority.consumeRetry(
-                        execution.retryPort))
+                if (!logicalSpdLiveBoundary.consume(
+                        execution.liveOwner, execution.retryPort,
+                        execution.retryAuthority))
                     break;
-                panic_if(logicalSpdBridge->recvReqRetry(
-                             execution.token, execution.retryPort) !=
+                const Transport::Status resumed =
+                    execution.retryAuthority ==
+                            LogicalSPDCacheLiveAdapterState::WaitAuthority::
+                                DownstreamRequestRetry
+                        ? logicalSpdBridge->recvReqRetry(
+                              execution.token, execution.retryPort)
+                        : logicalSpdBridge->resumeLocalCapacity(
+                              execution.token, execution.retryPort);
+                panic_if(resumed !=
                              Transport::Status::Accepted,
-                         "Logical SPD retry identity was rejected\n");
-                const bool accepted =
-                    sendPacketCache(execution.retryPacket);
+                         "Logical SPD refused-send resume was rejected\n");
+                const int routedPort =
+                    core_addr(execution.retryPacket->getAddr());
+                panic_if(routedPort != execution.retryPort,
+                         "Logical SPD retry rerouted from port %u to %d\n",
+                         execution.retryPort, routedPort);
+                uint8_t actualPort = 0;
+                LogicalSPDCacheLiveAdapterState::WaitAuthority refusal =
+                    LogicalSPDCacheLiveAdapterState::WaitAuthority::None;
+                const bool accepted = sendPacketCache(
+                    execution.retryPacket, &actualPort, &refusal);
+                panic_if(actualPort != execution.retryPort,
+                         "Logical SPD retry used port %u, expected %u\n",
+                         actualPort, execution.retryPort);
                 const Transport::Result sent =
                     logicalSpdBridge->sendPrepared(
                         execution.token, accepted);
@@ -1481,10 +1512,20 @@ MAA::serviceLogicalSPD()
                                        : Transport::Status::SendRefused),
                          "Logical SPD retry transition failed with %d\n",
                          static_cast<int>(sent.status));
-                if (accepted)
+                if (accepted) {
                     execution.retryPacket = nullptr;
-                if (accepted)
-                    execution.retryAuthority.clearRetry();
+                    logicalSpdLiveBoundary.release(execution.liveOwner);
+                    execution.retryAuthority =
+                        LogicalSPDCacheLiveAdapterState::WaitAuthority::None;
+                } else {
+                    panic_if(
+                        refusal == LogicalSPDCacheLiveAdapterState::
+                                       WaitAuthority::None ||
+                            !logicalSpdLiveBoundary.arm(
+                                execution.liveOwner, actualPort, refusal),
+                        "Logical SPD could not re-arm exact port owner\n");
+                    execution.retryAuthority = refusal;
+                }
                 break;
             }
             const Transport::Result prepared =
@@ -1494,7 +1535,19 @@ MAA::serviceLogicalSPD()
                          "Logical SPD accepted a null request\n");
                 PacketPtr packet =
                     makeLogicalSPDPacket(execution, *prepared.handle);
-                const bool accepted = sendPacketCache(packet);
+                const int routedPort = core_addr(packet->getAddr());
+                panic_if(routedPort < 0 ||
+                             routedPort >= static_cast<int>(
+                                 LogicalSPDCacheLiveAdapterState::PortCount) ||
+                             routedPort != prepared.handle->callbackPort,
+                         "Logical SPD physical port %d does not match "
+                         "transport port %u\n",
+                         routedPort, prepared.handle->callbackPort);
+                uint8_t actualPort = 0;
+                LogicalSPDCacheLiveAdapterState::WaitAuthority refusal =
+                    LogicalSPDCacheLiveAdapterState::WaitAuthority::None;
+                const bool accepted =
+                    sendPacketCache(packet, &actualPort, &refusal);
                 const Transport::Result sent =
                     logicalSpdBridge->sendPrepared(
                         execution.token, accepted);
@@ -1505,8 +1558,14 @@ MAA::serviceLogicalSPD()
                          static_cast<int>(sent.status));
                 if (!accepted) {
                     execution.retryPacket = packet;
-                    execution.retryPort = prepared.handle->callbackPort;
-                    execution.retryAuthority.armRetry(execution.retryPort);
+                    execution.retryPort = actualPort;
+                    execution.retryAuthority = refusal;
+                    panic_if(
+                        refusal == LogicalSPDCacheLiveAdapterState::
+                                       WaitAuthority::None ||
+                            !logicalSpdLiveBoundary.arm(
+                                execution.liveOwner, actualPort, refusal),
+                        "Logical SPD could not claim exact refused port\n");
                     break;
                 }
                 continue;
@@ -1544,17 +1603,33 @@ MAA::scheduleLogicalSPDEvent(int latency)
 }
 
 void
-MAA::notifyLogicalSPDRetry(uint8_t retryingPort)
+MAA::notifyLogicalSPDPortEvent(
+    uint8_t actualPort, LogicalSPDCacheLiveAdapterState::PortEvent event)
 {
+    const LogicalSPDCacheLiveAdapterState::Notification notification =
+        logicalSpdLiveBoundary.notify(actualPort, event);
+    if (!notification.granted)
+        return;
     for (LogicalSPDExecution &execution : logicalSpdExecutions) {
         if (execution.active && execution.retryPacket != nullptr &&
-            LogicalSPDCachePortProvenance::retryMatches(
-                execution.retryPort, retryingPort)) {
-            execution.retryAuthority.notifyRetry(retryingPort);
+            execution.liveOwner == notification.owner &&
+            execution.retryPort == actualPort) {
+            panic_if(logicalSpdLiveBoundary.pendingAuthority(actualPort) !=
+                         execution.retryAuthority,
+                     "Logical SPD port %u owner authority diverged\n",
+                     actualPort);
             scheduleLogicalSPDEvent();
             return;
         }
     }
+    panic("Logical SPD port %u granted missing owner %lu\n", actualPort,
+          notification.owner);
+}
+
+void
+MAA::notifyLogicalSPDResponse()
+{
+    scheduleLogicalSPDEvent();
 }
 
 DrainState

@@ -427,6 +427,18 @@ class LogicalSPDCacheRuntime
         return status;
     }
 
+    Transport::Status resumeLocalCapacity(uint8_t callbackPort)
+    {
+        const Transport::Status mutation = networkMutationStatus();
+        if (mutation != Transport::Status::Accepted)
+            return mutation;
+        const Transport::Status status =
+            transport.resumeLocalCapacity(callbackPort);
+        if (transport.poisoned())
+            poisonAuthority();
+        return status;
+    }
+
     Transport::Result receive(Transport::ReturnedHandle &returned,
                               uint8_t callbackPort)
     {
