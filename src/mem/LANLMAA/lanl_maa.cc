@@ -4196,8 +4196,9 @@ LANLMAA::receiveResultResponse(PacketPtr packet)
         ++stats.descriptorUmtResultLineWrites;
         descriptorResultCursor += resultWords;
         if (descriptorResultCursor == operations.size()) {
-            descriptorResultCursor = 0;
             ++umtOrderedWaveResultCorner;
+            if (umtOrderedWaveResultCorner != UmtOrderedWaveCorners)
+                descriptorResultCursor = 0;
         }
     } else if (spartaFusedCellDescriptor()) {
         ++stats.descriptorResultWrites;
@@ -4359,7 +4360,9 @@ LANLMAA::completeDescriptor()
         panic_if(
             umtFusedCornerPhase != UmtFusedCornerPhase::Compute ||
                 umtFusedResultsComputed != operations.size() ||
-                descriptorResultCursor != operations.size(),
+                descriptorResultCursor != operations.size() ||
+                (umtOrderedWaveDescriptor() &&
+                 umtOrderedWaveResultCorner != UmtOrderedWaveCorners),
             "LANLMAA completed with incomplete UMT fused accounting");
     }
     beginSharedOverlayDrain();
