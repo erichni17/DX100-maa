@@ -137,6 +137,11 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Cycles blocked by a full line table"),
       ADD_STAT(contextWouldBlockCycles, statistics::units::Cycle::get(),
                "Cycles blocked by active continuation-context capacity"),
+      ADD_STAT(operationTableHighWaterMark,
+               statistics::units::Count::get(),
+               "Maximum simultaneously allocated operation entries"),
+      ADD_STAT(lineTableHighWaterMark, statistics::units::Count::get(),
+               "Maximum simultaneously allocated or in-flight line entries"),
       ADD_STAT(bransonContextThrottleCycles,
                statistics::units::Cycle::get(),
                "Branson context-blocked cycles below physical capacity"),
@@ -1388,6 +1393,18 @@ LANLMAA::freeLine(Addr address)
             return entry.state == LineState::Free;
         });
     return line == end ? nullptr : &*line;
+}
+
+void
+LANLMAA::recordLineTableHighWaterMark()
+{
+    const size_t activeLines = std::count_if(
+        lines.begin(), lines.end(), [](const LineEntry &line) {
+            return line.state != LineState::Free;
+        });
+    if (activeLines > stats.lineTableHighWaterMark.value()) {
+        stats.lineTableHighWaterMark = activeLines;
+    }
 }
 
 size_t
@@ -4713,6 +4730,9 @@ LANLMAA::admitOperations()
 
         ++stats.logicalItems;
         ++activeOperations;
+        if (activeOperations > stats.operationTableHighWaterMark.value()) {
+            stats.operationTableHighWaterMark = activeOperations;
+        }
         ++nextAdmission;
         ++admitted;
     }
@@ -4777,6 +4797,7 @@ LANLMAA::attachReadyOperations()
                 }
                 line->state = LineState::Allocated;
                 line->lineAddress = aligned;
+                recordLineTableHighWaterMark();
             }
             panic_if(
                 pairAccess && !spartaFusedSummaries.reserveAccess(
@@ -4844,6 +4865,7 @@ LANLMAA::attachReadyOperations()
                 }
                 line->state = LineState::Allocated;
                 line->lineAddress = aligned;
+                recordLineTableHighWaterMark();
             }
             line->waiters.push_back(index);
             operation.state = OperationState::DataPending;
@@ -4889,6 +4911,7 @@ LANLMAA::attachReadyOperations()
             }
             line->state = LineState::Allocated;
             line->lineAddress = aligned;
+            recordLineTableHighWaterMark();
         }
         line->waiters.push_back(index);
         operation.state = OperationState::DataPending;

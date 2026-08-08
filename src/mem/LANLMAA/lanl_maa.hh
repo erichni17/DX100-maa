@@ -286,6 +286,8 @@ class LANLMAA : public ClockedObject
         statistics::Scalar operationWouldBlockCycles;
         statistics::Scalar lineWouldBlockCycles;
         statistics::Scalar contextWouldBlockCycles;
+        statistics::Scalar operationTableHighWaterMark;
+        statistics::Scalar lineTableHighWaterMark;
         statistics::Scalar bransonContextThrottleCycles;
         statistics::Scalar portSendFailures;
         statistics::Scalar portRetryNotifications;
@@ -543,6 +545,7 @@ class LANLMAA : public ClockedObject
     Addr lineAddress(Addr address) const;
     LineEntry *matchingLine(Addr address);
     LineEntry *freeLine(Addr address);
+    void recordLineTableHighWaterMark();
     size_t updateBank(Addr address) const;
     UpdateEntry *matchingUpdate(Addr address);
     UpdateEntry *accumulatingUpdate(Addr address);
