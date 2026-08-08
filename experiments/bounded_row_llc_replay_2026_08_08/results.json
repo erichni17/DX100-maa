@@ -1,0 +1,170 @@
+{
+  "arms": {
+    "bounded_modulo": {
+      "a_line_requests": 9575,
+      "b_read_lines": 4100,
+      "b_scans": 4,
+      "backing_bytes": 0,
+      "drain_causes": {
+        "offset_capacity": 2,
+        "partition_boundary": 3,
+        "row_capacity": 0
+      },
+      "dram_row_groups": 138,
+      "epoch_populations": [
+        4053,
+        4096,
+        81,
+        4096,
+        4,
+        4054
+      ],
+      "epochs": 6,
+      "issue_order_sha256": "156a15d742cab0bbcd5e02ef68fb300e467984bef66843646ad763cdaf22cb53",
+      "peak_offsets": 4096,
+      "peak_row_slots": 310,
+      "placement_order_sha256": "f967c51fbcc8bc7b5508e4a8c96013c71312f78bb617ec0560a2cd0eb3655e9c",
+      "selector_words": 65536
+    },
+    "full_metadata": {
+      "a_line_requests": 9523,
+      "b_read_lines": 1025,
+      "b_scans": 1,
+      "backing_bytes": 0,
+      "drain_causes": {
+        "offset_capacity": 0,
+        "partition_boundary": 0,
+        "row_capacity": 0
+      },
+      "dram_row_groups": 129,
+      "epoch_populations": [
+        16384
+      ],
+      "epochs": 1,
+      "issue_order_sha256": "7c6ca88e003402a88513c5f0ed6a25037d5c2f694f9562bd45e131e20d5e7689",
+      "peak_offsets": 16384,
+      "peak_row_slots": 1242,
+      "placement_order_sha256": "139bab194f43b3569309d8192131d6ce7e6a8ae863607603999f9590c640b2a5"
+    },
+    "llc_replay": {
+      "a_line_requests": 9575,
+      "a_order_exactly_matches_bounded_modulo": true,
+      "drain_causes": {
+        "offset_capacity": 2,
+        "partition_boundary": 3,
+        "row_capacity": 0
+      },
+      "dram_row_groups": 138,
+      "epoch_populations": [
+        4053,
+        4096,
+        81,
+        4096,
+        4,
+        4054
+      ],
+      "epochs": 6,
+      "generic64": {
+        "backing_full_line_stores": 1543,
+        "backing_replay_read_lines": 1543,
+        "coherent_line_transfers": 5654,
+        "current_partition": 0,
+        "delta_vs_modulo_b_line_transfers": 1554,
+        "delta_vs_modulo_b_line_transfers_pct": 37.902439,
+        "eventual_dirty_writeback_lines": 1543,
+        "fixed_backing_address_span_bytes": 393216,
+        "format": "generic64_u32_itr_u32_b",
+        "original_b_read_lines": 1025,
+        "queue_tail_buffer_bytes": 192,
+        "record_bytes": 8,
+        "replay_populations": [
+          0,
+          4177,
+          4100,
+          4054
+        ],
+        "replay_records": 12331,
+        "semantic_backing_read_bytes": 98648,
+        "semantic_backing_write_bytes": 98648,
+        "semantic_original_b_read_bytes": 65536,
+        "valid_backing_bytes": 98648
+      },
+      "issue_order_sha256": "156a15d742cab0bbcd5e02ef68fb300e467984bef66843646ad763cdaf22cb53",
+      "original_b_scans": 1,
+      "packed32": {
+        "backing_full_line_stores": 773,
+        "backing_replay_read_lines": 773,
+        "coherent_line_transfers": 3344,
+        "current_partition": 0,
+        "delta_vs_modulo_b_line_transfers": -756,
+        "delta_vs_modulo_b_line_transfers_pct": -18.439024,
+        "eventual_dirty_writeback_lines": 773,
+        "fixed_backing_address_span_bytes": 196608,
+        "format": "packed32_itr14_b17_one_spare_bit",
+        "original_b_read_lines": 1025,
+        "queue_tail_buffer_bytes": 192,
+        "record_bytes": 4,
+        "replay_populations": [
+          0,
+          4177,
+          4100,
+          4054
+        ],
+        "replay_records": 12331,
+        "semantic_backing_read_bytes": 49324,
+        "semantic_backing_write_bytes": 49324,
+        "semantic_original_b_read_bytes": 65536,
+        "valid_backing_bytes": 49324
+      },
+      "peak_offsets": 4096,
+      "peak_row_slots": 310,
+      "placement_order_sha256": "f967c51fbcc8bc7b5508e4a8c96013c71312f78bb617ec0560a2cd0eb3655e9c",
+      "replay_subset_passes": 3,
+      "selector_cycles_arithmetic_lower_bound": 1795,
+      "selector_records": 28715
+    }
+  },
+  "configuration": {
+    "finite_offsets": 4096,
+    "finite_rows_per_slice": 32,
+    "full_offsets": 16384,
+    "full_rows_per_slice": 128,
+    "line_bytes": 64,
+    "lines_per_row_slot": 8,
+    "ordering": "stable_input_then_native_slice_row_slot_line_slot",
+    "partition_function": "grow_addr_mod_4",
+    "partitions": 4,
+    "slices": 16
+  },
+  "evidence_class": "deterministic_work_and_traffic_model_no_timing_claim",
+  "gate": {
+    "gem5_vertical_slice": false,
+    "materiality_threshold_pct": 5.0,
+    "observed_context": {
+      "bounded_modulo_cpu_cycles": 199542,
+      "bounded_modulo_filter_cycles": 4101,
+      "bounded_modulo_simTicks": 62456646,
+      "filter_words_per_cycle": 16,
+      "provenance": "0108d9b committed matched-oracle counters.tsv"
+    },
+    "reason": "even a free replay engine can remove at most the unmatched selector cycles, below the materiality threshold; generic hardware records increase coherent B/backing line transfers, while packed32 is workload-specialized and leaves A requests, DRAM row groups, epochs, and ordering unchanged",
+    "timing_or_speedup_claim": false,
+    "zero_cost_filter_cycles_eliminated_upper_bound": 2306,
+    "zero_cost_filter_only_latency_reduction_upper_bound_pct": 1.155646,
+    "zero_cost_filter_only_speedup_upper_bound_pct": 1.169158
+  },
+  "input": {
+    "b_input_lines": 1025,
+    "logical_elements": 16384,
+    "physical_schema": "dx100.physical_admission.v1",
+    "raw_trace_sha256": "1c68340c0e87a53240905389c1c0e5bf451a0645b8ceaf5f92d4e34edaba5424",
+    "source_elements": 131072
+  },
+  "partition_populations": [
+    4053,
+    4177,
+    4100,
+    4054
+  ],
+  "schema": "dx100.bounded_row_llc_replay_model.v1"
+}

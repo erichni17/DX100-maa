@@ -1,0 +1,42 @@
+{
+  "bounded_modulo_control": {
+    "campaign_commit": "0108d9b7a0c9f7818be75745aef3f8b72146c7d4",
+    "counters_tsv_sha256": "0bda77a7fcdc8e9d1248b963cefae6a337c5b1ba0dbb22098da86872dee00be0",
+    "evidence_root": "/data1/nier/dx100-runs/2026-08-03-virtualization-integration/bounded-matched-oracle-f281637",
+    "matrix_tsv_sha256": "9205ea3918da6d1a888eb434d689505faabc2e02d9cb7bfa2c5e39812d1537c3"
+  },
+  "generated_artifacts": {
+    "model_sha256": "5a20601cc363513fc3720548378df59f154ad31985980e3701eaef2b467137ea",
+    "report_sha256": "7329d944a9cbb0ac7470cf97d5144e4e1536f07de2bf5ef0ae0a8a2218184748",
+    "results_sha256": "38c8164ac6013fc0c77816893abb1a2d0da1737cd9fff90d5d477605199d1dbd",
+    "tests_sha256": "4833ea9733ce8891bf4d05ef18f0706a19b6d4a7603c384f17211fd2a5e2a45e"
+  },
+  "model_configuration": {
+    "finite_offsets": 4096,
+    "finite_rows_per_slice": 32,
+    "full_offsets": 16384,
+    "full_rows_per_slice": 128,
+    "line_bytes": 64,
+    "lines_per_row_slot": 8,
+    "partition_function": "grow_addr_mod_4",
+    "partitions": 4,
+    "slices": 16
+  },
+  "physical_input": {
+    "artifact_gem5_sha256": "90858e29506525ea0ab4af88130c212ff8f4d3ae32842a7dfe322f8221ee9295",
+    "artifact_ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+    "artifact_workload_sha256": "f87d7206c91d5d48235da13a90ad08f2fb8c8f58ae25311758ebe4094ca6dfc5",
+    "case": "native_direct_16k",
+    "checkpoint_identity_sha256": "ef60d62c814de7a9c1700ab45b44b8d09c4e334b56e8c1e3ba4d6503793f3b5c",
+    "output_hash": "7228541527853630339",
+    "physical_validation_sha256": "f5846cb3b817792ec008f6cd1982113c5a70627bcc2e8922eb9d66d48050f7ca",
+    "ramulator_config_sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b",
+    "raw_trace_path": "/data1/nier/dx100-runs/2026-08-08-virtualization-sprint/hybrid-control-explicit-0108d9b/native_direct_16k/physical_admission_records.jsonl",
+    "raw_trace_sha256": "1c68340c0e87a53240905389c1c0e5bf451a0645b8ceaf5f92d4e34edaba5424",
+    "record_count": 16384,
+    "record_payload_sha256": "f74273f74634df18d3fe0c4920c4ada223082038145b46529cea893da881ea7d",
+    "schema": "dx100.physical_admission.v1",
+    "source_commit": "0108d9b7a0c9f7818be75745aef3f8b72146c7d4"
+  },
+  "schema": "dx100.bounded_row_llc_replay_input.v1"
+}
