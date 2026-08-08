@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -31,7 +30,10 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         port = (ROOT / "src/mem/MAA/Port.cc").read_text()
         stream = (ROOT / "src/mem/MAA/StreamAccess.cc").read_text()
         self.assertEqual(port.count("it->paddr, true);"), 2)
-        self.assertIn("if (transportAccepted && my_instruction->controllerManaged", stream)
+        self.assertIn(
+            "if (transportAccepted && my_instruction->controllerManaged",
+            stream,
+        )
 
     def test_shared_checkpoint_reuses_checkpointed_selector_path(self):
         runner = (
@@ -39,6 +41,104 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         ).read_text()
         self.assertIn('DX100_SHARED_TREATMENT_FILE="$selector"', runner)
         self.assertNotIn('DX100_SHARED_TREATMENT_FILE="$treatment"', runner)
+
+    def test_issue_ready_handoff_is_explicit_and_ordered(self):
+        maa_py = (ROOT / "src/mem/MAA/MAA.py").read_text()
+        indirect = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
+        port = (ROOT / "src/mem/MAA/Port.cc").read_text()
+        runner = (
+            ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
+        ).read_text()
+
+        self.assertIn("virtual_page_ready_on_issue = Param.Bool", maa_py)
+        function = indirect[
+            indirect.index("bool IndirectAccessUnit::createRetirementWrite(") :
+        ]
+        self.assertLess(
+            function.index("maa->sendPacket(FuncUnitType::INDIRECT"),
+            function.index("markVirtualPageReadyIfEligible(entry.first)"),
+        )
+        self.assertIn("!maa->virtual_page_ready_on_issue", indirect)
+        self.assertIn("virtual_page_unforwardable_writes[page] != 0", indirect)
+        self.assertIn("size == block_size && valid_words == 0", indirect)
+        self.assertIn("forward_issue_ready_stream", port)
+        self.assertIn("!outstanding_it->second.packet->isMaskedWrite()", port)
+        self.assertIn("virtual_retirement_stream_forwards", port)
+        forward_guard = port[
+            port.index("const bool forward_issue_ready_stream") : port.index(
+                "if (forward_issue_ready_stream)"
+            )
+        ]
+        self.assertIn("!has_deferred_packets", forward_guard)
+        self.assertIn("!has_scheduled_forward", forward_guard)
+        self.assertIn("std::max(curTick(), tick)", port)
+        self.assertIn(
+            "clockPeriod() * virtual_retirement_forward_latency", port
+        )
+        self.assertIn("scheduleRetirementForward", port)
+        self.assertIn("pkt->setData(data)", port)
+        self.assertIn("begin()->tick > curTick()", port)
+        self.assertNotIn("if (tick <= curTick())", port)
+        service = port[
+            port.index("MAA::serviceRetirementForwards()") : port.index(
+                "bool MAA::scheduleNextSendMem"
+            )
+        ]
+        self.assertNotIn("while (", service)
+        self.assertIn("curTick() + clockPeriod()", service)
+        self.assertIn(
+            "my_scheduled_retirement_forward_addresses.count(paddr) != 0",
+            port[port.index("void MAA::sendNextDeferredPacket") :],
+        )
+        self.assertIn("transparent_issue_ready_4k)", runner)
+        self.assertIn("virtual_retirement_stream_forwards", runner)
+
+    def test_scheduled_forward_has_bounded_lifecycle(self):
+        header = (ROOT / "src/mem/MAA/MAA.hh").read_text()
+        maa = (ROOT / "src/mem/MAA/MAA.cc").read_text()
+        port = (ROOT / "src/mem/MAA/Port.cc").read_text()
+
+        self.assertEqual(port.count("MAA::sendPacket("), 1)
+        self.assertEqual(port.count("void MAA::sendNextDeferredPacket"), 1)
+        self.assertIn("retirementForwardEvent(", maa)
+        self.assertIn("[this] { serviceRetirementForwards(); }", maa)
+        destructor = maa[
+            maa.index("MAA::~MAA()") : maa.index("void MAA::addAddrRegion")
+        ]
+        self.assertIn("retirementForwardEvent.scheduled()", destructor)
+        self.assertIn("!my_scheduled_retirement_forwards.empty()", destructor)
+        self.assertIn(
+            "!my_scheduled_retirement_forward_addresses.empty()", destructor
+        )
+        self.assertIn(
+            "my_scheduled_retirement_forwards.size() >=\n"
+            "        virtual_max_outstanding_writes",
+            port,
+        )
+        self.assertIn("virtual_max_outstanding_writes > 64", maa)
+        self.assertIn("virtual_retirement_forward_latency == 0", maa)
+        self.assertIn("ScheduledRetirementForward", header)
+
+    def test_issue_ready_pair_is_treatment_neutral(self):
+        runner = (
+            ROOT / "experiments/scripts/run_hybrid_tail_issue_ready_pair.sh"
+        ).read_text()
+        self.assertIn(
+            "for arm in transparent_4k transparent_issue_ready_4k", runner
+        )
+        self.assertIn('DX100_SHARED_CHECKPOINT_DIR="$checkpoint"', runner)
+        self.assertIn('DX100_SHARED_TREATMENT_FILE="$selector"', runner)
+        self.assertIn("checkpoint_files.pre_treatment.sha256", runner)
+        self.assertIn('control_records == "$candidate_records"', runner)
+        self.assertIn("unlike_arms.serialized.tsv", runner)
+        self.assertGreaterEqual(runner.count("[[ ! -e $selector ]]"), 2)
+        invocation = next(
+            line
+            for line in runner.splitlines()
+            if '"$root/experiments/scripts/run_virtual_tile_consumer_case.sh"'
+            in line
+        )
+        self.assertFalse(invocation.rstrip().endswith("&"))
 
 
 if __name__ == "__main__":

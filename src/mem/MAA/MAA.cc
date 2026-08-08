@@ -98,6 +98,9 @@ MAA::MAA(const MAAParams &p)
                                  ? p.num_tile_elements
                                  : p.physical_tile_elements),
       transparent_spd_mode(p.transparent_spd_mode),
+      virtual_page_ready_on_issue(p.virtual_page_ready_on_issue),
+      virtual_retirement_forward_latency(
+          p.virtual_retirement_forward_latency),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -156,7 +159,9 @@ MAA::MAA(const MAAParams &p)
       dispatchRegisterEvent([this] { dispatchRegister(); }, name()),
       stats(this, p.num_maas * p.num_indirect_units_per_maa, this),
       sendCacheEvent([this] { sendOutstandingCachePacket(); }, name()),
-      sendMemEvent([this] { sendOutstandingMemPacket(); }, name()) {
+      sendMemEvent([this] { sendOutstandingMemPacket(); }, name()),
+      retirementForwardEvent(
+          [this] { serviceRetirementForwards(); }, name()) {
 
     m_core_addr_bits = calc_log2(num_cores);
     panic_if(num_cores % num_maas != 0, "Number of cores %d must be a multiple of the number of MAAs %s\n", num_cores, num_maas);
@@ -167,6 +172,14 @@ MAA::MAA(const MAAParams &p)
     panic_if(transparent_spd_mode > 2,
              "Invalid transparent SPD mode %u (expected 0..2)\n",
              transparent_spd_mode);
+    panic_if(virtual_page_ready_on_issue &&
+                 virtual_max_outstanding_writes > 64,
+             "Issue-ready page handoff requires at most 64 bounded "
+             "retirement lines, got %u\n",
+             virtual_max_outstanding_writes);
+    panic_if(virtual_retirement_forward_latency == 0,
+             "Retirement-to-STREAM forwarding must charge at least one "
+             "MAA cycle\n");
     panic_if(num_offset_table_entries == 0 ||
                  num_offset_table_entries > num_tile_elements,
              "Offset Table capacity %u must be in [1,%u]\n",
@@ -358,6 +371,14 @@ void MAA::init() {
 }
 
 MAA::~MAA() {
+    panic_if(retirementForwardEvent.scheduled() ||
+                 !my_scheduled_retirement_forwards.empty() ||
+                 !my_scheduled_retirement_forward_addresses.empty(),
+             "MAA destroyed with scheduled retirement forwards still owned: "
+             "event=%d queue=%zu addresses=%zu\n",
+             retirementForwardEvent.scheduled(),
+             my_scheduled_retirement_forwards.size(),
+             my_scheduled_retirement_forward_addresses.size());
     for (auto &[paddr, packets] : my_deferred_pkt_map) {
         for (auto &deferred : packets)
             delete deferred.packet;
@@ -2086,6 +2107,22 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                statistics::units::Count::get(),
                "MAA packets deferred by a nonempty exact-address FIFO after "
                "the virtual-retirement owner completed"),
+      ADD_STAT(virtual_retirement_stream_forwards,
+               statistics::units::Count::get(),
+               "STREAM cache-line reads forwarded from bounded complete-line "
+               "virtual-retirement entries"),
+      ADD_STAT(virtual_retirement_stream_forward_scheduled,
+               statistics::units::Count::get(),
+               "future-tick STREAM forwards placed in the bounded copy queue"),
+      ADD_STAT(virtual_retirement_stream_forward_copy_bytes,
+               statistics::units::Byte::get(),
+               "retirement bytes copied into future-tick STREAM packets"),
+      ADD_STAT(virtual_retirement_stream_forward_queue_high_water,
+               statistics::units::Count::get(),
+               "maximum occupied future-tick forwarding slots"),
+      ADD_STAT(virtual_retirement_stream_forward_queue_full,
+               statistics::units::Count::get(),
+               "future-tick forwards rejected by the bounded copy queue"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "
@@ -2221,12 +2258,24 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_VirtPagesReady.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReady"),
             statistics::units::Count::get(),
-            "virtual output pages whose retirement writes all completed"));
+            "virtual output pages released by the configured handoff policy"));
         IND_VirtPagesReadyBeforeSourceDrain.push_back(new statistics::Scalar(
             this,
             MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReadyBeforeSourceDrain"),
             statistics::units::Count::get(),
             "virtual output pages ready before all source responses drained"));
+        IND_VirtPagesReadyWithPendingWrites.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReadyWithPendingWrites"),
+            statistics::units::Count::get(),
+            "virtual output pages released before all retirement writes "
+            "completed"));
+        IND_VirtPageReadyPendingWords.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtPageReadyPendingWords"),
+            statistics::units::Count::get(),
+            "retirement words still pending when virtual pages were "
+            "released"));
         IND_VirtFirstPageReadyCycles.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtFirstPageReadyCycles"),
             statistics::units::Count::get(),

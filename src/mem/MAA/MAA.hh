@@ -8,8 +8,10 @@
 #include <deque>
 #include <memory>
 #include <queue>
+#include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "base/trace.hh"
 #include "base/types.hh"
@@ -397,6 +399,8 @@ public:
     unsigned int num_tile_elements;
     unsigned int physical_tile_elements;
     unsigned int transparent_spd_mode;
+    bool virtual_page_ready_on_issue;
+    unsigned int virtual_retirement_forward_latency;
     unsigned int num_regs;
     unsigned int num_instructions_per_core;
     unsigned int num_instructions_per_maa;
@@ -652,6 +656,11 @@ public:
         statistics::Scalar virtual_page_wait_responses;
         statistics::Scalar virtual_retirement_native_deferrals;
         statistics::Scalar virtual_retirement_queue_deferrals;
+        statistics::Scalar virtual_retirement_stream_forwards;
+        statistics::Scalar virtual_retirement_stream_forward_scheduled;
+        statistics::Scalar virtual_retirement_stream_forward_copy_bytes;
+        statistics::Scalar virtual_retirement_stream_forward_queue_high_water;
+        statistics::Scalar virtual_retirement_stream_forward_queue_full;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.
@@ -714,6 +723,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;
         std::vector<statistics::Scalar *> IND_VirtPagesReady;
         std::vector<statistics::Scalar *> IND_VirtPagesReadyBeforeSourceDrain;
+        std::vector<statistics::Scalar *> IND_VirtPagesReadyWithPendingWrites;
+        std::vector<statistics::Scalar *> IND_VirtPageReadyPendingWords;
         std::vector<statistics::Scalar *> IND_VirtFirstPageReadyCycles;
         std::vector<statistics::Scalar *> IND_VirtAllPagesReadyCycles;
         std::vector<statistics::Scalar *> IND_VirtPageReadySpanCycles;
@@ -868,23 +879,51 @@ protected:
         bool forceCache;
         bool forceRetirementCache;
     };
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_read_pkts;
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_cache_write_pkts;
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_mem_write_pkts;
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_indirect_mem_read_pkts;
+    struct ScheduledRetirementForward
+    {
+        int maaID;
+        PacketPtr packet;
+        Tick tick;
+        uint64_t ordinal;
+    };
+    struct CompareScheduledRetirementForward
+    {
+        bool operator()(const ScheduledRetirementForward &lhs,
+                        const ScheduledRetirementForward &rhs) const {
+            return lhs.tick < rhs.tick ||
+                (lhs.tick == rhs.tick && lhs.ordinal < rhs.ordinal);
+        }
+    };
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_indirect_cache_read_pkts;
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_indirect_cache_write_pkts;
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_indirect_mem_write_pkts;
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_indirect_mem_read_pkts;
     // Smart writeback queue: last DRAM row issued to each bank, per channel.
     // Used to pick a ready writeback that keeps an already-open row open
     // (row-buffer hit) instead of draining in pure read-return order.
     std::unordered_map<uint64_t, Addr> *my_writeback_last_row;
     // Decompose a paddr into (bank_key, row) for the per-bank open-row tracker.
     void writeRowKey(Addr paddr, uint64_t &bank_key, Addr &row);
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_cache_read_pkts;
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_cache_write_pkts;
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_mem_write_pkts;
-    std::multiset<OutstandingPacket, CompareByTick> *my_outstanding_stream_mem_read_pkts;
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_stream_cache_read_pkts;
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_stream_cache_write_pkts;
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_stream_mem_write_pkts;
+    std::multiset<OutstandingPacket, CompareByTick>
+        *my_outstanding_stream_mem_read_pkts;
     std::unordered_map<Addr, OutstandingPacket> my_outstanding_pkt_map;
     std::unordered_map<Addr, std::deque<DeferredPacket>>
         my_deferred_pkt_map;
+    std::multiset<ScheduledRetirementForward,
+                  CompareScheduledRetirementForward>
+        my_scheduled_retirement_forwards;
+    std::unordered_set<Addr> my_scheduled_retirement_forward_addresses;
+    uint64_t next_scheduled_retirement_forward_ordinal = 0;
     uint32_t *my_num_outstanding_indirect_pkts;
     uint32_t *my_num_outstanding_stream_pkts;
     bool allIndirectEmpty();
@@ -895,8 +934,12 @@ protected:
     bool sendOutstandingCachePacket();
     bool sendOutstandingMemPacket();
     void sendNextDeferredPacket(Addr paddr);
+    bool scheduleRetirementForward(int maaID, PacketPtr pkt, Tick tick,
+                                   const uint8_t *data);
+    void serviceRetirementForwards();
     EventFunctionWrapper sendCacheEvent;
     EventFunctionWrapper sendMemEvent;
+    EventFunctionWrapper retirementForwardEvent;
     bool *mem_channels_blocked;
     bool *cache_bus_blocked;
     void unblockMemChannel(int channel_id);

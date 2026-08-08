@@ -1430,11 +1430,13 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_source_reservations.clear();
         virtual_outstanding_writes = 0;
         virtual_retirement_write_pages.clear();
+        virtual_retirement_write_forwardable.clear();
         virtual_page_logical_words.clear();
         virtual_page_scanned_words.clear();
         virtual_page_expected_words.clear();
         virtual_page_issued_words.clear();
         virtual_page_completed_words.clear();
+        virtual_page_unforwardable_writes.clear();
         virtual_page_ready.clear();
         virtual_pages_ready = 0;
         virtual_pages_ready_before_source_drain = 0;
@@ -2227,6 +2229,9 @@ void IndirectAccessUnit::executeInstruction() {
             panic_if(!virtual_retirement_write_pages.empty(),
                      "I[%d] virtual retirement metadata remains at response\n",
                      my_indirect_id);
+            panic_if(!virtual_retirement_write_forwardable.empty(),
+                     "I[%d] virtual forwarding metadata remains at response\n",
+                     my_indirect_id);
             panic_if(virtual_pages_ready !=
                          static_cast<int>(virtual_page_expected_words.size()),
                      "I[%d] only %d/%zu virtual pages became ready\n",
@@ -2970,6 +2975,7 @@ void IndirectAccessUnit::initializeVirtualPageTracking() {
     virtual_page_expected_words.assign(pages, 0);
     virtual_page_issued_words.assign(pages, 0);
     virtual_page_completed_words.assign(pages, 0);
+    virtual_page_unforwardable_writes.assign(pages, 0);
     virtual_page_ready.assign(pages, false);
     for (int page = 0; page < pages; ++page) {
         virtual_page_logical_words[page] =
@@ -2992,22 +2998,36 @@ void IndirectAccessUnit::trackVirtualIteration(int itr,
              virtual_page_logical_words[page]);
     if (write_expected)
         virtual_page_expected_words[page]++;
-    markVirtualPageReadyIfComplete(page);
+    markVirtualPageReadyIfEligible(page);
 }
 
-void IndirectAccessUnit::markVirtualPageReadyIfComplete(int page) {
+void IndirectAccessUnit::markVirtualPageReadyIfEligible(int page) {
     panic_if(page < 0 ||
                  page >= static_cast<int>(virtual_page_logical_words.size()),
              "I[%d] invalid virtual page %d\n", my_indirect_id, page);
     if (virtual_page_ready[page] ||
         virtual_page_scanned_words[page] != virtual_page_logical_words[page] ||
         virtual_page_issued_words[page] != virtual_page_expected_words[page] ||
-        virtual_page_completed_words[page] !=
-            virtual_page_expected_words[page])
+        (!maa->virtual_page_ready_on_issue &&
+         virtual_page_completed_words[page] !=
+             virtual_page_expected_words[page]) ||
+        (maa->virtual_page_ready_on_issue &&
+         virtual_page_unforwardable_writes[page] != 0))
         return;
 
+    const int pending_words = virtual_page_issued_words[page] -
+        virtual_page_completed_words[page];
+    panic_if(pending_words < 0,
+             "I[%d] virtual page %d completed more words than issued\n",
+             my_indirect_id, page);
     virtual_page_ready[page] = true;
     virtual_pages_ready++;
+    if (pending_words != 0) {
+        (*maa->stats
+               .IND_VirtPagesReadyWithPendingWrites[my_indirect_id])++;
+        (*maa->stats.IND_VirtPageReadyPendingWords[my_indirect_id]) +=
+            pending_words;
+    }
     maa->setVirtualPageReady(my_dst_tile, page);
     if (virtual_first_page_ready_tick == 0)
         virtual_first_page_ready_tick = curTick();
@@ -3073,12 +3093,28 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
              my_indirect_id, write_key);
     auto &metadata = virtual_retirement_write_pages[write_key];
     metadata.assign(page_words.begin(), page_words.end());
+    const bool forwardable = size == block_size && valid_words == 0;
+    const auto inserted =
+        virtual_retirement_write_forwardable.emplace(write_key, forwardable);
+    panic_if(!inserted.second,
+             "I[%d] duplicate forwarding metadata for 0x%lx\n",
+             my_indirect_id, write_key);
+    if (!forwardable) {
+        for (const auto &entry : metadata)
+            ++virtual_page_unforwardable_writes[entry.first];
+    }
 }
 
 void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
     auto metadata = virtual_retirement_write_pages.find(write_key);
     panic_if(metadata == virtual_retirement_write_pages.end(),
              "I[%d] completed virtual write 0x%lx has no page metadata\n",
+             my_indirect_id, write_key);
+    const auto forwarding =
+        virtual_retirement_write_forwardable.find(write_key);
+    panic_if(forwarding == virtual_retirement_write_forwardable.end(),
+             "I[%d] completed virtual write 0x%lx has no forwarding "
+             "metadata\n",
              my_indirect_id, write_key);
     for (const auto &[page, words] : metadata->second) {
         virtual_page_completed_words[page] += words;
@@ -3087,8 +3123,15 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
                  "I[%d] virtual page %d completed too many words: %d/%d\n",
                  my_indirect_id, page, virtual_page_completed_words[page],
                  virtual_page_expected_words[page]);
-        markVirtualPageReadyIfComplete(page);
+        if (!forwarding->second) {
+            panic_if(virtual_page_unforwardable_writes[page] == 0,
+                     "I[%d] virtual page %d lost an unforwardable write\n",
+                     my_indirect_id, page);
+            --virtual_page_unforwardable_writes[page];
+        }
+        markVirtualPageReadyIfEligible(page);
     }
+    virtual_retirement_write_forwardable.erase(forwarding);
     virtual_retirement_write_pages.erase(metadata);
 }
 
@@ -3153,6 +3196,16 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
              my_indirect_id);
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(0)), true, true);
+    const auto tracked = virtual_retirement_write_pages.find(write_key);
+    panic_if(tracked == virtual_retirement_write_pages.end(),
+             "I[%d] issued virtual write 0x%lx lost page metadata\n",
+             my_indirect_id, write_key);
+    // The packet is now owned by MAA's exact-address retirement map.  A
+    // consumer fill released here is either deferred behind that write or
+    // observes its completed cache value; it can never bypass unregistered
+    // producer data.
+    for (const auto &entry : tracked->second)
+        markVirtualPageReadyIfEligible(entry.first);
     accountVirtualRequestInterval();
     return true;
 }

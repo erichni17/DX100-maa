@@ -59,11 +59,36 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
     const bool has_deferred_packets =
         deferred_it != my_deferred_pkt_map.end() &&
         !deferred_it->second.empty();
+    const bool has_scheduled_forward =
+        my_scheduled_retirement_forward_addresses.count(paddr) != 0;
     const bool retirement_owns_address =
         outstanding_it != my_outstanding_pkt_map.end() &&
         outstanding_it->second.virtualRetirement;
+    const bool forward_issue_ready_stream =
+        virtual_page_ready_on_issue && retirement_owns_address &&
+        !has_deferred_packets && !has_scheduled_forward &&
+        funcUnit == FuncUnitType::STREAM && pkt->cmd == MemCmd::ReadReq &&
+        outstanding_it->second.cmd == MemCmd::WriteReq &&
+        outstanding_it->second.packet->getSize() == 64 &&
+        !outstanding_it->second.packet->isMaskedWrite();
+    if (forward_issue_ready_stream) {
+        panic_if(maaID < 0 || maaID >= static_cast<int>(num_maas),
+                 "%s: invalid STREAM unit %d for retirement forwarding\n",
+                 __func__, maaID);
+        const Tick delivery_tick = std::max(curTick(), tick) +
+            clockPeriod() * virtual_retirement_forward_latency;
+        if (scheduleRetirementForward(
+                maaID, pkt, delivery_tick,
+                outstanding_it->second.packet->getPtr<uint8_t>())) {
+            return;
+        }
+        // A full scheduled-forward table falls through to the ordinary
+        // exact-address deferral path.  All successful forwards pay the
+        // configured mux latency after both now and the request-ready tick.
+    }
     if (!bypass_deferred_queue &&
-        (has_deferred_packets || retirement_owns_address)) {
+        (has_deferred_packets || has_scheduled_forward ||
+         retirement_owns_address)) {
         DPRINTF(MAAPort,
                 "%s: deferring packet %s behind exact-address "
                 "retirement serialization at 0x%lx\n",
@@ -72,7 +97,8 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
             {funcUnit, maaID, pkt, tick, force_cache,
              force_retirement_cache});
         stats.virtual_retirement_native_deferrals += 1;
-        if (!retirement_owns_address)
+        if (!retirement_owns_address || has_deferred_packets ||
+            has_scheduled_forward)
             stats.virtual_retirement_queue_deferrals += 1;
         return;
     }
@@ -248,6 +274,7 @@ void MAA::sendNextDeferredPacket(Addr paddr) {
     auto deferred_it = my_deferred_pkt_map.find(paddr);
     if (deferred_it == my_deferred_pkt_map.end() ||
         deferred_it->second.empty() ||
+        my_scheduled_retirement_forward_addresses.count(paddr) != 0 ||
         my_outstanding_pkt_map.find(paddr) !=
             my_outstanding_pkt_map.end()) {
         return;
@@ -263,6 +290,75 @@ void MAA::sendNextDeferredPacket(Addr paddr) {
     sendPacket(deferred.funcUnit, deferred.maaID, deferred.packet,
                deferred.tick, deferred.forceCache,
                deferred.forceRetirementCache, true);
+}
+
+bool
+MAA::scheduleRetirementForward(int maaID, PacketPtr pkt, Tick tick,
+                               const uint8_t *data)
+{
+    panic_if(tick <= curTick(),
+             "%s: scheduled retirement forward is not in the future\n",
+             __func__);
+    panic_if(pkt->getSize() != 64,
+             "%s: retirement forward packet is not one full line\n",
+             __func__);
+    const Addr paddr = pkt->req->getPaddr();
+    panic_if(my_scheduled_retirement_forward_addresses.count(paddr) != 0,
+             "%s: duplicate scheduled forward at 0x%lx\n", __func__, paddr);
+    if (my_scheduled_retirement_forwards.size() >=
+        virtual_max_outstanding_writes) {
+        stats.virtual_retirement_stream_forward_queue_full += 1;
+        return false;
+    }
+
+    // The read packet already owns one cache-line payload allocation.  Copy
+    // the immutable retirement bytes into it now so write acknowledgement and
+    // packet deletion cannot invalidate a future-tick delivery.
+    pkt->setData(data);
+    my_scheduled_retirement_forwards.insert(
+        {maaID, pkt, tick, next_scheduled_retirement_forward_ordinal++});
+    my_scheduled_retirement_forward_addresses.insert(paddr);
+    stats.virtual_retirement_stream_forward_scheduled += 1;
+    stats.virtual_retirement_stream_forward_copy_bytes += pkt->getSize();
+    stats.virtual_retirement_stream_forward_queue_high_water = std::max(
+        stats.virtual_retirement_stream_forward_queue_high_water.value(),
+        static_cast<double>(my_scheduled_retirement_forwards.size()));
+    if (!retirementForwardEvent.scheduled())
+        schedule(retirementForwardEvent, tick);
+    else if (tick < retirementForwardEvent.when())
+        reschedule(retirementForwardEvent, tick);
+    return true;
+}
+
+void
+MAA::serviceRetirementForwards()
+{
+    panic_if(my_scheduled_retirement_forwards.empty() ||
+                 my_scheduled_retirement_forwards.begin()->tick > curTick(),
+             "%s: forwarding event fired without a ready entry\n", __func__);
+    const ScheduledRetirementForward forward =
+        *my_scheduled_retirement_forwards.begin();
+    my_scheduled_retirement_forwards.erase(
+        my_scheduled_retirement_forwards.begin());
+    const Addr paddr = forward.packet->req->getPaddr();
+    panic_if(my_scheduled_retirement_forward_addresses.erase(paddr) != 1,
+             "%s: scheduled address 0x%lx lost ownership\n",
+             __func__, paddr);
+    streamAccessUnits[forward.maaID].readPacketSent(paddr);
+    panic_if(!streamAccessUnits[forward.maaID].recvData(
+                 paddr, forward.packet->getPtr<uint8_t>()),
+             "%s: STREAM unit %d rejected scheduled retirement line "
+             "0x%lx\n",
+             __func__, forward.maaID, paddr);
+    stats.virtual_retirement_stream_forwards += 1;
+    delete forward.packet;
+    sendNextDeferredPacket(paddr);
+    if (!my_scheduled_retirement_forwards.empty()) {
+        const Tick next_tick = std::max(
+            my_scheduled_retirement_forwards.begin()->tick,
+            curTick() + clockPeriod());
+        schedule(retirementForwardEvent, next_tick);
+    }
 }
 bool MAA::scheduleNextSendMem() {
     bool return_val = false;

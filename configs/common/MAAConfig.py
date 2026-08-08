@@ -26,6 +26,16 @@ def _get_maa_opts(options):
             options, "maa_transparent_spd_mode"
         )
 
+    if hasattr(options, "maa_virtual_page_ready_on_issue"):
+        opts["virtual_page_ready_on_issue"] = getattr(
+            options, "maa_virtual_page_ready_on_issue"
+        )
+
+    if hasattr(options, "maa_virtual_retirement_forward_latency"):
+        opts["virtual_retirement_forward_latency"] = getattr(
+            options, "maa_virtual_retirement_forward_latency"
+        )
+
     if hasattr(options, "maa_num_regs_per_core"):
         opts["num_regs_per_core"] = getattr(options, "maa_num_regs_per_core")
 

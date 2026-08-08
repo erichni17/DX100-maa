@@ -24,6 +24,14 @@ class MAA(ClockedObject):
         0,
         "Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=two-half ping-pong",
     )
+    virtual_page_ready_on_issue = Param.Bool(
+        False,
+        "Release a virtual output page when all writes are issued and every "
+        "pending line is forwardable from the bounded retirement buffer",
+    )
+    virtual_retirement_forward_latency = Param.Unsigned(
+        1, "Cycles for the bounded retirement-line-to-STREAM forwarding mux"
+    )
     num_regs_per_core = Param.Unsigned(
         8,
         "Number of 32-bit scalar registers per core attached to the DX100 instance",

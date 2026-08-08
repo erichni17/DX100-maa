@@ -15,7 +15,9 @@ class TransparentControllerContractTest(unittest.TestCase):
         self.assertNotIn("std::deque", source)
         self.assertNotIn("uint8_t *", source)
 
-    def test_page_ready_follows_write_completion_accounting(self):
+    def test_completion_ready_control_and_forwardable_issue_ready_candidate(
+        self,
+    ):
         source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         begin = source.index(
             "void IndirectAccessUnit::completeVirtualRetirementWrite"
@@ -26,8 +28,15 @@ class TransparentControllerContractTest(unittest.TestCase):
         completion = source[begin:end]
         self.assertLess(
             completion.index("virtual_page_completed_words[page] += words"),
-            completion.index("markVirtualPageReadyIfComplete(page)"),
+            completion.index("markVirtualPageReadyIfEligible(page)"),
         )
+        eligible = source[
+            source.index(
+                "void IndirectAccessUnit::markVirtualPageReadyIfEligible"
+            ) : begin
+        ]
+        self.assertIn("!maa->virtual_page_ready_on_issue", eligible)
+        self.assertIn("virtual_page_unforwardable_writes[page] != 0", eligible)
 
     def test_application_submits_one_transparent_consumer(self):
         source = (

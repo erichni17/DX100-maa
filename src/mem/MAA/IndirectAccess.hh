@@ -140,11 +140,13 @@ protected:
     std::set<Addr> virtual_outstanding_write_lines;
     std::map<Addr, std::vector<std::pair<int, int>>>
         virtual_retirement_write_pages;
+    std::map<Addr, bool> virtual_retirement_write_forwardable;
     std::vector<int> virtual_page_logical_words;
     std::vector<int> virtual_page_scanned_words;
     std::vector<int> virtual_page_expected_words;
     std::vector<int> virtual_page_issued_words;
     std::vector<int> virtual_page_completed_words;
+    std::vector<int> virtual_page_unforwardable_writes;
     std::vector<bool> virtual_page_ready;
     int virtual_pages_ready = 0;
     int virtual_pages_ready_before_source_drain = 0;
@@ -354,7 +356,7 @@ protected:
                                       uint16_t valid_words) const;
     void initializeVirtualPageTracking();
     void trackVirtualIteration(int itr, bool write_expected);
-    void markVirtualPageReadyIfComplete(int page);
+    void markVirtualPageReadyIfEligible(int page);
     void trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
                                      unsigned size, uint16_t valid_words);
     void completeVirtualRetirementWrite(Addr write_key);

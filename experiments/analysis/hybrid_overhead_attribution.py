@@ -36,6 +36,10 @@ RUN_CASE_CONTRACTS = {
         "mode": "transparent",
         "page_elements": "4096",
     },
+    "transparent_issue_ready_4k": {
+        "mode": "transparent",
+        "page_elements": "4096",
+    },
 }
 RUN_TERMINAL_MARKER_COUNTS = {
     "exact_output": 1,
@@ -920,9 +924,7 @@ def audited_artifacts(path: Path) -> dict[str, dict[str, str]]:
     }
     labels = label_versions.get(len(records))
     if labels is None:
-        raise AuditError(
-            f"{path}: unsupported artifact count {len(records)}"
-        )
+        raise AuditError(f"{path}: unsupported artifact count {len(records)}")
     return {
         label: {"sha256": digest, "path": artifact}
         for label, (digest, artifact) in zip(labels, records)
@@ -1408,7 +1410,7 @@ def tail_instrumentation_audit(
     if not accepts and not summaries and not snapshots:
         return {"active": False}
     if (
-        case_name != "transparent_4k"
+        case_name not in ("transparent_4k", "transparent_issue_ready_4k")
         or len(summaries) != 1
         or len(snapshots) != 1
         or not accepts
@@ -1457,13 +1459,18 @@ def tail_instrumentation_audit(
 
     by_page = defaultdict(list)
     generation = parse_canonical_uint64(summary["generation"], "generation")
-    if parse_canonical_uint64(snapshot["generation"], "generation") != generation:
+    if (
+        parse_canonical_uint64(snapshot["generation"], "generation")
+        != generation
+    ):
         raise AuditError("blocker snapshot generation mismatch")
     for event in accepts:
         page = parse_canonical_uint64(event["page"], "page")
-        if page >= 4 or parse_canonical_uint64(
-            event["generation"], "generation"
-        ) != generation:
+        if (
+            page >= 4
+            or parse_canonical_uint64(event["generation"], "generation")
+            != generation
+        ):
             raise AuditError("consumer acceptance identity mismatch")
         by_page[page].append(event)
     if set(by_page) != set(range(4)):
@@ -1699,7 +1706,7 @@ def audit_run(path: Path) -> dict:
         }.items()
     }
     if (
-        result["case"] == "transparent_4k"
+        result["case"] in ("transparent_4k", "transparent_issue_ready_4k")
         and sum(request_reasons.values()) != request_cycles
     ):
         raise AuditError(

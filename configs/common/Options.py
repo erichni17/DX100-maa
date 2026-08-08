@@ -239,6 +239,21 @@ def addNoISAOptions(parser):
         help="Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=2K ping-pong",
     )
     parser.add_argument(
+        "--maa_virtual_page_ready_on_issue",
+        action="store_true",
+        help=(
+            "Release each virtual output page once all retirement writes "
+            "are issued and pending full lines can forward from the bounded "
+            "retirement buffer"
+        ),
+    )
+    parser.add_argument(
+        "--maa_virtual_retirement_forward_latency",
+        type=int,
+        default=1,
+        help="MAA cycles charged for bounded retirement-line forwarding",
+    )
+    parser.add_argument(
         "--maa_num_regs_per_core",
         type=int,
         default=8,
