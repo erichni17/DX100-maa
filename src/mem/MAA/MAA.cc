@@ -20,6 +20,7 @@
 #include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/Invalidator.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
+#include "mem/MAA/LogicalSPDCachePortProvenance.hh"
 #include "mem/MAA/RangeFuser.hh"
 #include "mem/MAA/SPD.hh"
 #include "mem/MAA/StreamAccess.hh"
@@ -1379,7 +1380,7 @@ MAA::makeLogicalSPDPacket(
 }
 
 bool
-MAA::recvLogicalSPDTimingResp(PacketPtr pkt)
+MAA::recvLogicalSPDTimingResp(PacketPtr pkt, uint8_t respondingPort)
 {
     using Transport = LogicalSPDCacheGem5Bridge::Runtime::Transport;
     auto *peek = dynamic_cast<LogicalSPDSenderState *>(pkt->senderState);
@@ -1388,6 +1389,10 @@ MAA::recvLogicalSPDTimingResp(PacketPtr pkt)
     auto *state = dynamic_cast<LogicalSPDSenderState *>(
         pkt->popSenderState());
     panic_if(state == nullptr, "Logical SPD response lost sender state\n");
+    panic_if(!LogicalSPDCachePortProvenance::responseMatches(
+                 state->callbackPort, respondingPort),
+             "Logical SPD response arrived on port %u, expected port %u\n",
+             respondingPort, state->callbackPort);
     Transport::ReturnedHandle returned;
     returned.incarnation = state->packetIncarnation;
     returned.request = state->request;
@@ -1415,7 +1420,7 @@ MAA::recvLogicalSPDTimingResp(PacketPtr pkt)
         returned.command = Transport::Command::WriteResp;
     }
     const Transport::Result result = logicalSpdBridge->receive(
-        state->token, returned, state->callbackPort);
+        state->token, returned, respondingPort);
     panic_if(!returned.disposed ||
                  (result.status != Transport::Status::Accepted &&
                   result.status != Transport::Status::Completed),
@@ -1531,10 +1536,12 @@ MAA::scheduleLogicalSPDEvent(int latency)
 }
 
 void
-MAA::notifyLogicalSPDRetry()
+MAA::notifyLogicalSPDRetry(uint8_t retryingPort)
 {
     for (const LogicalSPDExecution &execution : logicalSpdExecutions) {
-        if (execution.active && execution.retryPacket != nullptr) {
+        if (execution.active && execution.retryPacket != nullptr &&
+            LogicalSPDCachePortProvenance::retryMatches(
+                execution.retryPort, retryingPort)) {
             scheduleLogicalSPDEvent();
             return;
         }

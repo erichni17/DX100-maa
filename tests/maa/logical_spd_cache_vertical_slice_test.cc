@@ -58,6 +58,14 @@ bits(double value)
 }
 
 double
+fromBits(uint64_t value)
+{
+    double result = 0;
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+double
 apply(Slice::Operation operation, double left, double right)
 {
     switch (operation) {
@@ -136,9 +144,11 @@ struct Harness
     uint64_t fillResponses = 0;
     uint64_t writeResponses = 0;
     const double scalar = 2.5;
+    const bool inPlace;
 
-    explicit Harness(Runtime::Mode mode = Runtime::Mode::PingPong2K)
-        : runtime(mode)
+    explicit Harness(Runtime::Mode mode = Runtime::Mode::PingPong2K,
+                     bool sameBacking = false)
+        : runtime(mode), inPlace(sameBacking)
     {
         for (std::size_t index = 0; index < GuardedAlignedSpan::Elements;
              ++index) {
@@ -149,7 +159,9 @@ struct Harness
         }
         CHECK(peer.registerBacking(SourceBase, source.data(),
                                    Slice::BackingBytes));
-        CHECK(peer.registerBacking(DestinationBase, destination.data(),
+        CHECK(peer.registerBacking(DestinationBase,
+                                   inPlace ? source.data()
+                                           : destination.data(),
                                    Slice::BackingBytes));
         CHECK(runtime.initialize(0) == Slice::Status::Accepted);
         CHECK(runtime.registerSource(
@@ -158,7 +170,8 @@ struct Harness
         Slice::Admission admission;
         admission.sourceLogical = 0;
         admission.destinationLogical = 1;
-        admission.destination = {DestinationBase, Slice::BackingBytes};
+        admission.destination = {inPlace ? SourceBase : DestinationBase,
+                                 Slice::BackingBytes};
         admission.operation = Slice::Operation::Add;
         admission.scalarBits = bits(scalar);
         CHECK(runtime.admit(admission) == Slice::Status::Accepted);
@@ -308,9 +321,9 @@ testTypedFP64PayloadGeometryAndInitialObjects()
 
 void
 testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
-    Runtime::Mode mode)
+    Runtime::Mode mode, bool inPlace = false)
 {
-    Harness harness(mode);
+    Harness harness(mode, inPlace);
     const auto pages = static_cast<uint8_t>(harness.runtime.pageCount());
     const auto lines = harness.runtime.transportSnapshot().activeLines;
     for (uint8_t page = 0; page < pages; ++page)
@@ -326,12 +339,26 @@ testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
     CHECK(completed.counters.pagesCompleted == pages);
     for (std::size_t index = 0; index < GuardedAlignedSpan::Elements;
          ++index) {
-        CHECK(bits(harness.destination.doubles()[index]) ==
+        const double *output = inPlace ? harness.source.doubles() :
+                                        harness.destination.doubles();
+        CHECK(bits(output[index]) ==
               bits(apply(Slice::Operation::Add,
-                         harness.source.doubles()[index], harness.scalar)));
+                         fromBits(harness.sourceBits[index]),
+                         harness.scalar)));
     }
     CHECK(harness.destination.guardsExact());
-    harness.checkSourceExact();
+    CHECK(harness.source.guardsExact());
+    if (!inPlace)
+        harness.checkSourceExact();
+
+    // The in-place arm's acceptance criterion is the complete four-page
+    // dirty-writeback transform above; destination refill is covered by the
+    // disjoint-backing arm and would intentionally read the same backing.
+    if (inPlace) {
+        CHECK(harness.runtime.retireCompletedOperation() ==
+              Slice::Status::Accepted);
+        return;
+    }
 
     CHECK(harness.runtime.retireCompletedOperation() ==
           Slice::Status::Accepted);
@@ -496,6 +523,16 @@ testDatapathRejectsBeforeMutationAndSpecialValues()
         destination[index] = -static_cast<double>(index) - 7.0;
     }
     const auto exact = destination;
+    std::array<double, Datapath::MaxPageElements + 1> partialOverlap{};
+    for (std::size_t index = 0; index < partialOverlap.size(); ++index)
+        partialOverlap[index] = static_cast<double>(index);
+    const auto partialExact = partialOverlap;
+    CHECK(Datapath::transform(
+              Datapath::Operation::Mul,
+              {partialOverlap.data(), Datapath::MaxPageElements},
+              {partialOverlap.data() + 1, Datapath::MaxPageElements},
+              bits(3.0)) == Datapath::Result::Aliased);
+    CHECK(partialOverlap == partialExact);
     const auto expectUnchanged = [&](Datapath::Operation operation,
                                      Datapath::ConstSpan input,
                                      Datapath::Span output) {
@@ -668,6 +705,17 @@ testBackingRangeArithmeticBeforeMutation()
 {
     const uint64_t maximum = std::numeric_limits<uint64_t>::max();
     const uint64_t bytes = Slice::BackingBytes;
+    // Slice admission accepts only equal-sized spans aligned to bytes.  Thus
+    // two distinct valid bases differ by at least bytes and cannot overlap;
+    // the Datapath test above covers its separately reachable pointer-level
+    // partial-overlap defense.
+    for (uint64_t left = 0; left < 4 * bytes; left += bytes) {
+        for (uint64_t right = 0; right < 4 * bytes; right += bytes) {
+            const bool overlap = left <= right ? right - left < bytes
+                                               : left - right < bytes;
+            CHECK(overlap == (left == right));
+        }
+    }
     const uint64_t terminalBase = maximum - (bytes - 1);
     CHECK(terminalBase % bytes == 0);
 
@@ -954,6 +1002,8 @@ main()
     testTypedFP64PayloadGeometryAndInitialObjects();
     testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
         Runtime::Mode::Serial4K);
+    testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
+        Runtime::Mode::Serial4K, true);
     testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
         Runtime::Mode::PingPong2K);
     testAbortQueuedPendingRetryInflightAndDelivering();
