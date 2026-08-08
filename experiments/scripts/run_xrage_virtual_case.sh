@@ -2,8 +2,8 @@
 # Run one exact XRAGE smoke and, by default, its matched bounded-4K arm.
 set -euo pipefail
 
-if [[ $# -ne 6 ]]; then
-    echo "usage: $0 OUTDIR GEM5_BIN XRAGE_VERIFY_BIN INPUT_JSON RAMULATOR_LIB CHECKPOINT_RUN|-" >&2
+if [[ $# -ne 8 ]]; then
+    echo "usage: $0 OUTDIR GEM5_BIN XRAGE_VERIFY_BIN INPUT_JSON RAMULATOR_LIB RAMULATOR_PROVENANCE_JSON SIMULATOR_PROVENANCE_JSON CHECKPOINT_RUN|-" >&2
     exit 2
 fi
 
@@ -13,8 +13,11 @@ gem5_source=$(realpath "$2")
 workload_source=$(realpath "$3")
 input_source=$(realpath "$4")
 ramulator_source=$(realpath "$5")
-checkpoint_source=$6
+ramulator_provenance_source=$(realpath "$6")
+simulator_provenance_source=$(realpath "$7")
+checkpoint_source=$8
 run_mode=${XRAGE_RUN_MODE:-pair}
+resume=${XRAGE_RESUME:-0}
 
 case "$run_mode" in
     smoke|pair) ;;
@@ -23,9 +26,14 @@ case "$run_mode" in
         exit 2
         ;;
 esac
+[[ $resume == 0 || $resume == 1 ]] || {
+    echo "XRAGE_RESUME must be 0 or 1" >&2
+    exit 2
+}
 [[ -x $gem5_source && -x $workload_source && -f $input_source &&
-   -f $ramulator_source ]] || {
-    echo "missing gem5, XRAGE verifier, input, or Ramulator library" >&2
+   -f $ramulator_source && -f $ramulator_provenance_source &&
+   -f $simulator_provenance_source ]] || {
+    echo "missing gem5, XRAGE verifier, input, library, or provenance" >&2
     exit 2
 }
 if [[ $checkpoint_source != - ]]; then
@@ -38,8 +46,12 @@ if [[ $checkpoint_source != - ]]; then
         exit 2
     }
 fi
-[[ ! -e $out ]] || {
+[[ ! -e $out || $resume == 1 ]] || {
     echo "refusing to overwrite evidence root: $out" >&2
+    exit 2
+}
+[[ $resume == 0 || -d $out ]] || {
+    echo "XRAGE_RESUME requires an existing evidence root: $out" >&2
     exit 2
 }
 [[ -z $(git -C "$root" status --short) ]] || {
@@ -52,23 +64,135 @@ mkdir -p "$out/input"
 status="$out/campaign.exit"
 trap 'rc=$?; printf "%s\n" "$rc" > "$status"' EXIT
 
-cp --reflink=auto "$gem5_source" "$out/input/gem5.opt"
-cp --reflink=auto "$workload_source" "$out/input/xrage_verify"
-cp --reflink=auto "$input_source" "$out/input/xrage.json"
-cp --reflink=auto "$ramulator_source" "$out/input/libramulator.so"
-chmod 0555 "$out/input/gem5.opt" "$out/input/xrage_verify"
+if [[ $resume == 0 ]]; then
+    cp --reflink=auto "$gem5_source" "$out/input/gem5.opt"
+    cp --reflink=auto "$workload_source" "$out/input/xrage_verify"
+    cp --reflink=auto "$input_source" "$out/input/xrage.json"
+    cp --reflink=auto "$ramulator_source" "$out/input/libramulator.so"
+    cp --reflink=auto "$ramulator_provenance_source" \
+        "$out/input/ramulator_provenance.json"
+    cp --reflink=auto "$simulator_provenance_source" \
+        "$out/input/simulator_provenance.json"
+    chmod 0555 "$out/input/gem5.opt" "$out/input/xrage_verify"
+fi
 
 gem5="$out/input/gem5.opt"
 workload="$out/input/xrage_verify"
 input="$out/input/xrage.json"
 ramulator="$out/input/libramulator.so"
-source_commit=$(git -C "$root" rev-parse HEAD)
+ramulator_provenance="$out/input/ramulator_provenance.json"
+simulator_provenance="$out/input/simulator_provenance.json"
+runner_source_commit=$(git -C "$root" rev-parse HEAD)
 library_path="$out/input${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-git -C "$root" status --short > "$out/input/source_status.txt"
-git -C "$root" rev-parse HEAD > "$out/input/source_commit"
-sha256sum "$gem5" "$workload" "$input" "$ramulator" \
-    > "$out/input/artifact_sha256.txt"
+mapfile -t ramulator_identity < <(python3 - "$ramulator_provenance" <<'PY'
+import json
+import sys
+
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+print(record.get("schema", ""))
+print(record.get("frozen_library", {}).get("sha256", ""))
+print(record.get("elf_build_id", ""))
+PY
+)
+[[ ${ramulator_identity[0]:-} == dx100.ramulator_provenance.v1 &&
+   ${ramulator_identity[1]:-} =~ ^[0-9a-f]{64}$ &&
+   ${ramulator_identity[1]} == \
+   $(sha256sum "$ramulator" | awk '{print $1}') ]] || {
+    echo "Ramulator provenance does not authenticate the copied ELF" >&2
+    exit 1
+}
+ramulator_build_id=$(readelf -n "$ramulator" |
+    sed -n 's/.*Build ID: //p' | head -1)
+[[ -n $ramulator_build_id &&
+   $ramulator_build_id == "${ramulator_identity[2]:-}" ]] || {
+    echo "Ramulator ELF build ID differs from its provenance" >&2
+    exit 1
+}
+
+mapfile -t simulator_identity < <(python3 - "$simulator_provenance" <<'PY'
+import json
+import sys
+
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+build = record.get("build", {})
+binary = record.get("frozen_binary", {})
+status = record.get("source_status", {})
+print(record.get("schema", ""))
+print(record.get("simulator_source_commit", ""))
+print(binary.get("sha256", ""))
+print(build.get("command_path", ""))
+print(build.get("command_sha256", ""))
+print(build.get("log_path", ""))
+print(build.get("log_sha256", ""))
+print(build.get("exit_code", ""))
+print(status.get("path", ""))
+print(status.get("sha256", ""))
+PY
+)
+simulator_source_commit=${simulator_identity[1]:-}
+simulator_command_source=${simulator_identity[3]:-}
+simulator_log_source=${simulator_identity[5]:-}
+simulator_status_source=${simulator_identity[8]:-}
+[[ ${simulator_identity[0]:-} == dx100.simulator_provenance.v1 &&
+   $simulator_source_commit =~ ^[0-9a-f]{40}$ &&
+   ${simulator_identity[2]:-} == $(sha256sum "$gem5" | awk '{print $1}') &&
+   ${simulator_identity[7]:-} == 0 &&
+   -f $simulator_command_source && -f $simulator_log_source &&
+   -f $simulator_status_source && ! -s $simulator_status_source &&
+   ${simulator_identity[4]:-} == \
+   $(sha256sum "$simulator_command_source" | awk '{print $1}') &&
+   ${simulator_identity[6]:-} == \
+   $(sha256sum "$simulator_log_source" | awk '{print $1}') &&
+   ${simulator_identity[9]:-} == \
+   $(sha256sum "$simulator_status_source" | awk '{print $1}') ]] || {
+    echo "simulator provenance does not authenticate a clean successful build" >&2
+    exit 1
+}
+git -C "$root" cat-file -e "$simulator_source_commit^{commit}" || {
+    echo "simulator source commit is unavailable in this repository" >&2
+    exit 1
+}
+
+if [[ $resume == 0 ]]; then
+    cp --reflink=auto "$simulator_command_source" \
+        "$out/input/simulator_build.command"
+    cp --reflink=auto "$simulator_log_source" \
+        "$out/input/simulator_build.log"
+    cp --reflink=auto "$simulator_status_source" \
+        "$out/input/simulator_source_status.txt"
+fi
+
+if [[ $resume == 0 ]]; then
+    git -C "$root" status --short > "$out/input/source_status.txt"
+    git -C "$root" rev-parse HEAD > "$out/input/runner_source_commit"
+    sha256sum "$gem5" "$workload" "$input" "$ramulator" \
+        "$ramulator_provenance" "$simulator_provenance" \
+        "$out/input/simulator_build.command" \
+        "$out/input/simulator_build.log" \
+        "$out/input/simulator_source_status.txt" \
+        > "$out/input/artifact_sha256.txt"
+else
+    [[ -f $out/manifest.txt && -f $out/input/artifact_sha256.txt &&
+       -z $(<"$out/input/source_status.txt") ]] || {
+        echo "resumed XRAGE evidence lacks a clean frozen manifest" >&2
+        exit 1
+    }
+    sha256sum --status -c "$out/input/artifact_sha256.txt" || {
+        echo "resumed XRAGE input artifacts changed" >&2
+        exit 1
+    }
+    recorded_checkpoint=$(sed -n 's/^checkpoint_source=//p' \
+        "$out/manifest.txt")
+    [[ $recorded_checkpoint == "$checkpoint_source" ]] || {
+        echo "resumed XRAGE checkpoint differs from the frozen manifest" >&2
+        exit 1
+    }
+    {
+        printf 'resume_runner_source_commit=%s\n' "$runner_source_commit"
+        printf 'resumed_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$out/resume_manifest.txt"
+fi
 LD_LIBRARY_PATH="$library_path" ldd "$gem5" > "$out/input/gem5.ldd.txt"
 loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     "$out/input/gem5.ldd.txt")
@@ -78,10 +202,13 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     exit 1
 }
 
+if [[ $resume == 0 ]]; then
 {
-    printf 'source_commit=%s\n' "$source_commit"
+    printf 'simulator_source_commit=%s\n' "$simulator_source_commit"
+    printf 'runner_source_commit=%s\n' "$runner_source_commit"
     printf 'run_mode=%s\n' "$run_mode"
     printf 'workload=xrage_gather0\n'
+    printf 'comparison=4k_physical_full_metadata_vs_4k_physical_bounded_metadata\n'
     printf 'correctness=exact_integer_output_hash\n'
     printf 'logical_tile_elements=16384\n'
     printf 'physical_tile_elements=4096\n'
@@ -92,6 +219,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'bounded_schedule=four_modulo_passes_finite_filter_16_words_per_cycle\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out/manifest.txt"
+fi
 sha256sum \
     "$root/experiments/scripts/run_xrage_virtual_case.sh" \
     "$root/experiments/scripts/run_xrage_direct_index_smoke.sh" \
@@ -99,10 +227,11 @@ sha256sum \
     "$root/experiments/scripts/verify_xrage_checkpoint_attestation.py" \
     "$root/configs/deprecated/example/se.py" \
     "$root/ext/ramulator2/ramulator2/example_gem5_config.yaml" \
-    > "$out/runner_sha256.txt"
+    > "$out/$([[ $resume == 1 ]] && echo resume_runner_sha256.txt || \
+        echo runner_sha256.txt)"
 
 common=(
-    XRAGE_SIMULATOR_SOURCE_COMMIT="$source_commit"
+    XRAGE_SIMULATOR_SOURCE_COMMIT="$simulator_source_commit"
     XRAGE_ARM=direct_index_4k
     XRAGE_GUEST_ARM=direct4
     MAA_PHYSICAL_TILE_ELEMENTS=4096
@@ -149,7 +278,29 @@ full_environment=(
     MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=0
     MAA_VIRTUAL_PARTITION_KEEP_COMBINER=0
 )
-if [[ $checkpoint_source == - ]]; then
+if [[ $resume == 1 ]]; then
+    [[ -f $out/full_metadata/xrage_checkpoint_recovery.pass &&
+       $(<"$out/full_metadata/restore.exit") == 0 &&
+       -f $out/full_metadata/result.tsv ]] || {
+        echo "resumed XRAGE full-metadata smoke is incomplete" >&2
+        exit 1
+    }
+    sha256sum --status -c "$out/full_metadata/artifact_sha256.txt" || {
+        echo "resumed XRAGE full-metadata artifacts changed" >&2
+        exit 1
+    }
+    full_log="$out/full_metadata/restore.log"
+    [[ $(grep -c '^MAA_GATHER_VERIFY_PASS ' "$full_log") -eq 1 &&
+       $(grep -c 'because m5_exit instruction encountered' "$full_log") -eq 1 ]] || {
+        echo "resumed XRAGE full-metadata completion markers are invalid" >&2
+        exit 1
+    }
+    ! grep -Eqi 'panic|fatal|segmentation fault|MAA_GATHER_VERIFY_FAIL' \
+        "$full_log" || {
+        echo "resumed XRAGE full-metadata log contains a failure marker" >&2
+        exit 1
+    }
+elif [[ $checkpoint_source == - ]]; then
     env LD_LIBRARY_PATH="$library_path" "${full_environment[@]}" \
         "$root/experiments/scripts/run_xrage_direct_index_smoke.sh" \
         "$gem5" "$workload" "$runtime_input" "$out/full_metadata" \
@@ -165,7 +316,7 @@ printf '0\n' > "$out/full_metadata.launch.exit"
 
 checkpoint_command=$(<"$shared_checkpoint_run/checkpoint.command")
 [[ $checkpoint_command == *"--cpu-type AtomicSimpleCPU"* &&
-   $checkpoint_command != *"--maa"* &&
+   ! $checkpoint_command =~ (^|[[:space:]])--maa($|[[:space:]]) &&
    $checkpoint_command != *"--maa_num_"* &&
    $checkpoint_command != *"--maa_physical_"* ]] || {
     echo "XRAGE checkpoint is not treatment-neutral" >&2
