@@ -63,6 +63,7 @@ class LogicalSPDCacheGem5Bridge
     };
 
     explicit LogicalSPDCacheGem5Bridge(std::size_t numMaas);
+    LogicalSPDCacheGem5Bridge(std::size_t numMaas, Runtime::Mode mode);
     LogicalSPDCacheGem5Bridge(std::size_t numMaas, RuntimeFactory factory);
     ~LogicalSPDCacheGem5Bridge() noexcept;
 

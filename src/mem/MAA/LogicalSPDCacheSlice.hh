@@ -18,15 +18,21 @@ class LogicalSPDCacheSlice
     friend class LogicalSPDCacheRuntime;
 
   public:
-    using Controller = LogicalSPDCacheController<>;
+    using Controller = LogicalSPDCacheController<2, 8, 2, 8, 4>;
     using PageIdentity = Controller::PageIdentity;
 
     static constexpr std::size_t LogicalDescriptors = 2;
-    static constexpr std::size_t Pages = 4;
+    static constexpr std::size_t LogicalElements = 16384;
+    static constexpr std::size_t Pages = 8;
     static constexpr std::size_t Slots = 2;
-    static constexpr std::size_t PageElements = 4096;
+    static constexpr std::size_t PageElements = 2048;
+    static constexpr std::size_t SerialPageElements = 4096;
+    static constexpr std::size_t PayloadElements = 4096;
     static constexpr std::size_t PageBytes = PageElements * sizeof(double);
-    static constexpr std::size_t BackingBytes = Pages * PageBytes;
+    static constexpr std::size_t PayloadBytes =
+        PayloadElements * sizeof(double);
+    static constexpr std::size_t BackingBytes =
+        LogicalElements * sizeof(double);
     static constexpr std::size_t CacheLineBytes = 64;
     static constexpr std::size_t LinesPerPage = PageBytes / CacheLineBytes;
     static constexpr std::size_t OperationMemorySerials = Pages * 3;
@@ -37,6 +43,12 @@ class LogicalSPDCacheSlice
         Free,
         Source,
         Destination,
+    };
+
+    enum class Mode : uint8_t
+    {
+        Serial4K = 0,
+        PingPong2K = 2,
     };
 
     enum class Stage : uint8_t
@@ -195,6 +207,10 @@ class LogicalSPDCacheSlice
         bool active = false;
         bool refillPending = false;
         bool memoryActionActive = false;
+        Mode mode = Mode::PingPong2K;
+        uint8_t pageCount = Pages;
+        uint8_t slotCount = Slots;
+        uint16_t pageElements = PageElements;
         uint16_t maaID = 0;
         uint32_t operationID = 0;
         uint32_t lastOperationID = 0;
@@ -207,6 +223,7 @@ class LogicalSPDCacheSlice
         Controller::DescriptorHandle source{};
         Controller::DescriptorHandle destination{};
         Controller::OverwriteReservation reservation{};
+        Controller::InPlaceReservation inPlaceReservation{};
         PageAction acceptedPageAction{};
         PageIdentity refillIdentity{};
         std::array<DescriptorRecord, LogicalDescriptors> descriptors{};
@@ -259,6 +276,14 @@ class LogicalSPDCacheSlice
     const Controller &cacheController() const { return controller; }
     const Counters &counters() const { return stats; }
     AuditSnapshot auditSnapshot() const;
+    Mode cacheMode() const { return configuredMode; }
+    std::size_t activePages() const { return pageCount; }
+    std::size_t activeSlots() const { return slotCount; }
+    std::size_t activePageElements() const { return elementsPerPage; }
+    std::size_t activePageBytes() const
+    {
+        return elementsPerPage * sizeof(double);
+    }
 
   private:
     struct ActiveOperation
@@ -272,6 +297,7 @@ class LogicalSPDCacheSlice
         uint8_t page = 0;
         Stage stage = Stage::Idle;
         Controller::OverwriteReservation reservation{};
+        Controller::InPlaceReservation inPlaceReservation{};
     };
 
     static bool validBacking(BackingSpan backing);
@@ -292,10 +318,22 @@ class LogicalSPDCacheSlice
     ComputeAction makeComputeAction() const;
     Status finishAbortWithoutDirtyData();
 
-    LogicalSPDCacheSlice() = default;
+    explicit LogicalSPDCacheSlice(Mode mode = Mode::PingPong2K)
+        : controller(mode == Mode::Serial4K ? 4 : 8,
+                     mode == Mode::Serial4K ? 1 : 2),
+          configuredMode(mode),
+          pageCount(mode == Mode::Serial4K ? 4 : 8),
+          slotCount(mode == Mode::Serial4K ? 1 : 2),
+          elementsPerPage(mode == Mode::Serial4K ? SerialPageElements
+                                                : PageElements)
+    {}
     ~LogicalSPDCacheSlice();
 
     Controller controller{};
+    Mode configuredMode = Mode::PingPong2K;
+    uint8_t pageCount = Pages;
+    uint8_t slotCount = Slots;
+    uint16_t elementsPerPage = PageElements;
     std::array<DescriptorRecord, LogicalDescriptors> descriptors{};
     ActiveOperation active{};
     PageAction acceptedMemoryAction{};
@@ -402,6 +440,11 @@ LogicalSPDCacheSlice::initialize(uint16_t id)
     const Status mutation = publicMutationStatus();
     if (mutation != Status::Accepted)
         return mutation;
+    if (!controller.geometryValid() ||
+        (configuredMode != Mode::Serial4K &&
+         configuredMode != Mode::PingPong2K)) {
+        return reject(Status::Invalid);
+    }
     if (initialized)
         return maaID == id ? Status::Accepted : Status::Busy;
     maaID = id;
@@ -441,7 +484,7 @@ LogicalSPDCacheSlice::registerSource(uint8_t logical, BackingSpan backing,
     if (allocation.status != Controller::AllocateStatus::Accepted)
         return reject(Status::Busy);
 
-    for (uint8_t page = 0; page < Pages; ++page) {
+    for (uint8_t page = 0; page < pageCount; ++page) {
         if (controller.notifyPageReady(
                 controller.identity(allocation.descriptor, page)) !=
             Controller::ReadyResult::Accepted) {
@@ -454,7 +497,8 @@ LogicalSPDCacheSlice::registerSource(uint8_t logical, BackingSpan backing,
     record.backing = backing;
     record.producerTransaction = ++lastProducerTransaction;
     record.dataType = dataType;
-    record.backingReady = (uint8_t{1} << Pages) - 1;
+    record.backingReady = static_cast<uint8_t>(
+        (uint16_t{1} << pageCount) - 1);
     descriptors[logical] = record;
     increment(stats.sourceRegistrations);
     return Status::Accepted;
@@ -464,7 +508,7 @@ inline bool
 LogicalSPDCacheSlice::allPagesReady(
     const Controller::DescriptorHandle &handle) const
 {
-    for (uint8_t page = 0; page < Pages; ++page) {
+    for (uint8_t page = 0; page < pageCount; ++page) {
         if (!controller.pageIsReady(controller.identity(handle, page)))
             return false;
     }
@@ -502,7 +546,7 @@ LogicalSPDCacheSlice::admit(const Admission &request)
     if (overlaps(source.backing, request.destination))
         return reject(Status::Invalid);
     if (lastOperationID == std::numeric_limits<uint32_t>::max() ||
-        !controller.canAllocateMemorySerials(OperationMemorySerials)) {
+        !controller.canAllocateMemorySerials(pageCount * 3)) {
         return reject(Status::Exhausted);
     }
 
@@ -560,11 +604,19 @@ LogicalSPDCacheSlice::queueSourcePage()
 inline LogicalSPDCacheSlice::Status
 LogicalSPDCacheSlice::reserveOverwrite()
 {
-    const auto reply =
-        controller.reserveFullOverwrite(sourcePage(), destinationPage());
-    if (reply.status != Controller::OverwriteStatus::Accepted)
-        return Status::Busy;
-    active.reservation = reply.reservation;
+    if (configuredMode == Mode::Serial4K) {
+        const auto reply = controller.reserveInPlaceOverwrite(
+            sourcePage(), destinationPage());
+        if (reply.status != Controller::OverwriteStatus::Accepted)
+            return Status::Busy;
+        active.inPlaceReservation = reply.reservation;
+    } else {
+        const auto reply = controller.reserveFullOverwrite(
+            sourcePage(), destinationPage());
+        if (reply.status != Controller::OverwriteStatus::Accepted)
+            return Status::Busy;
+        active.reservation = reply.reservation;
+    }
     active.stage = Stage::ComputeReady;
     return Status::Accepted;
 }
@@ -587,7 +639,8 @@ LogicalSPDCacheSlice::makePageAction(
     action.page = static_cast<uint8_t>(controllerAction.page.page);
     action.slot = static_cast<uint8_t>(controllerAction.slot);
     action.baseAddress = record.backing.base +
-                         static_cast<uint64_t>(action.page) * PageBytes;
+                         static_cast<uint64_t>(action.page) *
+                             activePageBytes();
     action.serial = controllerAction.serial;
     action.controller = controllerAction;
     return action;
@@ -689,7 +742,7 @@ LogicalSPDCacheSlice::completePageAction(const PageAction &pageAction)
     if (abortRequested)
         return finishAbortWithoutDirtyData();
     ++active.page;
-    if (active.page == Pages) {
+    if (active.page == pageCount) {
         active.stage = Stage::Complete;
         increment(stats.highLevelCompletions);
         return Status::Accepted;
@@ -707,13 +760,20 @@ LogicalSPDCacheSlice::makeComputeAction() const
     ComputeAction action;
     action.valid = true;
     action.operationID = active.operationID;
-    action.computeSerial = active.reservation.computeSerial;
+    action.computeSerial =
+        configuredMode == Mode::Serial4K
+            ? active.inPlaceReservation.computeSerial
+            : active.reservation.computeSerial;
     action.source = sourcePage();
     action.destination = destinationPage();
-    action.sourceSlot =
-        static_cast<uint8_t>(active.reservation.sourceSlot);
-    action.destinationSlot =
-        static_cast<uint8_t>(active.reservation.destinationSlot);
+    action.sourceSlot = static_cast<uint8_t>(
+        configuredMode == Mode::Serial4K
+            ? active.inPlaceReservation.slot
+            : active.reservation.sourceSlot);
+    action.destinationSlot = static_cast<uint8_t>(
+        configuredMode == Mode::Serial4K
+            ? active.inPlaceReservation.slot
+            : active.reservation.destinationSlot);
     action.operation = active.operation;
     action.scalarBits = active.scalarBits;
     return action;
@@ -737,8 +797,11 @@ LogicalSPDCacheSlice::acceptCompute(const ComputeAction &compute)
         return Status::Invalid;
     if (!(compute == makeComputeAction()))
         return productionStop();
-    if (controller.beginOverwriteCompute(active.reservation) !=
-        Controller::OverwriteResult::Accepted) {
+    const Controller::OverwriteResult begun =
+        configuredMode == Mode::Serial4K
+            ? controller.beginInPlaceCompute(active.inPlaceReservation)
+            : controller.beginOverwriteCompute(active.reservation);
+    if (begun != Controller::OverwriteResult::Accepted) {
         return productionStop();
     }
     active.stage = Stage::Computing;
@@ -757,8 +820,12 @@ LogicalSPDCacheSlice::completeCompute(const ComputeAction &compute)
         return Status::Invalid;
     if (!(compute == makeComputeAction()))
         return productionStop();
-    if (controller.completeOverwrite(active.reservation) !=
-        Controller::OverwriteResult::Accepted) {
+    const Controller::OverwriteResult completed =
+        configuredMode == Mode::Serial4K
+            ? controller.completeInPlaceOverwrite(
+                  active.inPlaceReservation)
+            : controller.completeOverwrite(active.reservation);
+    if (completed != Controller::OverwriteResult::Accepted) {
         return productionStop();
     }
     active.stage = Stage::WaitingWriteback;
@@ -776,7 +843,7 @@ LogicalSPDCacheSlice::queueRefill(uint8_t logical, uint8_t page)
         return Status::Draining;
     if (active.valid || refillPending || memoryActionActive)
         return Status::Busy;
-    if (logical >= LogicalDescriptors || page >= Pages ||
+    if (logical >= LogicalDescriptors || page >= pageCount ||
         descriptors[logical].role == DescriptorRole::Free)
         return Status::Invalid;
     const PageIdentity identity =
@@ -860,12 +927,17 @@ LogicalSPDCacheSlice::cancelUnacceptedForAbort()
         }
         break;
       case Stage::ComputeReady:
-      case Stage::Computing:
-        if (controller.cancelOverwrite(active.reservation) !=
-            Controller::OverwriteResult::Accepted) {
+      case Stage::Computing: {
+        const Controller::OverwriteResult canceled =
+            configuredMode == Mode::Serial4K
+                ? controller.cancelInPlaceOverwrite(
+                      active.inPlaceReservation)
+                : controller.cancelOverwrite(active.reservation);
+        if (canceled != Controller::OverwriteResult::Accepted) {
             return productionStop();
         }
         break;
+      }
       case Stage::WaitingWriteback:
         return Status::Busy;
       case Stage::Idle:
@@ -924,7 +996,7 @@ LogicalSPDCacheSlice::descriptorComplete(uint8_t logical) const
     return logical < LogicalDescriptors &&
            descriptors[logical].role != DescriptorRole::Free &&
            descriptors[logical].writebackAcked ==
-               (uint8_t{1} << Pages) - 1;
+               static_cast<uint8_t>((uint16_t{1} << pageCount) - 1);
 }
 
 inline LogicalSPDCacheSlice::Status
@@ -968,7 +1040,7 @@ LogicalSPDCacheSlice::drained() const
         controller.activeLeaseCount() != 0) {
         return false;
     }
-    for (std::size_t slot = 0; slot < Slots; ++slot) {
+    for (std::size_t slot = 0; slot < slotCount; ++slot) {
         const auto phase = controller.slotPhase(slot);
         if (phase != Controller::Phase::Empty &&
             phase != Controller::Phase::Clean)
@@ -985,7 +1057,7 @@ LogicalSPDCacheSlice::destructionSafe() const
         controller.activeLeaseCount() != 0) {
         return false;
     }
-    for (std::size_t slot = 0; slot < Slots; ++slot) {
+    for (std::size_t slot = 0; slot < slotCount; ++slot) {
         const Controller::Phase phase = controller.slotPhase(slot);
         if (phase == Controller::Phase::Filling ||
             phase == Controller::Phase::Reserved ||
@@ -1066,6 +1138,10 @@ LogicalSPDCacheSlice::auditSnapshot() const
     snapshot.active = active.valid;
     snapshot.refillPending = refillPending;
     snapshot.memoryActionActive = memoryActionActive;
+    snapshot.mode = configuredMode;
+    snapshot.pageCount = pageCount;
+    snapshot.slotCount = slotCount;
+    snapshot.pageElements = elementsPerPage;
     snapshot.maaID = maaID;
     snapshot.operationID = active.operationID;
     snapshot.lastOperationID = lastOperationID;
@@ -1078,13 +1154,14 @@ LogicalSPDCacheSlice::auditSnapshot() const
     snapshot.source = active.source;
     snapshot.destination = active.destination;
     snapshot.reservation = active.reservation;
+    snapshot.inPlaceReservation = active.inPlaceReservation;
     snapshot.acceptedPageAction = acceptedMemoryAction;
     snapshot.refillIdentity = refillIdentity;
     snapshot.descriptors = descriptors;
     snapshot.missQueueSize = controller.missQueueSize();
     snapshot.activeLeases = controller.activeLeaseCount();
     snapshot.counters = stats;
-    for (std::size_t slot = 0; slot < Slots; ++slot) {
+    for (std::size_t slot = 0; slot < slotCount; ++slot) {
         snapshot.slotPhases[slot] = controller.slotPhase(slot);
         snapshot.slotIdentities[slot] = controller.slotIdentity(slot);
         snapshot.slotTransactions[slot] =
@@ -1100,11 +1177,12 @@ LogicalSPDCacheSlice::auditSnapshot() const
 }
 
 static_assert(LogicalSPDCacheSlice::LogicalDescriptors == 2);
-static_assert(LogicalSPDCacheSlice::Pages == 4);
+static_assert(LogicalSPDCacheSlice::Pages == 8);
 static_assert(LogicalSPDCacheSlice::Slots == 2);
-static_assert(LogicalSPDCacheSlice::PageElements == 4096);
+static_assert(LogicalSPDCacheSlice::PageElements == 2048);
+static_assert(LogicalSPDCacheSlice::PayloadBytes == 32 * 1024);
 static_assert(LogicalSPDCacheSlice::CacheLineBytes == 64);
-static_assert(LogicalSPDCacheSlice::LinesPerPage == 512);
+static_assert(LogicalSPDCacheSlice::LinesPerPage == 256);
 
 } // namespace gem5
 

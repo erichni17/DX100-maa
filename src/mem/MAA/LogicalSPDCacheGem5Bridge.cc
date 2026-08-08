@@ -8,10 +8,15 @@
 namespace gem5 {
 
 LogicalSPDCacheGem5Bridge::LogicalSPDCacheGem5Bridge(std::size_t numMaas)
+    : LogicalSPDCacheGem5Bridge(numMaas, Runtime::Mode::PingPong2K)
+{}
+
+LogicalSPDCacheGem5Bridge::LogicalSPDCacheGem5Bridge(
+    std::size_t numMaas, Runtime::Mode mode)
     : LogicalSPDCacheGem5Bridge(
           numMaas,
-          [](std::size_t) {
-              return std::make_unique<LogicalSPDCacheRuntime>();
+          [mode](std::size_t) {
+              return std::make_unique<LogicalSPDCacheRuntime>(mode);
           },
           productionIncarnations())
 {}
