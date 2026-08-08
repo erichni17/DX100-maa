@@ -60,7 +60,28 @@ testExactOnceOutOfOrderRetirement()
     assert(tracker.admissions() == logical);
     assert(tracker.retirements() == logical);
     assert(tracker.finish() == Result::Accepted);
-    assert(tracker.chargedBytes() == 4672);
+    assert(tracker.chargedBytes() == 5733);
+}
+
+void
+testSemanticByteAccountingIsFieldComplete()
+{
+    BoundedRangePassTracker tracker;
+    assert(tracker.configure(16384, 4096, 4, 65536) == Result::Accepted);
+    const auto bytes = tracker.semanticByteBreakdown();
+
+    // admitted + retired: two 16K-bit semantic bitmaps.
+    assert(bytes.bitmaps == 4096);
+    // passAdmissions + passRetirements: 128 uint32_t counters.
+    assert(bytes.passCounters == 512);
+    // passFinished: one semantic byte for each of 64 pass states.
+    assert(bytes.passFinished == 64);
+    // passRanges: 64 {uint64_t lower, uint64_t upper} records.
+    assert(bytes.passRanges == 1024);
+    // configuredFlag; logical/active/pass counts; grow bounds; global counts.
+    assert(bytes.scalarConfig == 37);
+    assert(bytes.total() == 5733);
+    assert(tracker.chargedBytes() == bytes.total());
 }
 
 void
@@ -156,6 +177,7 @@ main()
 {
     testRangesCoverGrowSpaceExactly();
     testExactOnceOutOfOrderRetirement();
+    testSemanticByteAccountingIsFieldComplete();
     testSkewRemainsExactAndExplicit();
     testSourceRelativeRange();
     testExplicitBalancedRanges();
