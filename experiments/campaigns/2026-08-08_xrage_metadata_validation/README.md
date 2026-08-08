@@ -44,6 +44,12 @@ localize the loss to bounded metadata execution; they do not isolate a single
 causal knob because the treatment jointly changes Row/Offset capacities,
 partition count, index traffic, and filtering.
 
+The bounded arm nevertheless records fewer DRAM commands: 486,560 reads,
+87,457 activates, and 79,797 precharges, versus 500,298, 111,692, and 104,120
+for full metadata. The slowdown therefore cannot be attributed to a larger
+DRAM-command count or assumed loss of row locality. In this implementation,
+the extra bounded-control work outweighs the lower DRAM traffic.
+
 ## Provenance
 
 Raw evidence is outside Git at:
