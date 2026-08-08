@@ -1,0 +1,81 @@
+{
+  "matched_timing_calibration_aug3": {
+    "bounded_modulo": {
+      "fill_cycles": 75308,
+      "filter_visits": 65537,
+      "request_cycles": 98261,
+      "result_tsv_sha256": "05a4ed98474bcaa3f3bb7732674fe7ab66655f250ad1b817105656a5005d35e7",
+      "simTicks": 62456646,
+      "stats_txt_sha256": "2663a08734b002530f1006730c9077f42699bc78f8eb11abb50fd3ba930f129c"
+    },
+    "campaign_commit": "0108d9b7a0c9f7818be75745aef3f8b72146c7d4",
+    "campaign_root": "/data1/nier/dx100-runs/2026-08-03-virtualization-integration/bounded-matched-oracle-f281637",
+    "counters_tsv_sha256": "0bda77a7fcdc8e9d1248b963cefae6a337c5b1ba0dbb22098da86872dee00be0",
+    "delta_modulo_minus_full": {
+      "fill_cycles": 49099,
+      "fill_plus_request_cycles": 34040,
+      "request_cycles": -15059
+    },
+    "full_control": {
+      "fill_cycles": 26209,
+      "request_cycles": 113320,
+      "result_tsv_sha256": "a9ff96a2f68f9b7a39ca928b5a0d2312bd3de2f362142f0ef72bb54c880abd2c",
+      "row_table_full_events": 859,
+      "simTicks": 51504776,
+      "stats_txt_sha256": "f61aa5520dc4e16275f7c6bc0c2c54d8276f0766b21a7a7761fa418dbce36607",
+      "virtual_build_rounds": 102
+    },
+    "matrix_tsv_sha256": "9205ea3918da6d1a888eb434d689505faabc2e02d9cb7bfa2c5e39812d1537c3",
+    "offline_oracle_advantage_vs_modulo_pct": 0.658,
+    "role": "separate matched timing calibration; not the physical trace source"
+  },
+  "generated_artifacts": {
+    "model_sha256": "bd5de4781540028694e99e87ad74f07adb482deca4e03d0a977eb78108a39992",
+    "report_sha256": "952a73d183a5b5052413377831870d8599cd77ccae5511cdcb3f8efed4454098",
+    "results_sha256": "a720a9650b4e40009a5aad29dfb4dc76e01bdfd92fd0ab61bee59680a17921cb",
+    "tests_sha256": "6b33adcda3cfbd4720398f8135f612f0ece3c6fd2b87c51afb799048c332923c"
+  },
+  "model_configuration": {
+    "configured_live_merge_heads": 8,
+    "descriptor_record_bytes": 8,
+    "finite_offsets": 4096,
+    "finite_rows_per_slice": 32,
+    "diagnostic_offsets": 16384,
+    "diagnostic_rows_per_slice": 128,
+    "general_subrun_upper_bound": 512,
+    "llc_bus_bytes_per_cycle": 32,
+    "llc_hit_latency_cycles": 42,
+    "line_bytes": 64,
+    "lines_per_row_slot": 8,
+    "nominal_4k_chunks": 4,
+    "partition_function": "grow_addr_mod_4",
+    "partitions": 4,
+    "slices": 16
+  },
+  "physical_trace_control_aug8": {
+    "artifact_gem5_sha256": "90858e29506525ea0ab4af88130c212ff8f4d3ae32842a7dfe322f8221ee9295",
+    "artifact_ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+    "artifact_workload_sha256": "f87d7206c91d5d48235da13a90ad08f2fb8c8f58ae25311758ebe4094ca6dfc5",
+    "case": "native_direct_16k",
+    "campaign_root": "/data1/nier/dx100-runs/2026-08-08-virtualization-sprint/hybrid-control-explicit-0108d9b",
+    "checkpoint_identity_sha256": "ef60d62c814de7a9c1700ab45b44b8d09c4e334b56e8c1e3ba4d6503793f3b5c",
+    "output_hash": "7228541527853630339",
+    "physical_validation_sha256": "f5846cb3b817792ec008f6cd1982113c5a70627bcc2e8922eb9d66d48050f7ca",
+    "fill_cycles": 13306,
+    "ramulator_config_sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b",
+    "raw_trace_path": "/data1/nier/dx100-runs/2026-08-08-virtualization-sprint/hybrid-control-explicit-0108d9b/native_direct_16k/physical_admission_records.jsonl",
+    "raw_trace_sha256": "1c68340c0e87a53240905389c1c0e5bf451a0645b8ceaf5f92d4e34edaba5424",
+    "record_count": 16384,
+    "record_payload_sha256": "f74273f74634df18d3fe0c4920c4ada223082038145b46529cea893da881ea7d",
+    "request_cycles": 107076,
+    "result_tsv_sha256": "63f85392c64d77c8f6a8fead906d6b5c482d63c56cd0830f16adabb95ef0237a",
+    "row_table_full_events": 845,
+    "schema": "dx100.physical_admission.v1",
+    "simTicks": 40159152,
+    "source_commit": "0108d9b7a0c9f7818be75745aef3f8b72146c7d4",
+    "stats_txt_sha256": "e2152f3a6971c55ef595de5affb254e40cdcece6f8004c580f49bdcc8ea13e9b",
+    "virtual_build_rounds": 103,
+    "role": "physical record and finite geometry source; not stage calibration"
+  },
+  "schema": "dx100.bounded_row_llc_replay_input.v3"
+}
