@@ -506,7 +506,7 @@ class LANLMAA : public ClockedObject
     std::vector<UmtOrderedWaveRecord> umtOrderedWaveRecords;
     std::vector<std::array<uint64_t, UmtOrderedWaveCorners>>
         umtOrderedWaveResults;
-    uint8_t umtOrderedWaveResultCorner = 0;
+    UmtOrderedWaveCompletionCursor umtOrderedWaveResultCursor;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
     size_t descriptorAddressCursor = 0;

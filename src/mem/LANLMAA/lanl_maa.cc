@@ -883,7 +883,7 @@ LANLMAA::rearmDescriptorEngine()
     umtOrderedWaveActive = false;
     umtOrderedWaveRecords.clear();
     umtOrderedWaveResults.clear();
-    umtOrderedWaveResultCorner = 0;
+    umtOrderedWaveResultCursor = UmtOrderedWaveCompletionCursor{};
     umtMixedSidecarReadsQueued = false;
     panic_if(umtMixedSidecarPorts.active() ||
                  umtMixedSidecarPorts.pending() != 0,
@@ -1178,13 +1178,14 @@ void
 LANLMAA::issueResultWrite()
 {
     if (umtOrderedWaveDescriptor()) {
-        if (umtOrderedWaveResultCorner == UmtOrderedWaveCorners) {
+        if (umtOrderedWaveResultCursor.complete()) {
             descriptorState = DescriptorState::CompletionPending;
             return;
         }
         if (!resultPacket) {
             const Addr address = umtOrderedWave.resultBase +
-                umtOrderedWaveResultCorner * umtOrderedWave.recordStride +
+                umtOrderedWaveResultCursor.corner *
+                    umtOrderedWave.recordStride +
                 descriptorResultCursor * sizeof(uint64_t);
             const size_t packetWords = umtOrderedWaveWordsToLineBoundary(
                 address,
@@ -1204,7 +1205,8 @@ LANLMAA::issueResultWrite()
                     byte / sizeof(uint64_t);
                 writeLe(
                     data, byte,
-                    umtOrderedWaveResults[group][umtOrderedWaveResultCorner],
+                    umtOrderedWaveResults[group]
+                        [umtOrderedWaveResultCursor.corner],
                     sizeof(uint64_t));
             }
             tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
@@ -3330,7 +3332,7 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         }
         descriptorAddressCursor = operations.size();
         descriptorResultCursor = 0;
-        umtOrderedWaveResultCorner = 0;
+        umtOrderedWaveResultCursor = UmtOrderedWaveCompletionCursor{};
         umtFusedBatchReadyCycle = 0;
         umtFusedResultsComputed = 0;
         beginDescriptorExecution();
@@ -4194,12 +4196,10 @@ LANLMAA::receiveResultResponse(PacketPtr packet)
                  "LANLMAA ordered-wave result packet crossed a plane");
         stats.descriptorResultWrites += resultWords;
         ++stats.descriptorUmtResultLineWrites;
-        descriptorResultCursor += resultWords;
-        if (descriptorResultCursor == operations.size()) {
-            ++umtOrderedWaveResultCorner;
-            if (umtOrderedWaveResultCorner != UmtOrderedWaveCorners)
-                descriptorResultCursor = 0;
-        }
+        panic_if(!umtOrderedWaveResultCursor.advance(
+                     resultWords, operations.size()),
+                 "LANLMAA ordered-wave result cursor became invalid");
+        descriptorResultCursor = umtOrderedWaveResultCursor.group;
     } else if (spartaFusedCellDescriptor()) {
         ++stats.descriptorResultWrites;
         ++spartaFusedWritesAcknowledged;
@@ -4362,7 +4362,7 @@ LANLMAA::completeDescriptor()
                 umtFusedResultsComputed != operations.size() ||
                 descriptorResultCursor != operations.size() ||
                 (umtOrderedWaveDescriptor() &&
-                 umtOrderedWaveResultCorner != UmtOrderedWaveCorners),
+                 !umtOrderedWaveResultCursor.complete()),
             "LANLMAA completed with incomplete UMT fused accounting");
     }
     beginSharedOverlayDrain();

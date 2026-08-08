@@ -161,7 +161,7 @@ application-speedup claim.
 
 ### UMT ordered eight-corner wave contract (opcode 11)
 
-Opcode 11 is a version-4, 256-byte contract occupying four adjacent
+Opcode 11 is a version-5, 256-byte contract occupying four adjacent
 64-byte descriptor slots. Byte 7 must equal three: bit zero promises an
 exactly eight-corner positive UCB zone and bit one selects a
 structure-of-arrays mapped arena. Opcode 10 remains unchanged as the
@@ -169,13 +169,13 @@ per-corner baseline.
 
 | Offset | Size | Meaning |
 | ---: | ---: | --- |
-| 8 | 4 | Group count, 1-32 |
-| 12 | 4 | Input/result plane stride, exactly 256 bytes |
+| 8 | 4 | Group count, 1-64 |
+| 12 | 4 | Input/result plane stride, exactly 512 bytes |
 | 16 | 8 | Record base |
 | 24 | 8 | Result base |
 | 32 | 8 | 32-byte completion record |
 | 40 | 8 | Reserved, zero |
-| 48 | 8 | ABI fingerprint `0x9bafe2c1186d4075` |
+| 48 | 8 | ABI fingerprint `0xd51dcb1df4ac9e64` |
 | 56 | 4 | Corner count, exactly 8 |
 | 60 | 4 | Stored nonzero edge count, 0-12 |
 | 64 | 4 | 28-bit strict-upper edge mask in source-major order |
@@ -185,12 +185,13 @@ per-corner baseline.
 | 168 | 64 | Eight finite FP64 `sum_area` values in solve order |
 | 232 | 24 | Reserved, zero |
 
-The mapped record arena is sixteen 256-byte planes: eight source planes
+The mapped record arena is sixteen 512-byte planes: eight source planes
 followed by eight sigma-times-volume planes. Word `g` of a plane belongs to
-group `g`; unused words through the fixed 32-group capacity are ignored. The
+group `g`; unused words through the fixed 64-group capacity are ignored. The
 result arena is eight planes in solve order using the same stride. This
-preserves the version-3 logical inputs, results, 32-group hardware footprint,
-and exact physical line counts while allowing the native bridge to pack and
+preserves the version-3 logical inputs and results while using the existing
+64-entry operation and continuation stores as its 64-group admission limit
+and allowing the native bridge to pack and
 sink contiguous group slices. Descriptor-global `sum_area[8]` is reused by
 every group. The 28-bit mask
 reconstructs the shared strict-upper coefficient triangle; at most twelve
@@ -218,11 +219,15 @@ pair per nonzero edge. Architecturally retained group state is eight mutable
 sources plus eight denominators; at most twelve coefficients and eight
 sum-area constants are descriptor-global. Hoisting sum area adds one descriptor
 fetch and 64 bytes of descriptor-global state while removing one 64-byte input
-line per group. For a full 32-group descriptor, it replaces 32 input reads with
+line per group. For a full 64-group descriptor, it replaces 64 input reads with
 one descriptor read relative to version 2. Version 4 changes only mapped-arena
-address formation; it adds no arithmetic or live per-group state.
-The C++ vectors used by the functional simulator are not an SRAM sizing
-claim. Synthesis, wiring, power, and physical timing remain unproven.
+address formation; version 5 widens opcode-11's arena planes and admission
+limit. It adds no new fields or words per group and does not change the line,
+update, or descriptor stores, but it doubles simultaneous live groups from 32
+to 64 and therefore doubles aggregate semantic retained-state demand.
+The C++ vectors used by the functional simulator are not an SRAM sizing claim.
+The streamed/banked mapping for that 64-group demand remains an open hardware
+gate; synthesis, wiring, power, and physical timing remain unproven.
 
 ## Completion and control records
 

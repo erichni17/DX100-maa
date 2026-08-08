@@ -93,11 +93,11 @@ system.lanl_maa = LANLMAA(
     descriptor_mode=True,
     descriptor_table_base=DATA_PADDR,
     descriptor_slots=8,
-    max_descriptor_items=32,
+    max_descriptor_items=64,
     control_addr=CONTROL_PADDR,
     control_size=CONTROL_BYTES,
     operation_entries=64,
-    continuation_entries=32,
+    continuation_entries=64,
     line_entries=32,
     update_entries=64,
     update_banks=8,
@@ -149,7 +149,7 @@ process_environment = [
 ]
 if args.maa:
     mapping_cookie = (
-        "umt-lanl-maa-opcode11-wave-soa-arena-v4"
+        "umt-lanl-maa-opcode11-wave-soa-arena-v5"
         if args.umt_mode == "wave"
         else "umt-lanl-maa-opcode10-mapped-v1"
     )

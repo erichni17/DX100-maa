@@ -15,7 +15,7 @@ namespace lanlmaa
 {
 
 constexpr size_t UmtOrderedWaveDescriptorBytes = 256;
-constexpr uint16_t UmtOrderedWaveDescriptorVersion = 4;
+constexpr uint16_t UmtOrderedWaveDescriptorVersion = 5;
 constexpr uint8_t UmtOrderedWaveOpcode = 11;
 constexpr uint8_t UmtOrderedWaveEightCornerFlag = 1U << 0;
 constexpr uint8_t UmtOrderedWaveStructureOfArraysFlag = 1U << 1;
@@ -29,11 +29,13 @@ constexpr uint32_t UmtOrderedWaveRecordBytes =
     UmtOrderedWaveRecordFp64Words * sizeof(uint64_t);
 constexpr uint32_t UmtOrderedWaveResultBytes =
     UmtOrderedWaveCorners * sizeof(uint64_t);
-constexpr uint32_t UmtOrderedWaveMaximumGroups = 32;
+// Opcode 11 may consume every existing operation and continuation entry.
+// This does not increase the line, update, or descriptor stores.
+constexpr uint32_t UmtOrderedWaveMaximumGroups = 64;
 constexpr uint32_t UmtOrderedWavePlaneStride =
     UmtOrderedWaveMaximumGroups * sizeof(uint64_t);
 constexpr uint64_t UmtOrderedWaveAbiFingerprint =
-    0x9bafe2c1186d4075ULL;
+    0xd51dcb1df4ac9e64ULL;
 constexpr size_t UmtOrderedWaveSumAreaOffset = 168;
 
 struct UmtOrderedWaveDescriptor
@@ -67,6 +69,30 @@ struct UmtOrderedWaveDescriptorDecodeResult
     DescriptorError error = DescriptorError::None;
 
     explicit operator bool() const { return error == DescriptorError::None; }
+};
+
+struct UmtOrderedWaveCompletionCursor
+{
+    size_t group = 0;
+    size_t corner = 0;
+
+    // A final-plane acknowledgement leaves group at its terminal value so
+    // completion is selected without wrapping to plane zero.
+    bool advance(size_t acknowledgedWords, size_t groupCount)
+    {
+        if (acknowledgedWords == 0 || group > groupCount ||
+            acknowledgedWords > groupCount - group)
+            return false;
+        group += acknowledgedWords;
+        if (group != groupCount)
+            return true;
+        ++corner;
+        if (corner != UmtOrderedWaveCorners)
+            group = 0;
+        return true;
+    }
+
+    bool complete() const { return corner == UmtOrderedWaveCorners; }
 };
 
 inline size_t

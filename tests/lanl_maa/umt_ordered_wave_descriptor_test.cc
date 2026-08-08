@@ -37,7 +37,7 @@ validBytes()
     put(bytes, 4, UmtOrderedWaveDescriptorVersion, 2);
     put(bytes, 6, UmtOrderedWaveOpcode, 1);
     put(bytes, 7, UmtOrderedWaveFlags, 1);
-    put(bytes, 8, 32, 4);
+    put(bytes, 8, UmtOrderedWaveMaximumGroups, 4);
     put(bytes, 12, UmtOrderedWavePlaneStride, 4);
     put(bytes, 16, 0x1000, 8);
     put(bytes, 24, 0x4000, 8);
@@ -95,9 +95,22 @@ main()
     assert(counts.addSub == 19);
     const auto schedule = umtOrderedWaveSchedule(decoded.descriptor);
     assert(schedule);
-    assert(schedule.operations.divide == 256);
-    assert(schedule.operations.multiply == 352);
-    assert(schedule.operations.addSub == 608);
+    assert(schedule.operations.divide == 512);
+    assert(schedule.operations.multiply == 704);
+    assert(schedule.operations.addSub == 1216);
+
+    UmtOrderedWaveCompletionCursor cursor;
+    assert(cursor.advance(8, UmtOrderedWaveMaximumGroups));
+    assert(cursor.group == 8 && cursor.corner == 0 && !cursor.complete());
+    assert(cursor.advance(56, UmtOrderedWaveMaximumGroups));
+    assert(cursor.group == 0 && cursor.corner == 1 && !cursor.complete());
+    for (size_t corner = 1; corner < UmtOrderedWaveCorners; ++corner) {
+        assert(cursor.advance(UmtOrderedWaveMaximumGroups,
+                              UmtOrderedWaveMaximumGroups));
+    }
+    assert(cursor.group == UmtOrderedWaveMaximumGroups);
+    assert(cursor.complete());
+    assert(!cursor.advance(1, UmtOrderedWaveMaximumGroups));
 
     UmtOrderedWaveRecord record;
     for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
@@ -127,6 +140,26 @@ main()
                    sizeof(double)) == 0);
     }
 
+    bytes = validBytes();
+    put(bytes, 8, UmtOrderedWaveMaximumGroups + 1, 4);
+    assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
+           DescriptorError::TooManyItems);
+    bytes = validBytes();
+    put(bytes, 4, UmtOrderedWaveDescriptorVersion - 1, 2);
+    assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
+           DescriptorError::BadVersion);
+    bytes = validBytes();
+    put(bytes, 48, UmtOrderedWaveAbiFingerprint ^ 1, 8);
+    assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
+           DescriptorError::BadRecordValue);
+    bytes = validBytes();
+    put(bytes, 24, 0x2ff8, 8);
+    assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
+           DescriptorError::OverlappingInput);
+    bytes = validBytes();
+    put(bytes, 32, 0x4ff8, 8);
+    assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
+           DescriptorError::OverlappingOutput);
     bytes = validBytes();
     put(bytes, 8, 0, 4);
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
