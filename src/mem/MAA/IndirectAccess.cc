@@ -3530,6 +3530,49 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
 
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
+    if (flush_partial && maa->virtual_page_ready_on_issue) {
+        // Retire non-forwardable fragments first. Once acknowledged, later
+        // full-line writes can remain in the bounded retirement map and feed
+        // an issue-ready STREAM consumer. This changes only cross-address
+        // scheduling; the exact-address map still preserves ordering.
+        for (auto &slot : virtual_combine_slots) {
+            if (!slot.valid || slot.valid_words == full_mask)
+                continue;
+            if (virtual_outstanding_writes ==
+                virtual_max_outstanding_writes_limit) {
+                break;
+            }
+            if (virtual_masked_writes) {
+                const int words = __builtin_popcount(slot.valid_words);
+                if (createRetirementWrite(slot.line_vaddr, block_size,
+                                          slot.data.data(),
+                                          slot.valid_words)) {
+                    virtual_combine_words -= words;
+                    virtual_partial_word_writes++;
+                    slot = VirtualCombineSlot();
+                }
+                continue;
+            }
+            while (slot.valid_words != 0 &&
+                   virtual_outstanding_writes <
+                       virtual_max_outstanding_writes_limit) {
+                unsigned word = __builtin_ctz(slot.valid_words);
+                if (!createRetirementWrite(
+                        slot.line_vaddr + word * my_word_size, my_word_size,
+                        slot.data.data() + word * my_word_size)) {
+                    break;
+                }
+                slot.valid_words &= ~(1U << word);
+                panic_if(virtual_combine_words == 0,
+                         "I[%d] virtual word accounting underflow\n",
+                         my_indirect_id);
+                virtual_combine_words--;
+                virtual_partial_word_writes++;
+            }
+            if (slot.valid_words == 0)
+                slot = VirtualCombineSlot();
+        }
+    }
     for (auto &slot : virtual_combine_slots) {
         if (!slot.valid)
             continue;

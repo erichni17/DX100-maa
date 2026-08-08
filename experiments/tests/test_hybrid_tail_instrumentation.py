@@ -93,6 +93,22 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         self.assertIn("transparent_issue_ready_4k)", runner)
         self.assertIn("virtual_retirement_stream_forwards", runner)
 
+    def test_issue_ready_flush_prioritizes_nonforwardable_fragments(self):
+        source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
+        drain = source[
+            source.index("drainVirtualCombiner(bool flush_partial)") :
+        ]
+        priority = drain.index(
+            "flush_partial && maa->virtual_page_ready_on_issue"
+        )
+        ordinary = drain.index(
+            "for (auto &slot : virtual_combine_slots)", priority
+        )
+        full_line = drain.index("slot.valid_words == full_mask", ordinary)
+
+        self.assertLess(priority, full_line)
+        self.assertIn("Retire non-forwardable fragments first", drain)
+
     def test_scheduled_forward_has_bounded_lifecycle(self):
         header = (ROOT / "src/mem/MAA/MAA.hh").read_text()
         maa = (ROOT / "src/mem/MAA/MAA.cc").read_text()
