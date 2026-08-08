@@ -22,4 +22,13 @@ ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
     "$work/logical_spd_bridge_lifecycle_sanitize"
 
+port_test="$root/tests/maa/logical_spd_cache_port_provenance_test.cc"
+"$cxx" "${common[@]}" -O2 "$port_test" -o "$work/logical_spd_port_opt"
+"$work/logical_spd_port_opt"
+"$cxx" "${common[@]}" -O1 -g -fno-omit-frame-pointer \
+    -fsanitize=address,undefined "$port_test" -o "$work/logical_spd_port_sanitize"
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+    "$work/logical_spd_port_sanitize"
+
 python3 "$root/experiments/tests/test_logical_spd_cache_bridge_lifecycle_contract.py"

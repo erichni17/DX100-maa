@@ -567,10 +567,10 @@ protected:
         LogicalSPDExecution &execution,
         const LogicalSPDCacheGem5Bridge::Runtime::Transport::RequestPacket
             &request);
-    bool recvLogicalSPDTimingResp(PacketPtr pkt);
+    bool recvLogicalSPDTimingResp(PacketPtr pkt, uint8_t respondingPort);
     void serviceLogicalSPD();
     void scheduleLogicalSPDEvent(int latency = 0);
-    void notifyLogicalSPDRetry();
+    void notifyLogicalSPDRetry(uint8_t retryingPort);
     EventFunctionWrapper logicalSpdEvent;
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;

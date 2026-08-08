@@ -1,25 +1,26 @@
-#include "mem/MAA/ALU.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/IndirectAccess.hh"
-#include "mem/MAA/Invalidator.hh"
-#include "mem/MAA/RangeFuser.hh"
-#include "mem/MAA/SPD.hh"
-#include "mem/MAA/StreamAccess.hh"
-#include "mem/MAA/MAA.hh"
+#include <cassert>
+#include <cstdint>
 
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
+#include "debug/MAA.hh"
+#include "debug/MAACachePort.hh"
+#include "debug/MAAController.hh"
+#include "debug/MAACpuPort.hh"
+#include "debug/MAAMemPort.hh"
+#include "mem/MAA/ALU.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/IndirectAccess.hh"
+#include "mem/MAA/Invalidator.hh"
+#include "mem/MAA/LogicalSPDCachePortProvenance.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/RangeFuser.hh"
+#include "mem/MAA/SPD.hh"
+#include "mem/MAA/StreamAccess.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
-#include "debug/MAA.hh"
-#include "debug/MAACpuPort.hh"
-#include "debug/MAACachePort.hh"
-#include "debug/MAAMemPort.hh"
-#include "debug/MAAController.hh"
 #include "sim/cur_tick.hh"
-#include <cassert>
-#include <cstdint>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -30,7 +31,7 @@ namespace gem5 {
 bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAACachePort, "%s: received %s\n", __func__, pkt->print());
-    if (!maa->recvLogicalSPDTimingResp(pkt))
+    if (!maa->recvLogicalSPDTimingResp(pkt, static_cast<uint8_t>(core_id)))
         maa->recvTimingResp(pkt, true);
     outstandingCacheSidePackets--;
     if (blockReason == BlockReason::MAX_XBAR_PACKETS) {
@@ -126,7 +127,7 @@ void MAA::CacheSidePort::setUnblocked(BlockReason reason) {
     blockReason = BlockReason::NOT_BLOCKED;
     if (maa->cache_bus_blocked[core_id])
         maa->unblockCache(core_id);
-    maa->notifyLogicalSPDRetry();
+    maa->notifyLogicalSPDRetry(static_cast<uint8_t>(core_id));
 }
 
 void MAA::CacheSidePort::allocate(int _core_id, int _maxOutstandingCacheSidePackets) {
