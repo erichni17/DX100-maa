@@ -1,0 +1,3 @@
+case	output_hash	simTicks	physical_elements	offset_entries	write_issues	write_completions	pages_ready	row_table_cache_lines	row_table_rows_inserted	dram_reads	dram_activates	dram_precharges
+native_direct_16k	7228541527853630339	41189861	16384	16384	0	0	0	10518	1477	25723	4560	3468
+transparent_4k	7228541527853630339	46889591	4096	16384	5019	5019	4	9954	1455	26411	5787	4559

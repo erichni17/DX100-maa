@@ -1,0 +1,22 @@
+campaign: virtualization_control_2026_08_08
+status: accepted_control
+source_commit: 0108d9b7a0c9f7818be75745aef3f8b72146c7d4
+raw_root: /data1/nier/dx100-runs/2026-08-08-virtualization-sprint/hybrid-control-sequential-0108d9b
+checkpoint_identity_sha256: b2ce605f4f22273b9193a67dbc12370bc1f35080a084c13f395663131c92c4e3
+artifacts:
+  gem5_sha256: 90858e29506525ea0ab4af88130c212ff8f4d3ae32842a7dfe322f8221ee9295
+  workload_sha256: f87d7206c91d5d48235da13a90ad08f2fb8c8f58ae25311758ebe4094ca6dfc5
+  ramulator_sha256: 76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
+  ramulator_provenance_sha256: 9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66
+controls:
+  logical_elements: 16384
+  native_physical_elements: 16384
+  transparent_physical_elements: 4096
+  offset_table_entries: 16384
+  offset_table_epoch_entries: 16384
+  shared_checkpoint: true
+  unlike_treatments_serialized: true
+excluded_attempts:
+  - /data1/nier/dx100-runs/2026-08-08-virtualization-sprint/hybrid-control-0108d9b
+  - /data1/nier/dx100-runs/2026-08-08-virtualization-sprint/hybrid-control-explicit-0108d9b
+exclusion_reason: concurrent unlike treatments raced through one shared deferred selector
