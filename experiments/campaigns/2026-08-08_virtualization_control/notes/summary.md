@@ -1,8 +1,10 @@
 # Virtualization Control
 
 This is the frozen control for the August 8 optimization sprint. Both arms use
-the same treatment-neutral checkpoint, source commit, gem5 binary, workload,
-Ramulator library, logical 16K range, and 16K Offset capacity. Unlike deferred
+the same treatment-neutral checkpoint, gem5 binary, workload, Ramulator
+library, logical 16K range, and 16K Offset capacity. The frozen simulator was
+built from `f281637`; the evidence runner was at `0108d9b`. There are no source,
+configuration, API, or Ramulator changes between those commits. Unlike deferred
 treatments were run serially because the workload reads one shared treatment
 file after checkpoint restore.
 
@@ -20,7 +22,8 @@ four page-ready events, and extra DRAM activation/precharge activity.
 This result is not the older 8.26% retirement-only calibration. That experiment
 did not equalize the full producer/consumer chain. It also does not supersede
 the prior 14.27% matched result, which used an older binary; it re-establishes
-the control at source commit `0108d9b` for comparisons made in this sprint.
+the `f281637` simulator control under the stricter `0108d9b` evidence runner
+for comparisons made in this sprint.
 
 ## Excluded Attempts
 

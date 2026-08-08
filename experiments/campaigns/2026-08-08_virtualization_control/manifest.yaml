@@ -1,6 +1,8 @@
 campaign: virtualization_control_2026_08_08
 status: accepted_control
-source_commit: 0108d9b7a0c9f7818be75745aef3f8b72146c7d4
+simulator_source_commit: f28163724c1d1f1e2303c5995272a3db32e32b6c
+runner_source_commit: 0108d9b7a0c9f7818be75745aef3f8b72146c7d4
+simulator_source_diff_to_runner: none
 raw_root: /data1/nier/dx100-runs/2026-08-08-virtualization-sprint/hybrid-control-sequential-0108d9b
 checkpoint_identity_sha256: b2ce605f4f22273b9193a67dbc12370bc1f35080a084c13f395663131c92c4e3
 artifacts:
