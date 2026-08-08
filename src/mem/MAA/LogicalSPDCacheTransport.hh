@@ -15,13 +15,17 @@ class LogicalSPDCacheTransport
     friend class LogicalSPDCacheRuntime;
   public:
     static constexpr std::size_t DescriptorCount = 2;
-    static constexpr std::size_t PagesPerDescriptor = 4;
+    static constexpr std::size_t PagesPerDescriptor = 8;
     static constexpr std::size_t SlotCount = 2;
     static constexpr std::size_t PortCount = 4;
-    static constexpr std::size_t PageElements = 4096;
+    static constexpr std::size_t PageElements = 2048;
+    static constexpr std::size_t MaxPageElements = 4096;
     static constexpr std::size_t LineBytes = 64;
     static constexpr std::size_t PageBytes = PageElements * sizeof(double);
     static constexpr std::size_t LinesPerPage = PageBytes / LineBytes;
+    static constexpr std::size_t MaxPageBytes =
+        MaxPageElements * sizeof(double);
+    static constexpr std::size_t MaxLinesPerPage = MaxPageBytes / LineBytes;
     static constexpr std::size_t RecordCount = 8;
     static constexpr std::size_t FifoEntries = 8;
     static constexpr std::size_t ResponseCredits = 4;
@@ -280,18 +284,26 @@ class LogicalSPDCacheTransport
         std::array<bool, RecordCount> packetOwned{};
         std::array<std::array<std::byte, LineBytes>, ResponseCredits>
             lineBuffers{};
-        std::array<uint64_t, LinesPerPage / 64> issued{};
-        std::array<uint64_t, LinesPerPage / 64> acked{};
+        uint16_t activeLines = LinesPerPage;
+        uint16_t activePageBytes = PageBytes;
+        std::array<uint64_t, MaxLinesPerPage / 64> issued{};
+        std::array<uint64_t, MaxLinesPerPage / 64> acked{};
 
         bool operator==(const AuditSnapshot &other) const;
     };
 
     using CopyHook = bool (*)(void *context);
 
-    explicit LogicalSPDCacheTransport(std::size_t ports = PortCount,
-                                      std::size_t lineBytes = LineBytes);
+    explicit LogicalSPDCacheTransport(
+        std::size_t ports = PortCount,
+        std::size_t lineBytes = LineBytes,
+        std::size_t pageBytes = PageBytes,
+        std::size_t pagesPerDescriptor = PagesPerDescriptor);
     LogicalSPDCacheTransport(std::size_t ports, std::size_t lineBytes,
-                             IdBudget budget);
+                             IdBudget budget,
+                             std::size_t pageBytes = PageBytes,
+                             std::size_t pagesPerDescriptor =
+                                 PagesPerDescriptor);
     ~LogicalSPDCacheTransport();
 
     LogicalSPDCacheTransport(const LogicalSPDCacheTransport &) = delete;
@@ -319,6 +331,9 @@ class LogicalSPDCacheTransport
     bool assertInvariants() const;
     bool drained() const;
     bool geometryValid() const { return geometryIsValid; }
+    std::size_t pageBytes() const { return configuredPageBytes; }
+    std::size_t linesPerPage() const { return configuredLinesPerPage; }
+    std::size_t pageCount() const { return configuredPagesPerDescriptor; }
     bool copyActive() const { return deliveryCopyActive; }
     bool sealed() const { return isSealed; }
     bool poisoned() const { return terminalPoisoned; }
@@ -397,8 +412,8 @@ class LogicalSPDCacheTransport
         uint64_t controllerSerial = 0;
         PageSpan slotSpan{};
         uint16_t nextLine = 0;
-        std::array<uint64_t, LinesPerPage / 64> issued{};
-        std::array<uint64_t, LinesPerPage / 64> acked{};
+        std::array<uint64_t, MaxLinesPerPage / 64> issued{};
+        std::array<uint64_t, MaxLinesPerPage / 64> acked{};
         uint16_t ackCount = 0;
         AbortCode abortCode = AbortCode::None;
     };
@@ -419,7 +434,7 @@ class LogicalSPDCacheTransport
     static bool validCommand(Command command);
     static bool validAbortCode(AbortCode code);
     static bool validFaultPoint(FaultPoint fault);
-    static bool validPageSpan(PageSpan span);
+    bool validPageSpan(PageSpan span) const;
     bool previewIncarnations(uint32_t count, uint32_t &first,
                              uint32_t &committedNext,
                              bool &committedExhausted) const;
@@ -455,11 +470,12 @@ class LogicalSPDCacheTransport
         void *context, const CompletionAuthority *authority);
     Result ackReleaseAndRefill(
         uint8_t record, const CompletionAuthority *authority = nullptr);
-    static void setBit(std::array<uint64_t, LinesPerPage / 64> &bits,
+    static void setBit(std::array<uint64_t, MaxLinesPerPage / 64> &bits,
                        std::size_t line);
-    static bool getBit(const std::array<uint64_t, LinesPerPage / 64> &bits,
-                       std::size_t line);
-    static bool allBits(const std::array<uint64_t, LinesPerPage / 64> &bits);
+    bool getBit(const std::array<uint64_t, MaxLinesPerPage / 64> &bits,
+                std::size_t line) const;
+    bool allBits(
+        const std::array<uint64_t, MaxLinesPerPage / 64> &bits) const;
 
     std::array<TransactionRecord, RecordCount> records{};
     RequestFifo fifo{};
@@ -477,17 +493,21 @@ class LogicalSPDCacheTransport
     bool geometryIsValid = true;
     bool terminalPoisoned = false;
     IdBudget remainingBudget{};
+    std::size_t configuredPageBytes = PageBytes;
+    std::size_t configuredLinesPerPage = LinesPerPage;
+    std::size_t configuredPagesPerDescriptor = PagesPerDescriptor;
 };
 
 static_assert(LogicalSPDCacheTransport::DescriptorCount == 2);
-static_assert(LogicalSPDCacheTransport::PagesPerDescriptor == 4);
+static_assert(LogicalSPDCacheTransport::PagesPerDescriptor == 8);
 static_assert(LogicalSPDCacheTransport::SlotCount == 2);
 static_assert(LogicalSPDCacheTransport::PortCount == 4);
 static_assert(LogicalSPDCacheTransport::LineBytes == 64);
 static_assert(LogicalSPDCacheTransport::RecordCount == 8);
 static_assert(LogicalSPDCacheTransport::FifoEntries == 8);
 static_assert(LogicalSPDCacheTransport::ResponseCredits == 4);
-static_assert(LogicalSPDCacheTransport::LinesPerPage == 512);
+static_assert(LogicalSPDCacheTransport::LinesPerPage == 256);
+static_assert(LogicalSPDCacheTransport::MaxLinesPerPage == 512);
 
 } // namespace gem5
 

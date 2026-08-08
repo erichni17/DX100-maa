@@ -67,6 +67,19 @@ class LogicalSPDCacheController
     static constexpr uint16_t NoLease = std::numeric_limits<uint16_t>::max();
     static constexpr TransactionSerial NoTransaction = 0;
 
+    explicit LogicalSPDCacheController(
+        std::size_t activePages = PagesPerDescriptor,
+        std::size_t activeSlots = PhysicalSlots)
+        : pageCount(activePages), slotCount(activeSlots),
+          geometryIsValid(activePages != 0 &&
+                          activePages <= PagesPerDescriptor &&
+                          activeSlots != 0 && activeSlots <= PhysicalSlots)
+    {}
+
+    bool geometryValid() const { return geometryIsValid; }
+    std::size_t activePages() const { return pageCount; }
+    std::size_t activeSlots() const { return slotCount; }
+
     struct DescriptorHandle
     {
         uint16_t logical = 0;
@@ -268,6 +281,21 @@ class LogicalSPDCacheController
         OverwriteReservation reservation{};
     };
 
+    struct InPlaceReservation
+    {
+        Lease source{};
+        PageIdentity destination{};
+        uint16_t slot = NoSlot;
+        TransactionSerial computeSerial = NoTransaction;
+        TransactionSerial writebackSerial = NoTransaction;
+    };
+
+    struct InPlaceReply
+    {
+        OverwriteStatus status = OverwriteStatus::Invalid;
+        InPlaceReservation reservation{};
+    };
+
     enum class OverwriteResult : uint8_t
     {
         Accepted,
@@ -297,7 +325,7 @@ class LogicalSPDCacheController
     PageIdentity
     identity(const DescriptorHandle &descriptor, uint16_t page) const
     {
-        if (page >= PagesPerDescriptor)
+        if (page >= pageCount)
             return {};
         return {descriptor.logical, page, descriptor.generation};
     }
@@ -467,6 +495,109 @@ class LogicalSPDCacheController
                  computeSerial, writebackSerial}};
     }
 
+    /** Reserve the sole resident slot for an exact in-place scalar update. */
+    InPlaceReply
+    reserveInPlaceOverwrite(const PageIdentity &source,
+                            const PageIdentity &destination)
+    {
+        if (!geometryIsValid || slotCount != 1 ||
+            !validCoordinates(source) || !validCoordinates(destination) ||
+            source.logical == destination.logical) {
+            return {OverwriteStatus::Invalid, {}};
+        }
+        if (!isLive(source) || !isLive(destination))
+            return {OverwriteStatus::Stale, {}};
+        if (!descriptors[source.logical].ready[source.page])
+            return {OverwriteStatus::SourceNotReady, {}};
+        if (descriptors[destination.logical].ready[destination.page])
+            return {OverwriteStatus::DestinationReady, {}};
+        const uint16_t slot = residentSlot(source);
+        if (slot == NoSlot)
+            return {OverwriteStatus::SourceNotResident, {}};
+        if (queued(destination) || pageHasOwner(destination) ||
+            slotPinned(slot)) {
+            return {OverwriteStatus::DestinationUnavailable, {}};
+        }
+        uint16_t leaseEntry = NoLease;
+        for (uint16_t entry = 0; entry < LeaseEntries; ++entry) {
+            if (!leases[entry].active &&
+                leases[entry].serial !=
+                    std::numeric_limits<uint64_t>::max()) {
+                leaseEntry = entry;
+                break;
+            }
+        }
+        if (leaseEntry == NoLease)
+            return {OverwriteStatus::Backpressure, {}};
+        const TransactionSerial maximum =
+            std::numeric_limits<TransactionSerial>::max();
+        if (lastMemorySerial >= maximum - 1)
+            return {OverwriteStatus::SerialExhausted, {}};
+
+        const TransactionSerial computeSerial = lastMemorySerial + 1;
+        const TransactionSerial writebackSerial = computeSerial + 1;
+        const Lease sourceLease = activateManagedLease(
+            leaseEntry, slot, source, LeasePurpose::InPlaceOverwrite,
+            computeSerial);
+        Slot &owned = slots[slot];
+        owned.phase = Phase::Reserved;
+        owned.transaction = computeSerial;
+        owned.writebackTransaction = writebackSerial;
+        owned.publishOnWriteback = false;
+        lastMemorySerial = writebackSerial;
+        return {OverwriteStatus::Accepted,
+                {sourceLease, destination, slot, computeSerial,
+                 writebackSerial}};
+    }
+
+    OverwriteResult
+    beginInPlaceCompute(const InPlaceReservation &reservation)
+    {
+        if (!matchingInPlace(reservation, Phase::Reserved))
+            return validInPlaceFields(reservation)
+                       ? OverwriteResult::Stale
+                       : OverwriteResult::Invalid;
+        slots[reservation.slot].phase = Phase::Computing;
+        return OverwriteResult::Accepted;
+    }
+
+    OverwriteResult
+    completeInPlaceOverwrite(const InPlaceReservation &reservation)
+    {
+        if (!matchingInPlace(reservation, Phase::Computing))
+            return validInPlaceFields(reservation)
+                       ? OverwriteResult::Stale
+                       : OverwriteResult::Invalid;
+        LeaseRecord &source = leases[reservation.source.entry];
+        Slot &slot = slots[reservation.slot];
+        slot.phase = Phase::Dirty;
+        slot.page = reservation.destination;
+        slot.transaction = NoTransaction;
+        slot.writebackTransaction = reservation.writebackSerial;
+        slot.publishOnWriteback = true;
+        releaseManagedLease(source);
+        return OverwriteResult::Accepted;
+    }
+
+    OverwriteResult
+    cancelInPlaceOverwrite(const InPlaceReservation &reservation)
+    {
+        if (!matchingInPlace(reservation, Phase::Reserved) &&
+            !matchingInPlace(reservation, Phase::Computing)) {
+            return validInPlaceFields(reservation)
+                       ? OverwriteResult::Stale
+                       : OverwriteResult::Invalid;
+        }
+        LeaseRecord &source = leases[reservation.source.entry];
+        Slot &slot = slots[reservation.slot];
+        slot.phase = Phase::Clean;
+        slot.transaction = NoTransaction;
+        slot.writebackTransaction = NoTransaction;
+        slot.publishOnWriteback = false;
+        releaseManagedLease(source);
+        return OverwriteResult::Accepted;
+    }
+
     /**
      * Start the exact reserved compute; duplicate/forged starts are no-ops.
      */
@@ -542,7 +673,7 @@ class LogicalSPDCacheController
     MemoryAction
     pendingAction() const
     {
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if (slots[slot].phase == Phase::Dirty &&
                 slots[slot].writebackTransaction != NoTransaction &&
                 !slotPinned(slot)) {
@@ -551,7 +682,7 @@ class LogicalSPDCacheController
         }
         if (memorySerialExhausted())
             return {};
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if (slots[slot].phase == Phase::Dirty &&
                 !isLive(slots[slot].page) && !slotPinned(slot)) {
                 return writebackAction(slot);
@@ -565,15 +696,15 @@ class LogicalSPDCacheController
         if (pageHasOwner(missQueue[0]))
             return {};
 
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if (slots[slot].phase == Phase::Empty)
                 return fillAction(slot, false);
         }
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if (slots[slot].phase == Phase::Clean && !slotPinned(slot))
                 return fillAction(slot, true);
         }
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if (slots[slot].phase == Phase::Dirty && !slotPinned(slot))
                 return writebackAction(slot);
         }
@@ -589,7 +720,7 @@ class LogicalSPDCacheController
     {
         if ((action.kind != ActionKind::Fill &&
              action.kind != ActionKind::Writeback) ||
-            action.slot >= PhysicalSlots ||
+            action.slot >= slotCount ||
             action.serial == NoTransaction) {
             return ActionResult::Invalid;
         }
@@ -651,7 +782,7 @@ class LogicalSPDCacheController
     {
         if ((action.kind != ActionKind::Fill &&
              action.kind != ActionKind::Writeback) ||
-            action.slot >= PhysicalSlots || action.serial == NoTransaction ||
+            action.slot >= slotCount || action.serial == NoTransaction ||
             !validCoordinates(action.page)) {
             return CancelResult::Invalid;
         }
@@ -678,7 +809,7 @@ class LogicalSPDCacheController
     completeFill(uint16_t slotIndex, const PageIdentity &page,
                  TransactionSerial serial)
     {
-        if (slotIndex >= PhysicalSlots || !validCoordinates(page) ||
+        if (slotIndex >= slotCount || !validCoordinates(page) ||
             serial == NoTransaction) {
             return ResponseResult::Invalid;
         }
@@ -700,7 +831,7 @@ class LogicalSPDCacheController
     completeWriteback(uint16_t slotIndex, const PageIdentity &page,
                       TransactionSerial serial)
     {
-        if (slotIndex >= PhysicalSlots || !validCoordinates(page) ||
+        if (slotIndex >= slotCount || !validCoordinates(page) ||
             serial == NoTransaction) {
             return ResponseResult::Invalid;
         }
@@ -808,28 +939,28 @@ class LogicalSPDCacheController
 
     Phase slotPhase(std::size_t slot) const
     {
-        return slot < PhysicalSlots ? slots[slot].phase : Phase::Empty;
+        return slot < slotCount ? slots[slot].phase : Phase::Empty;
     }
 
     PageIdentity slotIdentity(std::size_t slot) const
     {
-        return slot < PhysicalSlots ? slots[slot].page : PageIdentity{};
+        return slot < slotCount ? slots[slot].page : PageIdentity{};
     }
 
     TransactionSerial slotTransaction(std::size_t slot) const
     {
-        return slot < PhysicalSlots ? slots[slot].transaction : NoTransaction;
+        return slot < slotCount ? slots[slot].transaction : NoTransaction;
     }
 
     TransactionSerial slotWritebackTransaction(std::size_t slot) const
     {
-        return slot < PhysicalSlots ? slots[slot].writebackTransaction
+        return slot < slotCount ? slots[slot].writebackTransaction
                                     : NoTransaction;
     }
 
     bool slotPublishesOnWriteback(std::size_t slot) const
     {
-        return slot < PhysicalSlots && slots[slot].publishOnWriteback;
+        return slot < slotCount && slots[slot].publishOnWriteback;
     }
 
     bool canAllocateMemorySerials(std::size_t count) const
@@ -849,7 +980,7 @@ class LogicalSPDCacheController
     {
         if (!pageIsReady(page))
             return NoSlot;
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if ((slots[slot].phase == Phase::Clean ||
                  slots[slot].phase == Phase::Dirty) &&
                 slots[slot].page == page) {
@@ -861,7 +992,7 @@ class LogicalSPDCacheController
 
     bool slotIsPinned(std::size_t slot) const
     {
-        return slot < PhysicalSlots &&
+        return slot < slotCount &&
                slotPinned(static_cast<uint16_t>(slot));
     }
 
@@ -879,6 +1010,7 @@ class LogicalSPDCacheController
         General,
         OverwriteSource,
         OverwriteDestination,
+        InPlaceOverwrite,
     };
 
     struct Descriptor
@@ -911,7 +1043,7 @@ class LogicalSPDCacheController
     validCoordinates(const PageIdentity &page) const
     {
         return page.logical < LogicalDescriptors &&
-               page.page < PagesPerDescriptor && page.generation != 0;
+               page.page < pageCount && page.generation != 0;
     }
 
     bool
@@ -994,11 +1126,11 @@ class LogicalSPDCacheController
     uint16_t
     overwriteDestinationSlot(uint16_t sourceSlot) const
     {
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if (slot != sourceSlot && slots[slot].phase == Phase::Empty)
                 return slot;
         }
-        for (uint16_t slot = 0; slot < PhysicalSlots; ++slot) {
+        for (uint16_t slot = 0; slot < slotCount; ++slot) {
             if (slot != sourceSlot && slots[slot].phase == Phase::Clean &&
                 !slotPinned(slot)) {
                 return slot;
@@ -1073,8 +1205,8 @@ class LogicalSPDCacheController
                reservation.source.entry != reservation.destination.entry &&
                reservation.source.serial != 0 &&
                reservation.destination.serial != 0 &&
-               reservation.sourceSlot < PhysicalSlots &&
-               reservation.destinationSlot < PhysicalSlots &&
+               reservation.sourceSlot < slotCount &&
+               reservation.destinationSlot < slotCount &&
                reservation.sourceSlot != reservation.destinationSlot &&
                validCoordinates(reservation.source.page) &&
                validCoordinates(reservation.destination.page) &&
@@ -1101,8 +1233,8 @@ class LogicalSPDCacheController
             destination.purpose != LeasePurpose::OverwriteDestination ||
             source.overwriteSerial != reservation.computeSerial ||
             destination.overwriteSerial != reservation.computeSerial ||
-            source.slot >= PhysicalSlots ||
-            destination.slot >= PhysicalSlots ||
+            source.slot >= slotCount ||
+            destination.slot >= slotCount ||
             source.slot == destination.slot ||
             source.slot != reservation.sourceSlot ||
             destination.slot != reservation.destinationSlot ||
@@ -1126,6 +1258,46 @@ class LogicalSPDCacheController
                destinationSlot.publishOnWriteback;
     }
 
+    bool
+    validInPlaceFields(const InPlaceReservation &reservation) const
+    {
+        return reservation.source.entry < LeaseEntries &&
+               reservation.source.serial != 0 &&
+               reservation.slot < slotCount && slotCount == 1 &&
+               validCoordinates(reservation.source.page) &&
+               validCoordinates(reservation.destination) &&
+               reservation.source.page.logical !=
+                   reservation.destination.logical &&
+               reservation.computeSerial != NoTransaction &&
+               reservation.writebackSerial != NoTransaction &&
+               reservation.computeSerial != reservation.writebackSerial;
+    }
+
+    bool
+    matchingInPlace(const InPlaceReservation &reservation,
+                    Phase phase) const
+    {
+        if (!validInPlaceFields(reservation))
+            return false;
+        const LeaseRecord &source = leases[reservation.source.entry];
+        if (!source.active || source.serial != reservation.source.serial ||
+            source.page != reservation.source.page ||
+            source.purpose != LeasePurpose::InPlaceOverwrite ||
+            source.overwriteSerial != reservation.computeSerial ||
+            source.slot != reservation.slot || !isLive(source.page) ||
+            !isLive(reservation.destination) ||
+            !descriptors[source.page.logical].ready[source.page.page] ||
+            descriptors[reservation.destination.logical]
+                       .ready[reservation.destination.page]) {
+            return false;
+        }
+        const Slot &slot = slots[reservation.slot];
+        return slot.phase == phase && slot.page == source.page &&
+               slot.transaction == reservation.computeSerial &&
+               slot.writebackTransaction == reservation.writebackSerial &&
+               !slot.publishOnWriteback;
+    }
+
     LeaseRecord *
     matchingLease(const Lease &lease)
     {
@@ -1145,6 +1317,9 @@ class LogicalSPDCacheController
     std::array<LeaseRecord, LeaseEntries> leases{};
     std::size_t queueSize = 0;
     TransactionSerial lastMemorySerial = NoTransaction;
+    std::size_t pageCount = PagesPerDescriptor;
+    std::size_t slotCount = PhysicalSlots;
+    bool geometryIsValid = true;
 };
 
 } // namespace gem5

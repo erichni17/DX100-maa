@@ -14,14 +14,15 @@ namespace gem5 {
 struct LogicalSPDPrivatePayloadAccounting
 {
     static constexpr std::size_t LogicalSlotsPerMAA = 2;
-    static constexpr std::size_t PageElements = 4096;
+    static constexpr std::size_t PageElements = 2048;
+    static constexpr std::size_t SerialSlotElements = 4096;
     static constexpr std::size_t FP64Bytes = 8;
     static constexpr std::size_t PayloadBytesPerMAA =
         LogicalSlotsPerMAA * PageElements * FP64Bytes;
 };
 
 static_assert(LogicalSPDPrivatePayloadAccounting::PayloadBytesPerMAA ==
-              65536);
+              32768);
 
 } // namespace gem5
 
