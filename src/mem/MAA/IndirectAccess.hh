@@ -1,24 +1,25 @@
 #ifndef __MEM_MAA_INDIRECT_ACCESS_HH__
 #define __MEM_MAA_INDIRECT_ACCESS_HH__
 
-#include <cassert>
 #include <array>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
-#include <string>
 #include <map>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "arch/generic/mmu.hh"
 #include "base/statistics.hh"
 #include "base/types.hh"
+#include "mem/MAA/BoundedRangePass.hh"
+#include "mem/MAA/ReorderSurvivalTracker.hh"
+#include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
-#include "mem/MAA/BoundedRangePass.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
-#include "mem/MAA/Tables.hh"
 
 namespace gem5 {
 
@@ -205,6 +206,8 @@ protected:
     uint64_t attribution_write_completions = 0;
     uint64_t attribution_execute_sequence = 0;
     uint64_t attribution_event_occurrence = 0;
+    ReorderSurvivalTracker reorder_survival;
+    uint64_t reorder_instruction_sequence = 0;
 
 public:
     MAA *maa;
@@ -374,6 +377,12 @@ protected:
     void finishVirtualRequestInterval();
     void transitionAttributionStage(AttributionStage next,
                                     const char *reason);
+    void recordReorderSurvivalIssue(Addr addr);
+    void recordReorderSurvivalIssuedEntries(uint64_t entries);
+    void recordReorderSurvivalDrain(
+        ReorderSurvivalTracker::DrainReason reason);
+    void closeReorderSurvivalEpoch(bool final);
+    void finishReorderSurvival();
     bool checkAndResetAllRowTablesSent();
     int getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank);
     Addr getGrowAddr(int RT_config, int bankgroup, int bank, int row);

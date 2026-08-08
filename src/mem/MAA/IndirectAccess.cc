@@ -1,22 +1,25 @@
 #include "mem/MAA/IndirectAccess.hh"
-#include "mem/MAA/Tables.hh"
+
+#include <cassert>
+#include <cstdint>
+#include <string>
+
 #include "base/logging.hh"
-#include "mem/MAA/MAA.hh"
-#include "mem/MAA/SPD.hh"
-#include "mem/MAA/IF.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "debug/MAAIndirect.hh"
 #include "debug/MAAIssueDigest.hh"
 #include "debug/MAAIssueTrace.hh"
 #include "debug/MAAPhysicalRecordTrace.hh"
+#include "debug/MAAReorderTrace.hh"
 #include "debug/MAATrace.hh"
 #include "debug/MAAVirtualTrace.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/SPD.hh"
+#include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
 #include "sim/cur_tick.hh"
-#include <cassert>
-#include <cstdint>
-#include <string>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -422,6 +425,131 @@ void IndirectAccessUnit::setRowTableConfig(Addr addr, int num_CLs, int num_ROWs)
     }
     panic_if(true, "I[%d] %s: addr(0x%lx) not found in the cache!\n", my_indirect_id, __func__, addr);
 }
+void
+IndirectAccessUnit::recordReorderSurvivalIssue(Addr addr)
+{
+    if (!debug::MAAReorderTrace)
+        return;
+    const std::vector<int> addr_vec = maa->map_addr(addr);
+    const int rt_idx = getRowTableIdx(
+        my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
+        addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL]);
+    const Addr grow = getGrowAddr(
+        my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL],
+        addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+    const uint64_t row_key = grow +
+        static_cast<uint64_t>(rt_idx) *
+            static_cast<uint64_t>(num_RT_possible_grows[my_RT_config]);
+    panic_if(!reorder_survival.issueLine(row_key),
+             "I[%d] could not record reorder-survival source issue\n",
+             my_indirect_id);
+}
+
+void
+IndirectAccessUnit::recordReorderSurvivalIssuedEntries(uint64_t entries)
+{
+    if (!debug::MAAReorderTrace)
+        return;
+    panic_if(!reorder_survival.issueEntries(entries),
+             "I[%d] could not record %lu reorder-survival issued entries\n",
+             my_indirect_id, entries);
+}
+
+void
+IndirectAccessUnit::recordReorderSurvivalDrain(
+    ReorderSurvivalTracker::DrainReason reason)
+{
+    if (!debug::MAAReorderTrace)
+        return;
+    panic_if(!reorder_survival.markDrain(reason),
+             "I[%d] could not record reorder-survival drain\n",
+             my_indirect_id);
+}
+
+void
+IndirectAccessUnit::closeReorderSurvivalEpoch(bool final)
+{
+    if (!debug::MAAReorderTrace)
+        return;
+    ReorderSurvivalTracker::Epoch epoch;
+    panic_if(!reorder_survival.closeEpoch(final, epoch),
+             "I[%d] could not close reorder-survival epoch (final=%d)\n",
+             my_indirect_id, final);
+    DPRINTF(MAAReorderTrace,
+            "schema=dx100.reorder_epoch.v1 event=reorder_epoch unit=%d "
+            "instruction_id=%lu operation_tick=%lu pc=0x%lx cid=%d "
+            "if_id=%d opcode=%d epoch_id=%lu admissions=%lu "
+            "issued_lines=%lu issued_entries=%lu row_transitions=%lu "
+            "rt_full_drains=%lu offset_drains=%lu "
+            "partition_drains=%lu final=%d\n",
+            my_indirect_id, reorder_survival.instructionId,
+            my_decode_start_tick, my_instruction->PC, my_instruction->CID,
+            my_instruction->if_id,
+            static_cast<int>(my_instruction->opcode), epoch.id,
+            epoch.admissions, epoch.issuedLines, epoch.issuedEntries,
+            epoch.rowTransitions, epoch.rtFullDrains, epoch.offsetDrains,
+            epoch.partitionDrains, epoch.final);
+}
+
+void
+IndirectAccessUnit::finishReorderSurvival()
+{
+    if (!debug::MAAReorderTrace)
+        return;
+    closeReorderSurvivalEpoch(true);
+    panic_if(reorder_survival.totalAdmissions !=
+                 attribution_row_insert_successes,
+             "I[%d] reorder-survival admissions %lu != row successes %lu\n",
+             my_indirect_id, reorder_survival.totalAdmissions,
+             attribution_row_insert_successes);
+    panic_if(reorder_survival.totalSelectedDescriptors !=
+                 reorder_survival.totalAdmissions,
+             "I[%d] reorder-survival selected/admitted descriptors do not "
+             "reconcile: %lu/%lu\n",
+             my_indirect_id, reorder_survival.totalSelectedDescriptors,
+             reorder_survival.totalAdmissions);
+    panic_if(reorder_survival.totalIssuedLines != source_issue_sequence,
+             "I[%d] reorder-survival lines %lu != source issues %lu\n",
+             my_indirect_id, reorder_survival.totalIssuedLines,
+             source_issue_sequence);
+    panic_if(!reorder_survival.reconciled(),
+             "I[%d] reorder-survival admitted/issued entries do not "
+             "reconcile: %lu/%lu\n",
+             my_indirect_id, reorder_survival.totalAdmissions,
+             reorder_survival.totalIssuedEntries);
+    const bool predicate_present = my_cond_tile != -1;
+    const char *classification =
+        reorder_survival.preserves16K(predicate_present)
+        ? "preserved"
+        : "inherited/partitioned";
+    DPRINTF(MAAReorderTrace,
+            "schema=dx100.reorder_summary.v1 event=reorder_summary unit=%d "
+            "instruction_id=%lu operation_tick=%lu pc=0x%lx cid=%d "
+            "if_id=%d opcode=%d predicate_present=%d "
+            "selected_descriptors=%lu epochs=%lu "
+            "total_admitted=%lu max_joint_admissions=%lu "
+            "rt_full_drains=%lu offset_drains=%lu "
+            "partition_drains=%lu mid_instruction_drains=%lu "
+            "total_issued_lines=%lu total_issued_entries=%lu "
+            "row_transitions=%lu reconciled=1 classification=%s\n",
+            my_indirect_id, reorder_survival.instructionId,
+            my_decode_start_tick, my_instruction->PC, my_instruction->CID,
+            my_instruction->if_id,
+            static_cast<int>(my_instruction->opcode),
+            predicate_present, reorder_survival.totalSelectedDescriptors,
+            reorder_survival.epochs,
+            reorder_survival.totalAdmissions,
+            reorder_survival.maxJointAdmissions,
+            reorder_survival.totalRTFullDrains,
+            reorder_survival.totalOffsetDrains,
+            reorder_survival.totalPartitionDrains,
+            reorder_survival.midInstructionDrains(),
+            reorder_survival.totalIssuedLines,
+            reorder_survival.totalIssuedEntries,
+            reorder_survival.totalRowTransitions, classification);
+}
+
 void IndirectAccessUnit::check_reset() {
     for (int i = 0; i < num_RT_configs; i++) {
         for (int j = 0; j < num_RT_slices[i]; j++) {
@@ -1014,6 +1142,8 @@ void IndirectAccessUnit::fillRowTable(
                 direct_index_next_prefetch_itr = 0;
                 direct_index_partition_barrier = true;
                 needDrain = true;
+                recordReorderSurvivalDrain(
+                    ReorderSurvivalTracker::DrainReason::PartitionBoundary);
                 DPRINTF(MAAVirtualTrace,
                         "event=index_partition unit=%d completed=%d next=%d "
                         "total=%d policy=%s\n", my_indirect_id,
@@ -1094,6 +1224,16 @@ void IndirectAccessUnit::fillRowTable(
             if (isDirectIndexLoad() && !virtual_iteration_selected)
                 direct_index_partition_rejected = true;
             if (virtual_iteration_selected) {
+                if (debug::MAAReorderTrace) {
+                    const uint64_t selection_id =
+                        (static_cast<uint64_t>(
+                             static_cast<uint32_t>(direct_index_partition))
+                         << 32) |
+                        static_cast<uint32_t>(my_i);
+                    panic_if(!reorder_survival.select(selection_id),
+                             "I[%d] could not record selected descriptor\n",
+                             my_indirect_id);
+                }
                 if (offset_table->occupancy() >=
                     maa->num_offset_table_epoch_entries) {
                     attribution_offset_pressure_events++;
@@ -1109,6 +1249,8 @@ void IndirectAccessUnit::fillRowTable(
                             maa->num_offset_table_epoch_entries);
                     offset_table_drain = true;
                     needDrain = true;
+                    recordReorderSurvivalDrain(
+                        ReorderSurvivalTracker::DrainReason::OffsetEpochFull);
                     (*maa->stats.IND_NumOTEpochDrain[my_indirect_id])++;
                     if (offset_table->is_full())
                         (*maa->stats.IND_NumOTFull[my_indirect_id])++;
@@ -1142,10 +1284,16 @@ void IndirectAccessUnit::fillRowTable(
                             attribution_execute_sequence - 1, my_i,
                             my_RT_idx, grow_addr);
                     needDrain = true;
+                    recordReorderSurvivalDrain(
+                        ReorderSurvivalTracker::DrainReason::RowTableFull);
                     (*maa->stats.IND_NumRTFull[my_indirect_id])++;
                     break;
                 } else {
                     attribution_row_insert_successes++;
+                    if (debug::MAAReorderTrace)
+                        panic_if(!reorder_survival.admit(),
+                                 "I[%d] could not record reorder admission\n",
+                                 my_indirect_id);
                     if (maa->virtual_index_range_passes) {
                         const auto result = bounded_range_pass.recordAdmission(
                             my_i, grow_addr, direct_index_partition);
@@ -1227,6 +1375,7 @@ void IndirectAccessUnit::fillRowTable(
                                 my_indirect_id, __func__, my_RT_idx,
                                 block_paddr);
                         my_expected_responses++;
+                        recordReorderSurvivalIssue(block_paddr);
                         createReadPacket(
                             block_paddr,
                             getCeiling(num_rowtable_accesses,
@@ -1318,6 +1467,8 @@ void IndirectAccessUnit::executeInstruction() {
         attribution_write_issues = 0;
         attribution_write_completions = 0;
         attribution_execute_sequence = 1;
+        if (debug::MAAReorderTrace)
+            reorder_survival.begin(reorder_instruction_sequence++);
         state = Status::Decode;
         transitionAttributionStage(AttributionStage::Decode,
                                    "instruction_start");
@@ -1815,6 +1966,7 @@ void IndirectAccessUnit::executeInstruction() {
                          virtual_response_slots.size(),
                      "I[%d] virtual response slots exceeded capacity\n",
                      my_indirect_id);
+            recordReorderSurvivalIssue(source_addr);
             createReadPacket(source_addr, latency);
         };
 
@@ -1983,6 +2135,7 @@ void IndirectAccessUnit::executeInstruction() {
                                     rowtable_latency);
                         } else {
                             my_expected_responses++;
+                            recordReorderSurvivalIssue(addr);
                             createReadPacket(
                                 addr,
                                 getCeiling(num_rowtable_accesses + 1,
@@ -2114,6 +2267,7 @@ void IndirectAccessUnit::executeInstruction() {
             } else if (direct_index_partition_barrier) {
                 finishBoundedRangePass(direct_index_partition - 1,
                                        "barrier_drained");
+                closeReorderSurvivalEpoch(false);
                 state = Status::Fill;
                 transitionAttributionStage(AttributionStage::Fill,
                                            "partition_advance");
@@ -2124,6 +2278,9 @@ void IndirectAccessUnit::executeInstruction() {
                                            "request_complete");
                 my_fill_finished = false;
             } else {
+                if (debug::MAAReorderTrace &&
+                    reorder_survival.drainPending())
+                    closeReorderSurvivalEpoch(false);
                 state = Status::Fill;
                 transitionAttributionStage(AttributionStage::Fill,
                                            "request_refill");
@@ -2303,6 +2460,7 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_VirtIndexWordHighWater[my_indirect_id]) +=
                 direct_index_max_words;
         }
+        finishReorderSurvival();
         DPRINTF(MAAIssueDigest,
                 "unit=%d instruction_tick=%lu count=%lu "
                 "fnv=0x%016lx mix=0x%016lx\n",
@@ -2536,6 +2694,8 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
     } else {
         entries = RT[my_RT_config][RT_idx].get_entry_recv(
             grow_addr, addr, reorder_RT);
+        if (!entries.empty())
+            recordReorderSurvivalIssuedEntries(entries.size());
     }
     bool is_full = false;
     if (RT_idx == my_RT_idx)
@@ -3246,6 +3406,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
                          "I[%d] packed response cursor changed while stalled\n",
                          my_indirect_id);
+                recordReorderSurvivalIssuedEntries(1);
                 slot.next_packed_word++;
             }
             if (slot.valid &&
@@ -3305,6 +3466,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
                      "I[%d] virtual offset cursor changed while stalled\n",
                      my_indirect_id);
+            recordReorderSurvivalIssuedEntries(1);
             if (slot.next_itr == -1) {
                 release_native_claim(slot);
                 slot = VirtualResponseSlot();
