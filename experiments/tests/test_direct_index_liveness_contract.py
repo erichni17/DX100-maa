@@ -45,6 +45,54 @@ class DirectIndexLivenessContractTest(unittest.TestCase):
         self.assertIn("dataptr + entry.wid * my_word_size", source)
         self.assertIn("insertVirtualCombineWord(entry.itr", source)
 
+    def test_every_post_admission_consumer_uses_descriptor_metadata(self):
+        source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
+
+        build = source[
+            source.index("case Status::Build:") : source.index(
+                "case Status::Request:"
+            )
+        ]
+        bounded_response = source[
+            source.index("const bool bounded_response_load") : source.index(
+                "uint8_t new_data[block_size]"
+            )
+        ]
+        drain = source[
+            source.index("bool IndirectAccessUnit::drainVirtualResponses") :
+            source.index("bool IndirectAccessUnit::reserveVirtualCombineBank")
+        ]
+        placement = source[
+            source.index("Addr IndirectAccessUnit::backingWordAddr") :
+            source.index("void IndirectAccessUnit::drainVirtualCombiner")
+        ]
+
+        # Request issue retains the source line plus the OffsetTable-chain
+        # head/count. Response capture uses wid to select A's returned word.
+        self.assertIn("claim_entry_send(\n                                addr", build)
+        self.assertIn("VirtualSourceReservation{source_head", build)
+        self.assertIn("createReadPacket(source_addr", build)
+        self.assertIn("slot->next_itr = virtual_head", bounded_response)
+        self.assertIn("offset_table->peek_entry(itr)", bounded_response)
+        self.assertIn("dataptr + entry.wid * my_word_size", bounded_response)
+
+        # Retirement consumes the linked chain in its retained order. itr is
+        # the logical destination identity; the instruction-owned backing base
+        # supplies the other half of the destination address.
+        self.assertIn("insertVirtualCombineWord(entry.itr", drain)
+        self.assertIn("offset_table->consume_entry(slot.next_itr)", drain)
+        self.assertIn(
+            "return my_backing_addr + index * my_word_size", placement
+        )
+        self.assertIn("const Addr vaddr = backingWordAddr(itr)", placement)
+
+        # These are all consumers downstream of successful admission. A later
+        # direct-index refill may populate new iterations, but none of these
+        # consumers rereads the admitted feeder value.
+        for consumer in (build, bounded_response, drain, placement):
+            self.assertNotIn("peekDirectIndex(", consumer)
+            self.assertNotIn("direct_index_value", consumer)
+
     def test_poison_is_confined_to_private_feeder_copy(self):
         source = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         begin = source.index("void IndirectAccessUnit::discardDirectIndex")
