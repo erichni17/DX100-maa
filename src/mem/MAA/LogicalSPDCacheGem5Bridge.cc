@@ -198,6 +198,8 @@ LogicalSPDCacheGem5Bridge::claimCallback(
 {
     if (!validMaa(maaId))
         return {LifecycleStatus::InvalidMaa, {}};
+    if (admissionsClosed)
+        return {LifecycleStatus::Sealed, {}};
     LifecycleState &state = lifecycle[maaId];
     if (state.failClosed || runtimes[maaId]->poisoned())
         return {failClosed(maaId), {}};

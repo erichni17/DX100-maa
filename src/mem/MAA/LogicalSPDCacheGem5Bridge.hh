@@ -72,8 +72,10 @@ class LogicalSPDCacheGem5Bridge
         const LogicalSPDCacheGem5Bridge &) = delete;
 
     std::size_t runtimeCount() const { return runtimes.size(); }
-    bool admissionClosed() const { return false; }
+    bool admissionClosed() const { return admissionsClosed; }
     bool nativeDrainIntegrated() const { return false; }
+    void closeAdmission() { admissionsClosed = true; }
+    void reopenAdmission() { admissionsClosed = false; }
 
     const Runtime &runtime(std::size_t maaId) const;
 
@@ -155,6 +157,7 @@ class LogicalSPDCacheGem5Bridge
     std::vector<std::unique_ptr<LogicalSPDCacheRuntime>> runtimes;
     std::vector<LifecycleState> lifecycle;
     uint64_t nextCallbackIdentity = 1;
+    bool admissionsClosed = false;
 
     friend struct LogicalSPDCacheGem5BridgeTestAccess;
 };

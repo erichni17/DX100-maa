@@ -15,6 +15,7 @@
 #include "base/types.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
+#include "mem/MAA/LogicalSPDCacheLiveAdapterState.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
@@ -556,6 +557,7 @@ protected:
         PacketPtr completionPacket = nullptr;
         PacketPtr retryPacket = nullptr;
         uint8_t retryPort = 0;
+        LogicalSPDCacheLiveAdapterState retryAuthority{};
         int coreID = -1;
         ContextID contextID = InvalidContextID;
         Addr pc = 0;
@@ -571,6 +573,8 @@ protected:
     void serviceLogicalSPD();
     void scheduleLogicalSPDEvent(int latency = 0);
     void notifyLogicalSPDRetry(uint8_t retryingPort);
+    DrainState drain() override;
+    void drainResume() override;
     EventFunctionWrapper logicalSpdEvent;
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;
