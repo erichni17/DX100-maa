@@ -98,6 +98,7 @@ MAA::MAA(const MAAParams &p)
                                  ? p.num_tile_elements
                                  : p.physical_tile_elements),
       transparent_spd_mode(p.transparent_spd_mode),
+      logical_spd_cache_mode(p.logical_spd_cache_mode),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -167,6 +168,9 @@ MAA::MAA(const MAAParams &p)
     panic_if(transparent_spd_mode > 2,
              "Invalid transparent SPD mode %u (expected 0..2)\n",
              transparent_spd_mode);
+    panic_if(logical_spd_cache_mode > 1,
+             "Invalid logical SPD cache mode %u (expected 0 or 1)\n",
+             logical_spd_cache_mode);
     panic_if(num_offset_table_entries == 0 ||
                  num_offset_table_entries > num_tile_elements,
              "Offset Table capacity %u must be in [1,%u]\n",
@@ -240,8 +244,10 @@ MAA::MAA(const MAAParams &p)
                   p.num_spd_read_ports_per_maa * num_maas,
                   p.num_spd_write_ports_per_maa * num_maas);
     rf = new RF(num_regs);
+    // The logical cache deliberately has a two-value contract independent of
+    // the three-value transparent-controller experiment knob.
     const LogicalSPDCacheRuntime::Mode logicalSpdMode =
-        transparent_spd_mode == 0
+        logical_spd_cache_mode == 0
             ? LogicalSPDCacheRuntime::Mode::Serial4K
             : LogicalSPDCacheRuntime::Mode::PingPong2K;
     logicalSpdBridge = std::make_unique<LogicalSPDCacheGem5Bridge>(
@@ -1218,8 +1224,9 @@ MAA::submitLogicalSPDDescriptor(
         sourceBase <= destinationBase
             ? destinationBase - sourceBase < Slice::BackingBytes
             : sourceBase - destinationBase < Slice::BackingBytes;
-    panic_if(backingOverlap,
-             "Logical SPD source and destination backing spans overlap: "
+    panic_if(backingOverlap && sourceBase != destinationBase,
+             "Logical SPD source and destination backing spans partially "
+             "overlap: "
              "source=0x%lx destination=0x%lx\n",
              sourceBase, destinationBase);
 

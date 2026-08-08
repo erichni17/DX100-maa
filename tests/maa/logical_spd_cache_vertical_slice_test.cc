@@ -137,7 +137,8 @@ struct Harness
     uint64_t writeResponses = 0;
     const double scalar = 2.5;
 
-    Harness()
+    explicit Harness(Runtime::Mode mode = Runtime::Mode::PingPong2K)
+        : runtime(mode)
     {
         for (std::size_t index = 0; index < GuardedAlignedSpan::Elements;
              ++index) {
@@ -221,7 +222,7 @@ struct Harness
                     continue;
                 const auto key = runtime.recordKey(record);
                 if (delayFinalWrite && write &&
-                    key.line == Transport::LinesPerPage - 1) {
+                    key.line == runtime.transportSnapshot().activeLines - 1) {
                     delayed = record;
                     continue;
                 }
@@ -229,7 +230,8 @@ struct Harness
                 progressed = true;
             }
             if (delayed != Transport::NoRecord &&
-                runtime.ackCount() == Transport::LinesPerPage - 1) {
+                runtime.ackCount() ==
+                    runtime.transportSnapshot().activeLines - 1) {
                 CHECK(!runtime.operationComplete());
                 completeResponse(delayed, true);
                 delayed = Transport::NoRecord;
@@ -305,20 +307,23 @@ testTypedFP64PayloadGeometryAndInitialObjects()
 }
 
 void
-testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill()
+testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
+    Runtime::Mode mode)
 {
-    Harness harness;
-    for (uint8_t page = 0; page < Slice::Pages; ++page)
-        harness.finishOnePage(page == Slice::Pages - 1);
+    Harness harness(mode);
+    const auto pages = static_cast<uint8_t>(harness.runtime.pageCount());
+    const auto lines = harness.runtime.transportSnapshot().activeLines;
+    for (uint8_t page = 0; page < pages; ++page)
+        harness.finishOnePage(page == pages - 1);
 
     CHECK(harness.runtime.operationComplete());
     CHECK(harness.runtime.descriptorComplete(1));
-    CHECK(harness.fillResponses == Slice::Pages * Transport::LinesPerPage);
+    CHECK(harness.fillResponses == pages * lines);
     CHECK(harness.writeResponses ==
-          Slice::Pages * Transport::LinesPerPage);
+          pages * lines);
     const auto completed = harness.runtime.sliceSnapshot();
     CHECK(completed.counters.highLevelCompletions == 1);
-    CHECK(completed.counters.pagesCompleted == Slice::Pages);
+    CHECK(completed.counters.pagesCompleted == pages);
     for (std::size_t index = 0; index < GuardedAlignedSpan::Elements;
          ++index) {
         CHECK(bits(harness.destination.doubles()[index]) ==
@@ -333,7 +338,7 @@ testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill()
     CHECK(harness.runtime.queueRefill(1, 3) == Slice::Status::Accepted);
     const uint64_t fillsBefore = harness.fillResponses;
     harness.runPageAction();
-    CHECK(harness.fillResponses == fillsBefore + Transport::LinesPerPage);
+    CHECK(harness.fillResponses == fillsBefore + lines);
     const auto refill = harness.runtime.sliceSnapshot();
     CHECK(refill.counters.refillCompletions == 1);
     const uint16_t slot = refill.slotIdentities[0].logical == 1 &&
@@ -344,14 +349,15 @@ testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill()
     CHECK(refill.slotIdentities[slot].page == 3);
     const auto payload = harness.runtime.slotPayload(
         static_cast<uint8_t>(slot));
-    CHECK(payload.size == Slice::PageBytes);
+    CHECK(payload.size == harness.runtime.pageElements() * sizeof(double));
     CHECK(reinterpret_cast<uintptr_t>(payload.data) % alignof(double) == 0);
     CHECK(reinterpret_cast<uintptr_t>(payload.data) %
               Transport::LineBytes ==
           0);
     CHECK(std::memcmp(payload.data,
-                      harness.destination.data() + 3 * Slice::PageBytes,
-                      Slice::PageBytes) == 0);
+                      harness.destination.data() +
+                          3 * harness.runtime.pageElements() * sizeof(double),
+                      payload.size) == 0);
 }
 
 void
@@ -629,7 +635,8 @@ testGeometryEnumAndJointLifecycleGates()
     CHECK(correlationAfterFault.transportActionID ==
           correlationBeforeFault.transportActionID);
     invalidSpan.destination = {Harness::SourceBase, Slice::BackingBytes};
-    CHECK(spans.admit(invalidSpan) == Slice::Status::Invalid);
+    CHECK(spans.admit(invalidSpan) == Slice::Status::Accepted);
+    CHECK(spans.abort(Slice::AbortCode::Caller) == Slice::Status::Accepted);
 
     Harness enumHarness;
     Slice::Admission forged;
@@ -716,7 +723,7 @@ testBackingRangeArithmeticBeforeMutation()
     overlappingAdmission.sourceLogical = 0;
     overlappingAdmission.destinationLogical = 1;
     overlappingAdmission.destination =
-        {Harness::SourceBase, Slice::BackingBytes};
+        {Harness::SourceBase + Slice::CacheLineBytes, Slice::BackingBytes};
     CHECK(overlap.admit(overlappingAdmission) == Slice::Status::Invalid);
     const auto overlapAfter = overlap.sliceSnapshot();
     CHECK(!overlapAfter.active);
@@ -945,7 +952,10 @@ int
 main()
 {
     testTypedFP64PayloadGeometryAndInitialObjects();
-    testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill();
+    testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
+        Runtime::Mode::Serial4K);
+    testAuthenticatedVerticalAll16KDelayedAckAndDestinationRefill(
+        Runtime::Mode::PingPong2K);
     testAbortQueuedPendingRetryInflightAndDelivering();
     testAbortReservedComputingDirtyWritebackAndBetweenPages();
     testDatapathRejectsBeforeMutationAndSpecialValues();

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-    echo "usage: $0 OUTDIR" >&2
+if [[ $# -ne 2 ]]; then
+    echo "usage: $0 OUTDIR serial4k|pingpong2k" >&2
     exit 2
 fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
+mode=$2
 gem5="$root/build/X86/gem5.opt"
 source_file="$root/benchmarks/API/test_logical_spd_cache_live.cpp"
 config="$root/configs/deprecated/example/se.py"
@@ -15,6 +16,11 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
 [[ -x $gem5 ]] || { echo "missing gem5.opt: $gem5" >&2; exit 2; }
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
+case "$mode" in
+    serial4k) logical_mode=0; pages=4; page_elements=4096; slots=1 ;;
+    pingpong2k) logical_mode=1; pages=8; page_elements=2048; slots=2 ;;
+    *) echo "unsupported logical mode: $mode" >&2; exit 2 ;;
+esac
 mkdir -p "$out/artifacts"
 binary="$out/artifacts/test_logical_spd_cache_live"
 
@@ -22,6 +28,7 @@ binary="$out/artifacts/test_logical_spd_cache_live"
     -I"$root/util/m5/src" -std=c++11 -O2 -Wall -Wextra -Werror \
     -Wno-ignored-qualifiers \
     -DGEM5 -DTILE_SIZE=16384 -DNUM_CORES=4 \
+    -DLOGICAL_SPD_CACHE_MODE="$logical_mode" \
     -DMAA_MEM_SIZE=0x80000000 \
     "$root/util/m5/src/abi/x86/m5op.S" "$source_file" \
     -o "$binary"
@@ -46,16 +53,18 @@ restore_cmd=(
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=1
     --maa --maa_num_maas=1 --maa_num_tile_elements=16384
-    --maa_physical_tile_elements=2048
+    --maa_physical_tile_elements=4096
+    --maa_logical_spd_cache_mode="$logical_mode"
     --maa_num_initial_row_table_slices=16 --cmd "$binary"
 )
 
 {
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'logical_elements=16384\nphysical_page_elements=2048\n'
-    printf 'private_slots=2\nprivate_slot_bytes=16384\nprivate_payload_bytes=32768\n'
-    printf 'hardware_bytes=32768\nmetadata_bytes=0\n'
+    printf 'logical_cache_mode=%s\nlogical_elements=16384\nvisible_physical_tile_elements=4096\n' "$mode"
+    printf 'logical_pages=%s\nlogical_page_elements=%s\nprivate_slots=%s\n' "$pages" "$page_elements" "$slots"
+    printf 'private_payload_bytes=32768\npacked_private_metadata_lower_bound_bytes=1309\n'
+    printf 'ordinary_visible_spd_is_additive=1\n'
     printf 'isoarea_timing_claim=0\n'
     printf 'checkpoint_command='
     printf '%q ' "${checkpoint_cmd[@]}"
@@ -105,7 +114,7 @@ printf '%s\n' "$restore_rc" > "$out/restore.exit"
     exit 1
 }
 
-expected='LOGICAL_SPD_CACHE_LIVE_RESULT elements=16384 pages=8 expected_hash=7303085050985348899 output_hash=7303085050985348899 errors=0'
+expected="LOGICAL_SPD_CACHE_LIVE_RESULT elements=16384 pages=$pages expected_hash=7303085050985348899 output_hash=7303085050985348899 errors=0"
 [[ $(grep -Fxc "$expected" "$out/restore.log" || true) -eq 1 ]] || {
     echo "missing exact logical SPD result" >&2
     exit 1
@@ -131,7 +140,8 @@ grep -Eq '^simTicks[[:space:]]+[1-9][0-9]*' "$out/run/stats.txt" || {
 for resolved in \
     'num_maas=1' \
     'num_tile_elements=16384' \
-    'physical_tile_elements=2048' \
+    'physical_tile_elements=4096' \
+    "logical_spd_cache_mode=$logical_mode" \
     'num_initial_row_table_slices=16'; do
     grep -Fqx "$resolved" "$out/run/config.ini" || {
         echo "missing resolved MAA geometry: $resolved" >&2

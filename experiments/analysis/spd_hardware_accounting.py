@@ -65,6 +65,7 @@ CONSUMER_EXPERIMENT = {
 RUNTIME_LOGICAL_SLOTS_PER_MAA = 2
 RUNTIME_PAGE_ELEMENTS = 2048
 FP64_BYTES = 8
+PACKED_PRIVATE_METADATA_LOWER_BOUND_BYTES = 1309
 
 
 def checked_sources() -> list[str]:
@@ -165,6 +166,12 @@ def ledger(
                 private_payload_per_maa
             ),
             "private_logical_spd_payload_bytes": private_payload_total,
+            "packed_private_logical_spd_metadata_lower_bound_bytes_per_maa": (
+                PACKED_PRIVATE_METADATA_LOWER_BOUND_BYTES
+            ),
+            "packed_private_logical_spd_metadata_lower_bound_bytes": (
+                maas * PACKED_PRIVATE_METADATA_LOWER_BOUND_BYTES
+            ),
             "transparent_visible_plus_private_payload_bytes": (
                 transparent_payload_total
             ),
@@ -209,8 +216,11 @@ def ledger(
                 "4 bytes per physical lane element (uint32_t)"
             ),
             "spd_private_payload": (
-                "two Runtime-owned FP64 slots x 4096 elements x "
-                "8 bytes per MAA"
+                "one Runtime-owned 4096-element FP64 bank x 8 bytes per MAA; "
+                "Serial4K exposes one slot and PingPong2K exposes two 2048-element slots"
+            ),
+            "spd_private_metadata_lower_bound": (
+                "1,309 packed semantic bytes per MAA, separate from the 32,768-byte payload"
             ),
             "spd_element_finished": "one C++ bool per physical lane element; synthesis width is not fixed here",
             "spd_tile_scalars": "TileStatus:uint8_t, dirty:bool, ready:uint16_t, size:uint32_t per lane tile",

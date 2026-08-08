@@ -26,6 +26,11 @@ def _get_maa_opts(options):
             options, "maa_transparent_spd_mode"
         )
 
+    if hasattr(options, "maa_logical_spd_cache_mode"):
+        opts["logical_spd_cache_mode"] = getattr(
+            options, "maa_logical_spd_cache_mode"
+        )
+
     if hasattr(options, "maa_num_regs_per_core"):
         opts["num_regs_per_core"] = getattr(options, "maa_num_regs_per_core")
 

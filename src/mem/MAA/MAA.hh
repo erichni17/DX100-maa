@@ -397,6 +397,7 @@ public:
     unsigned int num_tile_elements;
     unsigned int physical_tile_elements;
     unsigned int transparent_spd_mode;
+    unsigned int logical_spd_cache_mode;
     unsigned int num_regs;
     unsigned int num_instructions_per_core;
     unsigned int num_instructions_per_maa;

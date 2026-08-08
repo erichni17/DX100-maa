@@ -30,6 +30,16 @@ class SpdHardwareAccountingTest(unittest.TestCase):
         )
         self.assertEqual(payload["private_logical_spd_payload_bytes"], 131072)
         self.assertEqual(
+            payload[
+                "packed_private_logical_spd_metadata_lower_bound_bytes_per_maa"
+            ],
+            1309,
+        )
+        self.assertEqual(
+            payload["packed_private_logical_spd_metadata_lower_bound_bytes"],
+            5236,
+        )
+        self.assertEqual(
             payload["transparent_visible_plus_private_payload_bytes"],
             655360,
         )
