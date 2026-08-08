@@ -132,6 +132,16 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         self.assertIn('control_records == "$candidate_records"', runner)
         self.assertIn("unlike_arms.serialized.tsv", runner)
         self.assertGreaterEqual(runner.count("[[ ! -e $selector ]]"), 2)
+        self.assertGreaterEqual(
+            runner.count("MAA_OFFSET_TABLE_ENTRIES=16384"), 2
+        )
+        self.assertGreaterEqual(
+            runner.count("MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384"), 2
+        )
+        self.assertIn(
+            '"$root/experiments/scripts/run_hybrid_tail_issue_ready_pair.sh"',
+            runner,
+        )
         invocation = next(
             line
             for line in runner.splitlines()
@@ -140,14 +150,13 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         )
         self.assertFalse(invocation.rstrip().endswith("&"))
 
-    def test_offset_capacity_audits_raw_config_and_effective_result(self):
+    def test_offset_capacity_audits_configured_and_effective_result(self):
         runner = (
             ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
         ).read_text()
 
-        # config.ini records the raw zero-as-default SimObject parameters;
-        # the result ledger separately records the constructor-resolved 16K
-        # capacities used by the primary comparison.
+        # config.ini records configured SimObject parameters while the result
+        # ledger separately records constructor-resolved effective capacities.
         self.assertIn('"num_offset_table_entries=$offset_entries"', runner)
         self.assertIn(
             '"num_offset_table_epoch_entries=$offset_epoch_entries"', runner

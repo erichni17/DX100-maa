@@ -54,6 +54,7 @@ sha256sum \
     "$root/src/mem/MAA/StreamAccess.cc" \
     "$root/configs/common/Options.py" \
     "$root/configs/common/MAAConfig.py" \
+    "$root/experiments/scripts/run_hybrid_tail_issue_ready_pair.sh" \
     "$root/experiments/scripts/run_virtual_tile_consumer_case.sh" \
     > "$out/input/source_snapshot.sha256"
 LD_LIBRARY_PATH="$out/input${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
@@ -67,6 +68,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
 
 [[ ! -e $selector ]]
 set +e
+MAA_OFFSET_TABLE_ENTRIES=16384 \
+MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384 \
 LD_LIBRARY_PATH="$out/input${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     /usr/bin/time -f 'checkpoint_wall=%e checkpoint_rss_kb=%M' \
     "$gem5" --listener-mode=off --outdir="$checkpoint" \
@@ -107,6 +110,8 @@ for arm in transparent_4k transparent_issue_ready_4k; do
     DX100_RAMULATOR_PROVENANCE_FILE="$provenance" \
     MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
     MAA_DEBUG_FLAGS=MAAVirtualTrace,MAAPhysicalRecordTrace \
+    MAA_OFFSET_TABLE_ENTRIES=16384 \
+    MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384 \
     "$root/experiments/scripts/run_virtual_tile_consumer_case.sh" \
         "$gem5" "$workload" "$arm" "$out/$arm"
     cmp -s "$out/$arm/shared_checkpoint_files.sha256" \
