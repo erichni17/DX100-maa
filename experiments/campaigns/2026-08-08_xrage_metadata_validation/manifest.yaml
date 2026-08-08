@@ -1,0 +1,42 @@
+---
+schema: dx100.xrage_metadata_validation.v1
+status: passed
+description: 4K-physical full-metadata versus 4K-physical bounded-metadata
+not_native16: true
+raw_evidence: /data1/nier/worktrees/codex-coordination/sessions/repr-virtual-workload-20260808-20260808-093807-f737e61d/xrage-pair-41fc3f1
+source:
+    simulator_source_commit: 41fc3f11c54713535edbeab5ebcedbf78e079c4d
+    runner_source_commit: 41fc3f11c54713535edbeab5ebcedbf78e079c4d
+artifacts:
+    gem5_sha256: cf8690d6811d6b9f9b8cb1c04a0967d65e5c3c92113c5bfdea86657620929da4
+    xrage_verifier_sha256: c4acb453ec043c8d45f09f07333277da904d3929da5ff8627b6cbbe704d5d414
+    input_sha256: 1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde
+    ramulator_elf_sha256: 76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
+    ramulator_provenance_sha256: 9f17f88f4a61fc79fee2b402530a8c43951024dc93a3068de8b3c584d3a49c66
+    simulator_provenance_sha256: e6527d5d46f5723f3451a04f8fe605cea32c9a88b1f2cfac95da5e8d71cc385b
+    evidence_manifest_sha256: 2bb6016da84ce434016f1519a6a15214579ec73df4b81b05d3f297e3b8ac5c24
+    matrix_sha256: 38b4924d20baba5a299afc31f556a1821b7efd08d8b0be81c1142ab1d5a50033
+checkpoint:
+    kind: treatment-neutral pre-MAA AtomicSimpleCPU
+    file_list_identity: 94a8ead604eafff7264486fb21f5f649e5c2c11d40fa91f052e9b26c640f62c9
+correctness:
+    output_length: 2097152
+    output_hash: 11014995430510232451
+    both_restore_exit_zero: true
+    both_m5_exit: true
+    both_stats_blocks: 2
+results:
+    full_metadata:
+        physical_tile_elements: 4096
+        roi_simTicks: 1284958900
+        virtual_write_issues: 320375
+        virtual_write_completions: 320375
+    bounded_4k:
+        physical_tile_elements: 4096
+        roi_simTicks: 1456213094
+        delta_vs_full_pct: 13.327601
+        virtual_write_issues: 263974
+        virtual_write_completions: 263974
+        virtual_index_partitions: 4
+        index_filter_words: 8388799
+        offset_table_epoch_drains: 191
