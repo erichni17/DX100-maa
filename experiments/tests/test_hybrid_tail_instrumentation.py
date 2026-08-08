@@ -167,6 +167,19 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
             runner,
         )
 
+    def test_shared_selector_is_consumed_only_after_exact_treatment(self):
+        runner = (
+            ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
+        ).read_text()
+
+        treatment_check = runner.index("[[ $treatment_count -eq 1 ]]")
+        consume = runner.index(
+            'mv -- "$shared_selector" "$out/treatment.consumed.txt"'
+        )
+        self.assertLess(treatment_check, consume)
+        self.assertIn('cmp -s "$shared_selector" "$out/treatment.txt"', runner)
+        self.assertIn("[[ ! -e $shared_selector ]]", runner[consume:])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -707,6 +707,10 @@ if [[ -n $shared_checkpoint ]]; then
         echo "shared checkpoint did not consume the exact treatment" >&2
         exit 1
     }
+    [[ -f $shared_selector && ! -e $out/treatment.consumed.txt ]]
+    cmp -s "$shared_selector" "$out/treatment.txt"
+    mv -- "$shared_selector" "$out/treatment.consumed.txt"
+    [[ ! -e $shared_selector ]]
 fi
 pollution_count=$(grep -Fxc 'VIRTUAL_TILE_CONSUMER_POLLUTION bytes=33554432' \
     "$out/restore.log" || true)
