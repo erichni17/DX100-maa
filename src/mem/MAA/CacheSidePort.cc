@@ -31,12 +31,16 @@ namespace gem5 {
 bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAACachePort, "%s: received %s\n", __func__, pkt->print());
-    if (!maa->recvLogicalSPDTimingResp(pkt, static_cast<uint8_t>(core_id)))
+    const bool logical_response =
+        maa->recvLogicalSPDTimingResp(pkt, static_cast<uint8_t>(core_id));
+    if (!logical_response)
         maa->recvTimingResp(pkt, true);
     outstandingCacheSidePackets--;
     if (blockReason == BlockReason::MAX_XBAR_PACKETS) {
         setUnblocked(BlockReason::MAX_XBAR_PACKETS);
     }
+    if (logical_response)
+        maa->notifyLogicalSPDResponse();
     pkt->deleteData();
     delete pkt;
     return true;
@@ -89,11 +93,22 @@ void MAA::CacheSidePort::recvReqRetry() {
     setUnblocked(BlockReason::CACHE_FAILED);
 }
 
-bool MAA::CacheSidePort::sendPacket(PacketPtr pkt) {
+bool MAA::CacheSidePort::sendPacket(
+    PacketPtr pkt,
+    LogicalSPDCacheLiveAdapterState::WaitAuthority *refusal) {
     /// print the packet
     DPRINTF(MAACachePort, "%s: sending %s to cache\n", __func__, pkt->print());
+    if (refusal != nullptr)
+        *refusal = LogicalSPDCacheLiveAdapterState::WaitAuthority::None;
     if (blockReason != BlockReason::NOT_BLOCKED) {
         DPRINTF(MAACachePort, "%s Send blocked because of %s...\n", __func__, blockReason == BlockReason::MAX_XBAR_PACKETS ? "MAX_XBAR_PACKETS" : "CACHE_FAILED");
+        if (refusal != nullptr) {
+            *refusal = blockReason == BlockReason::MAX_XBAR_PACKETS
+                ? LogicalSPDCacheLiveAdapterState::WaitAuthority::
+                      LocalResponseCapacity
+                : LogicalSPDCacheLiveAdapterState::WaitAuthority::
+                      DownstreamRequestRetry;
+        }
         return false;
     }
     if (outstandingCacheSidePackets == maxOutstandingCacheSidePackets) {
@@ -101,12 +116,20 @@ bool MAA::CacheSidePort::sendPacket(PacketPtr pkt) {
         DPRINTF(MAACachePort, "%s Send failed because XBAR is full...\n", __func__);
         assert(blockReason == BlockReason::NOT_BLOCKED);
         blockReason = BlockReason::MAX_XBAR_PACKETS;
+        if (refusal != nullptr) {
+            *refusal = LogicalSPDCacheLiveAdapterState::WaitAuthority::
+                LocalResponseCapacity;
+        }
         return false;
     }
     if (sendTimingReq(pkt) == false) {
         // Cache cannot receive a new request
         DPRINTF(MAACachePort, "%s Send failed because cache returned false...\n", __func__);
         blockReason = BlockReason::CACHE_FAILED;
+        if (refusal != nullptr) {
+            *refusal = LogicalSPDCacheLiveAdapterState::WaitAuthority::
+                DownstreamRequestRetry;
+        }
         return false;
     }
     DPRINTF(MAACachePort, "%s Send is successfull...\n", __func__);
@@ -114,9 +137,13 @@ bool MAA::CacheSidePort::sendPacket(PacketPtr pkt) {
         outstandingCacheSidePackets++;
     return true;
 }
-bool MAA::sendPacketCache(PacketPtr pkt) {
+bool MAA::sendPacketCache(
+    PacketPtr pkt, uint8_t *actualPort,
+    LogicalSPDCacheLiveAdapterState::WaitAuthority *refusal) {
     int pkt_bus_id = core_addr(pkt->getAddr());
-    return cacheSidePorts[pkt_bus_id]->sendPacket(pkt);
+    if (actualPort != nullptr)
+        *actualPort = static_cast<uint8_t>(pkt_bus_id);
+    return cacheSidePorts[pkt_bus_id]->sendPacket(pkt, refusal);
 }
 bool MAA::sendPacketRetirementCache(PacketPtr pkt) {
     int pkt_bus_id = core_addr(pkt->getAddr());
@@ -127,7 +154,12 @@ void MAA::CacheSidePort::setUnblocked(BlockReason reason) {
     blockReason = BlockReason::NOT_BLOCKED;
     if (maa->cache_bus_blocked[core_id])
         maa->unblockCache(core_id);
-    maa->notifyLogicalSPDRetry(static_cast<uint8_t>(core_id));
+    const auto event = reason == BlockReason::MAX_XBAR_PACKETS
+        ? LogicalSPDCacheLiveAdapterState::PortEvent::
+              ResponseCapacityReleased
+        : LogicalSPDCacheLiveAdapterState::PortEvent::
+              DownstreamRequestRetry;
+    maa->notifyLogicalSPDPortEvent(static_cast<uint8_t>(core_id), event);
 }
 
 void MAA::CacheSidePort::allocate(int _core_id, int _maxOutstandingCacheSidePackets) {

@@ -271,6 +271,15 @@ LogicalSPDCacheGem5Bridge::recvReqRetry(
     return runtimes[token.maaId]->recvReqRetry(callbackPort);
 }
 
+LogicalSPDCacheGem5Bridge::Runtime::Transport::Status
+LogicalSPDCacheGem5Bridge::resumeLocalCapacity(
+    const CallbackToken &token, uint8_t callbackPort)
+{
+    if (!authentic(token))
+        return Runtime::Transport::Status::Invalid;
+    return runtimes[token.maaId]->resumeLocalCapacity(callbackPort);
+}
+
 LogicalSPDCacheGem5Bridge::Runtime::Transport::Result
 LogicalSPDCacheGem5Bridge::receive(
     const CallbackToken &token, Runtime::Transport::ReturnedHandle &returned,

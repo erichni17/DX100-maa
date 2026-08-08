@@ -103,6 +103,8 @@ class LogicalSPDCacheGem5Bridge
         const CallbackToken &token, bool accepted);
     Runtime::Transport::Status recvReqRetry(
         const CallbackToken &token, uint8_t callbackPort);
+    Runtime::Transport::Status resumeLocalCapacity(
+        const CallbackToken &token, uint8_t callbackPort);
     Runtime::Transport::Result receive(
         const CallbackToken &token,
         Runtime::Transport::ReturnedHandle &returned,
