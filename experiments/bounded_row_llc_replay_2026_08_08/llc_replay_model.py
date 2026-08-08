@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Deterministic finite Row/Offset and coherent-LLC B-replay model.
+"""Deterministic finite Row/Offset and coherent-LLC descriptor-spool model.
 
-The model consumes only ``dx100.physical_admission.v1`` records.  It compares
-an idealized full-metadata arm, the implemented grow-modulo rescan policy, and
-a prospective stable replay policy.  Replay deliberately uses the same
-partition function and admission order as modulo; therefore any difference in
-A traffic or ordering is a model failure rather than an alleged benefit.
+The model consumes only ``dx100.physical_admission.v1`` records. It compares an
+overprovisioned offline 16K ordering diagnostic, professor-style cached-B
+rescans, stable partition replay, and a one-scan finite descriptor spool. The
+requested four 4K runs are checked against physical Row geometry before the
+model forms finite subruns and a bounded head merge. The offline diagnostic is
+not the measured 64-row/slice native control and cannot establish its order.
 
 This is a work/traffic model.  It does not predict gem5 ticks and cannot turn
 the separately recorded offline balanced-range oracle into online hardware.
@@ -26,21 +27,42 @@ SCHEMA = "dx100.physical_admission.v1"
 LOGICAL_ELEMENTS = 16_384
 SOURCE_ELEMENTS = 131_072
 PARTITIONS = 4
+CONFIGURED_MERGE_HEADS = 8
 LINE_BYTES = 64
 FINITE_OFFSETS = 4_096
 FINITE_ROWS_PER_SLICE = 32
-FULL_OFFSETS = 16_384
-# A true 16K Row window has 16K line slots. The earlier hybrid control had
-# only 8K (16 slices * 64 row slots * 8 lines) and is kept as measured context.
-FULL_ROWS_PER_SLICE = 128
+DIAGNOSTIC_OFFSETS = 16_384
+# This deliberately overprovisioned offline ordering diagnostic avoids row
+# drains on the accepted trace. It is not the measured 64-row/slice control.
+DIAGNOSTIC_ROWS_PER_SLICE = 128
+NATIVE_CONTROL_ROWS_PER_SLICE = 64
 LINES_PER_ROW_SLOT = 8
 SLICES = 16
 SLICE_ORDER = (0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15)
-OBSERVED_MODULO_SIM_TICKS = 62_456_646
-OBSERVED_MODULO_CPU_CYCLES = 199_542
-OBSERVED_MODULO_FILTER_CYCLES = 4_101
+AUG3_MODULO_SIM_TICKS = 62_456_646
+AUG3_MODULO_CPU_CYCLES = 199_542
+AUG3_MODULO_FILTER_CYCLES = 4_101
 FILTER_WORDS_PER_CYCLE = 16
 MATERIALITY_THRESHOLD_PCT = 5.0
+AUG3_FULL_FILL_CYCLES = 26_209
+AUG3_FULL_REQUEST_CYCLES = 113_320
+AUG3_FULL_RT_FULL_EVENTS = 859
+AUG3_FULL_BUILD_ROUNDS = 102
+AUG3_MODULO_FILL_CYCLES = 75_308
+AUG3_MODULO_REQUEST_CYCLES = 98_261
+AUG3_MODULO_FILTER_VISITS = 65_537
+TRACE_CONTROL_SIM_TICKS = 40_159_152
+TRACE_CONTROL_FILL_CYCLES = 13_306
+TRACE_CONTROL_REQUEST_CYCLES = 107_076
+TRACE_CONTROL_RT_FULL_EVENTS = 845
+TRACE_CONTROL_BUILD_ROUNDS = 103
+DESCRIPTOR_RECORD_BYTES = 8
+PHYSICAL_ADDRESS_BITS = 33
+LLC_BUS_BYTES_PER_CYCLE = 32
+LLC_HIT_LATENCY_CYCLES = 42
+GENERAL_SUBRUN_UPPER_BOUND = (
+    PARTITIONS * math.ceil(FINITE_OFFSETS / FINITE_ROWS_PER_SLICE)
+)
 
 
 class ModelError(ValueError):
@@ -117,6 +139,11 @@ def load_trace(path: Path, expected_sha256: str) -> list[Record]:
                 raise ModelError(f"B[{record.itr}] is outside the frozen source")
             if record.b_paddr % 4 or record.a_line_paddr % LINE_BYTES:
                 raise ModelError(f"unaligned physical record at itr {record.itr}")
+            if record.a_line_paddr >= 1 << PHYSICAL_ADDRESS_BITS:
+                raise ModelError(
+                    f"A physical address exceeds {PHYSICAL_ADDRESS_BITS} bits "
+                    f"at itr {record.itr}"
+                )
             if not 0 <= record.native_slice < SLICES:
                 raise ModelError(f"invalid native slice at itr {record.itr}")
             if record.row != record.grow or not 0 <= record.wid < 8:
@@ -236,10 +263,12 @@ def build_schedule(
     epochs: list[FiniteEpoch] = []
     drains = {"offset_capacity": 0, "row_capacity": 0, "partition_boundary": 0}
     placements: list[int] = []
+    expected_itrs: list[int] = []
     issue_digest = hashlib.sha256()
     for stream_number, stream in enumerate(streams):
         epoch = FiniteEpoch(offset_capacity, rows_per_slice)
         for record in stream:
+            expected_itrs.append(record.itr)
             accepted, reason = epoch.can_insert(record)
             if not accepted:
                 if not epoch.records or reason is None:
@@ -257,7 +286,9 @@ def build_schedule(
         if stream_number + 1:
             drains["partition_boundary"] += 1
     drains["partition_boundary"] = max(0, drains["partition_boundary"] - 1)
-    if sorted(placements) != list(range(len(placements))):
+    if len(set(expected_itrs)) != len(expected_itrs):
+        raise ModelError("schedule input contains duplicate logical iterations")
+    if sorted(placements) != sorted(expected_itrs):
         raise ModelError("schedule does not place every logical iteration exactly once")
     for epoch_number, epoch in enumerate(epochs):
         for record in epoch.issue_records():
@@ -276,6 +307,369 @@ def partition_streams(records: Sequence[Record]) -> tuple[tuple[Record, ...], ..
         tuple(record for record in records if record.partition == partition)
         for partition in range(PARTITIONS)
     )
+
+
+def descriptor_sort_key(record: Record) -> tuple[int, int, int, int]:
+    return (
+        SLICE_ORDER.index(record.native_slice),
+        record.grow,
+        record.a_line_paddr,
+        record.itr,
+    )
+
+
+def build_descriptor_runs(
+    records: Sequence[Record], run_records: int = FINITE_OFFSETS
+) -> tuple[tuple[Record, ...], ...]:
+    if run_records <= 0 or len(records) % run_records:
+        raise ModelError("descriptor runs must exactly cover the logical input")
+    runs = tuple(
+        tuple(sorted(records[start : start + run_records], key=descriptor_sort_key))
+        for start in range(0, len(records), run_records)
+    )
+    if len(runs) != PARTITIONS or any(len(run) > FINITE_OFFSETS for run in runs):
+        raise ModelError("descriptor spool is not four finite 4K runs")
+    return runs
+
+
+def finite_descriptor_subruns(
+    records: Sequence[Record],
+) -> tuple[tuple[tuple[Record, ...], ...], tuple[Schedule, ...]]:
+    """Split each nominal 4K chunk at its own finite row-pressure drains."""
+
+    subruns: list[tuple[Record, ...]] = []
+    schedules: list[Schedule] = []
+    for start in range(0, len(records), FINITE_OFFSETS):
+        schedule = build_schedule(
+            [records[start : start + FINITE_OFFSETS]],
+            FINITE_OFFSETS,
+            FINITE_ROWS_PER_SLICE,
+        )
+        schedules.append(schedule)
+        subruns.extend(
+            tuple(sorted(epoch.records, key=descriptor_sort_key))
+            for epoch in schedule.epochs
+        )
+    runs = tuple(subruns)
+    if any(len(run) > FINITE_OFFSETS for run in runs):
+        raise ModelError("finite descriptor run exceeds the Offset window")
+    if sum(len(run) for run in runs) != len(records):
+        raise ModelError("finite descriptor runs do not exactly cover the input")
+    if len(runs) > CONFIGURED_MERGE_HEADS:
+        raise ModelError(
+            f"trace needs {len(runs)} merge heads, configured fail-closed "
+            f"limit is {CONFIGURED_MERGE_HEADS}"
+        )
+    return runs, tuple(schedules)
+
+
+def nominal_four_run_geometry(records: Sequence[Record]) -> dict[str, object]:
+    """Check whether four fixed 4K chunks fit the 32-row/slice geometry."""
+
+    chunks: list[dict[str, object]] = []
+    for chunk_number, start in enumerate(range(0, len(records), FINITE_OFFSETS)):
+        chunk = records[start : start + FINITE_OFFSETS]
+        line_sets: dict[tuple[int, int], set[int]] = {}
+        for record in chunk:
+            line_sets.setdefault((record.native_slice, record.grow), set()).add(
+                record.a_line_paddr
+            )
+        rows_by_slice = []
+        for native_slice in range(SLICES):
+            rows_by_slice.append(
+                sum(
+                    math.ceil(len(lines) / LINES_PER_ROW_SLOT)
+                    for (slice_id, _), lines in line_sets.items()
+                    if slice_id == native_slice
+                )
+            )
+        chunks.append(
+            {
+                "chunk": chunk_number,
+                "records": len(chunk),
+                "row_groups": len(line_sets),
+                "rows_by_slice": rows_by_slice,
+                "total_row_slots_required": sum(rows_by_slice),
+                "max_row_slots_in_one_slice": max(rows_by_slice),
+                "fits_32_rows_per_slice": max(rows_by_slice)
+                <= FINITE_ROWS_PER_SLICE,
+            }
+        )
+    return {
+        "requested_runs": PARTITIONS,
+        "requested_records_per_run": FINITE_OFFSETS,
+        "row_slots_available_total": SLICES * FINITE_ROWS_PER_SLICE,
+        "row_slots_available_per_slice": FINITE_ROWS_PER_SLICE,
+        "chunks": chunks,
+        "hardware_legal": all(
+            bool(chunk["fits_32_rows_per_slice"]) for chunk in chunks
+        ),
+    }
+
+
+def merge_descriptor_runs(
+    runs: Sequence[Sequence[Record]],
+) -> tuple[Record, ...]:
+    if not 1 <= len(runs) <= CONFIGURED_MERGE_HEADS:
+        raise ModelError(
+            f"k-way merge requires one to {CONFIGURED_MERGE_HEADS} finite runs"
+        )
+    heads = [0] * len(runs)
+    merged: list[Record] = []
+    while True:
+        available = [
+            index for index in range(len(runs))
+            if heads[index] < len(runs[index])
+        ]
+        if not available:
+            break
+        selected = min(
+            available,
+            key=lambda index: descriptor_sort_key(runs[index][heads[index]]),
+        )
+        merged.append(runs[selected][heads[selected]])
+        heads[selected] += 1
+    if sorted(record.itr for record in merged) != list(range(len(merged))):
+        raise ModelError("descriptor merge lost or duplicated result iterations")
+    return tuple(merged)
+
+
+def _stage_budget_comparison(
+    total_cycles: int, baseline_cycles: int
+) -> dict[str, float | int]:
+    return {
+        "analytical_stage_sum_cycles": total_cycles,
+        "analytical_headroom_vs_aug3_modulo_cycles": baseline_cycles - total_cycles,
+        "analytical_headroom_vs_aug3_modulo_stage_sum_pct": round(
+            100.0 * (1.0 - total_cycles / baseline_cycles), 6
+        ),
+        "gem5_latency_claim": False,
+    }
+
+
+def descriptor_spool_model(records: Sequence[Record]) -> dict[str, object]:
+    requested_four_run = nominal_four_run_geometry(records)
+    runs, chunk_schedules = finite_descriptor_subruns(records)
+    merged = merge_descriptor_runs(runs)
+    mapping_digest = hashlib.sha256()
+    issue_digest = hashlib.sha256()
+    line_fanout: dict[int, int] = {}
+    for record in merged:
+        mapping_digest.update(
+            f"{record.itr}:{record.wid}:{record.a_line_paddr:x}\n".encode("ascii")
+        )
+        issue_digest.update(
+            f"{record.native_slice}:{record.grow}:{record.a_line_paddr:x}:"
+            f"{record.itr}:{record.wid}\n".encode("ascii")
+        )
+        line_fanout[record.a_line_paddr] = line_fanout.get(record.a_line_paddr, 0) + 1
+
+    descriptor_bytes = len(records) * DESCRIPTOR_RECORD_BYTES
+    descriptor_lines = sum(
+        math.ceil(len(run) * DESCRIPTOR_RECORD_BYTES / LINE_BYTES)
+        for run in runs
+    )
+    descriptor_backing_bytes = descriptor_lines * LINE_BYTES
+    transfer_cycles = math.ceil(
+        descriptor_backing_bytes / LLC_BUS_BYTES_PER_CYCLE
+    )
+    baseline_cycles = AUG3_MODULO_FILL_CYCLES + AUG3_MODULO_REQUEST_CYCLES
+    sensitivity: dict[str, object] = {}
+    for records_per_cycle in (1, 2, 4):
+        engine_cycles = math.ceil(len(records) / records_per_cycle)
+        append_cycles = (
+            max(engine_cycles, transfer_cycles)
+            + len(runs) * LLC_HIT_LATENCY_CYCLES
+        )
+        merge_cycles = (
+            max(engine_cycles, transfer_cycles) + LLC_HIT_LATENCY_CYCLES
+        )
+        queue_cycles = append_cycles + merge_cycles
+        analytical_fill_budget = AUG3_FULL_FILL_CYCLES + queue_cycles
+        serialized_writeback = transfer_cycles + LLC_HIT_LATENCY_CYCLES
+        request_cases: dict[str, object] = {}
+        for name, request_cycles in (
+            ("aug3_modulo_request", AUG3_MODULO_REQUEST_CYCLES),
+            ("aug3_full_control_request", AUG3_FULL_REQUEST_CYCLES),
+        ):
+            critical = analytical_fill_budget + request_cycles
+            with_writeback = critical + serialized_writeback
+            request_cases[name] = {
+                "request_cycles": request_cycles,
+                "stage_budget_without_serialized_writeback": _stage_budget_comparison(
+                    critical, baseline_cycles
+                ),
+                "stage_budget_with_serialized_writeback": _stage_budget_comparison(
+                    with_writeback, baseline_cycles
+                ),
+            }
+        sensitivity[str(records_per_cycle)] = {
+            "descriptor_records_per_cycle": records_per_cycle,
+            "per_phase_engine_cycles": engine_cycles,
+            "per_phase_llc_transfer_cycles": transfer_cycles,
+            "append_run_startup_latency_cycles": (
+                len(runs) * LLC_HIT_LATENCY_CYCLES
+            ),
+            "merge_startup_latency_cycles": LLC_HIT_LATENCY_CYCLES,
+            "append_plus_merge_cycles": queue_cycles,
+            "analytical_fill_budget_cycles": analytical_fill_budget,
+            "analytical_fill_headroom_vs_aug3_modulo_cycles": (
+                AUG3_MODULO_FILL_CYCLES - analytical_fill_budget
+            ),
+            "serialized_dirty_writeback_cycles": serialized_writeback,
+            "request_cases": request_cases,
+        }
+
+    required_rate = next(
+        rate
+        for rate in (1, 2, 4)
+        if sensitivity[str(rate)]["request_cases"]["aug3_full_control_request"]
+        ["stage_budget_with_serialized_writeback"]
+        ["analytical_headroom_vs_aug3_modulo_stage_sum_pct"]
+        >= MATERIALITY_THRESHOLD_PCT
+    )
+    run_record_prefixes: list[int] = []
+    run_base_byte_offsets: list[int] = []
+    next_record = 0
+    next_byte = 0
+    for run in runs:
+        run_record_prefixes.append(next_record)
+        run_base_byte_offsets.append(next_byte)
+        next_record += len(run)
+        next_byte += math.ceil(
+            len(run) * DESCRIPTOR_RECORD_BYTES / LINE_BYTES
+        ) * LINE_BYTES
+    return {
+        "mechanism": "one_b_scan_finite_sorted_runs_bounded_head_merge",
+        "requested_four_run_policy": {
+            **requested_four_run,
+            "decision": (
+                "accept"
+                if requested_four_run["hardware_legal"]
+                else "reject_row_geometry_overflow"
+            ),
+        },
+        "modeled_policy": "one_scan_finite_descriptor_subruns",
+        "run_count": len(runs),
+        "run_populations": [len(run) for run in runs],
+        "run_formation": {
+            "b_scans": 1,
+            "merge_passes": 1,
+            "nominal_4k_chunks": PARTITIONS,
+            "subruns_per_nominal_chunk": [
+                len(schedule.epochs) for schedule in chunk_schedules
+            ],
+            "general_subrun_upper_bound": GENERAL_SUBRUN_UPPER_BOUND,
+            "configured_live_merge_head_limit": CONFIGURED_MERGE_HEADS,
+            "overflow_behavior": "fail_closed_no_uncharged_hierarchical_merge",
+            "row_pressure_drains": sum(
+                schedule.drain_causes["row_capacity"]
+                for schedule in chunk_schedules
+            ),
+            "offset_pressure_drains": sum(
+                schedule.drain_causes["offset_capacity"]
+                for schedule in chunk_schedules
+            ),
+            "row_slots_per_run": [
+                epoch.row_slots
+                for schedule in chunk_schedules
+                for epoch in schedule.epochs
+            ],
+            "row_groups_per_run": [
+                epoch.row_groups
+                for schedule in chunk_schedules
+                for epoch in schedule.epochs
+            ],
+            "max_row_slots_in_one_slice_per_run": [
+                max(len(rows) for rows in epoch.rows)
+                for schedule in chunk_schedules
+                for epoch in schedule.epochs
+            ],
+        },
+        "total_finite_records": sum(len(run) for run in runs),
+        "record_format": {
+            "bytes": DESCRIPTOR_RECORD_BYTES,
+            "a_line_index_bits": 27,
+            "logical_iteration_bits": 14,
+            "wid_bits": 3,
+            "used_bits": 44,
+            "reserved_bits": 20,
+            "address_contract": "33-bit physical byte address, 64-byte aligned",
+        },
+        "result_iteration_mapping": {
+            "records": len(merged),
+            "stable_itr_and_wid_embedded": True,
+            "mapping_sha256": mapping_digest.hexdigest(),
+            "max_a_line_fanout": max(line_fanout.values()),
+            "unbounded_mapping_state": False,
+        },
+        "merge": {
+            "heads": len(runs),
+            "head_descriptor_bytes": len(runs) * DESCRIPTOR_RECORD_BYTES,
+            "head_index_bytes": len(runs) * 2,
+            "tail_index_bytes": len(runs) * 2,
+            "head_valid_bytes": len(runs),
+            "line_read_buffers_bytes": len(runs) * LINE_BYTES,
+            "append_line_buffer_bytes": LINE_BYTES,
+            "bounded_control_and_buffers_bytes": (
+                len(runs) * DESCRIPTOR_RECORD_BYTES
+                + len(runs) * 2
+                + len(runs) * 2
+                + len(runs)
+                + len(runs) * LINE_BYTES
+                + LINE_BYTES
+            ),
+            "queue_valid_record_prefixes": run_record_prefixes,
+            "queue_base_byte_offsets_aligned": run_base_byte_offsets,
+            "queue_head_indices_initial": [0] * len(runs),
+            "queue_tail_indices_immutable": [len(run) for run in runs],
+            "merged_mapping_records": len(merged),
+            "coalesced_a_line_requests": len(line_fanout),
+            "dram_row_groups": len({(record.native_slice, record.grow) for record in merged}),
+            "issue_mapping_sha256": issue_digest.hexdigest(),
+            "native_issue_order_relation": "unknown_not_reconstructed",
+        },
+        "traffic": {
+            "original_b_scan_records": len(records),
+            "original_b_read_lines": input_line_count(records),
+            "classification_visits": len(records),
+            "descriptor_append_records": len(records),
+            "descriptor_valid_bytes": descriptor_bytes,
+            "descriptor_backing_bytes_with_subrun_padding": (
+                descriptor_backing_bytes
+            ),
+            "descriptor_padding_bytes": descriptor_backing_bytes - descriptor_bytes,
+            "descriptor_append_line_bytes": descriptor_backing_bytes,
+            "descriptor_append_lines": descriptor_lines,
+            "descriptor_read_records": len(records),
+            "descriptor_read_line_bytes": descriptor_backing_bytes,
+            "descriptor_read_lines": descriptor_lines,
+            "eventual_dirty_writeback_line_bytes": descriptor_backing_bytes,
+            "eventual_dirty_writeback_lines": descriptor_lines,
+            "coherent_line_transfers": input_line_count(records) + 3 * descriptor_lines,
+            "llc_bus_bytes_per_cycle": LLC_BUS_BYTES_PER_CYCLE,
+            "configured_llc_hit_latency_cycles": LLC_HIT_LATENCY_CYCLES,
+        },
+        "calibration_assumptions": {
+            "one_scan_fill_anchor_cycles": AUG3_FULL_FILL_CYCLES,
+            "one_scan_fill_anchor_source": "separate_aug3_full_control_calibration",
+            "physical_trace_control_fill_cycles": TRACE_CONTROL_FILL_CYCLES,
+            "physical_trace_control_not_used_as_stage_anchor": True,
+            "finite_run_sort_uses_existing_row_offset_storage": True,
+            "sort_emit_is_charged_at_descriptor_records_per_cycle": True,
+            "row_slots_are_not_assumed_pre_sorted": True,
+            "bounded_sort_selector_candidates_per_slice": (
+                FINITE_ROWS_PER_SLICE * LINES_PER_ROW_SLOT
+            ),
+            "request_is_bracketed_not_predicted": True,
+            "dirty_writeback_is_reported_both_off_and_on_critical_path": True,
+        },
+        "analytical_stage_budget_sensitivity": sensitivity,
+        "required_records_per_cycle_for_analytical_5pct_stage_headroom": required_rate,
+        "configured_bus_record_ceiling_per_cycle": (
+            LLC_BUS_BYTES_PER_CYCLE // DESCRIPTOR_RECORD_BYTES
+        ),
+    }
 
 
 def replay_traffic(
@@ -341,7 +735,9 @@ def schedule_summary(schedule: Schedule) -> dict[str, object]:
 
 def evaluate(records: Sequence[Record], trace_sha256: str) -> dict[str, object]:
     partitions = partition_streams(records)
-    full = build_schedule([records], FULL_OFFSETS, FULL_ROWS_PER_SLICE)
+    diagnostic = build_schedule(
+        [records], DIAGNOSTIC_OFFSETS, DIAGNOSTIC_ROWS_PER_SLICE
+    )
     modulo = build_schedule(partitions, FINITE_OFFSETS, FINITE_ROWS_PER_SLICE)
     replay = build_schedule(partitions, FINITE_OFFSETS, FINITE_ROWS_PER_SLICE)
     if modulo.issue_sha256 != replay.issue_sha256:
@@ -351,23 +747,9 @@ def evaluate(records: Sequence[Record], trace_sha256: str) -> dict[str, object]:
     modulo_b_lines = PARTITIONS * input_line_count(records)
     packed = replay_traffic(records, 4)
     generic = replay_traffic(records, 8)
+    spool = descriptor_spool_model(records)
     replay_selector_records = len(records) + int(packed["replay_records"])
     replay_selector_cycles = math.ceil(replay_selector_records / FILTER_WORDS_PER_CYCLE)
-    zero_cost_filter_savings_cycles = max(
-        0, OBSERVED_MODULO_FILTER_CYCLES - replay_selector_cycles
-    )
-    zero_cost_filter_latency_reduction_upper_bound_pct = round(
-        100.0 * zero_cost_filter_savings_cycles / OBSERVED_MODULO_CPU_CYCLES, 6
-    )
-    zero_cost_filter_speedup_upper_bound_pct = round(
-        100.0
-        * (
-            OBSERVED_MODULO_CPU_CYCLES
-            / (OBSERVED_MODULO_CPU_CYCLES - zero_cost_filter_savings_cycles)
-            - 1.0
-        ),
-        6,
-    )
     for traffic in (packed, generic):
         traffic["delta_vs_modulo_b_line_transfers"] = (
             int(traffic["coherent_line_transfers"]) - modulo_b_lines
@@ -378,8 +760,11 @@ def evaluate(records: Sequence[Record], trace_sha256: str) -> dict[str, object]:
             6,
         )
     return {
-        "schema": "dx100.bounded_row_llc_replay_model.v1",
-        "evidence_class": "deterministic_work_and_traffic_model_no_timing_claim",
+        "schema": "dx100.bounded_row_llc_replay_model.v3",
+        "evidence_class": (
+            "deterministic_work_traffic_and_analytical_stage_budget_"
+            "no_candidate_timing_claim"
+        ),
         "input": {
             "physical_schema": SCHEMA,
             "raw_trace_sha256": trace_sha256,
@@ -387,32 +772,124 @@ def evaluate(records: Sequence[Record], trace_sha256: str) -> dict[str, object]:
             "source_elements": SOURCE_ELEMENTS,
             "b_input_lines": input_line_count(records),
         },
+        "evidence_sources": {
+            "physical_trace_control_aug8": {
+                "campaign_root": (
+                    "/data1/nier/dx100-runs/2026-08-08-virtualization-sprint/"
+                    "hybrid-control-explicit-0108d9b"
+                ),
+                "case": "native_direct_16k",
+                "raw_trace_sha256": trace_sha256,
+                "result_tsv_sha256": (
+                    "63f85392c64d77c8f6a8fead906d6b5c482d63c56cd0830f16adabb95ef0237a"
+                ),
+                "stats_txt_sha256": (
+                    "e2152f3a6971c55ef595de5affb254e40cdcece6f8004c580f49bdcc8ea13e9b"
+                ),
+                "simTicks": TRACE_CONTROL_SIM_TICKS,
+                "fill_cycles": TRACE_CONTROL_FILL_CYCLES,
+                "request_cycles": TRACE_CONTROL_REQUEST_CYCLES,
+                "row_table_full_events": TRACE_CONTROL_RT_FULL_EVENTS,
+                "virtual_build_rounds": TRACE_CONTROL_BUILD_ROUNDS,
+                "rows_per_slice": NATIVE_CONTROL_ROWS_PER_SLICE,
+                "offset_entries": LOGICAL_ELEMENTS,
+                "role": "physical_record_and_geometry_source_not_stage_calibration",
+            },
+            "matched_timing_calibration_aug3": {
+                "campaign_root": (
+                    "/data1/nier/dx100-runs/2026-08-03-virtualization-"
+                    "integration/bounded-matched-oracle-f281637"
+                ),
+                "role": "separate_matched_stage_budget_calibration",
+                "full_control": {
+                    "case": "hybrid_full_metadata",
+                    "result_tsv_sha256": (
+                        "a9ff96a2f68f9b7a39ca928b5a0d2312bd3de2f362142f0ef72bb54c880abd2c"
+                    ),
+                    "stats_txt_sha256": (
+                        "f61aa5520dc4e16275f7c6bc0c2c54d8276f0766b21a7a7761fa418dbce36607"
+                    ),
+                    "simTicks": 51_504_776,
+                    "fill_cycles": AUG3_FULL_FILL_CYCLES,
+                    "request_cycles": AUG3_FULL_REQUEST_CYCLES,
+                    "row_table_full_events": AUG3_FULL_RT_FULL_EVENTS,
+                    "virtual_build_rounds": AUG3_FULL_BUILD_ROUNDS,
+                    "rows_per_slice": NATIVE_CONTROL_ROWS_PER_SLICE,
+                    "offset_entries": LOGICAL_ELEMENTS,
+                },
+                "bounded_modulo": {
+                    "case": "bounded_modulo_4k",
+                    "result_tsv_sha256": (
+                        "05a4ed98474bcaa3f3bb7732674fe7ab66655f250ad1b817105656a5005d35e7"
+                    ),
+                    "stats_txt_sha256": (
+                        "2663a08734b002530f1006730c9077f42699bc78f8eb11abb50fd3ba930f129c"
+                    ),
+                    "simTicks": AUG3_MODULO_SIM_TICKS,
+                    "cpu_cycles": AUG3_MODULO_CPU_CYCLES,
+                    "fill_cycles": AUG3_MODULO_FILL_CYCLES,
+                    "request_cycles": AUG3_MODULO_REQUEST_CYCLES,
+                    "filter_visits": AUG3_MODULO_FILTER_VISITS,
+                    "filter_cycles": AUG3_MODULO_FILTER_CYCLES,
+                },
+                "delta_modulo_minus_full": {
+                    "fill_cycles": (
+                        AUG3_MODULO_FILL_CYCLES - AUG3_FULL_FILL_CYCLES
+                    ),
+                    "request_cycles": (
+                        AUG3_MODULO_REQUEST_CYCLES - AUG3_FULL_REQUEST_CYCLES
+                    ),
+                    "fill_plus_request_cycles": (
+                        AUG3_MODULO_FILL_CYCLES
+                        + AUG3_MODULO_REQUEST_CYCLES
+                        - AUG3_FULL_FILL_CYCLES
+                        - AUG3_FULL_REQUEST_CYCLES
+                    ),
+                },
+            },
+        },
         "configuration": {
             "partitions": PARTITIONS,
             "partition_function": "grow_addr_mod_4",
             "finite_offsets": FINITE_OFFSETS,
             "finite_rows_per_slice": FINITE_ROWS_PER_SLICE,
-            "full_offsets": FULL_OFFSETS,
-            "full_rows_per_slice": FULL_ROWS_PER_SLICE,
+            "diagnostic_offsets": DIAGNOSTIC_OFFSETS,
+            "diagnostic_rows_per_slice": DIAGNOSTIC_ROWS_PER_SLICE,
+            "native_control_offsets": LOGICAL_ELEMENTS,
+            "native_control_rows_per_slice": NATIVE_CONTROL_ROWS_PER_SLICE,
             "slices": SLICES,
             "lines_per_row_slot": LINES_PER_ROW_SLOT,
             "line_bytes": LINE_BYTES,
-            "ordering": "stable_input_then_native_slice_row_slot_line_slot",
+            "diagnostic_ordering": (
+                "offline_stable_input_then_fixed_slice_row_slot_line_slot"
+            ),
+            "descriptor_spool": {
+                "record_bytes": DESCRIPTOR_RECORD_BYTES,
+                "llc_bus_bytes_per_cycle": LLC_BUS_BYTES_PER_CYCLE,
+                "llc_hit_latency_cycles": LLC_HIT_LATENCY_CYCLES,
+                "configured_live_merge_heads": CONFIGURED_MERGE_HEADS,
+                "general_subrun_upper_bound": GENERAL_SUBRUN_UPPER_BOUND,
+            },
         },
         "partition_populations": [len(partition) for partition in partitions],
         "arms": {
-            "full_metadata": {
-                **schedule_summary(full),
+            "unlimited_16k_ordering_diagnostic": {
+                **schedule_summary(diagnostic),
                 "b_scans": 1,
                 "b_read_lines": input_line_count(records),
                 "backing_bytes": 0,
+                "offline_ordering_diagnostic": True,
+                "actual_native_control": False,
+                "one_epoch_is_measured": False,
+                "model_rows_per_slice": DIAGNOSTIC_ROWS_PER_SLICE,
             },
-            "bounded_modulo": {
+            "bounded_modulo_geometry_model": {
                 **schedule_summary(modulo),
                 "b_scans": PARTITIONS,
                 "b_read_lines": modulo_b_lines,
                 "selector_words": PARTITIONS * len(records),
                 "backing_bytes": 0,
+                "timing_source": "none_geometry_only",
             },
             "llc_replay": {
                 **schedule_summary(replay),
@@ -424,31 +901,35 @@ def evaluate(records: Sequence[Record], trace_sha256: str) -> dict[str, object]:
                 "packed32": packed,
                 "generic64": generic,
             },
+            "sorted_descriptor_spool": spool,
         },
         "gate": {
-            "gem5_vertical_slice": False,
+            "gem5_vertical_slice_recommended": False,
+            "candidate_timing_measured": False,
+            "policy_decision": (
+                "reject_repeated_scans_and_reject_exact_four_run_policy; "
+                "retain_eight_subrun_spool_as_untimed_followup"
+            ),
             "materiality_threshold_pct": MATERIALITY_THRESHOLD_PCT,
-            "zero_cost_filter_only_latency_reduction_upper_bound_pct": (
-                zero_cost_filter_latency_reduction_upper_bound_pct
-            ),
-            "zero_cost_filter_only_speedup_upper_bound_pct": (
-                zero_cost_filter_speedup_upper_bound_pct
-            ),
-            "zero_cost_filter_cycles_eliminated_upper_bound": zero_cost_filter_savings_cycles,
             "reason": (
-                "even a free replay engine can remove at most the unmatched selector "
-                "cycles, below the materiality threshold; generic hardware records "
-                "increase coherent B/backing line transfers, while packed32 is "
-                "workload-specialized and leaves A requests, DRAM row groups, epochs, "
-                "and ordering unchanged"
+                "the separate Aug-3 matched calibration attributes +49,099 cycles "
+                "to repeated-pass Fill and -15,059 to Request; the Aug-8 physical "
+                "trace shows the requested four 4K sorted runs become eight "
+                "subruns, while the two-record/cycle result remains an analytical "
+                "cross-campaign stage budget, not gem5 latency"
             ),
+            "analytical_followup": {
+                "policy": "one_scan_eight_finite_descriptor_subruns",
+                "minimum_assumed_sort_emit_and_merge_rate_records_per_cycle": 2,
+                "requires_gem5_timing_before_any_latency_claim": True,
+            },
             "timing_or_speedup_claim": False,
-            "observed_context": {
-                "bounded_modulo_simTicks": OBSERVED_MODULO_SIM_TICKS,
-                "bounded_modulo_cpu_cycles": OBSERVED_MODULO_CPU_CYCLES,
-                "bounded_modulo_filter_cycles": OBSERVED_MODULO_FILTER_CYCLES,
-                "filter_words_per_cycle": FILTER_WORDS_PER_CYCLE,
-                "provenance": "0108d9b committed matched-oracle counters.tsv",
+            "evidence_separation": {
+                "geometry_source": "physical_trace_control_aug8",
+                "analytical_stage_calibration_source": (
+                    "matched_timing_calibration_aug3"
+                ),
+                "mixed_control_claim": False,
             },
         },
     }

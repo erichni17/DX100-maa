@@ -1,8 +1,10 @@
-# Bounded-row coherent-LLC replay model
+# Finite descriptor-subrun replay model
 
-This directory is a deterministic work/traffic screen for one proposed true
-metadata-virtualization mechanism. It does not implement gem5 and does not
-claim timing performance.
+This directory is a deterministic physical-trace screen comparing repeated
+cached-B scans with one scan plus finite sorted descriptor subruns. It models
+the exact Row/Offset drain geometry, descriptor mapping, coherent LLC traffic,
+and an analytical service-rate budget. It does not implement gem5 or claim
+candidate latency.
 
 Run the synthetic invariant tests:
 
@@ -22,7 +24,7 @@ cmp /tmp/bounded-row-llc-replay-results.json \
   experiments/bounded_row_llc_replay_2026_08_08/results.json
 ```
 
-`input_manifest.json` binds the source commit, binaries, checkpoint, raw trace,
-physical validation, Ramulator configuration, and the prior matched-control
-tables. The 12 MiB raw JSONL remains in the frozen run root; it is consumed and
-SHA-256 checked rather than copied into Git.
+`input_manifest.json` separately binds the Aug-8 physical trace control and
+the Aug-3 matched timing calibration, including their result/stats hashes and
+counters. The 12 MiB raw JSONL remains in the Aug-8 run root; it is consumed
+and SHA-256 checked rather than copied into Git.
