@@ -480,7 +480,8 @@ IndirectAccessUnit::closeReorderSurvivalEpoch(bool final)
             "schema=dx100.reorder_epoch.v1 event=reorder_epoch unit=%d "
             "instruction_id=%lu operation_tick=%lu pc=0x%lx cid=%d "
             "if_id=%d opcode=%d epoch_id=%lu admissions=%lu "
-            "issued_lines=%lu issued_entries=%lu row_transitions=%lu "
+            "issued_lines=%lu issued_entries=%lu "
+            "max_joint_admissions=%lu row_transitions=%lu "
             "rt_full_drains=%lu offset_drains=%lu "
             "partition_drains=%lu final=%d\n",
             my_indirect_id, reorder_survival.instructionId,
@@ -488,7 +489,8 @@ IndirectAccessUnit::closeReorderSurvivalEpoch(bool final)
             my_instruction->if_id,
             static_cast<int>(my_instruction->opcode), epoch.id,
             epoch.admissions, epoch.issuedLines, epoch.issuedEntries,
-            epoch.rowTransitions, epoch.rtFullDrains, epoch.offsetDrains,
+            epoch.maxJointAdmissions, epoch.rowTransitions,
+            epoch.rtFullDrains, epoch.offsetDrains,
             epoch.partitionDrains, epoch.final);
 }
 
@@ -509,6 +511,12 @@ IndirectAccessUnit::finishReorderSurvival()
              "reconcile: %lu/%lu\n",
              my_indirect_id, reorder_survival.totalSelectedDescriptors,
              reorder_survival.totalAdmissions);
+    panic_if(reorder_survival.totalRTFullDrains !=
+                 attribution_row_pressure_events,
+             "I[%d] reorder-survival RT-full drains %lu != pressure events "
+             "%lu\n",
+             my_indirect_id, reorder_survival.totalRTFullDrains,
+             attribution_row_pressure_events);
     panic_if(reorder_survival.totalIssuedLines != source_issue_sequence,
              "I[%d] reorder-survival lines %lu != source issues %lu\n",
              my_indirect_id, reorder_survival.totalIssuedLines,

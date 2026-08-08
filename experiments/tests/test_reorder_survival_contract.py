@@ -70,6 +70,7 @@ class ReorderSurvivalContractTest(unittest.TestCase):
         self.assertNotIn("issueLine(uint64_t row_key,", self.header)
         self.assertIn("totalSelectedDescriptors", self.header)
         self.assertIn("selected/admitted descriptors", self.indirect)
+        self.assertIn("RT-full drains %lu != pressure events", self.indirect)
 
     def test_analyzer_fails_closed_and_states_claim_boundary(self):
         for token in (

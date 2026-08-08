@@ -28,6 +28,7 @@ class ReorderSurvivalTracker
         uint64_t admissions = 0;
         uint64_t issuedLines = 0;
         uint64_t issuedEntries = 0;
+        uint64_t maxJointAdmissions = 0;
         uint64_t rowTransitions = 0;
         uint64_t rtFullDrains = 0;
         uint64_t offsetDrains = 0;
@@ -49,6 +50,7 @@ class ReorderSurvivalTracker
         totalOffsetDrains = 0;
         totalPartitionDrains = 0;
         maxJointAdmissions = 0;
+        visibleAdmissions = 0;
         epochs = 0;
         lastIssuedRow = 0;
         hasLastIssuedRow = false;
@@ -81,6 +83,11 @@ class ReorderSurvivalTracker
             return false;
         ++current.admissions;
         ++totalAdmissions;
+        ++visibleAdmissions;
+        current.maxJointAdmissions =
+            std::max(current.maxJointAdmissions, visibleAdmissions);
+        maxJointAdmissions =
+            std::max(maxJointAdmissions, visibleAdmissions);
         return true;
     }
 
@@ -103,10 +110,12 @@ class ReorderSurvivalTracker
     bool
     issueEntries(uint64_t entries)
     {
-        if (!active || complete || entries == 0)
+        if (!active || complete || entries == 0 ||
+            entries > visibleAdmissions)
             return false;
         current.issuedEntries += entries;
         totalIssuedEntries += entries;
+        visibleAdmissions -= entries;
         return true;
     }
 
@@ -131,9 +140,14 @@ class ReorderSurvivalTracker
             total_counter = &totalPartitionDrains;
             break;
         }
-        // A pressure condition can be observed repeatedly while the same
-        // drain is outstanding.  It is one epoch boundary, not many.
-        if (*epoch_counter == 0) {
+        // Every RowTable-full observation is a finite drain within the
+        // current Offset/partition epoch. Offset/partition pressure itself
+        // is one epoch boundary and can be observed repeatedly while that
+        // boundary is outstanding.
+        if (reason == DrainReason::RowTableFull) {
+            ++*epoch_counter;
+            ++*total_counter;
+        } else if (*epoch_counter == 0) {
             ++*epoch_counter;
             ++*total_counter;
         }
@@ -143,18 +157,17 @@ class ReorderSurvivalTracker
     bool
     drainPending() const
     {
-        return current.rtFullDrains != 0 || current.offsetDrains != 0 ||
-               current.partitionDrains != 0;
+        return current.offsetDrains != 0 || current.partitionDrains != 0;
     }
 
     bool
     closeEpoch(bool final, Epoch &closed)
     {
-        if (!active || complete || (!final && !drainPending()))
+        if (!active || complete || (!final && !drainPending()) ||
+            visibleAdmissions != 0 ||
+            current.admissions != current.issuedEntries)
             return false;
         current.final = final;
-        maxJointAdmissions =
-            std::max(maxJointAdmissions, current.admissions);
         closed = current;
         ++epochs;
         if (final) {
@@ -205,6 +218,7 @@ class ReorderSurvivalTracker
     Epoch current{};
     uint64_t lastIssuedRow = 0;
     uint64_t lastSelectionId = 0;
+    uint64_t visibleAdmissions = 0;
     bool hasLastIssuedRow = false;
     bool hasLastSelectionId = false;
     bool active = false;
