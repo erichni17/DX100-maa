@@ -18,7 +18,9 @@ namespace gem5 {
  * Standalone production authority for the logical SPD-cache slice.
  *
  * This object owns the scheduler/controller Slice, the physical Transport,
- * the captured-scalar Datapath, and exactly two private 32-KiB payload slots.
+ * the captured-scalar Datapath, and one private 32-KiB payload bank.  The
+ * bank is exposed either as one 4K-element in-place slot or as two disjoint
+ * 2K-element source/destination slots; no mode allocates a second bank.
  * No bridge may publish a Slice page or compute completion directly.  The
  * eventual gem5 bridge must convert a transition to ProductionStop/Poisoned
  * into panic/fatal; host tests retain the persistent fail-closed state so they
@@ -30,6 +32,7 @@ class LogicalSPDCacheRuntime
     using Slice = LogicalSPDCacheSlice;
     using Transport = LogicalSPDCacheTransport;
     using Datapath = LogicalSPDCacheDatapath;
+    using Mode = Slice::Mode;
 
     /**
      * Field-mapped packed semantic-state lower bound.
@@ -44,10 +47,10 @@ class LogicalSPDCacheRuntime
      */
     struct PackedSemanticLedger
     {
-        // LogicalSPDCacheController::Descriptor, twice.
+        // LogicalSPDCacheController::Descriptor[2], each with 8 ready bits.
         static constexpr std::size_t ControllerDescriptorAllocated = 1;
         static constexpr std::size_t ControllerDescriptorGeneration = 32;
-        static constexpr std::size_t ControllerDescriptorReady = 4;
+        static constexpr std::size_t ControllerDescriptorReady = 8;
         static constexpr std::size_t ControllerDescriptors =
             2 * (ControllerDescriptorAllocated +
                  ControllerDescriptorGeneration +
@@ -55,7 +58,7 @@ class LogicalSPDCacheRuntime
 
         // LogicalSPDCacheController::Slot, twice.
         static constexpr std::size_t ControllerSlotPhase = 3;
-        static constexpr std::size_t ControllerPageIdentity = 1 + 2 + 32;
+        static constexpr std::size_t ControllerPageIdentity = 1 + 3 + 32;
         static constexpr std::size_t ControllerSlotTransaction = 64;
         static constexpr std::size_t ControllerSlotWritebackTransaction = 64;
         static constexpr std::size_t ControllerSlotPublish = 1;
@@ -65,9 +68,9 @@ class LogicalSPDCacheRuntime
                  ControllerSlotWritebackTransaction +
                  ControllerSlotPublish);
 
-        // missQueue[4], LeaseRecord[4], queueSize, lastMemorySerial.
+        // missQueue[8], LeaseRecord[4], queueSize, lastMemorySerial.
         static constexpr std::size_t ControllerMissQueue =
-            4 * ControllerPageIdentity;
+            8 * ControllerPageIdentity;
         static constexpr std::size_t ControllerLeaseActive = 1;
         static constexpr std::size_t ControllerLeaseSlot = 2;
         static constexpr std::size_t ControllerLeaseSerial = 64;
@@ -80,12 +83,13 @@ class LogicalSPDCacheRuntime
                  ControllerLeaseSerial + ControllerLeasePage +
                  ControllerLeasePurpose +
                  ControllerLeaseOverwriteSerial);
-        static constexpr std::size_t ControllerQueueSize = 3;
+        static constexpr std::size_t ControllerQueueSize = 4;
         static constexpr std::size_t ControllerLastMemorySerial = 64;
+        static constexpr std::size_t ControllerConfiguration = 4 + 2 + 1;
         static constexpr std::size_t ControllerBits =
             ControllerDescriptors + ControllerSlots + ControllerMissQueue +
             ControllerLeases + ControllerQueueSize +
-            ControllerLastMemorySerial;
+            ControllerLastMemorySerial + ControllerConfiguration;
 
         // LogicalSPDCacheSlice::DescriptorRecord[2].
         static constexpr std::size_t SliceDescriptorRole = 2;
@@ -105,10 +109,13 @@ class LogicalSPDCacheRuntime
             3 + 64 + ControllerPageIdentity;
         static constexpr std::size_t SliceOverwriteReservation =
             2 * SliceLease + 2 + 2 + 64 + 64;
+        static constexpr std::size_t SliceInPlaceReservation =
+            SliceLease + ControllerPageIdentity + 2 + 64 + 64;
         static constexpr std::size_t SliceStage = 3;
         static constexpr std::size_t SliceActiveOperation =
-            1 + 32 + 2 * SliceDescriptorHandle + 3 + 64 + 2 +
-            SliceStage + SliceOverwriteReservation;
+            1 + 32 + 2 * SliceDescriptorHandle + 3 + 64 + 3 +
+            SliceStage + SliceOverwriteReservation +
+            SliceInPlaceReservation;
 
         // acceptedMemoryAction stores PageAction plus MemoryAction duplicate.
         static constexpr std::size_t SliceControllerMemoryAction =
@@ -130,6 +137,7 @@ class LogicalSPDCacheRuntime
         static constexpr std::size_t SliceAbortRequested = 1;
         static constexpr std::size_t SliceAbortCompletion = 1;
         static constexpr std::size_t SliceAbortCode = 1;
+        static constexpr std::size_t SliceConfiguration = 1 + 4 + 2 + 12;
         static constexpr std::size_t SliceInstrumentationCounterBits =
             12 * 64;
         static constexpr std::size_t SliceBits =
@@ -139,14 +147,14 @@ class LogicalSPDCacheRuntime
             SliceLastOperationID + SliceLastProducerTransaction +
             SliceMaaID + SliceInitialized + SliceDraining + SliceSealed +
             SlicePoisoned + SliceAbortRequested + SliceAbortCompletion +
-            SliceAbortCode;
+            SliceAbortCode + SliceConfiguration;
 
         // LogicalSPDCacheTransport::TransactionRecord[8].
         static constexpr std::size_t TransportRecordState = 3;
         static constexpr std::size_t TransportRecordEpoch = 16;
         static constexpr std::size_t TransportRecordActionID = 32;
         static constexpr std::size_t TransportTransactionKey =
-            1 + 32 + 1 + 2 + 9 + 1;
+            1 + 32 + 1 + 3 + 9 + 1;
         static constexpr std::size_t TransportRouteToken = 4 + 16 + 32;
         static constexpr std::size_t TransportRequestIdentity = 32;
         static constexpr std::size_t TransportRequestPacket =
@@ -182,7 +190,7 @@ class LogicalSPDCacheRuntime
         static constexpr std::size_t TransportActionOperation = 1;
         static constexpr std::size_t TransportActionDescriptor = 1;
         static constexpr std::size_t TransportActionGeneration = 32;
-        static constexpr std::size_t TransportActionPage = 2;
+        static constexpr std::size_t TransportActionPage = 3;
         static constexpr std::size_t TransportActionSlot = 1;
         static constexpr std::size_t TransportActionBase = 64;
         static constexpr std::size_t TransportActionControllerSerial = 64;
@@ -213,6 +221,7 @@ class LogicalSPDCacheRuntime
         static constexpr std::size_t TransportGeometryValid = 1;
         static constexpr std::size_t TransportPoisoned = 1;
         static constexpr std::size_t TransportRemainingBudget = 3 * 32;
+        static constexpr std::size_t TransportConfiguration = 1 + 1 + 4;
         static constexpr std::size_t TransportBits =
             TransportRecords + TransportFifo + TransportPending +
             TransportCreditOwners + TransportLineBuffers +
@@ -220,7 +229,8 @@ class LogicalSPDCacheRuntime
             TransportActionIDsExhausted + TransportNextIncarnationID +
             TransportIncarnationIDsExhausted + TransportCopyActive +
             TransportSealed + TransportGeometryValid +
-            TransportPoisoned + TransportRemainingBudget;
+            TransportPoisoned + TransportRemainingBudget +
+            TransportConfiguration;
 
         // Runtime correlations duplicate exact Slice actions by design.
         static constexpr std::size_t RuntimePageCorrelation =
@@ -237,22 +247,24 @@ class LogicalSPDCacheRuntime
             RuntimeAbortRequested + RuntimePoisoned + RuntimeSealed;
         static constexpr std::size_t DatapathBits = 0;
         static constexpr std::size_t PrivatePayloadBits =
-            2 * 32 * 1024 * 8;
+            Slice::PayloadBytes * 8;
 
         static constexpr std::size_t PackedBits =
             SliceBits + TransportBits + RuntimeCorrelationBits +
             DatapathBits + PrivatePayloadBits;
         static constexpr std::size_t PackedBytes = (PackedBits + 7) / 8;
-        static constexpr std::size_t PythonReferenceLowerBoundBytes = 66181;
+        static constexpr std::size_t PythonReferenceLowerBoundBytes =
+            PackedBytes;
     };
 
-    static_assert(PackedSemanticLedger::ControllerBits == 1287);
-    static_assert(PackedSemanticLedger::SliceActiveOperation == 507);
-    static_assert(PackedSemanticLedger::SliceBits == 2693);
-    static_assert(PackedSemanticLedger::TransportBits == 6715);
-    static_assert(PackedSemanticLedger::RuntimeCorrelationBits == 579);
-    static_assert(PackedSemanticLedger::PackedBits == 534275);
-    static_assert(PackedSemanticLedger::PackedBytes == 66785);
+    static_assert(PackedSemanticLedger::ControllerBits == 1457);
+    static_assert(PackedSemanticLedger::SliceActiveOperation == 779);
+    static_assert(PackedSemanticLedger::SliceBits == 3157);
+    static_assert(PackedSemanticLedger::TransportBits == 6730);
+    static_assert(PackedSemanticLedger::RuntimeCorrelationBits == 583);
+    static_assert(PackedSemanticLedger::PrivatePayloadBits == 262144);
+    static_assert(PackedSemanticLedger::PackedBits == 272614);
+    static_assert(PackedSemanticLedger::PackedBytes == 34077);
 
     struct ConstPageSpan
     {
@@ -275,12 +287,29 @@ class LogicalSPDCacheRuntime
     explicit LogicalSPDCacheRuntime(
         std::size_t ports = Transport::PortCount,
         std::size_t lineBytes = Transport::LineBytes)
-        : transport(ports, lineBytes)
+        : LogicalSPDCacheRuntime(Mode::PingPong2K, ports, lineBytes)
+    {}
+
+    LogicalSPDCacheRuntime(
+        Mode mode, std::size_t ports = Transport::PortCount,
+        std::size_t lineBytes = Transport::LineBytes)
+        : slice(mode),
+          transport(ports, lineBytes, slice.activePageBytes(),
+                    slice.activePages())
     {}
 
     LogicalSPDCacheRuntime(std::size_t ports, std::size_t lineBytes,
                            Transport::IdBudget budget)
-        : transport(ports, lineBytes, budget)
+        : LogicalSPDCacheRuntime(
+              Mode::PingPong2K, ports, lineBytes, budget)
+    {}
+
+    LogicalSPDCacheRuntime(Mode mode, std::size_t ports,
+                           std::size_t lineBytes,
+                           Transport::IdBudget budget)
+        : slice(mode),
+          transport(ports, lineBytes, budget, slice.activePageBytes(),
+                    slice.activePages())
     {}
 
     ~LogicalSPDCacheRuntime()
@@ -480,9 +509,12 @@ class LogicalSPDCacheRuntime
         if (!computeCorrelation.active)
             return Slice::Status::NotReady;
         const Slice::ComputeAction action = computeCorrelation.action;
-        if (action.sourceSlot >= Slice::Slots ||
-            action.destinationSlot >= Slice::Slots ||
-            action.sourceSlot == action.destinationSlot)
+        if (action.sourceSlot >= slice.activeSlots() ||
+            action.destinationSlot >= slice.activeSlots() ||
+            (slice.cacheMode() == Mode::PingPong2K &&
+             action.sourceSlot == action.destinationSlot) ||
+            (slice.cacheMode() == Mode::Serial4K &&
+             action.sourceSlot != action.destinationSlot))
             return poisonSliceStatus();
         Datapath::Operation operation;
         switch (action.operation) {
@@ -507,11 +539,18 @@ class LogicalSPDCacheRuntime
           default:
             return poisonSliceStatus();
         }
-        const double *source = slots[action.sourceSlot].data();
-        double *destination = slots[action.destinationSlot].data();
+        const Transport::PageSpan sourceSpan =
+            slotSpan(action.sourceSlot);
+        const Transport::PageSpan destinationSpan =
+            slotSpan(action.destinationSlot);
+        const double *source =
+            reinterpret_cast<const double *>(sourceSpan.data);
+        double *destination =
+            reinterpret_cast<double *>(destinationSpan.data);
         if (datapath.transform(
-                operation, {source, Slice::PageElements},
-                {destination, Slice::PageElements}, action.scalarBits) !=
+                operation, {source, slice.activePageElements()},
+                {destination, slice.activePageElements()},
+                action.scalarBits) !=
             Datapath::Result::Accepted) {
             return poisonSliceStatus();
         }
@@ -614,8 +653,7 @@ class LogicalSPDCacheRuntime
         const Slice::Status status = slice.reset();
         if (status != Slice::Status::Accepted)
             return status;
-        for (auto &slot : slots)
-            slot.fill(0.0);
+        payload.fill(0.0);
         return Slice::Status::Accepted;
     }
 
@@ -672,6 +710,12 @@ class LogicalSPDCacheRuntime
     }
     bool geometryValid() const { return transport.geometryValid(); }
     bool sealed() const { return runtimeSealed; }
+    Mode cacheMode() const { return slice.cacheMode(); }
+    std::size_t payloadBytes() const { return payload.size() * sizeof(double); }
+    std::size_t pageBytes() const { return slice.activePageBytes(); }
+    std::size_t pageElements() const { return slice.activePageElements(); }
+    std::size_t pageCount() const { return slice.activePages(); }
+    std::size_t slotCount() const { return slice.activeSlots(); }
 
     Slice::AuditSnapshot sliceSnapshot() const
     {
@@ -697,10 +741,11 @@ class LogicalSPDCacheRuntime
 
     ConstPageSpan slotPayload(uint8_t slot) const
     {
-        return slot < Slice::Slots
-                   ? ConstPageSpan{byteView(slots[slot]),
-                                   sizeof(PayloadSlot)}
-                   : ConstPageSpan{};
+        if (slot >= slice.activeSlots())
+            return {};
+        const std::size_t offset = slot * slice.activePageElements();
+        return {reinterpret_cast<const std::byte *>(payload.data() + offset),
+                slice.activePageBytes()};
     }
 
     const Transport::RequestPacket *pendingHandle() const
@@ -724,22 +769,8 @@ class LogicalSPDCacheRuntime
     bool transportDrained() const { return transport.drained(); }
 
   private:
-    using PayloadSlot = std::array<double, Slice::PageElements>;
-
-    static_assert(sizeof(PayloadSlot) == Slice::PageBytes);
-    static_assert(alignof(PayloadSlot) == alignof(double));
     static_assert(std::is_trivially_copyable<double>::value);
     static_assert(std::numeric_limits<double>::is_iec559);
-
-    static std::byte *byteView(PayloadSlot &slot)
-    {
-        return reinterpret_cast<std::byte *>(slot.data());
-    }
-
-    static const std::byte *byteView(const PayloadSlot &slot)
-    {
-        return reinterpret_cast<const std::byte *>(slot.data());
-    }
 
     struct PageCorrelation
     {
@@ -757,9 +788,11 @@ class LogicalSPDCacheRuntime
 
     Transport::PageSpan slotSpan(uint8_t slot)
     {
-        if (slot >= Slice::Slots)
+        if (slot >= slice.activeSlots())
             return {};
-        return {byteView(slots[slot]), sizeof(PayloadSlot)};
+        const std::size_t offset = slot * slice.activePageElements();
+        return {reinterpret_cast<std::byte *>(payload.data() + offset),
+                slice.activePageBytes()};
     }
 
     Slice::Status controlMutationStatus()
@@ -919,7 +952,7 @@ class LogicalSPDCacheRuntime
     LogicalSPDCacheTransport transport;
     LogicalSPDCacheDatapath datapath{};
     alignas(Transport::LineBytes)
-        std::array<PayloadSlot, Slice::Slots> slots{};
+        std::array<double, Slice::PayloadElements> payload{};
     PageCorrelation pageCorrelation{};
     ComputeCorrelation computeCorrelation{};
     bool runtimeAbortRequested = false;
@@ -928,7 +961,7 @@ class LogicalSPDCacheRuntime
 };
 
 static_assert(LogicalSPDCacheSlice::Slots == 2);
-static_assert(LogicalSPDCacheSlice::PageBytes == 32 * 1024);
+static_assert(LogicalSPDCacheSlice::PayloadBytes == 32 * 1024);
 
 } // namespace gem5
 

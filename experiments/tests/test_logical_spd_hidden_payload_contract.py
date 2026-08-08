@@ -29,14 +29,14 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
 
     def test_runtime_owns_exact_payload(self) -> None:
         for evidence in (
-            "std::array<PayloadSlot, Slice::Slots> slots{}",
+            "std::array<double, Slice::PayloadElements> payload{}",
             "PrivatePayloadBits =",
-            "2 * 32 * 1024 * 8",
-            "PackedBytes == 66785",
+            "Slice::PayloadBytes * 8",
+            "PackedBytes == 34077",
         ):
             self.assertIn(evidence, self.runtime)
         self.assertIn(
-            "PayloadBytesPerMAA ==\n              65536", self.layout
+            "PayloadBytesPerMAA ==\n              32768", self.layout
         )
 
     def test_retired_header_is_accounting_only(self) -> None:
@@ -78,7 +78,7 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         )
         self.assertEqual(
             self.maa_cc.count(
-                "std::make_unique<LogicalSPDCacheGem5Bridge>(num_maas)"
+                "std::make_unique<LogicalSPDCacheGem5Bridge>(\n        num_maas, logicalSpdMode)"
             ),
             1,
         )

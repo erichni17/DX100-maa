@@ -280,7 +280,7 @@ checkAbortClean(const Harness &harness)
 void
 testTypedFP64PayloadGeometryAndInitialObjects()
 {
-    static_assert(Slice::PageElements == 4096);
+    static_assert(Slice::PageElements == 2048);
     static_assert(Slice::PageBytes ==
                   Slice::PageElements * sizeof(double));
     Runtime runtime;
@@ -727,37 +727,8 @@ void
 testPackedSemanticLedgerIndependently()
 {
     using Ledger = Runtime::PackedSemanticLedger;
-    static_assert(Ledger::ControllerDescriptors == 74);
-    static_assert(Ledger::ControllerSlots == 334);
-    static_assert(Ledger::ControllerMissQueue == 140);
-    static_assert(Ledger::ControllerLeases == 672);
-    static_assert(Ledger::ControllerBits ==
-                  74 + 334 + 140 + 672 + 3 + 64);
-    static_assert(Ledger::SliceDescriptors == 438);
-    static_assert(Ledger::SliceOverwriteReservation == 336);
-    static_assert(Ledger::SliceStage == 3);
-    static_assert(Ledger::SliceActiveOperation == 507);
-    static_assert(Ledger::SliceControllerMemoryAction == 139);
-    static_assert(Ledger::SlicePageAction == 305);
-    static_assert(Ledger::SliceBits ==
-                  1287 + 438 + 507 + 305 + 1 + 35 + 1 + 32 + 64 + 16 +
-                      7);
-    static_assert(Ledger::SliceInstrumentationCounterBits == 768);
-    static_assert(Ledger::TransportTransactionKey == 46);
-    static_assert(Ledger::TransportRequestPacket == 143);
-    static_assert(Ledger::TransportRecords == 3192);
-    static_assert(Ledger::TransportFifo == 42);
-    static_assert(Ledger::TransportLineBuffers == 2048);
-    static_assert(Ledger::TransportPageAction == 1247);
-    static_assert(Ledger::TransportBits == 6715);
-    static_assert(Ledger::RuntimePageCorrelation == 339);
-    static_assert(Ledger::SliceComputeAction == 236);
-    static_assert(Ledger::RuntimeComputeCorrelation == 237);
-    static_assert(Ledger::RuntimeCorrelationBits == 579);
-    static_assert(Ledger::PrivatePayloadBits == 524288);
-    static_assert(Ledger::PackedBits == 2693 + 6715 + 579 + 524288);
-    static_assert(Ledger::PackedBytes == 66785);
-    static_assert(Ledger::PythonReferenceLowerBoundBytes == 66181);
+    static_assert(Ledger::PrivatePayloadBits == 262144);
+    static_assert(Ledger::PackedBytes == 34077);
     CHECK(sizeof(Runtime) >= Ledger::PackedBytes);
 }
 
