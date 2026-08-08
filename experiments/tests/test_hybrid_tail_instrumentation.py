@@ -110,7 +110,13 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         self.assertIn("Retire non-forwardable fragments first", drain)
         self.assertIn("constexpr int issue_ready_reserve_lines = 32", drain)
         self.assertIn("full_lines_to_drain - issue_ready_reserve_lines", drain)
-        self.assertIn("480-word/60-line limit", drain)
+        self.assertIn("configured 384-line", drain)
+        insert = source[source.index("insertVirtualCombineWord") :]
+        self.assertIn("candidate_fragment &&", insert)
+        self.assertIn("victim.valid_words == full_mask", insert)
+        self.assertIn(
+            "createRetirementWrite(victim.line_vaddr, block_size,", insert
+        )
 
     def test_scheduled_forward_has_bounded_lifecycle(self):
         header = (ROOT / "src/mem/MAA/MAA.hh").read_text()

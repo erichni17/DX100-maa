@@ -3401,6 +3401,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     const Addr line_vaddr = vaddr & ~(block_size - 1);
     const unsigned word = (vaddr - line_vaddr) / my_word_size;
     const uint16_t word_bit = 1U << word;
+    const uint16_t full_mask = (1U << my_words_per_cl) - 1;
     VirtualCombineSlot *target = nullptr;
     VirtualCombineSlot *free_slot = nullptr;
     const int ways = virtual_combine_ways == 0
@@ -3437,15 +3438,27 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                 continue;
             const int candidate_words =
                 __builtin_popcount(candidate.valid_words);
+            const bool candidate_fragment =
+                candidate.valid_words != full_mask;
+            const bool victim_fragment =
+                victim_idx != -1 &&
+                virtual_combine_slots[victim_idx].valid_words != full_mask;
             if (victim_idx == -1 ||
-                (virtual_combine_victim_policy == 1 &&
-                 candidate_words < victim_words) ||
-                (virtual_combine_victim_policy == 2 &&
-                 candidate_words > victim_words)) {
+                (maa->virtual_page_ready_on_issue && candidate_fragment &&
+                 !victim_fragment) ||
+                ((!maa->virtual_page_ready_on_issue ||
+                  candidate_fragment == victim_fragment) &&
+                 ((virtual_combine_victim_policy == 1 &&
+                   candidate_words < victim_words) ||
+                  (virtual_combine_victim_policy == 2 &&
+                   candidate_words > victim_words)))) {
                 victim_idx = idx;
                 victim_words = candidate_words;
-                if (virtual_combine_victim_policy == 0)
+                if (virtual_combine_victim_policy == 0 &&
+                    (!maa->virtual_page_ready_on_issue ||
+                     candidate_fragment)) {
                     break;
+                }
             }
         }
         if (victim_idx == -1 && target != nullptr)
@@ -3453,8 +3466,20 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         panic_if(victim_idx == -1,
                  "I[%d] virtual combiner has no valid victim\n", my_indirect_id);
         auto &victim = virtual_combine_slots[victim_idx];
-        if (virtual_masked_writes && victim.valid_words != 0 &&
-            virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+        if (maa->virtual_page_ready_on_issue &&
+            victim.valid_words == full_mask &&
+            virtual_outstanding_writes <
+                virtual_max_outstanding_writes_limit) {
+            if (createRetirementWrite(victim.line_vaddr, block_size,
+                                      victim.data.data())) {
+                virtual_combine_words -= my_words_per_cl;
+                virtual_full_line_writes++;
+                victim.valid_words = 0;
+            }
+        } else if (
+            virtual_masked_writes && victim.valid_words != 0 &&
+            virtual_outstanding_writes <
+                virtual_max_outstanding_writes_limit) {
             const int words = __builtin_popcount(victim.valid_words);
             if (createRetirementWrite(victim.line_vaddr, block_size,
                                       victim.data.data(), victim.valid_words)) {
@@ -3581,8 +3606,8 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         });
     if (!flush_partial && maa->virtual_page_ready_on_issue) {
         // Keep a finite tail of complete lines in the already-accounted
-        // combiner. The 32-line reserve is below its 480-word/60-line limit,
-        // so admission can continue while the producer drains older lines.
+        // combiner. The 32-line reserve is below its configured 384-line and
+        // 4096-word limits, so admission can continue while older lines drain.
         full_lines_to_drain =
             std::max(0, full_lines_to_drain - issue_ready_reserve_lines);
     }
