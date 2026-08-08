@@ -47,6 +47,8 @@ LogicalSPDCacheTransport::AuditSnapshot::operator==(
            copyActive == other.copyActive && sealed == other.sealed &&
            poisoned == other.poisoned &&
            geometryValid == other.geometryValid &&
+           activeLines == other.activeLines &&
+           activePageBytes == other.activePageBytes &&
            operation == other.operation && abortCode == other.abortCode &&
            descriptor == other.descriptor && generation == other.generation &&
            page == other.page && slot == other.slot &&
@@ -66,15 +68,26 @@ LogicalSPDCacheTransport::AuditSnapshot::operator==(
 }
 
 LogicalSPDCacheTransport::LogicalSPDCacheTransport(std::size_t ports,
-                                                   std::size_t lineBytes)
-    : LogicalSPDCacheTransport(ports, lineBytes, IdBudget{})
+                                                   std::size_t lineBytes,
+                                                   std::size_t pageBytes,
+                                                   std::size_t pages)
+    : LogicalSPDCacheTransport(
+          ports, lineBytes, IdBudget{}, pageBytes, pages)
 {}
 
 LogicalSPDCacheTransport::LogicalSPDCacheTransport(std::size_t ports,
                                                    std::size_t lineBytes,
-                                                   IdBudget budget)
-    : geometryIsValid(ports == PortCount && lineBytes == LineBytes),
-      remainingBudget(budget)
+                                                   IdBudget budget,
+                                                   std::size_t pageBytes,
+                                                   std::size_t pages)
+    : geometryIsValid(
+          ports == PortCount && lineBytes == LineBytes &&
+          pageBytes >= LineBytes && pageBytes <= MaxPageBytes &&
+          pageBytes % LineBytes == 0 && pages != 0 &&
+          pages <= PagesPerDescriptor),
+      remainingBudget(budget), configuredPageBytes(pageBytes),
+      configuredLinesPerPage(pageBytes / LineBytes),
+      configuredPagesPerDescriptor(pages)
 {
     fifo.entries.fill(NoRecord);
     creditOwners.fill(NoRecord);
@@ -153,13 +166,13 @@ LogicalSPDCacheTransport::validFaultPoint(FaultPoint fault)
 }
 
 bool
-LogicalSPDCacheTransport::validPageSpan(PageSpan span)
+LogicalSPDCacheTransport::validPageSpan(PageSpan span) const
 {
-    if (span.data == nullptr || span.size != PageBytes)
+    if (span.data == nullptr || span.size != configuredPageBytes)
         return false;
     const uintptr_t begin = reinterpret_cast<uintptr_t>(span.data);
     return begin % LineBytes == 0 &&
-           begin <= UINTPTR_MAX - PageBytes;
+           begin <= UINTPTR_MAX - configuredPageBytes;
 }
 
 uint8_t
@@ -194,25 +207,31 @@ LogicalSPDCacheTransport::responseCommand(Operation operation)
 
 void
 LogicalSPDCacheTransport::setBit(
-    std::array<uint64_t, LinesPerPage / 64> &bits, std::size_t line)
+    std::array<uint64_t, MaxLinesPerPage / 64> &bits, std::size_t line)
 {
     bits[line / 64] |= uint64_t{1} << (line % 64);
 }
 
 bool
 LogicalSPDCacheTransport::getBit(
-    const std::array<uint64_t, LinesPerPage / 64> &bits, std::size_t line)
+    const std::array<uint64_t, MaxLinesPerPage / 64> &bits,
+    std::size_t line) const
 {
-    return line < LinesPerPage &&
+    return line < configuredLinesPerPage &&
            (bits[line / 64] & (uint64_t{1} << (line % 64))) != 0;
 }
 
 bool
 LogicalSPDCacheTransport::allBits(
-    const std::array<uint64_t, LinesPerPage / 64> &bits)
+    const std::array<uint64_t, MaxLinesPerPage / 64> &bits) const
 {
-    for (const uint64_t word : bits) {
-        if (word != std::numeric_limits<uint64_t>::max())
+    for (std::size_t line = 0; line < configuredLinesPerPage; ++line) {
+        if (!getBit(bits, line))
+            return false;
+    }
+    for (std::size_t line = configuredLinesPerPage;
+         line < MaxLinesPerPage; ++line) {
+        if ((bits[line / 64] & (uint64_t{1} << (line % 64))) != 0)
             return false;
     }
     return true;
@@ -256,11 +275,11 @@ LogicalSPDCacheTransport::startAction(
         return Status::InvalidGeometry;
     if (!validOperation(operation) || descriptor >= DescriptorCount ||
         generation == 0 ||
-        page >= PagesPerDescriptor || slot >= SlotCount ||
+        page >= configuredPagesPerDescriptor || slot >= SlotCount ||
         controllerSerial == 0 || !validPageSpan(slotSpan) ||
-        baseAddress % PageBytes != 0 ||
+        baseAddress % configuredPageBytes != 0 ||
         baseAddress > std::numeric_limits<uint64_t>::max() -
-                          (PageBytes - 1)) {
+                          (configuredPageBytes - 1)) {
         return Status::Invalid;
     }
     if (action.state != ActionState::Free)
@@ -273,11 +292,11 @@ LogicalSPDCacheTransport::startAction(
         remainingEpochs +=
             std::numeric_limits<uint16_t>::max() - record.epoch;
     }
-    if (remainingEpochs < LinesPerPage ||
-        remainingBudget.recordEpochs < LinesPerPage)
+    if (remainingEpochs < configuredLinesPerPage ||
+        remainingBudget.recordEpochs < configuredLinesPerPage)
         return Status::Exhausted;
 
-    const uint64_t requiredIncarnations = 2 * LinesPerPage;
+    const uint64_t requiredIncarnations = 2 * configuredLinesPerPage;
     const uint64_t availableIncarnations =
         std::numeric_limits<uint32_t>::max() - nextIncarnationID + 1ULL;
     if (incarnationIDsExhausted ||
@@ -360,7 +379,8 @@ LogicalSPDCacheTransport::refillQueue()
 {
     if (action.state != ActionState::Active)
         return;
-    while (action.nextLine < LinesPerPage && fifo.count < FifoEntries) {
+    while (action.nextLine < configuredLinesPerPage &&
+           fifo.count < FifoEntries) {
         const int allocated = allocateRecord(action.actionID);
         if (allocated < 0)
             return;
@@ -750,7 +770,8 @@ LogicalSPDCacheTransport::precommitDelivery(
     const TransactionRecord &record = records[index];
     const std::size_t offset =
         static_cast<std::size_t>(record.key.line) * LineBytes;
-    return offset <= PageBytes - LineBytes ? completionCandidate(index)
+    return offset <= configuredPageBytes - LineBytes
+               ? completionCandidate(index)
                                            : CompletionIdentity{};
 }
 
@@ -772,7 +793,7 @@ LogicalSPDCacheTransport::commitDeliveryInternal(
     TransactionRecord &record = records[index];
     const std::size_t offset =
         static_cast<std::size_t>(record.key.line) * LineBytes;
-    if (offset > PageBytes - LineBytes)
+    if (offset > configuredPageBytes - LineBytes)
         return productionStopResult();
     const CompletionIdentity candidate = completionCandidate(index);
     if (!authorityExact(candidate, authority))
@@ -849,13 +870,14 @@ LogicalSPDCacheTransport::completionCandidate(uint8_t index) const
         record.key.generation != action.generation ||
         record.key.page != action.page || record.key.slot != action.slot ||
         getBit(action.acked, record.key.line) ||
-        action.nextLine != LinesPerPage ||
-        action.ackCount != LinesPerPage - 1 || !allBits(action.issued) ||
+        action.nextLine != configuredLinesPerPage ||
+        action.ackCount != configuredLinesPerPage - 1 ||
+        !allBits(action.issued) ||
         fifo.count != 0 || pending != NoRecord) {
         return {};
     }
 
-    std::array<uint64_t, LinesPerPage / 64> completedAcks = action.acked;
+    std::array<uint64_t, MaxLinesPerPage / 64> completedAcks = action.acked;
     setBit(completedAcks, record.key.line);
     if (completedAcks != action.issued)
         return {};
@@ -897,7 +919,8 @@ LogicalSPDCacheTransport::ackReleaseAndRefill(
     releaseRecord(index);
     refillQueue();
     const bool complete =
-        action.nextLine == LinesPerPage && action.ackCount == LinesPerPage &&
+        action.nextLine == configuredLinesPerPage &&
+        action.ackCount == configuredLinesPerPage &&
         allBits(action.issued) && action.acked == action.issued &&
         fifo.count == 0 && pending == NoRecord && !actionHasRecords();
     if (complete != candidate.valid())
@@ -1110,6 +1133,8 @@ LogicalSPDCacheTransport::auditSnapshot() const
     snapshot.sealed = isSealed;
     snapshot.poisoned = terminalPoisoned;
     snapshot.geometryValid = geometryIsValid;
+    snapshot.activeLines = static_cast<uint16_t>(configuredLinesPerPage);
+    snapshot.activePageBytes = static_cast<uint16_t>(configuredPageBytes);
     snapshot.operation = action.operation;
     snapshot.abortCode = action.abortCode;
     snapshot.descriptor = action.descriptor;
@@ -1243,8 +1268,9 @@ LogicalSPDCacheTransport::assertInvariants() const
              action.state != ActionState::AbortDrain) ||
             action.actionID == 0 || !validOperation(action.operation) ||
             action.descriptor >= DescriptorCount || action.generation == 0 ||
-            action.page >= PagesPerDescriptor || action.slot >= SlotCount ||
-            action.baseAddress % PageBytes != 0 ||
+            action.page >= configuredPagesPerDescriptor ||
+            action.slot >= SlotCount ||
+            action.baseAddress % configuredPageBytes != 0 ||
             action.controllerSerial == 0 ||
             !validPageSpan(action.slotSpan) ||
             (action.state == ActionState::Active &&
@@ -1252,7 +1278,7 @@ LogicalSPDCacheTransport::assertInvariants() const
             (action.state == ActionState::AbortDrain &&
              !validAbortCode(action.abortCode)) ||
             action.ackCount > action.nextLine ||
-            action.nextLine > LinesPerPage)
+            action.nextLine > configuredLinesPerPage)
             return false;
         for (std::size_t word = 0; word < action.acked.size(); ++word) {
             if ((action.acked[word] & ~action.issued[word]) != 0)

@@ -240,8 +240,12 @@ MAA::MAA(const MAAParams &p)
                   p.num_spd_read_ports_per_maa * num_maas,
                   p.num_spd_write_ports_per_maa * num_maas);
     rf = new RF(num_regs);
-    logicalSpdBridge =
-        std::make_unique<LogicalSPDCacheGem5Bridge>(num_maas);
+    const LogicalSPDCacheRuntime::Mode logicalSpdMode =
+        transparent_spd_mode == 0
+            ? LogicalSPDCacheRuntime::Mode::Serial4K
+            : LogicalSPDCacheRuntime::Mode::PingPong2K;
+    logicalSpdBridge = std::make_unique<LogicalSPDCacheGem5Bridge>(
+        num_maas, logicalSpdMode);
     logicalSpdExecutions.resize(num_maas);
     num_instructions_per_maa = num_instructions_per_core * num_cores_per_maas;
     num_instructions_total = num_instructions_per_maa * num_maas;
@@ -1193,9 +1197,11 @@ MAA::submitLogicalSPDDescriptor(
         logicalSpdExecutions[instruction->maa_id];
     if (execution.active)
         return false;
+    const Bridge::Runtime &authority =
+        logicalSpdBridge->runtime(instruction->maa_id);
     panic_if(num_tile_elements != LogicalElements ||
-                 physical_tile_elements != Slice::PageElements,
-             "Logical SPD live slice requires 16K logical and 4K physical "
+                 physical_tile_elements != Slice::SerialPageElements,
+             "Logical SPD live slice requires 16K logical and 4K visible "
              "FP64 elements, got %u/%u\n", num_tile_elements,
              physical_tile_elements);
     panic_if(instruction->datatype != Instruction::DataType::FLOAT64_TYPE,
@@ -1280,13 +1286,22 @@ MAA::submitLogicalSPDDescriptor(
     DPRINTF(MAAVirtualTrace,
             "event=logical_spd_admit maa=%d generation=%lu incarnation=%lu "
             "operation=%lu source=0x%lx destination=0x%lx elements=%lu "
-            "page_elements=%u slots=%u\n",
+            "mode=%u page_elements=%lu pages=%lu slots=%lu "
+            "payload_bytes=%lu packed_metadata_bytes=%lu "
+            "reorder_contract=producer_supplied\n",
             instruction->maa_id, claim.token.generation,
             claim.token.runtimeIdentity, claim.token.identity,
             instruction->logicalSourceBackingAddr,
             instruction->backingAddr,
             static_cast<unsigned long>(LogicalElements),
-            Slice::PageElements, Slice::Slots);
+            static_cast<unsigned>(authority.cacheMode()),
+            static_cast<unsigned long>(authority.pageElements()),
+            static_cast<unsigned long>(authority.pageCount()),
+            static_cast<unsigned long>(authority.slotCount()),
+            static_cast<unsigned long>(authority.payloadBytes()),
+            static_cast<unsigned long>(
+                Bridge::Runtime::PackedSemanticLedger::PackedBytes -
+                Slice::PayloadBytes));
     scheduleLogicalSPDEvent();
     return true;
 }
