@@ -140,6 +140,24 @@ class HybridTailInstrumentationContractTest(unittest.TestCase):
         )
         self.assertFalse(invocation.rstrip().endswith("&"))
 
+    def test_offset_capacity_audits_raw_config_and_effective_result(self):
+        runner = (
+            ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
+        ).read_text()
+
+        # config.ini records the raw zero-as-default SimObject parameters;
+        # the result ledger separately records the constructor-resolved 16K
+        # capacities used by the primary comparison.
+        self.assertIn('"num_offset_table_entries=$offset_entries"', runner)
+        self.assertIn(
+            '"num_offset_table_epoch_entries=$offset_epoch_entries"', runner
+        )
+        self.assertIn("resolved_offset_entries=16384", runner)
+        self.assertIn(
+            '"$resolved_offset_entries" "$resolved_offset_epoch_entries"',
+            runner,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

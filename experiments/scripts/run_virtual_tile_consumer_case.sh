@@ -672,8 +672,8 @@ for expected in \
     "num_initial_row_table_slices=$row_slices" \
     "num_row_table_rows_per_slice=$row_rows" \
     "num_row_table_entries_per_subslice_row=$row_entries" \
-    "num_offset_table_entries=$resolved_offset_entries" \
-    "num_offset_table_epoch_entries=$resolved_offset_epoch_entries" \
+    "num_offset_table_entries=$offset_entries" \
+    "num_offset_table_epoch_entries=$offset_epoch_entries" \
     "virtual_index_partitions=$index_partitions" \
     "virtual_index_range_passes=$([[ $index_range_passes -eq 1 ]] && echo true || echo false)" \
     "virtual_index_range_policy=$index_range_policy" \
@@ -682,7 +682,7 @@ for expected in \
     "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
     "reconfigure_row_table=false"; do
     grep -Fqx "$expected" "$config_ini" || {
-        echo "missing resolved row-table treatment: $expected" >&2
+        echo "missing configured row-table treatment: $expected" >&2
         exit 1
     }
 done
