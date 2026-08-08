@@ -24,6 +24,10 @@ class MAA(ClockedObject):
         0,
         "Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=two-half ping-pong",
     )
+    logical_spd_cache_mode = Param.Unsigned(
+        0,
+        "Logical SPD cache mode: 0=Serial4K, 1=PingPong2K",
+    )
     num_regs_per_core = Param.Unsigned(
         8,
         "Number of 32-bit scalar registers per core attached to the DX100 instance",

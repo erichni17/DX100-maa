@@ -239,6 +239,13 @@ def addNoISAOptions(parser):
         help="Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=2K ping-pong",
     )
     parser.add_argument(
+        "--maa_logical_spd_cache_mode",
+        type=int,
+        choices=(0, 1),
+        default=0,
+        help="Logical SPD cache mode: 0=Serial4K, 1=PingPong2K",
+    )
+    parser.add_argument(
         "--maa_num_regs_per_core",
         type=int,
         default=8,

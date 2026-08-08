@@ -23,8 +23,10 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         cls.maa_cc = (MAA_DIR / "MAA.cc").read_text()
         cls.sconscript = (MAA_DIR / "SConscript").read_text()
         cls.live_runner = (
-            ROOT / "experiments" / "scripts" /
-            "run_logical_spd_cache_live_smoke.sh"
+            ROOT
+            / "experiments"
+            / "scripts"
+            / "run_logical_spd_cache_live_smoke.sh"
         ).read_text()
 
     def test_runtime_owns_exact_payload(self) -> None:
@@ -118,12 +120,33 @@ class LogicalSpdPayloadAuthorityContractTest(unittest.TestCase):
         self.assertIn("maaId < numMaas", self.bridge_cc)
         self.assertIn("runtimeCount() const", self.bridge_hh)
 
-    def test_live_runner_requires_clean_source_and_unique_terminals(self) -> None:
+    def test_live_runner_requires_clean_source_and_unique_terminals(
+        self,
+    ) -> None:
         for evidence in (
             "[[ ! -s $out/source_status.txt ]]",
             "[[ ! -s $out/source.diff ]]",
             "^Exiting @ tick [0-9]+ because checkpoint$",
             "^Exiting @ tick [0-9]+ because m5_exit instruction encountered$",
+        ):
+            self.assertIn(evidence, self.live_runner)
+
+    def test_logical_mode_is_explicit_and_live_arms_preserve_visible_tiles(
+        self,
+    ) -> None:
+        maa_py = (MAA_DIR / "MAA.py").read_text()
+        options = (ROOT / "configs" / "common" / "Options.py").read_text()
+        config = (ROOT / "configs" / "common" / "MAAConfig.py").read_text()
+        self.assertIn("logical_spd_cache_mode", maa_py)
+        self.assertIn("maa_logical_spd_cache_mode", options)
+        self.assertIn("maa_logical_spd_cache_mode", config)
+        for evidence in (
+            "serial4k) logical_mode=0; pages=4; page_elements=4096; slots=1",
+            "pingpong2k) logical_mode=1; pages=8; page_elements=2048; slots=2",
+            "--maa_physical_tile_elements=4096",
+            "packed_private_metadata_lower_bound_bytes=1309",
+            "ordinary_visible_spd_is_additive=1",
+            "isoarea_timing_claim=0",
         ):
             self.assertIn(evidence, self.live_runner)
 

@@ -16,8 +16,12 @@
 namespace {
 
 constexpr std::size_t Elements = 16384;
-constexpr std::size_t Pages = 8;
-constexpr std::size_t PageElements = 2048;
+#ifndef LOGICAL_SPD_CACHE_MODE
+#define LOGICAL_SPD_CACHE_MODE 0
+#endif
+constexpr bool Serial4K = LOGICAL_SPD_CACHE_MODE == 0;
+constexpr std::size_t Pages = Serial4K ? 4 : 8;
+constexpr std::size_t PageElements = Serial4K ? 4096 : 2048;
 constexpr std::size_t BackingBytes = Elements * sizeof(double);
 constexpr uint64_t ExpectedHash = 7303085050985348899ULL;
 
@@ -61,8 +65,10 @@ main()
     std::cout << "LOGICAL_SPD_CACHE_LIVE_LAYOUT elements=" << Elements
               << " pages=" << Pages
               << " page_elements=" << PageElements
-              << " slots=2 slot_bytes=16384 payload_bytes=32768"
-              << " hardware_bytes=32768 metadata_bytes=0 isoarea_timing_claim=0"
+              << " slots=" << (Serial4K ? 1 : 2)
+              << " private_payload_bytes=32768"
+              << " packed_private_metadata_lower_bound_bytes=1309"
+              << " visible_spd_payload_additive=1 isoarea_timing_claim=0"
               << std::endl;
 
     // This checkpoint contains fixed input only.  MAA registration, scalar

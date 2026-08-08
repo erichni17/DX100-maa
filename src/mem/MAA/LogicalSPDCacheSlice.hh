@@ -543,7 +543,10 @@ LogicalSPDCacheSlice::admit(const Admission &request)
         controller.descriptorAllocated(request.destinationLogical)) {
         return reject(Status::Busy);
     }
-    if (overlaps(source.backing, request.destination))
+    // In-place is defined page-by-page and is safe; any shifted overlap can
+    // corrupt a later source page and is rejected before mutation.
+    if (overlaps(source.backing, request.destination) &&
+        source.backing.base != request.destination.base)
         return reject(Status::Invalid);
     if (lastOperationID == std::numeric_limits<uint32_t>::max() ||
         !controller.canAllocateMemorySerials(pageCount * 3)) {
