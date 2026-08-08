@@ -116,6 +116,28 @@ umtOrderedWaveWordsToLineBoundary(
         remainingWords, bytesToBoundary / sizeof(uint64_t));
 }
 
+inline size_t
+umtOrderedWaveExpectedLineWaiters(
+    const UmtOrderedWaveDescriptor &descriptor, size_t stage,
+    uint64_t lineAddress, size_t lineBytes)
+{
+    if (stage >= UmtOrderedWaveRecordFp64Words || lineBytes == 0 ||
+        lineBytes % sizeof(uint64_t) != 0 ||
+        lineAddress % lineBytes != 0) {
+        return 0;
+    }
+    const uint64_t planeBase = descriptor.recordBase +
+        stage * static_cast<uint64_t>(descriptor.recordStride);
+    size_t waiters = 0;
+    for (size_t group = 0; group < descriptor.groupCount; ++group) {
+        const uint64_t address =
+            planeBase + group * sizeof(uint64_t);
+        if (address >= lineAddress && address - lineAddress < lineBytes)
+            ++waiters;
+    }
+    return waiters;
+}
+
 inline UmtOrderedWaveResult
 executeUmtOrderedWave(const UmtOrderedWaveDescriptor &descriptor,
                       UmtOrderedWaveRecord record)

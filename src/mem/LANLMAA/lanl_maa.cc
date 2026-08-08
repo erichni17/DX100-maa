@@ -5116,6 +5116,27 @@ LANLMAA::issueLines()
         if (line.state != LineState::Allocated) {
             continue;
         }
+        if (umtOrderedWaveDescriptor()) {
+            panic_if(line.waiters.empty(),
+                     "LANLMAA ordered-wave line has no waiters");
+            const auto &first = operations[line.waiters.front()];
+            const size_t expected = umtOrderedWaveExpectedLineWaiters(
+                umtOrderedWave, first.umtFusedReadStage,
+                line.lineAddress, lineBytes);
+            panic_if(expected == 0 || line.waiters.size() > expected,
+                     "LANLMAA ordered-wave line has invalid waiter count");
+            for (const size_t waiter : line.waiters) {
+                panic_if(
+                    waiter >= operations.size() ||
+                        operations[waiter].umtFusedReadStage !=
+                            first.umtFusedReadStage ||
+                        lineAddress(operations[waiter].address) !=
+                            line.lineAddress,
+                    "LANLMAA ordered-wave line mixed input planes");
+            }
+            if (line.waiters.size() != expected)
+                continue;
+        }
         if (rejectedPacket && line.packet != rejectedPacket) {
             continue;
         }

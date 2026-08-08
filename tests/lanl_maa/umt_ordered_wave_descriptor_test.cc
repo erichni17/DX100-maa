@@ -140,6 +140,29 @@ main()
                    sizeof(double)) == 0);
     }
 
+    UmtOrderedWaveDescriptor lineDescriptor;
+    lineDescriptor.recordBase = 0x2008;
+    lineDescriptor.recordStride = UmtOrderedWavePlaneStride;
+    lineDescriptor.groupCount = 64;
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, 0, 0x2000, 64) == 7);
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, 0, 0x2040, 64) == 8);
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, 0, 0x2200, 64) == 1);
+    lineDescriptor.groupCount = 33;
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, 3, 0x2600, 64) == 7);
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, 3, 0x2640, 64) == 8);
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, 3, 0x2700, 64) == 2);
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, UmtOrderedWaveRecordFp64Words,
+               0x2000, 64) == 0);
+    assert(umtOrderedWaveExpectedLineWaiters(
+               lineDescriptor, 0, 0x2008, 64) == 0);
+
     bytes = validBytes();
     put(bytes, 8, UmtOrderedWaveMaximumGroups + 1, 4);
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
