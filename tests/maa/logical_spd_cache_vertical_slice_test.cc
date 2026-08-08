@@ -507,20 +507,25 @@ testDatapathRejectsBeforeMutationAndSpecialValues()
                     {source.data(), Datapath::PageElements - 1},
                     {destination.data(), Datapath::PageElements});
     expectUnchanged(Datapath::Operation::Add,
-                    {source.data(), Datapath::PageElements + 1},
+                    {source.data(), Datapath::MaxPageElements + 1},
                     {destination.data(), Datapath::PageElements});
     expectUnchanged(Datapath::Operation::Add,
                     {source.data(), Datapath::PageElements},
                     {destination.data(), Datapath::PageElements - 1});
     expectUnchanged(Datapath::Operation::Add,
                     {source.data(), Datapath::PageElements},
-                    {destination.data(), Datapath::PageElements + 1});
+                    {destination.data(), Datapath::MaxPageElements + 1});
     expectUnchanged(static_cast<Datapath::Operation>(0xff),
                     {source.data(), Datapath::PageElements},
                     {destination.data(), Datapath::PageElements});
-    expectUnchanged(Datapath::Operation::Add,
-                    {destination.data(), Datapath::PageElements},
-                    {destination.data(), Datapath::PageElements});
+    destination[0] = std::numeric_limits<double>::quiet_NaN();
+    CHECK(Datapath::transform(
+              Datapath::Operation::Add,
+              {destination.data(), Datapath::PageElements},
+              {destination.data(), Datapath::PageElements}, bits(0.0)) ==
+          Datapath::Result::Accepted);
+    CHECK(std::isnan(destination[0]));
+    destination = exact;
     const auto *misalignedSource = reinterpret_cast<const double *>(
         reinterpret_cast<const std::byte *>(source.data()) + 1);
     expectUnchanged(Datapath::Operation::Add,

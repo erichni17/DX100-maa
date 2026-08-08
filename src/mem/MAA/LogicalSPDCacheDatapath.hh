@@ -12,7 +12,7 @@ class LogicalSPDCacheDatapath
 {
   public:
     static constexpr std::size_t PageElements = 2048;
-    static constexpr std::size_t MaxPageElements = PageElements;
+    static constexpr std::size_t MaxPageElements = 4096;
 
     enum class Operation : uint8_t
     {
@@ -76,7 +76,8 @@ class LogicalSPDCacheDatapath
             destinationBegin > UINTPTR_MAX - bytes) {
             return Result::Invalid;
         }
-        if (sourceBegin < destinationBegin + bytes &&
+        if (sourceBegin != destinationBegin &&
+            sourceBegin < destinationBegin + bytes &&
             destinationBegin < sourceBegin + bytes) {
             return Result::Aliased;
         }
@@ -112,7 +113,7 @@ class LogicalSPDCacheDatapath
 };
 
 static_assert(LogicalSPDCacheDatapath::PageElements == 2048);
-static_assert(LogicalSPDCacheDatapath::MaxPageElements == 2048);
+static_assert(LogicalSPDCacheDatapath::MaxPageElements == 4096);
 
 } // namespace gem5
 
