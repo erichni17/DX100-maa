@@ -3530,6 +3530,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
 
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
+    constexpr int issue_ready_reserve_lines = 32;
     if (flush_partial && maa->virtual_page_ready_on_issue) {
         // Retire non-forwardable fragments first. Once acknowledged, later
         // full-line writes can remain in the bounded retirement map and feed
@@ -3573,14 +3574,29 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
                 slot = VirtualCombineSlot();
         }
     }
+    int full_lines_to_drain = std::count_if(
+        virtual_combine_slots.begin(), virtual_combine_slots.end(),
+        [full_mask](const VirtualCombineSlot &slot) {
+            return slot.valid && slot.valid_words == full_mask;
+        });
+    if (!flush_partial && maa->virtual_page_ready_on_issue) {
+        // Keep a finite tail of complete lines in the already-accounted
+        // combiner. The 32-line reserve is below its 480-word/60-line limit,
+        // so admission can continue while the producer drains older lines.
+        full_lines_to_drain =
+            std::max(0, full_lines_to_drain - issue_ready_reserve_lines);
+    }
     for (auto &slot : virtual_combine_slots) {
         if (!slot.valid)
             continue;
         if (slot.valid_words == full_mask &&
             virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+            if (full_lines_to_drain == 0)
+                continue;
             if (!createRetirementWrite(slot.line_vaddr, block_size,
                                        slot.data.data()))
                 continue;
+            --full_lines_to_drain;
             virtual_full_line_writes++;
             panic_if(virtual_combine_words < my_words_per_cl,
                      "I[%d] virtual full-line accounting underflow\n",
