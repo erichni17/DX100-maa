@@ -1,0 +1,107 @@
+{
+  "schema": "dx100.xrage_row_visibility_evidence.v1",
+  "status": "PASS",
+  "date": "2026-08-08",
+  "simulator_source_commit": "f60a5b8da5cbb1a355dbca99b1cb721b3980953a",
+  "runner_source_commit": "6c45159264f92baf4353bee36fa64bab27e35c30",
+  "raw_root": "/data1/nier/worktrees/codex-coordination/sessions/xrage-row-visibility-20260808-20260808-113447-2b30ba1d/xrage-row-visibility-f60a5b8d",
+  "raw_evidence": {
+    "manifest_sha256": "358a253da8d5c5752b614d5d3d594900cd360a3c34de998f08b05af03c0986a6",
+    "analysis_sha256": "4ab9645bc4d3973344cb916fb0aec22dff01519c61f915211ccdc5ca01b6d6cd",
+    "evidence_sha256_manifest_sha256": "b171ef04dde4933ee150338af048b52c31e891b05c2886bb7130ccf6c96c6803"
+  },
+  "frozen_identity_sha256": {
+    "gem5": "c0ae048c24b973085d6d85272b2fdae8e283392b6f862382cc182dbb34ef774c",
+    "xrage_verifier": "c4acb453ec043c8d45f09f07333277da904d3929da5ff8627b6cbbe704d5d414",
+    "xrage_input": "1a56db824f4fd58222d4246504e2a6fcdb0b691cd380ec18be5531ae76c1ccde",
+    "ramulator": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+    "checkpoint_manifest": "9574cb33ad58a769808e218355d6f912555f063749dd6e8f6fdbc6d4cdf52293",
+    "checkpoint_files_manifest": "5f9e9b80fc2377bba8f348228339826a736c411e51336de39fb32e2aa0cbc8be"
+  },
+  "design": {
+    "execution": "serialized",
+    "treatment": "maa_num_row_table_rows_per_slice only: 64 versus 128",
+    "row128_label": "high-cost diagnostic; never baseline",
+    "logical_tile_elements": 16384,
+    "physical_tile_elements": 4096,
+    "offset_table_entries": 16384,
+    "offset_table_epoch_entries": 16384,
+    "index_passes": 1,
+    "debug_flags": [
+      "MAAReorderTrace",
+      "MAAIssueDigest"
+    ]
+  },
+  "validation": {
+    "runs": 4,
+    "exact_output_elements": 2097152,
+    "exact_output_hash": 11014995430510232451,
+    "terminal_m5_exit_all": true,
+    "stats_blocks_per_run": 2,
+    "indirect_instructions_per_run": 128,
+    "issue_digests_per_run": 128,
+    "all_indirect_instructions_reconciled": true,
+    "binary_input_checkpoint_match": true
+  },
+  "repetition": {
+    "row64_reps": 2,
+    "row128_reps": 2,
+    "row128_delta_percent_vs_row64": 0.0,
+    "decision": "STOPPED_AFTER_IDENTICAL_REPLAY",
+    "result_tsv_sha256_all_runs": "a7fa55fe70b326d4b5dbaf3ffdbbb5cd67e5fc8262d8693b1dd1d9c498b065fd",
+    "trace_sha256_all_runs": "03f2b006da7c27d6c1b44cdab4cb8a285823919ea038e8dfc57faf53b658a4d4",
+    "roi_simTicks_all_runs": 1284958900,
+    "final_simTicks_all_runs": 9553636087
+  },
+  "metrics_identical_all_runs": {
+    "max_joint_admissions": {
+      "count": 128,
+      "sum": 2097152,
+      "min": 16384,
+      "p50_nearest_rank": 16384,
+      "p95_nearest_rank": 16384,
+      "max": 16384
+    },
+    "rt_full_drains": {
+      "count": 128,
+      "sum": 0,
+      "min": 0,
+      "p50_nearest_rank": 0,
+      "p95_nearest_rank": 0,
+      "max": 0
+    },
+    "issued_a_lines": {
+      "count": 128,
+      "sum": 299046,
+      "min": 1961,
+      "p50_nearest_rank": 2299,
+      "p95_nearest_rank": 2618,
+      "max": 2840
+    },
+    "row_transitions": {
+      "count": 128,
+      "sum": 297946,
+      "min": 1953,
+      "p50_nearest_rank": 2292,
+      "p95_nearest_rank": 2607,
+      "max": 2828
+    },
+    "fill_cycles": 1613731,
+    "request_cycles": 2420806,
+    "dram_commands": {
+      "rd": 1000667,
+      "wr": 262163,
+      "act": 224722,
+      "pre": 209540
+    }
+  },
+  "semantic_rowtable_storage_delta": {
+    "added_rows": 1920,
+    "added_entry_slots": 32768,
+    "active_16_slice_organization_bytes": 161792,
+    "all_four_allocated_organizations_bytes": 616704,
+    "all_four_allocated_organizations_bits": 4933632,
+    "caveat": "Semantic core-array accounting only; excludes C++ padding/allocator overhead and is not synthesized area."
+  },
+  "interpretation": "Row128 did not change this XRAGE execution. Issue counts and transitions are descriptive and are not standalone causal evidence."
+}
