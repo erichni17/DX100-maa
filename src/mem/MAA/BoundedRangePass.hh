@@ -234,12 +234,48 @@ class BoundedRangePassTracker
         return pass < numPasses ? passRetirements[pass] : 0;
     }
 
-    /** Explicit payload accounting; excludes allocator/object overhead. */
+    struct SemanticByteBreakdown
+    {
+        size_t bitmaps = 0;
+        size_t passCounters = 0;
+        size_t passFinished = 0;
+        size_t passRanges = 0;
+        size_t scalarConfig = 0;
+
+        size_t total() const
+        {
+            return bitmaps + passCounters + passFinished + passRanges +
+                   scalarConfig;
+        }
+    };
+
+    /**
+     * Field-complete semantic storage accounting.
+     *
+     * Each boolean is charged as one semantic byte. This deliberately excludes
+     * host padding, vector allocator/capacity overhead, and synthesized area.
+     */
+    SemanticByteBreakdown semanticByteBreakdown() const
+    {
+        SemanticByteBreakdown bytes;
+        bytes.bitmaps =
+            (admitted.size() + retired.size()) * sizeof(uint64_t);
+        bytes.passCounters =
+            (passAdmissions.size() + passRetirements.size()) *
+            sizeof(uint32_t);
+        bytes.passFinished = passFinished.size();
+        bytes.passRanges = passRanges.size() * 2 * sizeof(uint64_t);
+        bytes.scalarConfig =
+            1 + // configuredFlag
+            3 * sizeof(uint32_t) + // logicalEntries, activeEntries, numPasses
+            2 * sizeof(uint64_t) + // growLower, growUpper
+            2 * sizeof(uint32_t); // admissionCount, retirementCount
+        return bytes;
+    }
+
     size_t chargedBytes() const
     {
-        return (admitted.size() + retired.size()) * sizeof(uint64_t) +
-               2 * MaxPasses * sizeof(uint32_t) +
-               MaxPasses * sizeof(bool);
+        return semanticByteBreakdown().total();
     }
 
     static const char *resultName(Result result)
