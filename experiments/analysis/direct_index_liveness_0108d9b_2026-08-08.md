@@ -49,12 +49,16 @@ transparent consumer path reads the admitted B value.
 ## Fresh exact-output evidence
 
 The authoritative run is
-`/tmp/b-index-liveness-20260808/transparent_4k_v3`. It restored a private copy
+`/data1/nier/dx100-runs/2026-08-08-virtualization-sprint/b-index-liveness-f281637/transparent_4k`.
+It restored a private copy
 of the treatment-neutral checkpoint and passed the repository's fail-closed
 `run_virtual_tile_consumer_case.sh` gate. The machine-readable companion to
 this note preserves the full identities and hashes.
 
-- Source: `0108d9b7a0c9f7818be75745aef3f8b72146c7d4`, clean at launch.
+- Simulator source: `f28163724c1d1f1e2303c5995272a3db32e32b6c`.
+- Evidence runner source: `0108d9b7a0c9f7818be75745aef3f8b72146c7d4`,
+  clean at launch. There are no changed files between these commits under
+  `src`, `configs`, `benchmarks/API`, or `ext/ramulator2`.
 - gem5 SHA-256:
   `90858e29506525ea0ab4af88130c212ff8f4d3ae32842a7dfe322f8221ee9295`.
 - Workload SHA-256:

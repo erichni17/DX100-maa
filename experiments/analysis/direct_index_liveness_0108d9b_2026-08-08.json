@@ -29,7 +29,7 @@
     "status": "passed"
   },
   "raw_artifacts": {
-    "raw_root": "/tmp/b-index-liveness-20260808/transparent_4k_v3",
+    "raw_root": "/data1/nier/dx100-runs/2026-08-08-virtualization-sprint/b-index-liveness-f281637/transparent_4k",
     "restore_log_sha256": "a38fa017ca1578c0706fb872aaf4646435665e6a26f53bf67f4f337dd469d6e2",
     "result_tsv_sha256": "865cd091be3823c39c21ba7d78331798cf72d0184ec57144f3f38f5c691f9a13",
     "stats_sha256": "ba24b44e7373010941b8a759ce825052dceb216a8d518bab62e986d866923c5e",
@@ -37,7 +37,9 @@
   },
   "schema_version": 1,
   "simTicks": 46889591,
-  "source_commit": "0108d9b7a0c9f7818be75745aef3f8b72146c7d4",
+  "runner_source_commit": "0108d9b7a0c9f7818be75745aef3f8b72146c7d4",
+  "simulator_source_commit": "f28163724c1d1f1e2303c5995272a3db32e32b6c",
+  "simulator_source_diff_files": [],
   "source_diff_bytes": 0,
   "source_status_bytes": 0,
   "workload_sha256": "f87d7206c91d5d48235da13a90ad08f2fb8c8f58ae25311758ebe4094ca6dfc5"
