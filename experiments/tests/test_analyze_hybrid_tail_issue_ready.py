@@ -8,10 +8,28 @@ from experiments.analysis.analyze_hybrid_tail_issue_ready import (
     audit_config_delta,
     audit_page_readiness,
     build_report,
+    classify_mechanism_activation,
 )
 
 
 class HybridTailIssueReadyAnalyzerTest(unittest.TestCase):
+    def test_activation_classification_is_fail_closed(self):
+        self.assertEqual(
+            classify_mechanism_activation(0, 0, 0, 0), "no_activation"
+        )
+        self.assertEqual(
+            classify_mechanism_activation(2, 256, 0, 0),
+            "early_release_only_no_dynamic_forward",
+        )
+        self.assertEqual(
+            classify_mechanism_activation(1, 8, 1, 1),
+            "bounded_forwarding_activated",
+        )
+        with self.assertRaises(AuditError):
+            classify_mechanism_activation(0, 0, 1, 1)
+        with self.assertRaises(AuditError):
+            classify_mechanism_activation(1, 8, 0, 1)
+
     def test_config_delta_accepts_only_treatment_bit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

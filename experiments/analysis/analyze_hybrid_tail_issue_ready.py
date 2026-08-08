@@ -93,6 +93,31 @@ def canonical_int(result: dict[str, str], field: str) -> int:
     return int(value)
 
 
+def classify_mechanism_activation(
+    pending_pages: int,
+    pending_words: int,
+    forwards: int,
+    scheduled: int,
+) -> str:
+    """Classify activation without turning a missing mechanism into a pass."""
+    values = (pending_pages, pending_words, forwards, scheduled)
+    if any(value < 0 for value in values):
+        raise AuditError("mechanism counters must be nonnegative")
+    if pending_pages == 0 and pending_words == 0:
+        if forwards != 0 or scheduled != 0:
+            raise AuditError("forwarding occurred without an early-ready page")
+        return "no_activation"
+    if pending_pages == 0 or pending_words == 0:
+        raise AuditError("pending-page counters do not reconcile")
+    if forwards == 0 and scheduled == 0:
+        return "early_release_only_no_dynamic_forward"
+    if forwards == scheduled and forwards > 0:
+        return "bounded_forwarding_activated"
+    raise AuditError(
+        "scheduled/delivered forwarding counters do not reconcile"
+    )
+
+
 def audit_page_readiness(path: Path, expect_pending: bool) -> dict:
     with path.open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream, delimiter="\t"))
