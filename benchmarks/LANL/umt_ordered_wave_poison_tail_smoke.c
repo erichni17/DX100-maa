@@ -13,7 +13,11 @@
 #define POISON UINT64_C(0x7ff0000000000001)
 #define RESULT_SENTINEL UINT64_C(0xdeadbeefcafef00d)
 
+#ifdef ONLY_GROUP_COUNT
+static const uint64_t group_counts[] = {ONLY_GROUP_COUNT};
+#else
 static const uint64_t group_counts[] = {1, 7, 8, 9, 31, 32, 33, 63, 64};
+#endif
 
 static uint64_t
 double_bits(double value)

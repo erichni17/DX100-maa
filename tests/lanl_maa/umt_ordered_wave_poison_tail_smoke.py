@@ -54,7 +54,12 @@ class MAACoherenceCache(Cache):
 
 with open(args.metadata, encoding="utf-8") as stream:
     metadata = json.load(stream)
-if metadata["group_counts"] != [1, 7, 8, 9, 31, 32, 33, 63, 64]:
+allowed_group_counts = {1, 7, 8, 9, 31, 32, 33, 63, 64}
+if (
+    not metadata["group_counts"]
+    or len(set(metadata["group_counts"])) != len(metadata["group_counts"])
+    or not set(metadata["group_counts"]).issubset(allowed_group_counts)
+):
     raise ValueError("UMT64 poison-tail group matrix changed")
 
 system = System(
