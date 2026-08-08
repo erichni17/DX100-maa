@@ -110,7 +110,7 @@ def main():
     parser.add_argument("--source", required=True, type=pathlib.Path)
     parser.add_argument("--output-root", required=True, type=pathlib.Path)
     parser.add_argument("--expected-gem5-sha256", required=True)
-    parser.add_argument("--expected-simulator-commit", required=True)
+    parser.add_argument("--expected-gem5-source-commit", required=True)
     args = parser.parse_args()
 
     if args.output_root.exists():
@@ -121,8 +121,30 @@ def main():
     status = subprocess.check_output(
         ["git", "status", "--short"], cwd=ROOT, text=True
     ).strip()
-    if actual_commit != args.expected_simulator_commit or status:
-        raise RuntimeError("simulator source identity is not clean and exact")
+    if status:
+        raise RuntimeError("poison-tail harness worktree is not clean")
+    changed_paths = set(
+        subprocess.check_output(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                f"{args.expected_gem5_source_commit}..HEAD",
+            ],
+            cwd=ROOT,
+            text=True,
+        ).splitlines()
+    )
+    expected_harness_paths = {
+        "benchmarks/LANL/umt_ordered_wave_poison_tail_smoke.c",
+        "tests/lanl_maa/run_umt_ordered_wave_poison_tail_smoke.py",
+        "tests/lanl_maa/umt_ordered_wave_poison_tail_smoke.py",
+    }
+    if changed_paths != expected_harness_paths:
+        raise RuntimeError(
+            "harness branch changed production source or lacks exact tests: "
+            f"{sorted(changed_paths)}"
+        )
     actual_gem5_sha = sha256(args.gem5.resolve())
     if actual_gem5_sha != args.expected_gem5_sha256:
         raise RuntimeError("gem5 identity mismatch")
@@ -136,7 +158,8 @@ def main():
         "sum_groups": sum(GROUP_COUNTS),
         "inactive_record_bits": "0x7ff0000000000001",
         "inactive_result_bits": "0xdeadbeefcafef00d",
-        "simulator_commit": actual_commit,
+        "simulator_commit": args.expected_gem5_source_commit,
+        "harness_commit": actual_commit,
         "gem5_sha256": actual_gem5_sha,
         "config_sha256": sha256(args.config.resolve()),
         "source_sha256": sha256(args.source.resolve()),
