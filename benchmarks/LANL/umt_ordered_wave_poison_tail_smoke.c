@@ -5,6 +5,7 @@
 #define RECORD_OFFSET UINT64_C(0x1000)
 #define RESULT_OFFSET UINT64_C(0x4000)
 #define COMPLETION_OFFSET UINT64_C(0x5000)
+#define CASE_STRIDE UINT64_C(0x6000)
 #define PLANE_WORDS UINT64_C(64)
 #define CORNERS UINT64_C(8)
 #define INPUT_PLANES UINT64_C(16)
@@ -47,12 +48,6 @@ _start(void)
 {
     volatile uint64_t *descriptor =
         (volatile uint64_t *)(uintptr_t)DATA_VADDR;
-    volatile uint64_t *records =
-        (volatile uint64_t *)(uintptr_t)(DATA_VADDR + RECORD_OFFSET);
-    volatile uint64_t *results =
-        (volatile uint64_t *)(uintptr_t)(DATA_VADDR + RESULT_OFFSET);
-    volatile uint64_t *completion =
-        (volatile uint64_t *)(uintptr_t)(DATA_VADDR + COMPLETION_OFFSET);
     volatile uint64_t *control =
         (volatile uint64_t *)(uintptr_t)CONTROL_VADDR;
 
@@ -60,14 +55,21 @@ _start(void)
          case_index < sizeof(group_counts) / sizeof(group_counts[0]);
          ++case_index) {
         const uint64_t groups = group_counts[case_index];
+        const uint64_t case_offset = case_index * CASE_STRIDE;
+        volatile uint64_t *records = (volatile uint64_t *)(uintptr_t)(
+            DATA_VADDR + RECORD_OFFSET + case_offset);
+        volatile uint64_t *results = (volatile uint64_t *)(uintptr_t)(
+            DATA_VADDR + RESULT_OFFSET + case_offset);
+        volatile uint64_t *completion = (volatile uint64_t *)(uintptr_t)(
+            DATA_VADDR + COMPLETION_OFFSET + case_offset);
         for (uint64_t word = 0; word < DESCRIPTOR_WORDS; ++word) {
             descriptor[word] = 0;
         }
         descriptor[0] = UINT64_C(0x030b000531414d4c);
         descriptor[1] = (UINT64_C(512) << 32) | groups;
-        descriptor[2] = UINT64_C(0x10001000);
-        descriptor[3] = UINT64_C(0x10004000);
-        descriptor[4] = UINT64_C(0x10005000);
+        descriptor[2] = UINT64_C(0x10001000) + case_offset;
+        descriptor[3] = UINT64_C(0x10004000) + case_offset;
+        descriptor[4] = UINT64_C(0x10005000) + case_offset;
         descriptor[6] = UINT64_C(0xd51dcb1df4ac9e64);
         descriptor[7] = CORNERS;
         for (uint64_t corner = 0; corner < CORNERS; ++corner) {
