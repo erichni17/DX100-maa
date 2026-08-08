@@ -47,7 +47,19 @@ class XrageVirtualCaseContractTest(unittest.TestCase):
         self.assertIn("MAA_NUM_OFFSET_TABLE_EPOCH_ENTRIES=4096", self.source)
         self.assertIn("MAA_VIRTUAL_INDEX_PARTITIONS=4", self.source)
         self.assertIn("MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=16", self.source)
-        self.assertIn("checkpoint_retargeted=1", self.source)
+        self.assertIn('checkpoint_run=$shared_checkpoint_run', self.source)
+
+    def test_frozen_checkpoint_requires_matching_guest_abi_and_input(self):
+        self.assertIn("checkpoint_source/artifact_sha256.txt", self.source)
+        self.assertIn("workload_hash", self.source)
+        self.assertIn(
+            "frozen checkpoint input does not match the requested XRAGE input",
+            self.source,
+        )
+        self.assertIn(
+            "XRAGE verifier binary does not match the frozen checkpoint ABI",
+            self.source,
+        )
 
     def test_comparison_requires_exact_hash_and_simticks(self):
         self.assertIn('bounded_hash == "$full_hash"', self.source)

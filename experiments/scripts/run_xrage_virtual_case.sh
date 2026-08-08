@@ -2,8 +2,8 @@
 # Run one exact XRAGE smoke and, by default, its matched bounded-4K arm.
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-    echo "usage: $0 OUTDIR GEM5_BIN XRAGE_VERIFY_BIN INPUT_JSON RAMULATOR_LIB" >&2
+if [[ $# -ne 6 ]]; then
+    echo "usage: $0 OUTDIR GEM5_BIN XRAGE_VERIFY_BIN INPUT_JSON RAMULATOR_LIB CHECKPOINT_RUN|-" >&2
     exit 2
 fi
 
@@ -13,6 +13,7 @@ gem5_source=$(realpath "$2")
 workload_source=$(realpath "$3")
 input_source=$(realpath "$4")
 ramulator_source=$(realpath "$5")
+checkpoint_source=$6
 run_mode=${XRAGE_RUN_MODE:-pair}
 
 case "$run_mode" in
@@ -27,6 +28,16 @@ esac
     echo "missing gem5, XRAGE verifier, input, or Ramulator library" >&2
     exit 2
 }
+if [[ $checkpoint_source != - ]]; then
+    checkpoint_source=$(realpath "$checkpoint_source")
+    [[ -d $checkpoint_source/checkpoint &&
+       -f $checkpoint_source/manifest.txt &&
+       -f $checkpoint_source/artifact_sha256.txt &&
+       -f $checkpoint_source/checkpoint.command ]] || {
+        echo "frozen checkpoint run is incomplete: $checkpoint_source" >&2
+        exit 2
+    }
+fi
 [[ ! -e $out ]] || {
     echo "refusing to overwrite evidence root: $out" >&2
     exit 2
@@ -75,6 +86,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'logical_tile_elements=16384\n'
     printf 'physical_tile_elements=4096\n'
     printf 'shared_checkpoint=pre_maa_atomic\n'
+    printf 'checkpoint_source=%s\n' "$checkpoint_source"
     printf 'full_metadata=row_16x64_offset_16384_epoch_16384\n'
     printf 'bounded_metadata=row_16x32_offset_4096_epoch_4096\n'
     printf 'bounded_schedule=four_modulo_passes_finite_filter_16_words_per_cycle\n'
@@ -102,20 +114,56 @@ common=(
     MAA_RETIREMENT_CACHE_SIZE=1kB
 )
 
+# A reused checkpoint must contain the same guest ABI and input bytes.  The
+# input path itself is retained because the recovery guard compares the
+# pre-checkpoint command, even though the input has already been parsed.
+runtime_input=$input
+if [[ $checkpoint_source != - ]]; then
+    checkpoint_input=$(sed -n 's/^input=//p' \
+        "$checkpoint_source/manifest.txt")
+    [[ -f $checkpoint_input &&
+       $(sha256sum "$checkpoint_input" | awk '{print $1}') == \
+       $(sha256sum "$input" | awk '{print $1}') ]] || {
+        echo "frozen checkpoint input does not match the requested XRAGE input" >&2
+        exit 1
+    }
+    workload_hash=$(sha256sum "$workload" | awk '{print $1}')
+    grep -Eq "^${workload_hash}  " \
+        "$checkpoint_source/artifact_sha256.txt" || {
+        echo "XRAGE verifier binary does not match the frozen checkpoint ABI" >&2
+        exit 1
+    }
+    runtime_input=$checkpoint_input
+    shared_checkpoint_run=$checkpoint_source
+else
+    shared_checkpoint_run=$out/full_metadata
+fi
+
 # The first exact verifier restore is both the smoke and the full-metadata arm.
-env LD_LIBRARY_PATH="$library_path" "${common[@]}" \
-    MAA_ROW_TABLE_ROWS_PER_SLICE=64 \
-    MAA_NUM_OFFSET_TABLE_ENTRIES=16384 \
-    MAA_NUM_OFFSET_TABLE_EPOCH_ENTRIES=16384 \
-    MAA_VIRTUAL_INDEX_PARTITIONS=1 \
-    MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=0 \
-    MAA_VIRTUAL_PARTITION_KEEP_COMBINER=0 \
-    "$root/experiments/scripts/run_xrage_direct_index_smoke.sh" \
-    "$gem5" "$workload" "$input" "$out/full_metadata" \
-    > "$out/full_metadata.launch.log" 2>&1
+full_environment=(
+    "${common[@]}"
+    MAA_ROW_TABLE_ROWS_PER_SLICE=64
+    MAA_NUM_OFFSET_TABLE_ENTRIES=16384
+    MAA_NUM_OFFSET_TABLE_EPOCH_ENTRIES=16384
+    MAA_VIRTUAL_INDEX_PARTITIONS=1
+    MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=0
+    MAA_VIRTUAL_PARTITION_KEEP_COMBINER=0
+)
+if [[ $checkpoint_source == - ]]; then
+    env LD_LIBRARY_PATH="$library_path" "${full_environment[@]}" \
+        "$root/experiments/scripts/run_xrage_direct_index_smoke.sh" \
+        "$gem5" "$workload" "$runtime_input" "$out/full_metadata" \
+        > "$out/full_metadata.launch.log" 2>&1
+else
+    env LD_LIBRARY_PATH="$library_path" "${full_environment[@]}" \
+        XRAGE_ALLOW_PRE_MAA_RETARGET=1 \
+        "$root/experiments/scripts/recover_xrage_checkpoint.sh" \
+        "$gem5" "$workload" "$runtime_input" "$shared_checkpoint_run" \
+        "$out/full_metadata" > "$out/full_metadata.launch.log" 2>&1
+fi
 printf '0\n' > "$out/full_metadata.launch.exit"
 
-checkpoint_command=$(<"$out/full_metadata/checkpoint.command")
+checkpoint_command=$(<"$shared_checkpoint_run/checkpoint.command")
 [[ $checkpoint_command == *"--cpu-type AtomicSimpleCPU"* &&
    $checkpoint_command != *"--maa"* &&
    $checkpoint_command != *"--maa_num_"* &&
@@ -124,7 +172,7 @@ checkpoint_command=$(<"$out/full_metadata/checkpoint.command")
     exit 1
 }
 (
-    cd "$out/full_metadata/checkpoint"
+    cd "$shared_checkpoint_run/checkpoint"
     find . -type f -print0 | sort -z | xargs -0 sha256sum
 ) > "$out/checkpoint_files.pre_treatment.sha256"
 sha256sum "$out/checkpoint_files.pre_treatment.sha256" \
@@ -141,7 +189,7 @@ if [[ $run_mode == pair ]]; then
         MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=16 \
         MAA_VIRTUAL_PARTITION_KEEP_COMBINER=1 \
         "$root/experiments/scripts/recover_xrage_checkpoint.sh" \
-        "$gem5" "$workload" "$input" "$out/full_metadata" \
+        "$gem5" "$workload" "$runtime_input" "$shared_checkpoint_run" \
         "$out/bounded_4k" > "$out/bounded_4k.launch.log" 2>&1
     printf '0\n' > "$out/bounded_4k.launch.exit"
 fi
@@ -178,9 +226,12 @@ if [[ $run_mode == pair ]]; then
         echo "bounded XRAGE output differs from the exact full-metadata arm" >&2
         exit 1
     }
-    grep -Fqx 'checkpoint_retargeted=1' \
+    grep -Fqx "checkpoint_run=$shared_checkpoint_run" \
+        "$out/full_metadata/manifest.txt" 2>/dev/null ||
+        [[ $checkpoint_source == - ]]
+    grep -Fqx "checkpoint_run=$shared_checkpoint_run" \
         "$out/bounded_4k/manifest.txt" || {
-        echo "bounded arm did not attest checkpoint retargeting" >&2
+        echo "bounded arm did not attest the shared checkpoint" >&2
         exit 1
     }
     bounded_delta=$(awk -v value="$bounded_ticks" -v reference="$full_ticks" \
