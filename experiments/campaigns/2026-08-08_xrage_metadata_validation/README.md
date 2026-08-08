@@ -26,6 +26,24 @@ issued four partitions, processed 8,388,799 filter words in 524,479 cycles,
 and recorded 191 offset-table-full events/epoch drains. Virtual write issues
 equal completions in both arms (320,375/320,375 and 263,974/263,974).
 
+The stage counters nearly close the timing delta:
+
+| stage | full metadata | bounded metadata | bounded minus full |
+| --- | ---: | ---: | ---: |
+| Fill cycles | 1,613,731 | 1,745,409 | +131,678 |
+| Request cycles | 2,420,806 | 2,836,185 | +415,379 |
+| Fill + Request | 4,034,537 | 4,581,594 | **+547,057** |
+
+At the matched 3.2 GHz clock, the 171,254,194-tick ROI difference is
+548,013.421 cycles. The measured Fill and Request deltas therefore account for
+99.825% of it, leaving 956.421 cycles elsewhere. The bounded arm also performs
+four times as many index-line reads (524,288 versus 131,072), 524,479 charged
+filter cycles of which 366,008 are non-overlapped waits, 191 Offset epoch
+drains, and 6,590 rather than 4,480 RowTable build rounds. These counters
+localize the loss to bounded metadata execution; they do not isolate a single
+causal knob because the treatment jointly changes Row/Offset capacities,
+partition count, index traffic, and filtering.
+
 ## Provenance
 
 Raw evidence is outside Git at:
