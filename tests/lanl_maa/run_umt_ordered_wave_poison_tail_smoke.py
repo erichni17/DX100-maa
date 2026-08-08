@@ -92,6 +92,7 @@ def validate(stats, group_counts):
         "descriptorUmtBatches": len(group_counts),
         "descriptorUmtResultsComputed": 8 * groups,
         "activeContextHighWaterMark": max(group_counts),
+        "operationTableHighWaterMark": max(group_counts),
         "lineWouldBlockCycles": 0,
     }
     failures = {
@@ -101,7 +102,13 @@ def validate(stats, group_counts):
     }
     if failures:
         raise RuntimeError(f"UMT64 poison-tail stat mismatch: {failures}")
-    return expected
+    line_high_water = stats.get("lineTableHighWaterMark")
+    if line_high_water is None or not 0 < line_high_water <= 32:
+        raise RuntimeError(
+            "UMT64 poison-tail line-table high-water is absent or outside "
+            f"the 32-entry capacity: {line_high_water}"
+        )
+    return expected, {"lineTableHighWaterMark": line_high_water}
 
 
 def main():
@@ -221,7 +228,7 @@ def main():
     if "LANLMAA_UMT64_POISON_TAIL_TERMINAL code=0" not in completed.stdout:
         raise RuntimeError("gem5 output lacks the exact poison-tail terminal")
     stats_path = outdir / "stats.txt"
-    expected_stats = validate(read_stats(stats_path), group_counts)
+    expected_stats, bounded_stats = validate(read_stats(stats_path), group_counts)
     report = {
         **metadata,
         "status": "passed",
@@ -229,6 +236,7 @@ def main():
         "returncode": completed.returncode,
         "command": command,
         "expected_stats": expected_stats,
+        "bounded_stats": bounded_stats,
         "stats_sha256": sha256(stats_path),
         "stdout_sha256": sha256(args.output_root / "stdout.log"),
         "stderr_sha256": sha256(args.output_root / "stderr.log"),
