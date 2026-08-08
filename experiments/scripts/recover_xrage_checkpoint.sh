@@ -107,8 +107,8 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
     echo "MAA_NUM_INITIAL_ROW_TABLE_SLICES must be 4, 8, 16, or 32" >&2
     exit 2
 }
-[[ $row_table_rows -gt 0 && $row_table_rows -le 64 ]] || {
-    echo "MAA_ROW_TABLE_ROWS_PER_SLICE must be in [1,64]" >&2
+[[ $row_table_rows -gt 0 && $row_table_rows -le 128 ]] || {
+    echo "MAA_ROW_TABLE_ROWS_PER_SLICE must be in [1,128]" >&2
     exit 2
 }
 [[ $offset_table_entries -ge 0 && $offset_table_entries -le 16384 ]] || {
