@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -67,12 +68,33 @@ testRuntimeIsSolePayloadAuthority()
             "serial control exposes no second payload slot");
 }
 
+void testModeGeometryAndExactOutput()
+{
+    LogicalSPDCacheRuntime serial(LogicalSPDCacheRuntime::Mode::Serial4K);
+    require(serial.pageElements() == 4096 && serial.slotCount() == 1,
+            "Serial4K exposes one 4096-element slot");
+    std::array<double, 4096> values{};
+    for (std::size_t i = 0; i < values.size(); ++i)
+        values[i] = static_cast<double>(i);
+    require(LogicalSPDCacheRuntime::Datapath::transform(
+                LogicalSPDCacheRuntime::Datapath::Operation::Add,
+                {values.data(), values.size()},
+                {values.data(), values.size()}, 0) ==
+                LogicalSPDCacheRuntime::Datapath::Result::Accepted,
+            "Serial4K exact in-place output accepted");
+    require(values[4095] == 4095.0, "Serial4K exact output preserved");
+    LogicalSPDCacheRuntime ping(LogicalSPDCacheRuntime::Mode::PingPong2K);
+    require(ping.pageElements() == 2048 && ping.slotCount() == 2,
+            "PingPong2K exposes two 2048-element slots");
+}
+
 } // anonymous namespace
 
 int
 main()
 {
     testRuntimeIsSolePayloadAuthority();
+    testModeGeometryAndExactOutput();
     std::cout << "PASS logical_spd_hidden_payload_test\n";
     return 0;
 }
