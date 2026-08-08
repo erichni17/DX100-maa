@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -139,6 +140,21 @@ def main():
     ).strip()
     if status:
         raise RuntimeError("poison-tail harness worktree is not clean")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.expected_gem5_source_commit):
+        raise RuntimeError("expected gem5 source commit is not a full SHA-1")
+    ancestry = subprocess.run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            args.expected_gem5_source_commit,
+            "HEAD",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise RuntimeError("gem5 source commit is not a harness ancestor")
     changed_paths = set(
         subprocess.check_output(
             [
@@ -156,9 +172,9 @@ def main():
         "tests/lanl_maa/run_umt_ordered_wave_poison_tail_smoke.py",
         "tests/lanl_maa/umt_ordered_wave_poison_tail_smoke.py",
     }
-    if changed_paths != expected_harness_paths:
+    if not changed_paths.issubset(expected_harness_paths):
         raise RuntimeError(
-            "harness branch changed production source or lacks exact tests: "
+            "harness commits after gem5 changed production source: "
             f"{sorted(changed_paths)}"
         )
     actual_gem5_sha = sha256(args.gem5.resolve())
