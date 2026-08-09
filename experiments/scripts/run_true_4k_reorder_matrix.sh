@@ -89,8 +89,9 @@ field() {
     ' "$file"
 }
 reference_hash=$(field output_hash "$out/native16/result.tsv")
-printf 'arm\toutput_hash\tsimTicks\ta_line_requests\trow_groups' \
+printf 'arm\toutput_hash\tsimTicks\ta_line_requests\ta_unique_lines' \
     > "$out/matrix.tsv"
+printf '\trow_insertions\ttranslated_unique_rows' >> "$out/matrix.tsv"
 printf '\trow_drains\toffset_drains\tdram_activates\tsummary_bytes' \
     >> "$out/matrix.tsv"
 printf '\treplay_bytes\treplay_passes\treplay_drains\tmax_epoch' \
@@ -103,8 +104,10 @@ for arm in native16 native4 physical_grow_4k; do
     hash=$(field output_hash "$result")
     [[ $hash == "$reference_hash" ]]
     ticks=$(field simTicks "$result")
-    lines=$(field row_table_unique_cache_lines "$result")
-    groups=$(field row_table_rows_inserted "$result")
+    lines=$(field row_table_cache_lines "$result")
+    unique_lines=$(field row_table_unique_cache_lines "$result")
+    row_insertions=$(field row_table_rows_inserted "$result")
+    unique_rows=$(field row_table_unique_rows "$result")
     row_drains=$(field row_table_full_events "$result")
     offset_drains=$(field offset_epoch_drains "$result")
     activates=$(field dram_activates "$result")
@@ -119,9 +122,11 @@ for arm in native16 native4 physical_grow_4k; do
     row_lines=$(field bounded_row_line_entries "$result")
     metadata_bytes=$(field bounded_reorder_metadata_bytes "$result")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-        "$arm" "$hash" "$ticks" "$lines" "$groups" "$row_drains" \
+        "$arm" "$hash" "$ticks" "$lines" "$unique_lines" \
+        "$row_insertions" "$unique_rows" "$row_drains" \
         "$offset_drains" "$activates" "$((summary_words * 4))" \
-        "$((replay_words * 4))" "$passes" "$replay_drains" \
+        "$((replay_words * 4))" >> "$out/matrix.tsv"
+    printf '\t%s\t%s' "$passes" "$replay_drains" \
         >> "$out/matrix.tsv"
     printf '\t%s\t%s\t%s\t%s\t%s\t%s\n' "$max_epoch" "$word_entries" \
         "$offset_entries" "$row_directories" "$row_lines" \

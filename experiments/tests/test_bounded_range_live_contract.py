@@ -177,6 +177,15 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         ):
             self.assertGreaterEqual(self.runner.count(name), 2)
 
+    def test_true_matrix_separates_requests_from_unique_lines(self) -> None:
+        matrix = (
+            ROOT / "experiments/scripts/run_true_4k_reorder_matrix.sh"
+        ).read_text()
+        self.assertIn("field row_table_cache_lines", matrix)
+        self.assertIn("field row_table_unique_cache_lines", matrix)
+        self.assertIn("a_line_requests\\ta_unique_lines", matrix)
+        self.assertIn("row_insertions\\ttranslated_unique_rows", matrix)
+
     def test_capacity_drain_gate_covers_finite_direct_index_passes(
         self,
     ) -> None:
