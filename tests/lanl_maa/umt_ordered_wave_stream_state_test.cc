@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 #include "mem/LANLMAA/UmtOrderedWaveStreamState.hh"
 
@@ -234,6 +235,35 @@ capacityBackpressureCase()
     assert(state.resultBankStalls() == 0);
 }
 
+void
+partialIssueErrorAccountingCase()
+{
+    UmtOrderedWaveStreamState state;
+    assert(state.configure(2));
+    const auto wave = descriptor(2);
+    for (size_t source = 0; source < UmtOrderedWaveCorners; ++source) {
+        for (size_t group = 0; group < 2; ++group) {
+            const double value = group == 0 && source == 0 ?
+                std::numeric_limits<double>::quiet_NaN() : 1.0;
+            assert(state.writeSource(
+                group, source, umtOrderedWaveStreamEncodeFp64(value), 0).
+                accepted);
+        }
+    }
+    assert(state.bindDescriptor(wave));
+    assert(state.enqueueDenominator(
+        0, 0, 0, umtOrderedWaveStreamEncodeFp64(1.0)).accepted);
+    assert(state.enqueueDenominator(
+        1, 1, 0, umtOrderedWaveStreamEncodeFp64(1.0)).accepted);
+    const uint64_t ready = state.readyCycle();
+    assert(state.cycle(ready).error == DescriptorError::None);
+    const uint64_t issuedBeforeFailure = state.fpOperationsIssued();
+    const auto progress = state.cycle(ready + 1);
+    assert(progress.error == DescriptorError::BadRecordValue);
+    assert(state.fpOperationsIssued() == issuedBeforeFailure + 1);
+    assert(state.dualIssueCycles() == 0);
+}
+
 } // anonymous namespace
 
 int
@@ -271,6 +301,7 @@ main()
     tokenizedCase(16);
     tokenizedCase(64, true);
     capacityBackpressureCase();
+    partialIssueErrorAccountingCase();
     UmtOrderedWaveStreamState issueEvidence;
     assert(issueEvidence.configure(64));
     auto issueDescriptor = descriptor(64, true);
