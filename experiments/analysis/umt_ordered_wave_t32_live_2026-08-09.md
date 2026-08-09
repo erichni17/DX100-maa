@@ -40,3 +40,25 @@ Promotion requires:
 
 No application-performance or physical-design claim is made until those gates
 pass.
+
+## Prepared issue-two successor
+
+A separate follow-on treatment retains T32/L8/II32 and permits at most two
+global FP issues per cycle.  Writebacks reserve bank ports first; both issue
+slots share the round-robin cursor; existing per-unit next-issue state forbids
+two adds or two multiplies in one cycle; divider-lane state constrains divides;
+and two bank-reading operations may issue only from distinct single-ported
+banks.
+
+The treatment adds no arithmetic unit or persistent functional scheduler
+state.  It exports two 64-bit mechanism counters, increasing the measured
+state floor from 57,950 to 58,078 bits.  A direct priority-encoder
+implementation has 64 selector-candidate inputs and 128 operand-route bits:
+32 candidate inputs and 64 route bits beyond issue width one.  These are
+combinational logical lower bounds, not gates, wires, physical area, timing,
+power, or energy.
+
+The compiled state-model test requires nonzero dual-issue cycles while
+retaining bit-exact results.  This remains a prepared prototype and must not
+be built or interpreted as application evidence until the T32-only live A/B
+is classified.

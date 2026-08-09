@@ -299,6 +299,28 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtStateFpIssueStallCycles,
                statistics::units::Cycle::get(),
                "Cycles with UMT stream tokens but no FP issue"),
+      ADD_STAT(descriptorUmtStateFpOperationsIssued,
+               statistics::units::Count::get(),
+               "UMT FP operations issued by the stream scheduler"),
+      ADD_STAT(descriptorUmtStateDualIssueCycles,
+               statistics::units::Cycle::get(),
+               "Cycles issuing exactly two UMT FP operations"),
+      ADD_STAT(descriptorUmtStateFpIssueWidth,
+               statistics::units::Count::get(),
+               "Maximum UMT FP operations selected per cycle"),
+      ADD_STAT(descriptorUmtStateFpIssueSelectionCandidateInputs,
+               statistics::units::Count::get(),
+               "Logical selector candidate inputs for all UMT FP slots"),
+      ADD_STAT(descriptorUmtStateFpIssueOperandRouteBits,
+               statistics::units::Count::get(),
+               "Logical bank-operand route bits for all UMT FP slots"),
+      ADD_STAT(
+          descriptorUmtStateIncrementalFpIssueSelectionCandidateInputs,
+          statistics::units::Count::get(),
+          "Selector candidate inputs added beyond one UMT FP slot"),
+      ADD_STAT(descriptorUmtStateIncrementalFpIssueOperandRouteBits,
+               statistics::units::Count::get(),
+               "Bank-operand route bits added beyond one UMT FP slot"),
       ADD_STAT(descriptorUmtInputLineWaiterHoldLineCycles,
                statistics::units::Cycle::get(),
                "Aggregate D64 line-cycles held for complete waiter sets"),
@@ -2585,6 +2607,10 @@ LANLMAA::recordUmtOrderedWaveStreamStats()
         umtOrderedWaveState.tokenBackpressure();
     stats.descriptorUmtStateFpIssueStallCycles +=
         umtOrderedWaveState.fpIssueStalls();
+    stats.descriptorUmtStateFpOperationsIssued +=
+        umtOrderedWaveState.fpOperationsIssued();
+    stats.descriptorUmtStateDualIssueCycles +=
+        umtOrderedWaveState.dualIssueCycles();
     stats.descriptorUmtStatePipelineResultBankStallCycles +=
         umtOrderedWaveState.resultBankStalls();
 }
@@ -3503,6 +3529,17 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         stats.descriptorUmtStateTokenLogicalBitsFloor =
             UmtOrderedWaveStreamState::ComputeTokens *
             UmtOrderedWaveStreamState::RepresentedTokenLogicalBitsFloor;
+        stats.descriptorUmtStateFpIssueWidth =
+            UmtOrderedWaveStreamState::FpIssueWidth;
+        stats.descriptorUmtStateFpIssueSelectionCandidateInputs =
+            UmtOrderedWaveStreamState::FpIssueSelectionCandidateInputs;
+        stats.descriptorUmtStateFpIssueOperandRouteBits =
+            UmtOrderedWaveStreamState::FpIssueOperandRouteBits;
+        stats.descriptorUmtStateIncrementalFpIssueSelectionCandidateInputs =
+            UmtOrderedWaveStreamState::
+                IncrementalFpIssueSelectionCandidateInputs;
+        stats.descriptorUmtStateIncrementalFpIssueOperandRouteBits =
+            UmtOrderedWaveStreamState::IncrementalFpIssueOperandRouteBits;
         stats.descriptorUmtStateFunctionalControlLogicalBitsFloor =
             UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor;
         stats.descriptorUmtStateBankSchedulerLogicalBitsFloor =

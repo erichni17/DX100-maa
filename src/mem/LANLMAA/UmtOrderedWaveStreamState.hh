@@ -44,7 +44,8 @@ umtOrderedWaveStreamBitsForStates(size_t states)
 // operation/continuation rows.  Denominators remain in the returned line
 // packet; a completed result overwrites its dead source word in place.
 template <size_t ComputeTokenCount, size_t DividerLaneCount,
-          uint64_t DividerInitiationIntervalCycles>
+          uint64_t DividerInitiationIntervalCycles,
+          size_t GlobalFpIssueWidth = 1>
 class UmtOrderedWaveStreamStateModel
 {
   public:
@@ -54,6 +55,9 @@ class UmtOrderedWaveStreamStateModel
     static_assert(DividerLaneCount <= UmtOrderedWaveMaximumGroups);
     static_assert(DividerInitiationIntervalCycles != 0);
     static_assert(DividerInitiationIntervalCycles <= 64);
+    static_assert(GlobalFpIssueWidth != 0);
+    static_assert(GlobalFpIssueWidth <= 2);
+    static_assert(GlobalFpIssueWidth <= ComputeTokenCount);
 
     static constexpr size_t Banks = 4;
     static constexpr size_t RowsPerBank =
@@ -84,6 +88,18 @@ class UmtOrderedWaveStreamStateModel
     static constexpr uint64_t DivideLatency = 64;
     static constexpr uint64_t DividerInitiationInterval =
         DividerInitiationIntervalCycles;
+    static constexpr size_t FpIssueWidth = GlobalFpIssueWidth;
+    // Combinational lower bounds for a direct priority-encoder
+    // implementation.  They count selector candidate inputs and routed bank
+    // operand bits, not gates, wires, physical area, timing, power, or energy.
+    static constexpr size_t FpIssueSelectionCandidateInputs =
+        ComputeTokens * FpIssueWidth;
+    static constexpr size_t FpIssueOperandRouteBits =
+        64 * FpIssueWidth;
+    static constexpr size_t IncrementalFpIssueSelectionCandidateInputs =
+        ComputeTokens * (FpIssueWidth - 1);
+    static constexpr size_t IncrementalFpIssueOperandRouteBits =
+        64 * (FpIssueWidth - 1);
     // Minimum logical width of the independently represented Token fields:
     // phase4 + operation6 + group6 + corner3 + destination4 + readyCycle64
     // + six FP64 values.  This excludes compiler padding, ECC, queues,
@@ -109,7 +125,7 @@ class UmtOrderedWaveStreamStateModel
             UmtOrderedWaveMaximumGroups + 1) +
         umtOrderedWaveStreamBitsForStates(RowsPerBank + 1) +
         umtOrderedWaveStreamBitsForStates(ComputeTokens + 1) +
-        15 * 64;
+        17 * 64;
     static constexpr size_t AuxiliaryLogicalBitsFloor =
         ComputeTokens * RepresentedTokenLogicalBitsFloor +
         FunctionalControlLogicalBitsFloor +
@@ -172,6 +188,8 @@ class UmtOrderedWaveStreamStateModel
         tokenBackpressureEvents = 0;
         pipelineActiveCycleCount = 0;
         fpIssueStallCycles = 0;
+        fpOperationIssueCount = 0;
+        dualIssueCycleCount = 0;
         bankConflictCycles = 0;
         writebackStallCycles = 0;
         resultBankStallCycleCount = 0;
@@ -201,6 +219,8 @@ class UmtOrderedWaveStreamStateModel
         return pipelineActiveCycleCount;
     }
     uint64_t fpIssueStalls() const { return fpIssueStallCycles; }
+    uint64_t fpOperationsIssued() const { return fpOperationIssueCount; }
+    uint64_t dualIssueCycles() const { return dualIssueCycleCount; }
     uint64_t bankConflicts() const { return bankConflictCycles; }
     uint64_t writebackStalls() const { return writebackStallCycles; }
     uint64_t resultBankStalls() const
@@ -338,11 +358,19 @@ class UmtOrderedWaveStreamStateModel
             --activeTokens;
         }
 
-        bool issued = false;
-        for (size_t probe = 0; probe < tokens.size() && !issued; ++probe) {
-            const size_t index = (issueCursor + probe) % tokens.size();
-            auto &token = tokens[index];
-            switch (token.phase) {
+        // Writebacks above have first priority and have already reserved any
+        // bank ports they consume. Each FP slot then walks the same
+        // round-robin cursor. Per-unit next-issue cycles prevent two adds or
+        // two multiplies in one cycle, divider lane state limits divides, and
+        // reserveNow() rejects same-bank read pairs.
+        size_t issues = 0;
+        for (size_t slot = 0; slot < FpIssueWidth; ++slot) {
+            bool issued = false;
+            for (size_t probe = 0;
+                 probe < tokens.size() && !issued; ++probe) {
+                const size_t index = (issueCursor + probe) % tokens.size();
+                auto &token = tokens[index];
+                switch (token.phase) {
               case TokenPhase::DenominatorAddPending:
                 if (cycle < addNextIssue)
                     break;
@@ -440,12 +468,19 @@ class UmtOrderedWaveStreamStateModel
                 break;
               default:
                 break;
+                }
+                if (issued)
+                    issueCursor = (index + 1) % tokens.size();
             }
-            if (issued)
-                issueCursor = (index + 1) % tokens.size();
+            if (!issued)
+                break;
+            ++issues;
         }
-        if (!issued && activeTokens != 0)
+        if (issues == 0 && activeTokens != 0)
             ++fpIssueStallCycles;
+        fpOperationIssueCount += issues;
+        if (issues == 2)
+            ++dualIssueCycleCount;
         return result;
     }
 
@@ -737,20 +772,31 @@ class UmtOrderedWaveStreamStateModel
     uint64_t tokenBackpressureEvents = 0;
     uint64_t pipelineActiveCycleCount = 0;
     uint64_t fpIssueStallCycles = 0;
+    uint64_t fpOperationIssueCount = 0;
+    uint64_t dualIssueCycleCount = 0;
     uint64_t bankConflictCycles = 0;
     uint64_t writebackStallCycles = 0;
     uint64_t resultBankStallCycleCount = 0;
     DescriptorError latchedError = DescriptorError::None;
 };
 
-// The T32 resource treatment keeps eight divider lanes, II=32, one global FP
-// issue slot, and single-ported banks.  It doubles only the bounded compute
-// token capacity so two returned D64 line pairs can remain in flight.
+// The issue-two treatment retains T32, eight divider lanes, II=32, and four
+// single-ported banks. It may issue two operations only when per-unit and bank
+// constraints independently permit both.
 using UmtOrderedWaveStreamState =
-    UmtOrderedWaveStreamStateModel<32, 8, 32>;
+    UmtOrderedWaveStreamStateModel<32, 8, 32, 2>;
 
 static_assert(UmtOrderedWaveStreamState::Banks == 4);
 static_assert(UmtOrderedWaveStreamState::RowsPerBank == 16);
+static_assert(UmtOrderedWaveStreamState::FpIssueWidth == 2);
+static_assert(
+    UmtOrderedWaveStreamState::FpIssueSelectionCandidateInputs == 64);
+static_assert(UmtOrderedWaveStreamState::FpIssueOperandRouteBits == 128);
+static_assert(
+    UmtOrderedWaveStreamState::
+        IncrementalFpIssueSelectionCandidateInputs == 32);
+static_assert(
+    UmtOrderedWaveStreamState::IncrementalFpIssueOperandRouteBits == 64);
 static_assert(UmtOrderedWaveStreamState::AllocatedBytes == 4608);
 static_assert(UmtOrderedWaveStreamState::PhysicalBytes == 5120);
 static_assert(UmtOrderedWaveStreamState::ResidualBytes == 512);
@@ -761,12 +807,12 @@ static_assert(
 static_assert(
     UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
 static_assert(
-    UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 978);
+    UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 1106);
 static_assert(
-    UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 16990);
+    UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 17118);
 static_assert(
     UmtOrderedWaveStreamState::PhysicalStorePlusLogicalAuxiliaryBitsFloor ==
-        57950);
+        58078);
 
 } // namespace lanlmaa
 } // namespace gem5

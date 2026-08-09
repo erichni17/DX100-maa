@@ -240,6 +240,15 @@ int
 main()
 {
     assert(UmtOrderedWaveStreamState::ComputeTokens == 32);
+    assert(UmtOrderedWaveStreamState::FpIssueWidth == 2);
+    assert(
+        UmtOrderedWaveStreamState::FpIssueSelectionCandidateInputs == 64);
+    assert(UmtOrderedWaveStreamState::FpIssueOperandRouteBits == 128);
+    assert(
+        UmtOrderedWaveStreamState::
+            IncrementalFpIssueSelectionCandidateInputs == 32);
+    assert(
+        UmtOrderedWaveStreamState::IncrementalFpIssueOperandRouteBits == 64);
     assert(UmtOrderedWaveStreamState::DividerLanes == 8);
     assert(UmtOrderedWaveStreamState::DivideLatency == 64);
     assert(UmtOrderedWaveStreamState::DividerInitiationInterval == 32);
@@ -247,11 +256,11 @@ main()
     assert(
         UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor == 657);
     assert(UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
-    assert(UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 978);
-    assert(UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 16990);
+    assert(UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 1106);
+    assert(UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 17118);
     assert(
         UmtOrderedWaveStreamState::
-            PhysicalStorePlusLogicalAuxiliaryBitsFloor == 57950);
+            PhysicalStorePlusLogicalAuxiliaryBitsFloor == 58078);
     closedCase(1);
     closedCase(16);
     closedCase(32);
@@ -262,6 +271,27 @@ main()
     tokenizedCase(16);
     tokenizedCase(64, true);
     capacityBackpressureCase();
+    UmtOrderedWaveStreamState issueEvidence;
+    assert(issueEvidence.configure(64));
+    auto issueDescriptor = descriptor(64, true);
+    assert(issueEvidence.bindDescriptor(issueDescriptor));
+    for (size_t group = 0; group < 64; ++group) {
+        for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner)
+            assert(issueEvidence.writeSource(
+                group, corner, umtOrderedWaveStreamEncodeFp64(1.0), 0).
+                accepted);
+    }
+    for (size_t group = 0; group < 32; ++group) {
+        assert(issueEvidence.enqueueDenominator(
+            group, group, 0, umtOrderedWaveStreamEncodeFp64(1.0)).
+            accepted);
+    }
+    for (uint64_t cycle = 0;
+         cycle < 4096 && issueEvidence.tokensInUse() != 0; ++cycle) {
+        issueEvidence.cycle(cycle);
+    }
+    assert(issueEvidence.fpOperationsIssued() > 0);
+    assert(issueEvidence.dualIssueCycles() > 0);
 
     UmtOrderedWaveStreamState invalid;
     assert(!invalid.configure(65));
