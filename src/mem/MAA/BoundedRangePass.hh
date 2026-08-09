@@ -101,8 +101,10 @@ class BoundedRangePassTracker
         numPasses = passes;
         growLower = ranges.front().lower;
         growUpper = ranges.back().upper;
-        for (uint32_t pass = 0; pass < passes; ++pass)
+        for (uint32_t pass = 0; pass < passes; ++pass) {
             passRanges[pass] = ranges[pass];
+            passExpectedInspections[pass] = logical_entries;
+        }
         const size_t words = ceilDiv(logicalEntries, uint32_t(64));
         admitted.assign(words, 0);
         retired.assign(words, 0);
@@ -127,8 +129,10 @@ class BoundedRangePassTracker
         growLower = 0;
         growUpper = passes;
         externallySelected = true;
-        for (uint32_t pass = 0; pass < passes; ++pass)
+        for (uint32_t pass = 0; pass < passes; ++pass) {
             passRanges[pass] = {pass, static_cast<uint64_t>(pass) + 1};
+            passExpectedInspections[pass] = logical_entries;
+        }
         const size_t words = ceilDiv(logicalEntries, uint32_t(64));
         admitted.assign(words, 0);
         retired.assign(words, 0);
@@ -136,10 +140,40 @@ class BoundedRangePassTracker
         return Result::Accepted;
     }
 
+    /** Configure exact-once checking for pass-grouped descriptor reads. */
+    template <class Population>
+    Result configureSelectedPopulations(uint32_t logical_entries,
+                                        uint32_t active_entries,
+                                        uint32_t passes,
+                                        Population population)
+    {
+        const Result result = configureSelected(
+            logical_entries, active_entries, passes);
+        if (result != Result::Accepted)
+            return result;
+        uint64_t total = 0;
+        for (uint32_t pass = 0; pass < passes; ++pass) {
+            const uint32_t expected = population(pass);
+            if (expected == 0 || expected > active_entries) {
+                reset();
+                return Result::InvalidConfiguration;
+            }
+            passExpectedInspections[pass] = expected;
+            total += expected;
+        }
+        if (total != logical_entries) {
+            reset();
+            return Result::InvalidConfiguration;
+        }
+        groupedInspections = true;
+        return Result::Accepted;
+    }
+
     void reset()
     {
         configuredFlag = false;
         externallySelected = false;
+        groupedInspections = false;
         logicalEntries = 0;
         activeEntries = 0;
         numPasses = 0;
@@ -152,6 +186,7 @@ class BoundedRangePassTracker
         passAdmissions.fill(0);
         passRetirements.fill(0);
         passInspections.fill(0);
+        passExpectedInspections.fill(0);
         passEpochAdmissions.fill(0);
         passMaxEpochAdmissions.fill(0);
         passDrains.fill(0);
@@ -187,6 +222,25 @@ class BoundedRangePassTracker
         if (passFinished[pass])
             return Result::PassAlreadyFinished;
         if (iteration != passInspections[pass])
+            return Result::InspectionOutOfOrder;
+        passInspections[pass]++;
+        return Result::Accepted;
+    }
+
+    /** Record one descriptor read from a pass-contiguous backing segment. */
+    Result recordSelectedInspection(uint32_t iteration, uint32_t pass)
+    {
+        if (!configuredFlag)
+            return Result::NotConfigured;
+        if (!groupedInspections)
+            return Result::WrongPass;
+        if (iteration >= logicalEntries)
+            return Result::IterationOutOfRange;
+        if (pass >= numPasses)
+            return Result::PassOutOfRange;
+        if (passFinished[pass])
+            return Result::PassAlreadyFinished;
+        if (passInspections[pass] >= passExpectedInspections[pass])
             return Result::InspectionOutOfOrder;
         passInspections[pass]++;
         return Result::Accepted;
@@ -303,7 +357,7 @@ class BoundedRangePassTracker
             return Result::PassOutOfRange;
         if (passFinished[pass])
             return Result::PassAlreadyFinished;
-        if (passInspections[pass] != logicalEntries ||
+        if (passInspections[pass] != passExpectedInspections[pass] ||
             passAdmissions[pass] != passRetirements[pass])
             return Result::PassIncomplete;
         passFinished[pass] = true;
@@ -319,7 +373,7 @@ class BoundedRangePassTracker
             return Result::Incomplete;
         for (uint32_t pass = 0; pass < numPasses; ++pass) {
             if (!passFinished[pass] ||
-                passInspections[pass] != logicalEntries ||
+                passInspections[pass] != passExpectedInspections[pass] ||
                 passAdmissions[pass] != passRetirements[pass])
                 return Result::Incomplete;
         }
@@ -379,7 +433,8 @@ class BoundedRangePassTracker
             (admitted.size() + retired.size()) * sizeof(uint64_t);
         bytes.passCounters =
             (passAdmissions.size() + passRetirements.size() +
-             passInspections.size() + passEpochAdmissions.size() +
+             passInspections.size() + passExpectedInspections.size() +
+             passEpochAdmissions.size() +
              passMaxEpochAdmissions.size() + passDrains.size()) *
             sizeof(uint32_t);
         bytes.passFinished = passFinished.size();
@@ -387,6 +442,7 @@ class BoundedRangePassTracker
         bytes.scalarConfig =
             1 + // configuredFlag
             1 + // externallySelected
+            1 + // groupedInspections
             3 * sizeof(uint32_t) + // logicalEntries, activeEntries, numPasses
             2 * sizeof(uint64_t) + // growLower, growUpper
             2 * sizeof(uint32_t); // admissionCount, retirementCount
@@ -442,6 +498,7 @@ class BoundedRangePassTracker
 
     bool configuredFlag = false;
     bool externallySelected = false;
+    bool groupedInspections = false;
     uint32_t logicalEntries = 0;
     uint32_t activeEntries = 0;
     uint32_t numPasses = 0;
@@ -454,6 +511,7 @@ class BoundedRangePassTracker
     std::array<uint32_t, MaxPasses> passAdmissions{};
     std::array<uint32_t, MaxPasses> passRetirements{};
     std::array<uint32_t, MaxPasses> passInspections{};
+    std::array<uint32_t, MaxPasses> passExpectedInspections{};
     std::array<uint32_t, MaxPasses> passEpochAdmissions{};
     std::array<uint32_t, MaxPasses> passMaxEpochAdmissions{};
     std::array<uint32_t, MaxPasses> passDrains{};

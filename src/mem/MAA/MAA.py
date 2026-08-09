@@ -115,6 +115,10 @@ class MAA(ClockedObject):
         False,
         "Select contiguous DRAM-grow ranges with explicit exact-once tracking",
     )
+    virtual_index_descriptor_spool = Param.Bool(
+        False,
+        "Materialize pass-grouped direct-index descriptors in timed backing",
+    )
     virtual_index_range_policy = Param.Unsigned(
         0,
         "Range bounds: 0=full grow, 1=A endpoints, 2=explicit oracle, "

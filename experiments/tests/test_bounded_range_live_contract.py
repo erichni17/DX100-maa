@@ -158,9 +158,10 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             "2 * static_cast<uint64_t>(offset_table->capacity())",
             self.indirect,
         )
-        self.assertLess(
-            self.indirect.index("discardDirectIndex(\n                my_i"),
-            self.indirect.index("bounded_grow_plan.commitReplayOrdinal"),
+        self.assertRegex(
+            self.indirect,
+            r"discardDirectIndex\(\s*my_i,[\s\S]*?\);\s*"
+            r"if \(commit_grow_ordinal\)[\s\S]*?commitReplayOrdinal",
         )
 
     def test_evidence_snapshot_covers_bounded_treatment_sources(self) -> None:
@@ -261,7 +262,7 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
     def test_runner_closes_exact_candidate_signature(self) -> None:
         for token in (
             "index_words -eq $expected_index_words",
-            "feeder_descriptor_discards -eq 16384",
+            "feeder_descriptor_discards -eq $expected_descriptor_discards",
             "feeder_partition_discards -eq $expected_partition_discards",
             "range_pass_count -eq $actual_index_partitions",
             "range_complete_count -eq 1",

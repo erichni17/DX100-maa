@@ -432,6 +432,7 @@ public:
     bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
     bool virtual_index_range_passes;
+    bool virtual_index_descriptor_spool;
     unsigned int virtual_index_range_policy;
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;
@@ -750,6 +751,8 @@ public:
         std::vector<statistics::Scalar *> IND_BoundedSummaryHashProbes;
         std::vector<statistics::Scalar *> IND_BoundedSummaryReductionVisits;
         std::vector<statistics::Scalar *> IND_BoundedSummaryPlanBytes;
+        std::vector<statistics::Scalar *> IND_BoundedBucketLineReads;
+        std::vector<statistics::Scalar *> IND_BoundedBucketWords;
         std::vector<statistics::Scalar *> IND_BoundedReplayLineReads;
         std::vector<statistics::Scalar *> IND_BoundedReplayWords;
         std::vector<statistics::Scalar *> IND_BoundedReplayPasses;
@@ -760,6 +763,17 @@ public:
         std::vector<statistics::Scalar *> IND_BoundedRowDirectoryEntries;
         std::vector<statistics::Scalar *> IND_BoundedRowLineEntries;
         std::vector<statistics::Scalar *> IND_BoundedReorderMetadataBytes;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolLineWrites;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolWriteBytes;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolWriteAcks;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolLineReads;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolReadBytes;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolWriteCreditStalls;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolReadCreditStalls;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolWriteHighWater;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolStagingEntries;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolControlBytes;
+        std::vector<statistics::Scalar *> IND_DescriptorSpoolBackingBytes;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;

@@ -390,6 +390,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_index_descriptor_spool",
+        action="store_true",
+        help=(
+            "Materialize pass-grouped direct-index descriptors in finite "
+            "timing-visible backing"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_range_policy",
         type=int,
         default=0,

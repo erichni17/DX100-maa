@@ -155,6 +155,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_index_range_passes"
         )
 
+    if hasattr(options, "maa_virtual_index_descriptor_spool"):
+        opts["virtual_index_descriptor_spool"] = getattr(
+            options, "maa_virtual_index_descriptor_spool"
+        )
+
     if hasattr(options, "maa_virtual_index_range_policy"):
         opts["virtual_index_range_policy"] = getattr(
             options, "maa_virtual_index_range_policy"

@@ -133,6 +133,7 @@ MAA::MAA(const MAAParams &p)
       virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
       virtual_index_range_passes(p.virtual_index_range_passes),
+      virtual_index_descriptor_spool(p.virtual_index_descriptor_spool),
       virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
       virtual_index_filter_words_per_cycle(
@@ -223,6 +224,11 @@ MAA::MAA(const MAAParams &p)
     panic_if(!virtual_index_range_passes && virtual_index_range_policy != 0,
              "Virtual index range policy %u requires range passes\n",
              virtual_index_range_policy);
+    panic_if(virtual_index_descriptor_spool &&
+                 (!virtual_index_range_passes ||
+                  virtual_index_range_policy != 3),
+             "Descriptor spooling requires bounded translated-grow policy "
+             "3\n");
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),
              "Explicit range boundaries require range policy 2\n");
@@ -2576,6 +2582,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryPlanBytes"),
             statistics::units::Byte::get(),
             "fixed-width retained translated-grow replay plan bytes"));
+        IND_BoundedBucketLineReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedBucketLineReads"),
+            statistics::units::Count::get(),
+            "LLC-visible B line reads used to bucket descriptor records"));
+        IND_BoundedBucketWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedBucketWords"),
+            statistics::units::Count::get(),
+            "B words inspected once while bucketing descriptor records"));
         IND_BoundedReplayLineReads.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayLineReads"),
             statistics::units::Count::get(),
@@ -2618,6 +2632,52 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             MAKE_INDIRECT_STAT_NAME("IND_BoundedReorderMetadataBytes"),
             statistics::units::Byte::get(),
             "source-semantic bounded Word/Offset/Row metadata bytes"));
+        IND_DescriptorSpoolLineWrites.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolLineWrites"),
+            statistics::units::Count::get(),
+            "acknowledged descriptor-spool cache-line writes issued"));
+        IND_DescriptorSpoolWriteBytes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolWriteBytes"),
+            statistics::units::Byte::get(),
+            "descriptor-spool bytes written through the cache hierarchy"));
+        IND_DescriptorSpoolWriteAcks.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolWriteAcks"),
+            statistics::units::Count::get(),
+            "authenticated descriptor-spool write acknowledgements"));
+        IND_DescriptorSpoolLineReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolLineReads"),
+            statistics::units::Count::get(),
+            "descriptor-spool cache-line reads issued"));
+        IND_DescriptorSpoolReadBytes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolReadBytes"),
+            statistics::units::Byte::get(),
+            "descriptor-spool bytes read through the cache hierarchy"));
+        IND_DescriptorSpoolWriteCreditStalls.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolWriteCreditStalls"),
+            statistics::units::Count::get(),
+            "bucket stalls at the finite acknowledged-write limit"));
+        IND_DescriptorSpoolReadCreditStalls.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolReadCreditStalls"),
+            statistics::units::Count::get(),
+            "replay stalls at the finite descriptor-line read limit"));
+        IND_DescriptorSpoolWriteHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolWriteHighWater"),
+            statistics::units::Count::get(),
+            "maximum acknowledged descriptor writes in flight"));
+        IND_DescriptorSpoolStagingEntries.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolStagingEntries"),
+            statistics::units::Count::get(),
+            "charged pass-line descriptor staging capacity"));
+        IND_DescriptorSpoolControlBytes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolControlBytes"),
+            statistics::units::Byte::get(),
+            "charged finite on-chip spool control and staging bytes"));
+        IND_DescriptorSpoolBackingBytes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolBackingBytes"),
+            statistics::units::Byte::get(),
+            "charged timing-visible descriptor-spool backing capacity"));
         IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
             statistics::units::Count::get(),

@@ -70,7 +70,7 @@ testExactOnceOutOfOrderRetirement()
     assert(tracker.admissions() == logical);
     assert(tracker.retirements() == logical);
     assert(tracker.finish() == Result::Accepted);
-    assert(tracker.chargedBytes() == 6758);
+    assert(tracker.chargedBytes() == 7015);
 }
 
 void
@@ -82,16 +82,47 @@ testSemanticByteAccountingIsFieldComplete()
 
     // admitted + retired: two 16K-bit semantic bitmaps.
     assert(bytes.bitmaps == 4096);
-    // Six 64-entry uint32 arrays: totals, scan cursors, and drain epochs.
-    assert(bytes.passCounters == 1536);
+    // Seven 64-entry uint32 arrays: totals, expected/actual scan cursors, and
+    // drain epochs.
+    assert(bytes.passCounters == 1792);
     // passFinished: one semantic byte for each of 64 pass states.
     assert(bytes.passFinished == 64);
     // passRanges: 64 {uint64_t lower, uint64_t upper} records.
     assert(bytes.passRanges == 1024);
     // Two mode flags; logical/active/pass counts; grow bounds; global counts.
-    assert(bytes.scalarConfig == 38);
-    assert(bytes.total() == 6758);
+    assert(bytes.scalarConfig == 39);
+    assert(bytes.total() == 7015);
     assert(tracker.chargedBytes() == bytes.total());
+}
+
+void
+testPassGroupedInspectionContract()
+{
+    BoundedRangePassTracker tracker;
+    const std::array<uint32_t, 4> populations{3, 1, 2, 2};
+    assert(tracker.configureSelectedPopulations(
+               8, 4, populations.size(),
+               [&](uint32_t pass) { return populations[pass]; }) ==
+           Result::Accepted);
+    const std::array<std::array<uint32_t, 3>, 4> selected{{
+        {{7, 2, 5}}, {{0, 0, 0}}, {{1, 6, 0}}, {{3, 4, 0}}}};
+    for (uint32_t pass = 0; pass < populations.size(); ++pass) {
+        for (uint32_t index = 0; index < populations[pass]; ++index) {
+            const uint32_t itr = selected[pass][index];
+            assert(tracker.recordSelectedInspection(itr, pass) ==
+                   Result::Accepted);
+            assert(tracker.recordSelectedAdmission(itr, pass) ==
+                   Result::Accepted);
+            assert(tracker.recordRetirement(itr, pass) == Result::Accepted);
+        }
+        assert(tracker.finishPass(pass) == Result::Accepted);
+    }
+    assert(tracker.finish() == Result::Accepted);
+
+    BoundedRangePassTracker invalid;
+    assert(invalid.configureSelectedPopulations(
+               8, 4, 4, [](uint32_t) { return 1; }) ==
+           Result::InvalidConfiguration);
 }
 
 void
@@ -216,6 +247,7 @@ main()
     testRangesCoverGrowSpaceExactly();
     testExactOnceOutOfOrderRetirement();
     testSemanticByteAccountingIsFieldComplete();
+    testPassGroupedInspectionContract();
     testSkewRemainsExactAndExplicit();
     testSourceRelativeRange();
     testExplicitBalancedRanges();

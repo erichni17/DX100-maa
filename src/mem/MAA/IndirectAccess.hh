@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -14,6 +15,7 @@
 #include "arch/generic/mmu.hh"
 #include "base/statistics.hh"
 #include "base/types.hh"
+#include "mem/MAA/BoundedDescriptorSpool.hh"
 #include "mem/MAA/BoundedMetadataLedger.hh"
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
@@ -282,6 +284,7 @@ protected:
         Addr line_addr = 0;
         Addr word_paddr = 0;
         uint32_t phase = 0;
+        uint32_t logical_itr = 0;
     };
     enum class DirectIndexDiscardReason : uint8_t
     {
@@ -300,6 +303,28 @@ protected:
     bool direct_index_partition_barrier = false;
     BoundedRangePassTracker bounded_range_pass;
     BoundedGrowPassPlan bounded_grow_plan;
+    BoundedDescriptorSpool descriptor_spool;
+    bool descriptor_spool_bucket_active = false;
+    bool descriptor_spool_bucket_scan_complete = false;
+    bool descriptor_spool_replay_active = false;
+    Addr descriptor_spool_base_vaddr = 0;
+    static constexpr uint32_t DescriptorIndexPageBytes = 4096;
+    static constexpr uint32_t MaxDescriptorIndexPages = 17;
+    std::array<Addr, MaxDescriptorIndexPages>
+        descriptor_spool_index_page_paddrs{};
+    std::array<bool, MaxDescriptorIndexPages>
+        descriptor_spool_index_page_valid{};
+    struct DescriptorSpoolPendingLine
+    {
+        Addr vaddr = 0;
+        uint32_t pass = 0;
+        uint32_t line = 0;
+        uint32_t firstCursor = 0;
+        uint32_t descriptors = 0;
+    };
+    std::map<Addr, DescriptorSpoolPendingLine>
+        descriptor_spool_pending_lines;
+    std::map<Addr, Addr> descriptor_spool_write_paddr_to_vaddr;
     bool direct_index_summary_active = false;
     bool direct_index_summary_overflow = false;
     bool direct_index_iteration_fallback = false;
@@ -354,6 +379,7 @@ protected:
     bool isDirectIndexLoad() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
+    void fillDescriptorSpoolWindow();
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
     uint32_t directIndexPassForGrow(Addr grow_addr) const;
@@ -367,6 +393,23 @@ protected:
                             DirectIndexDiscardReason reason);
     bool receiveDirectIndex(Addr addr, uint8_t *dataptr,
                             bool is_block_cached);
+    bool receiveDescriptorSpool(Addr addr, uint8_t *dataptr,
+                                bool is_block_cached);
+    bool flushDescriptorSpoolLine(uint32_t pass, bool allow_partial);
+    bool finishDescriptorSpoolBucketing();
+    void startDescriptorSpoolReplay();
+    uint16_t captureDescriptorIndexPage(uint32_t iteration,
+                                        Addr word_paddr);
+    Addr descriptorIndexWordPaddr(uint32_t iteration,
+                                  uint16_t source_page) const;
+    size_t descriptorSpoolControlBytes() const;
+    void createDescriptorSpoolReadPacket(Addr vaddr, uint32_t pass,
+                                         uint32_t line,
+                                         uint32_t first_cursor,
+                                         uint32_t descriptors);
+    void createDescriptorSpoolWritePacket(
+        Addr vaddr,
+        const std::array<uint8_t, BoundedDescriptorSpool::LineBytes> &data);
     void createDirectIndexReadPacket(Addr addr, int latency);
     void accountReadResponse(Addr addr, bool is_block_cached);
     Addr backingWordAddr(int itr) const;

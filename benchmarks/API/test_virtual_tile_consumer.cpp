@@ -20,6 +20,11 @@ namespace {
 
 constexpr int total_elements = 16384;
 constexpr int guard_elements = 32;
+constexpr size_t descriptor_spool_units = 4;
+constexpr size_t descriptor_spool_slot_bytes =
+    total_elements * 8 + 4 * 64;
+constexpr size_t descriptor_spool_elements =
+    descriptor_spool_units * descriptor_spool_slot_bytes / sizeof(double);
 constexpr double scale = 3.0;
 constexpr size_t cache_pollution_bytes = 32 * 1024 * 1024;
 
@@ -90,7 +95,8 @@ main(int argc, char **argv)
     std::vector<double> source(total_elements * 8);
     std::vector<uint32_t> indices(total_elements);
     std::vector<double> backing_storage(
-        total_elements + 2 * guard_elements, -1.0);
+        total_elements + 2 * guard_elements + descriptor_spool_elements,
+        -1.0);
     std::vector<double> destination_storage(
         total_elements + 2 * guard_elements, -1.0);
     std::vector<double> fence_storage(1, 0.0);
@@ -105,6 +111,12 @@ main(int argc, char **argv)
               << " page_elements=" << page_elements
               << " logical_elements=" << TILE_SIZE
               << " mem_size=" << static_cast<uint64_t>(MEM_SIZE)
+              << std::endl;
+    std::cout << "VIRTUAL_TILE_CONSUMER_DESCRIPTOR_STORAGE units="
+              << descriptor_spool_units
+              << " slot_bytes=" << descriptor_spool_slot_bytes
+              << " total_bytes="
+              << descriptor_spool_units * descriptor_spool_slot_bytes
               << std::endl;
     m5_checkpoint(0, 0);
     if (deferred_treatment) {

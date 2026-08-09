@@ -60,6 +60,7 @@ combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
 index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
 index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
+index_descriptor_spool=${MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL:-0}
 index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
@@ -91,6 +92,15 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 }
 [[ $index_range_passes == 1 || $index_range_policy == 0 ]] || {
     echo "nonzero range policy requires range passes" >&2
+    exit 2
+}
+[[ $index_descriptor_spool == 0 || $index_descriptor_spool == 1 ]] || {
+    echo "MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL must be 0 or 1" >&2
+    exit 2
+}
+[[ $index_descriptor_spool == 0 ||
+   ($index_range_passes == 1 && $index_range_policy == 3) ]] || {
+    echo "descriptor spool requires adaptive translated-grow range passes" >&2
     exit 2
 }
 index_range_boundary_values=()
@@ -202,6 +212,10 @@ fi
 index_range_args=()
 if [[ $index_range_passes == 1 ]]; then
     index_range_args+=(--maa_virtual_index_range_passes)
+fi
+index_descriptor_spool_args=()
+if [[ $index_descriptor_spool == 1 ]]; then
+    index_descriptor_spool_args+=(--maa_virtual_index_descriptor_spool)
 fi
 index_range_boundary_args=()
 if [[ $index_range_policy == 2 ]]; then
@@ -470,6 +484,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_index_partitions=%s\n' "$index_partitions"
     printf 'virtual_index_range_passes=%s\n' "$index_range_passes"
     printf 'virtual_index_range_policy=%s\n' "$index_range_policy"
+    printf 'virtual_index_descriptor_spool=%s\n' \
+        "$index_descriptor_spool"
     printf 'virtual_index_range_boundaries=%s\n' \
         "${index_range_boundaries:-none}"
     printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
@@ -481,7 +497,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'cache_pollution_bytes=%s\n' \
         "$((polluted * 32 * 1024 * 1024))"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
-    printf 'baseline_commit=d7875f99e6caf1d47bd6010b89112458384aec6c\n'
+    printf 'baseline_commit=6e84c2c4a4c9b008f0efb78314c7ac1b7f828b55\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
     printf 'shared_checkpoint=%s\n' "${shared_checkpoint:-none}"
@@ -505,6 +521,8 @@ cp -- "$root/src/mem/MAA/IndirectAccess.cc" "$snapshot/IndirectAccess.cc"
 cp -- "$root/src/mem/MAA/IndirectAccess.hh" "$snapshot/IndirectAccess.hh"
 cp -- "$root/src/mem/MAA/BoundedRangePass.hh" \
     "$snapshot/BoundedRangePass.hh"
+cp -- "$root/src/mem/MAA/BoundedDescriptorSpool.hh" \
+    "$snapshot/BoundedDescriptorSpool.hh"
 cp -- "$root/src/mem/MAA/BoundedQuantileRanges.hh" \
     "$snapshot/BoundedQuantileRanges.hh"
 cp -- "$root/src/mem/MAA/BoundedMetadataLedger.hh" \
@@ -527,16 +545,24 @@ cp -- "$root/configs/common/Options.py" "$snapshot/Options.py"
 cp -- "$root/src/mem/MAA/CpuSidePort.cc" "$snapshot/CpuSidePort.cc"
 cp -- "$root/tests/virtual_tile/bounded_range_pass_test.cc" \
     "$snapshot/bounded_range_pass_test.cc"
+cp -- "$root/tests/virtual_tile/bounded_descriptor_spool_test.cc" \
+    "$snapshot/bounded_descriptor_spool_test.cc"
 cp -- "$root/tests/virtual_tile/bounded_quantile_ranges_test.cc" \
     "$snapshot/bounded_quantile_ranges_test.cc"
 cp -- "$root/tests/virtual_tile/bounded_metadata_ledger_test.cc" \
     "$snapshot/bounded_metadata_ledger_test.cc"
 cp -- "$root/experiments/tests/test_bounded_range_live_contract.py" \
     "$snapshot/test_bounded_range_live_contract.py"
+cp -- "$root/experiments/tests/test_descriptor_spool_live_contract.py" \
+    "$snapshot/test_descriptor_spool_live_contract.py"
 cp -- "$root/experiments/scripts/run_bounded_range_pass_unit.sh" \
     "$snapshot/run_bounded_range_pass_unit.sh"
+cp -- "$root/experiments/scripts/run_bounded_descriptor_spool_unit.sh" \
+    "$snapshot/run_bounded_descriptor_spool_unit.sh"
 cp -- "$root/experiments/scripts/run_true_4k_reorder_matrix.sh" \
     "$snapshot/run_true_4k_reorder_matrix.sh"
+cp -- "$root/experiments/scripts/run_true_4k_descriptor_spool_matrix.sh" \
+    "$snapshot/run_true_4k_descriptor_spool_matrix.sh"
 cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     "$snapshot/hybrid_overhead_attribution.py"
 {
@@ -558,6 +584,7 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/MAA_gem5.hpp" \
     "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
     "$snapshot/BoundedRangePass.hh" \
+    "$snapshot/BoundedDescriptorSpool.hh" \
     "$snapshot/BoundedQuantileRanges.hh" \
     "$snapshot/BoundedMetadataLedger.hh" \
     "$snapshot/Tables.cc" "$snapshot/Tables.hh" \
@@ -570,11 +597,15 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/hybrid_overhead_attribution.py" \
     "$snapshot/CpuSidePort.cc" \
     "$snapshot/bounded_range_pass_test.cc" \
+    "$snapshot/bounded_descriptor_spool_test.cc" \
     "$snapshot/bounded_quantile_ranges_test.cc" \
     "$snapshot/bounded_metadata_ledger_test.cc" \
     "$snapshot/test_bounded_range_live_contract.py" \
+    "$snapshot/test_descriptor_spool_live_contract.py" \
     "$snapshot/run_bounded_range_pass_unit.sh" \
+    "$snapshot/run_bounded_descriptor_spool_unit.sh" \
     "$snapshot/run_true_4k_reorder_matrix.sh" \
+    "$snapshot/run_true_4k_descriptor_spool_matrix.sh" \
     "$out/source.diff" "$out/source_status.txt" "$out/invocation.sh.txt" \
     > "$out/artifact_sha256.txt"
 
@@ -670,6 +701,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_index_range_policy="$index_range_policy" \
     "${index_range_boundary_args[@]}" \
     "${index_range_args[@]}" \
+    "${index_descriptor_spool_args[@]}" \
     "${index_cache_args[@]}" \
     "${partition_combiner_args[@]}" \
     --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle" \
@@ -694,6 +726,7 @@ for expected in \
     "virtual_index_partitions=$index_partitions" \
     "virtual_index_range_passes=$([[ $index_range_passes -eq 1 ]] && echo true || echo false)" \
     "virtual_index_range_policy=$index_range_policy" \
+    "virtual_index_descriptor_spool=$([[ $index_descriptor_spool -eq 1 ]] && echo true || echo false)" \
     "virtual_index_force_cache=$([[ $index_force_cache -eq 1 ]] && echo true || echo false)" \
     "virtual_partition_keep_combiner=$([[ $partition_keep_combiner -eq 1 ]] && echo true || echo false)" \
     "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
@@ -711,9 +744,21 @@ roi_count=$(grep -Fxc 'ROI Ended' "$out/restore.log" || true)
 fatal_count=$(grep -Eic \
     'panic|fatal|assert|abort|segmentation fault|error:' \
     "$out/restore.log" || true)
-[[ $result_count -eq 1 && $roi_count -eq 1 && $fatal_count -eq 0 ]] || {
-    printf 'invalid completion: result=%s roi=%s fatal=%s\n' \
-        "$result_count" "$roi_count" "$fatal_count" >&2
+m5_exit_count=$(grep -Ec \
+    '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
+    "$out/restore.log" || true)
+stats_begin_count=$(grep -Fxc -- \
+    '---------- Begin Simulation Statistics ----------' \
+    "$out/run/stats.txt" || true)
+stats_end_count=$(grep -Fxc -- \
+    '---------- End Simulation Statistics   ----------' \
+    "$out/run/stats.txt" || true)
+[[ $result_count -eq 1 && $roi_count -eq 1 && $fatal_count -eq 0 && \
+   $m5_exit_count -eq 1 && $stats_begin_count -gt 0 && \
+   $stats_begin_count -eq $stats_end_count ]] || {
+    printf 'invalid completion: result=%s roi=%s fatal=%s m5_exit=%s stats=%s/%s\n' \
+        "$result_count" "$roi_count" "$fatal_count" "$m5_exit_count" \
+        "$stats_begin_count" "$stats_end_count" >&2
     exit 1
 }
 if [[ -n $shared_checkpoint ]]; then
@@ -744,7 +789,8 @@ read -r ticks insts index_line_reads index_words index_hwm \
     indirect_spd_reads stream_spd_reads stream_writes alu_compute \
     page_ready_signals page_wait_reads page_wait_deferrals \
     page_wait_responses \
-    l3_read_hits l3_read_misses memory_bytes_read cpu_cycles \
+    l3_read_hits l3_read_misses l3_write_requests \
+    memory_bytes_read memory_bytes_written cpu_cycles \
     rt_cache_lines rt_rows rt_unique_cache_lines rt_unique_rows \
     source_reads response_slot_hwm response_word_hwm \
     response_pool_stalls < <(
@@ -776,7 +822,9 @@ read -r ticks insts index_line_reads index_words index_hwm \
         section == 1 && $1 == "system.maa.virtual_page_wait_responses" { pws = $2 }
         section == 1 && $1 == "system.l3.ReadReq_T.hits::maa" { lh = $2 }
         section == 1 && $1 == "system.l3.ReadReq_T.misses::maa" { lm = $2 }
+        section == 1 && $1 == "system.l3.WriteReq_T.accesses::maa" { lw = $2 }
         section == 1 && $1 == "system.mem_ctrls.bytesRead::maa" { mb = $2 }
+        section == 1 && $1 == "system.mem_ctrls.bytesWritten::maa" { mw = $2 }
         section == 1 && $1 == "system.switch_cpus0.numCycles" { cc = $2 }
         section == 1 && $1 ~ /IND_NumCacheLineInserted$/ { rc += $2 }
         section == 1 && $1 ~ /IND_NumRowsInserted$/ { rr += $2 }
@@ -785,6 +833,7 @@ read -r ticks insts index_line_reads index_words index_hwm \
         section == 1 && $1 ~ /IND_LoadsCacheHitResponding$/ { lc += $2 }
         section == 1 && $1 ~ /IND_LoadsCacheHitAccessing$/ { la += $2 }
         section == 1 && $1 ~ /IND_LoadsMemAccessing$/ { lmema += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolLineReads$/ { dl += $2 }
         section == 1 && $1 ~ /IND_VirtResponseSlotHighWater$/ { rsh += $2 }
         section == 1 && $1 ~ /IND_VirtResponseWordHighWater$/ { rwh += $2 }
         section == 1 && $1 ~ /IND_VirtResponseWordPoolStalls$/ { rps += $2 }
@@ -794,21 +843,25 @@ read -r ticks insts index_line_reads index_words index_hwm \
                   wi + 0, wc + 0, pr + 0, pe + 0, pf + 0, pa + 0,
                   ps + 0, ir + 0, sr + 0, sw + 0, ac + 0,
                   prs + 0, pwr + 0, pwd + 0, pws + 0,
-                  lh + 0, lm + 0, mb + 0, cc + 0, rc + 0,
+                  lh + 0, lm + 0, lw + 0, mb + 0, mw + 0, cc + 0, rc + 0,
                   rr + 0, ruc + 0, rur + 0,
-                  lc + la + lmema - il, rsh + 0, rwh + 0, rps + 0
+                  lc + la + lmema - il - dl,
+                  rsh + 0, rwh + 0, rps + 0
             exit
         }
     ' "$out/run/stats.txt"
 )
-read -r rt_full offset_epoch_drains build_rounds < <(
+read -r rt_full offset_epoch_drains build_rounds fill_cycles \
+    request_cycles < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 ~ /IND_NumRTFull$/ { rf += $2 }
         section == 1 && $1 ~ /IND_NumOTEpochDrain$/ { od += $2 }
         section == 1 && $1 ~ /IND_VirtBuildRounds$/ { br += $2 }
+        section == 1 && $1 ~ /IND_CyclesFill$/ { fc += $2 }
+        section == 1 && $1 ~ /IND_CyclesRequest$/ { qc += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
-            print rf + 0, od + 0, br + 0
+            print rf + 0, od + 0, br + 0, fc + 0, qc + 0
             exit
         }
     ' "$out/run/stats.txt"
@@ -845,16 +898,60 @@ read -r bounded_summary_lines bounded_summary_words bounded_summary_records \
         }
     ' "$out/run/stats.txt"
 )
-read -r dram_reads dram_acts dram_pres < <(
+read -r bounded_bucket_lines bounded_bucket_words \
+    descriptor_write_lines descriptor_write_bytes descriptor_write_acks \
+    descriptor_read_lines descriptor_read_bytes descriptor_write_stalls \
+    descriptor_read_stalls descriptor_write_hwm descriptor_staging_entries \
+    descriptor_control_bytes descriptor_backing_bytes < <(
+    awk '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 ~ /IND_BoundedBucketLineReads$/ { bl += $2 }
+        section == 1 && $1 ~ /IND_BoundedBucketWords$/ { bw += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolLineWrites$/ { wl += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolWriteBytes$/ { wb += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolWriteAcks$/ { wa += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolLineReads$/ { rl += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolReadBytes$/ { rb += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolWriteCreditStalls$/ { ws += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolReadCreditStalls$/ { rs += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolWriteHighWater$/ { wh += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolStagingEntries$/ { se += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolControlBytes$/ { cb += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolBackingBytes$/ { bb += $2 }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            print bl + 0, bw + 0, wl + 0, wb + 0, wa + 0,
+                  rl + 0, rb + 0, ws + 0, rs + 0, wh + 0,
+                  se + 0, cb + 0, bb + 0
+            exit
+        }
+    ' "$out/run/stats.txt"
+)
+read -r dram_reads dram_writes dram_acts dram_pres < <(
     awk '
         $1 == "CH0_num_RD_commands_T:" { rd = $2 }
+        $1 ~ /^CH0_num_WR_commands(_T)?:$/ { wr = $2 }
         $1 == "CH0_num_ACT_commands_T:" { act = $2 }
         $1 == "CH0_num_PRE_commands_T:" { pre = $2 }
-        END { print rd + 0, act + 0, pre + 0 }
+        END { print rd + 0, wr + 0, act + 0, pre + 0 }
     ' "$out/restore.log"
 )
+read -r fill_sim_ticks request_sim_ticks < <(
+    awk '
+        /event=indirect_stage_summary schema=2/ {
+            delete value
+            for (i = 1; i <= NF; ++i) {
+                split($i, kv, "=")
+                value[kv[1]] = kv[2]
+            }
+            fill += value["fill_sim_ticks"]
+            request += value["request_sim_ticks"]
+        }
+        END { print fill + 0, request + 0 }
+    ' "$out/run/virtual_trace.log"
+)
 [[ $ticks -gt 0 && $insts -gt 0 && $stream_spd_reads -gt 0 && \
-   $stream_writes -gt 0 && $alu_compute -gt 0 && $dram_reads -gt 0 ]] || {
+   $stream_writes -gt 0 && $alu_compute -gt 0 && $dram_reads -gt 0 && \
+   $fill_sim_ticks -gt 0 && $request_sim_ticks -gt 0 ]] || {
     echo "missing first-ROI performance or consumer activity" >&2
     exit 1
 }
@@ -963,24 +1060,55 @@ elif [[ $virtual -eq 1 ]]; then
         expected_index_words=$((16384 * index_partitions))
         if [[ $index_range_policy -eq 3 ]]; then
             actual_index_partitions=$bounded_replay_passes
-            expected_index_words=$((bounded_summary_words + bounded_replay_words))
+            if [[ $index_descriptor_spool -eq 1 ]]; then
+                expected_index_words=$((bounded_summary_words + bounded_bucket_words))
+            else
+                expected_index_words=$((bounded_summary_words + bounded_replay_words))
+            fi
             [[ $bounded_summary_words -eq 16384 &&
                $bounded_summary_records -gt 0 &&
                $bounded_summary_records -le 64 &&
                $bounded_plan_bytes -gt 0 &&
                $actual_index_partitions -ge 4 &&
                $actual_index_partitions -le $index_partitions &&
-               $bounded_replay_words -eq $((16384 * actual_index_partitions)) &&
                $bounded_replay_max_epoch -le 4096 &&
                $bounded_word_entries -le 4096 &&
                $bounded_offset_entries -le 4096 &&
                $bounded_row_lines -le 4096 &&
                $bounded_row_directories -gt 0 &&
-               $bounded_metadata_bytes -gt 0 &&
-               $((bounded_summary_lines + bounded_replay_lines)) -eq $index_line_reads ]] || {
+               $bounded_metadata_bytes -gt 0 ]] || {
                 echo "invalid adaptive grow-plan counters" >&2
                 exit 1
             }
+            if [[ $index_descriptor_spool -eq 1 ]]; then
+                [[ $bounded_bucket_words -eq 16384 &&
+                   $bounded_replay_words -eq 0 &&
+                   $bounded_replay_lines -eq 0 &&
+                   $((bounded_summary_lines + bounded_bucket_lines)) -eq $index_line_reads &&
+                   $descriptor_write_lines -eq 2048 &&
+                   $descriptor_write_acks -eq $descriptor_write_lines &&
+                   $descriptor_read_lines -eq $descriptor_write_lines &&
+                   $descriptor_write_bytes -eq 131072 &&
+                   $descriptor_read_bytes -eq $descriptor_write_bytes &&
+                   $descriptor_backing_bytes -eq 131328 &&
+                   $descriptor_staging_entries -eq 32 &&
+                   $descriptor_write_hwm -gt 0 &&
+                   $descriptor_write_hwm -le 16 &&
+                   $descriptor_control_bytes -gt 0 &&
+                   $descriptor_control_bytes -le 4096 ]] || {
+                    echo "invalid finite descriptor-spool counters" >&2
+                    exit 1
+                }
+            else
+                [[ $bounded_bucket_words -eq 0 &&
+                   $bounded_replay_words -eq $((16384 * actual_index_partitions)) &&
+                   $((bounded_summary_lines + bounded_replay_lines)) -eq $index_line_reads &&
+                   $descriptor_write_lines -eq 0 &&
+                   $descriptor_read_lines -eq 0 ]] || {
+                    echo "invalid adaptive replay counters" >&2
+                    exit 1
+                }
+            fi
             trace="$out/run/virtual_trace.log"
             accepted_plans=$(grep -Ec \
                 'event=bounded_grow_summary_complete .*fallback=none plan_result=accepted ' \
@@ -1089,8 +1217,17 @@ if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
     expected_summary_discards=0
     if [[ $index_range_policy -eq 3 ]]; then
         expected_summary_discards=16384
+        if [[ $index_descriptor_spool -eq 1 ]]; then
+            # The timed B bucketing scan and descriptor replay each consume a
+            # finite feeder object.  Only replay admissions reach RowTable.
+            expected_descriptor_discards=32768
+        fi
     fi
-    expected_partition_discards=$((index_words - expected_descriptor_discards - expected_summary_discards))
+    if [[ $index_descriptor_spool -eq 1 ]]; then
+        expected_partition_discards=0
+    else
+        expected_partition_discards=$((index_words - expected_descriptor_discards - expected_summary_discards))
+    fi
     [[ $feeder_descriptor_discards -eq $expected_descriptor_discards && \
        $feeder_predicate_discards -eq 0 && \
        $feeder_summary_discards -eq $expected_summary_discards && \
@@ -1172,7 +1309,8 @@ else
     }
 fi
 
-headers=(case output_hash simTicks simInsts index_line_reads index_words
+headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
+    fill_cycles request_cycles simInsts index_line_reads index_words
     index_hwm feeder_descriptor_discards feeder_predicate_discards
     feeder_partition_discards feeder_summary_discards
     physical_records physical_record_sha256 bounded_summary_histogram_sha256
@@ -1183,10 +1321,11 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     all_pages_ready_cycles page_ready_span_cycles stream_spd_reads
     stream_writes alu_compute_cycles page_ready_signals page_wait_reads
     page_wait_deferrals page_wait_responses l3_read_hits_maa
-    l3_read_misses_maa memory_bytes_read_maa cpu_cycles row_table_slices
+    l3_read_misses_maa l3_write_requests_maa memory_bytes_read_maa
+    memory_bytes_written_maa cpu_cycles row_table_slices
     row_table_rows_per_slice row_table_entries_per_subslice_row
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
-    virtual_index_range_policy
+    virtual_index_range_policy virtual_index_descriptor_spool
     virtual_index_range_boundaries
     virtual_index_force_cache virtual_partition_keep_combiner
     offset_table_entries offset_table_epoch_entries
@@ -1197,15 +1336,23 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     row_table_rows_inserted row_table_unique_cache_lines
     row_table_unique_rows source_reads response_slot_hwm response_word_hwm
     response_pool_stalls row_table_full_events offset_epoch_drains
-    virtual_build_rounds dram_reads
+    virtual_build_rounds dram_reads dram_writes
     dram_activates dram_precharges bounded_summary_line_reads
     bounded_summary_words bounded_summary_records bounded_summary_hash_probes
     bounded_summary_reduction_visits bounded_summary_plan_bytes
     bounded_replay_line_reads bounded_replay_words bounded_replay_passes
     bounded_replay_drains bounded_replay_max_epoch_admissions
     bounded_word_entries bounded_offset_entries bounded_row_directory_entries
-    bounded_row_line_entries bounded_reorder_metadata_bytes)
-values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
+    bounded_row_line_entries bounded_reorder_metadata_bytes
+    bounded_bucket_line_reads bounded_bucket_words
+    descriptor_spool_line_writes descriptor_spool_write_bytes
+    descriptor_spool_write_acks descriptor_spool_line_reads
+    descriptor_spool_read_bytes descriptor_spool_write_credit_stalls
+    descriptor_spool_read_credit_stalls descriptor_spool_write_high_water
+    descriptor_spool_staging_entries descriptor_spool_control_bytes
+    descriptor_spool_backing_bytes)
+values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
+    "$request_sim_ticks" "$fill_cycles" "$request_cycles" "$insts" "$index_line_reads"
     "$index_words" "$index_hwm" "$feeder_descriptor_discards"
     "$feeder_predicate_discards" "$feeder_partition_discards"
     "$feeder_summary_discards"
@@ -1219,9 +1366,10 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$stream_spd_reads" "$stream_writes" "$alu_compute"
     "$page_ready_signals" "$page_wait_reads" "$page_wait_deferrals"
     "$page_wait_responses" "$l3_read_hits" "$l3_read_misses"
-    "$memory_bytes_read" "$cpu_cycles" "$row_slices" "$row_rows"
+    "$l3_write_requests" "$memory_bytes_read" "$memory_bytes_written"
+    "$cpu_cycles" "$row_slices" "$row_rows"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
-    "$index_range_policy"
+    "$index_range_policy" "$index_descriptor_spool"
     "${index_range_boundaries:-none}"
     "$index_force_cache" "$partition_keep_combiner" \
     "$resolved_offset_entries" "$resolved_offset_epoch_entries"
@@ -1231,7 +1379,7 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$rt_cache_lines" "$rt_rows" "$rt_unique_cache_lines" "$rt_unique_rows"
     "$source_reads" "$response_slot_hwm" "$response_word_hwm"
     "$response_pool_stalls" "$rt_full" "$offset_epoch_drains"
-    "$build_rounds" "$dram_reads"
+    "$build_rounds" "$dram_reads" "$dram_writes"
     "$dram_acts" "$dram_pres" "$bounded_summary_lines"
     "$bounded_summary_words" "$bounded_summary_records"
     "$bounded_summary_probes" "$bounded_summary_visits"
@@ -1239,20 +1387,36 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$bounded_replay_passes" "$bounded_replay_drains"
     "$bounded_replay_max_epoch" "$bounded_word_entries"
     "$bounded_offset_entries" "$bounded_row_directories"
-    "$bounded_row_lines" "$bounded_metadata_bytes")
+    "$bounded_row_lines" "$bounded_metadata_bytes"
+    "$bounded_bucket_lines" "$bounded_bucket_words"
+    "$descriptor_write_lines" "$descriptor_write_bytes"
+    "$descriptor_write_acks" "$descriptor_read_lines"
+    "$descriptor_read_bytes" "$descriptor_write_stalls"
+    "$descriptor_read_stalls" "$descriptor_write_hwm"
+    "$descriptor_staging_entries" "$descriptor_control_bytes"
+    "$descriptor_backing_bytes")
 if [[ $index_range_passes -eq 1 ]]; then
     actual_index_partitions=$index_partitions
     expected_index_words=$((16384 * index_partitions))
     expected_partition_discards=$((16384 * (index_partitions - 1)))
+    expected_descriptor_discards=16384
+    range_backing=llc_index_rescan
     range_begin_schema=1
     if [[ $index_range_policy -eq 3 ]]; then
         actual_index_partitions=$bounded_replay_passes
-        expected_index_words=$((bounded_summary_words + bounded_replay_words))
-        expected_partition_discards=$((bounded_replay_words - 16384))
         range_begin_schema=2
+        if [[ $index_descriptor_spool -eq 1 ]]; then
+            expected_index_words=$((bounded_summary_words + bounded_bucket_words))
+            expected_partition_discards=0
+            expected_descriptor_discards=32768
+            range_backing=llc_descriptor_spool
+        else
+            expected_index_words=$((bounded_summary_words + bounded_replay_words))
+            expected_partition_discards=$((bounded_replay_words - 16384))
+        fi
     fi
     range_begin_count=$(grep -Ec \
-        "event=bounded_range_begin schema=${range_begin_schema} .* logical=16384 .* backing=llc_index_rescan .*combiner=retained" \
+        "event=bounded_range_begin schema=${range_begin_schema} .* logical=16384 .* backing=${range_backing} .*combiner=retained" \
         "$out/run/virtual_trace.log" || true)
     range_pass_count=$(grep -Ec \
         'event=bounded_range_pass_complete schema=1 ' \
@@ -1263,6 +1427,16 @@ if [[ $index_range_passes -eq 1 ]]; then
     uncached_index_responses=$(grep -Ec \
         'event=index_line_response schema=2 .* cached=0$' \
         "$out/run/virtual_trace.log" || true)
+    descriptor_response_count=$(grep -Ec \
+        'event=descriptor_spool_read_response schema=1 .* cached=1$' \
+        "$out/run/virtual_trace.log" || true)
+    uncached_descriptor_responses=$(grep -Ec \
+        'event=descriptor_spool_read_response schema=1 .* cached=0$' \
+        "$out/run/virtual_trace.log" || true)
+    descriptor_complete_count=$(grep -Ec \
+        'event=descriptor_spool_complete schema=1 .* descriptors=16384 .* write_lines=2048 write_acks=2048 read_lines=2048 read_responses=2048 .* staging_entries=32 .* fallback=none$' \
+        "$out/run/virtual_trace.log" || true)
+    expected_descriptor_complete_count=$index_descriptor_spool
     [[ $resolved_offset_entries -gt 0 &&
        $resolved_offset_entries -le 4096 &&
        $resolved_offset_epoch_entries -gt 0 &&
@@ -1271,12 +1445,15 @@ if [[ $index_range_passes -eq 1 ]]; then
        $index_force_cache -eq 1 && $partition_keep_combiner -eq 1 &&
        $grow_order -eq 1 &&
        $index_words -eq $expected_index_words &&
-       $feeder_descriptor_discards -eq 16384 &&
+       $feeder_descriptor_discards -eq $expected_descriptor_discards &&
        $feeder_predicate_discards -eq 0 &&
        $feeder_partition_discards -eq $expected_partition_discards &&
        $range_begin_count -eq 1 &&
        $range_pass_count -eq $actual_index_partitions &&
        $range_complete_count -eq 1 &&
+       $descriptor_complete_count -eq $expected_descriptor_complete_count &&
+       $descriptor_response_count -eq $descriptor_read_lines &&
+       $uncached_descriptor_responses -eq 0 &&
        $uncached_index_responses -eq 0 ]] || {
         echo "bounded range-pass closure failed" >&2
         exit 1
