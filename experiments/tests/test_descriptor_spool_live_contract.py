@@ -174,6 +174,7 @@ class DescriptorSpoolLiveContractTest(unittest.TestCase):
             "descriptor_external_segments -eq 3",
             "descriptor_write_bytes -eq 73728",
             "descriptor_spool_unclassified_write_stalls",
+            "expected_descriptor_discards=16384",
         ):
             self.assertIn(token, self.runner)
 

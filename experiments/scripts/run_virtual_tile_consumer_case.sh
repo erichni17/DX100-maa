@@ -1344,12 +1344,12 @@ if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
     if [[ $index_range_policy -eq 3 ]]; then
         expected_summary_discards=16384
         if [[ $index_descriptor_spool -eq 1 ]]; then
-            # The timed bucket scan consumes all B words. Resident-first
-            # admits 4096 directly and replays only 12288 external records;
-            # the accepted ab reference replays all 16384 records.
+            # The timed bucket scan consumes all B words. Resident-first's
+            # fixed replay decoder does not re-enter the B feeder; the
+            # accepted ab reference feeder consumes all records again.
             expected_descriptor_discards=32768
             if [[ $descriptor_spool_variant == resident_first ]]; then
-                expected_descriptor_discards=28672
+                expected_descriptor_discards=16384
             fi
         fi
     fi
@@ -1557,7 +1557,7 @@ if [[ $index_range_passes -eq 1 ]]; then
             expected_partition_discards=0
             expected_descriptor_discards=32768
             if [[ $descriptor_spool_variant == resident_first ]]; then
-                expected_descriptor_discards=28672
+                expected_descriptor_discards=16384
             fi
             range_backing=llc_descriptor_spool
         else
