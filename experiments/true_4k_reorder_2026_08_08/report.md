@@ -117,12 +117,16 @@ coalescing target only; they do not establish translated DRAM locality.
 
 ASan+UBSan unit tests pass for the tracker, metadata ledger, source-line
 diagnostic, five-pass whole-grow comparison, and authenticated four-pass grow
-split. The 13-test source contract suite passes. A production
+split, including a forced split-ordinal admission retry. The 16-test source
+contract suite passes. A production
 `build/X86/gem5.opt` build completed through generated local parameters,
 compilation of `Tables.cc`, `IndirectAccess.cc`, and `MAA.cc`, and final link;
 an immediate second SCons invocation reported the target up to date. The
 binary SHA-256 before source checkpointing is
-`f52dc9aa6b64c24c40213100c1c1b602bfcc7457b3997482cfb1dc16fded8b2e`.
+`a7afa35b16ba3b6ad3fb6b9a5b841884e8466a80af3526843bcee30e4b19159f`.
 The matched native16/native4/candidate matrix remains pending until this source
-is checkpointed to give the evidence runner a clean exact commit. No full
+is checkpointed to give the evidence runner a clean exact commit. Two failed
+attempt roots are preserved: `6faef8cb` exposed an invalid summed high-water
+runner bound, and `60d33659` exposed a null reset of intentionally unallocated
+RowTable configurations. Neither is positive candidate evidence. No full
 workload, speedup, area, energy, or DRAM-row-locality claim is made.

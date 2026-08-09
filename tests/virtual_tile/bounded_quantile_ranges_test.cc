@@ -115,6 +115,54 @@ testAuthenticatedPhysicalGrowPlanSplitsOnlyGrow21()
     assert(ordinal == 380);
     assert(plan.passFor(21, ordinal) == BoundedGrowPassPlan::MaxPasses);
     assert(plan.chargedBytes() == 1121);
+    assert(BoundedGrowPassPlan::modeledReductionVisits(
+               4096, plan.operations()) == 4096 + plan.operations());
+}
+
+void
+testSplitOrdinalCommitsOnlyAfterForcedRetry()
+{
+    const std::vector<std::pair<uint32_t, uint32_t>> records{
+        {13, 1785}, {14, 2058}, {15, 2026},
+        {16, 2028}, {17, 2026}, {18, 2027},
+        {19, 2028}, {20, 2026}, {21, 380}};
+    auto visit = [&records](auto consumer) {
+        for (const auto &[key, count] : records)
+            consumer(key, count);
+    };
+    BoundedGrowPassPlan plan;
+    assert(plan.configure(16384, 4096, 64, visit) ==
+           BoundedGrowPassPlan::Result::Accepted);
+
+    const std::array<uint32_t, 4> expectedQuotas{10, 41, 44, 285};
+    for (uint32_t pass = 0; pass < plan.passes(); ++pass) {
+        uint32_t committed = 0;
+        uint32_t selected = 0;
+        bool forced_retry = false;
+        while (committed < plan.splitPopulation()) {
+            const uint32_t observed = committed;
+            const uint32_t assigned = plan.passFor(21, observed);
+            if (assigned == pass && !forced_retry) {
+                // Model an admission failure/drain. No commit occurs, so the
+                // retried descriptor must retain its ordinal and assignment.
+                forced_retry = true;
+                assert(committed == observed);
+                assert(plan.passFor(21, committed) == assigned);
+                continue;
+            }
+            selected += assigned == pass;
+            assert(plan.commitSplitOrdinal(observed, committed) ==
+                   BoundedGrowPassPlan::Result::Accepted);
+        }
+        assert(forced_retry);
+        assert(selected == expectedQuotas[pass]);
+        const uint32_t stale = committed - 1;
+        assert(plan.commitSplitOrdinal(stale, committed) ==
+               BoundedGrowPassPlan::Result::StaleReplayOrdinal);
+        assert(committed == plan.splitPopulation());
+        assert(plan.commitSplitOrdinal(committed, committed) ==
+               BoundedGrowPassPlan::Result::ReplayOrdinalOverflow);
+    }
 }
 
 } // anonymous namespace
@@ -126,6 +174,7 @@ main()
     testHotLineRequiresFallback();
     testAuthenticatedPhysicalGrowPackingUsesFivePasses();
     testAuthenticatedPhysicalGrowPlanSplitsOnlyGrow21();
+    testSplitOrdinalCommitsOnlyAfterForcedRetry();
     std::cout << "bounded_quantile_ranges_test: PASS\n";
     return 0;
 }

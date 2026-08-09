@@ -63,6 +63,19 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIn("num_RT_slice_columns[initial_RT_config]", self.indirect)
         self.assertIn("Bounded range passes allow at most 4096", self.maa)
 
+    def test_single_row_table_reset_skips_unallocated_configs(self) -> None:
+        reset = re.search(
+            r"void IndirectAccessUnit::check_reset\(\).*?offset_table->check_reset",
+            self.indirect,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(reset)
+        self.assertRegex(
+            reset.group(0),
+            r"if \(RT\[i\] == nullptr\)\s+continue;\s+"
+            r"for \(int j = 0; j < num_RT_slices\[i\]; j\+\+\)",
+        )
+
     def test_range_selection_is_contiguous_not_modulo(self) -> None:
         helper = re.search(
             r"uint32_t IndirectAccessUnit::directIndexPassForGrow.*?\n}",
@@ -136,6 +149,33 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIn("recordSelectedAdmission", self.indirect)
         self.assertIn("direct_index_split_seen", self.indirect)
         self.assertIn("IND_BoundedSummaryPlanBytes", self.indirect)
+        self.assertIn("commitSplitOrdinal", planner)
+        self.assertIn("StaleReplayOrdinal", planner)
+        self.assertIn("modeledReductionVisits", planner)
+        self.assertNotIn(
+            "2 * static_cast<uint64_t>(offset_table->capacity())",
+            self.indirect,
+        )
+        self.assertLess(
+            self.indirect.index("discardDirectIndex(\n                my_i"),
+            self.indirect.index("bounded_grow_plan.commitSplitOrdinal"),
+        )
+
+    def test_evidence_snapshot_covers_bounded_treatment_sources(self) -> None:
+        for name in (
+            "BoundedRangePass.hh",
+            "BoundedQuantileRanges.hh",
+            "BoundedMetadataLedger.hh",
+            "Tables.cc",
+            "Tables.hh",
+            "bounded_range_pass_test.cc",
+            "bounded_quantile_ranges_test.cc",
+            "bounded_metadata_ledger_test.cc",
+            "test_bounded_range_live_contract.py",
+            "run_bounded_range_pass_unit.sh",
+            "run_true_4k_reorder_matrix.sh",
+        ):
+            self.assertGreaterEqual(self.runner.count(name), 2)
 
     def test_capacity_drain_gate_covers_finite_direct_index_passes(
         self,

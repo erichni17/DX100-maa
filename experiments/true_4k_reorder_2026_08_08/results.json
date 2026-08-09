@@ -47,12 +47,16 @@
   "validation": {
     "asan_ubsan_units": "pass",
     "unit_tests": 3,
-    "source_contract_tests": 13,
+    "source_contract_tests": 16,
     "production_objects": "pass_cxx17_o3_warnings_indirect_tables_maa",
     "production_gem5_build": "pass_full_scons_generated_params_compile_link_and_noop_recheck",
-    "production_gem5_sha256": "f52dc9aa6b64c24c40213100c1c1b602bfcc7457b3997482cfb1dc16fded8b2e",
+    "production_gem5_sha256": "a7afa35b16ba3b6ad3fb6b9a5b841884e8466a80af3526843bcee30e4b19159f",
     "ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
-    "matched_microbenchmark": "pending_clean_source_checkpoint"
+    "matched_microbenchmark": "pending_clean_source_checkpoint_after_runtime_retry_and_manifest_fixes",
+    "preserved_failed_roots": {
+      "6faef8cb": "runner_rejected_valid_native4_summed_index_high_water",
+      "60d33659": "candidate_segv_check_reset_unallocated_row_table_config"
+    }
   },
   "claims": {
     "exact_output": "pending_matched_gem5",

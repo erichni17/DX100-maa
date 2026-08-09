@@ -496,6 +496,12 @@ cp -- "$root/src/mem/MAA/IndirectAccess.cc" "$snapshot/IndirectAccess.cc"
 cp -- "$root/src/mem/MAA/IndirectAccess.hh" "$snapshot/IndirectAccess.hh"
 cp -- "$root/src/mem/MAA/BoundedRangePass.hh" \
     "$snapshot/BoundedRangePass.hh"
+cp -- "$root/src/mem/MAA/BoundedQuantileRanges.hh" \
+    "$snapshot/BoundedQuantileRanges.hh"
+cp -- "$root/src/mem/MAA/BoundedMetadataLedger.hh" \
+    "$snapshot/BoundedMetadataLedger.hh"
+cp -- "$root/src/mem/MAA/Tables.cc" "$snapshot/Tables.cc"
+cp -- "$root/src/mem/MAA/Tables.hh" "$snapshot/Tables.hh"
 cp -- "$root/src/mem/MAA/TransparentSPDController.hh" \
     "$snapshot/TransparentSPDController.hh"
 cp -- "$root/src/mem/MAA/MAA.cc" "$snapshot/MAA.cc"
@@ -510,6 +516,18 @@ cp -- "$root/src/mem/MAA/MAA.py" "$snapshot/MAA.py"
 cp -- "$root/configs/common/MAAConfig.py" "$snapshot/MAAConfig.py"
 cp -- "$root/configs/common/Options.py" "$snapshot/Options.py"
 cp -- "$root/src/mem/MAA/CpuSidePort.cc" "$snapshot/CpuSidePort.cc"
+cp -- "$root/tests/virtual_tile/bounded_range_pass_test.cc" \
+    "$snapshot/bounded_range_pass_test.cc"
+cp -- "$root/tests/virtual_tile/bounded_quantile_ranges_test.cc" \
+    "$snapshot/bounded_quantile_ranges_test.cc"
+cp -- "$root/tests/virtual_tile/bounded_metadata_ledger_test.cc" \
+    "$snapshot/bounded_metadata_ledger_test.cc"
+cp -- "$root/experiments/tests/test_bounded_range_live_contract.py" \
+    "$snapshot/test_bounded_range_live_contract.py"
+cp -- "$root/experiments/scripts/run_bounded_range_pass_unit.sh" \
+    "$snapshot/run_bounded_range_pass_unit.sh"
+cp -- "$root/experiments/scripts/run_true_4k_reorder_matrix.sh" \
+    "$snapshot/run_true_4k_reorder_matrix.sh"
 cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     "$snapshot/hybrid_overhead_attribution.py"
 {
@@ -530,6 +548,9 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/MAA_gem5.hpp" \
     "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
     "$snapshot/BoundedRangePass.hh" \
+    "$snapshot/BoundedQuantileRanges.hh" \
+    "$snapshot/BoundedMetadataLedger.hh" \
+    "$snapshot/Tables.cc" "$snapshot/Tables.hh" \
     "$snapshot/TransparentSPDController.hh" \
     "$snapshot/MAA.cc" "$snapshot/MAA.hh" \
     "$snapshot/IF.cc" "$snapshot/IF.hh" \
@@ -538,6 +559,12 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/MAA.py" "$snapshot/MAAConfig.py" "$snapshot/Options.py" \
     "$snapshot/hybrid_overhead_attribution.py" \
     "$snapshot/CpuSidePort.cc" \
+    "$snapshot/bounded_range_pass_test.cc" \
+    "$snapshot/bounded_quantile_ranges_test.cc" \
+    "$snapshot/bounded_metadata_ledger_test.cc" \
+    "$snapshot/test_bounded_range_live_contract.py" \
+    "$snapshot/run_bounded_range_pass_unit.sh" \
+    "$snapshot/run_true_4k_reorder_matrix.sh" \
     "$out/source.diff" "$out/source_status.txt" "$out/invocation.sh.txt" \
     > "$out/artifact_sha256.txt"
 

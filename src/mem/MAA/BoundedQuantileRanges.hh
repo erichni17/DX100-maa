@@ -270,7 +270,9 @@ class BoundedGrowPassPlan
         EmptyHistogram,
         PopulationMismatch,
         TooManyRecords,
-        RequiresIterationFallback
+        RequiresIterationFallback,
+        StaleReplayOrdinal,
+        ReplayOrdinalOverflow
     };
 
     template <class Visit>
@@ -427,6 +429,27 @@ class BoundedGrowPassPlan
         return MaxPasses;
     }
 
+    Result commitSplitOrdinal(uint32_t observed, uint32_t &committed) const
+    {
+        if (!configuredFlag)
+            return Result::InvalidConfiguration;
+        if (observed != committed)
+            return Result::StaleReplayOrdinal;
+        if (committed >= splitPopulationValue)
+            return Result::ReplayOrdinalOverflow;
+        committed++;
+        return Result::Accepted;
+    }
+
+    static uint64_t modeledReductionVisits(uint32_t table_capacity,
+                                           uint64_t planning_operations)
+    {
+        // The visitor makes one complete physical-table scan. Planner
+        // operations are the finite work performed on records after that
+        // scan; there is no second reduction scan.
+        return table_capacity + planning_operations;
+    }
+
     size_t chargedBytes() const
     {
         return keys.size() * sizeof(uint32_t) +
@@ -448,6 +471,9 @@ class BoundedGrowPassPlan
           case Result::TooManyRecords: return "too_many_records";
           case Result::RequiresIterationFallback:
             return "requires_iteration_fallback";
+          case Result::StaleReplayOrdinal: return "stale_replay_ordinal";
+          case Result::ReplayOrdinalOverflow:
+            return "replay_ordinal_overflow";
         }
         return "unknown";
     }

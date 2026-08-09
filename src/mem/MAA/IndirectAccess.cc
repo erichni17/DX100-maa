@@ -576,6 +576,8 @@ IndirectAccessUnit::finishReorderSurvival()
 
 void IndirectAccessUnit::check_reset() {
     for (int i = 0; i < num_RT_configs; i++) {
+        if (RT[i] == nullptr)
+            continue;
         for (int j = 0; j < num_RT_slices[i]; j++) {
             RT[i][j].check_reset();
         }
@@ -918,8 +920,8 @@ void IndirectAccessUnit::finishAdaptiveSummary()
               my_max, offset_table->capacity(),
               direct_index_max_partitions, visit);
     direct_index_summary_reduction_visits =
-        2 * static_cast<uint64_t>(offset_table->capacity()) +
-        bounded_grow_plan.operations();
+        BoundedGrowPassPlan::modeledReductionVisits(
+            offset_table->capacity(), bounded_grow_plan.operations());
     (*maa->stats.IND_BoundedSummaryReductionVisits[my_indirect_id]) +=
         direct_index_summary_reduction_visits;
     (*maa->stats.IND_BoundedSummaryPlanBytes[my_indirect_id]) +=
@@ -1430,6 +1432,8 @@ void IndirectAccessUnit::fillRowTable(
         bool direct_index_descriptor_inserted = false;
         bool direct_index_predicate_rejected = false;
         bool direct_index_partition_rejected = false;
+        bool commit_split_ordinal = false;
+        uint32_t split_ordinal = 0;
         const uint32_t direct_index_value = isDirectIndexLoad()
             ? peekDirectIndex(my_i)
             : 0;
@@ -1485,11 +1489,9 @@ void IndirectAccessUnit::fillRowTable(
                     selected_pass = bounded_range_pass.passForGrow(
                         bounded_range_key);
                 } else {
-                    const uint32_t split_ordinal =
-                        direct_index_split_seen;
-                    if (bounded_grow_plan.isSplitKey(
-                            static_cast<uint32_t>(grow_addr)))
-                        direct_index_split_seen++;
+                    split_ordinal = direct_index_split_seen;
+                    commit_split_ordinal = bounded_grow_plan.isSplitKey(
+                        static_cast<uint32_t>(grow_addr));
                     selected_pass = bounded_grow_plan.passFor(
                         static_cast<uint32_t>(grow_addr), split_ordinal);
                     panic_if(selected_pass >=
@@ -1724,6 +1726,16 @@ void IndirectAccessUnit::fillRowTable(
                     : direct_index_predicate_rejected
                         ? DirectIndexDiscardReason::PredicateRejected
                         : DirectIndexDiscardReason::PartitionRejected);
+            if (commit_split_ordinal) {
+                const auto commit_result =
+                    bounded_grow_plan.commitSplitOrdinal(
+                        split_ordinal, direct_index_split_seen);
+                panic_if(
+                    commit_result != BoundedGrowPassPlan::Result::Accepted,
+                    "I[%d] split-grow ordinal %u commit failed: %s\n",
+                    my_indirect_id, split_ordinal,
+                    BoundedGrowPassPlan::resultName(commit_result));
+            }
         }
         my_i++;
     }
