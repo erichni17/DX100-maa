@@ -34,9 +34,15 @@ umtOrderedWaveStreamEncodeFp64(double value)
 // Physical opcode-11 state carried by the existing paired
 // operation/continuation rows.  Denominators remain in the returned line
 // packet; a completed result overwrites its dead source word in place.
-class UmtOrderedWaveStreamState
+template <size_t ComputeTokenCount, size_t DividerLaneCount,
+          uint64_t DividerInitiationIntervalCycles>
+class UmtOrderedWaveStreamStateModel
 {
   public:
+    static_assert(ComputeTokenCount != 0);
+    static_assert(DividerLaneCount != 0);
+    static_assert(DividerInitiationIntervalCycles != 0);
+
     static constexpr size_t Banks = 4;
     static constexpr size_t RowsPerBank =
         UmtOrderedWaveMaximumGroups / Banks;
@@ -67,7 +73,17 @@ class UmtOrderedWaveStreamState
         uint64_t bankWrites = 0;
     };
 
-    static constexpr size_t ComputeTokens = 8;
+    static constexpr size_t ComputeTokens = ComputeTokenCount;
+    static constexpr size_t DividerLanes = DividerLaneCount;
+    static constexpr uint64_t DivideLatency = 64;
+    static constexpr uint64_t DividerInitiationInterval =
+        DividerInitiationIntervalCycles;
+    // Minimum logical width of the independently represented Token fields:
+    // phase4 + operation6 + group6 + corner3 + destination4 + readyCycle64
+    // + six FP64 values.  This excludes compiler padding, ECC, queues,
+    // arbiters, muxing, and every non-Token field in this class.
+    static constexpr size_t RepresentedTokenLogicalBitsFloor =
+        4 + 6 + 6 + 3 + 4 + 64 + 6 * 64;
 
     struct CycleResult
     {
@@ -338,9 +354,10 @@ class UmtOrderedWaveStreamState
                     result.error = latchedError;
                     return result;
                 }
-                token.readyCycle = cycle + 64;
+                token.readyCycle = cycle + DivideLatency;
                 token.phase = TokenPhase::DivideWait;
-                dividerNextIssue[lane] = cycle + 64;
+                dividerNextIssue[lane] =
+                    cycle + DividerInitiationInterval;
                 issued = true;
                 break;
               }
@@ -680,7 +697,7 @@ class UmtOrderedWaveStreamState
     size_t issueCursor = 0;
     uint64_t addNextIssue = 0;
     uint64_t multiplyNextIssue = 0;
-    std::array<uint64_t, 8> dividerNextIssue{};
+    std::array<uint64_t, DividerLanes> dividerNextIssue{};
     uint64_t tokenBackpressureEvents = 0;
     uint64_t pipelineActiveCycleCount = 0;
     uint64_t fpIssueStallCycles = 0;
@@ -689,6 +706,13 @@ class UmtOrderedWaveStreamState
     uint64_t resultBankStallCycleCount = 0;
     DescriptorError latchedError = DescriptorError::None;
 };
+
+// The production configuration remains byte-for-byte behaviorally equivalent
+// to the original fixed model.  The model template exists so standalone
+// probes can sweep compile-time token and divider resources without copying or
+// approximating the state machine.
+using UmtOrderedWaveStreamState =
+    UmtOrderedWaveStreamStateModel<8, 8, 64>;
 
 static_assert(UmtOrderedWaveStreamState::Banks == 4);
 static_assert(UmtOrderedWaveStreamState::RowsPerBank == 16);
