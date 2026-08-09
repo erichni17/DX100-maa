@@ -631,7 +631,9 @@ void IndirectAccessUnit::check_reset() {
     panic_if(!direct_index_pending_lines.empty() ||
                  std::any_of(descriptor_spool_read_slots.begin(),
                              descriptor_spool_read_slots.end(),
-                             [](const auto &slot) { return slot.valid; }) ||
+                             [](const auto &slot) {
+                                 return slot.valid || slot.demand_observed;
+                             }) ||
                  std::any_of(descriptor_spool_write_slots.begin(),
                              descriptor_spool_write_slots.end(),
                              [](const auto &slot) { return slot.valid; }) ||
@@ -1079,31 +1081,34 @@ IndirectAccessUnit::loadDescriptorSpoolCurrent(uint32_t cursor)
     auto findLine = [this, pass](uint32_t line)
         -> DescriptorSpoolPendingLine * {
         for (auto &slot : descriptor_spool_read_slots) {
-            if (slot.valid && slot.responded && slot.pass == pass &&
-                slot.line == line)
+            if (slot.valid && slot.pass == pass && slot.line == line)
                 return &slot;
         }
         return nullptr;
     };
     auto *first = findLine(first_line);
-    if (first == nullptr) {
-        startDescriptorSpoolDemandWait(cursor);
-        return false;
-    }
     std::array<DescriptorSpoolPendingLine *,
                BoundedDescriptorSpool::DescriptorBytes> sources{};
     std::array<uint8_t, BoundedDescriptorSpool::DescriptorBytes> packed{};
+    bool all_ready = true;
     for (uint32_t byte = 0;
          byte < BoundedDescriptorSpool::DescriptorBytes; ++byte) {
         const uint32_t stream_byte = first_byte + byte;
         const uint32_t line = first_line +
             stream_byte / BoundedDescriptorSpool::LineBytes;
         auto *source = line == first_line ? first : findLine(line);
-        if (source == nullptr) {
-            startDescriptorSpoolDemandWait(cursor);
-            return false;
-        }
+        panic_if(source == nullptr,
+                 "I[%d] descriptor demand has no issued line: pass=%u "
+                 "cursor=%u line=%u\n",
+                 my_indirect_id, pass, cursor, line);
+        source->demand_observed = true;
+        if (!source->responded)
+            all_ready = false;
         sources[byte] = source;
+    }
+    if (!all_ready) {
+        startDescriptorSpoolDemandWait(cursor);
+        return false;
     }
     finishDescriptorSpoolDemandWait(cursor);
     for (uint32_t byte = 0;
@@ -1558,8 +1563,8 @@ IndirectAccessUnit::descriptorSpoolControlBytes() const
     constexpr size_t write_scoreboard_bytes =
         BoundedDescriptorSpool::MaxOutstandingWrites *
         sizeof(DescriptorSpoolWriteSlot);
-    // Four existing read slots gain fixed read-ahead/use tags through their
-    // charged sizeof above. Charge the finite overlap sequencer and its
+    // Four existing read slots gain fixed read-ahead/demand/use tags through
+    // their charged sizeof above. Charge the finite overlap sequencer and its
     // requested observability counters separately; no line capacity is added.
     constexpr size_t overlap_control_bytes =
         4 * sizeof(bool) + 11 * sizeof(uint32_t) + 5 * sizeof(uint64_t);
@@ -1974,11 +1979,9 @@ bool IndirectAccessUnit::receiveDescriptorSpool(
                 BoundedDescriptorSpool::LineBytes);
     pending->responded = true;
     if (pending->read_ahead) {
-        // A line is counted as avoiding a demand wait iff its response
-        // completed before the descriptor consuming that line.  Latching
-        // this at response time covers responses both before and after
-        // read-ahead promotion, while consumption remains exact-once.
-        pending->ready_before_demand = true;
+        // Promotion is not demand.  A response can therefore arrive after
+        // promotion and still avoid the first descriptor demand for its line.
+        pending->ready_before_demand = !pending->demand_observed;
         descriptor_spool_next_pass_read_responses++;
     }
     DPRINTF(MAAVirtualTrace,
@@ -1991,7 +1994,7 @@ bool IndirectAccessUnit::receiveDescriptorSpool(
                 pending->pass, pending->line),
             is_block_cached,
             pending->read_ahead ? "next_pass_read_ahead" : "demand",
-            pending->read_ahead && descriptor_spool_read_ahead_active);
+            pending->read_ahead && pending->ready_before_demand);
     direct_index_max_lines = std::max(
         direct_index_max_lines,
         static_cast<int>(descriptorSpoolReadSlotsUsed()));
@@ -4003,6 +4006,12 @@ void IndirectAccessUnit::executeInstruction() {
                                  BoundedDescriptorSpool::
                                      MaxOutstandingReadLines) ||
                          descriptorSpoolReadSlotsUsed() != 0 ||
+                         std::any_of(
+                             descriptor_spool_read_slots.begin(),
+                             descriptor_spool_read_slots.end(),
+                             [](const auto &slot) {
+                                 return slot.demand_observed;
+                             }) ||
                          descriptorSpoolWriteSlotsUsed() != 0 ||
                          descriptor_spool_current_valid ||
                          descriptor_spool_replay_active ||

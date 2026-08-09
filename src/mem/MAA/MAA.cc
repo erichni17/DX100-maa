@@ -2739,7 +2739,8 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                 MAKE_INDIRECT_STAT_NAME(
                     "IND_DescriptorSpoolNextPassReadResponses"),
                 statistics::units::Count::get(),
-                "read-ahead descriptor responses received before promotion"));
+                "responses to descriptor reads issued before next-pass "
+                "demand"));
         IND_DescriptorSpoolUsefulPrefetchedLines.push_back(
             new statistics::Scalar(
                 this,

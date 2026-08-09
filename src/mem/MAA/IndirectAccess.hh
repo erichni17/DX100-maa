@@ -322,6 +322,7 @@ protected:
         bool valid = false;
         bool responded = false;
         bool read_ahead = false;
+        bool demand_observed = false;
         bool ready_before_demand = false;
         bool useful = false;
         Addr paddr = 0;
