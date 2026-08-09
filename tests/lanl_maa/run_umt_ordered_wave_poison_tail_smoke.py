@@ -138,11 +138,7 @@ def validate(stats, group_counts, abi_version):
         "lineTableHighWaterMark": line_high_water,
         "descriptorUmtStateTokenHighWaterMark": token_high_water,
     }
-    for name in (
-        "controlReadRequests",
-        "controlStatusReads",
-        "controlOpcodeReads",
-    ):
+    for name in ("controlReadRequests", "controlStatusReads"):
         value = stats.get(name)
         if value is None or value <= 0:
             raise RuntimeError(
@@ -150,6 +146,19 @@ def validate(stats, group_counts, abi_version):
                 f"{name}={value}"
             )
         bounded[name] = value
+    for name in ("controlOpcodeReads", "controlErrorReads"):
+        value = stats.get(name)
+        if value is None or value < 0:
+            raise RuntimeError(
+                "UMT64 poison-tail optional control-read counter is absent "
+                f"or negative: {name}={value}"
+            )
+        bounded[name] = value
+    if bounded["controlReadRequests"] < bounded["controlStatusReads"]:
+        raise RuntimeError(
+            "UMT64 poison-tail status reads exceed total control reads: "
+            f"{bounded}"
+        )
     return expected, bounded
 
 
