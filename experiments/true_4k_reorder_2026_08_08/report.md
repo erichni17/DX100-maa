@@ -4,11 +4,12 @@
 
 The narrow viable slice is a timing-visible translated-DRAM-grow summary,
 followed by four full B replays whose admissions are capped at 4,096. A fixed
-64-record grow plan pairs whole grows in descending-population order and may
-split one grow by deterministic replay ordinal to fill pass gaps. If the
-summary or plan cannot represent the distribution, the implementation falls
-back to four contiguous 4K iteration ranges. It never retains a 16K Word or
-Offset descriptor array.
+64-record by 64-pass quota table pairs whole grows in descending-population
+order and can split multiple grows by deterministic replay ordinal to fill
+pass gaps. If the summary or plan cannot represent the distribution, the
+implementation falls back to contiguous 4K iteration ranges; the intended
+physical-grow evidence arm rejects that fallback. It never retains a 16K Word
+or Offset descriptor array.
 
 This is a correctness/build candidate, not a promotion. Only matched gem5
 `simTicks`, exact hashes, and translated-row counters can support a locality or
@@ -25,12 +26,14 @@ report accounts for their architectural meanings separately:
 | Offset additions | 4,096 | 36,864 | next link, valid bit, and bounded free-stack id |
 | RowTable row directory | 512 | 5,120 | grow key plus valid/sent state |
 | RowTable line directory | 4,096 | 73,728 | line key, first/last links, valid/claimed state |
-| Retained grow plan | 64 records | 1,121 | grow/count/pass records and one split quota per pass |
+| Retained grow plan | 64 records x 64 passes | 9,370 | grow/count arrays, record/pass quotas, and replay ordinals |
 | Exact-once checker | 16K bits twice | 6,758 | non-functional admission/retirement audit plus pass counters |
 | Scratchpad payload | 4,096 elements/tile | 524,288 for 32 visible tiles | data payload, not reorder metadata |
 
-Word/Offset/Row reorder metadata is 148,480 semantic bytes. The grow plan and
-checker are reported separately. The candidate allocates exactly one active
+Word/Offset/Row reorder metadata is 148,480 semantic bytes; adding the
+functional grow plan gives 157,850 charged mechanism bytes. The 6,758-byte
+non-functional exact-once checker raises the instrumented total to 164,608
+bytes. The candidate allocates exactly one active
 RowTable organization; RowTable is a row/line directory, not a 16K payload
 table. Response slots and the destination combiner remain existing finite
 structures and are not included in the 148,480-byte figure.
@@ -105,28 +108,62 @@ coalescing target only; they do not establish translated DRAM locality.
 - Admission and retirement bitmaps fail on duplicate, missing, stale, or
   retirement-before-admission behavior.
 - More than 4,096 admissions without a fully retired explicit drain is fatal.
-- A summary overflow, more than 64 retained grows, multiple oversized grows,
-  or an un-packable plan selects deterministic 4K iteration ranges. Invalid or
-  mismatched populations fail closed.
+- A summary overflow, more than 64 retained grows, or an un-packable quota
+  plan selects deterministic 4K iteration ranges. Multiple oversized grows
+  are supported by bounded record/pass quotas. Invalid or mismatched
+  populations and stale/incomplete replay ordinals fail closed.
 - The matched runner requires exact output hashes, terminal ROI completion,
   `simTicks`, <=4K Word/Offset/Row-line counters, explicit Row-directory count,
   summary/replay traffic, pass/drain/max-epoch counters, and zero uncached B
   responses.
 
+## Matched gem5 evidence
+
+The clean matrix at
+`/data1/nier/dx100-runs/2026-08-08-true-4k-reorder/9ddf1ad3`
+uses source commit `9ddf1ad3f2aede325b03d532c8f8f26d4a0dd5e3`, gem5 SHA-256
+`64980714a719621fe061aa7d7d3a7f14a4b70950cff1acd63f1a94b175064f1e`,
+and three selector-isolated immutable checkpoints. The arms ran concurrently.
+All produced exact output hash `7228541527853630339` and terminal ROI
+completion.
+
+| Arm | simTicks | A-line requests | row insertions | row drains | DRAM activates |
+|---|---:|---:|---:|---:|---:|
+| native16 | 41,346,674 | 10,576 | 1,472 | 846 | 4,510 |
+| native4 | 59,297,850 | 16,384 | 2,103 | 3,589 | 5,115 |
+| physical-grow true4K | 66,685,589 | 9,603 | 1,260 | 0 | 3,848 |
+
+The candidate is 61.284% more simTicks than native16 and 12.459% more than
+native4, so this slice provides no speedup. Against native16/native4 it reduces
+A-line requests by 9.200%/41.388%, row insertions by 14.402%/40.086%, DRAM
+activates by 14.678%/24.770%, and DRAM reads by 6.500%/23.770%. These are
+mechanism counters, not a performance claim.
+
+The candidate charged one 65,536-byte summary and four 65,536-byte B replays:
+327,680 bytes total, 5,125 line reads, 81,920 filtered words, 6,413 filter
+cycles, and 1,301 wait cycles across 14 events. It reported accepted physical
+planning, no fallback, four exact passes of 4,096 inspected/admitted/retired
+descriptors, zero replay/Row/Offset drains, and exactly 16,384 authenticated
+physical admissions. Word/Offset/Row-directory/Row-line high-water bounds were
+4,096/4,096/512/4,096. The authenticated admission and grow-histogram hashes
+are respectively
+`d333ada7974d16bb397774127f9e54d6bb7700aff5d62eca4e380a52079ffa51`
+and `821c07b4a41cac39fdebf791c841a63b3bd40531e2abe7915362bab5f28788da`.
+
+The live translated-grow populations for grows 13 through 21 are
+`1580/2072/2028/2026/2027/2028/2026/2027/570`. Their difference from the
+earlier frozen physical trace demonstrates why source-line or prior-placement
+counts cannot substitute for runtime translated-grow evidence.
+
 ## Current validation and limitations
 
 ASan+UBSan unit tests pass for the tracker, metadata ledger, source-line
-diagnostic, five-pass whole-grow comparison, and authenticated four-pass grow
-split, including a forced split-ordinal admission retry. The 16-test source
-contract suite passes. A production
-`build/X86/gem5.opt` build completed through generated local parameters,
-compilation of `Tables.cc`, `IndirectAccess.cc`, and `MAA.cc`, and final link;
-an immediate second SCons invocation reported the target up to date. The
-binary SHA-256 before source checkpointing is
-`a7afa35b16ba3b6ad3fb6b9a5b841884e8466a80af3526843bcee30e4b19159f`.
-The matched native16/native4/candidate matrix remains pending until this source
-is checkpointed to give the evidence runner a clean exact commit. Two failed
-attempt roots are preserved: `6faef8cb` exposed an invalid summed high-water
-runner bound, and `60d33659` exposed a null reset of intentionally unallocated
-RowTable configurations. Neither is positive candidate evidence. No full
-workload, speedup, area, energy, or DRAM-row-locality claim is made.
+diagnostic, five-pass whole-grow comparison, multi-oversized-grow quotas, and
+authenticated four-pass grow splitting, including a forced admission retry
+that proves ordinal mutation is transactional. All 19 source contracts pass.
+The production build and final no-op recheck pass. Failed roots remain
+preserved: `6faef8cb` exposed an invalid native4 high-water gate, `60d33659`
+exposed a null reset, and `bc27f3b5` silently used iteration fallback with no
+physical admissions. They are not positive evidence. The final disposition is
+a viable true-bounded vertical slice for mechanism study, not promotion: no
+full workload, speedup, area, energy, or general DRAM-locality claim is made.

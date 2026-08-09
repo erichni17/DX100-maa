@@ -2,7 +2,8 @@
   "schema": "dx100.true_4k_reorder.v1",
   "date": "2026-08-08",
   "base_commit": "93159cf9aadaf1cd657a38249e280093b469b02f",
-  "candidate": "translated_grow_summary_single_split_four_replays",
+  "candidate": "translated_grow_summary_bounded_multi_quota_four_replays",
+  "candidate_commit": "9ddf1ad3f2aede325b03d532c8f8f26d4a0dd5e3",
   "bounds": {
     "logical_iterations": 16384,
     "active_word_entries": 4096,
@@ -18,7 +19,9 @@
     "row_directory": 5120,
     "row_line_directory": 73728,
     "word_offset_row_total": 148480,
-    "retained_grow_plan": 1121,
+    "retained_grow_plan": 9370,
+    "functional_mechanism_total": 157850,
+    "instrumented_with_exact_once_checker": 164608,
     "exact_once_checker": 6758,
     "scratchpad_payload_32_tiles": 524288
   },
@@ -47,21 +50,71 @@
   "validation": {
     "asan_ubsan_units": "pass",
     "unit_tests": 3,
-    "source_contract_tests": 16,
+    "source_contract_tests": 19,
     "production_objects": "pass_cxx17_o3_warnings_indirect_tables_maa",
     "production_gem5_build": "pass_full_scons_generated_params_compile_link_and_noop_recheck",
-    "production_gem5_sha256": "a7afa35b16ba3b6ad3fb6b9a5b841884e8466a80af3526843bcee30e4b19159f",
+    "production_gem5_sha256": "64980714a719621fe061aa7d7d3a7f14a4b70950cff1acd63f1a94b175064f1e",
     "ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
-    "matched_microbenchmark": "pending_clean_source_checkpoint_after_runtime_retry_and_manifest_fixes",
+    "matched_microbenchmark": "pass_exact_concurrent_selector_isolated_matrix",
+    "evidence_root": "/data1/nier/dx100-runs/2026-08-08-true-4k-reorder/9ddf1ad3",
     "preserved_failed_roots": {
       "6faef8cb": "runner_rejected_valid_native4_summed_index_high_water",
-      "60d33659": "candidate_segv_check_reset_unallocated_row_table_config"
+      "60d33659": "candidate_segv_check_reset_unallocated_row_table_config",
+      "bc27f3b5": "candidate_iteration_fallback_with_zero_physical_records"
+    }
+  },
+  "matched_matrix": {
+    "output_hash_all_arms": "7228541527853630339",
+    "native16": {
+      "simTicks": 41346674,
+      "a_line_requests": 10576,
+      "row_insertions": 1472,
+      "row_drains": 846,
+      "dram_reads": 25783,
+      "dram_activates": 4510
+    },
+    "native4": {
+      "simTicks": 59297850,
+      "a_line_requests": 16384,
+      "row_insertions": 2103,
+      "row_drains": 3589,
+      "dram_reads": 31624,
+      "dram_activates": 5115
+    },
+    "physical_grow_4k": {
+      "simTicks": 66685589,
+      "a_line_requests": 9603,
+      "row_insertions": 1260,
+      "row_drains": 0,
+      "offset_drains": 0,
+      "dram_reads": 24107,
+      "dram_activates": 3848,
+      "summary_bytes": 65536,
+      "replay_bytes": 262144,
+      "replay_passes": 4,
+      "max_epoch_admissions": 4096,
+      "physical_records": 16384,
+      "plan_result": "accepted",
+      "fallback": "none",
+      "physical_record_sha256": "d333ada7974d16bb397774127f9e54d6bb7700aff5d62eca4e380a52079ffa51",
+      "grow_histogram_sha256": "821c07b4a41cac39fdebf791c841a63b3bd40531e2abe7915362bab5f28788da",
+      "grow_populations_13_through_21": [
+        1580,
+        2072,
+        2028,
+        2026,
+        2027,
+        2028,
+        2026,
+        2027,
+        570
+      ]
     }
   },
   "claims": {
-    "exact_output": "pending_matched_gem5",
-    "simTicks": "pending_matched_gem5",
-    "translated_row_locality": "not_claimed",
+    "exact_output": "pass_all_three_matched_arms",
+    "simTicks": "candidate_is_61.284_percent_over_native16_and_12.459_percent_over_native4",
+    "translated_row_locality": "mechanism_counters_improve_but_general_locality_not_claimed",
     "promotion": "not_supported"
   }
 }
