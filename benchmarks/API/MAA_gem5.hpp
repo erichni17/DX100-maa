@@ -16,7 +16,9 @@
 // Validate NUM_CORES first (independent of any MEM_SIZE override) so an
 // unsupported core count still fails fast instead of compiling a mismatched
 // SPD/RF layout (SPD_DATA_SIZE/REG_SIZE below derive from NUM_CORES).
-#if NUM_CORES == 4
+#if NUM_CORES == 1
+#define DEFAULT_MEM_SIZE 0x100000000 // 4GB
+#elif NUM_CORES == 4
 #define DEFAULT_MEM_SIZE 0x400000000 // 16GB
 #elif NUM_CORES == 8
 #define DEFAULT_MEM_SIZE 0x800000000 // 32GB
