@@ -134,6 +134,8 @@ MAA::MAA(const MAAParams &p)
       virtual_index_partitions(p.virtual_index_partitions),
       virtual_index_range_passes(p.virtual_index_range_passes),
       virtual_index_descriptor_spool(p.virtual_index_descriptor_spool),
+      virtual_descriptor_spool_read_ahead(
+          p.virtual_descriptor_spool_read_ahead),
       virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
       virtual_index_filter_words_per_cycle(
@@ -229,6 +231,9 @@ MAA::MAA(const MAAParams &p)
                   virtual_index_range_policy != 3),
              "Descriptor spooling requires bounded translated-grow policy "
              "3\n");
+    panic_if(virtual_descriptor_spool_read_ahead &&
+                 !virtual_index_descriptor_spool,
+             "Descriptor-spool read-ahead requires descriptor spooling\n");
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),
              "Explicit range boundaries require range policy 2\n");
@@ -2714,6 +2719,94 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolWriteHighWater"),
             statistics::units::Count::get(),
             "maximum acknowledged descriptor writes in flight"));
+        IND_DescriptorSpoolOverlapOpportunities.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolOverlapOpportunities"),
+                statistics::units::Count::get(),
+                "pass boundaries with current-pass source reads in flight"));
+        IND_DescriptorSpoolNextPassReadIssues.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolNextPassReadIssues"),
+                statistics::units::Count::get(),
+                "descriptor lines issued before the next pass became demand"));
+        IND_DescriptorSpoolNextPassReadResponses.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolNextPassReadResponses"),
+                statistics::units::Count::get(),
+                "read-ahead descriptor responses received before promotion"));
+        IND_DescriptorSpoolUsefulPrefetchedLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolUsefulPrefetchedLines"),
+                statistics::units::Count::get(),
+                "read-ahead lines that supplied at least one descriptor "
+                "byte"));
+        IND_DescriptorSpoolDemandWaitsAvoided.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolDemandWaitsAvoided"),
+                statistics::units::Count::get(),
+                "useful read-ahead lines ready before next-pass "
+                "demand"));
+        IND_DescriptorSpoolPrefetchOccupancyLineCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolPrefetchOccupancyLineCycles"),
+                statistics::units::Count::get(),
+                "integral of occupied read-ahead lines over MAA cycles"));
+        IND_DescriptorSpoolPrefetchOccupancyHighWater.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolPrefetchOccupancyHighWater"),
+                statistics::units::Count::get(),
+                "maximum existing read slots occupied by next-pass "
+                "lines"));
+        IND_DescriptorSpoolWastedPrefetchedLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolWastedPrefetchedLines"),
+                statistics::units::Count::get(),
+                "read-ahead lines released without supplying descriptor "
+                "data"));
+        IND_DescriptorSpoolBoundaryDemandWaitEvents.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolBoundaryDemandWaitEvents"),
+                statistics::units::Count::get(),
+                "next-pass cursor-zero descriptor wait intervals"));
+        IND_DescriptorSpoolBoundaryDemandWaitCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolBoundaryDemandWaitCycles"),
+                statistics::units::Count::get(),
+                "MAA cycles waiting for cursor-zero descriptor data"));
+        IND_DescriptorSpoolWithinPassDemandWaitEvents.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolWithinPassDemandWaitEvents"),
+                statistics::units::Count::get(),
+                "non-boundary descriptor wait intervals"));
+        IND_DescriptorSpoolWithinPassDemandWaitCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolWithinPassDemandWaitCycles"),
+                statistics::units::Count::get(),
+                "MAA cycles waiting for descriptor data within a pass"));
         IND_DescriptorSpoolStagingEntries.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolStagingEntries"),
             statistics::units::Count::get(),

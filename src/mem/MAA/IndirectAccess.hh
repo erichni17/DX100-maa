@@ -307,6 +307,8 @@ protected:
     bool descriptor_spool_bucket_active = false;
     bool descriptor_spool_bucket_scan_complete = false;
     bool descriptor_spool_replay_active = false;
+    bool descriptor_spool_read_ahead_active = false;
+    bool descriptor_spool_overlap_opportunity_recorded = false;
     bool descriptor_spool_operation = false;
     Addr descriptor_spool_base_vaddr = 0;
     static constexpr uint32_t DescriptorIndexPageBytes = 4096;
@@ -319,6 +321,9 @@ protected:
     {
         bool valid = false;
         bool responded = false;
+        bool read_ahead = false;
+        bool ready_before_demand = false;
+        bool useful = false;
         Addr paddr = 0;
         Addr vaddr = 0;
         uint32_t pass = 0;
@@ -345,6 +350,24 @@ protected:
     uint64_t descriptor_spool_bucket_commits = 0;
     uint64_t descriptor_spool_filter_retry_inspections = 0;
     uint64_t descriptor_spool_final_flush_stalls = 0;
+    uint32_t descriptor_spool_overlap_opportunities = 0;
+    uint32_t descriptor_spool_next_pass_read_issues = 0;
+    uint32_t descriptor_spool_next_pass_read_responses = 0;
+    uint32_t descriptor_spool_useful_prefetched_lines = 0;
+    uint32_t descriptor_spool_demand_waits_avoided = 0;
+    uint32_t descriptor_spool_prefetch_occupancy = 0;
+    uint32_t descriptor_spool_prefetch_occupancy_hwm = 0;
+    Tick descriptor_spool_prefetch_occupancy_tick = 0;
+    uint64_t descriptor_spool_prefetch_occupancy_line_ticks = 0;
+    uint32_t descriptor_spool_wasted_prefetched_lines = 0;
+    bool descriptor_spool_demand_wait_active = false;
+    bool descriptor_spool_demand_wait_boundary = false;
+    Tick descriptor_spool_demand_wait_tick = 0;
+    uint32_t descriptor_spool_demand_wait_cursor = 0;
+    uint32_t descriptor_spool_boundary_demand_wait_events = 0;
+    uint64_t descriptor_spool_boundary_demand_wait_ticks = 0;
+    uint32_t descriptor_spool_within_pass_demand_wait_events = 0;
+    uint64_t descriptor_spool_within_pass_demand_wait_ticks = 0;
     bool direct_index_summary_active = false;
     bool direct_index_summary_overflow = false;
     bool direct_index_iteration_fallback = false;
@@ -403,7 +426,13 @@ protected:
     bool isDirectIndexLoad() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
-    void fillDescriptorSpoolWindow();
+    void fillDescriptorSpoolWindow(bool read_ahead = false);
+    void serviceDescriptorSpoolReadAhead();
+    void promoteDescriptorSpoolReadAhead(uint32_t pass);
+    void accountDescriptorSpoolPrefetchOccupancy();
+    void markDescriptorSpoolLineUseful(DescriptorSpoolPendingLine &slot);
+    void startDescriptorSpoolDemandWait(uint32_t cursor);
+    void finishDescriptorSpoolDemandWait(uint32_t cursor);
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
     const DirectIndexWord &currentDirectIndexWord(int itr) const;
@@ -432,7 +461,7 @@ protected:
     Addr descriptorIndexWordPaddr(uint32_t iteration) const;
     size_t descriptorSpoolControlBytes() const;
     void createDescriptorSpoolReadPacket(Addr vaddr, uint32_t pass,
-                                         uint32_t line);
+                                         uint32_t line, bool read_ahead);
     void createDescriptorSpoolWritePacket(
         Addr vaddr,
         const std::array<uint8_t, BoundedDescriptorSpool::LineBytes> &data);

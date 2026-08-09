@@ -643,6 +643,10 @@ void IndirectAccessUnit::check_reset() {
     panic_if(descriptor_spool_bucket_active ||
                  descriptor_spool_bucket_scan_complete ||
                  descriptor_spool_replay_active ||
+                 descriptor_spool_read_ahead_active ||
+                 descriptor_spool_prefetch_occupancy != 0 ||
+                 descriptor_spool_prefetch_occupancy_tick != 0 ||
+                 descriptor_spool_demand_wait_active ||
                  descriptor_spool.configured(),
              "I[%d] descriptor-spool lifecycle is not reset\n",
              my_indirect_id);
@@ -878,11 +882,15 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
         createDirectIndexReadPacket(block_paddr, rowtable_latency);
     }
 }
-void IndirectAccessUnit::fillDescriptorSpoolWindow()
+void IndirectAccessUnit::fillDescriptorSpoolWindow(bool read_ahead)
 {
     panic_if(!descriptor_spool_replay_active,
              "I[%d] descriptor-spool replay is not active\n",
              my_indirect_id);
+    panic_if(read_ahead != descriptor_spool_read_ahead_active,
+             "I[%d] descriptor-spool window mode mismatch: request=%d "
+             "active=%d\n", my_indirect_id, read_ahead,
+             descriptor_spool_read_ahead_active);
     const uint32_t pass = direct_index_partition;
     while (descriptorSpoolReadSlotsUsed() <
            BoundedDescriptorSpool::MaxOutstandingReadLines) {
@@ -890,12 +898,145 @@ void IndirectAccessUnit::fillDescriptorSpoolWindow()
         if (line >= descriptor_spool.passLines(pass))
             return;
         const Addr vaddr = descriptor_spool.lineAddress(pass, line);
-        createDescriptorSpoolReadPacket(vaddr, pass, line);
+        createDescriptorSpoolReadPacket(vaddr, pass, line, read_ahead);
         direct_index_next_prefetch_itr++;
     }
-    if (direct_index_next_prefetch_itr <
+    if (!read_ahead && direct_index_next_prefetch_itr <
         static_cast<int>(descriptor_spool.passLines(pass)))
         (*maa->stats.IND_DescriptorSpoolReadCreditStalls[my_indirect_id])++;
+}
+void
+IndirectAccessUnit::serviceDescriptorSpoolReadAhead()
+{
+    if (!descriptor_spool_read_ahead_active)
+        return;
+    panic_if(!maa->virtual_descriptor_spool_read_ahead ||
+                 !direct_index_partition_barrier ||
+                 !descriptor_spool_replay_active ||
+                 descriptor_spool.activeReplayPass() !=
+                     static_cast<uint32_t>(direct_index_partition),
+             "I[%d] invalid descriptor read-ahead lifecycle\n",
+             my_indirect_id);
+    if (virtual_source_received >= virtual_source_expected)
+        return;
+    if (!descriptor_spool_overlap_opportunity_recorded) {
+        descriptor_spool_overlap_opportunity_recorded = true;
+        descriptor_spool_overlap_opportunities++;
+        DPRINTF(MAAVirtualTrace,
+                "event=descriptor_spool_overlap_opportunity schema=1 "
+                "unit=%d operation_tick=%lu current_pass=%d next_pass=%d "
+                "source_expected=%d source_received=%d slots=%u\n",
+                my_indirect_id, my_decode_start_tick,
+                direct_index_partition - 1, direct_index_partition,
+                virtual_source_expected, virtual_source_received,
+                BoundedDescriptorSpool::MaxOutstandingReadLines);
+    }
+    fillDescriptorSpoolWindow(true);
+}
+void
+IndirectAccessUnit::accountDescriptorSpoolPrefetchOccupancy()
+{
+    if (descriptor_spool_prefetch_occupancy_tick != 0) {
+        panic_if(curTick() < descriptor_spool_prefetch_occupancy_tick,
+                 "I[%d] descriptor read-ahead occupancy tick regressed\n",
+                 my_indirect_id);
+        descriptor_spool_prefetch_occupancy_line_ticks +=
+            static_cast<uint64_t>(descriptor_spool_prefetch_occupancy) *
+            (curTick() - descriptor_spool_prefetch_occupancy_tick);
+    }
+    descriptor_spool_prefetch_occupancy_tick = curTick();
+}
+void
+IndirectAccessUnit::promoteDescriptorSpoolReadAhead(uint32_t pass)
+{
+    panic_if(!descriptor_spool_read_ahead_active ||
+                 descriptor_spool.activeReplayPass() != pass ||
+                 pass != static_cast<uint32_t>(direct_index_partition),
+             "I[%d] cannot promote descriptor read-ahead pass %u\n",
+             my_indirect_id, pass);
+    accountDescriptorSpoolPrefetchOccupancy();
+    uint32_t issued = 0;
+    uint32_t ready = 0;
+    for (auto &slot : descriptor_spool_read_slots) {
+        if (!slot.valid || !slot.read_ahead)
+            continue;
+        panic_if(slot.pass != pass,
+                 "I[%d] read-ahead slot pass %u survived promotion of %u\n",
+                 my_indirect_id, slot.pass, pass);
+        issued++;
+        if (slot.responded)
+            ready++;
+    }
+    panic_if(issued != descriptor_spool_prefetch_occupancy,
+             "I[%d] descriptor read-ahead occupancy mismatch %u/%u\n",
+             my_indirect_id, issued,
+             descriptor_spool_prefetch_occupancy);
+    descriptor_spool_prefetch_occupancy = 0;
+    descriptor_spool_prefetch_occupancy_tick = 0;
+    descriptor_spool_read_ahead_active = false;
+    descriptor_spool_overlap_opportunity_recorded = false;
+    DPRINTF(MAAVirtualTrace,
+            "event=descriptor_spool_read_ahead_promote schema=1 unit=%d "
+            "operation_tick=%lu pass=%u issued=%u ready=%u "
+            "pending=%u\n",
+            my_indirect_id, my_decode_start_tick, pass, issued, ready,
+            issued - ready);
+}
+void
+IndirectAccessUnit::markDescriptorSpoolLineUseful(
+    DescriptorSpoolPendingLine &slot)
+{
+    if (!slot.read_ahead || slot.useful)
+        return;
+    slot.useful = true;
+    descriptor_spool_useful_prefetched_lines++;
+    if (slot.ready_before_demand)
+        descriptor_spool_demand_waits_avoided++;
+}
+void
+IndirectAccessUnit::startDescriptorSpoolDemandWait(uint32_t cursor)
+{
+    if (descriptor_spool_demand_wait_active) {
+        panic_if(descriptor_spool_demand_wait_cursor != cursor,
+                 "I[%d] descriptor demand wait cursor changed %u/%u\n",
+                 my_indirect_id, descriptor_spool_demand_wait_cursor,
+                 cursor);
+        return;
+    }
+    descriptor_spool_demand_wait_active = true;
+    descriptor_spool_demand_wait_boundary = cursor == 0;
+    descriptor_spool_demand_wait_tick = curTick();
+    descriptor_spool_demand_wait_cursor = cursor;
+    if (descriptor_spool_demand_wait_boundary)
+        descriptor_spool_boundary_demand_wait_events++;
+    else
+        descriptor_spool_within_pass_demand_wait_events++;
+}
+void
+IndirectAccessUnit::finishDescriptorSpoolDemandWait(uint32_t cursor)
+{
+    if (!descriptor_spool_demand_wait_active)
+        return;
+    panic_if(descriptor_spool_demand_wait_cursor != cursor ||
+                 curTick() < descriptor_spool_demand_wait_tick,
+             "I[%d] invalid descriptor demand wait closure %u/%u\n",
+             my_indirect_id, descriptor_spool_demand_wait_cursor, cursor);
+    const Tick waited = curTick() - descriptor_spool_demand_wait_tick;
+    if (descriptor_spool_demand_wait_boundary)
+        descriptor_spool_boundary_demand_wait_ticks += waited;
+    else
+        descriptor_spool_within_pass_demand_wait_ticks += waited;
+    DPRINTF(MAAVirtualTrace,
+            "event=descriptor_spool_demand_wait schema=1 unit=%d "
+            "operation_tick=%lu pass=%d cursor=%u boundary=%d "
+            "sim_ticks=%lu cycles=%lu\n",
+            my_indirect_id, my_decode_start_tick, direct_index_partition,
+            cursor, descriptor_spool_demand_wait_boundary, waited,
+            static_cast<uint64_t>(maa->getTicksToCycles(waited)));
+    descriptor_spool_demand_wait_active = false;
+    descriptor_spool_demand_wait_boundary = false;
+    descriptor_spool_demand_wait_tick = 0;
+    descriptor_spool_demand_wait_cursor = 0;
 }
 size_t
 IndirectAccessUnit::descriptorSpoolReadSlotsUsed() const
@@ -936,27 +1077,40 @@ IndirectAccessUnit::loadDescriptorSpoolCurrent(uint32_t cursor)
     const uint32_t first_byte = byte_offset %
         BoundedDescriptorSpool::LineBytes;
     auto findLine = [this, pass](uint32_t line)
-        -> const DescriptorSpoolPendingLine * {
-        for (const auto &slot : descriptor_spool_read_slots) {
+        -> DescriptorSpoolPendingLine * {
+        for (auto &slot : descriptor_spool_read_slots) {
             if (slot.valid && slot.responded && slot.pass == pass &&
                 slot.line == line)
                 return &slot;
         }
         return nullptr;
     };
-    const auto *first = findLine(first_line);
-    if (first == nullptr)
+    auto *first = findLine(first_line);
+    if (first == nullptr) {
+        startDescriptorSpoolDemandWait(cursor);
         return false;
+    }
+    std::array<DescriptorSpoolPendingLine *,
+               BoundedDescriptorSpool::DescriptorBytes> sources{};
     std::array<uint8_t, BoundedDescriptorSpool::DescriptorBytes> packed{};
     for (uint32_t byte = 0;
          byte < BoundedDescriptorSpool::DescriptorBytes; ++byte) {
         const uint32_t stream_byte = first_byte + byte;
         const uint32_t line = first_line +
             stream_byte / BoundedDescriptorSpool::LineBytes;
-        const auto *source = line == first_line ? first : findLine(line);
-        if (source == nullptr)
+        auto *source = line == first_line ? first : findLine(line);
+        if (source == nullptr) {
+            startDescriptorSpoolDemandWait(cursor);
             return false;
-        packed[byte] = source->data[
+        }
+        sources[byte] = source;
+    }
+    finishDescriptorSpoolDemandWait(cursor);
+    for (uint32_t byte = 0;
+         byte < BoundedDescriptorSpool::DescriptorBytes; ++byte) {
+        markDescriptorSpoolLineUseful(*sources[byte]);
+        const uint64_t stream_byte = byte_offset + byte;
+        packed[byte] = sources[byte]->data[
             stream_byte % BoundedDescriptorSpool::LineBytes];
     }
     descriptor_spool_current_descriptor =
@@ -995,6 +1149,8 @@ IndirectAccessUnit::releaseDescriptorSpoolReadLines(uint32_t next_cursor)
         panic_if(!slot.responded,
                  "I[%d] releasing pending descriptor line %u\n",
                  my_indirect_id, slot.line);
+        if (slot.read_ahead && !slot.useful)
+            descriptor_spool_wasted_prefetched_lines++;
         slot = DescriptorSpoolPendingLine();
     }
 }
@@ -1402,11 +1558,16 @@ IndirectAccessUnit::descriptorSpoolControlBytes() const
     constexpr size_t write_scoreboard_bytes =
         BoundedDescriptorSpool::MaxOutstandingWrites *
         sizeof(DescriptorSpoolWriteSlot);
+    // Four existing read slots gain fixed read-ahead/use tags through their
+    // charged sizeof above. Charge the finite overlap sequencer and its
+    // requested observability counters separately; no line capacity is added.
+    constexpr size_t overlap_control_bytes =
+        4 * sizeof(bool) + 11 * sizeof(uint32_t) + 5 * sizeof(uint64_t);
     return descriptor_spool.chargedControlBytes() +
         descriptor_spool_index_page_paddrs.size() * sizeof(Addr) +
         descriptor_spool_index_page_valid.size() * sizeof(bool) +
         read_scoreboard_bytes + current_descriptor_bytes +
-        write_scoreboard_bytes;
+        write_scoreboard_bytes + overlap_control_bytes;
 }
 
 bool IndirectAccessUnit::flushDescriptorSpoolLine(uint32_t pass,
@@ -1557,7 +1718,9 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
     if (!maa->virtual_index_range_passes)
         return;
     if (descriptor_spool.configured()) {
-        if (descriptor_spool_replay_active) {
+        if (descriptor_spool_replay_active &&
+            descriptor_spool.activeReplayPass() ==
+                static_cast<uint32_t>(pass)) {
             const auto replay_result = descriptor_spool.finishReplay(pass);
             panic_if(replay_result != BoundedDescriptorSpool::Result::Accepted,
                      "I[%d] descriptor pass %d replay failed closure: %s\n",
@@ -1565,10 +1728,11 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
                      BoundedDescriptorSpool::resultName(replay_result));
             descriptor_spool_replay_active = false;
         } else {
-            panic_if(pass !=
-                         static_cast<int>(descriptor_spool.residentPass()),
-                     "I[%d] non-replay pass %d is not resident\n",
-                     my_indirect_id, pass);
+            const bool resident = pass == static_cast<int>(
+                descriptor_spool.residentPass());
+            panic_if(!resident && !descriptor_spool.replayFinished(pass),
+                     "I[%d] descriptor pass %d neither closed replay nor "
+                     "resident\n", my_indirect_id, pass);
         }
     } else if (!descriptor_spool.configured() &&
         maa->virtual_index_range_policy == 3 &&
@@ -1603,22 +1767,36 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
             reason);
     if (descriptor_spool.configured() &&
         pass + 1 < direct_index_partitions) {
-        panic_if(descriptorSpoolReadSlotsUsed() != 0 ||
-                     descriptor_spool_current_valid,
-                 "I[%d] descriptor pass %d retained read state\n",
+        panic_if(descriptor_spool_current_valid,
+                 "I[%d] descriptor pass %d retained a decoded word\n",
                  my_indirect_id, pass);
-        const auto replay_result = descriptor_spool.beginReplay(pass + 1);
-        panic_if(replay_result != BoundedDescriptorSpool::Result::Accepted,
-                 "I[%d] descriptor pass %d cannot start next replay: %s\n",
-                 my_indirect_id, pass,
-                 BoundedDescriptorSpool::resultName(replay_result));
-        descriptor_spool_replay_active = true;
-        DPRINTF(MAAVirtualTrace,
-                "event=descriptor_spool_replay_begin schema=1 unit=%d "
-                "operation_tick=%lu pass=%d population=%u lines=%u\n",
-                my_indirect_id, my_decode_start_tick, pass + 1,
-                descriptor_spool.population(pass + 1),
-                descriptor_spool.passLines(pass + 1));
+        if (descriptor_spool_replay_active) {
+            panic_if(!maa->virtual_descriptor_spool_read_ahead ||
+                         !descriptor_spool_read_ahead_active ||
+                         descriptor_spool.activeReplayPass() !=
+                             static_cast<uint32_t>(pass + 1),
+                     "I[%d] descriptor pass %d has an invalid early next "
+                     "replay\n", my_indirect_id, pass);
+            promoteDescriptorSpoolReadAhead(pass + 1);
+        } else {
+            panic_if(descriptorSpoolReadSlotsUsed() != 0,
+                     "I[%d] descriptor pass %d retained read slots\n",
+                     my_indirect_id, pass);
+            const auto replay_result = descriptor_spool.beginReplay(pass + 1);
+            panic_if(
+                replay_result != BoundedDescriptorSpool::Result::Accepted,
+                "I[%d] descriptor pass %d cannot start next replay: %s\n",
+                my_indirect_id, pass,
+                BoundedDescriptorSpool::resultName(replay_result));
+            descriptor_spool_replay_active = true;
+            DPRINTF(MAAVirtualTrace,
+                    "event=descriptor_spool_replay_begin schema=2 unit=%d "
+                    "operation_tick=%lu pass=%d population=%u lines=%u "
+                    "mode=demand previous_pass=%d\n",
+                    my_indirect_id, my_decode_start_tick, pass + 1,
+                    descriptor_spool.population(pass + 1),
+                    descriptor_spool.passLines(pass + 1), pass);
+        }
     } else if (!descriptor_spool.configured() &&
         maa->virtual_index_range_policy == 3 &&
         !direct_index_iteration_fallback &&
@@ -1795,15 +1973,25 @@ bool IndirectAccessUnit::receiveDescriptorSpool(
     std::memcpy(pending->data.data(), dataptr,
                 BoundedDescriptorSpool::LineBytes);
     pending->responded = true;
+    if (pending->read_ahead) {
+        // A line is counted as avoiding a demand wait iff its response
+        // completed before the descriptor consuming that line.  Latching
+        // this at response time covers responses both before and after
+        // read-ahead promotion, while consumption remains exact-once.
+        pending->ready_before_demand = true;
+        descriptor_spool_next_pass_read_responses++;
+    }
     DPRINTF(MAAVirtualTrace,
-            "event=descriptor_spool_read_response schema=1 unit=%d "
+            "event=descriptor_spool_read_response schema=2 unit=%d "
             "operation_tick=%lu pass=%u line=%u paddr=0x%lx "
-            "payload_bytes=%u cached=%d\n",
+            "payload_bytes=%u cached=%d mode=%s before_demand=%d\n",
             my_indirect_id, my_decode_start_tick, pending->pass,
             pending->line, addr,
             descriptor_spool.passPayloadLineBytes(
                 pending->pass, pending->line),
-            is_block_cached);
+            is_block_cached,
+            pending->read_ahead ? "next_pass_read_ahead" : "demand",
+            pending->read_ahead && descriptor_spool_read_ahead_active);
     direct_index_max_lines = std::max(
         direct_index_max_lines,
         static_cast<int>(descriptorSpoolReadSlotsUsed()));
@@ -1969,6 +2157,66 @@ void IndirectAccessUnit::fillRowTable(
                 my_i = 0;
                 direct_index_next_prefetch_itr = 0;
                 direct_index_partition_barrier = true;
+                if (descriptor_spool.configured() &&
+                    maa->virtual_descriptor_spool_read_ahead) {
+                    panic_if(descriptor_spool_demand_wait_active ||
+                                 descriptor_spool_read_ahead_active ||
+                                 descriptor_spool_prefetch_occupancy != 0 ||
+                                 descriptor_spool_prefetch_occupancy_tick != 0,
+                             "I[%d] descriptor overlap state survived pass "
+                             "%d fill\n", my_indirect_id,
+                             completed_partition);
+                    if (descriptor_spool_replay_active) {
+                        panic_if(descriptor_spool.activeReplayPass() !=
+                                     static_cast<uint32_t>(
+                                         completed_partition),
+                                 "I[%d] descriptor replay pass %u does not "
+                                 "match completed fill pass %d\n",
+                                 my_indirect_id,
+                                 descriptor_spool.activeReplayPass(),
+                                 completed_partition);
+                        const auto finish = descriptor_spool.finishReplay(
+                            completed_partition);
+                        panic_if(
+                            finish !=
+                                BoundedDescriptorSpool::Result::Accepted,
+                            "I[%d] descriptor pass %d cannot close before "
+                            "read-ahead: %s\n", my_indirect_id,
+                            completed_partition,
+                            BoundedDescriptorSpool::resultName(finish));
+                        descriptor_spool_replay_active = false;
+                    } else {
+                        panic_if(completed_partition != static_cast<int>(
+                                     descriptor_spool.residentPass()),
+                                 "I[%d] non-replay completed pass %d is not "
+                                 "resident\n", my_indirect_id,
+                                 completed_partition);
+                    }
+                    const auto begin = descriptor_spool.beginReplay(
+                        direct_index_partition);
+                    panic_if(begin !=
+                                 BoundedDescriptorSpool::Result::Accepted,
+                             "I[%d] descriptor pass %d cannot open early: "
+                             "%s\n", my_indirect_id,
+                             direct_index_partition,
+                             BoundedDescriptorSpool::resultName(begin));
+                    descriptor_spool_replay_active = true;
+                    descriptor_spool_read_ahead_active = true;
+                    descriptor_spool_overlap_opportunity_recorded = false;
+                    descriptor_spool_prefetch_occupancy_tick = curTick();
+                    DPRINTF(MAAVirtualTrace,
+                            "event=descriptor_spool_replay_begin schema=2 "
+                            "unit=%d operation_tick=%lu pass=%d "
+                            "population=%u lines=%u mode=next_pass_read_ahead "
+                            "previous_pass=%d\n",
+                            my_indirect_id, my_decode_start_tick,
+                            direct_index_partition,
+                            descriptor_spool.population(
+                                direct_index_partition),
+                            descriptor_spool.passLines(
+                                direct_index_partition),
+                            completed_partition);
+                }
                 needDrain = true;
                 recordReorderSurvivalDrain(
                     ReorderSurvivalTracker::DrainReason::PartitionBoundary);
@@ -2798,6 +3046,8 @@ void IndirectAccessUnit::executeInstruction() {
         descriptor_spool_bucket_active = false;
         descriptor_spool_bucket_scan_complete = false;
         descriptor_spool_replay_active = false;
+        descriptor_spool_read_ahead_active = false;
+        descriptor_spool_overlap_opportunity_recorded = false;
         descriptor_spool_operation = false;
         descriptor_spool_base_vaddr = 0;
         descriptor_spool_index_page_paddrs.fill(0);
@@ -2823,6 +3073,24 @@ void IndirectAccessUnit::executeInstruction() {
         descriptor_spool_bucket_commits = 0;
         descriptor_spool_filter_retry_inspections = 0;
         descriptor_spool_final_flush_stalls = 0;
+        descriptor_spool_overlap_opportunities = 0;
+        descriptor_spool_next_pass_read_issues = 0;
+        descriptor_spool_next_pass_read_responses = 0;
+        descriptor_spool_useful_prefetched_lines = 0;
+        descriptor_spool_demand_waits_avoided = 0;
+        descriptor_spool_prefetch_occupancy = 0;
+        descriptor_spool_prefetch_occupancy_hwm = 0;
+        descriptor_spool_prefetch_occupancy_tick = 0;
+        descriptor_spool_prefetch_occupancy_line_ticks = 0;
+        descriptor_spool_wasted_prefetched_lines = 0;
+        descriptor_spool_demand_wait_active = false;
+        descriptor_spool_demand_wait_boundary = false;
+        descriptor_spool_demand_wait_tick = 0;
+        descriptor_spool_demand_wait_cursor = 0;
+        descriptor_spool_boundary_demand_wait_events = 0;
+        descriptor_spool_boundary_demand_wait_ticks = 0;
+        descriptor_spool_within_pass_demand_wait_events = 0;
+        descriptor_spool_within_pass_demand_wait_ticks = 0;
         direct_index_ready_lines.clear();
         direct_index_words.clear();
         direct_index_max_lines = 0;
@@ -3420,6 +3688,7 @@ void IndirectAccessUnit::executeInstruction() {
             }
         }
         accountVirtualRequestInterval();
+        serviceDescriptorSpoolReadAhead();
         if (usesBoundedSourceResponses() && drainVirtualResponses()) {
             scheduleExecuteInstructionEvent(1);
             break;
@@ -3735,12 +4004,71 @@ void IndirectAccessUnit::executeInstruction() {
                                      MaxOutstandingReadLines) ||
                          descriptorSpoolReadSlotsUsed() != 0 ||
                          descriptorSpoolWriteSlotsUsed() != 0 ||
-                         descriptor_spool_current_valid,
+                         descriptor_spool_current_valid ||
+                         descriptor_spool_replay_active ||
+                         descriptor_spool_read_ahead_active ||
+                         descriptor_spool_prefetch_occupancy != 0 ||
+                         descriptor_spool_prefetch_occupancy_tick != 0 ||
+                         descriptor_spool_demand_wait_active ||
+                         descriptor_spool_next_pass_read_issues !=
+                             descriptor_spool_next_pass_read_responses ||
+                         descriptor_spool_next_pass_read_issues !=
+                             descriptor_spool_useful_prefetched_lines +
+                                 descriptor_spool_wasted_prefetched_lines ||
+                         descriptor_spool_demand_waits_avoided >
+                             descriptor_spool_useful_prefetched_lines ||
+                         descriptor_spool_prefetch_occupancy_hwm >
+                             BoundedDescriptorSpool::
+                                 MaxOutstandingReadLines ||
+                         (!maa->virtual_descriptor_spool_read_ahead &&
+                          (descriptor_spool_overlap_opportunities != 0 ||
+                           descriptor_spool_next_pass_read_issues != 0 ||
+                           descriptor_spool_next_pass_read_responses != 0 ||
+                           descriptor_spool_useful_prefetched_lines != 0 ||
+                           descriptor_spool_demand_waits_avoided != 0 ||
+                           descriptor_spool_prefetch_occupancy_hwm != 0 ||
+                           descriptor_spool_wasted_prefetched_lines != 0)),
                      "I[%d] descriptor spool failed terminal accounting\n",
                      my_indirect_id);
             (*maa->stats
                   .IND_DescriptorSpoolWriteHighWater[my_indirect_id]) +=
                 descriptor_spool.outstandingWriteHighWater();
+            (*maa->stats
+                  .IND_DescriptorSpoolOverlapOpportunities[my_indirect_id]) +=
+                descriptor_spool_overlap_opportunities;
+            (*maa->stats
+                  .IND_DescriptorSpoolNextPassReadIssues[my_indirect_id]) +=
+                descriptor_spool_next_pass_read_issues;
+            (*maa->stats
+                  .IND_DescriptorSpoolNextPassReadResponses[my_indirect_id]) +=
+                descriptor_spool_next_pass_read_responses;
+            (*maa->stats
+                  .IND_DescriptorSpoolUsefulPrefetchedLines[my_indirect_id]) +=
+                descriptor_spool_useful_prefetched_lines;
+            (*maa->stats
+                  .IND_DescriptorSpoolDemandWaitsAvoided[my_indirect_id]) +=
+                descriptor_spool_demand_waits_avoided;
+            (*maa->stats.IND_DescriptorSpoolPrefetchOccupancyLineCycles
+                  [my_indirect_id]) += maa->getTicksToCycles(
+                descriptor_spool_prefetch_occupancy_line_ticks);
+            (*maa->stats.IND_DescriptorSpoolPrefetchOccupancyHighWater
+                  [my_indirect_id]) +=
+                descriptor_spool_prefetch_occupancy_hwm;
+            (*maa->stats
+                  .IND_DescriptorSpoolWastedPrefetchedLines[my_indirect_id]) +=
+                descriptor_spool_wasted_prefetched_lines;
+            (*maa->stats.IND_DescriptorSpoolBoundaryDemandWaitEvents
+                  [my_indirect_id]) +=
+                descriptor_spool_boundary_demand_wait_events;
+            (*maa->stats.IND_DescriptorSpoolBoundaryDemandWaitCycles
+                  [my_indirect_id]) += maa->getTicksToCycles(
+                descriptor_spool_boundary_demand_wait_ticks);
+            (*maa->stats.IND_DescriptorSpoolWithinPassDemandWaitEvents
+                  [my_indirect_id]) +=
+                descriptor_spool_within_pass_demand_wait_events;
+            (*maa->stats.IND_DescriptorSpoolWithinPassDemandWaitCycles
+                  [my_indirect_id]) += maa->getTicksToCycles(
+                descriptor_spool_within_pass_demand_wait_ticks);
             (*maa->stats
                   .IND_DescriptorSpoolStagingEntries[my_indirect_id]) +=
                 descriptor_spool.activeStagingDescriptorCapacity();
@@ -3763,7 +4091,7 @@ void IndirectAccessUnit::executeInstruction() {
                   .IND_DescriptorSpoolExternalSegments[my_indirect_id]) +=
                 descriptor_spool.externalSegments();
             DPRINTF(MAAVirtualTrace,
-                    "event=descriptor_spool_complete schema=1 unit=%d "
+                    "event=descriptor_spool_complete schema=2 unit=%d "
                     "operation_tick=%lu b_scans=2 descriptors=%u "
                     "resident_pass=%u resident_descriptors=%u "
                     "external_descriptors=%u external_segments=%u "
@@ -3773,6 +4101,14 @@ void IndirectAccessUnit::executeInstruction() {
                     "backing_bytes=%lu staging_bytes=%u write_hwm=%u "
                     "read_hwm=%u unique_inspections=%lu "
                     "retry_inspections=%lu final_flush_stalls=%lu "
+                    "read_ahead=%d overlap_opportunities=%u "
+                    "next_pass_read_issues=%u next_pass_read_responses=%u "
+                    "useful_prefetched_lines=%u demand_waits_avoided=%u "
+                    "prefetch_occupancy=0 prefetch_occupancy_hwm=%u "
+                    "prefetch_occupancy_line_cycles=%lu wasted_lines=%u "
+                    "boundary_wait_events=%u boundary_wait_cycles=%lu "
+                    "within_pass_wait_events=%u "
+                    "within_pass_wait_cycles=%lu "
                     "active_limit=%u "
                     "identity_check=trace_side fallback=none\n",
                     my_indirect_id, my_decode_start_tick,
@@ -3795,11 +4131,35 @@ void IndirectAccessUnit::executeInstruction() {
                     descriptor_spool_bucket_commits,
                     descriptor_spool_filter_retry_inspections,
                     descriptor_spool_final_flush_stalls,
+                    maa->virtual_descriptor_spool_read_ahead,
+                    descriptor_spool_overlap_opportunities,
+                    descriptor_spool_next_pass_read_issues,
+                    descriptor_spool_next_pass_read_responses,
+                    descriptor_spool_useful_prefetched_lines,
+                    descriptor_spool_demand_waits_avoided,
+                    descriptor_spool_prefetch_occupancy_hwm,
+                    static_cast<uint64_t>(maa->getTicksToCycles(
+                        descriptor_spool_prefetch_occupancy_line_ticks)),
+                    descriptor_spool_wasted_prefetched_lines,
+                    descriptor_spool_boundary_demand_wait_events,
+                    static_cast<uint64_t>(maa->getTicksToCycles(
+                        descriptor_spool_boundary_demand_wait_ticks)),
+                    descriptor_spool_within_pass_demand_wait_events,
+                    static_cast<uint64_t>(maa->getTicksToCycles(
+                        descriptor_spool_within_pass_demand_wait_ticks)),
                     BoundedDescriptorSpool::MaxActiveDescriptors);
             descriptor_spool.reset();
             descriptor_spool_bucket_active = false;
             descriptor_spool_bucket_scan_complete = false;
             descriptor_spool_replay_active = false;
+            descriptor_spool_read_ahead_active = false;
+            descriptor_spool_overlap_opportunity_recorded = false;
+            descriptor_spool_prefetch_occupancy = 0;
+            descriptor_spool_prefetch_occupancy_tick = 0;
+            descriptor_spool_demand_wait_active = false;
+            descriptor_spool_demand_wait_boundary = false;
+            descriptor_spool_demand_wait_tick = 0;
+            descriptor_spool_demand_wait_cursor = 0;
             descriptor_spool_base_vaddr = 0;
             descriptor_spool_index_page_paddrs.fill(0);
             descriptor_spool_index_page_valid.fill(false);
@@ -3998,7 +4358,7 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
             my_indirect_id, __func__, read_pkt->print());
 }
 void IndirectAccessUnit::createDescriptorSpoolReadPacket(
-    Addr vaddr, uint32_t pass, uint32_t line)
+    Addr vaddr, uint32_t pass, uint32_t line, bool read_ahead)
 {
     const Addr paddr = translatePacket(
         vaddr, BaseMMU::Read, BoundedDescriptorSpool::LineBytes);
@@ -4023,6 +4383,7 @@ void IndirectAccessUnit::createDescriptorSpoolReadPacket(
              BoundedDescriptorSpool::resultName(issue));
     *slot = DescriptorSpoolPendingLine();
     slot->valid = true;
+    slot->read_ahead = read_ahead;
     slot->paddr = paddr;
     slot->vaddr = vaddr;
     slot->pass = pass;
@@ -4038,14 +4399,23 @@ void IndirectAccessUnit::createDescriptorSpoolReadPacket(
     (*maa->stats.IND_DescriptorSpoolLineReads[my_indirect_id])++;
     (*maa->stats.IND_DescriptorSpoolReadBytes[my_indirect_id]) +=
         BoundedDescriptorSpool::LineBytes;
+    if (read_ahead) {
+        accountDescriptorSpoolPrefetchOccupancy();
+        descriptor_spool_prefetch_occupancy++;
+        descriptor_spool_prefetch_occupancy_hwm = std::max(
+            descriptor_spool_prefetch_occupancy_hwm,
+            descriptor_spool_prefetch_occupancy);
+        descriptor_spool_next_pass_read_issues++;
+    }
     DPRINTF(MAAVirtualTrace,
-            "event=descriptor_spool_read_issue schema=1 unit=%d "
+            "event=descriptor_spool_read_issue schema=2 unit=%d "
             "operation_tick=%lu pass=%u line=%u vaddr=0x%lx paddr=0x%lx "
-            "payload_bytes=%u pending=%lu limit=%u\n",
+            "payload_bytes=%u pending=%lu limit=%u mode=%s\n",
             my_indirect_id, my_decode_start_tick, pass, line, vaddr, paddr,
             descriptor_spool.passPayloadLineBytes(pass, line),
             static_cast<unsigned long>(descriptorSpoolReadSlotsUsed()),
-            BoundedDescriptorSpool::MaxOutstandingReadLines);
+            BoundedDescriptorSpool::MaxOutstandingReadLines,
+            read_ahead ? "next_pass_read_ahead" : "demand");
 }
 void IndirectAccessUnit::createDescriptorSpoolWritePacket(
     Addr vaddr,

@@ -119,6 +119,10 @@ class MAA(ClockedObject):
         False,
         "Materialize pass-grouped direct-index descriptors in timed backing",
     )
+    virtual_descriptor_spool_read_ahead = Param.Bool(
+        False,
+        "Read ahead the next descriptor pass in the existing four-line window",
+    )
     virtual_index_range_policy = Param.Unsigned(
         0,
         "Range bounds: 0=full grow, 1=A endpoints, 2=explicit oracle, "

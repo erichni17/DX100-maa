@@ -198,6 +198,14 @@ class BoundedDescriptorSpool
     bool configured() const { return configuredFlag; }
     bool bucketingComplete() const { return bucketingClosed; }
     bool replayIsActive() const { return replayActive; }
+    uint32_t activeReplayPass() const
+    {
+        return replayActive ? replayPass : MaxPasses;
+    }
+    bool replayFinished(uint32_t pass) const
+    {
+        return pass < numPasses && passReplayFinished[pass];
+    }
     uint32_t passes() const { return numPasses; }
     uint32_t logical() const { return logicalEntries; }
     uint32_t residentPass() const { return selectedResidentPass; }

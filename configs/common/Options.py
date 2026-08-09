@@ -398,6 +398,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_descriptor_spool_read_ahead",
+        action="store_true",
+        help=(
+            "Read ahead the next descriptor pass in the existing four-line "
+            "spool window while current-pass source reads are in flight"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_range_policy",
         type=int,
         default=0,

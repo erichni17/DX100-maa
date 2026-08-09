@@ -433,6 +433,7 @@ public:
     unsigned int virtual_index_partitions;
     bool virtual_index_range_passes;
     bool virtual_index_descriptor_spool;
+    bool virtual_descriptor_spool_read_ahead;
     unsigned int virtual_index_range_policy;
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;
@@ -784,6 +785,30 @@ public:
         std::vector<statistics::Scalar *> IND_DescriptorSpoolWriteCreditStalls;
         std::vector<statistics::Scalar *> IND_DescriptorSpoolReadCreditStalls;
         std::vector<statistics::Scalar *> IND_DescriptorSpoolWriteHighWater;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolOverlapOpportunities;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolNextPassReadIssues;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolNextPassReadResponses;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolUsefulPrefetchedLines;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolDemandWaitsAvoided;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolPrefetchOccupancyLineCycles;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolPrefetchOccupancyHighWater;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolWastedPrefetchedLines;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolBoundaryDemandWaitEvents;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolBoundaryDemandWaitCycles;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolWithinPassDemandWaitEvents;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolWithinPassDemandWaitCycles;
         std::vector<statistics::Scalar *> IND_DescriptorSpoolStagingEntries;
         std::vector<statistics::Scalar *> IND_DescriptorSpoolControlBytes;
         std::vector<statistics::Scalar *> IND_DescriptorSpoolBackingBytes;
