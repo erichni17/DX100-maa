@@ -39,6 +39,7 @@ polluted=0
 transparent_spd_mode=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 require_physical_trace=${MAA_REQUIRE_PHYSICAL_RECORD_TRACE:-0}
+require_source_issue_digest=${MAA_REQUIRE_SOURCE_ISSUE_DIGEST:-0}
 shared_checkpoint=${DX100_SHARED_CHECKPOINT_DIR:-}
 shared_selector=${DX100_SHARED_TREATMENT_FILE:-}
 shared_checkpoint_log=${DX100_SHARED_CHECKPOINT_LOG:-}
@@ -46,6 +47,7 @@ frozen_ramulator_library=${DX100_FROZEN_RAMULATOR_LIBRARY:-}
 ramulator_provenance=${DX100_RAMULATOR_PROVENANCE_FILE:-}
 gem5_source_commit=${DX100_GEM5_SOURCE_COMMIT:-$(git -C "$root" rev-parse HEAD)}
 gem5_provenance=${DX100_GEM5_PROVENANCE_FILE:-}
+extra_maa_args_file=${DX100_EXTRA_MAA_ARGS_FILE:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
 row_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
@@ -63,6 +65,7 @@ index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
 index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
 index_descriptor_spool=${MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL:-0}
+descriptor_spool_read_ahead=${MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD:-0}
 descriptor_spool_variant=${MAA_DESCRIPTOR_SPOOL_VARIANT:-resident_first}
 index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
@@ -99,6 +102,16 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 }
 [[ $index_descriptor_spool == 0 || $index_descriptor_spool == 1 ]] || {
     echo "MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL must be 0 or 1" >&2
+    exit 2
+}
+[[ $descriptor_spool_read_ahead == 0 ||
+   $descriptor_spool_read_ahead == 1 ]] || {
+    echo "MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD must be 0 or 1" >&2
+    exit 2
+}
+[[ $descriptor_spool_read_ahead == 0 ||
+   $index_descriptor_spool == 1 ]] || {
+    echo "descriptor spool read-ahead requires descriptor spooling" >&2
     exit 2
 }
 [[ $index_descriptor_spool == 0 ||
@@ -171,6 +184,16 @@ fi
     echo "MAA_REQUIRE_PHYSICAL_RECORD_TRACE must be 0 or 1" >&2
     exit 2
 }
+[[ $require_source_issue_digest == 0 ||
+   $require_source_issue_digest == 1 ]] || {
+    echo "MAA_REQUIRE_SOURCE_ISSUE_DIGEST must be 0 or 1" >&2
+    exit 2
+}
+if [[ $require_source_issue_digest == 1 &&
+      ",$debug_flags," != *,MAAIssueDigest,* ]]; then
+    echo "source-issue validation requires MAAIssueDigest" >&2
+    exit 2
+fi
 if [[ $require_physical_trace == 1 &&
       ",$debug_flags," != *,MAAPhysicalRecordTrace,* ]]; then
     echo "physical-record validation requires MAAPhysicalRecordTrace" >&2
@@ -225,6 +248,12 @@ index_descriptor_spool_args=()
 if [[ $index_descriptor_spool == 1 ]]; then
     index_descriptor_spool_args+=(--maa_virtual_index_descriptor_spool)
 fi
+descriptor_spool_read_ahead_args=()
+if [[ $descriptor_spool_read_ahead == 1 ]]; then
+    descriptor_spool_read_ahead_args+=(
+        --maa_virtual_descriptor_spool_read_ahead
+    )
+fi
 index_range_boundary_args=()
 if [[ $index_range_policy == 2 ]]; then
     index_range_boundary_args+=(--maa_virtual_index_range_boundaries)
@@ -237,6 +266,25 @@ fi
 partition_combiner_args=()
 if [[ $partition_keep_combiner == 1 ]]; then
     partition_combiner_args+=(--maa_virtual_partition_keep_combiner)
+fi
+extra_maa_args=()
+if [[ -n $extra_maa_args_file ]]; then
+    extra_maa_args_file=$(realpath "$extra_maa_args_file")
+    [[ -f $extra_maa_args_file ]] || {
+        echo "missing extra MAA argument file: $extra_maa_args_file" >&2
+        exit 2
+    }
+    mapfile -t extra_maa_args < "$extra_maa_args_file"
+    [[ ${#extra_maa_args[@]} -gt 0 ]] || {
+        echo "extra MAA argument file is empty" >&2
+        exit 2
+    }
+    for argument in "${extra_maa_args[@]}"; do
+        [[ $argument == --maa_* && $argument != *[[:space:]]* ]] || {
+            echo "invalid extra MAA argument: $argument" >&2
+            exit 2
+        }
+    done
 fi
 offset_args=()
 if [[ $offset_entries -ne 0 ]]; then
@@ -494,6 +542,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_index_range_policy=%s\n' "$index_range_policy"
     printf 'virtual_index_descriptor_spool=%s\n' \
         "$index_descriptor_spool"
+    printf 'virtual_descriptor_spool_read_ahead=%s\n' \
+        "$descriptor_spool_read_ahead"
     printf 'descriptor_spool_variant=%s\n' "$descriptor_spool_variant"
     printf 'virtual_index_range_boundaries=%s\n' \
         "${index_range_boundaries:-none}"
@@ -508,6 +558,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'gem5_source_commit=%s\n' "$gem5_source_commit"
     printf 'gem5_provenance=%s\n' "${gem5_provenance:-none}"
+    printf 'extra_maa_args_file=%s\n' "${extra_maa_args_file:-none}"
     printf 'baseline_commit=6e84c2c4a4c9b008f0efb78314c7ac1b7f828b55\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -515,6 +566,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'shared_treatment_file=%s\n' "${shared_selector:-none}"
     printf 'shared_checkpoint_log=%s\n' "${shared_checkpoint_log:-none}"
     printf 'physical_record_schema=dx100.physical_admission.v1\n'
+    printf 'source_issue_digest_required=%s\n' \
+        "$require_source_issue_digest"
     printf 'frozen_ramulator_library=%s\n' "$ramulator_library"
     printf 'ramulator_provenance=%s\n' "$ramulator_provenance"
 } > "$out/manifest.txt"
@@ -581,6 +634,8 @@ cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
 {
     printf 'MAA_DEBUG_FLAGS=%q ' "$debug_flags"
     printf 'MAA_REQUIRE_PHYSICAL_RECORD_TRACE=%q ' "$require_physical_trace"
+    printf 'MAA_REQUIRE_SOURCE_ISSUE_DIGEST=%q ' \
+        "$require_source_issue_digest"
     printf 'DX100_SHARED_CHECKPOINT_DIR=%q ' "${shared_checkpoint:-}"
     printf 'DX100_SHARED_TREATMENT_FILE=%q ' "${shared_selector:-}"
     printf 'DX100_SHARED_CHECKPOINT_LOG=%q ' "${shared_checkpoint_log:-}"
@@ -589,6 +644,8 @@ cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     printf 'DX100_GEM5_SOURCE_COMMIT=%q ' "$gem5_source_commit"
     printf 'DX100_GEM5_PROVENANCE_FILE=%q ' "$gem5_provenance"
     printf 'MAA_DESCRIPTOR_SPOOL_VARIANT=%q ' "$descriptor_spool_variant"
+    printf 'MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD=%q ' \
+        "$descriptor_spool_read_ahead"
     printf '%q %q %q %q %q\n' "${DX100_FROZEN_RUNNER_PATH:-$0}" \
         "$gem5" "$binary" "$case_name" "$out"
 } > "$out/invocation.sh.txt"
@@ -625,6 +682,9 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/run_true_4k_descriptor_spool_matrix.sh" \
     "$out/source.diff" "$out/source_status.txt" "$out/invocation.sh.txt" \
     > "$out/artifact_sha256.txt"
+if [[ -n $extra_maa_args_file ]]; then
+    sha256sum "$extra_maa_args_file" >> "$out/artifact_sha256.txt"
+fi
 if [[ -n $gem5_provenance ]]; then
     gem5_provenance=$(realpath "$gem5_provenance")
     [[ -f $gem5_provenance ]] || {
@@ -727,8 +787,10 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "${index_range_boundary_args[@]}" \
     "${index_range_args[@]}" \
     "${index_descriptor_spool_args[@]}" \
+    "${descriptor_spool_read_ahead_args[@]}" \
     "${index_cache_args[@]}" \
     "${partition_combiner_args[@]}" \
+    "${extra_maa_args[@]}" \
     --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle" \
     --cmd "$binary" --options "$workload_options" \
     > "$out/restore.log" 2>&1
@@ -752,6 +814,7 @@ for expected in \
     "virtual_index_range_passes=$([[ $index_range_passes -eq 1 ]] && echo true || echo false)" \
     "virtual_index_range_policy=$index_range_policy" \
     "virtual_index_descriptor_spool=$([[ $index_descriptor_spool -eq 1 ]] && echo true || echo false)" \
+    "virtual_descriptor_spool_read_ahead=$([[ $descriptor_spool_read_ahead -eq 1 ]] && echo true || echo false)" \
     "virtual_index_force_cache=$([[ $index_force_cache -eq 1 ]] && echo true || echo false)" \
     "virtual_partition_keep_combiner=$([[ $partition_keep_combiner -eq 1 ]] && echo true || echo false)" \
     "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
@@ -931,7 +994,14 @@ read -r bounded_bucket_lines bounded_bucket_words \
     descriptor_write_lines descriptor_write_bytes descriptor_write_acks \
     descriptor_read_lines descriptor_read_bytes descriptor_write_stalls \
     descriptor_read_stalls descriptor_write_hwm descriptor_staging_entries \
-    descriptor_control_bytes descriptor_backing_bytes < <(
+    descriptor_control_bytes descriptor_backing_bytes \
+    descriptor_overlap_opportunities descriptor_next_pass_read_issues \
+    descriptor_next_pass_read_responses descriptor_useful_prefetched_lines \
+    descriptor_demand_waits_avoided descriptor_prefetch_occupancy_line_cycles \
+    descriptor_prefetch_occupancy_hwm descriptor_wasted_prefetched_lines \
+    descriptor_boundary_wait_events descriptor_boundary_wait_cycles \
+    descriptor_within_pass_wait_events \
+    descriptor_within_pass_wait_cycles < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 ~ /IND_BoundedBucketLineReads$/ { bl += $2 }
@@ -954,12 +1024,26 @@ read -r bounded_bucket_lines bounded_bucket_words \
         section == 1 && $1 ~ /IND_DescriptorSpoolStagingEntries$/ { se += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolControlBytes$/ { cb += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolBackingBytes$/ { bb += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolOverlapOpportunities$/ { oo += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolNextPassReadIssues$/ { ni += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolNextPassReadResponses$/ { nr += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolUsefulPrefetchedLines$/ { ul += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolDemandWaitsAvoided$/ { da += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolPrefetchOccupancyLineCycles$/ { oc += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolPrefetchOccupancyHighWater$/ { oh += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolWastedPrefetchedLines$/ { wlost += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolBoundaryDemandWaitEvents$/ { be += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolBoundaryDemandWaitCycles$/ { bc += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolWithinPassDemandWaitEvents$/ { we += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolWithinPassDemandWaitCycles$/ { wc += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
             print bl + 0, bw + 0, fri + 0, ffs + 0, bs + 0,
                   rp + 0, rd + 0, ed + 0, es + 0,
                   wl + 0, wb + 0, wa + 0,
                   rl + 0, rb + 0, ws + 0, rs + 0, wh + 0,
-                  se + 0, cb + 0, bb + 0
+                  se + 0, cb + 0, bb + 0, oo + 0, ni + 0, nr + 0,
+                  ul + 0, da + 0, oc + 0, oh + 0, wlost + 0,
+                  be + 0, bc + 0, we + 0, wc + 0
             exit
         }
     ' "$out/run/stats.txt"
@@ -1216,6 +1300,33 @@ elif [[ $virtual -eq 1 ]]; then
                         exit 1
                     }
                 fi
+                if [[ $descriptor_spool_read_ahead -eq 1 ]]; then
+                    [[ $descriptor_overlap_opportunities -eq 3 &&
+                       $descriptor_next_pass_read_issues -gt 0 &&
+                       $descriptor_next_pass_read_issues -le 12 &&
+                       $descriptor_next_pass_read_responses -eq $descriptor_next_pass_read_issues &&
+                       $descriptor_useful_prefetched_lines -eq $descriptor_next_pass_read_issues &&
+                       $descriptor_demand_waits_avoided -le $descriptor_useful_prefetched_lines &&
+                       $descriptor_prefetch_occupancy_line_cycles -gt 0 &&
+                       $descriptor_prefetch_occupancy_hwm -gt 0 &&
+                       $descriptor_prefetch_occupancy_hwm -le 4 &&
+                       $descriptor_wasted_prefetched_lines -eq 0 ]] || {
+                        echo "descriptor read-ahead accounting did not close" >&2
+                        exit 1
+                    }
+                else
+                    [[ $descriptor_overlap_opportunities -eq 0 &&
+                       $descriptor_next_pass_read_issues -eq 0 &&
+                       $descriptor_next_pass_read_responses -eq 0 &&
+                       $descriptor_useful_prefetched_lines -eq 0 &&
+                       $descriptor_demand_waits_avoided -eq 0 &&
+                       $descriptor_prefetch_occupancy_line_cycles -eq 0 &&
+                       $descriptor_prefetch_occupancy_hwm -eq 0 &&
+                       $descriptor_wasted_prefetched_lines -eq 0 ]] || {
+                        echo "disabled descriptor read-ahead leaked counters" >&2
+                        exit 1
+                    }
+                fi
             else
                 [[ $bounded_bucket_words -eq 0 &&
                    $bounded_replay_words -eq $((16384 * actual_index_partitions)) &&
@@ -1424,6 +1535,36 @@ if [[ $index_range_policy -eq 3 ]]; then
     }
 fi
 
+source_issue_records=0
+source_issue_requests=0
+source_issue_sha256=none
+if [[ $require_source_issue_digest -eq 1 ]]; then
+    awk '
+        /MAAIssueDigest:/ {
+            delete value
+            for (i = 1; i <= NF; ++i) {
+                split($i, kv, "=")
+                if (kv[1] == "count" || kv[1] == "fnv" || kv[1] == "mix")
+                    value[kv[1]] = kv[2]
+            }
+            if (value["count"] == "" || value["fnv"] == "" ||
+                value["mix"] == "")
+                exit 2
+            print value["count"], value["fnv"], value["mix"]
+        }
+    ' OFS='\t' "$out/run/virtual_trace.log" | LC_ALL=C sort \
+        > "$out/source_issue_multiset.tsv"
+    source_issue_records=$(wc -l < "$out/source_issue_multiset.tsv")
+    source_issue_requests=$(awk '{ total += $1 } END { print total + 0 }' \
+        "$out/source_issue_multiset.tsv")
+    [[ $source_issue_records -gt 0 && $source_issue_requests -gt 0 ]] || {
+        echo "source-issue digest evidence is empty" >&2
+        exit 1
+    }
+    source_issue_sha256=$(sha256sum "$out/source_issue_multiset.tsv" | \
+        awk '{ print $1 }')
+fi
+
 if [[ $overlap -eq 1 ]]; then
     [[ $page_wait_reads -eq $pages_ready && \
        $page_wait_responses -eq $pages_ready && \
@@ -1444,6 +1585,7 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     index_hwm feeder_descriptor_discards feeder_predicate_discards
     feeder_partition_discards feeder_summary_discards
     physical_records physical_record_sha256 bounded_summary_histogram_sha256
+    source_issue_records source_issue_requests source_issue_sha256
     index_filter_words index_filter_cycles index_filter_wait_events
     index_filter_wait_cycles descriptor_spool_filter_retry_inspections
     descriptor_spool_filter_predicate_retries
@@ -1460,6 +1602,7 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     row_table_rows_per_slice row_table_entries_per_subslice_row
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
     virtual_index_range_policy virtual_index_descriptor_spool
+    virtual_descriptor_spool_read_ahead
     descriptor_spool_variant
     virtual_index_range_boundaries
     virtual_index_force_cache virtual_partition_keep_combiner
@@ -1488,7 +1631,18 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     descriptor_spool_read_bytes descriptor_spool_write_credit_stalls
     descriptor_spool_read_credit_stalls descriptor_spool_write_high_water
     descriptor_spool_staging_entries descriptor_spool_control_bytes
-    descriptor_spool_backing_bytes)
+    descriptor_spool_backing_bytes descriptor_spool_overlap_opportunities
+    descriptor_spool_next_pass_read_issues
+    descriptor_spool_next_pass_read_responses
+    descriptor_spool_useful_prefetched_lines
+    descriptor_spool_demand_waits_avoided
+    descriptor_spool_prefetch_occupancy_line_cycles
+    descriptor_spool_prefetch_occupancy_high_water
+    descriptor_spool_wasted_prefetched_lines
+    descriptor_spool_boundary_demand_wait_events
+    descriptor_spool_boundary_demand_wait_cycles
+    descriptor_spool_within_pass_demand_wait_events
+    descriptor_spool_within_pass_demand_wait_cycles)
 values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$request_sim_ticks" "$fill_cycles" "$request_cycles" "$insts" "$index_line_reads"
     "$index_words" "$index_hwm" "$feeder_descriptor_discards"
@@ -1496,6 +1650,7 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$feeder_summary_discards"
     "$physical_records" "$physical_record_sha256"
     "$bounded_summary_histogram_sha256"
+    "$source_issue_records" "$source_issue_requests" "$source_issue_sha256"
     "$index_filter_words" "$index_filter_cycles"
     "$index_filter_wait_events" "$index_filter_wait_cycles"
     "$descriptor_filter_retry_inspections"
@@ -1513,6 +1668,7 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$cpu_cycles" "$row_slices" "$row_rows"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
     "$index_range_policy" "$index_descriptor_spool"
+    "$descriptor_spool_read_ahead"
     "$descriptor_spool_variant"
     "${index_range_boundaries:-none}"
     "$index_force_cache" "$partition_keep_combiner" \
@@ -1541,7 +1697,17 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$descriptor_read_bytes" "$descriptor_write_stalls"
     "$descriptor_read_stalls" "$descriptor_write_hwm"
     "$descriptor_staging_entries" "$descriptor_control_bytes"
-    "$descriptor_backing_bytes")
+    "$descriptor_backing_bytes" "$descriptor_overlap_opportunities"
+    "$descriptor_next_pass_read_issues"
+    "$descriptor_next_pass_read_responses"
+    "$descriptor_useful_prefetched_lines"
+    "$descriptor_demand_waits_avoided"
+    "$descriptor_prefetch_occupancy_line_cycles"
+    "$descriptor_prefetch_occupancy_hwm"
+    "$descriptor_wasted_prefetched_lines"
+    "$descriptor_boundary_wait_events" "$descriptor_boundary_wait_cycles"
+    "$descriptor_within_pass_wait_events"
+    "$descriptor_within_pass_wait_cycles")
 if [[ $index_range_passes -eq 1 ]]; then
     actual_index_partitions=$index_partitions
     expected_index_words=$((16384 * index_partitions))
@@ -1577,16 +1743,20 @@ if [[ $index_range_passes -eq 1 ]]; then
     uncached_index_responses=$(grep -Ec \
         'event=index_line_response schema=2 .* cached=0$' \
         "$out/run/virtual_trace.log" || true)
-    descriptor_response_count=$(grep -Ec \
-        'event=descriptor_spool_read_response schema=1 .* cached=1$' \
-        "$out/run/virtual_trace.log" || true)
-    uncached_descriptor_responses=$(grep -Ec \
-        'event=descriptor_spool_read_response schema=1 .* cached=0$' \
-        "$out/run/virtual_trace.log" || true)
+    descriptor_response_pattern='event=descriptor_spool_read_response schema=1 .* cached=1$'
+    uncached_descriptor_response_pattern='event=descriptor_spool_read_response schema=1 .* cached=0$'
     descriptor_complete_pattern='event=descriptor_spool_complete schema=1 .* descriptors=16384 write_lines=2048 write_acks=2048 read_lines=2048 read_responses=2048 .* staging_entries=32 .* fallback=none$'
     if [[ $descriptor_spool_variant == resident_first ]]; then
-        descriptor_complete_pattern='event=descriptor_spool_complete schema=1 .* b_scans=2 descriptors=16384 resident_pass=0 resident_descriptors=4096 external_descriptors=12288 external_segments=3 descriptor_bytes=6 payload_bytes=73728 write_lines=1152 write_acks=1152 read_lines=1152 read_responses=1152 .* fallback=none$'
+        descriptor_response_pattern='event=descriptor_spool_read_response schema=2 .* cached=1 mode=(demand|next_pass_read_ahead) before_demand=[01]$'
+        uncached_descriptor_response_pattern='event=descriptor_spool_read_response schema=2 .* cached=0 mode=(demand|next_pass_read_ahead) before_demand=[01]$'
+        descriptor_complete_pattern='event=descriptor_spool_complete schema=2 .* b_scans=2 descriptors=16384 resident_pass=0 resident_descriptors=4096 external_descriptors=12288 external_segments=3 descriptor_bytes=6 payload_bytes=73728 write_lines=1152 write_acks=1152 read_lines=1152 read_responses=1152 .* prefetch_occupancy=0 .* wasted_lines=0 .* fallback=none$'
     fi
+    descriptor_response_count=$(grep -Ec \
+        "$descriptor_response_pattern" \
+        "$out/run/virtual_trace.log" || true)
+    uncached_descriptor_responses=$(grep -Ec \
+        "$uncached_descriptor_response_pattern" \
+        "$out/run/virtual_trace.log" || true)
     descriptor_complete_count=$(grep -Ec \
         "$descriptor_complete_pattern" \
         "$out/run/virtual_trace.log" || true)

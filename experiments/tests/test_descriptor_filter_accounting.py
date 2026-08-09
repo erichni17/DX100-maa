@@ -85,16 +85,17 @@ class DescriptorFilterAccountingTest(unittest.TestCase):
 
     def test_complete_trace_regex_closes_exact_resident_line(self) -> None:
         expected = (
-            "event=descriptor_spool_complete schema=1 "
+            "event=descriptor_spool_complete schema=2 "
             ".* b_scans=2 descriptors=16384 resident_pass=0 "
             "resident_descriptors=4096 external_descriptors=12288 "
             "external_segments=3 descriptor_bytes=6 payload_bytes=73728 "
             "write_lines=1152 write_acks=1152 read_lines=1152 "
-            "read_responses=1152 .* fallback=none$"
+            "read_responses=1152 .* prefetch_occupancy=0 .* "
+            "wasted_lines=0 .* fallback=none$"
         )
         self.assertIn(expected, self.runner)
         trace_line = (
-            "1: global: event=descriptor_spool_complete schema=1 unit=0 "
+            "1: global: event=descriptor_spool_complete schema=2 unit=0 "
             "operation_tick=1 b_scans=2 descriptors=16384 resident_pass=0 "
             "resident_descriptors=4096 external_descriptors=12288 "
             "external_segments=3 descriptor_bytes=6 payload_bytes=73728 "
@@ -102,7 +103,14 @@ class DescriptorFilterAccountingTest(unittest.TestCase):
             "read_responses=1152 control_bytes=2000 backing_bytes=73728 "
             "staging_bytes=207 write_hwm=16 read_hwm=4 "
             "unique_inspections=16384 retry_inspections=100 "
-            "final_flush_stalls=2 active_limit=4096 "
+            "final_flush_stalls=2 read_ahead=0 overlap_opportunities=0 "
+            "next_pass_read_issues=0 next_pass_read_responses=0 "
+            "useful_prefetched_lines=0 demand_waits_avoided=0 "
+            "prefetch_occupancy=0 prefetch_occupancy_hwm=0 "
+            "prefetch_occupancy_line_cycles=0 wasted_lines=0 "
+            "boundary_wait_events=1 boundary_wait_cycles=10 "
+            "within_pass_wait_events=2 within_pass_wait_cycles=20 "
+            "active_limit=4096 "
             "identity_check=trace_side fallback=none"
         )
         self.assertIsNotNone(re.search(expected, trace_line))
