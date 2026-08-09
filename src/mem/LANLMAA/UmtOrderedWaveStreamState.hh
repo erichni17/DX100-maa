@@ -475,10 +475,10 @@ class UmtOrderedWaveStreamStateModel
             if (!issued)
                 break;
             ++issues;
+            ++fpOperationIssueCount;
         }
         if (issues == 0 && activeTokens != 0)
             ++fpIssueStallCycles;
-        fpOperationIssueCount += issues;
         if (issues == 2)
             ++dualIssueCycleCount;
         return result;
