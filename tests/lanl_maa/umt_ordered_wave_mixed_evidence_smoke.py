@@ -62,7 +62,7 @@ class MAACoherenceCache(Cache):
 
 with open(args.metadata, encoding="utf-8") as stream:
     metadata = json.load(stream)
-if metadata.get("schema") != "lanl-maa-umt-ordered-wave-mixed-evidence-v1":
+if metadata.get("schema") != "lanl-maa-umt-ordered-wave-mixed-evidence-v2":
     raise ValueError("mixed UMT evidence metadata schema changed")
 if metadata.get("validation_mode") not in ("confirmation", "calibration"):
     raise ValueError("mixed UMT evidence validation mode changed")

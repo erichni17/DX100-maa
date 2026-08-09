@@ -167,6 +167,87 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         ):
             DRIVER.validate_confirmation(stats, contract, "a" * 64)
 
+    def test_packet_retry_counters_are_exactly_predeclared(self):
+        stats = self.complete_fake_stats()
+        contract = self.timing_contract(stats)
+        for name in DRIVER.PACKET_RETRY_COUNTERS:
+            self.assertIn(name, contract["counters"])
+            with self.subTest(missing=name):
+                incomplete = {
+                    **contract,
+                    "counters": dict(contract["counters"]),
+                }
+                del incomplete["counters"][name]
+                with self.assertRaisesRegex(RuntimeError, "counter set"):
+                    DRIVER.validate_confirmation(stats, incomplete, "a" * 64)
+
+        for name in DRIVER.PACKET_RETRY_COUNTERS:
+            with self.subTest(name=name):
+                changed = dict(stats)
+                for retry_name in DRIVER.PACKET_RETRY_COUNTERS:
+                    changed[retry_name] = 2
+                DRIVER.validate_packet_retry_counters(changed)
+                changed[name] = 3
+                with self.assertRaisesRegex(RuntimeError, "retry"):
+                    DRIVER.validate_confirmation(changed, contract, "a" * 64)
+
+    def test_semantically_valid_retry_ledgers_are_closed_form(self):
+        stats = self.complete_fake_stats()
+        stats.update(
+            {
+                "portSendFailures": 3,
+                "portRetryNotifications": 3,
+                "retryPacketResubmissions": 3,
+                "retryPacketAcceptances": 1,
+            }
+        )
+        self.assertEqual(
+            DRIVER.validate_packet_retry_counters(stats),
+            {name: stats[name] for name in DRIVER.PACKET_RETRY_COUNTERS},
+        )
+        for name in DRIVER.PACKET_RETRY_COUNTERS:
+            stats[name] = 0
+        DRIVER.validate_packet_retry_counters(stats)
+
+    def test_adversarial_retry_contract_cannot_bless_open_obligations(self):
+        stats = self.complete_fake_stats()
+        stats.update(
+            {
+                "portSendFailures": 999,
+                "portRetryNotifications": 999,
+                "retryPacketResubmissions": 998,
+                "retryPacketAcceptances": 0,
+            }
+        )
+        contract = self.timing_contract(stats)
+        with self.assertRaisesRegex(RuntimeError, "retry obligation"):
+            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+
+    def test_balanced_retry_mutation_still_fails_exact_confirmation(self):
+        stats = self.complete_fake_stats()
+        contract = self.timing_contract(stats)
+        for name in DRIVER.PACKET_RETRY_COUNTERS:
+            stats[name] = 2
+        DRIVER.validate_packet_retry_counters(stats)
+        with self.assertRaisesRegex(
+            RuntimeError, "exact timing stat mismatch"
+        ):
+            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+
+    def test_terminal_retry_run_requires_an_acceptance(self):
+        stats = self.complete_fake_stats()
+        stats.update(
+            {
+                "portSendFailures": 2,
+                "portRetryNotifications": 2,
+                "retryPacketResubmissions": 2,
+                "retryPacketAcceptances": 0,
+            }
+        )
+        contract = self.timing_contract(stats)
+        with self.assertRaisesRegex(RuntimeError, "terminal retry acceptance"):
+            DRIVER.validate_confirmation(stats, contract, "a" * 64)
+
     def test_timing_contract_must_bind_build_manifest(self):
         stats = self.complete_fake_stats()
         contract = self.timing_contract(stats, "b" * 64)
@@ -177,17 +258,33 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         stats = self.complete_fake_stats()
         exact, candidate = DRIVER.timing_contract_candidate(stats, "a" * 64)
         self.assertEqual(exact, DRIVER.exact_stats())
+        self.assertEqual(
+            DRIVER.TIMING_CONTRACT_SCHEMA,
+            "lanl-maa-umt-ordered-wave-timing-contract-v2",
+        )
+        self.assertEqual(
+            DRIVER.EVIDENCE_REPORT_SCHEMA,
+            "lanl-maa-umt-ordered-wave-mixed-evidence-v2",
+        )
         self.assertEqual(candidate["schema"], DRIVER.TIMING_CONTRACT_SCHEMA)
         self.assertEqual(candidate["build_manifest_sha256"], "a" * 64)
         self.assertNotIn("status", candidate)
         self.assertEqual(
             DRIVER.validation_disposition("calibration"),
-            ("calibration_only", False),
+            {
+                "status": "calibration_only",
+                "gate_scope": "mixed_umt_evidence_prerequisite",
+                "prerequisite_gate_passed": False,
+                "application_performance_promotion_eligible": False,
+            },
         )
-        self.assertEqual(
-            DRIVER.validation_disposition("confirmation"),
-            ("passed", True),
+        confirmation = DRIVER.validation_disposition("confirmation")
+        self.assertEqual(confirmation["status"], "prerequisite_passed")
+        self.assertTrue(confirmation["prerequisite_gate_passed"])
+        self.assertFalse(
+            confirmation["application_performance_promotion_eligible"]
         )
+        self.assertNotIn("promotion_eligible", confirmation)
 
     def test_build_manifest_binds_reproducible_relink_contract(self):
         manifest = self.build_manifest()
