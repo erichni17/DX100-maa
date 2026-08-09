@@ -48,6 +48,24 @@ physical_tile_elements=${MAA_PHYSICAL_TILE_ELEMENTS:-0}
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be a non-negative integer" >&2
     exit 2
 }
+logical_tile_elements=${MAA_LOGICAL_TILE_ELEMENTS:-16384}
+offset_table_entries=${MAA_OFFSET_TABLE_ENTRIES:-0}
+offset_epoch_entries=${MAA_OFFSET_EPOCH_ENTRIES:-0}
+row_table_slices=${MAA_ROW_TABLE_SLICES:-16}
+row_table_rows=${MAA_ROW_TABLE_ROWS:-64}
+for value_name in logical_tile_elements offset_table_entries \
+    offset_epoch_entries row_table_slices row_table_rows; do
+    value=${!value_name}
+    [[ $value =~ ^[0-9]+$ ]] || {
+        echo "$value_name must be a non-negative integer" >&2
+        exit 2
+    }
+done
+[[ $logical_tile_elements -gt 0 && $row_table_slices -gt 0 && \
+   $row_table_rows -gt 0 ]] || {
+    echo "logical tile and Row-Table dimensions must be positive" >&2
+    exit 2
+}
 virtual_grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 [[ $virtual_grow_order == 0 || $virtual_grow_order == 1 ]] || {
     echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
@@ -112,11 +130,15 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16 \
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4 \
     --cacheline_size=64 --mem-type Ramulator2 --ramulator-config "$ramulator" \
-    --mem-channels=1 --maa --maa_num_tile_elements=16384 \
+    --mem-channels=1 --maa \
+    --maa_num_tile_elements="$logical_tile_elements" \
     --maa_physical_tile_elements="$physical_tile_elements" \
+    --maa_num_offset_table_entries="$offset_table_entries" \
+    --maa_num_offset_table_epoch_entries="$offset_epoch_entries" \
     --maa_num_indirect_units_per_maa="$indirect_units" \
     --maa_retirement_cache_response_latency="$retirement_cache_response_latency" \
-    --maa_num_initial_row_table_slices=16 \
+    --maa_num_initial_row_table_slices="$row_table_slices" \
+    --maa_num_row_table_rows_per_slice="$row_table_rows" \
     --maa_virtual_combine_slots="$combine_slots" \
     --maa_virtual_combine_words="$combine_words" \
     --maa_virtual_combine_ways="$combine_ways" \

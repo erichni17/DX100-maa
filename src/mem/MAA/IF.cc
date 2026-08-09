@@ -28,6 +28,7 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              src1RegID(-1),
                              src2RegID(-1),
                              src3RegID(-1),
+                             src4RegID(-1),
                              dst1RegID(-1),
                              dst2RegID(-1),
                              src1SpdID(-1),
@@ -75,25 +76,49 @@ std::string Instruction::print() const {
     char maxAddrStr[32];
     std::sprintf(maxAddrStr, "0x%lx", maxAddr);
     std::ostringstream str;
-    ccprintf(str, "INSTR[%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s]",
-             "core_id(" + std::to_string(core_id) + ")",
-             " maa_id(" + std::to_string(maa_id) + ")",
-             func_unit_id == -1 ? "" : " unit_id(" + std::to_string(func_unit_id) + ")",
-             " opcode(" + opcode_names[(int)opcode] + ")",
-             optype == OPType::MAX ? "" : " optype(" + optype_names[(int)optype] + ")",
-             " datatype(" + datatype_names[(int)datatype] + ")",
-             " state(" + status_names[(int)state] + ")",
-             src1SpdID == -1 ? "" : " srcSPD1(" + std::to_string(src1SpdID) + "/" + tile_status_names[(uint8_t)src1Status] + ")",
-             src2SpdID == -1 ? "" : " srcSPD2(" + std::to_string(src2SpdID) + "/" + tile_status_names[(uint8_t)src2Status] + ")",
-             src1RegID == -1 ? "" : " srcREG1(" + std::to_string(src1RegID) + ")",
-             src2RegID == -1 ? "" : " srcREG2(" + std::to_string(src2RegID) + ")",
-             src3RegID == -1 ? "" : " srcREG3(" + std::to_string(src3RegID) + ")",
-             dst1SpdID == -1 ? "" : " dstSPD1(" + std::to_string(dst1SpdID) + "/" + tile_status_names[(uint8_t)dst1Status] + ")",
-             dst2SpdID == -1 ? "" : " dstSPD2(" + std::to_string(dst2SpdID) + "/" + tile_status_names[(uint8_t)dst2Status] + ")",
-             dst1RegID == -1 ? "" : " dstREG1(" + std::to_string(dst1RegID) + ")",
-             dst2RegID == -1 ? "" : " dstREG2(" + std::to_string(dst2RegID) + ")",
-             condSpdID == -1 ? "" : " condSPD(" + std::to_string(condSpdID) + "/" + tile_status_names[(uint8_t)condStatus] + ")",
-             baseAddr != 0xFFFFFFFFFFFFFFFF ? " baseAddr(" + std::string(baseAddrStr) + ") minAddr(" + std::string(minAddrStr) + ") maxAddr(" + std::string(maxAddrStr) + ")" : "");
+    ccprintf(
+        str, "INSTR[%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s]",
+        "core_id(" + std::to_string(core_id) + ")",
+        " maa_id(" + std::to_string(maa_id) + ")",
+        func_unit_id == -1 ?
+            "" : " unit_id(" + std::to_string(func_unit_id) + ")",
+        " opcode(" + opcode_names[(int)opcode] + ")",
+        optype == OPType::MAX ?
+            "" : " optype(" + optype_names[(int)optype] + ")",
+        " datatype(" + datatype_names[(int)datatype] + ")",
+        " state(" + status_names[(int)state] + ")",
+        src1SpdID == -1 ?
+            "" : " srcSPD1(" + std::to_string(src1SpdID) + "/" +
+                tile_status_names[(uint8_t)src1Status] + ")",
+        src2SpdID == -1 ?
+            "" : " srcSPD2(" + std::to_string(src2SpdID) + "/" +
+                tile_status_names[(uint8_t)src2Status] + ")",
+        src1RegID == -1 ?
+            "" : " srcREG1(" + std::to_string(src1RegID) + ")",
+        src2RegID == -1 ?
+            "" : " srcREG2(" + std::to_string(src2RegID) + ")",
+        src3RegID == -1 ?
+            "" : " srcREG3(" + std::to_string(src3RegID) + ")",
+        src4RegID == -1 ?
+            "" : " srcREG4(" + std::to_string(src4RegID) + ")",
+        dst1SpdID == -1 ?
+            "" : " dstSPD1(" + std::to_string(dst1SpdID) + "/" +
+                tile_status_names[(uint8_t)dst1Status] + ")",
+        dst2SpdID == -1 ?
+            "" : " dstSPD2(" + std::to_string(dst2SpdID) + "/" +
+                tile_status_names[(uint8_t)dst2Status] + ")",
+        dst1RegID == -1 ?
+            "" : " dstREG1(" + std::to_string(dst1RegID) + ")",
+        dst2RegID == -1 ?
+            "" : " dstREG2(" + std::to_string(dst2RegID) + ")",
+        condSpdID == -1 ?
+            "" : " condSPD(" + std::to_string(condSpdID) + "/" +
+                tile_status_names[(uint8_t)condStatus] + ")",
+        baseAddr != 0xFFFFFFFFFFFFFFFF ?
+            " baseAddr(" + std::string(baseAddrStr) + ") minAddr(" +
+                std::string(minAddrStr) + ") maxAddr(" +
+                std::string(maxAddrStr) + ")" :
+            "");
     if (hasLogicalOperands()) {
         str << " logicalSrc1(" << src1LogicalID << ")"
             << " logicalSrc2(" << src2LogicalID << ")"
@@ -116,6 +141,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
         case OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
+        case OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR:
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::INDIR_LD_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
@@ -157,6 +183,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
         case OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
+        case OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR:
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::INDIR_LD_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
@@ -188,7 +215,8 @@ int Instruction::getWordSize(int tile_id) {
     return -1;
 }
 int Instruction::getTileSpanWordSize(int tile_id) {
-    if (opcode == OpcodeType::INDIR_LD_VIRTUAL_SCALAR &&
+    if ((opcode == OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+         opcode == OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR) &&
         tile_id == dst1SpdID) {
         // The FP64 payload remains eight bytes throughout gather, ALU, link,
         // combiner, and retirement.  Only the software-visible completion
@@ -240,7 +268,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         const int registers[] = {
             _instruction.dst1RegID, _instruction.dst2RegID,
             _instruction.src1RegID, _instruction.src2RegID,
-            _instruction.src3RegID,
+            _instruction.src3RegID, _instruction.src4RegID,
         };
         const int register_words = _instruction.WordSize() / sizeof(uint32_t);
         for (const int register_id : registers) {
@@ -309,6 +337,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         load.opcode = Instruction::OpcodeType::INDIR_LD;
         load.accessType = Instruction::AccessType::READ;
         load.src1RegID = load.src2RegID = load.src3RegID = -1;
+        load.src4RegID = -1;
         load.backingAddr = 0xFFFFFFFFFFFFFFFF;
         load.backingAddrRangeID = -1;
 
@@ -350,9 +379,13 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         return true;
     }
 
+    const bool zero_payload_scalar =
+        _instruction.opcode == Instruction::OpcodeType::
+                                   INDIR_LD_VIRTUAL_INDEX_SCALAR;
     const bool fused_direct_scalar =
         _instruction.opcode ==
-        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+            Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+        zero_payload_scalar;
     if (fused_direct_scalar) {
         const bool source_destination_overlap =
             _instruction.minAddr < _instruction.backingMaxAddr &&
@@ -362,13 +395,31 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                      _instruction.optype != Instruction::OPType::MUL_OP,
                  "Fused direct scalar load supports only FP64 MUL: %s\n",
                  _instruction.print());
-        panic_if(_instruction.condSpdID != -1 ||
-                     _instruction.src1SpdID == -1 ||
-                     _instruction.src1RegID == -1 ||
-                     _instruction.dst1SpdID == -1,
-                 "Fused direct scalar load requires one index tile, one "
-                 "scalar register, one completion tile, and no predicate: "
-                 "%s\n", _instruction.print());
+        if (zero_payload_scalar) {
+            panic_if(_instruction.condSpdID != -1 ||
+                         _instruction.src1SpdID != -1 ||
+                         _instruction.src2SpdID != -1 ||
+                         _instruction.src1RegID == -1 ||
+                         _instruction.src2RegID == -1 ||
+                         _instruction.src3RegID == -1 ||
+                         _instruction.src4RegID == -1 ||
+                         _instruction.dst1RegID != -1 ||
+                         _instruction.dst2RegID != -1 ||
+                         _instruction.dst1SpdID == -1 ||
+                         _instruction.dst2SpdID != -1,
+                     "Zero-payload XRAGE requires min/max/stride/scalar "
+                     "sources, one completion token, no SPD source or "
+                     "predicate, and no RF destination: %s\n",
+                     _instruction.print());
+        } else {
+            panic_if(_instruction.condSpdID != -1 ||
+                         _instruction.src1SpdID == -1 ||
+                         _instruction.src1RegID == -1 ||
+                         _instruction.dst1SpdID == -1,
+                     "Fused direct scalar load requires one index tile, one "
+                     "scalar register, one completion tile, and no predicate: "
+                     "%s\n", _instruction.print());
+        }
         panic_if(_instruction.addrRangeID < 0 ||
                      _instruction.backingAddrRangeID < 0 ||
                      _instruction.indexAddrRangeID < 0 ||
@@ -378,10 +429,12 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                  "Fused direct scalar load requires separately registered "
                  "non-aliasing source and destination regions: %s\n",
                  _instruction.print());
-        // Direct retirement may begin with the first gather response.  Hold
-        // the operation until the full index tile is resident so a C/B alias
-        // cannot corrupt indices that the stream producer has not read yet.
-        _instruction.src1MustBeFinished = true;
+        if (!zero_payload_scalar) {
+            // Direct retirement may begin with the first gather response. Hold
+            // opcode 17 until its full index tile is resident. Opcode 18 has
+            // no index tile and enforces its B/C span contract at decode.
+            _instruction.src1MustBeFinished = true;
+        }
     }
 
     switch (_instruction.opcode) {
@@ -394,6 +447,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
     case Instruction::OpcodeType::INDIR_LD:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
+    case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX:
     case Instruction::OpcodeType::INDIR_LD_INDEX:
     case Instruction::OpcodeType::INDIR_ST_VECTOR:
@@ -511,13 +565,17 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
             const Instruction &other = instructions[maa_id][i];
             const bool other_fused_direct_scalar =
                 other.opcode ==
-                Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                other.opcode == Instruction::OpcodeType::
+                                    INDIR_LD_VIRTUAL_INDEX_SCALAR;
             if (fused_direct_scalar || other_fused_direct_scalar) {
                 const auto writes_backing = [](const Instruction &inst) {
                     return inst.opcode ==
                                Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                            inst.opcode == Instruction::OpcodeType::
                                               INDIR_LD_VIRTUAL_SCALAR ||
+                           inst.opcode == Instruction::OpcodeType::
+                                              INDIR_LD_VIRTUAL_INDEX_SCALAR ||
                            inst.opcode == Instruction::OpcodeType::
                                               INDIR_LD_VIRTUAL_INDEX;
                 };
@@ -594,6 +652,8 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
             _instruction.opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
             _instruction.opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+            _instruction.opcode == Instruction::OpcodeType::
+                                       INDIR_LD_VIRTUAL_INDEX_SCALAR ||
             _instruction.opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
             _instruction.opcode == Instruction::OpcodeType::STREAM_PREFETCH;
@@ -613,7 +673,19 @@ bool IF::canPushRegister(Register _reg) {
                 (instructions[maa_id][i].src1RegID == register_id) ||
                 (instructions[maa_id][i].src2RegID == register_id) ||
                 (instructions[maa_id][i].src3RegID == register_id)) {
-                DPRINTF(MAAController, "%s: register write %d cannot be pushed b/c of %s!\n", __func__, register_id, instructions[maa_id][i].print());
+                DPRINTF(
+                    MAAController,
+                    "%s: register write %d cannot be pushed b/c of %s!\n",
+                    __func__, register_id,
+                    instructions[maa_id][i].print());
+                return false;
+            }
+            if (instructions[maa_id][i].src4RegID == register_id) {
+                DPRINTF(
+                    MAAController,
+                    "%s: register write %d cannot be pushed b/c of %s!\n",
+                    __func__, register_id,
+                    instructions[maa_id][i].print());
                 return false;
             }
         }
@@ -665,8 +737,10 @@ bool IF::hasFusedDirectInstruction() const {
     for (unsigned int maa_id = 0; maa_id < num_maas; ++maa_id) {
         for (unsigned int slot = 0; slot < num_instructions_per_maa; ++slot) {
             if (valids[maa_id][slot] &&
-                instructions[maa_id][slot].opcode ==
-                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR)
+                (instructions[maa_id][slot].opcode ==
+                     Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                 instructions[maa_id][slot].opcode ==
+                     Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR))
                 return true;
         }
     }

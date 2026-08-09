@@ -5,8 +5,8 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
-#include <vector>
 
 #include "sim/system.hh"
 
@@ -51,8 +51,8 @@ public:
     int directTransformCapacity() const { return num_ALU_lanes; }
     bool canStartDirectTransform() const;
     bool startDirectTransform(
-        IndirectAccessUnit *owner, const std::vector<int> &iterations,
-        const std::vector<std::array<uint8_t, 8>> &words, double scalar);
+        IndirectAccessUnit *owner, const int *iterations,
+        const std::array<uint8_t, 8> *words, size_t count, double scalar);
     bool ownsDirectTransform(const IndirectAccessUnit *owner) const;
     bool directTransformReady(const IndirectAccessUnit *owner) const;
     int directTransformIteration(const IndirectAccessUnit *owner) const;
@@ -90,7 +90,8 @@ protected:
         int iteration = -1;
         std::array<uint8_t, 8> data{};
     };
-    std::vector<DirectTransformEntry> direct_transform_entries;
+    std::unique_ptr<DirectTransformEntry[]> direct_transform_entries;
+    size_t direct_transform_count = 0;
     IndirectAccessUnit *direct_transform_owner = nullptr;
     size_t direct_transform_cursor = 0;
     double direct_transform_scalar = 0.0;

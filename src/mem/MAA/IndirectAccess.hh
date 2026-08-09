@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -17,6 +18,7 @@
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/Tables.hh"
+#include "mem/MAA/XRAGEZeroPayload.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
@@ -83,7 +85,9 @@ protected:
         bool valid = false;
         int next_itr = -1;
         std::array<uint8_t, 64> data{};
-        std::vector<std::array<uint8_t, 8>> packed_words;
+        std::unique_ptr<std::array<uint8_t, 8>[]> packed_words;
+        size_t packed_word_capacity = 0;
+        size_t packed_word_count = 0;
         size_t next_packed_word = 0;
         int reserved_words = 0;
         int claim_rt_idx = -1;
@@ -92,6 +96,28 @@ protected:
         Addr claim_grow_addr = 0;
         Addr claim_addr = 0;
         int claim_head = -1;
+
+        void allocatePackedWords(size_t capacity)
+        {
+            packed_word_capacity = capacity;
+            if (capacity != 0)
+                packed_words =
+                    std::make_unique<std::array<uint8_t, 8>[]>(capacity);
+        }
+        void clear()
+        {
+            valid = false;
+            next_itr = -1;
+            packed_word_count = 0;
+            next_packed_word = 0;
+            reserved_words = 0;
+            claim_rt_idx = -1;
+            claim_row_id = -1;
+            claim_entry_id = -1;
+            claim_grow_addr = 0;
+            claim_addr = 0;
+            claim_head = -1;
+        }
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
     int virtual_response_words = 0;
@@ -313,13 +339,19 @@ protected:
     bool direct_index_partition_barrier = false;
     BoundedRangePassTracker bounded_range_pass;
     int direct_index_next_prefetch_itr = 0;
-    std::map<Addr, std::vector<std::pair<int, uint16_t>>>
-        direct_index_pending_lines;
+    struct DirectIndexPendingLine
+    {
+        std::array<std::pair<uint16_t, uint8_t>,
+                   maa::XRAGEZeroPayloadContract::IndexWordsPerLine> words{};
+        uint8_t count = 0;
+    };
+    std::map<Addr, DirectIndexPendingLine> direct_index_pending_lines;
     std::map<Addr, int> direct_index_ready_lines;
     std::map<int, DirectIndexWord> direct_index_words;
     int direct_index_max_lines = 0;
     int direct_index_max_words = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
+    double my_fused_scalar = 0.0;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
     int my_expected_responses;
@@ -356,6 +388,7 @@ protected:
     Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
                          unsigned size = 64);
     bool isVirtualLoad() const;
+    bool isZeroPayloadXRAGE() const;
     bool isFusedDirectTransform() const;
     bool fusedDirectTransformLive() const;
     bool fusedDirectTransformPending() const;

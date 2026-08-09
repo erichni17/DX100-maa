@@ -45,6 +45,17 @@ main()
     assert(tracker.release(&c_writer_maa1));
     assert(tracker.empty());
 
+    // A/B may be the same immutable region: duplicate reads collapse to one
+    // shared lease and remain compatible with another reader.
+    int shared_ab = 0;
+    int shared_ab_reader = 0;
+    assert(tracker.tryAcquire(
+        &shared_ab, 0,
+        {{5, Mode::Read}, {5, Mode::Read}, {6, Mode::Write}}));
+    assert(tracker.tryAcquire(&shared_ab_reader, 1, {{5, Mode::Read}}));
+    assert(tracker.release(&shared_ab_reader));
+    assert(tracker.release(&shared_ab));
+
     // Self-aliasing B/C is normalized to one exclusive region lease.
     const auto normalized = MultiRangeAccessTracker::normalize(
         {Access{7, Mode::Read}, Access{7, Mode::Write}});

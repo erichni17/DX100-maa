@@ -1,0 +1,7 @@
+[
+  {
+    "pattern": "UNIFORM:20000:1:NR",
+    "kernel": "Gather",
+    "count": 1
+  }
+]

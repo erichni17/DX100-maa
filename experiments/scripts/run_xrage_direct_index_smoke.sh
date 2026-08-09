@@ -29,6 +29,12 @@ retirement_cache_size=${MAA_RETIREMENT_CACHE_SIZE:-1kB}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
 combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
 combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
+combine_banks=${MAA_VIRTUAL_COMBINE_BANKS:-0}
+response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
+response_words=${MAA_VIRTUAL_RESPONSE_WORDS:-0}
+response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
+virtual_words_per_cycle=${MAA_VIRTUAL_WORDS_PER_CYCLE:-4}
+write_credits=${MAA_VIRTUAL_MAX_OUTSTANDING_WRITES:-64}
 fused_result_width=${MAA_FUSED_RESULT_TRANSFER_WORDS_PER_CYCLE:-4}
 fused_result_banks=${MAA_FUSED_RESULT_TRANSFER_BANKS:-4}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
@@ -42,7 +48,9 @@ logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
 result_scale=${XRAGE_RESULT_SCALE:-1}
+guest_data_seed=${XRAGE_GUEST_DATA_SEED:-}
 debug_args=()
+guest_env_args=()
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be in [1,16384]" >&2
@@ -93,6 +101,16 @@ debug_args=()
     echo "virtual combiner capacity must be positive and slots must be divisible by ways" >&2
     exit 2
 }
+[[ $combine_banks -ge 0 && $combine_banks -le $combine_slots ]] || {
+    echo "MAA_VIRTUAL_COMBINE_BANKS must be in [0, combine slots]" >&2
+    exit 2
+}
+[[ $response_slots -gt 0 && $response_words -ge 0 &&
+   $response_word_pool -ge 0 && $virtual_words_per_cycle -ge 0 &&
+   $write_credits -gt 0 ]] || {
+    echo "virtual response/write capacities are invalid" >&2
+    exit 2
+}
 [[ $fused_result_width -gt 0 && $fused_result_width -le 64 &&
    $fused_result_banks -gt 0 && $fused_result_banks -le 64 ]] || {
     echo "fused result width and banks must be in [1,64]" >&2
@@ -128,6 +146,10 @@ debug_args=()
     echo "XRAGE_RESULT_SCALE must be 1 or 3" >&2
     exit 2
 }
+[[ -z $guest_data_seed || $guest_data_seed =~ ^[0-9]+$ ]] || {
+    echo "XRAGE_GUEST_DATA_SEED must be an unsigned integer" >&2
+    exit 2
+}
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
     echo "XRAGE_SIMULATOR_SOURCE_COMMIT must be a full Git commit" >&2
     exit 2
@@ -138,6 +160,10 @@ case "$arm" in
         workload_chunk_elements=16384
         ;;
     fused_4k)
+        maa_logical_tile_elements=4096
+        workload_chunk_elements=4096
+        ;;
+    zero_payload_4k)
         maa_logical_tile_elements=4096
         workload_chunk_elements=4096
         ;;
@@ -168,6 +194,21 @@ if [[ -n $logical_override ]]; then
     }
     maa_logical_tile_elements=$logical_override
 fi
+if [[ $arm == zero_payload_4k ]]; then
+    [[ $maa_logical_tile_elements -eq 4096 && $physical -eq 4096 &&
+       $index_partitions -eq 1 && $offset_table_entries -gt 0 &&
+       $offset_table_entries -le 4096 &&
+       $offset_table_epoch_entries -gt 0 &&
+       $offset_table_epoch_entries -le 4096 &&
+       $((row_table_slices * row_table_rows)) -le 4096 &&
+       $response_slots -le 4096 && $response_word_pool -le 4096 &&
+       $combine_slots -le 4096 && $combine_words -le 4096 &&
+       $index_buffer_lines -le 256 && $write_credits -le 4096 &&
+       $fused_result_width -le 16 && $fused_result_banks -le 16 ]] || {
+        echo "zero_payload_4k requires strict bounded 4K state, one index pass, and at most 16 ALU/result-link lanes" >&2
+        exit 2
+    }
+fi
 if [[ -n $guest_abi ]]; then
     [[ $guest_abi -gt 0 && $guest_abi -le 16384 ]] || {
         echo "MAA_GUEST_ABI_TILE_ELEMENTS must be in [1,16384]" >&2
@@ -181,7 +222,7 @@ if [[ -n $guest_abi ]]; then
 fi
 if [[ -n $guest_arm ]]; then
     case "$guest_arm" in
-        native16|native16x3|fused16|fused4|compact16|compact16x3|fuseddirect16x3|direct4|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
+        native16|native16x3|fused16|fused4|compact16|compact16x3|fuseddirect16x3|zeropayload4x3|direct4|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
         *)
             echo "unsupported XRAGE_GUEST_ARM: $guest_arm" >&2
             exit 2
@@ -190,12 +231,12 @@ if [[ -n $guest_arm ]]; then
 fi
 if [[ $result_scale == 3 ]]; then
     [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
-       $guest_arm == fuseddirect16x3 ]] || {
-        echo "scale 3 requires a native16x3, compact16x3, or fuseddirect16x3 guest arm" >&2
+       $guest_arm == fuseddirect16x3 || $guest_arm == zeropayload4x3 ]] || {
+        echo "scale 3 requires an x3 guest arm" >&2
         exit 2
     }
 elif [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
-        $guest_arm == fuseddirect16x3 ]]; then
+        $guest_arm == fuseddirect16x3 || $guest_arm == zeropayload4x3 ]]; then
     echo "x3 guest arms require XRAGE_RESULT_SCALE=3" >&2
     exit 2
 fi
@@ -219,6 +260,11 @@ fi
 }
 
 mkdir -p "$out"
+if [[ -n $guest_data_seed ]]; then
+    guest_env_file="$out/guest.env"
+    printf 'SPATTER_DATA_SEED=%s\n' "$guest_data_seed" > "$guest_env_file"
+    guest_env_args=(--env "$guest_env_file")
+fi
 runner_snapshot="$out/run_xrage_direct_index_smoke.sh"
 cp "$0" "$runner_snapshot"
 config="$root/configs/deprecated/example/se.py"
@@ -251,6 +297,12 @@ fi
     printf 'virtual_combine_slots=%s\n' "$combine_slots"
     printf 'virtual_combine_words=%s\n' "$combine_words"
     printf 'virtual_combine_ways=%s\n' "$combine_ways"
+    printf 'virtual_combine_banks=%s\n' "$combine_banks"
+    printf 'virtual_response_slots=%s\n' "$response_slots"
+    printf 'virtual_response_words=%s\n' "$response_words"
+    printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
+    printf 'virtual_words_per_cycle=%s\n' "$virtual_words_per_cycle"
+    printf 'virtual_max_outstanding_writes=%s\n' "$write_credits"
     printf 'fused_result_transfer_words_per_cycle=%s\n' \
         "$fused_result_width"
     printf 'fused_result_transfer_banks=%s\n' "$fused_result_banks"
@@ -261,20 +313,27 @@ fi
     printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
-    printf 'guest_environment=empty\n'
-    printf 'data_seed=gem5_fixed_epoch_time\n'
+    printf 'guest_environment=%s\n' \
+        "${guest_env_file:-empty}"
+    printf 'data_seed=%s\n' \
+        "${guest_data_seed:-gem5_fixed_epoch_time}"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
-sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" \
-    "$runner_snapshot" \
-    > "$out/artifact_sha256.txt"
+artifact_inputs=(
+    "$gem5" "$binary" "$input" "$config" "$ramulator" "$runner_snapshot"
+)
+if [[ -n ${guest_env_file:-} ]]; then
+    artifact_inputs+=("$guest_env_file")
+fi
+sha256sum "${artifact_inputs[@]}" > "$out/artifact_sha256.txt"
 
 checkpoint_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint"
     "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB
+    "${guest_env_args[@]}"
     --max-checkpoints=1 --cmd "$binary" --options "$options"
 )
 printf '%q ' "${checkpoint_cmd[@]}" > "$out/checkpoint.command"
@@ -298,6 +357,7 @@ ls "$out/checkpoint"/cpt.* >/dev/null 2>&1 || {
 restore_cmd=(
     "$gem5" "${debug_args[@]}" --listener-mode=off --outdir="$out/run"
     "$config" --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB
+    "${guest_env_args[@]}"
     --checkpoint-dir="$out/checkpoint"
     --sys-clock 3.2GHz --cpu-clock 3.2GHz
     --caches --l1d_size=32kB --l1d_assoc=8
@@ -321,9 +381,13 @@ restore_cmd=(
     --maa_num_offset_table_epoch_entries="$offset_table_epoch_entries"
     --maa_virtual_combine_slots="$combine_slots"
     --maa_virtual_combine_words="$combine_words"
-    --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
-    --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
-    --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
+    --maa_virtual_combine_ways="$combine_ways"
+    --maa_virtual_combine_banks="$combine_banks"
+    --maa_virtual_response_slots="$response_slots"
+    --maa_virtual_response_words="$response_words"
+    --maa_virtual_response_word_pool="$response_word_pool"
+    --maa_virtual_words_per_cycle="$virtual_words_per_cycle"
+    --maa_virtual_max_outstanding_writes="$write_credits"
     --maa_fused_result_transfer_words_per_cycle="$fused_result_width"
     --maa_fused_result_transfer_banks="$fused_result_banks"
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
@@ -402,11 +466,16 @@ read -r retirement_cache_count retirement_cache_matches < <(
 }
 
 hash=$(sed -n 's/^MAA_GATHER_VERIFY_PASS .* hash=\([0-9]*\)$/\1/p' "$log" | tail -1)
+verified_length=$(
+    sed -n 's/^MAA_GATHER_VERIFY_PASS length=\([0-9]*\) hash=.*$/\1/p' \
+        "$log" | tail -1
+)
 stats_blocks=$(awk '$1 == "simTicks" { count++ } END { print count + 0 }' \
     "$stats")
 roi_ticks=$(awk '$1 == "simTicks" { print $2; exit }' "$stats")
 final_ticks=$(awk '$1 == "simTicks" { value=$2 } END { print value }' "$stats")
-[[ $stats_blocks -eq 2 && -n $hash && -n $roi_ticks &&
+[[ $stats_blocks -eq 2 && -n $hash && -n $verified_length &&
+   -n $roi_ticks &&
    -n $final_ticks && $final_ticks -ge $roi_ticks ]] || {
     echo "XRAGE result extraction failed" >&2
     exit 1
@@ -441,6 +510,9 @@ index_outstanding_wait_cycles=$(
     sum_indirect_stat IND_VirtIndexOutstandingWaitCycles
 )
 indirect_spd_reads=$(sum_indirect_stat IND_CyclesSPDReadAccess)
+indirect_spd_writes=$(sum_indirect_stat IND_CyclesSPDWriteAccess)
+fused_result_words=$(sum_indirect_stat IND_FusedResultTransferWords)
+fused_alu_words=$(sum_indirect_stat IND_FusedALUWords)
 first_roi_stat() {
     awk -v name="$1" '
         /^---------- Begin Simulation Statistics/ { active = 1; next }
@@ -482,7 +554,8 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$offset_table_epoch_drains" \
     "$virtual_build_rounds" "$fill_cycles" \
     "$all_pages_ready_cycles" "$index_outstanding_merges" \
-    "$index_outstanding_wait_cycles" "$indirect_spd_reads"; do
+    "$index_outstanding_wait_cycles" "$indirect_spd_reads" \
+    "$indirect_spd_writes" "$fused_result_words" "$fused_alu_words"; do
     [[ -n $value ]] || {
         echo "XRAGE mechanism-counter extraction failed" >&2
         exit 1
@@ -514,8 +587,25 @@ else
         }
     fi
 fi
+if [[ $arm == zero_payload_4k ]]; then
+    expected_descriptors=$(((verified_length + 4095) / 4096))
+    [[ $verified_length -gt 0 &&
+       $index_words -eq $verified_length &&
+       $fused_alu_words -eq $verified_length &&
+       $fused_result_words -eq $verified_length &&
+       $maa_instructions -eq $expected_descriptors &&
+       $maa_indirect_instructions -eq $expected_descriptors &&
+       $maa_stream_read_instructions -eq 0 &&
+       $maa_stream_write_instructions -eq 0 &&
+       $maa_scalar_alu_instructions -eq 0 &&
+       $indirect_spd_reads -eq 0 && $indirect_spd_writes -eq 0 &&
+       $write_issues -gt 0 && $write_issues -eq $write_completions ]] || {
+        echo "zero-payload XRAGE mechanism counters violate the terminal-chain contract" >&2
+        exit 1
+    }
+fi
 {
-    printf 'output_hash\troi_simTicks\tfinal_simTicks\tstats_blocks'
+    printf 'output_hash\tverified_length\troi_simTicks\tfinal_simTicks\tstats_blocks'
     printf '\tvirtual_write_issues\tvirtual_write_completions'
     printf '\tvirtual_pages_ready\tdirect_index_words'
     printf '\tvirtual_index_partitions\tindex_filter_words'
@@ -526,13 +616,14 @@ fi
     printf '\tvirtual_build_rounds\tfill_cycles\tall_pages_ready_cycles'
     printf '\tdirect_index_outstanding_merges'
     printf '\tdirect_index_outstanding_wait_cycles'
-    printf '\tindirect_spd_read_cycles\tmaa_instructions'
+    printf '\tindirect_spd_read_cycles\tindirect_spd_write_cycles'
+    printf '\tfused_alu_words\tfused_result_words\tmaa_instructions'
     printf '\tmaa_indirect_instructions\tmaa_stream_read_instructions'
     printf '\tmaa_stream_write_instructions\tmaa_scalar_alu_instructions'
     printf '\tmaa_scalar_alu_cycles\tcpu_committed_instructions'
     printf '\tcpu_data_reads\tcpu_data_writes\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$hash" "$verified_length" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
         "$index_words" "$index_partitions" "$index_filter_words" \
         "$index_filter_cycles" "$index_filter_wait_events" \
@@ -542,6 +633,7 @@ fi
         "$virtual_build_rounds" "$fill_cycles" "$all_pages_ready_cycles" \
         "$index_outstanding_merges" \
         "$index_outstanding_wait_cycles" "$indirect_spd_reads" \
+        "$indirect_spd_writes" "$fused_alu_words" "$fused_result_words" \
         "$maa_instructions" "$maa_indirect_instructions" \
         "$maa_stream_read_instructions" "$maa_stream_write_instructions" \
         "$maa_scalar_alu_instructions" "$maa_scalar_alu_cycles" \

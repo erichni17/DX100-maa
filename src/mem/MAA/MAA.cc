@@ -127,6 +127,7 @@ MAA::MAA(const MAAParams &p)
       virtual_response_words(p.virtual_response_words),
       virtual_response_word_pool(p.virtual_response_word_pool),
       virtual_words_per_cycle(p.virtual_words_per_cycle),
+      num_ALU_lanes(p.num_ALU_lanes),
       fused_result_transfer_words_per_cycle(
           p.fused_result_transfer_words_per_cycle),
       fused_result_transfer_banks(p.fused_result_transfer_banks),
@@ -282,7 +283,8 @@ MAA::MAA(const MAAParams &p)
     aluUnits = new ALUUnit[num_maas];
     aluUnitsIdle = new bool[num_maas];
     for (int i = 0; i < num_maas; i++) {
-        aluUnits[i].allocate(this, i, p.ALU_lane_latency, p.num_ALU_lanes, num_tile_elements);
+        aluUnits[i].allocate(this, i, p.ALU_lane_latency, num_ALU_lanes,
+                             num_tile_elements);
         aluUnitsIdle[i] = true;
     }
     rangeUnits = new RangeFuserUnit[num_maas];
@@ -1839,6 +1841,8 @@ void MAA::dispatchInstruction() {
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                    instruction->opcode == Instruction::OpcodeType::
+                                               INDIR_LD_VIRTUAL_INDEX_SCALAR ||
                     instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX) {
                     resetVirtualPageReady(
@@ -2211,8 +2215,10 @@ void MAA::resetStats() {
         my_instructions.begin(), my_instructions.end(),
         [](const InstructionPtr instruction) {
             return instruction != nullptr &&
-                   instruction->opcode == Instruction::OpcodeType::
-                                              INDIR_LD_VIRTUAL_SCALAR;
+                   (instruction->opcode == Instruction::OpcodeType::
+                                               INDIR_LD_VIRTUAL_SCALAR ||
+                    instruction->opcode == Instruction::OpcodeType::
+                                               INDIR_LD_VIRTUAL_INDEX_SCALAR);
         });
     panic_if(decoding_fused || ifile->hasFusedDirectInstruction(),
              "ROI stats reset requested during a live fused direct-sink "

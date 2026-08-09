@@ -83,11 +83,12 @@ int main(int argc, char **argv) {
         cl.maa_arm != "compact16" && cl.maa_arm != "direct4" &&
         cl.maa_arm != "compact16x3" &&
         cl.maa_arm != "fuseddirect16x3" &&
+        cl.maa_arm != "zeropayload4x3" &&
         cl.maa_arm != "direct4warm" && cl.maa_arm != "direct4prefetch" &&
         cl.maa_arm != "direct4fusedprefetch") {
         std::cerr << "Runtime XRAGE arm must be native16, native16x3, "
                      "fused16, fused4, compact16, compact16x3, "
-                     "fuseddirect16x3, direct4, "
+                     "fuseddirect16x3, zeropayload4x3, direct4, "
                      "direct4warm, direct4prefetch, or direct4fusedprefetch"
                   << std::endl;
         return -1;
@@ -97,7 +98,8 @@ int main(int argc, char **argv) {
         config->maa_result_scale =
             cl.maa_arm == "native16x3" ||
                     cl.maa_arm == "compact16x3" ||
-                    cl.maa_arm == "fuseddirect16x3"
+                    cl.maa_arm == "fuseddirect16x3" ||
+                    cl.maa_arm == "zeropayload4x3"
                 ? 3 : 1;
     }
 #endif

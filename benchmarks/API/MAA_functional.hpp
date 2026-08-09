@@ -1,13 +1,16 @@
 #pragma once
+#include <pthread.h>
+
 #include <cassert>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <type_traits>
+
 #include "MAA.hpp"
 // #include "MAA_atomics.hpp"
-#include <pthread.h>
 
 /*******************************************************************************/
 /*******************************************************************************/
@@ -622,6 +625,51 @@ inline void maa_indirect_load_virtual(T1 *data, int idx_tile,
         }
     }
     set_tile_size(completion_tile, index_size);
+    set_tile_ready(completion_tile, 1);
+}
+template <class T1>
+inline void maa_indirect_load_virtual_index_scalar(
+    T1 *data, uint32_t *indices, int completion_tile, T1 *backing,
+    int min_reg, int max_reg, int stride_reg, int scalar_reg, Operation_t op) {
+    static_assert(std::is_same<T1, double>::value,
+                  "zero-payload XRAGE supports only double");
+    const int min = get_reg<int>(min_reg);
+    const int max = get_reg<int>(max_reg);
+    const int stride = get_reg<int>(stride_reg);
+    const double scalar = get_reg<double>(scalar_reg);
+    assert(op == Operation_t::MUL_OP);
+    assert(min >= 0 && stride > 0 && max > min);
+    const int logical = (max - min - 1) / stride + 1;
+    assert(logical > 0 && logical <= 4096);
+    const int8_t source_region = get_region(data);
+    const int8_t index_region = get_region(indices);
+    const int8_t backing_region = get_region(backing);
+    assert(source_region >= 0 && index_region >= 0 && backing_region >= 0);
+    assert(source_region != backing_region);
+    const uintptr_t a_region_first = reinterpret_cast<uintptr_t>(
+        mem_regions[source_region].start);
+    const uintptr_t a_region_last = reinterpret_cast<uintptr_t>(
+        mem_regions[source_region].end);
+    const uintptr_t c_region_first = reinterpret_cast<uintptr_t>(
+        mem_regions[backing_region].start);
+    const uintptr_t c_region_last = reinterpret_cast<uintptr_t>(
+        mem_regions[backing_region].end);
+    assert(a_region_last <= c_region_first ||
+           c_region_last <= a_region_first);
+    const uintptr_t b_first = reinterpret_cast<uintptr_t>(indices + min);
+    const uintptr_t b_last = reinterpret_cast<uintptr_t>(
+        indices + min + static_cast<int64_t>(logical - 1) * stride) +
+        sizeof(uint32_t);
+    const uintptr_t c_first = reinterpret_cast<uintptr_t>(backing);
+    const uintptr_t c_last = c_first + logical * sizeof(double);
+    assert(b_last <= c_first || c_last <= b_first);
+    for (int dst = 0, src = min; dst < logical; ++dst, src += stride) {
+        assert(check_region(index_region, indices + src));
+        assert(check_region(source_region, data + indices[src]));
+        assert(check_region(backing_region, backing + dst));
+        backing[dst] = data[indices[src]] * scalar;
+    }
+    set_tile_size(completion_tile, logical);
     set_tile_ready(completion_tile, 1);
 }
 template <class T1>

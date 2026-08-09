@@ -33,34 +33,34 @@ void ALUUnit::allocate(MAA *_maa, int _my_alu_id, Cycles _ALU_lane_latency, int 
     num_ALU_lanes = _num_ALU_lanes;
     num_tile_elements = _num_tile_elements;
     my_instruction = nullptr;
-    direct_transform_entries.clear();
-    direct_transform_entries.reserve(num_ALU_lanes);
+    panic_if(
+        num_ALU_lanes <= 0,
+        "A[%d] direct-transform lane count must be positive\n", my_alu_id);
+    direct_transform_entries =
+        std::make_unique<DirectTransformEntry[]>(num_ALU_lanes);
+    direct_transform_count = 0;
 }
 bool ALUUnit::canStartDirectTransform() const {
     return state == Status::Idle && my_instruction == nullptr &&
            !direct_transform_active;
 }
 bool ALUUnit::startDirectTransform(
-    IndirectAccessUnit *owner, const std::vector<int> &iterations,
-    const std::vector<std::array<uint8_t, 8>> &words, double scalar) {
+    IndirectAccessUnit *owner, const int *iterations,
+    const std::array<uint8_t, 8> *words, size_t count, double scalar) {
     if (!canStartDirectTransform())
         return false;
-    panic_if(owner == nullptr || iterations.empty() ||
-                 iterations.size() != words.size() ||
-                 iterations.size() > static_cast<size_t>(num_ALU_lanes),
-             "A[%d] invalid direct-transform batch: owner=%p words=%zu/%zu "
-             "lanes=%d\n", my_alu_id, owner, iterations.size(), words.size(),
-             num_ALU_lanes);
+    panic_if(owner == nullptr || iterations == nullptr || words == nullptr ||
+                 count == 0 || count > static_cast<size_t>(num_ALU_lanes),
+             "A[%d] invalid direct-transform batch: owner=%p words=%zu "
+             "lanes=%d\n", my_alu_id, owner, count, num_ALU_lanes);
     if (!maa->claimALUForDirectTransform(my_alu_id))
         return false;
 
-    direct_transform_entries.clear();
-    for (size_t index = 0; index < words.size(); ++index) {
-        DirectTransformEntry entry;
-        entry.iteration = iterations[index];
-        entry.data = words[index];
-        direct_transform_entries.push_back(entry);
+    for (size_t index = 0; index < count; ++index) {
+        direct_transform_entries[index].iteration = iterations[index];
+        direct_transform_entries[index].data = words[index];
     }
+    direct_transform_count = count;
     direct_transform_owner = owner;
     direct_transform_cursor = 0;
     direct_transform_scalar = scalar;
@@ -68,12 +68,12 @@ bool ALUUnit::startDirectTransform(
     direct_transform_ready = false;
     state = Status::Work;
     const Cycles latency =
-        Cycles(getCeiling(static_cast<int>(words.size()), num_ALU_lanes) *
+        Cycles(getCeiling(static_cast<int>(count), num_ALU_lanes) *
                ALU_lane_latency);
     (*maa->stats.ALU_CyclesCompute[my_alu_id]) += latency;
     DPRINTF(MAAALU,
             "A[%d] direct-transform batch starts with %zu/%d lanes for %lu "
-            "cycles\n", my_alu_id, words.size(), num_ALU_lanes,
+            "cycles\n", my_alu_id, count, num_ALU_lanes,
             static_cast<uint64_t>(latency));
     scheduleExecuteInstructionEvent(latency);
     return true;
@@ -90,7 +90,7 @@ bool ALUUnit::directTransformReady(const IndirectAccessUnit *owner) const {
 int ALUUnit::directTransformIteration(
     const IndirectAccessUnit *owner) const {
     panic_if(!directTransformReady(owner) ||
-                 direct_transform_cursor >= direct_transform_entries.size(),
+                 direct_transform_cursor >= direct_transform_count,
              "A[%d] direct-transform iteration queried before ready\n",
              my_alu_id);
     return direct_transform_entries[direct_transform_cursor].iteration;
@@ -98,22 +98,22 @@ int ALUUnit::directTransformIteration(
 const uint8_t *ALUUnit::directTransformData(
     const IndirectAccessUnit *owner) const {
     panic_if(!directTransformReady(owner) ||
-                 direct_transform_cursor >= direct_transform_entries.size(),
+                 direct_transform_cursor >= direct_transform_count,
              "A[%d] direct-transform data queried before ready\n",
              my_alu_id);
     return direct_transform_entries[direct_transform_cursor].data.data();
 }
 void ALUUnit::consumeDirectTransformWord(IndirectAccessUnit *owner) {
     panic_if(!directTransformReady(owner) ||
-                 direct_transform_cursor >= direct_transform_entries.size(),
+                 direct_transform_cursor >= direct_transform_count,
              "A[%d] invalid direct-transform result consumption\n",
              my_alu_id);
     direct_transform_cursor++;
-    if (direct_transform_cursor != direct_transform_entries.size())
+    if (direct_transform_cursor != direct_transform_count)
         return;
 
     DPRINTF(MAAALU, "A[%d] direct-transform batch retired\n", my_alu_id);
-    direct_transform_entries.clear();
+    direct_transform_count = 0;
     direct_transform_owner = nullptr;
     direct_transform_cursor = 0;
     direct_transform_scalar = 0.0;
@@ -169,7 +169,8 @@ void ALUUnit::executeInstruction() {
                      direct_transform_ready,
                  "A[%d] invalid direct-transform completion state\n",
                  my_alu_id);
-        for (auto &entry : direct_transform_entries) {
+        for (size_t index = 0; index < direct_transform_count; ++index) {
+            auto &entry = direct_transform_entries[index];
             double value;
             std::memcpy(&value, entry.data.data(), sizeof(value));
             value *= direct_transform_scalar;

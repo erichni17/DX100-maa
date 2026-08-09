@@ -51,9 +51,10 @@ public:
         STREAM_PREFETCH = 15,
         VIRTUAL_TILE_ALU_SCALAR = 16,
         INDIR_LD_VIRTUAL_SCALAR = 17,
+        INDIR_LD_VIRTUAL_INDEX_SCALAR = 18,
         MAX
     };
-    std::string opcode_names[18] = {
+    std::string opcode_names[19] = {
         "STREAM_LD",
         "STREAM_ST",
         "INDIR_LD",
@@ -71,7 +72,8 @@ public:
         "INDIR_LD_INDEX",
         "STREAM_PREFETCH",
         "VIRTUAL_TILE_ALU_SCALAR",
-        "INDIR_LD_VIRTUAL_SCALAR"
+        "INDIR_LD_VIRTUAL_SCALAR",
+        "INDIR_LD_VIRTUAL_INDEX_SCALAR"
     };
     enum class OPType : uint8_t
     {
@@ -164,7 +166,8 @@ public:
     Addr logicalSourceMinAddr, logicalSourceMaxAddr;
     int8_t addrRangeID, backingAddrRangeID, indexAddrRangeID;
     int8_t logicalSourceAddrRangeID;
-    int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
+    int16_t src1RegID, src2RegID, src3RegID, src4RegID;
+    int16_t dst1RegID, dst2RegID;
     int16_t src1SpdID, src2SpdID;
     TileStatus src1Status, src2Status;
     bool src1MustBeFinished;

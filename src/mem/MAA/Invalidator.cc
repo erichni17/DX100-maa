@@ -58,8 +58,10 @@ bool
 Invalidator::isFusedDirect(const Instruction *instruction)
 {
     return instruction != nullptr &&
-           instruction->opcode ==
-               Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+           (instruction->opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+            instruction->opcode == Instruction::OpcodeType::
+                                       INDIR_LD_VIRTUAL_INDEX_SCALAR);
 }
 
 std::vector<maa::MultiRangeAccessTracker::Access>

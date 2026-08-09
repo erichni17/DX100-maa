@@ -161,6 +161,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_response_slots.resize(_virtual_response_slots);
     virtual_response_words = _virtual_response_words;
     virtual_response_word_pool_limit = _virtual_response_word_pool;
+    const size_t packed_words_per_slot = _virtual_response_word_pool != 0
+        ? static_cast<size_t>(_virtual_response_word_pool)
+        : static_cast<size_t>(_virtual_response_words);
+    for (auto &slot : virtual_response_slots)
+        slot.allocatePackedWords(packed_words_per_slot);
     virtual_words_per_cycle_limit = _virtual_words_per_cycle;
     panic_if(_virtual_max_outstanding_writes <= 0,
              "I[%d] virtual retirement must allow at least one write\n",
@@ -708,13 +713,21 @@ bool IndirectAccessUnit::isVirtualLoad() const {
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+            my_instruction->opcode == Instruction::OpcodeType::
+                                          INDIR_LD_VIRTUAL_INDEX_SCALAR ||
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX);
 }
+bool IndirectAccessUnit::isZeroPayloadXRAGE() const {
+    return my_instruction != nullptr &&
+           my_instruction->opcode == Instruction::OpcodeType::
+                                         INDIR_LD_VIRTUAL_INDEX_SCALAR;
+}
 bool IndirectAccessUnit::isFusedDirectTransform() const {
     return my_instruction != nullptr &&
-           my_instruction->opcode ==
-               Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+           (my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+            isZeroPayloadXRAGE());
 }
 bool IndirectAccessUnit::fusedDirectTransformLive() const {
     return isFusedDirectTransform();
@@ -732,6 +745,8 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
     return my_instruction != nullptr &&
            (my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
+            my_instruction->opcode == Instruction::OpcodeType::
+                                          INDIR_LD_VIRTUAL_INDEX_SCALAR ||
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_INDEX);
 }
@@ -810,7 +825,7 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             return;
         }
 
-        std::vector<std::pair<int, uint16_t>> pending_words;
+        DirectIndexPendingLine pending_words;
         int candidate = itr;
         for (; candidate < my_max; ++candidate) {
             const int64_t candidate_source =
@@ -826,12 +841,15 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             const Addr candidate_vaddr = my_index_addr + candidate_offset;
             if (addrBlockAligner(candidate_vaddr, block_size) != block_vaddr)
                 break;
-            pending_words.emplace_back(
-                candidate,
-                static_cast<uint16_t>((candidate_vaddr - block_vaddr) /
-                                      sizeof(uint32_t)));
+            panic_if(pending_words.count >= pending_words.words.size(),
+                     "I[%d] direct-index line captured more than %zu words\n",
+                     my_indirect_id, pending_words.words.size());
+            pending_words.words[pending_words.count++] = {
+                static_cast<uint16_t>(candidate),
+                static_cast<uint8_t>((candidate_vaddr - block_vaddr) /
+                                     sizeof(uint32_t))};
         }
-        panic_if(pending_words.empty(),
+        panic_if(pending_words.count == 0,
                  "I[%d] direct-index request at itr %d captured no words\n",
                  my_indirect_id, itr);
         panic_if(direct_index_pending_lines.find(block_paddr) !=
@@ -840,7 +858,7 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
                          direct_index_ready_lines.end(),
                  "I[%d] direct-index line 0x%lx is already buffered\n",
                  my_indirect_id, block_paddr);
-        const int pending_word_count = pending_words.size();
+        const int pending_word_count = pending_words.count;
         direct_index_pending_lines.emplace(
             block_paddr, std::move(pending_words));
         direct_index_next_prefetch_itr = candidate;
@@ -1008,10 +1026,11 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
     const auto pending_words = std::move(pending->second);
     direct_index_pending_lines.erase(pending);
     panic_if(!direct_index_ready_lines.emplace(
-                  addr, static_cast<int>(pending_words.size())).second,
+                  addr, static_cast<int>(pending_words.count)).second,
              "I[%d] duplicate ready direct-index line 0x%lx\n",
              my_indirect_id, addr);
-    for (const auto &[itr, wid] : pending_words) {
+    for (uint8_t index = 0; index < pending_words.count; ++index) {
+        const auto [itr, wid] = pending_words.words[index];
         panic_if(wid >= block_size / sizeof(uint32_t),
                  "I[%d] invalid streamed-index word %u\n",
                  my_indirect_id, wid);
@@ -1024,14 +1043,14 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
                  my_indirect_id, itr);
     }
     (*maa->stats.IND_VirtIndexWords[my_indirect_id]) +=
-        pending_words.size();
+        pending_words.count;
     DPRINTF(MAAVirtualTrace,
             "event=index_line_response schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu line=0x%lx "
             "words=%d cached=%d\n",
             my_indirect_id, attribution_event_occurrence++,
             my_decode_start_tick, addr,
-            static_cast<int>(pending_words.size()),
+            static_cast<int>(pending_words.count),
             is_block_cached);
     direct_index_max_lines = std::max(
         direct_index_max_lines,
@@ -1513,9 +1532,19 @@ void IndirectAccessUnit::executeInstruction() {
         my_base_addr = my_instruction->baseAddr;
         my_backing_addr = my_instruction->backingAddr;
         my_index_addr = my_instruction->indexAddr;
+        my_min_addr = my_instruction->minAddr;
+        my_max_addr = my_instruction->maxAddr;
+        my_addr_range_id = my_instruction->addrRangeID;
+        my_backing_min_addr = my_instruction->backingMinAddr;
+        my_backing_max_addr = my_instruction->backingMaxAddr;
+        my_backing_addr_range_id = my_instruction->backingAddrRangeID;
+        my_index_min_addr = my_instruction->indexMinAddr;
+        my_index_max_addr = my_instruction->indexMaxAddr;
+        my_index_addr_range_id = my_instruction->indexAddrRangeID;
         my_idx_tile = my_instruction->src1SpdID;
         my_src_tile = my_instruction->src2SpdID;
-        my_src_reg = my_instruction->src1RegID;
+        my_src_reg = isZeroPayloadXRAGE() ? my_instruction->src4RegID
+                                          : my_instruction->src1RegID;
         my_dst_tile = my_instruction->dst1SpdID;
         my_cond_tile = my_instruction->condSpdID;
         if (isFusedDirectTransform()) {
@@ -1524,7 +1553,7 @@ void IndirectAccessUnit::executeInstruction() {
                          my_instruction->optype !=
                              Instruction::OPType::MUL_OP ||
                          my_instruction->condSpdID != -1 ||
-                         my_instruction->src1RegID == -1 ||
+                         my_src_reg == -1 ||
                          my_instruction->addrRangeID < 0 ||
                          my_instruction->backingAddrRangeID < 0 ||
                          my_instruction->indexAddrRangeID < 0 ||
@@ -1535,6 +1564,9 @@ void IndirectAccessUnit::executeInstruction() {
                      my_instruction->print());
             (*maa->stats.ALU_NumInsts[fusedDirectTransformALU()])++;
             (*maa->stats.ALU_NumInstsCompute[fusedDirectTransformALU()])++;
+            // Snapshot the scalar once. Later CPU RF writes cannot change
+            // individual batches of this streaming compound operation.
+            my_fused_scalar = maa->rf->getData<double>(my_src_reg);
         }
         panic_if(usesBoundedSourceResponses() && !reorder_RT,
                  "I[%d] bounded-response indirect load requires row-table "
@@ -1692,7 +1724,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_pipeline_ticks.fill(0);
         virtual_trace_request_calls = 0;
         for (auto &slot : virtual_response_slots)
-            slot = VirtualResponseSlot();
+            slot.clear();
         for (auto &slot : virtual_combine_slots)
             slot = VirtualCombineSlot();
         offset_table->reset();
@@ -1729,17 +1761,117 @@ void IndirectAccessUnit::executeInstruction() {
                 maa->rf->getData<int>(my_instruction->src2RegID);
             my_index_stride =
                 maa->rf->getData<int>(my_instruction->src3RegID);
-            panic_if(my_index_stride <= 0 || index_max < my_index_min,
+            panic_if(my_index_min < 0 || my_index_stride <= 0 ||
+                         index_max < my_index_min,
                      "I[%d] invalid streamed-index range %d:%d:%d\n",
                      my_indirect_id, my_index_min, index_max,
                      my_index_stride);
             my_max = index_max == my_index_min
                 ? 0
                 : (index_max - my_index_min - 1) / my_index_stride + 1;
-            panic_if(my_max > num_tile_elements,
-                     "I[%d] streamed-index length %d exceeds logical tile "
-                     "capacity %d\n",
-                     my_indirect_id, my_max, num_tile_elements);
+            if (isZeroPayloadXRAGE()) {
+                const uint64_t active_row_line_slots =
+                    static_cast<uint64_t>(num_RT_slices[my_RT_config]) *
+                    num_RT_rows_per_slice *
+                    num_RT_slice_columns[my_RT_config];
+                const maa::XRAGEZeroPayloadContract::Config config{
+                    static_cast<uint32_t>(my_max),
+                    static_cast<uint32_t>(offset_table->capacity()),
+                    static_cast<uint32_t>(maa->num_offset_table_epoch_entries),
+                    active_row_line_slots,
+                    static_cast<uint32_t>(direct_index_buffer_lines),
+                    static_cast<uint32_t>(virtual_response_slots.size()),
+                    static_cast<uint32_t>(virtual_response_words),
+                    static_cast<uint32_t>(virtual_response_word_pool_limit),
+                    static_cast<uint32_t>(virtual_combine_slots.size()),
+                    static_cast<uint32_t>(virtual_combine_words_limit),
+                    static_cast<uint32_t>(
+                        virtual_max_outstanding_writes_limit),
+                    static_cast<uint32_t>(my_words_per_cl),
+                    maa->num_ALU_lanes,
+                    maa->fused_result_transfer_words_per_cycle,
+                    maa->fused_result_transfer_banks,
+                    maa->virtual_index_range_passes,
+                    static_cast<uint32_t>(direct_index_partitions),
+                };
+                const auto validation =
+                    maa::XRAGEZeroPayloadContract::validate(config);
+                panic_if(
+                    validation !=
+                        maa::XRAGEZeroPayloadContract::Result::Accepted,
+                    "I[%d] zero-payload XRAGE strict-4K contract rejected "
+                    "configuration: %s\n",
+                    my_indirect_id,
+                    maa::XRAGEZeroPayloadContract::resultName(validation));
+
+                const uint64_t first_index =
+                    static_cast<uint64_t>(my_index_min);
+                const uint64_t last_index = first_index +
+                    static_cast<uint64_t>(my_max - 1) * my_index_stride;
+                panic_if(first_index >
+                             (std::numeric_limits<uint64_t>::max() /
+                              sizeof(uint32_t)) ||
+                             last_index >
+                             ((std::numeric_limits<uint64_t>::max() -
+                               sizeof(uint32_t)) /
+                              sizeof(uint32_t)),
+                         "I[%d] zero-payload XRAGE B span overflows\n",
+                         my_indirect_id);
+                const uint64_t b_first_offset =
+                    first_index * sizeof(uint32_t);
+                const uint64_t b_last_offset =
+                    last_index * sizeof(uint32_t) + sizeof(uint32_t);
+                panic_if(my_index_addr >
+                             std::numeric_limits<uint64_t>::max() -
+                                 b_last_offset,
+                         "I[%d] zero-payload XRAGE B address overflows\n",
+                         my_indirect_id);
+                const uint64_t b_first =
+                    my_index_addr + b_first_offset;
+                const uint64_t b_last =
+                    my_index_addr + b_last_offset;
+                const uint64_t c_bytes =
+                    static_cast<uint64_t>(my_max) * sizeof(uint64_t);
+                panic_if(b_first < my_index_min_addr ||
+                             b_last > my_index_max_addr || b_last < b_first,
+                         "I[%d] zero-payload XRAGE consumed B span "
+                         "[0x%lx,0x%lx) is outside its registered region\n",
+                         my_indirect_id, b_first, b_last);
+                panic_if(my_backing_addr < my_backing_min_addr ||
+                             my_backing_addr > my_backing_max_addr ||
+                             c_bytes > my_backing_max_addr - my_backing_addr,
+                         "I[%d] zero-payload XRAGE C span exceeds its "
+                         "registered region\n",
+                         my_indirect_id);
+                panic_if(maa::XRAGEZeroPayloadContract::spanOverlaps(
+                             b_first, b_last - b_first, my_backing_addr,
+                             c_bytes),
+                         "I[%d] zero-payload XRAGE forbids consumed B/C "
+                         "overlap\n",
+                         my_indirect_id);
+                const auto storage =
+                    maa::XRAGEZeroPayloadContract::byteBreakdown(config);
+                const auto traffic =
+                    maa::XRAGEZeroPayloadContract::traffic(my_max);
+                DPRINTF(MAAVirtualTrace,
+                        "event=xrage_zero_payload_begin schema=1 unit=%d "
+                        "operation_tick=%lu logical=%d metadata_bytes=%zu "
+                        "internal_payload_bytes=%zu spd_payload_bytes=%zu "
+                        "b_bytes=%lu a_bytes=%lu result_link_bytes=%lu "
+                        "c_bytes=%lu removed_index_spd_bytes=%lu "
+                        "removed_result_spd_bytes=%lu\n",
+                        my_indirect_id, my_decode_start_tick, my_max,
+                        storage.metadataTotal(),
+                        storage.internalPayloadTotal(), storage.spdPayload,
+                        traffic.bMemory, traffic.selectedAMemory,
+                        traffic.aluResultLink, traffic.cWrites,
+                        traffic.indexSPDRemoved, traffic.resultSPDRemoved);
+            } else {
+                panic_if(my_max > num_tile_elements,
+                         "I[%d] streamed-index length %d exceeds logical "
+                         "tile capacity %d\n",
+                         my_indirect_id, my_max, num_tile_elements);
+            }
             my_idx_tile_ready = true;
             if (maa->virtual_index_range_passes) {
                 panic_if(!isVirtualLoad(),
@@ -1820,15 +1952,6 @@ void IndirectAccessUnit::executeInstruction() {
         my_fill_finished = false;
         my_force_cache_determined = false;
         my_force_cache = false;
-        my_min_addr = my_instruction->minAddr;
-        my_max_addr = my_instruction->maxAddr;
-        my_addr_range_id = my_instruction->addrRangeID;
-        my_backing_min_addr = my_instruction->backingMinAddr;
-        my_backing_max_addr = my_instruction->backingMaxAddr;
-        my_backing_addr_range_id = my_instruction->backingAddrRangeID;
-        my_index_min_addr = my_instruction->indexMinAddr;
-        my_index_max_addr = my_instruction->indexMaxAddr;
-        my_index_addr_range_id = my_instruction->indexAddrRangeID;
         if (isVirtualLoad()) {
             panic_if(my_backing_addr_range_id < 0,
                      "I[%d] virtual backing has no registered region\n",
@@ -2666,6 +2789,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_unique_WORD_addrs.clear();
         my_unique_CL_addrs.clear();
         my_unique_ROW_addrs.clear();
+        my_fused_scalar = 0.0;
         my_instruction = nullptr;
         break;
     }
@@ -2868,14 +2992,14 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
             int itr = virtual_head;
             while (itr != -1) {
                 OffsetTableEntry entry = offset_table->peek_entry(itr);
-                panic_if(virtual_response_word_pool_limit == 0 &&
-                             slot->packed_words.size() == virtual_response_words,
-                         "I[%d] source response needs more than %d packed words\n",
-                         my_indirect_id, virtual_response_words);
-                std::array<uint8_t, 8> word{};
-                std::memcpy(word.data(),
+                panic_if(slot->packed_word_count ==
+                             slot->packed_word_capacity,
+                         "I[%d] source response needs more than %zu "
+                         "preallocated packed words\n",
+                         my_indirect_id, slot->packed_word_capacity);
+                std::memcpy(slot->packed_words[slot->packed_word_count].data(),
                             dataptr + entry.wid * my_word_size, my_word_size);
-                slot->packed_words.push_back(word);
+                slot->packed_word_count++;
                 itr = entry.next_itr;
             }
         }
@@ -2915,6 +3039,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         switch (my_instruction->opcode) {
         case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
         case Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
+        case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR:
         case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX:
             panic("Virtual load must use bounded response retirement\n");
         case Instruction::OpcodeType::INDIR_LD:
@@ -3573,17 +3698,23 @@ bool IndirectAccessUnit::drainVirtualResponses() {
         panic_if(capacity <= 0,
                  "I[%d] fused direct transform has no ALU lanes\n",
                  my_indirect_id);
-        std::vector<int> iterations;
-        std::vector<std::array<uint8_t, 8>> words;
-        iterations.reserve(capacity);
-        words.reserve(capacity);
+        panic_if(capacity > static_cast<int>(
+                                maa::XRAGEZeroPayloadContract::MaxALULanes),
+                 "I[%d] fused direct transform has %d lanes (max %u)\n",
+                 my_indirect_id, capacity,
+                 maa::XRAGEZeroPayloadContract::MaxALULanes);
+        std::array<int, maa::XRAGEZeroPayloadContract::MaxALULanes>
+            iterations{};
+        std::array<std::array<uint8_t, 8>,
+                   maa::XRAGEZeroPayloadContract::MaxALULanes> words{};
+        size_t batch_words = 0;
         for (auto &slot : virtual_response_slots) {
             const bool packed = virtual_response_words != 0 ||
                                 virtual_response_word_pool_limit != 0;
             while (slot.valid &&
-                   static_cast<int>(words.size()) < capacity &&
+                   static_cast<int>(batch_words) < capacity &&
                    (!packed ||
-                    slot.next_packed_word < slot.packed_words.size())) {
+                    slot.next_packed_word < slot.packed_word_count)) {
                 if (budget_exhausted())
                     break;
                 const OffsetTableEntry entry =
@@ -3598,8 +3729,9 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                         my_word_size);
                 }
                 virtual_word_attempts_this_cycle++;
-                iterations.push_back(entry.itr);
-                words.push_back(word);
+                iterations[batch_words] = entry.itr;
+                words[batch_words] = word;
+                batch_words++;
                 OffsetTableEntry consumed =
                     offset_table->consume_entry(slot.next_itr);
                 panic_if(consumed.itr != entry.itr ||
@@ -3611,12 +3743,12 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                     slot.next_packed_word++;
                 if (!packed && slot.next_itr == -1) {
                     release_native_claim(slot);
-                    slot = VirtualResponseSlot();
+                    slot.clear();
                     virtual_reserved_responses--;
                 }
             }
             if (packed && slot.valid &&
-                slot.next_packed_word == slot.packed_words.size()) {
+                slot.next_packed_word == slot.packed_word_count) {
                 panic_if(slot.next_itr != -1,
                          "I[%d] fused packed response ended before its "
                          "offset chain\n", my_indirect_id);
@@ -3626,29 +3758,32 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                          "underflow\n", my_indirect_id);
                 virtual_reserved_response_words -= slot.reserved_words;
                 release_native_claim(slot);
-                slot = VirtualResponseSlot();
+                slot.clear();
                 virtual_reserved_responses--;
             }
-            if (static_cast<int>(words.size()) == capacity ||
+            if (static_cast<int>(batch_words) == capacity ||
                 budget_exhausted())
                 break;
         }
-        if (words.empty())
+        if (batch_words == 0)
             return finish_drain(true);
 
-        const double scalar = maa->rf->getData<double>(my_src_reg);
-        panic_if(!alu.startDirectTransform(this, iterations, words, scalar),
-                 "I[%d] lost the shared ALU while issuing a fused batch\n",
-                 my_indirect_id);
+        panic_if(
+            !alu.startDirectTransform(
+                this, iterations.data(), words.data(), batch_words,
+                my_fused_scalar),
+            "I[%d] lost the shared ALU while issuing a fused batch\n",
+            my_indirect_id);
         fused_alu_batches++;
-        fused_alu_words += words.size();
+        fused_alu_words += batch_words;
         fused_alu_result_high_water = std::max(
-            fused_alu_result_high_water, static_cast<int>(words.size()));
+            fused_alu_result_high_water, static_cast<int>(batch_words));
         DPRINTF(MAAVirtualTrace,
                 "event=fused_alu_batch schema=1 unit=%d operation_tick=%lu "
                 "alu=%d words=%zu lanes=%d scalar=%.17g\n",
                 my_indirect_id, my_decode_start_tick,
-                fusedDirectTransformALU(), words.size(), capacity, scalar);
+                fusedDirectTransformALU(), batch_words, capacity,
+                my_fused_scalar);
         return finish_drain(true);
     }
     bool bank_stalled = false;
@@ -3657,7 +3792,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             virtual_response_word_pool_limit != 0) {
             bool capacity_stalled = false;
             while (slot.valid &&
-                   slot.next_packed_word < slot.packed_words.size()) {
+                   slot.next_packed_word < slot.packed_word_count) {
                 if (budget_exhausted())
                     return finish_drain(true);
                 const OffsetTableEntry entry =
@@ -3701,7 +3836,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 slot.next_packed_word++;
             }
             if (slot.valid &&
-                slot.next_packed_word == slot.packed_words.size()) {
+                slot.next_packed_word == slot.packed_word_count) {
                 panic_if(slot.next_itr != -1,
                          "I[%d] packed response ended before offset chain\n",
                          my_indirect_id);
@@ -3710,7 +3845,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                          my_indirect_id);
                 virtual_reserved_response_words -= slot.reserved_words;
                 release_native_claim(slot);
-                slot = VirtualResponseSlot();
+                slot.clear();
                 virtual_reserved_responses--;
             }
             if (capacity_stalled)
@@ -3760,7 +3895,7 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             recordReorderSurvivalIssuedEntries(1);
             if (slot.next_itr == -1) {
                 release_native_claim(slot);
-                slot = VirtualResponseSlot();
+                slot.clear();
                 virtual_reserved_responses--;
             }
         }

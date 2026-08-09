@@ -76,9 +76,14 @@ class FusedDirectTransformContractTest(unittest.TestCase):
 
     def test_shared_alu_has_timed_finite_retained_batch(self):
         self.assertIn(
-            "direct_transform_entries.reserve(num_ALU_lanes)", self.alu_source
+            "std::make_unique<DirectTransformEntry[]>(num_ALU_lanes)",
+            self.alu_source,
         )
-        self.assertIn("iterations.size() >", self.alu_source)
+        self.assertIn(
+            "count > static_cast<size_t>(num_ALU_lanes)", self.alu_source
+        )
+        self.assertIn("direct_transform_count", self.alu_header)
+        self.assertNotIn("std::vector<DirectTransformEntry>", self.alu_header)
         self.assertIn("ALU_lane_latency", self.alu_source)
         self.assertIn(
             "scheduleExecuteInstructionEvent(latency)", self.alu_source

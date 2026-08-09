@@ -491,11 +491,13 @@ void setup_MAA(const std::string &maa_arm) {
 #pragma omp critical
         {
             int tid = omp_get_thread_num();
-            tile1s[tid] = get_new_tile<int>();
+            tile1s[tid] = maa_arm == "zeropayload4x3"
+                ? -1 : get_new_tile<int>();
             // The fused direct sink retains only a 32-bit completion token;
             // it neither allocates an FP64 result pair nor the native arm's
             // second FP64 payload pair.
-            tile2s[tid] = maa_arm == "fuseddirect16x3"
+            tile2s[tid] = maa_arm == "fuseddirect16x3" ||
+                                  maa_arm == "zeropayload4x3"
                 ? get_new_tile<uint32_t>() : get_new_tile<double>();
             tile3s[tid] = maa_arm == "native16x3"
                 ? get_new_tile<double>() : -1;
@@ -529,7 +531,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 #ifdef MAA
     int maa_tile_size = TILE_SIZE;
 #ifdef MAA_XRAGE_RUNTIME_ARMS
-    if (maa_arm == "fused4")
+    if (maa_arm == "fused4" || maa_arm == "zeropayload4x3")
         maa_tile_size = 4096;
     std::cout << "MAA XRAGE arm " << maa_arm << std::endl;
     std::cout << "MAA XRAGE result scale " << maa_result_scale << std::endl;
@@ -581,7 +583,13 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             const int chunk_end =
                 std::min(j + maa_tile_size, pattern_length);
             maa_const(chunk_end, reg2);
-            if (maa_arm == "direct4fusedprefetch") {
+            if (maa_arm == "zeropayload4x3") {
+                maa_indirect_load_virtual_index_scalar<double>(
+                    sparse.data(),
+                    reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
+                    dense.data() + j, reg1, reg2, reg3, reg4,
+                    Operation_t::MUL_OP);
+            } else if (maa_arm == "direct4fusedprefetch") {
                 maa_indirect_load_virtual_index_prefetch<double>(
                     sparse.data(),
                     reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,

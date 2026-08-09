@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <type_traits>
 
 #include <gem5/m5ops.h>
 #include <gem5/maa_logical_spd_cache_abi.hh>
@@ -61,7 +62,8 @@ enum OpcodeType : uint8_t {
     INDIR_LD_INDEX = 14,
     STREAM_PREFETCH = 15,
     VIRTUAL_TILE_ALU_SCALAR = 16,
-    INDIR_LD_VIRTUAL_SCALAR = 17
+    INDIR_LD_VIRTUAL_SCALAR = 17,
+    INDIR_LD_VIRTUAL_INDEX_SCALAR = 18
 };
 enum class DataType : uint8_t {
     UINT32_TYPE = 0,
@@ -445,6 +447,37 @@ inline void maa_indirect_load_virtual_scalar(
         ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
         ((uint64_t)scalar_reg << 24) | ((uint64_t)NA_UINT8 << 16) |
         ((uint64_t)NA_UINT8 << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)backing;
+    *INSTR_indexaddr = (uint64_t)indices;
+    __asm__ __volatile__("mfence;");
+}
+/**
+ * Strict zero-payload XRAGE terminal chain:
+ *
+ *   backing[i] = data[indices[min + i * stride]] * scalar
+ *
+ * B is consumed directly from coherent memory, and the only SPD name is a
+ * one-word completion token. Hardware accepts only FP64 MUL, positive stride,
+ * and 1..4096 logical results; it rejects range-pass virtualization and any
+ * A/C or consumed-B/C overlap instead of falling back to a payload path.
+ */
+template <class T1>
+inline void maa_indirect_load_virtual_index_scalar(
+    T1 *data, uint32_t *indices, int completion_tile, T1 *backing,
+    int min_reg, int max_reg, int stride_reg, int scalar_reg, Operation_t op) {
+    static_assert(std::is_same<T1, double>::value,
+                  "zero-payload XRAGE supports only double");
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)op << 16) |
+        ((uint64_t)completion_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)scalar_reg << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) | ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
     *INSTR_baseaddr = (uint64_t)data;
     *INSTR_backingaddr = (uint64_t)backing;
     *INSTR_indexaddr = (uint64_t)indices;

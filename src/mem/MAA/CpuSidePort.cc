@@ -260,6 +260,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                    current_instruction->opcode == Instruction::OpcodeType::
+                        INDIR_LD_VIRTUAL_INDEX_SCALAR ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
                     current_instruction->opcode ==
@@ -308,6 +310,15 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 data = data >> 8;
                 current_instruction->src1SpdID = (data & NA_UINT8) == NA_UINT8 ? -1 : (data & NA_UINT8);
                 data = data >> 8;
+                if (current_instruction->opcode ==
+                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX_SCALAR) {
+                    // Opcode 18 reuses the raw rdst1 byte as an explicit
+                    // fourth source. Clear the generic destination before
+                    // hazard processing so the scalar is never writable.
+                    current_instruction->src4RegID =
+                        current_instruction->dst1RegID;
+                    current_instruction->dst1RegID = -1;
+                }
                 break;
             }
             case 2: {
@@ -336,6 +347,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                    current_instruction->opcode == Instruction::OpcodeType::
+                        INDIR_LD_VIRTUAL_INDEX_SCALAR ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
                     current_instruction->opcode ==
@@ -359,6 +372,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR &&
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::
+                                INDIR_LD_VIRTUAL_INDEX_SCALAR &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                         current_instruction->opcode !=
@@ -394,7 +410,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
                     current_instruction->opcode ==
-                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR)
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                    current_instruction->opcode == Instruction::OpcodeType::
+                        INDIR_LD_VIRTUAL_INDEX_SCALAR)
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(
@@ -417,6 +435,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             Instruction::OpcodeType::INDIR_LD_INDEX &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR &&
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::
+                                INDIR_LD_VIRTUAL_INDEX_SCALAR &&
                         !current_instruction->isLogicalALUScalar(),
                     "Instruction word four is only valid for direct-index "
                     "loads, fused direct-sink index provenance, or logical "

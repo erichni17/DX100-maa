@@ -426,6 +426,7 @@ public:
     unsigned int virtual_response_words;
     unsigned int virtual_response_word_pool;
     unsigned int virtual_words_per_cycle;
+    unsigned int num_ALU_lanes;
     unsigned int fused_result_transfer_words_per_cycle;
     unsigned int fused_result_transfer_banks;
     unsigned int virtual_max_outstanding_writes;
