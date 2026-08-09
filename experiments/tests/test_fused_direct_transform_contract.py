@@ -28,6 +28,13 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         cls.runner = (
             ROOT / "experiments/scripts/run_xrage_direct_index_smoke.sh"
         ).read_text()
+        cls.correctness_runner = (
+            ROOT
+            / "experiments/scripts/run_fused_direct_transform_correctness.sh"
+        ).read_text()
+        cls.validator = (
+            ROOT / "experiments/scripts/validate_virtual_gather.sh"
+        ).read_text()
 
     def test_opcode_and_api_encoding_match(self):
         for source in (self.api, self.if_header):
@@ -166,24 +173,72 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         )
         self.assertIn('tile3s[tid] = maa_arm == "native16x3"', self.spatter)
 
-    def test_live_drain_and_mid_operation_reset_fail_closed(self):
+    def test_live_drain_waits_and_mid_operation_reset_fails_closed(self):
+        live = self.maa_source[
+            self.maa_source.index(
+                "MAA::hasLiveState()"
+            ) : self.maa_source.index("MAA::hasLiveFusedDirectState()")
+        ]
+        self.assertIn("allFuncUnitsIdle", live)
+        self.assertIn("ifile->empty", live)
+        self.assertIn("hasLiveRegionAccesses", live)
+        self.assertIn("queued_callbacks", live)
+        self.assertIn("outstanding_packets", live)
         drain = self.maa_source[
             self.maa_source.index("MAA::drain()") : self.maa_source.index(
                 "MAA::drainResume()"
             )
         ]
-        self.assertIn("allFuncUnitsIdle", drain)
-        self.assertIn("ifile->empty", drain)
-        self.assertIn("hasLiveRegionAccesses", drain)
-        self.assertIn("queued_callbacks", drain)
-        self.assertIn("outstanding_packets", drain)
+        self.assertIn("hasLiveState", drain)
+        self.assertIn("scheduleDrainEvent", drain)
+        self.assertIn("DrainState::Draining", drain)
+        self.assertNotIn("drainQuiescenceObserved", self.maa_header)
+        service = self.maa_source[
+            self.maa_source.index(
+                "MAA::serviceDrain()"
+            ) : self.maa_source.index("MAA::drain()")
+        ]
+        self.assertIn("drainState() != DrainState::Draining", service)
+        self.assertIn("hasLiveState", service)
+        self.assertIn("signalDrainDone", service)
+        fused_live = self.maa_source[
+            self.maa_source.index(
+                "MAA::hasLiveFusedDirectState()"
+            ) : self.maa_source.index("MAA::scheduleDrainEvent()")
+        ]
+        self.assertIn("hasFusedDirectInstruction", fused_live)
+        self.assertIn("fusedDirectTransformLive", fused_live)
         reset = self.maa_source[
             self.maa_source.index(
                 "void MAA::resetStats()"
             ) : self.maa_source.index("#define MAKE_INDIRECT_STAT_NAME")
         ]
-        self.assertIn("hasFusedDirectInstruction", reset)
+        self.assertIn("hasLiveFusedDirectState", reset)
         self.assertIn("partial-operation accounting is unsupported", reset)
+        self.assertIn(
+            "FUSED_DIRECT_LIVE_DRAIN_RETURNED", self.correctness_runner
+        )
+        guest = (
+            ROOT / "benchmarks/API/test_fused_direct_transform.cpp"
+        ).read_text()
+        self.assertIn("waitForPartialOutput(output, mode)", guest)
+        self.assertNotIn(
+            "checkpoint/drain requested with live instruction",
+            self.correctness_runner,
+        )
+
+    def test_two_maa_live_hazard_gate_is_enabled(self):
+        self.assertIn("MAA_NUM_MAAS=2", self.correctness_runner)
+        self.assertIn("4097 multimaa", self.correctness_runner)
+        self.assertIn(
+            "fused_direct_global_lease_conflict_deferrals",
+            self.correctness_runner,
+        )
+        self.assertIn(
+            "fused_direct_global_lease_high_water", self.correctness_runner
+        )
+        self.assertIn("num_maas=${MAA_NUM_MAAS:-1}", self.validator)
+        self.assertIn('--maa_num_maas="$num_maas"', self.validator)
 
     def test_transform_feeds_existing_combiner_and_ack_gate(self):
         drain = self.indirect.index(

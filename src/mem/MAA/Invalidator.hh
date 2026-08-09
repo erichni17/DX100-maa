@@ -117,6 +117,7 @@ protected:
     std::vector<Instruction *> transientInstructions;
     std::vector<Tick> transientTicks;
     maa::MultiRangeAccessTracker regionAccessTracker;
+    size_t fusedDirectLeaseCount = 0;
     std::map<Instruction *, CompoundPermit> compoundPermits;
 };
 } // namespace gem5

@@ -156,6 +156,7 @@ MAA::MAA(const MAAParams &p)
       system(p.system),
       mmu(p.mmu),
       logicalSpdEvent([this] { serviceLogicalSPD(); }, name()),
+      drainEvent([this] { serviceDrain(); }, name()),
       issueInstructionEvent([this] { issueInstruction(); }, name()),
       dispatchInstructionEvent([this] { dispatchInstruction(); }, name()),
       dispatchRegisterEvent([this] { dispatchRegister(); }, name()),
@@ -1675,13 +1676,9 @@ MAA::notifyLogicalSPDResponse()
     scheduleLogicalSPDEvent();
 }
 
-DrainState
-MAA::drain()
+bool
+MAA::hasLiveState()
 {
-    logicalSpdBridge->closeAdmission();
-    panic_if(!logicalSpdBridge->allQuiescent(),
-             "Logical SPD checkpoint/drain requested with live state; "
-             "serialization is unsupported\n");
     const bool queued_callbacks =
         !my_instruction_pkts.empty() || !my_instruction_recvs.empty() ||
         !my_instruction_RIDs.empty() || !my_instructions.empty() ||
@@ -1697,12 +1694,64 @@ MAA::drain()
         !my_outstanding_stream_cache_write_pkts->empty() ||
         !my_outstanding_stream_mem_read_pkts->empty() ||
         !my_outstanding_stream_mem_write_pkts->empty();
-    panic_if(!allFuncUnitsIdle() || !ifile->empty() ||
-                 invalidator->hasLiveRegionAccesses() || queued_callbacks ||
-                 outstanding_packets,
-             "MAA checkpoint/drain requested with live instruction, fused "
-             "ALU/combiner/retirement state, address lease, packet, or "
-             "callback; serialization is unsupported\n");
+    return !allFuncUnitsIdle() || !ifile->empty() ||
+           invalidator->hasLiveRegionAccesses() || queued_callbacks ||
+           outstanding_packets;
+}
+
+bool
+MAA::hasLiveFusedDirectState()
+{
+    const bool decoding = std::any_of(
+        my_instructions.begin(), my_instructions.end(),
+        [](const InstructionPtr instruction) {
+            return instruction != nullptr &&
+                   instruction->opcode == Instruction::OpcodeType::
+                                              INDIR_LD_VIRTUAL_SCALAR;
+        });
+    if (decoding || ifile->hasFusedDirectInstruction())
+        return true;
+    for (int indirect_id = 0; indirect_id < num_indirect_units_total;
+         ++indirect_id) {
+        if (indirectAccessUnits[indirect_id].fusedDirectTransformLive())
+            return true;
+    }
+    return false;
+}
+
+void
+MAA::scheduleDrainEvent()
+{
+    if (!drainEvent.scheduled())
+        schedule(drainEvent, getClockEdge(Cycles(1)));
+}
+
+void
+MAA::serviceDrain()
+{
+    if (drainState() != DrainState::Draining)
+        return;
+    panic_if(!logicalSpdBridge->allQuiescent(),
+             "Logical SPD checkpoint/drain reached live state after drain "
+             "admission closed; serialization is unsupported\n");
+    if (hasLiveState()) {
+        scheduleDrainEvent();
+        return;
+    }
+    signalDrainDone();
+}
+
+DrainState
+MAA::drain()
+{
+    logicalSpdBridge->closeAdmission();
+    panic_if(!logicalSpdBridge->allQuiescent(),
+             "Logical SPD checkpoint/drain requested with live state; "
+             "serialization is unsupported\n");
+    if (hasLiveState()) {
+        scheduleDrainEvent();
+        return DrainState::Draining;
+    }
     return DrainState::Drained;
 }
 
@@ -1711,6 +1760,9 @@ MAA::drainResume()
 {
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD drain resumed with non-quiescent live state\n");
+    panic_if(hasLiveState(),
+             "MAA drain resumed before instruction and packet state became "
+             "quiescent\n");
     logicalSpdBridge->reopenAdmission();
 }
 
@@ -2207,14 +2259,7 @@ Tick MAA::getCyclesToTicks(Cycles c) const {
     return cyclesToTicks(c);
 }
 void MAA::resetStats() {
-    const bool decoding_fused = std::any_of(
-        my_instructions.begin(), my_instructions.end(),
-        [](const InstructionPtr instruction) {
-            return instruction != nullptr &&
-                   instruction->opcode == Instruction::OpcodeType::
-                                              INDIR_LD_VIRTUAL_SCALAR;
-        });
-    panic_if(decoding_fused || ifile->hasFusedDirectInstruction(),
+    panic_if(hasLiveFusedDirectState(),
              "ROI stats reset requested during a live fused direct-sink "
              "operation; partial-operation accounting is unsupported\n");
     my_last_idle_tick = curTick();
@@ -2325,6 +2370,17 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                statistics::units::Count::get(),
                "MAA packets deferred by a nonempty exact-address FIFO after "
                "the virtual-retirement owner completed"),
+      ADD_STAT(fused_direct_global_lease_grants,
+               statistics::units::Count::get(),
+               "fused direct instructions granted atomic global A/B/C "
+               "address leases"),
+      ADD_STAT(fused_direct_global_lease_conflict_deferrals,
+               statistics::units::Count::get(),
+               "fused direct issue attempts deferred by a conflicting global "
+               "A/B/C address lease"),
+      ADD_STAT(fused_direct_global_lease_high_water,
+               statistics::units::Count::get(),
+               "maximum concurrent fused direct global A/B/C leases"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "

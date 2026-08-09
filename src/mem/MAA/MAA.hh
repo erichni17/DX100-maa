@@ -587,9 +587,14 @@ protected:
         uint8_t actualPort,
         LogicalSPDCacheLiveAdapterState::PortEvent event);
     void notifyLogicalSPDResponse();
+    bool hasLiveState();
+    bool hasLiveFusedDirectState();
+    void serviceDrain();
+    void scheduleDrainEvent();
     DrainState drain() override;
     void drainResume() override;
     EventFunctionWrapper logicalSpdEvent;
+    EventFunctionWrapper drainEvent;
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;
     void scheduleDispatchInstructionEvent(int latency = 0);
@@ -673,6 +678,9 @@ public:
         statistics::Scalar virtual_page_wait_responses;
         statistics::Scalar virtual_retirement_native_deferrals;
         statistics::Scalar virtual_retirement_queue_deferrals;
+        statistics::Scalar fused_direct_global_lease_grants;
+        statistics::Scalar fused_direct_global_lease_conflict_deferrals;
+        statistics::Scalar fused_direct_global_lease_high_water;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.

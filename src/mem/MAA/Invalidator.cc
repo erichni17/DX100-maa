@@ -96,13 +96,25 @@ Invalidator::getAddrRegionPermit(Instruction *instruction)
     panic_if(accesses.empty(),
              "Instruction %s has no valid registered address access\n",
              instruction->print());
-    if (!regionAccessTracker.owns(instruction) &&
-        !regionAccessTracker.tryAcquire(instruction, instruction->maa_id,
-                                        accesses)) {
-        DPRINTF(MAAInvalidator,
-                "Global address lease blocks instruction %s\n",
-                instruction->print());
-        return false;
+    if (!regionAccessTracker.owns(instruction)) {
+        if (!regionAccessTracker.tryAcquire(instruction, instruction->maa_id,
+                                            accesses)) {
+            if (isFusedDirect(instruction))
+                maa->stats.fused_direct_global_lease_conflict_deferrals++;
+            DPRINTF(MAAInvalidator,
+                    "Global address lease blocks instruction %s\n",
+                    instruction->print());
+            return false;
+        }
+        if (isFusedDirect(instruction)) {
+            maa->stats.fused_direct_global_lease_grants++;
+            fusedDirectLeaseCount++;
+            if (maa->stats.fused_direct_global_lease_high_water.value() <
+                fusedDirectLeaseCount) {
+                maa->stats.fused_direct_global_lease_high_water =
+                    fusedDirectLeaseCount;
+            }
+        }
     }
 
     if (!isFusedDirect(instruction))
@@ -331,6 +343,9 @@ Invalidator::finishInstruction(Instruction *instruction)
         return;
 
     if (isFusedDirect(instruction)) {
+        panic_if(fusedDirectLeaseCount == 0,
+                 "Fused instruction %s completed without a counted global "
+                 "address lease\n", instruction->print());
         const auto permit = compoundPermits.find(instruction);
         panic_if(permit == compoundPermits.end() ||
                      permit->second.nextRegion !=
@@ -340,6 +355,7 @@ Invalidator::finishInstruction(Instruction *instruction)
         for (Instruction &proxy : permit->second.regions)
             finishSingleAddrRegion(&proxy);
         compoundPermits.erase(permit);
+        fusedDirectLeaseCount--;
     } else {
         finishSingleAddrRegion(instruction);
     }

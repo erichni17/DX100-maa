@@ -273,6 +273,7 @@ public:
         return direct_index_pending_lines.find(addr) !=
                direct_index_pending_lines.end();
     }
+    bool fusedDirectTransformLive() const;
 
     bool recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached);
 
@@ -357,7 +358,6 @@ protected:
                          unsigned size = 64);
     bool isVirtualLoad() const;
     bool isFusedDirectTransform() const;
-    bool fusedDirectTransformLive() const;
     bool fusedDirectTransformPending() const;
     int fusedDirectTransformALU() const;
     bool isDirectIndexLoad() const;
