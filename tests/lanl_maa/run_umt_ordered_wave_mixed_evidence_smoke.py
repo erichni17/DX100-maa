@@ -49,7 +49,8 @@ CASES = (
 )
 SUCCESS_CASES = tuple(case for case in CASES if not case.expect_error)
 BUILD_MANIFEST_SCHEMA = "lanl-maa-reproducible-gem5-build-v1"
-TIMING_CONTRACT_SCHEMA = "lanl-maa-umt-ordered-wave-timing-contract-v1"
+TIMING_CONTRACT_SCHEMA = "lanl-maa-umt-ordered-wave-timing-contract-v2"
+EVIDENCE_REPORT_SCHEMA = "lanl-maa-umt-ordered-wave-mixed-evidence-v2"
 GUEST_COMPILE_FLAGS = (
     "-std=c11",
     "-O2",
@@ -101,7 +102,33 @@ TIMING_COUNTER_REASONS = {
     "controlReadRequests": (
         "total control reads inherit the simulated status-poll count"
     ),
+    "portSendFailures": (
+        "downstream timing-request refusal count depends on memory-system "
+        "contention"
+    ),
+    "portRetryNotifications": (
+        "retry notification count depends on downstream request availability"
+    ),
+    "retryPacketResubmissions": (
+        "retained-packet resubmission count depends on timing-request refusals"
+    ),
+    "retryPacketAcceptances": (
+        "accepted retained-packet count depends on how many retry episodes "
+        "occur"
+    ),
 }
+PACKET_RETRY_COUNTERS = (
+    "portSendFailures",
+    "portRetryNotifications",
+    "retryPacketResubmissions",
+    "retryPacketAcceptances",
+)
+PACKET_RETRY_RELATIONSHIPS = (
+    "portSendFailures == portRetryNotifications == "
+    "retryPacketResubmissions",
+    "0 <= retryPacketAcceptances <= retryPacketResubmissions",
+    "(retryPacketAcceptances == 0) == (retryPacketResubmissions == 0)",
+)
 
 BUILD_MANIFEST_KEYS = {
     "schema",
@@ -310,6 +337,38 @@ def validate_exact_stats(stats):
     return expected
 
 
+def validate_packet_retry_counters(stats):
+    observed = {}
+    for name in PACKET_RETRY_COUNTERS:
+        value = stats.get(name)
+        if type(value) is not int or value < 0:
+            raise RuntimeError(
+                "mixed UMT packet retry counter is absent, noninteger, or "
+                f"negative: {name}={value}"
+            )
+        observed[name] = value
+
+    failures = observed["portSendFailures"]
+    notifications = observed["portRetryNotifications"]
+    resubmissions = observed["retryPacketResubmissions"]
+    acceptances = observed["retryPacketAcceptances"]
+    if failures != notifications or notifications != resubmissions:
+        raise RuntimeError(
+            "mixed UMT retry obligation accounting did not close: "
+            f"{observed}"
+        )
+    if acceptances > resubmissions:
+        raise RuntimeError(
+            "mixed UMT retry acceptance exceeds resubmissions: " f"{observed}"
+        )
+    if (acceptances == 0) != (resubmissions == 0):
+        raise RuntimeError(
+            "mixed UMT terminal retry acceptance accounting did not close: "
+            f"{observed}"
+        )
+    return observed
+
+
 def observed_timing_counters(stats):
     observed = {}
     for name in TIMING_COUNTER_REASONS:
@@ -321,11 +380,15 @@ def observed_timing_counters(stats):
             )
         observed[name] = value
 
-    retained_work = set(TIMING_COUNTER_REASONS) - {
-        "lineTableHighWaterMark",
-        "controlStatusReads",
-        "controlReadRequests",
-    }
+    retained_work = (
+        set(TIMING_COUNTER_REASONS)
+        - {
+            "lineTableHighWaterMark",
+            "controlStatusReads",
+            "controlReadRequests",
+        }
+        - set(PACKET_RETRY_COUNTERS)
+    )
     missing_work = {
         name: observed[name] for name in retained_work if observed[name] <= 0
     }
@@ -345,6 +408,7 @@ def observed_timing_counters(stats):
         raise RuntimeError(
             "mixed UMT control-read accounting did not close: " f"{observed}"
         )
+    validate_packet_retry_counters(observed)
     return observed
 
 
@@ -407,9 +471,19 @@ def timing_contract_candidate(stats, build_manifest_sha256):
 
 def validation_disposition(mode):
     if mode == "confirmation":
-        return "passed", True
+        return {
+            "status": "prerequisite_passed",
+            "gate_scope": "mixed_umt_evidence_prerequisite",
+            "prerequisite_gate_passed": True,
+            "application_performance_promotion_eligible": False,
+        }
     if mode == "calibration":
-        return "calibration_only", False
+        return {
+            "status": "calibration_only",
+            "gate_scope": "mixed_umt_evidence_prerequisite",
+            "prerequisite_gate_passed": False,
+            "application_performance_promotion_eligible": False,
+        }
     raise ValueError(f"unknown validation mode: {mode}")
 
 
@@ -610,7 +684,7 @@ def main():
     compile_command = compile_guest(source, binary, compiler)
     actual_guest_sha256 = sha256(binary)
     metadata = {
-        "schema": "lanl-maa-umt-ordered-wave-mixed-evidence-v1",
+        "schema": EVIDENCE_REPORT_SCHEMA,
         "validation_mode": validation_mode,
         "cases": case_metadata(),
         "edge_count": len(EDGES),
@@ -687,11 +761,10 @@ def main():
         candidate_path = args.output_root / "timing-contract.candidate.json"
         write_json(candidate_path, candidate)
         candidate_sha256 = sha256(candidate_path)
-    report_status, promotion_eligible = validation_disposition(validation_mode)
+    disposition = validation_disposition(validation_mode)
     report = {
         **metadata,
-        "status": report_status,
-        "promotion_eligible": promotion_eligible,
+        **disposition,
         "terminal": True,
         "returncode": completed.returncode,
         "command": command,
@@ -706,6 +779,13 @@ def main():
             str(candidate_path) if candidate_path else None
         ),
         "candidate_timing_contract_sha256": candidate_sha256,
+        "packet_retry_accounting": {
+            "counters": validate_packet_retry_counters(stats),
+            "closed_form_relationships": list(PACKET_RETRY_RELATIONSHIPS),
+            "exactly_bound_by_timing_contract": (
+                validation_mode == "confirmation"
+            ),
+        },
         "unasserted_timing_counters": {
             "descriptorCycles": (
                 "includes descriptor traffic, cache latency, execution, and drain"
@@ -725,13 +805,15 @@ def main():
         ),
         "calibration_boundary": (
             "Calibration emits a candidate external timing contract but is "
-            "never promotion-eligible; only a later confirmation run with a "
-            "predeclared exact contract can report passed."
+            "never a prerequisite pass; only a later confirmation run with a "
+            "predeclared exact contract can report prerequisite_passed. "
+            "Neither mode establishes application performance promotion."
         ),
         "claim_boundary": (
-            "Live mixed-ABI terminal-rearm, fixed dense-graph scalar-oracle, "
-            "poison-tail, fail-closed error-drain, exact-work, occupancy, and "
-            "cost-floor evidence; no application-speedup, total-area, energy, "
+            "Prerequisite-only live mixed-ABI terminal-rearm, fixed "
+            "dense-graph scalar-oracle, poison-tail, fail-closed error-drain, "
+            "exact-work, packet-retry, occupancy, and cost-floor evidence; no "
+            "application-speedup, performance-promotion, total-area, energy, "
             "RTL, or physical-design claim."
         ),
     }
