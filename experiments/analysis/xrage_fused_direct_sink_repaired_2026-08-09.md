@@ -2,7 +2,7 @@
 
 Date: 2026-08-09
 
-Validated source: `48f611539e97eb0b956842ed32ea36a7acbf03ec`
+Validated source: `e9916d1221e45f97c1b32814ff72835b8e072d7b`
 
 ## Mechanism
 
@@ -46,7 +46,7 @@ hazards, or live lifecycle correctly.
 ## Correctness and lifecycle
 
 The final matrix at
-`/data1/nier/dx100-runs/2026-08-09-fused-direct-full-correctness-final-v5`
+`/data1/nier/dx100-runs/2026-08-09-fused-direct-full-correctness-final-v6-no-ram-patch`
 passes:
 
 - exact N=4,097 output, hash `5894740462575425604`;
@@ -58,11 +58,11 @@ passes:
   with 1,321 conflict deferrals and concurrent-lease high-water two.
 
 The matched performance evidence is at
-`/data1/nier/dx100-runs/2026-08-09-xrage-fused-direct-48f61153-matched-v1`.
+`/data1/nier/dx100-runs/2026-08-09-xrage-fused-direct-e9916d12-matched-v1`.
 The production gem5 SHA-256 is
-`c9c038c52560f646b82ca7e53d307eb4a3526506085504606b3bb94470846001`;
+`45a70f3f29a84d708d14d892973cbdfa865eefd54048dacf8b1e9ff7f6e3248d`;
 the guest SHA-256 is
-`418d4c708484435aa702f92021f8d6e778a8efb579856d884d5f02461a042fa4`;
+`d6f8fe0ba965f67bc00f698a4a14249d951e3e30cf719b12ad13017692b75249`;
 Ramulator SHA-256 is
 `76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753`.
 
