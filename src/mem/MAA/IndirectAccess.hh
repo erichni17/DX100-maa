@@ -307,6 +307,7 @@ protected:
     bool descriptor_spool_bucket_active = false;
     bool descriptor_spool_bucket_scan_complete = false;
     bool descriptor_spool_replay_active = false;
+    bool descriptor_spool_operation = false;
     Addr descriptor_spool_base_vaddr = 0;
     static constexpr uint32_t DescriptorIndexPageBytes = 4096;
     static constexpr uint32_t MaxDescriptorIndexPages = 17;
@@ -316,15 +317,32 @@ protected:
         descriptor_spool_index_page_valid{};
     struct DescriptorSpoolPendingLine
     {
+        bool valid = false;
+        bool responded = false;
+        Addr paddr = 0;
         Addr vaddr = 0;
         uint32_t pass = 0;
         uint32_t line = 0;
-        uint32_t firstCursor = 0;
-        uint32_t descriptors = 0;
+        std::array<uint8_t, BoundedDescriptorSpool::LineBytes> data{};
     };
-    std::map<Addr, DescriptorSpoolPendingLine>
-        descriptor_spool_pending_lines;
-    std::map<Addr, Addr> descriptor_spool_write_paddr_to_vaddr;
+    std::array<DescriptorSpoolPendingLine,
+               BoundedDescriptorSpool::MaxOutstandingReadLines>
+        descriptor_spool_read_slots{};
+    struct DescriptorSpoolWriteSlot
+    {
+        bool valid = false;
+        Addr paddr = 0;
+        Addr vaddr = 0;
+    };
+    std::array<DescriptorSpoolWriteSlot,
+               BoundedDescriptorSpool::MaxOutstandingWrites>
+        descriptor_spool_write_slots{};
+    bool descriptor_spool_current_valid = false;
+    uint32_t descriptor_spool_current_cursor = 0;
+    BoundedDescriptorSpool::Descriptor descriptor_spool_current_descriptor{};
+    DirectIndexWord descriptor_spool_current_word{};
+    uint64_t descriptor_spool_bucket_attempts = 0;
+    uint64_t descriptor_spool_bucket_commits = 0;
     bool direct_index_summary_active = false;
     bool direct_index_summary_overflow = false;
     bool direct_index_iteration_fallback = false;
@@ -369,6 +387,10 @@ protected:
     Tick my_fill_start_tick;
     Tick my_build_start_tick;
     Tick my_request_start_tick;
+    // These sets are functional for every legacy/non-spool operation: cache
+    // routing and row-table configuration consume their exact cardinalities.
+    // The resident-first spool path explicitly suppresses updates so its
+    // operation-sized state remains bounded.
     std::set<Addr> my_unique_WORD_addrs;
     std::set<Addr> my_unique_CL_addrs;
     std::set<Addr> my_unique_ROW_addrs;
@@ -382,6 +404,7 @@ protected:
     void fillDescriptorSpoolWindow();
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
+    const DirectIndexWord &currentDirectIndexWord(int itr) const;
     uint32_t directIndexPassForGrow(Addr grow_addr) const;
     uint64_t directIndexRangeKey(uint32_t index, Addr grow_addr,
                                  int iteration) const;
@@ -395,18 +418,19 @@ protected:
                             bool is_block_cached);
     bool receiveDescriptorSpool(Addr addr, uint8_t *dataptr,
                                 bool is_block_cached);
+    bool loadDescriptorSpoolCurrent(uint32_t cursor);
+    void releaseDescriptorSpoolReadLines(uint32_t next_cursor);
+    size_t descriptorSpoolReadSlotsUsed() const;
+    size_t descriptorSpoolWriteSlotsUsed() const;
     bool flushDescriptorSpoolLine(uint32_t pass, bool allow_partial);
     bool finishDescriptorSpoolBucketing();
     void startDescriptorSpoolReplay();
     uint16_t captureDescriptorIndexPage(uint32_t iteration,
                                         Addr word_paddr);
-    Addr descriptorIndexWordPaddr(uint32_t iteration,
-                                  uint16_t source_page) const;
+    Addr descriptorIndexWordPaddr(uint32_t iteration) const;
     size_t descriptorSpoolControlBytes() const;
     void createDescriptorSpoolReadPacket(Addr vaddr, uint32_t pass,
-                                         uint32_t line,
-                                         uint32_t first_cursor,
-                                         uint32_t descriptors);
+                                         uint32_t line);
     void createDescriptorSpoolWritePacket(
         Addr vaddr,
         const std::array<uint8_t, BoundedDescriptorSpool::LineBytes> &data);

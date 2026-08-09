@@ -13,9 +13,11 @@ namespace gem5
  * Fail-closed accounting for the bounded direct-index range-pass candidate.
  *
  * This object deliberately stores no index, source address, row, cache-line,
- * or result payload.  The two bitmaps are an explicit four-KiB checker for a
- * 16K logical gather: one admission bit and one retirement bit per logical
- * iteration.  Row/Offset payload remains in the native finite tables.
+ * result payload, or logical-size identity bitmap.  Live hardware checks only
+ * finite pass counts, active-epoch occupancy, and closure.  Retry-idempotent
+ * identity is enforced by the owning Word/Offset/RowTable transaction; an
+ * exhaustive per-iteration audit is emitted to and validated by the trace
+ * side, where it cannot influence routing, timing, or completion.
  */
 class BoundedRangePassTracker
 {
@@ -105,9 +107,6 @@ class BoundedRangePassTracker
             passRanges[pass] = ranges[pass];
             passExpectedInspections[pass] = logical_entries;
         }
-        const size_t words = ceilDiv(logicalEntries, uint32_t(64));
-        admitted.assign(words, 0);
-        retired.assign(words, 0);
         configuredFlag = true;
         return Result::Accepted;
     }
@@ -133,9 +132,6 @@ class BoundedRangePassTracker
             passRanges[pass] = {pass, static_cast<uint64_t>(pass) + 1};
             passExpectedInspections[pass] = logical_entries;
         }
-        const size_t words = ceilDiv(logicalEntries, uint32_t(64));
-        admitted.assign(words, 0);
-        retired.assign(words, 0);
         configuredFlag = true;
         return Result::Accepted;
     }
@@ -179,8 +175,6 @@ class BoundedRangePassTracker
         numPasses = 0;
         growLower = 0;
         growUpper = 0;
-        admitted.clear();
-        retired.clear();
         admissionCount = 0;
         retirementCount = 0;
         passAdmissions.fill(0);
@@ -297,13 +291,11 @@ class BoundedRangePassTracker
     }
 
   private:
-    Result recordAdmissionCommon(uint32_t iteration, uint32_t pass)
+    Result recordAdmissionCommon(uint32_t, uint32_t pass)
     {
-        if (test(admitted, iteration))
-            return Result::DuplicateAdmission;
-        if (passEpochAdmissions[pass] >= activeEntries)
+        if (admissionCount >= logicalEntries ||
+            passEpochAdmissions[pass] >= activeEntries)
             return Result::EpochOverflow;
-        set(admitted, iteration);
         admissionCount++;
         passAdmissions[pass]++;
         passEpochAdmissions[pass]++;
@@ -339,11 +331,9 @@ class BoundedRangePassTracker
             return Result::PassOutOfRange;
         if (passFinished[pass])
             return Result::PassAlreadyFinished;
-        if (!test(admitted, iteration))
+        if (retirementCount >= admissionCount ||
+            passRetirements[pass] >= passAdmissions[pass])
             return Result::RetirementBeforeAdmission;
-        if (test(retired, iteration))
-            return Result::DuplicateRetirement;
-        set(retired, iteration);
         retirementCount++;
         passRetirements[pass]++;
         return Result::Accepted;
@@ -377,7 +367,7 @@ class BoundedRangePassTracker
                 passAdmissions[pass] != passRetirements[pass])
                 return Result::Incomplete;
         }
-        return admitted == retired ? Result::Accepted : Result::Incomplete;
+        return Result::Accepted;
     }
 
     uint32_t admissionsForPass(uint32_t pass) const
@@ -407,7 +397,7 @@ class BoundedRangePassTracker
 
     struct SemanticByteBreakdown
     {
-        size_t bitmaps = 0;
+        size_t identityBitmaps = 0;
         size_t passCounters = 0;
         size_t passFinished = 0;
         size_t passRanges = 0;
@@ -415,7 +405,7 @@ class BoundedRangePassTracker
 
         size_t total() const
         {
-            return bitmaps + passCounters + passFinished + passRanges +
+            return identityBitmaps + passCounters + passFinished + passRanges +
                    scalarConfig;
         }
     };
@@ -429,8 +419,7 @@ class BoundedRangePassTracker
     SemanticByteBreakdown semanticByteBreakdown() const
     {
         SemanticByteBreakdown bytes;
-        bytes.bitmaps =
-            (admitted.size() + retired.size()) * sizeof(uint64_t);
+        bytes.identityBitmaps = 0;
         bytes.passCounters =
             (passAdmissions.size() + passRetirements.size() +
              passInspections.size() + passExpectedInspections.size() +
@@ -486,16 +475,6 @@ class BoundedRangePassTracker
         return value / divisor + (value % divisor != 0);
     }
 
-    static bool test(const std::vector<uint64_t> &bits, uint32_t index)
-    {
-        return bits[index / 64] & (uint64_t(1) << (index % 64));
-    }
-
-    static void set(std::vector<uint64_t> &bits, uint32_t index)
-    {
-        bits[index / 64] |= uint64_t(1) << (index % 64);
-    }
-
     bool configuredFlag = false;
     bool externallySelected = false;
     bool groupedInspections = false;
@@ -504,8 +483,6 @@ class BoundedRangePassTracker
     uint32_t numPasses = 0;
     uint64_t growLower = 0;
     uint64_t growUpper = 0;
-    std::vector<uint64_t> admitted;
-    std::vector<uint64_t> retired;
     uint32_t admissionCount = 0;
     uint32_t retirementCount = 0;
     std::array<uint32_t, MaxPasses> passAdmissions{};

@@ -102,6 +102,9 @@ testAuthenticatedPhysicalGrowPlanSplitsOnlyGrow21()
            BoundedGrowPassPlan::Result::Accepted);
     assert(plan.passes() == 4);
     assert(plan.records() == 9);
+    // All four counted populations are equal, so the documented low-pass
+    // tie break selects pass zero without oracle workload knowledge.
+    assert(plan.residentPass() == 0);
     const std::array<uint32_t, 4> expectedQuotas{10, 41, 44, 285};
     uint32_t ordinal = 0;
     for (uint32_t pass = 0; pass < 4; ++pass) {

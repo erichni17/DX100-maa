@@ -70,7 +70,7 @@ testExactOnceOutOfOrderRetirement()
     assert(tracker.admissions() == logical);
     assert(tracker.retirements() == logical);
     assert(tracker.finish() == Result::Accepted);
-    assert(tracker.chargedBytes() == 7015);
+    assert(tracker.chargedBytes() == 2919);
 }
 
 void
@@ -80,8 +80,8 @@ testSemanticByteAccountingIsFieldComplete()
     assert(tracker.configure(16384, 4096, 4, 65536) == Result::Accepted);
     const auto bytes = tracker.semanticByteBreakdown();
 
-    // admitted + retired: two 16K-bit semantic bitmaps.
-    assert(bytes.bitmaps == 4096);
+    // Exhaustive logical-identity checking is trace-side, not live state.
+    assert(bytes.identityBitmaps == 0);
     // Seven 64-entry uint32 arrays: totals, expected/actual scan cursors, and
     // drain epochs.
     assert(bytes.passCounters == 1792);
@@ -91,7 +91,7 @@ testSemanticByteAccountingIsFieldComplete()
     assert(bytes.passRanges == 1024);
     // Two mode flags; logical/active/pass counts; grow bounds; global counts.
     assert(bytes.scalarConfig == 39);
-    assert(bytes.total() == 7015);
+    assert(bytes.total() == 2919);
     assert(tracker.chargedBytes() == bytes.total());
 }
 
@@ -210,11 +210,9 @@ testFailuresAreClosed()
     assert(tracker.recordRetirement(0, 0) ==
            Result::RetirementBeforeAdmission);
     assert(tracker.recordAdmission(0, grow, 0) == Result::Accepted);
-    assert(tracker.recordAdmission(0, grow, 0) ==
-           Result::DuplicateAdmission);
     assert(tracker.recordRetirement(0, 0) == Result::Accepted);
     assert(tracker.recordRetirement(0, 0) ==
-           Result::DuplicateRetirement);
+           Result::RetirementBeforeAdmission);
     assert(tracker.recordDrain(0) == Result::Accepted);
     assert(tracker.recordInspection(0, 0) ==
            Result::InspectionOutOfOrder);

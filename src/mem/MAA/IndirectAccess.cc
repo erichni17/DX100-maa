@@ -629,8 +629,13 @@ void IndirectAccessUnit::check_reset() {
                              [](Tick ticks) { return ticks != 0; }),
              "I[%d] stage attribution is still active\n", my_indirect_id);
     panic_if(!direct_index_pending_lines.empty() ||
-                 !descriptor_spool_pending_lines.empty() ||
-                 !descriptor_spool_write_paddr_to_vaddr.empty() ||
+                 std::any_of(descriptor_spool_read_slots.begin(),
+                             descriptor_spool_read_slots.end(),
+                             [](const auto &slot) { return slot.valid; }) ||
+                 std::any_of(descriptor_spool_write_slots.begin(),
+                             descriptor_spool_write_slots.end(),
+                             [](const auto &slot) { return slot.valid; }) ||
+                 descriptor_spool_current_valid ||
                  !direct_index_ready_lines.empty() ||
                  !direct_index_words.empty(),
              "I[%d] direct-index buffer is not empty at reset\n",
@@ -778,9 +783,15 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
         fillDescriptorSpoolWindow();
         return;
     }
+    const size_t line_capacity = maa->virtual_index_descriptor_spool
+        ? std::min<size_t>(direct_index_buffer_lines,
+                           BoundedDescriptorSpool::MaxOutstandingReadLines)
+        : static_cast<size_t>(direct_index_buffer_lines);
+    panic_if(line_capacity == 0,
+             "I[%d] direct-index feeder has zero line capacity\n",
+             my_indirect_id);
     while (direct_index_pending_lines.size() +
-               direct_index_ready_lines.size() <
-           static_cast<size_t>(direct_index_buffer_lines)) {
+               direct_index_ready_lines.size() < line_capacity) {
         const int itr = direct_index_next_prefetch_itr;
         if (itr >= my_max)
             return;
@@ -873,32 +884,137 @@ void IndirectAccessUnit::fillDescriptorSpoolWindow()
              "I[%d] descriptor-spool replay is not active\n",
              my_indirect_id);
     const uint32_t pass = direct_index_partition;
-    while (descriptor_spool_pending_lines.size() +
-               direct_index_ready_lines.size() <
+    while (descriptorSpoolReadSlotsUsed() <
            BoundedDescriptorSpool::MaxOutstandingReadLines) {
         const uint32_t line = direct_index_next_prefetch_itr;
         if (line >= descriptor_spool.passLines(pass))
             return;
         const Addr vaddr = descriptor_spool.lineAddress(pass, line);
-        const uint32_t descriptors =
-            descriptor_spool.descriptorsInLine(pass, line);
-        const uint32_t first_cursor =
-            line * BoundedDescriptorSpool::DescriptorsPerLine;
-        createDescriptorSpoolReadPacket(
-            vaddr, pass, line, first_cursor, descriptors);
+        createDescriptorSpoolReadPacket(vaddr, pass, line);
         direct_index_next_prefetch_itr++;
     }
     if (direct_index_next_prefetch_itr <
         static_cast<int>(descriptor_spool.passLines(pass)))
         (*maa->stats.IND_DescriptorSpoolReadCreditStalls[my_indirect_id])++;
 }
+size_t
+IndirectAccessUnit::descriptorSpoolReadSlotsUsed() const
+{
+    return std::count_if(
+        descriptor_spool_read_slots.begin(),
+        descriptor_spool_read_slots.end(),
+        [](const auto &slot) { return slot.valid; });
+}
+size_t
+IndirectAccessUnit::descriptorSpoolWriteSlotsUsed() const
+{
+    return std::count_if(
+        descriptor_spool_write_slots.begin(),
+        descriptor_spool_write_slots.end(),
+        [](const auto &slot) { return slot.valid; });
+}
+bool
+IndirectAccessUnit::loadDescriptorSpoolCurrent(uint32_t cursor)
+{
+    panic_if(!descriptor_spool_replay_active,
+             "I[%d] cannot decode a descriptor outside replay\n",
+             my_indirect_id);
+    if (descriptor_spool_current_valid) {
+        panic_if(descriptor_spool_current_cursor != cursor,
+                 "I[%d] decoded descriptor cursor changed from %u to %u\n",
+                 my_indirect_id, descriptor_spool_current_cursor, cursor);
+        return true;
+    }
+    const uint32_t pass = direct_index_partition;
+    if (cursor >= descriptor_spool.population(pass))
+        return false;
+    const uint64_t byte_offset =
+        static_cast<uint64_t>(cursor) *
+        BoundedDescriptorSpool::DescriptorBytes;
+    const uint32_t first_line = byte_offset /
+        BoundedDescriptorSpool::LineBytes;
+    const uint32_t first_byte = byte_offset %
+        BoundedDescriptorSpool::LineBytes;
+    auto findLine = [this, pass](uint32_t line)
+        -> const DescriptorSpoolPendingLine * {
+        for (const auto &slot : descriptor_spool_read_slots) {
+            if (slot.valid && slot.responded && slot.pass == pass &&
+                slot.line == line)
+                return &slot;
+        }
+        return nullptr;
+    };
+    const auto *first = findLine(first_line);
+    if (first == nullptr)
+        return false;
+    std::array<uint8_t, BoundedDescriptorSpool::DescriptorBytes> packed{};
+    for (uint32_t byte = 0;
+         byte < BoundedDescriptorSpool::DescriptorBytes; ++byte) {
+        const uint32_t stream_byte = first_byte + byte;
+        const uint32_t line = first_line +
+            stream_byte / BoundedDescriptorSpool::LineBytes;
+        const auto *source = line == first_line ? first : findLine(line);
+        if (source == nullptr)
+            return false;
+        packed[byte] = source->data[
+            stream_byte % BoundedDescriptorSpool::LineBytes];
+    }
+    descriptor_spool_current_descriptor =
+        BoundedDescriptorSpool::unpack(packed.data());
+    panic_if(descriptor_spool_current_descriptor.iteration >=
+                 static_cast<uint32_t>(my_max),
+             "I[%d] decoded descriptor cursor %u has iteration %u/%d\n",
+             my_indirect_id, cursor,
+             descriptor_spool_current_descriptor.iteration, my_max);
+    descriptor_spool_current_cursor = cursor;
+    descriptor_spool_current_word = DirectIndexWord{
+        descriptor_spool_current_descriptor.value,
+        first->paddr,
+        descriptorIndexWordPaddr(
+            descriptor_spool_current_descriptor.iteration),
+        direct_index_phase,
+        descriptor_spool_current_descriptor.iteration};
+    descriptor_spool_current_valid = true;
+    direct_index_max_words = std::max(direct_index_max_words, 1);
+    return true;
+}
+void
+IndirectAccessUnit::releaseDescriptorSpoolReadLines(uint32_t next_cursor)
+{
+    const uint32_t pass = direct_index_partition;
+    const uint32_t first_needed =
+        next_cursor >= descriptor_spool.population(pass)
+        ? descriptor_spool.passLines(pass)
+        : static_cast<uint32_t>(
+              static_cast<uint64_t>(next_cursor) *
+              BoundedDescriptorSpool::DescriptorBytes /
+              BoundedDescriptorSpool::LineBytes);
+    for (auto &slot : descriptor_spool_read_slots) {
+        if (!slot.valid || slot.pass != pass || slot.line >= first_needed)
+            continue;
+        panic_if(!slot.responded,
+                 "I[%d] releasing pending descriptor line %u\n",
+                 my_indirect_id, slot.line);
+        slot = DescriptorSpoolPendingLine();
+    }
+}
 bool IndirectAccessUnit::ensureDirectIndex(int itr) {
     if (!isDirectIndexLoad())
         return true;
     fillDirectIndexWindow();
+    if (descriptor_spool_replay_active)
+        return loadDescriptorSpoolCurrent(itr);
     return direct_index_words.find(itr) != direct_index_words.end();
 }
 uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
+    if (descriptor_spool_replay_active) {
+        panic_if(!descriptor_spool_current_valid ||
+                     descriptor_spool_current_cursor !=
+                         static_cast<uint32_t>(itr),
+                 "I[%d] descriptor cursor %d is not decoded\n",
+                 my_indirect_id, itr);
+        return descriptor_spool_current_descriptor.value;
+    }
     auto entry = direct_index_words.find(itr);
     panic_if(entry == direct_index_words.end(),
              "I[%d] streamed index %d is not buffered\n",
@@ -908,6 +1024,23 @@ uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
              my_indirect_id, itr, entry->second.phase,
              direct_index_phase);
     return entry->second.value;
+}
+const IndirectAccessUnit::DirectIndexWord &
+IndirectAccessUnit::currentDirectIndexWord(int itr) const
+{
+    if (descriptor_spool_replay_active) {
+        panic_if(!descriptor_spool_current_valid ||
+                     descriptor_spool_current_cursor !=
+                         static_cast<uint32_t>(itr),
+                 "I[%d] descriptor cursor %d has no current word\n",
+                 my_indirect_id, itr);
+        return descriptor_spool_current_word;
+    }
+    const auto word = direct_index_words.find(itr);
+    panic_if(word == direct_index_words.end(),
+             "I[%d] streamed index %d is not buffered\n",
+             my_indirect_id, itr);
+    return word->second;
 }
 uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
     if (!maa->virtual_index_range_passes)
@@ -1015,16 +1148,24 @@ void IndirectAccessUnit::finishAdaptiveSummary()
              BoundedRangePassTracker::resultName(tracker_result));
 
     if (maa->virtual_index_descriptor_spool) {
+        panic_if(my_max != static_cast<int>(
+                              BoundedDescriptorSpool::MaxLogicalDescriptors) ||
+                     offset_table->capacity() != static_cast<int>(
+                         BoundedDescriptorSpool::MaxActiveDescriptors) ||
+                     direct_index_partitions !=
+                         static_cast<int>(BoundedDescriptorSpool::MaxPasses) ||
+                     bounded_grow_plan.residentPass() != 0,
+                 "I[%d] resident-first spool requires logical16K, active4K, "
+                 "four counted passes, and deterministic resident pass 0\n",
+                 my_indirect_id);
         const uint64_t payload_end = my_backing_addr +
             static_cast<uint64_t>(my_max) * my_word_size;
-        const uint64_t slot_bytes =
-            ((static_cast<uint64_t>(num_tile_elements) *
-                  BoundedDescriptorSpool::DescriptorBytes +
-              BoundedDescriptorSpool::MaxPasses *
-                  BoundedDescriptorSpool::LineBytes +
-              BoundedDescriptorSpool::LineBytes - 1) /
-             BoundedDescriptorSpool::LineBytes) *
-            BoundedDescriptorSpool::LineBytes;
+        constexpr uint64_t slot_bytes =
+            static_cast<uint64_t>(
+                BoundedDescriptorSpool::MaxExternalPasses) *
+            BoundedDescriptorSpool::MaxActiveDescriptors *
+            BoundedDescriptorSpool::DescriptorBytes;
+        static_assert(slot_bytes % BoundedDescriptorSpool::LineBytes == 0);
         const uint64_t unit_tail =
             static_cast<uint64_t>(my_indirect_id + 1) * slot_bytes;
         panic_if(my_backing_max_addr < unit_tail,
@@ -1041,6 +1182,7 @@ void IndirectAccessUnit::finishAdaptiveSummary()
                  slot_bytes, payload_end);
         const auto spool_result = descriptor_spool.configure(
             my_max, direct_index_partitions,
+            bounded_grow_plan.residentPass(),
             [this](uint32_t pass) {
                 return bounded_grow_plan.population(pass);
             },
@@ -1052,6 +1194,7 @@ void IndirectAccessUnit::finishAdaptiveSummary()
         descriptor_spool_bucket_active = true;
         descriptor_spool_bucket_scan_complete = false;
         descriptor_spool_replay_active = false;
+        descriptor_spool_operation = true;
         descriptor_spool_index_page_paddrs.fill(0);
         descriptor_spool_index_page_valid.fill(false);
     }
@@ -1211,8 +1354,7 @@ IndirectAccessUnit::captureDescriptorIndexPage(uint32_t iteration,
 }
 
 Addr
-IndirectAccessUnit::descriptorIndexWordPaddr(
-    uint32_t iteration, uint16_t source_page) const
+IndirectAccessUnit::descriptorIndexWordPaddr(uint32_t iteration) const
 {
     panic_if(iteration >= static_cast<uint32_t>(my_max),
              "I[%d] replay descriptor iteration %u exceeds logical size %d\n",
@@ -1234,43 +1376,37 @@ IndirectAccessUnit::descriptorIndexWordPaddr(
     const Addr word_vaddr = my_index_addr + byte_offset;
     const Addr first_page = my_index_addr &
         ~(static_cast<Addr>(DescriptorIndexPageBytes) - 1);
-    const uint64_t expected_page = (word_vaddr - first_page) /
+    const uint64_t source_page = (word_vaddr - first_page) /
         DescriptorIndexPageBytes;
     const Addr page_offset = word_vaddr &
         (static_cast<Addr>(DescriptorIndexPageBytes) - 1);
-    panic_if(expected_page >= MaxDescriptorIndexPages ||
-                 source_page != expected_page ||
+    panic_if(source_page >= MaxDescriptorIndexPages ||
                  !descriptor_spool_index_page_valid[source_page],
-             "I[%d] replay descriptor has invalid page: itr=%u "
-             "encoded=%u expected=%lu\n", my_indirect_id, iteration,
-             source_page, expected_page);
+             "I[%d] replay descriptor has invalid derived page: "
+             "itr=%u page=%lu\n", my_indirect_id, iteration,
+             source_page);
     return descriptor_spool_index_page_paddrs[source_page] + page_offset;
 }
 
 size_t
 IndirectAccessUnit::descriptorSpoolControlBytes() const
 {
-    // Charge the semantic capacity of every candidate-only live structure,
-    // not merely the entries occupied at retirement.  Host std::map node
-    // layout is not modeled hardware; keys, values, and valid bits are.
+    // Charge every candidate-only fixed structure at semantic capacity.
     constexpr size_t read_scoreboard_bytes =
         BoundedDescriptorSpool::MaxOutstandingReadLines *
-        (sizeof(Addr) + sizeof(DescriptorSpoolPendingLine) + sizeof(bool));
-    constexpr size_t ready_line_bytes =
-        BoundedDescriptorSpool::MaxOutstandingReadLines *
-        (sizeof(Addr) + sizeof(int) + sizeof(bool));
-    constexpr size_t decoded_descriptor_bytes =
-        BoundedDescriptorSpool::MaxOutstandingReadLines *
-        BoundedDescriptorSpool::DescriptorsPerLine *
-        (sizeof(int) + sizeof(DirectIndexWord) + sizeof(bool));
-    constexpr size_t write_address_map_bytes =
+        sizeof(DescriptorSpoolPendingLine);
+    constexpr size_t current_descriptor_bytes =
+        sizeof(bool) + sizeof(uint32_t) +
+        sizeof(BoundedDescriptorSpool::Descriptor) +
+        sizeof(DirectIndexWord);
+    constexpr size_t write_scoreboard_bytes =
         BoundedDescriptorSpool::MaxOutstandingWrites *
-        (2 * sizeof(Addr) + sizeof(bool));
+        sizeof(DescriptorSpoolWriteSlot);
     return descriptor_spool.chargedControlBytes() +
         descriptor_spool_index_page_paddrs.size() * sizeof(Addr) +
         descriptor_spool_index_page_valid.size() * sizeof(bool) +
-        read_scoreboard_bytes + ready_line_bytes +
-        decoded_descriptor_bytes + write_address_map_bytes;
+        read_scoreboard_bytes + current_descriptor_bytes +
+        write_scoreboard_bytes;
 }
 
 bool IndirectAccessUnit::flushDescriptorSpoolLine(uint32_t pass,
@@ -1279,10 +1415,10 @@ bool IndirectAccessUnit::flushDescriptorSpoolLine(uint32_t pass,
     if (!descriptor_spool.lineReady(pass, allow_partial))
         return true;
     Addr vaddr = 0;
-    uint32_t descriptors = 0;
+    uint32_t payload_bytes = 0;
     std::array<uint8_t, BoundedDescriptorSpool::LineBytes> data{};
     const auto result = descriptor_spool.issueStagedLine(
-        pass, allow_partial, vaddr, data, descriptors);
+        pass, allow_partial, vaddr, data, payload_bytes);
     if (result == BoundedDescriptorSpool::Result::NoWriteCredit) {
         (*maa->stats
               .IND_DescriptorSpoolWriteCreditStalls[my_indirect_id])++;
@@ -1295,9 +1431,9 @@ bool IndirectAccessUnit::flushDescriptorSpoolLine(uint32_t pass,
     createDescriptorSpoolWritePacket(vaddr, data);
     DPRINTF(MAAVirtualTrace,
             "event=descriptor_spool_line_materialized schema=1 unit=%d "
-            "operation_tick=%lu pass=%u vaddr=0x%lx descriptors=%u "
+            "operation_tick=%lu pass=%u vaddr=0x%lx payload_bytes=%u "
             "external_bytes=%lu\n",
-            my_indirect_id, my_decode_start_tick, pass, vaddr, descriptors,
+            my_indirect_id, my_decode_start_tick, pass, vaddr, payload_bytes,
             descriptor_spool.requiredBackingBytes());
     return true;
 }
@@ -1325,39 +1461,51 @@ bool IndirectAccessUnit::finishDescriptorSpoolBucketing()
              my_indirect_id, BoundedDescriptorSpool::resultName(finish));
     DPRINTF(MAAVirtualTrace,
             "event=descriptor_spool_bucket_complete schema=1 unit=%d "
-            "operation_tick=%lu logical=%u lines=%u write_acks=%u "
-            "backing_bytes=%lu control_bytes=%lu staging_entries=%u "
-            "write_hwm=%u\n",
+            "operation_tick=%lu logical=%u resident_pass=%u resident=%u "
+            "external=%u segments=%u payload_bytes=%lu lines=%u "
+            "write_acks=%u backing_bytes=%lu control_bytes=%lu "
+            "staging_bytes=%u write_hwm=%u unique_inspections=%lu "
+            "retry_inspections=%lu identity_check=trace_side\n",
             my_indirect_id, my_decode_start_tick, descriptor_spool.logical(),
+            descriptor_spool.residentPass(),
+            descriptor_spool.residentDescriptors(),
+            descriptor_spool.externalDescriptors(),
+            descriptor_spool.externalSegments(),
+            descriptor_spool.externalPayloadBytes(),
             descriptor_spool.writeLinesIssued(),
             descriptor_spool.writeAcks(),
             descriptor_spool.reservedBackingBytes(),
             descriptorSpoolControlBytes(),
-            descriptor_spool.activeStagingDescriptorCapacity(),
-            descriptor_spool.outstandingWriteHighWater());
+            descriptor_spool.activeStagingBytes(),
+            descriptor_spool.outstandingWriteHighWater(),
+            descriptor_spool_bucket_commits,
+            descriptor_spool_bucket_attempts -
+                descriptor_spool_bucket_commits);
     startDescriptorSpoolReplay();
     return true;
 }
 void IndirectAccessUnit::startDescriptorSpoolReplay()
 {
-    const auto begin = descriptor_spool.beginReplay(0);
-    panic_if(begin != BoundedDescriptorSpool::Result::Accepted,
-             "I[%d] descriptor replay cannot begin: %s\n", my_indirect_id,
-             BoundedDescriptorSpool::resultName(begin));
-    descriptor_spool_bucket_active = false;
-    descriptor_spool_replay_active = true;
-    direct_index_partition = 0;
-    direct_index_next_prefetch_itr = 0;
-    my_i = 0;
-    panic_if(direct_index_phase == std::numeric_limits<uint32_t>::max(),
-             "I[%d] descriptor feeder phase token overflow\n",
+    panic_if(descriptor_spool.residentPass() != 0 ||
+                 descriptor_spool.residentDescriptors() !=
+                     descriptor_spool.population(0),
+             "I[%d] deterministic resident pass did not close\n",
              my_indirect_id);
-    direct_index_phase++;
+    descriptor_spool_bucket_active = false;
+    descriptor_spool_replay_active = false;
+    direct_index_partition = descriptor_spool.residentPass();
+    direct_index_next_prefetch_itr = 0;
+    // The complete resident population is already in active Row/Offset state.
+    // Re-enter Fill at the logical end so the ordinary partition barrier
+    // drains resident A/C work before the first external replay.
+    my_i = my_max;
     DPRINTF(MAAVirtualTrace,
-            "event=descriptor_spool_replay_begin schema=1 unit=%d "
-            "operation_tick=%lu pass=0 population=%u lines=%u\n",
+            "event=descriptor_spool_resident_begin schema=1 unit=%d "
+            "operation_tick=%lu pass=0 population=%u active_limit=%u "
+            "selection=largest_planned_population_low_pass_tie\n",
             my_indirect_id, my_decode_start_tick,
-            descriptor_spool.population(0), descriptor_spool.passLines(0));
+            descriptor_spool.population(0),
+            BoundedDescriptorSpool::MaxActiveDescriptors);
     scheduleNextExecution(true);
 }
 BoundedRangePassTracker::Range
@@ -1399,13 +1547,22 @@ int IndirectAccessUnit::directIndexRetirementPass() const {
 void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
     if (!maa->virtual_index_range_passes)
         return;
-    if (descriptor_spool_replay_active) {
-        const auto replay_result = descriptor_spool.finishReplay(pass);
-        panic_if(replay_result != BoundedDescriptorSpool::Result::Accepted,
-                 "I[%d] descriptor pass %d replay failed closure: %s\n",
-                 my_indirect_id, pass,
-                 BoundedDescriptorSpool::resultName(replay_result));
-    } else if (maa->virtual_index_range_policy == 3 &&
+    if (descriptor_spool.configured()) {
+        if (descriptor_spool_replay_active) {
+            const auto replay_result = descriptor_spool.finishReplay(pass);
+            panic_if(replay_result != BoundedDescriptorSpool::Result::Accepted,
+                     "I[%d] descriptor pass %d replay failed closure: %s\n",
+                     my_indirect_id, pass,
+                     BoundedDescriptorSpool::resultName(replay_result));
+            descriptor_spool_replay_active = false;
+        } else {
+            panic_if(pass !=
+                         static_cast<int>(descriptor_spool.residentPass()),
+                     "I[%d] non-replay pass %d is not resident\n",
+                     my_indirect_id, pass);
+        }
+    } else if (!descriptor_spool.configured() &&
+        maa->virtual_index_range_policy == 3 &&
         !direct_index_iteration_fallback) {
         const auto replay_result = bounded_grow_plan.finishReplay();
         panic_if(replay_result != BoundedGrowPassPlan::Result::Accepted,
@@ -1435,20 +1592,26 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
             bounded_range_pass.maxEpochAdmissionsForPass(pass),
             bounded_range_pass.admissions(), bounded_range_pass.retirements(),
             reason);
-    if (descriptor_spool_replay_active &&
+    if (descriptor_spool.configured() &&
         pass + 1 < direct_index_partitions) {
+        panic_if(descriptorSpoolReadSlotsUsed() != 0 ||
+                     descriptor_spool_current_valid,
+                 "I[%d] descriptor pass %d retained read state\n",
+                 my_indirect_id, pass);
         const auto replay_result = descriptor_spool.beginReplay(pass + 1);
         panic_if(replay_result != BoundedDescriptorSpool::Result::Accepted,
                  "I[%d] descriptor pass %d cannot start next replay: %s\n",
                  my_indirect_id, pass,
                  BoundedDescriptorSpool::resultName(replay_result));
+        descriptor_spool_replay_active = true;
         DPRINTF(MAAVirtualTrace,
                 "event=descriptor_spool_replay_begin schema=1 unit=%d "
                 "operation_tick=%lu pass=%d population=%u lines=%u\n",
                 my_indirect_id, my_decode_start_tick, pass + 1,
                 descriptor_spool.population(pass + 1),
                 descriptor_spool.passLines(pass + 1));
-    } else if (maa->virtual_index_range_policy == 3 &&
+    } else if (!descriptor_spool.configured() &&
+        maa->virtual_index_range_policy == 3 &&
         !direct_index_iteration_fallback &&
         pass + 1 < direct_index_partitions) {
         const auto replay_result = bounded_grow_plan.beginReplay();
@@ -1460,6 +1623,31 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
 }
 void IndirectAccessUnit::discardDirectIndex(
     int itr, uint32_t expected_value, DirectIndexDiscardReason reason) {
+    if (descriptor_spool_replay_active) {
+        panic_if(!descriptor_spool_current_valid ||
+                     descriptor_spool_current_cursor !=
+                         static_cast<uint32_t>(itr) ||
+                     descriptor_spool_current_descriptor.value !=
+                         expected_value ||
+                     descriptor_spool_current_word.phase !=
+                         direct_index_phase,
+                 "I[%d] descriptor cursor %d changed before discard\n",
+                 my_indirect_id, itr);
+        panic_if(reason == DirectIndexDiscardReason::SummaryObserved,
+                 "I[%d] replay descriptor cannot be a summary word\n",
+                 my_indirect_id);
+        DPRINTF(MAAVirtualTrace,
+                "event=index_feeder_discard unit=%d itr=%d logical_itr=%u "
+                "value=%u reason=descriptor_replay private=scalar_decode\n",
+                my_indirect_id, itr,
+                descriptor_spool_current_descriptor.iteration,
+                expected_value);
+        descriptor_spool_current_valid = false;
+        descriptor_spool_current_descriptor = {};
+        descriptor_spool_current_word = {};
+        releaseDescriptorSpoolReadLines(itr + 1);
+        return;
+    }
     auto word = direct_index_words.find(itr);
     panic_if(word == direct_index_words.end(),
              "I[%d] streamed index %d cannot be consumed\n",
@@ -1572,56 +1760,44 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
 bool IndirectAccessUnit::receiveDescriptorSpool(
     Addr addr, uint8_t *dataptr, bool is_block_cached)
 {
-    auto pending = descriptor_spool_pending_lines.find(addr);
-    if (pending == descriptor_spool_pending_lines.end())
+    auto pending = std::find_if(
+        descriptor_spool_read_slots.begin(),
+        descriptor_spool_read_slots.end(),
+        [addr](const auto &slot) {
+            return slot.valid && slot.paddr == addr;
+        });
+    if (pending == descriptor_spool_read_slots.end())
         return false;
     panic_if(!descriptor_spool_replay_active,
              "I[%d] received descriptor line outside replay\n",
              my_indirect_id);
     accountReadResponse(addr, is_block_cached);
-    const DescriptorSpoolPendingLine metadata = pending->second;
-    descriptor_spool_pending_lines.erase(pending);
-    panic_if(metadata.pass != static_cast<uint32_t>(direct_index_partition),
+    panic_if(pending->responded,
+             "I[%d] duplicate descriptor response line %u\n",
+             my_indirect_id, pending->line);
+    panic_if(pending->pass != static_cast<uint32_t>(direct_index_partition),
              "I[%d] descriptor response pass %u is stale (current=%d)\n",
-             my_indirect_id, metadata.pass, direct_index_partition);
-    const auto response = descriptor_spool.recordReadResponse(metadata.pass);
+             my_indirect_id, pending->pass, direct_index_partition);
+    const auto response = descriptor_spool.recordReadResponse(
+        pending->pass, pending->line);
     panic_if(response != BoundedDescriptorSpool::Result::Accepted,
              "I[%d] descriptor response failed: %s\n", my_indirect_id,
              BoundedDescriptorSpool::resultName(response));
+    std::memcpy(pending->data.data(), dataptr,
+                BoundedDescriptorSpool::LineBytes);
+    pending->responded = true;
     DPRINTF(MAAVirtualTrace,
             "event=descriptor_spool_read_response schema=1 unit=%d "
             "operation_tick=%lu pass=%u line=%u paddr=0x%lx "
-            "descriptors=%u cached=%d\n",
-            my_indirect_id, my_decode_start_tick, metadata.pass,
-            metadata.line, addr, metadata.descriptors, is_block_cached);
-    panic_if(!direct_index_ready_lines.emplace(
-                  addr, static_cast<int>(metadata.descriptors)).second,
-             "I[%d] duplicate ready descriptor line 0x%lx\n",
-             my_indirect_id, addr);
-    for (uint32_t word = 0; word < metadata.descriptors; ++word) {
-        BoundedDescriptorSpool::Descriptor descriptor;
-        std::memcpy(&descriptor,
-                    dataptr + word * BoundedDescriptorSpool::DescriptorBytes,
-                    sizeof(descriptor));
-        const int cursor = metadata.firstCursor + word;
-        panic_if(!direct_index_words
-                      .emplace(cursor, DirectIndexWord{
-                                           descriptor.value, addr,
-                                           descriptorIndexWordPaddr(
-                                               descriptor.iteration,
-                                               descriptor.sourcePage),
-                                           direct_index_phase,
-                                           descriptor.iteration})
-                      .second,
-                 "I[%d] duplicate descriptor cursor %d\n",
-                 my_indirect_id, cursor);
-    }
+            "payload_bytes=%u cached=%d\n",
+            my_indirect_id, my_decode_start_tick, pending->pass,
+            pending->line, addr,
+            descriptor_spool.passPayloadLineBytes(
+                pending->pass, pending->line),
+            is_block_cached);
     direct_index_max_lines = std::max(
         direct_index_max_lines,
-        static_cast<int>(descriptor_spool_pending_lines.size() +
-                         direct_index_ready_lines.size()));
-    direct_index_max_words = std::max(
-        direct_index_max_words, static_cast<int>(direct_index_words.size()));
+        static_cast<int>(descriptorSpoolReadSlotsUsed()));
     scheduleNextExecution(true);
     return true;
 }
@@ -1669,11 +1845,7 @@ bool IndirectAccessUnit::checkElementReady() {
               (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
     int operand_itr = my_i;
     if (idx_ready && descriptor_spool_replay_active) {
-        const auto descriptor = direct_index_words.find(my_i);
-        panic_if(descriptor == direct_index_words.end(),
-                 "I[%d] ready descriptor cursor %d has no logical identity\n",
-                 my_indirect_id, my_i);
-        operand_itr = descriptor->second.logical_itr;
+        operand_itr = currentDirectIndexWord(my_i).logical_itr;
     }
     bool cond_ready = my_cond_tile == -1 || !idx_ready ||
         maa->spd->getElementFinished(
@@ -1771,7 +1943,8 @@ void IndirectAccessUnit::fillRowTable(
             if (isVirtualLoad() && isDirectIndexLoad() &&
                 direct_index_partition + 1 < direct_index_partitions) {
                 panic_if(!direct_index_pending_lines.empty() ||
-                             !descriptor_spool_pending_lines.empty() ||
+                             descriptorSpoolReadSlotsUsed() != 0 ||
+                             descriptor_spool_current_valid ||
                              !direct_index_ready_lines.empty() ||
                              !direct_index_words.empty(),
                          "I[%d] direct-index partition %d ended with buffered "
@@ -1822,14 +1995,10 @@ void IndirectAccessUnit::fillRowTable(
             waitForElement = true;
             break;
         }
-        const auto direct_word = isDirectIndexLoad()
-            ? direct_index_words.find(my_i) : direct_index_words.end();
-        panic_if(isDirectIndexLoad() &&
-                     direct_word == direct_index_words.end(),
-                 "I[%d] direct-index feeder cursor %d disappeared\n",
-                 my_indirect_id, my_i);
+        const DirectIndexWord *direct_word = isDirectIndexLoad()
+            ? &currentDirectIndexWord(my_i) : nullptr;
         const int logical_itr = descriptor_spool_replay_active
-            ? static_cast<int>(direct_word->second.logical_itr) : my_i;
+            ? static_cast<int>(direct_word->logical_itr) : my_i;
         if (isVirtualLoad() && !isDirectIndexLoad() && my_max == -1) {
             my_max = maa->spd->getSizeForReadyElement(
                 my_idx_tile, my_i, sizeof(uint32_t));
@@ -1847,6 +2016,7 @@ void IndirectAccessUnit::fillRowTable(
         bool direct_index_predicate_rejected = false;
         bool direct_index_partition_rejected = false;
         bool commit_grow_ordinal = false;
+        bool resident_bucket = false;
         uint32_t grow_ordinal = 0;
         uint32_t grow_ordinal_key = 0;
         const uint32_t direct_index_value = isDirectIndexLoad()
@@ -1857,6 +2027,8 @@ void IndirectAccessUnit::fillRowTable(
         if (isVirtualLoad() && isDirectIndexLoad() &&
             direct_index_partitions > 1 && !descriptor_spool_replay_active)
             num_direct_index_filter_words++;
+        if (descriptor_spool_bucket_active)
+            descriptor_spool_bucket_attempts++;
         bool virtual_iteration_selected = condition_taken;
         if (!condition_taken && maa->virtual_index_descriptor_spool &&
             direct_index_summary_active) {
@@ -1889,6 +2061,15 @@ void IndirectAccessUnit::fillRowTable(
             panic_if(bucket_pass >= descriptor_spool.passes(),
                      "I[%d] predicate ordinal %u has no pass\n",
                      my_indirect_id, predicate_ordinal);
+            captureDescriptorIndexPage(
+                logical_itr, direct_word->word_paddr);
+            if (descriptor_spool.isResidentPass(bucket_pass)) {
+                resident_bucket = true;
+                virtual_iteration_selected = true;
+                grow_ordinal_key = predicate_key;
+                grow_ordinal = predicate_ordinal;
+                commit_grow_ordinal = true;
+            } else {
             if (descriptor_spool.lineReady(bucket_pass, false) &&
                 !flushDescriptorSpoolLine(bucket_pass, false)) {
                 waitForElement = true;
@@ -1898,8 +2079,6 @@ void IndirectAccessUnit::fillRowTable(
                 bucket_pass,
                 BoundedDescriptorSpool::Descriptor{
                     static_cast<uint16_t>(logical_itr),
-                    captureDescriptorIndexPage(
-                        logical_itr, direct_word->second.word_paddr),
                     direct_index_value});
             panic_if(stage_result !=
                          BoundedDescriptorSpool::Result::Accepted,
@@ -1916,11 +2095,13 @@ void IndirectAccessUnit::fillRowTable(
                      my_indirect_id, predicate_ordinal,
                      BoundedGrowPassPlan::resultName(commit_result));
             (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
+            descriptor_spool_bucket_commits++;
             discardDirectIndex(
                 my_i, direct_index_value,
                 DirectIndexDiscardReason::DescriptorInserted);
             my_i++;
             continue;
+            }
         }
         if (!condition_taken && descriptor_spool_replay_active)
             virtual_iteration_selected = true;
@@ -1979,6 +2160,12 @@ void IndirectAccessUnit::fillRowTable(
                 panic_if(bucket_pass >= descriptor_spool.passes(),
                          "I[%d] bucket grow 0x%lx ordinal %u has no pass\n",
                          my_indirect_id, grow_addr, grow_ordinal);
+                captureDescriptorIndexPage(
+                    logical_itr, direct_word->word_paddr);
+                if (descriptor_spool.isResidentPass(bucket_pass)) {
+                    resident_bucket = true;
+                    commit_grow_ordinal = true;
+                } else {
                 if (descriptor_spool.lineReady(bucket_pass, false) &&
                     !flushDescriptorSpoolLine(bucket_pass, false)) {
                     waitForElement = true;
@@ -1988,8 +2175,6 @@ void IndirectAccessUnit::fillRowTable(
                     bucket_pass,
                     BoundedDescriptorSpool::Descriptor{
                         static_cast<uint16_t>(logical_itr),
-                        captureDescriptorIndexPage(
-                            logical_itr, direct_word->second.word_paddr),
                         idx});
                 panic_if(stage_result !=
                              BoundedDescriptorSpool::Result::Accepted,
@@ -2005,16 +2190,20 @@ void IndirectAccessUnit::fillRowTable(
                          my_indirect_id, grow_ordinal,
                          BoundedGrowPassPlan::resultName(commit_result));
                 (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
+                descriptor_spool_bucket_commits++;
                 discardDirectIndex(
                     my_i, direct_index_value,
                     DirectIndexDiscardReason::DescriptorInserted);
                 my_i++;
                 continue;
+                }
             }
             const uint64_t bounded_range_key =
                 directIndexRangeKey(idx, grow_addr, logical_itr);
             uint32_t selected_pass;
-            if (descriptor_spool_replay_active) {
+            if (resident_bucket) {
+                selected_pass = descriptor_spool.residentPass();
+            } else if (descriptor_spool_replay_active) {
                 selected_pass = direct_index_partition;
             } else if (maa->virtual_index_range_passes &&
                 maa->virtual_index_range_policy == 3) {
@@ -2064,6 +2253,10 @@ void IndirectAccessUnit::fillRowTable(
                 }
                 if (offset_table->occupancy() >=
                     maa->num_offset_table_epoch_entries) {
+                    panic_if(resident_bucket,
+                             "I[%d] resident population exceeded bounded "
+                             "Offset state before its planned 4K closure\n",
+                             my_indirect_id);
                     attribution_offset_pressure_events++;
                     DPRINTF(MAAVirtualTrace,
                             "event=indirect_stall schema=2 unit=%d "
@@ -2102,6 +2295,10 @@ void IndirectAccessUnit::fillRowTable(
                     first_CL_access);
                 num_rowtable_accesses++;
                 if (!inserted) {
+                    panic_if(resident_bucket,
+                             "I[%d] resident population exceeded bounded "
+                             "RowTable state before its planned 4K closure\n",
+                             my_indirect_id);
                     attribution_row_pressure_events++;
                     DPRINTF(MAAVirtualTrace,
                             "event=indirect_stall schema=2 unit=%d "
@@ -2143,11 +2340,6 @@ void IndirectAccessUnit::fillRowTable(
                     if (isDirectIndexLoad())
                         direct_index_descriptor_inserted = true;
                     if (isDirectIndexLoad()) {
-                        const auto direct_word =
-                            direct_index_words.find(my_i);
-                        panic_if(direct_word == direct_index_words.end(),
-                                 "I[%d] admitted index %d has no physical "
-                                 "record\n", my_indirect_id, my_i);
                         const Addr a_paddr =
                             block_paddr + (vaddr - block_vaddr);
                         const bool generation_available =
@@ -2175,7 +2367,7 @@ void IndirectAccessUnit::fillRowTable(
                                 "aperture_slice_end=%d aperture_slices=%d "
                                 "provenance=direct_index_"
                                 "descriptor_admission\n",
-                                logical_itr, direct_word->second.word_paddr,
+                                logical_itr, direct_word->word_paddr,
                                 idx,
                                 a_paddr, block_paddr,
                                 addr_vec[ADDR_CHANNEL_LEVEL],
@@ -2200,11 +2392,13 @@ void IndirectAccessUnit::fillRowTable(
                     }
                     if (usesBoundedSourceResponses())
                         my_RT_req_sent[my_RT_config][my_RT_idx] = false;
-                    my_unique_WORD_addrs.insert(vaddr);
-                    my_unique_CL_addrs.insert(block_paddr);
-                    my_unique_ROW_addrs.insert(
-                        grow_addr +
-                        my_RT_idx * num_RT_possible_grows[my_RT_config]);
+                    if (!descriptor_spool_operation) {
+                        my_unique_WORD_addrs.insert(vaddr);
+                        my_unique_CL_addrs.insert(block_paddr);
+                        my_unique_ROW_addrs.insert(
+                            grow_addr + my_RT_idx *
+                                num_RT_possible_grows[my_RT_config]);
+                    }
                     if (!reorder_RT && first_CL_access) {
                         DPRINTF(MAAIndirect,
                                 "I[%d] %s: Creating packet for bank[%d], "
@@ -2237,7 +2431,8 @@ void IndirectAccessUnit::fillRowTable(
         if (isVirtualLoad() && track_virtual_iteration)
             trackVirtualIteration(logical_itr, condition_taken);
         if (isDirectIndexLoad()) {
-            if (descriptor_spool_replay_active && !condition_taken) {
+            if ((descriptor_spool_replay_active || resident_bucket) &&
+                !condition_taken) {
                 const auto admitted =
                     bounded_range_pass.recordSelectedAdmission(
                         logical_itr, direct_index_partition);
@@ -2259,7 +2454,9 @@ void IndirectAccessUnit::fillRowTable(
                          BoundedRangePassTracker::resultName(retired));
             }
             if (maa->virtual_index_range_passes) {
-                const auto inspection_result = descriptor_spool_replay_active
+                const bool grouped_descriptor =
+                    descriptor_spool_replay_active || resident_bucket;
+                const auto inspection_result = grouped_descriptor
                     ? bounded_range_pass.recordSelectedInspection(
                           logical_itr, direct_index_partition)
                     : bounded_range_pass.recordInspection(
@@ -2272,7 +2469,7 @@ void IndirectAccessUnit::fillRowTable(
                     direct_index_partition,
                     BoundedRangePassTracker::resultName(
                         inspection_result));
-                if (!descriptor_spool_replay_active)
+                if (!descriptor_spool_replay_active && !resident_bucket)
                     (*maa->stats.IND_BoundedReplayWords[my_indirect_id])++;
             }
             const int terminal_decisions =
@@ -2292,14 +2489,37 @@ void IndirectAccessUnit::fillRowTable(
                     direct_index_partition,
                     BoundedDescriptorSpool::Descriptor{
                         static_cast<uint16_t>(logical_itr),
-                        captureDescriptorIndexPage(
-                            logical_itr, direct_word->second.word_paddr),
                         direct_index_value});
                 panic_if(consumed !=
                              BoundedDescriptorSpool::Result::Accepted,
                          "I[%d] descriptor consumption failed: %s\n",
                          my_indirect_id,
                          BoundedDescriptorSpool::resultName(consumed));
+            }
+            if (resident_bucket) {
+                const auto resident =
+                    descriptor_spool.recordResidentClassification(
+                        direct_index_partition,
+                        BoundedDescriptorSpool::Descriptor{
+                            static_cast<uint16_t>(logical_itr),
+                            direct_index_value});
+                panic_if(resident !=
+                             BoundedDescriptorSpool::Result::Accepted,
+                         "I[%d] resident descriptor classification failed: "
+                         "%s\n", my_indirect_id,
+                         BoundedDescriptorSpool::resultName(resident));
+                (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
+                descriptor_spool_bucket_commits++;
+                DPRINTF(MAAVirtualTrace,
+                        "event=descriptor_spool_resident_admit schema=1 "
+                        "unit=%d operation_tick=%lu pass=%d itr=%d "
+                        "condition=%d active=%u limit=%u\n",
+                        my_indirect_id, my_decode_start_tick,
+                        direct_index_partition, logical_itr,
+                        condition_taken,
+                        bounded_range_pass.admissionsForPass(
+                            direct_index_partition),
+                        BoundedDescriptorSpool::MaxActiveDescriptors);
             }
             discardDirectIndex(
                 my_i, direct_index_value,
@@ -2541,6 +2761,7 @@ void IndirectAccessUnit::executeInstruction() {
         descriptor_spool_bucket_active = false;
         descriptor_spool_bucket_scan_complete = false;
         descriptor_spool_replay_active = false;
+        descriptor_spool_operation = false;
         descriptor_spool_base_vaddr = 0;
         descriptor_spool_index_page_paddrs.fill(0);
         descriptor_spool_index_page_valid.fill(false);
@@ -2553,8 +2774,16 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_summary_reduction_visits = 0;
         offset_table_drain = false;
         direct_index_pending_lines.clear();
-        descriptor_spool_pending_lines.clear();
-        descriptor_spool_write_paddr_to_vaddr.clear();
+        for (auto &slot : descriptor_spool_read_slots)
+            slot = DescriptorSpoolPendingLine();
+        for (auto &slot : descriptor_spool_write_slots)
+            slot = DescriptorSpoolWriteSlot();
+        descriptor_spool_current_valid = false;
+        descriptor_spool_current_cursor = 0;
+        descriptor_spool_current_descriptor = {};
+        descriptor_spool_current_word = {};
+        descriptor_spool_bucket_attempts = 0;
+        descriptor_spool_bucket_commits = 0;
         direct_index_ready_lines.clear();
         direct_index_words.clear();
         direct_index_max_lines = 0;
@@ -2835,11 +3064,21 @@ void IndirectAccessUnit::executeInstruction() {
         Addr addr;
         if (my_force_cache_determined == false) {
             my_force_cache_determined = true;
-            if (my_unique_WORD_addrs.size() > my_words_per_cl * my_unique_CL_addrs.size()) {
-                DPRINTF(MAAIndirect, "I[%d] %s: Direct cache access is needed!\n", my_indirect_id, __func__);
+            if (descriptor_spool_operation) {
+                my_force_cache = direct_index_force_cache;
+                DPRINTF(MAAIndirect,
+                        "I[%d] bounded operation declared cache route %d\n",
+                        my_indirect_id, my_force_cache);
+            } else if (my_unique_WORD_addrs.size() >
+                       my_words_per_cl * my_unique_CL_addrs.size()) {
+                DPRINTF(MAAIndirect,
+                        "I[%d] %s: Direct cache access is needed!\n",
+                        my_indirect_id, __func__);
                 my_force_cache = true;
             } else {
-                DPRINTF(MAAIndirect, "I[%d] %s: Direct cache access is not needed!\n", my_indirect_id, __func__);
+                DPRINTF(MAAIndirect,
+                        "I[%d] %s: Direct cache access is not needed!\n",
+                        my_indirect_id, __func__);
                 my_force_cache = false;
             }
         }
@@ -3428,14 +3667,33 @@ void IndirectAccessUnit::executeInstruction() {
                 direct_index_max_words;
         }
         if (descriptor_spool.configured()) {
-            panic_if(descriptor_spool.descriptorsConsumed() !=
+            panic_if(descriptor_spool.classifiedDescriptors() !=
                          static_cast<uint32_t>(my_max) ||
+                         descriptor_spool.residentDescriptors() != 4096 ||
+                         descriptor_spool.externalDescriptors() != 12288 ||
+                         descriptor_spool.externalSegments() != 3 ||
+                         descriptor_spool.descriptorsConsumed() !=
+                             descriptor_spool.externalDescriptors() ||
                          descriptor_spool.readLinesIssued() !=
                              descriptor_spool.readLineResponses() ||
                          descriptor_spool.writeLinesIssued() !=
                              descriptor_spool.writeAcks() ||
-                         !descriptor_spool_pending_lines.empty() ||
-                         !descriptor_spool_write_paddr_to_vaddr.empty(),
+                         descriptor_spool.writeLinesIssued() != 1152 ||
+                         descriptor_spool.readLinesIssued() != 1152 ||
+                         descriptor_spool.externalPayloadBytes() != 73728 ||
+                         direct_index_summary_next_iteration !=
+                             static_cast<uint32_t>(my_max) ||
+                         descriptor_spool_bucket_commits !=
+                             static_cast<uint32_t>(my_max) ||
+                         descriptor_spool_bucket_attempts <
+                             descriptor_spool_bucket_commits ||
+                         direct_index_max_lines >
+                             static_cast<int>(
+                                 BoundedDescriptorSpool::
+                                     MaxOutstandingReadLines) ||
+                         descriptorSpoolReadSlotsUsed() != 0 ||
+                         descriptorSpoolWriteSlotsUsed() != 0 ||
+                         descriptor_spool_current_valid,
                      "I[%d] descriptor spool failed terminal accounting\n",
                      my_indirect_id);
             (*maa->stats
@@ -3452,20 +3710,37 @@ void IndirectAccessUnit::executeInstruction() {
                 descriptor_spool.reservedBackingBytes();
             DPRINTF(MAAVirtualTrace,
                     "event=descriptor_spool_complete schema=1 unit=%d "
-                    "operation_tick=%lu descriptors=%u write_lines=%u "
-                    "write_acks=%u read_lines=%u read_responses=%u "
-                    "control_bytes=%lu backing_bytes=%lu "
-                    "staging_entries=%u write_hwm=%u fallback=none\n",
+                    "operation_tick=%lu b_scans=2 descriptors=%u "
+                    "resident_pass=%u resident_descriptors=%u "
+                    "external_descriptors=%u external_segments=%u "
+                    "descriptor_bytes=%u payload_bytes=%lu "
+                    "write_lines=%u write_acks=%u read_lines=%u "
+                    "read_responses=%u control_bytes=%lu "
+                    "backing_bytes=%lu staging_bytes=%u write_hwm=%u "
+                    "read_hwm=%u unique_inspections=%lu "
+                    "retry_inspections=%lu active_limit=%u "
+                    "identity_check=trace_side fallback=none\n",
                     my_indirect_id, my_decode_start_tick,
-                    descriptor_spool.descriptorsConsumed(),
+                    descriptor_spool.classifiedDescriptors(),
+                    descriptor_spool.residentPass(),
+                    descriptor_spool.residentDescriptors(),
+                    descriptor_spool.externalDescriptors(),
+                    descriptor_spool.externalSegments(),
+                    BoundedDescriptorSpool::DescriptorBytes,
+                    descriptor_spool.externalPayloadBytes(),
                     descriptor_spool.writeLinesIssued(),
                     descriptor_spool.writeAcks(),
                     descriptor_spool.readLinesIssued(),
                     descriptor_spool.readLineResponses(),
                     descriptorSpoolControlBytes(),
                     descriptor_spool.reservedBackingBytes(),
-                    descriptor_spool.activeStagingDescriptorCapacity(),
-                    descriptor_spool.outstandingWriteHighWater());
+                    descriptor_spool.activeStagingBytes(),
+                    descriptor_spool.outstandingWriteHighWater(),
+                    descriptor_spool.outstandingReadHighWater(),
+                    descriptor_spool_bucket_commits,
+                    descriptor_spool_bucket_attempts -
+                        descriptor_spool_bucket_commits,
+                    BoundedDescriptorSpool::MaxActiveDescriptors);
             descriptor_spool.reset();
             descriptor_spool_bucket_active = false;
             descriptor_spool_bucket_scan_complete = false;
@@ -3550,13 +3825,32 @@ void IndirectAccessUnit::executeInstruction() {
         } else {
             maa->stats.cycles_INDRMW += total_cycles;
         }
-        setRowTableConfig(my_base_addr, my_unique_CL_addrs.size(), my_unique_ROW_addrs.size());
-        (*maa->stats.IND_NumUniqueWordsInserted[my_indirect_id]) += my_unique_WORD_addrs.size();
-        (*maa->stats.IND_NumUniqueCacheLineInserted[my_indirect_id]) += my_unique_CL_addrs.size();
-        (*maa->stats.IND_NumUniqueRowsInserted[my_indirect_id]) += my_unique_ROW_addrs.size();
+        if (descriptor_spool_operation) {
+            panic_if(!my_unique_WORD_addrs.empty() ||
+                         !my_unique_CL_addrs.empty() ||
+                         !my_unique_ROW_addrs.empty(),
+                     "I[%d] descriptor spool populated legacy uniqueness "
+                     "sets\n",
+                     my_indirect_id);
+            DPRINTF(MAAVirtualTrace,
+                    "event=bounded_identity_accounting schema=1 unit=%d "
+                    "operation_tick=%lu identity_check=trace_side "
+                    "legacy_unique_sets=suppressed\n",
+                    my_indirect_id, my_decode_start_tick);
+        } else {
+            setRowTableConfig(my_base_addr, my_unique_CL_addrs.size(),
+                              my_unique_ROW_addrs.size());
+            (*maa->stats.IND_NumUniqueWordsInserted[my_indirect_id]) +=
+                my_unique_WORD_addrs.size();
+            (*maa->stats.IND_NumUniqueCacheLineInserted[my_indirect_id]) +=
+                my_unique_CL_addrs.size();
+            (*maa->stats.IND_NumUniqueRowsInserted[my_indirect_id]) +=
+                my_unique_ROW_addrs.size();
+        }
         my_unique_WORD_addrs.clear();
         my_unique_CL_addrs.clear();
         my_unique_ROW_addrs.clear();
+        descriptor_spool_operation = false;
         my_instruction = nullptr;
         break;
     }
@@ -3649,21 +3943,35 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
             my_indirect_id, __func__, read_pkt->print());
 }
 void IndirectAccessUnit::createDescriptorSpoolReadPacket(
-    Addr vaddr, uint32_t pass, uint32_t line, uint32_t first_cursor,
-    uint32_t descriptors)
+    Addr vaddr, uint32_t pass, uint32_t line)
 {
     const Addr paddr = translatePacket(
         vaddr, BaseMMU::Read, BoundedDescriptorSpool::LineBytes);
-    panic_if(descriptor_spool_pending_lines.count(paddr) != 0,
+    panic_if(std::any_of(
+                 descriptor_spool_read_slots.begin(),
+                 descriptor_spool_read_slots.end(),
+                 [paddr](const auto &slot) {
+                     return slot.valid && slot.paddr == paddr;
+                 }),
              "I[%d] descriptor line 0x%lx is already pending\n",
              my_indirect_id, paddr);
+    auto slot = std::find_if(
+        descriptor_spool_read_slots.begin(),
+        descriptor_spool_read_slots.end(),
+        [](const auto &candidate) { return !candidate.valid; });
+    panic_if(slot == descriptor_spool_read_slots.end(),
+             "I[%d] descriptor read scoreboard is full\n",
+             my_indirect_id);
     const auto issue = descriptor_spool.recordReadIssue(pass, line);
     panic_if(issue != BoundedDescriptorSpool::Result::Accepted,
              "I[%d] descriptor read issue failed: %s\n", my_indirect_id,
              BoundedDescriptorSpool::resultName(issue));
-    descriptor_spool_pending_lines.emplace(
-        paddr, DescriptorSpoolPendingLine{
-                   vaddr, pass, line, first_cursor, descriptors});
+    *slot = DescriptorSpoolPendingLine();
+    slot->valid = true;
+    slot->paddr = paddr;
+    slot->vaddr = vaddr;
+    slot->pass = pass;
+    slot->line = line;
     RequestPtr req = std::make_shared<Request>(
         paddr, BoundedDescriptorSpool::LineBytes, flags, maa->requestorId);
     req->setRegion(my_backing_addr_range_id);
@@ -3678,9 +3986,10 @@ void IndirectAccessUnit::createDescriptorSpoolReadPacket(
     DPRINTF(MAAVirtualTrace,
             "event=descriptor_spool_read_issue schema=1 unit=%d "
             "operation_tick=%lu pass=%u line=%u vaddr=0x%lx paddr=0x%lx "
-            "descriptors=%u pending=%zu limit=%u\n",
+            "payload_bytes=%u pending=%lu limit=%u\n",
             my_indirect_id, my_decode_start_tick, pass, line, vaddr, paddr,
-            descriptors, descriptor_spool_pending_lines.size(),
+            descriptor_spool.passPayloadLineBytes(pass, line),
+            static_cast<unsigned long>(descriptorSpoolReadSlotsUsed()),
             BoundedDescriptorSpool::MaxOutstandingReadLines);
 }
 void IndirectAccessUnit::createDescriptorSpoolWritePacket(
@@ -3692,15 +4001,22 @@ void IndirectAccessUnit::createDescriptorSpoolWritePacket(
     panic_if(maa->hasOutstandingPacket(paddr),
              "I[%d] dedicated descriptor address 0x%lx is already owned\n",
              my_indirect_id, paddr);
-    panic_if(!descriptor_spool_write_paddr_to_vaddr
-                  .emplace(paddr, vaddr)
-                  .second,
+    panic_if(std::any_of(
+                 descriptor_spool_write_slots.begin(),
+                 descriptor_spool_write_slots.end(),
+                 [paddr](const auto &slot) {
+                     return slot.valid && slot.paddr == paddr;
+                 }),
              "I[%d] duplicate descriptor write 0x%lx\n",
              my_indirect_id, paddr);
-    panic_if(descriptor_spool_write_paddr_to_vaddr.size() >
-                 BoundedDescriptorSpool::MaxOutstandingWrites,
-             "I[%d] descriptor write map exceeded finite capacity\n",
+    auto slot = std::find_if(
+        descriptor_spool_write_slots.begin(),
+        descriptor_spool_write_slots.end(),
+        [](const auto &candidate) { return !candidate.valid; });
+    panic_if(slot == descriptor_spool_write_slots.end(),
+             "I[%d] descriptor write scoreboard exceeded finite capacity\n",
              my_indirect_id);
+    *slot = DescriptorSpoolWriteSlot{true, paddr, vaddr};
     RequestPtr req = std::make_shared<Request>(
         paddr, BoundedDescriptorSpool::LineBytes, flags, maa->requestorId);
     req->setRegion(my_backing_addr_range_id);
@@ -5037,10 +5353,15 @@ void IndirectAccessUnit::transitionAttributionStage(
 }
 
 void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
-    auto spool_write = descriptor_spool_write_paddr_to_vaddr.find(addr);
-    if (spool_write != descriptor_spool_write_paddr_to_vaddr.end()) {
-        const Addr vaddr = spool_write->second;
-        descriptor_spool_write_paddr_to_vaddr.erase(spool_write);
+    auto spool_write = std::find_if(
+        descriptor_spool_write_slots.begin(),
+        descriptor_spool_write_slots.end(),
+        [addr](const auto &slot) {
+            return slot.valid && slot.paddr == addr;
+        });
+    if (spool_write != descriptor_spool_write_slots.end()) {
+        const Addr vaddr = spool_write->vaddr;
+        *spool_write = DescriptorSpoolWriteSlot();
         const auto ack = descriptor_spool.acknowledgeWrite(vaddr);
         panic_if(ack != BoundedDescriptorSpool::Result::Accepted,
                  "I[%d] descriptor write ack 0x%lx failed: %s\n",

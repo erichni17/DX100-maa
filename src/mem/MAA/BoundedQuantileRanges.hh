@@ -418,6 +418,18 @@ class BoundedGrowPassPlan
     {
         return pass < numPasses ? passPopulations[pass] : 0;
     }
+    /** Deterministic runtime choice: largest planned population, low tie. */
+    uint32_t residentPass() const
+    {
+        if (!configuredFlag)
+            return MaxPasses;
+        uint32_t resident = 0;
+        for (uint32_t pass = 1; pass < numPasses; ++pass) {
+            if (passPopulations[pass] > passPopulations[resident])
+                resident = pass;
+        }
+        return resident;
+    }
     uint32_t quota(uint32_t key, uint32_t pass) const
     {
         const uint32_t record = findRecord(key);
