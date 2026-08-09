@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -80,6 +81,23 @@ class DescriptorFilterAccountingTest(unittest.TestCase):
             self.matrix,
         )
         self.assertIn("canonical_ramulator_sha=", self.matrix)
+
+    def test_descriptor_complete_trace_contract_allows_adjacent_fields(self):
+        expected = (
+            "event=descriptor_spool_complete schema=1 "
+            ".* descriptors=16384 write_lines=2048 "
+            "write_acks=2048 read_lines=2048 read_responses=2048 "
+            ".* staging_entries=32 .* fallback=none$"
+        )
+        self.assertIn(expected, self.runner)
+        trace_line = (
+            "3490359717: global: event=descriptor_spool_complete schema=1 "
+            "unit=0 operation_tick=3435831048 descriptors=16384 "
+            "write_lines=2048 write_acks=2048 read_lines=2048 "
+            "read_responses=2048 control_bytes=2449 backing_bytes=131328 "
+            "staging_entries=32 write_hwm=16 fallback=none"
+        )
+        self.assertIsNotNone(re.search(expected, trace_line))
 
 
 if __name__ == "__main__":

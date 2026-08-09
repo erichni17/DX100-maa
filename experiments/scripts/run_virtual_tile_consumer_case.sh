@@ -1476,7 +1476,7 @@ if [[ $index_range_passes -eq 1 ]]; then
         'event=descriptor_spool_read_response schema=1 .* cached=0$' \
         "$out/run/virtual_trace.log" || true)
     descriptor_complete_count=$(grep -Ec \
-        'event=descriptor_spool_complete schema=1 .* descriptors=16384 .* write_lines=2048 write_acks=2048 read_lines=2048 read_responses=2048 .* staging_entries=32 .* fallback=none$' \
+        'event=descriptor_spool_complete schema=1 .* descriptors=16384 write_lines=2048 write_acks=2048 read_lines=2048 read_responses=2048 .* staging_entries=32 .* fallback=none$' \
         "$out/run/virtual_trace.log" || true)
     expected_descriptor_complete_count=$index_descriptor_spool
     [[ $resolved_offset_entries -gt 0 &&
