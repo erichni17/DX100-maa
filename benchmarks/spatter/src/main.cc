@@ -134,7 +134,11 @@ int main(int argc, char **argv) {
     alloc_MAA();
 #endif
 #ifdef MAA
+#ifdef MAA_XRAGE_RUNTIME_ARMS
+    Spatter::setup_MAA(cl.maa_arm);
+#else
     Spatter::setup_MAA();
+#endif
 #endif
 
 #ifdef GEM5

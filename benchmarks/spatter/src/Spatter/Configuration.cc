@@ -483,7 +483,7 @@ void require_maa_team(const char *phase) {
 }
 } // namespace
 
-void setup_MAA() {
+void setup_MAA(const std::string &maa_arm) {
     init_MAA();
 #pragma omp parallel num_threads(NUM_CORES)
     {
@@ -492,8 +492,13 @@ void setup_MAA() {
         {
             int tid = omp_get_thread_num();
             tile1s[tid] = get_new_tile<int>();
-            tile2s[tid] = get_new_tile<double>();
-            tile3s[tid] = get_new_tile<double>();
+            // The fused direct sink retains only a 32-bit completion token;
+            // it neither allocates an FP64 result pair nor the native arm's
+            // second FP64 payload pair.
+            tile2s[tid] = maa_arm == "fuseddirect16x3"
+                ? get_new_tile<uint32_t>() : get_new_tile<double>();
+            tile3s[tid] = maa_arm == "native16x3"
+                ? get_new_tile<double>() : -1;
             reg1s[tid] = get_new_reg<int>();
             reg2s[tid] = get_new_reg<int>();
             reg3s[tid] = get_new_reg<int>(1);
@@ -601,8 +606,10 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
                         sparse.data(), tile1, tile2, dense.data() + j);
                 } else if (maa_arm == "fuseddirect16x3") {
                     maa_indirect_load_virtual_scalar<double>(
-                        sparse.data(), tile1, tile2, dense.data() + j,
-                        reg4, Operation_t::MUL_OP);
+                        sparse.data(),
+                        reinterpret_cast<uint32_t *>(pattern_int.data()),
+                        tile1, tile2, dense.data() + j, reg4,
+                        Operation_t::MUL_OP);
                 } else if (maa_arm == "fused16" || maa_arm == "fused4") {
                     maa_indirect_load_spd_stream<double>(
                         sparse.data(), tile1, tile2, dense.data(), reg1,

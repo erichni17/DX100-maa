@@ -426,6 +426,8 @@ public:
     unsigned int virtual_response_words;
     unsigned int virtual_response_word_pool;
     unsigned int virtual_words_per_cycle;
+    unsigned int fused_result_transfer_words_per_cycle;
+    unsigned int fused_result_transfer_banks;
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     unsigned int virtual_index_buffer_lines;
@@ -735,6 +737,15 @@ public:
         std::vector<statistics::Scalar *> IND_FusedALUWords;
         std::vector<statistics::Scalar *> IND_FusedALUWaitCycles;
         std::vector<statistics::Scalar *> IND_FusedALUResultHighWater;
+        std::vector<statistics::Scalar *> IND_FusedResultTransferWords;
+        std::vector<statistics::Scalar *> IND_FusedResultTransferCycles;
+        std::vector<statistics::Scalar *> IND_FusedResultTransferStallCycles;
+        std::vector<statistics::Scalar *>
+            IND_FusedResultTransferWidthStallCycles;
+        std::vector<statistics::Scalar *>
+            IND_FusedResultTransferBankStallCycles;
+        std::vector<statistics::Scalar *>
+            IND_FusedResultTransferBackpressureStallCycles;
         std::vector<statistics::Scalar *> IND_VirtPagesReady;
         std::vector<statistics::Scalar *> IND_VirtPagesReadyBeforeSourceDrain;
         std::vector<statistics::Scalar *> IND_VirtFirstPageReadyCycles;

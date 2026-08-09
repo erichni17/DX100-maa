@@ -194,6 +194,7 @@ public:
     Instruction();
     std::string print() const;
     int getWordSize(int tile_id);
+    int getTileSpanWordSize(int tile_id);
     int WordSize();
     int core_id;
     int maa_id;
@@ -258,6 +259,8 @@ public:
     bool canPushRegister(Register _reg);
     bool hasTileReference(int maa_id, int tile_id);
     bool isCompletionOnlyTile(int maa_id, int tile_id) const;
+    bool empty() const;
+    bool hasFusedDirectInstruction() const;
     Instruction *getReady(FuncUnitType funcUniType, int maa_id = -1);
     void finishInstructionCompute(Instruction *instruction);
     void finishInstructionInvalidate(Instruction *instruction, int tile_id, uint8_t tile_status);

@@ -4,14 +4,18 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <string>
+#include <vector>
 
+#include "arch/generic/mmu.hh"
 #include "base/types.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/MultiRangeAccessTracker.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
-#include "mem/MAA/IF.hh"
+
 namespace gem5 {
 class MAA;
 
@@ -69,9 +73,22 @@ public:
     void scheduleTransientInstructionEvent(int latency);
     bool getAddrRegionPermit(Instruction *instruction);
     void finishInstruction(Instruction *instruction);
+    bool hasLiveRegionAccesses() const;
     Status getState() const { return state; }
 
 protected:
+    struct CompoundPermit
+    {
+        std::vector<Instruction> regions;
+        size_t nextRegion = 0;
+    };
+
+    bool getSingleAddrRegionPermit(Instruction *instruction);
+    void finishSingleAddrRegion(Instruction *instruction);
+    std::vector<maa::MultiRangeAccessTracker::Access>
+        instructionAccesses(const Instruction *instruction) const;
+    static bool isFusedDirect(const Instruction *instruction);
+
     void executeInstruction();
     void transientInstruction();
     void createMyPacket();
@@ -99,6 +116,8 @@ protected:
     PacketPtr my_pkt;
     std::vector<Instruction *> transientInstructions;
     std::vector<Tick> transientTicks;
+    maa::MultiRangeAccessTracker regionAccessTracker;
+    std::map<Instruction *, CompoundPermit> compoundPermits;
 };
 } // namespace gem5
 

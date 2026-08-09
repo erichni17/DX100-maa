@@ -15,6 +15,13 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         cls.alu_header = (ROOT / "src/mem/MAA/ALU.hh").read_text()
         cls.alu_source = (ROOT / "src/mem/MAA/ALU.cc").read_text()
         cls.indirect = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
+        cls.invalidator = (ROOT / "src/mem/MAA/Invalidator.cc").read_text()
+        cls.maa_header = (ROOT / "src/mem/MAA/MAA.hh").read_text()
+        cls.maa_source = (ROOT / "src/mem/MAA/MAA.cc").read_text()
+        cls.maa_params = (ROOT / "src/mem/MAA/MAA.py").read_text()
+        cls.tracker_test = (
+            ROOT / "tests/maa/multi_range_access_tracker_test.cc"
+        ).read_text()
         cls.spatter = (
             ROOT / "benchmarks/spatter/src/Spatter/Configuration.cc"
         ).read_text()
@@ -36,6 +43,8 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         self.assertIn("OpcodeType::INDIR_LD_VIRTUAL_SCALAR", body)
         self.assertIn("((uint64_t)scalar_reg << 24)", body)
         self.assertIn("*INSTR_backingaddr", body)
+        self.assertIn("*INSTR_indexaddr", body)
+        self.assertRegex(body, r"uint32_t\s*\*indices")
         self.assertNotIn("maa_alu_scalar", body)
 
     def test_decoder_waits_for_backing_and_marks_completion_only(self):
@@ -59,6 +68,7 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         self.assertIn("condSpdID != -1", legality)
         self.assertIn("addrRangeID ==", legality)
         self.assertIn("backingAddrRangeID", legality)
+        self.assertIn("indexAddrRangeID", legality)
         self.assertIn("source_destination_overlap", legality)
         self.assertIn("minAddr < _instruction.backingMaxAddr", legality)
         self.assertIn("src1MustBeFinished = true", legality)
@@ -91,8 +101,89 @@ class FusedDirectTransformContractTest(unittest.TestCase):
             )
         ]
         self.assertIn("direct_transform_ready = true", completion)
-        self.assertIn("scheduleExecuteInstructionEvent(0)", completion)
+        self.assertIn("scheduleExecuteInstructionEvent(1)", completion)
         self.assertIn("IND_FusedALUResultHighWater", self.indirect)
+
+    def test_global_compound_address_lease_covers_a_b_and_c(self):
+        accesses = self.invalidator[
+            self.invalidator.index(
+                "Invalidator::instructionAccesses"
+            ) : self.invalidator.index("Invalidator::getAddrRegionPermit")
+        ]
+        self.assertIn("instruction->addrRangeID, Mode::Read", accesses)
+        self.assertIn("instruction->indexAddrRangeID, Mode::Read", accesses)
+        self.assertIn("instruction->backingAddrRangeID, Mode::Write", accesses)
+        self.assertIn("regionAccessTracker.tryAcquire", self.invalidator)
+        self.assertIn("finishSingleAddrRegion", self.invalidator)
+        self.assertIn("regionAccessTracker.release", self.invalidator)
+        self.assertIn("Cross-MAA C read/write", self.tracker_test)
+        self.assertIn("wholly disjoint write", self.tracker_test)
+        self.assertIn("B input retains ordering", self.tracker_test)
+
+    def test_result_handoff_has_explicit_delay_width_banks_and_counters(self):
+        self.assertIn("scheduleExecuteInstructionEvent(1)", self.alu_source)
+        for token in (
+            "fused_result_transfer_words_per_cycle",
+            "fused_result_transfer_banks",
+        ):
+            self.assertIn(token, self.maa_params)
+            self.assertIn(token, self.maa_header)
+            self.assertIn(token, self.indirect)
+        for counter in (
+            "IND_FusedResultTransferWords",
+            "IND_FusedResultTransferCycles",
+            "IND_FusedResultTransferStallCycles",
+            "IND_FusedResultTransferWidthStallCycles",
+            "IND_FusedResultTransferBankStallCycles",
+            "IND_FusedResultTransferBackpressureStallCycles",
+        ):
+            self.assertIn(counter, self.maa_header)
+            self.assertIn(counter, self.maa_source)
+            self.assertIn(counter, self.indirect)
+
+    def test_fused_completion_is_one_32_bit_token_without_tile3(self):
+        self.assertIn("int Instruction::getTileSpanWordSize", self.if_source)
+        span = self.if_source[
+            self.if_source.index(
+                "int Instruction::getTileSpanWordSize"
+            ) : self.if_source.index("int Instruction::WordSize")
+        ]
+        self.assertIn("INDIR_LD_VIRTUAL_SCALAR", span)
+        self.assertIn("tile_id == dst1SpdID", span)
+        self.assertIn("return sizeof(uint32_t)", span)
+        payload = self.if_source[
+            self.if_source.index(
+                "int Instruction::getWordSize"
+            ) : self.if_source.index("int Instruction::getTileSpanWordSize")
+        ]
+        self.assertRegex(
+            payload,
+            r"INDIR_LD_VIRTUAL_SCALAR:[\s\S]*?return WordSize\(\)",
+        )
+        self.assertIn("getTileSpanWordSize", self.maa_source)
+        self.assertIn(
+            'tile2s[tid] = maa_arm == "fuseddirect16x3"', self.spatter
+        )
+        self.assertIn('tile3s[tid] = maa_arm == "native16x3"', self.spatter)
+
+    def test_live_drain_and_mid_operation_reset_fail_closed(self):
+        drain = self.maa_source[
+            self.maa_source.index("MAA::drain()") : self.maa_source.index(
+                "MAA::drainResume()"
+            )
+        ]
+        self.assertIn("allFuncUnitsIdle", drain)
+        self.assertIn("ifile->empty", drain)
+        self.assertIn("hasLiveRegionAccesses", drain)
+        self.assertIn("queued_callbacks", drain)
+        self.assertIn("outstanding_packets", drain)
+        reset = self.maa_source[
+            self.maa_source.index(
+                "void MAA::resetStats()"
+            ) : self.maa_source.index("#define MAKE_INDIRECT_STAT_NAME")
+        ]
+        self.assertIn("hasFusedDirectInstruction", reset)
+        self.assertIn("partial-operation accounting is unsupported", reset)
 
     def test_transform_feeds_existing_combiner_and_ack_gate(self):
         drain = self.indirect.index(

@@ -538,6 +538,18 @@ def addNoISAOptions(parser):
         help="Response-word combiner attempts per cycle (0 is unlimited)",
     )
     parser.add_argument(
+        "--maa_fused_result_transfer_words_per_cycle",
+        type=int,
+        default=4,
+        help="FP64 ALU-result words transferred to the combiner per cycle",
+    )
+    parser.add_argument(
+        "--maa_fused_result_transfer_banks",
+        type=int,
+        default=4,
+        help="Single-write banks on the fused ALU-result-to-combiner handoff",
+    )
+    parser.add_argument(
         "--l1d_repl_policy",
         default="LRURP",
         choices=ObjectList.rp_list.get_names(),

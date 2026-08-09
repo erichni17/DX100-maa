@@ -179,7 +179,9 @@ void ALUUnit::executeInstruction() {
         DPRINTF(MAAALU,
                 "A[%d] direct-transform batch computed; waiting for direct "
                 "store capacity\n", my_alu_id);
-        direct_transform_owner->scheduleExecuteInstructionEvent(0);
+        // The result link is a distinct timed resource.  Results become
+        // visible to its finite-width/banked handoff on the next MAA cycle.
+        direct_transform_owner->scheduleExecuteInstructionEvent(1);
         return;
     }
     switch (state) {

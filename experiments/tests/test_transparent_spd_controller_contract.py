@@ -112,7 +112,7 @@ class TransparentControllerContractTest(unittest.TestCase):
         controller = (
             ROOT / "src/mem/MAA/TransparentSPDController.hh"
         ).read_text()
-        self.assertIn("_instruction.getWordSize(tile)", interface)
+        self.assertIn("_instruction.getTileSpanWordSize(tile)", interface)
         self.assertIn("tile + offset", interface)
         self.assertIn("transparentControllerUsesRegister", interface)
         self.assertIn("spansOverlap(first_register", controller)

@@ -51,7 +51,7 @@ template <typename T>
 using aligned_vector = std::vector<T, aligned_allocator<T, ALIGN>>;
 
 namespace Spatter {
-void setup_MAA();
+void setup_MAA(const std::string &maa_arm = "");
 
 class ConfigurationBase {
 public:

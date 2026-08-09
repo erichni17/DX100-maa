@@ -392,7 +392,9 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->backingMaxAddr = addrRegions[
                     current_instruction->backingAddrRangeID].second;
                 if (current_instruction->opcode ==
-                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX)
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
+                    current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR)
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(
@@ -413,9 +415,12 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_INDEX &&
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR &&
                         !current_instruction->isLogicalALUScalar(),
                     "Instruction word four is only valid for direct-index "
-                    "loads or logical ALU_SCALAR source backing!\n");
+                    "loads, fused direct-sink index provenance, or logical "
+                    "ALU_SCALAR source backing!\n");
                 if (current_instruction->isLogicalALUScalar()) {
                     maa::LogicalSPDCacheABI::ScalarOperandShape shape;
                     shape.datatype = static_cast<uint8_t>(

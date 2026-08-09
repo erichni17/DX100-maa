@@ -188,6 +188,12 @@ class MAA(ClockedObject):
     virtual_words_per_cycle = Param.Unsigned(
         0, "Response-word combiner attempts per cycle (0 is unlimited)"
     )
+    fused_result_transfer_words_per_cycle = Param.Unsigned(
+        4, "FP64 ALU-result words transferred to the combiner per cycle"
+    )
+    fused_result_transfer_banks = Param.Unsigned(
+        4, "Single-write banks on the fused ALU-result-to-combiner handoff"
+    )
 
     def addRamulatorInstance(self, simObj):
         self.getCCObject().addRamulator(simObj.getCCObject())

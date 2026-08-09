@@ -50,9 +50,27 @@ GEM5_BIN="$gem5" \
     257 alias "$out/alias" 3600 "$binary" 384 128 64 4096 1 0 480 \
     4 4 0 | tee "$out/alias.controller.log"
 
+EXPECT_FAILURE=1 \
+EXPECTED_FAILURE_REGEX='checkpoint/drain requested with live instruction.*serialization is unsupported' \
+GEM5_BIN="$gem5" \
+    "$root/experiments/scripts/validate_virtual_gather.sh" \
+    4097 drain "$out/live_drain" 3600 "$binary" 384 128 64 4096 1 0 480 \
+    4 4 0 | tee "$out/live_drain.controller.log"
+
+EXPECT_FAILURE=1 \
+EXPECTED_FAILURE_REGEX='stats reset requested during a live fused direct-sink operation' \
+GEM5_BIN="$gem5" \
+    "$root/experiments/scripts/validate_virtual_gather.sh" \
+    4097 reset "$out/live_reset" 3600 "$binary" 384 128 64 4096 1 0 480 \
+    4 4 0 | tee "$out/live_reset.controller.log"
+
 grep -Eq '^system\.maa\.I[0-9]+_IND_FusedALUWords[[:space:]]+4097' \
     "$out/exact/stats.txt"
 grep -Eq '^system\.maa\.I[0-9]+_IND_FusedALUBatches[[:space:]]+[1-9]' \
+    "$out/exact/stats.txt"
+grep -Eq '^system\.maa\.I[0-9]+_IND_FusedResultTransferWords[[:space:]]+4097' \
+    "$out/exact/stats.txt"
+grep -Eq '^system\.maa\.I[0-9]+_IND_FusedResultTransferCycles[[:space:]]+[1-9]' \
     "$out/exact/stats.txt"
 grep -Eq '^system\.maa\.I[0-9]+_IND_VirtWriteIssues[[:space:]]+' \
     "$out/exact/stats.txt"

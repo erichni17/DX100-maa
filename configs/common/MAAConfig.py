@@ -125,6 +125,16 @@ def _get_maa_opts(options):
             options, "maa_virtual_words_per_cycle"
         )
 
+    if hasattr(options, "maa_fused_result_transfer_words_per_cycle"):
+        opts["fused_result_transfer_words_per_cycle"] = getattr(
+            options, "maa_fused_result_transfer_words_per_cycle"
+        )
+
+    if hasattr(options, "maa_fused_result_transfer_banks"):
+        opts["fused_result_transfer_banks"] = getattr(
+            options, "maa_fused_result_transfer_banks"
+        )
+
     if hasattr(options, "maa_virtual_max_outstanding_writes"):
         opts["virtual_max_outstanding_writes"] = getattr(
             options, "maa_virtual_max_outstanding_writes"

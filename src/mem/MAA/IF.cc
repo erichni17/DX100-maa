@@ -187,6 +187,16 @@ int Instruction::getWordSize(int tile_id) {
     assert(false);
     return -1;
 }
+int Instruction::getTileSpanWordSize(int tile_id) {
+    if (opcode == OpcodeType::INDIR_LD_VIRTUAL_SCALAR &&
+        tile_id == dst1SpdID) {
+        // The FP64 payload remains eight bytes throughout gather, ALU, link,
+        // combiner, and retirement.  Only the software-visible completion
+        // token occupies SPD state, and that token is one 32-bit tile.
+        return sizeof(uint32_t);
+    }
+    return getWordSize(tile_id);
+}
 int Instruction::WordSize() {
     switch (datatype) {
     case DataType::UINT32_TYPE:
@@ -215,7 +225,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
             if (tile == -1)
                 continue;
             const int tile_words =
-                _instruction.getWordSize(tile) / sizeof(uint32_t);
+                _instruction.getTileSpanWordSize(tile) / sizeof(uint32_t);
             for (int offset = 0; offset < tile_words; ++offset) {
                 if (!maa->transparentControllerOwnsTile(
                         _instruction.maa_id, tile + offset))
@@ -361,6 +371,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                  "%s\n", _instruction.print());
         panic_if(_instruction.addrRangeID < 0 ||
                      _instruction.backingAddrRangeID < 0 ||
+                     _instruction.indexAddrRangeID < 0 ||
                      _instruction.addrRangeID ==
                          _instruction.backingAddrRangeID ||
                      source_destination_overlap,
@@ -510,12 +521,18 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                            inst.opcode == Instruction::OpcodeType::
                                               INDIR_LD_VIRTUAL_INDEX;
                 };
-                const int lhs_read =
+                const int lhs_reads[] = {
                     _instruction.accessType == Instruction::AccessType::READ
-                        ? _instruction.addrRangeID : -1;
-                const int rhs_read =
+                        ? _instruction.addrRangeID : -1,
+                    fused_direct_scalar
+                        ? _instruction.indexAddrRangeID : -1,
+                };
+                const int rhs_reads[] = {
                     other.accessType == Instruction::AccessType::READ
-                        ? other.addrRangeID : -1;
+                        ? other.addrRangeID : -1,
+                    other_fused_direct_scalar
+                        ? other.indexAddrRangeID : -1,
+                };
                 const int lhs_write = writes_backing(_instruction)
                     ? _instruction.backingAddrRangeID
                     : (_instruction.accessType ==
@@ -525,10 +542,14 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                     ? other.backingAddrRangeID
                     : (other.accessType == Instruction::AccessType::WRITE
                            ? other.addrRangeID : -1);
-                const bool memory_hazard =
-                    (lhs_write >= 0 &&
-                     (lhs_write == rhs_read || lhs_write == rhs_write)) ||
-                    (rhs_write >= 0 && rhs_write == lhs_read);
+                bool memory_hazard =
+                    lhs_write >= 0 && lhs_write == rhs_write;
+                for (const int lhs_read : lhs_reads)
+                    memory_hazard = memory_hazard ||
+                        (rhs_write >= 0 && rhs_write == lhs_read);
+                for (const int rhs_read : rhs_reads)
+                    memory_hazard = memory_hazard ||
+                        (lhs_write >= 0 && lhs_write == rhs_read);
                 if (memory_hazard) {
                     DPRINTF(MAAController,
                             "%s: fused direct memory hazard keeps %s behind "
@@ -617,7 +638,7 @@ bool IF::hasTileReference(int maa_id, int tile_id) {
             if (first == -1)
                 continue;
             const int words =
-                instruction.getWordSize(first) / sizeof(uint32_t);
+                instruction.getTileSpanWordSize(first) / sizeof(uint32_t);
             if (tile_id >= first && tile_id < first + words)
                 return true;
         }
@@ -630,6 +651,26 @@ bool IF::isCompletionOnlyTile(int maa_id, int tile_id) const {
     panic_if(tile_id < 0 || tile_id >= static_cast<int>(num_tiles),
              "Invalid tile id %d\n", tile_id);
     return completion_only_tiles[maa_id][tile_id];
+}
+bool IF::empty() const {
+    for (unsigned int maa_id = 0; maa_id < num_maas; ++maa_id) {
+        for (unsigned int slot = 0; slot < num_instructions_per_maa; ++slot) {
+            if (valids[maa_id][slot])
+                return false;
+        }
+    }
+    return true;
+}
+bool IF::hasFusedDirectInstruction() const {
+    for (unsigned int maa_id = 0; maa_id < num_maas; ++maa_id) {
+        for (unsigned int slot = 0; slot < num_instructions_per_maa; ++slot) {
+            if (valids[maa_id][slot] &&
+                instructions[maa_id][slot].opcode ==
+                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR)
+                return true;
+        }
+    }
+    return false;
 }
 Instruction *IF::getReady(FuncUnitType funcUniType, int maa_id) {
     int rand_base = rand() % num_instructions_per_maa;

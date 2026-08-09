@@ -15,6 +15,8 @@ out=$(realpath -m "$5")
 arm=${XRAGE_ARM:?XRAGE_ARM must identify the performance arm}
 physical=${MAA_PHYSICAL_TILE_ELEMENTS:-4096}
 index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-128}
+fused_result_width=${MAA_FUSED_RESULT_TRANSFER_WORDS_PER_CYCLE:-4}
+fused_result_banks=${MAA_FUSED_RESULT_TRANSFER_BANKS:-4}
 replicas=${XRAGE_REPLICAS:-3}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
@@ -39,6 +41,14 @@ esac
 }
 [[ $index_buffer_lines -gt 0 && $index_buffer_lines -le 1024 ]] || {
     echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,1024]" >&2
+    exit 2
+}
+[[ $fused_result_width -gt 0 && $fused_result_width -le 64 ]] || {
+    echo "MAA_FUSED_RESULT_TRANSFER_WORDS_PER_CYCLE must be in [1,64]" >&2
+    exit 2
+}
+[[ $fused_result_banks -gt 0 && $fused_result_banks -le 64 ]] || {
+    echo "MAA_FUSED_RESULT_TRANSFER_BANKS must be in [1,64]" >&2
     exit 2
 }
 [[ $replicas -ge 1 && $replicas -le 10 ]] || {
@@ -115,6 +125,9 @@ options="-f $input"
     printf 'maa_logical_tile_elements=%s\n' "$logical"
     printf 'workload_chunk_elements=%s\n' "$chunk"
     printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
+    printf 'fused_result_transfer_words_per_cycle=%s\n' \
+        "$fused_result_width"
+    printf 'fused_result_transfer_banks=%s\n' "$fused_result_banks"
     printf 'replicas=%s\n' "$replicas"
     printf 'binary=%s\n' "$binary"
     printf 'input=%s\n' "$input"
@@ -189,6 +202,8 @@ restore_base=(
     --maa_virtual_combine_ways=4 --maa_virtual_combine_banks=0
     --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
+    --maa_fused_result_transfer_words_per_cycle="$fused_result_width"
+    --maa_fused_result_transfer_banks="$fused_result_banks"
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
     --maa_virtual_masked_writes --cmd "$binary" --options "$options"
 )
@@ -199,7 +214,10 @@ printf '\tvirtual_write_issues\tvirtual_write_completions' \
     >> "$out/results.tsv"
 printf '\tvirtual_pages_ready\tdirect_index_words' \
     >> "$out/results.tsv"
-printf '\tindirect_spd_read_cycles\n' >> "$out/results.tsv"
+printf '\tindirect_spd_read_cycles\tfused_result_transfer_words' \
+    >> "$out/results.tsv"
+printf '\tfused_result_transfer_cycles\tfused_result_transfer_stalls\n' \
+    >> "$out/results.tsv"
 
 first_stat_or_zero() {
     local stats=$1
@@ -265,13 +283,20 @@ for ((replica = 1; replica <= replicas; replica++)); do
     index_words=$(first_stat_or_zero "$stats" system.maa.I0_IND_VirtIndexWords)
     spd_reads=$(first_stat_or_zero "$stats" \
         system.maa.I0_IND_CyclesSPDReadAccess)
+    transfer_words=$(first_stat_or_zero "$stats" \
+        system.maa.I0_IND_FusedResultTransferWords)
+    transfer_cycles=$(first_stat_or_zero "$stats" \
+        system.maa.I0_IND_FusedResultTransferCycles)
+    transfer_stalls=$(first_stat_or_zero "$stats" \
+        system.maa.I0_IND_FusedResultTransferStallCycles)
     [[ $writes -eq $completions ]] || {
         echo "XRAGE replica $replica has incomplete virtual writes" >&2
         exit 1
     }
-    printf '%s\t%s\t%s\t2\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t2\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$replica" "${ticks[0]}" "${ticks[1]}" "$writes" \
         "$completions" "$pages" "$index_words" "$spd_reads" \
+        "$transfer_words" "$transfer_cycles" "$transfer_stalls" \
         >> "$out/results.tsv"
 done
 

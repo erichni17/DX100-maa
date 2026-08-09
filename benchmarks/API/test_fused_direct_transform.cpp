@@ -18,8 +18,10 @@ int main(int argc, char **argv) {
     const int n = argc > 1 ? std::atoi(argv[1]) : 4097;
     const std::string mode = argc > 2 ? argv[2] : "exact";
     if (n <= 0 || n > TILE_SIZE ||
-        (mode != "exact" && mode != "alias")) {
-        std::cerr << "usage: test_fused_direct_transform N exact|alias"
+        (mode != "exact" && mode != "alias" && mode != "drain" &&
+         mode != "reset")) {
+        std::cerr <<
+            "usage: test_fused_direct_transform N exact|alias|drain|reset"
                   << std::endl;
         return 2;
     }
@@ -52,15 +54,31 @@ int main(int argc, char **argv) {
     const int stride_reg = get_new_reg<int>(1);
     const int scale_reg = get_new_reg<double>(3.0);
     const int index_tile = get_new_tile<int>();
-    const int completion_tile = get_new_tile<double>();
+    // The direct-sink result has no SPD payload.  One 32-bit tile ID remains
+    // solely as the software-visible completion token.
+    const int completion_tile = get_new_tile<uint32_t>();
 
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
     maa_stream_load<uint32_t>(indices.data(), min_reg, max_reg, stride_reg,
                               index_tile);
     maa_indirect_load_virtual_scalar<double>(
-        source.data(), index_tile, completion_tile, destination, scale_reg,
-        Operation_t::MUL_OP);
+        source.data(), indices.data(), index_tile, completion_tile,
+        destination, scale_reg, Operation_t::MUL_OP);
+    if (mode == "drain") {
+        std::cout << "FUSED_DIRECT_LIVE_DRAIN_REQUEST" << std::endl;
+        m5_checkpoint(0, 0);
+        std::cerr << "live fused checkpoint unexpectedly returned"
+                  << std::endl;
+        return 3;
+    }
+    if (mode == "reset") {
+        std::cout << "FUSED_DIRECT_LIVE_RESET_REQUEST" << std::endl;
+        m5_reset_stats(0, 0);
+        std::cerr << "live fused stats reset unexpectedly returned"
+                  << std::endl;
+        return 3;
+    }
     wait_ready(completion_tile);
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);

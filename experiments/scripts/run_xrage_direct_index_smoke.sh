@@ -29,6 +29,8 @@ retirement_cache_size=${MAA_RETIREMENT_CACHE_SIZE:-1kB}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
 combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
 combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
+fused_result_width=${MAA_FUSED_RESULT_TRANSFER_WORDS_PER_CYCLE:-4}
+fused_result_banks=${MAA_FUSED_RESULT_TRANSFER_BANKS:-4}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 offset_table_entries=${MAA_NUM_OFFSET_TABLE_ENTRIES:-0}
@@ -89,6 +91,11 @@ debug_args=()
 [[ $combine_slots -gt 0 && $combine_words -gt 0 && $combine_ways -gt 0 &&
    $((combine_slots % combine_ways)) -eq 0 ]] || {
     echo "virtual combiner capacity must be positive and slots must be divisible by ways" >&2
+    exit 2
+}
+[[ $fused_result_width -gt 0 && $fused_result_width -le 64 &&
+   $fused_result_banks -gt 0 && $fused_result_banks -le 64 ]] || {
+    echo "fused result width and banks must be in [1,64]" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
@@ -244,6 +251,9 @@ fi
     printf 'virtual_combine_slots=%s\n' "$combine_slots"
     printf 'virtual_combine_words=%s\n' "$combine_words"
     printf 'virtual_combine_ways=%s\n' "$combine_ways"
+    printf 'fused_result_transfer_words_per_cycle=%s\n' \
+        "$fused_result_width"
+    printf 'fused_result_transfer_banks=%s\n' "$fused_result_banks"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'offset_table_entries=%s\n' "$offset_table_entries"
@@ -314,6 +324,8 @@ restore_cmd=(
     --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
     --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
+    --maa_fused_result_transfer_words_per_cycle="$fused_result_width"
+    --maa_fused_result_transfer_banks="$fused_result_banks"
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
     --maa_virtual_index_partitions="$index_partitions"
     --maa_virtual_index_filter_words_per_cycle="$index_filter_words_per_cycle"

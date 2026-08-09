@@ -127,6 +127,9 @@ MAA::MAA(const MAAParams &p)
       virtual_response_words(p.virtual_response_words),
       virtual_response_word_pool(p.virtual_response_word_pool),
       virtual_words_per_cycle(p.virtual_words_per_cycle),
+      fused_result_transfer_words_per_cycle(
+          p.fused_result_transfer_words_per_cycle),
+      fused_result_transfer_banks(p.fused_result_transfer_banks),
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
@@ -163,6 +166,12 @@ MAA::MAA(const MAAParams &p)
     m_core_addr_bits = calc_log2(num_cores);
     panic_if(num_cores % num_maas != 0, "Number of cores %d must be a multiple of the number of MAAs %s\n", num_cores, num_maas);
     panic_if(num_indirect_units_per_maa == 0, "Number of indirect units per MAA must be positive\n");
+    panic_if(fused_result_transfer_words_per_cycle == 0 ||
+                 fused_result_transfer_banks == 0,
+             "Fused result transfer requires positive width and banks, got "
+             "%u words/cycle and %u banks\n",
+             fused_result_transfer_words_per_cycle,
+             fused_result_transfer_banks);
     panic_if(physical_tile_elements > num_tile_elements,
              "Physical tile capacity %u exceeds logical capacity %u\n",
              physical_tile_elements, num_tile_elements);
@@ -638,7 +647,10 @@ void MAA::issueInstruction() {
                         Instruction *inst = ifile->getReady(FuncUnitType::STREAM, maa_id);
                         if (inst != nullptr) {
                             if (inst->dst1SpdID != -1) {
-                                spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
+                                spd->setTileService(
+                                    inst->dst1SpdID,
+                                    inst->getTileSpanWordSize(
+                                        inst->dst1SpdID));
                             }
                             inst->func_unit_id = maa_id;
                             streamAccessUnits[maa_id].setInstruction(inst);
@@ -658,7 +670,10 @@ void MAA::issueInstruction() {
                             Instruction *inst = ifile->getReady(FuncUnitType::INDIRECT, maa_id);
                             if (inst != nullptr) {
                                 if (inst->dst1SpdID != -1) {
-                                    spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
+                                    spd->setTileService(
+                                        inst->dst1SpdID,
+                                        inst->getTileSpanWordSize(
+                                            inst->dst1SpdID));
                                 }
                                 inst->func_unit_id = indirect_id;
                                 indirectAccessUnits[indirect_id].setInstruction(inst);
@@ -677,7 +692,10 @@ void MAA::issueInstruction() {
                         Instruction *inst = ifile->getReady(FuncUnitType::ALU, maa_id);
                         if (inst != nullptr) {
                             if (inst->dst1SpdID != -1) {
-                                spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
+                                spd->setTileService(
+                                    inst->dst1SpdID,
+                                    inst->getTileSpanWordSize(
+                                        inst->dst1SpdID));
                             }
                             inst->func_unit_id = maa_id;
                             aluUnits[maa_id].setInstruction(inst);
@@ -697,10 +715,16 @@ void MAA::issueInstruction() {
                         Instruction *inst = ifile->getReady(FuncUnitType::RANGE, maa_id);
                         if (inst != nullptr) {
                             if (inst->dst1SpdID != -1) {
-                                spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
+                                spd->setTileService(
+                                    inst->dst1SpdID,
+                                    inst->getTileSpanWordSize(
+                                        inst->dst1SpdID));
                             }
                             if (inst->dst2SpdID != -1) {
-                                spd->setTileService(inst->dst2SpdID, inst->getWordSize(inst->dst1SpdID));
+                                spd->setTileService(
+                                    inst->dst2SpdID,
+                                    inst->getTileSpanWordSize(
+                                        inst->dst2SpdID));
                             }
                             inst->func_unit_id = maa_id;
                             rangeUnits[maa_id].setInstruction(inst);
@@ -728,8 +752,8 @@ uint8_t MAA::getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst)
 
     bool is_dirty = spd->getTileDirty(tile_id);
     SPD::TileStatus status = spd->getTileStatus(tile_id);
-    if (instruction->getWordSize(tile_id) == 8) {
-        if (spd->getTileDirty(tile_id + 1) == true) {
+    if (instruction->getTileSpanWordSize(tile_id) == 8) {
+        if (spd->getTileDirty(tile_id + 1)) {
             is_dirty = true;
         }
         panic_if(spd->getTileStatus(tile_id + 1) != status, "Tile[%d] and Tile[%d] have different statuses %s != %s\n",
@@ -1110,28 +1134,30 @@ bool MAA::dispatchTransparentMicroOp(
         return false;
 
     if (instruction.dst1SpdID != -1) {
-        spd->setTileIdle(instruction.dst1SpdID,
-                         instruction.getWordSize(instruction.dst1SpdID));
+        spd->setTileIdle(
+            instruction.dst1SpdID,
+            instruction.getTileSpanWordSize(instruction.dst1SpdID));
         spd->setTileNotReady(
             instruction.dst1SpdID,
-            instruction.getWordSize(instruction.dst1SpdID));
+            instruction.getTileSpanWordSize(instruction.dst1SpdID));
     }
     if (instruction.dst2SpdID != -1) {
-        spd->setTileIdle(instruction.dst2SpdID,
-                         instruction.getWordSize(instruction.dst2SpdID));
+        spd->setTileIdle(
+            instruction.dst2SpdID,
+            instruction.getTileSpanWordSize(instruction.dst2SpdID));
         spd->setTileNotReady(
             instruction.dst2SpdID,
-            instruction.getWordSize(instruction.dst2SpdID));
+            instruction.getTileSpanWordSize(instruction.dst2SpdID));
     }
     if (instruction.src1SpdID != -1) {
         spd->setTileNotReady(
             instruction.src1SpdID,
-            instruction.getWordSize(instruction.src1SpdID));
+            instruction.getTileSpanWordSize(instruction.src1SpdID));
     }
     if (instruction.src2SpdID != -1) {
         spd->setTileNotReady(
             instruction.src2SpdID,
-            instruction.getWordSize(instruction.src2SpdID));
+            instruction.getTileSpanWordSize(instruction.src2SpdID));
     }
     scheduleIssueInstructionEvent(1);
     return true;
@@ -1656,6 +1682,27 @@ MAA::drain()
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD checkpoint/drain requested with live state; "
              "serialization is unsupported\n");
+    const bool queued_callbacks =
+        !my_instruction_pkts.empty() || !my_instruction_recvs.empty() ||
+        !my_instruction_RIDs.empty() || !my_instructions.empty() ||
+        !my_registers.empty() || !my_register_pkts.empty() ||
+        !my_ready_pkts.empty() || !my_ready_tile_ids.empty();
+    const bool outstanding_packets =
+        !my_outstanding_pkt_map.empty() || !my_deferred_pkt_map.empty() ||
+        !my_outstanding_indirect_cache_read_pkts->empty() ||
+        !my_outstanding_indirect_cache_write_pkts->empty() ||
+        !my_outstanding_indirect_mem_read_pkts->empty() ||
+        !my_outstanding_indirect_mem_write_pkts->empty() ||
+        !my_outstanding_stream_cache_read_pkts->empty() ||
+        !my_outstanding_stream_cache_write_pkts->empty() ||
+        !my_outstanding_stream_mem_read_pkts->empty() ||
+        !my_outstanding_stream_mem_write_pkts->empty();
+    panic_if(!allFuncUnitsIdle() || !ifile->empty() ||
+                 invalidator->hasLiveRegionAccesses() || queued_callbacks ||
+                 outstanding_packets,
+             "MAA checkpoint/drain requested with live instruction, fused "
+             "ALU/combiner/retirement state, address lease, packet, or "
+             "callback; serialization is unsupported\n");
     return DrainState::Drained;
 }
 
@@ -1779,8 +1826,14 @@ void MAA::dispatchInstruction() {
                 if (instruction->dst1SpdID != -1) {
                     assert(instruction->dst1SpdID != instruction->src1SpdID);
                     assert(instruction->dst1SpdID != instruction->src2SpdID);
-                    spd->setTileIdle(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
-                    spd->setTileNotReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
+                    spd->setTileIdle(
+                        instruction->dst1SpdID,
+                        instruction->getTileSpanWordSize(
+                            instruction->dst1SpdID));
+                    spd->setTileNotReady(
+                        instruction->dst1SpdID,
+                        instruction->getTileSpanWordSize(
+                            instruction->dst1SpdID));
                 }
                 if (instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
@@ -1795,14 +1848,26 @@ void MAA::dispatchInstruction() {
                 if (instruction->dst2SpdID != -1) {
                     assert(instruction->dst2SpdID != instruction->src1SpdID);
                     assert(instruction->dst2SpdID != instruction->src2SpdID);
-                    spd->setTileIdle(instruction->dst2SpdID, instruction->getWordSize(instruction->dst2SpdID));
-                    spd->setTileNotReady(instruction->dst2SpdID, instruction->getWordSize(instruction->dst2SpdID));
+                    spd->setTileIdle(
+                        instruction->dst2SpdID,
+                        instruction->getTileSpanWordSize(
+                            instruction->dst2SpdID));
+                    spd->setTileNotReady(
+                        instruction->dst2SpdID,
+                        instruction->getTileSpanWordSize(
+                            instruction->dst2SpdID));
                 }
                 if (instruction->src1SpdID != -1) {
-                    spd->setTileNotReady(instruction->src1SpdID, instruction->getWordSize(instruction->src1SpdID));
+                    spd->setTileNotReady(
+                        instruction->src1SpdID,
+                        instruction->getTileSpanWordSize(
+                            instruction->src1SpdID));
                 }
                 if (instruction->src2SpdID != -1) {
-                    spd->setTileNotReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
+                    spd->setTileNotReady(
+                        instruction->src2SpdID,
+                        instruction->getTileSpanWordSize(
+                            instruction->src2SpdID));
                 }
                 if (instruction->opcode ==
                     Instruction::OpcodeType::INDIR_LD_SPD_STREAM) {
@@ -1811,7 +1876,8 @@ void MAA::dispatchInstruction() {
                              "tile\n");
                     spd->setTileNotReady(
                         instruction->dst1SpdID,
-                        instruction->getWordSize(instruction->dst1SpdID));
+                        instruction->getTileSpanWordSize(
+                            instruction->dst1SpdID));
                 }
                 if (instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
@@ -1860,18 +1926,30 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     controller_request.elementOffset = instruction->controllerElementOffset;
     controller_request.transactionID = instruction->controllerTransactionID;
     if (instruction->dst1SpdID != -1) {
-        spd->setTileFinished(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
-        setTileReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
+        spd->setTileFinished(
+            instruction->dst1SpdID,
+            instruction->getTileSpanWordSize(instruction->dst1SpdID));
+        setTileReady(
+            instruction->dst1SpdID,
+            instruction->getTileSpanWordSize(instruction->dst1SpdID));
     }
     if (instruction->dst2SpdID != -1) {
-        spd->setTileFinished(instruction->dst2SpdID, instruction->getWordSize(instruction->dst2SpdID));
-        setTileReady(instruction->dst2SpdID, instruction->getWordSize(instruction->dst2SpdID));
+        spd->setTileFinished(
+            instruction->dst2SpdID,
+            instruction->getTileSpanWordSize(instruction->dst2SpdID));
+        setTileReady(
+            instruction->dst2SpdID,
+            instruction->getTileSpanWordSize(instruction->dst2SpdID));
     }
     if (instruction->src1SpdID != -1) {
-        setTileReady(instruction->src1SpdID, instruction->getWordSize(instruction->src1SpdID));
+        setTileReady(
+            instruction->src1SpdID,
+            instruction->getTileSpanWordSize(instruction->src1SpdID));
     }
     if (instruction->src2SpdID != -1) {
-        setTileReady(instruction->src2SpdID, instruction->getWordSize(instruction->src2SpdID));
+        setTileReady(
+            instruction->src2SpdID,
+            instruction->getTileSpanWordSize(instruction->src2SpdID));
     }
     ifile->finishInstructionCompute(instruction);
     if (num_maas > 1)
@@ -2078,8 +2156,9 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
 }
 void MAA::finishInstructionInvalidate(Instruction *instruction, int tileID) {
     invalidatorIdle = true;
-    spd->setTileClean(tileID, instruction->getWordSize(tileID));
-    ifile->finishInstructionInvalidate(instruction, tileID, (uint8_t)(spd->getTileStatus(tileID)));
+    spd->setTileClean(tileID, instruction->getTileSpanWordSize(tileID));
+    ifile->finishInstructionInvalidate(
+        instruction, tileID, (uint8_t)(spd->getTileStatus(tileID)));
     scheduleIssueInstructionEvent();
     if (allFuncUnitsIdle()) {
         my_last_idle_tick = curTick();
@@ -2128,6 +2207,16 @@ Tick MAA::getCyclesToTicks(Cycles c) const {
     return cyclesToTicks(c);
 }
 void MAA::resetStats() {
+    const bool decoding_fused = std::any_of(
+        my_instructions.begin(), my_instructions.end(),
+        [](const InstructionPtr instruction) {
+            return instruction != nullptr &&
+                   instruction->opcode == Instruction::OpcodeType::
+                                              INDIR_LD_VIRTUAL_SCALAR;
+        });
+    panic_if(decoding_fused || ifile->hasFusedDirectInstruction(),
+             "ROI stats reset requested during a live fused direct-sink "
+             "operation; partial-operation accounting is unsupported\n");
     my_last_idle_tick = curTick();
     my_last_reset_tick = curTick();
     printf("Resetting MAA stats\n");
@@ -2386,6 +2475,41 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             statistics::units::Count::get(),
             "sum of per-instruction peak words held in the finite ALU lane "
             "result buffer"));
+        IND_FusedResultTransferWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_FusedResultTransferWords"),
+            statistics::units::Count::get(),
+            "FP64 words transferred from fused ALU results to the combiner"));
+        IND_FusedResultTransferCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_FusedResultTransferCycles"),
+            statistics::units::Cycle::get(),
+            "cycles that transferred at least one fused ALU result word"));
+        IND_FusedResultTransferStallCycles.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_FusedResultTransferStallCycles"),
+            statistics::units::Cycle::get(),
+            "cycles the fused result handoff stalled for any reason"));
+        IND_FusedResultTransferWidthStallCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_FusedResultTransferWidthStallCycles"),
+                statistics::units::Cycle::get(),
+                "fused result handoff cycles stalled at its word width"));
+        IND_FusedResultTransferBankStallCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_FusedResultTransferBankStallCycles"),
+                statistics::units::Cycle::get(),
+                "fused result handoff cycles stalled by a same-bank write"));
+        IND_FusedResultTransferBackpressureStallCycles.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_FusedResultTransferBackpressureStallCycles"),
+                statistics::units::Cycle::get(),
+                "fused result handoff cycles stalled by combiner or "
+                "retirement backpressure"));
         IND_VirtPagesReady.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReady"),
             statistics::units::Count::get(),

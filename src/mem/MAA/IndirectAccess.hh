@@ -170,6 +170,20 @@ protected:
     uint64_t fused_alu_wait_cycles = 0;
     int fused_alu_result_high_water = 0;
     Tick fused_alu_wait_tick = 0;
+    uint64_t fused_result_transfer_words = 0;
+    uint64_t fused_result_transfer_cycles = 0;
+    uint64_t fused_result_transfer_stall_cycles = 0;
+    uint64_t fused_result_transfer_width_stall_cycles = 0;
+    uint64_t fused_result_transfer_bank_stall_cycles = 0;
+    uint64_t fused_result_transfer_backpressure_stall_cycles = 0;
+    Tick fused_result_transfer_tick = 0;
+    Tick fused_result_transfer_active_tick = 0;
+    Tick fused_result_transfer_stall_tick = 0;
+    Tick fused_result_transfer_width_stall_tick = 0;
+    Tick fused_result_transfer_bank_stall_tick = 0;
+    Tick fused_result_transfer_backpressure_stall_tick = 0;
+    unsigned fused_result_transfer_words_this_cycle = 0;
+    std::vector<bool> fused_result_transfer_bank_used;
     bool virtual_build_incomplete = false;
     int virtual_native_slice_cursor = 0;
     bool virtual_write_address_blocked = false;
@@ -343,6 +357,7 @@ protected:
                          unsigned size = 64);
     bool isVirtualLoad() const;
     bool isFusedDirectTransform() const;
+    bool fusedDirectTransformLive() const;
     bool fusedDirectTransformPending() const;
     int fusedDirectTransformALU() const;
     bool isDirectIndexLoad() const;

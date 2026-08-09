@@ -716,6 +716,9 @@ bool IndirectAccessUnit::isFusedDirectTransform() const {
            my_instruction->opcode ==
                Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
 }
+bool IndirectAccessUnit::fusedDirectTransformLive() const {
+    return isFusedDirectTransform();
+}
 int IndirectAccessUnit::fusedDirectTransformALU() const {
     panic_if(maa == nullptr || maa->num_indirect_units_per_maa == 0,
              "I[%d] has no MAA/indirect-unit geometry\n", my_indirect_id);
@@ -1524,6 +1527,7 @@ void IndirectAccessUnit::executeInstruction() {
                          my_instruction->src1RegID == -1 ||
                          my_instruction->addrRangeID < 0 ||
                          my_instruction->backingAddrRangeID < 0 ||
+                         my_instruction->indexAddrRangeID < 0 ||
                          my_instruction->addrRangeID ==
                              my_instruction->backingAddrRangeID,
                      "I[%d] unsupported or alias-unsafe fused direct "
@@ -1536,7 +1540,11 @@ void IndirectAccessUnit::executeInstruction() {
                  "I[%d] bounded-response indirect load requires row-table "
                  "reordering\n",
                  my_indirect_id);
-        if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+        if (isFusedDirectTransform()) {
+            // dst1 is a 32-bit completion token, not the FP64 gathered word.
+            my_word_size = my_instruction->WordSize();
+        } else if (my_instruction->opcode ==
+                       Instruction::OpcodeType::INDIR_LD ||
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_INDEX ||
             isVirtualLoad() ||
@@ -1656,6 +1664,21 @@ void IndirectAccessUnit::executeInstruction() {
         fused_alu_wait_cycles = 0;
         fused_alu_result_high_water = 0;
         fused_alu_wait_tick = 0;
+        fused_result_transfer_words = 0;
+        fused_result_transfer_cycles = 0;
+        fused_result_transfer_stall_cycles = 0;
+        fused_result_transfer_width_stall_cycles = 0;
+        fused_result_transfer_bank_stall_cycles = 0;
+        fused_result_transfer_backpressure_stall_cycles = 0;
+        fused_result_transfer_tick = 0;
+        fused_result_transfer_active_tick = 0;
+        fused_result_transfer_stall_tick = 0;
+        fused_result_transfer_width_stall_tick = 0;
+        fused_result_transfer_bank_stall_tick = 0;
+        fused_result_transfer_backpressure_stall_tick = 0;
+        fused_result_transfer_words_this_cycle = 0;
+        fused_result_transfer_bank_used.assign(
+            maa->fused_result_transfer_banks, false);
         virtual_build_incomplete = false;
         virtual_native_slice_cursor = 0;
         virtual_write_address_blocked = false;
@@ -2441,14 +2464,44 @@ void IndirectAccessUnit::executeInstruction() {
                 (*maa->stats
                       .IND_FusedALUResultHighWater[my_indirect_id]) +=
                     fused_alu_result_high_water;
+                (*maa->stats
+                      .IND_FusedResultTransferWords[my_indirect_id]) +=
+                    fused_result_transfer_words;
+                (*maa->stats
+                      .IND_FusedResultTransferCycles[my_indirect_id]) +=
+                    fused_result_transfer_cycles;
+                (*maa->stats
+                      .IND_FusedResultTransferStallCycles[my_indirect_id]) +=
+                    fused_result_transfer_stall_cycles;
+                (*maa->stats
+                      .IND_FusedResultTransferWidthStallCycles[
+                          my_indirect_id]) +=
+                    fused_result_transfer_width_stall_cycles;
+                (*maa->stats
+                      .IND_FusedResultTransferBankStallCycles[
+                          my_indirect_id]) +=
+                    fused_result_transfer_bank_stall_cycles;
+                (*maa->stats
+                      .IND_FusedResultTransferBackpressureStallCycles[
+                          my_indirect_id]) +=
+                    fused_result_transfer_backpressure_stall_cycles;
                 DPRINTF(MAAVirtualTrace,
-                        "event=fused_alu_summary schema=1 unit=%d "
+                        "event=fused_alu_summary schema=2 unit=%d "
                         "operation_tick=%lu batches=%lu words=%lu "
-                        "wait_cycles=%lu result_high_water=%d\n",
+                        "wait_cycles=%lu result_high_water=%d "
+                        "transfer_words=%lu transfer_cycles=%lu "
+                        "transfer_stalls=%lu width_stalls=%lu "
+                        "bank_stalls=%lu backpressure_stalls=%lu\n",
                         my_indirect_id, my_decode_start_tick,
                         fused_alu_batches, fused_alu_words,
                         fused_alu_wait_cycles,
-                        fused_alu_result_high_water);
+                        fused_alu_result_high_water,
+                        fused_result_transfer_words,
+                        fused_result_transfer_cycles,
+                        fused_result_transfer_stall_cycles,
+                        fused_result_transfer_width_stall_cycles,
+                        fused_result_transfer_bank_stall_cycles,
+                        fused_result_transfer_backpressure_stall_cycles);
             }
             initializeVirtualPageTracking();
             panic_if(!virtual_retirement_write_pages.empty(),
@@ -3443,16 +3496,62 @@ bool IndirectAccessUnit::drainVirtualResponses() {
         if (alu.ownsDirectTransform(this)) {
             if (!alu.directTransformReady(this))
                 return finish_drain(true);
+            if (fused_result_transfer_tick != curTick()) {
+                fused_result_transfer_tick = curTick();
+                fused_result_transfer_words_this_cycle = 0;
+                std::fill(fused_result_transfer_bank_used.begin(),
+                          fused_result_transfer_bank_used.end(), false);
+            }
+            auto account_transfer_stall =
+                [this](uint64_t &reason_counter, Tick &reason_tick) {
+                    if (fused_result_transfer_stall_tick != curTick()) {
+                        fused_result_transfer_stall_tick = curTick();
+                        fused_result_transfer_stall_cycles++;
+                    }
+                    if (reason_tick != curTick()) {
+                        reason_tick = curTick();
+                        reason_counter++;
+                    }
+                };
             while (alu.ownsDirectTransform(this)) {
+                if (fused_result_transfer_words_this_cycle >=
+                    maa->fused_result_transfer_words_per_cycle) {
+                    account_transfer_stall(
+                        fused_result_transfer_width_stall_cycles,
+                        fused_result_transfer_width_stall_tick);
+                    return finish_drain(true);
+                }
                 const int itr = alu.directTransformIteration(this);
+                const Addr result_word = backingWordAddr(itr) / my_word_size;
+                const unsigned result_bank =
+                    result_word % maa->fused_result_transfer_banks;
+                if (fused_result_transfer_bank_used[result_bank]) {
+                    account_transfer_stall(
+                        fused_result_transfer_bank_stall_cycles,
+                        fused_result_transfer_bank_stall_tick);
+                    return finish_drain(true);
+                }
                 if (!reserveVirtualCombineBank(itr)) {
                     account_alu_wait();
+                    account_transfer_stall(
+                        fused_result_transfer_backpressure_stall_cycles,
+                        fused_result_transfer_backpressure_stall_tick);
                     return finish_drain(true);
                 }
                 if (!insertVirtualCombineWord(
                         itr, alu.directTransformData(this))) {
                     account_alu_wait();
+                    account_transfer_stall(
+                        fused_result_transfer_backpressure_stall_cycles,
+                        fused_result_transfer_backpressure_stall_tick);
                     return finish_drain(true);
+                }
+                fused_result_transfer_bank_used[result_bank] = true;
+                fused_result_transfer_words_this_cycle++;
+                fused_result_transfer_words++;
+                if (fused_result_transfer_active_tick != curTick()) {
+                    fused_result_transfer_active_tick = curTick();
+                    fused_result_transfer_cycles++;
                 }
                 alu.consumeDirectTransformWord(this);
             }

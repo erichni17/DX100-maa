@@ -54,7 +54,85 @@ void Invalidator::allocate(int _num_maas,
     my_instruction = nullptr;
     state = Status::Idle;
 }
-bool Invalidator::getAddrRegionPermit(Instruction *instruction) {
+bool
+Invalidator::isFusedDirect(const Instruction *instruction)
+{
+    return instruction != nullptr &&
+           instruction->opcode ==
+               Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+}
+
+std::vector<maa::MultiRangeAccessTracker::Access>
+Invalidator::instructionAccesses(const Instruction *instruction) const
+{
+    using Access = maa::MultiRangeAccessTracker::Access;
+    using Mode = maa::MultiRangeAccessTracker::Mode;
+    if (instruction->accessType == Instruction::AccessType::COMPUTE)
+        return {};
+    if (!isFusedDirect(instruction)) {
+        return {{instruction->addrRangeID,
+                 instruction->accessType == Instruction::AccessType::WRITE
+                     ? Mode::Write : Mode::Read}};
+    }
+
+    // The fused API names all three architectural memory operands.  The
+    // index tile must already be complete before issue, but retaining B's
+    // read lease through retirement prevents a different MAA from changing
+    // the API-visible input while the operation is live.
+    return maa::MultiRangeAccessTracker::normalize({
+        Access{instruction->addrRangeID, Mode::Read},
+        Access{instruction->indexAddrRangeID, Mode::Read},
+        Access{instruction->backingAddrRangeID, Mode::Write},
+    });
+}
+
+bool
+Invalidator::getAddrRegionPermit(Instruction *instruction)
+{
+    if (instruction->accessType == Instruction::AccessType::COMPUTE)
+        return true;
+
+    const auto accesses = instructionAccesses(instruction);
+    panic_if(accesses.empty(),
+             "Instruction %s has no valid registered address access\n",
+             instruction->print());
+    if (!regionAccessTracker.owns(instruction) &&
+        !regionAccessTracker.tryAcquire(instruction, instruction->maa_id,
+                                        accesses)) {
+        DPRINTF(MAAInvalidator,
+                "Global address lease blocks instruction %s\n",
+                instruction->print());
+        return false;
+    }
+
+    if (!isFusedDirect(instruction))
+        return getSingleAddrRegionPermit(instruction);
+
+    auto [permit_it, inserted] =
+        compoundPermits.try_emplace(instruction, CompoundPermit{});
+    CompoundPermit &permit = permit_it->second;
+    if (inserted) {
+        permit.regions.reserve(accesses.size());
+        for (const auto &access : accesses) {
+            Instruction proxy = *instruction;
+            proxy.addrRangeID = access.region;
+            proxy.accessType =
+                access.mode == maa::MultiRangeAccessTracker::Mode::Write
+                    ? Instruction::AccessType::WRITE
+                    : Instruction::AccessType::READ;
+            permit.regions.push_back(proxy);
+        }
+    }
+    while (permit.nextRegion < permit.regions.size()) {
+        Instruction *proxy = &permit.regions[permit.nextRegion];
+        if (!getSingleAddrRegionPermit(proxy))
+            return false;
+        permit.nextRegion++;
+    }
+    return true;
+}
+
+bool Invalidator::getSingleAddrRegionPermit(Instruction *instruction) {
     int8_t region_id = instruction->addrRangeID;
     int maa_id = instruction->maa_id;
     if (instruction->accessType == Instruction::AccessType::COMPUTE) {
@@ -246,7 +324,31 @@ void Invalidator::transientInstruction() {
         maa->scheduleIssueInstructionEvent();
     }
 }
-void Invalidator::finishInstruction(Instruction *instruction) {
+void
+Invalidator::finishInstruction(Instruction *instruction)
+{
+    if (instruction->accessType == Instruction::AccessType::COMPUTE)
+        return;
+
+    if (isFusedDirect(instruction)) {
+        const auto permit = compoundPermits.find(instruction);
+        panic_if(permit == compoundPermits.end() ||
+                     permit->second.nextRegion !=
+                         permit->second.regions.size(),
+                 "Fused instruction %s completed without every global "
+                 "address permit\n", instruction->print());
+        for (Instruction &proxy : permit->second.regions)
+            finishSingleAddrRegion(&proxy);
+        compoundPermits.erase(permit);
+    } else {
+        finishSingleAddrRegion(instruction);
+    }
+    panic_if(!regionAccessTracker.release(instruction),
+             "Instruction %s completed without a global address lease\n",
+             instruction->print());
+}
+
+void Invalidator::finishSingleAddrRegion(Instruction *instruction) {
     if (instruction->accessType == Instruction::AccessType::READ) {
         panic_if(rg_status[instruction->maa_id][instruction->addrRangeID] != RGStatus::UsingShared && rg_status[instruction->maa_id][instruction->addrRangeID] != RGStatus::UsingModified, "Instruction %s is not in UsingShared or UsingModified state: %s!\n", instruction->print(), rg_status_names[(uint8_t)(rg_status[instruction->maa_id][instruction->addrRangeID])]);
         if (rg_status[instruction->maa_id][instruction->addrRangeID] == RGStatus::UsingShared) {
@@ -261,6 +363,13 @@ void Invalidator::finishInstruction(Instruction *instruction) {
         rg_status[instruction->maa_id][instruction->addrRangeID] = RGStatus::UsedModified;
         DPRINTF(MAAInvalidator, "Region[%d][%d] changed to UsedModified because of finishing WRITE for instruction %s!\n", instruction->maa_id, instruction->addrRangeID, instruction->print());
     }
+}
+
+bool
+Invalidator::hasLiveRegionAccesses() const
+{
+    return !regionAccessTracker.empty() || !compoundPermits.empty() ||
+           !transientInstructions.empty();
 }
 int Invalidator::get_cl_id(int tile_id, int element_id, int word_size) {
     return (int)((tile_id * num_tile_elements * 4 + element_id * word_size) / 64);
@@ -316,7 +425,8 @@ void Invalidator::executeInstruction() {
         my_invalidating_tile = (my_invalidating_tile == -1 && my_instruction->src2Status == Instruction::TileStatus::Invalidating) ? my_instruction->src2SpdID : my_invalidating_tile;
         my_invalidating_tile = (my_invalidating_tile == -1 && my_instruction->condStatus == Instruction::TileStatus::Invalidating) ? my_instruction->condSpdID : my_invalidating_tile;
         panic_if(my_invalidating_tile == -1, "No invalidating tile found!\n");
-        my_word_size = my_instruction->getWordSize(my_invalidating_tile);
+        my_word_size =
+            my_instruction->getTileSpanWordSize(my_invalidating_tile);
 
         // Initialization
         my_i = 0;
