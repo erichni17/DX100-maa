@@ -307,7 +307,6 @@ protected:
     uint32_t direct_index_summary_records = 0;
     uint64_t direct_index_summary_probes = 0;
     uint64_t direct_index_summary_reduction_visits = 0;
-    uint32_t direct_index_split_seen = 0;
     int direct_index_next_prefetch_itr = 0;
     std::map<Addr, std::vector<std::pair<int, uint16_t>>>
         direct_index_pending_lines;

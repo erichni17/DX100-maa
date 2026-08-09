@@ -102,19 +102,18 @@ testAuthenticatedPhysicalGrowPlanSplitsOnlyGrow21()
            BoundedGrowPassPlan::Result::Accepted);
     assert(plan.passes() == 4);
     assert(plan.records() == 9);
-    assert(plan.splitKey() == 21);
-    assert(plan.splitPopulation() == 380);
     const std::array<uint32_t, 4> expectedQuotas{10, 41, 44, 285};
     uint32_t ordinal = 0;
     for (uint32_t pass = 0; pass < 4; ++pass) {
         assert(plan.population(pass) == 4096);
-        assert(plan.splitQuota(pass) == expectedQuotas[pass]);
+        assert(plan.quota(21, pass) == expectedQuotas[pass]);
         for (uint32_t i = 0; i < expectedQuotas[pass]; ++i)
             assert(plan.passFor(21, ordinal++) == pass);
     }
     assert(ordinal == 380);
     assert(plan.passFor(21, ordinal) == BoundedGrowPassPlan::MaxPasses);
-    assert(plan.chargedBytes() == 1121);
+    assert(plan.splitRecords() == 1);
+    assert(plan.chargedBytes() == 9370);
     assert(BoundedGrowPassPlan::modeledReductionVisits(
                4096, plan.operations()) == 4096 + plan.operations());
 }
@@ -134,35 +133,59 @@ testSplitOrdinalCommitsOnlyAfterForcedRetry()
     assert(plan.configure(16384, 4096, 64, visit) ==
            BoundedGrowPassPlan::Result::Accepted);
 
-    const std::array<uint32_t, 4> expectedQuotas{10, 41, 44, 285};
+    const std::array<uint32_t, 4> expectedQuotas{4096, 4096, 4096, 4096};
     for (uint32_t pass = 0; pass < plan.passes(); ++pass) {
-        uint32_t committed = 0;
         uint32_t selected = 0;
         bool forced_retry = false;
-        while (committed < plan.splitPopulation()) {
-            const uint32_t observed = committed;
-            const uint32_t assigned = plan.passFor(21, observed);
-            if (assigned == pass && !forced_retry) {
-                // Model an admission failure/drain. No commit occurs, so the
-                // retried descriptor must retain its ordinal and assignment.
-                forced_retry = true;
-                assert(committed == observed);
-                assert(plan.passFor(21, committed) == assigned);
-                continue;
+        assert(plan.beginReplay() == BoundedGrowPassPlan::Result::Accepted);
+        for (const auto &[key, count] : records) {
+            for (uint32_t i = 0; i < count; ++i) {
+                uint32_t observed = 0;
+                assert(plan.peekReplayOrdinal(key, observed) ==
+                       BoundedGrowPassPlan::Result::Accepted);
+                const uint32_t assigned = plan.passFor(key, observed);
+                if (assigned == pass && !forced_retry) {
+                    // Model an admission failure/drain. No commit occurs, so
+                    // the retried descriptor retains its assignment.
+                    forced_retry = true;
+                    uint32_t retry = 0;
+                    assert(plan.peekReplayOrdinal(key, retry) ==
+                           BoundedGrowPassPlan::Result::Accepted);
+                    assert(retry == observed);
+                    assert(plan.passFor(key, retry) == assigned);
+                }
+                selected += assigned == pass;
+                assert(plan.commitReplayOrdinal(key, observed) ==
+                       BoundedGrowPassPlan::Result::Accepted);
             }
-            selected += assigned == pass;
-            assert(plan.commitSplitOrdinal(observed, committed) ==
-                   BoundedGrowPassPlan::Result::Accepted);
         }
         assert(forced_retry);
         assert(selected == expectedQuotas[pass]);
-        const uint32_t stale = committed - 1;
-        assert(plan.commitSplitOrdinal(stale, committed) ==
-               BoundedGrowPassPlan::Result::StaleReplayOrdinal);
-        assert(committed == plan.splitPopulation());
-        assert(plan.commitSplitOrdinal(committed, committed) ==
-               BoundedGrowPassPlan::Result::ReplayOrdinalOverflow);
+        assert(plan.finishReplay() ==
+               BoundedGrowPassPlan::Result::Accepted);
     }
+}
+
+void
+testMultipleOversizedGrowGroupsUseBoundedQuotas()
+{
+    const std::vector<std::pair<uint32_t, uint32_t>> records{
+        {1, 5000}, {2, 5000}, {3, 5000}, {4, 1384}};
+    auto visit = [&records](auto consumer) {
+        for (const auto &[key, count] : records)
+            consumer(key, count);
+    };
+    BoundedGrowPassPlan plan;
+    assert(plan.configure(16384, 4096, 4, visit) ==
+           BoundedGrowPassPlan::Result::Accepted);
+    assert(plan.passes() == 4);
+    assert(plan.splitRecords() == 3);
+    for (uint32_t pass = 0; pass < plan.passes(); ++pass)
+        assert(plan.population(pass) == 4096);
+    assert(plan.quota(4, 0) == 1384);
+    assert(plan.quota(1, 0) == 2712 && plan.quota(1, 1) == 2288);
+    assert(plan.quota(2, 1) == 1808 && plan.quota(2, 2) == 3192);
+    assert(plan.quota(3, 2) == 904 && plan.quota(3, 3) == 4096);
 }
 
 } // anonymous namespace
@@ -175,6 +198,7 @@ main()
     testAuthenticatedPhysicalGrowPackingUsesFivePasses();
     testAuthenticatedPhysicalGrowPlanSplitsOnlyGrow21();
     testSplitOrdinalCommitsOnlyAfterForcedRetry();
+    testMultipleOversizedGrowGroupsUseBoundedQuotas();
     std::cout << "bounded_quantile_ranges_test: PASS\n";
     return 0;
 }

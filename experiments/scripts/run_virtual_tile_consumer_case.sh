@@ -41,6 +41,7 @@ debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 require_physical_trace=${MAA_REQUIRE_PHYSICAL_RECORD_TRACE:-0}
 shared_checkpoint=${DX100_SHARED_CHECKPOINT_DIR:-}
 shared_selector=${DX100_SHARED_TREATMENT_FILE:-}
+shared_checkpoint_log=${DX100_SHARED_CHECKPOINT_LOG:-}
 frozen_ramulator_library=${DX100_FROZEN_RAMULATOR_LIBRARY:-}
 ramulator_provenance=${DX100_RAMULATOR_PROVENANCE_FILE:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
@@ -168,6 +169,13 @@ if [[ -n $shared_checkpoint || -n $shared_selector ]]; then
         echo "shared checkpoint directory does not exist" >&2
         exit 2
     }
+    if [[ -n $shared_checkpoint_log ]]; then
+        shared_checkpoint_log=$(realpath "$shared_checkpoint_log")
+        [[ -f $shared_checkpoint_log ]] || {
+            echo "shared checkpoint log does not exist" >&2
+            exit 2
+        }
+    fi
     [[ -n $frozen_ramulator_library && -n $ramulator_provenance ]] || {
         echo "shared evidence requires frozen Ramulator library/provenance" >&2
         exit 2
@@ -478,6 +486,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'timeout=none\n'
     printf 'shared_checkpoint=%s\n' "${shared_checkpoint:-none}"
     printf 'shared_treatment_file=%s\n' "${shared_selector:-none}"
+    printf 'shared_checkpoint_log=%s\n' "${shared_checkpoint_log:-none}"
     printf 'physical_record_schema=dx100.physical_admission.v1\n'
     printf 'frozen_ramulator_library=%s\n' "$ramulator_library"
     printf 'ramulator_provenance=%s\n' "$ramulator_provenance"
@@ -535,6 +544,7 @@ cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     printf 'MAA_REQUIRE_PHYSICAL_RECORD_TRACE=%q ' "$require_physical_trace"
     printf 'DX100_SHARED_CHECKPOINT_DIR=%q ' "${shared_checkpoint:-}"
     printf 'DX100_SHARED_TREATMENT_FILE=%q ' "${shared_selector:-}"
+    printf 'DX100_SHARED_CHECKPOINT_LOG=%q ' "${shared_checkpoint_log:-}"
     printf 'DX100_FROZEN_RAMULATOR_LIBRARY=%q ' "$ramulator_library"
     printf 'DX100_RAMULATOR_PROVENANCE_FILE=%q ' "$ramulator_provenance"
     printf '%q %q %q %q %q\n' "${DX100_FROZEN_RUNNER_PATH:-$0}" \
@@ -611,7 +621,7 @@ layout_log="$out/checkpoint.log"
 layout_mode="$mode"
 layout_page="$page"
 if [[ -n $shared_checkpoint ]]; then
-    layout_log="$(dirname "$shared_checkpoint")/shared-checkpoint.log"
+    layout_log=${shared_checkpoint_log:-$(dirname "$shared_checkpoint")/shared-checkpoint.log}
     layout_mode=deferred
     layout_page=0
 fi
@@ -971,6 +981,21 @@ elif [[ $virtual -eq 1 ]]; then
                 echo "invalid adaptive grow-plan counters" >&2
                 exit 1
             }
+            trace="$out/run/virtual_trace.log"
+            accepted_plans=$(grep -Ec \
+                'event=bounded_grow_summary_complete .*fallback=none plan_result=accepted ' \
+                "$trace" || true)
+            translated_begins=$(grep -Ec \
+                'event=bounded_range_begin .*range_policy=3 key=translated_dram_grow ' \
+                "$trace" || true)
+            iteration_fallbacks=$(grep -Ec \
+                'event=bounded_grow_summary_complete .*fallback=iteration_ranges' \
+                "$trace" || true)
+            [[ $accepted_plans -eq 1 && $translated_begins -eq 1 && \
+               $iteration_fallbacks -eq 0 ]] || {
+                echo "adaptive grow plan did not remain physical: accepted=$accepted_plans translated=$translated_begins fallbacks=$iteration_fallbacks" >&2
+                exit 1
+            }
         fi
         [[ $index_words -eq $expected_index_words && $index_hwm -gt 0 && \
            $index_hwm -le $index_hwm_capacity ]] || {
@@ -1077,6 +1102,38 @@ fi
 
 physical_records=0
 physical_record_sha256=none
+bounded_summary_histogram_sha256=none
+if [[ $index_range_policy -eq 3 ]]; then
+    trace="$out/run/virtual_trace.log"
+    awk '
+        /event=bounded_grow_histogram_record/ {
+            delete value
+            for (i = 1; i <= NF; ++i) {
+                split($i, kv, "=")
+                value[kv[1]] = kv[2]
+            }
+            print value["grow"], value["count"]
+        }
+    ' OFS='\t' "$trace" | sort -n -k1,1 \
+        > "$out/translated_grow_histogram.tsv"
+    read -r histogram_records histogram_population < <(
+        awk '{ records++; population += $2 }
+             END { print records + 0, population + 0 }' \
+            "$out/translated_grow_histogram.tsv"
+    )
+    histogram_unique=$(awk '
+        NR > 1 && $1 == previous { duplicate = 1 }
+        { previous = $1 }
+        END { print duplicate ? 0 : 1 }
+    ' "$out/translated_grow_histogram.tsv")
+    [[ $histogram_records -eq $bounded_summary_records && \
+       $histogram_population -eq 16384 && $histogram_unique -eq 1 ]] || {
+        echo "invalid translated-grow histogram: records=$histogram_records/$bounded_summary_records population=$histogram_population/16384 unique=$histogram_unique" >&2
+        exit 1
+    }
+    bounded_summary_histogram_sha256=$(sha256sum \
+        "$out/translated_grow_histogram.tsv" | awk '{ print $1 }')
+fi
 if [[ $require_physical_trace -eq 1 ]]; then
     python3 "$root/experiments/analysis/hybrid_overhead_attribution.py" \
         validate-physical "$out/run/virtual_trace.log" \
@@ -1089,6 +1146,13 @@ if [[ $require_physical_trace -eq 1 ]]; then
         "$out/physical_validation.json")
     [[ ${#physical_record_sha256} -eq 64 ]] || {
         echo "physical-record validator did not emit a hash" >&2
+        exit 1
+    }
+fi
+if [[ $index_range_policy -eq 3 ]]; then
+    [[ $require_physical_trace -eq 1 && $physical_records -eq 16384 && \
+       ${#bounded_summary_histogram_sha256} -eq 64 ]] || {
+        echo "physical grow arm lacks authenticated admissions or histogram" >&2
         exit 1
     }
 fi
@@ -1111,7 +1175,7 @@ fi
 headers=(case output_hash simTicks simInsts index_line_reads index_words
     index_hwm feeder_descriptor_discards feeder_predicate_discards
     feeder_partition_discards feeder_summary_discards
-    physical_records physical_record_sha256
+    physical_records physical_record_sha256 bounded_summary_histogram_sha256
     index_filter_words index_filter_cycles index_filter_wait_events
     index_filter_wait_cycles write_issues
     write_completions indirect_spd_reads pages_ready
@@ -1146,6 +1210,7 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$feeder_predicate_discards" "$feeder_partition_discards"
     "$feeder_summary_discards"
     "$physical_records" "$physical_record_sha256"
+    "$bounded_summary_histogram_sha256"
     "$index_filter_words" "$index_filter_cycles"
     "$index_filter_wait_events" "$index_filter_wait_cycles"
     "$write_issues" "$write_completions"

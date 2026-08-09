@@ -912,7 +912,14 @@ void IndirectAccessUnit::finishAdaptiveSummary()
     (*maa->stats.IND_BoundedSummaryHashProbes[my_indirect_id]) +=
         direct_index_summary_probes;
     auto visit = [this](auto consumer) {
-        offset_table->forEachSummaryRecord(consumer);
+        offset_table->forEachSummaryRecord(
+            [this, &consumer](uint32_t key, uint32_t count) {
+                DPRINTF(MAAVirtualTrace,
+                        "event=bounded_grow_histogram_record schema=1 "
+                        "unit=%d operation_tick=%lu grow=%u count=%u\n",
+                        my_indirect_id, my_decode_start_tick, key, count);
+                consumer(key, count);
+            });
     };
     const auto plan_result = direct_index_summary_overflow
         ? BoundedGrowPassPlan::Result::TooManyRecords
@@ -933,6 +940,10 @@ void IndirectAccessUnit::finishAdaptiveSummary()
         tracker_result = bounded_range_pass.configureSelected(
             my_max, offset_table->capacity(), direct_index_partitions);
         direct_index_iteration_fallback = false;
+        const auto replay_result = bounded_grow_plan.beginReplay();
+        panic_if(replay_result != BoundedGrowPassPlan::Result::Accepted,
+                 "I[%d] cannot begin grow replay: %s\n", my_indirect_id,
+                 BoundedGrowPassPlan::resultName(replay_result));
     } else {
         const bool has_iteration_fallback =
             plan_result == BoundedGrowPassPlan::Result::TooManyRecords ||
@@ -1017,7 +1028,7 @@ void IndirectAccessUnit::finishAdaptiveSummary()
             "event=bounded_grow_summary_complete schema=1 unit=%d "
             "operation_tick=%lu grow_records=%u observations=%u "
             "hash_probes=%lu reduction_visits=%lu modeled_cycles=%lu "
-            "fallback=%s plan_result=%s split_key=%u split_population=%u "
+            "fallback=%s plan_result=%s split_records=%u "
             "plan_bytes=%lu backing=llc_index_scan "
             "histogram_storage=phase_shared_word_offset\n",
             my_indirect_id, my_decode_start_tick,
@@ -1028,23 +1039,22 @@ void IndirectAccessUnit::finishAdaptiveSummary()
             static_cast<uint64_t>(summary_latency),
             direct_index_iteration_fallback ? "iteration_ranges" : "none",
             BoundedGrowPassPlan::resultName(plan_result),
-            direct_index_iteration_fallback ? 0 : bounded_grow_plan.splitKey(),
             direct_index_iteration_fallback
-                ? 0 : bounded_grow_plan.splitPopulation(),
+                ? 0 : bounded_grow_plan.splitRecords(),
             static_cast<unsigned long>(bounded_grow_plan.chargedBytes()));
     for (int pass = 0; pass < direct_index_partitions; ++pass) {
         const auto range = bounded_range_pass.range(pass);
         DPRINTF(MAAVirtualTrace,
                 "event=bounded_grow_pass_plan schema=1 unit=%d "
                 "operation_tick=%lu pass=%d lower=%lu upper=%lu "
-                "planned_population=%u split_quota=%u key=%s\n",
+                "planned_population=%u quota_mode=%s key=%s\n",
                 my_indirect_id, my_decode_start_tick, pass,
                 range.lower, range.upper,
                 direct_index_iteration_fallback
                     ? static_cast<uint32_t>(range.upper - range.lower)
                     : bounded_grow_plan.population(pass),
                 direct_index_iteration_fallback
-                    ? 0 : bounded_grow_plan.splitQuota(pass),
+                    ? "none" : "record_pass",
                 direct_index_iteration_fallback
                     ? "logical_iteration_fallback"
                     : "translated_dram_grow");
@@ -1054,7 +1064,6 @@ void IndirectAccessUnit::finishAdaptiveSummary()
     direct_index_summary_active = false;
     direct_index_next_prefetch_itr = 0;
     direct_index_partition = 0;
-    direct_index_split_seen = 0;
     panic_if(direct_index_phase == std::numeric_limits<uint32_t>::max(),
              "I[%d] direct-index phase token overflow\n", my_indirect_id);
     direct_index_phase++;
@@ -1102,11 +1111,11 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
         return;
     if (maa->virtual_index_range_policy == 3 &&
         !direct_index_iteration_fallback) {
-        panic_if(direct_index_split_seen !=
-                     bounded_grow_plan.splitPopulation(),
-                 "I[%d] bounded grow pass %d saw %u/%u split-grow words\n",
-                 my_indirect_id, pass, direct_index_split_seen,
-                 bounded_grow_plan.splitPopulation());
+        const auto replay_result = bounded_grow_plan.finishReplay();
+        panic_if(replay_result != BoundedGrowPassPlan::Result::Accepted,
+                 "I[%d] bounded grow pass %d replay failed closure: %s\n",
+                 my_indirect_id, pass,
+                 BoundedGrowPassPlan::resultName(replay_result));
     }
     const auto result = bounded_range_pass.finishPass(pass);
     panic_if(result != BoundedRangePassTracker::Result::Accepted,
@@ -1130,7 +1139,15 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
             bounded_range_pass.maxEpochAdmissionsForPass(pass),
             bounded_range_pass.admissions(), bounded_range_pass.retirements(),
             reason);
-    direct_index_split_seen = 0;
+    if (maa->virtual_index_range_policy == 3 &&
+        !direct_index_iteration_fallback &&
+        pass + 1 < direct_index_partitions) {
+        const auto replay_result = bounded_grow_plan.beginReplay();
+        panic_if(replay_result != BoundedGrowPassPlan::Result::Accepted,
+                 "I[%d] bounded grow pass %d cannot start next replay: %s\n",
+                 my_indirect_id, pass,
+                 BoundedGrowPassPlan::resultName(replay_result));
+    }
 }
 void IndirectAccessUnit::discardDirectIndex(
     int itr, uint32_t expected_value, DirectIndexDiscardReason reason) {
@@ -1432,8 +1449,9 @@ void IndirectAccessUnit::fillRowTable(
         bool direct_index_descriptor_inserted = false;
         bool direct_index_predicate_rejected = false;
         bool direct_index_partition_rejected = false;
-        bool commit_split_ordinal = false;
-        uint32_t split_ordinal = 0;
+        bool commit_grow_ordinal = false;
+        uint32_t grow_ordinal = 0;
+        uint32_t grow_ordinal_key = 0;
         const uint32_t direct_index_value = isDirectIndexLoad()
             ? peekDirectIndex(my_i)
             : 0;
@@ -1489,17 +1507,25 @@ void IndirectAccessUnit::fillRowTable(
                     selected_pass = bounded_range_pass.passForGrow(
                         bounded_range_key);
                 } else {
-                    split_ordinal = direct_index_split_seen;
-                    commit_split_ordinal = bounded_grow_plan.isSplitKey(
-                        static_cast<uint32_t>(grow_addr));
+                    grow_ordinal_key = static_cast<uint32_t>(grow_addr);
+                    const auto ordinal_result =
+                        bounded_grow_plan.peekReplayOrdinal(
+                            grow_ordinal_key, grow_ordinal);
+                    panic_if(
+                        ordinal_result !=
+                            BoundedGrowPassPlan::Result::Accepted,
+                        "I[%d] grow 0x%lx has no replay ordinal: %s\n",
+                        my_indirect_id, grow_addr,
+                        BoundedGrowPassPlan::resultName(ordinal_result));
+                    commit_grow_ordinal = true;
                     selected_pass = bounded_grow_plan.passFor(
-                        static_cast<uint32_t>(grow_addr), split_ordinal);
+                        grow_ordinal_key, grow_ordinal);
                     panic_if(selected_pass >=
                                  static_cast<uint32_t>(
                                      direct_index_partitions),
                              "I[%d] grow 0x%lx ordinal %u has no bounded "
                              "grow-plan pass\n", my_indirect_id, grow_addr,
-                             split_ordinal);
+                             grow_ordinal);
                 }
             } else {
                 selected_pass = directIndexPassForGrow(grow_addr);
@@ -1726,14 +1752,14 @@ void IndirectAccessUnit::fillRowTable(
                     : direct_index_predicate_rejected
                         ? DirectIndexDiscardReason::PredicateRejected
                         : DirectIndexDiscardReason::PartitionRejected);
-            if (commit_split_ordinal) {
+            if (commit_grow_ordinal) {
                 const auto commit_result =
-                    bounded_grow_plan.commitSplitOrdinal(
-                        split_ordinal, direct_index_split_seen);
+                    bounded_grow_plan.commitReplayOrdinal(
+                        grow_ordinal_key, grow_ordinal);
                 panic_if(
                     commit_result != BoundedGrowPassPlan::Result::Accepted,
-                    "I[%d] split-grow ordinal %u commit failed: %s\n",
-                    my_indirect_id, split_ordinal,
+                    "I[%d] grow ordinal %u commit failed: %s\n",
+                    my_indirect_id, grow_ordinal,
                     BoundedGrowPassPlan::resultName(commit_result));
             }
         }
@@ -1962,7 +1988,6 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_summary_records = 0;
         direct_index_summary_probes = 0;
         direct_index_summary_reduction_visits = 0;
-        direct_index_split_seen = 0;
         offset_table_drain = false;
         direct_index_pending_lines.clear();
         direct_index_ready_lines.clear();

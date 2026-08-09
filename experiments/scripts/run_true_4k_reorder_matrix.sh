@@ -32,22 +32,38 @@ git -C "$root" rev-parse HEAD > "$out/input/source_commit"
 sha256sum "$ramulator" > "$out/input/ramulator.sha256"
 
 config="$root/configs/deprecated/example/se.py"
-checkpoint="$out/shared_checkpoint"
-selector="$out/shared_treatment.txt"
-LD_LIBRARY_PATH="$out/input${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-    "$gem5" --listener-mode=off --outdir="$checkpoint" "$config" \
-    --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB --max-checkpoints=1 \
-    --cmd "$workload" --options "deferred $selector" \
-    > "$out/shared-checkpoint.log" 2>&1
-grep -Fqx \
-    'VIRTUAL_TILE_CONSUMER_LAYOUT mode=deferred page_elements=0 logical_elements=16384 mem_size=2147483648' \
-    "$out/shared-checkpoint.log"
-[[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' \
-    "$out/shared-checkpoint.log") -eq 1 ]]
+mkdir -p "$out/checkpoints"
+create_checkpoint() {
+    local label=$1
+    local checkpoint="$out/checkpoints/$label"
+    local selector="$out/${label}.treatment.txt"
+    local log="$out/checkpoints/${label}.log"
+    LD_LIBRARY_PATH="$out/input${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        "$gem5" --listener-mode=off --outdir="$checkpoint" "$config" \
+        --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB --max-checkpoints=1 \
+        --cmd "$workload" --options "deferred $selector" \
+        > "$log" 2>&1
+    grep -Fqx \
+        'VIRTUAL_TILE_CONSUMER_LAYOUT mode=deferred page_elements=0 logical_elements=16384 mem_size=2147483648' \
+        "$log"
+    [[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' "$log") -eq 1 ]]
+}
+wait_all() {
+    local rc=0
+    local pid
+    for pid in "$@"; do
+        wait "$pid" || rc=1
+    done
+    return "$rc"
+}
+checkpoint_pids=()
+for arm in native16 native4 physical_grow_4k; do
+    create_checkpoint "$arm" &
+    checkpoint_pids+=("$!")
+done
+wait_all "${checkpoint_pids[@]}"
 
 common=(
-    DX100_SHARED_CHECKPOINT_DIR="$checkpoint"
-    DX100_SHARED_TREATMENT_FILE="$selector"
     DX100_FROZEN_RAMULATOR_LIBRARY="$ramulator"
     DX100_RAMULATOR_PROVENANCE_FILE="$out/input/ramulator.sha256"
     MAA_DEBUG_FLAGS=MAAVirtualTrace
@@ -56,21 +72,30 @@ run_arm() {
     local label=$1
     local case_name=$2
     shift 2
-    env "${common[@]}" "$@" \
+    env "${common[@]}" \
+        DX100_SHARED_CHECKPOINT_DIR="$out/checkpoints/$label" \
+        DX100_SHARED_TREATMENT_FILE="$out/${label}.treatment.txt" \
+        DX100_SHARED_CHECKPOINT_LOG="$out/checkpoints/${label}.log" \
+        "$@" \
         "$root/experiments/scripts/run_virtual_tile_consumer_case.sh" \
         "$gem5" "$workload" "$case_name" "$out/$label" \
         > "$out/$label.launch.log" 2>&1
 }
 
+arm_pids=()
 run_arm native16 native_direct_16k \
     MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=64 \
     MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
-    MAA_OFFSET_TABLE_ENTRIES=16384 MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384
+    MAA_OFFSET_TABLE_ENTRIES=16384 MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384 &
+arm_pids+=("$!")
 run_arm native4 native_direct_4k \
     MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
     MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
-    MAA_OFFSET_TABLE_ENTRIES=4096 MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096
+    MAA_OFFSET_TABLE_ENTRIES=4096 MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 &
+arm_pids+=("$!")
 run_arm physical_grow_4k paged_4k \
+    MAA_DEBUG_FLAGS=MAAVirtualTrace,MAAPhysicalRecordTrace \
+    MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
     MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
     MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
     MAA_OFFSET_TABLE_ENTRIES=4096 MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 \
@@ -78,7 +103,9 @@ run_arm physical_grow_4k paged_4k \
     MAA_VIRTUAL_INDEX_RANGE_POLICY=3 MAA_VIRTUAL_INDEX_FORCE_CACHE=1 \
     MAA_VIRTUAL_PARTITION_KEEP_COMBINER=1 MAA_VIRTUAL_GROW_ORDER=1 \
     MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=16 \
-    MAA_REQUIRE_INDEX_FILTER_WAIT=1
+    MAA_REQUIRE_INDEX_FILTER_WAIT=1 &
+arm_pids+=("$!")
+wait_all "${arm_pids[@]}"
 
 field() {
     local name=$1
@@ -89,8 +116,10 @@ field() {
     ' "$file"
 }
 reference_hash=$(field output_hash "$out/native16/result.tsv")
-printf 'arm\toutput_hash\tsimTicks\ta_line_requests\ta_unique_lines' \
+printf 'arm\toutput_hash\tphysical_record_sha256\tgrow_histogram_sha256' \
     > "$out/matrix.tsv"
+printf '\tsimTicks\ta_line_requests\ta_unique_lines' \
+    >> "$out/matrix.tsv"
 printf '\trow_insertions\ttranslated_unique_rows' >> "$out/matrix.tsv"
 printf '\trow_drains\toffset_drains\tdram_activates\tsummary_bytes' \
     >> "$out/matrix.tsv"
@@ -104,6 +133,8 @@ for arm in native16 native4 physical_grow_4k; do
     hash=$(field output_hash "$result")
     [[ $hash == "$reference_hash" ]]
     ticks=$(field simTicks "$result")
+    physical_hash=$(field physical_record_sha256 "$result")
+    histogram_hash=$(field bounded_summary_histogram_sha256 "$result")
     lines=$(field row_table_cache_lines "$result")
     unique_lines=$(field row_table_unique_cache_lines "$result")
     row_insertions=$(field row_table_rows_inserted "$result")
@@ -122,9 +153,11 @@ for arm in native16 native4 physical_grow_4k; do
     row_lines=$(field bounded_row_line_entries "$result")
     metadata_bytes=$(field bounded_reorder_metadata_bytes "$result")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-        "$arm" "$hash" "$ticks" "$lines" "$unique_lines" \
+        "$arm" "$hash" "$physical_hash" "$histogram_hash" \
+        "$ticks" "$lines" "$unique_lines" \
         "$row_insertions" "$unique_rows" "$row_drains" \
-        "$offset_drains" "$activates" "$((summary_words * 4))" \
+        "$offset_drains" "$activates" >> "$out/matrix.tsv"
+    printf '\t%s\t%s' "$((summary_words * 4))" \
         "$((replay_words * 4))" >> "$out/matrix.tsv"
     printf '\t%s\t%s' "$passes" "$replay_drains" \
         >> "$out/matrix.tsv"

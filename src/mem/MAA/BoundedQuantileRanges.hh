@@ -1,6 +1,7 @@
 #ifndef __MEM_MAA_BOUNDED_QUANTILE_RANGES_HH__
 #define __MEM_MAA_BOUNDED_QUANTILE_RANGES_HH__
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -248,21 +249,19 @@ class BoundedQuantileRanges
 };
 
 /**
- * Bounded translated-grow plan with at most one deterministically split key.
+ * Bounded translated-grow plan with deterministic per-key/pass quotas.
  *
  * Unlike BoundedQuantileRanges, this planner may assign disjoint grow keys to
- * the same pass. It first assigns whole grows in descending-population order,
- * then uses one grow's replay ordinal to fill the remaining pass capacity.
- * The retained plan has a fixed 64-record ceiling and is charged separately
- * from the phase-shared Word/Offset histogram used to discover it.
+ * the same pass. It orders grows by descending population, then fills passes
+ * with contiguous ordinal quotas. Any number of grows may span pass
+ * boundaries. The fixed 64x64 uint16 quota table and replay ordinals are
+ * charged separately from the phase-shared Word/Offset histogram.
  */
 class BoundedGrowPassPlan
 {
   public:
     static constexpr uint32_t MaxPasses = 64;
     static constexpr uint32_t MaxRecords = 64;
-    static constexpr uint8_t NoPass = MaxPasses;
-
     enum class Result : uint8_t
     {
         Accepted,
@@ -272,7 +271,10 @@ class BoundedGrowPassPlan
         TooManyRecords,
         RequiresIterationFallback,
         StaleReplayOrdinal,
-        ReplayOrdinalOverflow
+        ReplayOrdinalOverflow,
+        ReplayNotActive,
+        UnknownReplayKey,
+        IncompleteReplay
     };
 
     template <class Visit>
@@ -309,29 +311,11 @@ class BoundedGrowPassPlan
         if (total != logical)
             return Result::PopulationMismatch;
 
-        uint32_t hot_records = 0;
-        uint32_t smallest = 0;
-        uint32_t hot = 0;
-        for (uint32_t record = 0; record < numRecords; ++record) {
-            planningOperations++;
-            if (counts[record] < counts[smallest])
-                smallest = record;
-            if (counts[record] > active) {
-                hot = record;
-                hot_records++;
-            }
-        }
-        if (hot_records > 1)
-            return Result::RequiresIterationFallback;
-        splitRecord = hot_records == 1 ? hot : smallest;
-        splitPopulationValue = counts[splitRecord];
-
-        uint32_t pass = 0;
-        for (uint32_t placed = 0; placed + 1 < numRecords; ++placed) {
+        for (uint32_t rank = 0; rank < numRecords; ++rank) {
             uint32_t selected = MaxRecords;
             for (uint32_t record = 0; record < numRecords; ++record) {
                 planningOperations++;
-                if (record == splitRecord || keyPass[record] != NoPass)
+                if (recordPlaced[record])
                     continue;
                 if (selected == MaxRecords ||
                     counts[record] > counts[selected] ||
@@ -340,28 +324,65 @@ class BoundedGrowPassPlan
                     selected = record;
                 }
             }
-            if (selected == MaxRecords || counts[selected] > active)
+            if (selected == MaxRecords)
                 return Result::RequiresIterationFallback;
-            if (passPopulations[pass] + counts[selected] > active) {
-                pass++;
-                if (pass >= target_passes)
-                    return Result::RequiresIterationFallback;
+            recordPlaced[selected] = 1;
+            recordOrder[rank] = static_cast<uint8_t>(selected);
+        }
+        recordPlaced.fill(0);
+
+        // Preserve every grow that fits as a whole, using deterministic
+        // first-fit decreasing placement.
+        for (uint32_t rank = 0; rank < numRecords; ++rank) {
+            const uint32_t selected = recordOrder[rank];
+            if (counts[selected] > active)
+                continue;
+            for (uint32_t pass = 0; pass < target_passes; ++pass) {
+                planningOperations++;
+                if (active - passPopulations[pass] < counts[selected])
+                    continue;
+                passQuotas[selected][pass] =
+                    static_cast<uint16_t>(counts[selected]);
+                passPopulations[pass] += counts[selected];
+                recordPlaced[selected] = 1;
+                break;
             }
-            keyPass[selected] = pass;
-            passPopulations[pass] += counts[selected];
         }
 
-        uint32_t split_remaining = splitPopulationValue;
-        for (pass = 0; pass < target_passes; ++pass) {
-            planningOperations++;
-            const uint32_t gap = active - passPopulations[pass];
-            splitQuotas[pass] = gap < split_remaining
-                ? gap : split_remaining;
-            split_remaining -= splitQuotas[pass];
-            passPopulations[pass] += splitQuotas[pass];
+        // Split only records that could not fit whole, including any number
+        // of records larger than the active capacity.
+        for (uint32_t rank = 0; rank < numRecords; ++rank) {
+            const uint32_t selected = recordOrder[rank];
+            if (recordPlaced[selected])
+                continue;
+            uint32_t remaining = counts[selected];
+            uint32_t pass = 0;
+            while (remaining != 0) {
+                planningOperations++;
+                if (pass >= target_passes)
+                    return Result::RequiresIterationFallback;
+                const uint32_t gap = active - passPopulations[pass];
+                if (gap == 0) {
+                    pass++;
+                    continue;
+                }
+                const uint32_t quota = std::min(gap, remaining);
+                if (quota > std::numeric_limits<uint16_t>::max())
+                    return Result::RequiresIterationFallback;
+                passQuotas[selected][pass] =
+                    static_cast<uint16_t>(quota);
+                passPopulations[pass] += quota;
+                remaining -= quota;
+            }
+            recordPlaced[selected] = 1;
         }
-        if (split_remaining != 0)
-            return Result::RequiresIterationFallback;
+        for (uint32_t pass = 0; pass < target_passes; ++pass) {
+            planningOperations++;
+            const uint32_t expected = pass + 1 == target_passes
+                ? logical - active * (target_passes - 1) : active;
+            if (passPopulations[pass] != expected)
+                return Result::RequiresIterationFallback;
+        }
 
         logicalEntries = logical;
         activeEntries = active;
@@ -377,14 +398,16 @@ class BoundedGrowPassPlan
         activeEntries = 0;
         numPasses = 0;
         numRecords = 0;
-        splitRecord = MaxRecords;
-        splitPopulationValue = 0;
         planningOperations = 0;
+        replayActive = false;
         keys.fill(0);
         counts.fill(0);
-        keyPass.fill(NoPass);
+        recordPlaced.fill(0);
+        recordOrder.fill(0);
         passPopulations.fill(0);
-        splitQuotas.fill(0);
+        replayOrdinals.fill(0);
+        for (auto &quotas : passQuotas)
+            quotas.fill(0);
     }
 
     bool configured() const { return configuredFlag; }
@@ -395,19 +418,22 @@ class BoundedGrowPassPlan
     {
         return pass < numPasses ? passPopulations[pass] : 0;
     }
-    uint32_t splitQuota(uint32_t pass) const
+    uint32_t quota(uint32_t key, uint32_t pass) const
     {
-        return pass < numPasses ? splitQuotas[pass] : 0;
+        const uint32_t record = findRecord(key);
+        return record < numRecords && pass < numPasses
+            ? passQuotas[record][pass] : 0;
     }
-    uint32_t splitPopulation() const { return splitPopulationValue; }
-    uint32_t splitKey() const
+    uint32_t splitRecords() const
     {
-        return splitRecord < numRecords ? keys[splitRecord] : 0;
-    }
-    bool isSplitKey(uint32_t key) const
-    {
-        return configuredFlag && splitRecord < numRecords &&
-            keys[splitRecord] == key;
+        uint32_t split = 0;
+        for (uint32_t record = 0; record < numRecords; ++record) {
+            uint32_t used = 0;
+            for (uint32_t pass = 0; pass < numPasses; ++pass)
+                used += passQuotas[record][pass] != 0;
+            split += used > 1;
+        }
+        return split;
     }
     uint32_t passFor(uint32_t key, uint32_t split_ordinal) const
     {
@@ -416,11 +442,9 @@ class BoundedGrowPassPlan
         for (uint32_t record = 0; record < numRecords; ++record) {
             if (keys[record] != key)
                 continue;
-            if (record != splitRecord)
-                return keyPass[record];
             uint32_t cursor = 0;
             for (uint32_t pass = 0; pass < numPasses; ++pass) {
-                cursor += splitQuotas[pass];
+                cursor += passQuotas[record][pass];
                 if (split_ordinal < cursor)
                     return pass;
             }
@@ -429,15 +453,50 @@ class BoundedGrowPassPlan
         return MaxPasses;
     }
 
-    Result commitSplitOrdinal(uint32_t observed, uint32_t &committed) const
+    Result beginReplay()
     {
         if (!configuredFlag)
             return Result::InvalidConfiguration;
-        if (observed != committed)
+        replayOrdinals.fill(0);
+        replayActive = true;
+        return Result::Accepted;
+    }
+
+    Result peekReplayOrdinal(uint32_t key, uint32_t &ordinal) const
+    {
+        if (!replayActive)
+            return Result::ReplayNotActive;
+        const uint32_t record = findRecord(key);
+        if (record == MaxRecords)
+            return Result::UnknownReplayKey;
+        ordinal = replayOrdinals[record];
+        return Result::Accepted;
+    }
+
+    Result commitReplayOrdinal(uint32_t key, uint32_t observed)
+    {
+        if (!replayActive)
+            return Result::ReplayNotActive;
+        const uint32_t record = findRecord(key);
+        if (record == MaxRecords)
+            return Result::UnknownReplayKey;
+        if (observed != replayOrdinals[record])
             return Result::StaleReplayOrdinal;
-        if (committed >= splitPopulationValue)
+        if (replayOrdinals[record] >= counts[record])
             return Result::ReplayOrdinalOverflow;
-        committed++;
+        replayOrdinals[record]++;
+        return Result::Accepted;
+    }
+
+    Result finishReplay()
+    {
+        if (!replayActive)
+            return Result::ReplayNotActive;
+        for (uint32_t record = 0; record < numRecords; ++record) {
+            if (replayOrdinals[record] != counts[record])
+                return Result::IncompleteReplay;
+        }
+        replayActive = false;
         return Result::Accepted;
     }
 
@@ -454,10 +513,13 @@ class BoundedGrowPassPlan
     {
         return keys.size() * sizeof(uint32_t) +
             counts.size() * sizeof(uint32_t) +
-            keyPass.size() * sizeof(uint8_t) +
+            recordPlaced.size() * sizeof(uint8_t) +
+            recordOrder.size() * sizeof(uint8_t) +
             passPopulations.size() * sizeof(uint32_t) +
-            splitQuotas.size() * sizeof(uint32_t) +
-            1 + 6 * sizeof(uint32_t) + sizeof(uint64_t);
+            passQuotas.size() * passQuotas.front().size() *
+                sizeof(uint16_t) +
+            replayOrdinals.size() * sizeof(uint32_t) +
+            2 + 4 * sizeof(uint32_t) + sizeof(uint64_t);
     }
 
     static const char *resultName(Result result)
@@ -474,6 +536,9 @@ class BoundedGrowPassPlan
           case Result::StaleReplayOrdinal: return "stale_replay_ordinal";
           case Result::ReplayOrdinalOverflow:
             return "replay_ordinal_overflow";
+          case Result::ReplayNotActive: return "replay_not_active";
+          case Result::UnknownReplayKey: return "unknown_replay_key";
+          case Result::IncompleteReplay: return "incomplete_replay";
         }
         return "unknown";
     }
@@ -484,19 +549,29 @@ class BoundedGrowPassPlan
         return value / divisor + (value % divisor != 0);
     }
 
+    uint32_t findRecord(uint32_t key) const
+    {
+        for (uint32_t record = 0; record < numRecords; ++record) {
+            if (keys[record] == key)
+                return record;
+        }
+        return MaxRecords;
+    }
+
     bool configuredFlag = false;
     uint32_t logicalEntries = 0;
     uint32_t activeEntries = 0;
     uint32_t numPasses = 0;
     uint32_t numRecords = 0;
-    uint32_t splitRecord = MaxRecords;
-    uint32_t splitPopulationValue = 0;
     uint64_t planningOperations = 0;
+    bool replayActive = false;
     std::array<uint32_t, MaxRecords> keys{};
     std::array<uint32_t, MaxRecords> counts{};
-    std::array<uint8_t, MaxRecords> keyPass{};
+    std::array<uint8_t, MaxRecords> recordPlaced{};
+    std::array<uint8_t, MaxRecords> recordOrder{};
     std::array<uint32_t, MaxPasses> passPopulations{};
-    std::array<uint32_t, MaxPasses> splitQuotas{};
+    std::array<std::array<uint16_t, MaxPasses>, MaxRecords> passQuotas{};
+    std::array<uint32_t, MaxRecords> replayOrdinals{};
 };
 
 } // namespace gem5

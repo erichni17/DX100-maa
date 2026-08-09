@@ -136,20 +136,22 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertEqual(self.indirect.count("checker_bytes=%lu"), 3)
         self.assertNotIn("checker_bytes=%zu", self.indirect)
 
-    def test_policy3_uses_translated_grow_plan_and_bounded_split(self) -> None:
+    def test_policy3_uses_translated_grow_plan_and_bounded_quotas(
+        self,
+    ) -> None:
         planner = (ROOT / "src/mem/MAA/BoundedQuantileRanges.hh").read_text()
         for token in (
             "class BoundedGrowPassPlan",
             "MaxRecords = 64",
-            "splitQuotas",
+            "passQuotas",
             "RequiresIterationFallback",
         ):
             self.assertIn(token, planner)
         self.assertIn("key=translated_dram_grow", self.indirect)
         self.assertIn("recordSelectedAdmission", self.indirect)
-        self.assertIn("direct_index_split_seen", self.indirect)
         self.assertIn("IND_BoundedSummaryPlanBytes", self.indirect)
-        self.assertIn("commitSplitOrdinal", planner)
+        self.assertIn("commitReplayOrdinal", planner)
+        self.assertIn("peekReplayOrdinal", planner)
         self.assertIn("StaleReplayOrdinal", planner)
         self.assertIn("modeledReductionVisits", planner)
         self.assertNotIn(
@@ -158,7 +160,7 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         )
         self.assertLess(
             self.indirect.index("discardDirectIndex(\n                my_i"),
-            self.indirect.index("bounded_grow_plan.commitSplitOrdinal"),
+            self.indirect.index("bounded_grow_plan.commitReplayOrdinal"),
         )
 
     def test_evidence_snapshot_covers_bounded_treatment_sources(self) -> None:
@@ -185,6 +187,43 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIn("field row_table_unique_cache_lines", matrix)
         self.assertIn("a_line_requests\\ta_unique_lines", matrix)
         self.assertIn("row_insertions\\ttranslated_unique_rows", matrix)
+
+    def test_physical_grow_arm_fails_closed_on_fallback(self) -> None:
+        for token in (
+            "fallback=none plan_result=accepted",
+            "iteration_fallbacks -eq 0",
+            "physical_records -eq 16384",
+            "translated_grow_histogram.tsv",
+            "bounded_summary_histogram_sha256",
+        ):
+            self.assertIn(token, self.runner)
+        matrix = (
+            ROOT / "experiments/scripts/run_true_4k_reorder_matrix.sh"
+        ).read_text()
+        self.assertIn("MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1", matrix)
+        self.assertIn("MAAPhysicalRecordTrace", matrix)
+
+    def test_true_matrix_isolates_selectors_before_parallel_restore(
+        self,
+    ) -> None:
+        matrix = (
+            ROOT / "experiments/scripts/run_true_4k_reorder_matrix.sh"
+        ).read_text()
+        self.assertIn(
+            'DX100_SHARED_TREATMENT_FILE="$out/${label}.treatment.txt"',
+            matrix,
+        )
+        self.assertIn(
+            'DX100_SHARED_CHECKPOINT_DIR="$out/checkpoints/$label"',
+            matrix,
+        )
+        self.assertIn("DX100_SHARED_CHECKPOINT_LOG=", matrix)
+        self.assertEqual(matrix.count('arm_pids+=("$!")'), 3)
+        self.assertIn('wait_all "${arm_pids[@]}"', matrix)
+        self.assertIn(
+            "shared_checkpoint_log=${DX100_SHARED_CHECKPOINT_LOG:-}",
+            self.runner,
+        )
 
     def test_capacity_drain_gate_covers_finite_direct_index_passes(
         self,
