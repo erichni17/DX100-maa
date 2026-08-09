@@ -234,6 +234,35 @@ if [[ -n $extra_a_args ]]; then
         --output-dir "$out/a_source_routing_4k/read_ahead_validation"
 fi
 
+route_evidence() {
+    local arm=$1
+    local expected_bypass=$2
+    local expected_force_cache=$3
+    local resolved expected_record records matching
+    resolved=$([[ $expected_bypass -eq 1 ]] && echo true || echo false)
+    grep -Fqx \
+        "virtual_descriptor_spool_source_bypass_cache=$resolved" \
+        "$out/$arm/run/config.ini"
+    expected_record="source=A force_cache=$expected_force_cache bypass_cache=$expected_bypass direct_index_force_cache=1"
+    records=$(grep -Ec \
+        'event=descriptor_spool_source_route schema=1 ' \
+        "$out/$arm/run/virtual_trace.log")
+    matching=$(grep -Fc "$expected_record" \
+        "$out/$arm/run/virtual_trace.log")
+    [[ $records -gt 0 && $matching -eq $records ]]
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$arm" "$resolved" "$expected_force_cache" "$records" \
+        "$expected_record"
+}
+{
+    printf 'arm\tresolved_bypass_cache\tsource_force_cache\ttrace_records\ttrace_contract\n'
+    route_evidence resident_control_4k 0 1
+    route_evidence overlap_treatment_4k 0 1
+    if [[ -n $extra_a_args ]]; then
+        route_evidence a_source_routing_4k 1 0
+    fi
+} > "$out/source_route.tsv"
+
 field() {
     local name=$1
     local file=$2
@@ -254,17 +283,31 @@ for hash_field in physical_record_sha256 bounded_summary_histogram_sha256 \
     source_issue_sha256; do
     [[ $(field "$hash_field" "$control") == \
        $(field "$hash_field" "$treatment") ]]
+    if [[ -n $extra_a_args ]]; then
+        [[ $(field "$hash_field" "$control") == \
+           $(field "$hash_field" \
+               "$out/a_source_routing_4k/result.tsv") ]]
+    fi
 done
 for traffic_field in source_reads descriptor_spool_line_writes \
     descriptor_spool_write_bytes descriptor_spool_write_acks \
     descriptor_spool_line_reads descriptor_spool_read_bytes; do
     [[ $(field "$traffic_field" "$control") == \
        $(field "$traffic_field" "$treatment") ]]
+    if [[ -n $extra_a_args ]]; then
+        [[ $(field "$traffic_field" "$control") == \
+           $(field "$traffic_field" \
+               "$out/a_source_routing_4k/result.tsv") ]]
+    fi
 done
 for bounded_field in bounded_word_entries bounded_offset_entries \
     bounded_row_directory_entries bounded_row_line_entries; do
     [[ $(field "$bounded_field" "$control") -le 4096 ]]
     [[ $(field "$bounded_field" "$treatment") -le 4096 ]]
+    if [[ -n $extra_a_args ]]; then
+        [[ $(field "$bounded_field" \
+               "$out/a_source_routing_4k/result.tsv") -le 4096 ]]
+    fi
 done
 
 checkpoint_identity "$out/checkpoints/virtual4" \
@@ -315,6 +358,7 @@ runner_sha=$(sha256sum "$0" | awk '{ print $1 }')
     done
 } > "$out/provenance.tsv"
 sha256sum "$out/matrix.tsv" "$out/provenance.tsv" \
+    "$out/source_route.tsv" \
     > "$out/matrix_artifact_sha256.txt"
 touch "$out/matrix.complete"
 cat "$out/matrix.tsv"

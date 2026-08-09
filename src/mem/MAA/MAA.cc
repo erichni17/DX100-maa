@@ -136,6 +136,8 @@ MAA::MAA(const MAAParams &p)
       virtual_index_descriptor_spool(p.virtual_index_descriptor_spool),
       virtual_descriptor_spool_read_ahead(
           p.virtual_descriptor_spool_read_ahead),
+      virtual_descriptor_spool_source_bypass_cache(
+          p.virtual_descriptor_spool_source_bypass_cache),
       virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
       virtual_index_filter_words_per_cycle(
@@ -234,6 +236,10 @@ MAA::MAA(const MAAParams &p)
     panic_if(virtual_descriptor_spool_read_ahead &&
                  !virtual_index_descriptor_spool,
              "Descriptor-spool read-ahead requires descriptor spooling\n");
+    panic_if(virtual_descriptor_spool_source_bypass_cache &&
+                 !virtual_index_descriptor_spool,
+             "Descriptor-spool A-source cache bypass requires descriptor "
+             "spooling\n");
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),
              "Explicit range boundaries require range policy 2\n");

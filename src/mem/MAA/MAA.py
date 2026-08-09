@@ -123,6 +123,10 @@ class MAA(ClockedObject):
         False,
         "Read ahead the next descriptor pass in the existing four-line window",
     )
+    virtual_descriptor_spool_source_bypass_cache = Param.Bool(
+        False,
+        "Bypass cache only for descriptor-spooled A-source reads",
+    )
     virtual_index_range_policy = Param.Unsigned(
         0,
         "Range bounds: 0=full grow, 1=A endpoints, 2=explicit oracle, "

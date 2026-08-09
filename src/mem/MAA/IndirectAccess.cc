@@ -3375,10 +3375,22 @@ void IndirectAccessUnit::executeInstruction() {
         if (my_force_cache_determined == false) {
             my_force_cache_determined = true;
             if (descriptor_spool_operation) {
-                my_force_cache = direct_index_force_cache;
+                const bool source_bypass_cache =
+                    maa->virtual_descriptor_spool_source_bypass_cache;
+                my_force_cache = source_bypass_cache
+                    ? false
+                    : direct_index_force_cache;
                 DPRINTF(MAAIndirect,
                         "I[%d] bounded operation declared cache route %d\n",
                         my_indirect_id, my_force_cache);
+                DPRINTF(MAAVirtualTrace,
+                        "event=descriptor_spool_source_route schema=1 "
+                        "unit=%d operation_tick=%lu source=A "
+                        "force_cache=%d bypass_cache=%d "
+                        "direct_index_force_cache=%d\n",
+                        my_indirect_id, my_decode_start_tick,
+                        my_force_cache, source_bypass_cache,
+                        direct_index_force_cache);
             } else if (my_unique_WORD_addrs.size() >
                        my_words_per_cl * my_unique_CL_addrs.size()) {
                 DPRINTF(MAAIndirect,

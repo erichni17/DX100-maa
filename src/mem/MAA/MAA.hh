@@ -434,6 +434,7 @@ public:
     bool virtual_index_range_passes;
     bool virtual_index_descriptor_spool;
     bool virtual_descriptor_spool_read_ahead;
+    bool virtual_descriptor_spool_source_bypass_cache;
     unsigned int virtual_index_range_policy;
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;

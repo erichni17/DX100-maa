@@ -406,6 +406,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_descriptor_spool_source_bypass_cache",
+        action="store_true",
+        help=(
+            "Bypass the cache hierarchy only for A-source reads issued by "
+            "descriptor-spooled operations"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_range_policy",
         type=int,
         default=0,
