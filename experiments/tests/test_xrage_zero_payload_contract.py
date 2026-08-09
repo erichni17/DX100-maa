@@ -123,7 +123,7 @@ class XRAGEZeroPayloadContractTest(unittest.TestCase):
             )
         ]
         self.assertIn("XRAGEZeroPayloadContract::validate", decode)
-        self.assertIn("panic_if(validation !=", decode)
+        self.assertRegex(decode, r"panic_if\s*\(\s*validation\s*!=")
         self.assertIn("virtual_index_range_passes", decode)
         self.assertIn("direct_index_partitions", decode)
         self.assertNotIn("bounded_range_pass.begin", decode)
