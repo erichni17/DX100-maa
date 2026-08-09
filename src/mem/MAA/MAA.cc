@@ -2590,6 +2590,54 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedBucketWords"),
             statistics::units::Count::get(),
             "B words inspected once while bucketing descriptor records"));
+        IND_DescriptorSpoolFilterRetryInspections.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolFilterRetryInspections"),
+                statistics::units::Count::get(),
+                "partition-filter inspections retried after a descriptor "
+                "spool write-credit denial"));
+        IND_DescriptorSpoolFinalFlushStalls.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolFinalFlushStalls"),
+                statistics::units::Count::get(),
+                "write-credit stalls while flushing final staged lines "
+                "without re-inspecting a B word"));
+        IND_DescriptorSpoolBScans.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolBScans"),
+            statistics::units::Count::get(),
+            "complete B scans performed by resident-first spooling"));
+        IND_DescriptorSpoolResidentPopulations.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolResidentPopulations"),
+                statistics::units::Count::get(),
+                "populations admitted directly without backing traffic"));
+        IND_DescriptorSpoolResidentDescriptors.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolResidentDescriptors"),
+                statistics::units::Count::get(),
+                "descriptors classified into the direct resident pass"));
+        IND_DescriptorSpoolExternalDescriptors.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolExternalDescriptors"),
+                statistics::units::Count::get(),
+                "descriptors serialized to timing-visible backing"));
+        IND_DescriptorSpoolExternalSegments.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolExternalSegments"),
+                statistics::units::Count::get(),
+                "finite nonresident descriptor-spool segments"));
         IND_BoundedReplayLineReads.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayLineReads"),
             statistics::units::Count::get(),

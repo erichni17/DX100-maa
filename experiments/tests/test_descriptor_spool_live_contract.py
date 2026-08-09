@@ -169,6 +169,11 @@ class DescriptorSpoolLiveContractTest(unittest.TestCase):
             "request_sim_ticks",
             "dram_activates",
             "descriptor_spool_backing_bytes",
+            "descriptor_b_scans -eq 2",
+            "descriptor_resident_descriptors -eq 4096",
+            "descriptor_external_segments -eq 3",
+            "descriptor_write_bytes -eq 73728",
+            "descriptor_spool_unclassified_write_stalls",
         ):
             self.assertIn(token, self.runner)
 
@@ -176,8 +181,8 @@ class DescriptorSpoolLiveContractTest(unittest.TestCase):
         for arm in (
             "native16",
             "native4",
-            "base_replay_4k",
-            "descriptor_spool_4k",
+            "ab_spool_reference_4k",
+            "resident_first_4k",
         ):
             self.assertIn(arm, self.matrix)
         self.assertEqual(self.matrix.count('arm_pids+=("$!")'), 4)
@@ -185,7 +190,12 @@ class DescriptorSpoolLiveContractTest(unittest.TestCase):
         self.assertIn("matrix.complete", self.matrix)
         self.assertIn("physical_records", self.matrix)
         self.assertIn("descriptor_spool_write_bytes", self.matrix)
-        self.assertIn("naive_16byte_total_bytes", self.matrix)
+        self.assertIn("accepted_ab_commit=59ad3fbb", self.matrix)
+        self.assertIn(
+            "candidate_total_bytes -lt $reference_total_bytes", self.matrix
+        )
+        self.assertIn("provenance.tsv", self.matrix)
+        self.assertIn("canonical_ab_gem5_sha=", self.matrix)
         self.assertIn('> "$out/traffic.tsv"', self.matrix)
 
 

@@ -44,6 +44,8 @@ shared_selector=${DX100_SHARED_TREATMENT_FILE:-}
 shared_checkpoint_log=${DX100_SHARED_CHECKPOINT_LOG:-}
 frozen_ramulator_library=${DX100_FROZEN_RAMULATOR_LIBRARY:-}
 ramulator_provenance=${DX100_RAMULATOR_PROVENANCE_FILE:-}
+gem5_source_commit=${DX100_GEM5_SOURCE_COMMIT:-$(git -C "$root" rev-parse HEAD)}
+gem5_provenance=${DX100_GEM5_PROVENANCE_FILE:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
 row_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
@@ -61,6 +63,7 @@ index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
 index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
 index_descriptor_spool=${MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL:-0}
+descriptor_spool_variant=${MAA_DESCRIPTOR_SPOOL_VARIANT:-resident_first}
 index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
@@ -101,6 +104,11 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 [[ $index_descriptor_spool == 0 ||
    ($index_range_passes == 1 && $index_range_policy == 3) ]] || {
     echo "descriptor spool requires adaptive translated-grow range passes" >&2
+    exit 2
+}
+[[ $descriptor_spool_variant == resident_first ||
+   $descriptor_spool_variant == ab_reference ]] || {
+    echo "MAA_DESCRIPTOR_SPOOL_VARIANT must be resident_first or ab_reference" >&2
     exit 2
 }
 index_range_boundary_values=()
@@ -486,6 +494,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_index_range_policy=%s\n' "$index_range_policy"
     printf 'virtual_index_descriptor_spool=%s\n' \
         "$index_descriptor_spool"
+    printf 'descriptor_spool_variant=%s\n' "$descriptor_spool_variant"
     printf 'virtual_index_range_boundaries=%s\n' \
         "${index_range_boundaries:-none}"
     printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
@@ -497,6 +506,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'cache_pollution_bytes=%s\n' \
         "$((polluted * 32 * 1024 * 1024))"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'gem5_source_commit=%s\n' "$gem5_source_commit"
+    printf 'gem5_provenance=%s\n' "${gem5_provenance:-none}"
     printf 'baseline_commit=6e84c2c4a4c9b008f0efb78314c7ac1b7f828b55\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -555,6 +566,8 @@ cp -- "$root/experiments/tests/test_bounded_range_live_contract.py" \
     "$snapshot/test_bounded_range_live_contract.py"
 cp -- "$root/experiments/tests/test_descriptor_spool_live_contract.py" \
     "$snapshot/test_descriptor_spool_live_contract.py"
+cp -- "$root/experiments/tests/test_descriptor_filter_accounting.py" \
+    "$snapshot/test_descriptor_filter_accounting.py"
 cp -- "$root/experiments/scripts/run_bounded_range_pass_unit.sh" \
     "$snapshot/run_bounded_range_pass_unit.sh"
 cp -- "$root/experiments/scripts/run_bounded_descriptor_spool_unit.sh" \
@@ -573,6 +586,9 @@ cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     printf 'DX100_SHARED_CHECKPOINT_LOG=%q ' "${shared_checkpoint_log:-}"
     printf 'DX100_FROZEN_RAMULATOR_LIBRARY=%q ' "$ramulator_library"
     printf 'DX100_RAMULATOR_PROVENANCE_FILE=%q ' "$ramulator_provenance"
+    printf 'DX100_GEM5_SOURCE_COMMIT=%q ' "$gem5_source_commit"
+    printf 'DX100_GEM5_PROVENANCE_FILE=%q ' "$gem5_provenance"
+    printf 'MAA_DESCRIPTOR_SPOOL_VARIANT=%q ' "$descriptor_spool_variant"
     printf '%q %q %q %q %q\n' "${DX100_FROZEN_RUNNER_PATH:-$0}" \
         "$gem5" "$binary" "$case_name" "$out"
 } > "$out/invocation.sh.txt"
@@ -602,12 +618,21 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/bounded_metadata_ledger_test.cc" \
     "$snapshot/test_bounded_range_live_contract.py" \
     "$snapshot/test_descriptor_spool_live_contract.py" \
+    "$snapshot/test_descriptor_filter_accounting.py" \
     "$snapshot/run_bounded_range_pass_unit.sh" \
     "$snapshot/run_bounded_descriptor_spool_unit.sh" \
     "$snapshot/run_true_4k_reorder_matrix.sh" \
     "$snapshot/run_true_4k_descriptor_spool_matrix.sh" \
     "$out/source.diff" "$out/source_status.txt" "$out/invocation.sh.txt" \
     > "$out/artifact_sha256.txt"
+if [[ -n $gem5_provenance ]]; then
+    gem5_provenance=$(realpath "$gem5_provenance")
+    [[ -f $gem5_provenance ]] || {
+        echo "missing gem5 provenance: $gem5_provenance" >&2
+        exit 1
+    }
+    sha256sum "$gem5_provenance" >> "$out/artifact_sha256.txt"
+fi
 
 checkpoint_dir="$out/checkpoint"
 workload_options="$mode $page"
@@ -899,6 +924,10 @@ read -r bounded_summary_lines bounded_summary_words bounded_summary_records \
     ' "$out/run/stats.txt"
 )
 read -r bounded_bucket_lines bounded_bucket_words \
+    descriptor_filter_retry_inspections descriptor_final_flush_stalls \
+    descriptor_b_scans descriptor_resident_populations \
+    descriptor_resident_descriptors descriptor_external_descriptors \
+    descriptor_external_segments \
     descriptor_write_lines descriptor_write_bytes descriptor_write_acks \
     descriptor_read_lines descriptor_read_bytes descriptor_write_stalls \
     descriptor_read_stalls descriptor_write_hwm descriptor_staging_entries \
@@ -907,6 +936,13 @@ read -r bounded_bucket_lines bounded_bucket_words \
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 ~ /IND_BoundedBucketLineReads$/ { bl += $2 }
         section == 1 && $1 ~ /IND_BoundedBucketWords$/ { bw += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolFilterRetryInspections$/ { fri += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolFinalFlushStalls$/ { ffs += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolBScans$/ { bs += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolResidentPopulations$/ { rp += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolResidentDescriptors$/ { rd += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolExternalDescriptors$/ { ed += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolExternalSegments$/ { es += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolLineWrites$/ { wl += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolWriteBytes$/ { wb += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolWriteAcks$/ { wa += $2 }
@@ -919,13 +955,76 @@ read -r bounded_bucket_lines bounded_bucket_words \
         section == 1 && $1 ~ /IND_DescriptorSpoolControlBytes$/ { cb += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolBackingBytes$/ { bb += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
-            print bl + 0, bw + 0, wl + 0, wb + 0, wa + 0,
+            print bl + 0, bw + 0, fri + 0, ffs + 0, bs + 0,
+                  rp + 0, rd + 0, ed + 0, es + 0,
+                  wl + 0, wb + 0, wa + 0,
                   rl + 0, rb + 0, ws + 0, rs + 0, wh + 0,
                   se + 0, cb + 0, bb + 0
             exit
         }
     ' "$out/run/stats.txt"
 )
+descriptor_filter_predicate_retries=0
+descriptor_filter_grow_retries=0
+descriptor_final_flush_trace_stalls=0
+descriptor_unclassified_write_stalls=0
+if [[ $index_descriptor_spool -eq 1 ]]; then
+    trace="$out/run/virtual_trace.log"
+    descriptor_filter_predicate_retries=$(grep -Ec \
+        'event=descriptor_spool_filter_retry schema=1 .*source=predicate_bucket .*reason=write_credit$' \
+        "$trace" || true)
+    descriptor_filter_grow_retries=$(grep -Ec \
+        'event=descriptor_spool_filter_retry schema=1 .*source=grow_bucket .*reason=write_credit$' \
+        "$trace" || true)
+    descriptor_final_flush_trace_stalls=$(grep -Ec \
+        'event=descriptor_spool_final_flush_stall schema=1 .*reason=write_credit b_reinspection=0$' \
+        "$trace" || true)
+    [[ $descriptor_filter_retry_inspections -eq \
+       $((descriptor_filter_predicate_retries + \
+          descriptor_filter_grow_retries)) && \
+       $descriptor_filter_retry_inspections -le $descriptor_write_stalls ]] || {
+        echo "unattributed descriptor filter retries: stats=$descriptor_filter_retry_inspections predicate=$descriptor_filter_predicate_retries grow=$descriptor_filter_grow_retries final_flush=$descriptor_final_flush_stalls/$descriptor_final_flush_trace_stalls write_credit_stalls=$descriptor_write_stalls" >&2
+        exit 1
+    }
+    if [[ $descriptor_spool_variant == resident_first ]]; then
+        [[ $descriptor_final_flush_stalls -eq \
+           $descriptor_final_flush_trace_stalls && \
+           $descriptor_write_stalls -eq \
+           $((descriptor_filter_retry_inspections + \
+              descriptor_final_flush_stalls)) ]] || {
+            echo "resident-first final-flush accounting is not closed" >&2
+            exit 1
+        }
+    else
+        # The accepted 59ad3fbb reference predates the dedicated final-flush
+        # stat. Preserve its retry semantics and expose the residual stalls
+        # explicitly instead of misclassifying them as B re-inspections.
+        [[ $descriptor_final_flush_stalls -eq 0 && \
+           $descriptor_final_flush_trace_stalls -eq 0 && \
+           $descriptor_b_scans -eq 0 && \
+           $descriptor_resident_populations -eq 0 && \
+           $descriptor_resident_descriptors -eq 0 && \
+           $descriptor_external_descriptors -eq 0 && \
+           $descriptor_external_segments -eq 0 ]] || {
+            echo "ab reference unexpectedly reported resident-first counters" >&2
+            exit 1
+        }
+        descriptor_unclassified_write_stalls=$((
+            descriptor_write_stalls - descriptor_filter_retry_inspections
+        ))
+    fi
+else
+    [[ $descriptor_filter_retry_inspections -eq 0 && \
+       $descriptor_final_flush_stalls -eq 0 && \
+       $descriptor_b_scans -eq 0 && \
+       $descriptor_resident_populations -eq 0 && \
+       $descriptor_resident_descriptors -eq 0 && \
+       $descriptor_external_descriptors -eq 0 && \
+       $descriptor_external_segments -eq 0 ]] || {
+        echo "non-descriptor arm reported resident-first spool counters" >&2
+        exit 1
+    }
+fi
 read -r dram_reads dram_writes dram_acts dram_pres < <(
     awk '
         $1 == "CH0_num_RD_commands_T:" { rd = $2 }
@@ -1085,20 +1184,38 @@ elif [[ $virtual -eq 1 ]]; then
                    $bounded_replay_words -eq 0 &&
                    $bounded_replay_lines -eq 0 &&
                    $((bounded_summary_lines + bounded_bucket_lines)) -eq $index_line_reads &&
-                   $descriptor_write_lines -eq 2048 &&
                    $descriptor_write_acks -eq $descriptor_write_lines &&
                    $descriptor_read_lines -eq $descriptor_write_lines &&
-                   $descriptor_write_bytes -eq 131072 &&
                    $descriptor_read_bytes -eq $descriptor_write_bytes &&
-                   $descriptor_backing_bytes -eq 131328 &&
-                   $descriptor_staging_entries -eq 32 &&
                    $descriptor_write_hwm -gt 0 &&
                    $descriptor_write_hwm -le 16 &&
                    $descriptor_control_bytes -gt 0 &&
                    $descriptor_control_bytes -le 4096 ]] || {
-                    echo "invalid finite descriptor-spool counters" >&2
+                    echo "invalid common finite descriptor-spool counters" >&2
                     exit 1
                 }
+                if [[ $descriptor_spool_variant == resident_first ]]; then
+                    [[ $descriptor_b_scans -eq 2 &&
+                       $descriptor_resident_populations -eq 1 &&
+                       $descriptor_resident_descriptors -eq 4096 &&
+                       $descriptor_external_descriptors -eq 12288 &&
+                       $descriptor_external_segments -eq 3 &&
+                       $descriptor_write_lines -eq 1152 &&
+                       $descriptor_write_bytes -eq 73728 &&
+                       $descriptor_backing_bytes -eq 73728 &&
+                       $descriptor_staging_entries -eq 35 ]] || {
+                        echo "invalid resident-first descriptor-spool counters" >&2
+                        exit 1
+                    }
+                else
+                    [[ $descriptor_write_lines -eq 2048 &&
+                       $descriptor_write_bytes -eq 131072 &&
+                       $descriptor_backing_bytes -eq 131328 &&
+                       $descriptor_staging_entries -eq 32 ]] || {
+                        echo "invalid ab-reference descriptor-spool counters" >&2
+                        exit 1
+                    }
+                fi
             else
                 [[ $bounded_bucket_words -eq 0 &&
                    $bounded_replay_words -eq $((16384 * actual_index_partitions)) &&
@@ -1135,7 +1252,16 @@ elif [[ $virtual -eq 1 ]]; then
             exit 1
         }
         if [[ $index_partitions -gt 1 ]]; then
-            expected_filter_words=$((expected_index_words + rt_full + offset_epoch_drains))
+            expected_filter_words=$expected_index_words
+            if [[ $index_descriptor_spool -eq 1 ]]; then
+                # A full-line write-credit denial deliberately re-examines
+                # the same B word. Final staged-line flush stalls do not.
+                expected_filter_words=$((expected_filter_words + \
+                    descriptor_filter_retry_inspections))
+            else
+                expected_filter_words=$((expected_filter_words + rt_full + \
+                    offset_epoch_drains))
+            fi
             [[ $index_filter_words -eq $expected_filter_words ]] || {
                 echo "invalid partition-filter inspections: $index_filter_words/$expected_filter_words" >&2
                 exit 1
@@ -1218,9 +1344,13 @@ if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
     if [[ $index_range_policy -eq 3 ]]; then
         expected_summary_discards=16384
         if [[ $index_descriptor_spool -eq 1 ]]; then
-            # The timed B bucketing scan and descriptor replay each consume a
-            # finite feeder object.  Only replay admissions reach RowTable.
+            # The timed bucket scan consumes all B words. Resident-first
+            # admits 4096 directly and replays only 12288 external records;
+            # the accepted ab reference replays all 16384 records.
             expected_descriptor_discards=32768
+            if [[ $descriptor_spool_variant == resident_first ]]; then
+                expected_descriptor_discards=28672
+            fi
         fi
     fi
     if [[ $index_descriptor_spool -eq 1 ]]; then
@@ -1315,7 +1445,11 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     feeder_partition_discards feeder_summary_discards
     physical_records physical_record_sha256 bounded_summary_histogram_sha256
     index_filter_words index_filter_cycles index_filter_wait_events
-    index_filter_wait_cycles write_issues
+    index_filter_wait_cycles descriptor_spool_filter_retry_inspections
+    descriptor_spool_filter_predicate_retries
+    descriptor_spool_filter_grow_retries
+    descriptor_spool_final_flush_stalls
+    descriptor_spool_unclassified_write_stalls write_issues
     write_completions indirect_spd_reads pages_ready
     pages_ready_before_source_drain first_page_ready_cycles
     all_pages_ready_cycles page_ready_span_cycles stream_spd_reads
@@ -1326,6 +1460,7 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     row_table_rows_per_slice row_table_entries_per_subslice_row
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
     virtual_index_range_policy virtual_index_descriptor_spool
+    descriptor_spool_variant
     virtual_index_range_boundaries
     virtual_index_force_cache virtual_partition_keep_combiner
     offset_table_entries offset_table_epoch_entries
@@ -1345,6 +1480,9 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     bounded_word_entries bounded_offset_entries bounded_row_directory_entries
     bounded_row_line_entries bounded_reorder_metadata_bytes
     bounded_bucket_line_reads bounded_bucket_words
+    descriptor_spool_b_scans descriptor_spool_resident_populations
+    descriptor_spool_resident_descriptors
+    descriptor_spool_external_descriptors descriptor_spool_external_segments
     descriptor_spool_line_writes descriptor_spool_write_bytes
     descriptor_spool_write_acks descriptor_spool_line_reads
     descriptor_spool_read_bytes descriptor_spool_write_credit_stalls
@@ -1360,6 +1498,11 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$bounded_summary_histogram_sha256"
     "$index_filter_words" "$index_filter_cycles"
     "$index_filter_wait_events" "$index_filter_wait_cycles"
+    "$descriptor_filter_retry_inspections"
+    "$descriptor_filter_predicate_retries"
+    "$descriptor_filter_grow_retries"
+    "$descriptor_final_flush_stalls"
+    "$descriptor_unclassified_write_stalls"
     "$write_issues" "$write_completions"
     "$indirect_spd_reads" "$pages_ready" "$pages_ready_early"
     "$first_page_cycles" "$all_page_cycles" "$page_span_cycles"
@@ -1370,6 +1513,7 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$cpu_cycles" "$row_slices" "$row_rows"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
     "$index_range_policy" "$index_descriptor_spool"
+    "$descriptor_spool_variant"
     "${index_range_boundaries:-none}"
     "$index_force_cache" "$partition_keep_combiner" \
     "$resolved_offset_entries" "$resolved_offset_epoch_entries"
@@ -1389,6 +1533,9 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$bounded_offset_entries" "$bounded_row_directories"
     "$bounded_row_lines" "$bounded_metadata_bytes"
     "$bounded_bucket_lines" "$bounded_bucket_words"
+    "$descriptor_b_scans" "$descriptor_resident_populations"
+    "$descriptor_resident_descriptors" "$descriptor_external_descriptors"
+    "$descriptor_external_segments"
     "$descriptor_write_lines" "$descriptor_write_bytes"
     "$descriptor_write_acks" "$descriptor_read_lines"
     "$descriptor_read_bytes" "$descriptor_write_stalls"
@@ -1409,6 +1556,9 @@ if [[ $index_range_passes -eq 1 ]]; then
             expected_index_words=$((bounded_summary_words + bounded_bucket_words))
             expected_partition_discards=0
             expected_descriptor_discards=32768
+            if [[ $descriptor_spool_variant == resident_first ]]; then
+                expected_descriptor_discards=28672
+            fi
             range_backing=llc_descriptor_spool
         else
             expected_index_words=$((bounded_summary_words + bounded_replay_words))
@@ -1433,8 +1583,12 @@ if [[ $index_range_passes -eq 1 ]]; then
     uncached_descriptor_responses=$(grep -Ec \
         'event=descriptor_spool_read_response schema=1 .* cached=0$' \
         "$out/run/virtual_trace.log" || true)
+    descriptor_complete_pattern='event=descriptor_spool_complete schema=1 .* descriptors=16384 write_lines=2048 write_acks=2048 read_lines=2048 read_responses=2048 .* staging_entries=32 .* fallback=none$'
+    if [[ $descriptor_spool_variant == resident_first ]]; then
+        descriptor_complete_pattern='event=descriptor_spool_complete schema=1 .* b_scans=2 descriptors=16384 resident_pass=0 resident_descriptors=4096 external_descriptors=12288 external_segments=3 descriptor_bytes=6 payload_bytes=73728 write_lines=1152 write_acks=1152 read_lines=1152 read_responses=1152 .* fallback=none$'
+    fi
     descriptor_complete_count=$(grep -Ec \
-        'event=descriptor_spool_complete schema=1 .* descriptors=16384 .* write_lines=2048 write_acks=2048 read_lines=2048 read_responses=2048 .* staging_entries=32 .* fallback=none$' \
+        "$descriptor_complete_pattern" \
         "$out/run/virtual_trace.log" || true)
     expected_descriptor_complete_count=$index_descriptor_spool
     [[ $resolved_offset_entries -gt 0 &&

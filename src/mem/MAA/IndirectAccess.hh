@@ -343,6 +343,8 @@ protected:
     DirectIndexWord descriptor_spool_current_word{};
     uint64_t descriptor_spool_bucket_attempts = 0;
     uint64_t descriptor_spool_bucket_commits = 0;
+    uint64_t descriptor_spool_filter_retry_inspections = 0;
+    uint64_t descriptor_spool_final_flush_stalls = 0;
     bool direct_index_summary_active = false;
     bool direct_index_summary_overflow = false;
     bool direct_index_iteration_fallback = false;

@@ -1450,8 +1450,17 @@ bool IndirectAccessUnit::finishDescriptorSpoolBucketing()
         descriptor_spool_bucket_scan_complete = true;
     }
     for (uint32_t pass = 0; pass < descriptor_spool.passes(); ++pass) {
-        if (!flushDescriptorSpoolLine(pass, true))
+        if (!flushDescriptorSpoolLine(pass, true)) {
+            descriptor_spool_final_flush_stalls++;
+            (*maa->stats
+                  .IND_DescriptorSpoolFinalFlushStalls[my_indirect_id])++;
+            DPRINTF(MAAVirtualTrace,
+                    "event=descriptor_spool_final_flush_stall schema=1 "
+                    "unit=%d operation_tick=%lu pass=%u "
+                    "reason=write_credit b_reinspection=0\n",
+                    my_indirect_id, my_decode_start_tick, pass);
             return false;
+        }
     }
     if (descriptor_spool.outstandingWriteCount() != 0)
         return false;
@@ -2024,8 +2033,10 @@ void IndirectAccessUnit::fillRowTable(
             : 0;
         if (isDirectIndexLoad() && !condition_taken)
             direct_index_predicate_rejected = true;
-        if (isVirtualLoad() && isDirectIndexLoad() &&
-            direct_index_partitions > 1 && !descriptor_spool_replay_active)
+        const bool direct_index_filtering =
+            isVirtualLoad() && isDirectIndexLoad() &&
+            direct_index_partitions > 1 && !descriptor_spool_replay_active;
+        if (direct_index_filtering)
             num_direct_index_filter_words++;
         if (descriptor_spool_bucket_active)
             descriptor_spool_bucket_attempts++;
@@ -2070,37 +2081,50 @@ void IndirectAccessUnit::fillRowTable(
                 grow_ordinal = predicate_ordinal;
                 commit_grow_ordinal = true;
             } else {
-            if (descriptor_spool.lineReady(bucket_pass, false) &&
-                !flushDescriptorSpoolLine(bucket_pass, false)) {
-                waitForElement = true;
-                break;
-            }
-            const auto stage_result = descriptor_spool.stage(
-                bucket_pass,
-                BoundedDescriptorSpool::Descriptor{
-                    static_cast<uint16_t>(logical_itr),
-                    direct_index_value});
-            panic_if(stage_result !=
-                         BoundedDescriptorSpool::Result::Accepted,
-                     "I[%d] predicate descriptor stage itr=%d pass=%u "
-                     "failed: %s\n",
-                     my_indirect_id, logical_itr, bucket_pass,
-                     BoundedDescriptorSpool::resultName(stage_result));
-            const auto commit_result =
-                bounded_grow_plan.commitReplayOrdinal(
-                    predicate_key, predicate_ordinal);
-            panic_if(commit_result !=
-                         BoundedGrowPassPlan::Result::Accepted,
-                     "I[%d] predicate ordinal %u commit failed: %s\n",
-                     my_indirect_id, predicate_ordinal,
-                     BoundedGrowPassPlan::resultName(commit_result));
-            (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
-            descriptor_spool_bucket_commits++;
-            discardDirectIndex(
-                my_i, direct_index_value,
-                DirectIndexDiscardReason::DescriptorInserted);
-            my_i++;
-            continue;
+                if (descriptor_spool.lineReady(bucket_pass, false) &&
+                    !flushDescriptorSpoolLine(bucket_pass, false)) {
+                    if (direct_index_filtering) {
+                        descriptor_spool_filter_retry_inspections++;
+                        (*maa->stats
+                              .IND_DescriptorSpoolFilterRetryInspections[
+                                  my_indirect_id])++;
+                        DPRINTF(MAAVirtualTrace,
+                                "event=descriptor_spool_filter_retry "
+                                "schema=1 unit=%d operation_tick=%lu "
+                                "source=predicate_bucket pass=%u itr=%d "
+                                "reason=write_credit\n",
+                                my_indirect_id, my_decode_start_tick,
+                                bucket_pass, logical_itr);
+                    }
+                    waitForElement = true;
+                    break;
+                }
+                const auto stage_result = descriptor_spool.stage(
+                    bucket_pass,
+                    BoundedDescriptorSpool::Descriptor{
+                        static_cast<uint16_t>(logical_itr),
+                        direct_index_value});
+                panic_if(stage_result !=
+                             BoundedDescriptorSpool::Result::Accepted,
+                         "I[%d] predicate descriptor stage itr=%d pass=%u "
+                         "failed: %s\n",
+                         my_indirect_id, logical_itr, bucket_pass,
+                         BoundedDescriptorSpool::resultName(stage_result));
+                const auto commit_result =
+                    bounded_grow_plan.commitReplayOrdinal(
+                        predicate_key, predicate_ordinal);
+                panic_if(commit_result !=
+                             BoundedGrowPassPlan::Result::Accepted,
+                         "I[%d] predicate ordinal %u commit failed: %s\n",
+                         my_indirect_id, predicate_ordinal,
+                         BoundedGrowPassPlan::resultName(commit_result));
+                (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
+                descriptor_spool_bucket_commits++;
+                discardDirectIndex(
+                    my_i, direct_index_value,
+                    DirectIndexDiscardReason::DescriptorInserted);
+                my_i++;
+                continue;
             }
         }
         if (!condition_taken && descriptor_spool_replay_active)
@@ -2166,36 +2190,49 @@ void IndirectAccessUnit::fillRowTable(
                     resident_bucket = true;
                     commit_grow_ordinal = true;
                 } else {
-                if (descriptor_spool.lineReady(bucket_pass, false) &&
-                    !flushDescriptorSpoolLine(bucket_pass, false)) {
-                    waitForElement = true;
-                    break;
-                }
-                const auto stage_result = descriptor_spool.stage(
-                    bucket_pass,
-                    BoundedDescriptorSpool::Descriptor{
-                        static_cast<uint16_t>(logical_itr),
-                        idx});
-                panic_if(stage_result !=
-                             BoundedDescriptorSpool::Result::Accepted,
-                         "I[%d] descriptor stage itr=%d pass=%u failed: %s\n",
-                         my_indirect_id, logical_itr, bucket_pass,
-                         BoundedDescriptorSpool::resultName(stage_result));
-                const auto commit_result =
-                    bounded_grow_plan.commitReplayOrdinal(
-                        grow_ordinal_key, grow_ordinal);
-                panic_if(commit_result !=
-                             BoundedGrowPassPlan::Result::Accepted,
-                         "I[%d] bucket ordinal %u commit failed: %s\n",
-                         my_indirect_id, grow_ordinal,
-                         BoundedGrowPassPlan::resultName(commit_result));
-                (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
-                descriptor_spool_bucket_commits++;
-                discardDirectIndex(
-                    my_i, direct_index_value,
-                    DirectIndexDiscardReason::DescriptorInserted);
-                my_i++;
-                continue;
+                    if (descriptor_spool.lineReady(bucket_pass, false) &&
+                        !flushDescriptorSpoolLine(bucket_pass, false)) {
+                        if (direct_index_filtering) {
+                            descriptor_spool_filter_retry_inspections++;
+                            (*maa->stats
+                                  .IND_DescriptorSpoolFilterRetryInspections[
+                                      my_indirect_id])++;
+                            DPRINTF(MAAVirtualTrace,
+                                    "event=descriptor_spool_filter_retry "
+                                    "schema=1 unit=%d operation_tick=%lu "
+                                    "source=grow_bucket pass=%u itr=%d "
+                                    "reason=write_credit\n",
+                                    my_indirect_id, my_decode_start_tick,
+                                    bucket_pass, logical_itr);
+                        }
+                        waitForElement = true;
+                        break;
+                    }
+                    const auto stage_result = descriptor_spool.stage(
+                        bucket_pass,
+                        BoundedDescriptorSpool::Descriptor{
+                            static_cast<uint16_t>(logical_itr),
+                            idx});
+                    panic_if(stage_result !=
+                                 BoundedDescriptorSpool::Result::Accepted,
+                             "I[%d] descriptor stage itr=%d pass=%u failed: "
+                             "%s\n", my_indirect_id, logical_itr, bucket_pass,
+                             BoundedDescriptorSpool::resultName(stage_result));
+                    const auto commit_result =
+                        bounded_grow_plan.commitReplayOrdinal(
+                            grow_ordinal_key, grow_ordinal);
+                    panic_if(commit_result !=
+                                 BoundedGrowPassPlan::Result::Accepted,
+                             "I[%d] bucket ordinal %u commit failed: %s\n",
+                             my_indirect_id, grow_ordinal,
+                             BoundedGrowPassPlan::resultName(commit_result));
+                    (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
+                    descriptor_spool_bucket_commits++;
+                    discardDirectIndex(
+                        my_i, direct_index_value,
+                        DirectIndexDiscardReason::DescriptorInserted);
+                    my_i++;
+                    continue;
                 }
             }
             const uint64_t bounded_range_key =
@@ -2784,6 +2821,8 @@ void IndirectAccessUnit::executeInstruction() {
         descriptor_spool_current_word = {};
         descriptor_spool_bucket_attempts = 0;
         descriptor_spool_bucket_commits = 0;
+        descriptor_spool_filter_retry_inspections = 0;
+        descriptor_spool_final_flush_stalls = 0;
         direct_index_ready_lines.clear();
         direct_index_words.clear();
         direct_index_max_lines = 0;
@@ -3687,6 +3726,9 @@ void IndirectAccessUnit::executeInstruction() {
                              static_cast<uint32_t>(my_max) ||
                          descriptor_spool_bucket_attempts <
                              descriptor_spool_bucket_commits ||
+                         descriptor_spool_bucket_attempts !=
+                             descriptor_spool_bucket_commits +
+                                 descriptor_spool_filter_retry_inspections ||
                          direct_index_max_lines >
                              static_cast<int>(
                                  BoundedDescriptorSpool::
@@ -3708,6 +3750,18 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats
                   .IND_DescriptorSpoolBackingBytes[my_indirect_id]) +=
                 descriptor_spool.reservedBackingBytes();
+            (*maa->stats.IND_DescriptorSpoolBScans[my_indirect_id]) += 2;
+            (*maa->stats
+                  .IND_DescriptorSpoolResidentPopulations[my_indirect_id])++;
+            (*maa->stats
+                  .IND_DescriptorSpoolResidentDescriptors[my_indirect_id]) +=
+                descriptor_spool.residentDescriptors();
+            (*maa->stats
+                  .IND_DescriptorSpoolExternalDescriptors[my_indirect_id]) +=
+                descriptor_spool.externalDescriptors();
+            (*maa->stats
+                  .IND_DescriptorSpoolExternalSegments[my_indirect_id]) +=
+                descriptor_spool.externalSegments();
             DPRINTF(MAAVirtualTrace,
                     "event=descriptor_spool_complete schema=1 unit=%d "
                     "operation_tick=%lu b_scans=2 descriptors=%u "
@@ -3718,7 +3772,8 @@ void IndirectAccessUnit::executeInstruction() {
                     "read_responses=%u control_bytes=%lu "
                     "backing_bytes=%lu staging_bytes=%u write_hwm=%u "
                     "read_hwm=%u unique_inspections=%lu "
-                    "retry_inspections=%lu active_limit=%u "
+                    "retry_inspections=%lu final_flush_stalls=%lu "
+                    "active_limit=%u "
                     "identity_check=trace_side fallback=none\n",
                     my_indirect_id, my_decode_start_tick,
                     descriptor_spool.classifiedDescriptors(),
@@ -3738,8 +3793,8 @@ void IndirectAccessUnit::executeInstruction() {
                     descriptor_spool.outstandingWriteHighWater(),
                     descriptor_spool.outstandingReadHighWater(),
                     descriptor_spool_bucket_commits,
-                    descriptor_spool_bucket_attempts -
-                        descriptor_spool_bucket_commits,
+                    descriptor_spool_filter_retry_inspections,
+                    descriptor_spool_final_flush_stalls,
                     BoundedDescriptorSpool::MaxActiveDescriptors);
             descriptor_spool.reset();
             descriptor_spool_bucket_active = false;
