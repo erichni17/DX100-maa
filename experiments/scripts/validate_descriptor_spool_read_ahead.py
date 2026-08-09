@@ -142,6 +142,7 @@ def validate_common_evidence(
     result: dict[str, str],
     events: list[Event],
     enabled: bool,
+    expected_case: str,
 ) -> Event:
     expected_knob = 1 if enabled else 0
     require_exact_ints(
@@ -154,8 +155,8 @@ def validate_common_evidence(
         },
         "manifest",
     )
-    if result.get("case") != "paged_4k":
-        fail(f"result.case is not paged_4k: {result.get('case')!r}")
+    if result.get("case") != expected_case:
+        fail(f"result.case is not {expected_case}: {result.get('case')!r}")
     require_exact_ints(
         result,
         {
@@ -523,13 +524,19 @@ def validate_treatment(events: list[Event], complete: Event) -> dict[str, int]:
 
 
 def validate(
-    mode: str, manifest_path: Path, result_path: Path, trace_path: Path
+    mode: str,
+    manifest_path: Path,
+    result_path: Path,
+    trace_path: Path,
+    expected_case: str = "paged_4k",
 ) -> dict[str, object]:
     manifest = read_manifest(manifest_path)
     result = read_result(result_path)
     events = parse_events(trace_path)
     enabled = mode == "treatment"
-    complete = validate_common_evidence(manifest, result, events, enabled)
+    complete = validate_common_evidence(
+        manifest, result, events, enabled, expected_case
+    )
     metrics = (
         validate_treatment(events, complete)
         if enabled
@@ -608,6 +615,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--expected-case", default="paged_4k")
     return parser
 
 
@@ -624,7 +632,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"descriptor overlap audit failed: refusing to overwrite {output}"
         )
     try:
-        report = validate(args.mode, args.manifest, args.result, args.trace)
+        report = validate(
+            args.mode,
+            args.manifest,
+            args.result,
+            args.trace,
+            args.expected_case,
+        )
     except AuditError as error:
         raise SystemExit(
             f"descriptor overlap audit failed: {error}"

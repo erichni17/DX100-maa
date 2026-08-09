@@ -164,7 +164,9 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
             f"operation_tick=99 pass={pass_number}"
         )
 
-    def run_validation(self, enabled: bool, mutate=None):
+    def run_validation(
+        self, enabled: bool, mutate=None, expected_case: str = "paged_4k"
+    ):
         evidence, trace = self.evidence(enabled)
         result = evidence.pop("__result__")
         if mutate:
@@ -189,6 +191,7 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
                 manifest_path,
                 result_path,
                 trace_path,
+                expected_case,
             )
 
     def test_accepts_control_and_treatment_closure(self) -> None:
@@ -196,6 +199,15 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
         treatment = self.run_validation(True)
         self.assertEqual(treatment["metrics"]["read_ahead_issues"], 12)
         self.assertEqual(treatment["metrics"]["ready_before_demand"], 9)
+
+    def test_accepts_explicit_transparent_case(self) -> None:
+        def transparent(_manifest, result, _trace):
+            result["case"] = "transparent_4k"
+
+        report = self.run_validation(
+            True, transparent, expected_case="transparent_4k"
+        )
+        self.assertEqual(report["status"], "passed")
 
     def test_rejects_wrong_pass_and_early_promotion(self) -> None:
         def wrong_pass(_manifest, _result, trace):

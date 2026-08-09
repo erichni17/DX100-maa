@@ -151,15 +151,22 @@ run_arm transparent4 transparent_4k 1 \
     MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1 "${virtual_geometry[@]}"
 
 for arm in paged4 transparent4; do
+    expected_case=paged_4k
+    if [[ $arm == transparent4 ]]; then
+        expected_case=transparent_4k
+    fi
     python3 "$validator" --mode treatment \
         --manifest "$out/$arm/manifest.txt" \
         --result "$out/$arm/result.tsv" \
         --trace "$out/$arm/run/virtual_trace.log" \
+        --expected-case "$expected_case" \
         --output-dir "$out/$arm/read_ahead_validation"
 done
 
 python3 - "$out" <<'PY'
 import csv
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -177,8 +184,29 @@ rows = {arm: read_result(arm) for arm in arms}
 if len({row["output_hash"] for row in rows.values()}) != 1:
     raise SystemExit("exact output hashes differ")
 
+def semantic_physical_digest(arm):
+    records = []
+    path = out / arm / "physical_admission_records.jsonl"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        for field in ("trace_line", "sim_tick", "operation_tick"):
+            record.pop(field, None)
+        records.append(record)
+    payload = "".join(
+        json.dumps(
+            record, sort_keys=True, separators=(",", ":")
+        ) + "\n"
+        for record in records
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+semantic_physical = {
+    arm: semantic_physical_digest(arm) for arm in ("paged4", "transparent4")
+}
+if len(set(semantic_physical.values())) != 1:
+    raise SystemExit(f"semantic physical admissions differ: {semantic_physical}")
+
 producer_fields = (
-    "physical_record_sha256",
     "bounded_summary_histogram_sha256",
     "source_issue_sha256",
     "source_reads",
@@ -187,8 +215,6 @@ producer_fields = (
     "descriptor_spool_write_acks",
     "descriptor_spool_line_reads",
     "descriptor_spool_read_bytes",
-    "write_issues",
-    "write_completions",
 )
 for field in producer_fields:
     if rows["paged4"][field] != rows["transparent4"][field]:
@@ -266,7 +292,16 @@ with (out / "producer_equivalence.tsv").open(
 ) as f:
     writer = csv.writer(f, delimiter="\t", lineterminator="\n")
     writer.writerow(("field", "paged4", "transparent4"))
+    writer.writerow(
+        (
+            "semantic_physical_sha256",
+            semantic_physical["paged4"],
+            semantic_physical["transparent4"],
+        )
+    )
     for field in producer_fields:
+        writer.writerow((field, rows["paged4"][field], rows["transparent4"][field]))
+    for field in ("physical_record_sha256", "write_issues", "write_completions"):
         writer.writerow((field, rows["paged4"][field], rows["transparent4"][field]))
 
 (out / "matrix.complete").touch()
