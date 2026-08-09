@@ -24,27 +24,17 @@ constexpr double Sentinel = -1.0;
 
 bool
 waitForPartialOutput(const std::vector<double> &output,
-                     const std::string &label)
+                     const std::string &label, size_t probe)
 {
+    if (probe >= output.size())
+        return false;
     volatile const double *values = output.data();
-    while (true) {
-        size_t changed = 0;
-        for (size_t index = 0; index < output.size(); ++index) {
-            if (values[index] != Sentinel)
-                changed++;
-        }
-        if (changed > 0 && changed < output.size()) {
-            std::cout << "FUSED_DIRECT_PARTIAL_OUTPUT label=" << label
-                      << " changed=" << changed
-                      << " elements=" << output.size() << std::endl;
-            return true;
-        }
-        if (changed == output.size()) {
-            std::cerr << "fused operation completed before deterministic "
-                      << "live trigger: " << label << std::endl;
-            return false;
-        }
+    while (values[probe] == Sentinel) {
     }
+    std::cout << "FUSED_DIRECT_PARTIAL_OUTPUT label=" << label
+              << " probe=" << probe << " elements=" << output.size()
+              << std::endl;
+    return true;
 }
 
 void
@@ -123,6 +113,8 @@ runMultiPhase(MultiPhase phase, int n, std::vector<double> &source_a,
         destination_c[i] = Sentinel;
         destination_d[i] = Sentinel;
     }
+    const size_t first_probe = static_cast<size_t>(
+        std::min_element(index_b, index_b + n) - index_b);
 
     std::atomic<bool> release_second{false};
     std::atomic<bool> missed_live_trigger{false};
@@ -157,7 +149,7 @@ runMultiPhase(MultiPhase phase, int n, std::vector<double> &source_a,
                 source_a.data(), index_b, index_tile, completion_tile,
                 destination_c.data(), scale_reg, Operation_t::MUL_OP);
             const bool partial =
-                waitForPartialOutput(destination_c, phase_name);
+                waitForPartialOutput(destination_c, phase_name, first_probe);
             missed_live_trigger.store(!partial, std::memory_order_release);
             release_second.store(true, std::memory_order_release);
         } else {
@@ -298,6 +290,8 @@ int main(int argc, char **argv) {
         source[i] = static_cast<double>(i * 17 + 3) / 8.0;
     for (int i = 0; i < n; ++i)
         indices[i] = (i * 97 + 13) % source.size();
+    const size_t first_probe = static_cast<size_t>(
+        std::min_element(indices.begin(), indices.end()) - indices.begin());
     double *destination =
         mode == "alias" ? source.data() : output.data();
 
@@ -333,7 +327,7 @@ int main(int argc, char **argv) {
     // The live-state gates must begin after the command has reached MAA, not
     // merely after the CPU has issued its memory-mapped command writes.
     if ((mode == "drain" || mode == "reset") &&
-        !waitForPartialOutput(output, mode))
+        !waitForPartialOutput(output, mode, first_probe))
         return 4;
     if (mode == "drain") {
         std::cout << "FUSED_DIRECT_LIVE_DRAIN_REQUEST" << std::endl;

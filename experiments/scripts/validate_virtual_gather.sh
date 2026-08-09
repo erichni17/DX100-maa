@@ -48,6 +48,11 @@ num_maas=${MAA_NUM_MAAS:-1}
     echo "MAA_NUM_MAAS must be a positive integer" >&2
     exit 2
 }
+num_cpus=${GEM5_NUM_CPUS:-4}
+[[ $num_cpus =~ ^[1-9][0-9]*$ ]] || {
+    echo "GEM5_NUM_CPUS must be a positive integer" >&2
+    exit 2
+}
 physical_tile_elements=${MAA_PHYSICAL_TILE_ELEMENTS:-0}
 [[ $physical_tile_elements =~ ^[0-9]+$ ]] || {
     echo "MAA_PHYSICAL_TILE_ELEMENTS must be a non-negative integer" >&2
@@ -73,6 +78,10 @@ if [[ "$masked_writes" == 1 ]]; then
 fi
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
+debug_args=()
+if [[ -n ${GEM5_DEBUG_FLAGS:-} ]]; then
+    debug_args+=(--debug-flags="$GEM5_DEBUG_FLAGS")
+fi
 
 if [[ -e "$outdir" ]]; then
     echo "refusing to overwrite existing output path: $outdir" >&2
@@ -82,8 +91,10 @@ mkdir -p "$outdir"
 
 set +e
 /usr/bin/time -f 'checkpoint_wall=%e checkpoint_rss_kb=%M' \
-    timeout 300 "$gem5" --listener-mode=off --outdir="$outdir" "$config" \
-    --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB --max-checkpoints=1 \
+    timeout 300 "$gem5" --listener-mode=off "${debug_args[@]}" \
+    --outdir="$outdir" "$config" \
+    --cpu-type AtomicSimpleCPU -n "$num_cpus" --mem-size 2GB \
+    --max-checkpoints=1 \
     --cmd "$binary" --options "$n $pattern" >"$outdir/checkpoint.log" 2>&1
 checkpoint_rc=$?
 set -e
@@ -103,11 +114,12 @@ if [[ ${#layouts[@]} -ne 1 ]] ||
 fi
 
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
+OMP_PROC_BIND=false OMP_NUM_THREADS="$num_cpus" \
 /usr/bin/time -f 'restore_wall=%e restore_rss_kb=%M' \
     "${restore_timeout[@]}" \
-    "$gem5" --listener-mode=off \
-    --outdir="$outdir" "$config" --cpu-type X86O3CPU -r 1 -n 4 \
+    "$gem5" --listener-mode=off "${debug_args[@]}" \
+    --outdir="$outdir" "$config" --cpu-type X86O3CPU -r 1 \
+    -n "$num_cpus" \
     --mem-size 2GB --sys-clock 3.2GHz --cpu-clock 3.2GHz \
     --caches --l1d_size=32kB --l1d_assoc=8 \
     --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8 \

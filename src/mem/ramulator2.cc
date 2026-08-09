@@ -269,21 +269,27 @@ bool Ramulator2::recvTimingReq(PacketPtr pkt) {
             retryReq = true;
         }
     } else if (pkt->isWrite()) {
-        // Generate ramulator WRITE request and try to send to ramulator's memory system
-        enqueue_success = ramulator2_frontend->receive_external_requests(1, pkt->getAddr(), pkt->getRegion(), 0,
-                                                                         [this](Ramulator::Request &req) {
-                                                                             DPRINTF(Ramulator2, "Write to %ld completed.\n", req.addr);
-                                                                             auto &pkt_q = outstandingWrites.find(req.addr)->second;
-                                                                             PacketPtr pkt = pkt_q.front();
-                                                                             pkt_q.pop_front();
-                                                                             if (!pkt_q.size())
-                                                                                 outstandingWrites.erase(req.addr);
+        // Generate a Ramulator WRITE request and send it to the memory system.
+        enqueue_success = ramulator2_frontend->receive_external_requests(
+            1, pkt->getAddr(), pkt->getRegion(), 0,
+            [this](Ramulator::Request &req) {
+                DPRINTF(Ramulator2, "Write to %ld completed.\n", req.addr);
+                auto &pkt_q = outstandingWrites.find(req.addr)->second;
+                PacketPtr pkt = pkt_q.front();
+                pkt_q.pop_front();
+                if (pkt_q.empty())
+                    outstandingWrites.erase(req.addr);
 
-                                                                             // added counter to track requests in flight
-                                                                             --nbrOutstandingWrites;
-
-                                                                             accessAndRespond(pkt);
-                                                                         });
+                --nbrOutstandingWrites;
+                accessAndRespond(pkt);
+                if (nbrOutstanding() == 0 &&
+                    drainState() == DrainState::Draining) {
+                    DPRINTF(Drain,
+                            "Ramulator2 done draining after write "
+                            "completion\n");
+                    signalDrainDone();
+                }
+            });
 
         if (enqueue_success) {
             auditWriteAddr(pkt->getAddr());

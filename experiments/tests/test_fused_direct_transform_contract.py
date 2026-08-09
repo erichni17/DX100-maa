@@ -19,6 +19,7 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         cls.maa_header = (ROOT / "src/mem/MAA/MAA.hh").read_text()
         cls.maa_source = (ROOT / "src/mem/MAA/MAA.cc").read_text()
         cls.maa_params = (ROOT / "src/mem/MAA/MAA.py").read_text()
+        cls.ramulator = (ROOT / "src/mem/ramulator2.cc").read_text()
         cls.tracker_test = (
             ROOT / "tests/maa/multi_range_access_tracker_test.cc"
         ).read_text()
@@ -37,6 +38,7 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         ).read_text()
 
     def test_opcode_and_api_encoding_match(self):
+        self.assertIn("#if NUM_CORES == 1", self.api)
         for source in (self.api, self.if_header):
             self.assertRegex(source, r"INDIR_LD_VIRTUAL_SCALAR\s*=\s*17")
         body = self.api[
@@ -218,14 +220,34 @@ class FusedDirectTransformContractTest(unittest.TestCase):
         self.assertIn(
             "FUSED_DIRECT_LIVE_DRAIN_RETURNED", self.correctness_runner
         )
+        self.assertIn(
+            "test_fused_direct_transform_1c", self.correctness_runner
+        )
+        self.assertIn("GEM5_NUM_CPUS=1", self.correctness_runner)
+        self.assertIn("num_cpus=${GEM5_NUM_CPUS:-4}", self.validator)
+        self.assertIn("MAA drain waiting:", self.correctness_runner)
         guest = (
             ROOT / "benchmarks/API/test_fused_direct_transform.cpp"
         ).read_text()
-        self.assertIn("waitForPartialOutput(output, mode)", guest)
+        self.assertIn("waitForPartialOutput(output, mode, first_probe)", guest)
+        self.assertIn("std::min_element(indices.begin()", guest)
         self.assertNotIn(
             "checkpoint/drain requested with live instruction",
             self.correctness_runner,
         )
+
+    def test_last_ramulator_write_completion_signals_live_drain(self):
+        write_callback = self.ramulator[
+            self.ramulator.index(
+                "} else if (pkt->isWrite())"
+            ) : self.ramulator.index(
+                "} else {", self.ramulator.index("} else if (pkt->isWrite())")
+            )
+        ]
+        self.assertIn("--nbrOutstandingWrites", write_callback)
+        self.assertIn("nbrOutstanding() == 0", write_callback)
+        self.assertIn("drainState() == DrainState::Draining", write_callback)
+        self.assertIn("signalDrainDone", write_callback)
 
     def test_two_maa_live_hazard_gate_is_enabled(self):
         self.assertIn("MAA_NUM_MAAS=2", self.correctness_runner)

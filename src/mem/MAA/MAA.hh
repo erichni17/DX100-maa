@@ -593,6 +593,7 @@ protected:
     void scheduleDrainEvent();
     DrainState drain() override;
     void drainResume() override;
+    uint64_t drainPollCount = 0;
     EventFunctionWrapper logicalSpdEvent;
     EventFunctionWrapper drainEvent;
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,

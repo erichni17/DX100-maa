@@ -1723,7 +1723,7 @@ void
 MAA::scheduleDrainEvent()
 {
     if (!drainEvent.scheduled())
-        schedule(drainEvent, getClockEdge(Cycles(1)));
+        schedule(drainEvent, getClockEdge(Cycles(100)));
 }
 
 void
@@ -1735,6 +1735,20 @@ MAA::serviceDrain()
              "Logical SPD checkpoint/drain reached live state after drain "
              "admission closed; serialization is unsupported\n");
     if (hasLiveState()) {
+        drainPollCount++;
+        if ((drainPollCount & (drainPollCount - 1)) == 0) {
+            warn("MAA drain waiting: polls=%lu function_units=%d ifile=%d "
+                 "regions=%d instruction_callbacks=%lu "
+                 "register_callbacks=%lu ready_callbacks=%lu "
+                 "outstanding_cpu=%lu deferred_cpu=%lu\n",
+                 drainPollCount, !allFuncUnitsIdle(), !ifile->empty(),
+                 invalidator->hasLiveRegionAccesses(),
+                 static_cast<unsigned long>(my_instructions.size()),
+                 static_cast<unsigned long>(my_registers.size()),
+                 static_cast<unsigned long>(my_ready_pkts.size()),
+                 static_cast<unsigned long>(my_outstanding_pkt_map.size()),
+                 static_cast<unsigned long>(my_deferred_pkt_map.size()));
+        }
         scheduleDrainEvent();
         return;
     }
@@ -1745,6 +1759,7 @@ DrainState
 MAA::drain()
 {
     logicalSpdBridge->closeAdmission();
+    drainPollCount = 0;
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD checkpoint/drain requested with live state; "
              "serialization is unsupported\n");
