@@ -116,6 +116,14 @@ testResidentFirstDenseLayoutAndExactClosure()
 
     for (uint32_t pass = 1; pass < populations.size(); ++pass) {
         assert(spool.beginReplay(pass) == Result::Accepted);
+        assert(spool.replayIsActive());
+        assert(spool.activeReplayPass() == pass);
+        assert(!spool.replayFinished(pass));
+        assert(spool.recordReadIssue(pass + 1, 0) ==
+               Result::WrongReplayPass);
+        assert(spool.recordReadResponse(pass + 1, 0) ==
+               Result::WrongReplayPass);
+        assert(spool.finishReplay(pass) == Result::ReplayIncomplete);
         for (uint32_t line = 0; line < spool.passLines(pass); ++line) {
             assert(spool.recordReadIssue(pass, line) == Result::Accepted);
             assert(spool.recordReadResponse(pass, line) == Result::Accepted);
@@ -132,6 +140,9 @@ testResidentFirstDenseLayoutAndExactClosure()
                    Result::Accepted);
         }
         assert(spool.finishReplay(pass) == Result::Accepted);
+        assert(!spool.replayIsActive());
+        assert(spool.activeReplayPass() == BoundedDescriptorSpool::MaxPasses);
+        assert(spool.replayFinished(pass));
     }
     assert(spool.readLinesIssued() == 1152);
     assert(spool.readLineResponses() == 1152);
