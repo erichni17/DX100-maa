@@ -603,6 +603,8 @@ public:
     Tick my_last_idle_tick;
     Tick my_last_reset_tick;
     bool allFuncUnitsIdle();
+    bool claimALUForDirectTransform(int aluID);
+    void releaseALUFromDirectTransform(int aluID);
     Tick getCurTick();
 
 public:
@@ -729,6 +731,10 @@ public:
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;
+        std::vector<statistics::Scalar *> IND_FusedALUBatches;
+        std::vector<statistics::Scalar *> IND_FusedALUWords;
+        std::vector<statistics::Scalar *> IND_FusedALUWaitCycles;
+        std::vector<statistics::Scalar *> IND_FusedALUResultHighWater;
         std::vector<statistics::Scalar *> IND_VirtPagesReady;
         std::vector<statistics::Scalar *> IND_VirtPagesReadyBeforeSourceDrain;
         std::vector<statistics::Scalar *> IND_VirtFirstPageReadyCycles;

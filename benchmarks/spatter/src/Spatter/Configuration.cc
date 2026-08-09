@@ -599,6 +599,10 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
                 if (maa_arm == "compact16" || maa_arm == "compact16x3") {
                     maa_indirect_load_virtual<double>(
                         sparse.data(), tile1, tile2, dense.data() + j);
+                } else if (maa_arm == "fuseddirect16x3") {
+                    maa_indirect_load_virtual_scalar<double>(
+                        sparse.data(), tile1, tile2, dense.data() + j,
+                        reg4, Operation_t::MUL_OP);
                 } else if (maa_arm == "fused16" || maa_arm == "fused4") {
                     maa_indirect_load_spd_stream<double>(
                         sparse.data(), tile1, tile2, dense.data(), reg1,

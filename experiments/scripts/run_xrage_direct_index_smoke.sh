@@ -174,7 +174,7 @@ if [[ -n $guest_abi ]]; then
 fi
 if [[ -n $guest_arm ]]; then
     case "$guest_arm" in
-        native16|native16x3|fused16|fused4|compact16|compact16x3|direct4|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
+        native16|native16x3|fused16|fused4|compact16|compact16x3|fuseddirect16x3|direct4|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
         *)
             echo "unsupported XRAGE_GUEST_ARM: $guest_arm" >&2
             exit 2
@@ -182,11 +182,13 @@ if [[ -n $guest_arm ]]; then
     esac
 fi
 if [[ $result_scale == 3 ]]; then
-    [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ]] || {
-        echo "scale 3 requires native16x3 or compact16x3 guest arm" >&2
+    [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
+       $guest_arm == fuseddirect16x3 ]] || {
+        echo "scale 3 requires a native16x3, compact16x3, or fuseddirect16x3 guest arm" >&2
         exit 2
     }
-elif [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ]]; then
+elif [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
+        $guest_arm == fuseddirect16x3 ]]; then
     echo "x3 guest arms require XRAGE_RESULT_SCALE=3" >&2
     exit 2
 fi

@@ -60,7 +60,8 @@ enum OpcodeType : uint8_t {
     INDIR_LD_VIRTUAL_INDEX = 13,
     INDIR_LD_INDEX = 14,
     STREAM_PREFETCH = 15,
-    VIRTUAL_TILE_ALU_SCALAR = 16
+    VIRTUAL_TILE_ALU_SCALAR = 16,
+    INDIR_LD_VIRTUAL_SCALAR = 17
 };
 enum class DataType : uint8_t {
     UINT32_TYPE = 0,
@@ -419,6 +420,31 @@ inline void maa_indirect_load_virtual(T1 *data, int idx_tile, int completion_til
         ((uint64_t)NA_UINT8 << 16) |
         ((uint64_t)NA_UINT8 << 8) |
         (uint64_t)(cond_tile == -1 ? NA_UINT8 : cond_tile);
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)backing;
+    __asm__ __volatile__("mfence;");
+}
+/**
+ * Gather data[idx[i]], apply a scalar ALU operation in the MAA's timed lane
+ * array, and retire the result directly to backing[i].  The first hardware
+ * implementation intentionally accepts only unpredicated FP64 MUL.  Keeping
+ * this as a distinct opcode makes the single-consumer/direct-sink contract
+ * explicit without changing the established virtual-gather API.
+ */
+template <class T1>
+inline void maa_indirect_load_virtual_scalar(
+    T1 *data, int idx_tile, int completion_tile, T1 *backing,
+    int scalar_reg, Operation_t op) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_LD_VIRTUAL_SCALAR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)op << 16) |
+        ((uint64_t)completion_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)idx_tile << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)scalar_reg << 24) | ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)NA_UINT8;
     *INSTR_baseaddr = (uint64_t)data;
     *INSTR_backingaddr = (uint64_t)backing;
     __asm__ __volatile__("mfence;");

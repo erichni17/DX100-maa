@@ -1,16 +1,20 @@
 #ifndef __MEM_MAA_ALU_HH__
 #define __MEM_MAA_ALU_HH__
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
+
 #include "sim/system.hh"
 
 namespace gem5 {
 
 class MAA;
 class Instruction;
+class IndirectAccessUnit;
 
 class ALUUnit {
 public:
@@ -44,6 +48,18 @@ public:
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);
 
+    int directTransformCapacity() const { return num_ALU_lanes; }
+    bool canStartDirectTransform() const;
+    bool startDirectTransform(
+        IndirectAccessUnit *owner, const std::vector<int> &iterations,
+        const std::vector<std::array<uint8_t, 8>> &words, double scalar);
+    bool ownsDirectTransform(const IndirectAccessUnit *owner) const;
+    bool directTransformReady(const IndirectAccessUnit *owner) const;
+    int directTransformIteration(const IndirectAccessUnit *owner) const;
+    const uint8_t *directTransformData(
+        const IndirectAccessUnit *owner) const;
+    void consumeDirectTransformWord(IndirectAccessUnit *owner);
+
 protected:
     Instruction *my_instruction;
     int my_alu_id;
@@ -68,6 +84,18 @@ protected:
     uint64_t my_red_u64;
     float my_red_f32;
     double my_red_f64;
+
+    struct DirectTransformEntry
+    {
+        int iteration = -1;
+        std::array<uint8_t, 8> data{};
+    };
+    std::vector<DirectTransformEntry> direct_transform_entries;
+    IndirectAccessUnit *direct_transform_owner = nullptr;
+    size_t direct_transform_cursor = 0;
+    double direct_transform_scalar = 0.0;
+    bool direct_transform_active = false;
+    bool direct_transform_ready = false;
 
     void executeInstruction();
     void updateLatency(int num_spd_read_data_accesses,

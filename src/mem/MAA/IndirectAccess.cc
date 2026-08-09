@@ -14,6 +14,7 @@
 #include "debug/MAAReorderTrace.hh"
 #include "debug/MAATrace.hh"
 #include "debug/MAAVirtualTrace.hh"
+#include "mem/MAA/ALU.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
@@ -581,6 +582,9 @@ void IndirectAccessUnit::check_reset() {
              my_indirect_id);
     panic_if(!virtualCombinerEmpty(),
              "I[%d] virtual combiner is not empty at reset\n", my_indirect_id);
+    panic_if(fusedDirectTransformPending(),
+             "I[%d] still owns the shared ALU direct-transform buffer at "
+             "reset\n", my_indirect_id);
     panic_if(virtual_combine_words != 0,
              "I[%d] virtual combiner still accounts for %d words\n",
              my_indirect_id, virtual_combine_words);
@@ -703,7 +707,23 @@ bool IndirectAccessUnit::isVirtualLoad() const {
            (my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
             my_instruction->opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+            my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX);
+}
+bool IndirectAccessUnit::isFusedDirectTransform() const {
+    return my_instruction != nullptr &&
+           my_instruction->opcode ==
+               Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+}
+int IndirectAccessUnit::fusedDirectTransformALU() const {
+    panic_if(maa == nullptr || maa->num_indirect_units_per_maa == 0,
+             "I[%d] has no MAA/indirect-unit geometry\n", my_indirect_id);
+    return my_indirect_id / maa->num_indirect_units_per_maa;
+}
+bool IndirectAccessUnit::fusedDirectTransformPending() const {
+    return isFusedDirectTransform() &&
+           maa->aluUnits[fusedDirectTransformALU()].ownsDirectTransform(this);
 }
 bool IndirectAccessUnit::isDirectIndexLoad() const {
     return my_instruction != nullptr &&
@@ -1495,6 +1515,23 @@ void IndirectAccessUnit::executeInstruction() {
         my_src_reg = my_instruction->src1RegID;
         my_dst_tile = my_instruction->dst1SpdID;
         my_cond_tile = my_instruction->condSpdID;
+        if (isFusedDirectTransform()) {
+            panic_if(my_instruction->datatype !=
+                         Instruction::DataType::FLOAT64_TYPE ||
+                         my_instruction->optype !=
+                             Instruction::OPType::MUL_OP ||
+                         my_instruction->condSpdID != -1 ||
+                         my_instruction->src1RegID == -1 ||
+                         my_instruction->addrRangeID < 0 ||
+                         my_instruction->backingAddrRangeID < 0 ||
+                         my_instruction->addrRangeID ==
+                             my_instruction->backingAddrRangeID,
+                     "I[%d] unsupported or alias-unsafe fused direct "
+                     "transform %s\n", my_indirect_id,
+                     my_instruction->print());
+            (*maa->stats.ALU_NumInsts[fusedDirectTransformALU()])++;
+            (*maa->stats.ALU_NumInstsCompute[fusedDirectTransformALU()])++;
+        }
         panic_if(usesBoundedSourceResponses() && !reorder_RT,
                  "I[%d] bounded-response indirect load requires row-table "
                  "reordering\n",
@@ -1614,6 +1651,11 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_max_reserved_response_words = 0;
         virtual_response_word_pool_stalls = 0;
         virtual_max_outstanding_writes = 0;
+        fused_alu_batches = 0;
+        fused_alu_words = 0;
+        fused_alu_wait_cycles = 0;
+        fused_alu_result_high_water = 0;
+        fused_alu_wait_tick = 0;
         virtual_build_incomplete = false;
         virtual_native_slice_cursor = 0;
         virtual_write_address_blocked = false;
@@ -2236,7 +2278,8 @@ void IndirectAccessUnit::executeInstruction() {
         }
         const bool virtual_sources_drained =
             virtual_source_received == virtual_source_expected &&
-            virtual_reserved_responses == 0;
+            virtual_reserved_responses == 0 &&
+            !fusedDirectTransformPending();
         if (isVirtualLoad() && my_fill_finished &&
             !virtual_build_incomplete &&
             virtual_sources_drained) {
@@ -2388,6 +2431,25 @@ void IndirectAccessUnit::executeInstruction() {
                 virtual_full_line_writes;
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
                 virtual_partial_word_writes;
+            if (isFusedDirectTransform()) {
+                (*maa->stats.IND_FusedALUBatches[my_indirect_id]) +=
+                    fused_alu_batches;
+                (*maa->stats.IND_FusedALUWords[my_indirect_id]) +=
+                    fused_alu_words;
+                (*maa->stats.IND_FusedALUWaitCycles[my_indirect_id]) +=
+                    fused_alu_wait_cycles;
+                (*maa->stats
+                      .IND_FusedALUResultHighWater[my_indirect_id]) +=
+                    fused_alu_result_high_water;
+                DPRINTF(MAAVirtualTrace,
+                        "event=fused_alu_summary schema=1 unit=%d "
+                        "operation_tick=%lu batches=%lu words=%lu "
+                        "wait_cycles=%lu result_high_water=%d\n",
+                        my_indirect_id, my_decode_start_tick,
+                        fused_alu_batches, fused_alu_words,
+                        fused_alu_wait_cycles,
+                        fused_alu_result_high_water);
+            }
             initializeVirtualPageTracking();
             panic_if(!virtual_retirement_write_pages.empty(),
                      "I[%d] virtual retirement metadata remains at response\n",
@@ -2799,6 +2861,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         }
         switch (my_instruction->opcode) {
         case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
+        case Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
         case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX:
             panic("Virtual load must use bounded response retirement\n");
         case Instruction::OpcodeType::INDIR_LD:
@@ -3368,6 +3431,127 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                virtual_word_attempts_this_cycle >=
                    virtual_words_per_cycle_limit;
     };
+    if (isFusedDirectTransform()) {
+        ALUUnit &alu = maa->aluUnits[fusedDirectTransformALU()];
+        auto account_alu_wait = [this]() {
+            if (fused_alu_wait_tick == curTick())
+                return;
+            fused_alu_wait_tick = curTick();
+            fused_alu_wait_cycles++;
+        };
+
+        if (alu.ownsDirectTransform(this)) {
+            if (!alu.directTransformReady(this))
+                return finish_drain(true);
+            while (alu.ownsDirectTransform(this)) {
+                const int itr = alu.directTransformIteration(this);
+                if (!reserveVirtualCombineBank(itr)) {
+                    account_alu_wait();
+                    return finish_drain(true);
+                }
+                if (!insertVirtualCombineWord(
+                        itr, alu.directTransformData(this))) {
+                    account_alu_wait();
+                    return finish_drain(true);
+                }
+                alu.consumeDirectTransformWord(this);
+            }
+        }
+
+        const bool response_waiting = std::any_of(
+            virtual_response_slots.begin(), virtual_response_slots.end(),
+            [](const VirtualResponseSlot &slot) { return slot.valid; });
+        if (!response_waiting) {
+            drainVirtualCombiner(false);
+            return finish_drain(false);
+        }
+        if (!alu.canStartDirectTransform()) {
+            account_alu_wait();
+            return finish_drain(true);
+        }
+
+        const int capacity = alu.directTransformCapacity();
+        panic_if(capacity <= 0,
+                 "I[%d] fused direct transform has no ALU lanes\n",
+                 my_indirect_id);
+        std::vector<int> iterations;
+        std::vector<std::array<uint8_t, 8>> words;
+        iterations.reserve(capacity);
+        words.reserve(capacity);
+        for (auto &slot : virtual_response_slots) {
+            const bool packed = virtual_response_words != 0 ||
+                                virtual_response_word_pool_limit != 0;
+            while (slot.valid &&
+                   static_cast<int>(words.size()) < capacity &&
+                   (!packed ||
+                    slot.next_packed_word < slot.packed_words.size())) {
+                if (budget_exhausted())
+                    break;
+                const OffsetTableEntry entry =
+                    offset_table->peek_entry(slot.next_itr);
+                std::array<uint8_t, 8> word{};
+                if (packed) {
+                    word = slot.packed_words[slot.next_packed_word];
+                } else {
+                    std::memcpy(
+                        word.data(),
+                        slot.data.data() + entry.wid * my_word_size,
+                        my_word_size);
+                }
+                virtual_word_attempts_this_cycle++;
+                iterations.push_back(entry.itr);
+                words.push_back(word);
+                OffsetTableEntry consumed =
+                    offset_table->consume_entry(slot.next_itr);
+                panic_if(consumed.itr != entry.itr ||
+                             consumed.wid != entry.wid,
+                         "I[%d] fused response cursor changed while "
+                         "forming an ALU batch\n", my_indirect_id);
+                recordReorderSurvivalIssuedEntries(1);
+                if (packed)
+                    slot.next_packed_word++;
+                if (!packed && slot.next_itr == -1) {
+                    release_native_claim(slot);
+                    slot = VirtualResponseSlot();
+                    virtual_reserved_responses--;
+                }
+            }
+            if (packed && slot.valid &&
+                slot.next_packed_word == slot.packed_words.size()) {
+                panic_if(slot.next_itr != -1,
+                         "I[%d] fused packed response ended before its "
+                         "offset chain\n", my_indirect_id);
+                panic_if(virtual_reserved_response_words <
+                             slot.reserved_words,
+                         "I[%d] fused packed response accounting "
+                         "underflow\n", my_indirect_id);
+                virtual_reserved_response_words -= slot.reserved_words;
+                release_native_claim(slot);
+                slot = VirtualResponseSlot();
+                virtual_reserved_responses--;
+            }
+            if (static_cast<int>(words.size()) == capacity ||
+                budget_exhausted())
+                break;
+        }
+        if (words.empty())
+            return finish_drain(true);
+
+        const double scalar = maa->rf->getData<double>(my_src_reg);
+        panic_if(!alu.startDirectTransform(this, iterations, words, scalar),
+                 "I[%d] lost the shared ALU while issuing a fused batch\n",
+                 my_indirect_id);
+        fused_alu_batches++;
+        fused_alu_words += words.size();
+        fused_alu_result_high_water = std::max(
+            fused_alu_result_high_water, static_cast<int>(words.size()));
+        DPRINTF(MAAVirtualTrace,
+                "event=fused_alu_batch schema=1 unit=%d operation_tick=%lu "
+                "alu=%d words=%zu lanes=%d scalar=%.17g\n",
+                my_indirect_id, my_decode_start_tick,
+                fusedDirectTransformALU(), words.size(), capacity, scalar);
+        return finish_drain(true);
+    }
     bool bank_stalled = false;
     for (auto &slot : virtual_response_slots) {
         if (virtual_response_words != 0 ||
@@ -3719,7 +3903,8 @@ bool IndirectAccessUnit::boundedRetirementComplete() const {
     const bool sources_complete = boundedSourceResponsesComplete();
     if (!sources_complete || !isVirtualLoad())
         return sources_complete;
-    return virtualCombinerEmpty() && virtual_outstanding_writes == 0;
+    return !fusedDirectTransformPending() && virtualCombinerEmpty() &&
+           virtual_outstanding_writes == 0;
 }
 
 IndirectAccessUnit::VirtualRequestReason
@@ -3735,7 +3920,7 @@ IndirectAccessUnit::classifyVirtualRequestReason() const {
         return VirtualRequestReason::FinalDrain;
     if (!sources_arrived)
         return VirtualRequestReason::SourceFlight;
-    if (virtual_reserved_responses != 0)
+    if (virtual_reserved_responses != 0 || fusedDirectTransformPending())
         return VirtualRequestReason::Retained;
     if (virtual_outstanding_writes != 0)
         return VirtualRequestReason::Writes;

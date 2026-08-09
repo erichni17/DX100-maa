@@ -259,6 +259,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_INDEX ||
@@ -333,6 +335,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 if (current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     current_instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                    current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_INDEX ||
@@ -353,6 +357,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(
                     current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL &&
+                        current_instruction->opcode !=
+                            Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                         current_instruction->opcode !=

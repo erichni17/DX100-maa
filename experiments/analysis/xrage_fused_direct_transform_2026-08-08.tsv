@@ -1,0 +1,6 @@
+arm	scale	replica	roi_simTicks	output_hash	terminal	correct	fused_alu_batches	fused_alu_words	fused_alu_wait_cycles	virtual_write_issues	virtual_write_completions
+native16x3	3	1	22548520	16942094529479519491	m5_exit	pass	0	0	0	0	0
+native16x3	3	2	22548520	16942094529479519491	m5_exit	pass	0	0	0	0	0
+fuseddirect16x3	3	1	20988841	16942094529479519491	m5_exit	pass	5019	20000	1651	3620	3620
+fuseddirect16x3	3	2	20988841	16942094529479519491	m5_exit	pass	5019	20000	1651	3620	3620
+compact16_control	1	1	21139081	10990373302566333699	m5_exit	pass	0	0	0	3615	3615

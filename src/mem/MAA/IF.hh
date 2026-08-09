@@ -50,9 +50,10 @@ public:
         INDIR_LD_INDEX = 14,
         STREAM_PREFETCH = 15,
         VIRTUAL_TILE_ALU_SCALAR = 16,
+        INDIR_LD_VIRTUAL_SCALAR = 17,
         MAX
     };
-    std::string opcode_names[17] = {
+    std::string opcode_names[18] = {
         "STREAM_LD",
         "STREAM_ST",
         "INDIR_LD",
@@ -69,7 +70,8 @@ public:
         "INDIR_LD_VIRTUAL_INDEX",
         "INDIR_LD_INDEX",
         "STREAM_PREFETCH",
-        "VIRTUAL_TILE_ALU_SCALAR"
+        "VIRTUAL_TILE_ALU_SCALAR",
+        "INDIR_LD_VIRTUAL_SCALAR"
     };
     enum class OPType : uint8_t
     {

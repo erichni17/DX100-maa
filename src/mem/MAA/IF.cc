@@ -115,6 +115,7 @@ int Instruction::getWordSize(int tile_id) {
         }
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
+        case OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::INDIR_LD_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
@@ -155,6 +156,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::STREAM_PREFETCH:
         case OpcodeType::INDIR_LD:
         case OpcodeType::INDIR_LD_VIRTUAL:
+        case OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::INDIR_LD_INDEX:
         case OpcodeType::INDIR_LD_SPD_STREAM:
@@ -338,6 +340,39 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
         return true;
     }
 
+    const bool fused_direct_scalar =
+        _instruction.opcode ==
+        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+    if (fused_direct_scalar) {
+        const bool source_destination_overlap =
+            _instruction.minAddr < _instruction.backingMaxAddr &&
+            _instruction.backingMinAddr < _instruction.maxAddr;
+        panic_if(_instruction.datatype !=
+                     Instruction::DataType::FLOAT64_TYPE ||
+                     _instruction.optype != Instruction::OPType::MUL_OP,
+                 "Fused direct scalar load supports only FP64 MUL: %s\n",
+                 _instruction.print());
+        panic_if(_instruction.condSpdID != -1 ||
+                     _instruction.src1SpdID == -1 ||
+                     _instruction.src1RegID == -1 ||
+                     _instruction.dst1SpdID == -1,
+                 "Fused direct scalar load requires one index tile, one "
+                 "scalar register, one completion tile, and no predicate: "
+                 "%s\n", _instruction.print());
+        panic_if(_instruction.addrRangeID < 0 ||
+                     _instruction.backingAddrRangeID < 0 ||
+                     _instruction.addrRangeID ==
+                         _instruction.backingAddrRangeID ||
+                     source_destination_overlap,
+                 "Fused direct scalar load requires separately registered "
+                 "non-aliasing source and destination regions: %s\n",
+                 _instruction.print());
+        // Direct retirement may begin with the first gather response.  Hold
+        // the operation until the full index tile is resident so a C/B alias
+        // cannot corrupt indices that the stream producer has not read yet.
+        _instruction.src1MustBeFinished = true;
+    }
+
     switch (_instruction.opcode) {
     case Instruction::OpcodeType::STREAM_LD:
     case Instruction::OpcodeType::STREAM_PREFETCH:
@@ -347,6 +382,7 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
     }
     case Instruction::OpcodeType::INDIR_LD:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL:
+    case Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR:
     case Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX:
     case Instruction::OpcodeType::INDIR_LD_INDEX:
     case Instruction::OpcodeType::INDIR_ST_VECTOR:
@@ -461,10 +497,62 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                     return false;
                 }
             }
-            if (_instruction.addrRangeID == instructions[maa_id][i].addrRangeID) {
-                if ((_instruction.accessType == Instruction::AccessType::WRITE && instructions[maa_id][i].accessType != Instruction::AccessType::COMPUTE) || // WAR hazard
-                    (_instruction.accessType == Instruction::AccessType::READ && instructions[maa_id][i].accessType == Instruction::AccessType::WRITE)) {    // RAW hazard
-                    DPRINTF(MAAController, "%s: %s cannot be pushed b/c of %s!\n", __func__, _instruction.print(), instructions[maa_id][i].print());
+            const Instruction &other = instructions[maa_id][i];
+            const bool other_fused_direct_scalar =
+                other.opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR;
+            if (fused_direct_scalar || other_fused_direct_scalar) {
+                const auto writes_backing = [](const Instruction &inst) {
+                    return inst.opcode ==
+                               Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
+                           inst.opcode == Instruction::OpcodeType::
+                                              INDIR_LD_VIRTUAL_SCALAR ||
+                           inst.opcode == Instruction::OpcodeType::
+                                              INDIR_LD_VIRTUAL_INDEX;
+                };
+                const int lhs_read =
+                    _instruction.accessType == Instruction::AccessType::READ
+                        ? _instruction.addrRangeID : -1;
+                const int rhs_read =
+                    other.accessType == Instruction::AccessType::READ
+                        ? other.addrRangeID : -1;
+                const int lhs_write = writes_backing(_instruction)
+                    ? _instruction.backingAddrRangeID
+                    : (_instruction.accessType ==
+                               Instruction::AccessType::WRITE
+                           ? _instruction.addrRangeID : -1);
+                const int rhs_write = writes_backing(other)
+                    ? other.backingAddrRangeID
+                    : (other.accessType == Instruction::AccessType::WRITE
+                           ? other.addrRangeID : -1);
+                const bool memory_hazard =
+                    (lhs_write >= 0 &&
+                     (lhs_write == rhs_read || lhs_write == rhs_write)) ||
+                    (rhs_write >= 0 && rhs_write == lhs_read);
+                if (memory_hazard) {
+                    DPRINTF(MAAController,
+                            "%s: fused direct memory hazard keeps %s behind "
+                            "%s\n", __func__, _instruction.print(),
+                            other.print());
+                    return false;
+                }
+            } else if (_instruction.addrRangeID ==
+                       instructions[maa_id][i].addrRangeID) {
+                const bool war_hazard =
+                    _instruction.accessType ==
+                        Instruction::AccessType::WRITE &&
+                    instructions[maa_id][i].accessType !=
+                        Instruction::AccessType::COMPUTE;
+                const bool raw_hazard =
+                    _instruction.accessType ==
+                        Instruction::AccessType::READ &&
+                    instructions[maa_id][i].accessType ==
+                        Instruction::AccessType::WRITE;
+                if (war_hazard || raw_hazard) {
+                    DPRINTF(MAAController,
+                            "%s: %s cannot be pushed b/c of %s!\n",
+                            __func__, _instruction.print(),
+                            instructions[maa_id][i].print());
                     return false;
                 }
             }
@@ -483,6 +571,8 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
     if (_instruction.dst1SpdID != -1) {
         completion_only_tiles[maa_id][_instruction.dst1SpdID] =
             _instruction.opcode == Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
+            _instruction.opcode ==
+                Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
             _instruction.opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
             _instruction.opcode == Instruction::OpcodeType::STREAM_PREFETCH;

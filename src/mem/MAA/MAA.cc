@@ -584,6 +584,23 @@ bool MAA::allFuncUnitsIdle() {
     }
     return true;
 }
+bool MAA::claimALUForDirectTransform(int aluID) {
+    panic_if(aluID < 0 || aluID >= static_cast<int>(num_maas),
+             "Invalid direct-transform ALU id %d\n", aluID);
+    if (!aluUnitsIdle[aluID] ||
+        aluUnits[aluID].getState() != ALUUnit::Status::Idle)
+        return false;
+    aluUnitsIdle[aluID] = false;
+    return true;
+}
+void MAA::releaseALUFromDirectTransform(int aluID) {
+    panic_if(aluID < 0 || aluID >= static_cast<int>(num_maas) ||
+                 aluUnitsIdle[aluID] ||
+                 aluUnits[aluID].getState() != ALUUnit::Status::Idle,
+             "Invalid direct-transform ALU release for unit %d\n", aluID);
+    aluUnitsIdle[aluID] = true;
+    scheduleIssueInstructionEvent();
+}
 bool MAA::getAddrRegionPermit(Instruction *instruction) {
     return invalidator->getAddrRegionPermit(instruction);
 }
@@ -1768,6 +1785,8 @@ void MAA::dispatchInstruction() {
                 if (instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
                     instruction->opcode ==
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_SCALAR ||
+                    instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX) {
                     resetVirtualPageReady(
                         instruction->dst1SpdID, instruction->backingAddr,
@@ -2349,6 +2368,24 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_VirtWriteIssues.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteIssues"), statistics::units::Count::get(), "number of virtual retirement writes issued"));
         IND_VirtWriteCompletions.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteCompletions"), statistics::units::Count::get(), "number of virtual retirement writes completed"));
         IND_VirtWriteAddressConflicts.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteAddressConflicts"), statistics::units::Count::get(), "virtual retirement write attempts deferred by an exact-address MAA transaction conflict"));
+        IND_FusedALUBatches.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_FusedALUBatches"),
+            statistics::units::Count::get(),
+            "fused direct-transform batches issued to the shared ALU"));
+        IND_FusedALUWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_FusedALUWords"),
+            statistics::units::Count::get(),
+            "fused direct-transform words computed by ALU lanes"));
+        IND_FusedALUWaitCycles.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_FusedALUWaitCycles"),
+            statistics::units::Count::get(),
+            "cycles a fused direct transform waited for the shared ALU or "
+            "downstream result retirement"));
+        IND_FusedALUResultHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_FusedALUResultHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak words held in the finite ALU lane "
+            "result buffer"));
         IND_VirtPagesReady.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReady"),
             statistics::units::Count::get(),
@@ -2451,6 +2488,11 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         (*IND_LoadsMemAccessingLatency[indirect_id]).flags(statistics::nozero);
         (*IND_StoresMemAccessing[indirect_id]).flags(statistics::nozero);
         (*IND_Evicts[indirect_id]).flags(statistics::nozero);
+        (*IND_FusedALUBatches[indirect_id]).flags(statistics::nozero);
+        (*IND_FusedALUWords[indirect_id]).flags(statistics::nozero);
+        (*IND_FusedALUWaitCycles[indirect_id]).flags(statistics::nozero);
+        (*IND_FusedALUResultHighWater[indirect_id]).flags(
+            statistics::nozero);
 
         (*IND_AvgWordsPerCacheLine[indirect_id]) = (*IND_NumWordsInserted[indirect_id]) / (*IND_NumCacheLineInserted[indirect_id]);
         (*IND_AvgCacheLinesPerRow[indirect_id]) = (*IND_NumCacheLineInserted[indirect_id]) / (*IND_NumRowsInserted[indirect_id]);

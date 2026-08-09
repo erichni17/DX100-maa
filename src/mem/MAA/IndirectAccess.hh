@@ -165,6 +165,11 @@ protected:
     int virtual_max_reserved_response_words = 0;
     int virtual_response_word_pool_stalls = 0;
     int virtual_max_outstanding_writes = 0;
+    uint64_t fused_alu_batches = 0;
+    uint64_t fused_alu_words = 0;
+    uint64_t fused_alu_wait_cycles = 0;
+    int fused_alu_result_high_water = 0;
+    Tick fused_alu_wait_tick = 0;
     bool virtual_build_incomplete = false;
     int virtual_native_slice_cursor = 0;
     bool virtual_write_address_blocked = false;
@@ -337,6 +342,9 @@ protected:
     Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
                          unsigned size = 64);
     bool isVirtualLoad() const;
+    bool isFusedDirectTransform() const;
+    bool fusedDirectTransformPending() const;
+    int fusedDirectTransformALU() const;
     bool isDirectIndexLoad() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
