@@ -104,7 +104,7 @@ def validate(stats, group_counts, abi_version):
         "descriptorUmtStateCapacityErrors": 0,
         "descriptorUmtStateStoreHighWaterMark": max(group_counts),
         "descriptorUmtStateBankHighWaterMark": (max(group_counts) + 3) // 4,
-        "descriptorUmtStateTokenHighWaterMark": min(16, max(group_counts)),
+        "descriptorUmtStateTokenHighWaterMark": min(32, max(group_counts)),
         "descriptorUmtStateAllocatedStoreBytes": 4608,
         "descriptorUmtStatePhysicalStoreBytes": 5120,
         "descriptorUmtStateResidualStoreBytes": 512,

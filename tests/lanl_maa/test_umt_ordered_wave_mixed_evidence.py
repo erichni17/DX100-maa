@@ -84,6 +84,7 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         self.assertEqual(expected["descriptorUmtFp64DivideOperations"], 1104)
         self.assertEqual(expected["descriptorUmtStateStoreHighWaterMark"], 64)
         self.assertEqual(expected["descriptorUmtStateBankHighWaterMark"], 16)
+        self.assertEqual(expected["descriptorUmtStateTokenHighWaterMark"], 32)
         self.assertEqual(
             expected["descriptorUmtStatePhysicalStoreBytes"], 5120
         )

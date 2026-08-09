@@ -306,7 +306,7 @@ def exact_stats():
         # Fixed capacity, occupancy, and explicitly-labeled cost floors.
         "descriptorUmtStateStoreHighWaterMark": 64,
         "descriptorUmtStateBankHighWaterMark": 16,
-        "descriptorUmtStateTokenHighWaterMark": 16,
+        "descriptorUmtStateTokenHighWaterMark": 32,
         "descriptorUmtStateAllocatedStoreBytes": 4608,
         "descriptorUmtStatePhysicalStoreBytes": 5120,
         "descriptorUmtStateResidualStoreBytes": 512,
