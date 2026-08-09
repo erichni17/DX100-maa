@@ -64,6 +64,10 @@ index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
 require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
+index_buffer_lines=4
+# IND_VirtIndexWordHighWater is a sum of per-instruction-unit peaks. This
+# runner has four units and 16 FP32 words per cache line.
+index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 [[ $grow_order == 0 || $grow_order == 1 ]] || {
     echo "MAA_VIRTUAL_GROW_ORDER must be 0 or 1" >&2
     exit 2
@@ -624,7 +628,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_response_word_pool="$response_word_pool" \
     --maa_virtual_words_per_cycle=4 \
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
-    --maa_virtual_index_buffer_lines=4 \
+    --maa_virtual_index_buffer_lines="$index_buffer_lines" \
     --maa_virtual_index_partitions="$index_partitions" \
     --maa_virtual_index_range_policy="$index_range_policy" \
     "${index_range_boundary_args[@]}" \
@@ -941,7 +945,8 @@ elif [[ $virtual -eq 1 ]]; then
                 exit 1
             }
         fi
-        [[ $index_words -eq $expected_index_words && $index_hwm -gt 0 && $index_hwm -le 64 ]] || {
+        [[ $index_words -eq $expected_index_words && $index_hwm -gt 0 && \
+           $index_hwm -le $index_hwm_capacity ]] || {
             echo "invalid bounded index evidence: $index_words/$index_hwm" >&2
             exit 1
         }
@@ -992,7 +997,8 @@ elif [[ $virtual -eq 1 ]]; then
 else
     if [[ $direct -eq 1 ]]; then
         [[ $index_words -eq 16384 && $index_hwm -gt 0 && \
-           $index_hwm -le 64 && $indirect_spd_reads -eq 0 ]] || {
+           $index_hwm -le $index_hwm_capacity && \
+           $indirect_spd_reads -eq 0 ]] || {
             echo "invalid native direct-index evidence: words=$index_words hwm=$index_hwm spd=$indirect_spd_reads" >&2
             exit 1
         }

@@ -181,6 +181,17 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.runner)
 
+    def test_index_high_water_uses_configured_finite_capacity(self) -> None:
+        self.assertIn("index_buffer_lines=4", self.runner)
+        self.assertIn(
+            "index_hwm_capacity=$((index_buffer_lines * 4 * 16))",
+            self.runner,
+        )
+        self.assertEqual(
+            self.runner.count("index_hwm -le $index_hwm_capacity"), 2
+        )
+        self.assertNotIn("index_hwm -le 64", self.runner)
+
     def test_filter_retry_accounting_includes_offset_epoch_drains(
         self,
     ) -> None:
