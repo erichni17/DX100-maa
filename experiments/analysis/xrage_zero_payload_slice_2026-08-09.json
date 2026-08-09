@@ -1,0 +1,167 @@
+{
+  "date": "2026-08-09",
+  "status": "correctness_pass_performance_regression",
+  "base_commit": "6374f753daf6d0968a4e0cb0a1eda37505ca055f",
+  "implementation_commit": "e6325d408e76a8267631d85be90b6c83d48fe2a9",
+  "validated_commit": "318f9e1f05a4017bbe3eaf713d33758b3330a490",
+  "precursor_audit_commit": "e2dfb15dc5e8",
+  "opcode": {
+    "number": 18,
+    "name": "INDIR_LD_VIRTUAL_INDEX_SCALAR",
+    "operation": "C[i] = A[B[i]] * scalar",
+    "datatype": "FP64",
+    "optype": "MUL",
+    "logical_entries_min": 1,
+    "logical_entries_max": 4096,
+    "generic_range_passes": false,
+    "index_partitions": 1,
+    "index_spd_payload_bytes": 0,
+    "result_spd_payload_bytes": 0,
+    "completion_token_bytes": 4
+  },
+  "matched_capacity_bytes": {
+    "metadata": {
+      "operation": 64,
+      "offset": 14336,
+      "row": 11520,
+      "feeder": 41,
+      "response": 194,
+      "alu_and_link": 33,
+      "combiner": 170,
+      "write": 81,
+      "completion": 12,
+      "total": 26451
+    },
+    "internal_payload": {
+      "feeder": 64,
+      "response": 4096,
+      "alu": 128,
+      "combiner": 1024,
+      "write": 512,
+      "total": 5824
+    },
+    "spd_payload": 0,
+    "semantic_total": 32275,
+    "exclusions": [
+      "C++ container nodes",
+      "allocator padding",
+      "SRAM periphery",
+      "ports",
+      "wires"
+    ]
+  },
+  "tiny_backpressure_capacity_bytes": {
+    "metadata": 60613,
+    "internal_payload": 296,
+    "spd_payload": 0
+  },
+  "traffic_bytes_20000": {
+    "b_memory": 80000,
+    "selected_a_memory": 160000,
+    "alu_result_link": 160000,
+    "c_writes": 160000,
+    "spd_payload": 0,
+    "non_spd_payload_total": 560000,
+    "removed_index_spd": 160000,
+    "removed_result_spd": 640000,
+    "removed_spd_total": 800000
+  },
+  "timed_control_bytes_20000": {
+    "native16x3": {
+      "chunks": 2,
+      "instructions": 8,
+      "descriptor_mmio": 192,
+      "bounds_register_mmio": 20,
+      "completion_reads": 4,
+      "total": 216
+    },
+    "zeropayload4x3": {
+      "chunks": 5,
+      "instructions": 5,
+      "descriptor_mmio": 200,
+      "bounds_register_mmio": 44,
+      "completion_reads": 10,
+      "total": 254
+    }
+  },
+  "tests": {
+    "source_contract_tests": 27,
+    "source_contract_status": "pass",
+    "asan_ubsan_unit_status": "pass",
+    "correctness_wall_seconds": 553.09,
+    "positive_cases": {
+      "suite": {
+        "logical_entries": 8240,
+        "descriptors": 6,
+        "errors": 0,
+        "direct_index_words": 8240,
+        "fused_alu_words": 8240,
+        "result_link_words": 8240,
+        "spd_read_cycles": 0,
+        "spd_write_cycles": 0,
+        "write_issues": 8240,
+        "write_acks": 8240
+      },
+      "split_4097": {
+        "logical_entries": 4097,
+        "descriptors": 2,
+        "errors": 0,
+        "direct_index_words": 4097,
+        "fused_alu_words": 4097,
+        "result_link_words": 4097,
+        "spd_read_cycles": 0,
+        "spd_write_cycles": 0,
+        "write_issues": 4097,
+        "write_acks": 4097
+      }
+    },
+    "expected_failure_exit_134": [
+      "single_descriptor_4097",
+      "a_c_alias",
+      "consumed_b_c_alias",
+      "live_drain",
+      "live_stats_reset"
+    ]
+  },
+  "build": {
+    "status": "pass",
+    "command": "scons build/X86/gem5.opt -j16",
+    "wall_seconds": 247.19,
+    "max_rss_kib": 10313108,
+    "gem5_sha256": "9cb0ce0b36c80da3d0e481f62e1accc3b736d0d921af78b07c4282bd18e6b3ff",
+    "native_guest_sha256": "4de8e68f6dc9b921e9b5990d41c3299628e50cbfbc7e251f3fe57db133b7b1cf",
+    "zero_payload_guest_sha256": "d639312e9985e992313e9dde8fc24cb4bcbf1afa02499ab3eb1256bcbce09861"
+  },
+  "matched_performance": {
+    "status": "pass_with_regression",
+    "input_sha256": "192d007a05e4af8ecc7a44e429a8b8cd5c1060ec52bf31539ff0aa0e364b655e",
+    "output_hash": "8118948097720528131",
+    "verified_length": 20000,
+    "result_scale": 3,
+    "seed": 1,
+    "native16x3_sim_ticks": 21443317,
+    "zeropayload4x3_sim_ticks": 51108831,
+    "native_over_zero_speedup": 0.419562,
+    "zero_over_native_ticks": 2.383439,
+    "zero_percent_more_ticks": 138.344,
+    "zero_payload_counters": {
+      "direct_index_words": 20000,
+      "fused_alu_words": 20000,
+      "result_link_words": 20000,
+      "spd_read_cycles": 0,
+      "spd_write_cycles": 0,
+      "write_issues": 2500,
+      "write_acks": 2500,
+      "maa_instructions": 5,
+      "stream_read_instructions": 0,
+      "stream_write_instructions": 0,
+      "separate_scalar_alu_instructions": 0
+    }
+  },
+  "evidence": {
+    "correctness": "/data1/nier/worktrees/codex-coordination/sessions/xrage-zero-payload-slice-20260809-003057-0dff8b0e/artifacts/correctness",
+    "matched": "/data1/nier/worktrees/codex-coordination/sessions/xrage-zero-payload-slice-20260809-003057-0dff8b0e/artifacts/matched",
+    "matched_summary": "/data1/nier/worktrees/codex-coordination/sessions/xrage-zero-payload-slice-20260809-003057-0dff8b0e/artifacts/matched/summary.tsv",
+    "production_build_log": "/data1/nier/worktrees/codex-coordination/sessions/xrage-zero-payload-slice-20260809-003057-0dff8b0e/artifacts/build/gem5_checkpoint_rebuild.log"
+  }
+}
