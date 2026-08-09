@@ -31,6 +31,8 @@
 
 #ifdef ONLY_GROUP_COUNT
 static const uint64_t group_counts[] = {ONLY_GROUP_COUNT};
+#elif UMT_ABI_VERSION == 4
+static const uint64_t group_counts[] = {1, 7, 8, 9, 31, 32};
 #else
 static const uint64_t group_counts[] = {1, 7, 8, 9, 31, 32, 33, 63, 64};
 #endif

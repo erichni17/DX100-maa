@@ -11,6 +11,7 @@ import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GROUP_COUNTS = [1, 7, 8, 9, 31, 32, 33, 63, 64]
+D32_GROUP_COUNTS = [group for group in GROUP_COUNTS if group <= 32]
 
 
 def sha256(path):
@@ -67,9 +68,11 @@ def compile_guest(source, binary, group_counts, abi_version):
     command.append(f"-DUMT_ABI_VERSION={abi_version}")
     if len(group_counts) == 1:
         command.append(f"-DONLY_GROUP_COUNT={group_counts[0]}")
-    elif group_counts != GROUP_COUNTS:
+    elif group_counts != (
+        D32_GROUP_COUNTS if abi_version == 4 else GROUP_COUNTS
+    ):
         raise RuntimeError(
-            "only one cold case or the exact full matrix is valid"
+            "only one cold case or the exact ABI matrix is valid"
         )
     command.extend([str(source), "-o", str(binary)])
     subprocess.run(command, check=True)
