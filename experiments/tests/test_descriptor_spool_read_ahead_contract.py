@@ -114,6 +114,16 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
         self.assertIn("DX100_A_SOURCE_ROUTING_ARGS_FILE", self.matrix)
         self.assertIn("arms+=(a_source_routing_4k)", self.matrix)
         self.assertIn("MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD=", self.matrix)
+        self.assertEqual(
+            self.matrix.count("MAA_REQUIRE_SOURCE_ISSUE_DIGEST=0"), 2
+        )
+        self.assertEqual(
+            self.matrix.count("MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1"), 3
+        )
+        self.assertIn(
+            'wait_all checkpoint "${checkpoint_jobs[@]}"', self.matrix
+        )
+        self.assertIn('wait_all arm "${arm_jobs[@]}"', self.matrix)
         for token in (
             "source_commit",
             "gem5_sha256",

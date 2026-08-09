@@ -111,9 +111,30 @@ create_checkpoint() {
     [[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' "$log") -eq 1 ]]
     checkpoint_identity "$checkpoint" "$out/checkpoints/${label}.identity.sha256"
 }
+wait_all() {
+    local phase=$1
+    shift
+    local failed=0
+    local job label pid status
+    for job in "$@"; do
+        label=${job%%:*}
+        pid=${job#*:}
+        if wait "$pid"; then
+            continue
+        fi
+        status=$?
+        printf '%s job %s (pid %s) failed with status %s\n' \
+            "$phase" "$label" "$pid" "$status" >&2
+        failed=1
+    done
+    return "$failed"
+}
+checkpoint_jobs=()
 for checkpoint in native16 native4 virtual4; do
-    create_checkpoint "$checkpoint"
+    create_checkpoint "$checkpoint" &
+    checkpoint_jobs+=("$checkpoint:$!")
 done
+wait_all checkpoint "${checkpoint_jobs[@]}"
 
 common=(
     DX100_FROZEN_RAMULATOR_LIBRARY="$ramulator"
@@ -121,7 +142,6 @@ common=(
     DX100_GEM5_SOURCE_COMMIT="$source_commit"
     DX100_GEM5_PROVENANCE_FILE="$out/input/gem5.provenance.txt"
     MAA_DEBUG_FLAGS=MAAVirtualTrace,MAAPhysicalRecordTrace,MAAIssueDigest
-    MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1
 )
 run_arm() {
     local label=$1
@@ -161,16 +181,23 @@ virtual_geometry=(
     MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=16
     MAA_REQUIRE_INDEX_FILTER_WAIT=1
 )
+arm_jobs=()
 run_arm native16 native_direct_16k native16 0 0 \
+    MAA_REQUIRE_SOURCE_ISSUE_DIGEST=0 \
     "${native_geometry[@]}" MAA_ROW_TABLE_ROWS_PER_SLICE=64 \
-    MAA_OFFSET_TABLE_ENTRIES=16384 MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384
+    MAA_OFFSET_TABLE_ENTRIES=16384 MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384 &
+arm_jobs+=("native16:$!")
 run_arm native4 native_direct_4k native4 0 0 \
+    MAA_REQUIRE_SOURCE_ISSUE_DIGEST=0 \
     "${native_geometry[@]}" MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
-    MAA_OFFSET_TABLE_ENTRIES=4096 MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096
+    MAA_OFFSET_TABLE_ENTRIES=4096 MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 &
+arm_jobs+=("native4:$!")
 run_arm resident_control_4k paged_4k virtual4 0 1 \
-    "${virtual_geometry[@]}"
+    MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1 "${virtual_geometry[@]}" &
+arm_jobs+=("resident_control_4k:$!")
 run_arm overlap_treatment_4k paged_4k virtual4 1 1 \
-    "${virtual_geometry[@]}"
+    MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1 "${virtual_geometry[@]}" &
+arm_jobs+=("overlap_treatment_4k:$!")
 
 arms=("${base_arms[@]}")
 if [[ -n $extra_a_args ]]; then
@@ -182,9 +209,11 @@ if [[ -n $extra_a_args ]]; then
     cp -- "$extra_a_args" "$out/input/a_source_routing.args"
     run_arm a_source_routing_4k paged_4k virtual4 1 1 \
         DX100_EXTRA_MAA_ARGS_FILE="$out/input/a_source_routing.args" \
-        "${virtual_geometry[@]}"
+        MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1 "${virtual_geometry[@]}" &
+    arm_jobs+=("a_source_routing_4k:$!")
     arms+=(a_source_routing_4k)
 fi
+wait_all arm "${arm_jobs[@]}"
 
 python3 "$validator" --mode control \
     --manifest "$out/resident_control_4k/manifest.txt" \
