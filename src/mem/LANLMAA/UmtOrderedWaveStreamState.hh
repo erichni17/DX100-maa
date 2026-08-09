@@ -743,12 +743,11 @@ class UmtOrderedWaveStreamStateModel
     DescriptorError latchedError = DescriptorError::None;
 };
 
-// The selected successor keeps eight divider lanes and 64-cycle latency, adds
-// a second in-flight slot per lane (II=32), and admits both returned D32 line
-// blocks concurrently. Global FP issue remains one and banks remain
-// single-ported.
+// The T32 resource treatment keeps eight divider lanes, II=32, one global FP
+// issue slot, and single-ported banks.  It doubles only the bounded compute
+// token capacity so two returned D64 line pairs can remain in flight.
 using UmtOrderedWaveStreamState =
-    UmtOrderedWaveStreamStateModel<16, 8, 32>;
+    UmtOrderedWaveStreamStateModel<32, 8, 32>;
 
 static_assert(UmtOrderedWaveStreamState::Banks == 4);
 static_assert(UmtOrderedWaveStreamState::RowsPerBank == 16);
@@ -758,16 +757,16 @@ static_assert(UmtOrderedWaveStreamState::ResidualBytes == 512);
 static_assert(
     UmtOrderedWaveStreamState::RepresentedTokenLogicalBitsFloor == 471);
 static_assert(
-    UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor == 655);
+    UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor == 657);
 static_assert(
     UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
 static_assert(
-    UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 977);
+    UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 978);
 static_assert(
-    UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 9451);
+    UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 16990);
 static_assert(
     UmtOrderedWaveStreamState::PhysicalStorePlusLogicalAuxiliaryBitsFloor ==
-        50411);
+        57950);
 
 } // namespace lanlmaa
 } // namespace gem5

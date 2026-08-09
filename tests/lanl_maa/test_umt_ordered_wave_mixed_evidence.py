@@ -91,7 +91,7 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             expected[
                 "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor"
             ],
-            50411,
+            57950,
         )
 
     @staticmethod
