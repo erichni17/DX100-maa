@@ -357,6 +357,8 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorUmtStateAllocatedBytes;
         statistics::Scalar descriptorUmtStatePhysicalBytes;
         statistics::Scalar descriptorUmtStateResidualBytes;
+        statistics::Scalar descriptorUmtStateAuxiliaryBitsFloor;
+        statistics::Scalar descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor;
         statistics::Scalar descriptorCompletionWrites;
         statistics::Scalar descriptorErrors;
         statistics::Scalar sharedOverlayModeAcquisitions;

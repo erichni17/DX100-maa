@@ -50,6 +50,12 @@ class UmtOrderedWaveStreamState
         UmtOrderedWaveMaximumGroups * 640;
     static constexpr size_t PhysicalBytes = PhysicalBits / 8;
     static constexpr size_t ResidualBytes = PhysicalBytes - AllocatedBytes;
+    // Logical lower bound for the eight FP tokens and bounded transient
+    // tags/data outside the paired store.  ECC and control implementation are
+    // deliberately excluded, so this must never be presented as a total.
+    static constexpr size_t AuxiliaryBitsFloor = 1972;
+    static constexpr size_t PhysicalPlusAuxiliaryBitsFloor =
+        PhysicalBits + AuxiliaryBitsFloor;
 
     struct Reservation
     {
@@ -689,6 +695,9 @@ static_assert(UmtOrderedWaveStreamState::RowsPerBank == 16);
 static_assert(UmtOrderedWaveStreamState::AllocatedBytes == 4608);
 static_assert(UmtOrderedWaveStreamState::PhysicalBytes == 5120);
 static_assert(UmtOrderedWaveStreamState::ResidualBytes == 512);
+static_assert(UmtOrderedWaveStreamState::AuxiliaryBitsFloor == 1972);
+static_assert(
+    UmtOrderedWaveStreamState::PhysicalPlusAuxiliaryBitsFloor == 42932);
 
 } // namespace lanlmaa
 } // namespace gem5

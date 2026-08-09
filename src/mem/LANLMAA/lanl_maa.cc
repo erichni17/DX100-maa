@@ -308,6 +308,12 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtStateResidualBytes,
                statistics::units::Byte::get(),
                "Unallocated bytes remaining in the paired UMT rows"),
+      ADD_STAT(descriptorUmtStateAuxiliaryBitsFloor,
+               statistics::units::Count::get(),
+               "Logical lower-bound transient UMT bits outside the store"),
+      ADD_STAT(descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor,
+               statistics::units::Count::get(),
+               "Paired-store physical bits plus the auxiliary logical floor"),
       ADD_STAT(descriptorCompletionWrites, statistics::units::Count::get(),
                "Completion-record writes acknowledged"),
       ADD_STAT(descriptorErrors, statistics::units::Count::get(),
@@ -3479,6 +3485,10 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
             UmtOrderedWaveStreamState::PhysicalBytes;
         stats.descriptorUmtStateResidualBytes =
             UmtOrderedWaveStreamState::ResidualBytes;
+        stats.descriptorUmtStateAuxiliaryBitsFloor =
+            UmtOrderedWaveStreamState::AuxiliaryBitsFloor;
+        stats.descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor =
+            UmtOrderedWaveStreamState::PhysicalPlusAuxiliaryBitsFloor;
         if (umtOrderedWave.abiVersion ==
                 UmtOrderedWaveD32DescriptorVersion) {
             ++stats.descriptorUmtD32Descriptors;

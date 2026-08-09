@@ -108,6 +108,8 @@ def validate(stats, group_counts, abi_version):
         "descriptorUmtStateAllocatedBytes": 4608,
         "descriptorUmtStatePhysicalBytes": 5120,
         "descriptorUmtStateResidualBytes": 512,
+        "descriptorUmtStateAuxiliaryBitsFloor": 1972,
+        "descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor": 42932,
         "descriptorUmtInputLineReads": 16 * packet_multipliers,
         "descriptorUmtFp64AddSubOperations": 8 * groups,
         "descriptorUmtFp64MultiplyOperations": 0,
