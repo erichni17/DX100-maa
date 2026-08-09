@@ -529,6 +529,7 @@ class LANLMAA : public ClockedObject
     bool umtMixedSidecarReadsQueued = false;
     UmtMixedCornerSidecarPortModel umtMixedSidecarPorts;
     UmtOrderedWaveStreamState umtOrderedWaveState;
+    bool umtOrderedWaveStateStatsRecorded = false;
     UmtOrderedWaveCompletionCursor umtOrderedWaveResultCursor;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;
@@ -628,6 +629,7 @@ class LANLMAA : public ClockedObject
     const UpdateEntry &umtMixedSidecarEntry(
         uint32_t context, uint32_t word) const;
     void clearUmtMixedSidecar();
+    void recordUmtOrderedWaveStreamStats();
     void progressUmtFusedCornerBatch();
     bool faceMinMaxDescriptor() const;
     UpdateKind configuredUpdateKind() const;

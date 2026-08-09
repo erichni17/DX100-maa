@@ -953,6 +953,7 @@ LANLMAA::rearmDescriptorEngine()
     umtMixedCornerActive = false;
     umtOrderedWaveActive = false;
     umtOrderedWaveState.clear();
+    umtOrderedWaveStateStatsRecorded = false;
     umtOrderedWaveResultCursor = UmtOrderedWaveCompletionCursor{};
     umtMixedSidecarReadsQueued = false;
     panic_if(umtMixedSidecarPorts.active() ||
@@ -1075,6 +1076,8 @@ LANLMAA::beginDescriptorErrorDrain(DescriptorError error)
                  descriptorState == DescriptorState::Completed ||
                  descriptorState == DescriptorState::Error,
              "LANLMAA began a descriptor error drain in a terminal state");
+
+    recordUmtOrderedWaveStreamStats();
 
     size_t bransonComputationsCancelled = 0;
     size_t bransonComputationsCancelledInFlight = 0;
@@ -2544,6 +2547,28 @@ LANLMAA::clearUmtMixedSidecar()
 }
 
 void
+LANLMAA::recordUmtOrderedWaveStreamStats()
+{
+    if (!umtOrderedWaveDescriptor() || umtOrderedWaveStateStatsRecorded)
+        return;
+
+    // A drain before the first token admission is a valid zero snapshot:
+    // clear() and value initialization reset every exported stream counter.
+    umtOrderedWaveStateStatsRecorded = true;
+    stats.descriptorUmtBatchCycles +=
+        umtOrderedWaveState.pipelineActiveCycles();
+    stats.descriptorUmtStateTokenHighWaterMark = std::max(
+        stats.descriptorUmtStateTokenHighWaterMark.value(),
+        static_cast<double>(umtOrderedWaveState.tokenHighWaterMark()));
+    stats.descriptorUmtStateTokenBackpressureEvents +=
+        umtOrderedWaveState.tokenBackpressure();
+    stats.descriptorUmtStateFpIssueStallCycles +=
+        umtOrderedWaveState.fpIssueStalls();
+    stats.descriptorUmtStateResultBankStallCycles +=
+        umtOrderedWaveState.resultBankStalls();
+}
+
+void
 LANLMAA::progressUmtFusedCornerBatch()
 {
     panic_if(!umtCornerDescriptor(),
@@ -2654,7 +2679,6 @@ LANLMAA::progressUmtFusedCornerBatch()
             operation.state = OperationState::UmtComputePending;
         }
         ++stats.descriptorUmtBatches;
-        stats.descriptorUmtBatchCycles += batchCycles;
         if (umtOrderedWaveDescriptor()) {
             panic_if(!waveSchedule,
                      "LANLMAA ordered-wave schedule became invalid");
@@ -2664,18 +2688,8 @@ LANLMAA::progressUmtFusedCornerBatch()
                 waveSchedule.operations.multiply;
             stats.descriptorUmtFp64DivideOperations +=
                 waveSchedule.operations.divide;
-            stats.descriptorUmtStateTokenHighWaterMark = std::max(
-                stats.descriptorUmtStateTokenHighWaterMark.value(),
-                static_cast<double>(
-                    umtOrderedWaveState.tokenHighWaterMark()));
-            stats.descriptorUmtStateTokenBackpressureEvents +=
-                umtOrderedWaveState.tokenBackpressure();
-            stats.descriptorUmtStateFpIssueStallCycles +=
-                umtOrderedWaveState.fpIssueStalls();
-            stats.descriptorUmtStateResultBankStallCycles +=
-                umtOrderedWaveState.bankConflicts() +
-                umtOrderedWaveState.writebackStalls();
         } else {
+            stats.descriptorUmtBatchCycles += batchCycles;
             stats.descriptorUmtFp64AddSubOperations +=
                 38 * operations.size();
             stats.descriptorUmtFp64MultiplyOperations +=
@@ -4444,6 +4458,7 @@ LANLMAA::beginDescriptorResults()
              "LANLMAA descriptor reached results with allocated lines");
     panic_if(!allUpdateEntriesFree(),
              "LANLMAA descriptor reached results with allocated updates");
+    recordUmtOrderedWaveStreamStats();
     descriptorResultCursor = 0;
     spartaFusedWriteChannel = 0;
     descriptorState = spartaFusedCellDescriptor() ?
@@ -5315,8 +5330,11 @@ LANLMAA::issueLines()
                         return operations[other.waiters.front()].
                             umtFusedReadStage >= UmtOrderedWaveCorners;
                     });
-                if (denominatorInFlight ||
-                    umtOrderedWaveState.availableTokens() < expected) {
+                if (denominatorInFlight) {
+                    continue;
+                }
+                if (umtOrderedWaveState.availableTokens() < expected) {
+                    umtOrderedWaveState.recordTokenCapacityBackpressure();
                     continue;
                 }
             }

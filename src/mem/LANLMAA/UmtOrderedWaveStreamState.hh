@@ -115,9 +115,11 @@ class UmtOrderedWaveStreamState
         multiplyNextIssue = 0;
         dividerNextIssue.fill(0);
         tokenBackpressureEvents = 0;
+        pipelineActiveCycleCount = 0;
         fpIssueStallCycles = 0;
         bankConflictCycles = 0;
         writebackStallCycles = 0;
+        resultBankStallCycleCount = 0;
         latchedError = DescriptorError::None;
     }
 
@@ -137,10 +139,23 @@ class UmtOrderedWaveStreamState
     size_t tokensInUse() const { return activeTokens; }
     size_t tokenHighWaterMark() const { return tokenHighWater; }
     uint64_t tokenBackpressure() const { return tokenBackpressureEvents; }
+    uint64_t pipelineActiveCycles() const
+    {
+        return pipelineActiveCycleCount;
+    }
     uint64_t fpIssueStalls() const { return fpIssueStallCycles; }
     uint64_t bankConflicts() const { return bankConflictCycles; }
     uint64_t writebackStalls() const { return writebackStallCycles; }
+    uint64_t resultBankStalls() const
+    {
+        return resultBankStallCycleCount;
+    }
     DescriptorError error() const { return latchedError; }
+
+    void recordTokenCapacityBackpressure()
+    {
+        ++tokenBackpressureEvents;
+    }
 
     Reservation enqueueDenominator(
         size_t operation, size_t group, size_t corner,
@@ -165,7 +180,6 @@ class UmtOrderedWaveStreamState
                 return token.phase == TokenPhase::Free;
             });
         if (iterator == tokens.end()) {
-            ++tokenBackpressureEvents;
             return {false, DescriptorError::None, 0, 0, 0, 0};
         }
         *iterator = {};
@@ -176,6 +190,7 @@ class UmtOrderedWaveStreamState
         iterator->denominatorInput = value;
         state |= BusyMask;
         ++activeTokens;
+        ++denominatorWords;
         tokenHighWater = std::max(tokenHighWater, activeTokens);
         return {true, DescriptorError::None, 0, 0, 0, 0};
     }
@@ -187,6 +202,12 @@ class UmtOrderedWaveStreamState
             result.error = latchedError;
             return result;
         }
+        if (activeTokens != 0)
+            ++pipelineActiveCycleCount;
+
+        bool bankConflictRecorded = false;
+        bool writebackStallRecorded = false;
+        bool resultBankStallRecorded = false;
 
         for (auto &token : tokens) {
             if (token.phase == TokenPhase::DenominatorAddWait &&
@@ -210,7 +231,14 @@ class UmtOrderedWaveStreamState
             } else if (token.phase == TokenPhase::EdgeAddWait &&
                        cycle >= token.readyCycle) {
                 if (!reserveNow(token.group, cycle, false, true)) {
-                    ++writebackStallCycles;
+                    if (!writebackStallRecorded) {
+                        ++writebackStallCycles;
+                        writebackStallRecorded = true;
+                    }
+                    if (!resultBankStallRecorded) {
+                        ++resultBankStallCycleCount;
+                        resultBankStallRecorded = true;
+                    }
                     continue;
                 }
                 word(token.group, token.destination) =
@@ -231,7 +259,14 @@ class UmtOrderedWaveStreamState
             if (token.phase != TokenPhase::ResultWritePending)
                 continue;
             if (!reserveNow(token.group, cycle, false, true)) {
-                ++writebackStallCycles;
+                if (!writebackStallRecorded) {
+                    ++writebackStallCycles;
+                    writebackStallRecorded = true;
+                }
+                if (!resultBankStallRecorded) {
+                    ++resultBankStallCycleCount;
+                    resultBankStallRecorded = true;
+                }
                 continue;
             }
             word(token.group, token.corner) =
@@ -280,7 +315,14 @@ class UmtOrderedWaveStreamState
                 if (lane == dividerNextIssue.size())
                     break;
                 if (!reserveNow(token.group, cycle, true, false)) {
-                    ++bankConflictCycles;
+                    if (!bankConflictRecorded) {
+                        ++bankConflictCycles;
+                        bankConflictRecorded = true;
+                    }
+                    if (!resultBankStallRecorded) {
+                        ++resultBankStallCycleCount;
+                        resultBankStallRecorded = true;
+                    }
                     break;
                 }
                 token.numerator = umtOrderedWaveStreamDecodeFp64(
@@ -316,7 +358,14 @@ class UmtOrderedWaveStreamState
                 if (cycle < addNextIssue)
                     break;
                 if (!reserveNow(token.group, cycle, true, false)) {
-                    ++bankConflictCycles;
+                    if (!bankConflictRecorded) {
+                        ++bankConflictCycles;
+                        bankConflictRecorded = true;
+                    }
+                    if (!resultBankStallRecorded) {
+                        ++resultBankStallCycleCount;
+                        resultBankStallRecorded = true;
+                    }
                     break;
                 }
                 token.updatedSource = umtOrderedWaveStreamDecodeFp64(
@@ -627,9 +676,11 @@ class UmtOrderedWaveStreamState
     uint64_t multiplyNextIssue = 0;
     std::array<uint64_t, 8> dividerNextIssue{};
     uint64_t tokenBackpressureEvents = 0;
+    uint64_t pipelineActiveCycleCount = 0;
     uint64_t fpIssueStallCycles = 0;
     uint64_t bankConflictCycles = 0;
     uint64_t writebackStallCycles = 0;
+    uint64_t resultBankStallCycleCount = 0;
     DescriptorError latchedError = DescriptorError::None;
 };
 

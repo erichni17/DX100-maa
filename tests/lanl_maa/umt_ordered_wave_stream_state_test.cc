@@ -116,6 +116,7 @@ tokenizedCase(size_t groups, bool dense = false)
     }
     assert(state.bindDescriptor(wave));
     cycle = state.readyCycle();
+    uint64_t activeCycleCalls = 0;
     for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
         size_t next = 0;
         size_t completed = 0;
@@ -126,7 +127,9 @@ tokenizedCase(size_t groups, bool dense = false)
                     umtOrderedWaveStreamEncodeFp64(1.0)).accepted);
                 ++next;
             }
+            assert(state.tokensInUse() != 0);
             const auto progress = state.cycle(cycle++);
+            ++activeCycleCalls;
             assert(progress.error == DescriptorError::None);
             completed += progress.completions;
         }
@@ -143,8 +146,92 @@ tokenizedCase(size_t groups, bool dense = false)
     }
     assert(state.tokenHighWaterMark() ==
            std::min(groups, UmtOrderedWaveStreamState::ComputeTokens));
+    assert(state.consumedDenominators() ==
+           groups * UmtOrderedWaveCorners);
+    assert(state.pipelineActiveCycles() == activeCycleCalls);
+    const uint64_t measuredActiveCycles = state.pipelineActiveCycles();
+    assert(state.cycle(cycle++).error == DescriptorError::None);
+    assert(state.pipelineActiveCycles() == measuredActiveCycles);
+    assert(state.bankConflicts() <= state.pipelineActiveCycles());
+    assert(state.writebackStalls() <= state.pipelineActiveCycles());
+    assert(state.resultBankStalls() <= state.pipelineActiveCycles());
+    assert(state.resultBankStalls() >= state.bankConflicts());
+    assert(state.resultBankStalls() >= state.writebackStalls());
+    assert(state.resultBankStalls() <=
+           state.bankConflicts() + state.writebackStalls());
     assert(state.tokenBackpressure() == 0);
     assert(state.error() == DescriptorError::None);
+}
+
+void
+capacityBackpressureCase()
+{
+    constexpr size_t groups = UmtOrderedWaveStreamState::ComputeTokens + 1;
+    UmtOrderedWaveStreamState state;
+    assert(state.consumedDenominators() == 0);
+    assert(state.pipelineActiveCycles() == 0);
+    assert(state.tokenBackpressure() == 0);
+    assert(state.resultBankStalls() == 0);
+    assert(state.configure(groups));
+    const auto wave = descriptor(groups);
+    uint64_t cycle = 0;
+    for (size_t source = 0; source < UmtOrderedWaveCorners; ++source) {
+        for (size_t group = 0; group < groups; ++group) {
+            assert(state.writeSource(
+                group, source,
+                umtOrderedWaveStreamEncodeFp64(4.0 + source + group),
+                cycle).accepted);
+        }
+        ++cycle;
+    }
+    assert(state.bindDescriptor(wave));
+    cycle = state.readyCycle();
+
+    for (size_t group = 0;
+         group < UmtOrderedWaveStreamState::ComputeTokens; ++group) {
+        assert(state.enqueueDenominator(
+            group, group, 0,
+            umtOrderedWaveStreamEncodeFp64(1.0)).accepted);
+    }
+    assert(state.availableTokens() == 0);
+    assert(state.consumedDenominators() ==
+           UmtOrderedWaveStreamState::ComputeTokens);
+    assert(state.tokenBackpressure() == 0);
+
+    const auto blocked = state.enqueueDenominator(
+        UmtOrderedWaveStreamState::ComputeTokens,
+        UmtOrderedWaveStreamState::ComputeTokens, 0,
+        umtOrderedWaveStreamEncodeFp64(1.0));
+    assert(!blocked.accepted);
+    assert(blocked.error == DescriptorError::None);
+    assert(state.consumedDenominators() ==
+           UmtOrderedWaveStreamState::ComputeTokens);
+    assert(state.tokenBackpressure() == 0);
+    state.recordTokenCapacityBackpressure();
+    assert(state.tokenBackpressure() == 1);
+
+    uint64_t activeCycleCalls = 0;
+    size_t completions = 0;
+    while (completions == 0) {
+        assert(state.tokensInUse() != 0);
+        const auto progress = state.cycle(cycle++);
+        ++activeCycleCalls;
+        assert(progress.error == DescriptorError::None);
+        completions += progress.completions;
+    }
+    assert(state.pipelineActiveCycles() == activeCycleCalls);
+    assert(state.availableTokens() != 0);
+    assert(state.enqueueDenominator(
+        UmtOrderedWaveStreamState::ComputeTokens,
+        UmtOrderedWaveStreamState::ComputeTokens, 0,
+        umtOrderedWaveStreamEncodeFp64(1.0)).accepted);
+    assert(state.consumedDenominators() == groups);
+
+    assert(state.configure(1));
+    assert(state.consumedDenominators() == 0);
+    assert(state.pipelineActiveCycles() == 0);
+    assert(state.tokenBackpressure() == 0);
+    assert(state.resultBankStalls() == 0);
 }
 
 } // anonymous namespace
@@ -161,6 +248,7 @@ main()
     tokenizedCase(8);
     tokenizedCase(16);
     tokenizedCase(64, true);
+    capacityBackpressureCase();
 
     UmtOrderedWaveStreamState invalid;
     assert(!invalid.configure(65));
