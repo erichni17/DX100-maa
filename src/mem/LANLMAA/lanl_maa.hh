@@ -25,6 +25,7 @@
 #include "mem/LANLMAA/UmtMixedCornerDescriptor.hh"
 #include "mem/LANLMAA/UmtMixedCornerScheduleModel.hh"
 #include "mem/LANLMAA/UmtOrderedWaveDescriptor.hh"
+#include "mem/LANLMAA/UmtOrderedWaveStreamState.hh"
 #include "mem/port.hh"
 #include "mem/tport.hh"
 #include "params/LANLMAA.hh"
@@ -338,6 +339,24 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorAddressesLoaded;
         statistics::Scalar descriptorResultWrites;
         statistics::Scalar descriptorUmtResultLineWrites;
+        statistics::Scalar descriptorUmtD32Descriptors;
+        statistics::Scalar descriptorUmtD64Descriptors;
+        statistics::Scalar descriptorUmtStateInputWrites;
+        statistics::Scalar descriptorUmtStateDenominatorsConsumed;
+        statistics::Scalar descriptorUmtStateResultWrites;
+        statistics::Scalar descriptorUmtStateResultReads;
+        statistics::Scalar descriptorUmtStateInputBankStallCycles;
+        statistics::Scalar descriptorUmtStateResultBankStallCycles;
+        statistics::Scalar descriptorUmtStateStoreHighWaterMark;
+        statistics::Scalar descriptorUmtStateBankHighWaterMark;
+        statistics::Scalar descriptorUmtStateCapacityErrors;
+        statistics::Scalar descriptorUmtStateTokenHighWaterMark;
+        statistics::Scalar descriptorUmtStateTokenBackpressureEvents;
+        statistics::Scalar descriptorUmtStateFpIssueStallCycles;
+        statistics::Scalar descriptorUmtInputLineHoldCycles;
+        statistics::Scalar descriptorUmtStateAllocatedBytes;
+        statistics::Scalar descriptorUmtStatePhysicalBytes;
+        statistics::Scalar descriptorUmtStateResidualBytes;
         statistics::Scalar descriptorCompletionWrites;
         statistics::Scalar descriptorErrors;
         statistics::Scalar sharedOverlayModeAcquisitions;
@@ -509,9 +528,7 @@ class LANLMAA : public ClockedObject
     bool umtOrderedWaveActive = false;
     bool umtMixedSidecarReadsQueued = false;
     UmtMixedCornerSidecarPortModel umtMixedSidecarPorts;
-    std::vector<UmtOrderedWaveRecord> umtOrderedWaveRecords;
-    std::vector<std::array<uint64_t, UmtOrderedWaveCorners>>
-        umtOrderedWaveResults;
+    UmtOrderedWaveStreamState umtOrderedWaveState;
     UmtOrderedWaveCompletionCursor umtOrderedWaveResultCursor;
     DescriptorError descriptorError = DescriptorError::None;
     uint32_t descriptorSlot = 0;

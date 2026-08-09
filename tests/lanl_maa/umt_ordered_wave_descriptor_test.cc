@@ -30,19 +30,23 @@ put(std::array<uint8_t, UmtOrderedWaveDescriptorBytes> &bytes,
 }
 
 std::array<uint8_t, UmtOrderedWaveDescriptorBytes>
-validBytes()
+validBytes(uint16_t version = UmtOrderedWaveD64DescriptorVersion)
 {
     std::array<uint8_t, UmtOrderedWaveDescriptorBytes> bytes{};
+    const bool d32 = version == UmtOrderedWaveD32DescriptorVersion;
     put(bytes, 0, DescriptorMagic, 4);
-    put(bytes, 4, UmtOrderedWaveDescriptorVersion, 2);
+    put(bytes, 4, version, 2);
     put(bytes, 6, UmtOrderedWaveOpcode, 1);
     put(bytes, 7, UmtOrderedWaveFlags, 1);
-    put(bytes, 8, UmtOrderedWaveMaximumGroups, 4);
-    put(bytes, 12, UmtOrderedWavePlaneStride, 4);
+    put(bytes, 8, d32 ? UmtOrderedWaveD32MaximumGroups :
+        UmtOrderedWaveMaximumGroups, 4);
+    put(bytes, 12, d32 ? UmtOrderedWaveD32PlaneStride :
+        UmtOrderedWavePlaneStride, 4);
     put(bytes, 16, 0x1000, 8);
     put(bytes, 24, 0x4000, 8);
     put(bytes, 32, 0x5000, 8);
-    put(bytes, 48, UmtOrderedWaveAbiFingerprint, 8);
+    put(bytes, 48, d32 ? UmtOrderedWaveD32AbiFingerprint :
+        UmtOrderedWaveAbiFingerprint, 8);
     put(bytes, 56, UmtOrderedWaveCorners, 4);
     std::array<double, UmtOrderedWaveDenseCoefficients> coefficients{};
     for (size_t corner = 0;
@@ -88,6 +92,8 @@ main()
     auto bytes = validBytes();
     auto decoded = decodeUmtOrderedWaveDescriptor(bytes);
     assert(decoded);
+    assert(decoded.descriptor.abiVersion ==
+           UmtOrderedWaveD64DescriptorVersion);
     const auto counts =
         umtOrderedWaveDependencyDag(decoded.descriptor).counts();
     assert(counts.divide == 8);
@@ -111,6 +117,19 @@ main()
     assert(cursor.group == UmtOrderedWaveMaximumGroups);
     assert(cursor.complete());
     assert(!cursor.advance(1, UmtOrderedWaveMaximumGroups));
+
+    auto d32Bytes = validBytes(UmtOrderedWaveD32DescriptorVersion);
+    auto d32Decoded = decodeUmtOrderedWaveDescriptor(d32Bytes);
+    assert(d32Decoded);
+    assert(d32Decoded.descriptor.abiVersion ==
+           UmtOrderedWaveD32DescriptorVersion);
+    assert(d32Decoded.descriptor.groupCount ==
+           UmtOrderedWaveD32MaximumGroups);
+    assert(d32Decoded.descriptor.recordStride ==
+           UmtOrderedWaveD32PlaneStride);
+    put(d32Bytes, 8, UmtOrderedWaveD32MaximumGroups + 1, 4);
+    assert(decodeUmtOrderedWaveDescriptor(d32Bytes).error ==
+           DescriptorError::TooManyItems);
 
     UmtOrderedWaveRecord record;
     for (size_t corner = 0; corner < UmtOrderedWaveCorners; ++corner) {
@@ -168,7 +187,7 @@ main()
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::TooManyItems);
     bytes = validBytes();
-    put(bytes, 4, UmtOrderedWaveDescriptorVersion - 1, 2);
+    put(bytes, 4, UmtOrderedWaveD32DescriptorVersion - 1, 2);
     assert(decodeUmtOrderedWaveDescriptor(bytes).error ==
            DescriptorError::BadVersion);
     bytes = validBytes();

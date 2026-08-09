@@ -254,6 +254,60 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtResultLineWrites,
                statistics::units::Count::get(),
                "UMT ordered-wave physical result packets acknowledged"),
+      ADD_STAT(descriptorUmtD32Descriptors,
+               statistics::units::Count::get(),
+               "Accepted UMT ordered-wave ABI-v4 D32 descriptors"),
+      ADD_STAT(descriptorUmtD64Descriptors,
+               statistics::units::Count::get(),
+               "Accepted UMT ordered-wave ABI-v5 D64 descriptors"),
+      ADD_STAT(descriptorUmtStateInputWrites,
+               statistics::units::Count::get(),
+               "Accepted source writes to the banked UMT stream store"),
+      ADD_STAT(descriptorUmtStateDenominatorsConsumed,
+               statistics::units::Count::get(),
+               "Denominator words admitted to bounded UMT FP tokens"),
+      ADD_STAT(descriptorUmtStateResultWrites,
+               statistics::units::Count::get(),
+               "Accepted writes to the banked UMT result state store"),
+      ADD_STAT(descriptorUmtStateResultReads,
+               statistics::units::Count::get(),
+               "Accepted reads from the banked UMT result state store"),
+      ADD_STAT(descriptorUmtStateInputBankStallCycles,
+               statistics::units::Cycle::get(),
+               "UMT input-state writes serialized by a single bank port"),
+      ADD_STAT(descriptorUmtStateResultBankStallCycles,
+               statistics::units::Cycle::get(),
+               "UMT result-state accesses serialized by a single bank port"),
+      ADD_STAT(descriptorUmtStateStoreHighWaterMark,
+               statistics::units::Count::get(),
+               "Maximum active groups in the fixed UMT state store"),
+      ADD_STAT(descriptorUmtStateBankHighWaterMark,
+               statistics::units::Count::get(),
+               "Maximum active group rows in one UMT state bank"),
+      ADD_STAT(descriptorUmtStateCapacityErrors,
+               statistics::units::Count::get(),
+               "Fail-closed UMT state-store capacity or index errors"),
+      ADD_STAT(descriptorUmtStateTokenHighWaterMark,
+               statistics::units::Count::get(),
+               "Maximum simultaneously occupied UMT stream FP tokens"),
+      ADD_STAT(descriptorUmtStateTokenBackpressureEvents,
+               statistics::units::Count::get(),
+               "UMT denominator admissions blocked by eight-token capacity"),
+      ADD_STAT(descriptorUmtStateFpIssueStallCycles,
+               statistics::units::Cycle::get(),
+               "Cycles with UMT stream tokens but no FP issue"),
+      ADD_STAT(descriptorUmtInputLineHoldCycles,
+               statistics::units::Cycle::get(),
+               "D64 input line cycles held for complete waiter coalescing"),
+      ADD_STAT(descriptorUmtStateAllocatedBytes,
+               statistics::units::Byte::get(),
+               "Fixed bytes allocated by the UMT in-place stream state"),
+      ADD_STAT(descriptorUmtStatePhysicalBytes,
+               statistics::units::Byte::get(),
+               "Physical bytes in the paired UMT operation/continuation rows"),
+      ADD_STAT(descriptorUmtStateResidualBytes,
+               statistics::units::Byte::get(),
+               "Unallocated bytes remaining in the paired UMT rows"),
       ADD_STAT(descriptorCompletionWrites, statistics::units::Count::get(),
                "Completion-record writes acknowledged"),
       ADD_STAT(descriptorErrors, statistics::units::Count::get(),
@@ -898,8 +952,7 @@ LANLMAA::rearmDescriptorEngine()
     umtFusedCornerPhase = UmtFusedCornerPhase::Inactive;
     umtMixedCornerActive = false;
     umtOrderedWaveActive = false;
-    umtOrderedWaveRecords.clear();
-    umtOrderedWaveResults.clear();
+    umtOrderedWaveState.clear();
     umtOrderedWaveResultCursor = UmtOrderedWaveCompletionCursor{};
     umtMixedSidecarReadsQueued = false;
     panic_if(umtMixedSidecarPorts.active() ||
@@ -1195,6 +1248,10 @@ void
 LANLMAA::issueResultWrite()
 {
     if (umtOrderedWaveDescriptor()) {
+        if (static_cast<uint64_t>(curCycle()) <
+                umtOrderedWaveState.readyCycle()) {
+            return;
+        }
         if (umtOrderedWaveResultCursor.complete()) {
             descriptorState = DescriptorState::CompletionPending;
             return;
@@ -1220,13 +1277,24 @@ LANLMAA::issueResultWrite()
                  byte += sizeof(uint64_t)) {
                 const size_t group = descriptorResultCursor +
                     byte / sizeof(uint64_t);
+                uint64_t value = 0;
+                const auto reservation = umtOrderedWaveState.readResult(
+                    group, umtOrderedWaveResultCursor.corner,
+                    static_cast<uint64_t>(curCycle()), value);
+                panic_if(!reservation.accepted,
+                         "LANLMAA read invalid ordered-wave result state");
+                ++stats.descriptorUmtStateResultReads;
+                stats.descriptorUmtStateResultBankStallCycles +=
+                    reservation.stallCycles;
                 writeLe(
-                    data, byte,
-                    umtOrderedWaveResults[group]
-                        [umtOrderedWaveResultCursor.corner],
+                    data, byte, value,
                     sizeof(uint64_t));
             }
             tagRequest(resultPacket, TrafficKind::Result, &resultPacket);
+        }
+        if (static_cast<uint64_t>(curCycle()) <
+                umtOrderedWaveState.readyCycle()) {
+            return;
         }
         if (sendDescriptorPacket(resultPacket))
             descriptorState = DescriptorState::ResultInFlight;
@@ -1312,7 +1380,7 @@ LANLMAA::issueCompletionWrite()
         writeLe(
             data, 4,
             umtOrderedWaveDescriptor() ?
-                UmtOrderedWaveDescriptorVersion :
+                umtOrderedWave.abiVersion :
             umtMixedCornerDescriptor() ?
                 UmtMixedCornerDescriptorVersion :
             umtFusedCornerDescriptor() ? UmtFusedCornerDescriptorVersion :
@@ -2482,6 +2550,34 @@ LANLMAA::progressUmtFusedCornerBatch()
              "LANLMAA progressed an inactive UMT fused descriptor");
     const uint64_t cycle = static_cast<uint64_t>(curCycle());
     if (umtFusedCornerPhase == UmtFusedCornerPhase::Read) {
+        if (umtOrderedWaveDescriptor()) {
+            const auto progress = umtOrderedWaveState.cycle(cycle);
+            if (progress.error != DescriptorError::None) {
+                ++stats.descriptorUmtStateCapacityErrors;
+                beginDescriptorErrorDrain(progress.error);
+                return;
+            }
+            for (size_t completion = 0;
+                 completion < progress.completions; ++completion) {
+                const size_t index =
+                    progress.completedOperations[completion];
+                panic_if(index >= operations.size(),
+                         "LANLMAA UMT token completed an invalid operation");
+                auto &operation = operations[index];
+                panic_if(operation.state != OperationState::UmtComputePending,
+                         "LANLMAA UMT token completed an inactive operation");
+                ++operation.umtFusedReadStage;
+                ++stats.descriptorUmtStateResultWrites;
+                if (operation.umtFusedReadStage ==
+                        UmtOrderedWaveRecordFp64Words) {
+                    operation.state = OperationState::UmtComputeReady;
+                    ++stats.descriptorUmtGroupsLoaded;
+                } else {
+                    operation.address = umtFusedCornerReadAddress(operation);
+                    operation.state = OperationState::AddressReady;
+                }
+            }
+        }
         if (umtMixedCornerDescriptor()) {
             const auto sidecarCycle = umtMixedSidecarPorts.cycle();
             for (const auto &request : sidecarCycle.served) {
@@ -2530,6 +2626,11 @@ LANLMAA::progressUmtFusedCornerBatch()
                 })) {
             return;
         }
+        if (umtOrderedWaveDescriptor() &&
+            (umtOrderedWaveState.tokensInUse() != 0 ||
+             cycle < umtOrderedWaveState.readyCycle())) {
+            return;
+        }
         panic_if(std::any_of(
                      lines.begin(), lines.end(), [](const LineEntry &line) {
                          return line.state != LineState::Free;
@@ -2542,7 +2643,7 @@ LANLMAA::progressUmtFusedCornerBatch()
             umtOrderedWaveSchedule(umtOrderedWave) :
             UmtFp64ScheduleResult{};
         const uint64_t batchCycles = umtOrderedWaveDescriptor() ?
-            waveSchedule.makespanCycles : umtFusedCornerBatchCycles(groups);
+            1 : umtFusedCornerBatchCycles(groups);
         panic_if(batchCycles == 0 ||
                      cycle >
                          std::numeric_limits<uint64_t>::max() - batchCycles,
@@ -2563,6 +2664,17 @@ LANLMAA::progressUmtFusedCornerBatch()
                 waveSchedule.operations.multiply;
             stats.descriptorUmtFp64DivideOperations +=
                 waveSchedule.operations.divide;
+            stats.descriptorUmtStateTokenHighWaterMark = std::max(
+                stats.descriptorUmtStateTokenHighWaterMark.value(),
+                static_cast<double>(
+                    umtOrderedWaveState.tokenHighWaterMark()));
+            stats.descriptorUmtStateTokenBackpressureEvents +=
+                umtOrderedWaveState.tokenBackpressure();
+            stats.descriptorUmtStateFpIssueStallCycles +=
+                umtOrderedWaveState.fpIssueStalls();
+            stats.descriptorUmtStateResultBankStallCycles +=
+                umtOrderedWaveState.bankConflicts() +
+                umtOrderedWaveState.writebackStalls();
         } else {
             stats.descriptorUmtFp64AddSubOperations +=
                 38 * operations.size();
@@ -2589,20 +2701,9 @@ LANLMAA::progressUmtFusedCornerBatch()
         panic_if(operation.state != OperationState::UmtComputePending,
                  "LANLMAA UMT fused batch lost a pending context");
         if (umtOrderedWaveDescriptor()) {
-            const auto result = executeUmtOrderedWave(
-                umtOrderedWave,
-                umtOrderedWaveRecords[operation.umtFusedGroup]);
-            if (!result) {
-                beginDescriptorErrorDrain(result.error);
-                return;
-            }
-            for (size_t corner = 0; corner < UmtOrderedWaveCorners;
-                 ++corner) {
-                umtOrderedWaveResults[operation.umtFusedGroup][corner] =
-                    encodeDouble(result.flux[corner]);
-            }
-            results.push_back(
-                umtOrderedWaveResults[operation.umtFusedGroup][0]);
+            panic_if(!umtOrderedWaveState.complete(),
+                     "LANLMAA retired an incomplete ordered-wave stream");
+            results.push_back(0);
         } else if (umtMixedCornerDescriptor()) {
             UmtMixedCornerRetained retained;
             retained.source = decodeDouble(operation.umtFusedValues[0]);
@@ -3348,11 +3449,38 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
         descriptor.resultVector = umtOrderedWave.resultBase;
         descriptor.completionRecord = umtOrderedWave.completionRecord;
         operations.assign(umtOrderedWave.groupCount, Operation{});
-        umtOrderedWaveRecords.assign(
-            umtOrderedWave.groupCount, UmtOrderedWaveRecord{});
-        umtOrderedWaveResults.assign(
-            umtOrderedWave.groupCount,
-            std::array<uint64_t, UmtOrderedWaveCorners>{});
+        if (!umtOrderedWaveState.configure(umtOrderedWave.groupCount)) {
+            ++stats.descriptorUmtStateCapacityErrors;
+            rejectDescriptor(DescriptorError::TooManyItems);
+            return true;
+        }
+        if (!umtOrderedWaveState.bindDescriptor(umtOrderedWave)) {
+            ++stats.descriptorUmtStateCapacityErrors;
+            rejectDescriptor(DescriptorError::BadStartState);
+            return true;
+        }
+        stats.descriptorUmtStateAllocatedBytes =
+            UmtOrderedWaveStreamState::AllocatedBytes;
+        stats.descriptorUmtStatePhysicalBytes =
+            UmtOrderedWaveStreamState::PhysicalBytes;
+        stats.descriptorUmtStateResidualBytes =
+            UmtOrderedWaveStreamState::ResidualBytes;
+        if (umtOrderedWave.abiVersion ==
+                UmtOrderedWaveD32DescriptorVersion) {
+            ++stats.descriptorUmtD32Descriptors;
+        } else {
+            ++stats.descriptorUmtD64Descriptors;
+        }
+        if (umtOrderedWaveState.highWater() >
+                stats.descriptorUmtStateStoreHighWaterMark.value()) {
+            stats.descriptorUmtStateStoreHighWaterMark =
+                umtOrderedWaveState.highWater();
+        }
+        if (umtOrderedWaveState.bankHighWater() >
+                stats.descriptorUmtStateBankHighWaterMark.value()) {
+            stats.descriptorUmtStateBankHighWaterMark =
+                umtOrderedWaveState.bankHighWater();
+        }
         for (size_t group = 0; group < operations.size(); ++group) {
             auto &operation = operations[group];
             operation.umtFusedGroup = group;
@@ -5169,8 +5297,29 @@ LANLMAA::issueLines()
                             line.lineAddress,
                     "LANLMAA ordered-wave line mixed input planes");
             }
-            if (line.waiters.size() != expected)
+            if (umtOrderedWave.abiVersion ==
+                    UmtOrderedWaveD64DescriptorVersion &&
+                line.waiters.size() != expected) {
+                ++stats.descriptorUmtInputLineHoldCycles;
                 continue;
+            }
+            if (first.umtFusedReadStage >= UmtOrderedWaveCorners) {
+                const bool denominatorInFlight = std::any_of(
+                    lines.begin(), lines.end(),
+                    [&line, this](const LineEntry &other) {
+                        if (&other == &line ||
+                            other.state != LineState::InFlight ||
+                            other.waiters.empty()) {
+                            return false;
+                        }
+                        return operations[other.waiters.front()].
+                            umtFusedReadStage >= UmtOrderedWaveCorners;
+                    });
+                if (denominatorInFlight ||
+                    umtOrderedWaveState.availableTokens() < expected) {
+                    continue;
+                }
+            }
         }
         if (rejectedPacket && line.packet != rejectedPacket) {
             continue;
@@ -5421,22 +5570,42 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                      "LANLMAA read an invalid UMT fused input stage");
             DescriptorError error = DescriptorError::None;
             uint8_t inputWordsConsumed = 1;
+            bool tokenPending = false;
             if (umtOrderedWaveDescriptor()) {
-                auto &record =
-                    umtOrderedWaveRecords[operation.umtFusedGroup];
                 uint64_t bits = 0;
                 std::memcpy(&bits, data + offset, sizeof(bits));
                 const double input = decodeDouble(bits);
                 ++stats.descriptorUmtInputReads;
                 if (!std::isfinite(input)) {
                     error = DescriptorError::BadRecordValue;
-                } else if (operation.umtFusedReadStage <
-                               UmtOrderedWaveCorners) {
-                    record.source[operation.umtFusedReadStage] = input;
                 } else {
-                    record.sigtVolume[
-                        operation.umtFusedReadStage -
-                            UmtOrderedWaveCorners] = input;
+                    const bool sourceStage =
+                        operation.umtFusedReadStage <
+                            UmtOrderedWaveCorners;
+                    const auto reservation = sourceStage ?
+                        umtOrderedWaveState.writeSource(
+                            operation.umtFusedGroup,
+                            operation.umtFusedReadStage, bits,
+                            static_cast<uint64_t>(curCycle())) :
+                        umtOrderedWaveState.enqueueDenominator(
+                            operationIndex, operation.umtFusedGroup,
+                            operation.umtFusedReadStage -
+                                UmtOrderedWaveCorners,
+                            bits);
+                    if (!reservation.accepted) {
+                        ++stats.descriptorUmtStateCapacityErrors;
+                        error = reservation.error == DescriptorError::None ?
+                            DescriptorError::ContinuationExhausted :
+                            reservation.error;
+                    } else if (sourceStage) {
+                        ++stats.descriptorUmtStateInputWrites;
+                        stats.descriptorUmtStateInputBankStallCycles +=
+                            reservation.stallCycles;
+                    } else {
+                        ++stats.descriptorUmtStateDenominatorsConsumed;
+                        inputWordsConsumed = 0;
+                        tokenPending = true;
+                    }
                 }
             } else {
                 uint64_t bits = 0;
@@ -5540,7 +5709,9 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                 return true;
             }
             operation.umtFusedReadStage += inputWordsConsumed;
-            if (operation.umtFusedReadStage == inputStages) {
+            if (tokenPending) {
+                operation.state = OperationState::UmtComputePending;
+            } else if (operation.umtFusedReadStage == inputStages) {
                 operation.state = umtMixedCornerDescriptor() ?
                     OperationState::UmtSidecarPending :
                     OperationState::UmtComputeReady;

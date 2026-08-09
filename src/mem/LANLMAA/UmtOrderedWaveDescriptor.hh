@@ -15,7 +15,10 @@ namespace lanlmaa
 {
 
 constexpr size_t UmtOrderedWaveDescriptorBytes = 256;
-constexpr uint16_t UmtOrderedWaveDescriptorVersion = 5;
+constexpr uint16_t UmtOrderedWaveD32DescriptorVersion = 4;
+constexpr uint16_t UmtOrderedWaveD64DescriptorVersion = 5;
+constexpr uint16_t UmtOrderedWaveDescriptorVersion =
+    UmtOrderedWaveD64DescriptorVersion;
 constexpr uint8_t UmtOrderedWaveOpcode = 11;
 constexpr uint8_t UmtOrderedWaveEightCornerFlag = 1U << 0;
 constexpr uint8_t UmtOrderedWaveStructureOfArraysFlag = 1U << 1;
@@ -32,14 +35,20 @@ constexpr uint32_t UmtOrderedWaveResultBytes =
 // Opcode 11 may consume every existing operation and continuation entry.
 // This does not increase the line, update, or descriptor stores.
 constexpr uint32_t UmtOrderedWaveMaximumGroups = 64;
+constexpr uint32_t UmtOrderedWaveD32MaximumGroups = 32;
 constexpr uint32_t UmtOrderedWavePlaneStride =
     UmtOrderedWaveMaximumGroups * sizeof(uint64_t);
+constexpr uint32_t UmtOrderedWaveD32PlaneStride =
+    UmtOrderedWaveD32MaximumGroups * sizeof(uint64_t);
 constexpr uint64_t UmtOrderedWaveAbiFingerprint =
     0xd51dcb1df4ac9e64ULL;
+constexpr uint64_t UmtOrderedWaveD32AbiFingerprint =
+    0x9bafe2c1186d4075ULL;
 constexpr size_t UmtOrderedWaveSumAreaOffset = 168;
 
 struct UmtOrderedWaveDescriptor
 {
+    uint16_t abiVersion = 0;
     uint32_t groupCount = 0;
     uint32_t recordStride = 0;
     uint64_t recordBase = 0;
@@ -245,8 +254,9 @@ decodeUmtOrderedWaveDescriptor(
         result.error = DescriptorError::BadMagic;
         return result;
     }
-    if (descriptorReadLe16(bytes.data() + 4) !=
-        UmtOrderedWaveDescriptorVersion) {
+    const uint16_t abiVersion = descriptorReadLe16(bytes.data() + 4);
+    if (abiVersion != UmtOrderedWaveD32DescriptorVersion &&
+        abiVersion != UmtOrderedWaveD64DescriptorVersion) {
         result.error = DescriptorError::BadVersion;
         return result;
     }
@@ -259,6 +269,7 @@ decodeUmtOrderedWaveDescriptor(
         return result;
     }
     auto &descriptor = result.descriptor;
+    descriptor.abiVersion = abiVersion;
     descriptor.groupCount = descriptorReadLe32(bytes.data() + 8);
     descriptor.recordStride = descriptorReadLe32(bytes.data() + 12);
     descriptor.recordBase = descriptorReadLe64(bytes.data() + 16);
@@ -268,17 +279,24 @@ decodeUmtOrderedWaveDescriptor(
         result.error = DescriptorError::Empty;
         return result;
     }
-    if (descriptor.groupCount > UmtOrderedWaveMaximumGroups) {
+    const bool d32 = abiVersion == UmtOrderedWaveD32DescriptorVersion;
+    const uint32_t maximumGroups = d32 ?
+        UmtOrderedWaveD32MaximumGroups : UmtOrderedWaveMaximumGroups;
+    const uint32_t planeStride = d32 ?
+        UmtOrderedWaveD32PlaneStride : UmtOrderedWavePlaneStride;
+    const uint64_t abiFingerprint = d32 ?
+        UmtOrderedWaveD32AbiFingerprint : UmtOrderedWaveAbiFingerprint;
+    if (descriptor.groupCount > maximumGroups) {
         result.error = DescriptorError::TooManyItems;
         return result;
     }
-    if (descriptor.recordStride != UmtOrderedWavePlaneStride) {
+    if (descriptor.recordStride != planeStride) {
         result.error = DescriptorError::BadRecordGeometry;
         return result;
     }
     if (descriptorReadLe64(bytes.data() + 40) != 0 ||
         descriptorReadLe64(bytes.data() + 48) !=
-            UmtOrderedWaveAbiFingerprint ||
+            abiFingerprint ||
         descriptorReadLe32(bytes.data() + 56) != UmtOrderedWaveCorners) {
         result.error = DescriptorError::BadRecordValue;
         return result;

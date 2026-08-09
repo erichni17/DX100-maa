@@ -6,7 +6,23 @@
 #define RESULT_OFFSET UINT64_C(0x4000)
 #define COMPLETION_OFFSET UINT64_C(0x5000)
 #define CASE_STRIDE UINT64_C(0x6000)
+#ifndef UMT_ABI_VERSION
+#define UMT_ABI_VERSION 5
+#endif
+
+#if UMT_ABI_VERSION == 4
+#define PLANE_WORDS UINT64_C(32)
+#define DESCRIPTOR_MAGIC UINT64_C(0x030b000431414d4c)
+#define COMPLETION_MAGIC UINT64_C(0x000b000443414d4c)
+#define ABI_FINGERPRINT UINT64_C(0x9bafe2c1186d4075)
+#elif UMT_ABI_VERSION == 5
 #define PLANE_WORDS UINT64_C(64)
+#define DESCRIPTOR_MAGIC UINT64_C(0x030b000531414d4c)
+#define COMPLETION_MAGIC UINT64_C(0x000b000543414d4c)
+#define ABI_FINGERPRINT UINT64_C(0xd51dcb1df4ac9e64)
+#else
+#error "UMT_ABI_VERSION must be 4 or 5"
+#endif
 #define CORNERS UINT64_C(8)
 #define INPUT_PLANES UINT64_C(16)
 #define DESCRIPTOR_WORDS UINT64_C(32)
@@ -69,12 +85,12 @@ _start(void)
         for (uint64_t word = 0; word < DESCRIPTOR_WORDS; ++word) {
             descriptor[word] = 0;
         }
-        descriptor[0] = UINT64_C(0x030b000531414d4c);
-        descriptor[1] = (UINT64_C(512) << 32) | groups;
+        descriptor[0] = DESCRIPTOR_MAGIC;
+        descriptor[1] = (PLANE_WORDS * UINT64_C(8) << 32) | groups;
         descriptor[2] = UINT64_C(0x10001000) + case_offset;
         descriptor[3] = UINT64_C(0x10004000) + case_offset;
         descriptor[4] = UINT64_C(0x10005000) + case_offset;
-        descriptor[6] = UINT64_C(0xd51dcb1df4ac9e64);
+        descriptor[6] = ABI_FINGERPRINT;
         descriptor[7] = CORNERS;
         for (uint64_t corner = 0; corner < CORNERS; ++corner) {
             descriptor[21 + corner] = double_bits(1.0);
@@ -121,7 +137,7 @@ _start(void)
             finish(UINT64_C(13));
         }
         fence();
-        if (completion[0] != UINT64_C(0x000b000543414d4c) ||
+        if (completion[0] != COMPLETION_MAGIC ||
             completion[1] != 0 || completion[2] != groups ||
             completion[3] != groups * CORNERS) {
             finish(UINT64_C(40) + case_index);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, run, and fail-closed validate the ABI-v5 UMT64 poison-tail smoke."""
+"""Build, run, and fail-closed validate the dual-ABI UMT poison-tail smoke."""
 
 import argparse
 import hashlib
@@ -43,7 +43,7 @@ def read_stats(path):
     return stats
 
 
-def compile_guest(source, binary, group_counts):
+def compile_guest(source, binary, group_counts, abi_version):
     compiler = shutil.which("cc")
     if not compiler:
         raise RuntimeError("UMT64 poison-tail smoke requires cc")
@@ -64,15 +64,18 @@ def compile_guest(source, binary, group_counts):
         "-Wl,--build-id=none",
         "-Wl,-e,_start",
     ]
+    command.append(f"-DUMT_ABI_VERSION={abi_version}")
     if len(group_counts) == 1:
         command.append(f"-DONLY_GROUP_COUNT={group_counts[0]}")
     elif group_counts != GROUP_COUNTS:
-        raise RuntimeError("only one cold case or the exact full matrix is valid")
+        raise RuntimeError(
+            "only one cold case or the exact full matrix is valid"
+        )
     command.extend([str(source), "-o", str(binary)])
     subprocess.run(command, check=True)
 
 
-def validate(stats, group_counts):
+def validate(stats, group_counts, abi_version):
     groups = sum(group_counts)
     packet_multipliers = sum((group + 7) // 8 for group in group_counts)
     expected = {
@@ -81,10 +84,24 @@ def validate(stats, group_counts):
         "descriptorFetches": 4 * len(group_counts),
         "descriptorResultWrites": 8 * groups,
         "descriptorUmtResultLineWrites": 8 * packet_multipliers,
+        "descriptorUmtD32Descriptors": (
+            len(group_counts) if abi_version == 4 else 0
+        ),
+        "descriptorUmtD64Descriptors": (
+            len(group_counts) if abi_version == 5 else 0
+        ),
         "descriptorCompletionWrites": len(group_counts),
         "descriptorErrors": 0,
         "descriptorUmtGroupsLoaded": groups,
         "descriptorUmtInputReads": 16 * groups,
+        "descriptorUmtStateInputWrites": 8 * groups,
+        "descriptorUmtStateDenominatorsConsumed": 8 * groups,
+        "descriptorUmtStateResultWrites": 8 * groups,
+        "descriptorUmtStateResultReads": 8 * groups,
+        "descriptorUmtStateCapacityErrors": 0,
+        "descriptorUmtStateAllocatedBytes": 4608,
+        "descriptorUmtStatePhysicalBytes": 5120,
+        "descriptorUmtStateResidualBytes": 512,
         "descriptorUmtInputLineReads": 16 * packet_multipliers,
         "descriptorUmtFp64AddSubOperations": 8 * groups,
         "descriptorUmtFp64MultiplyOperations": 0,
@@ -108,7 +125,16 @@ def validate(stats, group_counts):
             "UMT64 poison-tail line-table high-water is absent or outside "
             f"the 32-entry capacity: {line_high_water}"
         )
-    bounded = {"lineTableHighWaterMark": line_high_water}
+    token_high_water = stats.get("descriptorUmtStateTokenHighWaterMark")
+    if token_high_water is None or not 0 < token_high_water <= 8:
+        raise RuntimeError(
+            "UMT token high-water is absent or outside capacity: "
+            f"{token_high_water}"
+        )
+    bounded = {
+        "lineTableHighWaterMark": line_high_water,
+        "descriptorUmtStateTokenHighWaterMark": token_high_water,
+    }
     for name in (
         "controlReadRequests",
         "controlStatusReads",
@@ -132,6 +158,7 @@ def main():
     parser.add_argument("--output-root", required=True, type=pathlib.Path)
     parser.add_argument("--expected-gem5-sha256", required=True)
     parser.add_argument("--expected-gem5-source-commit", required=True)
+    parser.add_argument("--abi-version", type=int, choices=(4, 5), default=5)
     parser.add_argument(
         "--group-counts",
         default=",".join(map(str, GROUP_COUNTS)),
@@ -148,7 +175,11 @@ def main():
         or len(set(group_counts)) != len(group_counts)
         or not set(group_counts).issubset(GROUP_COUNTS)
     ):
-        raise RuntimeError("group counts are empty, duplicated, or outside the gate")
+        raise RuntimeError(
+            "group counts are empty, duplicated, or outside the gate"
+        )
+    if args.abi_version == 4 and max(group_counts) > 32:
+        raise RuntimeError("ABI v4 poison-tail cases may not exceed 32 groups")
 
     if args.output_root.exists():
         raise RuntimeError(f"refusing to overwrite {args.output_root}")
@@ -203,10 +234,13 @@ def main():
 
     args.output_root.mkdir(parents=False)
     binary = args.output_root / "umt64_poison_tail.elf"
-    compile_guest(args.source.resolve(), binary, group_counts)
+    compile_guest(
+        args.source.resolve(), binary, group_counts, args.abi_version
+    )
     metadata = {
         "schema": "lanl-maa-umt64-poison-tail-v1",
         "group_counts": group_counts,
+        "abi_version": args.abi_version,
         "sum_groups": sum(group_counts),
         "inactive_record_bits": "0x7ff0000000000001",
         "inactive_result_bits": "0xdeadbeefcafef00d",
@@ -241,7 +275,9 @@ def main():
     if "LANLMAA_UMT64_POISON_TAIL_TERMINAL code=0" not in completed.stdout:
         raise RuntimeError("gem5 output lacks the exact poison-tail terminal")
     stats_path = outdir / "stats.txt"
-    expected_stats, bounded_stats = validate(read_stats(stats_path), group_counts)
+    expected_stats, bounded_stats = validate(
+        read_stats(stats_path), group_counts, args.abi_version
+    )
     report = {
         **metadata,
         "status": "passed",
@@ -254,8 +290,9 @@ def main():
         "stdout_sha256": sha256(args.output_root / "stdout.log"),
         "stderr_sha256": sha256(args.output_root / "stderr.log"),
         "claim_boundary": (
-            "Live ABI-v5 functional full/partial-tail evidence only; no "
-            "physical-storage, timing, energy, or application-speedup claim."
+            "Live dual-ABI functional, bounded-store, token, and stall-counter "
+            "evidence; no application-speedup, energy, RTL, or physical-design "
+            "claim."
         ),
     }
     report_path = args.output_root / "report.json"

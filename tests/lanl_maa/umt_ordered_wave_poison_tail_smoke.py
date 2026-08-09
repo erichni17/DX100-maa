@@ -1,4 +1,4 @@
-"""Run the ABI-v5 UMT64 full/partial poison-tail CPU smoke."""
+"""Run the dual-ABI UMT ordered-wave full/partial poison-tail CPU smoke."""
 
 import argparse
 import json
@@ -61,6 +61,10 @@ if (
     or not set(metadata["group_counts"]).issubset(allowed_group_counts)
 ):
     raise ValueError("UMT64 poison-tail group matrix changed")
+if metadata.get("abi_version") not in (4, 5):
+    raise ValueError("UMT poison-tail ABI version is invalid")
+if metadata["abi_version"] == 4 and max(metadata["group_counts"]) > 32:
+    raise ValueError("UMT ABI-v4 poison-tail group count exceeds D32")
 
 system = System(
     cache_line_size=64,

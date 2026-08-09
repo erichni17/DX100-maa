@@ -34,7 +34,11 @@ parser.add_argument("--app-stderr", required=True)
 parser.add_argument("--submission-report", required=True)
 parser.add_argument("--problem", choices=("1", "2"), required=True)
 parser.add_argument("--maa", action="store_true")
-parser.add_argument("--umt-mode", choices=("corner", "wave"), default="corner")
+parser.add_argument(
+    "--umt-mode",
+    choices=("corner", "wave", "wave_d32", "wave_d64", "wave_auto"),
+    default="corner",
+)
 parser.add_argument("--max-insts", type=int, default=0)
 parser.add_argument("--max-ticks", type=int, default=0)
 args = parser.parse_args()
@@ -148,11 +152,12 @@ process_environment = [
     "OMPI_MCA_shmem_mmap_backing_file_base_dir=/tmp",
 ]
 if args.maa:
-    mapping_cookie = (
-        "umt-lanl-maa-opcode11-wave-soa-arena-v5"
-        if args.umt_mode == "wave"
-        else "umt-lanl-maa-opcode10-mapped-v1"
-    )
+    if args.umt_mode == "corner":
+        mapping_cookie = "umt-lanl-maa-opcode10-mapped-v1"
+    elif args.umt_mode == "wave":
+        mapping_cookie = "umt-lanl-maa-opcode11-wave-soa-arena-v5"
+    else:
+        mapping_cookie = "umt-lanl-maa-opcode11-wave-soa-arena-adaptive-v1"
     process_environment.extend(
         [
             "LANL_MAA_UMT_SUBMIT=1",
