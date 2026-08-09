@@ -108,7 +108,7 @@ def validate(stats, group_counts, abi_version):
         "descriptorUmtStateAllocatedStoreBytes": 4608,
         "descriptorUmtStatePhysicalStoreBytes": 5120,
         "descriptorUmtStateResidualStoreBytes": 512,
-        "descriptorUmtStateTokenLogicalBitsFloor": 7536,
+        "descriptorUmtStateTokenLogicalBitsFloor": 15072,
         "descriptorUmtStateFunctionalControlLogicalBitsFloor": 657,
         "descriptorUmtStateBankSchedulerLogicalBitsFloor": 283,
         "descriptorUmtStateInstrumentationLogicalBitsFloor": 978,
