@@ -99,6 +99,26 @@ class DescriptorFilterAccountingTest(unittest.TestCase):
         )
         self.assertIsNotNone(re.search(expected, trace_line))
 
+    def test_matrix_uses_one_virtual_checkpoint_for_treatment_equivalence(
+        self,
+    ):
+        self.assertIn(
+            "for arm in native16 native4 virtual_4k; do",
+            self.matrix,
+        )
+        self.assertIn(
+            "run_arm base_replay_4k paged_4k virtual_4k virtual_4k",
+            self.matrix,
+        )
+        self.assertIn(
+            "run_arm descriptor_spool_4k paged_4k virtual_4k virtual_4k",
+            self.matrix,
+        )
+        self.assertIn(
+            "base_checkpoint_identity == $candidate_checkpoint_identity",
+            self.matrix,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

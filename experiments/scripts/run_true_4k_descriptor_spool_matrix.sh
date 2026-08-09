@@ -64,7 +64,7 @@ wait_all() {
 }
 
 checkpoint_pids=()
-for arm in native16 native4 base_replay_4k descriptor_spool_4k; do
+for arm in native16 native4 virtual_4k; do
     create_checkpoint "$arm" &
     checkpoint_pids+=("$!")
 done
@@ -78,11 +78,13 @@ common=(
 run_arm() {
     local label=$1
     local case_name=$2
-    shift 2
+    local checkpoint_label=$3
+    local selector_label=$4
+    shift 4
     env "${common[@]}" \
-        DX100_SHARED_CHECKPOINT_DIR="$out/checkpoints/$label" \
-        DX100_SHARED_TREATMENT_FILE="$out/${label}.treatment.txt" \
-        DX100_SHARED_CHECKPOINT_LOG="$out/checkpoints/${label}.log" \
+        DX100_SHARED_CHECKPOINT_DIR="$out/checkpoints/$checkpoint_label" \
+        DX100_SHARED_TREATMENT_FILE="$out/${selector_label}.treatment.txt" \
+        DX100_SHARED_CHECKPOINT_LOG="$out/checkpoints/${checkpoint_label}.log" \
         "$@" \
         "$root/experiments/scripts/run_virtual_tile_consumer_case.sh" \
         "$gem5" "$workload" "$case_name" "$out/$label" \
@@ -90,17 +92,17 @@ run_arm() {
 }
 
 arm_pids=()
-run_arm native16 native_direct_16k \
+run_arm native16 native_direct_16k native16 native16 \
     MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=64 \
     MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
     MAA_OFFSET_TABLE_ENTRIES=16384 MAA_OFFSET_TABLE_EPOCH_ENTRIES=16384 &
 arm_pids+=("$!")
-run_arm native4 native_direct_4k \
+run_arm native4 native_direct_4k native4 native4 \
     MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
     MAA_ROW_TABLE_ENTRIES_PER_SUBSLICE_ROW=8 \
     MAA_OFFSET_TABLE_ENTRIES=4096 MAA_OFFSET_TABLE_EPOCH_ENTRIES=4096 &
 arm_pids+=("$!")
-run_arm base_replay_4k paged_4k \
+run_arm base_replay_4k paged_4k virtual_4k virtual_4k \
     MAA_DEBUG_FLAGS=MAAVirtualTrace,MAAPhysicalRecordTrace \
     MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
     MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
@@ -112,7 +114,7 @@ run_arm base_replay_4k paged_4k \
     MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=16 \
     MAA_REQUIRE_INDEX_FILTER_WAIT=1 &
 arm_pids+=("$!")
-run_arm descriptor_spool_4k paged_4k \
+run_arm descriptor_spool_4k paged_4k virtual_4k virtual_4k \
     MAA_DEBUG_FLAGS=MAAVirtualTrace,MAAPhysicalRecordTrace \
     MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
     MAA_ROW_TABLE_SLICES=16 MAA_ROW_TABLE_ROWS_PER_SLICE=32 \
@@ -181,6 +183,15 @@ done
 
 base="$out/base_replay_4k/result.tsv"
 candidate="$out/descriptor_spool_4k/result.tsv"
+base_checkpoint=$(cat "$out/base_replay_4k/checkpoint.path")
+candidate_checkpoint=$(cat "$out/descriptor_spool_4k/checkpoint.path")
+base_checkpoint_identity=$(awk '{ print $1 }' \
+    "$out/base_replay_4k/shared_checkpoint_identity.sha256")
+candidate_checkpoint_identity=$(awk '{ print $1 }' \
+    "$out/descriptor_spool_4k/shared_checkpoint_identity.sha256")
+[[ $base_checkpoint == "$out/checkpoints/virtual_4k" ]]
+[[ $candidate_checkpoint == "$out/checkpoints/virtual_4k" ]]
+[[ $base_checkpoint_identity == $candidate_checkpoint_identity ]]
 [[ $(field physical_records "$base") -eq 16384 ]]
 [[ $(field physical_records "$candidate") -eq 16384 ]]
 [[ $(field physical_record_sha256 "$base") == \
