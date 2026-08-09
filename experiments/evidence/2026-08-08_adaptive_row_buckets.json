@@ -1,0 +1,1300 @@
+{
+  "claims": {
+    "core_maa_behavior_changed": false,
+    "hardware_feasibility": "selector state, scans, comparisons, skew fallback, and finite termination are modeled; timing/area synthesis is not",
+    "magic_oracle_boundaries": false,
+    "performance": false
+  },
+  "geometry": {
+    "active_reorder_metadata_elements": 4096,
+    "b_lines_per_full_scan": 1024,
+    "cache_line_bytes": 64,
+    "index_word_bytes": 4,
+    "logical_elements": 16384,
+    "minimum_capacity_passes": 4,
+    "selector_state_budget_bytes": 1024,
+    "source_elements": 2097152,
+    "source_lines": 262144,
+    "source_word_bytes": 8
+  },
+  "global_reject_conditions": [
+    "any pass population exceeds active reorder metadata capacity",
+    "any logical iteration is missing or assigned more than once",
+    "selector state exceeds the configured byte budget",
+    "boundary selection depends on an unmodeled offline oracle",
+    "recursive splitting lacks singleton-key termination",
+    "DRAM-row claims are requested without a matching authenticated physical trace"
+  ],
+  "input": {
+    "analyzed_elements": 16384,
+    "configuration_count": 1,
+    "declared_count": 1,
+    "frozen_sha256_expected": "7cb86c456e11f32ea4664510c43b519af6fac3e3bfa1bc86f95f330ca230c136",
+    "frozen_sha256_match": true,
+    "kernel": "Gather",
+    "path": "/data1/nier/dx100-runs/verified/2026-07-24-xrage-retirement-cache-cost-57b2ad3/inputs/benchmark/xrage_20k.json",
+    "pattern_elements": 20000,
+    "sha256": "7cb86c456e11f32ea4664510c43b519af6fac3e3bfa1bc86f95f330ca230c136"
+  },
+  "physical_grow_diagnostic": {
+    "grow_populations": [
+      {
+        "grow_addr": 13,
+        "population": 1785
+      },
+      {
+        "grow_addr": 14,
+        "population": 2058
+      },
+      {
+        "grow_addr": 15,
+        "population": 2026
+      },
+      {
+        "grow_addr": 16,
+        "population": 2028
+      },
+      {
+        "grow_addr": 17,
+        "population": 2026
+      },
+      {
+        "grow_addr": 18,
+        "population": 2027
+      },
+      {
+        "grow_addr": 19,
+        "population": 2028
+      },
+      {
+        "grow_addr": 20,
+        "population": 2026
+      },
+      {
+        "grow_addr": 21,
+        "population": 380
+      }
+    ],
+    "metric_boundary": "authenticated decoded physical admission coordinates; separate from frozen XRAGE and not DRAM command/timing evidence",
+    "policies": [
+      {
+        "accepted_for_hardware_bounded_execution": false,
+        "b_scan_model": {
+          "b_lines_per_full_scan": 1024,
+          "first_pass_scan_cycles_lower_bound": 16384,
+          "initial_first_pass_scans": 1,
+          "recursive_boundary_refinement_scans": 0,
+          "recursive_refinement_scan_cycles_lower_bound": 0,
+          "repeated_b_line_reads": 4096,
+          "replay_scan_cycles_lower_bound": 65536,
+          "replay_scans": 4,
+          "scan_cycles_lower_bound_at_one_word_per_cycle": 81920,
+          "selection_full_scans": 1,
+          "total_b_line_reads": 5120,
+          "total_full_scans": 5
+        },
+        "boundary_selection": {
+          "comparator_evaluations": 18,
+          "comparators": 2,
+          "cycles": 9,
+          "mechanism": "four equal-count ranges of observed whole grow values"
+        },
+        "capacity_elements": 4096,
+        "dram_row_summary": {
+          "available": true,
+          "cross_pass_duplicate_decoded_rows": 0,
+          "global_unique_decoded_rows": 129,
+          "not_command_metrics": true,
+          "sum_unique_decoded_rows_across_passes": 129
+        },
+        "kind": "physical_diagnostic_static_whole_grow_ranges",
+        "maximum_pass_population": 5869,
+        "name": "physical_static_four_unsplit_grow_ranges",
+        "pass_count": 4,
+        "pass_populations": [
+          5869,
+          4054,
+          4055,
+          2406
+        ],
+        "passes": [
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 568,
+              "unique_decoded_dram_rows": 46
+            },
+            "pass": 0,
+            "population": 5869,
+            "source_line_lower": 26944,
+            "source_line_reuse_hits": 2483,
+            "source_line_upper_inclusive": 32766,
+            "unique_source_lines": 3386
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 383,
+              "unique_decoded_dram_rows": 32
+            },
+            "pass": 1,
+            "population": 4054,
+            "source_line_lower": 32768,
+            "source_line_reuse_hits": 1687,
+            "source_line_upper_inclusive": 36863,
+            "unique_source_lines": 2367
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 383,
+              "unique_decoded_dram_rows": 32
+            },
+            "pass": 2,
+            "population": 4055,
+            "source_line_lower": 36864,
+            "source_line_reuse_hits": 1688,
+            "source_line_upper_inclusive": 40959,
+            "unique_source_lines": 2367
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 227,
+              "unique_decoded_dram_rows": 19
+            },
+            "pass": 3,
+            "population": 2406,
+            "source_line_lower": 40961,
+            "source_line_reuse_hits": 1003,
+            "source_line_upper_inclusive": 43390,
+            "unique_source_lines": 1403
+          }
+        ],
+        "policy_state": {
+          "charged_bytes": 18,
+          "components": {
+            "scan_and_pass_state": 9,
+            "three_grow_boundaries": 9
+          }
+        },
+        "reject_conditions": [
+          {
+            "code": "active_metadata_capacity_exceeded",
+            "detail": "maximum pass population 5869 exceeds 4096"
+          }
+        ],
+        "source_line_coalescing": {
+          "cross_pass_duplicate_line_requests": 0,
+          "global_unique_lines": 9523,
+          "population_minus_unique_line_requests": 6861,
+          "proxy_only": false,
+          "sum_unique_lines_across_passes": 9523
+        },
+        "status": "REJECT"
+      },
+      {
+        "accepted_for_hardware_bounded_execution": true,
+        "b_scan_model": {
+          "b_lines_per_full_scan": 1024,
+          "first_pass_scan_cycles_lower_bound": 16384,
+          "initial_first_pass_scans": 1,
+          "recursive_boundary_refinement_scans": 0,
+          "recursive_refinement_scan_cycles_lower_bound": 0,
+          "repeated_b_line_reads": 5120,
+          "replay_scan_cycles_lower_bound": 81920,
+          "replay_scans": 5,
+          "scan_cycles_lower_bound_at_one_word_per_cycle": 98304,
+          "selection_full_scans": 1,
+          "total_b_line_reads": 6144,
+          "total_full_scans": 6
+        },
+        "boundary_selection": {
+          "comparator_evaluations": 512,
+          "comparators": 2,
+          "cycles": 256,
+          "mechanism": "greedy adjacent whole-grow packing from histogram counts"
+        },
+        "capacity_elements": 4096,
+        "dram_row_summary": {
+          "available": true,
+          "cross_pass_duplicate_decoded_rows": 0,
+          "global_unique_decoded_rows": 129,
+          "not_command_metrics": true,
+          "sum_unique_decoded_rows_across_passes": 129
+        },
+        "finite_model_crosscheck": {
+          "a_line_requests": 9523,
+          "capacity_drains": 0,
+          "drain_reasons": {
+            "line_word_limit": 0,
+            "offset_limit": 0,
+            "row_slot_limit": 0
+          },
+          "epochs": 5,
+          "evidence_class": "analytical_finite_table_replay_on_authenticated_physical_records",
+          "gem5_timing_evidence": false,
+          "geometry": {
+            "line_entries": 4096,
+            "line_word_limit": 480,
+            "lines_per_row": 8,
+            "offset_entries": 4096,
+            "rows_per_slice": 32,
+            "slices": 16
+          },
+          "peak_line_slots": 2366,
+          "peak_offsets": 4054,
+          "peak_row_slots": 310
+        },
+        "kind": "physical_diagnostic_online_indivisible_grow_packing",
+        "maximum_pass_population": 4054,
+        "name": "physical_variable_pass_whole_grow_packing",
+        "pass_count": 5,
+        "pass_populations": [
+          3843,
+          4054,
+          4053,
+          4054,
+          380
+        ],
+        "passes": [
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 376,
+              "unique_decoded_dram_rows": 30
+            },
+            "pass": 0,
+            "population": 3843,
+            "source_line_lower": 26944,
+            "source_line_reuse_hits": 1639,
+            "source_line_upper_inclusive": 30719,
+            "unique_source_lines": 2204
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 383,
+              "unique_decoded_dram_rows": 32
+            },
+            "pass": 1,
+            "population": 4054,
+            "source_line_lower": 30720,
+            "source_line_reuse_hits": 1688,
+            "source_line_upper_inclusive": 34815,
+            "unique_source_lines": 2366
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 383,
+              "unique_decoded_dram_rows": 32
+            },
+            "pass": 2,
+            "population": 4053,
+            "source_line_lower": 34817,
+            "source_line_reuse_hits": 1687,
+            "source_line_upper_inclusive": 38910,
+            "unique_source_lines": 2366
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 383,
+              "unique_decoded_dram_rows": 32
+            },
+            "pass": 3,
+            "population": 4054,
+            "source_line_lower": 38912,
+            "source_line_reuse_hits": 1688,
+            "source_line_upper_inclusive": 43007,
+            "unique_source_lines": 2366
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 35,
+              "unique_decoded_dram_rows": 3
+            },
+            "pass": 4,
+            "population": 380,
+            "source_line_lower": 43008,
+            "source_line_reuse_hits": 159,
+            "source_line_upper_inclusive": 43390,
+            "unique_source_lines": 221
+          }
+        ],
+        "policy_state": {
+          "budget_bytes": 1024,
+          "charged_bytes": 574,
+          "components": {
+            "eight_whole_grow_pass_descriptors": 56,
+            "reused_256x16bit_histogram": 512,
+            "scan_cursor_selected_count_pass_flags": 6
+          }
+        },
+        "reject_conditions": [],
+        "source_line_coalescing": {
+          "cross_pass_duplicate_line_requests": 0,
+          "global_unique_lines": 9523,
+          "population_minus_unique_line_requests": 6861,
+          "proxy_only": false,
+          "sum_unique_lines_across_passes": 9523
+        },
+        "status": "ACCEPT",
+        "whole_grow_pass_descriptors": [
+          {
+            "grow_values": [
+              13,
+              14
+            ],
+            "pass": 0,
+            "population": 3843
+          },
+          {
+            "grow_values": [
+              15,
+              16
+            ],
+            "pass": 1,
+            "population": 4054
+          },
+          {
+            "grow_values": [
+              17,
+              18
+            ],
+            "pass": 2,
+            "population": 4053
+          },
+          {
+            "grow_values": [
+              19,
+              20
+            ],
+            "pass": 3,
+            "population": 4054
+          },
+          {
+            "grow_values": [
+              21
+            ],
+            "pass": 4,
+            "population": 380
+          }
+        ]
+      },
+      {
+        "accepted_for_hardware_bounded_execution": true,
+        "b_scan_model": {
+          "b_lines_per_full_scan": 1024,
+          "first_pass_scan_cycles_lower_bound": 16384,
+          "initial_first_pass_scans": 1,
+          "recursive_boundary_refinement_scans": 0,
+          "recursive_refinement_scan_cycles_lower_bound": 0,
+          "repeated_b_line_reads": 4096,
+          "replay_scan_cycles_lower_bound": 65536,
+          "replay_scans": 4,
+          "scan_cycles_lower_bound_at_one_word_per_cycle": 81920,
+          "selection_full_scans": 1,
+          "total_b_line_reads": 5120,
+          "total_full_scans": 5
+        },
+        "boundary_selection": {
+          "comparator_evaluations": 548,
+          "comparators": 2,
+          "cycles": 292,
+          "mechanism": "256-counter walk plus bounded best-fit pairing of eight main grows; stable logical-iteration occurrence quotas split only the tail grow"
+        },
+        "capacity_elements": 4096,
+        "dram_row_summary": {
+          "available": true,
+          "cross_pass_duplicate_decoded_rows": 7,
+          "global_unique_decoded_rows": 129,
+          "not_command_metrics": true,
+          "sum_unique_decoded_rows_across_passes": 136
+        },
+        "finite_model_crosscheck": {
+          "a_line_requests": 9582,
+          "capacity_drains": 0,
+          "drain_reasons": {
+            "line_word_limit": 0,
+            "offset_limit": 0,
+            "row_slot_limit": 0
+          },
+          "epochs": 4,
+          "evidence_class": "analytical_finite_table_replay_on_authenticated_physical_records",
+          "gem5_timing_evidence": false,
+          "geometry": {
+            "line_entries": 4096,
+            "line_word_limit": 480,
+            "lines_per_row": 8,
+            "offset_entries": 4096,
+            "rows_per_slice": 32,
+            "slices": 16
+          },
+          "peak_line_slots": 2409,
+          "peak_offsets": 4096,
+          "peak_row_slots": 317
+        },
+        "kind": "physical_diagnostic_online_paired_grow_plus_stable_tail_split",
+        "main_pair_populations": [
+          4086,
+          4055,
+          4052,
+          3811
+        ],
+        "maximum_pass_population": 4096,
+        "name": "physical_paired_grow_plus_tail_split_four_pass",
+        "pass_count": 4,
+        "pass_populations": [
+          4096,
+          4096,
+          4096,
+          4096
+        ],
+        "passes": [
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 387,
+              "unique_decoded_dram_rows": 33
+            },
+            "pass": 0,
+            "population": 4096,
+            "source_line_lower": 28673,
+            "source_line_reuse_hits": 1710,
+            "source_line_upper_inclusive": 43124,
+            "unique_source_lines": 2386
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 387,
+              "unique_decoded_dram_rows": 35
+            },
+            "pass": 1,
+            "population": 4096,
+            "source_line_lower": 36864,
+            "source_line_reuse_hits": 1688,
+            "source_line_upper_inclusive": 43390,
+            "unique_source_lines": 2408
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 388,
+              "unique_decoded_dram_rows": 35
+            },
+            "pass": 2,
+            "population": 4096,
+            "source_line_lower": 30720,
+            "source_line_reuse_hits": 1687,
+            "source_line_upper_inclusive": 43387,
+            "unique_source_lines": 2409
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 401,
+              "unique_decoded_dram_rows": 33
+            },
+            "pass": 3,
+            "population": 4096,
+            "source_line_lower": 26944,
+            "source_line_reuse_hits": 1717,
+            "source_line_upper_inclusive": 43390,
+            "unique_source_lines": 2379
+          }
+        ],
+        "policy_state": {
+          "budget_bytes": 1024,
+          "charged_bytes": 562,
+          "components": {
+            "four_range_and_occurrence_quota_descriptors": 44,
+            "reused_256x16bit_histogram": 512,
+            "scan_cursor_selected_count_pass_flags": 6
+          }
+        },
+        "reject_conditions": [],
+        "source_line_coalescing": {
+          "cross_pass_duplicate_line_requests": 59,
+          "global_unique_lines": 9523,
+          "population_minus_unique_line_requests": 6802,
+          "proxy_only": false,
+          "sum_unique_lines_across_passes": 9582
+        },
+        "split_grow_segments": [
+          {
+            "grow_value": 14,
+            "pass": 0,
+            "population": 2058,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 2058
+          },
+          {
+            "grow_value": 16,
+            "pass": 0,
+            "population": 2028,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 2028
+          },
+          {
+            "grow_value": 21,
+            "pass": 0,
+            "population": 10,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 10
+          },
+          {
+            "grow_value": 19,
+            "pass": 1,
+            "population": 2028,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 2028
+          },
+          {
+            "grow_value": 18,
+            "pass": 1,
+            "population": 2027,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 2027
+          },
+          {
+            "grow_value": 21,
+            "pass": 1,
+            "population": 41,
+            "stable_occurrence_begin": 10,
+            "stable_occurrence_end_exclusive": 51
+          },
+          {
+            "grow_value": 15,
+            "pass": 2,
+            "population": 2026,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 2026
+          },
+          {
+            "grow_value": 17,
+            "pass": 2,
+            "population": 2026,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 2026
+          },
+          {
+            "grow_value": 21,
+            "pass": 2,
+            "population": 44,
+            "stable_occurrence_begin": 51,
+            "stable_occurrence_end_exclusive": 95
+          },
+          {
+            "grow_value": 20,
+            "pass": 3,
+            "population": 2026,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 2026
+          },
+          {
+            "grow_value": 13,
+            "pass": 3,
+            "population": 1785,
+            "stable_occurrence_begin": 0,
+            "stable_occurrence_end_exclusive": 1785
+          },
+          {
+            "grow_value": 21,
+            "pass": 3,
+            "population": 285,
+            "stable_occurrence_begin": 95,
+            "stable_occurrence_end_exclusive": 380
+          }
+        ],
+        "status": "ACCEPT",
+        "tail_grow_value": 21,
+        "tail_occurrence_gaps": [
+          10,
+          41,
+          44,
+          285
+        ]
+      },
+      {
+        "accepted_for_hardware_bounded_execution": true,
+        "b_scan_model": {
+          "b_lines_per_full_scan": 1024,
+          "first_pass_scan_cycles_lower_bound": 0,
+          "initial_first_pass_scans": 0,
+          "recursive_boundary_refinement_scans": 0,
+          "recursive_refinement_scan_cycles_lower_bound": 0,
+          "repeated_b_line_reads": 0,
+          "replay_scan_cycles_lower_bound": 16384,
+          "replay_scans": 1,
+          "scan_cycles_lower_bound_at_one_word_per_cycle": 16384,
+          "selection_full_scans": 0,
+          "total_b_line_reads": 1024,
+          "total_full_scans": 1
+        },
+        "boundary_selection": {
+          "comparator_evaluations": 0,
+          "comparators": 0,
+          "cycles": 0,
+          "mechanism": "fixed 4096-iteration rollover"
+        },
+        "capacity_elements": 4096,
+        "dram_row_summary": {
+          "available": true,
+          "cross_pass_duplicate_decoded_rows": 387,
+          "global_unique_decoded_rows": 129,
+          "not_command_metrics": true,
+          "sum_unique_decoded_rows_across_passes": 516
+        },
+        "finite_model_crosscheck": {
+          "a_line_requests": 16384,
+          "capacity_drains": 4,
+          "drain_reasons": {
+            "line_word_limit": 0,
+            "offset_limit": 0,
+            "row_slot_limit": 4
+          },
+          "epochs": 8,
+          "evidence_class": "analytical_finite_table_replay_on_authenticated_physical_records",
+          "gem5_timing_evidence": false,
+          "geometry": {
+            "line_entries": 4096,
+            "line_word_limit": 480,
+            "lines_per_row": 8,
+            "offset_entries": 4096,
+            "rows_per_slice": 32,
+            "slices": 16
+          },
+          "peak_line_slots": 3877,
+          "peak_offsets": 3877,
+          "peak_row_slots": 499
+        },
+        "kind": "physical_diagnostic_fixed_iteration_chunks",
+        "maximum_pass_population": 4096,
+        "name": "physical_sequential_iteration_chunks",
+        "pass_count": 4,
+        "pass_populations": [
+          4096,
+          4096,
+          4096,
+          4096
+        ],
+        "passes": [
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 391,
+              "unique_decoded_dram_rows": 129
+            },
+            "pass": 0,
+            "population": 4096,
+            "source_line_lower": 26945,
+            "source_line_reuse_hits": 0,
+            "source_line_upper_inclusive": 43390,
+            "unique_source_lines": 4096
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 390,
+              "unique_decoded_dram_rows": 129
+            },
+            "pass": 1,
+            "population": 4096,
+            "source_line_lower": 26945,
+            "source_line_reuse_hits": 0,
+            "source_line_upper_inclusive": 43390,
+            "unique_source_lines": 4096
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 390,
+              "unique_decoded_dram_rows": 129
+            },
+            "pass": 2,
+            "population": 4096,
+            "source_line_lower": 26945,
+            "source_line_reuse_hits": 0,
+            "source_line_upper_inclusive": 43390,
+            "unique_source_lines": 4096
+          },
+          {
+            "dram_rows": {
+              "decoded_row_transitions_in_logical_filter_order": 390,
+              "unique_decoded_dram_rows": 129
+            },
+            "pass": 3,
+            "population": 4096,
+            "source_line_lower": 26944,
+            "source_line_reuse_hits": 0,
+            "source_line_upper_inclusive": 43386,
+            "unique_source_lines": 4096
+          }
+        ],
+        "policy_state": {
+          "charged_bytes": 5,
+          "components": {
+            "scan_cursor_selected_count_chunk_flags": 5
+          }
+        },
+        "reject_conditions": [],
+        "source_line_coalescing": {
+          "cross_pass_duplicate_line_requests": 6861,
+          "global_unique_lines": 9523,
+          "population_minus_unique_line_requests": 0,
+          "proxy_only": false,
+          "sum_unique_lines_across_passes": 16384
+        },
+        "status": "ACCEPT"
+      }
+    ],
+    "provenance": {
+      "record_count": 16384,
+      "relationship_to_frozen_xrage": "separate workload diagnostic; not substituted for frozen XRAGE input",
+      "schema": "dx100.physical_admission.v1",
+      "status": "authenticated_separate_physical_diagnostic",
+      "trace_path": "/data1/nier/dx100-runs/2026-08-03-virtualization-integration/bounded-range-4bf5ef5/physical_admission_records.jsonl",
+      "trace_sha256": "2803564faba235362e4ffe1b33cec0fecbe52860bd86261369082fcb977f7605",
+      "validation_path": "/data1/nier/dx100-runs/2026-08-03-virtualization-integration/bounded-range-4bf5ef5/physical_validation.json",
+      "validation_sha256": "ab6f0ee609df9e1f66d43c5f4f12f156032ff625f9181518686a6a9b9c2f8873"
+    },
+    "record_count": 16384,
+    "unique_grow_values": 9,
+    "unique_physical_a_lines": 9523,
+    "whole_vs_split_replay_delta": {
+      "extra_whole_grow_b_line_reads": 1024,
+      "extra_whole_grow_replay_scans": 1,
+      "extra_whole_grow_scan_cycles_lower_bound": 16384,
+      "split_grow_replay_scans": 4,
+      "whole_grow_replay_scans": 5
+    }
+  },
+  "physical_trace": {
+    "dram_row_metrics_available": false,
+    "reason": "frozen campaign and authenticated XRAGE reorder evidence contain no per-admission physical grow/DRAM-row trace matching SHA-256 7cb86c456e11f32ea4664510c43b519af6fac3e3bfa1bc86f95f330ca230c136; the submitted bounded-range trace is analyzed separately and is not substituted for XRAGE",
+    "status": "not_available_for_frozen_input"
+  },
+  "policies": [
+    {
+      "accepted_for_hardware_bounded_execution": true,
+      "b_scan_model": {
+        "b_lines_per_full_scan": 1024,
+        "first_pass_scan_cycles_lower_bound": 0,
+        "initial_first_pass_scans": 0,
+        "recursive_boundary_refinement_scans": 0,
+        "recursive_refinement_scan_cycles_lower_bound": 0,
+        "repeated_b_line_reads": 0,
+        "replay_scan_cycles_lower_bound": 16384,
+        "replay_scans": 1,
+        "scan_cycles_lower_bound_at_one_word_per_cycle": 16384,
+        "selection_full_scans": 0,
+        "total_b_line_reads": 1024,
+        "total_full_scans": 1
+      },
+      "boundary_selection": {
+        "comparator_evaluations": 0,
+        "comparators": 0,
+        "cycles": 0,
+        "mechanism": "counter rollover at fixed iteration capacity"
+      },
+      "capacity_elements": 4096,
+      "dram_row_summary": null,
+      "kind": "online_fixed_iteration_range",
+      "maximum_pass_population": 4096,
+      "name": "iteration_chunks",
+      "pass_count": 4,
+      "pass_populations": [
+        4096,
+        4096,
+        4096,
+        4096
+      ],
+      "passes": [
+        {
+          "pass": 0,
+          "population": 4096,
+          "source_line_lower": 36346,
+          "source_line_reuse_hits": 3538,
+          "source_line_upper_inclusive": 38566,
+          "unique_source_lines": 558
+        },
+        {
+          "pass": 1,
+          "population": 4096,
+          "source_line_lower": 36893,
+          "source_line_reuse_hits": 3516,
+          "source_line_upper_inclusive": 39205,
+          "unique_source_lines": 580
+        },
+        {
+          "pass": 2,
+          "population": 4096,
+          "source_line_lower": 37456,
+          "source_line_reuse_hits": 3519,
+          "source_line_upper_inclusive": 39690,
+          "unique_source_lines": 577
+        },
+        {
+          "pass": 3,
+          "population": 4096,
+          "source_line_lower": 38025,
+          "source_line_reuse_hits": 3501,
+          "source_line_upper_inclusive": 40352,
+          "unique_source_lines": 595
+        }
+      ],
+      "policy_state": {
+        "charged_bytes": 5,
+        "components": {
+          "chunk_id_and_flags": 1,
+          "scan_cursor": 2,
+          "selected_count": 2
+        },
+        "materialized_16k_labels": false
+      },
+      "reject_conditions": [],
+      "source_line_coalescing": {
+        "cross_pass_duplicate_line_requests": 141,
+        "global_unique_lines": 2169,
+        "population_minus_unique_line_requests": 14074,
+        "proxy_only": true,
+        "sum_unique_lines_across_passes": 2310
+      },
+      "status": "ACCEPT"
+    },
+    {
+      "accepted_for_hardware_bounded_execution": false,
+      "b_scan_model": {
+        "b_lines_per_full_scan": 1024,
+        "first_pass_scan_cycles_lower_bound": 0,
+        "initial_first_pass_scans": 0,
+        "recursive_boundary_refinement_scans": 0,
+        "recursive_refinement_scan_cycles_lower_bound": 0,
+        "repeated_b_line_reads": 3072,
+        "replay_scan_cycles_lower_bound": 65536,
+        "replay_scans": 4,
+        "scan_cycles_lower_bound_at_one_word_per_cycle": 65536,
+        "selection_full_scans": 0,
+        "total_b_line_reads": 4096,
+        "total_full_scans": 4
+      },
+      "boundary_selection": {
+        "comparator_evaluations": 0,
+        "comparators": 3,
+        "cycles": 0,
+        "mechanism": "descriptor-derived equal source-array quarters"
+      },
+      "capacity_elements": 4096,
+      "dram_row_summary": null,
+      "kind": "online_static_contiguous_address_range",
+      "maximum_pass_population": 16384,
+      "name": "static_full_array_range",
+      "pass_count": 4,
+      "pass_populations": [
+        16384,
+        0,
+        0,
+        0
+      ],
+      "passes": [
+        {
+          "pass": 0,
+          "population": 16384,
+          "source_line_lower": 36346,
+          "source_line_reuse_hits": 14215,
+          "source_line_upper_inclusive": 40352,
+          "unique_source_lines": 2169
+        },
+        {
+          "pass": 1,
+          "population": 0,
+          "source_line_lower": null,
+          "source_line_reuse_hits": 0,
+          "source_line_upper_inclusive": null,
+          "unique_source_lines": 0
+        },
+        {
+          "pass": 2,
+          "population": 0,
+          "source_line_lower": null,
+          "source_line_reuse_hits": 0,
+          "source_line_upper_inclusive": null,
+          "unique_source_lines": 0
+        },
+        {
+          "pass": 3,
+          "population": 0,
+          "source_line_lower": null,
+          "source_line_reuse_hits": 0,
+          "source_line_upper_inclusive": null,
+          "unique_source_lines": 0
+        }
+      ],
+      "policy_state": {
+        "charged_bytes": 14,
+        "components": {
+          "scan_cursor_selected_count_pass_flags": 5,
+          "upper_exclusive_boundaries": 9
+        },
+        "materialized_16k_labels": false
+      },
+      "reject_conditions": [
+        {
+          "code": "active_metadata_capacity_exceeded",
+          "detail": "maximum pass population 16384 exceeds 4096"
+        }
+      ],
+      "source_line_coalescing": {
+        "cross_pass_duplicate_line_requests": 0,
+        "global_unique_lines": 2169,
+        "population_minus_unique_line_requests": 14215,
+        "proxy_only": true,
+        "sum_unique_lines_across_passes": 2169
+      },
+      "status": "REJECT",
+      "upper_exclusive_proxy_boundaries": [
+        65536,
+        131072,
+        196608
+      ]
+    },
+    {
+      "accepted_for_hardware_bounded_execution": false,
+      "b_scan_model": {
+        "b_lines_per_full_scan": 1024,
+        "first_pass_scan_cycles_lower_bound": 0,
+        "initial_first_pass_scans": 0,
+        "recursive_boundary_refinement_scans": 0,
+        "recursive_refinement_scan_cycles_lower_bound": 0,
+        "repeated_b_line_reads": 3072,
+        "replay_scan_cycles_lower_bound": 65536,
+        "replay_scans": 4,
+        "scan_cycles_lower_bound_at_one_word_per_cycle": 65536,
+        "selection_full_scans": 0,
+        "total_b_line_reads": 4096,
+        "total_full_scans": 4
+      },
+      "boundary_selection": {
+        "comparator_evaluations": 0,
+        "comparators": 0,
+        "cycles": 0,
+        "mechanism": "low address bits; no divider for power-of-two buckets"
+      },
+      "capacity_elements": 4096,
+      "dram_row_summary": null,
+      "kind": "online_static_noncontiguous_address_bucket",
+      "maximum_pass_population": 4129,
+      "name": "source_line_modulo",
+      "pass_count": 4,
+      "pass_populations": [
+        4129,
+        4010,
+        4122,
+        4123
+      ],
+      "passes": [
+        {
+          "pass": 0,
+          "population": 4129,
+          "source_line_lower": 36348,
+          "source_line_reuse_hits": 3582,
+          "source_line_upper_inclusive": 40352,
+          "unique_source_lines": 547
+        },
+        {
+          "pass": 1,
+          "population": 4010,
+          "source_line_lower": 36349,
+          "source_line_reuse_hits": 3488,
+          "source_line_upper_inclusive": 40337,
+          "unique_source_lines": 522
+        },
+        {
+          "pass": 2,
+          "population": 4122,
+          "source_line_lower": 36346,
+          "source_line_reuse_hits": 3573,
+          "source_line_upper_inclusive": 40342,
+          "unique_source_lines": 549
+        },
+        {
+          "pass": 3,
+          "population": 4123,
+          "source_line_lower": 36351,
+          "source_line_reuse_hits": 3572,
+          "source_line_upper_inclusive": 40351,
+          "unique_source_lines": 551
+        }
+      ],
+      "policy_state": {
+        "charged_bytes": 5,
+        "components": {
+          "scan_cursor_selected_count_pass_flags": 5
+        },
+        "materialized_16k_labels": false
+      },
+      "reject_conditions": [
+        {
+          "code": "active_metadata_capacity_exceeded",
+          "detail": "maximum pass population 4129 exceeds 4096"
+        }
+      ],
+      "source_line_coalescing": {
+        "cross_pass_duplicate_line_requests": 0,
+        "global_unique_lines": 2169,
+        "population_minus_unique_line_requests": 14215,
+        "proxy_only": true,
+        "sum_unique_lines_across_passes": 2169
+      },
+      "status": "REJECT"
+    },
+    {
+      "accepted_for_hardware_bounded_execution": false,
+      "b_scan_model": {
+        "b_lines_per_full_scan": 1024,
+        "first_pass_scan_cycles_lower_bound": 16384,
+        "initial_first_pass_scans": 1,
+        "recursive_boundary_refinement_scans": 0,
+        "recursive_refinement_scan_cycles_lower_bound": 0,
+        "repeated_b_line_reads": 4096,
+        "replay_scan_cycles_lower_bound": 65536,
+        "replay_scans": 4,
+        "scan_cycles_lower_bound_at_one_word_per_cycle": 81920,
+        "selection_full_scans": 1,
+        "total_b_line_reads": 5120,
+        "total_full_scans": 5
+      },
+      "boundary_selection": {
+        "comparator_evaluations": null,
+        "comparators": null,
+        "cycles": null,
+        "mechanism": "host-language exact sort; intentionally not a hardware cycle model"
+      },
+      "capacity_elements": 4096,
+      "dram_row_summary": null,
+      "kind": "offline_upper_diagnostic_only",
+      "maximum_pass_population": 4096,
+      "name": "exact_offline_source_line_quantile",
+      "pass_count": 4,
+      "pass_populations": [
+        4096,
+        4096,
+        4096,
+        4096
+      ],
+      "passes": [
+        {
+          "pass": 0,
+          "population": 4096,
+          "source_line_lower": 36346,
+          "source_line_reuse_hits": 3574,
+          "source_line_upper_inclusive": 36930,
+          "unique_source_lines": 522
+        },
+        {
+          "pass": 1,
+          "population": 4096,
+          "source_line_lower": 36931,
+          "source_line_reuse_hits": 3570,
+          "source_line_upper_inclusive": 37514,
+          "unique_source_lines": 526
+        },
+        {
+          "pass": 2,
+          "population": 4096,
+          "source_line_lower": 37515,
+          "source_line_reuse_hits": 3572,
+          "source_line_upper_inclusive": 38101,
+          "unique_source_lines": 524
+        },
+        {
+          "pass": 3,
+          "population": 4096,
+          "source_line_lower": 38102,
+          "source_line_reuse_hits": 3499,
+          "source_line_upper_inclusive": 40352,
+          "unique_source_lines": 597
+        }
+      ],
+      "policy_state": {
+        "budget_bytes": 1024,
+        "charged_bytes_lower_bound": 49163,
+        "components": {
+          "materialized_source_line_keys": 49152,
+          "quantile_boundaries": 9,
+          "scan_cursor": 2
+        },
+        "materialized_16k_labels": false,
+        "sorter_control_and_datapath_bytes": "unmodeled"
+      },
+      "reject_conditions": [
+        {
+          "code": "offline_oracle_boundary_selection",
+          "detail": "exact sorted quantiles are an upper diagnostic, not an online policy"
+        },
+        {
+          "code": "selector_state_budget_exceeded",
+          "detail": "materialized-key lower bound 49163 B exceeds 1024 B"
+        }
+      ],
+      "source_line_coalescing": {
+        "cross_pass_duplicate_line_requests": 0,
+        "global_unique_lines": 2169,
+        "population_minus_unique_line_requests": 14215,
+        "proxy_only": true,
+        "sum_unique_lines_across_passes": 2169
+      },
+      "status": "REJECT",
+      "upper_inclusive_proxy_boundaries": [
+        36930,
+        37514,
+        38101
+      ]
+    },
+    {
+      "accepted_for_hardware_bounded_execution": true,
+      "b_scan_model": {
+        "b_lines_per_full_scan": 1024,
+        "first_pass_scan_cycles_lower_bound": 16384,
+        "initial_first_pass_scans": 1,
+        "recursive_boundary_refinement_scans": 2,
+        "recursive_refinement_scan_cycles_lower_bound": 32768,
+        "repeated_b_line_reads": 7168,
+        "replay_scan_cycles_lower_bound": 81920,
+        "replay_scans": 5,
+        "scan_cycles_lower_bound_at_one_word_per_cycle": 131072,
+        "selection_full_scans": 3,
+        "total_b_line_reads": 8192,
+        "total_full_scans": 8
+      },
+      "boundary_selection": {
+        "comparator_evaluations": 1536,
+        "comparators": 2,
+        "cycles": 768,
+        "histogram_full_scans": 3,
+        "histogram_split_nodes": 3,
+        "maximum_recursive_depth": 2,
+        "mechanism": "one counter read per cycle; nonzero and packed-capacity comparisons"
+      },
+      "capacity_elements": 4096,
+      "dram_row_summary": null,
+      "kind": "online_finite_adaptive_contiguous_address_range",
+      "maximum_pass_population": 4096,
+      "name": "online_coarse_histogram_radix_range",
+      "pass_count": 5,
+      "pass_populations": [
+        4072,
+        4096,
+        4080,
+        4012,
+        124
+      ],
+      "passes": [
+        {
+          "pass": 0,
+          "population": 4072,
+          "source_line_lower": 36346,
+          "source_line_reuse_hits": 3553,
+          "source_line_upper_inclusive": 36927,
+          "unique_source_lines": 519
+        },
+        {
+          "pass": 1,
+          "population": 4096,
+          "source_line_lower": 36928,
+          "source_line_reuse_hits": 3570,
+          "source_line_upper_inclusive": 37511,
+          "unique_source_lines": 526
+        },
+        {
+          "pass": 2,
+          "population": 4080,
+          "source_line_lower": 37512,
+          "source_line_reuse_hits": 3558,
+          "source_line_upper_inclusive": 38095,
+          "unique_source_lines": 522
+        },
+        {
+          "pass": 3,
+          "population": 4012,
+          "source_line_lower": 38096,
+          "source_line_reuse_hits": 3441,
+          "source_line_upper_inclusive": 39690,
+          "unique_source_lines": 571
+        },
+        {
+          "pass": 4,
+          "population": 124,
+          "source_line_lower": 40295,
+          "source_line_reuse_hits": 93,
+          "source_line_upper_inclusive": 40352,
+          "unique_source_lines": 31
+        }
+      ],
+      "policy_state": {
+        "budget_bytes": 1024,
+        "charged_bytes": 633,
+        "components": {
+          "bounded_recursion_stack": 27,
+          "pass_descriptors": 88,
+          "reused_histogram_counters": 512,
+          "scan_cursor_selected_count_pass_flags": 6
+        },
+        "counter_bytes": 2,
+        "histogram_bins": 256,
+        "materialized_16k_labels": false,
+        "pass_descriptor_slots": 8,
+        "recursion_stack_levels": 3
+      },
+      "range_descriptors": [
+        {
+          "lower_proxy_line": 35840,
+          "pass": 0,
+          "population": 4072,
+          "stable_duplicate_ordinal": null,
+          "upper_proxy_line_exclusive": 36928
+        },
+        {
+          "lower_proxy_line": 36928,
+          "pass": 1,
+          "population": 4096,
+          "stable_duplicate_ordinal": null,
+          "upper_proxy_line_exclusive": 37512
+        },
+        {
+          "lower_proxy_line": 37512,
+          "pass": 2,
+          "population": 4080,
+          "stable_duplicate_ordinal": null,
+          "upper_proxy_line_exclusive": 38096
+        },
+        {
+          "lower_proxy_line": 38096,
+          "pass": 3,
+          "population": 4012,
+          "stable_duplicate_ordinal": null,
+          "upper_proxy_line_exclusive": 39936
+        },
+        {
+          "lower_proxy_line": 39936,
+          "pass": 4,
+          "population": 124,
+          "stable_duplicate_ordinal": null,
+          "upper_proxy_line_exclusive": 40960
+        }
+      ],
+      "recursive_split_termination": {
+        "configured_maximum_depth": 3,
+        "duplicate_fallback_key_count": 0,
+        "maximum_depth": 2,
+        "over_capacity_identical_key_fallback": "stable_iteration_ordinal_chunks",
+        "proof": "each radix split consumes at least one key bit; at singleton range, stable occurrence chunks have population <= capacity",
+        "terminated": true
+      },
+      "reject_conditions": [],
+      "source_line_coalescing": {
+        "cross_pass_duplicate_line_requests": 0,
+        "global_unique_lines": 2169,
+        "population_minus_unique_line_requests": 14215,
+        "proxy_only": true,
+        "sum_unique_lines_across_passes": 2169
+      },
+      "status": "ACCEPT"
+    }
+  ],
+  "proxy_observation": {
+    "dram_row_proof": false,
+    "metric": "source cache-line identifier = B[i] // 8 FP64 words",
+    "unique_source_proxy_lines_full_window": 2169,
+    "warning": "source cache-line IDs do not encode controller mapping, channel, bank, or DRAM row"
+  },
+  "schema": "dx100.adaptive_row_bucket_policy.v1"
+}
