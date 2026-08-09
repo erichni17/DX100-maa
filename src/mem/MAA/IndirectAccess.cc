@@ -1854,8 +1854,10 @@ void IndirectAccessUnit::fillRowTable(
             : 0;
         if (isDirectIndexLoad() && !condition_taken)
             direct_index_predicate_rejected = true;
-        if (isVirtualLoad() && isDirectIndexLoad() &&
-            direct_index_partitions > 1 && !descriptor_spool_replay_active)
+        const bool direct_index_filtering =
+            isVirtualLoad() && isDirectIndexLoad() &&
+            direct_index_partitions > 1 && !descriptor_spool_replay_active;
+        if (direct_index_filtering)
             num_direct_index_filter_words++;
         bool virtual_iteration_selected = condition_taken;
         if (!condition_taken && maa->virtual_index_descriptor_spool &&
@@ -1891,6 +1893,18 @@ void IndirectAccessUnit::fillRowTable(
                      my_indirect_id, predicate_ordinal);
             if (descriptor_spool.lineReady(bucket_pass, false) &&
                 !flushDescriptorSpoolLine(bucket_pass, false)) {
+                if (direct_index_filtering) {
+                    (*maa->stats
+                          .IND_DescriptorSpoolFilterRetryInspections[
+                              my_indirect_id])++;
+                    DPRINTF(MAAVirtualTrace,
+                            "event=descriptor_spool_filter_retry schema=1 "
+                            "unit=%d operation_tick=%lu "
+                            "source=predicate_bucket pass=%u itr=%d "
+                            "reason=write_credit\n",
+                            my_indirect_id, my_decode_start_tick, bucket_pass,
+                            logical_itr);
+                }
                 waitForElement = true;
                 break;
             }
@@ -1981,6 +1995,18 @@ void IndirectAccessUnit::fillRowTable(
                          my_indirect_id, grow_addr, grow_ordinal);
                 if (descriptor_spool.lineReady(bucket_pass, false) &&
                     !flushDescriptorSpoolLine(bucket_pass, false)) {
+                    if (direct_index_filtering) {
+                        (*maa->stats
+                              .IND_DescriptorSpoolFilterRetryInspections[
+                                  my_indirect_id])++;
+                        DPRINTF(MAAVirtualTrace,
+                                "event=descriptor_spool_filter_retry "
+                                "schema=1 unit=%d operation_tick=%lu "
+                                "source=grow_bucket pass=%u itr=%d "
+                                "reason=write_credit\n",
+                                my_indirect_id, my_decode_start_tick,
+                                bucket_pass, logical_itr);
+                    }
                     waitForElement = true;
                     break;
                 }

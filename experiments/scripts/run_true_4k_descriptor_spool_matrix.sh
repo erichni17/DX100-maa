@@ -16,6 +16,12 @@ ramulator_source=$(realpath "$4")
     echo "refusing evidence run from a dirty worktree" >&2
     exit 1
 }
+canonical_ramulator_sha=76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753
+ramulator_sha=$(sha256sum "$ramulator_source" | awk '{ print $1 }')
+[[ $ramulator_sha == $canonical_ramulator_sha ]] || {
+    echo "Ramulator SHA-256 is not canonical: $ramulator_sha" >&2
+    exit 1
+}
 
 mkdir -p "$out/input"
 trap 'rc=$?; printf "%s\n" "$rc" > "$out/matrix.exit"' EXIT
@@ -134,6 +140,9 @@ fields=(
     output_hash physical_records physical_record_sha256
     bounded_summary_histogram_sha256 simTicks fill_sim_ticks
     request_sim_ticks fill_cycles request_cycles index_line_reads index_words
+    index_filter_words descriptor_spool_filter_retry_inspections
+    descriptor_spool_filter_predicate_retries
+    descriptor_spool_filter_grow_retries
     bounded_summary_line_reads bounded_summary_words bounded_bucket_line_reads
     bounded_bucket_words bounded_replay_line_reads bounded_replay_words
     bounded_replay_passes descriptor_spool_line_writes
@@ -185,6 +194,13 @@ candidate="$out/descriptor_spool_4k/result.tsv"
 [[ $(field descriptor_spool_line_writes "$base") -eq 0 ]]
 [[ $(field bounded_summary_words "$candidate") -eq 16384 ]]
 [[ $(field bounded_bucket_words "$candidate") -eq 16384 ]]
+[[ $(field descriptor_spool_filter_retry_inspections "$candidate") -eq \
+   $(( $(field descriptor_spool_filter_predicate_retries "$candidate") + \
+       $(field descriptor_spool_filter_grow_retries "$candidate") )) ]]
+[[ $(field index_filter_words "$candidate") -eq \
+   $(( $(field bounded_summary_words "$candidate") + \
+       $(field bounded_bucket_words "$candidate") + \
+       $(field descriptor_spool_filter_retry_inspections "$candidate") )) ]]
 [[ $(field bounded_replay_passes "$candidate") -eq 4 ]]
 [[ $(field bounded_replay_words "$candidate") -eq 0 ]]
 [[ $(field descriptor_spool_line_writes "$candidate") -eq 2048 ]]
@@ -196,6 +212,7 @@ candidate="$out/descriptor_spool_4k/result.tsv"
 [[ $(field descriptor_spool_staging_entries "$candidate") -eq 32 ]]
 [[ $(field descriptor_spool_write_high_water "$candidate") -le 16 ]]
 [[ $(field descriptor_spool_control_bytes "$candidate") -le 4096 ]]
+[[ $(field descriptor_spool_filter_retry_inspections "$base") -eq 0 ]]
 for capacity in bounded_word_entries bounded_offset_entries \
     bounded_row_directory_entries bounded_row_line_entries; do
     [[ $(field "$capacity" "$candidate") -le 4096 ]]

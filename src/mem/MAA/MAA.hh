@@ -753,6 +753,8 @@ public:
         std::vector<statistics::Scalar *> IND_BoundedSummaryPlanBytes;
         std::vector<statistics::Scalar *> IND_BoundedBucketLineReads;
         std::vector<statistics::Scalar *> IND_BoundedBucketWords;
+        std::vector<statistics::Scalar *>
+            IND_DescriptorSpoolFilterRetryInspections;
         std::vector<statistics::Scalar *> IND_BoundedReplayLineReads;
         std::vector<statistics::Scalar *> IND_BoundedReplayWords;
         std::vector<statistics::Scalar *> IND_BoundedReplayPasses;

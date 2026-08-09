@@ -899,6 +899,7 @@ read -r bounded_summary_lines bounded_summary_words bounded_summary_records \
     ' "$out/run/stats.txt"
 )
 read -r bounded_bucket_lines bounded_bucket_words \
+    descriptor_filter_retry_inspections \
     descriptor_write_lines descriptor_write_bytes descriptor_write_acks \
     descriptor_read_lines descriptor_read_bytes descriptor_write_stalls \
     descriptor_read_stalls descriptor_write_hwm descriptor_staging_entries \
@@ -907,6 +908,7 @@ read -r bounded_bucket_lines bounded_bucket_words \
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 ~ /IND_BoundedBucketLineReads$/ { bl += $2 }
         section == 1 && $1 ~ /IND_BoundedBucketWords$/ { bw += $2 }
+        section == 1 && $1 ~ /IND_DescriptorSpoolFilterRetryInspections$/ { fri += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolLineWrites$/ { wl += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolWriteBytes$/ { wb += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolWriteAcks$/ { wa += $2 }
@@ -919,13 +921,36 @@ read -r bounded_bucket_lines bounded_bucket_words \
         section == 1 && $1 ~ /IND_DescriptorSpoolControlBytes$/ { cb += $2 }
         section == 1 && $1 ~ /IND_DescriptorSpoolBackingBytes$/ { bb += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
-            print bl + 0, bw + 0, wl + 0, wb + 0, wa + 0,
+            print bl + 0, bw + 0, fri + 0, wl + 0, wb + 0, wa + 0,
                   rl + 0, rb + 0, ws + 0, rs + 0, wh + 0,
                   se + 0, cb + 0, bb + 0
             exit
         }
     ' "$out/run/stats.txt"
 )
+descriptor_filter_predicate_retries=0
+descriptor_filter_grow_retries=0
+if [[ $index_descriptor_spool -eq 1 ]]; then
+    trace="$out/run/virtual_trace.log"
+    descriptor_filter_predicate_retries=$(grep -Ec \
+        'event=descriptor_spool_filter_retry schema=1 .*source=predicate_bucket .*reason=write_credit$' \
+        "$trace" || true)
+    descriptor_filter_grow_retries=$(grep -Ec \
+        'event=descriptor_spool_filter_retry schema=1 .*source=grow_bucket .*reason=write_credit$' \
+        "$trace" || true)
+    [[ $descriptor_filter_retry_inspections -eq \
+       $((descriptor_filter_predicate_retries + \
+          descriptor_filter_grow_retries)) && \
+       $descriptor_filter_retry_inspections -le $descriptor_write_stalls ]] || {
+        echo "unattributed descriptor filter retries: stats=$descriptor_filter_retry_inspections predicate=$descriptor_filter_predicate_retries grow=$descriptor_filter_grow_retries write_credit_stalls=$descriptor_write_stalls" >&2
+        exit 1
+    }
+else
+    [[ $descriptor_filter_retry_inspections -eq 0 ]] || {
+        echo "non-descriptor arm reported descriptor filter retries" >&2
+        exit 1
+    }
+fi
 read -r dram_reads dram_writes dram_acts dram_pres < <(
     awk '
         $1 == "CH0_num_RD_commands_T:" { rd = $2 }
@@ -1135,7 +1160,19 @@ elif [[ $virtual -eq 1 ]]; then
             exit 1
         }
         if [[ $index_partitions -gt 1 ]]; then
-            expected_filter_words=$((expected_index_words + rt_full + offset_epoch_drains))
+            expected_filter_words=$expected_index_words
+            if [[ $index_descriptor_spool -eq 1 ]]; then
+                # Each write-credit denial returns before advancing my_i.
+                # The next invocation deliberately re-executes the filter for
+                # that staged descriptor; final partial-line flush stalls do
+                # not re-examine a B word and are excluded by the dedicated
+                # retry-inspection counter.
+                expected_filter_words=$((expected_filter_words + \
+                    descriptor_filter_retry_inspections))
+            else
+                expected_filter_words=$((expected_filter_words + rt_full + \
+                    offset_epoch_drains))
+            fi
             [[ $index_filter_words -eq $expected_filter_words ]] || {
                 echo "invalid partition-filter inspections: $index_filter_words/$expected_filter_words" >&2
                 exit 1
@@ -1315,7 +1352,9 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     feeder_partition_discards feeder_summary_discards
     physical_records physical_record_sha256 bounded_summary_histogram_sha256
     index_filter_words index_filter_cycles index_filter_wait_events
-    index_filter_wait_cycles write_issues
+    index_filter_wait_cycles descriptor_spool_filter_retry_inspections
+    descriptor_spool_filter_predicate_retries
+    descriptor_spool_filter_grow_retries write_issues
     write_completions indirect_spd_reads pages_ready
     pages_ready_before_source_drain first_page_ready_cycles
     all_pages_ready_cycles page_ready_span_cycles stream_spd_reads
@@ -1360,6 +1399,9 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$bounded_summary_histogram_sha256"
     "$index_filter_words" "$index_filter_cycles"
     "$index_filter_wait_events" "$index_filter_wait_cycles"
+    "$descriptor_filter_retry_inspections"
+    "$descriptor_filter_predicate_retries"
+    "$descriptor_filter_grow_retries"
     "$write_issues" "$write_completions"
     "$indirect_spd_reads" "$pages_ready" "$pages_ready_early"
     "$first_page_cycles" "$all_page_cycles" "$page_span_cycles"

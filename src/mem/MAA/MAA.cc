@@ -2590,6 +2590,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedBucketWords"),
             statistics::units::Count::get(),
             "B words inspected once while bucketing descriptor records"));
+        IND_DescriptorSpoolFilterRetryInspections.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_DescriptorSpoolFilterRetryInspections"),
+                statistics::units::Count::get(),
+                "partition-filter inspections retried after a descriptor "
+                "spool write-credit denial"));
         IND_BoundedReplayLineReads.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayLineReads"),
             statistics::units::Count::get(),
