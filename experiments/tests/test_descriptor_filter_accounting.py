@@ -43,6 +43,14 @@ class DescriptorFilterAccountingTest(unittest.TestCase):
             )
             self.assertIn(retry_counter, preceding)
 
+    def test_descriptor_spool_trace_uses_gem5_supported_size_format(self):
+        self.assertNotIn("pending=%zu", self.indirect)
+        self.assertIn("pending=%lu", self.indirect)
+        self.assertIn(
+            "static_cast<unsigned long>(descriptor_spool_pending_lines.size())",
+            self.indirect,
+        )
+
     def test_33870_is_accounted_without_counting_final_flush_stalls(self):
         summary_words = 16_384
         bucket_words = 16_384

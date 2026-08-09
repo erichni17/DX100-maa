@@ -3704,9 +3704,10 @@ void IndirectAccessUnit::createDescriptorSpoolReadPacket(
     DPRINTF(MAAVirtualTrace,
             "event=descriptor_spool_read_issue schema=1 unit=%d "
             "operation_tick=%lu pass=%u line=%u vaddr=0x%lx paddr=0x%lx "
-            "descriptors=%u pending=%zu limit=%u\n",
+            "descriptors=%u pending=%lu limit=%u\n",
             my_indirect_id, my_decode_start_tick, pass, line, vaddr, paddr,
-            descriptors, descriptor_spool_pending_lines.size(),
+            descriptors,
+            static_cast<unsigned long>(descriptor_spool_pending_lines.size()),
             BoundedDescriptorSpool::MaxOutstandingReadLines);
 }
 void IndirectAccessUnit::createDescriptorSpoolWritePacket(
