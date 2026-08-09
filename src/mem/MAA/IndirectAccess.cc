@@ -2900,9 +2900,17 @@ void IndirectAccessUnit::executeInstruction() {
         // established overlap policy for ordinary single-pass operations.
         const bool finite_direct_index_pass =
             isDirectIndexLoad() && direct_index_partitions > 1;
-        const bool refill_allowed = finite_direct_index_pass
-            ? !virtual_build_incomplete
-            : legacy_refill_allowed;
+        // A selected online victim exclusively owns the live Row/Offset
+        // window until every one of its source lines and descriptors has
+        // retired.  Trying to overlap Fill here cannot make progress:
+        // fillRowTable() must report needDrain while the victim is active,
+        // and an immediate reschedule would form a zero-time Request loop
+        // ahead of the timing-visible source responses.
+        const bool online_victim_drain =
+            usesOnlineRowWindow() && online_row_victim_active;
+        const bool refill_allowed = !online_victim_drain &&
+            (finite_direct_index_pass ? !virtual_build_incomplete
+                                      : legacy_refill_allowed);
         if (!my_fill_finished && !direct_index_partition_barrier &&
             refill_allowed) {
             bool finished, waitForFinish, waitForElement, needDrain;

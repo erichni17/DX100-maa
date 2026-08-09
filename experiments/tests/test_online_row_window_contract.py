@@ -94,6 +94,16 @@ class OnlineRowWindowContractTest(unittest.TestCase):
             self.indirect,
         )
 
+    def test_active_victim_blocks_zero_time_refill(self) -> None:
+        self.assertIn(
+            "usesOnlineRowWindow() && online_row_victim_active",
+            self.indirect,
+        )
+        self.assertIn(
+            "const bool refill_allowed = !online_victim_drain",
+            self.indirect,
+        )
+
     def test_constructor_rejects_illegal_capacity_or_fallback(self) -> None:
         for token in (
             "Online row window requires exactly 16384 logical entries",
