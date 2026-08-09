@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include "base/logging.hh"
@@ -74,16 +75,16 @@ IndirectAccessUnit::~IndirectAccessUnit() {
     delete[] RT_config_cache_tick;
     assert(RT != nullptr);
     for (int i = 0; i < num_RT_configs; i++) {
-        assert(RT[i] != nullptr);
-        delete[] RT[i];
+        if (RT[i] != nullptr)
+            delete[] RT[i];
     }
     delete[] RT;
     assert(offset_table != nullptr);
     delete offset_table;
     assert(my_RT_req_sent != nullptr);
     for (int i = 0; i < num_RT_configs; i++) {
-        assert(my_RT_req_sent[i] != nullptr);
-        delete[] my_RT_req_sent[i];
+        if (my_RT_req_sent[i] != nullptr)
+            delete[] my_RT_req_sent[i];
     }
     delete[] my_RT_req_sent;
     assert(my_RT_slice_order != nullptr);
@@ -177,6 +178,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] direct-index partitions (%d) must be in [1,64]\n",
              my_indirect_id, _virtual_index_partitions);
     direct_index_partitions = _virtual_index_partitions;
+    direct_index_max_partitions = _virtual_index_partitions;
     direct_index_filter_words_per_cycle =
         _virtual_index_filter_words_per_cycle;
     rowtable_latency = _rowtable_latency;
@@ -206,8 +208,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
         RT_config_cache_tick[i] = 0;
     }
 
-    RT = new RowTableSlice *[num_RT_configs];
-    my_RT_req_sent = new bool *[num_RT_configs];
+    RT = new RowTableSlice *[num_RT_configs]();
+    my_RT_req_sent = new bool *[num_RT_configs]();
     my_RT_slice_order = new std::vector<int>[num_RT_configs];
     RT_slice_org = new int *[num_RT_configs];
     num_RT_slices = new int[num_RT_configs];
@@ -223,21 +225,31 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     int current_num_RT_entries_per_row = num_RT_entries_per_subslice_row * current_num_RT_subslices;
     initial_RT_config = -1;
     for (int i = 0; i < num_RT_configs; i++) {
-        RT[i] = new RowTableSlice[current_num_RT_slices];
-        my_RT_req_sent[i] = new bool[current_num_RT_slices];
         num_RT_slices[i] = current_num_RT_slices;
         num_RT_rows_total[i] = current_num_RT_rows_total;
         num_RT_subslices[i] = current_num_RT_subslices;
         num_RT_slice_columns[i] = current_num_RT_entries_per_row;
         num_RT_possible_grows[i] = current_num_RT_possible_grows;
-        if (reconfigure_RT == false && current_num_RT_slices == num_initial_RT_slices) {
+        const bool configured_row_table = reconfigure_RT
+            ? i == num_RT_configs - 1
+            : current_num_RT_slices == num_initial_RT_slices;
+        if (configured_row_table) {
             initial_RT_config = i;
         }
         panic_if(current_num_RT_entries_per_row <= 0, "I[%d] TC[%d] %s: current_num_RT_entries_per_row is %d!\n",
                  my_indirect_id, i, __func__, current_num_RT_entries_per_row);
-        for (int j = 0; j < current_num_RT_slices; j++) {
-            RT[i][j].allocate(my_indirect_id, j, num_RT_rows_per_slice, current_num_RT_entries_per_row, offset_table, maa, false);
-            my_RT_req_sent[i][j] = false;
+        const bool allocate_row_table =
+            !maa->virtual_index_range_passes || configured_row_table;
+        if (allocate_row_table) {
+            RT[i] = new RowTableSlice[current_num_RT_slices];
+            my_RT_req_sent[i] = new bool[current_num_RT_slices];
+            for (int j = 0; j < current_num_RT_slices; j++) {
+                RT[i][j].allocate(my_indirect_id, j,
+                                  num_RT_rows_per_slice,
+                                  current_num_RT_entries_per_row,
+                                  offset_table, maa, false);
+                my_RT_req_sent[i][j] = false;
+            }
         }
 
         // How many banks corresponding to which level exist in
@@ -286,15 +298,15 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
         current_num_RT_entries_per_row /= 2;
         current_num_RT_possible_grows /= 2;
     }
-    if (reconfigure_RT)
-        initial_RT_config = num_RT_configs - 1;
-    else
-        panic_if(initial_RT_config == -1,
-                 "I[%d] unsupported initial Row-Table slice count %d\n",
-                 my_indirect_id, num_initial_RT_slices);
+    panic_if(initial_RT_config == -1,
+             "I[%d] unsupported initial Row-Table slice count %d\n",
+             my_indirect_id, num_initial_RT_slices);
     DPRINTF(MAAIndirect, "I[%d] %s: initial_RT_config(%d)!\n",
             my_indirect_id, __func__, initial_RT_config);
     if (maa->virtual_index_range_passes) {
+        uint32_t allocated_row_configs = 0;
+        for (int config = 0; config < num_RT_configs; ++config)
+            allocated_row_configs += RT[config] != nullptr;
         const uint64_t active_row_line_slots =
             static_cast<uint64_t>(num_RT_slices[initial_RT_config]) *
             num_RT_rows_per_slice *
@@ -309,6 +321,10 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                  "I[%d] bounded range RowTable has %lu active line slots "
                  "(max %u)\n", my_indirect_id, active_row_line_slots,
                  BoundedRangePassTracker::MaxActiveEntries);
+        panic_if(allocated_row_configs != 1,
+                 "I[%d] bounded range allocated %u Row Table configs "
+                 "(expected exactly one)\n",
+                 my_indirect_id, allocated_row_configs);
     }
 }
 int IndirectAccessUnit::getRowTableIdx(int RT_config, int channel, int rank, int bankgroup, int bank) {
@@ -848,6 +864,10 @@ uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
     panic_if(entry == direct_index_words.end(),
              "I[%d] streamed index %d is not buffered\n",
              my_indirect_id, itr);
+    panic_if(entry->second.phase != direct_index_phase,
+             "I[%d] streamed index %d has stale phase %u (expected %u)\n",
+             my_indirect_id, itr, entry->second.phase,
+             direct_index_phase);
     return entry->second.value;
 }
 uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
@@ -858,6 +878,186 @@ uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
              "I[%d] grow 0x%lx has no bounded range pass\n",
              my_indirect_id, grow_addr);
     return pass;
+}
+uint64_t IndirectAccessUnit::directIndexRangeKey(
+    uint32_t, Addr grow_addr, int iteration) const
+{
+    if (!maa->virtual_index_range_passes ||
+        maa->virtual_index_range_policy != 3)
+        return grow_addr;
+    if (direct_index_iteration_fallback)
+        return static_cast<uint64_t>(iteration);
+    return grow_addr;
+}
+void IndirectAccessUnit::finishAdaptiveSummary()
+{
+    panic_if(!direct_index_summary_active || !offset_table->summaryActive(),
+             "I[%d] adaptive summary is not active\n", my_indirect_id);
+    panic_if(!direct_index_pending_lines.empty() ||
+                 !direct_index_ready_lines.empty() ||
+                 !direct_index_words.empty(),
+             "I[%d] adaptive summary ended with buffered B data\n",
+             my_indirect_id);
+    panic_if(direct_index_summary_next_iteration !=
+                 static_cast<uint32_t>(my_max),
+             "I[%d] adaptive summary inspected %u/%d iterations\n",
+             my_indirect_id, direct_index_summary_next_iteration, my_max);
+
+    direct_index_summary_records = offset_table->summaryRecords();
+    direct_index_summary_probes = offset_table->summaryProbes();
+    (*maa->stats.IND_BoundedSummaryRecords[my_indirect_id]) +=
+        direct_index_summary_records;
+    (*maa->stats.IND_BoundedSummaryHashProbes[my_indirect_id]) +=
+        direct_index_summary_probes;
+    auto visit = [this](auto consumer) {
+        offset_table->forEachSummaryRecord(consumer);
+    };
+    const auto plan_result = direct_index_summary_overflow
+        ? BoundedGrowPassPlan::Result::TooManyRecords
+        : bounded_grow_plan.configure(
+              my_max, offset_table->capacity(),
+              direct_index_max_partitions, visit);
+    direct_index_summary_reduction_visits =
+        2 * static_cast<uint64_t>(offset_table->capacity()) +
+        bounded_grow_plan.operations();
+    (*maa->stats.IND_BoundedSummaryReductionVisits[my_indirect_id]) +=
+        direct_index_summary_reduction_visits;
+    (*maa->stats.IND_BoundedSummaryPlanBytes[my_indirect_id]) +=
+        bounded_grow_plan.chargedBytes();
+
+    BoundedRangePassTracker::Result tracker_result;
+    if (plan_result == BoundedGrowPassPlan::Result::Accepted) {
+        direct_index_partitions = bounded_grow_plan.passes();
+        tracker_result = bounded_range_pass.configureSelected(
+            my_max, offset_table->capacity(), direct_index_partitions);
+        direct_index_iteration_fallback = false;
+    } else {
+        const bool has_iteration_fallback =
+            plan_result == BoundedGrowPassPlan::Result::TooManyRecords ||
+            plan_result ==
+                BoundedGrowPassPlan::Result::RequiresIterationFallback;
+        panic_if(!has_iteration_fallback,
+                 "I[%d] adaptive summary failed closed: %s\n",
+                 my_indirect_id,
+                 BoundedGrowPassPlan::resultName(plan_result));
+        direct_index_iteration_fallback = true;
+        direct_index_partitions = getCeiling(
+            my_max, offset_table->capacity());
+        tracker_result = bounded_range_pass.configureRange(
+            my_max, offset_table->capacity(), direct_index_partitions,
+            0, my_max);
+    }
+    panic_if(tracker_result != BoundedRangePassTracker::Result::Accepted,
+             "I[%d] adaptive replay configuration failed: %s\n",
+             my_indirect_id,
+             BoundedRangePassTracker::resultName(tracker_result));
+
+    const uint32_t row_directories =
+        num_RT_slices[my_RT_config] * num_RT_rows_per_slice;
+    const uint32_t row_lines =
+        row_directories * num_RT_slice_columns[my_RT_config];
+    const BoundedMetadataLedger ledger{
+        static_cast<uint32_t>(offset_table->capacity()),
+        static_cast<uint32_t>(offset_table->capacity()),
+        row_directories, row_lines,
+        maa->physical_tile_elements, maa->num_tiles};
+    (*maa->stats.IND_BoundedWordEntries[my_indirect_id]) +=
+        ledger.wordEntries;
+    (*maa->stats.IND_BoundedOffsetLinkEntries[my_indirect_id]) +=
+        ledger.offsetLinkEntries;
+    (*maa->stats.IND_BoundedRowDirectoryEntries[my_indirect_id]) +=
+        ledger.rowDirectoryEntries;
+    (*maa->stats.IND_BoundedRowLineEntries[my_indirect_id]) +=
+        ledger.rowLineEntries;
+    (*maa->stats.IND_BoundedReorderMetadataBytes[my_indirect_id]) +=
+        ledger.reorderMetadataBytes();
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_range_begin schema=2 unit=%d "
+            "operation_tick=%lu logical=%d word_entries=%u "
+            "offset_link_entries=%u row_directory_entries=%u "
+            "row_line_entries=%u allocated_row_configs=1 passes=%d "
+            "max_passes=%d "
+            "range_policy=3 key=%s checker_bytes=%lu "
+            "reorder_metadata_bytes=%lu scratchpad_elements_per_tile=%u "
+            "scratchpad_payload_bytes=%lu backing=llc_index_rescan "
+            "combiner=retained\n",
+            my_indirect_id, my_decode_start_tick, my_max,
+            ledger.wordEntries, ledger.offsetLinkEntries,
+            ledger.rowDirectoryEntries, ledger.rowLineEntries,
+            direct_index_partitions, direct_index_max_partitions,
+            direct_index_iteration_fallback
+                ? "logical_iteration_fallback"
+                : "translated_dram_grow",
+            static_cast<unsigned long>(bounded_range_pass.chargedBytes()),
+            static_cast<unsigned long>(ledger.reorderMetadataBytes()),
+            ledger.scratchpadElementsPerTile,
+            static_cast<unsigned long>(ledger.scratchpadPayloadBytes()));
+
+    const uint64_t modeled_visits = direct_index_summary_probes +
+        direct_index_summary_reduction_visits;
+    panic_if(modeled_visits > static_cast<uint64_t>(
+                                  std::numeric_limits<int>::max()),
+             "I[%d] adaptive summary modeled work overflow\n",
+             my_indirect_id);
+    const Cycles summary_latency(getCeiling(
+        static_cast<int>(modeled_visits),
+        direct_index_filter_words_per_cycle));
+    if (my_direct_index_filter_finish_tick < curTick())
+        my_direct_index_filter_finish_tick =
+            maa->getClockEdge(summary_latency);
+    else
+        my_direct_index_filter_finish_tick +=
+            maa->getCyclesToTicks(summary_latency);
+    (*maa->stats.IND_VirtIndexFilterCycles[my_indirect_id]) +=
+        summary_latency;
+
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_grow_summary_complete schema=1 unit=%d "
+            "operation_tick=%lu grow_records=%u observations=%u "
+            "hash_probes=%lu reduction_visits=%lu modeled_cycles=%lu "
+            "fallback=%s plan_result=%s split_key=%u split_population=%u "
+            "plan_bytes=%lu backing=llc_index_scan "
+            "histogram_storage=phase_shared_word_offset\n",
+            my_indirect_id, my_decode_start_tick,
+            direct_index_summary_records,
+            offset_table->summaryObservations(),
+            direct_index_summary_probes,
+            direct_index_summary_reduction_visits,
+            static_cast<uint64_t>(summary_latency),
+            direct_index_iteration_fallback ? "iteration_ranges" : "none",
+            BoundedGrowPassPlan::resultName(plan_result),
+            direct_index_iteration_fallback ? 0 : bounded_grow_plan.splitKey(),
+            direct_index_iteration_fallback
+                ? 0 : bounded_grow_plan.splitPopulation(),
+            static_cast<unsigned long>(bounded_grow_plan.chargedBytes()));
+    for (int pass = 0; pass < direct_index_partitions; ++pass) {
+        const auto range = bounded_range_pass.range(pass);
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_grow_pass_plan schema=1 unit=%d "
+                "operation_tick=%lu pass=%d lower=%lu upper=%lu "
+                "planned_population=%u split_quota=%u key=%s\n",
+                my_indirect_id, my_decode_start_tick, pass,
+                range.lower, range.upper,
+                direct_index_iteration_fallback
+                    ? static_cast<uint32_t>(range.upper - range.lower)
+                    : bounded_grow_plan.population(pass),
+                direct_index_iteration_fallback
+                    ? 0 : bounded_grow_plan.splitQuota(pass),
+                direct_index_iteration_fallback
+                    ? "logical_iteration_fallback"
+                    : "translated_dram_grow");
+    }
+
+    offset_table->endSummary();
+    direct_index_summary_active = false;
+    direct_index_next_prefetch_itr = 0;
+    direct_index_partition = 0;
+    direct_index_split_seen = 0;
+    panic_if(direct_index_phase == std::numeric_limits<uint32_t>::max(),
+             "I[%d] direct-index phase token overflow\n", my_indirect_id);
+    direct_index_phase++;
+    my_i = 0;
+    scheduleNextExecution(true);
 }
 BoundedRangePassTracker::Range
 IndirectAccessUnit::directIndexSourceGrowRange()
@@ -898,23 +1098,37 @@ int IndirectAccessUnit::directIndexRetirementPass() const {
 void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
     if (!maa->virtual_index_range_passes)
         return;
+    if (maa->virtual_index_range_policy == 3 &&
+        !direct_index_iteration_fallback) {
+        panic_if(direct_index_split_seen !=
+                     bounded_grow_plan.splitPopulation(),
+                 "I[%d] bounded grow pass %d saw %u/%u split-grow words\n",
+                 my_indirect_id, pass, direct_index_split_seen,
+                 bounded_grow_plan.splitPopulation());
+    }
     const auto result = bounded_range_pass.finishPass(pass);
     panic_if(result != BoundedRangePassTracker::Result::Accepted,
              "I[%d] bounded range pass %d failed closure: %s\n",
              my_indirect_id, pass,
              BoundedRangePassTracker::resultName(result));
     const auto range = bounded_range_pass.range(pass);
+    (*maa->stats.IND_BoundedReplayPasses[my_indirect_id])++;
     DPRINTF(MAAVirtualTrace,
             "event=bounded_range_pass_complete schema=1 unit=%d "
             "operation_tick=%lu pass=%d passes=%d lower=0x%lx upper=0x%lx "
-            "admitted=%u retired=%u admitted_total=%u retired_total=%u "
+            "inspected=%u admitted=%u retired=%u drains=%u "
+            "max_epoch_admissions=%u admitted_total=%u retired_total=%u "
             "reason=%s\n",
             my_indirect_id, my_decode_start_tick, pass,
             direct_index_partitions, range.lower, range.upper,
+            bounded_range_pass.inspectionsForPass(pass),
             bounded_range_pass.admissionsForPass(pass),
             bounded_range_pass.retirementsForPass(pass),
+            bounded_range_pass.drainsForPass(pass),
+            bounded_range_pass.maxEpochAdmissionsForPass(pass),
             bounded_range_pass.admissions(), bounded_range_pass.retirements(),
             reason);
+    direct_index_split_seen = 0;
 }
 void IndirectAccessUnit::discardDirectIndex(
     int itr, uint32_t expected_value, DirectIndexDiscardReason reason) {
@@ -925,6 +1139,9 @@ void IndirectAccessUnit::discardDirectIndex(
     panic_if(word->second.value != expected_value,
              "I[%d] streamed index %d changed from %u to %u before discard\n",
              my_indirect_id, itr, expected_value, word->second.value);
+    panic_if(word->second.phase != direct_index_phase,
+             "I[%d] stale streamed index %d phase %u (expected %u)\n",
+             my_indirect_id, itr, word->second.phase, direct_index_phase);
     const Addr line_addr = word->second.line_addr;
 
     // direct_index_words is a private feeder copy populated from the B memory
@@ -950,6 +1167,9 @@ void IndirectAccessUnit::discardDirectIndex(
         break;
       case DirectIndexDiscardReason::PartitionRejected:
         reason_name = "partition_rejected";
+        break;
+      case DirectIndexDiscardReason::SummaryObserved:
+        reason_name = "summary_observed";
         break;
     }
     panic_if(reason_name == nullptr,
@@ -995,7 +1215,8 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
         panic_if(!direct_index_words
                       .emplace(itr, DirectIndexWord{
                                         words[wid], addr,
-                                        addr + wid * sizeof(uint32_t)})
+                                        addr + wid * sizeof(uint32_t),
+                                        direct_index_phase})
                       .second,
                  "I[%d] duplicate streamed index %d\n",
                  my_indirect_id, itr);
@@ -1137,6 +1358,11 @@ void IndirectAccessUnit::fillRowTable(
     checkTileReady();
     while (true) {
         if (my_max != -1 && my_i >= my_max) {
+            if (direct_index_summary_active) {
+                finishAdaptiveSummary();
+                waitForElement = true;
+                break;
+            }
             if (isVirtualLoad() && isDirectIndexLoad() &&
                 direct_index_partition + 1 < direct_index_partitions) {
                 panic_if(!direct_index_pending_lines.empty() ||
@@ -1146,6 +1372,12 @@ void IndirectAccessUnit::fillRowTable(
                          "index data\n",
                          my_indirect_id, direct_index_partition);
                 const int completed_partition = direct_index_partition++;
+                panic_if(
+                    direct_index_phase ==
+                        std::numeric_limits<uint32_t>::max(),
+                    "I[%d] direct-index phase token overflow\n",
+                    my_indirect_id);
+                direct_index_phase++;
                 my_i = 0;
                 direct_index_next_prefetch_itr = 0;
                 direct_index_partition_barrier = true;
@@ -1224,11 +1456,56 @@ void IndirectAccessUnit::fillRowTable(
             std::vector<int> addr_vec = maa->map_addr(block_paddr);
             my_RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
             Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+            if (direct_index_summary_active) {
+                panic_if(grow_addr > std::numeric_limits<uint32_t>::max(),
+                         "I[%d] translated grow 0x%lx exceeds bounded "
+                         "summary key width\n", my_indirect_id, grow_addr);
+                panic_if(my_i != static_cast<int>(
+                                     direct_index_summary_next_iteration),
+                         "I[%d] adaptive summary replay order changed at "
+                         "%d/%u\n", my_indirect_id, my_i,
+                         direct_index_summary_next_iteration);
+                if (!offset_table->observeSummaryKey(
+                        static_cast<uint32_t>(grow_addr)))
+                    direct_index_summary_overflow = true;
+                (*maa->stats.IND_BoundedSummaryWords[my_indirect_id])++;
+                direct_index_summary_next_iteration++;
+                discardDirectIndex(
+                    my_i, direct_index_value,
+                    DirectIndexDiscardReason::SummaryObserved);
+                my_i++;
+                continue;
+            }
+            const uint64_t bounded_range_key =
+                directIndexRangeKey(idx, grow_addr, my_i);
+            uint32_t selected_pass;
+            if (maa->virtual_index_range_passes &&
+                maa->virtual_index_range_policy == 3) {
+                if (direct_index_iteration_fallback) {
+                    selected_pass = bounded_range_pass.passForGrow(
+                        bounded_range_key);
+                } else {
+                    const uint32_t split_ordinal =
+                        direct_index_split_seen;
+                    if (bounded_grow_plan.isSplitKey(
+                            static_cast<uint32_t>(grow_addr)))
+                        direct_index_split_seen++;
+                    selected_pass = bounded_grow_plan.passFor(
+                        static_cast<uint32_t>(grow_addr), split_ordinal);
+                    panic_if(selected_pass >=
+                                 static_cast<uint32_t>(
+                                     direct_index_partitions),
+                             "I[%d] grow 0x%lx ordinal %u has no bounded "
+                             "grow-plan pass\n", my_indirect_id, grow_addr,
+                             split_ordinal);
+                }
+            } else {
+                selected_pass = directIndexPassForGrow(grow_addr);
+            }
             virtual_iteration_selected =
                 !isVirtualLoad() || !isDirectIndexLoad() ||
                 direct_index_partitions == 1 ||
-                static_cast<int>(directIndexPassForGrow(grow_addr)) ==
-                    direct_index_partition;
+                static_cast<int>(selected_pass) == direct_index_partition;
             if (isDirectIndexLoad() && !virtual_iteration_selected)
                 direct_index_partition_rejected = true;
             if (virtual_iteration_selected) {
@@ -1303,8 +1580,14 @@ void IndirectAccessUnit::fillRowTable(
                                  "I[%d] could not record reorder admission\n",
                                  my_indirect_id);
                     if (maa->virtual_index_range_passes) {
-                        const auto result = bounded_range_pass.recordAdmission(
-                            my_i, grow_addr, direct_index_partition);
+                        const auto result =
+                            maa->virtual_index_range_policy == 3 &&
+                                    !direct_index_iteration_fallback
+                            ? bounded_range_pass.recordSelectedAdmission(
+                                  my_i, direct_index_partition)
+                            : bounded_range_pass.recordAdmission(
+                                  my_i, bounded_range_key,
+                                  direct_index_partition);
                         panic_if(
                             result != BoundedRangePassTracker::Result::Accepted,
                             "I[%d] bounded range admission itr=%d grow=0x%lx "
@@ -1408,6 +1691,20 @@ void IndirectAccessUnit::fillRowTable(
         if (isVirtualLoad() && track_virtual_iteration)
             trackVirtualIteration(my_i, condition_taken);
         if (isDirectIndexLoad()) {
+            if (maa->virtual_index_range_passes) {
+                const auto inspection_result =
+                    bounded_range_pass.recordInspection(
+                        my_i, direct_index_partition);
+                panic_if(
+                    inspection_result !=
+                        BoundedRangePassTracker::Result::Accepted,
+                    "I[%d] bounded range inspection itr=%d pass=%d "
+                    "failed: %s\n", my_indirect_id, my_i,
+                    direct_index_partition,
+                    BoundedRangePassTracker::resultName(
+                        inspection_result));
+                (*maa->stats.IND_BoundedReplayWords[my_indirect_id])++;
+            }
             const int terminal_decisions =
                 static_cast<int>(direct_index_descriptor_inserted) +
                 static_cast<int>(direct_index_predicate_rejected) +
@@ -1641,8 +1938,19 @@ void IndirectAccessUnit::executeInstruction() {
         my_index_stride = 1;
         direct_index_next_prefetch_itr = 0;
         direct_index_partition = 0;
+        direct_index_partitions = direct_index_max_partitions;
+        direct_index_phase = 1;
         direct_index_partition_barrier = false;
         bounded_range_pass.reset();
+        bounded_grow_plan.reset();
+        direct_index_summary_active = false;
+        direct_index_summary_overflow = false;
+        direct_index_iteration_fallback = false;
+        direct_index_summary_next_iteration = 0;
+        direct_index_summary_records = 0;
+        direct_index_summary_probes = 0;
+        direct_index_summary_reduction_visits = 0;
+        direct_index_split_seen = 0;
         offset_table_drain = false;
         direct_index_pending_lines.clear();
         direct_index_ready_lines.clear();
@@ -1680,6 +1988,18 @@ void IndirectAccessUnit::executeInstruction() {
                 panic_if(!isVirtualLoad(),
                          "I[%d] bounded range passes require a virtual load\n",
                          my_indirect_id);
+                if (maa->virtual_index_range_policy == 3) {
+                    offset_table->beginSummary();
+                    direct_index_summary_active = true;
+                    DPRINTF(MAAVirtualTrace,
+                            "event=bounded_quantile_summary_begin schema=1 "
+                            "unit=%d operation_tick=%lu logical=%d "
+                            "histogram_capacity=%d key=translated_dram_grow "
+                            "backing=llc_index_scan "
+                            "storage=phase_shared_word_offset\n",
+                            my_indirect_id, my_decode_start_tick, my_max,
+                            offset_table->capacity());
+                } else {
                 BoundedRangePassTracker::Range grow_range{
                     0, num_RT_possible_grows[my_RT_config]};
                 if (maa->virtual_index_range_policy == 1)
@@ -1740,6 +2060,7 @@ void IndirectAccessUnit::executeInstruction() {
                                 my_indirect_id, my_decode_start_tick, pass,
                                 range.lower, range.upper);
                     }
+                }
                 }
             }
         }
@@ -2289,6 +2610,27 @@ void IndirectAccessUnit::executeInstruction() {
                 if (debug::MAAReorderTrace &&
                     reorder_survival.drainPending())
                     closeReorderSurvivalEpoch(false);
+                if (maa->virtual_index_range_passes) {
+                    const auto drain_result =
+                        bounded_range_pass.recordDrain(
+                            direct_index_partition);
+                    panic_if(
+                        drain_result !=
+                            BoundedRangePassTracker::Result::Accepted,
+                        "I[%d] bounded range pass %d drain failed: %s\n",
+                        my_indirect_id, direct_index_partition,
+                        BoundedRangePassTracker::resultName(drain_result));
+                    DPRINTF(MAAVirtualTrace,
+                            "event=bounded_range_drain schema=1 unit=%d "
+                            "operation_tick=%lu pass=%d drains=%u "
+                            "max_epoch_admissions=%u\n",
+                            my_indirect_id, my_decode_start_tick,
+                            direct_index_partition,
+                            bounded_range_pass.drainsForPass(
+                                direct_index_partition),
+                            bounded_range_pass.maxEpochAdmissionsForPass(
+                                direct_index_partition));
+                }
                 state = Status::Fill;
                 transitionAttributionStage(AttributionStage::Fill,
                                            "request_refill");
@@ -2460,6 +2802,21 @@ void IndirectAccessUnit::executeInstruction() {
                         bounded_range_pass.retirements(),
                         static_cast<unsigned long>(
                             bounded_range_pass.chargedBytes()));
+                uint32_t replay_drains = 0;
+                uint32_t max_epoch_admissions = 0;
+                for (uint32_t pass = 0;
+                     pass < bounded_range_pass.passes(); ++pass) {
+                    replay_drains +=
+                        bounded_range_pass.drainsForPass(pass);
+                    max_epoch_admissions = std::max(
+                        max_epoch_admissions,
+                        bounded_range_pass.maxEpochAdmissionsForPass(pass));
+                }
+                (*maa->stats.IND_BoundedReplayDrains[my_indirect_id]) +=
+                    replay_drains;
+                (*maa->stats
+                      .IND_BoundedReplayMaxEpochAdmissions[my_indirect_id]) +=
+                    max_epoch_admissions;
             }
         }
         if (isDirectIndexLoad()) {
@@ -2629,6 +2986,13 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
                     maa->getClockEdge(Cycles(latency)),
                     direct_index_force_cache);
     (*maa->stats.IND_VirtIndexLineReads[my_indirect_id])++;
+    if (maa->virtual_index_range_passes) {
+        if (direct_index_summary_active)
+            (*maa->stats
+                  .IND_BoundedSummaryLineReads[my_indirect_id])++;
+        else
+            (*maa->stats.IND_BoundedReplayLineReads[my_indirect_id])++;
+    }
     DPRINTF(MAAIndirect,
             "I[%d] %s: created direct-index read %s\n",
             my_indirect_id, __func__, read_pkt->print());

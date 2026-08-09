@@ -1,9 +1,12 @@
 #include "mem/MAA/Tables.hh"
+
+#include <limits>
+
 #include "base/logging.hh"
-#include "mem/MAA/MAA.hh"
+#include "debug/MAAOffsetTable.hh"
 #include "debug/MAARequestTable.hh"
 #include "debug/MAARowTable.hh"
-#include "debug/MAAOffsetTable.hh"
+#include "mem/MAA/MAA.hh"
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -141,6 +144,8 @@ void OffsetTable::allocate(int _my_unit_id,
     }
 }
 int OffsetTable::insert(int itr, int wid, int last_entry) {
+    panic_if(summary_mode,
+             "Offset Table reorder insert attempted during summary phase\n");
     panic_if(free_entries.empty(),
              "Offset Table is full while inserting logical iteration %d\n",
              itr);
@@ -186,7 +191,9 @@ std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
     return result;
 }
 OffsetTableEntry OffsetTable::consume_entry(int &itr) {
-    panic_if(itr < 0 || itr >= num_entries || entries_valid[itr] == false,
+    panic_if(summary_mode,
+             "Offset Table consume attempted during summary phase\n");
+    panic_if(itr < 0 || itr >= num_entries || !entries_valid[itr],
              "Entry %d is invalid!\n", itr);
     OffsetTableEntry result = entries[itr];
     entries_valid[itr] = false;
@@ -203,6 +210,8 @@ OffsetTableEntry OffsetTable::peek_entry(int itr) const {
     return entries[itr];
 }
 int OffsetTable::count_entries(int itr) const {
+    panic_if(summary_mode,
+             "Offset Table count attempted during summary phase\n");
     int count = 0;
     while (itr != -1) {
         panic_if(itr < 0 || itr >= num_entries || !entries_valid[itr],
@@ -212,7 +221,59 @@ int OffsetTable::count_entries(int itr) const {
     }
     return count;
 }
+void OffsetTable::beginSummary() {
+    panic_if(summary_mode, "Offset Table summary phase started twice\n");
+    panic_if(occupancy() != 0,
+             "Offset Table summary phase requires empty reorder state\n");
+    for (int i = 0; i < num_entries; ++i) {
+        panic_if(entries_valid[i] || entries[i].itr != -1 ||
+                     entries[i].wid != -1 || entries[i].next_itr != -1,
+                 "Offset Table entry %d is not clean for summary reuse\n", i);
+    }
+    summary_mode = true;
+    summary_records = 0;
+    summary_observations = 0;
+    summary_probes = 0;
+}
+bool OffsetTable::observeSummaryKey(uint32_t key) {
+    panic_if(!summary_mode,
+             "Offset Table summary observation outside summary phase\n");
+    panic_if(key > static_cast<uint32_t>(std::numeric_limits<int>::max()),
+             "Offset Table summary key %u exceeds signed storage\n", key);
+    const uint32_t start =
+        (key * uint32_t(2654435761U)) % static_cast<uint32_t>(num_entries);
+    for (int probe = 0; probe < num_entries; ++probe) {
+        summary_probes++;
+        const int slot = (start + probe) % num_entries;
+        if (!entries_valid[slot]) {
+            entries_valid[slot] = true;
+            entries[slot].itr = static_cast<int>(key);
+            entries[slot].wid = 1;
+            entries[slot].next_itr = -1;
+            summary_records++;
+            summary_observations++;
+            return true;
+        }
+        if (entries[slot].itr == static_cast<int>(key)) {
+            panic_if(entries[slot].wid == std::numeric_limits<int>::max(),
+                     "Offset Table summary count overflow for key %u\n", key);
+            entries[slot].wid++;
+            summary_observations++;
+            return true;
+        }
+    }
+    return false;
+}
+void OffsetTable::endSummary() {
+    panic_if(!summary_mode, "Offset Table summary phase is not active\n");
+    summary_mode = false;
+    reset();
+    summary_records = 0;
+    summary_observations = 0;
+    summary_probes = 0;
+}
 void OffsetTable::check_reset() {
+    panic_if(summary_mode, "Offset Table reset check during summary phase\n");
     for (int i = 0; i < num_entries; i++) {
         panic_if(entries_valid[i], "Entry %d is valid: wid(%d) next_itr(%d)!\n",
                  i, entries[i].wid, entries[i].next_itr);
@@ -229,6 +290,7 @@ void OffsetTable::check_reset() {
              static_cast<int>(free_entries.size()), num_entries);
 }
 void OffsetTable::reset() {
+    panic_if(summary_mode, "Offset Table reset during summary phase\n");
     free_entries.clear();
     for (int i = num_entries - 1; i >= 0; i--) {
         entries_valid[i] = false;

@@ -14,6 +14,8 @@
 #include "arch/generic/mmu.hh"
 #include "base/statistics.hh"
 #include "base/types.hh"
+#include "mem/MAA/BoundedMetadataLedger.hh"
+#include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/Tables.hh"
@@ -279,20 +281,33 @@ protected:
         uint32_t value = 0;
         Addr line_addr = 0;
         Addr word_paddr = 0;
+        uint32_t phase = 0;
     };
     enum class DirectIndexDiscardReason : uint8_t
     {
         DescriptorInserted,
         PredicateRejected,
         PartitionRejected,
+        SummaryObserved,
     };
     int direct_index_buffer_lines = 1;
     bool direct_index_force_cache = false;
     int direct_index_partitions = 1;
+    int direct_index_max_partitions = 1;
     int direct_index_filter_words_per_cycle = 0;
     int direct_index_partition = 0;
+    uint32_t direct_index_phase = 1;
     bool direct_index_partition_barrier = false;
     BoundedRangePassTracker bounded_range_pass;
+    BoundedGrowPassPlan bounded_grow_plan;
+    bool direct_index_summary_active = false;
+    bool direct_index_summary_overflow = false;
+    bool direct_index_iteration_fallback = false;
+    uint32_t direct_index_summary_next_iteration = 0;
+    uint32_t direct_index_summary_records = 0;
+    uint64_t direct_index_summary_probes = 0;
+    uint64_t direct_index_summary_reduction_visits = 0;
+    uint32_t direct_index_split_seen = 0;
     int direct_index_next_prefetch_itr = 0;
     std::map<Addr, std::vector<std::pair<int, uint16_t>>>
         direct_index_pending_lines;
@@ -343,6 +358,9 @@ protected:
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
     uint32_t directIndexPassForGrow(Addr grow_addr) const;
+    uint64_t directIndexRangeKey(uint32_t index, Addr grow_addr,
+                                 int iteration) const;
+    void finishAdaptiveSummary();
     BoundedRangePassTracker::Range directIndexSourceGrowRange();
     int directIndexRetirementPass() const;
     void finishBoundedRangePass(int pass, const char *reason);

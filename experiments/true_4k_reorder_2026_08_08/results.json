@@ -1,0 +1,63 @@
+{
+  "schema": "dx100.true_4k_reorder.v1",
+  "date": "2026-08-08",
+  "base_commit": "93159cf9aadaf1cd657a38249e280093b469b02f",
+  "candidate": "translated_grow_summary_single_split_four_replays",
+  "bounds": {
+    "logical_iterations": 16384,
+    "active_word_entries": 4096,
+    "active_offset_entries": 4096,
+    "active_row_directory_entries": 512,
+    "active_row_line_entries": 4096,
+    "retained_grow_plan_records": 64,
+    "allocated_row_table_organizations": 1
+  },
+  "semantic_storage_bytes": {
+    "word_fields": 32768,
+    "offset_additions": 36864,
+    "row_directory": 5120,
+    "row_line_directory": 73728,
+    "word_offset_row_total": 148480,
+    "retained_grow_plan": 1121,
+    "exact_once_checker": 6758,
+    "scratchpad_payload_32_tiles": 524288
+  },
+  "authenticated_physical_trace": {
+    "path": "/data1/nier/dx100-runs/2026-08-03-virtualization-integration/bounded-range-4bf5ef5/physical_admission_records.jsonl",
+    "sha256": "2803564faba235362e4ffe1b33cec0fecbe52860bd86261369082fcb977f7605",
+    "records": 16384,
+    "grow_populations_13_through_21": [1785, 2058, 2026, 2028, 2026, 2027, 2028, 2026, 380],
+    "unsplit_contiguous_quartiles": [5869, 4054, 4055, 2406],
+    "whole_grow_five_pass_populations": [3843, 4054, 4053, 4054, 380],
+    "four_pass_split_grow": 21,
+    "four_pass_split_quotas": [10, 41, 44, 285],
+    "four_pass_populations": [4096, 4096, 4096, 4096]
+  },
+  "finite_model_comparison": {
+    "sequential_4k": {"a_line_requests": 16384, "epochs": 8, "row_drains": 4, "row_groups": 644},
+    "whole_grow_five_pass": {"a_line_requests": 9523, "epochs": 5, "row_drains": 0, "row_groups": 129, "peak_offsets": 4054, "peak_row_slots": 310},
+    "single_grow_split_four_pass": {"a_line_requests": 9582, "epochs": 4, "row_drains": 0, "row_groups": 136, "peak_offsets": 4096, "peak_row_slots": 317}
+  },
+  "modeled_b_traffic_bytes": {
+    "summary_words": 65536,
+    "four_replay_words": 262144,
+    "candidate_total_words": 327680,
+    "descriptor_spill_append_read_writeback_line_bytes": 459584
+  },
+  "validation": {
+    "asan_ubsan_units": "pass",
+    "unit_tests": 3,
+    "source_contract_tests": 13,
+    "production_objects": "pass_cxx17_o3_warnings_indirect_tables_maa",
+    "production_gem5_build": "pass_full_scons_generated_params_compile_link_and_noop_recheck",
+    "production_gem5_sha256": "f52dc9aa6b64c24c40213100c1c1b602bfcc7457b3997482cfb1dc16fded8b2e",
+    "ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+    "matched_microbenchmark": "pending_clean_source_checkpoint"
+  },
+  "claims": {
+    "exact_output": "pending_matched_gem5",
+    "simTicks": "pending_matched_gem5",
+    "translated_row_locality": "not_claimed",
+    "promotion": "not_supported"
+  }
+}

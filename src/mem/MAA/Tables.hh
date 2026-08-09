@@ -76,6 +76,23 @@ public:
     OffsetTableEntry peek_entry(int itr) const;
     int count_entries(int itr) const;
     OffsetTableEntry consume_entry(int &itr);
+    void beginSummary();
+    bool observeSummaryKey(uint32_t key);
+    void endSummary();
+    bool summaryActive() const { return summary_mode; }
+    uint32_t summaryRecords() const { return summary_records; }
+    uint32_t summaryObservations() const { return summary_observations; }
+    uint64_t summaryProbes() const { return summary_probes; }
+    template <class Visitor>
+    void forEachSummaryRecord(Visitor visitor) const
+    {
+        assert(summary_mode);
+        for (int i = 0; i < num_entries; ++i) {
+            if (entries_valid[i])
+                visitor(static_cast<uint32_t>(entries[i].itr),
+                        static_cast<uint32_t>(entries[i].wid));
+        }
+    }
     bool is_full() const { return free_entries.empty(); }
     int capacity() const { return num_entries; }
     int occupancy() const {
@@ -90,6 +107,10 @@ public:
     MAA *maa;
     int my_unit_id;
     bool is_stream;
+    bool summary_mode = false;
+    uint32_t summary_records = 0;
+    uint32_t summary_observations = 0;
+    uint64_t summary_probes = 0;
 };
 
 class RowTableEntry {

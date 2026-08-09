@@ -80,8 +80,8 @@ require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
     echo "MAA_VIRTUAL_INDEX_RANGE_PASSES must be 0 or 1" >&2
     exit 2
 }
-[[ $index_range_policy -ge 0 && $index_range_policy -le 2 ]] || {
-    echo "MAA_VIRTUAL_INDEX_RANGE_POLICY must be in [0,2]" >&2
+[[ $index_range_policy -ge 0 && $index_range_policy -le 3 ]] || {
+    echo "MAA_VIRTUAL_INDEX_RANGE_POLICY must be in [0,3]" >&2
     exit 2
 }
 [[ $index_range_passes == 1 || $index_range_policy == 0 ]] || {
@@ -772,6 +772,38 @@ read -r rt_full offset_epoch_drains build_rounds < <(
         }
     ' "$out/run/stats.txt"
 )
+read -r bounded_summary_lines bounded_summary_words bounded_summary_records \
+    bounded_summary_probes bounded_summary_visits bounded_plan_bytes \
+    bounded_replay_lines bounded_replay_words bounded_replay_passes \
+    bounded_replay_drains bounded_replay_max_epoch bounded_word_entries \
+    bounded_offset_entries bounded_row_directories bounded_row_lines \
+    bounded_metadata_bytes < <(
+    awk '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 ~ /IND_BoundedSummaryLineReads$/ { sl += $2 }
+        section == 1 && $1 ~ /IND_BoundedSummaryWords$/ { sw += $2 }
+        section == 1 && $1 ~ /IND_BoundedSummaryRecords$/ { sr += $2 }
+        section == 1 && $1 ~ /IND_BoundedSummaryHashProbes$/ { sp += $2 }
+        section == 1 && $1 ~ /IND_BoundedSummaryReductionVisits$/ { sv += $2 }
+        section == 1 && $1 ~ /IND_BoundedSummaryPlanBytes$/ { pb += $2 }
+        section == 1 && $1 ~ /IND_BoundedReplayLineReads$/ { rl += $2 }
+        section == 1 && $1 ~ /IND_BoundedReplayWords$/ { rw += $2 }
+        section == 1 && $1 ~ /IND_BoundedReplayPasses$/ { rp += $2 }
+        section == 1 && $1 ~ /IND_BoundedReplayDrains$/ { rd += $2 }
+        section == 1 && $1 ~ /IND_BoundedReplayMaxEpochAdmissions$/ { rm += $2 }
+        section == 1 && $1 ~ /IND_BoundedWordEntries$/ { we += $2 }
+        section == 1 && $1 ~ /IND_BoundedOffsetLinkEntries$/ { oe += $2 }
+        section == 1 && $1 ~ /IND_BoundedRowDirectoryEntries$/ { dr += $2 }
+        section == 1 && $1 ~ /IND_BoundedRowLineEntries$/ { le += $2 }
+        section == 1 && $1 ~ /IND_BoundedReorderMetadataBytes$/ { mb += $2 }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            print sl + 0, sw + 0, sr + 0, sp + 0, sv + 0, pb + 0,
+                  rl + 0, rw + 0, rp + 0, rd + 0, rm + 0, we + 0,
+                  oe + 0, dr + 0, le + 0, mb + 0
+            exit
+        }
+    ' "$out/run/stats.txt"
+)
 read -r dram_reads dram_acts dram_pres < <(
     awk '
         $1 == "CH0_num_RD_commands_T:" { rd = $2 }
@@ -886,7 +918,29 @@ elif [[ $virtual -eq 1 ]]; then
         ' OFS='\t' "$trace"
     } > "$out/page_readiness.tsv"
     if [[ $direct -eq 1 ]]; then
+        actual_index_partitions=$index_partitions
         expected_index_words=$((16384 * index_partitions))
+        if [[ $index_range_policy -eq 3 ]]; then
+            actual_index_partitions=$bounded_replay_passes
+            expected_index_words=$((bounded_summary_words + bounded_replay_words))
+            [[ $bounded_summary_words -eq 16384 &&
+               $bounded_summary_records -gt 0 &&
+               $bounded_summary_records -le 64 &&
+               $bounded_plan_bytes -gt 0 &&
+               $actual_index_partitions -ge 4 &&
+               $actual_index_partitions -le $index_partitions &&
+               $bounded_replay_words -eq $((16384 * actual_index_partitions)) &&
+               $bounded_replay_max_epoch -le 4096 &&
+               $bounded_word_entries -le 4096 &&
+               $bounded_offset_entries -le 4096 &&
+               $bounded_row_lines -le 4096 &&
+               $bounded_row_directories -gt 0 &&
+               $bounded_metadata_bytes -gt 0 &&
+               $((bounded_summary_lines + bounded_replay_lines)) -eq $index_line_reads ]] || {
+                echo "invalid adaptive grow-plan counters" >&2
+                exit 1
+            }
+        fi
         [[ $index_words -eq $expected_index_words && $index_hwm -gt 0 && $index_hwm -le 64 ]] || {
             echo "invalid bounded index evidence: $index_words/$index_hwm" >&2
             exit 1
@@ -958,6 +1012,7 @@ fi
 feeder_descriptor_discards=0
 feeder_predicate_discards=0
 feeder_partition_discards=0
+feeder_summary_discards=0
 if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
     trace="$out/run/virtual_trace.log"
     feeder_descriptor_discards=$(grep -c \
@@ -969,12 +1024,20 @@ if [[ $direct -eq 1 && $reload_only -eq 0 ]]; then
     feeder_predicate_discards=$(grep -c \
         'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=predicate_rejected private=direct_index_words' \
         "$trace" || true)
+    feeder_summary_discards=$(grep -c \
+        'event=index_feeder_discard .*poisoned=0 poison=0x0 reason=summary_observed private=direct_index_words' \
+        "$trace" || true)
     expected_descriptor_discards=16384
-    expected_partition_discards=$((index_words - expected_descriptor_discards))
+    expected_summary_discards=0
+    if [[ $index_range_policy -eq 3 ]]; then
+        expected_summary_discards=16384
+    fi
+    expected_partition_discards=$((index_words - expected_descriptor_discards - expected_summary_discards))
     [[ $feeder_descriptor_discards -eq $expected_descriptor_discards && \
        $feeder_predicate_discards -eq 0 && \
+       $feeder_summary_discards -eq $expected_summary_discards && \
        $feeder_partition_discards -eq $expected_partition_discards ]] || {
-        echo "invalid private index-feeder discard evidence: inserted=$feeder_descriptor_discards/$expected_descriptor_discards predicate=$feeder_predicate_discards/0 partition=$feeder_partition_discards/$expected_partition_discards" >&2
+        echo "invalid private index-feeder discard evidence: inserted=$feeder_descriptor_discards/$expected_descriptor_discards summary=$feeder_summary_discards/$expected_summary_discards predicate=$feeder_predicate_discards/0 partition=$feeder_partition_discards/$expected_partition_discards" >&2
         exit 1
     }
 fi
@@ -1014,7 +1077,8 @@ fi
 
 headers=(case output_hash simTicks simInsts index_line_reads index_words
     index_hwm feeder_descriptor_discards feeder_predicate_discards
-    feeder_partition_discards physical_records physical_record_sha256
+    feeder_partition_discards feeder_summary_discards
+    physical_records physical_record_sha256
     index_filter_words index_filter_cycles index_filter_wait_events
     index_filter_wait_cycles write_issues
     write_completions indirect_spd_reads pages_ready
@@ -1035,11 +1099,19 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     row_table_cache_lines
     row_table_rows_inserted row_table_unique_cache_lines
     row_table_unique_rows source_reads response_slot_hwm response_word_hwm
-    response_pool_stalls row_table_full_events virtual_build_rounds dram_reads
-    dram_activates dram_precharges)
+    response_pool_stalls row_table_full_events offset_epoch_drains
+    virtual_build_rounds dram_reads
+    dram_activates dram_precharges bounded_summary_line_reads
+    bounded_summary_words bounded_summary_records bounded_summary_hash_probes
+    bounded_summary_reduction_visits bounded_summary_plan_bytes
+    bounded_replay_line_reads bounded_replay_words bounded_replay_passes
+    bounded_replay_drains bounded_replay_max_epoch_admissions
+    bounded_word_entries bounded_offset_entries bounded_row_directory_entries
+    bounded_row_line_entries bounded_reorder_metadata_bytes)
 values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$index_words" "$index_hwm" "$feeder_descriptor_discards"
     "$feeder_predicate_discards" "$feeder_partition_discards"
+    "$feeder_summary_discards"
     "$physical_records" "$physical_record_sha256"
     "$index_filter_words" "$index_filter_cycles"
     "$index_filter_wait_events" "$index_filter_wait_cycles"
@@ -1060,13 +1132,29 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$response_slots" "$response_word_pool"
     "$rt_cache_lines" "$rt_rows" "$rt_unique_cache_lines" "$rt_unique_rows"
     "$source_reads" "$response_slot_hwm" "$response_word_hwm"
-    "$response_pool_stalls" "$rt_full" "$build_rounds" "$dram_reads"
-    "$dram_acts" "$dram_pres")
+    "$response_pool_stalls" "$rt_full" "$offset_epoch_drains"
+    "$build_rounds" "$dram_reads"
+    "$dram_acts" "$dram_pres" "$bounded_summary_lines"
+    "$bounded_summary_words" "$bounded_summary_records"
+    "$bounded_summary_probes" "$bounded_summary_visits"
+    "$bounded_plan_bytes" "$bounded_replay_lines" "$bounded_replay_words"
+    "$bounded_replay_passes" "$bounded_replay_drains"
+    "$bounded_replay_max_epoch" "$bounded_word_entries"
+    "$bounded_offset_entries" "$bounded_row_directories"
+    "$bounded_row_lines" "$bounded_metadata_bytes")
 if [[ $index_range_passes -eq 1 ]]; then
+    actual_index_partitions=$index_partitions
     expected_index_words=$((16384 * index_partitions))
     expected_partition_discards=$((16384 * (index_partitions - 1)))
+    range_begin_schema=1
+    if [[ $index_range_policy -eq 3 ]]; then
+        actual_index_partitions=$bounded_replay_passes
+        expected_index_words=$((bounded_summary_words + bounded_replay_words))
+        expected_partition_discards=$((bounded_replay_words - 16384))
+        range_begin_schema=2
+    fi
     range_begin_count=$(grep -Ec \
-        'event=bounded_range_begin schema=1 .* logical=16384 active_offsets=[1-9][0-9]* .* backing=llc_index_rescan combiner=retained$' \
+        "event=bounded_range_begin schema=${range_begin_schema} .* logical=16384 .* backing=llc_index_rescan .*combiner=retained" \
         "$out/run/virtual_trace.log" || true)
     range_pass_count=$(grep -Ec \
         'event=bounded_range_pass_complete schema=1 ' \
@@ -1089,7 +1177,7 @@ if [[ $index_range_passes -eq 1 ]]; then
        $feeder_predicate_discards -eq 0 &&
        $feeder_partition_discards -eq $expected_partition_discards &&
        $range_begin_count -eq 1 &&
-       $range_pass_count -eq $index_partitions &&
+       $range_pass_count -eq $actual_index_partitions &&
        $range_complete_count -eq 1 &&
        $uncached_index_responses -eq 0 ]] || {
         echo "bounded range-pass closure failed" >&2

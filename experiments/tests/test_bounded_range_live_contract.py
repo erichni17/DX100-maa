@@ -2,7 +2,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -121,10 +120,26 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertIn("event=bounded_range_complete schema=1", self.indirect)
         self.assertIn("duplicate_admissions=0", self.indirect)
         self.assertIn("missing=0", self.indirect)
-        self.assertEqual(self.indirect.count("checker_bytes=%lu"), 2)
+        self.assertEqual(self.indirect.count("checker_bytes=%lu"), 3)
         self.assertNotIn("checker_bytes=%zu", self.indirect)
 
-    def test_capacity_drain_gate_covers_finite_direct_index_passes(self) -> None:
+    def test_policy3_uses_translated_grow_plan_and_bounded_split(self) -> None:
+        planner = (ROOT / "src/mem/MAA/BoundedQuantileRanges.hh").read_text()
+        for token in (
+            "class BoundedGrowPassPlan",
+            "MaxRecords = 64",
+            "splitQuotas",
+            "RequiresIterationFallback",
+        ):
+            self.assertIn(token, planner)
+        self.assertIn("key=translated_dram_grow", self.indirect)
+        self.assertIn("recordSelectedAdmission", self.indirect)
+        self.assertIn("direct_index_split_seen", self.indirect)
+        self.assertIn("IND_BoundedSummaryPlanBytes", self.indirect)
+
+    def test_capacity_drain_gate_covers_finite_direct_index_passes(
+        self,
+    ) -> None:
         legacy_gate = re.search(
             r"const bool legacy_refill_allowed\s*=\s*(.*?);",
             self.indirect,
@@ -160,13 +175,15 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             "index_words -eq $expected_index_words",
             "feeder_descriptor_discards -eq 16384",
             "feeder_partition_discards -eq $expected_partition_discards",
-            "range_pass_count -eq $index_partitions",
+            "range_pass_count -eq $actual_index_partitions",
             "range_complete_count -eq 1",
             "row_slices * row_rows * row_entries",
         ):
             self.assertIn(token, self.runner)
 
-    def test_filter_retry_accounting_includes_offset_epoch_drains(self) -> None:
+    def test_filter_retry_accounting_includes_offset_epoch_drains(
+        self,
+    ) -> None:
         self.assertIn("IND_NumOTEpochDrain", self.runner)
         self.assertIn(
             "expected_index_words + rt_full + offset_epoch_drains",

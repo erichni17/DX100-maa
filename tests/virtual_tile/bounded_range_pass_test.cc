@@ -45,22 +45,32 @@ testExactOnceOutOfOrderRetirement()
         selected[tracker.passForGrow(grow)].push_back(itr);
     }
     for (uint32_t pass = 0; pass < tracker.passes(); ++pass) {
-        for (uint32_t itr : selected[pass]) {
-            const uint64_t grow =
-                (static_cast<uint64_t>(itr) * 997 + 13) % grows;
-            assert(tracker.recordAdmission(itr, grow, pass) ==
-                   Result::Accepted);
-        }
-        for (auto itr = selected[pass].rbegin();
-             itr != selected[pass].rend(); ++itr) {
-            assert(tracker.recordRetirement(*itr, pass) == Result::Accepted);
+        for (uint32_t itr = 0; itr < logical; ++itr)
+            assert(tracker.recordInspection(itr, pass) == Result::Accepted);
+        for (size_t begin = 0; begin < selected[pass].size();
+             begin += tracker.active()) {
+            const size_t end = std::min(
+                begin + tracker.active(), selected[pass].size());
+            for (size_t i = begin; i < end; ++i) {
+                const uint32_t itr = selected[pass][i];
+                const uint64_t grow =
+                    (static_cast<uint64_t>(itr) * 997 + 13) % grows;
+                assert(tracker.recordAdmission(itr, grow, pass) ==
+                       Result::Accepted);
+            }
+            for (size_t i = end; i > begin; --i) {
+                assert(tracker.recordRetirement(
+                           selected[pass][i - 1], pass) == Result::Accepted);
+            }
+            if (end != selected[pass].size())
+                assert(tracker.recordDrain(pass) == Result::Accepted);
         }
         assert(tracker.finishPass(pass) == Result::Accepted);
     }
     assert(tracker.admissions() == logical);
     assert(tracker.retirements() == logical);
     assert(tracker.finish() == Result::Accepted);
-    assert(tracker.chargedBytes() == 5733);
+    assert(tracker.chargedBytes() == 6758);
 }
 
 void
@@ -72,15 +82,15 @@ testSemanticByteAccountingIsFieldComplete()
 
     // admitted + retired: two 16K-bit semantic bitmaps.
     assert(bytes.bitmaps == 4096);
-    // passAdmissions + passRetirements: 128 uint32_t counters.
-    assert(bytes.passCounters == 512);
+    // Six 64-entry uint32 arrays: totals, scan cursors, and drain epochs.
+    assert(bytes.passCounters == 1536);
     // passFinished: one semantic byte for each of 64 pass states.
     assert(bytes.passFinished == 64);
     // passRanges: 64 {uint64_t lower, uint64_t upper} records.
     assert(bytes.passRanges == 1024);
-    // configuredFlag; logical/active/pass counts; grow bounds; global counts.
-    assert(bytes.scalarConfig == 37);
-    assert(bytes.total() == 5733);
+    // Two mode flags; logical/active/pass counts; grow bounds; global counts.
+    assert(bytes.scalarConfig == 38);
+    assert(bytes.total() == 6758);
     assert(tracker.chargedBytes() == bytes.total());
 }
 
@@ -92,12 +102,17 @@ testSkewRemainsExactAndExplicit()
     const uint64_t grow = 50000;
     const uint32_t selected_pass = tracker.passForGrow(grow);
     for (uint32_t pass = 0; pass < tracker.passes(); ++pass) {
+        for (uint32_t itr = 0; itr < tracker.logical(); ++itr)
+            assert(tracker.recordInspection(itr, pass) == Result::Accepted);
         if (pass == selected_pass) {
             for (uint32_t itr = 0; itr < tracker.logical(); ++itr) {
                 assert(tracker.recordAdmission(itr, grow, pass) ==
                        Result::Accepted);
                 assert(tracker.recordRetirement(itr, pass) ==
                        Result::Accepted);
+                if ((itr + 1) % tracker.active() == 0 &&
+                    itr + 1 != tracker.logical())
+                    assert(tracker.recordDrain(pass) == Result::Accepted);
             }
         }
         assert(tracker.finishPass(pass) == Result::Accepted);
@@ -156,6 +171,9 @@ testFailuresAreClosed()
     assert(tracker.configure(16384, 4096, 3, 65536) ==
            Result::InvalidConfiguration);
     assert(tracker.configure(16384, 4096, 4, 65536) == Result::Accepted);
+    assert(tracker.recordInspection(1, 0) ==
+           Result::InspectionOutOfOrder);
+    assert(tracker.recordInspection(0, 0) == Result::Accepted);
     const uint64_t grow = 7;
     assert(tracker.recordAdmission(0, grow, 1) == Result::WrongPass);
     assert(tracker.recordRetirement(0, 0) ==
@@ -166,8 +184,28 @@ testFailuresAreClosed()
     assert(tracker.recordRetirement(0, 0) == Result::Accepted);
     assert(tracker.recordRetirement(0, 0) ==
            Result::DuplicateRetirement);
-    assert(tracker.finishPass(0) == Result::Accepted);
+    assert(tracker.recordDrain(0) == Result::Accepted);
+    assert(tracker.recordInspection(0, 0) ==
+           Result::InspectionOutOfOrder);
+    assert(tracker.finishPass(0) == Result::PassIncomplete);
     assert(tracker.finish() == Result::Incomplete);
+}
+
+void
+testEpochOverflowRequiresExplicitDrain()
+{
+    BoundedRangePassTracker tracker;
+    assert(tracker.configure(8, 4, 2, 2) == Result::Accepted);
+    for (uint32_t itr = 0; itr < 8; ++itr)
+        assert(tracker.recordInspection(itr, 0) == Result::Accepted);
+    for (uint32_t itr = 0; itr < 4; ++itr)
+        assert(tracker.recordAdmission(itr, 0, 0) == Result::Accepted);
+    assert(tracker.recordAdmission(4, 0, 0) == Result::EpochOverflow);
+    assert(tracker.recordDrain(0) == Result::DrainIncomplete);
+    for (uint32_t itr = 0; itr < 4; ++itr)
+        assert(tracker.recordRetirement(itr, 0) == Result::Accepted);
+    assert(tracker.recordDrain(0) == Result::Accepted);
+    assert(tracker.recordAdmission(4, 0, 0) == Result::Accepted);
 }
 
 } // anonymous namespace
@@ -182,6 +220,7 @@ main()
     testSourceRelativeRange();
     testExplicitBalancedRanges();
     testFailuresAreClosed();
+    testEpochOverflowRequiresExplicitDrain();
     std::cout << "bounded_range_pass_test: PASS\n";
     return 0;
 }

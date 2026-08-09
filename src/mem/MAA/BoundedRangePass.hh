@@ -36,6 +36,9 @@ class BoundedRangePassTracker
         RetirementBeforeAdmission,
         DuplicateRetirement,
         PassAlreadyFinished,
+        InspectionOutOfOrder,
+        EpochOverflow,
+        DrainIncomplete,
         PassIncomplete,
         Incomplete
     };
@@ -107,9 +110,36 @@ class BoundedRangePassTracker
         return Result::Accepted;
     }
 
+    /** Configure exact-once checking for a caller-owned bounded pass plan. */
+    Result configureSelected(uint32_t logical_entries,
+                             uint32_t active_entries, uint32_t passes)
+    {
+        reset();
+        if (logical_entries == 0 || active_entries == 0 ||
+            active_entries > MaxActiveEntries || passes == 0 ||
+            passes > MaxPasses ||
+            passes < ceilDiv(logical_entries, active_entries)) {
+            return Result::InvalidConfiguration;
+        }
+        logicalEntries = logical_entries;
+        activeEntries = active_entries;
+        numPasses = passes;
+        growLower = 0;
+        growUpper = passes;
+        externallySelected = true;
+        for (uint32_t pass = 0; pass < passes; ++pass)
+            passRanges[pass] = {pass, static_cast<uint64_t>(pass) + 1};
+        const size_t words = ceilDiv(logicalEntries, uint32_t(64));
+        admitted.assign(words, 0);
+        retired.assign(words, 0);
+        configuredFlag = true;
+        return Result::Accepted;
+    }
+
     void reset()
     {
         configuredFlag = false;
+        externallySelected = false;
         logicalEntries = 0;
         activeEntries = 0;
         numPasses = 0;
@@ -121,6 +151,10 @@ class BoundedRangePassTracker
         retirementCount = 0;
         passAdmissions.fill(0);
         passRetirements.fill(0);
+        passInspections.fill(0);
+        passEpochAdmissions.fill(0);
+        passMaxEpochAdmissions.fill(0);
+        passDrains.fill(0);
         passFinished.fill(false);
         passRanges.fill({});
     }
@@ -134,6 +168,29 @@ class BoundedRangePassTracker
     uint64_t upperGrow() const { return growUpper; }
     uint32_t admissions() const { return admissionCount; }
     uint32_t retirements() const { return retirementCount; }
+
+    /**
+     * Record one timing-visible backing-word inspection.
+     *
+     * A finite replay pass must inspect logical iterations in ascending order.
+     * This scalar cursor catches a duplicated, omitted, reordered, or stale
+     * replay without retaining another logical-sized descriptor array.
+     */
+    Result recordInspection(uint32_t iteration, uint32_t pass)
+    {
+        if (!configuredFlag)
+            return Result::NotConfigured;
+        if (iteration >= logicalEntries)
+            return Result::IterationOutOfRange;
+        if (pass >= numPasses)
+            return Result::PassOutOfRange;
+        if (passFinished[pass])
+            return Result::PassAlreadyFinished;
+        if (iteration != passInspections[pass])
+            return Result::InspectionOutOfOrder;
+        passInspections[pass]++;
+        return Result::Accepted;
+    }
 
     Range range(uint32_t pass) const
     {
@@ -167,11 +224,54 @@ class BoundedRangePassTracker
             return Result::PassAlreadyFinished;
         if (passForGrow(grow) != pass)
             return Result::WrongPass;
+        return recordAdmissionCommon(iteration, pass);
+    }
+
+    Result recordSelectedAdmission(uint32_t iteration, uint32_t pass)
+    {
+        if (!configuredFlag)
+            return Result::NotConfigured;
+        if (iteration >= logicalEntries)
+            return Result::IterationOutOfRange;
+        if (pass >= numPasses)
+            return Result::PassOutOfRange;
+        if (passFinished[pass])
+            return Result::PassAlreadyFinished;
+        if (!externallySelected)
+            return Result::WrongPass;
+        return recordAdmissionCommon(iteration, pass);
+    }
+
+  private:
+    Result recordAdmissionCommon(uint32_t iteration, uint32_t pass)
+    {
         if (test(admitted, iteration))
             return Result::DuplicateAdmission;
+        if (passEpochAdmissions[pass] >= activeEntries)
+            return Result::EpochOverflow;
         set(admitted, iteration);
         admissionCount++;
         passAdmissions[pass]++;
+        passEpochAdmissions[pass]++;
+        if (passEpochAdmissions[pass] > passMaxEpochAdmissions[pass])
+            passMaxEpochAdmissions[pass] = passEpochAdmissions[pass];
+        return Result::Accepted;
+    }
+
+  public:
+
+    Result recordDrain(uint32_t pass)
+    {
+        if (!configuredFlag)
+            return Result::NotConfigured;
+        if (pass >= numPasses)
+            return Result::PassOutOfRange;
+        if (passFinished[pass])
+            return Result::PassAlreadyFinished;
+        if (passAdmissions[pass] != passRetirements[pass])
+            return Result::DrainIncomplete;
+        passEpochAdmissions[pass] = 0;
+        passDrains[pass]++;
         return Result::Accepted;
     }
 
@@ -203,7 +303,8 @@ class BoundedRangePassTracker
             return Result::PassOutOfRange;
         if (passFinished[pass])
             return Result::PassAlreadyFinished;
-        if (passAdmissions[pass] != passRetirements[pass])
+        if (passInspections[pass] != logicalEntries ||
+            passAdmissions[pass] != passRetirements[pass])
             return Result::PassIncomplete;
         passFinished[pass] = true;
         return Result::Accepted;
@@ -218,6 +319,7 @@ class BoundedRangePassTracker
             return Result::Incomplete;
         for (uint32_t pass = 0; pass < numPasses; ++pass) {
             if (!passFinished[pass] ||
+                passInspections[pass] != logicalEntries ||
                 passAdmissions[pass] != passRetirements[pass])
                 return Result::Incomplete;
         }
@@ -232,6 +334,21 @@ class BoundedRangePassTracker
     uint32_t retirementsForPass(uint32_t pass) const
     {
         return pass < numPasses ? passRetirements[pass] : 0;
+    }
+
+    uint32_t inspectionsForPass(uint32_t pass) const
+    {
+        return pass < numPasses ? passInspections[pass] : 0;
+    }
+
+    uint32_t drainsForPass(uint32_t pass) const
+    {
+        return pass < numPasses ? passDrains[pass] : 0;
+    }
+
+    uint32_t maxEpochAdmissionsForPass(uint32_t pass) const
+    {
+        return pass < numPasses ? passMaxEpochAdmissions[pass] : 0;
     }
 
     struct SemanticByteBreakdown
@@ -261,12 +378,15 @@ class BoundedRangePassTracker
         bytes.bitmaps =
             (admitted.size() + retired.size()) * sizeof(uint64_t);
         bytes.passCounters =
-            (passAdmissions.size() + passRetirements.size()) *
+            (passAdmissions.size() + passRetirements.size() +
+             passInspections.size() + passEpochAdmissions.size() +
+             passMaxEpochAdmissions.size() + passDrains.size()) *
             sizeof(uint32_t);
         bytes.passFinished = passFinished.size();
         bytes.passRanges = passRanges.size() * 2 * sizeof(uint64_t);
         bytes.scalarConfig =
             1 + // configuredFlag
+            1 + // externallySelected
             3 * sizeof(uint32_t) + // logicalEntries, activeEntries, numPasses
             2 * sizeof(uint64_t) + // growLower, growUpper
             2 * sizeof(uint32_t); // admissionCount, retirementCount
@@ -293,6 +413,10 @@ class BoundedRangePassTracker
             return "retirement_before_admission";
           case Result::DuplicateRetirement: return "duplicate_retirement";
           case Result::PassAlreadyFinished: return "pass_already_finished";
+          case Result::InspectionOutOfOrder:
+            return "inspection_out_of_order";
+          case Result::EpochOverflow: return "epoch_overflow";
+          case Result::DrainIncomplete: return "drain_incomplete";
           case Result::PassIncomplete: return "pass_incomplete";
           case Result::Incomplete: return "incomplete";
         }
@@ -317,6 +441,7 @@ class BoundedRangePassTracker
     }
 
     bool configuredFlag = false;
+    bool externallySelected = false;
     uint32_t logicalEntries = 0;
     uint32_t activeEntries = 0;
     uint32_t numPasses = 0;
@@ -328,6 +453,10 @@ class BoundedRangePassTracker
     uint32_t retirementCount = 0;
     std::array<uint32_t, MaxPasses> passAdmissions{};
     std::array<uint32_t, MaxPasses> passRetirements{};
+    std::array<uint32_t, MaxPasses> passInspections{};
+    std::array<uint32_t, MaxPasses> passEpochAdmissions{};
+    std::array<uint32_t, MaxPasses> passMaxEpochAdmissions{};
+    std::array<uint32_t, MaxPasses> passDrains{};
     std::array<bool, MaxPasses> passFinished{};
     std::array<Range, MaxPasses> passRanges{};
 };

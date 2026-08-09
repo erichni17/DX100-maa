@@ -187,6 +187,18 @@ MAA::MAA(const MAAParams &p)
         panic_if(num_offset_table_entries > 4096,
                  "Bounded range passes allow at most 4096 Offset entries, "
                  "got %u\n", num_offset_table_entries);
+        panic_if(physical_tile_elements > 4096,
+                 "Bounded range passes allow at most 4096 physical SPD "
+                 "elements per tile, got %u\n", physical_tile_elements);
+        panic_if(reconfigure_row_table,
+                 "Bounded range passes require one explicitly allocated "
+                 "Row Table configuration\n");
+        panic_if(virtual_index_range_policy == 3 &&
+                     num_offset_table_entries != 4096,
+                 "Adaptive translated-grow quantiles phase-share exactly "
+                 "4096 "
+                 "Word/Offset entries, got %u\n",
+                 num_offset_table_entries);
         panic_if(virtual_index_partitions < minimum_passes,
                  "Bounded range passes need at least %u passes for %u/%u "
                  "logical/active entries, got %u\n", minimum_passes,
@@ -205,8 +217,8 @@ MAA::MAA(const MAAParams &p)
                  "Bounded range passes cannot use attribution-only native "
                  "issue order\n");
     }
-    panic_if(virtual_index_range_policy > 2,
-             "Invalid virtual index range policy %u (expected 0..2)\n",
+    panic_if(virtual_index_range_policy > 3,
+             "Invalid virtual index range policy %u (expected 0..3)\n",
              virtual_index_range_policy);
     panic_if(!virtual_index_range_passes && virtual_index_range_policy != 0,
              "Virtual index range policy %u requires range passes\n",
@@ -2539,6 +2551,73 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWaitCycles"),
             statistics::units::Cycle::get(),
             "non-overlapped scheduler cycles caused by index filtering"));
+        IND_BoundedSummaryLineReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryLineReads"),
+            statistics::units::Count::get(),
+            "LLC-visible B line reads used to build a bounded grow plan"));
+        IND_BoundedSummaryWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryWords"),
+            statistics::units::Count::get(),
+            "B words inspected by bounded translated-grow discovery"));
+        IND_BoundedSummaryRecords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryRecords"),
+            statistics::units::Count::get(),
+            "distinct translated grows in the phase-shared histogram"));
+        IND_BoundedSummaryHashProbes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryHashProbes"),
+            statistics::units::Count::get(),
+            "finite phase-shared histogram hash probes"));
+        IND_BoundedSummaryReductionVisits.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryReductionVisits"),
+            statistics::units::Count::get(),
+            "finite histogram slots and records visited by grow planning"));
+        IND_BoundedSummaryPlanBytes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryPlanBytes"),
+            statistics::units::Byte::get(),
+            "fixed-width retained translated-grow replay plan bytes"));
+        IND_BoundedReplayLineReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayLineReads"),
+            statistics::units::Count::get(),
+            "LLC-visible B line reads made by bounded replay passes"));
+        IND_BoundedReplayWords.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayWords"),
+            statistics::units::Count::get(),
+            "B words inspected by bounded replay passes"));
+        IND_BoundedReplayPasses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayPasses"),
+            statistics::units::Count::get(),
+            "fully closed bounded replay passes"));
+        IND_BoundedReplayDrains.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayDrains"),
+            statistics::units::Count::get(),
+            "explicit Row/Word/Offset capacity drains within replay passes"));
+        IND_BoundedReplayMaxEpochAdmissions.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_BoundedReplayMaxEpochAdmissions"),
+            statistics::units::Count::get(),
+            "maximum admissions between explicit bounded drains"));
+        IND_BoundedWordEntries.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedWordEntries"),
+            statistics::units::Count::get(),
+            "charged tile-proportional Word Table entries"));
+        IND_BoundedOffsetLinkEntries.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedOffsetLinkEntries"),
+            statistics::units::Count::get(),
+            "charged Offset linked-placement fields co-resident with words"));
+        IND_BoundedRowDirectoryEntries.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedRowDirectoryEntries"),
+            statistics::units::Count::get(),
+            "charged Row Table row-directory entries"));
+        IND_BoundedRowLineEntries.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedRowLineEntries"),
+            statistics::units::Count::get(),
+            "charged Row Table line-directory entries"));
+        IND_BoundedReorderMetadataBytes.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_BoundedReorderMetadataBytes"),
+            statistics::units::Byte::get(),
+            "source-semantic bounded Word/Offset/Row metadata bytes"));
         IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
             statistics::units::Count::get(),
