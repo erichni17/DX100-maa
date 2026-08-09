@@ -272,12 +272,15 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtStateResultReads,
                statistics::units::Count::get(),
                "Accepted reads from the banked UMT result state store"),
-      ADD_STAT(descriptorUmtStateInputBankStallCycles,
+      ADD_STAT(descriptorUmtStateInputBankWaitCycles,
                statistics::units::Cycle::get(),
-               "UMT input-state writes serialized by a single bank port"),
-      ADD_STAT(descriptorUmtStateResultBankStallCycles,
+               "Aggregate source-write request wait cycles at UMT banks"),
+      ADD_STAT(descriptorUmtStatePipelineResultBankStallCycles,
                statistics::units::Cycle::get(),
-               "UMT result-state accesses serialized by a single bank port"),
+               "Unique pipeline cycles stalled by a UMT result-bank port"),
+      ADD_STAT(descriptorUmtStateResultDrainBankWaitCycles,
+               statistics::units::Cycle::get(),
+               "Aggregate result-drain request wait cycles at UMT banks"),
       ADD_STAT(descriptorUmtStateStoreHighWaterMark,
                statistics::units::Count::get(),
                "Maximum active groups in the fixed UMT state store"),
@@ -292,28 +295,40 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
                "Maximum simultaneously occupied UMT stream FP tokens"),
       ADD_STAT(descriptorUmtStateTokenBackpressureEvents,
                statistics::units::Count::get(),
-               "UMT denominator admissions blocked by eight-token capacity"),
+               "UMT denominator admission attempts blocked by token capacity"),
       ADD_STAT(descriptorUmtStateFpIssueStallCycles,
                statistics::units::Cycle::get(),
                "Cycles with UMT stream tokens but no FP issue"),
-      ADD_STAT(descriptorUmtInputLineHoldCycles,
+      ADD_STAT(descriptorUmtInputLineWaiterHoldLineCycles,
                statistics::units::Cycle::get(),
-               "D64 input line cycles held for complete waiter coalescing"),
-      ADD_STAT(descriptorUmtStateAllocatedBytes,
+               "Aggregate D64 line-cycles held for complete waiter sets"),
+      ADD_STAT(descriptorUmtStateAllocatedStoreBytes,
                statistics::units::Byte::get(),
                "Fixed bytes allocated by the UMT in-place stream state"),
-      ADD_STAT(descriptorUmtStatePhysicalBytes,
+      ADD_STAT(descriptorUmtStatePhysicalStoreBytes,
                statistics::units::Byte::get(),
                "Physical bytes in the paired UMT operation/continuation rows"),
-      ADD_STAT(descriptorUmtStateResidualBytes,
+      ADD_STAT(descriptorUmtStateResidualStoreBytes,
                statistics::units::Byte::get(),
                "Unallocated bytes remaining in the paired UMT rows"),
-      ADD_STAT(descriptorUmtStateAuxiliaryBitsFloor,
+      ADD_STAT(descriptorUmtStateTokenLogicalBitsFloor,
                statistics::units::Count::get(),
-               "Logical lower-bound transient UMT bits outside the store"),
-      ADD_STAT(descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor,
+               "No-padding logical bit floor for all UMT stream tokens"),
+      ADD_STAT(descriptorUmtStateFunctionalControlLogicalBitsFloor,
                statistics::units::Count::get(),
-               "Paired-store physical bits plus the auxiliary logical floor"),
+               "Logical bit floor for UMT functional token control"),
+      ADD_STAT(descriptorUmtStateBankSchedulerLogicalBitsFloor,
+               statistics::units::Count::get(),
+               "Logical bit floor for UMT bank scheduler state"),
+      ADD_STAT(descriptorUmtStateInstrumentationLogicalBitsFloor,
+               statistics::units::Count::get(),
+               "Logical bit floor for exported UMT instrumentation"),
+      ADD_STAT(descriptorUmtStateAuxiliaryLogicalBitsFloor,
+               statistics::units::Count::get(),
+               "Derived logical bit floor outside the paired UMT store"),
+      ADD_STAT(descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor,
+               statistics::units::Count::get(),
+               "Physical store bits plus the logical auxiliary bit floor"),
       ADD_STAT(descriptorCompletionWrites, statistics::units::Count::get(),
                "Completion-record writes acknowledged"),
       ADD_STAT(descriptorErrors, statistics::units::Count::get(),
@@ -1293,7 +1308,7 @@ LANLMAA::issueResultWrite()
                 panic_if(!reservation.accepted,
                          "LANLMAA read invalid ordered-wave result state");
                 ++stats.descriptorUmtStateResultReads;
-                stats.descriptorUmtStateResultBankStallCycles +=
+                stats.descriptorUmtStateResultDrainBankWaitCycles +=
                     reservation.stallCycles;
                 writeLe(
                     data, byte, value,
@@ -2570,7 +2585,7 @@ LANLMAA::recordUmtOrderedWaveStreamStats()
         umtOrderedWaveState.tokenBackpressure();
     stats.descriptorUmtStateFpIssueStallCycles +=
         umtOrderedWaveState.fpIssueStalls();
-    stats.descriptorUmtStateResultBankStallCycles +=
+    stats.descriptorUmtStatePipelineResultBankStallCycles +=
         umtOrderedWaveState.resultBankStalls();
 }
 
@@ -3479,16 +3494,26 @@ LANLMAA::receiveDescriptorResponse(PacketPtr packet)
             rejectDescriptor(DescriptorError::BadStartState);
             return true;
         }
-        stats.descriptorUmtStateAllocatedBytes =
+        stats.descriptorUmtStateAllocatedStoreBytes =
             UmtOrderedWaveStreamState::AllocatedBytes;
-        stats.descriptorUmtStatePhysicalBytes =
+        stats.descriptorUmtStatePhysicalStoreBytes =
             UmtOrderedWaveStreamState::PhysicalBytes;
-        stats.descriptorUmtStateResidualBytes =
+        stats.descriptorUmtStateResidualStoreBytes =
             UmtOrderedWaveStreamState::ResidualBytes;
-        stats.descriptorUmtStateAuxiliaryBitsFloor =
-            UmtOrderedWaveStreamState::AuxiliaryBitsFloor;
-        stats.descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor =
-            UmtOrderedWaveStreamState::PhysicalPlusAuxiliaryBitsFloor;
+        stats.descriptorUmtStateTokenLogicalBitsFloor =
+            UmtOrderedWaveStreamState::ComputeTokens *
+            UmtOrderedWaveStreamState::RepresentedTokenLogicalBitsFloor;
+        stats.descriptorUmtStateFunctionalControlLogicalBitsFloor =
+            UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor;
+        stats.descriptorUmtStateBankSchedulerLogicalBitsFloor =
+            UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor;
+        stats.descriptorUmtStateInstrumentationLogicalBitsFloor =
+            UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor;
+        stats.descriptorUmtStateAuxiliaryLogicalBitsFloor =
+            UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor;
+        stats.descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor =
+            UmtOrderedWaveStreamState::
+                PhysicalStorePlusLogicalAuxiliaryBitsFloor;
         if (umtOrderedWave.abiVersion ==
                 UmtOrderedWaveD32DescriptorVersion) {
             ++stats.descriptorUmtD32Descriptors;
@@ -5325,7 +5350,7 @@ LANLMAA::issueLines()
             if (umtOrderedWave.abiVersion ==
                     UmtOrderedWaveD64DescriptorVersion &&
                 line.waiters.size() != expected) {
-                ++stats.descriptorUmtInputLineHoldCycles;
+                ++stats.descriptorUmtInputLineWaiterHoldLineCycles;
                 continue;
             }
             if (first.umtFusedReadStage >= UmtOrderedWaveCorners) {
@@ -5627,7 +5652,7 @@ LANLMAA::receiveTimingResponse(PacketPtr packet)
                             reservation.error;
                     } else if (sourceStage) {
                         ++stats.descriptorUmtStateInputWrites;
-                        stats.descriptorUmtStateInputBankStallCycles +=
+                        stats.descriptorUmtStateInputBankWaitCycles +=
                             reservation.stallCycles;
                     } else {
                         ++stats.descriptorUmtStateDenominatorsConsumed;

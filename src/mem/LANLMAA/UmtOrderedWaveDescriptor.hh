@@ -233,7 +233,7 @@ umtOrderedWaveResources()
     resources.multiplyUnits = 1;
     resources.divideUnits = 8;
     resources.divideLatency = 64;
-    resources.divideInitiationInterval = 64;
+    resources.divideInitiationInterval = 32;
     return resources;
 }
 

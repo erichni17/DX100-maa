@@ -31,6 +31,15 @@ umtOrderedWaveStreamEncodeFp64(double value)
     return bits;
 }
 
+constexpr size_t
+umtOrderedWaveStreamBitsForStates(size_t states)
+{
+    size_t bits = 0;
+    for (size_t maximum = states - 1; maximum != 0; maximum >>= 1)
+        ++bits;
+    return bits;
+}
+
 // Physical opcode-11 state carried by the existing paired
 // operation/continuation rows.  Denominators remain in the returned line
 // packet; a completed result overwrites its dead source word in place.
@@ -40,8 +49,11 @@ class UmtOrderedWaveStreamStateModel
 {
   public:
     static_assert(ComputeTokenCount != 0);
+    static_assert(ComputeTokenCount <= UmtOrderedWaveMaximumGroups);
     static_assert(DividerLaneCount != 0);
+    static_assert(DividerLaneCount <= UmtOrderedWaveMaximumGroups);
     static_assert(DividerInitiationIntervalCycles != 0);
+    static_assert(DividerInitiationIntervalCycles <= 64);
 
     static constexpr size_t Banks = 4;
     static constexpr size_t RowsPerBank =
@@ -56,12 +68,6 @@ class UmtOrderedWaveStreamStateModel
         UmtOrderedWaveMaximumGroups * 640;
     static constexpr size_t PhysicalBytes = PhysicalBits / 8;
     static constexpr size_t ResidualBytes = PhysicalBytes - AllocatedBytes;
-    // Logical lower bound for the eight FP tokens and bounded transient
-    // tags/data outside the paired store.  ECC and control implementation are
-    // deliberately excluded, so this must never be presented as a total.
-    static constexpr size_t AuxiliaryBitsFloor = 1972;
-    static constexpr size_t PhysicalPlusAuxiliaryBitsFloor =
-        PhysicalBits + AuxiliaryBitsFloor;
 
     struct Reservation
     {
@@ -84,6 +90,33 @@ class UmtOrderedWaveStreamStateModel
     // arbiters, muxing, and every non-Token field in this class.
     static constexpr size_t RepresentedTokenLogicalBitsFloor =
         4 + 6 + 6 + 3 + 4 + 64 + 6 * 64;
+    // Independently derived logical widths of every represented state-model
+    // field outside the 5 KiB paired store. The decoded descriptor is shared
+    // with the engine's existing descriptor register rather than copied into
+    // this model. Compiler padding, ECC, datapath gates, muxes, clocking,
+    // physical register cells, and unrepresented control are excluded.
+    static constexpr size_t FunctionalControlLogicalBitsFloor =
+        umtOrderedWaveStreamBitsForStates(ComputeTokens + 1) +
+        umtOrderedWaveStreamBitsForStates(ComputeTokens) +
+        1 + 5 + 2 * 64 + DividerLanes * 64;
+    static constexpr size_t BankSchedulerLogicalBitsFloor =
+        umtOrderedWaveStreamBitsForStates(
+            UmtOrderedWaveMaximumGroups + 1) +
+        Banks * umtOrderedWaveStreamBitsForStates(RowsPerBank + 1) +
+        Banks * 64;
+    static constexpr size_t InstrumentationLogicalBitsFloor =
+        umtOrderedWaveStreamBitsForStates(
+            UmtOrderedWaveMaximumGroups + 1) +
+        umtOrderedWaveStreamBitsForStates(RowsPerBank + 1) +
+        umtOrderedWaveStreamBitsForStates(ComputeTokens + 1) +
+        15 * 64;
+    static constexpr size_t AuxiliaryLogicalBitsFloor =
+        ComputeTokens * RepresentedTokenLogicalBitsFloor +
+        FunctionalControlLogicalBitsFloor +
+        BankSchedulerLogicalBitsFloor +
+        InstrumentationLogicalBitsFloor;
+    static constexpr size_t PhysicalStorePlusLogicalAuxiliaryBitsFloor =
+        PhysicalBits + AuxiliaryLogicalBitsFloor;
 
     struct CycleResult
     {
@@ -129,7 +162,7 @@ class UmtOrderedWaveStreamStateModel
         words = {};
         metadataWords = {};
         tokens = {};
-        descriptorBound = false;
+        boundDescriptor = nullptr;
         activeTokens = 0;
         tokenHighWater = 0;
         issueCursor = 0;
@@ -148,12 +181,14 @@ class UmtOrderedWaveStreamStateModel
     bool bindDescriptor(const UmtOrderedWaveDescriptor &descriptor)
     {
         if (activeGroups == 0 || descriptor.groupCount != activeGroups ||
-            activeTokens != 0) {
+            activeTokens != 0 || boundDescriptor != nullptr) {
             reject(DescriptorError::BadStartState);
             return false;
         }
-        boundDescriptor = descriptor;
-        descriptorBound = true;
+        // The engine retains its decoded descriptor until terminal rearm, so
+        // the state model consumes that existing register without a duplicate
+        // descriptor-sized allocation.
+        boundDescriptor = &descriptor;
         return true;
     }
 
@@ -183,7 +218,7 @@ class UmtOrderedWaveStreamStateModel
         size_t operation, size_t group, size_t corner,
         uint64_t denominatorBits)
     {
-        if (!descriptorBound || !validGroup(group) ||
+        if (boundDescriptor == nullptr || !validGroup(group) ||
             corner >= SourceResultWords) {
             return reject(DescriptorError::BadStartState);
         }
@@ -312,7 +347,7 @@ class UmtOrderedWaveStreamStateModel
                 if (cycle < addNextIssue)
                     break;
                 token.denominator =
-                    boundDescriptor.sumArea[token.corner] +
+                    boundDescriptor->sumArea[token.corner] +
                     token.denominatorInput;
                 if (!std::isfinite(token.denominator) ||
                     token.denominator <= 0.0) {
@@ -364,7 +399,7 @@ class UmtOrderedWaveStreamStateModel
               case TokenPhase::MultiplyPending:
                 if (cycle < multiplyNextIssue)
                     break;
-                token.product = boundDescriptor.coefficients[
+                token.product = boundDescriptor->coefficients[
                     umtOrderedWaveCoefficientIndex(
                         token.corner, token.destination)] * token.flux;
                 if (!std::isfinite(token.product)) {
@@ -630,7 +665,7 @@ class UmtOrderedWaveStreamStateModel
     void skipInactiveEdges(Token &token) const
     {
         while (token.destination < SourceResultWords &&
-               boundDescriptor.coefficients[
+               boundDescriptor->coefficients[
                    umtOrderedWaveCoefficientIndex(
                        token.corner, token.destination)] == 0.0) {
             ++token.destination;
@@ -689,8 +724,9 @@ class UmtOrderedWaveStreamStateModel
     std::array<uint64_t, Banks> nextBankCycle{};
     std::array<std::array<Row, RowsPerBank>, Banks> words{};
     std::array<std::array<uint64_t, RowsPerBank>, Banks> metadataWords{};
-    UmtOrderedWaveDescriptor boundDescriptor{};
-    bool descriptorBound = false;
+    // Host pointer to the engine's existing decoded descriptor register; it
+    // is not an additional logical hardware pointer or descriptor copy.
+    const UmtOrderedWaveDescriptor *boundDescriptor = nullptr;
     std::array<Token, ComputeTokens> tokens{};
     size_t activeTokens = 0;
     size_t tokenHighWater = 0;
@@ -707,21 +743,31 @@ class UmtOrderedWaveStreamStateModel
     DescriptorError latchedError = DescriptorError::None;
 };
 
-// The production configuration remains byte-for-byte behaviorally equivalent
-// to the original fixed model.  The model template exists so standalone
-// probes can sweep compile-time token and divider resources without copying or
-// approximating the state machine.
+// The selected successor keeps eight divider lanes and 64-cycle latency, adds
+// a second in-flight slot per lane (II=32), and admits both returned D32 line
+// blocks concurrently. Global FP issue remains one and banks remain
+// single-ported.
 using UmtOrderedWaveStreamState =
-    UmtOrderedWaveStreamStateModel<8, 8, 64>;
+    UmtOrderedWaveStreamStateModel<16, 8, 32>;
 
 static_assert(UmtOrderedWaveStreamState::Banks == 4);
 static_assert(UmtOrderedWaveStreamState::RowsPerBank == 16);
 static_assert(UmtOrderedWaveStreamState::AllocatedBytes == 4608);
 static_assert(UmtOrderedWaveStreamState::PhysicalBytes == 5120);
 static_assert(UmtOrderedWaveStreamState::ResidualBytes == 512);
-static_assert(UmtOrderedWaveStreamState::AuxiliaryBitsFloor == 1972);
 static_assert(
-    UmtOrderedWaveStreamState::PhysicalPlusAuxiliaryBitsFloor == 42932);
+    UmtOrderedWaveStreamState::RepresentedTokenLogicalBitsFloor == 471);
+static_assert(
+    UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor == 655);
+static_assert(
+    UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
+static_assert(
+    UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 977);
+static_assert(
+    UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 9451);
+static_assert(
+    UmtOrderedWaveStreamState::PhysicalStorePlusLogicalAuxiliaryBitsFloor ==
+        50411);
 
 } // namespace lanlmaa
 } // namespace gem5

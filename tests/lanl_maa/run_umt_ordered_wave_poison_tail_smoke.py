@@ -104,12 +104,16 @@ def validate(stats, group_counts, abi_version):
         "descriptorUmtStateCapacityErrors": 0,
         "descriptorUmtStateStoreHighWaterMark": max(group_counts),
         "descriptorUmtStateBankHighWaterMark": (max(group_counts) + 3) // 4,
-        "descriptorUmtStateTokenHighWaterMark": min(8, max(group_counts)),
-        "descriptorUmtStateAllocatedBytes": 4608,
-        "descriptorUmtStatePhysicalBytes": 5120,
-        "descriptorUmtStateResidualBytes": 512,
-        "descriptorUmtStateAuxiliaryBitsFloor": 1972,
-        "descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor": 42932,
+        "descriptorUmtStateTokenHighWaterMark": min(16, max(group_counts)),
+        "descriptorUmtStateAllocatedStoreBytes": 4608,
+        "descriptorUmtStatePhysicalStoreBytes": 5120,
+        "descriptorUmtStateResidualStoreBytes": 512,
+        "descriptorUmtStateTokenLogicalBitsFloor": 7536,
+        "descriptorUmtStateFunctionalControlLogicalBitsFloor": 655,
+        "descriptorUmtStateBankSchedulerLogicalBitsFloor": 283,
+        "descriptorUmtStateInstrumentationLogicalBitsFloor": 977,
+        "descriptorUmtStateAuxiliaryLogicalBitsFloor": 9451,
+        "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 50411,
         "descriptorUmtInputLineReads": 16 * packet_multipliers,
         "descriptorUmtFp64AddSubOperations": 8 * groups,
         "descriptorUmtFp64MultiplyOperations": 0,
@@ -166,7 +170,7 @@ def validate(stats, group_counts, abi_version):
             f"placeholder: {batch_cycles}"
         )
     bounded["descriptorUmtBatchCycles"] = batch_cycles
-    input_hold_cycles = stats.get("descriptorUmtInputLineHoldCycles")
+    input_hold_cycles = stats.get("descriptorUmtInputLineWaiterHoldLineCycles")
     if abi_version == 4:
         if input_hold_cycles != 0:
             raise RuntimeError(
@@ -177,13 +181,14 @@ def validate(stats, group_counts, abi_version):
         input_hold_cycles is None or input_hold_cycles <= 0
     ):
         raise RuntimeError("D64 full matrix did not exercise line holding")
-    bounded["descriptorUmtInputLineHoldCycles"] = input_hold_cycles
+    bounded["descriptorUmtInputLineWaiterHoldLineCycles"] = input_hold_cycles
     if len(group_counts) > 1:
         for name in (
             "descriptorUmtStateTokenBackpressureEvents",
             "descriptorUmtStateFpIssueStallCycles",
-            "descriptorUmtStateInputBankStallCycles",
-            "descriptorUmtStateResultBankStallCycles",
+            "descriptorUmtStateInputBankWaitCycles",
+            "descriptorUmtStatePipelineResultBankStallCycles",
+            "descriptorUmtStateResultDrainBankWaitCycles",
         ):
             value = stats.get(name)
             if value is None or value <= 0:

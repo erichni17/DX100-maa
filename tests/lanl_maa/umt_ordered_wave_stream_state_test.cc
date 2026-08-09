@@ -239,6 +239,19 @@ capacityBackpressureCase()
 int
 main()
 {
+    assert(UmtOrderedWaveStreamState::ComputeTokens == 16);
+    assert(UmtOrderedWaveStreamState::DividerLanes == 8);
+    assert(UmtOrderedWaveStreamState::DivideLatency == 64);
+    assert(UmtOrderedWaveStreamState::DividerInitiationInterval == 32);
+    assert(UmtOrderedWaveStreamState::RepresentedTokenLogicalBitsFloor == 471);
+    assert(
+        UmtOrderedWaveStreamState::FunctionalControlLogicalBitsFloor == 655);
+    assert(UmtOrderedWaveStreamState::BankSchedulerLogicalBitsFloor == 283);
+    assert(UmtOrderedWaveStreamState::InstrumentationLogicalBitsFloor == 977);
+    assert(UmtOrderedWaveStreamState::AuxiliaryLogicalBitsFloor == 9451);
+    assert(
+        UmtOrderedWaveStreamState::
+            PhysicalStorePlusLogicalAuxiliaryBitsFloor == 50411);
     closedCase(1);
     closedCase(16);
     closedCase(32);

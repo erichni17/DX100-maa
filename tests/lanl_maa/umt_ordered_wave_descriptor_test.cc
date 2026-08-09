@@ -99,6 +99,13 @@ main()
     assert(counts.divide == 8);
     assert(counts.multiply == 11);
     assert(counts.addSub == 19);
+    const auto resources = umtOrderedWaveResources();
+    assert(resources.globalIssueWidth == 1);
+    assert(resources.addSubUnits == 1);
+    assert(resources.multiplyUnits == 1);
+    assert(resources.divideUnits == 8);
+    assert(resources.divideLatency == 64);
+    assert(resources.divideInitiationInterval == 32);
     const auto schedule = umtOrderedWaveSchedule(decoded.descriptor);
     assert(schedule);
     assert(schedule.operations.divide == 512);
