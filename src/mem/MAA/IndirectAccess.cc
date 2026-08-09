@@ -736,6 +736,67 @@ bool IndirectAccessUnit::usesBoundedSourceResponses() const {
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_INDEX);
 }
+bool IndirectAccessUnit::usesOnlineRowWindow() const {
+    return maa->virtual_online_row_window && isVirtualLoad() &&
+           isDirectIndexLoad();
+}
+uint32_t IndirectAccessUnit::activeRowLines() const {
+    uint32_t result = 0;
+    for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice)
+        result += RT[my_RT_config][slice].active_lines();
+    return result;
+}
+uint32_t IndirectAccessUnit::activeRowDirectories() const {
+    uint32_t result = 0;
+    for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice)
+        result += RT[my_RT_config][slice].active_rows();
+    return result;
+}
+void IndirectAccessUnit::selectOnlineRowVictim(
+    const char *reason, int &num_rowtable_accesses) {
+    panic_if(!usesOnlineRowWindow(),
+             "I[%d] selected an online victim outside online mode\n",
+             my_indirect_id);
+    panic_if(online_row_victim_active,
+             "I[%d] online victim 0x%lx is already active\n",
+             my_indirect_id, online_row_victim.grow);
+    online_row_victim = online_row_window.selectOldest();
+    panic_if(online_row_victim.result != OnlineRowWindow::Result::Accepted,
+             "I[%d] online oldest-grow selection failed: %s\n",
+             my_indirect_id,
+             OnlineRowWindow::resultName(online_row_victim.result));
+    online_row_victim_lines = 0;
+    online_row_victim_rows = 0;
+    for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice) {
+        online_row_victim_lines += RT[my_RT_config][slice].count_grow_lines(
+            online_row_victim.grow);
+        online_row_victim_rows += RT[my_RT_config][slice].count_grow_rows(
+            online_row_victim.grow);
+    }
+    panic_if(online_row_victim_lines == 0 || online_row_victim_rows == 0,
+             "I[%d] selected grow 0x%lx has no live RowTable state\n",
+             my_indirect_id, online_row_victim.grow);
+    const auto result = online_row_window.recordVictim(online_row_victim);
+    panic_if(result != OnlineRowWindow::Result::Accepted,
+             "I[%d] cannot commit online grow victim 0x%lx: %s\n",
+             my_indirect_id, online_row_victim.grow,
+             OnlineRowWindow::resultName(result));
+    online_row_victim_active = true;
+    panic_if(online_row_victim.visits >
+                 static_cast<uint32_t>(std::numeric_limits<int>::max() -
+                                       num_rowtable_accesses),
+             "I[%d] online victim scan latency overflow\n", my_indirect_id);
+    num_rowtable_accesses += online_row_victim.visits;
+    DPRINTF(MAAVirtualTrace,
+            "event=online_row_victim schema=1 unit=%d operation_tick=%lu "
+            "reason=%s policy=oldest_grow grow=0x%lx descriptors=%u "
+            "lines=%u rows=%u visits=%u episode=%u reopens=%u\n",
+            my_indirect_id, my_decode_start_tick, reason,
+            online_row_victim.grow, online_row_victim.descriptors,
+            online_row_victim_lines, online_row_victim_rows,
+            online_row_victim.visits, online_row_window.victims(),
+            online_row_window.reopens());
+}
 void IndirectAccessUnit::accountReadResponse(Addr addr,
                                              bool is_block_cached) {
     if (is_block_cached) {
@@ -1367,8 +1428,15 @@ void IndirectAccessUnit::fillRowTable(
     num_spd_read_condidx_accesses = 0;
     num_rowtable_accesses = 0;
     num_direct_index_filter_words = 0;
+    if (online_row_victim_active) {
+        needDrain = true;
+        return;
+    }
     if (offset_table_drain) {
-        if (offset_table->occupancy() != 0) {
+        const bool online_has_room = usesOnlineRowWindow() &&
+            offset_table->occupancy() <
+                static_cast<int>(maa->num_offset_table_epoch_entries);
+        if (offset_table->occupancy() != 0 && !online_has_room) {
             needDrain = true;
             return;
         }
@@ -1567,6 +1635,9 @@ void IndirectAccessUnit::fillRowTable(
                     (*maa->stats.IND_NumOTEpochDrain[my_indirect_id])++;
                     if (offset_table->is_full())
                         (*maa->stats.IND_NumOTFull[my_indirect_id])++;
+                    if (usesOnlineRowWindow())
+                        selectOnlineRowVictim("offset_full",
+                                              num_rowtable_accesses);
                     break;
                 }
                 DPRINTF(MAAIndirect,
@@ -1600,6 +1671,9 @@ void IndirectAccessUnit::fillRowTable(
                     recordReorderSurvivalDrain(
                         ReorderSurvivalTracker::DrainReason::RowTableFull);
                     (*maa->stats.IND_NumRTFull[my_indirect_id])++;
+                    if (usesOnlineRowWindow())
+                        selectOnlineRowVictim("row_full",
+                                              num_rowtable_accesses);
                     break;
                 } else {
                     attribution_row_insert_successes++;
@@ -1682,11 +1756,27 @@ void IndirectAccessUnit::fillRowTable(
                     }
                     if (usesBoundedSourceResponses())
                         my_RT_req_sent[my_RT_config][my_RT_idx] = false;
-                    my_unique_WORD_addrs.insert(vaddr);
-                    my_unique_CL_addrs.insert(block_paddr);
-                    my_unique_ROW_addrs.insert(
-                        grow_addr +
-                        my_RT_idx * num_RT_possible_grows[my_RT_config]);
+                    if (usesOnlineRowWindow()) {
+                        const auto result = online_row_window.recordAdmission(
+                            grow_addr, my_i, activeRowLines(),
+                            activeRowDirectories());
+                        panic_if(
+                            result != OnlineRowWindow::Result::Accepted,
+                            "I[%d] online admission itr=%d grow=0x%lx "
+                            "failed closed: %s\n", my_indirect_id, my_i,
+                            grow_addr, OnlineRowWindow::resultName(result));
+                    }
+                    // These generic exact uniqueness sets are host-side
+                    // instrumentation.  Online mode must not populate them:
+                    // its precise state is limited to bounded Word/Offset and
+                    // Row tables.
+                    if (!usesOnlineRowWindow()) {
+                        my_unique_WORD_addrs.insert(vaddr);
+                        my_unique_CL_addrs.insert(block_paddr);
+                        my_unique_ROW_addrs.insert(
+                            grow_addr + my_RT_idx *
+                                num_RT_possible_grows[my_RT_config]);
+                    }
                     if (!reorder_RT && first_CL_access) {
                         DPRINTF(MAAIndirect,
                                 "I[%d] %s: Creating packet for bank[%d], "
@@ -1981,6 +2071,11 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_partition_barrier = false;
         bounded_range_pass.reset();
         bounded_grow_plan.reset();
+        online_row_window.reset();
+        online_row_victim = OnlineRowWindow::Selection{};
+        online_row_victim_active = false;
+        online_row_victim_lines = 0;
+        online_row_victim_rows = 0;
         direct_index_summary_active = false;
         direct_index_summary_overflow = false;
         direct_index_iteration_fallback = false;
@@ -2020,6 +2115,56 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] streamed-index length %d exceeds logical tile "
                      "capacity %d\n",
                      my_indirect_id, my_max, num_tile_elements);
+            if (usesOnlineRowWindow()) {
+                panic_if(my_max != 16384,
+                         "I[%d] online row window requires a full 16384-entry "
+                         "logical operation, got %d\n", my_indirect_id,
+                         my_max);
+                const uint32_t row_directories =
+                    num_RT_slices[my_RT_config] * num_RT_rows_per_slice;
+                const uint32_t row_lines = row_directories *
+                    num_RT_slice_columns[my_RT_config];
+                const auto result = online_row_window.configure(
+                    my_max, offset_table->capacity(), row_lines,
+                    row_directories);
+                panic_if(result != OnlineRowWindow::Result::Accepted,
+                         "I[%d] cannot configure online row window: %s\n",
+                         my_indirect_id,
+                         OnlineRowWindow::resultName(result));
+                const BoundedMetadataLedger ledger{
+                    static_cast<uint32_t>(offset_table->capacity()),
+                    static_cast<uint32_t>(offset_table->capacity()),
+                    row_directories, row_lines,
+                    maa->physical_tile_elements, maa->num_tiles};
+                (*maa->stats.IND_BoundedWordEntries[my_indirect_id]) +=
+                    ledger.wordEntries;
+                (*maa->stats.IND_BoundedOffsetLinkEntries[my_indirect_id]) +=
+                    ledger.offsetLinkEntries;
+                (*maa->stats.IND_BoundedRowDirectoryEntries[my_indirect_id]) +=
+                    ledger.rowDirectoryEntries;
+                (*maa->stats.IND_BoundedRowLineEntries[my_indirect_id]) +=
+                    ledger.rowLineEntries;
+                (*maa->stats
+                      .IND_BoundedReorderMetadataBytes[my_indirect_id]) +=
+                    ledger.reorderMetadataBytes();
+                (*maa->stats.IND_OnlineWindowPolicyBytes[my_indirect_id]) +=
+                    OnlineRowWindow::chargedBytes();
+                DPRINTF(MAAVirtualTrace,
+                        "event=online_row_window_begin schema=1 unit=%d "
+                        "operation_tick=%lu logical=%d b_passes=1 "
+                        "word_entries=%u offset_entries=%u row_entries=%u "
+                        "line_entries=%u payload_elements_per_tile=%u "
+                        "policy=oldest_grow policy_entries=%u "
+                        "policy_bytes=%lu fallback=forbidden "
+                        "backing=none\n",
+                        my_indirect_id, my_decode_start_tick, my_max,
+                        ledger.wordEntries, ledger.offsetLinkEntries,
+                        ledger.rowDirectoryEntries, ledger.rowLineEntries,
+                        ledger.scratchpadElementsPerTile,
+                        OnlineRowWindow::MaxTrackedGrows,
+                        static_cast<unsigned long>(
+                            OnlineRowWindow::chargedBytes()));
+            }
             my_idx_tile_ready = true;
             if (maa->virtual_index_range_passes) {
                 panic_if(!isVirtualLoad(),
@@ -2270,11 +2415,18 @@ void IndirectAccessUnit::executeInstruction() {
         Addr addr;
         if (my_force_cache_determined == false) {
             my_force_cache_determined = true;
-            if (my_unique_WORD_addrs.size() > my_words_per_cl * my_unique_CL_addrs.size()) {
-                DPRINTF(MAAIndirect, "I[%d] %s: Direct cache access is needed!\n", my_indirect_id, __func__);
+            if (usesOnlineRowWindow()) {
+                my_force_cache = true;
+            } else if (my_unique_WORD_addrs.size() >
+                       my_words_per_cl * my_unique_CL_addrs.size()) {
+                DPRINTF(MAAIndirect,
+                        "I[%d] %s: Direct cache access is needed!\n",
+                        my_indirect_id, __func__);
                 my_force_cache = true;
             } else {
-                DPRINTF(MAAIndirect, "I[%d] %s: Direct cache access is not needed!\n", my_indirect_id, __func__);
+                DPRINTF(MAAIndirect,
+                        "I[%d] %s: Direct cache access is not needed!\n",
+                        my_indirect_id, __func__);
                 my_force_cache = false;
             }
         }
@@ -2382,6 +2534,12 @@ void IndirectAccessUnit::executeInstruction() {
                                               my_fill_finished,
                                               virtual_row_id,
                                               virtual_entry_id);
+                    } else if (usesOnlineRowWindow() &&
+                               online_row_victim_active) {
+                        entry_ready = RT[my_RT_config][RT_idx]
+                            .claim_entry_send_for_grow(
+                                online_row_victim.grow, addr, virtual_head,
+                                virtual_words, false);
                     } else if (usesBoundedSourceResponses()) {
                         entry_ready =
                             RT[my_RT_config][RT_idx].claim_entry_send(
@@ -2435,14 +2593,22 @@ void IndirectAccessUnit::executeInstruction() {
                                     int committed_head = -1;
                                     int committed_words = 0;
                                     const bool committed =
-                                        RT[my_RT_config][RT_idx]
-                                            .claim_entry_send(
-                                                committed_addr,
-                                                committed_head,
-                                                committed_words,
-                                                my_fill_finished,
-                                                maa->virtual_grow_order,
-                                                true);
+                                        usesOnlineRowWindow() &&
+                                                online_row_victim_active
+                                        ? RT[my_RT_config][RT_idx]
+                                              .claim_entry_send_for_grow(
+                                                  online_row_victim.grow,
+                                                  committed_addr,
+                                                  committed_head,
+                                                  committed_words, true)
+                                        : RT[my_RT_config][RT_idx]
+                                              .claim_entry_send(
+                                                  committed_addr,
+                                                  committed_head,
+                                                  committed_words,
+                                                  my_fill_finished,
+                                                  maa->virtual_grow_order,
+                                                  true);
                                     panic_if(
                                         !committed ||
                                             committed_addr != addr ||
@@ -2478,10 +2644,19 @@ void IndirectAccessUnit::executeInstruction() {
                                 int committed_head = -1;
                                 int committed_words = 0;
                                 const bool committed =
-                                    RT[my_RT_config][RT_idx].claim_entry_send(
-                                        committed_addr, committed_head,
-                                        committed_words, my_fill_finished,
-                                        maa->virtual_grow_order, true);
+                                    usesOnlineRowWindow() &&
+                                            online_row_victim_active
+                                    ? RT[my_RT_config][RT_idx]
+                                          .claim_entry_send_for_grow(
+                                              online_row_victim.grow,
+                                              committed_addr, committed_head,
+                                              committed_words, true)
+                                    : RT[my_RT_config][RT_idx]
+                                          .claim_entry_send(
+                                              committed_addr, committed_head,
+                                              committed_words,
+                                              my_fill_finished,
+                                              maa->virtual_grow_order, true);
                                 panic_if(!committed ||
                                              committed_addr != addr ||
                                              committed_head != virtual_head ||
@@ -2606,8 +2781,9 @@ void IndirectAccessUnit::executeInstruction() {
             !maa->virtual_partition_keep_combiner)
             drainVirtualCombiner(true);
         const bool retain_partition_combiner =
-            isVirtualLoad() && direct_index_partition_barrier &&
-            maa->virtual_partition_keep_combiner;
+            (isVirtualLoad() && direct_index_partition_barrier &&
+             maa->virtual_partition_keep_combiner) ||
+            (usesOnlineRowWindow() && online_row_victim_active);
         bool responses_complete;
         if (!usesBoundedSourceResponses()) {
             responses_complete =
@@ -2644,6 +2820,37 @@ void IndirectAccessUnit::executeInstruction() {
                                            "request_complete");
                 my_fill_finished = false;
             } else {
+                if (usesOnlineRowWindow() && online_row_victim_active) {
+                    uint32_t remaining_lines = 0;
+                    uint32_t remaining_rows = 0;
+                    for (int slice = 0;
+                         slice < num_RT_slices[my_RT_config]; ++slice) {
+                        remaining_lines += RT[my_RT_config][slice]
+                            .count_grow_lines(online_row_victim.grow);
+                        remaining_rows += RT[my_RT_config][slice]
+                            .count_grow_rows(online_row_victim.grow);
+                    }
+                    panic_if(remaining_lines != 0 || remaining_rows != 0,
+                             "I[%d] online victim 0x%lx retained %u lines "
+                             "and %u rows\n", my_indirect_id,
+                             online_row_victim.grow, remaining_lines,
+                             remaining_rows);
+                    DPRINTF(MAAVirtualTrace,
+                            "event=online_row_victim_complete schema=1 "
+                            "unit=%d operation_tick=%lu grow=0x%lx "
+                            "descriptors=%u lines=%u rows=%u "
+                            "remaining_descriptors=%d\n",
+                            my_indirect_id, my_decode_start_tick,
+                            online_row_victim.grow,
+                            online_row_victim.descriptors,
+                            online_row_victim_lines,
+                            online_row_victim_rows,
+                            offset_table->occupancy());
+                    online_row_victim = OnlineRowWindow::Selection{};
+                    online_row_victim_active = false;
+                    online_row_victim_lines = 0;
+                    online_row_victim_rows = 0;
+                }
                 if (debug::MAAReorderTrace &&
                     reorder_survival.drainPending())
                     closeReorderSurvivalEpoch(false);
@@ -2855,6 +3062,60 @@ void IndirectAccessUnit::executeInstruction() {
                       .IND_BoundedReplayMaxEpochAdmissions[my_indirect_id]) +=
                     max_epoch_admissions;
             }
+            if (usesOnlineRowWindow()) {
+                panic_if(online_row_victim_active,
+                         "I[%d] online victim 0x%lx remains at completion\n",
+                         my_indirect_id, online_row_victim.grow);
+                const uint32_t live_lines = activeRowLines();
+                const uint32_t live_rows = activeRowDirectories();
+                const auto result =
+                    online_row_window.finish(live_lines, live_rows);
+                panic_if(result != OnlineRowWindow::Result::Accepted,
+                         "I[%d] online row window failed closure: %s "
+                         "admitted=%u/%u retired=%u/%u lines=%u rows=%u\n",
+                         my_indirect_id,
+                         OnlineRowWindow::resultName(result),
+                         online_row_window.totalAdmissions(),
+                         online_row_window.logical(),
+                         online_row_window.totalRetirements(),
+                         online_row_window.logical(), live_lines, live_rows);
+                (*maa->stats.IND_OnlineWindowAdmissions[my_indirect_id]) +=
+                    online_row_window.totalAdmissions();
+                (*maa->stats.IND_OnlineWindowRetirements[my_indirect_id]) +=
+                    online_row_window.totalRetirements();
+                (*maa->stats.IND_OnlineWindowVictims[my_indirect_id]) +=
+                    online_row_window.victims();
+                (*maa->stats.IND_OnlineWindowReopens[my_indirect_id]) +=
+                    online_row_window.reopens();
+                (*maa->stats
+                      .IND_OnlineWindowSelectionVisits[my_indirect_id]) +=
+                    online_row_window.visits();
+                (*maa->stats.IND_OnlineWindowMaxDescriptors[my_indirect_id]) +=
+                    online_row_window.maxDescriptors();
+                (*maa->stats.IND_OnlineWindowMaxLines[my_indirect_id]) +=
+                    online_row_window.maxLines();
+                (*maa->stats.IND_OnlineWindowMaxRows[my_indirect_id]) +=
+                    online_row_window.maxRows();
+                DPRINTF(MAAVirtualTrace,
+                        "event=online_row_window_complete schema=1 unit=%d "
+                        "operation_tick=%lu logical=%u admitted=%u "
+                        "retired=%u b_passes=1 victims=%u reopens=%u "
+                        "selection_visits=%lu max_descriptors=%u "
+                        "max_lines=%u max_rows=%u policy_bytes=%lu "
+                        "fallback=none overflow=none placement=iteration\n",
+                        my_indirect_id, my_decode_start_tick,
+                        online_row_window.logical(),
+                        online_row_window.totalAdmissions(),
+                        online_row_window.totalRetirements(),
+                        online_row_window.victims(),
+                        online_row_window.reopens(),
+                        online_row_window.visits(),
+                        online_row_window.maxDescriptors(),
+                        online_row_window.maxLines(),
+                        online_row_window.maxRows(),
+                        static_cast<unsigned long>(
+                            OnlineRowWindow::chargedBytes()));
+            }
         }
         if (isDirectIndexLoad()) {
             (*maa->stats.IND_VirtIndexLineHighWater[my_indirect_id]) +=
@@ -2938,10 +3199,15 @@ void IndirectAccessUnit::executeInstruction() {
         } else {
             maa->stats.cycles_INDRMW += total_cycles;
         }
-        setRowTableConfig(my_base_addr, my_unique_CL_addrs.size(), my_unique_ROW_addrs.size());
-        (*maa->stats.IND_NumUniqueWordsInserted[my_indirect_id]) += my_unique_WORD_addrs.size();
-        (*maa->stats.IND_NumUniqueCacheLineInserted[my_indirect_id]) += my_unique_CL_addrs.size();
-        (*maa->stats.IND_NumUniqueRowsInserted[my_indirect_id]) += my_unique_ROW_addrs.size();
+        if (!usesOnlineRowWindow())
+            setRowTableConfig(my_base_addr, my_unique_CL_addrs.size(),
+                              my_unique_ROW_addrs.size());
+        (*maa->stats.IND_NumUniqueWordsInserted[my_indirect_id]) +=
+            my_unique_WORD_addrs.size();
+        (*maa->stats.IND_NumUniqueCacheLineInserted[my_indirect_id]) +=
+            my_unique_CL_addrs.size();
+        (*maa->stats.IND_NumUniqueRowsInserted[my_indirect_id]) +=
+            my_unique_ROW_addrs.size();
         my_unique_WORD_addrs.clear();
         my_unique_CL_addrs.clear();
         my_unique_ROW_addrs.clear();
@@ -3815,6 +4081,14 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
                          "I[%d] packed response cursor changed while stalled\n",
                          my_indirect_id);
+                if (usesOnlineRowWindow()) {
+                    const auto result =
+                        online_row_window.recordRetirement(consumed.itr);
+                    panic_if(result != OnlineRowWindow::Result::Accepted,
+                             "I[%d] online retirement itr=%d failed closed: "
+                             "%s\n", my_indirect_id, consumed.itr,
+                             OnlineRowWindow::resultName(result));
+                }
                 recordReorderSurvivalIssuedEntries(1);
                 slot.next_packed_word++;
             }
@@ -3875,6 +4149,14 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             panic_if(consumed.itr != entry.itr || consumed.wid != entry.wid,
                      "I[%d] virtual offset cursor changed while stalled\n",
                      my_indirect_id);
+            if (usesOnlineRowWindow()) {
+                const auto result =
+                    online_row_window.recordRetirement(consumed.itr);
+                panic_if(result != OnlineRowWindow::Result::Accepted,
+                         "I[%d] online retirement itr=%d failed closed: %s\n",
+                         my_indirect_id, consumed.itr,
+                         OnlineRowWindow::resultName(result));
+            }
             recordReorderSurvivalIssuedEntries(1);
             if (slot.next_itr == -1) {
                 release_native_claim(slot);

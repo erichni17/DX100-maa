@@ -135,6 +135,7 @@ MAA::MAA(const MAAParams &p)
       virtual_index_range_passes(p.virtual_index_range_passes),
       virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
+      virtual_online_row_window(p.virtual_online_row_window),
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
       virtual_partition_keep_combiner(p.virtual_partition_keep_combiner),
@@ -216,6 +217,40 @@ MAA::MAA(const MAAParams &p)
         panic_if(virtual_native_issue_order,
                  "Bounded range passes cannot use attribution-only native "
                  "issue order\n");
+    }
+    if (virtual_online_row_window) {
+        const uint64_t active_rows =
+            static_cast<uint64_t>(num_initial_row_table_slices) *
+            num_row_table_rows_per_slice;
+        const uint64_t active_lines = active_rows *
+            num_row_table_entries_per_subslice_row;
+        panic_if(num_tile_elements != 16384,
+                 "Online row window requires exactly 16384 logical entries, "
+                 "got %u\n", num_tile_elements);
+        panic_if(physical_tile_elements != 4096,
+                 "Online row window requires exactly 4096 physical payload "
+                 "entries, got %u\n", physical_tile_elements);
+        panic_if(num_offset_table_entries != 4096 ||
+                     num_offset_table_epoch_entries != 4096,
+                 "Online row window requires exactly 4096 Word/Offset slots "
+                 "and epoch entries, got %u/%u\n", num_offset_table_entries,
+                 num_offset_table_epoch_entries);
+        panic_if(active_rows > 512 || active_lines > 4096,
+                 "Online row window exceeds RowTable bounds: rows=%lu "
+                 "lines=%lu\n", active_rows, active_lines);
+        panic_if(virtual_index_partitions != 1 ||
+                     virtual_index_range_passes ||
+                     virtual_index_range_policy != 0,
+                 "Online row window requires one non-replay index pass\n");
+        panic_if(!virtual_index_force_cache,
+                 "Online row window requires timing-visible coherent B "
+                 "reads\n");
+        panic_if(reconfigure_row_table,
+                 "Online row window requires one RowTable organization\n");
+        panic_if(!virtual_grow_order,
+                 "Online row window requires grow-grouped final issue\n");
+        panic_if(virtual_native_issue_order,
+                 "Online row window cannot use native issue-order claims\n");
     }
     panic_if(virtual_index_range_policy > 3,
              "Invalid virtual index range policy %u (expected 0..3)\n",
@@ -2618,6 +2653,42 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             MAKE_INDIRECT_STAT_NAME("IND_BoundedReorderMetadataBytes"),
             statistics::units::Byte::get(),
             "source-semantic bounded Word/Offset/Row metadata bytes"));
+        IND_OnlineWindowAdmissions.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowAdmissions"),
+            statistics::units::Count::get(),
+            "logical descriptors admitted by the one-scan row window"));
+        IND_OnlineWindowRetirements.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowRetirements"),
+            statistics::units::Count::get(),
+            "logical descriptors retired by the one-scan row window"));
+        IND_OnlineWindowVictims.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowVictims"),
+            statistics::units::Count::get(),
+            "oldest translated-grow victim episodes before final drain"));
+        IND_OnlineWindowReopens.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowReopens"),
+            statistics::units::Count::get(),
+            "retired translated grows opened again by later B words"));
+        IND_OnlineWindowSelectionVisits.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowSelectionVisits"),
+            statistics::units::Count::get(),
+            "fixed policy-ledger entries timing-charged during victim scans"));
+        IND_OnlineWindowMaxDescriptors.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowMaxDescriptors"),
+            statistics::units::Count::get(),
+            "maximum simultaneously live precise Word/Offset descriptors"));
+        IND_OnlineWindowMaxLines.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowMaxLines"),
+            statistics::units::Count::get(),
+            "maximum simultaneously live RowTable line slots"));
+        IND_OnlineWindowMaxRows.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowMaxRows"),
+            statistics::units::Count::get(),
+            "maximum simultaneously live RowTable row directories"));
+        IND_OnlineWindowPolicyBytes.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_OnlineWindowPolicyBytes"),
+            statistics::units::Byte::get(),
+            "finite grow history and oldest-live selection state"));
         IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
             statistics::units::Count::get(),

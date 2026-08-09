@@ -434,6 +434,7 @@ public:
     bool virtual_index_range_passes;
     unsigned int virtual_index_range_policy;
     std::vector<Addr> virtual_index_range_boundaries;
+    bool virtual_online_row_window;
     unsigned int virtual_index_filter_words_per_cycle;
     bool virtual_partition_keep_combiner;
     bool virtual_grow_order;
@@ -760,6 +761,15 @@ public:
         std::vector<statistics::Scalar *> IND_BoundedRowDirectoryEntries;
         std::vector<statistics::Scalar *> IND_BoundedRowLineEntries;
         std::vector<statistics::Scalar *> IND_BoundedReorderMetadataBytes;
+        std::vector<statistics::Scalar *> IND_OnlineWindowAdmissions;
+        std::vector<statistics::Scalar *> IND_OnlineWindowRetirements;
+        std::vector<statistics::Scalar *> IND_OnlineWindowVictims;
+        std::vector<statistics::Scalar *> IND_OnlineWindowReopens;
+        std::vector<statistics::Scalar *> IND_OnlineWindowSelectionVisits;
+        std::vector<statistics::Scalar *> IND_OnlineWindowMaxDescriptors;
+        std::vector<statistics::Scalar *> IND_OnlineWindowMaxLines;
+        std::vector<statistics::Scalar *> IND_OnlineWindowMaxRows;
+        std::vector<statistics::Scalar *> IND_OnlineWindowPolicyBytes;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;

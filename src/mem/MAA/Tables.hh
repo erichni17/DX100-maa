@@ -196,6 +196,8 @@ public:
     bool get_entry_send(Addr &addr, bool drain);
     bool claim_entry_send(Addr &addr, int &head, int &words, bool drain,
                           bool group_by_grow, bool commit);
+    bool claim_entry_send_for_grow(Addr selected_grow, Addr &addr, int &head,
+                                   int &words, bool commit);
     bool claim_entry_send_native_order(Addr &addr, int &head, int &words,
                                        bool drain, int &row_id,
                                        int &entry_id);
@@ -209,6 +211,10 @@ public:
     get_entry_recv(Addr grow_addr, Addr addr, bool check_sent);
     int get_entry_recv_head(Addr grow_addr, Addr addr, bool check_sent);
     int count_entry_words(Addr grow_addr, Addr addr) const;
+    uint32_t count_grow_lines(Addr grow_addr) const;
+    uint32_t count_grow_rows(Addr grow_addr) const;
+    uint32_t active_lines() const;
+    uint32_t active_rows() const;
 
     void reset();
     void check_reset();

@@ -17,6 +17,7 @@
 #include "mem/MAA/BoundedMetadataLedger.hh"
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
+#include "mem/MAA/OnlineRowWindow.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
@@ -300,6 +301,11 @@ protected:
     bool direct_index_partition_barrier = false;
     BoundedRangePassTracker bounded_range_pass;
     BoundedGrowPassPlan bounded_grow_plan;
+    OnlineRowWindow online_row_window;
+    OnlineRowWindow::Selection online_row_victim;
+    bool online_row_victim_active = false;
+    uint32_t online_row_victim_lines = 0;
+    uint32_t online_row_victim_rows = 0;
     bool direct_index_summary_active = false;
     bool direct_index_summary_overflow = false;
     bool direct_index_iteration_fallback = false;
@@ -353,6 +359,11 @@ protected:
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
     bool usesBoundedSourceResponses() const;
+    bool usesOnlineRowWindow() const;
+    uint32_t activeRowLines() const;
+    uint32_t activeRowDirectories() const;
+    void selectOnlineRowVictim(const char *reason,
+                               int &num_rowtable_accesses);
     void fillDirectIndexWindow();
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;

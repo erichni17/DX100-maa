@@ -44,6 +44,7 @@ shared_selector=${DX100_SHARED_TREATMENT_FILE:-}
 shared_checkpoint_log=${DX100_SHARED_CHECKPOINT_LOG:-}
 frozen_ramulator_library=${DX100_FROZEN_RAMULATOR_LIBRARY:-}
 ramulator_provenance=${DX100_RAMULATOR_PROVENANCE_FILE:-}
+binary_source_commit=${DX100_BINARY_SOURCE_COMMIT:-}
 grow_order=${MAA_VIRTUAL_GROW_ORDER:-0}
 row_slices=${MAA_ROW_TABLE_SLICES:-16}
 row_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
@@ -61,6 +62,7 @@ index_partitions=${MAA_VIRTUAL_INDEX_PARTITIONS:-1}
 index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
 index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
 index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
+online_row_window=${MAA_VIRTUAL_ONLINE_ROW_WINDOW:-0}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
@@ -83,6 +85,10 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 }
 [[ $index_range_passes == 0 || $index_range_passes == 1 ]] || {
     echo "MAA_VIRTUAL_INDEX_RANGE_PASSES must be 0 or 1" >&2
+    exit 2
+}
+[[ $online_row_window == 0 || $online_row_window == 1 ]] || {
+    echo "MAA_VIRTUAL_ONLINE_ROW_WINDOW must be 0 or 1" >&2
     exit 2
 }
 [[ $index_range_policy -ge 0 && $index_range_policy -le 3 ]] || {
@@ -185,6 +191,11 @@ fi
     echo "virtual response capacities must be positive" >&2
     exit 2
 }
+if [[ -n $binary_source_commit &&
+      ! $binary_source_commit =~ ^[0-9a-f]{40}$ ]]; then
+    echo "DX100_BINARY_SOURCE_COMMIT must be a full lowercase commit" >&2
+    exit 2
+fi
 [[ $combine_slots -gt 0 && $combine_words -gt 0 && $combine_ways -ge 0 &&
    $combine_victim_policy -ge 0 && $combine_victim_policy -le 2 &&
    $combine_banks -ge 0 ]] || {
@@ -215,6 +226,10 @@ fi
 partition_combiner_args=()
 if [[ $partition_keep_combiner == 1 ]]; then
     partition_combiner_args+=(--maa_virtual_partition_keep_combiner)
+fi
+online_row_window_args=()
+if [[ $online_row_window == 1 ]]; then
+    online_row_window_args+=(--maa_virtual_online_row_window)
 fi
 offset_args=()
 if [[ $offset_entries -ne 0 ]]; then
@@ -472,6 +487,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_index_range_policy=%s\n' "$index_range_policy"
     printf 'virtual_index_range_boundaries=%s\n' \
         "${index_range_boundaries:-none}"
+    printf 'virtual_online_row_window=%s\n' "$online_row_window"
     printf 'virtual_index_force_cache=%s\n' "$index_force_cache"
     printf 'virtual_partition_keep_combiner=%s\n' \
         "$partition_keep_combiner"
@@ -481,6 +497,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'cache_pollution_bytes=%s\n' \
         "$((polluted * 32 * 1024 * 1024))"
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
+    printf 'binary_source_commit=%s\n' \
+        "${binary_source_commit:-$(git -C "$root" rev-parse HEAD)}"
     printf 'baseline_commit=d7875f99e6caf1d47bd6010b89112458384aec6c\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'timeout=none\n'
@@ -509,12 +527,16 @@ cp -- "$root/src/mem/MAA/BoundedQuantileRanges.hh" \
     "$snapshot/BoundedQuantileRanges.hh"
 cp -- "$root/src/mem/MAA/BoundedMetadataLedger.hh" \
     "$snapshot/BoundedMetadataLedger.hh"
+cp -- "$root/src/mem/MAA/OnlineRowWindow.hh" \
+    "$snapshot/OnlineRowWindow.hh"
 cp -- "$root/src/mem/MAA/Tables.cc" "$snapshot/Tables.cc"
 cp -- "$root/src/mem/MAA/Tables.hh" "$snapshot/Tables.hh"
 cp -- "$root/src/mem/MAA/TransparentSPDController.hh" \
     "$snapshot/TransparentSPDController.hh"
 cp -- "$root/src/mem/MAA/MAA.cc" "$snapshot/MAA.cc"
 cp -- "$root/src/mem/MAA/MAA.hh" "$snapshot/MAA.hh"
+cp -- "$root/src/mem/MAA/SPD.cc" "$snapshot/SPD.cc"
+cp -- "$root/src/mem/MAA/SPD.hh" "$snapshot/SPD.hh"
 cp -- "$root/src/mem/MAA/IF.cc" "$snapshot/IF.cc"
 cp -- "$root/src/mem/MAA/IF.hh" "$snapshot/IF.hh"
 cp -- "$root/src/mem/MAA/StreamAccess.cc" "$snapshot/StreamAccess.cc"
@@ -537,6 +559,14 @@ cp -- "$root/experiments/scripts/run_bounded_range_pass_unit.sh" \
     "$snapshot/run_bounded_range_pass_unit.sh"
 cp -- "$root/experiments/scripts/run_true_4k_reorder_matrix.sh" \
     "$snapshot/run_true_4k_reorder_matrix.sh"
+cp -- "$root/tests/virtual_tile/online_row_window_test.cc" \
+    "$snapshot/online_row_window_test.cc"
+cp -- "$root/experiments/scripts/run_online_row_window_unit.sh" \
+    "$snapshot/run_online_row_window_unit.sh"
+cp -- "$root/experiments/scripts/run_true_4k_online_matrix.sh" \
+    "$snapshot/run_true_4k_online_matrix.sh"
+cp -- "$root/experiments/tests/test_online_row_window_contract.py" \
+    "$snapshot/test_online_row_window_contract.py"
 cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     "$snapshot/hybrid_overhead_attribution.py"
 {
@@ -547,6 +577,7 @@ cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     printf 'DX100_SHARED_CHECKPOINT_LOG=%q ' "${shared_checkpoint_log:-}"
     printf 'DX100_FROZEN_RAMULATOR_LIBRARY=%q ' "$ramulator_library"
     printf 'DX100_RAMULATOR_PROVENANCE_FILE=%q ' "$ramulator_provenance"
+    printf 'DX100_BINARY_SOURCE_COMMIT=%q ' "$binary_source_commit"
     printf '%q %q %q %q %q\n' "${DX100_FROZEN_RUNNER_PATH:-$0}" \
         "$gem5" "$binary" "$case_name" "$out"
 } > "$out/invocation.sh.txt"
@@ -560,9 +591,11 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/BoundedRangePass.hh" \
     "$snapshot/BoundedQuantileRanges.hh" \
     "$snapshot/BoundedMetadataLedger.hh" \
+    "$snapshot/OnlineRowWindow.hh" \
     "$snapshot/Tables.cc" "$snapshot/Tables.hh" \
     "$snapshot/TransparentSPDController.hh" \
     "$snapshot/MAA.cc" "$snapshot/MAA.hh" \
+    "$snapshot/SPD.cc" "$snapshot/SPD.hh" \
     "$snapshot/IF.cc" "$snapshot/IF.hh" \
     "$snapshot/StreamAccess.cc" "$snapshot/StreamAccess.hh" \
     "$snapshot/ALU.cc" "$snapshot/ALU.hh" \
@@ -575,6 +608,10 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/test_bounded_range_live_contract.py" \
     "$snapshot/run_bounded_range_pass_unit.sh" \
     "$snapshot/run_true_4k_reorder_matrix.sh" \
+    "$snapshot/online_row_window_test.cc" \
+    "$snapshot/run_online_row_window_unit.sh" \
+    "$snapshot/run_true_4k_online_matrix.sh" \
+    "$snapshot/test_online_row_window_contract.py" \
     "$out/source.diff" "$out/source_status.txt" "$out/invocation.sh.txt" \
     > "$out/artifact_sha256.txt"
 
@@ -668,6 +705,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_index_buffer_lines="$index_buffer_lines" \
     --maa_virtual_index_partitions="$index_partitions" \
     --maa_virtual_index_range_policy="$index_range_policy" \
+    "${online_row_window_args[@]}" \
     "${index_range_boundary_args[@]}" \
     "${index_range_args[@]}" \
     "${index_cache_args[@]}" \
@@ -703,6 +741,12 @@ for expected in \
         exit 1
     }
 done
+if [[ $online_row_window -eq 1 ]]; then
+    grep -Fqx 'virtual_online_row_window=true' "$config_ini" || {
+        echo "missing resolved online row-window treatment" >&2
+        exit 1
+    }
+fi
 
 result_count=$(grep -Ec \
     "^VIRTUAL_TILE_CONSUMER_RESULT mode=${mode} page_elements=${page} hash=[0-9]+ errors=0$" \
@@ -841,6 +885,27 @@ read -r bounded_summary_lines bounded_summary_words bounded_summary_records \
             print sl + 0, sw + 0, sr + 0, sp + 0, sv + 0, pb + 0,
                   rl + 0, rw + 0, rp + 0, rd + 0, rm + 0, we + 0,
                   oe + 0, dr + 0, le + 0, mb + 0
+            exit
+        }
+    ' "$out/run/stats.txt"
+)
+read -r online_admissions online_retirements online_victims online_reopens \
+    online_visits online_max_descriptors online_max_lines online_max_rows \
+    online_policy_bytes < <(
+    awk '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 ~ /IND_OnlineWindowAdmissions$/ { a += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowRetirements$/ { r += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowVictims$/ { v += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowReopens$/ { o += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowSelectionVisits$/ { s += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowMaxDescriptors$/ { d += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowMaxLines$/ { l += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowMaxRows$/ { w += $2 }
+        section == 1 && $1 ~ /IND_OnlineWindowPolicyBytes$/ { b += $2 }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            print a + 0, r + 0, v + 0, o + 0, s + 0, d + 0,
+                  l + 0, w + 0, b + 0
             exit
         }
     ' "$out/run/stats.txt"
@@ -1157,6 +1222,52 @@ if [[ $index_range_policy -eq 3 ]]; then
     }
 fi
 
+if [[ $online_row_window -eq 1 ]]; then
+    trace="$out/run/virtual_trace.log"
+    online_begin_count=$(grep -Ec \
+        'event=online_row_window_begin schema=1 .* logical=16384 b_passes=1 .* policy=oldest_grow .* fallback=forbidden backing=none$' \
+        "$trace" || true)
+    online_complete_count=$(grep -Ec \
+        'event=online_row_window_complete schema=1 .* logical=16384 admitted=16384 retired=16384 b_passes=1 .* fallback=none overflow=none placement=iteration$' \
+        "$trace" || true)
+    online_victim_trace_count=$(grep -Ec \
+        'event=online_row_victim schema=1 .* policy=oldest_grow ' \
+        "$trace" || true)
+    online_fallback_count=$(grep -Eci \
+        'event=online_row_.*fallback=(iteration|spill|overflow|host)' \
+        "$trace" || true)
+    uncached_index_responses=$(grep -Ec \
+        'event=index_line_response schema=2 .* cached=0$' \
+        "$trace" || true)
+    [[ $physical -eq 4096 && $resolved_offset_entries -eq 4096 &&
+       $resolved_offset_epoch_entries -eq 4096 &&
+       $((row_slices * row_rows)) -eq 512 &&
+       $((row_slices * row_rows * row_entries)) -eq 4096 &&
+       $index_partitions -eq 1 && $index_range_passes -eq 0 &&
+       $index_range_policy -eq 0 && $index_force_cache -eq 1 &&
+       $grow_order -eq 1 && $index_words -eq 16384 &&
+       $feeder_descriptor_discards -eq 16384 &&
+       $feeder_partition_discards -eq 0 &&
+       $bounded_summary_words -eq 0 && $bounded_replay_words -eq 0 &&
+       $bounded_word_entries -eq 4096 &&
+       $bounded_offset_entries -eq 4096 &&
+       $bounded_row_directories -eq 512 &&
+       $bounded_row_lines -eq 4096 && $bounded_metadata_bytes -gt 0 &&
+       $online_admissions -eq 16384 && $online_retirements -eq 16384 &&
+       $online_victims -gt 0 && $online_victim_trace_count -eq $online_victims &&
+       $online_reopens -gt 0 &&
+       $online_visits -eq $((online_victims * 512)) &&
+       $online_max_descriptors -gt 0 && $online_max_descriptors -le 4096 &&
+       $online_max_lines -gt 0 && $online_max_lines -le 4096 &&
+       $online_max_rows -gt 0 && $online_max_rows -le 512 &&
+       $online_policy_bytes -eq 12416 && $online_begin_count -eq 1 &&
+       $online_complete_count -eq 1 && $online_fallback_count -eq 0 &&
+       $uncached_index_responses -eq 0 ]] || {
+        echo "online row-window closure failed" >&2
+        exit 1
+    }
+fi
+
 if [[ $overlap -eq 1 ]]; then
     [[ $page_wait_reads -eq $pages_ready && \
        $page_wait_responses -eq $pages_ready && \
@@ -1188,6 +1299,7 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
     virtual_index_range_policy
     virtual_index_range_boundaries
+    virtual_online_row_window
     virtual_index_force_cache virtual_partition_keep_combiner
     offset_table_entries offset_table_epoch_entries
     transparent_spd_mode
@@ -1204,7 +1316,10 @@ headers=(case output_hash simTicks simInsts index_line_reads index_words
     bounded_replay_line_reads bounded_replay_words bounded_replay_passes
     bounded_replay_drains bounded_replay_max_epoch_admissions
     bounded_word_entries bounded_offset_entries bounded_row_directory_entries
-    bounded_row_line_entries bounded_reorder_metadata_bytes)
+    bounded_row_line_entries bounded_reorder_metadata_bytes
+    online_admissions online_retirements online_victims online_reopens
+    online_selection_visits online_max_descriptors online_max_lines
+    online_max_rows online_policy_bytes)
 values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$index_words" "$index_hwm" "$feeder_descriptor_discards"
     "$feeder_predicate_discards" "$feeder_partition_discards"
@@ -1223,6 +1338,7 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
     "$index_range_policy"
     "${index_range_boundaries:-none}"
+    "$online_row_window"
     "$index_force_cache" "$partition_keep_combiner" \
     "$resolved_offset_entries" "$resolved_offset_epoch_entries"
     "$transparent_spd_mode"
@@ -1239,7 +1355,10 @@ values=("$case_name" "$output_hash" "$ticks" "$insts" "$index_line_reads"
     "$bounded_replay_passes" "$bounded_replay_drains"
     "$bounded_replay_max_epoch" "$bounded_word_entries"
     "$bounded_offset_entries" "$bounded_row_directories"
-    "$bounded_row_lines" "$bounded_metadata_bytes")
+    "$bounded_row_lines" "$bounded_metadata_bytes"
+    "$online_admissions" "$online_retirements" "$online_victims"
+    "$online_reopens" "$online_visits" "$online_max_descriptors"
+    "$online_max_lines" "$online_max_rows" "$online_policy_bytes")
 if [[ $index_range_passes -eq 1 ]]; then
     actual_index_partitions=$index_partitions
     expected_index_words=$((16384 * index_partitions))

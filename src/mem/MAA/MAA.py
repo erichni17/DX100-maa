@@ -124,6 +124,10 @@ class MAA(ClockedObject):
         [],
         "Explicit contiguous grow boundaries for policy 2",
     )
+    virtual_online_row_window = Param.Bool(
+        False,
+        "Use a one-scan 4K descriptor window with oldest-grow retirement",
+    )
     virtual_index_filter_words_per_cycle = Param.Unsigned(
         0,
         "Partition-filter index words examined per cycle (0 is unlimited)",

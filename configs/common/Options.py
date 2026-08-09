@@ -403,6 +403,14 @@ def addNoISAOptions(parser):
         help="Explicit grow boundaries for range policy 2",
     )
     parser.add_argument(
+        "--maa_virtual_online_row_window",
+        action="store_true",
+        help=(
+            "Use one B scan and retire the oldest live translated grow when "
+            "the exact 4K Row/Offset window fills"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_filter_words_per_cycle",
         type=int,
         default=0,

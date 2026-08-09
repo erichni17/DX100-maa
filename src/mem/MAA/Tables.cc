@@ -735,6 +735,25 @@ bool RowTableSlice::claim_entry_send(Addr &addr, int &head, int &words,
     }
     return false;
 }
+bool RowTableSlice::claim_entry_send_for_grow(Addr selected_grow, Addr &addr,
+                                               int &head, int &words,
+                                               bool commit) {
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; ++row_id) {
+        if (!entries_valid[row_id] || entries_sent[row_id] ||
+            entries[row_id].grow_addr != selected_grow)
+            continue;
+        if (!entries[row_id].claim_entry_send(addr, head, words, commit))
+            panic("ROT[%d] selected grow 0x%lx row[%d] has no claimable "
+                  "entry\n", my_table_id, selected_grow, row_id);
+        if (commit && entries[row_id].all_entries_received()) {
+            entries_valid[row_id] = false;
+            entries_sent[row_id] = false;
+            entries[row_id].check_reset();
+        }
+        return true;
+    }
+    return false;
+}
 bool RowTableSlice::claim_entry_send_native_order(Addr &addr, int &head,
                                                   int &words, bool,
                                                   int &claimed_row_id,
@@ -853,6 +872,42 @@ int RowTableSlice::count_entry_words(Addr grow_addr, Addr addr) const {
                  my_table_id, addr);
         result = count;
     }
+    return result;
+}
+uint32_t RowTableSlice::count_grow_lines(Addr grow_addr) const {
+    uint32_t result = 0;
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; ++row_id) {
+        if (!entries_valid[row_id] || entries_sent[row_id] ||
+            entries[row_id].grow_addr != grow_addr)
+            continue;
+        for (int entry_id = 0; entry_id < num_RT_entries_per_row; ++entry_id)
+            result += entries[row_id].entries_valid[entry_id] ? 1 : 0;
+    }
+    return result;
+}
+uint32_t RowTableSlice::count_grow_rows(Addr grow_addr) const {
+    uint32_t result = 0;
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; ++row_id) {
+        if (entries_valid[row_id] && !entries_sent[row_id] &&
+            entries[row_id].grow_addr == grow_addr)
+            result++;
+    }
+    return result;
+}
+uint32_t RowTableSlice::active_lines() const {
+    uint32_t result = 0;
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; ++row_id) {
+        if (!entries_valid[row_id])
+            continue;
+        for (int entry_id = 0; entry_id < num_RT_entries_per_row; ++entry_id)
+            result += entries[row_id].entries_valid[entry_id] ? 1 : 0;
+    }
+    return result;
+}
+uint32_t RowTableSlice::active_rows() const {
+    uint32_t result = 0;
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; ++row_id)
+        result += entries_valid[row_id] ? 1 : 0;
     return result;
 }
 bool RowTableSlice::is_full() {
