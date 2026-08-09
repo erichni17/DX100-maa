@@ -236,19 +236,6 @@ class FusedDirectTransformContractTest(unittest.TestCase):
             self.correctness_runner,
         )
 
-    def test_last_ramulator_write_completion_signals_live_drain(self):
-        write_callback = self.ramulator[
-            self.ramulator.index(
-                "} else if (pkt->isWrite())"
-            ) : self.ramulator.index(
-                "} else {", self.ramulator.index("} else if (pkt->isWrite())")
-            )
-        ]
-        self.assertIn("--nbrOutstandingWrites", write_callback)
-        self.assertIn("nbrOutstanding() == 0", write_callback)
-        self.assertIn("drainState() == DrainState::Draining", write_callback)
-        self.assertIn("signalDrainDone", write_callback)
-
     def test_two_maa_live_hazard_gate_is_enabled(self):
         self.assertIn("MAA_NUM_MAAS=2", self.correctness_runner)
         self.assertIn("4097 multimaa", self.correctness_runner)

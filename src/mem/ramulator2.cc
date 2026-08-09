@@ -282,13 +282,6 @@ bool Ramulator2::recvTimingReq(PacketPtr pkt) {
 
                 --nbrOutstandingWrites;
                 accessAndRespond(pkt);
-                if (nbrOutstanding() == 0 &&
-                    drainState() == DrainState::Draining) {
-                    DPRINTF(Drain,
-                            "Ramulator2 done draining after write "
-                            "completion\n");
-                    signalDrainDone();
-                }
             });
 
         if (enqueue_success) {

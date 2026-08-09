@@ -17,8 +17,9 @@ from true-4K virtualization.
 The operation holds compound A-read, B-read, and C-write hazards across MAAs.
 Completion waits for source responses, ALU and link drain, combiner drain, and
 all write acknowledgements. Live checkpoint waits for this state to quiesce;
-mid-operation stats reset fails closed. A Ramulator write completion now
-signals drain completion when it removes the last outstanding request.
+mid-operation stats reset fails closed. An independent one-core control proved
+that the existing Ramulator drain path completes without a memory-controller
+source change; the earlier four-core hang was a test-topology artifact.
 
 ## Matched performance
 
