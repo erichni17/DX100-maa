@@ -72,18 +72,26 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         self.assertEqual(expected["descriptorRearms"], 4)
         self.assertEqual(expected["descriptorCompletionWrites"], 4)
         self.assertEqual(expected["descriptorErrors"], 1)
-        self.assertEqual(expected["descriptorUmtInputReads"], 2209)
-        self.assertEqual(expected["descriptorUmtInputLineReads"], 305)
+        self.assertEqual(expected["descriptorUmtInputReads"], 2280)
+        self.assertEqual(expected["descriptorUmtInputLineReads"], 313)
+        self.assertEqual(expected["descriptorUmtStateInputWrites"], 1168)
+        self.assertEqual(
+            expected["descriptorUmtStateDenominatorsConsumed"], 1111
+        )
         self.assertEqual(expected["descriptorUmtResultLineWrites"], 152)
         self.assertEqual(expected["descriptorUmtFp64AddSubOperations"], 2760)
         self.assertEqual(expected["descriptorUmtFp64MultiplyOperations"], 1656)
         self.assertEqual(expected["descriptorUmtFp64DivideOperations"], 1104)
         self.assertEqual(expected["descriptorUmtStateStoreHighWaterMark"], 64)
         self.assertEqual(expected["descriptorUmtStateBankHighWaterMark"], 16)
-        self.assertEqual(expected["descriptorUmtStatePhysicalBytes"], 5120)
         self.assertEqual(
-            expected["descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor"],
-            42932,
+            expected["descriptorUmtStatePhysicalStoreBytes"], 5120
+        )
+        self.assertEqual(
+            expected[
+                "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor"
+            ],
+            50411,
         )
 
     @staticmethod
@@ -110,17 +118,31 @@ class MixedUmtEvidenceTest(unittest.TestCase):
     def build_manifest():
         return {
             "schema": DRIVER.BUILD_MANIFEST_SCHEMA,
-            "harness_commit": "1" * 40,
-            "simulator_commit": "2" * 40,
+            "status": "passed",
+            "source_commit": "1" * 40,
+            "source_tree": "2" * 40,
+            "source_clean_before_and_after": True,
+            "source_identity_unchanged": True,
+            "command": [
+                str(pathlib.Path("/usr/bin/scons").resolve()),
+                "--ignore-style",
+                "build/X86/gem5.opt",
+                "-j4",
+            ],
+            "returncode": 0,
+            "started_at": "2026-08-09T00:00:00+00:00",
+            "ended_at": "2026-08-09T00:01:00+00:00",
+            "required_relink_observed": True,
+            "target": "/source/build/X86/gem5.opt",
+            "target_size": 1,
+            "target_mtime_ns": 1,
             "gem5_sha256": "3" * 64,
-            "config_sha256": "4" * 64,
-            "source_sha256": "5" * 64,
-            "guest_sha256": "6" * 64,
-            "compiler_command": "cc",
-            "compiler_sha256": "7" * 64,
-            "compile_flags": list(DRIVER.GUEST_COMPILE_FLAGS),
-            "case_matrix": DRIVER.expected_case_matrix(),
-            "edge_mask": "0x0a54a18b",
+            "frozen_gem5": "/identity/gem5.opt",
+            "frozen_gem5_sha256": "3" * 64,
+            "stdout_sha256": "4" * 64,
+            "stderr_sha256": "5" * 64,
+            "builder_sha256": "6" * 64,
+            "claim_boundary": "local exact build",
         }
 
     def test_confirmation_requires_exact_external_timing_contract(self):
@@ -167,14 +189,16 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             ("passed", True),
         )
 
-    def test_build_manifest_binds_reproducible_compile_contract(self):
+    def test_build_manifest_binds_reproducible_relink_contract(self):
         manifest = self.build_manifest()
         self.assertIs(
             DRIVER.validate_build_manifest_document(manifest), manifest
         )
         changed = dict(manifest)
-        changed["compile_flags"] = manifest["compile_flags"][:-1]
-        with self.assertRaisesRegex(RuntimeError, "compile flags changed"):
+        changed["required_relink_observed"] = False
+        with self.assertRaisesRegex(
+            RuntimeError, "required_relink_observed is not true"
+        ):
             DRIVER.validate_build_manifest_document(changed)
 
     def test_validator_rejects_error_as_completion(self):
@@ -188,9 +212,10 @@ class MixedUmtEvidenceTest(unittest.TestCase):
             "descriptorUmtBatchCycles",
             "descriptorUmtStateTokenBackpressureEvents",
             "descriptorUmtStateFpIssueStallCycles",
-            "descriptorUmtStateInputBankStallCycles",
-            "descriptorUmtStateResultBankStallCycles",
-            "descriptorUmtInputLineHoldCycles",
+            "descriptorUmtStateInputBankWaitCycles",
+            "descriptorUmtStatePipelineResultBankStallCycles",
+            "descriptorUmtStateResultDrainBankWaitCycles",
+            "descriptorUmtInputLineWaiterHoldLineCycles",
         ):
             with self.subTest(name=name):
                 stats = self.complete_fake_stats()

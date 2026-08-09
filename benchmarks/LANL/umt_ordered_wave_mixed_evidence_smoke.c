@@ -262,8 +262,13 @@ _start(void)
             }
         }
         if (evidence.expect_error != 0) {
-            /* The sole bad active value follows four completed descriptors. */
-            records[0] = POISON;
+            /*
+             * Seven group tokens from denominator plane zero are admitted
+             * before the final waiter poisons the same returned line.  Error
+             * drain must discard that retained work without publishing any
+             * result or completion.
+             */
+            records[CORNERS * words + UINT64_C(7)] = POISON;
         }
         for (uint64_t corner = 0; corner < CORNERS; ++corner) {
             for (uint64_t group = 0; group < words; ++group) {

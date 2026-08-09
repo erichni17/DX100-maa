@@ -48,7 +48,7 @@ CASES = (
     EvidenceCase(4, 8, True),
 )
 SUCCESS_CASES = tuple(case for case in CASES if not case.expect_error)
-BUILD_MANIFEST_SCHEMA = "lanl-maa-umt-ordered-wave-build-manifest-v1"
+BUILD_MANIFEST_SCHEMA = "lanl-maa-reproducible-gem5-build-v1"
 TIMING_CONTRACT_SCHEMA = "lanl-maa-umt-ordered-wave-timing-contract-v1"
 GUEST_COMPILE_FLAGS = (
     "-std=c11",
@@ -80,13 +80,16 @@ TIMING_COUNTER_REASONS = {
     "descriptorUmtStateFpIssueStallCycles": (
         "stall cycles depend on cycle-by-cycle token arbitration"
     ),
-    "descriptorUmtStateInputBankStallCycles": (
+    "descriptorUmtStateInputBankWaitCycles": (
         "input bank conflicts depend on response arrival cycles"
     ),
-    "descriptorUmtStateResultBankStallCycles": (
-        "result conflicts depend on FP completion and bank arbitration cycles"
+    "descriptorUmtStatePipelineResultBankStallCycles": (
+        "pipeline result conflicts depend on FP completion and bank arbitration"
     ),
-    "descriptorUmtInputLineHoldCycles": (
+    "descriptorUmtStateResultDrainBankWaitCycles": (
+        "result drain waits depend on packet formation and bank arbitration"
+    ),
+    "descriptorUmtInputLineWaiterHoldLineCycles": (
         "D64 complete-line hold duration depends on waiter allocation timing"
     ),
     "lineTableHighWaterMark": (
@@ -102,17 +105,26 @@ TIMING_COUNTER_REASONS = {
 
 BUILD_MANIFEST_KEYS = {
     "schema",
-    "harness_commit",
-    "simulator_commit",
+    "status",
+    "source_commit",
+    "source_tree",
+    "source_clean_before_and_after",
+    "source_identity_unchanged",
+    "command",
+    "returncode",
+    "started_at",
+    "ended_at",
+    "required_relink_observed",
+    "target",
+    "target_size",
+    "target_mtime_ns",
     "gem5_sha256",
-    "config_sha256",
-    "source_sha256",
-    "guest_sha256",
-    "compiler_command",
-    "compiler_sha256",
-    "compile_flags",
-    "case_matrix",
-    "edge_mask",
+    "frozen_gem5",
+    "frozen_gem5_sha256",
+    "stdout_sha256",
+    "stderr_sha256",
+    "builder_sha256",
+    "claim_boundary",
 }
 
 
@@ -241,14 +253,18 @@ def exact_stats():
         "descriptorUmtD64Descriptors": sum(
             case.abi_version == 5 for case in CASES
         ),
-        # The bad descriptor fails on active source plane 0, group 0.
+        # The error case accepts all source planes and seven denominator
+        # tokens before active denominator plane zero, group seven poisons the
+        # retained-work drain.
         "descriptorUmtGroupsLoaded": success_groups,
-        "descriptorUmtInputReads": INPUT_PLANES * success_groups + 1,
+        "descriptorUmtInputReads": INPUT_PLANES * success_groups + 72,
         "descriptorUmtInputLineReads": (
-            INPUT_PLANES * success_line_packets + 1
+            INPUT_PLANES * success_line_packets + 9
         ),
-        "descriptorUmtStateInputWrites": CORNERS * success_groups,
-        "descriptorUmtStateDenominatorsConsumed": CORNERS * success_groups,
+        "descriptorUmtStateInputWrites": CORNERS * success_groups + 64,
+        "descriptorUmtStateDenominatorsConsumed": (
+            CORNERS * success_groups + 7
+        ),
         "descriptorUmtStateResultWrites": CORNERS * success_groups,
         "descriptorUmtStateResultReads": CORNERS * success_groups,
         "descriptorUmtStateCapacityErrors": 0,
@@ -263,12 +279,16 @@ def exact_stats():
         # Fixed capacity, occupancy, and explicitly-labeled cost floors.
         "descriptorUmtStateStoreHighWaterMark": 64,
         "descriptorUmtStateBankHighWaterMark": 16,
-        "descriptorUmtStateTokenHighWaterMark": 8,
-        "descriptorUmtStateAllocatedBytes": 4608,
-        "descriptorUmtStatePhysicalBytes": 5120,
-        "descriptorUmtStateResidualBytes": 512,
-        "descriptorUmtStateAuxiliaryBitsFloor": 1972,
-        "descriptorUmtStatePhysicalPlusAuxiliaryBitsFloor": 42932,
+        "descriptorUmtStateTokenHighWaterMark": 16,
+        "descriptorUmtStateAllocatedStoreBytes": 4608,
+        "descriptorUmtStatePhysicalStoreBytes": 5120,
+        "descriptorUmtStateResidualStoreBytes": 512,
+        "descriptorUmtStateTokenLogicalBitsFloor": 7536,
+        "descriptorUmtStateFunctionalControlLogicalBitsFloor": 655,
+        "descriptorUmtStateBankSchedulerLogicalBitsFloor": 283,
+        "descriptorUmtStateInstrumentationLogicalBitsFloor": 977,
+        "descriptorUmtStateAuxiliaryLogicalBitsFloor": 9451,
+        "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 50411,
         "activeContextHighWaterMark": 64,
         "operationTableHighWaterMark": 64,
         "lineWouldBlockCycles": 0,
@@ -411,70 +431,74 @@ def validate_build_manifest_document(document):
         raise RuntimeError("build manifest schema changed")
     for name in (
         "gem5_sha256",
-        "config_sha256",
-        "source_sha256",
-        "guest_sha256",
-        "compiler_sha256",
+        "frozen_gem5_sha256",
+        "stdout_sha256",
+        "stderr_sha256",
+        "builder_sha256",
     ):
         if not is_sha256(document[name]):
             raise RuntimeError(f"build manifest {name} is not SHA-256")
-    for name in ("harness_commit", "simulator_commit"):
+    for name in ("source_commit", "source_tree"):
         if not isinstance(document[name], str) or not re.fullmatch(
             r"[0-9a-f]{40}", document[name]
         ):
             raise RuntimeError(f"build manifest {name} is not a full SHA-1")
-    if document["compiler_command"] != "cc":
-        raise RuntimeError("build manifest compiler command changed")
-    if document["compile_flags"] != list(GUEST_COMPILE_FLAGS):
-        raise RuntimeError("build manifest compile flags changed")
-    if document["case_matrix"] != expected_case_matrix():
-        raise RuntimeError("build manifest case matrix changed")
-    if document["edge_mask"] != f"0x{edge_mask():08x}":
-        raise RuntimeError("build manifest edge mask changed")
+    if document["status"] != "passed" or document["returncode"] != 0:
+        raise RuntimeError("build manifest does not record a passed build")
+    for name in (
+        "source_clean_before_and_after",
+        "source_identity_unchanged",
+        "required_relink_observed",
+    ):
+        if document[name] is not True:
+            raise RuntimeError(f"build manifest {name} is not true")
+    expected_command = [
+        str(pathlib.Path("/usr/bin/scons").resolve()),
+        "--ignore-style",
+        "build/X86/gem5.opt",
+        "-j4",
+    ]
+    if document["command"] != expected_command:
+        raise RuntimeError("build manifest command is not the capped J4 build")
+    if document["gem5_sha256"] != document["frozen_gem5_sha256"]:
+        raise RuntimeError("build manifest target and frozen hashes differ")
+    for name in ("target_size", "target_mtime_ns"):
+        if type(document[name]) is not int or document[name] <= 0:
+            raise RuntimeError(f"build manifest {name} is not positive")
+    for name in (
+        "started_at",
+        "ended_at",
+        "target",
+        "frozen_gem5",
+        "claim_boundary",
+    ):
+        if not isinstance(document[name], str) or not document[name]:
+            raise RuntimeError(f"build manifest {name} is empty")
     return document
 
 
-def validate_repository_boundary(document, actual_commit):
-    if document["harness_commit"] != actual_commit:
-        raise RuntimeError("build manifest does not bind the harness commit")
-    ancestry = subprocess.run(
-        [
-            "git",
-            "merge-base",
-            "--is-ancestor",
-            document["simulator_commit"],
-            "HEAD",
-        ],
-        cwd=ROOT,
-        check=False,
-    )
-    if ancestry.returncode != 0:
-        raise RuntimeError(
-            "manifest simulator commit is not a harness ancestor"
-        )
-    changed_paths = set(
-        subprocess.check_output(
-            [
-                "git",
-                "diff",
-                "--name-only",
-                f"{document['simulator_commit']}..HEAD",
-            ],
-            cwd=ROOT,
-            text=True,
-        ).splitlines()
-    )
-    expected_harness_paths = {
-        "benchmarks/LANL/umt_ordered_wave_mixed_evidence_smoke.c",
-        "tests/lanl_maa/run_umt_ordered_wave_mixed_evidence_smoke.py",
-        "tests/lanl_maa/umt_ordered_wave_mixed_evidence_smoke.py",
-        "tests/lanl_maa/test_umt_ordered_wave_mixed_evidence.py",
-    }
-    if not changed_paths.issubset(expected_harness_paths):
-        raise RuntimeError(
-            "harness commits after gem5 changed production source: "
-            f"{sorted(changed_paths)}"
-        )
+def validate_repository_boundary(
+    document, actual_commit, build_manifest_path, gem5
+):
+    if document["source_commit"] != actual_commit:
+        raise RuntimeError("build manifest does not bind exact harness HEAD")
+    actual_tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True
+    ).strip()
+    if document["source_tree"] != actual_tree:
+        raise RuntimeError("build manifest does not bind exact source tree")
+    expected_target = (ROOT / "build/X86/gem5.opt").resolve()
+    if pathlib.Path(document["target"]).resolve() != expected_target:
+        raise RuntimeError("build manifest target path changed")
+    if pathlib.Path(document["frozen_gem5"]).resolve() != gem5:
+        raise RuntimeError("build manifest does not name the supplied gem5")
+    if build_manifest_path.parent != gem5.parent:
+        raise RuntimeError("build manifest and frozen gem5 are separated")
+    builder = ROOT / "tests/lanl_maa/run_reproducible_gem5_build.py"
+    if document["builder_sha256"] != sha256(builder):
+        raise RuntimeError("build manifest builder hash is stale")
+    if document["frozen_gem5_sha256"] != sha256(gem5):
+        raise RuntimeError("frozen gem5 hash differs from build manifest")
 
 
 def compile_guest(source, binary, compiler):
@@ -532,35 +556,39 @@ def main():
     if status:
         raise RuntimeError("mixed UMT evidence worktree is not clean")
 
+    source = args.source.resolve()
+    config = args.config.resolve()
+    gem5 = args.gem5.resolve()
+    expected_source = (
+        ROOT / "benchmarks/LANL/umt_ordered_wave_mixed_evidence_smoke.c"
+    ).resolve()
+    expected_config = (
+        ROOT / "tests/lanl_maa/umt_ordered_wave_mixed_evidence_smoke.py"
+    ).resolve()
+    if source != expected_source or config != expected_config:
+        raise RuntimeError("mixed UMT source or config path changed")
+
     build_manifest_path = args.build_manifest.resolve()
     build_manifest = validate_build_manifest_document(
         read_json_object(build_manifest_path, "build manifest")
     )
     build_manifest_sha256 = sha256(build_manifest_path)
-    validate_repository_boundary(build_manifest, actual_commit)
+    validate_repository_boundary(
+        build_manifest, actual_commit, build_manifest_path, gem5
+    )
 
     compiler = shutil.which("cc")
     if not compiler:
         raise RuntimeError("mixed UMT evidence smoke requires cc")
     compiler = str(pathlib.Path(compiler).resolve())
-    source = args.source.resolve()
-    config = args.config.resolve()
-    gem5 = args.gem5.resolve()
     artifact_hashes = {
         "gem5_sha256": sha256(gem5),
         "config_sha256": sha256(config),
         "source_sha256": sha256(source),
         "compiler_sha256": sha256(compiler),
     }
-    manifest_failures = {
-        name: {"expected": build_manifest[name], "observed": value}
-        for name, value in artifact_hashes.items()
-        if build_manifest[name] != value
-    }
-    if manifest_failures:
-        raise RuntimeError(
-            f"build manifest artifact mismatch: {manifest_failures}"
-        )
+    if build_manifest["frozen_gem5_sha256"] != artifact_hashes["gem5_sha256"]:
+        raise RuntimeError("build manifest frozen gem5 artifact mismatch")
 
     validation_mode = (
         "calibration" if args.calibrate_timing_contract else "confirmation"
@@ -581,12 +609,6 @@ def main():
     binary = args.output_root / "umt_ordered_wave_mixed_evidence.elf"
     compile_command = compile_guest(source, binary, compiler)
     actual_guest_sha256 = sha256(binary)
-    if actual_guest_sha256 != build_manifest["guest_sha256"]:
-        raise RuntimeError(
-            "reproducible guest build does not match build manifest: "
-            f"expected={build_manifest['guest_sha256']} "
-            f"observed={actual_guest_sha256}"
-        )
     metadata = {
         "schema": "lanl-maa-umt-ordered-wave-mixed-evidence-v1",
         "validation_mode": validation_mode,
@@ -603,8 +625,8 @@ def main():
         ],
         "bad_active_value": {
             "case_index": len(CASES) - 1,
-            "plane": 0,
-            "group": 0,
+            "plane": 8,
+            "group": 7,
             "bits": f"0x{POISON_BITS:016x}",
             "expected_error": BAD_RECORD_VALUE,
         },
@@ -613,7 +635,7 @@ def main():
         "build_manifest": build_manifest,
         "build_manifest_sha256": build_manifest_sha256,
         "timing_contract_sha256": timing_contract_sha256,
-        "simulator_commit": build_manifest["simulator_commit"],
+        "simulator_commit": build_manifest["source_commit"],
         "harness_commit": actual_commit,
         "gem5_sha256": artifact_hashes["gem5_sha256"],
         "config_sha256": artifact_hashes["config_sha256"],
@@ -697,8 +719,9 @@ def main():
         "stderr_sha256": sha256(args.output_root / "stderr.log"),
         "error_termination": (
             "One guest is unambiguous: it observes four Completion terminals, "
-            "then requires Error/BadRecordValue with an untouched final "
-            "completion record and result arena before process exit."
+            "then admits seven denominator tokens before requiring "
+            "Error/BadRecordValue with an untouched final completion record "
+            "and result arena before process exit."
         ),
         "calibration_boundary": (
             "Calibration emits a candidate external timing contract but is "

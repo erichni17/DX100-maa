@@ -110,8 +110,8 @@ if metadata.get("edge_mask") != EXPECTED_EDGE_MASK:
 bad_value = metadata.get("bad_active_value", {})
 if bad_value != {
     "case_index": 4,
-    "plane": 0,
-    "group": 0,
+    "plane": 8,
+    "group": 7,
     "bits": "0x7ff0000000000001",
     "expected_error": 18,
 }:
