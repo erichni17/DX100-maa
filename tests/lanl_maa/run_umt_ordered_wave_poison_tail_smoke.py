@@ -102,6 +102,9 @@ def validate(stats, group_counts, abi_version):
         "descriptorUmtStateResultWrites": 8 * groups,
         "descriptorUmtStateResultReads": 8 * groups,
         "descriptorUmtStateCapacityErrors": 0,
+        "descriptorUmtStateStoreHighWaterMark": max(group_counts),
+        "descriptorUmtStateBankHighWaterMark": (max(group_counts) + 3) // 4,
+        "descriptorUmtStateTokenHighWaterMark": min(8, max(group_counts)),
         "descriptorUmtStateAllocatedBytes": 4608,
         "descriptorUmtStatePhysicalBytes": 5120,
         "descriptorUmtStateResidualBytes": 512,
@@ -128,12 +131,7 @@ def validate(stats, group_counts, abi_version):
             "UMT64 poison-tail line-table high-water is absent or outside "
             f"the 32-entry capacity: {line_high_water}"
         )
-    token_high_water = stats.get("descriptorUmtStateTokenHighWaterMark")
-    if token_high_water is None or not 0 < token_high_water <= 8:
-        raise RuntimeError(
-            "UMT token high-water is absent or outside capacity: "
-            f"{token_high_water}"
-        )
+    token_high_water = stats["descriptorUmtStateTokenHighWaterMark"]
     bounded = {
         "lineTableHighWaterMark": line_high_water,
         "descriptorUmtStateTokenHighWaterMark": token_high_water,
@@ -159,6 +157,39 @@ def validate(stats, group_counts, abi_version):
             "UMT64 poison-tail status reads exceed total control reads: "
             f"{bounded}"
         )
+    batch_cycles = stats.get("descriptorUmtBatchCycles")
+    if batch_cycles is None or batch_cycles <= len(group_counts):
+        raise RuntimeError(
+            "UMT measured pipeline cycles are absent or still a per-batch "
+            f"placeholder: {batch_cycles}"
+        )
+    bounded["descriptorUmtBatchCycles"] = batch_cycles
+    input_hold_cycles = stats.get("descriptorUmtInputLineHoldCycles")
+    if abi_version == 4:
+        if input_hold_cycles != 0:
+            raise RuntimeError(
+                "D32 unexpectedly used complete-line hold: "
+                f"{input_hold_cycles}"
+            )
+    elif len(group_counts) > 1 and (
+        input_hold_cycles is None or input_hold_cycles <= 0
+    ):
+        raise RuntimeError("D64 full matrix did not exercise line holding")
+    bounded["descriptorUmtInputLineHoldCycles"] = input_hold_cycles
+    if len(group_counts) > 1:
+        for name in (
+            "descriptorUmtStateTokenBackpressureEvents",
+            "descriptorUmtStateFpIssueStallCycles",
+            "descriptorUmtStateInputBankStallCycles",
+            "descriptorUmtStateResultBankStallCycles",
+        ):
+            value = stats.get(name)
+            if value is None or value <= 0:
+                raise RuntimeError(
+                    "UMT full matrix did not exercise required pressure: "
+                    f"{name}={value}"
+                )
+            bounded[name] = value
     return expected, bounded
 
 
