@@ -40,6 +40,12 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
             "virtual_descriptor_spool_read_ahead=",
         ):
             self.assertIn(token, self.case_runner)
+        self.assertIn(
+            "instruction_tick=[0-9]+ count=[0-9]+ "
+            "fnv=0x[[:xdigit:]]+ mix=0x[[:xdigit:]]+$",
+            self.case_runner,
+        )
+        self.assertNotIn("/MAAIssueDigest:/", self.case_runner)
 
     def test_exactly_four_existing_payload_slots_carry_all_tags(self) -> None:
         spool = (

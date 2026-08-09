@@ -121,8 +121,9 @@ wait_all() {
         pid=${job#*:}
         if wait "$pid"; then
             continue
+        else
+            status=$?
         fi
-        status=$?
         printf '%s job %s (pid %s) failed with status %s\n' \
             "$phase" "$label" "$pid" "$status" >&2
         failed=1

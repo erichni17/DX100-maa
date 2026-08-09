@@ -1540,7 +1540,7 @@ source_issue_requests=0
 source_issue_sha256=none
 if [[ $require_source_issue_digest -eq 1 ]]; then
     awk '
-        /MAAIssueDigest:/ {
+        / unit=[0-9]+ instruction_tick=[0-9]+ count=[0-9]+ fnv=0x[[:xdigit:]]+ mix=0x[[:xdigit:]]+$/ {
             delete value
             for (i = 1; i <= NF; ++i) {
                 split($i, kv, "=")
