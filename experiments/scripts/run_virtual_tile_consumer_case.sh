@@ -56,6 +56,8 @@ offset_entries=${MAA_OFFSET_TABLE_ENTRIES:-0}
 offset_epoch_entries=${MAA_OFFSET_TABLE_EPOCH_ENTRIES:-0}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-96}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
+words_per_cycle=${MAA_VIRTUAL_WORDS_PER_CYCLE:-4}
+max_outstanding_writes=${MAA_VIRTUAL_MAX_OUTSTANDING_WRITES:-64}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
 combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
 combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
@@ -82,6 +84,14 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 }
 [[ $row_slices -gt 0 && $row_rows -gt 0 && $row_entries -gt 0 ]] || {
     echo "row-table dimensions must be positive" >&2
+    exit 2
+}
+[[ $words_per_cycle -ge 0 ]] || {
+    echo "MAA_VIRTUAL_WORDS_PER_CYCLE must be nonnegative" >&2
+    exit 2
+}
+[[ $max_outstanding_writes -gt 0 ]] || {
+    echo "MAA_VIRTUAL_MAX_OUTSTANDING_WRITES must be positive" >&2
     exit 2
 }
 [[ $index_partitions -gt 0 && $index_partitions -le 64 ]] || {
@@ -532,6 +542,9 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'virtual_grow_order=%s\n' "$grow_order"
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
+    printf 'virtual_words_per_cycle=%s\n' "$words_per_cycle"
+    printf 'virtual_max_outstanding_writes=%s\n' \
+        "$max_outstanding_writes"
     printf 'virtual_combine_slots=%s\n' "$combine_slots"
     printf 'virtual_combine_words=%s\n' "$combine_words"
     printf 'virtual_combine_ways=%s\n' "$combine_ways"
@@ -779,8 +792,9 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa_virtual_combine_banks="$combine_banks" \
     --maa_virtual_response_slots="$response_slots" \
     --maa_virtual_response_word_pool="$response_word_pool" \
-    --maa_virtual_words_per_cycle=4 \
-    --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes \
+    --maa_virtual_words_per_cycle="$words_per_cycle" \
+    --maa_virtual_max_outstanding_writes="$max_outstanding_writes" \
+    --maa_virtual_masked_writes \
     --maa_virtual_index_buffer_lines="$index_buffer_lines" \
     --maa_virtual_index_partitions="$index_partitions" \
     --maa_virtual_index_range_policy="$index_range_policy" \
@@ -818,6 +832,8 @@ for expected in \
     "virtual_index_force_cache=$([[ $index_force_cache -eq 1 ]] && echo true || echo false)" \
     "virtual_partition_keep_combiner=$([[ $partition_keep_combiner -eq 1 ]] && echo true || echo false)" \
     "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
+    "virtual_words_per_cycle=$words_per_cycle" \
+    "virtual_max_outstanding_writes=$max_outstanding_writes" \
     "reconfigure_row_table=false"; do
     grep -Fqx "$expected" "$config_ini" || {
         echo "missing resolved row-table treatment: $expected" >&2
@@ -1610,6 +1626,7 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     transparent_spd_mode
     virtual_index_filter_words_per_cycle require_index_filter_wait
     response_slots response_word_pool
+    virtual_words_per_cycle virtual_max_outstanding_writes
     row_table_cache_lines
     row_table_rows_inserted row_table_unique_cache_lines
     row_table_unique_rows source_reads response_slot_hwm response_word_hwm
@@ -1676,6 +1693,7 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$transparent_spd_mode"
     "$index_filter_words_per_cycle" "$require_index_filter_wait"
     "$response_slots" "$response_word_pool"
+    "$words_per_cycle" "$max_outstanding_writes"
     "$rt_cache_lines" "$rt_rows" "$rt_unique_cache_lines" "$rt_unique_rows"
     "$source_reads" "$response_slot_hwm" "$response_word_hwm"
     "$response_pool_stalls" "$rt_full" "$offset_epoch_drains"

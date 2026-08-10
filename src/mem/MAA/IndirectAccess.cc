@@ -11,6 +11,7 @@
 #include "debug/MAAIndirect.hh"
 #include "debug/MAAIssueDigest.hh"
 #include "debug/MAAIssueTrace.hh"
+#include "debug/MAAMacroEvent.hh"
 #include "debug/MAAPhysicalRecordTrace.hh"
 #include "debug/MAAReorderTrace.hh"
 #include "debug/MAATrace.hh"
@@ -828,6 +829,8 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
                                    block_paddr, FuncUnitType::INDIRECT,
                                    my_indirect_id);
         if (has_outstanding && !merge_outstanding) {
+            if (isVirtualLoad())
+                macro_b_retries++;
             (*maa->stats.IND_VirtIndexOutstandingWaitCycles
                   [my_indirect_id])++;
             scheduleExecuteInstructionEvent(1);
@@ -872,6 +875,12 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             direct_index_max_lines,
             static_cast<int>(direct_index_pending_lines.size() +
                              direct_index_ready_lines.size()));
+        if (isVirtualLoad()) {
+            macro_b_queue_high_water = std::max<uint64_t>(
+                macro_b_queue_high_water,
+                direct_index_pending_lines.size() +
+                    direct_index_ready_lines.size());
+        }
         DPRINTF(MAAVirtualTrace,
                 "event=index_line_issue schema=2 unit=%d occurrence=%lu "
                 "operation_tick=%lu line=0x%lx "
@@ -1909,6 +1918,8 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
     if (pending == direct_index_pending_lines.end())
         return false;
     accountReadResponse(addr, is_block_cached);
+    if (isVirtualLoad())
+        macro_b_last_response_tick = curTick();
     const auto *words = reinterpret_cast<const uint32_t *>(dataptr);
     const auto pending_words = std::move(pending->second);
     direct_index_pending_lines.erase(pending);
@@ -2604,6 +2615,11 @@ void IndirectAccessUnit::fillRowTable(
                     break;
                 } else {
                     attribution_row_insert_successes++;
+                    if (isVirtualLoad()) {
+                        if (macro_row_first_insert_tick == 0)
+                            macro_row_first_insert_tick = curTick();
+                        macro_row_last_insert_tick = curTick();
+                    }
                     if (debug::MAAReorderTrace)
                         panic_if(!reorder_survival.admit(),
                                  "I[%d] could not record reorder admission\n",
@@ -2873,6 +2889,33 @@ void IndirectAccessUnit::executeInstruction() {
         attribution_combiner_words = 0;
         attribution_write_issues = 0;
         attribution_write_completions = 0;
+        macro_b_first_issue_tick = 0;
+        macro_b_last_issue_tick = 0;
+        macro_b_last_response_tick = 0;
+        macro_row_first_insert_tick = 0;
+        macro_row_last_insert_tick = 0;
+        macro_a_first_issue_tick = 0;
+        macro_a_last_issue_tick = 0;
+        macro_a_last_response_tick = 0;
+        macro_backing_first_issue_tick = 0;
+        macro_backing_last_issue_tick = 0;
+        macro_backing_last_ack_tick = 0;
+        macro_backing_credit_stall_tick = 0;
+        macro_b_lines = 0;
+        macro_b_bytes = 0;
+        macro_b_retries = 0;
+        macro_b_queue_high_water = 0;
+        macro_a_lines = 0;
+        macro_a_bytes = 0;
+        macro_a_retries = 0;
+        macro_backing_transport_bytes = 0;
+        macro_backing_semantic_bytes = 0;
+        macro_backing_line_issues = 0;
+        macro_backing_word_issues = 0;
+        macro_backing_credit_stalls = 0;
+        macro_backing_address_retries = 0;
+        macro_request_reason_cycles.fill(0);
+        macro_pipeline_cycles.fill(0);
         attribution_execute_sequence = 1;
         if (debug::MAAReorderTrace)
             reorder_survival.begin(reorder_instruction_sequence++);
@@ -3487,6 +3530,7 @@ void IndirectAccessUnit::executeInstruction() {
                 if (usesBoundedSourceResponses() &&
                     virtual_reserved_responses ==
                         virtual_response_slots.size()) {
+                    macro_a_retries++;
                     virtual_capacity_full = true;
                     break;
                 }
@@ -3595,6 +3639,7 @@ void IndirectAccessUnit::executeInstruction() {
                                         last_RT_sent = 0;
                                 }
                                 virtual_response_word_pool_stalls++;
+                                macro_a_retries++;
                                 num_rowtable_accesses++;
                                 virtual_capacity_full = true;
                                 break;
@@ -4307,6 +4352,13 @@ bool IndirectAccessUnit::checkAndResetAllRowTablesSent() {
     return true;
 }
 void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
+    if (isVirtualLoad()) {
+        if (macro_a_first_issue_tick == 0)
+            macro_a_first_issue_tick = curTick();
+        macro_a_last_issue_tick = curTick();
+        macro_a_lines++;
+        macro_a_bytes += block_size;
+    }
     const uint64_t sequence = source_issue_sequence++;
     for (int byte = 0; byte < 8; ++byte) {
         source_issue_digest ^=
@@ -4355,6 +4407,13 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
     DPRINTF(MAAIndirect, "I[%d] %s: created %s for mem\n", my_indirect_id, __func__, read_pkt->print());
 }
 void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
+    if (isVirtualLoad()) {
+        if (macro_b_first_issue_tick == 0)
+            macro_b_first_issue_tick = curTick();
+        macro_b_last_issue_tick = curTick();
+        macro_b_lines++;
+        macro_b_bytes += block_size;
+    }
     RequestPtr real_req = std::make_shared<Request>(
         addr, block_size, flags, maa->requestorId);
     real_req->setRegion(my_index_addr_range_id);
@@ -4619,6 +4678,7 @@ bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_blo
         }
         my_received_responses++;
         virtual_source_received++;
+        macro_a_last_response_tick = curTick();
         const bool response_throttled = drainVirtualResponses();
         accountVirtualRequestInterval();
         if (response_throttled)
@@ -5126,11 +5186,14 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     Addr paddr = translatePacket(vaddr, BaseMMU::Write, size);
     const Addr write_key = size == block_size
         ? paddr & ~(block_size - 1) : paddr;
-    if (virtual_outstanding_write_lines.count(write_key) != 0)
+    if (virtual_outstanding_write_lines.count(write_key) != 0) {
+        macro_backing_address_retries++;
         return false;
+    }
     if (maa->hasOutstandingPacket(paddr)) {
         (*maa->stats.IND_VirtWriteAddressConflicts[my_indirect_id])++;
         virtual_write_address_blocked = true;
+        macro_backing_address_retries++;
         return false;
     }
     RequestPtr req = std::make_shared<Request>(paddr, size, flags,
@@ -5160,6 +5223,16 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     trackVirtualRetirementWrite(write_key, vaddr, size, valid_words);
     (*maa->stats.IND_VirtWriteIssues[my_indirect_id])++;
     attribution_write_issues++;
+    if (macro_backing_first_issue_tick == 0)
+        macro_backing_first_issue_tick = curTick();
+    macro_backing_last_issue_tick = curTick();
+    macro_backing_transport_bytes += size;
+    macro_backing_semantic_bytes += valid_words == 0
+        ? size : __builtin_popcount(valid_words) * my_word_size;
+    if (size == block_size)
+        macro_backing_line_issues++;
+    else
+        macro_backing_word_issues++;
     DPRINTF(MAAVirtualTrace,
             "event=backing_write_issue schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu key=0x%lx vaddr=0x%lx paddr=0x%lx "
@@ -5547,6 +5620,12 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         if (virtual_outstanding_writes == virtual_max_outstanding_writes_limit)
             break;
     }
+    if (!virtualCombinerEmpty() &&
+        virtual_outstanding_writes >= virtual_max_outstanding_writes_limit &&
+        macro_backing_credit_stall_tick != curTick()) {
+        macro_backing_credit_stall_tick = curTick();
+        macro_backing_credit_stalls++;
+    }
 }
 
 bool IndirectAccessUnit::virtualCombinerEmpty() const {
@@ -5689,12 +5768,14 @@ void IndirectAccessUnit::finishVirtualRequestInterval() {
     };
     const Cycles request_cycles =
         maa->getTicksToCycles(curTick() - my_request_start_tick);
+    std::array<uint64_t, 6> request_reason_cycles{};
     Cycles non_source_cycles(0);
     for (size_t i = 0; i < buckets.size(); ++i) {
         if (i == 1)
             continue;
         Cycles cycles = maa->getTicksToCycles(virtual_request_reason_ticks[i]);
         (*buckets[i]) += cycles;
+        request_reason_cycles[i] = cycles;
         non_source_cycles += cycles;
     }
     panic_if(non_source_cycles > request_cycles,
@@ -5702,7 +5783,11 @@ void IndirectAccessUnit::finishVirtualRequestInterval() {
              my_indirect_id);
     // Assign the residual to the dominant source-flight bucket so integer cycle
     // rounding cannot make the mutually exclusive buckets exceed the total.
-    (*buckets[1]) += request_cycles - non_source_cycles;
+    const Cycles source_cycles = request_cycles - non_source_cycles;
+    (*buckets[1]) += source_cycles;
+    request_reason_cycles[1] = source_cycles;
+    for (size_t i = 0; i < request_reason_cycles.size(); ++i)
+        macro_request_reason_cycles[i] += request_reason_cycles[i];
     std::array<statistics::Scalar *, 4> pipeline_buckets = {
         maa->stats.IND_VirtPipelineCyclesIdle[my_indirect_id],
         maa->stats.IND_VirtPipelineCyclesSourceOnly[my_indirect_id],
@@ -5732,8 +5817,10 @@ void IndirectAccessUnit::finishVirtualRequestInterval() {
                  my_indirect_id);
         pipeline_cycles[largest_pipeline_bucket] -= rounding_excess;
     }
-    for (size_t i = 0; i < pipeline_buckets.size(); ++i)
+    for (size_t i = 0; i < pipeline_buckets.size(); ++i) {
         (*pipeline_buckets[i]) += Cycles(pipeline_cycles[i]);
+        macro_pipeline_cycles[i] += pipeline_cycles[i];
+    }
     virtual_request_reason = VirtualRequestReason::None;
     virtual_request_reason_tick = 0;
     virtual_request_attributed_ticks = 0;
@@ -5785,6 +5872,74 @@ void IndirectAccessUnit::transitionAttributionStage(
                 attribution_stage_ticks[0], attribution_stage_ticks[1],
                 attribution_stage_ticks[2], attribution_stage_ticks[3],
                 attribution_stage_ticks[4], total);
+        if (isVirtualLoad()) {
+            DPRINTF(MAAMacroEvent,
+                    "event=hybrid_producer_macro schema=1 unit=%d "
+                    "operation_tick=%lu complete_tick=%lu "
+                    "b_first_issue_tick=%lu b_last_issue_tick=%lu "
+                    "b_last_response_tick=%lu b_lines=%lu b_bytes=%lu "
+                    "b_retries=%lu b_queue_high_water=%lu "
+                    "row_offset_first_insert_tick=%lu "
+                    "row_offset_last_insert_tick=%lu "
+                    "fill_sim_ticks=%lu build_sim_ticks=%lu "
+                    "row_insert_attempts=%lu row_offset_insertions=%lu "
+                    "offset_pressure_events=%lu row_pressure_events=%lu "
+                    "a_first_issue_tick=%lu a_last_issue_tick=%lu "
+                    "a_last_response_tick=%lu a_lines=%lu a_bytes=%lu "
+                    "a_retries=%lu a_slot_queue_high_water=%d "
+                    "a_word_queue_high_water=%d "
+                    "backing_first_issue_tick=%lu "
+                    "backing_last_issue_tick=%lu "
+                    "backing_last_ack_tick=%lu "
+                    "page_first_ready_tick=%lu page_last_ready_tick=%lu "
+                    "pages_ready=%d backing_transport_bytes=%lu "
+                    "backing_semantic_bytes=%lu backing_line_issues=%lu "
+                    "backing_word_issues=%lu backing_credit_stalls=%lu "
+                    "backing_address_retries=%lu "
+                    "backing_queue_high_water=%d "
+                    "pipeline_no_source_or_write_cycles=%lu "
+                    "pipeline_source_only_cycles=%lu "
+                    "pipeline_write_only_cycles=%lu "
+                    "pipeline_overlap_cycles=%lu "
+                    "request_build_cycles=%lu "
+                    "request_source_flight_cycles=%lu "
+                    "request_retained_cycles=%lu request_writes_cycles=%lu "
+                    "request_final_drain_cycles=%lu "
+                    "request_runnable_cycles=%lu\n",
+                    my_indirect_id, my_decode_start_tick, now,
+                    macro_b_first_issue_tick, macro_b_last_issue_tick,
+                    macro_b_last_response_tick, macro_b_lines, macro_b_bytes,
+                    macro_b_retries, macro_b_queue_high_water,
+                    macro_row_first_insert_tick, macro_row_last_insert_tick,
+                    attribution_stage_ticks[1], attribution_stage_ticks[2],
+                    attribution_row_insert_attempts,
+                    attribution_row_insert_successes,
+                    attribution_offset_pressure_events,
+                    attribution_row_pressure_events,
+                    macro_a_first_issue_tick, macro_a_last_issue_tick,
+                    macro_a_last_response_tick, macro_a_lines, macro_a_bytes,
+                    macro_a_retries, virtual_max_reserved_responses,
+                    virtual_max_reserved_response_words,
+                    macro_backing_first_issue_tick,
+                    macro_backing_last_issue_tick,
+                    macro_backing_last_ack_tick,
+                    virtual_first_page_ready_tick,
+                    virtual_all_pages_ready_tick, virtual_pages_ready,
+                    macro_backing_transport_bytes,
+                    macro_backing_semantic_bytes,
+                    macro_backing_line_issues, macro_backing_word_issues,
+                    macro_backing_credit_stalls,
+                    macro_backing_address_retries,
+                    virtual_max_outstanding_writes,
+                    macro_pipeline_cycles[0], macro_pipeline_cycles[1],
+                    macro_pipeline_cycles[2], macro_pipeline_cycles[3],
+                    macro_request_reason_cycles[0],
+                    macro_request_reason_cycles[1],
+                    macro_request_reason_cycles[2],
+                    macro_request_reason_cycles[3],
+                    macro_request_reason_cycles[4],
+                    macro_request_reason_cycles[5]);
+        }
         attribution_stage_tick = 0;
         attribution_stage_ticks.fill(0);
         return;
@@ -5837,6 +5992,7 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
     completeVirtualRetirementWrite(addr);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     attribution_write_completions++;
+    macro_backing_last_ack_tick = curTick();
     DPRINTF(MAAVirtualTrace,
             "event=backing_write_complete schema=2 unit=%d occurrence=%lu "
             "operation_tick=%lu key=0x%lx outstanding=%d\n",

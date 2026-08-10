@@ -13,6 +13,7 @@
 
 #include "base/trace.hh"
 #include "base/types.hh"
+#include "mem/MAA/HybridMacroEventTracker.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/MAA/LogicalSPDCacheLiveAdapterState.hh"
@@ -491,6 +492,9 @@ public:
     void recordTransparentConsumerAcceptance(int page, uint64_t transaction,
                                              Addr address, int ordinal,
                                              int expected);
+    void recordTransparentStreamTraffic(
+        TransparentSPDController::Action action, uint64_t lines,
+        uint64_t bytes);
     void finishInstructionCompute(InstructionPtr instruction);
     void finishInstructionInvalidate(InstructionPtr instruction, int tileID);
     bool sentMemSidePacket(PacketPtr pkt);
@@ -515,6 +519,8 @@ protected:
     std::vector<uint64_t> virtualPageConsumedGeneration;
     std::vector<Addr> virtualPageBackingAddr;
     std::vector<int> virtualPageWordSize;
+    std::vector<Tick> virtualMacroOperationTick;
+    std::vector<Tick> virtualPageLastReadyTick;
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
     uint64_t transparentTraceOccurrence = 0;
@@ -526,6 +532,11 @@ protected:
     std::array<Tick, static_cast<size_t>(
                          TransparentSPDController::Blocker::Count)>
         transparentBlockerTicks{};
+    HybridMacroEventTracker transparentMacroTracker;
+    HybridMacroEventTracker::Record transparentMacroAllReadyRecord{};
+    Tick transparentMacroAllReadyTick = 0;
+    bool transparentMacroAllReadySampled = false;
+    bool transparentMacroAllReadyBeforeSubmit = false;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();
@@ -539,6 +550,8 @@ protected:
     void updateTransparentBlockerTracking();
     void snapshotTransparentBlockerTracking(uint64_t generation);
     void finishTransparentBlockerTracking(uint64_t generation);
+    void emitTransparentMacroSummary(uint64_t generation,
+                                     Tick producerOperationTick);
     struct LogicalSPDSenderState : public Packet::SenderState
     {
         LogicalSPDCacheGem5Bridge::CallbackToken token{};

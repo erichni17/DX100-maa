@@ -395,6 +395,11 @@ void StreamAccessUnit::executeInstruction() {
         if (my_instruction->opcode == Instruction::OpcodeType::STREAM_LD) {
             maa->spd->setSize(my_dst_tile, my_size);
         }
+        if (my_instruction->controllerManaged) {
+            maa->recordTransparentStreamTraffic(
+                my_instruction->controllerAction, my_sent_requests,
+                static_cast<uint64_t>(my_sent_requests) * block_size);
+        }
         maa->finishInstructionCompute(my_instruction);
         my_instruction = nullptr;
         request_table->check_reset();
