@@ -870,13 +870,16 @@ printf '%s\n' "$restore_rc" > "$out/restore.exit"
 }
 
 config_ini="$out/run/config.ini"
+# config.ini records the user-facing zero sentinel; the C++ constructor
+# resolves it to the logical tile size. Mechanism gates below use the resolved
+# values.
 for expected in \
     "transparent_spd_mode=$transparent_spd_mode" \
     "num_initial_row_table_slices=$row_slices" \
     "num_row_table_rows_per_slice=$row_rows" \
     "num_row_table_entries_per_subslice_row=$row_entries" \
-    "num_offset_table_entries=$resolved_offset_entries" \
-    "num_offset_table_epoch_entries=$resolved_offset_epoch_entries" \
+    "num_offset_table_entries=$offset_entries" \
+    "num_offset_table_epoch_entries=$offset_epoch_entries" \
     "virtual_index_partitions=$index_partitions" \
     "virtual_index_range_passes=$([[ $index_range_passes -eq 1 ]] && echo true || echo false)" \
     "virtual_index_range_policy=$index_range_policy" \
