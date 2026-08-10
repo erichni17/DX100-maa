@@ -30,6 +30,7 @@ ifndef DUMP
 	MAA_BINARIES += $(SUITE)_maa_32K $(SUITE)_maa_64K
 	MAA_BINARIES += $(SUITE)_maa_4C $(SUITE)_maa_8C
 	MAA_BINARIES += $(SUITE)_maa_16K_fp $(SUITE)_maa_16K_virtual
+	MAA_BINARIES += $(SUITE)_maa_16K_bounded
 endif
 
 .PHONY: all FUNC GEM5 clean
@@ -79,6 +80,9 @@ endef
 
 %_maa_16K_virtual: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DMAA_VIRTUAL_GATHER -DCG_FP_ENABLE -DNUM_CORES=4 -DTILE_SIZE=16384)
+
+%_maa_16K_bounded: cg.cpp m5op.o
+	$(call build_binary,-DMAA -DMAA_VIRTUAL_GATHER -DMAA_BOUNDED_VIRTUAL_GATHER -DCG_FP_ENABLE -DNUM_CORES=4 -DTILE_SIZE=16384)
 
 %_maa_32K: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DNUM_CORES=4 -DTILE_SIZE=32768)

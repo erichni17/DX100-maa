@@ -182,7 +182,30 @@ static bool print_cg_fingerprint(const std::string &mode, const float x[],
 #endif
 
 #ifdef MAA_VIRTUAL_GATHER
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+constexpr size_t virtual_descriptor_spool_units = 4;
+constexpr size_t virtual_descriptor_spool_slot_bytes =
+    TILE_SIZE * 8 + 4 * 64;
+constexpr size_t virtual_descriptor_spool_words =
+    virtual_descriptor_spool_units * virtual_descriptor_spool_slot_bytes /
+    sizeof(float);
+alignas(64) static float virtual_gather_storage[
+    NUM_CORES * TILE_SIZE + virtual_descriptor_spool_words];
+
+static float *
+virtual_gather_backing_for_thread(int tid)
+{
+    return virtual_gather_storage + tid * TILE_SIZE;
+}
+#else
 alignas(64) static float virtual_gather_backing[NUM_CORES][TILE_SIZE];
+
+static float *
+virtual_gather_backing_for_thread(int tid)
+{
+    return virtual_gather_backing[tid];
+}
+#endif
 #endif
 
 /*
@@ -511,6 +534,16 @@ int main(int argc, char **argv) {
     }
 
 #ifdef GEM5
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+    std::cout << "CG_BOUNDED_VIRTUAL_LAYOUT logical=" << TILE_SIZE
+              << " payload_words=" << NUM_CORES * TILE_SIZE
+              << " descriptor_units=" << virtual_descriptor_spool_units
+              << " descriptor_slot_bytes="
+              << virtual_descriptor_spool_slot_bytes
+              << " registered_words="
+              << NUM_CORES * TILE_SIZE + virtual_descriptor_spool_words
+              << std::endl;
+#endif
     m5_checkpoint(0, 0);
 #endif
 
@@ -691,8 +724,15 @@ static void conj_grad_maa(int colidx[],
         add_mem_region(r, &r[NA + 2]);           // 12
         add_mem_region(x, &x[NA + 2]);           // 13
 #ifdef MAA_VIRTUAL_GATHER
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+        add_mem_region(virtual_gather_storage,
+                       virtual_gather_storage +
+                           NUM_CORES * TILE_SIZE +
+                           virtual_descriptor_spool_words);
+#else
         add_mem_region(&virtual_gather_backing[0][0],
                        &virtual_gather_backing[NUM_CORES - 1][TILE_SIZE]);
+#endif
 #endif
     }
 #endif
@@ -859,23 +899,38 @@ static void conj_grad_maa(int colidx[],
                 maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
                 // [t1 t4 t5 t6 t7] available
 
-                // t6 = colidx[k]
-                maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                const int gather_size = k_max - k_base < TILE_SIZE
+                                            ? k_max - k_base
+                                            : TILE_SIZE;
+                // Full bounded gathers consume colidx directly. Partial tails
+                // retain the staged path because the bounded engine is an
+                // exact logical16K/physical4K mechanism.
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+                if (gather_size != TILE_SIZE)
+#endif
+                    maa_stream_load<int>(colidx, r2, r3, r1, t6);
                 // [t1 t4 t5 t7] available
 
                 // t4 = p[colidx[k]]
                 // free t6
 #ifdef MAA_VIRTUAL_GATHER
-                const int gather_size = k_max - k_base < TILE_SIZE
-                                            ? k_max - k_base
-                                            : TILE_SIZE;
-                maa_indirect_load_virtual<float>(
-                    p, t6, t4, virtual_gather_backing[tid]);
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+                if (gather_size == TILE_SIZE) {
+                    maa_const<int>(k_base + gather_size, r3);
+                    maa_indirect_load_virtual_index<float>(
+                        p, reinterpret_cast<uint32_t *>(colidx), t4,
+                        virtual_gather_backing_for_thread(tid), r2, r3, r1);
+                } else
+#endif
+                {
+                    maa_indirect_load_virtual<float>(
+                        p, t6, t4, virtual_gather_backing_for_thread(tid));
+                }
                 wait_ready(t4);
                 maa_const<int>(0, r2);
                 maa_const<int>(gather_size, r3);
-                maa_stream_load<float>(virtual_gather_backing[tid], r2, r3,
-                                       r1, t4);
+                maa_stream_load<float>(virtual_gather_backing_for_thread(tid),
+                                       r2, r3, r1, t4);
                 maa_const<int>(k_base, r2);
                 maa_const<int>(k_max, r3);
 #else
@@ -1103,23 +1158,38 @@ static void conj_grad_maa(int colidx[],
             maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
             // [t1 t4 t5 t6 t7] available
 
-            // t6 = colidx[k]
-            maa_stream_load<int>(colidx, r2, r3, r1, t6);
+            const int gather_size = k_max - k_base < TILE_SIZE
+                                        ? k_max - k_base
+                                        : TILE_SIZE;
+            // Full bounded gathers consume colidx directly. Partial tails
+            // retain the staged path because the bounded engine is an
+            // exact logical16K/physical4K mechanism.
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+            if (gather_size != TILE_SIZE)
+#endif
+                maa_stream_load<int>(colidx, r2, r3, r1, t6);
             // [t1 t4 t5 t7] available
 
             // t4 = z[colidx[k]]
             // free t6
 #ifdef MAA_VIRTUAL_GATHER
-            const int gather_size = k_max - k_base < TILE_SIZE
-                                        ? k_max - k_base
-                                        : TILE_SIZE;
-            maa_indirect_load_virtual<float>(
-                z, t6, t4, virtual_gather_backing[tid]);
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+            if (gather_size == TILE_SIZE) {
+                maa_const<int>(k_base + gather_size, r3);
+                maa_indirect_load_virtual_index<float>(
+                    z, reinterpret_cast<uint32_t *>(colidx), t4,
+                    virtual_gather_backing_for_thread(tid), r2, r3, r1);
+            } else
+#endif
+            {
+                maa_indirect_load_virtual<float>(
+                    z, t6, t4, virtual_gather_backing_for_thread(tid));
+            }
             wait_ready(t4);
             maa_const<int>(0, r2);
             maa_const<int>(gather_size, r3);
-            maa_stream_load<float>(virtual_gather_backing[tid], r2, r3, r1,
-                                   t4);
+            maa_stream_load<float>(virtual_gather_backing_for_thread(tid),
+                                   r2, r3, r1, t4);
             maa_const<int>(k_base, r2);
             maa_const<int>(k_max, r3);
 #else
