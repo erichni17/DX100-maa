@@ -132,6 +132,14 @@ checkpoint_log() {
         printf '%s/checkpoints/%s.log\n' "$out" "$label"
     fi
 }
+checkpoint_selector() {
+    local label=$1
+    if [[ -n $checkpoint_seed ]]; then
+        printf '%s/%s.treatment.txt\n' "$checkpoint_seed" "$label"
+    else
+        printf '%s/%s.treatment.txt\n' "$out" "$label"
+    fi
+}
 create_checkpoint() {
     local label=$1
     local checkpoint="$out/checkpoints/$label"
@@ -173,8 +181,6 @@ if [[ -n $checkpoint_seed ]]; then
         seed_log=$(checkpoint_log "$checkpoint")
         [[ -d $seed_dir && -f $seed_log &&
            -f $checkpoint_seed/${checkpoint}.treatment.txt ]]
-        cp "$checkpoint_seed/${checkpoint}.treatment.txt" \
-            "$out/${checkpoint}.treatment.txt"
         checkpoint_identity "$seed_dir" \
             "$out/checkpoints/${checkpoint}.identity.sha256"
     done
@@ -208,9 +214,11 @@ run_arm() {
     local shared_checkpoint shared_log
     shared_checkpoint=$(checkpoint_dir "$checkpoint")
     shared_log=$(checkpoint_log "$checkpoint")
+    local shared_selector
+    shared_selector=$(checkpoint_selector "$checkpoint")
     env "${common[@]}" \
         DX100_SHARED_CHECKPOINT_DIR="$shared_checkpoint" \
-        DX100_SHARED_TREATMENT_FILE="$out/${checkpoint}.treatment.txt" \
+        DX100_SHARED_TREATMENT_FILE="$shared_selector" \
         DX100_SHARED_CHECKPOINT_LOG="$shared_log" \
         MAA_REQUIRE_PHYSICAL_RECORD_TRACE="$require_physical" \
         MAA_DESCRIPTOR_SPOOL_VARIANT=resident_first \
