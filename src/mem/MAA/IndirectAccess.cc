@@ -657,6 +657,7 @@ void IndirectAccessUnit::check_reset() {
         bounded_global_merge.configured() ||
             bounded_global_merge_phase != BoundedGlobalMergePhase::None ||
             bounded_global_merge_chain_head != -1 ||
+            bounded_global_merge_batch_inflight ||
             bounded_global_merge_source_pending ||
             bounded_global_merge_source_ready ||
             std::any_of(bounded_global_merge_read_slots.begin(),
@@ -1966,14 +1967,15 @@ void IndirectAccessUnit::serviceBoundedGlobalRunMaterialization()
              my_indirect_id, BoundedFourRunMerge::resultName(merge));
     bounded_global_merge_phase = BoundedGlobalMergePhase::Merge;
     bounded_global_merge_run = BoundedFourRunMerge::Runs;
+    bounded_global_merge_batch_inflight = false;
     direct_index_partition = 0;
     my_i = my_max;
-    my_fill_finished = true;
+    my_fill_finished = false;
     virtual_build_incomplete = false;
     my_force_cache_determined = true;
     my_force_cache = direct_index_force_cache;
-    state = Status::Request;
-    transitionAttributionStage(AttributionStage::Request,
+    state = Status::Build;
+    transitionAttributionStage(AttributionStage::Build,
                                "bounded_global_merge_begin");
     DPRINTF(MAAVirtualTrace,
             "event=bounded_global_merge_begin schema=1 unit=%d "
@@ -2058,23 +2060,45 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
         [this](const auto &descriptor) {
             return boundedGlobalMergeKey(descriptor);
         }, selected);
-    if (selected_result == BoundedFourRunMerge::Result::NoWork) {
-        panic_if(!bounded_global_merge.mergeDone(),
-                 "I[%d] merge lost all heads before closure\n",
-                 my_indirect_id);
-        if (bounded_global_merge_source_pending)
-            return;
+    auto dispatchBatch = [this](const char *reason) {
         if (bounded_global_merge_source_ready) {
             const auto end = bounded_global_merge.endSourceLine();
             panic_if(end != BoundedFourRunMerge::Result::Accepted,
-                     "I[%d] final A-line cluster failed closure: %s\n",
+                     "I[%d] staged A-line cluster failed closure: %s\n",
                      my_indirect_id,
                      BoundedFourRunMerge::resultName(end));
             bounded_global_merge_source_ready = false;
             bounded_global_merge_source_paddr = 0;
             bounded_global_merge_source_vaddr = 0;
-            bounded_global_merge_source_data.fill(0);
         }
+        panic_if(offset_table->occupancy() == 0,
+                 "I[%d] cannot dispatch an empty global-merge batch\n",
+                 my_indirect_id);
+        bounded_global_merge_batch_inflight = true;
+        my_fill_finished = false;
+        virtual_build_incomplete = false;
+        state = Status::Build;
+        transitionAttributionStage(AttributionStage::Build, reason);
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_batch_dispatch schema=1 unit=%d "
+                "operation_tick=%lu descriptors=%d reason=%s\n",
+                my_indirect_id, my_decode_start_tick,
+                offset_table->occupancy(), reason);
+        scheduleNextExecution(true);
+    };
+    if (selected_result == BoundedFourRunMerge::Result::NoWork) {
+        panic_if(!bounded_global_merge.mergeDone(),
+                 "I[%d] merge lost all heads before closure\n",
+                 my_indirect_id);
+        if (offset_table->occupancy() != 0) {
+            dispatchBatch("bounded_global_final_batch");
+            return;
+        }
+        panic_if(bounded_global_merge_batch_inflight ||
+                     virtual_reserved_responses != 0 ||
+                     !virtual_source_reservations.empty(),
+                 "I[%d] global merge reached final drain with an active "
+                 "source batch\n", my_indirect_id);
         virtual_final_flush = true;
         drainVirtualCombiner(true);
         if (!virtualCombinerEmpty() || virtual_outstanding_writes != 0 ||
@@ -2111,37 +2135,54 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
              "I[%d] four-run merge order regressed at itr=%u\n",
              my_indirect_id, descriptor.iteration);
     const Addr line_paddr = key[2];
-    if ((bounded_global_merge_source_pending ||
-         bounded_global_merge_source_ready) &&
+    if (offset_table->occupancy() >=
+        maa->num_offset_table_epoch_entries) {
+        dispatchBatch("bounded_global_offset_capacity");
+        return;
+    }
+    const Addr word_vaddr = my_base_addr +
+        static_cast<Addr>(descriptor.value) * my_word_size;
+    const Addr line_vaddr = addrBlockAligner(word_vaddr, block_size);
+    const uint32_t wid = (word_vaddr - line_vaddr) / my_word_size;
+    panic_if(wid >= static_cast<uint32_t>(my_words_per_cl),
+             "I[%d] merged descriptor word id %u is invalid\n",
+             my_indirect_id, wid);
+    const std::vector<int> address = maa->map_addr(line_paddr);
+    const int rt_idx = getRowTableIdx(
+        my_RT_config, address[ADDR_CHANNEL_LEVEL],
+        address[ADDR_RANK_LEVEL], address[ADDR_BANKGROUP_LEVEL],
+        address[ADDR_BANK_LEVEL]);
+    const Addr grow_addr = getGrowAddr(
+        my_RT_config, address[ADDR_BANKGROUP_LEVEL],
+        address[ADDR_BANK_LEVEL], address[ADDR_ROW_LEVEL]);
+    bool first_cl_access = false;
+    const bool inserted = RT[my_RT_config][rt_idx].insert(
+        grow_addr, line_paddr, descriptor.iteration,
+        static_cast<int>(wid), first_cl_access);
+    if (!inserted) {
+        dispatchBatch("bounded_global_row_capacity");
+        return;
+    }
+    if (bounded_global_merge_source_ready &&
         bounded_global_merge_source_paddr != line_paddr) {
-        panic_if(bounded_global_merge_source_pending ||
-                     !bounded_global_merge_source_ready,
-                 "I[%d] advanced beyond an incomplete A line\n",
-                 my_indirect_id);
         const auto end = bounded_global_merge.endSourceLine();
         panic_if(end != BoundedFourRunMerge::Result::Accepted,
-                 "I[%d] A-line cluster failed closure: %s\n",
+                 "I[%d] staged A-line cluster failed closure: %s\n",
                  my_indirect_id,
                  BoundedFourRunMerge::resultName(end));
         bounded_global_merge_source_ready = false;
         bounded_global_merge_source_paddr = 0;
         bounded_global_merge_source_vaddr = 0;
-        bounded_global_merge_source_data.fill(0);
     }
-    if (!bounded_global_merge_source_pending &&
-        !bounded_global_merge_source_ready) {
-        const Addr word_vaddr = my_base_addr +
-            static_cast<Addr>(descriptor.value) * my_word_size;
-        const Addr line_vaddr = addrBlockAligner(word_vaddr, block_size);
+    if (!bounded_global_merge_source_ready) {
         const auto begin = bounded_global_merge.beginSourceLine(line_paddr);
         panic_if(begin != BoundedFourRunMerge::Result::Accepted,
-                 "I[%d] A-line cluster 0x%lx cannot begin: %s\n",
+                 "I[%d] staged A-line cluster 0x%lx cannot begin: %s\n",
                  my_indirect_id, line_paddr,
                  BoundedFourRunMerge::resultName(begin));
-        bounded_global_merge_source_pending = true;
+        bounded_global_merge_source_ready = true;
         bounded_global_merge_source_paddr = line_paddr;
         bounded_global_merge_source_vaddr = line_vaddr;
-        virtual_source_expected++;
         if (!bounded_global_merge_last_row_valid ||
             bounded_global_merge_last_slice != key[0] ||
             bounded_global_merge_last_row != key[1]) {
@@ -2150,34 +2191,6 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
             bounded_global_merge_last_slice = key[0];
             bounded_global_merge_last_row = key[1];
         }
-        my_force_cache = direct_index_force_cache;
-        recordReorderSurvivalIssue(line_paddr);
-        createReadPacket(line_paddr, 0);
-        return;
-    }
-    if (bounded_global_merge_source_pending)
-        return;
-    panic_if(!bounded_global_merge_source_ready ||
-                 bounded_global_merge_source_paddr != line_paddr,
-             "I[%d] selected descriptor has no matching A response\n",
-             my_indirect_id);
-    const Addr word_vaddr = my_base_addr +
-        static_cast<Addr>(descriptor.value) * my_word_size;
-    const Addr line_vaddr = addrBlockAligner(word_vaddr, block_size);
-    const uint32_t wid = (word_vaddr - line_vaddr) / my_word_size;
-    panic_if(wid >= static_cast<uint32_t>(my_words_per_cl),
-             "I[%d] merged descriptor word id %u is invalid\n",
-             my_indirect_id, wid);
-    if (!reserveVirtualCombineBank(descriptor.iteration)) {
-        scheduleExecuteInstructionEvent(1);
-        return;
-    }
-    direct_index_partition = selected;
-    if (!insertVirtualCombineWord(
-            descriptor.iteration,
-            bounded_global_merge_source_data.data() + wid * my_word_size)) {
-        scheduleExecuteInstructionEvent(1);
-        return;
     }
     const auto retired = bounded_global_merge.recordRetirement(line_paddr);
     panic_if(retired != BoundedFourRunMerge::Result::Accepted,
@@ -2189,9 +2202,16 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
              "I[%d] merge run %u head consumption failed: %s\n",
              my_indirect_id, selected,
              BoundedFourRunMerge::resultName(consumed));
-    recordReorderSurvivalIssuedEntries(1);
     bounded_global_merge_last_key = key;
     bounded_global_merge_last_key_valid = true;
+    updateLatency(0, 0, 0, 0, 1, total_num_RT_subslices);
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_batch_stage schema=1 unit=%d "
+            "operation_tick=%lu run=%u itr=%u line=0x%lx grow=0x%lx "
+            "slice=%d wid=%u occupancy=%d\n",
+            my_indirect_id, my_decode_start_tick, selected,
+            descriptor.iteration, line_paddr, grow_addr, rt_idx, wid,
+            offset_table->occupancy());
     scheduleExecuteInstructionEvent(1);
 }
 BoundedRangePassTracker::Range
@@ -3639,6 +3659,7 @@ void IndirectAccessUnit::executeInstruction() {
         bounded_global_merge_row_groups = 0;
         bounded_global_merge_source_responses = 0;
         bounded_global_merge_terminal_acks = 0;
+        bounded_global_merge_batch_inflight = false;
         bounded_global_merge_last_key_valid = false;
         bounded_global_merge_last_key.fill(0);
         bounded_global_merge_last_row_valid = false;
@@ -3964,6 +3985,12 @@ void IndirectAccessUnit::executeInstruction() {
                 my_fill_start_tick = 0;
             }
             serviceBoundedGlobalRunMaterialization();
+            return;
+        }
+        if (maa->virtual_bounded_global_merge &&
+            bounded_global_merge_phase == BoundedGlobalMergePhase::Merge &&
+            !bounded_global_merge_batch_inflight) {
+            serviceBoundedGlobalMerge();
             return;
         }
         if (usesBoundedSourceResponses())
@@ -4306,7 +4333,8 @@ void IndirectAccessUnit::executeInstruction() {
             startVirtualRequestInterval();
         }
         if (maa->virtual_bounded_global_merge &&
-            bounded_global_merge_phase == BoundedGlobalMergePhase::Merge) {
+            bounded_global_merge_phase == BoundedGlobalMergePhase::Merge &&
+            !bounded_global_merge_batch_inflight) {
             if (scheduleNextExecution())
                 break;
             accountVirtualRequestInterval();
@@ -4360,9 +4388,14 @@ void IndirectAccessUnit::executeInstruction() {
             !virtual_build_incomplete && virtual_sources_drained &&
             !maa->virtual_partition_keep_combiner)
             drainVirtualCombiner(true);
+        const bool retain_global_merge_combiner =
+            maa->virtual_bounded_global_merge &&
+            bounded_global_merge_phase == BoundedGlobalMergePhase::Merge &&
+            bounded_global_merge_batch_inflight;
         const bool retain_partition_combiner =
-            isVirtualLoad() && direct_index_partition_barrier &&
-            maa->virtual_partition_keep_combiner;
+            (isVirtualLoad() && direct_index_partition_barrier &&
+             maa->virtual_partition_keep_combiner) ||
+            retain_global_merge_combiner;
         bool responses_complete;
         if (!usesBoundedSourceResponses()) {
             responses_complete =
@@ -4385,6 +4418,12 @@ void IndirectAccessUnit::executeInstruction() {
                 transitionAttributionStage(AttributionStage::Build,
                                            "request_rebuild");
                 virtual_build_incomplete = false;
+            } else if (retain_global_merge_combiner) {
+                bounded_global_merge_batch_inflight = false;
+                state = Status::Build;
+                transitionAttributionStage(
+                    AttributionStage::Build,
+                    "bounded_global_batch_complete");
             } else if (direct_index_partition_barrier) {
                 finishBoundedRangePass(direct_index_partition - 1,
                                        "barrier_drained");
@@ -4675,6 +4714,7 @@ void IndirectAccessUnit::executeInstruction() {
                     bounded_range_pass.retirements() !=
                         static_cast<uint32_t>(my_max) ||
                     bounded_global_merge.outstandingWriteCount() != 0 ||
+                    bounded_global_merge_batch_inflight ||
                     bounded_global_merge_source_pending ||
                     bounded_global_merge_source_ready ||
                     !read_slots_empty || !write_slots_empty,
@@ -4989,6 +5029,7 @@ void IndirectAccessUnit::executeInstruction() {
             bounded_global_merge_row_groups = 0;
             bounded_global_merge_source_responses = 0;
             bounded_global_merge_terminal_acks = 0;
+            bounded_global_merge_batch_inflight = false;
             bounded_global_merge_last_key_valid = false;
             bounded_global_merge_last_key.fill(0);
             bounded_global_merge_last_row_valid = false;
@@ -5552,6 +5593,15 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         slot->claim_grow_addr = virtual_claim_grow_addr;
         slot->claim_addr = addr;
         slot->claim_head = virtual_head;
+        if (maa->virtual_bounded_global_merge &&
+            bounded_global_merge_phase == BoundedGlobalMergePhase::Merge) {
+            const uint32_t pass = bounded_range_pass.passForGrow(grow_addr);
+            panic_if(pass >= bounded_range_pass.passes(),
+                     "I[%d] merged response grow 0x%lx has no pass\n",
+                     my_indirect_id, grow_addr);
+            slot->bounded_merge_pass = pass;
+            bounded_global_merge_source_responses++;
+        }
         if (virtual_response_word_pool_limit != 0) {
             panic_if(virtual_reserved_words <= 0,
                      "I[%d] response 0x%lx has no packed-word reservation\n",
@@ -6209,6 +6259,9 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 const auto &word = slot.packed_words[slot.next_packed_word];
                 virtual_word_attempts_this_cycle++;
                 if (virtual_load) {
+                    if (slot.bounded_merge_pass >= 0)
+                        direct_index_partition =
+                            slot.bounded_merge_pass;
                     if (!reserveVirtualCombineBank(entry.itr)) {
                         virtual_word_attempts_this_cycle--;
                         bank_stalled = true;
@@ -6270,6 +6323,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             const uint8_t *word =
                 slot.data.data() + entry.wid * my_word_size;
             if (virtual_load) {
+                if (slot.bounded_merge_pass >= 0)
+                    direct_index_partition = slot.bounded_merge_pass;
                 if (!reserveVirtualCombineBank(entry.itr)) {
                     virtual_word_attempts_this_cycle--;
                     bank_stalled = true;

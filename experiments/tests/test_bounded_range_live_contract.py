@@ -157,6 +157,41 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             r"descriptor_spool\.configured\(\)",
         )
 
+    def test_global_merge_refills_bounded_source_batches(self) -> None:
+        self.assertIn("bounded_global_merge_batch_inflight", self.indirect)
+        self.assertIn(
+            '"event=bounded_global_batch_dispatch schema=1 unit=%d "',
+            self.indirect,
+        )
+        self.assertRegex(
+            self.indirect,
+            r"RT\[my_RT_config\]\[rt_idx\]\.insert\(\s*"
+            r"grow_addr, line_paddr, descriptor\.iteration,",
+        )
+        self.assertRegex(
+            self.indirect,
+            r"else if \(retain_global_merge_combiner\) \{\s*"
+            r"bounded_global_merge_batch_inflight = false;\s*"
+            r"state = Status::Build;",
+        )
+        self.assertIn("slot->bounded_merge_pass = pass", self.indirect)
+        self.assertIn(
+            "direct_index_partition = slot.bounded_merge_pass",
+            self.indirect,
+        )
+
+    def test_global_merge_batch_is_closed_at_lifecycle_boundaries(
+        self,
+    ) -> None:
+        self.assertGreaterEqual(
+            self.indirect.count("bounded_global_merge_batch_inflight = false"),
+            4,
+        )
+        self.assertGreaterEqual(
+            self.indirect.count("bounded_global_merge_batch_inflight ||"),
+            3,
+        )
+
     def test_policy3_uses_translated_grow_plan_and_bounded_quotas(
         self,
     ) -> None:

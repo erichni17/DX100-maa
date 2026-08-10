@@ -97,6 +97,7 @@ protected:
         Addr claim_grow_addr = 0;
         Addr claim_addr = 0;
         int claim_head = -1;
+        int bounded_merge_pass = -1;
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
     int virtual_response_words = 0;
@@ -349,6 +350,7 @@ protected:
     uint32_t bounded_global_merge_row_groups = 0;
     uint32_t bounded_global_merge_source_responses = 0;
     uint32_t bounded_global_merge_terminal_acks = 0;
+    bool bounded_global_merge_batch_inflight = false;
     bool bounded_global_merge_last_key_valid = false;
     std::array<uint64_t, 4> bounded_global_merge_last_key{};
     bool bounded_global_merge_last_row_valid = false;
