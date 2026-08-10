@@ -1,0 +1,6 @@
+design	replica	status	output_hash	simTicks	latency_vs_control	payload_bytes	control_bytes	credit_hwm	credit_stalls	retries
+transparent_4k	1	pass	7228541527853630339	46020703	0.000000	0	0	0	0	0
+transparent_4k	2	pass	7228541527853630339	46020703	0.000000	0	0	0	0	0
+direct_retirement_16_credit	1	pass	7228541527853630339	43334224	-5.837544	1024	2856	16	3592	511
+direct_retirement_16_credit	2	pass	7228541527853630339	43334224	-5.837544	1024	2856	16	3592	511
+direct_retirement_4_credit	1	diagnostic_only	7228541527853630339	55804457	21.259462	256	2760	4	3994	136

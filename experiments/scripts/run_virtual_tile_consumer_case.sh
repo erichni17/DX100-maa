@@ -798,7 +798,10 @@ else
         cd "$shared_checkpoint"
         find . -type f -print0 | sort -z | xargs -0 sha256sum
     ) > "$out/shared_checkpoint_files.sha256"
-    sha256sum "$out/shared_checkpoint_files.sha256" \
+    shared_checkpoint_digest=$(sha256sum \
+        "$out/shared_checkpoint_files.sha256" | awk '{print $1}')
+    printf '%s  shared_checkpoint_files.sha256\n' \
+        "$shared_checkpoint_digest" \
         > "$out/shared_checkpoint_identity.sha256"
     printf '%s\n' "$shared_checkpoint" > "$out/checkpoint.path"
     printf '0\n' > "$out/checkpoint.exit"
@@ -2094,7 +2097,9 @@ if [[ -z $shared_checkpoint ]]; then
         cd "$checkpoint_dir"
         find . -type f -print0 | sort -z | xargs -0 sha256sum
     ) > "$out/checkpoint_files.sha256"
-    sha256sum "$out/checkpoint_files.sha256" \
+    checkpoint_digest=$(sha256sum "$out/checkpoint_files.sha256" |
+        awk '{print $1}')
+    printf '%s  checkpoint_files.sha256\n' "$checkpoint_digest" \
         > "$out/checkpoint_identity.sha256"
 else
     cp -- "$out/shared_checkpoint_identity.sha256" \
