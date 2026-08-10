@@ -173,6 +173,40 @@ testLateBoundProducerWriteRespIdentity()
 }
 
 void
+testRetrySurvivesSchedulingPreferenceChange()
+{
+    HybridConsumerPipeline pipeline;
+    const auto descriptor = validDescriptor();
+    CHECK(pipeline.submit(descriptor) ==
+          HybridConsumerPipeline::SubmitResult::Accepted);
+    CHECK(pipeline.notifyProducerWriteAck(ackFor(descriptor, 0)));
+
+    const auto data = payload(3);
+    const auto read0 = pipeline.pendingRead();
+    CHECK(pipeline.accept(read0));
+    CHECK(pipeline.completeRead(read0, data.data(), data.size()));
+    const auto compute0 = pipeline.pendingCompute();
+    CHECK(pipeline.accept(compute0));
+    CHECK(pipeline.completeCompute(compute0));
+    const auto write0 = pipeline.pendingWrite();
+    CHECK(pipeline.accept(write0));
+
+    const auto read1 = pipeline.pendingRead();
+    CHECK(read1.buffer == 1 && pipeline.accept(read1));
+    const auto read2 = pipeline.pendingRead();
+    CHECK(read2.buffer == 2 && pipeline.accept(read2));
+
+    // This models a packet held for a cache-port retry. A different response
+    // then frees buffer zero and changes pendingRead()'s preferred buffer.
+    const auto retry = pipeline.pendingRead();
+    CHECK(retry.buffer == 3);
+    CHECK(pipeline.completeWriteAck(write0));
+    CHECK(pipeline.pendingRead().buffer == 0);
+    CHECK(pipeline.accept(retry));
+    CHECK(pipeline.assertInvariants());
+}
+
+void
 testNoSyntheticVisibilityOrAcknowledgement()
 {
     HybridConsumerPipeline pipeline;
@@ -322,6 +356,7 @@ main()
 {
     testFiniteFourCreditOverlap();
     testLateBoundProducerWriteRespIdentity();
+    testRetrySurvivesSchedulingPreferenceChange();
     testNoSyntheticVisibilityOrAcknowledgement();
     testCompleteBothWordGeometries();
     testValidationAndExactIdentity();

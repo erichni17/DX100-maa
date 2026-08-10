@@ -269,21 +269,37 @@ class HybridConsumerPipeline
 
     bool accept(const Request &request)
     {
-        Request expected;
+        if (state != State::Active || request.buffer >= LineBufferCount ||
+            request.line >= lineCount())
+            return false;
+        const Buffer &candidate = buffers[request.buffer];
+        bool eligible = false;
         switch (request.kind) {
           case Kind::ReadBacking:
-            expected = pendingRead();
+            eligible = candidate.state == BufferState::Free &&
+                linePhases[request.line] == LineState::Blocked &&
+                producerAcked[producerPage(request.line)];
             break;
           case Kind::Compute:
-            expected = pendingCompute();
+            eligible = !aluInFlight &&
+                candidate.state == BufferState::ReadyForCompute &&
+                candidate.line == request.line &&
+                linePhases[request.line] == LineState::ReadyForCompute;
             break;
           case Kind::WriteDestination:
-            expected = pendingWrite();
+            eligible = candidate.state == BufferState::ReadyForWrite &&
+                candidate.line == request.line &&
+                linePhases[request.line] == LineState::ReadyForWrite;
             break;
           default:
             return false;
         }
-        if (!sameRequest(request, expected))
+        // A timing retry can remain pending while an unrelated response frees
+        // a lower-numbered buffer. Validate the request's exact ownership,
+        // not the scheduler preference that may have changed meanwhile.
+        if (!eligible || !sameRequest(
+                             request, makeRequest(request.kind, request.line,
+                                                  request.buffer)))
             return false;
         Buffer &buffer = buffers[request.buffer];
         buffer.line = request.line;
