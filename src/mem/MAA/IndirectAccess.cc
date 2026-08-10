@@ -2202,6 +2202,14 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
         if (bounded_global_merge_source_ready &&
             !issueBoundedGlobalSourceLine())
             return;
+        if (state != Status::Request) {
+            state = Status::Request;
+            transitionAttributionStage(
+                AttributionStage::Request,
+                "bounded_global_stream_merge_complete");
+            scheduleNextExecution(true);
+            return;
+        }
         virtual_final_flush = true;
         if (drainVirtualResponses()) {
             scheduleExecuteInstructionEvent(1);

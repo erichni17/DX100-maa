@@ -184,6 +184,7 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             r"bounded_global_merge_source_paddr != line_paddr &&\s*"
             r"!issueBoundedGlobalSourceLine\(\)\)",
         )
+        self.assertIn('"bounded_global_stream_merge_complete"', self.indirect)
         self.assertNotRegex(
             self.indirect,
             r"RT\[my_RT_config\]\[rt_idx\]\.insert\(\s*"
