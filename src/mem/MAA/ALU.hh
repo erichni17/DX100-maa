@@ -2,6 +2,7 @@
 #define __MEM_MAA_ALU_HH__
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -19,15 +20,17 @@ public:
         Decode = 1,
         Work = 2,
         Finish = 3,
+        DirectLine = 4,
         max
     };
 
 protected:
-    std::string status_names[5] = {
+    std::string status_names[6] = {
         "Idle",
         "Decode",
         "Work",
         "Finish",
+        "DirectLine",
         "max"};
     Status state;
     MAA *maa;
@@ -40,6 +43,15 @@ public:
     Status getState() const { return state; }
 
     void setInstruction(Instruction *_instruction);
+
+    /**
+     * Claim this existing ALU lane for one cache-line resident transform.
+     * The caller retains the 64-byte buffer and receives completion only
+     * after the same lane latency used by ordinary ALU work has elapsed.
+     */
+    bool startDirectLine(std::byte *data, uint8_t word_bytes,
+                         uint8_t datatype, uint8_t operation,
+                         uint64_t scalar_bits, uint64_t transaction);
 
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);
@@ -68,6 +80,13 @@ protected:
     uint64_t my_red_u64;
     float my_red_f32;
     double my_red_f64;
+
+    std::byte *direct_line_data = nullptr;
+    uint8_t direct_line_word_bytes = 0;
+    uint8_t direct_line_datatype = 0;
+    uint8_t direct_line_operation = 0;
+    uint64_t direct_line_scalar_bits = 0;
+    uint64_t direct_line_transaction = 0;
 
     void executeInstruction();
     void updateLatency(int num_spd_read_data_accesses,

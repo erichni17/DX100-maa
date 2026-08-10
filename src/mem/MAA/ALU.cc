@@ -1,11 +1,14 @@
 #include "mem/MAA/ALU.hh"
-#include "mem/MAA/MAA.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/SPD.hh"
+
+#include <cassert>
+#include <cstddef>
+
 #include "base/trace.hh"
 #include "debug/MAAALU.hh"
 #include "debug/MAATrace.hh"
-#include <cassert>
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/SPD.hh"
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -71,6 +74,40 @@ bool ALUUnit::scheduleNextExecution(bool force) {
     }
     return false;
 }
+
+bool
+ALUUnit::startDirectLine(std::byte *data, uint8_t word_bytes,
+                         uint8_t datatype, uint8_t operation,
+                         uint64_t scalar_bits,
+                         uint64_t transaction)
+{
+    if (state != Status::Idle || my_instruction != nullptr ||
+        data == nullptr ||
+        word_bytes != sizeof(double) ||
+        datatype != static_cast<uint8_t>(
+                        Instruction::DataType::FLOAT64_TYPE) ||
+        operation != static_cast<uint8_t>(Instruction::OPType::MUL_OP) ||
+        transaction == 0)
+        return false;
+
+    direct_line_data = data;
+    direct_line_word_bytes = word_bytes;
+    direct_line_datatype = datatype;
+    direct_line_operation = operation;
+    direct_line_scalar_bits = scalar_bits;
+    direct_line_transaction = transaction;
+    state = Status::DirectLine;
+
+    const int elements = 64 / direct_line_word_bytes;
+    const Cycles latency(
+        getCeiling(elements, num_ALU_lanes) * ALU_lane_latency);
+    // This is one controller-internal cache-line operation belonging to the
+    // already-counted virtual instruction, not a new architectural ALU op.
+    (*maa->stats.ALU_CyclesCompute[my_alu_id]) += latency;
+    scheduleExecuteInstructionEvent(latency);
+    return true;
+}
+
 void ALUUnit::executeInstruction() {
     switch (state) {
     case Status::Idle: {
@@ -910,6 +947,39 @@ void ALUUnit::executeInstruction() {
             assert(false);
         }
         my_instruction = nullptr;
+        break;
+    }
+    case Status::DirectLine: {
+        panic_if(direct_line_data == nullptr ||
+                     direct_line_word_bytes != sizeof(double) ||
+                     direct_line_datatype != static_cast<uint8_t>(
+                         Instruction::DataType::FLOAT64_TYPE) ||
+                     direct_line_operation != static_cast<uint8_t>(
+                         Instruction::OPType::MUL_OP) ||
+                     direct_line_transaction == 0,
+                 "A[%d] direct line lost its exact ALU contract\n",
+                 my_alu_id);
+        double scalar = 0.0;
+        std::memcpy(&scalar, &direct_line_scalar_bits, sizeof(scalar));
+        for (int element = 0; element < 64 / sizeof(double); ++element) {
+            double value = 0.0;
+            std::memcpy(&value,
+                        direct_line_data + element * sizeof(double),
+                        sizeof(value));
+            value *= scalar;
+            std::memcpy(direct_line_data + element * sizeof(double), &value,
+                        sizeof(value));
+        }
+        const int maa_id = my_alu_id;
+        const uint64_t transaction = direct_line_transaction;
+        direct_line_data = nullptr;
+        direct_line_word_bytes = 0;
+        direct_line_datatype = 0;
+        direct_line_operation = 0;
+        direct_line_scalar_bits = 0;
+        direct_line_transaction = 0;
+        state = Status::Idle;
+        maa->completeDirectRetirementALU(maa_id, transaction);
         break;
     }
     default:

@@ -26,7 +26,13 @@ class TransparentControllerContractTest(unittest.TestCase):
         completion = source[begin:end]
         self.assertLess(
             completion.index("virtual_page_completed_words[page] += words"),
-            completion.index("markVirtualPageReadyIfComplete(page)"),
+            completion.index(
+                "markVirtualPageReadyIfComplete(page, write_key)"
+            ),
+        )
+        self.assertIn(
+            "setVirtualPageReady(my_dst_tile, page, final_write_key)",
+            source,
         )
 
     def test_application_submits_one_transparent_consumer(self):

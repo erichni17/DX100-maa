@@ -31,9 +31,12 @@ namespace gem5 {
 bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
     /// print the packet
     DPRINTF(MAACachePort, "%s: received %s\n", __func__, pkt->print());
+    const bool direct_response = maa->recvDirectRetirementTimingResp(
+        pkt, static_cast<uint8_t>(core_id));
     const bool logical_response =
-        maa->recvLogicalSPDTimingResp(pkt, static_cast<uint8_t>(core_id));
-    if (!logical_response)
+        !direct_response && maa->recvLogicalSPDTimingResp(
+                                pkt, static_cast<uint8_t>(core_id));
+    if (!direct_response && !logical_response)
         maa->recvTimingResp(pkt, true);
     outstandingCacheSidePackets--;
     if (blockReason == BlockReason::MAX_XBAR_PACKETS) {
@@ -41,6 +44,8 @@ bool MAA::CacheSidePort::recvTimingResp(PacketPtr pkt) {
     }
     if (logical_response)
         maa->notifyLogicalSPDResponse();
+    if (direct_response)
+        maa->notifyDirectRetirementPortEvent(static_cast<uint8_t>(core_id));
     pkt->deleteData();
     delete pkt;
     return true;
@@ -91,6 +96,7 @@ void MAA::CacheSidePort::recvReqRetry() {
     /// print the packet
     DPRINTF(MAACachePort, "%s: called!\n", __func__);
     setUnblocked(BlockReason::CACHE_FAILED);
+    maa->notifyDirectRetirementPortEvent(static_cast<uint8_t>(core_id));
 }
 
 bool MAA::CacheSidePort::sendPacket(

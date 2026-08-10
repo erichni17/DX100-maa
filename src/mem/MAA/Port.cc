@@ -62,17 +62,22 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
     const bool retirement_owns_address =
         outstanding_it != my_outstanding_pkt_map.end() &&
         outstanding_it->second.virtualRetirement;
+    const bool direct_retirement_owns_address =
+        directRetirementOutstandingAddresses.find(paddr) !=
+        directRetirementOutstandingAddresses.end();
     if (!bypass_deferred_queue &&
-        (has_deferred_packets || retirement_owns_address)) {
+        (has_deferred_packets || retirement_owns_address ||
+         direct_retirement_owns_address)) {
         DPRINTF(MAAPort,
-                "%s: deferring packet %s behind exact-address "
-                "retirement serialization at 0x%lx\n",
+                "%s: deferring packet %s behind exact-address retirement "
+                "serialization at 0x%lx\n",
                 __func__, pkt->print(), paddr);
         my_deferred_pkt_map[paddr].push_back(
             {funcUnit, maaID, pkt, tick, force_cache,
              force_retirement_cache});
-        stats.virtual_retirement_native_deferrals += 1;
-        if (!retirement_owns_address)
+        if (retirement_owns_address)
+            stats.virtual_retirement_native_deferrals += 1;
+        else if (!direct_retirement_owns_address)
             stats.virtual_retirement_queue_deferrals += 1;
         return;
     }
@@ -249,7 +254,9 @@ void MAA::sendNextDeferredPacket(Addr paddr) {
     if (deferred_it == my_deferred_pkt_map.end() ||
         deferred_it->second.empty() ||
         my_outstanding_pkt_map.find(paddr) !=
-            my_outstanding_pkt_map.end()) {
+            my_outstanding_pkt_map.end() ||
+        directRetirementOutstandingAddresses.find(paddr) !=
+            directRetirementOutstandingAddresses.end()) {
         return;
     }
 

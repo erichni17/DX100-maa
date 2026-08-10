@@ -234,9 +234,13 @@ def addNoISAOptions(parser):
     parser.add_argument(
         "--maa_transparent_spd_mode",
         type=int,
-        choices=(0, 1, 2),
+        choices=(0, 1, 2, 3),
         default=0,
-        help="Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=2K ping-pong",
+        help=(
+            "Transparent SPD arm: 0=serial-4K, 1=serial-2K, "
+            "2=2K ping-pong, 3=narrow terminal FP64 "
+            "gather/multiply/dense-store direct retirement"
+        ),
     )
     parser.add_argument(
         "--maa_logical_spd_cache_mode",

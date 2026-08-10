@@ -118,6 +118,10 @@ testFiniteFourCreditOverlap()
         CHECK(pipeline.accept(reads[index]));
     }
     CHECK(pipeline.pendingRead().kind == HybridConsumerPipeline::Kind::None);
+    CHECK(pipeline.creditsInUse() ==
+          HybridConsumerPipeline::LineBufferCount);
+    CHECK(pipeline.creditHighWater() ==
+          HybridConsumerPipeline::LineBufferCount);
 
     for (const auto &read : reads)
         CHECK(pipeline.completeRead(read, lineData.data(), lineData.size()));
@@ -142,6 +146,30 @@ testFiniteFourCreditOverlap()
     CHECK(read4.line == 4 && read4.buffer == write0.buffer);
     CHECK(pipeline.accept(read4));
     CHECK(pipeline.assertInvariants());
+}
+
+void
+testLateBoundProducerWriteRespIdentity()
+{
+    HybridConsumerPipeline pipeline;
+    auto descriptor = validDescriptor();
+    descriptor.producerTransactions.fill(0);
+    CHECK(HybridConsumerPipeline::validate(descriptor) == nullptr);
+    CHECK(pipeline.submit(descriptor) ==
+          HybridConsumerPipeline::SubmitResult::Accepted);
+
+    const HybridConsumerPipeline::ProducerAck first{
+        descriptor.generation, 0, 0x8a5};
+    CHECK(!pipeline.notifyProducerWriteAck(
+        {descriptor.generation, 0, 0}));
+    CHECK(pipeline.notifyProducerWriteAck(first));
+    CHECK(!pipeline.notifyProducerWriteAck(
+        {descriptor.generation, 0, first.transactionID + 1}));
+    CHECK(pipeline.producerPageAcked(0));
+    CHECK(!pipeline.producerPageAcked(1));
+    const auto read = pipeline.pendingRead();
+    CHECK(read.kind == HybridConsumerPipeline::Kind::ReadBacking);
+    CHECK(read.line == 0);
 }
 
 void
@@ -212,6 +240,11 @@ testCompleteBothWordGeometries()
 void
 testValidationAndExactIdentity()
 {
+    CHECK(HybridConsumerPipeline::chargedPayloadBytes() == 256);
+    CHECK(HybridConsumerPipeline::chargedControlBytes() > 0);
+    CHECK(HybridConsumerPipeline::chargedTotalBytes() ==
+          HybridConsumerPipeline::chargedPayloadBytes() +
+              HybridConsumerPipeline::chargedControlBytes());
     auto descriptor = validDescriptor();
     CHECK(HybridConsumerPipeline::validate(descriptor) == nullptr);
 
@@ -220,6 +253,11 @@ testValidationAndExactIdentity()
     CHECK(HybridConsumerPipeline::validate(invalid) != nullptr);
     invalid = descriptor;
     invalid.destinationAddress = invalid.backingAddress;
+    CHECK(HybridConsumerPipeline::validate(invalid) != nullptr);
+    invalid = descriptor;
+    invalid.backingAddress += 8;
+    // The live selector uses this rejection to retain the existing
+    // StreamAccess/RMW fallback for a partial or unaligned request.
     CHECK(HybridConsumerPipeline::validate(invalid) != nullptr);
     invalid = descriptor;
     invalid.generation = std::numeric_limits<uint64_t>::max();
@@ -283,6 +321,7 @@ int
 main()
 {
     testFiniteFourCreditOverlap();
+    testLateBoundProducerWriteRespIdentity();
     testNoSyntheticVisibilityOrAcknowledgement();
     testCompleteBothWordGeometries();
     testValidationAndExactIdentity();

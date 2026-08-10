@@ -36,6 +36,13 @@ class HybridConsumerPipeline
     static constexpr uint8_t NoBuffer =
         std::numeric_limits<uint8_t>::max();
 
+    // Charge every persistent byte represented by this scheduler, not only
+    // the four cache-line data credits. The C++ footprint is conservative
+    // relative to packed RTL, but makes hidden metadata impossible here.
+    static constexpr std::size_t chargedPayloadBytes();
+    static constexpr std::size_t chargedControlBytes();
+    static constexpr std::size_t chargedTotalBytes();
+
     enum class State : uint8_t
     {
         Idle,
@@ -165,8 +172,11 @@ class HybridConsumerPipeline
         for (uint8_t page = 0; page < ProducerPages; ++page) {
             const uint64_t transaction =
                 descriptor.producerTransactions[page];
+            // A consumer can be admitted while its producer is still
+            // retiring. A zero is latched only by the exact final WriteResp
+            // notification before that page becomes readable.
             if (transaction == 0)
-                return "every producer page requires a real transaction";
+                continue;
             for (uint8_t prior = 0; prior < page; ++prior) {
                 if (descriptor.producerTransactions[prior] == transaction)
                     return "producer transactions must be distinct";
@@ -190,6 +200,7 @@ class HybridConsumerPipeline
         nextReadSearch = 0;
         completedLines = 0;
         acceptedReads = acceptedComputes = acceptedWrites = 0;
+        creditHighWaterValue = 0;
         aluInFlight = false;
         state = State::WaitingForProducer;
         return SubmitResult::Accepted;
@@ -199,8 +210,12 @@ class HybridConsumerPipeline
     {
         if ((state != State::WaitingForProducer && state != State::Active) ||
             ack.generation != desc.generation || ack.page >= ProducerPages ||
-            ack.transactionID != desc.producerTransactions[ack.page] ||
-            producerAcked[ack.page])
+            ack.transactionID == 0 || producerAcked[ack.page])
+            return false;
+        uint64_t &expected = desc.producerTransactions[ack.page];
+        if (expected == 0)
+            expected = ack.transactionID;
+        if (ack.transactionID != expected)
             return false;
         producerAcked[ack.page] = true;
         const uint16_t first = ack.page * linesPerProducerPage();
@@ -278,17 +293,20 @@ class HybridConsumerPipeline
             linePhases[request.line] = LineState::ReadInFlight;
             nextReadSearch = (request.line + 1) % lineCount();
             ++acceptedReads;
+            updateCreditHighWater();
             break;
           case Kind::Compute:
             buffer.state = BufferState::Computing;
             linePhases[request.line] = LineState::ComputeInFlight;
             aluInFlight = true;
             ++acceptedComputes;
+            updateCreditHighWater();
             break;
           case Kind::WriteDestination:
             buffer.state = BufferState::Writing;
             linePhases[request.line] = LineState::WriteInFlight;
             ++acceptedWrites;
+            updateCreditHighWater();
             break;
           default:
             return false;
@@ -303,7 +321,10 @@ class HybridConsumerPipeline
                        LineState::ReadInFlight) || payload == nullptr ||
             payloadBytes != LineBytes)
             return false;
-        std::memcpy(lineBuffers[request.buffer].data(), payload, LineBytes);
+        if (payload != lineBuffers[request.buffer].data()) {
+            std::memcpy(lineBuffers[request.buffer].data(), payload,
+                        LineBytes);
+        }
         buffers[request.buffer].state = BufferState::ReadyForCompute;
         linePhases[request.line] = LineState::ReadyForCompute;
         return assertInvariants();
@@ -357,6 +378,7 @@ class HybridConsumerPipeline
         nextReadSearch = 0;
         completedLines = 0;
         acceptedReads = acceptedComputes = acceptedWrites = 0;
+        creditHighWaterValue = 0;
         aluInFlight = false;
         return true;
     }
@@ -407,6 +429,14 @@ class HybridConsumerPipeline
     uint16_t readsAccepted() const { return acceptedReads; }
     uint16_t computesAccepted() const { return acceptedComputes; }
     uint16_t writesAccepted() const { return acceptedWrites; }
+    uint8_t creditsInUse() const
+    {
+        uint8_t credits = 0;
+        for (const Buffer &buffer : buffers)
+            credits += buffer.state != BufferState::Free;
+        return credits;
+    }
+    uint8_t creditHighWater() const { return creditHighWaterValue; }
     bool producerPageAcked(uint8_t page) const
     {
         return page < ProducerPages && producerAcked[page];
@@ -602,8 +632,34 @@ class HybridConsumerPipeline
     uint16_t acceptedReads = 0;
     uint16_t acceptedComputes = 0;
     uint16_t acceptedWrites = 0;
+    uint8_t creditHighWaterValue = 0;
     bool aluInFlight = false;
+
+    void updateCreditHighWater()
+    {
+        const uint8_t credits = creditsInUse();
+        if (credits > creditHighWaterValue)
+            creditHighWaterValue = credits;
+    }
 };
+
+inline constexpr std::size_t
+HybridConsumerPipeline::chargedPayloadBytes()
+{
+    return sizeof(lineBuffers);
+}
+
+inline constexpr std::size_t
+HybridConsumerPipeline::chargedControlBytes()
+{
+    return sizeof(HybridConsumerPipeline) - chargedPayloadBytes();
+}
+
+inline constexpr std::size_t
+HybridConsumerPipeline::chargedTotalBytes()
+{
+    return sizeof(HybridConsumerPipeline);
+}
 
 static_assert(HybridConsumerPipeline::LogicalElements == 16384);
 static_assert(HybridConsumerPipeline::ProducerPages == 4);
@@ -611,6 +667,11 @@ static_assert(HybridConsumerPipeline::LineBytes == 64);
 static_assert(HybridConsumerPipeline::LineBufferCount == 4);
 static_assert(HybridConsumerPipeline::LineBufferPayloadBytes == 256);
 static_assert(HybridConsumerPipeline::MaxLines == 2048);
+static_assert(HybridConsumerPipeline::chargedPayloadBytes() == 256);
+static_assert(HybridConsumerPipeline::chargedControlBytes() > 0);
+static_assert(HybridConsumerPipeline::chargedTotalBytes() ==
+              HybridConsumerPipeline::chargedPayloadBytes() +
+                  HybridConsumerPipeline::chargedControlBytes());
 
 } // namespace gem5
 

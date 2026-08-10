@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include "base/addr_range.hh"
 #include "base/logging.hh"
@@ -176,6 +177,7 @@ MAA::MAA(const MAAParams &p)
       system(p.system),
       mmu(p.mmu),
       logicalSpdEvent([this] { serviceLogicalSPD(); }, name()),
+      directRetirementEvent([this] { serviceDirectRetirement(); }, name()),
       issueInstructionEvent([this] { issueInstruction(); }, name()),
       dispatchInstructionEvent([this] { dispatchInstruction(); }, name()),
       dispatchRegisterEvent([this] { dispatchRegister(); }, name()),
@@ -189,8 +191,8 @@ MAA::MAA(const MAAParams &p)
     panic_if(physical_tile_elements > num_tile_elements,
              "Physical tile capacity %u exceeds logical capacity %u\n",
              physical_tile_elements, num_tile_elements);
-    panic_if(transparent_spd_mode > 2,
-             "Invalid transparent SPD mode %u (expected 0..2)\n",
+    panic_if(transparent_spd_mode > 3,
+             "Invalid transparent SPD mode %u (expected 0..3)\n",
              transparent_spd_mode);
     panic_if(logical_spd_cache_mode > 1,
              "Invalid logical SPD cache mode %u (expected 0 or 1)\n",
@@ -285,6 +287,9 @@ MAA::MAA(const MAAParams &p)
     virtualPageReady.resize(num_tiles);
     for (auto &pages : virtualPageReady)
         pages.fill(false);
+    virtualPageReadyTransaction.resize(num_tiles);
+    for (auto &transactions : virtualPageReadyTransaction)
+        transactions.fill(0);
     virtualPageGeneration.assign(num_tiles, 0);
     virtualPageConsumedGeneration.assign(num_tiles, 0);
     virtualPageBackingAddr.assign(num_tiles, 0);
@@ -617,6 +622,8 @@ int MAA::core_addr(Addr addr) {
     return slice_lower_bits(addr, m_core_addr_bits);
 }
 bool MAA::allFuncUnitsIdle() {
+    if (directRetirementExecution.active)
+        return false;
     if (invalidator->getState() != Invalidator::Status::Idle) {
         return false;
     }
@@ -802,7 +809,8 @@ bool MAA::transparentControllerUsesRegister(int maaID, int firstRegister,
     return transparentController.usesRegister(maaID, firstRegister,
                                               registerWords);
 }
-bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
+bool MAA::submitTransparentDescriptor(InstructionPtr instruction,
+                                      bool directFallback) {
     panic_if(instruction->opcode !=
                  Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR,
              "Cannot submit non-transparent descriptor %s\n",
@@ -939,8 +947,12 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     descriptor.destinationMinAddr = instruction->backingMinAddr;
     descriptor.destinationMaxAddr = instruction->backingMaxAddr;
     descriptor.destinationRangeID = instruction->backingAddrRangeID;
-    descriptor.mode = static_cast<TransparentSPDController::Mode>(
-        transparent_spd_mode);
+    // Selector 3 reserves the direct path for the exact full-line contract.
+    // An ineligible instruction must retain the existing serial-4K
+    // StreamAccess/RMW behavior rather than becoming a new unsupported ABI.
+    descriptor.mode = directFallback
+        ? TransparentSPDController::Mode::Serial4K
+        : static_cast<TransparentSPDController::Mode>(transparent_spd_mode);
 
     const char *validation =
         TransparentSPDController::validate(descriptor);
@@ -1003,6 +1015,520 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
     tryIssueTransparentMicroOp();
     return true;
 }
+
+bool
+MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
+{
+    panic_if(instruction->opcode !=
+                 Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR,
+             "Cannot submit invalid direct-retirement descriptor\n");
+    if (directRetirementExecution.active || transparentController.active())
+        return false;
+    const int word_size = instruction->WordSize();
+    const int tile_words = word_size / sizeof(uint32_t);
+    const auto valid_tile_span = [&](int first) {
+        return first >= 0 &&
+            first + tile_words <= static_cast<int>(num_tiles);
+    };
+    const bool direct_eligible =
+        num_tile_elements == HybridConsumerPipeline::LogicalElements &&
+        physical_tile_elements ==
+            HybridConsumerPipeline::ProducerPageElements &&
+        instruction->datatype == Instruction::DataType::FLOAT64_TYPE &&
+        instruction->optype == Instruction::OPType::MUL_OP &&
+        word_size == static_cast<int>(sizeof(double)) &&
+        valid_tile_span(instruction->src1SpdID) &&
+        valid_tile_span(instruction->dst2SpdID) &&
+        (instruction->src1SpdID + tile_words <= instruction->dst2SpdID ||
+         instruction->dst2SpdID + tile_words <= instruction->src1SpdID) &&
+        instruction->baseAddr % HybridConsumerPipeline::LineBytes == 0 &&
+        instruction->backingAddr % HybridConsumerPipeline::LineBytes == 0;
+    if (!direct_eligible) {
+        stats.direct_retirement_fallbacks++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_fallback schema=1 occurrence=%lu "
+                "logical=%u physical=%u word_bytes=%d source=0x%lx "
+                "destination=0x%lx\n",
+                directRetirementTraceOccurrence++, num_tile_elements,
+                physical_tile_elements, word_size, instruction->baseAddr,
+                instruction->backingAddr);
+        return submitTransparentDescriptor(instruction, true);
+    }
+    const int token_tile = instruction->src1SpdID;
+    panic_if(token_tile < 0 || token_tile >= num_tiles ||
+                 !ifile->isCompletionOnlyTile(instruction->maa_id,
+                                              token_tile),
+             "Direct retirement token is not a live completion-only tile\n");
+    for (int offset = 0; offset < tile_words; ++offset) {
+        if (ifile->hasTileReference(instruction->maa_id,
+                                    instruction->dst2SpdID + offset))
+            return false;
+    }
+    panic_if(virtualPageGeneration[token_tile] == 0 ||
+                 virtualPageGeneration[token_tile] ==
+                     virtualPageConsumedGeneration[token_tile] ||
+                 virtualPageBackingAddr[token_tile] != instruction->baseAddr ||
+                 virtualPageWordSize[token_tile] != word_size,
+             "Direct retirement does not name an unconsumed matching "
+             "producer generation\n");
+    panic_if(instruction->dst1RegID < 0 ||
+                 instruction->dst1RegID + word_size / sizeof(uint32_t) >
+                     static_cast<int>(num_regs),
+             "Direct retirement scalar register is invalid\n");
+
+    HybridConsumerPipeline::Descriptor descriptor;
+    descriptor.generation = virtualPageGeneration[token_tile];
+    descriptor.logicalElements = HybridConsumerPipeline::LogicalElements;
+    descriptor.wordBytes = word_size;
+    descriptor.backingAddress = instruction->baseAddr;
+    descriptor.backingRangeMin = instruction->minAddr;
+    descriptor.backingRangeMax = instruction->maxAddr;
+    descriptor.backingRangeID = instruction->addrRangeID;
+    descriptor.destinationAddress = instruction->backingAddr;
+    descriptor.destinationRangeMin = instruction->backingMinAddr;
+    descriptor.destinationRangeMax = instruction->backingMaxAddr;
+    descriptor.destinationRangeID = instruction->backingAddrRangeID;
+    for (uint8_t page = 0; page < HybridConsumerPipeline::ProducerPages;
+         ++page) {
+        if (getVirtualPageReady(token_tile, page)) {
+            descriptor.producerTransactions[page] =
+                getVirtualPageReadyTransaction(token_tile, page);
+        }
+    }
+    const char *validation = HybridConsumerPipeline::validate(descriptor);
+    if (validation != nullptr) {
+        stats.direct_retirement_fallbacks++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_fallback schema=1 occurrence=%lu "
+                "reason=%s source=0x%lx destination=0x%lx\n",
+                directRetirementTraceOccurrence++, validation,
+                descriptor.backingAddress, descriptor.destinationAddress);
+        return submitTransparentDescriptor(instruction, true);
+    }
+    panic_if(directRetirement.submit(descriptor) !=
+                 HybridConsumerPipeline::SubmitResult::Accepted,
+             "Validated direct-retirement descriptor was not accepted\n");
+
+    DirectRetirementExecution execution;
+    execution.active = true;
+    execution.coreID = instruction->core_id;
+    execution.maaID = instruction->maa_id;
+    execution.tokenTile = token_tile;
+    execution.completionTile = instruction->dst2SpdID;
+    execution.generation = descriptor.generation;
+    execution.datatype = static_cast<uint8_t>(instruction->datatype);
+    execution.operation = static_cast<uint8_t>(instruction->optype);
+    execution.wordBytes = word_size;
+    const double scalar = rf->getData<double>(instruction->dst1RegID);
+    std::memcpy(&execution.scalarBits, &scalar, sizeof(scalar));
+    execution.backingRangeID = instruction->addrRangeID;
+    execution.destinationRangeID = instruction->backingAddrRangeID;
+    execution.contextID = instruction->CID;
+    execution.pc = instruction->PC;
+    panic_if(!execution.macro.begin(curTick()),
+             "Direct-retirement macro tracker was already active\n");
+    directRetirementExecution = std::move(execution);
+    // There is no result SPD payload. Keep the existing destination tile ID
+    // only as an asynchronous completion token for later dependent work.
+    spd->setTileNotReady(directRetirementExecution.completionTile,
+                         word_size);
+    const uint64_t charged_payload_bytes =
+        HybridConsumerPipeline::chargedPayloadBytes();
+    const uint64_t charged_control_bytes =
+        HybridConsumerPipeline::chargedControlBytes() +
+        sizeof(DirectRetirementExecution) +
+        HybridConsumerPipeline::LineBufferCount * sizeof(Addr);
+    stats.direct_retirement_descriptors++;
+    stats.direct_retirement_payload_bytes = std::max(
+        stats.direct_retirement_payload_bytes.value(),
+        static_cast<double>(charged_payload_bytes));
+    stats.direct_retirement_control_bytes = std::max(
+        stats.direct_retirement_control_bytes.value(),
+        static_cast<double>(charged_control_bytes));
+
+    for (uint8_t page = 0; page < HybridConsumerPipeline::ProducerPages;
+         ++page) {
+        if (!getVirtualPageReady(token_tile, page))
+            continue;
+        const uint64_t transaction =
+            getVirtualPageReadyTransaction(token_tile, page);
+        panic_if(!directRetirement.notifyProducerWriteAck(
+                     {descriptor.generation, page, transaction}),
+                 "Direct retirement rejected already-acknowledged producer "
+                 "page %u\n", page);
+        stats.direct_retirement_producer_acks++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_producer_ack schema=1 "
+                "occurrence=%lu generation=%lu page=%u transaction=%lu\n",
+                directRetirementTraceOccurrence++, descriptor.generation,
+                page, transaction);
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=direct_retirement_submit schema=1 occurrence=%lu "
+            "generation=%lu token=%d source=0x%lx destination=0x%lx "
+            "scope=terminal_fp64_mul_dense_store credits=%u "
+            "payload_bytes=%zu control_bytes=%zu total_bytes=%zu "
+            "backing_span_bytes=%lu private_page_payload_bytes=0\n",
+            directRetirementTraceOccurrence++, descriptor.generation,
+            token_tile, descriptor.backingAddress,
+            descriptor.destinationAddress,
+            HybridConsumerPipeline::LineBufferCount,
+            static_cast<std::size_t>(charged_payload_bytes),
+            static_cast<std::size_t>(charged_control_bytes),
+            static_cast<std::size_t>(charged_payload_bytes +
+                                     charged_control_bytes),
+            static_cast<uint64_t>(descriptor.logicalElements) *
+                descriptor.wordBytes);
+    scheduleDirectRetirementEvent();
+    return true;
+}
+
+PacketPtr
+MAA::makeDirectRetirementPacket(
+    const HybridConsumerPipeline::Request &request)
+{
+    panic_if(!directRetirementExecution.active ||
+                 (request.kind != HybridConsumerPipeline::Kind::ReadBacking &&
+                  request.kind !=
+                      HybridConsumerPipeline::Kind::WriteDestination) ||
+                 request.size != HybridConsumerPipeline::LineBytes ||
+                 request.buffer >= HybridConsumerPipeline::LineBufferCount,
+             "Direct retirement produced an invalid cache-line request\n");
+    const int region =
+        request.kind == HybridConsumerPipeline::Kind::ReadBacking
+        ? directRetirementExecution.backingRangeID
+        : directRetirementExecution.destinationRangeID;
+    panic_if(region < 0 || getAddrRegion(request.address) != region,
+             "Direct-retirement address 0x%lx escaped its registered range\n",
+             request.address);
+    RequestPtr translationRequest = std::make_shared<Request>(
+        request.address, request.size, Request::Flags(0), requestorId,
+        directRetirementExecution.pc, directRetirementExecution.contextID);
+    ImmediateLogicalSPDTranslation translation;
+    ThreadContext *tc = system->threads[directRetirementExecution.contextID];
+    const BaseMMU::Mode mode =
+        request.kind == HybridConsumerPipeline::Kind::ReadBacking
+            ? BaseMMU::Read : BaseMMU::Write;
+    mmu->translateTiming(translationRequest, tc, &translation, mode);
+    panic_if(translation.delayed || !translation.finished ||
+                 translation.fault != NoFault,
+             "Direct retirement requires immediate valid translation for "
+             "0x%lx\n", request.address);
+    RequestPtr realRequest = std::make_shared<Request>(
+        translation.address, request.size, Request::Flags(0), requestorId);
+    realRequest->setRegion(region);
+    PacketPtr packet = new Packet(
+        realRequest, request.kind == HybridConsumerPipeline::Kind::ReadBacking
+                         ? MemCmd::ReadReq : MemCmd::WriteReq);
+    // The four credit-owned buffers are the packet storage: a read fills the
+    // credit directly, ALU updates it in place, and WriteReq retains it until
+    // its exact WriteResp. No page payload or shadow write queue exists.
+    packet->dataStatic(reinterpret_cast<uint8_t *>(
+        directRetirement.bufferData(request.buffer)));
+    auto *state = new DirectRetirementSenderState;
+    state->request = request;
+    // Cache-bank routing follows the translated physical address. The pure
+    // scheduler's virtual-address port remains part of its unit-test identity.
+    state->callbackPort = core_addr(translation.address);
+    packet->pushSenderState(state);
+    return packet;
+}
+
+bool
+MAA::recvDirectRetirementTimingResp(PacketPtr pkt, uint8_t respondingPort)
+{
+    auto *peek = dynamic_cast<DirectRetirementSenderState *>(pkt->senderState);
+    if (peek == nullptr)
+        return false;
+    auto *state = dynamic_cast<DirectRetirementSenderState *>(
+        pkt->popSenderState());
+    panic_if(state == nullptr || !directRetirementExecution.active ||
+                 state->callbackPort != respondingPort,
+             "Direct-retirement response lost exact port provenance\n");
+    const Addr paddr = pkt->getAddr();
+    panic_if(directRetirementOutstandingAddresses.erase(paddr) != 1,
+             "Direct-retirement response at 0x%lx did not own an exact "
+             "address reservation\n", paddr);
+    const auto &request = state->request;
+    bool accepted = false;
+    if (request.kind == HybridConsumerPipeline::Kind::ReadBacking) {
+        panic_if(pkt->cmd != MemCmd::ReadResp ||
+                     pkt->getSize() != HybridConsumerPipeline::LineBytes,
+                 "Direct retirement read did not receive an exact ReadResp\n");
+        accepted = directRetirement.completeRead(
+            request, reinterpret_cast<const std::byte *>(
+                         pkt->getConstPtr<uint8_t>()), pkt->getSize());
+        panic_if(!accepted || !directRetirementExecution.macro.complete(
+                                 HybridMacroEventTracker::Stage::PageFill,
+                                 curTick()),
+                 "Direct retirement rejected a read completion\n");
+        stats.direct_retirement_read_responses++;
+    } else {
+        panic_if(pkt->cmd != MemCmd::WriteResp ||
+                     pkt->getSize() != HybridConsumerPipeline::LineBytes,
+                 "Direct retirement write did not receive an exact "
+                 "WriteResp\n");
+        accepted = directRetirement.completeWriteAck(request);
+        panic_if(!accepted || !directRetirementExecution.macro.complete(
+                                 HybridMacroEventTracker::Stage::StreamStore,
+                                 curTick()),
+                 "Direct retirement rejected a write completion\n");
+        stats.direct_retirement_write_responses++;
+    }
+    delete state;
+    DPRINTF(MAAVirtualTrace,
+            "event=direct_retirement_response schema=1 occurrence=%lu "
+            "generation=%lu line=%u buffer=%u action=%u credits_in_use=%u\n",
+            directRetirementTraceOccurrence++,
+            directRetirementExecution.generation, request.line,
+            request.buffer, static_cast<unsigned>(request.kind),
+            directRetirement.creditsInUse());
+    sendNextDeferredPacket(paddr);
+    scheduleDirectRetirementEvent();
+    return true;
+}
+
+void
+MAA::completeDirectRetirementALU(int maaID, uint64_t transactionID)
+{
+    panic_if(!directRetirementExecution.active ||
+                 directRetirementExecution.maaID != maaID ||
+                 directRetirementExecution.aluRequest.transactionID !=
+                     transactionID ||
+                 !directRetirement.completeCompute(
+                     directRetirementExecution.aluRequest) ||
+                 !directRetirementExecution.macro.complete(
+                     HybridMacroEventTracker::Stage::ALU, curTick()),
+             "Direct-retirement ALU completion lost its line ownership\n");
+    directRetirementExecution.aluRequest = {};
+    aluUnitsIdle[maaID] = true;
+    stats.direct_retirement_alu_completions++;
+    DPRINTF(MAAVirtualTrace,
+            "event=direct_retirement_alu_complete schema=1 occurrence=%lu "
+            "generation=%lu transaction=%lu\n",
+            directRetirementTraceOccurrence++,
+            directRetirementExecution.generation, transactionID);
+    scheduleDirectRetirementEvent();
+    scheduleIssueInstructionEvent(1);
+}
+
+void
+MAA::scheduleDirectRetirementEvent(int latency)
+{
+    const Tick when = getClockEdge(Cycles(latency));
+    if (!directRetirementEvent.scheduled()) {
+        schedule(directRetirementEvent, when);
+    } else if (when < directRetirementEvent.when()) {
+        reschedule(directRetirementEvent, when);
+    }
+}
+
+void
+MAA::notifyDirectRetirementPortEvent(uint8_t port)
+{
+    if (directRetirementExecution.active)
+        scheduleDirectRetirementEvent();
+    DPRINTF(MAAVirtualTrace,
+            "event=direct_retirement_port_wake schema=1 occurrence=%lu "
+            "port=%u active=%d\n", directRetirementTraceOccurrence++,
+            port, directRetirementExecution.active);
+}
+
+void
+MAA::finishDirectRetirement()
+{
+    panic_if(!directRetirementExecution.active ||
+                 !directRetirement.complete() ||
+                 directRetirement.creditsInUse() != 0 ||
+                 !directRetirementOutstandingAddresses.empty() ||
+                 !directRetirementExecution.macro.finish(curTick()),
+             "Direct-retirement completion was attempted before all credits "
+             "closed\n");
+    const auto record = directRetirementExecution.macro.result();
+    const uint64_t generation = directRetirementExecution.generation;
+    const int token_tile = directRetirementExecution.tokenTile;
+    const int completion_tile = directRetirementExecution.completionTile;
+    const int word_bytes = directRetirementExecution.wordBytes;
+    panic_if(virtualPageGeneration[token_tile] != generation,
+             "Direct-retirement token generation changed before final ACK\n");
+    virtualPageConsumedGeneration[token_tile] = generation;
+    stats.direct_retirement_overlap_ticks += record.overlapTicks;
+    stats.direct_retirement_active_stage_high_water = std::max(
+        stats.direct_retirement_active_stage_high_water.value(),
+        static_cast<double>(record.activeStageHighWater));
+    stats.direct_retirement_credit_high_water = std::max(
+        stats.direct_retirement_credit_high_water.value(),
+        static_cast<double>(directRetirement.creditHighWater()));
+    DPRINTF(MAAVirtualTrace,
+            "event=direct_retirement_summary schema=1 occurrence=%lu "
+            "generation=%lu reads=%u computes=%u writes=%u "
+            "credit_high_water=%u overlap_ticks=%lu "
+            "active_stage_high_water=%lu fallback_count=%lu\n",
+            directRetirementTraceOccurrence++, generation,
+            directRetirement.readsAccepted(),
+            directRetirement.computesAccepted(),
+            directRetirement.writesAccepted(),
+            directRetirement.creditHighWater(),
+            record.overlapTicks, record.activeStageHighWater,
+            static_cast<uint64_t>(
+                stats.direct_retirement_fallbacks.value()));
+    panic_if(!directRetirement.retire(),
+             "Direct-retirement scheduler did not retire after final ACK\n");
+    directRetirementExecution = DirectRetirementExecution{};
+    setTileReady(completion_tile, word_bytes);
+    DPRINTF(MAAVirtualTrace,
+            "event=direct_retirement_retire schema=1 occurrence=%lu "
+            "generation=%lu final_write_responses=%u\n",
+            directRetirementTraceOccurrence++, generation,
+            HybridConsumerPipeline::MaxLines);
+}
+
+void
+MAA::serviceDirectRetirement()
+{
+    if (!directRetirementExecution.active)
+        return;
+    if (directRetirement.complete()) {
+        finishDirectRetirement();
+        return;
+    }
+
+    auto accepted = [this](const HybridConsumerPipeline::Request &request) {
+        panic_if(!directRetirement.accept(request),
+                 "Direct-retirement accepted packet had stale ownership\n");
+        const auto stage =
+            request.kind == HybridConsumerPipeline::Kind::ReadBacking
+            ? HybridMacroEventTracker::Stage::PageFill
+            : HybridMacroEventTracker::Stage::StreamStore;
+        panic_if(!directRetirementExecution.macro.issue(
+                     stage, curTick(), directRetirement.creditsInUse()) ||
+                     !directRetirementExecution.macro.traffic(
+                         stage, 1, HybridConsumerPipeline::LineBytes),
+                 "Direct-retirement could not record a live cache request\n");
+        if (request.kind == HybridConsumerPipeline::Kind::ReadBacking)
+            stats.direct_retirement_read_issues++;
+        else
+            stats.direct_retirement_write_issues++;
+        stats.direct_retirement_credit_high_water = std::max(
+            stats.direct_retirement_credit_high_water.value(),
+            static_cast<double>(directRetirement.creditHighWater()));
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_issue schema=1 occurrence=%lu "
+                "generation=%lu line=%u buffer=%u action=%u address=0x%lx "
+                "credits_in_use=%u\n",
+                directRetirementTraceOccurrence++,
+                directRetirementExecution.generation, request.line,
+                request.buffer, static_cast<unsigned>(request.kind),
+                request.address, directRetirement.creditsInUse());
+    };
+
+    if (directRetirementExecution.retryPacket != nullptr) {
+        auto *state = dynamic_cast<DirectRetirementSenderState *>(
+            directRetirementExecution.retryPacket->senderState);
+        panic_if(state == nullptr,
+                 "Direct-retirement retry lost sender identity\n");
+        const Addr paddr = directRetirementExecution.retryPacket->getAddr();
+        const auto deferred = my_deferred_pkt_map.find(paddr);
+        if (hasOutstandingPacket(paddr) ||
+            directRetirementOutstandingAddresses.find(paddr) !=
+                directRetirementOutstandingAddresses.end() ||
+            (deferred != my_deferred_pkt_map.end() &&
+             !deferred->second.empty())) {
+            stats.direct_retirement_address_stalls++;
+            return;
+        }
+        if (!sendPacketCache(directRetirementExecution.retryPacket)) {
+            stats.direct_retirement_retries++;
+            return;
+        }
+        const HybridConsumerPipeline::Request request = state->request;
+        directRetirementExecution.retryPacket = nullptr;
+        panic_if(!directRetirementOutstandingAddresses.insert(paddr).second,
+                 "Direct-retirement retry duplicated address 0x%lx\n", paddr);
+        accepted(request);
+        return;
+    }
+
+    auto discardUnsentPacket = [](PacketPtr packet) {
+        auto *state = dynamic_cast<DirectRetirementSenderState *>(
+            packet->popSenderState());
+        panic_if(state == nullptr,
+                 "Unsent direct-retirement packet lost sender state\n");
+        delete state;
+        delete packet;
+    };
+
+    for (unsigned attempt = 0;
+         attempt < HybridConsumerPipeline::LineBufferCount + 2; ++attempt) {
+        const auto write = directRetirement.pendingWrite();
+        const auto compute = directRetirement.pendingCompute();
+        const auto read = directRetirement.pendingRead();
+        if (write.kind == HybridConsumerPipeline::Kind::None &&
+            compute.kind == HybridConsumerPipeline::Kind::None &&
+            read.kind == HybridConsumerPipeline::Kind::None) {
+            if (directRetirement.creditsInUse() ==
+                    HybridConsumerPipeline::LineBufferCount &&
+                directRetirement.completed() != directRetirement.lines())
+                stats.direct_retirement_credit_stalls++;
+            return;
+        }
+        if (write.kind != HybridConsumerPipeline::Kind::None ||
+            read.kind != HybridConsumerPipeline::Kind::None) {
+            const auto request =
+                write.kind != HybridConsumerPipeline::Kind::None
+                ? write : read;
+            PacketPtr packet = makeDirectRetirementPacket(request);
+            const Addr paddr = packet->getAddr();
+            const auto deferred = my_deferred_pkt_map.find(paddr);
+            if (hasOutstandingPacket(paddr) ||
+                directRetirementOutstandingAddresses.find(paddr) !=
+                    directRetirementOutstandingAddresses.end() ||
+                (deferred != my_deferred_pkt_map.end() &&
+                 !deferred->second.empty())) {
+                discardUnsentPacket(packet);
+                stats.direct_retirement_address_stalls++;
+                return;
+            }
+            if (!sendPacketCache(packet)) {
+                directRetirementExecution.retryPacket = packet;
+                stats.direct_retirement_retries++;
+                return;
+            }
+            panic_if(!directRetirementOutstandingAddresses.insert(paddr)
+                         .second,
+                     "Direct-retirement duplicated address 0x%lx\n", paddr);
+            accepted(request);
+            continue;
+        }
+        panic_if(compute.kind == HybridConsumerPipeline::Kind::None,
+                 "Direct-retirement scheduler lost a runnable line\n");
+        if (!aluUnitsIdle[directRetirementExecution.maaID])
+            return;
+        panic_if(!directRetirement.accept(compute) ||
+                     !directRetirementExecution.macro.issue(
+                         HybridMacroEventTracker::Stage::ALU, curTick(), 1) ||
+                     !aluUnits[directRetirementExecution.maaID]
+                          .startDirectLine(
+                         directRetirement.bufferData(compute.buffer),
+                         directRetirementExecution.wordBytes,
+                         directRetirementExecution.datatype,
+                         directRetirementExecution.operation,
+                         directRetirementExecution.scalarBits,
+                         compute.transactionID),
+                 "Direct-retirement could not claim the existing ALU lane\n");
+        directRetirementExecution.aluRequest = compute;
+        aluUnitsIdle[directRetirementExecution.maaID] = false;
+        stats.direct_retirement_alu_issues++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_alu_issue schema=1 occurrence=%lu "
+                "generation=%lu line=%u buffer=%u transaction=%lu\n",
+                directRetirementTraceOccurrence++,
+                directRetirementExecution.generation, compute.line,
+                compute.buffer, compute.transactionID);
+        return;
+    }
+}
+
 void MAA::startTransparentBlockerTracking() {
     transparentBlockerTicks.fill(0);
     transparentInstructionFileBlocked = false;
@@ -1805,6 +2331,9 @@ DrainState
 MAA::drain()
 {
     logicalSpdBridge->closeAdmission();
+    panic_if(directRetirementExecution.active,
+             "Direct-retirement checkpoint/drain requested with live line "
+             "credits; serialization is unsupported\n");
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD checkpoint/drain requested with live state; "
              "serialization is unsupported\n");
@@ -1814,6 +2343,8 @@ MAA::drain()
 void
 MAA::drainResume()
 {
+    panic_if(directRetirementExecution.active,
+             "Direct-retirement drain resumed with live line credits\n");
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD drain resumed with non-quiescent live state\n");
     logicalSpdBridge->reopenAdmission();
@@ -1887,16 +2418,25 @@ void MAA::dispatchInstruction() {
             }
             if (instruction->opcode ==
                 Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR) {
-                if (!submitTransparentDescriptor(instruction)) {
+                const bool direct = transparent_spd_mode == 3;
+                const bool submitted = direct
+                    ? submitDirectRetirementDescriptor(instruction)
+                    : submitTransparentDescriptor(instruction);
+                if (!submitted) {
                     ++pkt_it;
                     ++recv_it;
                     ++rid_it;
                     ++instruction_it;
                     continue;
                 }
+                const bool direct_active =
+                    direct && directRetirementExecution.active;
                 DPRINTF(MAAController,
-                        "%s: transparent descriptor %s dispatched\n",
-                        __func__, instruction->print());
+                        "%s: %s descriptor %s dispatched\n", __func__,
+                        direct_active ? "direct-retirement" : "transparent",
+                        instruction->print());
+                // Completion is carried by an SPD readiness token for both
+                // paths; descriptor submission itself remains asynchronous.
                 pkt->makeTimingResponse();
                 pkt->headerDelay = pkt->payloadDelay = 0;
                 cpuSidePorts[0]->schedTimingResp(
@@ -2164,6 +2704,7 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
              "token tile %d reused with an outstanding virtual-page wait\n",
              tokenTileID);
     virtualPageReady[tokenTileID].fill(false);
+    virtualPageReadyTransaction[tokenTileID].fill(0);
     panic_if(virtualPageGeneration[tokenTileID] ==
                  std::numeric_limits<uint64_t>::max(),
              "virtual completion token %d generation overflow\n",
@@ -2181,6 +2722,15 @@ bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
              pageID);
     return virtualPageReady[tokenTileID][pageID];
 }
+uint64_t
+MAA::getVirtualPageReadyTransaction(int tokenTileID, int pageID) const
+{
+    panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || pageID < 0 ||
+                 pageID >= MaxVirtualPages,
+             "invalid virtual page transaction token=%d page=%d\n",
+             tokenTileID, pageID);
+    return virtualPageReadyTransaction[tokenTileID][pageID];
+}
 uint64_t MAA::getVirtualPageGeneration(int tokenTileID) const {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
              "invalid virtual page token=%d\n", tokenTileID);
@@ -2191,11 +2741,18 @@ Tick MAA::getVirtualProducerRegistrationTick(int tokenTileID) const {
              "invalid virtual page token=%d\n", tokenTileID);
     return virtualProducerRegistrationTick[tokenTileID];
 }
-void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
+void
+MAA::setVirtualPageReady(int tokenTileID, int pageID,
+                         uint64_t transactionID)
+{
     panic_if(getVirtualPageReady(tokenTileID, pageID),
              "virtual page token=%d page=%d became ready twice\n",
              tokenTileID, pageID);
+    panic_if(transactionID == 0,
+             "virtual page token=%d page=%d lacks final WriteResp identity\n",
+             tokenTileID, pageID);
     virtualPageReady[tokenTileID][pageID] = true;
+    virtualPageReadyTransaction[tokenTileID][pageID] = transactionID;
     virtualPageLastReadyTick[tokenTileID] = curTick();
     stats.virtual_page_ready_signals++;
 
@@ -2229,6 +2786,28 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
                 transparentController.descriptor().generation);
         }
         tryIssueTransparentMicroOp();
+    }
+
+    if (directRetirementExecution.active &&
+        directRetirementExecution.tokenTile == tokenTileID) {
+        panic_if(directRetirementExecution.generation !=
+                     virtualPageGeneration[tokenTileID],
+                 "Direct-retirement token %d received stale page %d\n",
+                 tokenTileID, pageID);
+        const HybridConsumerPipeline::ProducerAck ack{
+            directRetirementExecution.generation,
+            static_cast<uint8_t>(pageID), transactionID};
+        panic_if(!directRetirement.notifyProducerWriteAck(ack),
+                 "Direct-retirement rejected final producer WriteResp "
+                 "token=%d page=%d transaction=%lu\n",
+                 tokenTileID, pageID, transactionID);
+        stats.direct_retirement_producer_acks++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_producer_ack schema=1 "
+                "occurrence=%lu generation=%lu page=%d transaction=%lu\n",
+                directRetirementTraceOccurrence++,
+                directRetirementExecution.generation, pageID, transactionID);
+        scheduleDirectRetirementEvent();
     }
 
     const int readyID =
@@ -2414,6 +2993,53 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                statistics::units::Count::get(),
                "MAA packets deferred by a nonempty exact-address FIFO after "
                "the virtual-retirement owner completed"),
+      ADD_STAT(direct_retirement_descriptors, statistics::units::Count::get(),
+               "direct-retirement descriptors admitted"),
+      ADD_STAT(direct_retirement_producer_acks,
+               statistics::units::Count::get(),
+               "producer pages exposed by exact final WriteResp"),
+      ADD_STAT(direct_retirement_read_issues, statistics::units::Count::get(),
+               "direct-retirement backing line reads issued"),
+      ADD_STAT(direct_retirement_read_responses,
+               statistics::units::Count::get(),
+               "direct-retirement backing line read responses"),
+      ADD_STAT(direct_retirement_alu_issues, statistics::units::Count::get(),
+               "direct-retirement charged ALU-line issues"),
+      ADD_STAT(direct_retirement_alu_completions,
+               statistics::units::Count::get(),
+               "direct-retirement charged ALU-line completions"),
+      ADD_STAT(direct_retirement_write_issues,
+               statistics::units::Count::get(),
+               "direct-retirement full-line WriteReq issues"),
+      ADD_STAT(direct_retirement_write_responses,
+               statistics::units::Count::get(),
+               "direct-retirement exact WriteResp completions"),
+      ADD_STAT(direct_retirement_credit_high_water,
+               statistics::units::Count::get(),
+               "maximum direct-retirement 64-byte credits in use"),
+      ADD_STAT(direct_retirement_credit_stalls,
+               statistics::units::Count::get(),
+               "direct-retirement scheduler attempts stalled by four credits"),
+      ADD_STAT(direct_retirement_address_stalls,
+               statistics::units::Count::get(),
+               "direct-retirement sends deferred behind an MAA address owner"),
+      ADD_STAT(direct_retirement_retries, statistics::units::Count::get(),
+               "direct-retirement cache-port refusals"),
+      ADD_STAT(direct_retirement_overlap_ticks,
+               statistics::units::Tick::get(),
+               "direct-retirement measured read/ALU/write overlap ticks"),
+      ADD_STAT(direct_retirement_active_stage_high_water,
+               statistics::units::Count::get(),
+               "maximum simultaneously active direct-retirement stages"),
+      ADD_STAT(direct_retirement_fallbacks, statistics::units::Count::get(),
+               "direct-retirement descriptors retained on the existing "
+               "partial or unaligned fallback"),
+      ADD_STAT(direct_retirement_payload_bytes,
+               statistics::units::Byte::get(),
+               "maximum direct-retirement cache-line payload provisioned"),
+      ADD_STAT(direct_retirement_control_bytes,
+               statistics::units::Byte::get(),
+               "conservative persistent direct-retirement scheduler state"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "

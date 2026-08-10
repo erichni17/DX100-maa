@@ -22,7 +22,9 @@ class MAA(ClockedObject):
     )
     transparent_spd_mode = Param.Unsigned(
         0,
-        "Transparent SPD arm: 0=serial-4K, 1=serial-2K, 2=two-half ping-pong",
+        "Transparent SPD arm: 0=serial-4K, 1=serial-2K, "
+        "2=two-half ping-pong, 3=narrow terminal FP64 "
+        "gather/multiply/dense-store direct retirement",
     )
     logical_spd_cache_mode = Param.Unsigned(
         0,

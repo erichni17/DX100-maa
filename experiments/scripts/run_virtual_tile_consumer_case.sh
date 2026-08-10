@@ -37,6 +37,7 @@ out=$(realpath -m "$4")
 overlap=0
 polluted=0
 transparent_spd_mode=0
+direct_retirement=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 require_physical_trace=${MAA_REQUIRE_PHYSICAL_RECORD_TRACE:-0}
 require_source_issue_digest=${MAA_REQUIRE_SOURCE_ISSUE_DIGEST:-0}
@@ -387,6 +388,18 @@ transparent_4k)
     direct=1
     reload_only=0
     ;;
+direct_retirement_4k)
+    # The binary keeps the deterministic transparent treatment.  Selector 3
+    # changes only the MAA consumer transport after producer page WriteResp.
+    mode=transparent
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    transparent_spd_mode=3
+    direct_retirement=1
+    ;;
 isoarea_serial_4k)
     mode=transparent
     page=4096
@@ -549,6 +562,12 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'logical_tile_elements=16384\n'
     printf 'page_elements=%s\n' "$page"
     printf 'physical_tile_elements=%s\n' "$physical"
+    printf 'direct_retirement=%s\n' "$direct_retirement"
+    if [[ $direct_retirement -eq 1 ]]; then
+        printf 'direct_retirement_scope=terminal_fp64_mul_dense_store\n'
+    else
+        printf 'direct_retirement_scope=disabled\n'
+    fi
     printf 'row_table_slices=%s\n' "$row_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_rows"
     printf 'row_table_entries_per_subslice_row=%s\n' "$row_entries"
@@ -626,8 +645,12 @@ cp -- "$root/src/mem/MAA/Tables.cc" "$snapshot/Tables.cc"
 cp -- "$root/src/mem/MAA/Tables.hh" "$snapshot/Tables.hh"
 cp -- "$root/src/mem/MAA/TransparentSPDController.hh" \
     "$snapshot/TransparentSPDController.hh"
+cp -- "$root/src/mem/MAA/HybridConsumerPipeline.hh" \
+    "$snapshot/HybridConsumerPipeline.hh"
 cp -- "$root/src/mem/MAA/MAA.cc" "$snapshot/MAA.cc"
 cp -- "$root/src/mem/MAA/MAA.hh" "$snapshot/MAA.hh"
+cp -- "$root/src/mem/MAA/Port.cc" "$snapshot/Port.cc"
+cp -- "$root/src/mem/MAA/CacheSidePort.cc" "$snapshot/CacheSidePort.cc"
 cp -- "$root/src/mem/MAA/IF.cc" "$snapshot/IF.cc"
 cp -- "$root/src/mem/MAA/IF.hh" "$snapshot/IF.hh"
 cp -- "$root/src/mem/MAA/StreamAccess.cc" "$snapshot/StreamAccess.cc"
@@ -700,7 +723,9 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/BoundedMetadataLedger.hh" \
     "$snapshot/Tables.cc" "$snapshot/Tables.hh" \
     "$snapshot/TransparentSPDController.hh" \
+    "$snapshot/HybridConsumerPipeline.hh" \
     "$snapshot/MAA.cc" "$snapshot/MAA.hh" \
+    "$snapshot/Port.cc" "$snapshot/CacheSidePort.cc" \
     "$snapshot/IF.cc" "$snapshot/IF.hh" \
     "$snapshot/StreamAccess.cc" "$snapshot/StreamAccess.hh" \
     "$snapshot/ALU.cc" "$snapshot/ALU.hh" \
@@ -1247,12 +1272,54 @@ read -r fill_sim_ticks request_sim_ticks < <(
         END { print fill + 0, request + 0 }
     ' "$out/run/virtual_trace.log"
 )
-[[ $ticks -gt 0 && $insts -gt 0 && $stream_spd_reads -gt 0 && \
-   $stream_writes -gt 0 && $alu_compute -gt 0 && $dram_reads -gt 0 && \
-   $fill_sim_ticks -gt 0 && $request_sim_ticks -gt 0 ]] || {
+read -r direct_descriptors direct_producer_acks direct_read_issues \
+    direct_read_responses direct_alu_issues direct_alu_completions \
+    direct_write_issues direct_write_responses direct_credit_hwm \
+    direct_credit_stalls direct_address_stalls direct_retries \
+    direct_overlap_ticks direct_active_stage_hwm direct_fallbacks \
+    direct_payload_bytes direct_control_bytes < <(
+    awk '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 == "system.maa.direct_retirement_descriptors" { d = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_producer_acks" { pa = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_read_issues" { ri = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_read_responses" { rr = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_alu_issues" { ai = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_alu_completions" { ac = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_write_issues" { wi = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_write_responses" { wr = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_credit_high_water" { ch = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_credit_stalls" { cs = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_address_stalls" { as = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_retries" { re = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_overlap_ticks" { ot = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_active_stage_high_water" { ah = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_fallbacks" { fb = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_payload_bytes" { pb = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_control_bytes" { cb = $2 }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            print d + 0, pa + 0, ri + 0, rr + 0, ai + 0, ac + 0,
+                  wi + 0, wr + 0, ch + 0, cs + 0, as + 0, re + 0,
+                  ot + 0, ah + 0, fb + 0, pb + 0, cb + 0
+            exit
+        }
+    ' "$out/run/stats.txt"
+)
+if [[ $direct_retirement -eq 1 ]]; then
+    [[ $ticks -gt 0 && $insts -gt 0 && $direct_alu_issues -gt 0 && \
+       $dram_reads -gt 0 && $fill_sim_ticks -gt 0 && \
+       $request_sim_ticks -gt 0 ]] || {
+        echo "missing first-ROI direct-retirement activity" >&2
+        exit 1
+    }
+else
+    [[ $ticks -gt 0 && $insts -gt 0 && $stream_spd_reads -gt 0 && \
+       $stream_writes -gt 0 && $alu_compute -gt 0 && $dram_reads -gt 0 && \
+       $fill_sim_ticks -gt 0 && $request_sim_ticks -gt 0 ]] || {
     echo "missing first-ROI performance or consumer activity" >&2
     exit 1
 }
+fi
 if [[ $reload_only -eq 1 ]]; then
     [[ $index_words -eq 0 && $write_issues -eq 0 && \
        $write_completions -eq 0 && $indirect_spd_reads -eq 0 ]] || {
@@ -1291,6 +1358,79 @@ elif [[ $virtual -eq 1 ]]; then
         echo "invalid virtual page trace count: $trace_pages/$expected_pages" >&2
         exit 1
     }
+    if [[ $direct_retirement -eq 1 ]]; then
+        direct_lines=$((16384 * 8 / 64))
+        direct_submits=$(grep -c 'event=direct_retirement_submit schema=1 ' "$trace" || true)
+        direct_ack_trace=$(grep -c 'event=direct_retirement_producer_ack schema=1 ' "$trace" || true)
+        direct_issue_trace=$(grep -c 'event=direct_retirement_issue schema=1 ' "$trace" || true)
+        direct_response_trace=$(grep -c 'event=direct_retirement_response schema=1 ' "$trace" || true)
+        direct_alu_issue_trace=$(grep -c 'event=direct_retirement_alu_issue schema=1 ' "$trace" || true)
+        direct_alu_complete_trace=$(grep -c 'event=direct_retirement_alu_complete schema=1 ' "$trace" || true)
+        direct_summary_trace=$(grep -c 'event=direct_retirement_summary schema=1 ' "$trace" || true)
+        direct_retire_trace=$(grep -c 'event=direct_retirement_retire schema=1 ' "$trace" || true)
+        read -r trace_payload_bytes trace_control_bytes trace_total_bytes \
+            trace_backing_bytes < <(
+            awk '
+                /event=direct_retirement_submit schema=1/ {
+                    delete value
+                    for (i = 1; i <= NF; ++i) {
+                        split($i, kv, "=")
+                        value[kv[1]] = kv[2]
+                    }
+                    print value["payload_bytes"] + 0,
+                          value["control_bytes"] + 0,
+                          value["total_bytes"] + 0,
+                          value["backing_span_bytes"] + 0
+                    exit
+                }
+            ' "$trace"
+        )
+        [[ $direct_descriptors -eq 1 && \
+           $direct_producer_acks -eq $expected_pages && \
+           $direct_read_issues -eq $direct_lines && \
+           $direct_read_responses -eq $direct_lines && \
+           $direct_alu_issues -eq $direct_lines && \
+           $direct_alu_completions -eq $direct_lines && \
+           $direct_write_issues -eq $direct_lines && \
+           $direct_write_responses -eq $direct_lines && \
+           $direct_credit_hwm -eq 4 && $direct_fallbacks -eq 0 && \
+           $direct_payload_bytes -eq 256 && \
+           $direct_control_bytes -gt 0 && \
+           $trace_payload_bytes -eq $direct_payload_bytes && \
+           $trace_control_bytes -eq $direct_control_bytes && \
+           $trace_total_bytes -eq \
+               $((direct_payload_bytes + direct_control_bytes)) && \
+           $trace_backing_bytes -eq 131072 && \
+           $direct_submits -eq 1 && \
+           $direct_ack_trace -eq $expected_pages && \
+           $direct_issue_trace -eq $((direct_lines * 2)) && \
+           $direct_response_trace -eq $((direct_lines * 2)) && \
+           $direct_alu_issue_trace -eq $direct_lines && \
+           $direct_alu_complete_trace -eq $direct_lines && \
+           $direct_summary_trace -eq 1 && $direct_retire_trace -eq 1 ]] || {
+            echo "direct-retirement closure failed: descriptor=$direct_descriptors acks=$direct_producer_acks reads=$direct_read_issues/$direct_read_responses alu=$direct_alu_issues/$direct_alu_completions writes=$direct_write_issues/$direct_write_responses hwm=$direct_credit_hwm fallback=$direct_fallbacks trace=$direct_submits/$direct_ack_trace/$direct_issue_trace/$direct_response_trace/$direct_alu_issue_trace/$direct_alu_complete_trace/$direct_summary_trace/$direct_retire_trace" >&2
+            exit 1
+        }
+        grep -Eq "event=direct_retirement_submit schema=1 .*scope=terminal_fp64_mul_dense_store credits=4 payload_bytes=256 control_bytes=[1-9][0-9]* total_bytes=[1-9][0-9]* backing_span_bytes=131072 private_page_payload_bytes=0$" "$trace" && \
+        grep -Eq "event=direct_retirement_summary schema=1 .*reads=${direct_lines} computes=${direct_lines} writes=${direct_lines} credit_high_water=4 .*fallback_count=0$" "$trace" && \
+        grep -Eq "event=direct_retirement_retire schema=1 .*final_write_responses=${direct_lines}$" "$trace" || {
+            echo "direct-retirement trace lacks exact no-private-payload or final-WriteResp proof" >&2
+            exit 1
+        }
+        {
+            printf 'descriptors\tproducer_acks\tread_issues\tread_responses\talu_issues\talu_completions\twrite_issues\twrite_responses\tcredit_hwm\tcredit_stalls\taddress_stalls\tretries\toverlap_ticks\tactive_stage_hwm\tfallbacks\tpayload_bytes\tcontrol_bytes\n'
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$direct_descriptors" "$direct_producer_acks" \
+                "$direct_read_issues" "$direct_read_responses" \
+                "$direct_alu_issues" "$direct_alu_completions" \
+                "$direct_write_issues" "$direct_write_responses" \
+                "$direct_credit_hwm" "$direct_credit_stalls" \
+                "$direct_address_stalls" "$direct_retries" \
+                "$direct_overlap_ticks" "$direct_active_stage_hwm" \
+                "$direct_fallbacks" "$direct_payload_bytes" \
+                "$direct_control_bytes"
+        } > "$out/direct_retirement.tsv"
+    fi
     if [[ $case_name == transparent_4k ||
           $case_name == transparent_ready_4k ||
           $case_name == transparent_displaced_4k ||
@@ -1929,5 +2069,27 @@ fi
     (IFS=$'\t'; echo "${headers[*]}")
     (IFS=$'\t'; echo "${values[*]}")
 } > "$out/result.tsv"
+if [[ -z $shared_checkpoint ]]; then
+    (
+        cd "$checkpoint_dir"
+        find . -type f -print0 | sort -z | xargs -0 sha256sum
+    ) > "$out/checkpoint_files.sha256"
+    sha256sum "$out/checkpoint_files.sha256" \
+        > "$out/checkpoint_identity.sha256"
+else
+    cp -- "$out/shared_checkpoint_identity.sha256" \
+        "$out/checkpoint_identity.sha256"
+fi
+run_artifacts=(
+    "$out/result.tsv"
+    "$out/restore.log"
+    "$out/run/stats.txt"
+    "$out/run/virtual_trace.log"
+    "$out/checkpoint_identity.sha256"
+)
+if [[ $direct_retirement -eq 1 ]]; then
+    run_artifacts+=("$out/direct_retirement.tsv")
+fi
+sha256sum "${run_artifacts[@]}" > "$out/run_artifact_sha256.txt"
 touch "$out/virtual_tile_consumer_case.pass"
 cat "$out/result.tsv"

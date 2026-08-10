@@ -6078,7 +6078,9 @@ void IndirectAccessUnit::trackVirtualIteration(int itr,
     markVirtualPageReadyIfComplete(page);
 }
 
-void IndirectAccessUnit::markVirtualPageReadyIfComplete(int page) {
+void IndirectAccessUnit::markVirtualPageReadyIfComplete(
+    int page, Addr final_write_key)
+{
     panic_if(page < 0 ||
                  page >= static_cast<int>(virtual_page_logical_words.size()),
              "I[%d] invalid virtual page %d\n", my_indirect_id, page);
@@ -6091,7 +6093,17 @@ void IndirectAccessUnit::markVirtualPageReadyIfComplete(int page) {
 
     virtual_page_ready[page] = true;
     virtual_pages_ready++;
-    maa->setVirtualPageReady(my_dst_tile, page);
+    // A page with writes becomes visible only at its exact final WriteResp.
+    // A zero-write page is already coherent after its complete scan; give that
+    // distinct case an opaque non-address transaction identity.
+    if (final_write_key == 0) {
+        panic_if(virtual_page_expected_words[page] != 0,
+                 "I[%d] page %d closed without its final WriteResp key\n",
+                 my_indirect_id, page);
+        final_write_key = std::numeric_limits<Addr>::max() -
+            (static_cast<Addr>(my_indirect_id) << 8) - page;
+    }
+    maa->setVirtualPageReady(my_dst_tile, page, final_write_key);
     if (virtual_first_page_ready_tick == 0)
         virtual_first_page_ready_tick = curTick();
     if (virtual_pages_ready == static_cast<int>(virtual_page_ready.size()))
@@ -6170,7 +6182,7 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
                  "I[%d] virtual page %d completed too many words: %d/%d\n",
                  my_indirect_id, page, virtual_page_completed_words[page],
                  virtual_page_expected_words[page]);
-        markVirtualPageReadyIfComplete(page);
+        markVirtualPageReadyIfComplete(page, write_key);
     }
     virtual_retirement_write_pages.erase(metadata);
 }

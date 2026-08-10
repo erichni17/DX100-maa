@@ -10,9 +10,11 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "base/trace.hh"
 #include "base/types.hh"
+#include "mem/MAA/HybridConsumerPipeline.hh"
 #include "mem/MAA/HybridMacroEventTracker.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
@@ -485,8 +487,11 @@ public:
     void setTileReady(int tileID, int wordSize);
     void resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                int wordSize);
-    void setVirtualPageReady(int tokenTileID, int pageID);
+    void setVirtualPageReady(int tokenTileID, int pageID,
+                             uint64_t transactionID);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
+    uint64_t getVirtualPageReadyTransaction(int tokenTileID,
+                                            int pageID) const;
     uint64_t getVirtualPageGeneration(int tokenTileID) const;
     Tick getVirtualProducerRegistrationTick(int tokenTileID) const;
     bool transparentControllerOwnsTile(int maaID, int tileID) const;
@@ -507,6 +512,7 @@ public:
     void resetStats() override;
     bool getAddrRegionPermit(Instruction *instruction);
     void scheduleIssueInstructionEvent(int latency = 0);
+    void completeDirectRetirementALU(int maaID, uint64_t transactionID);
 
 protected:
     std::vector<RequestorID> my_instruction_RIDs;
@@ -518,6 +524,8 @@ protected:
     std::vector<PacketPtr> my_register_pkts;
     std::vector<int> my_ready_tile_ids;
     std::vector<std::array<bool, MaxVirtualPages>> virtualPageReady;
+    std::vector<std::array<uint64_t, MaxVirtualPages>>
+        virtualPageReadyTransaction;
     std::vector<uint64_t> virtualPageGeneration;
     std::vector<uint64_t> virtualPageConsumedGeneration;
     std::vector<Addr> virtualPageBackingAddr;
@@ -540,12 +548,47 @@ protected:
     Tick transparentMacroAllReadyTick = 0;
     bool transparentMacroAllReadySampled = false;
     bool transparentMacroAllReadyBeforeSubmit = false;
+    struct DirectRetirementSenderState : public Packet::SenderState
+    {
+        HybridConsumerPipeline::Request request{};
+        uint8_t callbackPort = HybridConsumerPipeline::PortCount;
+    };
+    struct DirectRetirementExecution
+    {
+        bool active = false;
+        int coreID = -1;
+        int maaID = -1;
+        int tokenTile = -1;
+        int completionTile = -1;
+        uint64_t generation = 0;
+        uint8_t datatype = 0;
+        uint8_t operation = 0;
+        uint8_t wordBytes = 0;
+        uint64_t scalarBits = 0;
+        int backingRangeID = -1;
+        int destinationRangeID = -1;
+        ContextID contextID = InvalidContextID;
+        Addr pc = 0;
+        PacketPtr retryPacket = nullptr;
+        HybridConsumerPipeline::Request aluRequest{};
+        HybridMacroEventTracker macro{};
+    };
+    HybridConsumerPipeline directRetirement;
+    DirectRetirementExecution directRetirementExecution;
+    // Direct-retirement packets bypass the generic OutstandingPacket payload
+    // machinery because their storage is one of the four LogicalSPD credits.
+    // Keep exact physical-address exclusion shared with that machinery so a
+    // legacy MAA request cannot overtake an in-flight direct ReadReq/WriteReq.
+    std::unordered_set<Addr> directRetirementOutstandingAddresses;
+    uint64_t directRetirementTraceOccurrence = 0;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();
     void dispatchInstruction();
     void dispatchRegister();
-    bool submitTransparentDescriptor(InstructionPtr instruction);
+    bool submitTransparentDescriptor(InstructionPtr instruction,
+                                     bool directFallback = false);
+    bool submitDirectRetirementDescriptor(InstructionPtr instruction);
     bool dispatchTransparentMicroOp(
         const TransparentSPDController::Request &request);
     void tryIssueTransparentMicroOp();
@@ -555,6 +598,14 @@ protected:
     void finishTransparentBlockerTracking(uint64_t generation);
     void emitTransparentMacroSummary(uint64_t generation,
                                      Tick producerRegistrationTick);
+    PacketPtr makeDirectRetirementPacket(
+        const HybridConsumerPipeline::Request &request);
+    bool recvDirectRetirementTimingResp(PacketPtr pkt,
+                                        uint8_t respondingPort);
+    void serviceDirectRetirement();
+    void scheduleDirectRetirementEvent(int latency = 0);
+    void notifyDirectRetirementPortEvent(uint8_t port);
+    void finishDirectRetirement();
     struct LogicalSPDSenderState : public Packet::SenderState
     {
         LogicalSPDCacheGem5Bridge::CallbackToken token{};
@@ -606,7 +657,7 @@ protected:
     void notifyLogicalSPDResponse();
     DrainState drain() override;
     void drainResume() override;
-    EventFunctionWrapper logicalSpdEvent;
+    EventFunctionWrapper logicalSpdEvent, directRetirementEvent;
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;
     void scheduleDispatchInstructionEvent(int latency = 0);
@@ -688,6 +739,23 @@ public:
         statistics::Scalar virtual_page_wait_responses;
         statistics::Scalar virtual_retirement_native_deferrals;
         statistics::Scalar virtual_retirement_queue_deferrals;
+        statistics::Scalar direct_retirement_descriptors;
+        statistics::Scalar direct_retirement_producer_acks;
+        statistics::Scalar direct_retirement_read_issues;
+        statistics::Scalar direct_retirement_read_responses;
+        statistics::Scalar direct_retirement_alu_issues;
+        statistics::Scalar direct_retirement_alu_completions;
+        statistics::Scalar direct_retirement_write_issues;
+        statistics::Scalar direct_retirement_write_responses;
+        statistics::Scalar direct_retirement_credit_high_water;
+        statistics::Scalar direct_retirement_credit_stalls;
+        statistics::Scalar direct_retirement_address_stalls;
+        statistics::Scalar direct_retirement_retries;
+        statistics::Scalar direct_retirement_overlap_ticks;
+        statistics::Scalar direct_retirement_active_stage_high_water;
+        statistics::Scalar direct_retirement_fallbacks;
+        statistics::Scalar direct_retirement_payload_bytes;
+        statistics::Scalar direct_retirement_control_bytes;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.

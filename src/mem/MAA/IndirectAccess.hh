@@ -571,7 +571,8 @@ protected:
                                       uint16_t valid_words) const;
     void initializeVirtualPageTracking();
     void trackVirtualIteration(int itr, bool write_expected);
-    void markVirtualPageReadyIfComplete(int page);
+    void markVirtualPageReadyIfComplete(int page,
+                                        Addr final_write_key = 0);
     void trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
                                      unsigned size, uint16_t valid_words);
     void completeVirtualRetirementWrite(Addr write_key);
