@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "conclusion": {
+    "backing_credit_or_local_throughput_supported_as_gap_cause": false,
+    "reason": "The real-visibility unlimited-local-width/512-credit throughput upper bound changed simTicks by zero.",
+    "ack_intervention_performed": false,
+    "ack_latency_conclusion": "untested_no_causal_claim",
+    "native_common_stages_are_hybrid_only_overhead": false
+  },
+  "provenance": {
+    "raw_root": "/data1/nier/worktrees/codex-coordination/sessions/hybrid-macro-profile-20260810-20260810-113256-355e631a/artifacts/matrix_948fb143",
+    "starting_commit": "ee08be4bb902ac72ced1f34ed02771cbe9588114",
+    "simulator_source_commit": "948fb143d79485f1d352940c35f65c7ac64aba9d",
+    "gem5_sha256": "90e55f95cbd41524c72424838a1d234943060ba4b5d5baa8e4068c25438eb0ee",
+    "workload_sha256": "83474017043e110a2623d224f2094d805df684028efaccbe436e0538d4b4c02d",
+    "ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+    "source_archive_sha256": "d84dd43d934e0daa64b5ce69f8abb0d808cbc7bf7423e44179bf3d166cad0e9c",
+    "checkpoint_identity_sha256": "2079da0984e16520f745c148afc9e2bff143bb79743dca56fdbf12e2e7559c5b",
+    "exact_output_hash": "7228541527853630339"
+  },
+  "matched_simTicks": {
+    "native16": 40062748,
+    "hybrid_base": 45282023,
+    "native4": 60314474,
+    "hybrid_w2_c64": 45341493,
+    "hybrid_w8_c64": 45282023,
+    "hybrid_w4_c16": 45172473,
+    "hybrid_w4_c32": 45297047,
+    "hybrid_w4_c128": 45282023,
+    "hybrid_transport_upper": 45282023
+  },
+  "hybrid_baseline": {
+    "gap_vs_native16_ticks": 5219275,
+    "gap_vs_native16_pct": 13.027750867,
+    "backing_writes": 5133,
+    "backing_queue_high_water": 64,
+    "backing_credit_stalls": 122,
+    "backing_first_issue_to_last_ack_ticks": 34996217,
+    "backing_last_issue_to_last_ack_ticks": 19406,
+    "producer_consumer_overlap_ticks": 4575434,
+    "consumer_exposed_idle_ticks": 34521708,
+    "post_ready_tail_ticks": 5356056,
+    "post_ready_fill_ticks": 674828,
+    "post_ready_alu_ticks": 320512,
+    "post_ready_store_ticks": 4360716,
+    "post_ready_exposed_idle_ticks": 0
+  },
+  "native16_timeline": {
+    "simTicks": 40062748,
+    "result_tsv_sha256": "f46854070c5fd04b204fc99ace6c8149363f0e26437191b3781e9e5c55084034",
+    "indirect_load": {"start": 3436198823, "end": 3473576031, "duration": 37377208},
+    "alu": {"start": 3436306808, "end": 3473717820, "duration": 37411012},
+    "stream_store": {"start": 3436328718, "end": 3475568589, "duration": 39239871},
+    "stream_load": {"start": 3475590499, "end": 3475637136, "duration": 46637},
+    "producer_consumer_overlap_ticks": 37269223,
+    "producer_stream_store_overlap_ticks": 37247313,
+    "stream_store_after_producer_ticks": 1992558
+  },
+  "artifact_sha256": {
+    "macro_profile_json": "ef90bf8fb3897ae7c502184aec028459ee03dd55b1d435343e1147c21986e41e",
+    "macro_profile_tsv": "2742ba11e2c340f907d50ba1363c2fdafc1104aaec0e43f0409fd6d727f7d587",
+    "native16_timeline_json": "ca23694239a78929fad2ee00635ac548c61604efb9c8bb8d1af36a2e48c00b37",
+    "native16_timeline_tsv": "37fbc0d35e4ac5c2fdf3ec60fea83b258a3510004e4076c4b82c5e0e1c131ae7",
+    "native16_timeline_trace": "361530808de62f8ae62216188f6e2fd85ab85ef4f668c459986dce79dec3264e"
+  }
+}
