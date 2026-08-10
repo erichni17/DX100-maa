@@ -15,15 +15,18 @@ SPEC.loader.exec_module(VALIDATOR)
 
 
 class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
-    def evidence(self, enabled: bool) -> tuple[dict[str, str], list[str]]:
-        issues = 12 if enabled else 0
-        ready = 9 if enabled else 0
+    def evidence(
+        self, enabled: bool, read_credits: int = 4
+    ) -> tuple[dict[str, str], list[str]]:
+        issues = 3 * read_credits if enabled else 0
+        ready = 3 * (read_credits - 1) if enabled else 0
         manifest = {
             "case": "paged_4k",
             "logical_tile_elements": "16384",
             "physical_tile_elements": "4096",
             "virtual_index_descriptor_spool": "1",
             "virtual_descriptor_spool_read_ahead": str(int(enabled)),
+            "virtual_descriptor_spool_read_credits": str(read_credits),
         }
         result = {
             "case": "paged_4k",
@@ -36,6 +39,7 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
             "source_issue_sha256": "b" * 64,
             "virtual_index_descriptor_spool": "1",
             "virtual_descriptor_spool_read_ahead": str(int(enabled)),
+            "virtual_descriptor_spool_read_credits": str(read_credits),
             "bounded_replay_passes": "4",
             "bounded_replay_words": "0",
             "bounded_bucket_words": "16384",
@@ -65,9 +69,9 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
             "descriptor_spool_prefetch_occupancy_line_cycles": "100"
             if enabled
             else "0",
-            "descriptor_spool_prefetch_occupancy_high_water": "4"
-            if enabled
-            else "0",
+            "descriptor_spool_prefetch_occupancy_high_water": str(
+                read_credits if enabled else 0
+            ),
             "descriptor_spool_wasted_prefetched_lines": "0",
             "descriptor_spool_boundary_demand_wait_events": "1",
             "descriptor_spool_boundary_demand_wait_cycles": "10",
@@ -87,13 +91,18 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
                     "event=descriptor_spool_overlap_opportunity schema=1 "
                     f"unit=0 operation_tick=99 current_pass={previous} "
                     f"next_pass={pass_number} source_expected=4096 "
-                    "source_received=4000 slots=4"
+                    f"source_received=4000 slots={read_credits}"
                 )
-                for line in range(4):
+                for line in range(read_credits):
                     trace.append(
-                        self.issue(pass_number, line, "next_pass_read_ahead")
+                        self.issue(
+                            pass_number,
+                            line,
+                            "next_pass_read_ahead",
+                            read_credits,
+                        )
                     )
-                for line in range(3):
+                for line in range(read_credits - 1):
                     trace.append(
                         self.response(
                             pass_number, line, "next_pass_read_ahead", 1
@@ -103,12 +112,17 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
                 trace.append(
                     "event=descriptor_spool_read_ahead_promote schema=1 "
                     f"unit=0 operation_tick=99 pass={pass_number} "
-                    "issued=4 ready=3 pending=1"
+                    f"issued={read_credits} ready={read_credits - 1} pending=1"
                 )
                 trace.append(
-                    self.response(pass_number, 3, "next_pass_read_ahead", 0)
+                    self.response(
+                        pass_number,
+                        read_credits - 1,
+                        "next_pass_read_ahead",
+                        0,
+                    )
                 )
-                start = 4
+                start = read_credits
             else:
                 trace.append(self.pass_complete(previous))
                 trace.append(
@@ -118,7 +132,9 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
                 )
                 start = 0
             for line in range(start, 384):
-                trace.append(self.issue(pass_number, line, "demand"))
+                trace.append(
+                    self.issue(pass_number, line, "demand", read_credits)
+                )
                 trace.append(self.response(pass_number, line, "demand", 0))
         trace.append(self.pass_complete(3))
         trace.append(
@@ -128,11 +144,12 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
             "external_segments=3 descriptor_bytes=6 payload_bytes=73728 "
             "write_lines=1152 write_acks=1152 read_lines=1152 "
             "read_responses=1152 control_bytes=3000 backing_bytes=73728 "
-            "staging_bytes=207 write_hwm=16 read_hwm=4 "
+            f"staging_bytes=207 write_hwm=16 read_hwm={read_credits} "
             f"read_ahead={int(enabled)} overlap_opportunities={3 if enabled else 0} "
             f"next_pass_read_issues={issues} next_pass_read_responses={issues} "
             f"useful_prefetched_lines={issues} demand_waits_avoided={ready} "
-            f"prefetch_occupancy=0 prefetch_occupancy_hwm={4 if enabled else 0} "
+            "prefetch_occupancy=0 "
+            f"prefetch_occupancy_hwm={read_credits if enabled else 0} "
             f"prefetch_occupancy_line_cycles={100 if enabled else 0} "
             "wasted_lines=0 boundary_wait_events=1 boundary_wait_cycles=10 "
             "within_pass_wait_events=2 within_pass_wait_cycles=20 "
@@ -141,12 +158,15 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
         return {**manifest, "__result__": result}, trace
 
     @staticmethod
-    def issue(pass_number: int, line: int, mode: str) -> str:
+    def issue(
+        pass_number: int, line: int, mode: str, read_credits: int = 4
+    ) -> str:
         return (
             "event=descriptor_spool_read_issue schema=2 unit=0 "
             f"operation_tick=99 pass={pass_number} line={line} "
-            f"vaddr=0x1 paddr=0x2 payload_bytes=64 pending={(line % 4) + 1} "
-            f"limit=4 mode={mode}"
+            f"vaddr=0x1 paddr=0x2 payload_bytes=64 "
+            f"pending={(line % read_credits) + 1} "
+            f"limit={read_credits} mode={mode}"
         )
 
     @staticmethod
@@ -165,9 +185,13 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
         )
 
     def run_validation(
-        self, enabled: bool, mutate=None, expected_case: str = "paged_4k"
+        self,
+        enabled: bool,
+        mutate=None,
+        expected_case: str = "paged_4k",
+        read_credits: int = 4,
     ):
-        evidence, trace = self.evidence(enabled)
+        evidence, trace = self.evidence(enabled, read_credits)
         result = evidence.pop("__result__")
         if mutate:
             mutate(evidence, result, trace)
@@ -199,6 +223,11 @@ class DescriptorSpoolReadAheadValidatorTest(unittest.TestCase):
         treatment = self.run_validation(True)
         self.assertEqual(treatment["metrics"]["read_ahead_issues"], 12)
         self.assertEqual(treatment["metrics"]["ready_before_demand"], 9)
+
+    def test_accepts_wider_bounded_read_window(self) -> None:
+        treatment = self.run_validation(True, read_credits=8)
+        self.assertEqual(treatment["metrics"]["read_ahead_issues"], 24)
+        self.assertEqual(treatment["metrics"]["ready_before_demand"], 21)
 
     def test_accepts_explicit_transparent_case(self) -> None:
         def transparent(_manifest, result, _trace):

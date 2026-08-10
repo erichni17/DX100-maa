@@ -22,8 +22,7 @@ from typing import (
 EXPECTED_PASSES = (1, 2, 3)
 EXPECTED_LINES_PER_PASS = 384
 EXPECTED_DESCRIPTOR_LINES = 1152
-MAX_READ_SLOTS = 4
-MAX_READ_AHEAD_LINES = 12
+MAX_READ_CREDITS = 32
 HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -143,8 +142,16 @@ def validate_common_evidence(
     events: list[Event],
     enabled: bool,
     expected_case: str,
-) -> Event:
+) -> tuple[Event, int]:
     expected_knob = 1 if enabled else 0
+    read_credits = require_int(
+        manifest, "virtual_descriptor_spool_read_credits", "manifest"
+    )
+    if not 1 <= read_credits <= MAX_READ_CREDITS:
+        fail(
+            "manifest.virtual_descriptor_spool_read_credits is outside "
+            f"[1,{MAX_READ_CREDITS}]"
+        )
     require_exact_ints(
         manifest,
         {
@@ -152,6 +159,7 @@ def validate_common_evidence(
             "physical_tile_elements": 4096,
             "virtual_index_descriptor_spool": 1,
             "virtual_descriptor_spool_read_ahead": expected_knob,
+            "virtual_descriptor_spool_read_credits": read_credits,
         },
         "manifest",
     )
@@ -253,8 +261,8 @@ def validate_common_evidence(
         fail("descriptor terminal record used a fallback")
     if event_int(complete, "control_bytes") > 4096:
         fail("terminal descriptor control state exceeds 4096 bytes")
-    if event_int(complete, "read_hwm") > MAX_READ_SLOTS:
-        fail("terminal descriptor read high-water exceeds four slots")
+    if event_int(complete, "read_hwm") > read_credits:
+        fail("terminal descriptor read high-water exceeds configured credits")
 
     issues = select(events, "descriptor_spool_read_issue")
     responses = select(events, "descriptor_spool_read_response")
@@ -298,10 +306,13 @@ def validate_common_evidence(
         ):
             fail(f"descriptor issue has invalid pass/line tag: {key}")
         pass_lines[pass_number] += 1
-        if event_int(issue, "limit") != MAX_READ_SLOTS:
-            fail(f"descriptor issue {key} does not expose a four-slot limit")
+        if event_int(issue, "limit") != read_credits:
+            fail(
+                f"descriptor issue {key} does not expose the configured "
+                f"{read_credits}-credit limit"
+            )
         pending = event_int(issue, "pending")
-        if pending <= 0 or pending > MAX_READ_SLOTS:
+        if pending <= 0 or pending > read_credits:
             fail(
                 f"descriptor issue {key} has invalid pending occupancy {pending}"
             )
@@ -322,7 +333,7 @@ def validate_common_evidence(
         fail(
             f"descriptor lines are not exactly partitioned by pass: {pass_lines}"
         )
-    return complete
+    return complete, read_credits
 
 
 def validate_control(events: list[Event], complete: Event) -> dict[str, int]:
@@ -373,7 +384,9 @@ def validate_control(events: list[Event], complete: Event) -> dict[str, int]:
     }
 
 
-def validate_treatment(events: list[Event], complete: Event) -> dict[str, int]:
+def validate_treatment(
+    events: list[Event], complete: Event, read_credits: int
+) -> dict[str, int]:
     begins = [
         event
         for event in select(events, "descriptor_spool_replay_begin")
@@ -432,10 +445,10 @@ def validate_treatment(events: list[Event], complete: Event) -> dict[str, int]:
         promotion = promotion_by_pass[pass_number]
         pass_issues = issues_by_pass[pass_number]
         pass_responses = responses_by_pass[pass_number]
-        if not 1 <= len(pass_issues) <= MAX_READ_SLOTS:
+        if not 1 <= len(pass_issues) <= read_credits:
             fail(
                 f"pass {pass_number} issued {len(pass_issues)} read-ahead "
-                "lines, expected [1,4]"
+                f"lines, expected [1,{read_credits}]"
             )
         if len(pass_responses) != len(pass_issues):
             fail(f"pass {pass_number} read-ahead issue/response count differs")
@@ -447,9 +460,10 @@ def validate_treatment(events: list[Event], complete: Event) -> dict[str, int]:
             fail(
                 f"overlap opportunity for pass {pass_number} has wrong predecessor"
             )
-        if event_int(opportunity, "slots") != MAX_READ_SLOTS:
+        if event_int(opportunity, "slots") != read_credits:
             fail(
-                f"overlap opportunity for pass {pass_number} did not reuse four slots"
+                f"overlap opportunity for pass {pass_number} did not expose "
+                f"{read_credits} slots"
             )
         if event_int(opportunity, "source_received") >= event_int(
             opportunity, "source_expected"
@@ -497,8 +511,12 @@ def validate_treatment(events: list[Event], complete: Event) -> dict[str, int]:
         total_ready += ready
 
     read_ahead_count = len(read_ahead_issues)
-    if read_ahead_count > MAX_READ_AHEAD_LINES:
-        fail(f"read-ahead issued {read_ahead_count} lines, limit is 12")
+    max_read_ahead_lines = len(EXPECTED_PASSES) * read_credits
+    if read_ahead_count > max_read_ahead_lines:
+        fail(
+            f"read-ahead issued {read_ahead_count} lines, limit is "
+            f"{max_read_ahead_lines}"
+        )
     require_exact_ints(
         complete.fields,
         {
@@ -512,8 +530,11 @@ def validate_treatment(events: list[Event], complete: Event) -> dict[str, int]:
         "descriptor_spool_complete",
     )
     occupancy_hwm = event_int(complete, "prefetch_occupancy_hwm")
-    if occupancy_hwm <= 0 or occupancy_hwm > MAX_READ_SLOTS:
-        fail("treatment prefetch occupancy high-water is outside [1,4]")
+    if occupancy_hwm <= 0 or occupancy_hwm > read_credits:
+        fail(
+            "treatment prefetch occupancy high-water is outside "
+            f"[1,{read_credits}]"
+        )
     if event_int(complete, "prefetch_occupancy_line_cycles") <= 0:
         fail("treatment did not charge read-ahead occupancy")
     return {
@@ -534,11 +555,11 @@ def validate(
     result = read_result(result_path)
     events = parse_events(trace_path)
     enabled = mode == "treatment"
-    complete = validate_common_evidence(
+    complete, read_credits = validate_common_evidence(
         manifest, result, events, enabled, expected_case
     )
     metrics = (
-        validate_treatment(events, complete)
+        validate_treatment(events, complete, read_credits)
         if enabled
         else validate_control(events, complete)
     )

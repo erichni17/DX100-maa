@@ -21,6 +21,7 @@ validator="$root/experiments/scripts/validate_descriptor_spool_read_ahead.py"
 extra_a_args=${DX100_A_SOURCE_ROUTING_ARGS_FILE:-}
 filter_words_per_cycle=${MAA_DESCRIPTOR_SPOOL_FILTER_WORDS_PER_CYCLE:-16}
 descriptor_spool_read_credits=${MAA_DESCRIPTOR_SPOOL_READ_CREDITS:-4}
+checkpoint_seed=${DX100_DESCRIPTOR_SPOOL_CHECKPOINT_SEED:-}
 base_arms=(native16 native4 resident_control_4k overlap_treatment_4k)
 
 [[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 2; }
@@ -62,6 +63,15 @@ check_sha() {
 check_sha "$gem5_source" "$expected_gem5_sha" gem5
 check_sha "$workload_source" "$expected_workload_sha" workload
 check_sha "$ramulator_source" "$expected_ramulator_sha" Ramulator
+if [[ -n $checkpoint_seed ]]; then
+    checkpoint_seed=$(realpath "$checkpoint_seed")
+    check_sha "$checkpoint_seed/input/gem5.opt" "$expected_gem5_sha" \
+        "checkpoint seed gem5"
+    check_sha "$checkpoint_seed/input/workload" "$expected_workload_sha" \
+        "checkpoint seed workload"
+    check_sha "$checkpoint_seed/input/libramulator.so" \
+        "$expected_ramulator_sha" "checkpoint seed Ramulator"
+fi
 
 config_rel=configs/deprecated/example/se.py
 config_sha=$(sha256sum "$config" | awk '{ print $1 }')
@@ -106,6 +116,22 @@ checkpoint_identity() {
     ) > "$output.files.sha256"
     sha256sum "$output.files.sha256" | awk '{ print $1 }' > "$output"
 }
+checkpoint_dir() {
+    local label=$1
+    if [[ -n $checkpoint_seed ]]; then
+        printf '%s/checkpoints/%s\n' "$checkpoint_seed" "$label"
+    else
+        printf '%s/checkpoints/%s\n' "$out" "$label"
+    fi
+}
+checkpoint_log() {
+    local label=$1
+    if [[ -n $checkpoint_seed ]]; then
+        printf '%s/checkpoints/%s.log\n' "$checkpoint_seed" "$label"
+    else
+        printf '%s/checkpoints/%s.log\n' "$out" "$label"
+    fi
+}
 create_checkpoint() {
     local label=$1
     local checkpoint="$out/checkpoints/$label"
@@ -141,12 +167,29 @@ wait_all() {
     done
     return "$failed"
 }
-checkpoint_jobs=()
-for checkpoint in native16 native4 virtual4; do
-    create_checkpoint "$checkpoint" &
-    checkpoint_jobs+=("$checkpoint:$!")
-done
-wait_all checkpoint "${checkpoint_jobs[@]}"
+if [[ -n $checkpoint_seed ]]; then
+    for checkpoint in native16 native4 virtual4; do
+        seed_dir=$(checkpoint_dir "$checkpoint")
+        seed_log=$(checkpoint_log "$checkpoint")
+        [[ -d $seed_dir && -f $seed_log &&
+           -f $checkpoint_seed/${checkpoint}.treatment.txt ]]
+        cp "$checkpoint_seed/${checkpoint}.treatment.txt" \
+            "$out/${checkpoint}.treatment.txt"
+        checkpoint_identity "$seed_dir" \
+            "$out/checkpoints/${checkpoint}.identity.sha256"
+    done
+    printf 'mode\tseeded\nroot\t%s\n' "$checkpoint_seed" \
+        > "$out/checkpoint_source.tsv"
+else
+    checkpoint_jobs=()
+    for checkpoint in native16 native4 virtual4; do
+        create_checkpoint "$checkpoint" &
+        checkpoint_jobs+=("$checkpoint:$!")
+    done
+    wait_all checkpoint "${checkpoint_jobs[@]}"
+    printf 'mode\tgenerated\nroot\t%s/checkpoints\n' "$out" \
+        > "$out/checkpoint_source.tsv"
+fi
 
 common=(
     DX100_FROZEN_RAMULATOR_LIBRARY="$ramulator"
@@ -162,10 +205,13 @@ run_arm() {
     local read_ahead=$4
     local require_physical=$5
     shift 5
+    local shared_checkpoint shared_log
+    shared_checkpoint=$(checkpoint_dir "$checkpoint")
+    shared_log=$(checkpoint_log "$checkpoint")
     env "${common[@]}" \
-        DX100_SHARED_CHECKPOINT_DIR="$out/checkpoints/$checkpoint" \
+        DX100_SHARED_CHECKPOINT_DIR="$shared_checkpoint" \
         DX100_SHARED_TREATMENT_FILE="$out/${checkpoint}.treatment.txt" \
-        DX100_SHARED_CHECKPOINT_LOG="$out/checkpoints/${checkpoint}.log" \
+        DX100_SHARED_CHECKPOINT_LOG="$shared_log" \
         MAA_REQUIRE_PHYSICAL_RECORD_TRACE="$require_physical" \
         MAA_DESCRIPTOR_SPOOL_VARIANT=resident_first \
         MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD="$read_ahead" \
@@ -327,7 +373,7 @@ for bounded_field in bounded_word_entries bounded_offset_entries \
     fi
 done
 
-checkpoint_identity "$out/checkpoints/virtual4" \
+checkpoint_identity "$(checkpoint_dir virtual4)" \
     "$out/checkpoints/virtual4.post.identity.sha256"
 cmp -s "$out/checkpoints/virtual4.identity.sha256" \
     "$out/checkpoints/virtual4.post.identity.sha256"
@@ -380,6 +426,7 @@ runner_sha=$(sha256sum "$0" | awk '{ print $1 }')
 } > "$out/provenance.tsv"
 sha256sum "$out/matrix.tsv" "$out/provenance.tsv" \
     "$out/source_route.tsv" "$out/filter_width.tsv" \
+    "$out/checkpoint_source.tsv" \
     > "$out/matrix_artifact_sha256.txt"
 touch "$out/matrix.complete"
 cat "$out/matrix.tsv"

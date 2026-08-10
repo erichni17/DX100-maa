@@ -149,6 +149,9 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
         self.assertIn(
             'wait_all checkpoint "${checkpoint_jobs[@]}"', self.matrix
         )
+        self.assertIn("DX100_DESCRIPTOR_SPOOL_CHECKPOINT_SEED", self.matrix)
+        self.assertIn('checkpoint_identity "$(checkpoint_dir virtual4)"', self.matrix)
+        self.assertIn("checkpoint_source.tsv", self.matrix)
         self.assertIn('wait_all arm "${arm_jobs[@]}"', self.matrix)
         for token in (
             "source_commit",

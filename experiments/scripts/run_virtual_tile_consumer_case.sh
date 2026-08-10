@@ -1589,15 +1589,18 @@ elif [[ $virtual -eq 1 ]]; then
                     }
                 fi
                 if [[ $descriptor_spool_read_ahead -eq 1 ]]; then
+                    max_read_ahead_lines=$((
+                        3 * descriptor_spool_read_credits
+                    ))
                     [[ $descriptor_overlap_opportunities -eq 3 &&
                        $descriptor_next_pass_read_issues -gt 0 &&
-                       $descriptor_next_pass_read_issues -le 12 &&
+                       $descriptor_next_pass_read_issues -le $max_read_ahead_lines &&
                        $descriptor_next_pass_read_responses -eq $descriptor_next_pass_read_issues &&
                        $descriptor_useful_prefetched_lines -eq $descriptor_next_pass_read_issues &&
                        $descriptor_demand_waits_avoided -le $descriptor_useful_prefetched_lines &&
                        $descriptor_prefetch_occupancy_line_cycles -gt 0 &&
                        $descriptor_prefetch_occupancy_hwm -gt 0 &&
-                       $descriptor_prefetch_occupancy_hwm -le 4 &&
+                       $descriptor_prefetch_occupancy_hwm -le $descriptor_spool_read_credits &&
                        $descriptor_wasted_prefetched_lines -eq 0 ]] || {
                         echo "descriptor read-ahead accounting did not close" >&2
                         exit 1
