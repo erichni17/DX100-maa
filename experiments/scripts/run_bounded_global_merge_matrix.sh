@@ -57,7 +57,6 @@ common=(
     DX100_GEM5_SOURCE_COMMIT="$source_commit"
     DX100_GEM5_PROVENANCE_FILE="$out/input/gem5.provenance.txt"
     MAA_DEBUG_FLAGS=MAAVirtualTrace,MAAPhysicalRecordTrace,MAAIssueDigest,MAAReorderTrace
-    MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1
     MAA_REQUIRE_SOURCE_ISSUE_DIGEST=1
     MAA_ROW_TABLE_SLICES=16
     MAA_ROW_TABLE_ROWS_PER_SLICE=32
@@ -80,6 +79,7 @@ run_arm() {
 
 run_arm native4 native_direct_4k
 run_arm current_paged4 paged_4k \
+    MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
     DX100_EXTRA_MAA_ARGS_FILE="$out/input/current-paged.args" \
     MAA_VIRTUAL_INDEX_PARTITIONS=64 \
     MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
@@ -92,6 +92,7 @@ run_arm current_paged4 paged_4k \
     MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=16 \
     MAA_REQUIRE_INDEX_FILTER_WAIT=1
 run_arm candidate paged_4k \
+    MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
     MAA_VIRTUAL_INDEX_PARTITIONS=64 \
     MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
     MAA_VIRTUAL_INDEX_RANGE_POLICY=3 \

@@ -111,14 +111,19 @@ def main() -> None:
             fail(f"{arm} lacks the runner completion marker")
         if results[arm]["simTicks"] <= 0:
             fail(f"{arm} has no positive simTicks")
-        if results[arm]["physical_records"] != 16384:
-            fail(f"{arm} physical admission count is not 16384")
+        expected_physical_records = 0 if arm == "native4" else 16384
+        if results[arm]["physical_records"] != expected_physical_records:
+            fail(
+                f"{arm} physical admission count is not "
+                f"{expected_physical_records}"
+            )
 
     output_hashes = {str(results[arm]["output_hash"]) for arm in ARMS}
     if len(output_hashes) != 1:
         fail(f"exact output hashes differ: {sorted(output_hashes)}")
     physical_hashes = {
         str(results[arm]["physical_record_sha256"]) for arm in ARMS
+        if arm != "native4"
     }
     if len(physical_hashes) != 1:
         fail("physical source/admission digests differ")
