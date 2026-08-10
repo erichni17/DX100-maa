@@ -99,8 +99,11 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             "result_payload",
         ):
             self.assertNotIn(forbidden, self.tracker)
-        self.assertIn("std::vector<uint64_t> admitted", self.tracker)
-        self.assertIn("std::vector<uint64_t> retired", self.tracker)
+        self.assertNotIn("std::vector<uint64_t> admitted", self.tracker)
+        self.assertNotIn("std::vector<uint64_t> retired", self.tracker)
+        self.assertIn("bytes.identityBitmaps = 0", self.tracker)
+        self.assertIn("passAdmissions", self.tracker)
+        self.assertIn("passRetirements", self.tracker)
         self.assertIn("chargedBytes", self.tracker)
 
     def test_rescans_are_llc_visible_and_finite_rate(self) -> None:
@@ -285,9 +288,9 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self,
     ) -> None:
         self.assertIn("IND_NumOTEpochDrain", self.runner)
-        self.assertIn(
-            "expected_index_words + rt_full + offset_epoch_drains",
+        self.assertRegex(
             self.runner,
+            r"expected_filter_words \+ rt_full \+ \\\n\s+offset_epoch_drains",
         )
 
     def test_runner_does_not_forward_zero_offset_sentinels(self) -> None:

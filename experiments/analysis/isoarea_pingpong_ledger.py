@@ -19,10 +19,11 @@ def build_ledger() -> dict:
     visible_lanes_per_core = 8
     maas = 1
     physical_elements = 4096
+    runtime_page_elements = 2048
     lane_bytes = physical_elements * 4
     visible_lanes = cores * visible_lanes_per_core
     runtime_slots = maas * 2
-    runtime_payload_bytes = runtime_slots * physical_elements * 8
+    runtime_payload_bytes = runtime_slots * runtime_page_elements * 8
 
     payload = {
         "visible_spd": {
@@ -258,17 +259,19 @@ def verify_sources(root: Path) -> None:
         ],
         "src/mem/MAA/LogicalSPDHiddenPayload.hh": [
             "LogicalSlotsPerMAA = 2",
-            "PageElements = 4096",
+            "PageElements = 2048",
+            "SerialSlotElements = 4096",
             "FP64Bytes = 8",
+            "PayloadBytesPerMAA ==\n              32768",
             "Accounting-only compatibility constants",
         ],
         "src/mem/MAA/LogicalSPDCacheRuntime.hh": [
-            "std::array<PayloadSlot, Slice::Slots> slots{}",
+            "std::array<double, Slice::PayloadElements> payload{}",
             "PrivatePayloadBits =",
-            "2 * 32 * 1024 * 8",
+            "PrivatePayloadBits == 262144",
         ],
         "src/mem/MAA/LogicalSPDCacheGem5Bridge.cc": [
-            "std::make_unique<LogicalSPDCacheRuntime>()",
+            "std::make_unique<LogicalSPDCacheRuntime>(mode)",
             "runtimes.reserve(numMaas)",
         ],
     }

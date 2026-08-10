@@ -16,10 +16,10 @@ class IsoAreaLedgerTest(unittest.TestCase):
         self.assertEqual(ledger["payload"]["visible_spd"]["bytes"], 524288)
         self.assertEqual(
             ledger["payload"]["private_logical_spd_runtime"]["bytes"],
-            65536,
+            32768,
         )
         self.assertEqual(
-            ledger["payload"]["total_maa_local_payload"]["bytes"], 589824
+            ledger["payload"]["total_maa_local_payload"]["bytes"], 557056
         )
         self.assertEqual(
             ledger["payload"]["private_logical_spd_runtime"]["storage_owner"],
