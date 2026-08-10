@@ -140,10 +140,11 @@ void OffsetTable::allocate(int _my_unit_id,
         entries[i].next_itr = -1;
         entries[i].wid = -1;
         entries[i].itr = -1;
+        entries[i].pass = -1;
         free_entries.push_back(i);
     }
 }
-int OffsetTable::insert(int itr, int wid, int last_entry) {
+int OffsetTable::insert(int itr, int wid, int last_entry, int pass) {
     panic_if(summary_mode,
              "Offset Table reorder insert attempted during summary phase\n");
     panic_if(free_entries.empty(),
@@ -156,6 +157,7 @@ int OffsetTable::insert(int itr, int wid, int last_entry) {
     entries[entry_id].itr = itr;
     entries[entry_id].wid = wid;
     entries[entry_id].next_itr = -1;
+    entries[entry_id].pass = pass;
     entries_valid[entry_id] = true;
     if (last_entry != -1) {
         panic_if(last_entry < 0 || last_entry >= num_entries ||
@@ -186,6 +188,7 @@ std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
         entries[prev_itr].itr = -1;
         entries[prev_itr].wid = -1;
         entries[prev_itr].next_itr = -1;
+        entries[prev_itr].pass = -1;
         free_entries.push_back(prev_itr);
     }
     return result;
@@ -200,6 +203,7 @@ OffsetTableEntry OffsetTable::consume_entry(int &itr) {
     entries[itr].itr = -1;
     entries[itr].wid = -1;
     entries[itr].next_itr = -1;
+    entries[itr].pass = -1;
     free_entries.push_back(itr);
     itr = result.next_itr;
     return result;
@@ -284,6 +288,9 @@ void OffsetTable::check_reset() {
         panic_if(entries[i].itr != -1,
                  "Entry %d has logical iteration %d while free!\n",
                  i, entries[i].itr);
+        panic_if(entries[i].pass != -1,
+                 "Entry %d has bounded pass %d while free!\n",
+                 i, entries[i].pass);
     }
     panic_if(static_cast<int>(free_entries.size()) != num_entries,
              "Offset Table has %d/%d free entries at reset\n",
@@ -297,6 +304,7 @@ void OffsetTable::reset() {
         entries[i].itr = -1;
         entries[i].next_itr = -1;
         entries[i].wid = -1;
+        entries[i].pass = -1;
         free_entries.push_back(i);
     }
 }
@@ -337,12 +345,12 @@ bool RowTableEntry::find_addr(Addr addr) const {
     }
     return false;
 }
-bool RowTableEntry::insert(Addr addr, int itr, int wid) {
+bool RowTableEntry::insert(Addr addr, int itr, int wid, int pass) {
     int free_entry_id = -1;
     for (int i = 0; i < num_RT_entries_per_row; i++) {
         if (entries_valid[i] == true && entries[i].addr == addr) {
             entries[i].last_itr =
-                offset_table->insert(itr, wid, entries[i].last_itr);
+                offset_table->insert(itr, wid, entries[i].last_itr, pass);
             DPRINTF(MAARowTable, "ROT[%d] ROW[%d] %s: entry[%d] inserted!\n",
                     my_table_id, my_table_row_id, __func__, i);
             return true;
@@ -354,7 +362,7 @@ bool RowTableEntry::insert(Addr addr, int itr, int wid) {
         return false;
     }
     entries[free_entry_id].addr = addr;
-    const int offset_entry = offset_table->insert(itr, wid, -1);
+    const int offset_entry = offset_table->insert(itr, wid, -1, pass);
     entries[free_entry_id].first_itr = offset_entry;
     entries[free_entry_id].last_itr = offset_entry;
     entries_valid[free_entry_id] = true;
@@ -548,13 +556,14 @@ void RowTableSlice::allocate(int _my_unit_id,
         entries_sent[i] = false;
     }
 }
-bool RowTableSlice::insert(Addr grow_addr, Addr addr, int itr, int wid, bool &first_CL_access) {
+bool RowTableSlice::insert(Addr grow_addr, Addr addr, int itr, int wid,
+                           bool &first_CL_access, int pass) {
     first_CL_access = false;
     // 1. Check if the (Row, CL) pair exists
     for (int i = 0; i < num_RT_rows_per_slice; i++) {
         if (entries_valid[i] == true && entries_sent[i] == false && entries[i].grow_addr == grow_addr && entries[i].find_addr(addr)) {
             DPRINTF(MAARowTable, "ROT[%d] %s: grow[0x%lx] addr[0x%lx] found in R[%d]!\n", my_table_id, __func__, grow_addr, addr, i);
-            assert(entries[i].insert(addr, itr, wid));
+            assert(entries[i].insert(addr, itr, wid, pass));
             return true;
         }
     }
@@ -565,8 +574,11 @@ bool RowTableSlice::insert(Addr grow_addr, Addr addr, int itr, int wid, bool &fi
     int num_free_entries = 0;
     for (int i = 0; i < num_RT_rows_per_slice; i++) {
         if (entries_valid[i] == true && entries_sent[i] == false && entries[i].grow_addr == grow_addr) {
-            if (entries[i].insert(addr, itr, wid)) {
-                DPRINTF(MAARowTable, "ROT[%d] %s: grow[0x%lx] R[%d] inserted new addr[0x%lx]!\n", my_table_id, __func__, grow_addr, i, addr);
+            if (entries[i].insert(addr, itr, wid, pass)) {
+                DPRINTF(MAARowTable,
+                        "ROT[%d] %s: grow[0x%lx] R[%d] inserted new "
+                        "addr[0x%lx]!\n",
+                        my_table_id, __func__, grow_addr, i, addr);
                 return true;
             }
         } else if (entries_valid[i] == false) {
@@ -585,7 +597,7 @@ bool RowTableSlice::insert(Addr grow_addr, Addr addr, int itr, int wid, bool &fi
     // 4. Add new (Row), add new (CL)
     DPRINTF(MAARowTable, "ROT[%d] %s: grow[0x%lx] adding to new R[%d]!\n", my_table_id, __func__, grow_addr, free_row_id);
     entries[free_row_id].grow_addr = grow_addr;
-    assert(entries[free_row_id].insert(addr, itr, wid) == true);
+    assert(entries[free_row_id].insert(addr, itr, wid, pass));
     entries_valid[free_row_id] = true;
     entries_sent[free_row_id] = false;
     if (num_free_entries == 1) {

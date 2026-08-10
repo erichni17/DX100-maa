@@ -174,9 +174,9 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             r"bounded_global_merge_batch_inflight = false;\s*"
             r"state = Status::Build;",
         )
-        self.assertIn("slot->bounded_merge_pass = pass", self.indirect)
+        self.assertIn("static_cast<int>(selected)", self.indirect)
         self.assertIn(
-            "direct_index_partition = slot.bounded_merge_pass",
+            "direct_index_partition = entry.pass",
             self.indirect,
         )
 

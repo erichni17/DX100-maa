@@ -37,6 +37,8 @@ class BoundedFourRunMerge
         static_cast<uint64_t>(MaxActiveDescriptors) * DescriptorBytes;
     static constexpr uint64_t RequiredBackingBytes = Runs * RunStrideBytes;
     static constexpr uint32_t MaxOutstandingWrites = 16;
+    static constexpr uint32_t ActivePassTagBytes =
+        MaxActiveDescriptors * 2 / 8;
 
     using Descriptor = BoundedDescriptorSpool::Descriptor;
 
@@ -540,7 +542,7 @@ class BoundedFourRunMerge
             sizeof(materializationCarry) + sizeof(readers) +
             sizeof(writeValid) + sizeof(writeAcked) +
             sizeof(writeAddresses) + 32 * sizeof(uint32_t) +
-            8 * sizeof(uint64_t) + 8 * sizeof(bool);
+            8 * sizeof(uint64_t) + 8 * sizeof(bool) + ActivePassTagBytes;
     }
 
     static const char *resultName(Result result)

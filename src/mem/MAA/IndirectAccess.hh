@@ -97,7 +97,6 @@ protected:
         Addr claim_grow_addr = 0;
         Addr claim_addr = 0;
         int claim_head = -1;
-        int bounded_merge_pass = -1;
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
     int virtual_response_words = 0;

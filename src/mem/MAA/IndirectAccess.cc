@@ -2158,7 +2158,8 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
     bool first_cl_access = false;
     const bool inserted = RT[my_RT_config][rt_idx].insert(
         grow_addr, line_paddr, descriptor.iteration,
-        static_cast<int>(wid), first_cl_access);
+        static_cast<int>(wid), first_cl_access,
+        static_cast<int>(selected));
     if (!inserted) {
         dispatchBatch("bounded_global_row_capacity");
         return;
@@ -5595,11 +5596,6 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         slot->claim_head = virtual_head;
         if (maa->virtual_bounded_global_merge &&
             bounded_global_merge_phase == BoundedGlobalMergePhase::Merge) {
-            const uint32_t pass = bounded_range_pass.passForGrow(grow_addr);
-            panic_if(pass >= bounded_range_pass.passes(),
-                     "I[%d] merged response grow 0x%lx has no pass\n",
-                     my_indirect_id, grow_addr);
-            slot->bounded_merge_pass = pass;
             bounded_global_merge_source_responses++;
         }
         if (virtual_response_word_pool_limit != 0) {
@@ -6259,9 +6255,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                 const auto &word = slot.packed_words[slot.next_packed_word];
                 virtual_word_attempts_this_cycle++;
                 if (virtual_load) {
-                    if (slot.bounded_merge_pass >= 0)
-                        direct_index_partition =
-                            slot.bounded_merge_pass;
+                    if (entry.pass >= 0)
+                        direct_index_partition = entry.pass;
                     if (!reserveVirtualCombineBank(entry.itr)) {
                         virtual_word_attempts_this_cycle--;
                         bank_stalled = true;
@@ -6323,8 +6318,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             const uint8_t *word =
                 slot.data.data() + entry.wid * my_word_size;
             if (virtual_load) {
-                if (slot.bounded_merge_pass >= 0)
-                    direct_index_partition = slot.bounded_merge_pass;
+                if (entry.pass >= 0)
+                    direct_index_partition = entry.pass;
                 if (!reserveVirtualCombineBank(entry.itr)) {
                     virtual_word_attempts_this_cycle--;
                     bank_stalled = true;

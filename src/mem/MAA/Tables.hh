@@ -53,6 +53,7 @@ struct OffsetTableEntry {
     int itr;
     int wid;
     int next_itr;
+    int pass;
 };
 class OffsetTable {
 public:
@@ -71,7 +72,7 @@ public:
                   int _num_entries,
                   MAA *_maa,
                   bool _is_stream = false);
-    int insert(int itr, int wid, int last_entry);
+    int insert(int itr, int wid, int last_entry, int pass = -1);
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
     OffsetTableEntry peek_entry(int itr) const;
     int count_entries(int itr) const;
@@ -141,7 +142,7 @@ public:
                   OffsetTable *_offset_table,
                   MAA *_maa,
                   bool _is_stream = false);
-    bool insert(Addr addr, int itr, int wid);
+    bool insert(Addr addr, int itr, int wid, int pass = -1);
     bool find_addr(Addr addr) const;
     void reset();
     void check_reset();
@@ -192,7 +193,8 @@ public:
                   OffsetTable *_offset_table,
                   MAA *_maa,
                   bool _is_stream = false);
-    bool insert(Addr grow_addr, Addr addr, int itr, int wid, bool &first_CL_access);
+    bool insert(Addr grow_addr, Addr addr, int itr, int wid,
+                bool &first_CL_access, int pass = -1);
     bool get_entry_send(Addr &addr, bool drain);
     bool claim_entry_send(Addr &addr, int &head, int &words, bool drain,
                           bool group_by_grow, bool commit);
