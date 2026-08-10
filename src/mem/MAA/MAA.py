@@ -102,6 +102,10 @@ class MAA(ClockedObject):
     virtual_masked_writes = Param.Bool(
         False, "Retire partial virtual lines as masked cache-line writes"
     )
+    virtual_idealized_write_ack = Param.Bool(
+        False,
+        "Diagnostic upper bound: expose virtual pages at final write issue",
+    )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",

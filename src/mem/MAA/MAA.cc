@@ -147,6 +147,7 @@ MAA::MAA(const MAAParams &p)
       virtual_words_per_cycle(p.virtual_words_per_cycle),
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
+      virtual_idealized_write_ack(p.virtual_idealized_write_ack),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
       virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
@@ -3170,10 +3171,15 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         IND_VirtWriteIssues.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteIssues"), statistics::units::Count::get(), "number of virtual retirement writes issued"));
         IND_VirtWriteCompletions.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteCompletions"), statistics::units::Count::get(), "number of virtual retirement writes completed"));
         IND_VirtWriteAddressConflicts.push_back(new statistics::Scalar(this, MAKE_INDIRECT_STAT_NAME("IND_VirtWriteAddressConflicts"), statistics::units::Count::get(), "virtual retirement write attempts deferred by an exact-address MAA transaction conflict"));
+        IND_VirtIdealizedAckPages.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtIdealizedAckPages"),
+            statistics::units::Count::get(),
+            "virtual pages exposed at final write issue by the diagnostic "
+            "idealized-ack upper bound"));
         IND_VirtPagesReady.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReady"),
             statistics::units::Count::get(),
-            "virtual output pages whose retirement writes all completed"));
+            "virtual output pages exposed to their consumer"));
         IND_VirtPagesReadyBeforeSourceDrain.push_back(new statistics::Scalar(
             this,
             MAKE_INDIRECT_STAT_NAME("IND_VirtPagesReadyBeforeSourceDrain"),

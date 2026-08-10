@@ -431,6 +431,7 @@ public:
     unsigned int virtual_words_per_cycle;
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
+    bool virtual_idealized_write_ack;
     unsigned int virtual_index_buffer_lines;
     bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
@@ -816,6 +817,7 @@ public:
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
         std::vector<statistics::Scalar *> IND_VirtWriteCompletions;
         std::vector<statistics::Scalar *> IND_VirtWriteAddressConflicts;
+        std::vector<statistics::Scalar *> IND_VirtIdealizedAckPages;
         std::vector<statistics::Scalar *> IND_VirtPagesReady;
         std::vector<statistics::Scalar *> IND_VirtPagesReadyBeforeSourceDrain;
         std::vector<statistics::Scalar *> IND_VirtFirstPageReadyCycles;

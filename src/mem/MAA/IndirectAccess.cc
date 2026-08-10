@@ -3702,6 +3702,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_page_expected_words.clear();
         virtual_page_issued_words.clear();
         virtual_page_completed_words.clear();
+        virtual_page_last_write_key.clear();
         virtual_page_ready.clear();
         virtual_pages_ready = 0;
         virtual_pages_ready_before_source_drain = 0;
@@ -6053,6 +6054,7 @@ void IndirectAccessUnit::initializeVirtualPageTracking() {
     virtual_page_expected_words.assign(pages, 0);
     virtual_page_issued_words.assign(pages, 0);
     virtual_page_completed_words.assign(pages, 0);
+    virtual_page_last_write_key.assign(pages, 0);
     virtual_page_ready.assign(pages, false);
     for (int page = 0; page < pages; ++page) {
         virtual_page_logical_words[page] =
@@ -6084,18 +6086,29 @@ void IndirectAccessUnit::markVirtualPageReadyIfComplete(
     panic_if(page < 0 ||
                  page >= static_cast<int>(virtual_page_logical_words.size()),
              "I[%d] invalid virtual page %d\n", my_indirect_id, page);
+    if (final_write_key == 0 && maa->virtual_idealized_write_ack &&
+        virtual_page_expected_words[page] != 0)
+        final_write_key = virtual_page_last_write_key[page];
+    const bool writes_visible =
+        virtual_page_completed_words[page] ==
+            virtual_page_expected_words[page] ||
+        (maa->virtual_idealized_write_ack && final_write_key != 0 &&
+         virtual_page_issued_words[page] ==
+             virtual_page_expected_words[page]);
     if (virtual_page_ready[page] ||
         virtual_page_scanned_words[page] != virtual_page_logical_words[page] ||
         virtual_page_issued_words[page] != virtual_page_expected_words[page] ||
-        virtual_page_completed_words[page] !=
-            virtual_page_expected_words[page])
+        !writes_visible)
         return;
 
+    const bool idealized_visibility =
+        virtual_page_completed_words[page] !=
+        virtual_page_expected_words[page];
     virtual_page_ready[page] = true;
     virtual_pages_ready++;
-    // A page with writes becomes visible only at its exact final WriteResp.
-    // A zero-write page is already coherent after its complete scan; give that
-    // distinct case an opaque non-address transaction identity.
+    // Normally a page with writes becomes visible only at its exact final
+    // WriteResp. The diagnostic upper bound instead uses the final issued
+    // transaction. A zero-write page is coherent after its complete scan.
     if (final_write_key == 0) {
         panic_if(virtual_page_expected_words[page] != 0,
                  "I[%d] page %d closed without its final WriteResp key\n",
@@ -6104,6 +6117,16 @@ void IndirectAccessUnit::markVirtualPageReadyIfComplete(
             (static_cast<Addr>(my_indirect_id) << 8) - page;
     }
     maa->setVirtualPageReady(my_dst_tile, page, final_write_key);
+    if (idealized_visibility) {
+        (*maa->stats.IND_VirtIdealizedAckPages[my_indirect_id])++;
+        DPRINTF(MAAVirtualTrace,
+                "event=idealized_ack_page_ready schema=1 unit=%d "
+                "operation_tick=%lu page=%d transaction=0x%lx issued=%d "
+                "completed=%d\n",
+                my_indirect_id, my_decode_start_tick, page, final_write_key,
+                virtual_page_issued_words[page],
+                virtual_page_completed_words[page]);
+    }
     if (virtual_first_page_ready_tick == 0)
         virtual_first_page_ready_tick = curTick();
     if (virtual_pages_ready == static_cast<int>(virtual_page_ready.size()))
@@ -6156,6 +6179,7 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
                  my_indirect_id, itr, my_max);
         const int page = itr / maa->physical_tile_elements;
         page_words[page]++;
+        virtual_page_last_write_key[page] = write_key;
         virtual_page_issued_words[page]++;
         panic_if(virtual_page_issued_words[page] >
                      virtual_page_expected_words[page],
@@ -6235,6 +6259,16 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
     virtual_outstanding_writes++;
     virtual_outstanding_write_lines.insert(write_key);
     trackVirtualRetirementWrite(write_key, vaddr, size, valid_words);
+    if (maa->virtual_idealized_write_ack) {
+        const auto metadata = virtual_retirement_write_pages.find(write_key);
+        panic_if(metadata == virtual_retirement_write_pages.end(),
+                 "I[%d] idealized write 0x%lx lacks page metadata\n",
+                 my_indirect_id, write_key);
+        for (const auto &[page, words] : metadata->second) {
+            (void)words;
+            markVirtualPageReadyIfComplete(page, write_key);
+        }
+    }
     (*maa->stats.IND_VirtWriteIssues[my_indirect_id])++;
     attribution_write_issues++;
     if (macro_backing_first_issue_tick == 0)

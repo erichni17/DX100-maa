@@ -369,6 +369,15 @@ def addNoISAOptions(parser):
         help="Retire partial virtual lines as masked cache-line writes",
     )
     parser.add_argument(
+        "--maa_virtual_idealized_write_ack",
+        action="store_true",
+        help=(
+            "Diagnostic upper bound that exposes a virtual page when its "
+            "final backing write issues; real write responses still fence "
+            "producer completion"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,

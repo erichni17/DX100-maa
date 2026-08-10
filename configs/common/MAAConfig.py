@@ -135,6 +135,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_masked_writes"
         )
 
+    if hasattr(options, "maa_virtual_idealized_write_ack"):
+        opts["virtual_idealized_write_ack"] = getattr(
+            options, "maa_virtual_idealized_write_ack"
+        )
+
     if hasattr(options, "maa_virtual_index_buffer_lines"):
         opts["virtual_index_buffer_lines"] = getattr(
             options, "maa_virtual_index_buffer_lines"

@@ -151,6 +151,7 @@ protected:
     std::vector<int> virtual_page_expected_words;
     std::vector<int> virtual_page_issued_words;
     std::vector<int> virtual_page_completed_words;
+    std::vector<Addr> virtual_page_last_write_key;
     std::vector<bool> virtual_page_ready;
     int virtual_pages_ready = 0;
     int virtual_pages_ready_before_source_drain = 0;
