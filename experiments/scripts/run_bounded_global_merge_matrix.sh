@@ -69,10 +69,9 @@ common=(
 run_arm() {
     local label=$1
     local case_name=$2
-    local selector="$out/${label}.treatment.txt"
     shift 2
     env "${common[@]}" \
-        DX100_SHARED_TREATMENT_FILE="$selector" \
+        DX100_SHARED_TREATMENT_FILE="$checkpoint_selector" \
         "$@" \
         "$root/experiments/scripts/run_virtual_tile_consumer_case.sh" \
         "$gem5" "$workload" "$case_name" "$out/$label" \
