@@ -4492,7 +4492,7 @@ void IndirectAccessUnit::executeInstruction() {
             ? !virtual_build_incomplete
             : legacy_refill_allowed;
         if (!my_fill_finished && !direct_index_partition_barrier &&
-            refill_allowed) {
+            !retain_global_merge_combiner && refill_allowed) {
             bool finished, waitForFinish, waitForElement, needDrain;
             int num_spd_read_condidx_accesses, num_rowtable_accesses;
             int num_direct_index_filter_words;

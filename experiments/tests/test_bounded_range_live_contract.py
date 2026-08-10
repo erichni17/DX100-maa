@@ -179,6 +179,11 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             "direct_index_partition = entry.pass",
             self.indirect,
         )
+        self.assertRegex(
+            self.indirect,
+            r"if \(!my_fill_finished && !direct_index_partition_barrier &&\s*"
+            r"!retain_global_merge_combiner && refill_allowed\)",
+        )
 
     def test_global_merge_batch_is_closed_at_lifecycle_boundaries(
         self,
