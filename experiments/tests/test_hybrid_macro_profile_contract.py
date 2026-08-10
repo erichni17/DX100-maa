@@ -88,6 +88,7 @@ class HybridMacroProfileContractTest(unittest.TestCase):
                 (run / "virtual_trace.log").write_text("", encoding="utf-8")
             producer = (
                 "event=hybrid_producer_macro schema=1 unit=0 "
+                "generation=1 registration_tick=9 "
                 "operation_tick=10 complete_tick=100 "
                 "b_first_issue_tick=11 b_last_issue_tick=12 "
                 "b_last_response_tick=13 a_first_issue_tick=20 "
@@ -101,7 +102,7 @@ class HybridMacroProfileContractTest(unittest.TestCase):
             )
             consumer = (
                 "event=hybrid_consumer_macro schema=1 generation=1 "
-                "producer_operation_tick=10 submit_tick=15 "
+                "producer_registration_tick=9 submit_tick=15 "
                 "all_pages_ready_tick=70 retire_tick=110 "
                 "fill_issues=4 fill_completions=4 alu_issues=4 "
                 "alu_completions=4 store_issues=4 store_completions=4 "

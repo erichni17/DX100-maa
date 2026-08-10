@@ -486,6 +486,8 @@ public:
                                int wordSize);
     void setVirtualPageReady(int tokenTileID, int pageID);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
+    uint64_t getVirtualPageGeneration(int tokenTileID) const;
+    Tick getVirtualProducerRegistrationTick(int tokenTileID) const;
     bool transparentControllerOwnsTile(int maaID, int tileID) const;
     bool transparentControllerUsesRegister(int maaID, int firstRegister,
                                            int registerWords) const;
@@ -519,7 +521,7 @@ protected:
     std::vector<uint64_t> virtualPageConsumedGeneration;
     std::vector<Addr> virtualPageBackingAddr;
     std::vector<int> virtualPageWordSize;
-    std::vector<Tick> virtualMacroOperationTick;
+    std::vector<Tick> virtualProducerRegistrationTick;
     std::vector<Tick> virtualPageLastReadyTick;
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
@@ -551,7 +553,7 @@ protected:
     void snapshotTransparentBlockerTracking(uint64_t generation);
     void finishTransparentBlockerTracking(uint64_t generation);
     void emitTransparentMacroSummary(uint64_t generation,
-                                     Tick producerOperationTick);
+                                     Tick producerRegistrationTick);
     struct LogicalSPDSenderState : public Packet::SenderState
     {
         LogicalSPDCacheGem5Bridge::CallbackToken token{};

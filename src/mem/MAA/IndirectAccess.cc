@@ -5875,6 +5875,7 @@ void IndirectAccessUnit::transitionAttributionStage(
         if (isVirtualLoad()) {
             DPRINTF(MAAMacroEvent,
                     "event=hybrid_producer_macro schema=1 unit=%d "
+                    "generation=%lu registration_tick=%lu "
                     "operation_tick=%lu complete_tick=%lu "
                     "b_first_issue_tick=%lu b_last_issue_tick=%lu "
                     "b_last_response_tick=%lu b_lines=%lu b_bytes=%lu "
@@ -5906,7 +5907,10 @@ void IndirectAccessUnit::transitionAttributionStage(
                     "request_retained_cycles=%lu request_writes_cycles=%lu "
                     "request_final_drain_cycles=%lu "
                     "request_runnable_cycles=%lu\n",
-                    my_indirect_id, my_decode_start_tick, now,
+                    my_indirect_id,
+                    maa->getVirtualPageGeneration(my_dst_tile),
+                    maa->getVirtualProducerRegistrationTick(my_dst_tile),
+                    my_decode_start_tick, now,
                     macro_b_first_issue_tick, macro_b_last_issue_tick,
                     macro_b_last_response_tick, macro_b_lines, macro_b_bytes,
                     macro_b_retries, macro_b_queue_high_water,

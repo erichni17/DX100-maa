@@ -107,8 +107,16 @@ def validate_hybrid(label, result, producer, consumer):
         ("submit_tick", "retire_tick"),
         f"{label} consumer",
     )
-    if producer["operation_tick"] != consumer["producer_operation_tick"]:
-        raise ValueError(f"{label}: producer/consumer operation tick mismatch")
+    if producer["generation"] != consumer["generation"]:
+        raise ValueError(f"{label}: producer/consumer generation mismatch")
+    if producer["registration_tick"] != consumer["producer_registration_tick"]:
+        raise ValueError(
+            f"{label}: producer/consumer registration tick mismatch"
+        )
+    if producer["registration_tick"] > producer["operation_tick"]:
+        raise ValueError(
+            f"{label}: producer began before generation registration"
+        )
     if producer["page_last_ready_tick"] != consumer["all_pages_ready_tick"]:
         raise ValueError(f"{label}: producer/consumer all-ready tick mismatch")
     if producer["pages_ready"] != 4 or result["pages_ready"] != "4":

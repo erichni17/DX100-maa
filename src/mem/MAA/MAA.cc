@@ -283,7 +283,7 @@ MAA::MAA(const MAAParams &p)
     virtualPageConsumedGeneration.assign(num_tiles, 0);
     virtualPageBackingAddr.assign(num_tiles, 0);
     virtualPageWordSize.assign(num_tiles, 0);
-    virtualMacroOperationTick.assign(num_tiles, 0);
+    virtualProducerRegistrationTick.assign(num_tiles, 0);
     virtualPageLastReadyTick.assign(num_tiles, 0);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
@@ -1076,7 +1076,7 @@ void MAA::finishTransparentBlockerTracking(uint64_t generation) {
     transparentInstructionFileBlocked = false;
 }
 void MAA::emitTransparentMacroSummary(uint64_t generation,
-                                      Tick producerOperationTick) {
+                                      Tick producerRegistrationTick) {
     using Stage = HybridMacroEventTracker::Stage;
     using Blocker = TransparentSPDController::Blocker;
     const auto &record = transparentMacroTracker.result();
@@ -1107,7 +1107,7 @@ void MAA::emitTransparentMacroSummary(uint64_t generation,
         : 0;
     DPRINTF(MAAMacroEvent,
             "event=hybrid_consumer_macro schema=1 generation=%lu "
-            "producer_operation_tick=%lu submit_tick=%lu "
+            "producer_registration_tick=%lu submit_tick=%lu "
             "all_pages_ready_tick=%lu all_ready_before_submit=%d "
             "retire_tick=%lu fill_first_issue_tick=%lu "
             "fill_last_issue_tick=%lu fill_last_complete_tick=%lu "
@@ -1130,7 +1130,7 @@ void MAA::emitTransparentMacroSummary(uint64_t generation,
             "blocker_producer_not_ready_ticks=%lu "
             "blocker_stream_busy_ticks=%lu blocker_alu_busy_ticks=%lu "
             "blocker_if_full_ticks=%lu\n",
-            generation, producerOperationTick, record.startTick,
+            generation, producerRegistrationTick, record.startTick,
             transparentMacroAllReadyTick,
             transparentMacroAllReadyBeforeSubmit, record.endTick,
             fill.firstIssueTick, fill.lastIssueTick, fill.lastCompleteTick,
@@ -2082,7 +2082,7 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                      "Transparent macro tracker did not finish cleanly\n");
             emitTransparentMacroSummary(
                 descriptor.generation,
-                virtualMacroOperationTick[descriptor.tokenTile]);
+                virtualProducerRegistrationTick[descriptor.tokenTile]);
             panic_if(!transparentController.retire(),
                      "Completed transparent descriptor did not retire\n");
             transparentControllerLookupReadyTick = 0;
@@ -2165,7 +2165,7 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
     ++virtualPageGeneration[tokenTileID];
     virtualPageBackingAddr[tokenTileID] = backingAddr;
     virtualPageWordSize[tokenTileID] = wordSize;
-    virtualMacroOperationTick[tokenTileID] = curTick();
+    virtualProducerRegistrationTick[tokenTileID] = curTick();
     virtualPageLastReadyTick[tokenTileID] = 0;
 }
 bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
@@ -2174,6 +2174,16 @@ bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
              "invalid virtual page token=%d page=%d\n", tokenTileID,
              pageID);
     return virtualPageReady[tokenTileID][pageID];
+}
+uint64_t MAA::getVirtualPageGeneration(int tokenTileID) const {
+    panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
+             "invalid virtual page token=%d\n", tokenTileID);
+    return virtualPageGeneration[tokenTileID];
+}
+Tick MAA::getVirtualProducerRegistrationTick(int tokenTileID) const {
+    panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
+             "invalid virtual page token=%d\n", tokenTileID);
+    return virtualProducerRegistrationTick[tokenTileID];
 }
 void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
     panic_if(getVirtualPageReady(tokenTileID, pageID),
