@@ -1973,7 +1973,8 @@ void IndirectAccessUnit::serviceBoundedGlobalRunMaterialization()
     my_fill_finished = false;
     virtual_build_incomplete = false;
     my_force_cache_determined = true;
-    my_force_cache = direct_index_force_cache;
+    my_force_cache = maa->virtual_descriptor_spool_source_bypass_cache
+        ? false : direct_index_force_cache;
     state = Status::Build;
     transitionAttributionStage(AttributionStage::Build,
                                "bounded_global_merge_begin");
@@ -1987,6 +1988,11 @@ void IndirectAccessUnit::serviceBoundedGlobalRunMaterialization()
             bounded_global_merge.population(2),
             bounded_global_merge.population(3),
             BoundedFourRunMerge::DescriptorBytes);
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_source_route schema=1 unit=%d "
+            "operation_tick=%lu source=A force_cache=%d bypass_cache=%d\n",
+            my_indirect_id, my_decode_start_tick, my_force_cache,
+            maa->virtual_descriptor_spool_source_bypass_cache);
     scheduleNextExecution(true);
 }
 

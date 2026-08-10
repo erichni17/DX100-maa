@@ -208,6 +208,12 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             "                    maa->virtual_descriptor_spool_source_bypass_cache",
             self.indirect,
         )
+        self.assertRegex(
+            self.indirect,
+            r"my_force_cache = maa->virtual_descriptor_spool_source_bypass_cache\s*"
+            r"\? false : direct_index_force_cache;",
+        )
+        self.assertIn("event=bounded_global_source_route", self.indirect)
         global_matrix = (
             ROOT / "experiments/scripts/run_bounded_global_merge_matrix.sh"
         ).read_text()
