@@ -13,6 +13,7 @@
 #include "debug/MAACachePort.hh"
 #include "debug/MAAController.hh"
 #include "debug/MAACpuPort.hh"
+#include "debug/MAAMacroEvent.hh"
 #include "debug/MAAMemPort.hh"
 #include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/ALU.hh"
@@ -61,6 +62,22 @@ transparentActionName(TransparentSPDController::Action action)
         return "stream_store";
     }
     panic("invalid transparent-controller action\n");
+}
+
+HybridMacroEventTracker::Stage
+transparentMacroStage(TransparentSPDController::Action action)
+{
+    switch (action) {
+      case TransparentSPDController::Action::Fill:
+        return HybridMacroEventTracker::Stage::PageFill;
+      case TransparentSPDController::Action::Compute:
+        return HybridMacroEventTracker::Stage::ALU;
+      case TransparentSPDController::Action::Store:
+        return HybridMacroEventTracker::Stage::StreamStore;
+      case TransparentSPDController::Action::None:
+        panic("empty transparent action has no macro stage\n");
+    }
+    panic("invalid transparent action has no macro stage\n");
 }
 
 class ImmediateLogicalSPDTranslation final : public BaseMMU::Translation
@@ -266,6 +283,8 @@ MAA::MAA(const MAAParams &p)
     virtualPageConsumedGeneration.assign(num_tiles, 0);
     virtualPageBackingAddr.assign(num_tiles, 0);
     virtualPageWordSize.assign(num_tiles, 0);
+    virtualMacroOperationTick.assign(num_tiles, 0);
+    virtualPageLastReadyTick.assign(num_tiles, 0);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
     spd = new SPD(this, num_tiles, num_tile_elements,
@@ -926,6 +945,12 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
              "Validated transparent descriptor was not accepted\n");
     transparentControllerLookupReadyTick =
         getClockEdge(Cycles(TransparentSPDController::ControllerLookupCycles));
+    panic_if(!transparentMacroTracker.begin(curTick()),
+             "Transparent macro tracker was active at descriptor submit\n");
+    transparentMacroAllReadyRecord = {};
+    transparentMacroAllReadyTick = 0;
+    transparentMacroAllReadySampled = false;
+    transparentMacroAllReadyBeforeSubmit = false;
 
     // These two credits cover the complete descriptor lifetime.  Native
     // micro-ops take and return their own credits independently.
@@ -938,6 +963,20 @@ bool MAA::submitTransparentDescriptor(InstructionPtr instruction) {
                      descriptor.tokenTile, page),
                  "Failed to import ready page %d for token %d\n", page,
                  descriptor.tokenTile);
+    }
+    bool all_pages_ready = true;
+    for (int page = 0; page < TransparentSPDController::NumPages; ++page) {
+        all_pages_ready = all_pages_ready &&
+            getVirtualPageReady(descriptor.tokenTile, page);
+    }
+    if (all_pages_ready) {
+        panic_if(!transparentMacroTracker.sample(curTick()),
+                 "Failed to sample macro tracker at submit\n");
+        transparentMacroAllReadyRecord = transparentMacroTracker.result();
+        transparentMacroAllReadyTick =
+            virtualPageLastReadyTick[descriptor.tokenTile];
+        transparentMacroAllReadySampled = true;
+        transparentMacroAllReadyBeforeSubmit = true;
     }
     startTransparentBlockerTracking();
     DPRINTF(MAAVirtualTrace,
@@ -1036,6 +1075,83 @@ void MAA::finishTransparentBlockerTracking(uint64_t generation) {
     transparentBlockerTracking = false;
     transparentInstructionFileBlocked = false;
 }
+void MAA::emitTransparentMacroSummary(uint64_t generation,
+                                      Tick producerOperationTick) {
+    using Stage = HybridMacroEventTracker::Stage;
+    using Blocker = TransparentSPDController::Blocker;
+    const auto &record = transparentMacroTracker.result();
+    const auto &fill = record.stages[static_cast<size_t>(Stage::PageFill)];
+    const auto &alu = record.stages[static_cast<size_t>(Stage::ALU)];
+    const auto &store =
+        record.stages[static_cast<size_t>(Stage::StreamStore)];
+    const auto &ready = transparentMacroAllReadyRecord;
+    const auto &ready_fill =
+        ready.stages[static_cast<size_t>(Stage::PageFill)];
+    const auto &ready_alu = ready.stages[static_cast<size_t>(Stage::ALU)];
+    const auto &ready_store =
+        ready.stages[static_cast<size_t>(Stage::StreamStore)];
+    const Tick producer_consumer_overlap = transparentMacroAllReadySampled
+        ? (ready.endTick - ready.startTick) - ready.exposedIdleTicks
+        : 0;
+    const Tick post_ready_idle = transparentMacroAllReadySampled
+        ? record.exposedIdleTicks - ready.exposedIdleTicks
+        : 0;
+    const Tick post_ready_fill = transparentMacroAllReadySampled
+        ? fill.activeTicks - ready_fill.activeTicks
+        : 0;
+    const Tick post_ready_alu = transparentMacroAllReadySampled
+        ? alu.activeTicks - ready_alu.activeTicks
+        : 0;
+    const Tick post_ready_store = transparentMacroAllReadySampled
+        ? store.activeTicks - ready_store.activeTicks
+        : 0;
+    DPRINTF(MAAMacroEvent,
+            "event=hybrid_consumer_macro schema=1 generation=%lu "
+            "producer_operation_tick=%lu submit_tick=%lu "
+            "all_pages_ready_tick=%lu all_ready_before_submit=%d "
+            "retire_tick=%lu fill_first_issue_tick=%lu "
+            "fill_last_issue_tick=%lu fill_last_complete_tick=%lu "
+            "fill_active_ticks=%lu fill_issues=%lu fill_completions=%lu "
+            "fill_lines=%lu fill_bytes=%lu fill_retries=%lu "
+            "fill_queue_high_water=%lu alu_first_issue_tick=%lu "
+            "alu_last_issue_tick=%lu alu_last_complete_tick=%lu "
+            "alu_active_ticks=%lu alu_issues=%lu alu_completions=%lu "
+            "alu_retries=%lu alu_queue_high_water=%lu "
+            "store_first_issue_tick=%lu store_last_issue_tick=%lu "
+            "store_last_complete_tick=%lu store_active_ticks=%lu "
+            "store_issues=%lu store_completions=%lu store_lines=%lu "
+            "store_bytes=%lu store_retries=%lu "
+            "store_queue_high_water=%lu action_overlap_ticks=%lu "
+            "consumer_exposed_idle_ticks=%lu "
+            "active_stage_high_water=%lu "
+            "producer_consumer_overlap_ticks=%lu "
+            "post_ready_fill_ticks=%lu post_ready_alu_ticks=%lu "
+            "post_ready_store_ticks=%lu post_ready_exposed_idle_ticks=%lu "
+            "blocker_producer_not_ready_ticks=%lu "
+            "blocker_stream_busy_ticks=%lu blocker_alu_busy_ticks=%lu "
+            "blocker_if_full_ticks=%lu\n",
+            generation, producerOperationTick, record.startTick,
+            transparentMacroAllReadyTick,
+            transparentMacroAllReadyBeforeSubmit, record.endTick,
+            fill.firstIssueTick, fill.lastIssueTick, fill.lastCompleteTick,
+            fill.activeTicks, fill.issues, fill.completions, fill.lines,
+            fill.bytes, fill.retries, fill.queueHighWater,
+            alu.firstIssueTick, alu.lastIssueTick, alu.lastCompleteTick,
+            alu.activeTicks, alu.issues, alu.completions, alu.retries,
+            alu.queueHighWater, store.firstIssueTick, store.lastIssueTick,
+            store.lastCompleteTick, store.activeTicks, store.issues,
+            store.completions, store.lines, store.bytes, store.retries,
+            store.queueHighWater, record.overlapTicks,
+            record.exposedIdleTicks, record.activeStageHighWater,
+            producer_consumer_overlap, post_ready_fill, post_ready_alu,
+            post_ready_store, post_ready_idle,
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::ProducerNotReady)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::StreamBusy)],
+            transparentBlockerTicks[static_cast<size_t>(Blocker::ALUBusy)],
+            transparentBlockerTicks[
+                static_cast<size_t>(Blocker::InstructionFileFull)]);
+}
 void MAA::recordTransparentConsumerAcceptance(
     int page, uint64_t transaction, Addr address, int ordinal, int expected) {
     panic_if(!transparentController.active() || ordinal <= 0 ||
@@ -1051,6 +1167,18 @@ void MAA::recordTransparentConsumerAcceptance(
             transparentController.descriptor().generation, page,
             transaction, address, ordinal, expected, ordinal == 1,
             ordinal == expected);
+}
+void MAA::recordTransparentStreamTraffic(
+    TransparentSPDController::Action action, uint64_t lines,
+    uint64_t bytes) {
+    panic_if(action != TransparentSPDController::Action::Fill &&
+                 action != TransparentSPDController::Action::Store,
+             "Cannot record stream traffic for transparent action %d\n",
+             static_cast<int>(action));
+    panic_if(!transparentMacroTracker.traffic(
+                 transparentMacroStage(action), lines, bytes),
+             "Failed to record transparent %s traffic\n",
+             transparentActionName(action));
 }
 bool MAA::dispatchTransparentMicroOp(
     const TransparentSPDController::Request &request) {
@@ -1170,6 +1298,9 @@ void MAA::tryIssueTransparentMicroOp() {
         if (request.action == TransparentSPDController::Action::None)
             return;
         if (!dispatchTransparentMicroOp(request)) {
+            panic_if(!transparentMacroTracker.retry(
+                         transparentMacroStage(request.action), curTick()),
+                     "Failed to record transparent action retry\n");
             updateTransparentBlockerTracking();
             transparentInstructionFileBlocked = true;
             updateTransparentBlockerTracking();
@@ -1188,6 +1319,9 @@ void MAA::tryIssueTransparentMicroOp() {
                  "Transparent controller rejected dispatched page %d "
                  "action %d\n",
                  request.page, static_cast<int>(request.action));
+        panic_if(!transparentMacroTracker.issue(
+                     transparentMacroStage(request.action), curTick()),
+                 "Failed to record transparent action issue\n");
         updateTransparentBlockerTracking();
         DPRINTF(MAAVirtualTrace,
                 "event=transparent_issue schema=2 occurrence=%lu "
@@ -1913,6 +2047,9 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
                  "Transparent controller rejected completion of page %d "
                  "action %d\n",
                  controller_page, static_cast<int>(controller_action));
+        panic_if(!transparentMacroTracker.complete(
+                     transparentMacroStage(controller_action), curTick()),
+                 "Failed to record transparent action completion\n");
         updateTransparentBlockerTracking();
         DPRINTF(MAAVirtualTrace,
                 "event=transparent_complete schema=2 occurrence=%lu "
@@ -1941,6 +2078,11 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
             virtualPageConsumedGeneration[descriptor.tokenTile] =
                 descriptor.generation;
             finishTransparentBlockerTracking(descriptor.generation);
+            panic_if(!transparentMacroTracker.finish(curTick()),
+                     "Transparent macro tracker did not finish cleanly\n");
+            emitTransparentMacroSummary(
+                descriptor.generation,
+                virtualMacroOperationTick[descriptor.tokenTile]);
             panic_if(!transparentController.retire(),
                      "Completed transparent descriptor did not retire\n");
             transparentControllerLookupReadyTick = 0;
@@ -2023,6 +2165,8 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
     ++virtualPageGeneration[tokenTileID];
     virtualPageBackingAddr[tokenTileID] = backingAddr;
     virtualPageWordSize[tokenTileID] = wordSize;
+    virtualMacroOperationTick[tokenTileID] = curTick();
+    virtualPageLastReadyTick[tokenTileID] = 0;
 }
 bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || pageID < 0 ||
@@ -2036,6 +2180,7 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
              "virtual page token=%d page=%d became ready twice\n",
              tokenTileID, pageID);
     virtualPageReady[tokenTileID][pageID] = true;
+    virtualPageLastReadyTick[tokenTileID] = curTick();
     stats.virtual_page_ready_signals++;
 
     if (transparentController.active() &&
@@ -2057,6 +2202,13 @@ void MAA::setVirtualPageReady(int tokenTileID, int pageID) {
                 virtualPageReady[tokenTileID][page];
         }
         if (allPagesReady) {
+            panic_if(transparentMacroAllReadySampled,
+                     "Transparent all-ready point sampled twice\n");
+            panic_if(!transparentMacroTracker.sample(curTick()),
+                     "Failed to sample transparent all-ready point\n");
+            transparentMacroAllReadyRecord = transparentMacroTracker.result();
+            transparentMacroAllReadyTick = curTick();
+            transparentMacroAllReadySampled = true;
             snapshotTransparentBlockerTracking(
                 transparentController.descriptor().generation);
         }
