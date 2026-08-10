@@ -2234,7 +2234,16 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
     if (!maa->virtual_index_range_passes)
         return;
     if (descriptor_spool.configured()) {
-        if (descriptor_spool_replay_active &&
+        if (maa->virtual_bounded_global_merge) {
+            panic_if(descriptor_spool_replay_active,
+                     "I[%d] global merge pass %d retained an active replay\n",
+                     my_indirect_id, pass);
+            const bool resident = pass == static_cast<int>(
+                descriptor_spool.residentPass());
+            panic_if(!resident && !descriptor_spool.replayFinished(pass),
+                     "I[%d] global merge pass %d did not finish its sorter "
+                     "replay\n", my_indirect_id, pass);
+        } else if (descriptor_spool_replay_active &&
             descriptor_spool.activeReplayPass() ==
                 static_cast<uint32_t>(pass)) {
             const auto replay_result = descriptor_spool.finishReplay(pass);
@@ -2281,7 +2290,8 @@ void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
             bounded_range_pass.maxEpochAdmissionsForPass(pass),
             bounded_range_pass.admissions(), bounded_range_pass.retirements(),
             reason);
-    if (descriptor_spool.configured() &&
+    if (!maa->virtual_bounded_global_merge &&
+        descriptor_spool.configured() &&
         pass + 1 < direct_index_partitions) {
         panic_if(descriptor_spool_current_valid,
                  "I[%d] descriptor pass %d retained a decoded word\n",

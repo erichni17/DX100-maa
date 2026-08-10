@@ -139,6 +139,24 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         self.assertEqual(self.indirect.count("checker_bytes=%lu"), 3)
         self.assertNotIn("checker_bytes=%zu", self.indirect)
 
+    def test_global_merge_closes_materialized_replays_without_restarting(
+        self,
+    ) -> None:
+        closure = re.search(
+            r"void IndirectAccessUnit::finishBoundedRangePass.*?\n}",
+            self.indirect,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(closure)
+        body = closure.group(0)
+        self.assertIn("if (maa->virtual_bounded_global_merge)", body)
+        self.assertIn("descriptor_spool.replayFinished(pass)", body)
+        self.assertRegex(
+            body,
+            r"if \(!maa->virtual_bounded_global_merge &&\s*"
+            r"descriptor_spool\.configured\(\)",
+        )
+
     def test_policy3_uses_translated_grow_plan_and_bounded_quotas(
         self,
     ) -> None:
