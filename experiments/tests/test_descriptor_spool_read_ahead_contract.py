@@ -47,11 +47,13 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
         )
         self.assertNotIn("/MAAIssueDigest:/", self.case_runner)
 
-    def test_exactly_four_existing_payload_slots_carry_all_tags(self) -> None:
+    def test_configurable_bounded_payload_slots_carry_all_tags(self) -> None:
         spool = (
             SOURCE_ROOT / "src/mem/MAA/BoundedDescriptorSpool.hh"
         ).read_text()
-        self.assertIn("MaxOutstandingReadLines = 4", spool)
+        self.assertIn("DefaultOutstandingReadLines = 4", spool)
+        self.assertIn("MaxOutstandingReadLines = 32", spool)
+        self.assertIn("readCredits()", spool)
         slot = re.search(
             r"struct DescriptorSpoolPendingLine\s*\{([\s\S]*?)\n\s*\};",
             self.header,
@@ -75,6 +77,24 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
         )
         self.assertNotIn("descriptor_spool_read_ahead_slots", self.header)
         self.assertNotIn("descriptor_spool_prefetch_data", self.header)
+
+    def test_read_credit_knob_reaches_runtime_and_runner(self) -> None:
+        options = (SOURCE_ROOT / "configs/common/Options.py").read_text()
+        config = (SOURCE_ROOT / "configs/common/MAAConfig.py").read_text()
+        simobject = (SOURCE_ROOT / "src/mem/MAA/MAA.py").read_text()
+        self.assertIn("--maa_virtual_descriptor_spool_read_credits", options)
+        self.assertIn('opts["virtual_descriptor_spool_read_credits"]', config)
+        self.assertRegex(
+            simobject,
+            r"virtual_descriptor_spool_read_credits\s*=\s*Param\.Unsigned\(\s*4,",
+        )
+        for token in (
+            "MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_CREDITS",
+            "--maa_virtual_descriptor_spool_read_credits",
+            "virtual_descriptor_spool_read_credits=",
+        ):
+            self.assertIn(token, self.case_runner)
+        self.assertIn("MAA_DESCRIPTOR_SPOOL_READ_CREDITS", self.matrix)
 
     def test_pass_tags_demand_observation_and_promotion_are_causal(
         self,
@@ -141,7 +161,7 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
             self.assertIn(token, self.matrix)
         matrix_fields = self.matrix.split("fields=(", 1)[1].split(")", 1)[0]
         self.assertIn("simTicks", matrix_fields)
-        self.assertNotIn("cycles", matrix_fields)
+        self.assertNotIn("cycles", matrix_fields.split())
 
 
 if __name__ == "__main__":

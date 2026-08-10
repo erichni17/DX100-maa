@@ -127,7 +127,11 @@ class MAA(ClockedObject):
     )
     virtual_descriptor_spool_read_ahead = Param.Bool(
         False,
-        "Read ahead the next descriptor pass in the existing four-line window",
+        "Read ahead the next descriptor pass in the configured credit window",
+    )
+    virtual_descriptor_spool_read_credits = Param.Unsigned(
+        4,
+        "Bounded 64-byte descriptor lines allowed in flight",
     )
     virtual_descriptor_spool_source_bypass_cache = Param.Bool(
         False,

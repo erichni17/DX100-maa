@@ -69,6 +69,7 @@ index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
 index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
 index_descriptor_spool=${MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL:-0}
 descriptor_spool_read_ahead=${MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD:-0}
+descriptor_spool_read_credits=${MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_CREDITS:-4}
 bounded_global_merge=${MAA_VIRTUAL_BOUNDED_GLOBAL_MERGE:-0}
 descriptor_spool_variant=${MAA_DESCRIPTOR_SPOOL_VARIANT:-resident_first}
 index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
@@ -124,6 +125,11 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 [[ $descriptor_spool_read_ahead == 0 ||
    $index_descriptor_spool == 1 ]] || {
     echo "descriptor spool read-ahead requires descriptor spooling" >&2
+    exit 2
+}
+[[ $descriptor_spool_read_credits -ge 1 &&
+   $descriptor_spool_read_credits -le 32 ]] || {
+    echo "MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_CREDITS must be in [1,32]" >&2
     exit 2
 }
 [[ $bounded_global_merge == 0 || $bounded_global_merge == 1 ]] || {
@@ -597,6 +603,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
         "$index_descriptor_spool"
     printf 'virtual_descriptor_spool_read_ahead=%s\n' \
         "$descriptor_spool_read_ahead"
+    printf 'virtual_descriptor_spool_read_credits=%s\n' \
+        "$descriptor_spool_read_credits"
     printf 'virtual_bounded_global_merge=%s\n' "$bounded_global_merge"
     printf 'descriptor_spool_variant=%s\n' "$descriptor_spool_variant"
     printf 'virtual_index_range_boundaries=%s\n' \
@@ -871,6 +879,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "${index_range_args[@]}" \
     "${index_descriptor_spool_args[@]}" \
     "${descriptor_spool_read_ahead_args[@]}" \
+    --maa_virtual_descriptor_spool_read_credits="$descriptor_spool_read_credits" \
     "${bounded_global_merge_args[@]}" \
     "${index_cache_args[@]}" \
     "${partition_combiner_args[@]}" \
@@ -902,6 +911,7 @@ for expected in \
     "virtual_index_range_policy=$index_range_policy" \
     "virtual_index_descriptor_spool=$([[ $index_descriptor_spool -eq 1 ]] && echo true || echo false)" \
     "virtual_descriptor_spool_read_ahead=$([[ $descriptor_spool_read_ahead -eq 1 ]] && echo true || echo false)" \
+    "virtual_descriptor_spool_read_credits=$descriptor_spool_read_credits" \
     "virtual_bounded_global_merge=$([[ $bounded_global_merge -eq 1 ]] && echo true || echo false)" \
     "virtual_index_force_cache=$([[ $index_force_cache -eq 1 ]] && echo true || echo false)" \
     "virtual_partition_keep_combiner=$([[ $partition_keep_combiner -eq 1 ]] && echo true || echo false)" \
@@ -1881,6 +1891,7 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
     virtual_index_range_policy virtual_index_descriptor_spool
     virtual_descriptor_spool_read_ahead
+    virtual_descriptor_spool_read_credits
     virtual_bounded_global_merge
     descriptor_spool_variant
     virtual_index_range_boundaries
@@ -1959,6 +1970,7 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
     "$index_range_policy" "$index_descriptor_spool"
     "$descriptor_spool_read_ahead"
+    "$descriptor_spool_read_credits"
     "$bounded_global_merge"
     "$descriptor_spool_variant"
     "${index_range_boundaries:-none}"

@@ -810,7 +810,8 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
     }
     const size_t line_capacity = maa->virtual_index_descriptor_spool
         ? std::min<size_t>(direct_index_buffer_lines,
-                           BoundedDescriptorSpool::MaxOutstandingReadLines)
+                           BoundedDescriptorSpool::
+                               DefaultOutstandingReadLines)
         : static_cast<size_t>(direct_index_buffer_lines);
     panic_if(line_capacity == 0,
              "I[%d] direct-index feeder has zero line capacity\n",
@@ -922,7 +923,7 @@ void IndirectAccessUnit::fillDescriptorSpoolWindow(bool read_ahead)
              descriptor_spool_read_ahead_active);
     const uint32_t pass = direct_index_partition;
     while (descriptorSpoolReadSlotsUsed() <
-           BoundedDescriptorSpool::MaxOutstandingReadLines) {
+           descriptor_spool.readCredits()) {
         const uint32_t line = direct_index_next_prefetch_itr;
         if (line >= descriptor_spool.passLines(pass))
             return;
@@ -958,7 +959,7 @@ IndirectAccessUnit::serviceDescriptorSpoolReadAhead()
                 my_indirect_id, my_decode_start_tick,
                 direct_index_partition - 1, direct_index_partition,
                 virtual_source_expected, virtual_source_received,
-                BoundedDescriptorSpool::MaxOutstandingReadLines);
+                descriptor_spool.readCredits());
     }
     fillDescriptorSpoolWindow(true);
 }
@@ -1381,7 +1382,8 @@ void IndirectAccessUnit::finishAdaptiveSummary()
             descriptor_spool_base_vaddr +
                 (maa->virtual_bounded_global_merge
                      ? BoundedFourRunMerge::RunStrideBytes : 0),
-            paged_slot_bytes);
+            paged_slot_bytes,
+            maa->virtual_descriptor_spool_read_credits);
         panic_if(spool_result != BoundedDescriptorSpool::Result::Accepted,
                  "I[%d] descriptor spool configuration failed: %s\n",
                  my_indirect_id,
@@ -1603,8 +1605,8 @@ size_t
 IndirectAccessUnit::descriptorSpoolControlBytes() const
 {
     // Charge every candidate-only fixed structure at semantic capacity.
-    constexpr size_t read_scoreboard_bytes =
-        BoundedDescriptorSpool::MaxOutstandingReadLines *
+    const size_t read_scoreboard_bytes =
+        maa->virtual_descriptor_spool_read_credits *
         sizeof(DescriptorSpoolPendingLine);
     constexpr size_t current_descriptor_bytes =
         sizeof(bool) + sizeof(uint32_t) +
@@ -4903,8 +4905,7 @@ void IndirectAccessUnit::executeInstruction() {
                                  descriptor_spool_filter_retry_inspections ||
                          direct_index_max_lines >
                              static_cast<int>(
-                                 BoundedDescriptorSpool::
-                                     MaxOutstandingReadLines) ||
+                                 descriptor_spool.readCredits()) ||
                          descriptorSpoolReadSlotsUsed() != 0 ||
                          std::any_of(
                              descriptor_spool_read_slots.begin(),
@@ -4927,8 +4928,7 @@ void IndirectAccessUnit::executeInstruction() {
                          descriptor_spool_demand_waits_avoided >
                              descriptor_spool_useful_prefetched_lines ||
                          descriptor_spool_prefetch_occupancy_hwm >
-                             BoundedDescriptorSpool::
-                                 MaxOutstandingReadLines ||
+                             descriptor_spool.readCredits() ||
                          (!maa->virtual_descriptor_spool_read_ahead &&
                           (descriptor_spool_overlap_opportunities != 0 ||
                            descriptor_spool_next_pass_read_issues != 0 ||
@@ -5322,11 +5322,12 @@ void IndirectAccessUnit::createDescriptorSpoolReadPacket(
                  }),
              "I[%d] descriptor line 0x%lx is already pending\n",
              my_indirect_id, paddr);
+    auto active_end = descriptor_spool_read_slots.begin() +
+        descriptor_spool.readCredits();
     auto slot = std::find_if(
-        descriptor_spool_read_slots.begin(),
-        descriptor_spool_read_slots.end(),
+        descriptor_spool_read_slots.begin(), active_end,
         [](const auto &candidate) { return !candidate.valid; });
-    panic_if(slot == descriptor_spool_read_slots.end(),
+    panic_if(slot == active_end,
              "I[%d] descriptor read scoreboard is full\n",
              my_indirect_id);
     const auto issue = descriptor_spool.recordReadIssue(pass, line);
@@ -5366,7 +5367,7 @@ void IndirectAccessUnit::createDescriptorSpoolReadPacket(
             my_indirect_id, my_decode_start_tick, pass, line, vaddr, paddr,
             descriptor_spool.passPayloadLineBytes(pass, line),
             static_cast<unsigned long>(descriptorSpoolReadSlotsUsed()),
-            BoundedDescriptorSpool::MaxOutstandingReadLines,
+            descriptor_spool.readCredits(),
             read_ahead ? "next_pass_read_ahead" : "demand");
 }
 void IndirectAccessUnit::createBoundedGlobalMergeReadPacket(

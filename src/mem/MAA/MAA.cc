@@ -155,6 +155,8 @@ MAA::MAA(const MAAParams &p)
       virtual_index_descriptor_spool(p.virtual_index_descriptor_spool),
       virtual_descriptor_spool_read_ahead(
           p.virtual_descriptor_spool_read_ahead),
+      virtual_descriptor_spool_read_credits(
+          p.virtual_descriptor_spool_read_credits),
       virtual_descriptor_spool_source_bypass_cache(
           p.virtual_descriptor_spool_source_bypass_cache),
       virtual_bounded_global_merge(p.virtual_bounded_global_merge),
@@ -257,6 +259,10 @@ MAA::MAA(const MAAParams &p)
     panic_if(virtual_descriptor_spool_read_ahead &&
                  !virtual_index_descriptor_spool,
              "Descriptor-spool read-ahead requires descriptor spooling\n");
+    panic_if(virtual_descriptor_spool_read_credits == 0 ||
+                 virtual_descriptor_spool_read_credits > 32,
+             "Descriptor-spool read credits must be in [1, 32], got %u\n",
+             virtual_descriptor_spool_read_credits);
     panic_if(virtual_descriptor_spool_source_bypass_cache &&
                  !virtual_index_descriptor_spool,
              "Descriptor-spool A-source cache bypass requires descriptor "

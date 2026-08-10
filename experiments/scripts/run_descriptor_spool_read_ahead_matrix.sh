@@ -20,6 +20,7 @@ case_runner="$root/experiments/scripts/run_virtual_tile_consumer_case.sh"
 validator="$root/experiments/scripts/validate_descriptor_spool_read_ahead.py"
 extra_a_args=${DX100_A_SOURCE_ROUTING_ARGS_FILE:-}
 filter_words_per_cycle=${MAA_DESCRIPTOR_SPOOL_FILTER_WORDS_PER_CYCLE:-16}
+descriptor_spool_read_credits=${MAA_DESCRIPTOR_SPOOL_READ_CREDITS:-4}
 base_arms=(native16 native4 resident_control_4k overlap_treatment_4k)
 
 [[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 2; }
@@ -35,6 +36,11 @@ base_arms=(native16 native4 resident_control_4k overlap_treatment_4k)
 }
 [[ $filter_words_per_cycle =~ ^[1-9][0-9]*$ ]] || {
     echo "MAA_DESCRIPTOR_SPOOL_FILTER_WORDS_PER_CYCLE must be positive" >&2
+    exit 2
+}
+[[ $descriptor_spool_read_credits =~ ^[1-9][0-9]*$ &&
+   $descriptor_spool_read_credits -le 32 ]] || {
+    echo "MAA_DESCRIPTOR_SPOOL_READ_CREDITS must be in [1,32]" >&2
     exit 2
 }
 git -C "$root" cat-file -e "$source_commit^{commit}"
@@ -163,6 +169,7 @@ run_arm() {
         MAA_REQUIRE_PHYSICAL_RECORD_TRACE="$require_physical" \
         MAA_DESCRIPTOR_SPOOL_VARIANT=resident_first \
         MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD="$read_ahead" \
+        MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_CREDITS="$descriptor_spool_read_credits" \
         "$@" "$case_runner" "$gem5" "$workload" "$case_name" \
         "$out/$label" > "$out/$label.launch.log" 2>&1
 }
@@ -267,8 +274,11 @@ route_evidence() {
         route_evidence a_source_routing_4k 1 0
     fi
 } > "$out/source_route.tsv"
-printf 'filter_words_per_cycle\t%s\n' "$filter_words_per_cycle" \
-    > "$out/filter_width.tsv"
+{
+    printf 'filter_words_per_cycle\t%s\n' "$filter_words_per_cycle"
+    printf 'descriptor_spool_read_credits\t%s\n' \
+        "$descriptor_spool_read_credits"
+} > "$out/filter_width.tsv"
 
 field() {
     local name=$1
@@ -323,12 +333,16 @@ cmp -s "$out/checkpoints/virtual4.identity.sha256" \
     "$out/checkpoints/virtual4.post.identity.sha256"
 
 fields=(output_hash simTicks physical_record_sha256 source_issue_sha256
+    fill_sim_ticks request_sim_ticks virtual_descriptor_spool_read_credits
+    descriptor_spool_read_credit_stalls descriptor_spool_control_bytes
     descriptor_spool_overlap_opportunities
     descriptor_spool_next_pass_read_issues
     descriptor_spool_next_pass_read_responses
     descriptor_spool_useful_prefetched_lines
     descriptor_spool_prefetch_occupancy_high_water
-    descriptor_spool_wasted_prefetched_lines)
+    descriptor_spool_wasted_prefetched_lines
+    descriptor_spool_within_pass_demand_wait_events
+    descriptor_spool_within_pass_demand_wait_cycles)
 {
     printf 'arm'
     printf '\t%s' "${fields[@]}"

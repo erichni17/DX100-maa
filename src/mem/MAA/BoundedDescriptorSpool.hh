@@ -38,7 +38,8 @@ class BoundedDescriptorSpool
     static constexpr uint32_t MaxCarryBytes = 5;
     static_assert(MaxCarryBytes == DescriptorBytes - 1);
     static constexpr uint32_t MaxOutstandingWrites = 16;
-    static constexpr uint32_t MaxOutstandingReadLines = 4;
+    static constexpr uint32_t DefaultOutstandingReadLines = 4;
+    static constexpr uint32_t MaxOutstandingReadLines = 32;
 
     struct Descriptor
     {
@@ -73,14 +74,16 @@ class BoundedDescriptorSpool
     template <class Population>
     Result configure(uint32_t logical, uint32_t passes,
                      uint32_t resident_pass, Population population,
-                     uint64_t backing_base, uint64_t backing_bytes)
+                     uint64_t backing_base, uint64_t backing_bytes,
+                     uint32_t read_credits = DefaultOutstandingReadLines)
     {
         reset();
         if (logical == 0 || logical > MaxLogicalDescriptors || passes < 2 ||
             passes > MaxPasses || resident_pass >= passes ||
             passes - 1 > MaxExternalPasses || backing_base == 0 ||
             backing_base % LineBytes != 0 ||
-            backing_bytes % LineBytes != 0)
+            backing_bytes % LineBytes != 0 || read_credits == 0 ||
+            read_credits > MaxOutstandingReadLines)
             return Result::InvalidConfiguration;
 
         uint64_t offset = 0;
@@ -119,6 +122,7 @@ class BoundedDescriptorSpool
         backingBase = backing_base;
         externalBytes = offset;
         externalCapacityBytes = backing_bytes;
+        readCreditLimit = read_credits;
         configuredFlag = true;
         return Result::Accepted;
     }
@@ -137,6 +141,7 @@ class BoundedDescriptorSpool
         externalBytes = 0;
         externalPayload = 0;
         externalCapacityBytes = 0;
+        readCreditLimit = DefaultOutstandingReadLines;
         totalClassified = 0;
         totalResident = 0;
         totalDescriptorsWritten = 0;
@@ -219,6 +224,7 @@ class BoundedDescriptorSpool
         return pass < numPasses ? passPopulations[pass] : 0;
     }
     uint64_t requiredBackingBytes() const { return externalBytes; }
+    uint32_t readCredits() const { return readCreditLimit; }
     uint64_t externalPayloadBytes() const { return externalPayload; }
     uint64_t reservedBackingBytes() const { return externalCapacityBytes; }
     uint64_t passBase(uint32_t pass) const
@@ -439,12 +445,12 @@ class BoundedDescriptorSpool
             return Result::WrongReplayPass;
         if (line != passReadLinesIssued[pass] || line >= passLines(pass))
             return Result::ReplayOverflow;
-        if (outstandingReads == MaxOutstandingReadLines)
+        if (outstandingReads == readCreditLimit)
             return Result::NoReadCredit;
         uint32_t slot = 0;
-        while (slot < MaxOutstandingReadLines && outstandingReadValid[slot])
+        while (slot < readCreditLimit && outstandingReadValid[slot])
             ++slot;
-        if (slot == MaxOutstandingReadLines)
+        if (slot == readCreditLimit)
             return Result::NoReadCredit;
         outstandingReadValid[slot] = true;
         outstandingReadPasses[slot] = pass;
@@ -463,7 +469,7 @@ class BoundedDescriptorSpool
             return Result::ReplayNotActive;
         if (pass != replayPass)
             return Result::WrongReplayPass;
-        for (uint32_t slot = 0; slot < MaxOutstandingReadLines; ++slot) {
+        for (uint32_t slot = 0; slot < readCreditLimit; ++slot) {
             if (!outstandingReadValid[slot] ||
                 outstandingReadPasses[slot] != pass ||
                 outstandingReadLines[slot] != line)
@@ -544,7 +550,7 @@ class BoundedDescriptorSpool
             (9 * sizeof(uint32_t) + 4 * sizeof(uint64_t) + 2);
         const size_t write_scoreboard = MaxOutstandingWrites *
             (sizeof(uint64_t) + 2 * sizeof(uint8_t));
-        const size_t read_scoreboard = MaxOutstandingReadLines *
+        const size_t read_scoreboard = readCreditLimit *
             (2 * sizeof(uint32_t) + sizeof(uint8_t));
         const size_t scalar = 8 * sizeof(uint8_t) +
             17 * sizeof(uint32_t) + 4 * sizeof(uint64_t);
@@ -598,6 +604,7 @@ class BoundedDescriptorSpool
     uint64_t externalBytes = 0;
     uint64_t externalPayload = 0;
     uint64_t externalCapacityBytes = 0;
+    uint32_t readCreditLimit = DefaultOutstandingReadLines;
     uint32_t totalClassified = 0;
     uint32_t totalResident = 0;
     uint32_t totalDescriptorsWritten = 0;

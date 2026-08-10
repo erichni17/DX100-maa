@@ -419,6 +419,12 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_descriptor_spool_read_credits",
+        type=int,
+        default=4,
+        help="Bounded 64-byte descriptor lines allowed in flight (1..32)",
+    )
+    parser.add_argument(
         "--maa_virtual_descriptor_spool_source_bypass_cache",
         action="store_true",
         help=(

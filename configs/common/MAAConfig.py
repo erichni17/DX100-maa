@@ -170,6 +170,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_descriptor_spool_read_ahead"
         )
 
+    if hasattr(options, "maa_virtual_descriptor_spool_read_credits"):
+        opts["virtual_descriptor_spool_read_credits"] = getattr(
+            options, "maa_virtual_descriptor_spool_read_credits"
+        )
+
     if hasattr(options, "maa_virtual_descriptor_spool_source_bypass_cache"):
         opts["virtual_descriptor_spool_source_bypass_cache"] = getattr(
             options, "maa_virtual_descriptor_spool_source_bypass_cache"

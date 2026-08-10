@@ -438,6 +438,7 @@ public:
     bool virtual_index_range_passes;
     bool virtual_index_descriptor_spool;
     bool virtual_descriptor_spool_read_ahead;
+    unsigned int virtual_descriptor_spool_read_credits;
     bool virtual_descriptor_spool_source_bypass_cache;
     bool virtual_bounded_global_merge;
     unsigned int virtual_index_range_policy;

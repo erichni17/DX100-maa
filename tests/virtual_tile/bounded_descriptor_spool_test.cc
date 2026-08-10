@@ -21,6 +21,8 @@ testResidentFirstDenseLayoutAndExactClosure()
     static_assert(BoundedDescriptorSpool::DescriptorBytes == 6);
     static_assert(BoundedDescriptorSpool::MaxExternalPasses == 3);
     static_assert(BoundedDescriptorSpool::MaxCarryBytes == 5);
+    static_assert(BoundedDescriptorSpool::DefaultOutstandingReadLines == 4);
+    static_assert(BoundedDescriptorSpool::MaxOutstandingReadLines == 32);
 
     BoundedDescriptorSpool spool;
     constexpr uint64_t base = 0x100000;
@@ -30,6 +32,8 @@ testResidentFirstDenseLayoutAndExactClosure()
                [&](uint32_t pass) { return populations[pass]; },
                base, 3 * 4096 * BoundedDescriptorSpool::DescriptorBytes) ==
            Result::Accepted);
+    assert(spool.readCredits() ==
+           BoundedDescriptorSpool::DefaultOutstandingReadLines);
     assert(spool.residentPass() == 0);
     assert(spool.externalSegments() == 3);
     assert(spool.population(0) == 4096);
@@ -196,8 +200,20 @@ testFailClosedAndRetryStable()
            Result::InvalidConfiguration);
     assert(spool.configure(16, 4, 0, population, 0x300000, 191) ==
            Result::InvalidConfiguration);
+    assert(spool.configure(16, 4, 0, population, 0x300000, 192, 0) ==
+           Result::InvalidConfiguration);
+    assert(spool.configure(
+               16, 4, 0, population, 0x300000, 192,
+               BoundedDescriptorSpool::MaxOutstandingReadLines + 1) ==
+           Result::InvalidConfiguration);
+
+    BoundedDescriptorSpool wider;
+    assert(wider.configure(16, 4, 0, population, 0x400000, 192, 8) ==
+           Result::Accepted);
+    assert(wider.readCredits() == 8);
     assert(spool.configure(16, 4, 0, population, 0x300000, 192) ==
            Result::Accepted);
+    assert(wider.chargedControlBytes() > spool.chargedControlBytes());
     assert(spool.stage(0, Descriptor{}) == Result::ResidentPass);
     assert(spool.recordResidentClassification(1, Descriptor{}) ==
            Result::WrongResidentPass);
