@@ -1,0 +1,10 @@
+configuration	filter_words_per_cycle	read_credits	control_bytes	simTicks	vs_native4_latency_pct	vs_native4_speedup	fill_sim_ticks	request_sim_ticks	within_pass_wait_events	within_pass_wait_cycles	status
+native16	na	na	na	39932540	-32.621129	1.484484	4174481	33175496	0	0	control
+native4	na	na	na	59267176	0.000000	1.000000	5108473	52099163	0	0	control
+source_routing_c4	16	4	1851	60915747	2.781592	0.972937	22116267	30571336	1044	16771	accepted
+source_routing_c8	16	8	2271	57603268	-2.807470	1.028886	18976564	30531898	889	6740	accepted
+source_routing_c16	16	16	3111	56696820	-4.336896	1.045335	17907669	30579474	818	3325	accepted
+source_routing_c24	16	24	3951	56327480	-4.960074	1.052189	17519549	30604827	601	2085	accepted
+source_routing_c24_replica	16	24	3951	56327480	-4.960074	1.052189	17519549	30604827	601	2085	accepted_exact_replica
+source_routing_c24_filter64	64	24	3951	55772531	-5.896426	1.062659	17217191	30529394	601	2085	accepted
+source_routing_c32	16	32	4791	na	na	na	na	na	na	na	rejected_control_budget
