@@ -660,6 +660,9 @@ void IndirectAccessUnit::check_reset() {
             bounded_global_merge_batch_inflight ||
             bounded_global_merge_source_pending ||
             bounded_global_merge_source_ready ||
+            bounded_global_merge_source_head != -1 ||
+            bounded_global_merge_source_tail != -1 ||
+            bounded_global_merge_source_words != 0 ||
             std::any_of(bounded_global_merge_read_slots.begin(),
                         bounded_global_merge_read_slots.end(),
                         [](const auto &slot) { return slot.valid; }) ||
@@ -1968,6 +1971,13 @@ void IndirectAccessUnit::serviceBoundedGlobalRunMaterialization()
     bounded_global_merge_phase = BoundedGlobalMergePhase::Merge;
     bounded_global_merge_run = BoundedFourRunMerge::Runs;
     bounded_global_merge_batch_inflight = false;
+    bounded_global_merge_source_pending = false;
+    bounded_global_merge_source_ready = false;
+    bounded_global_merge_source_paddr = 0;
+    bounded_global_merge_source_vaddr = 0;
+    bounded_global_merge_source_head = -1;
+    bounded_global_merge_source_tail = -1;
+    bounded_global_merge_source_words = 0;
     direct_index_partition = 0;
     my_i = my_max;
     my_fill_finished = false;
@@ -2038,6 +2048,119 @@ IndirectAccessUnit::boundedGlobalMergeKey(
     return {slice_rank, grow_addr, line_paddr, descriptor.iteration};
 }
 
+bool
+IndirectAccessUnit::virtualSourceCreditAvailable(int source_words) const
+{
+    panic_if(source_words <= 0,
+             "I[%d] virtual source credit requested for %d words\n",
+             my_indirect_id, source_words);
+    if (virtual_reserved_responses >=
+        static_cast<int>(virtual_response_slots.size()))
+        return false;
+    return virtual_response_word_pool_limit == 0 ||
+        virtual_reserved_response_words + source_words <=
+            virtual_response_word_pool_limit;
+}
+
+void
+IndirectAccessUnit::issueVirtualSource(
+    Addr source_addr, int source_head, int source_words, int source_rt_idx,
+    int source_row_id, int source_entry_id, Addr source_grow_addr, int latency)
+{
+    panic_if(source_head < 0 || source_words <= 0,
+             "I[%d] virtual source claim is empty\n", my_indirect_id);
+    if (virtual_response_words != 0 &&
+        virtual_response_word_pool_limit == 0)
+        panic_if(source_words > virtual_response_words,
+                 "I[%d] source response needs %d/%d packed words\n",
+                 my_indirect_id, source_words, virtual_response_words);
+    if (virtual_response_word_pool_limit != 0)
+        panic_if(source_words > virtual_response_word_pool_limit,
+                 "I[%d] source response needs %d/%d pooled words\n",
+                 my_indirect_id, source_words,
+                 virtual_response_word_pool_limit);
+    panic_if(!virtualSourceCreditAvailable(source_words),
+             "I[%d] cannot issue virtual source without bounded credit\n",
+             my_indirect_id);
+
+    if (virtual_response_word_pool_limit != 0)
+        virtual_reserved_response_words += source_words;
+    panic_if(!virtual_source_reservations
+                  .emplace(source_addr,
+                           VirtualSourceReservation{
+                               source_head, source_words, source_rt_idx,
+                               source_row_id, source_entry_id,
+                               source_grow_addr})
+                  .second,
+             "I[%d] duplicate source reservation for 0x%lx\n",
+             my_indirect_id, source_addr);
+    my_expected_responses++;
+    virtual_reserved_responses++;
+    virtual_source_expected++;
+    virtual_max_reserved_responses = std::max(
+        virtual_max_reserved_responses, virtual_reserved_responses);
+    virtual_max_reserved_response_words = std::max(
+        virtual_max_reserved_response_words,
+        virtual_reserved_response_words);
+    recordReorderSurvivalIssue(source_addr);
+    createReadPacket(source_addr, latency);
+}
+
+bool
+IndirectAccessUnit::issueBoundedGlobalSourceLine()
+{
+    panic_if(!bounded_global_merge_source_ready ||
+                 bounded_global_merge_source_paddr == 0 ||
+                 bounded_global_merge_source_head < 0 ||
+                 bounded_global_merge_source_tail < 0 ||
+                 bounded_global_merge_source_words <= 0,
+             "I[%d] bounded global source line is incomplete\n",
+             my_indirect_id);
+    if (!virtualSourceCreditAvailable(bounded_global_merge_source_words)) {
+        if (virtual_reserved_responses >=
+            static_cast<int>(virtual_response_slots.size()))
+            macro_a_retries++;
+        else
+            virtual_response_word_pool_stalls++;
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_stream_stall schema=1 unit=%d "
+                "operation_tick=%lu reason=source_credit paddr=0x%lx "
+                "words=%d reserved=%d reserved_words=%d\n",
+                my_indirect_id, my_decode_start_tick,
+                bounded_global_merge_source_paddr,
+                bounded_global_merge_source_words,
+                virtual_reserved_responses,
+                virtual_reserved_response_words);
+        return false;
+    }
+    const auto end = bounded_global_merge.endSourceLine();
+    panic_if(end != BoundedFourRunMerge::Result::Accepted,
+             "I[%d] merged A-line cluster failed closure: %s\n",
+             my_indirect_id, BoundedFourRunMerge::resultName(end));
+    issueVirtualSource(
+        bounded_global_merge_source_paddr,
+        bounded_global_merge_source_head,
+        bounded_global_merge_source_words, -1, -1, -1, 0, 0);
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_stream_issue schema=1 unit=%d "
+            "operation_tick=%lu paddr=0x%lx vaddr=0x%lx head=%d "
+            "words=%d reserved=%d reserved_words=%d\n",
+            my_indirect_id, my_decode_start_tick,
+            bounded_global_merge_source_paddr,
+            bounded_global_merge_source_vaddr,
+            bounded_global_merge_source_head,
+            bounded_global_merge_source_words,
+            virtual_reserved_responses,
+            virtual_reserved_response_words);
+    bounded_global_merge_source_ready = false;
+    bounded_global_merge_source_paddr = 0;
+    bounded_global_merge_source_vaddr = 0;
+    bounded_global_merge_source_head = -1;
+    bounded_global_merge_source_tail = -1;
+    bounded_global_merge_source_words = 0;
+    return true;
+}
+
 void IndirectAccessUnit::serviceBoundedGlobalMerge()
 {
     panic_if(bounded_global_merge_phase !=
@@ -2045,6 +2168,12 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
                  !bounded_global_merge.merging(),
              "I[%d] bounded global merge service is not active\n",
              my_indirect_id);
+    if (drainVirtualResponses()) {
+        scheduleExecuteInstructionEvent(1);
+        return;
+    }
+    drainVirtualCombiner(false);
+
     for (uint32_t run = 0; run < BoundedFourRunMerge::Runs; ++run) {
         if (!bounded_global_merge.needsRead(run))
             continue;
@@ -2066,49 +2195,20 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
         [this](const auto &descriptor) {
             return boundedGlobalMergeKey(descriptor);
         }, selected);
-    auto dispatchBatch = [this](const char *reason) {
-        if (bounded_global_merge_source_ready) {
-            const auto end = bounded_global_merge.endSourceLine();
-            panic_if(end != BoundedFourRunMerge::Result::Accepted,
-                     "I[%d] staged A-line cluster failed closure: %s\n",
-                     my_indirect_id,
-                     BoundedFourRunMerge::resultName(end));
-            bounded_global_merge_source_ready = false;
-            bounded_global_merge_source_paddr = 0;
-            bounded_global_merge_source_vaddr = 0;
-        }
-        panic_if(offset_table->occupancy() == 0,
-                 "I[%d] cannot dispatch an empty global-merge batch\n",
-                 my_indirect_id);
-        bounded_global_merge_batch_inflight = true;
-        my_fill_finished = false;
-        virtual_build_incomplete = false;
-        state = Status::Build;
-        transitionAttributionStage(AttributionStage::Build, reason);
-        DPRINTF(MAAVirtualTrace,
-                "event=bounded_global_batch_dispatch schema=1 unit=%d "
-                "operation_tick=%lu descriptors=%d reason=%s\n",
-                my_indirect_id, my_decode_start_tick,
-                offset_table->occupancy(), reason);
-        scheduleNextExecution(true);
-    };
     if (selected_result == BoundedFourRunMerge::Result::NoWork) {
         panic_if(!bounded_global_merge.mergeDone(),
                  "I[%d] merge lost all heads before closure\n",
                  my_indirect_id);
-        if (offset_table->occupancy() != 0) {
-            dispatchBatch("bounded_global_final_batch");
+        if (bounded_global_merge_source_ready &&
+            !issueBoundedGlobalSourceLine())
+            return;
+        virtual_final_flush = true;
+        if (drainVirtualResponses()) {
+            scheduleExecuteInstructionEvent(1);
             return;
         }
-        panic_if(bounded_global_merge_batch_inflight ||
-                     virtual_reserved_responses != 0 ||
-                     !virtual_source_reservations.empty(),
-                 "I[%d] global merge reached final drain with an active "
-                 "source batch\n", my_indirect_id);
-        virtual_final_flush = true;
         drainVirtualCombiner(true);
-        if (!virtualCombinerEmpty() || virtual_outstanding_writes != 0 ||
-            !maa->allIndirectPacketsSent(my_indirect_id))
+        if (!boundedRetirementComplete())
             return;
         const auto finish = bounded_global_merge.finishMerge();
         panic_if(finish != BoundedFourRunMerge::Result::Accepted,
@@ -2141,9 +2241,16 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
              "I[%d] four-run merge order regressed at itr=%u\n",
              my_indirect_id, descriptor.iteration);
     const Addr line_paddr = key[2];
-    if (offset_table->occupancy() >=
-        maa->num_offset_table_epoch_entries) {
-        dispatchBatch("bounded_global_offset_capacity");
+    if (bounded_global_merge_source_ready &&
+        bounded_global_merge_source_paddr != line_paddr &&
+        !issueBoundedGlobalSourceLine())
+        return;
+    if (offset_table->is_full()) {
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_stream_stall schema=1 unit=%d "
+                "operation_tick=%lu reason=offset_credit occupancy=%d\n",
+                my_indirect_id, my_decode_start_tick,
+                offset_table->occupancy());
         return;
     }
     const Addr word_vaddr = my_base_addr +
@@ -2153,34 +2260,6 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
     panic_if(wid >= static_cast<uint32_t>(my_words_per_cl),
              "I[%d] merged descriptor word id %u is invalid\n",
              my_indirect_id, wid);
-    const std::vector<int> address = maa->map_addr(line_paddr);
-    const int rt_idx = getRowTableIdx(
-        my_RT_config, address[ADDR_CHANNEL_LEVEL],
-        address[ADDR_RANK_LEVEL], address[ADDR_BANKGROUP_LEVEL],
-        address[ADDR_BANK_LEVEL]);
-    const Addr grow_addr = getGrowAddr(
-        my_RT_config, address[ADDR_BANKGROUP_LEVEL],
-        address[ADDR_BANK_LEVEL], address[ADDR_ROW_LEVEL]);
-    bool first_cl_access = false;
-    const bool inserted = RT[my_RT_config][rt_idx].insert(
-        grow_addr, line_paddr, descriptor.iteration,
-        static_cast<int>(wid), first_cl_access,
-        static_cast<int>(selected));
-    if (!inserted) {
-        dispatchBatch("bounded_global_row_capacity");
-        return;
-    }
-    if (bounded_global_merge_source_ready &&
-        bounded_global_merge_source_paddr != line_paddr) {
-        const auto end = bounded_global_merge.endSourceLine();
-        panic_if(end != BoundedFourRunMerge::Result::Accepted,
-                 "I[%d] staged A-line cluster failed closure: %s\n",
-                 my_indirect_id,
-                 BoundedFourRunMerge::resultName(end));
-        bounded_global_merge_source_ready = false;
-        bounded_global_merge_source_paddr = 0;
-        bounded_global_merge_source_vaddr = 0;
-    }
     if (!bounded_global_merge_source_ready) {
         const auto begin = bounded_global_merge.beginSourceLine(line_paddr);
         panic_if(begin != BoundedFourRunMerge::Result::Accepted,
@@ -2190,6 +2269,9 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
         bounded_global_merge_source_ready = true;
         bounded_global_merge_source_paddr = line_paddr;
         bounded_global_merge_source_vaddr = line_vaddr;
+        bounded_global_merge_source_head = -1;
+        bounded_global_merge_source_tail = -1;
+        bounded_global_merge_source_words = 0;
         if (!bounded_global_merge_last_row_valid ||
             bounded_global_merge_last_slice != key[0] ||
             bounded_global_merge_last_row != key[1]) {
@@ -2199,6 +2281,13 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
             bounded_global_merge_last_row = key[1];
         }
     }
+    const int offset_entry = offset_table->insert(
+        descriptor.iteration, static_cast<int>(wid),
+        bounded_global_merge_source_tail, static_cast<int>(selected));
+    if (bounded_global_merge_source_head == -1)
+        bounded_global_merge_source_head = offset_entry;
+    bounded_global_merge_source_tail = offset_entry;
+    bounded_global_merge_source_words++;
     const auto retired = bounded_global_merge.recordRetirement(line_paddr);
     panic_if(retired != BoundedFourRunMerge::Result::Accepted,
              "I[%d] merged descriptor %u retirement failed: %s\n",
@@ -2211,13 +2300,14 @@ void IndirectAccessUnit::serviceBoundedGlobalMerge()
              BoundedFourRunMerge::resultName(consumed));
     bounded_global_merge_last_key = key;
     bounded_global_merge_last_key_valid = true;
-    updateLatency(0, 0, 0, 0, 1, total_num_RT_subslices);
+    updateLatency(0, 0, 0, 1, 0, total_num_RT_subslices);
     DPRINTF(MAAVirtualTrace,
-            "event=bounded_global_batch_stage schema=1 unit=%d "
-            "operation_tick=%lu run=%u itr=%u line=0x%lx grow=0x%lx "
-            "slice=%d wid=%u occupancy=%d\n",
+            "event=bounded_global_stream_stage schema=1 unit=%d "
+            "operation_tick=%lu run=%u itr=%u line=0x%lx wid=%u "
+            "line_words=%d occupancy=%d\n",
             my_indirect_id, my_decode_start_tick, selected,
-            descriptor.iteration, line_paddr, grow_addr, rt_idx, wid,
+            descriptor.iteration, line_paddr, wid,
+            bounded_global_merge_source_words,
             offset_table->occupancy());
     scheduleExecuteInstructionEvent(1);
 }
@@ -3680,6 +3770,9 @@ void IndirectAccessUnit::executeInstruction() {
         bounded_global_merge_source_ready = false;
         bounded_global_merge_source_paddr = 0;
         bounded_global_merge_source_vaddr = 0;
+        bounded_global_merge_source_head = -1;
+        bounded_global_merge_source_tail = -1;
+        bounded_global_merge_source_words = 0;
         bounded_global_merge_source_data.fill(0);
         descriptor_spool_bucket_active = false;
         descriptor_spool_bucket_scan_complete = false;
@@ -4056,64 +4149,6 @@ void IndirectAccessUnit::executeInstruction() {
                 my_force_cache = false;
             }
         }
-        auto issueVirtualSource = [&](Addr source_addr, int source_head,
-                                      int source_words, int source_rt_idx,
-                                      int source_row_id, int source_entry_id,
-                                      Addr source_grow_addr, int latency) {
-            panic_if(source_head < 0 || source_words <= 0,
-                     "I[%d] virtual source claim is empty\n",
-                     my_indirect_id);
-            if (virtual_response_words != 0 &&
-                virtual_response_word_pool_limit == 0)
-                panic_if(source_words > virtual_response_words,
-                         "I[%d] source response needs %d/%d packed words\n",
-                         my_indirect_id, source_words,
-                         virtual_response_words);
-            if (virtual_response_word_pool_limit != 0)
-                panic_if(source_words > virtual_response_word_pool_limit,
-                         "I[%d] source response needs %d/%d pooled words\n",
-                         my_indirect_id, source_words,
-                         virtual_response_word_pool_limit);
-            panic_if(virtual_reserved_responses ==
-                         virtual_response_slots.size(),
-                     "I[%d] cannot issue virtual source without a slot\n",
-                     my_indirect_id);
-            panic_if(virtual_response_word_pool_limit != 0 &&
-                         virtual_reserved_response_words + source_words >
-                             virtual_response_word_pool_limit,
-                     "I[%d] cannot issue virtual source without pooled "
-                     "words\n",
-                     my_indirect_id);
-
-            if (virtual_response_word_pool_limit != 0)
-                virtual_reserved_response_words += source_words;
-            panic_if(!virtual_source_reservations
-                          .emplace(source_addr,
-                                   VirtualSourceReservation{source_head,
-                                                            source_words,
-                                                            source_rt_idx,
-                                                            source_row_id,
-                                                            source_entry_id,
-                                                            source_grow_addr})
-                          .second,
-                     "I[%d] duplicate source reservation for 0x%lx\n",
-                     my_indirect_id, source_addr);
-            my_expected_responses++;
-            virtual_reserved_responses++;
-            virtual_source_expected++;
-            virtual_max_reserved_responses = std::max(
-                virtual_max_reserved_responses, virtual_reserved_responses);
-            virtual_max_reserved_response_words = std::max(
-                virtual_max_reserved_response_words,
-                virtual_reserved_response_words);
-            panic_if(virtual_reserved_responses >
-                         virtual_response_slots.size(),
-                     "I[%d] virtual response slots exceeded capacity\n",
-                     my_indirect_id);
-            recordReorderSurvivalIssue(source_addr);
-            createReadPacket(source_addr, latency);
-        };
-
         bool virtual_capacity_full = false;
         if (usesBoundedSourceResponses() && virtual_pending_source) {
             issueVirtualSource(virtual_pending_source_addr,
@@ -4724,6 +4759,9 @@ void IndirectAccessUnit::executeInstruction() {
                     bounded_global_merge_batch_inflight ||
                     bounded_global_merge_source_pending ||
                     bounded_global_merge_source_ready ||
+                    bounded_global_merge_source_head != -1 ||
+                    bounded_global_merge_source_tail != -1 ||
+                    bounded_global_merge_source_words != 0 ||
                     !read_slots_empty || !write_slots_empty,
                 "I[%d] bounded global merge failed terminal accounting\n",
                 my_indirect_id);
@@ -5050,6 +5088,9 @@ void IndirectAccessUnit::executeInstruction() {
             bounded_global_merge_source_ready = false;
             bounded_global_merge_source_paddr = 0;
             bounded_global_merge_source_vaddr = 0;
+            bounded_global_merge_source_head = -1;
+            bounded_global_merge_source_tail = -1;
+            bounded_global_merge_source_words = 0;
             bounded_global_merge_source_data.fill(0);
         }
         finishReorderSurvival();

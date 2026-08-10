@@ -157,44 +157,53 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             r"descriptor_spool\.configured\(\)",
         )
 
-    def test_global_merge_refills_bounded_source_batches(self) -> None:
-        self.assertIn("bounded_global_merge_batch_inflight", self.indirect)
+    def test_global_merge_streams_bounded_source_lines(self) -> None:
         self.assertIn(
-            '"event=bounded_global_batch_dispatch schema=1 unit=%d "',
+            '"event=bounded_global_stream_issue schema=1 unit=%d "',
             self.indirect,
         )
         self.assertRegex(
             self.indirect,
-            r"RT\[my_RT_config\]\[rt_idx\]\.insert\(\s*"
-            r"grow_addr, line_paddr, descriptor\.iteration,",
+            r"offset_table->insert\(\s*descriptor\.iteration,"
+            r"\s*static_cast<int>\(wid\),\s*"
+            r"bounded_global_merge_source_tail,"
+            r"\s*static_cast<int>\(selected\)\)",
         )
         self.assertRegex(
             self.indirect,
-            r"else if \(retain_global_merge_combiner\) \{\s*"
-            r"bounded_global_merge_batch_inflight = false;\s*"
-            r"state = Status::Build;",
+            r"if \(!virtualSourceCreditAvailable\("
+            r"bounded_global_merge_source_words\)\)",
         )
-        self.assertIn("static_cast<int>(selected)", self.indirect)
         self.assertIn(
             "direct_index_partition = entry.pass",
             self.indirect,
         )
         self.assertRegex(
             self.indirect,
-            r"if \(!my_fill_finished && !direct_index_partition_barrier &&\s*"
-            r"!retain_global_merge_combiner && refill_allowed\)",
+            r"if \(bounded_global_merge_source_ready &&\s*"
+            r"bounded_global_merge_source_paddr != line_paddr &&\s*"
+            r"!issueBoundedGlobalSourceLine\(\)\)",
+        )
+        self.assertNotRegex(
+            self.indirect,
+            r"RT\[my_RT_config\]\[rt_idx\]\.insert\(\s*"
+            r"grow_addr, line_paddr, descriptor\.iteration,",
         )
 
-    def test_global_merge_batch_is_closed_at_lifecycle_boundaries(
+    def test_global_merge_stream_is_closed_at_lifecycle_boundaries(
         self,
     ) -> None:
         self.assertGreaterEqual(
-            self.indirect.count("bounded_global_merge_batch_inflight = false"),
+            self.indirect.count("bounded_global_merge_source_head = -1"),
             4,
         )
         self.assertGreaterEqual(
-            self.indirect.count("bounded_global_merge_batch_inflight ||"),
-            3,
+            self.indirect.count("bounded_global_merge_source_words = 0"),
+            4,
+        )
+        self.assertGreaterEqual(
+            self.indirect.count("bounded_global_merge_source_head != -1"),
+            2,
         )
 
     def test_global_merge_can_match_the_control_a_source_route(self) -> None:

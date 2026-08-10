@@ -378,6 +378,9 @@ protected:
     bool bounded_global_merge_source_ready = false;
     Addr bounded_global_merge_source_paddr = 0;
     Addr bounded_global_merge_source_vaddr = 0;
+    int bounded_global_merge_source_head = -1;
+    int bounded_global_merge_source_tail = -1;
+    int bounded_global_merge_source_words = 0;
     std::array<uint8_t, BoundedFourRunMerge::LineBytes>
         bounded_global_merge_source_data{};
     bool descriptor_spool_bucket_active = false;
@@ -536,6 +539,12 @@ protected:
     void startBoundedGlobalRunMaterialization();
     void serviceBoundedGlobalRunMaterialization();
     void serviceBoundedGlobalMerge();
+    bool virtualSourceCreditAvailable(int source_words) const;
+    void issueVirtualSource(Addr source_addr, int source_head,
+                            int source_words, int source_rt_idx,
+                            int source_row_id, int source_entry_id,
+                            Addr source_grow_addr, int latency);
+    bool issueBoundedGlobalSourceLine();
     bool receiveBoundedGlobalMerge(Addr addr, uint8_t *dataptr,
                                    bool is_block_cached);
     std::array<uint64_t, 4> boundedGlobalMergeKey(
