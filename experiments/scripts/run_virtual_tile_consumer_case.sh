@@ -238,6 +238,12 @@ if [[ -n $shared_checkpoint || -n $shared_selector ]]; then
             echo "shared checkpoint log does not exist" >&2
             exit 2
         }
+        grep -Fq -- "--options 'deferred $shared_selector'" \
+            "$shared_checkpoint_log" || {
+            echo "shared selector path does not match the frozen checkpoint" \
+                >&2
+            exit 2
+        }
     fi
     [[ -n $frozen_ramulator_library && -n $ramulator_provenance ]] || {
         echo "shared evidence requires frozen Ramulator library/provenance" >&2
@@ -810,6 +816,14 @@ isoarea_validate_layout "$layout_log" "$layout_mode" "$layout_page" || {
     echo "binary/config consumer contract mismatch" >&2
     exit 1
 }
+if [[ $direct_retirement -eq 1 ]]; then
+    grep -Fqx \
+        'VIRTUAL_TILE_CONSUMER_ALIGNMENT backing_mod64=0 destination_mod64=0' \
+        "$layout_log" || {
+        echo "direct retirement requires an aligned frozen workload" >&2
+        exit 1
+    }
+fi
 
 set +e
 LD_LIBRARY_PATH="$ramulator_library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \

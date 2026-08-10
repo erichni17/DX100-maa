@@ -20,6 +20,8 @@ namespace {
 
 constexpr int total_elements = 16384;
 constexpr int guard_elements = 32;
+constexpr size_t cache_line_bytes = 64;
+constexpr size_t cache_line_elements = cache_line_bytes / sizeof(double);
 constexpr size_t descriptor_spool_units = 4;
 constexpr size_t descriptor_spool_slot_bytes =
     total_elements * 8 + 4 * 64;
@@ -94,14 +96,27 @@ main(int argc, char **argv)
 
     std::vector<double> source(total_elements * 8);
     std::vector<uint32_t> indices(total_elements);
+    // The direct-retirement fast path operates on complete cache lines. Keep
+    // explicit guards while aligning the two payload regions; arbitrary
+    // unaligned application buffers remain on the existing safe fallback.
     std::vector<double> backing_storage(
-        total_elements + 2 * guard_elements + descriptor_spool_elements,
+        total_elements + 2 * guard_elements + cache_line_elements - 1 +
+            descriptor_spool_elements,
         -1.0);
     std::vector<double> destination_storage(
-        total_elements + 2 * guard_elements, -1.0);
+        total_elements + 2 * guard_elements + cache_line_elements - 1,
+        -1.0);
     std::vector<double> fence_storage(1, 0.0);
-    double *backing = backing_storage.data() + guard_elements;
-    double *destination = destination_storage.data() + guard_elements;
+    const auto align_payload = [](double *candidate) {
+        const uintptr_t address = reinterpret_cast<uintptr_t>(candidate);
+        const uintptr_t aligned =
+            (address + cache_line_bytes - 1) & ~(cache_line_bytes - 1);
+        return reinterpret_cast<double *>(aligned);
+    };
+    double *backing =
+        align_payload(backing_storage.data() + guard_elements);
+    double *destination =
+        align_payload(destination_storage.data() + guard_elements);
 
     for (int i = 0; i < static_cast<int>(source.size()); ++i)
         source[i] = static_cast<double>(i * 17 + 3);
@@ -117,6 +132,11 @@ main(int argc, char **argv)
               << " slot_bytes=" << descriptor_spool_slot_bytes
               << " total_bytes="
               << descriptor_spool_units * descriptor_spool_slot_bytes
+              << std::endl;
+    std::cout << "VIRTUAL_TILE_CONSUMER_ALIGNMENT backing_mod64="
+              << reinterpret_cast<uintptr_t>(backing) % cache_line_bytes
+              << " destination_mod64="
+              << reinterpret_cast<uintptr_t>(destination) % cache_line_bytes
               << std::endl;
     m5_checkpoint(0, 0);
     if (deferred_treatment) {
@@ -328,17 +348,16 @@ main(int argc, char **argv)
         hash = hashValue(hash, destination[i]);
     }
     for (int i = 0; i < guard_elements; ++i) {
-        const int suffix = guard_elements + total_elements + i;
-        if (backing_storage[i] != -1.0 && errors++ < 10)
+        if (backing[i - guard_elements] != -1.0 && errors++ < 10)
             std::cerr << "backing prefix guard corrupted[" << i << "]"
                       << std::endl;
-        if (backing_storage[suffix] != -1.0 && errors++ < 10)
+        if (backing[total_elements + i] != -1.0 && errors++ < 10)
             std::cerr << "backing suffix guard corrupted[" << i << "]"
                       << std::endl;
-        if (destination_storage[i] != -1.0 && errors++ < 10)
+        if (destination[i - guard_elements] != -1.0 && errors++ < 10)
             std::cerr << "destination prefix guard corrupted[" << i << "]"
                       << std::endl;
-        if (destination_storage[suffix] != -1.0 && errors++ < 10)
+        if (destination[total_elements + i] != -1.0 && errors++ < 10)
             std::cerr << "destination suffix guard corrupted[" << i << "]"
                       << std::endl;
     }
