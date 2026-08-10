@@ -47,7 +47,7 @@ grep -Fqx \
         "$out/checkpoint.log") -eq 1 ]]
 
 printf '%s\n' '--maa_virtual_descriptor_spool_source_bypass_cache' \
-    > "$out/input/current-paged.args"
+    > "$out/input/a-source-route.args"
 
 common=(
     DX100_FROZEN_RAMULATOR_LIBRARY="$ramulator"
@@ -80,7 +80,7 @@ run_arm() {
 run_arm native4 native_direct_4k
 run_arm current_paged4 paged_4k \
     MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
-    DX100_EXTRA_MAA_ARGS_FILE="$out/input/current-paged.args" \
+    DX100_EXTRA_MAA_ARGS_FILE="$out/input/a-source-route.args" \
     MAA_VIRTUAL_INDEX_PARTITIONS=64 \
     MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
     MAA_VIRTUAL_INDEX_RANGE_POLICY=3 \
@@ -93,6 +93,7 @@ run_arm current_paged4 paged_4k \
     MAA_REQUIRE_INDEX_FILTER_WAIT=1
 run_arm candidate paged_4k \
     MAA_REQUIRE_PHYSICAL_RECORD_TRACE=1 \
+    DX100_EXTRA_MAA_ARGS_FILE="$out/input/a-source-route.args" \
     MAA_VIRTUAL_INDEX_PARTITIONS=64 \
     MAA_VIRTUAL_INDEX_RANGE_PASSES=1 \
     MAA_VIRTUAL_INDEX_RANGE_POLICY=3 \

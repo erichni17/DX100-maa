@@ -197,6 +197,27 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             3,
         )
 
+    def test_global_merge_can_match_the_control_a_source_route(self) -> None:
+        self.assertNotRegex(
+            self.maa,
+            r"virtual_bounded_global_merge &&\s*\([^;]*"
+            r"virtual_descriptor_spool_source_bypass_cache",
+        )
+        self.assertIn(
+            "source_bypass_cache =\n"
+            "                    maa->virtual_descriptor_spool_source_bypass_cache",
+            self.indirect,
+        )
+        global_matrix = (
+            ROOT / "experiments/scripts/run_bounded_global_merge_matrix.sh"
+        ).read_text()
+        self.assertEqual(
+            global_matrix.count(
+                'DX100_EXTRA_MAA_ARGS_FILE="$out/input/a-source-route.args"'
+            ),
+            2,
+        )
+
     def test_policy3_uses_translated_grow_plan_and_bounded_quotas(
         self,
     ) -> None:

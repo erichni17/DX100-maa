@@ -260,10 +260,9 @@ MAA::MAA(const MAAParams &p)
              "spooling\n");
     panic_if(virtual_bounded_global_merge &&
                  (!virtual_index_descriptor_spool ||
-                  virtual_descriptor_spool_read_ahead ||
-                  virtual_descriptor_spool_source_bypass_cache),
+                  virtual_descriptor_spool_read_ahead),
              "Bounded global merge requires descriptor spooling and "
-             "disallows paged replay read-ahead/source-bypass controls\n");
+             "disallows paged replay read-ahead\n");
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),
              "Explicit range boundaries require range policy 2\n");
