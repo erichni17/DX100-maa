@@ -19,6 +19,7 @@ config="$root/configs/deprecated/example/se.py"
 case_runner="$root/experiments/scripts/run_virtual_tile_consumer_case.sh"
 validator="$root/experiments/scripts/validate_descriptor_spool_read_ahead.py"
 extra_a_args=${DX100_A_SOURCE_ROUTING_ARGS_FILE:-}
+filter_words_per_cycle=${MAA_DESCRIPTOR_SPOOL_FILTER_WORDS_PER_CYCLE:-16}
 base_arms=(native16 native4 resident_control_4k overlap_treatment_4k)
 
 [[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 2; }
@@ -30,6 +31,10 @@ base_arms=(native16 native4 resident_control_4k overlap_treatment_4k)
 }
 [[ $source_commit =~ ^[0-9a-f]{40}$ ]] || {
     echo "SOURCE_COMMIT must be a full 40-hex commit" >&2
+    exit 2
+}
+[[ $filter_words_per_cycle =~ ^[1-9][0-9]*$ ]] || {
+    echo "MAA_DESCRIPTOR_SPOOL_FILTER_WORDS_PER_CYCLE must be positive" >&2
     exit 2
 }
 git -C "$root" cat-file -e "$source_commit^{commit}"
@@ -179,7 +184,7 @@ virtual_geometry=(
     MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL=1
     MAA_VIRTUAL_PARTITION_KEEP_COMBINER=1
     MAA_VIRTUAL_GROW_ORDER=1
-    MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE=16
+    MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE="$filter_words_per_cycle"
     MAA_REQUIRE_INDEX_FILTER_WAIT=1
 )
 arm_jobs=()
@@ -262,6 +267,8 @@ route_evidence() {
         route_evidence a_source_routing_4k 1 0
     fi
 } > "$out/source_route.tsv"
+printf 'filter_words_per_cycle\t%s\n' "$filter_words_per_cycle" \
+    > "$out/filter_width.tsv"
 
 field() {
     local name=$1
@@ -358,7 +365,7 @@ runner_sha=$(sha256sum "$0" | awk '{ print $1 }')
     done
 } > "$out/provenance.tsv"
 sha256sum "$out/matrix.tsv" "$out/provenance.tsv" \
-    "$out/source_route.tsv" \
+    "$out/source_route.tsv" "$out/filter_width.tsv" \
     > "$out/matrix_artifact_sha256.txt"
 touch "$out/matrix.complete"
 cat "$out/matrix.tsv"
