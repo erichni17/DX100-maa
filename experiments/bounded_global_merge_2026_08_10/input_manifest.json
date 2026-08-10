@@ -1,0 +1,50 @@
+{
+  "schema": "dx100.bounded_global_merge_input.v1",
+  "source_grounding": {
+    "commit": "ee08be4bb902ac72ced1f34ed02771cbe9588114",
+    "core_maa_edited": false
+  },
+  "authenticated_current_trace": {
+    "role": "descriptor, physical-address, RowTable-key, and output reconstruction input; not candidate timing evidence",
+    "source_commit": "a0677ed7315fb768bc72cc95c0728f7b8b33a7ee",
+    "path": "/data1/nier/worktrees/codex-coordination/sessions/resident-first-spool-20260809-20260809-025450-7603f4d7/evidence/resident_first_descriptor_spool_a0677ed7/matched_matrix/resident_first_4k/physical_admission_records.jsonl",
+    "sha256": "b0e6b5b4b349815085a6dede6ded45bd6025ef120b3cab7f01a0673c4ba516e8",
+    "records": 16384,
+    "physical_record_digest": "2ffa5770f8b124c5c53120e7f9735714ba5d4be518b26c28b91d9a16de41f2c8",
+    "output_hash": "7228541527853630339",
+    "matrix_tsv": {
+      "path": "/data1/nier/worktrees/codex-coordination/sessions/resident-first-spool-20260809-20260809-025450-7603f4d7/evidence/resident_first_descriptor_spool_a0677ed7/matched_matrix/matrix.tsv",
+      "sha256": "c5fe2f0be8a1de848eb6bd6c83d82808245df6b220001881d44cf44a8b3d12f1"
+    },
+    "resident_result_tsv_sha256": "aabf75add984981d89b09a4c44c662f07d582aa4de68935df32c1baab34de1e8",
+    "native4_result_tsv_sha256": "7503bb453cff67ad631f3dba7fc637adea687cb34cd80580ee9eef0c46b86718",
+    "gem5_sha256": "aaff496e9cc822367036ab80ef632c5d35d6d7374706d33416698c2e0e958716",
+    "workload_sha256": "96d274918b1164ed692f452d78761ea96f79c117d35176fb2df0e62453c3e066",
+    "ramulator_sha256": "76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753",
+    "ramulator_config_sha256": "aca6e27b58afdfbfd80b7ec41c3f0e7e574a1fc7355a3512981ead823f68731b"
+  },
+  "exact_current_comparators": {
+    "role": "exact values supplied by the 2026-08-10 coordination objective; retained as measured context and not treated as paired candidate evidence",
+    "native4": {
+      "simTicks": 59267176,
+      "descriptor_fill_cycles": 5169508,
+      "a_request_cycles": 52038128
+    },
+    "bounded_paged4": {
+      "simTicks": 60913869,
+      "descriptor_fill_cycles": 22029879,
+      "a_request_cycles": 30625172,
+      "external_descriptor_records": 12288,
+      "external_descriptor_bytes": 73728,
+      "descriptor_line_writes": 1152,
+      "descriptor_line_reads": 1152
+    }
+  },
+  "generated_artifacts": {
+    "README.md": "cee281480e0869482fa51bd6f82adb4542d0c484350f5cf3ebbd835f5b74b95f",
+    "bounded_global_merge_model.py": "5a7d1eff3f8b9707024f64b69aefc3558ab68605bd56c4c627a5fdbbf89eb9b7",
+    "test_bounded_global_merge_model.py": "e00e1c6721d5931da650dd3a674de55a442a5e82a36477ad473ebcb28efedc18",
+    "results.json": "264656df418b3b9d6a66fc75ef7dd4645353df3ad697a9dabe17152de2379a09",
+    "report.md": "3c7a80e6a74976fb75500297393faeb9845e784fdc28db7508008841662eb6db"
+  }
+}
