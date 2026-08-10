@@ -142,9 +142,10 @@ testFiniteFourCreditOverlap()
 
     // Releasing the acknowledged write, rather than ALU completion, returns
     // the exact 64-byte credit to the next backing read.
-    auto read4 = pipeline.pendingRead();
-    CHECK(read4.line == 4 && read4.buffer == write0.buffer);
-    CHECK(pipeline.accept(read4));
+    auto nextRead = pipeline.pendingRead();
+    CHECK(nextRead.line == HybridConsumerPipeline::LineBufferCount &&
+          nextRead.buffer == write0.buffer);
+    CHECK(pipeline.accept(nextRead));
     CHECK(pipeline.assertInvariants());
 }
 
@@ -274,7 +275,7 @@ testCompleteBothWordGeometries()
 void
 testValidationAndExactIdentity()
 {
-    CHECK(HybridConsumerPipeline::chargedPayloadBytes() == 256);
+    CHECK(HybridConsumerPipeline::chargedPayloadBytes() == 1024);
     CHECK(HybridConsumerPipeline::chargedControlBytes() > 0);
     CHECK(HybridConsumerPipeline::chargedTotalBytes() ==
           HybridConsumerPipeline::chargedPayloadBytes() +

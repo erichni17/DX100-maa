@@ -12,8 +12,8 @@ namespace gem5 {
 /**
  * Finite control model for cache-line retirement of one accepted 16K hybrid
  * producer.  The producer payload remains in acknowledged backing memory.
- * Four explicit 64-byte buffers carry read responses through an external ALU
- * and then hold the exact bytes of acknowledged destination writes.
+ * Sixteen explicit 64-byte buffers carry read responses through an external
+ * ALU and then hold the exact bytes of acknowledged destination writes.
  *
  * This class is an executable scheduler, not a gem5 integration.  In
  * particular, it never manufactures producer visibility, read responses, ALU
@@ -28,7 +28,7 @@ class HybridConsumerPipeline
     static constexpr uint8_t ProducerPages = 4;
     static constexpr uint16_t LineBytes = 64;
     static constexpr uint8_t PortCount = 4;
-    static constexpr uint8_t LineBufferCount = 4;
+    static constexpr uint8_t LineBufferCount = 16;
     static constexpr uint16_t LineBufferPayloadBytes =
         LineBytes * LineBufferCount;
     static constexpr uint16_t MaxLines =
@@ -37,7 +37,7 @@ class HybridConsumerPipeline
         std::numeric_limits<uint8_t>::max();
 
     // Charge every persistent byte represented by this scheduler, not only
-    // the four cache-line data credits. The C++ footprint is conservative
+    // the cache-line data credits. The C++ footprint is conservative
     // relative to packed RTL, but makes hidden metadata impossible here.
     static constexpr std::size_t chargedPayloadBytes();
     static constexpr std::size_t chargedControlBytes();
@@ -680,10 +680,10 @@ HybridConsumerPipeline::chargedTotalBytes()
 static_assert(HybridConsumerPipeline::LogicalElements == 16384);
 static_assert(HybridConsumerPipeline::ProducerPages == 4);
 static_assert(HybridConsumerPipeline::LineBytes == 64);
-static_assert(HybridConsumerPipeline::LineBufferCount == 4);
-static_assert(HybridConsumerPipeline::LineBufferPayloadBytes == 256);
+static_assert(HybridConsumerPipeline::LineBufferCount == 16);
+static_assert(HybridConsumerPipeline::LineBufferPayloadBytes == 1024);
 static_assert(HybridConsumerPipeline::MaxLines == 2048);
-static_assert(HybridConsumerPipeline::chargedPayloadBytes() == 256);
+static_assert(HybridConsumerPipeline::chargedPayloadBytes() == 1024);
 static_assert(HybridConsumerPipeline::chargedControlBytes() > 0);
 static_assert(HybridConsumerPipeline::chargedTotalBytes() ==
               HybridConsumerPipeline::chargedPayloadBytes() +

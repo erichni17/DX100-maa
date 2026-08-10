@@ -1167,16 +1167,14 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             "event=direct_retirement_submit schema=1 occurrence=%lu "
             "generation=%lu token=%d source=0x%lx destination=0x%lx "
             "scope=terminal_fp64_mul_dense_store credits=%u "
-            "payload_bytes=%zu control_bytes=%zu total_bytes=%zu "
+            "payload_bytes=%lu control_bytes=%lu total_bytes=%lu "
             "backing_span_bytes=%lu private_page_payload_bytes=0\n",
             directRetirementTraceOccurrence++, descriptor.generation,
             token_tile, descriptor.backingAddress,
             descriptor.destinationAddress,
             HybridConsumerPipeline::LineBufferCount,
-            static_cast<std::size_t>(charged_payload_bytes),
-            static_cast<std::size_t>(charged_control_bytes),
-            static_cast<std::size_t>(charged_payload_bytes +
-                                     charged_control_bytes),
+            charged_payload_bytes, charged_control_bytes,
+            charged_payload_bytes + charged_control_bytes,
             static_cast<uint64_t>(descriptor.logicalElements) *
                 descriptor.wordBytes);
     scheduleDirectRetirementEvent();
@@ -1220,9 +1218,9 @@ MAA::makeDirectRetirementPacket(
     PacketPtr packet = new Packet(
         realRequest, request.kind == HybridConsumerPipeline::Kind::ReadBacking
                          ? MemCmd::ReadReq : MemCmd::WriteReq);
-    // The four credit-owned buffers are the packet storage: a read fills the
-    // credit directly, ALU updates it in place, and WriteReq retains it until
-    // its exact WriteResp. No page payload or shadow write queue exists.
+    // The bounded credit-owned buffers are the packet storage: a read fills
+    // the credit directly, ALU updates it in place, and WriteReq retains it
+    // until its exact WriteResp. No page payload or shadow write queue exists.
     packet->dataStatic(reinterpret_cast<uint8_t *>(
         directRetirement.bufferData(request.buffer)));
     auto *state = new DirectRetirementSenderState;
@@ -3019,7 +3017,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                "maximum direct-retirement 64-byte credits in use"),
       ADD_STAT(direct_retirement_credit_stalls,
                statistics::units::Count::get(),
-               "direct-retirement scheduler attempts stalled by four credits"),
+               "direct-retirement scheduler attempts stalled by all credits"),
       ADD_STAT(direct_retirement_address_stalls,
                statistics::units::Count::get(),
                "direct-retirement sends deferred behind an MAA address owner"),

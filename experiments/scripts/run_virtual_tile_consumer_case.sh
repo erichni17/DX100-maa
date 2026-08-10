@@ -1377,6 +1377,8 @@ elif [[ $virtual -eq 1 ]]; then
     }
     if [[ $direct_retirement -eq 1 ]]; then
         direct_lines=$((16384 * 8 / 64))
+        direct_credits=16
+        direct_payload=1024
         direct_submits=$(grep -c 'event=direct_retirement_submit schema=1 ' "$trace" || true)
         direct_ack_trace=$(grep -c 'event=direct_retirement_producer_ack schema=1 ' "$trace" || true)
         direct_issue_trace=$(grep -c 'event=direct_retirement_issue schema=1 ' "$trace" || true)
@@ -1410,8 +1412,9 @@ elif [[ $virtual -eq 1 ]]; then
            $direct_alu_completions -eq $direct_lines && \
            $direct_write_issues -eq $direct_lines && \
            $direct_write_responses -eq $direct_lines && \
-           $direct_credit_hwm -eq 4 && $direct_fallbacks -eq 0 && \
-           $direct_payload_bytes -eq 256 && \
+           $direct_credit_hwm -eq $direct_credits && \
+           $direct_fallbacks -eq 0 && \
+           $direct_payload_bytes -eq $direct_payload && \
            $direct_control_bytes -gt 0 && \
            $trace_payload_bytes -eq $direct_payload_bytes && \
            $trace_control_bytes -eq $direct_control_bytes && \
@@ -1428,8 +1431,8 @@ elif [[ $virtual -eq 1 ]]; then
             echo "direct-retirement closure failed: descriptor=$direct_descriptors acks=$direct_producer_acks reads=$direct_read_issues/$direct_read_responses alu=$direct_alu_issues/$direct_alu_completions writes=$direct_write_issues/$direct_write_responses hwm=$direct_credit_hwm fallback=$direct_fallbacks trace=$direct_submits/$direct_ack_trace/$direct_issue_trace/$direct_response_trace/$direct_alu_issue_trace/$direct_alu_complete_trace/$direct_summary_trace/$direct_retire_trace" >&2
             exit 1
         }
-        grep -Eq "event=direct_retirement_submit schema=1 .*scope=terminal_fp64_mul_dense_store credits=4 payload_bytes=256 control_bytes=[1-9][0-9]* total_bytes=[1-9][0-9]* backing_span_bytes=131072 private_page_payload_bytes=0$" "$trace" && \
-        grep -Eq "event=direct_retirement_summary schema=1 .*reads=${direct_lines} computes=${direct_lines} writes=${direct_lines} credit_high_water=4 .*fallback_count=0$" "$trace" && \
+        grep -Eq "event=direct_retirement_submit schema=1 .*scope=terminal_fp64_mul_dense_store credits=${direct_credits} payload_bytes=${direct_payload} control_bytes=[1-9][0-9]* total_bytes=[1-9][0-9]* backing_span_bytes=131072 private_page_payload_bytes=0$" "$trace" && \
+        grep -Eq "event=direct_retirement_summary schema=1 .*reads=${direct_lines} computes=${direct_lines} writes=${direct_lines} credit_high_water=${direct_credits} .*fallback_count=0$" "$trace" && \
         grep -Eq "event=direct_retirement_retire schema=1 .*final_write_responses=${direct_lines}$" "$trace" || {
             echo "direct-retirement trace lacks exact no-private-payload or final-WriteResp proof" >&2
             exit 1
