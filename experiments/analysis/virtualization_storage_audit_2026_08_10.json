@@ -1,0 +1,48 @@
+{
+  "schema": "dx100.virtualization-storage-audit.v1",
+  "scope": "source audit; no live MAA/config/runner source was changed",
+  "constants": {
+    "logical_tile_elements": 16384,
+    "hybrid_physical_tile_elements": 4096,
+    "default_tiles_per_core": 8,
+    "fp64_bytes": 8,
+    "spd_storage_word_bytes": 4,
+    "cache_line_bytes": 64,
+    "bounded_passes": 4,
+    "bounded_active_descriptors": 4096,
+    "bounded_logical_descriptors": 16384,
+    "descriptor_bytes": 6,
+    "descriptor_read_lines": 4,
+    "descriptor_write_credits": 16
+  },
+  "paths": {
+    "native16": {"logical_elements": 16384, "physical_elements": 16384, "spd_payload_bytes_per_tile": 65536, "semantic_result": "native SPD destination; FP64 uses a paired visible tile", "result_persists_in_shared_backing": false},
+    "native4": {"logical_elements": 16384, "physical_elements": 4096, "spd_payload_bytes_per_tile": 16384, "semantic_result": "only a 4K physical page can be stored at once", "result_persists_in_shared_backing": false},
+    "transparent_hybrid4": {"logical_elements": 16384, "physical_elements": 4096, "spd_payload_bytes_per_32bit_tile_span": 16384, "spd_input_page_bytes": 32768, "spd_output_page_bytes": 32768, "simultaneous_spd_staging_bytes": 65536, "producer_result_backing_bytes": 131072, "application_destination_bytes": 131072, "application_destination_is_virtualization_overhead": false, "result_persists_in_shared_backing": true, "verdict": "not a self-contained 4K payload: it uses separate 4K-value FP64 input/output pages plus a 16K-value coherent producer backing span"},
+    "bounded4": {"logical_elements": 16384, "resident_descriptors": 4096, "external_descriptor_payload_formula": "sum(ceil_to_64(6 * population[pass])) for the three nonresident passes", "external_descriptor_worst_case_bytes": 73728, "result_persists_in_shared_backing": true, "verdict": "bounded on-chip metadata/control, but A[B[i]] still persists in shared coherent backing"}
+  },
+  "finite_on_chip_or_private_state": {
+    "spd_payload_formula": "num_tiles_per_core * num_cores * physical_tile_elements * 4 bytes",
+    "hybrid_spd_payload_per_core_bytes": 131072,
+    "default_native_spd_payload_per_core_bytes": 524288,
+    "row_table_entries_formula": "active_slices * rows_per_slice * entries_per_row; entry fields are Addr + first_itr + last_itr (ABI/padding-dependent host bytes)",
+    "offset_table_entries": "num_offset_table_entries; default resolves to logical_tile_elements, and bounded operation closes epochs at its configured limit",
+    "response_pool_default_formula": "virtual_response_slots * 64 bytes = 8 * 64 = 512 bytes before C++ vector/object overhead; runner profile is 96 slots plus a 480-word pooled useful-data limit",
+    "combiner_default_formula": "virtual_combine_slots * 64 bytes = 16 * 64 = 1024 bytes before metadata; runner profile is 384 slots / configured 4096 words",
+    "direct_index_feeder": "at most virtual_index_buffer_lines 64-byte B lines, plus one DirectIndexWord record per admitted word; runner sets four lines",
+    "descriptor_spool": "four 64-byte staging lines, up to five carry bytes each, <=16 write credits and <=4 outstanding read lines; external descriptors are timing-visible backing, not on-chip payload",
+    "logical_spd_cache_separate_path": "LogicalSPDCacheRuntime has accounting-only private payload 2 * 2048 * 8 = 32768 bytes per MAA. It is a separate opcode path and must not be silently counted as the virtual-index hybrid SPD payload."
+  },
+  "liveness": {
+    "b_index_copy": "dead after row/offset admission for the normal direct-index path: discardDirectIndex erases direct_index_words after DescriptorInserted. Exception: the bounded descriptor-spool path deliberately serializes (logical iteration, B value) as a 6-byte external descriptor for later replay.",
+    "a_of_b_result": "must persist for the virtual consumer: source-response words enter the combiner and retirement writes target backingWordAddr(itr); the benchmark transparent consumer receives backing and destination pointers."
+  },
+  "source_anchors": [
+    "src/mem/MAA/MAA.py:num_tile_elements,physical_tile_elements",
+    "src/mem/MAA/SPD.cc:payload allocation uses physical_tile_elements * sizeof(uint32_t)",
+    "experiments/scripts/run_virtual_tile_consumer_case.sh:invocation fixes logical 16384 and passes physical",
+    "benchmarks/API/test_virtual_tile_consumer.cpp:transparent consumer receives backing,destination",
+    "src/mem/MAA/IndirectAccess.cc:receiveDirectIndex,discardDirectIndex,drainVirtualResponses,createRetirementWrite",
+    "src/mem/MAA/BoundedDescriptorSpool.hh:finite spool constants"
+  ]
+}
