@@ -122,7 +122,8 @@ def main() -> None:
     if len(output_hashes) != 1:
         fail(f"exact output hashes differ: {sorted(output_hashes)}")
     physical_hashes = {
-        str(results[arm]["physical_record_sha256"]) for arm in ARMS
+        str(results[arm]["physical_record_sha256"])
+        for arm in ARMS
         if arm != "native4"
     }
     if len(physical_hashes) != 1:
