@@ -127,6 +127,10 @@ class MAA(ClockedObject):
         False,
         "Bypass cache only for descriptor-spooled A-source reads",
     )
+    virtual_bounded_global_merge = Param.Bool(
+        False,
+        "Materialize four RowTable-sorted runs and merge four finite heads",
+    )
     virtual_index_range_policy = Param.Unsigned(
         0,
         "Range bounds: 0=full grow, 1=A endpoints, 2=explicit oracle, "

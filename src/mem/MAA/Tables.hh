@@ -199,6 +199,8 @@ public:
     bool claim_entry_send_native_order(Addr &addr, int &head, int &words,
                                        bool drain, int &row_id,
                                        int &entry_id);
+    bool claim_entry_send_sorted(Addr &grow_addr, Addr &addr, int &head,
+                                 int &words, uint64_t &comparisons);
     bool release_native_claim(int row_id, int entry_id, Addr grow_addr,
                               Addr addr, int head);
     void reset_virtual_claim_group();

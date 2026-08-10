@@ -170,6 +170,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_descriptor_spool_source_bypass_cache"
         )
 
+    if hasattr(options, "maa_virtual_bounded_global_merge"):
+        opts["virtual_bounded_global_merge"] = getattr(
+            options, "maa_virtual_bounded_global_merge"
+        )
+
     if hasattr(options, "maa_virtual_index_range_policy"):
         opts["virtual_index_range_policy"] = getattr(
             options, "maa_virtual_index_range_policy"

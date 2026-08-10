@@ -436,6 +436,7 @@ public:
     bool virtual_index_descriptor_spool;
     bool virtual_descriptor_spool_read_ahead;
     bool virtual_descriptor_spool_source_bypass_cache;
+    bool virtual_bounded_global_merge;
     unsigned int virtual_index_range_policy;
     std::vector<Addr> virtual_index_range_boundaries;
     unsigned int virtual_index_filter_words_per_cycle;
@@ -828,6 +829,31 @@ public:
         std::vector<statistics::Scalar *> IND_DescriptorSpoolStagingEntries;
         std::vector<statistics::Scalar *> IND_DescriptorSpoolControlBytes;
         std::vector<statistics::Scalar *> IND_DescriptorSpoolBackingBytes;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergePopulations;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeActiveHWM;
+        std::vector<statistics::Scalar *>
+            IND_BoundedGlobalMergeDescriptorRecords;
+        std::vector<statistics::Scalar *>
+            IND_BoundedGlobalMergeDescriptorBytes;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeSortReadLines;
+        std::vector<statistics::Scalar *>
+            IND_BoundedGlobalMergeSortedWriteLines;
+        std::vector<statistics::Scalar *>
+            IND_BoundedGlobalMergeSortComparisons;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeMergeReadLines;
+        std::vector<statistics::Scalar *>
+            IND_BoundedGlobalMergeMergeComparisons;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeMergeHeadHWM;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeALineIssues;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeCoalesced;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeRowGroups;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeAdmissions;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeRetirements;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeRunWriteAcks;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeTerminalAcks;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeFallbacks;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeControlBytes;
+        std::vector<statistics::Scalar *> IND_BoundedGlobalMergeBackingBytes;
         std::vector<statistics::Scalar *> IND_CyclesRTAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDReadAccess;
         std::vector<statistics::Scalar *> IND_CyclesSPDWriteAccess;

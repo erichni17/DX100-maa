@@ -770,6 +770,73 @@ bool RowTableSlice::claim_entry_send_native_order(Addr &addr, int &head,
         get_send_grow_rowid();
     }
 }
+bool RowTableSlice::claim_entry_send_sorted(Addr &grow_addr, Addr &addr,
+                                             int &head, int &words,
+                                             uint64_t &comparisons) {
+    int selected_row = -1;
+    int selected_entry = -1;
+    Addr selected_grow = 0;
+    Addr selected_addr = 0;
+    comparisons = 0;
+    for (int row_id = 0; row_id < num_RT_rows_per_slice; ++row_id) {
+        if (!entries_valid[row_id] || entries_sent[row_id])
+            continue;
+        for (int entry_id = 0;
+             entry_id < entries[row_id].num_RT_entries_per_row;
+             ++entry_id) {
+            if (!entries[row_id].entries_valid[entry_id])
+                continue;
+            const Addr candidate_grow = entries[row_id].grow_addr;
+            const Addr candidate_addr =
+                entries[row_id].entries[entry_id].addr;
+            if (selected_row == -1) {
+                selected_row = row_id;
+                selected_entry = entry_id;
+                selected_grow = candidate_grow;
+                selected_addr = candidate_addr;
+                continue;
+            }
+            comparisons++;
+            if (candidate_grow < selected_grow ||
+                (candidate_grow == selected_grow &&
+                 candidate_addr < selected_addr)) {
+                selected_row = row_id;
+                selected_entry = entry_id;
+                selected_grow = candidate_grow;
+                selected_addr = candidate_addr;
+            }
+        }
+    }
+    if (selected_row == -1)
+        return false;
+
+    RowTableEntry &row = entries[selected_row];
+    RowTableEntry::Entry &entry = row.entries[selected_entry];
+    grow_addr = selected_grow;
+    addr = selected_addr;
+    head = entry.first_itr;
+    words = offset_table->count_entries(head);
+    panic_if(words <= 0,
+             "ROT[%d] sorted claim selected empty ROW[%d] entry[%d]\n",
+             my_table_id, selected_row, selected_entry);
+    row.entries_valid[selected_entry] = false;
+    row.entries_claimed[selected_entry] = false;
+    if (row.all_entries_received()) {
+        entries_valid[selected_row] = false;
+        entries_sent[selected_row] = false;
+        row.check_reset();
+    }
+    last_sent_rowid = 0;
+    last_sent_grow_rowid = 0;
+    last_sent_grow_addr = 0;
+    virtual_claim_grow_addr = 0;
+    virtual_claim_grow_valid = false;
+    DPRINTF(MAARowTable,
+            "ROT[%d] sorted claim grow[0x%lx] addr[0x%lx] head[%d] "
+            "words[%d] comparisons[%lu]\n",
+            my_table_id, grow_addr, addr, head, words, comparisons);
+    return true;
+}
 bool RowTableSlice::release_native_claim(int row_id, int entry_id,
                                          Addr grow_addr, Addr addr,
                                          int head) {

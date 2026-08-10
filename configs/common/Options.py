@@ -414,6 +414,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_virtual_bounded_global_merge",
+        action="store_true",
+        help=(
+            "Materialize four RowTable-sorted descriptor runs in timed "
+            "backing and merge them with four finite heads"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_range_policy",
         type=int,
         default=0,

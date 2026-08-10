@@ -155,6 +155,7 @@ MAA::MAA(const MAAParams &p)
           p.virtual_descriptor_spool_read_ahead),
       virtual_descriptor_spool_source_bypass_cache(
           p.virtual_descriptor_spool_source_bypass_cache),
+      virtual_bounded_global_merge(p.virtual_bounded_global_merge),
       virtual_index_range_policy(p.virtual_index_range_policy),
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
       virtual_index_filter_words_per_cycle(
@@ -257,6 +258,12 @@ MAA::MAA(const MAAParams &p)
                  !virtual_index_descriptor_spool,
              "Descriptor-spool A-source cache bypass requires descriptor "
              "spooling\n");
+    panic_if(virtual_bounded_global_merge &&
+                 (!virtual_index_descriptor_spool ||
+                  virtual_descriptor_spool_read_ahead ||
+                  virtual_descriptor_spool_source_bypass_cache),
+             "Bounded global merge requires descriptor spooling and "
+             "disallows paged replay read-ahead/source-bypass controls\n");
     panic_if(virtual_index_range_policy != 2 &&
                  !virtual_index_range_boundaries.empty(),
              "Explicit range boundaries require range policy 2\n");
@@ -2988,6 +2995,125 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_DescriptorSpoolBackingBytes"),
             statistics::units::Byte::get(),
             "charged timing-visible descriptor-spool backing capacity"));
+        IND_BoundedGlobalMergePopulations.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergePopulations"),
+            statistics::units::Count::get(),
+            "finite sorted descriptor runs materialized"));
+        IND_BoundedGlobalMergeActiveHWM.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergeActiveHWM"),
+            statistics::units::Count::get(),
+            "maximum descriptors resident in the Row/Offset sorter"));
+        IND_BoundedGlobalMergeDescriptorRecords.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeDescriptorRecords"),
+                statistics::units::Count::get(),
+                "six-byte records materialized into sorted runs"));
+        IND_BoundedGlobalMergeDescriptorBytes.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeDescriptorBytes"),
+                statistics::units::Byte::get(),
+                "valid six-byte sorted-run payload traffic"));
+        IND_BoundedGlobalMergeSortReadLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeSortReadLines"),
+                statistics::units::Count::get(),
+                "timing-visible unsorted external-run lines read by the "
+                "sorter"));
+        IND_BoundedGlobalMergeSortedWriteLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeSortedWriteLines"),
+                statistics::units::Count::get(),
+                "timing-visible sorted-run cache lines written"));
+        IND_BoundedGlobalMergeSortComparisons.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeSortComparisons"),
+                statistics::units::Count::get(),
+                "bounded RowTable grow/line selection comparisons"));
+        IND_BoundedGlobalMergeMergeReadLines.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeMergeReadLines"),
+                statistics::units::Count::get(),
+                "timing-visible sorted-run cache lines read by four heads"));
+        IND_BoundedGlobalMergeMergeComparisons.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeMergeComparisons"),
+                statistics::units::Count::get(),
+                "finite four-head key comparisons"));
+        IND_BoundedGlobalMergeMergeHeadHWM.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeMergeHeadHWM"),
+                statistics::units::Count::get(),
+                "maximum simultaneously valid descriptor heads"));
+        IND_BoundedGlobalMergeALineIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergeALineIssues"),
+            statistics::units::Count::get(),
+            "A cache-line requests issued by the global merge"));
+        IND_BoundedGlobalMergeCoalesced.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergeCoalesced"),
+            statistics::units::Count::get(),
+            "descriptors coalesced behind an already-issued equal A line"));
+        IND_BoundedGlobalMergeRowGroups.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergeRowGroups"),
+            statistics::units::Count::get(),
+            "observed consecutive RowTable slice and DRAM-row groups"));
+        IND_BoundedGlobalMergeAdmissions.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergeAdmissions"),
+            statistics::units::Count::get(),
+            "descriptors admitted to the four bounded sorter populations"));
+        IND_BoundedGlobalMergeRetirements.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergeRetirements"),
+            statistics::units::Count::get(),
+            "merged descriptors restored to exact logical destinations"));
+        IND_BoundedGlobalMergeRunWriteAcks.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeRunWriteAcks"),
+                statistics::units::Count::get(),
+                "authenticated sorted-run write acknowledgements"));
+        IND_BoundedGlobalMergeTerminalAcks.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeTerminalAcks"),
+                statistics::units::Count::get(),
+                "all timing responses and writes acknowledged at terminal "
+                "closure"));
+        IND_BoundedGlobalMergeFallbacks.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_BoundedGlobalMergeFallbacks"),
+            statistics::units::Count::get(),
+            "fail-closed bounded-global-merge fallback attempts"));
+        IND_BoundedGlobalMergeControlBytes.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeControlBytes"),
+                statistics::units::Byte::get(),
+                "charged finite run-writer, four-reader, head and cursor "
+                "state"));
+        IND_BoundedGlobalMergeBackingBytes.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_BoundedGlobalMergeBackingBytes"),
+                statistics::units::Byte::get(),
+                "charged four-run timing-visible backing capacity"));
         IND_VirtCombineBankAccesses.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineBankAccesses"),
             statistics::units::Count::get(),

@@ -68,6 +68,7 @@ index_range_passes=${MAA_VIRTUAL_INDEX_RANGE_PASSES:-0}
 index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
 index_descriptor_spool=${MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL:-0}
 descriptor_spool_read_ahead=${MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD:-0}
+bounded_global_merge=${MAA_VIRTUAL_BOUNDED_GLOBAL_MERGE:-0}
 descriptor_spool_variant=${MAA_DESCRIPTOR_SPOOL_VARIANT:-resident_first}
 index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
 index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
@@ -122,6 +123,16 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 [[ $descriptor_spool_read_ahead == 0 ||
    $index_descriptor_spool == 1 ]] || {
     echo "descriptor spool read-ahead requires descriptor spooling" >&2
+    exit 2
+}
+[[ $bounded_global_merge == 0 || $bounded_global_merge == 1 ]] || {
+    echo "MAA_VIRTUAL_BOUNDED_GLOBAL_MERGE must be 0 or 1" >&2
+    exit 2
+}
+[[ $bounded_global_merge == 0 ||
+   ($index_descriptor_spool == 1 &&
+    $descriptor_spool_read_ahead == 0) ]] || {
+    echo "bounded global merge requires non-read-ahead descriptor spooling" >&2
     exit 2
 }
 [[ $index_descriptor_spool == 0 ||
@@ -263,6 +274,10 @@ if [[ $descriptor_spool_read_ahead == 1 ]]; then
     descriptor_spool_read_ahead_args+=(
         --maa_virtual_descriptor_spool_read_ahead
     )
+fi
+bounded_global_merge_args=()
+if [[ $bounded_global_merge == 1 ]]; then
+    bounded_global_merge_args+=(--maa_virtual_bounded_global_merge)
 fi
 index_range_boundary_args=()
 if [[ $index_range_policy == 2 ]]; then
@@ -557,6 +572,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
         "$index_descriptor_spool"
     printf 'virtual_descriptor_spool_read_ahead=%s\n' \
         "$descriptor_spool_read_ahead"
+    printf 'virtual_bounded_global_merge=%s\n' "$bounded_global_merge"
     printf 'descriptor_spool_variant=%s\n' "$descriptor_spool_variant"
     printf 'virtual_index_range_boundaries=%s\n' \
         "${index_range_boundaries:-none}"
@@ -600,6 +616,8 @@ cp -- "$root/src/mem/MAA/BoundedRangePass.hh" \
     "$snapshot/BoundedRangePass.hh"
 cp -- "$root/src/mem/MAA/BoundedDescriptorSpool.hh" \
     "$snapshot/BoundedDescriptorSpool.hh"
+cp -- "$root/src/mem/MAA/BoundedFourRunMerge.hh" \
+    "$snapshot/BoundedFourRunMerge.hh"
 cp -- "$root/src/mem/MAA/BoundedQuantileRanges.hh" \
     "$snapshot/BoundedQuantileRanges.hh"
 cp -- "$root/src/mem/MAA/BoundedMetadataLedger.hh" \
@@ -624,6 +642,8 @@ cp -- "$root/tests/virtual_tile/bounded_range_pass_test.cc" \
     "$snapshot/bounded_range_pass_test.cc"
 cp -- "$root/tests/virtual_tile/bounded_descriptor_spool_test.cc" \
     "$snapshot/bounded_descriptor_spool_test.cc"
+cp -- "$root/tests/maa/bounded_four_run_merge_test.cc" \
+    "$snapshot/bounded_four_run_merge_test.cc"
 cp -- "$root/tests/virtual_tile/bounded_quantile_ranges_test.cc" \
     "$snapshot/bounded_quantile_ranges_test.cc"
 cp -- "$root/tests/virtual_tile/bounded_metadata_ledger_test.cc" \
@@ -638,6 +658,8 @@ cp -- "$root/experiments/scripts/run_bounded_range_pass_unit.sh" \
     "$snapshot/run_bounded_range_pass_unit.sh"
 cp -- "$root/experiments/scripts/run_bounded_descriptor_spool_unit.sh" \
     "$snapshot/run_bounded_descriptor_spool_unit.sh"
+cp -- "$root/tests/maa/run_bounded_four_run_merge_unit.sh" \
+    "$snapshot/run_bounded_four_run_merge_unit.sh"
 cp -- "$root/experiments/scripts/run_true_4k_reorder_matrix.sh" \
     "$snapshot/run_true_4k_reorder_matrix.sh"
 cp -- "$root/experiments/scripts/run_true_4k_descriptor_spool_matrix.sh" \
@@ -659,6 +681,8 @@ cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     printf 'MAA_DESCRIPTOR_SPOOL_VARIANT=%q ' "$descriptor_spool_variant"
     printf 'MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD=%q ' \
         "$descriptor_spool_read_ahead"
+    printf 'MAA_VIRTUAL_BOUNDED_GLOBAL_MERGE=%q ' \
+        "$bounded_global_merge"
     printf '%q %q %q %q %q\n' "${DX100_FROZEN_RUNNER_PATH:-$0}" \
         "$gem5" "$binary" "$case_name" "$out"
 } > "$out/invocation.sh.txt"
@@ -671,6 +695,7 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/IndirectAccess.cc" "$snapshot/IndirectAccess.hh" \
     "$snapshot/BoundedRangePass.hh" \
     "$snapshot/BoundedDescriptorSpool.hh" \
+    "$snapshot/BoundedFourRunMerge.hh" \
     "$snapshot/BoundedQuantileRanges.hh" \
     "$snapshot/BoundedMetadataLedger.hh" \
     "$snapshot/Tables.cc" "$snapshot/Tables.hh" \
@@ -684,6 +709,7 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/CpuSidePort.cc" \
     "$snapshot/bounded_range_pass_test.cc" \
     "$snapshot/bounded_descriptor_spool_test.cc" \
+    "$snapshot/bounded_four_run_merge_test.cc" \
     "$snapshot/bounded_quantile_ranges_test.cc" \
     "$snapshot/bounded_metadata_ledger_test.cc" \
     "$snapshot/test_bounded_range_live_contract.py" \
@@ -691,6 +717,7 @@ sha256sum "$gem5" "$binary" "$snapshot/se.py" \
     "$snapshot/test_descriptor_filter_accounting.py" \
     "$snapshot/run_bounded_range_pass_unit.sh" \
     "$snapshot/run_bounded_descriptor_spool_unit.sh" \
+    "$snapshot/run_bounded_four_run_merge_unit.sh" \
     "$snapshot/run_true_4k_reorder_matrix.sh" \
     "$snapshot/run_true_4k_descriptor_spool_matrix.sh" \
     "$out/source.diff" "$out/source_status.txt" "$out/invocation.sh.txt" \
@@ -802,6 +829,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "${index_range_args[@]}" \
     "${index_descriptor_spool_args[@]}" \
     "${descriptor_spool_read_ahead_args[@]}" \
+    "${bounded_global_merge_args[@]}" \
     "${index_cache_args[@]}" \
     "${partition_combiner_args[@]}" \
     "${extra_maa_args[@]}" \
@@ -829,6 +857,7 @@ for expected in \
     "virtual_index_range_policy=$index_range_policy" \
     "virtual_index_descriptor_spool=$([[ $index_descriptor_spool -eq 1 ]] && echo true || echo false)" \
     "virtual_descriptor_spool_read_ahead=$([[ $descriptor_spool_read_ahead -eq 1 ]] && echo true || echo false)" \
+    "virtual_bounded_global_merge=$([[ $bounded_global_merge -eq 1 ]] && echo true || echo false)" \
     "virtual_index_force_cache=$([[ $index_force_cache -eq 1 ]] && echo true || echo false)" \
     "virtual_partition_keep_combiner=$([[ $partition_keep_combiner -eq 1 ]] && echo true || echo false)" \
     "virtual_index_filter_words_per_cycle=$index_filter_words_per_cycle" \
@@ -1064,6 +1093,45 @@ read -r bounded_bucket_lines bounded_bucket_words \
         }
     ' "$out/run/stats.txt"
 )
+read -r global_populations global_active_hwm global_descriptor_records \
+    global_descriptor_bytes global_sort_read_lines \
+    global_sorted_write_lines global_sort_comparisons \
+    global_merge_read_lines global_merge_comparisons global_head_hwm \
+    global_a_line_issues global_coalesced global_row_groups \
+    global_admissions global_retirements global_run_write_acks \
+    global_terminal_acks global_fallbacks global_control_bytes \
+    global_backing_bytes < <(
+    awk '
+        /^---------- Begin Simulation Statistics/ { section++ }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergePopulations$/ { p += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeActiveHWM$/ { ah += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeDescriptorRecords$/ { dr += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeDescriptorBytes$/ { db += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeSortReadLines$/ { sr += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeSortedWriteLines$/ { sw += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeSortComparisons$/ { sc += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeMergeReadLines$/ { mr += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeMergeComparisons$/ { mc += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeMergeHeadHWM$/ { hh += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeALineIssues$/ { ai += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeCoalesced$/ { co += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeRowGroups$/ { rg += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeAdmissions$/ { ad += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeRetirements$/ { rt += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeRunWriteAcks$/ { ra += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeTerminalAcks$/ { ta += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeFallbacks$/ { fb += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeControlBytes$/ { cb += $2 }
+        section == 1 && $1 ~ /IND_BoundedGlobalMergeBackingBytes$/ { bb += $2 }
+        /^---------- End Simulation Statistics/ && section == 1 {
+            print p + 0, ah + 0, dr + 0, db + 0, sr + 0, sw + 0,
+                  sc + 0, mr + 0, mc + 0, hh + 0, ai + 0, co + 0,
+                  rg + 0, ad + 0, rt + 0, ra + 0, ta + 0, fb + 0,
+                  cb + 0, bb + 0
+            exit
+        }
+    ' "$out/run/stats.txt"
+)
 descriptor_filter_predicate_retries=0
 descriptor_filter_grow_retries=0
 descriptor_final_flush_trace_stalls=0
@@ -1122,6 +1190,37 @@ else
        $descriptor_external_descriptors -eq 0 && \
        $descriptor_external_segments -eq 0 ]] || {
         echo "non-descriptor arm reported resident-first spool counters" >&2
+        exit 1
+    }
+fi
+
+global_complete_count=$(grep -Ec \
+    'event=bounded_global_merge_complete schema=1 .* populations=4 .* fallback=0 .* mode=timing$' \
+    "$out/run/virtual_trace.log" || true)
+if [[ $bounded_global_merge -eq 1 ]]; then
+    [[ $global_complete_count -eq 1 &&
+       $global_populations -eq 4 && $global_active_hwm -le 4096 &&
+       $global_descriptor_records -eq 16384 &&
+       $global_descriptor_bytes -eq 98304 &&
+       $global_sort_read_lines -eq 1152 &&
+       $global_sorted_write_lines -eq 1536 &&
+       $global_sort_comparisons -gt 0 &&
+       $global_merge_read_lines -eq 1536 &&
+       $global_merge_comparisons -gt 0 &&
+       $global_head_hwm -gt 0 && $global_head_hwm -le 4 &&
+       $((global_a_line_issues + global_coalesced)) -eq 16384 &&
+       $global_admissions -eq 16384 &&
+       $global_retirements -eq 16384 &&
+       $global_run_write_acks -eq 1536 &&
+       $global_terminal_acks -gt 0 && $global_fallbacks -eq 0 &&
+       $global_backing_bytes -eq 98304 ]] || {
+        echo "bounded global merge mechanism gate failed" >&2
+        exit 1
+    }
+else
+    [[ $global_complete_count -eq 0 && $global_populations -eq 0 &&
+       $global_descriptor_records -eq 0 && $global_fallbacks -eq 0 ]] || {
+        echo "bounded global merge activated in control case" >&2
         exit 1
     }
 fi
@@ -1619,6 +1718,7 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     virtual_grow_order virtual_index_partitions virtual_index_range_passes
     virtual_index_range_policy virtual_index_descriptor_spool
     virtual_descriptor_spool_read_ahead
+    virtual_bounded_global_merge
     descriptor_spool_variant
     virtual_index_range_boundaries
     virtual_index_force_cache virtual_partition_keep_combiner
@@ -1659,7 +1759,17 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     descriptor_spool_boundary_demand_wait_events
     descriptor_spool_boundary_demand_wait_cycles
     descriptor_spool_within_pass_demand_wait_events
-    descriptor_spool_within_pass_demand_wait_cycles)
+    descriptor_spool_within_pass_demand_wait_cycles
+    bounded_global_populations bounded_global_active_hwm
+    bounded_global_descriptor_records bounded_global_descriptor_bytes
+    bounded_global_sort_read_lines bounded_global_sorted_write_lines
+    bounded_global_sort_comparisons bounded_global_merge_read_lines
+    bounded_global_merge_comparisons bounded_global_head_hwm
+    bounded_global_a_line_issues bounded_global_coalesced
+    bounded_global_row_groups bounded_global_admissions
+    bounded_global_retirements bounded_global_run_write_acks
+    bounded_global_terminal_acks bounded_global_fallbacks
+    bounded_global_control_bytes bounded_global_backing_bytes)
 values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$request_sim_ticks" "$fill_cycles" "$request_cycles" "$insts" "$index_line_reads"
     "$index_words" "$index_hwm" "$feeder_descriptor_discards"
@@ -1686,6 +1796,7 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$row_entries" "$grow_order" "$index_partitions" "$index_range_passes"
     "$index_range_policy" "$index_descriptor_spool"
     "$descriptor_spool_read_ahead"
+    "$bounded_global_merge"
     "$descriptor_spool_variant"
     "${index_range_boundaries:-none}"
     "$index_force_cache" "$partition_keep_combiner" \
@@ -1725,7 +1836,16 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "$descriptor_wasted_prefetched_lines"
     "$descriptor_boundary_wait_events" "$descriptor_boundary_wait_cycles"
     "$descriptor_within_pass_wait_events"
-    "$descriptor_within_pass_wait_cycles")
+    "$descriptor_within_pass_wait_cycles"
+    "$global_populations" "$global_active_hwm"
+    "$global_descriptor_records" "$global_descriptor_bytes"
+    "$global_sort_read_lines" "$global_sorted_write_lines"
+    "$global_sort_comparisons" "$global_merge_read_lines"
+    "$global_merge_comparisons" "$global_head_hwm"
+    "$global_a_line_issues" "$global_coalesced" "$global_row_groups"
+    "$global_admissions" "$global_retirements" "$global_run_write_acks"
+    "$global_terminal_acks" "$global_fallbacks" "$global_control_bytes"
+    "$global_backing_bytes")
 if [[ $index_range_passes -eq 1 ]]; then
     actual_index_partitions=$index_partitions
     expected_index_words=$((16384 * index_partitions))

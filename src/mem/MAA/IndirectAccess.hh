@@ -16,6 +16,7 @@
 #include "base/statistics.hh"
 #include "base/types.hh"
 #include "mem/MAA/BoundedDescriptorSpool.hh"
+#include "mem/MAA/BoundedFourRunMerge.hh"
 #include "mem/MAA/BoundedMetadataLedger.hh"
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
@@ -331,6 +332,53 @@ protected:
     BoundedRangePassTracker bounded_range_pass;
     BoundedGrowPassPlan bounded_grow_plan;
     BoundedDescriptorSpool descriptor_spool;
+    BoundedFourRunMerge bounded_global_merge;
+    enum class BoundedGlobalMergePhase : uint8_t
+    {
+        None,
+        Materialize,
+        Merge,
+        Complete,
+    };
+    BoundedGlobalMergePhase bounded_global_merge_phase =
+        BoundedGlobalMergePhase::None;
+    uint32_t bounded_global_merge_run = 0;
+    uint32_t bounded_global_merge_slice_cursor = 0;
+    int bounded_global_merge_chain_head = -1;
+    uint64_t bounded_global_merge_sort_comparisons = 0;
+    uint32_t bounded_global_merge_row_groups = 0;
+    uint32_t bounded_global_merge_source_responses = 0;
+    uint32_t bounded_global_merge_terminal_acks = 0;
+    bool bounded_global_merge_last_key_valid = false;
+    std::array<uint64_t, 4> bounded_global_merge_last_key{};
+    bool bounded_global_merge_last_row_valid = false;
+    uint32_t bounded_global_merge_last_slice = 0;
+    uint64_t bounded_global_merge_last_row = 0;
+    struct BoundedGlobalMergeReadSlot
+    {
+        bool valid = false;
+        Addr paddr = 0;
+        Addr vaddr = 0;
+        uint32_t run = 0;
+        uint32_t line = 0;
+    };
+    std::array<BoundedGlobalMergeReadSlot, BoundedFourRunMerge::Runs>
+        bounded_global_merge_read_slots{};
+    struct BoundedGlobalMergeWriteSlot
+    {
+        bool valid = false;
+        Addr paddr = 0;
+        Addr vaddr = 0;
+    };
+    std::array<BoundedGlobalMergeWriteSlot,
+               BoundedFourRunMerge::MaxOutstandingWrites>
+        bounded_global_merge_write_slots{};
+    bool bounded_global_merge_source_pending = false;
+    bool bounded_global_merge_source_ready = false;
+    Addr bounded_global_merge_source_paddr = 0;
+    Addr bounded_global_merge_source_vaddr = 0;
+    std::array<uint8_t, BoundedFourRunMerge::LineBytes>
+        bounded_global_merge_source_data{};
     bool descriptor_spool_bucket_active = false;
     bool descriptor_spool_bucket_scan_complete = false;
     bool descriptor_spool_replay_active = false;
@@ -484,6 +532,19 @@ protected:
     bool flushDescriptorSpoolLine(uint32_t pass, bool allow_partial);
     bool finishDescriptorSpoolBucketing();
     void startDescriptorSpoolReplay();
+    void startBoundedGlobalRunMaterialization();
+    void serviceBoundedGlobalRunMaterialization();
+    void serviceBoundedGlobalMerge();
+    bool receiveBoundedGlobalMerge(Addr addr, uint8_t *dataptr,
+                                   bool is_block_cached);
+    std::array<uint64_t, 4> boundedGlobalMergeKey(
+        const BoundedFourRunMerge::Descriptor &descriptor);
+    void createBoundedGlobalMergeReadPacket(Addr vaddr, uint32_t run,
+                                            uint32_t line);
+    void createBoundedGlobalMergeWritePacket(
+        Addr vaddr,
+        const std::array<uint8_t, BoundedFourRunMerge::LineBytes> &data);
+    void resetBoundedGlobalSorterTables();
     uint16_t captureDescriptorIndexPage(uint32_t iteration,
                                         Addr word_paddr);
     Addr descriptorIndexWordPaddr(uint32_t iteration) const;

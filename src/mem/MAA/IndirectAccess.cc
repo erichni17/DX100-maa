@@ -653,6 +653,20 @@ void IndirectAccessUnit::check_reset() {
                  descriptor_spool.configured(),
              "I[%d] descriptor-spool lifecycle is not reset\n",
              my_indirect_id);
+    panic_if(
+        bounded_global_merge.configured() ||
+            bounded_global_merge_phase != BoundedGlobalMergePhase::None ||
+            bounded_global_merge_chain_head != -1 ||
+            bounded_global_merge_source_pending ||
+            bounded_global_merge_source_ready ||
+            std::any_of(bounded_global_merge_read_slots.begin(),
+                        bounded_global_merge_read_slots.end(),
+                        [](const auto &slot) { return slot.valid; }) ||
+            std::any_of(bounded_global_merge_write_slots.begin(),
+                        bounded_global_merge_write_slots.end(),
+                        [](const auto &slot) { return slot.valid; }),
+        "I[%d] bounded-global-merge lifecycle is not reset\n",
+        my_indirect_id);
 }
 Cycles IndirectAccessUnit::updateLatency(int num_spd_read_data_accesses, int num_spd_read_condidx_accesses, int num_spd_write_accesses, int num_rowtable_read_accesses, int num_rowtable_write_accesses, int RT_access_parallelism) {
     if (num_spd_read_data_accesses != 0) {
@@ -1330,12 +1344,16 @@ void IndirectAccessUnit::finishAdaptiveSummary()
                  my_indirect_id);
         const uint64_t payload_end = my_backing_addr +
             static_cast<uint64_t>(my_max) * my_word_size;
-        constexpr uint64_t slot_bytes =
+        constexpr uint64_t paged_slot_bytes =
             static_cast<uint64_t>(
                 BoundedDescriptorSpool::MaxExternalPasses) *
             BoundedDescriptorSpool::MaxActiveDescriptors *
             BoundedDescriptorSpool::DescriptorBytes;
-        static_assert(slot_bytes % BoundedDescriptorSpool::LineBytes == 0);
+        static_assert(paged_slot_bytes %
+                          BoundedDescriptorSpool::LineBytes == 0);
+        const uint64_t slot_bytes = maa->virtual_bounded_global_merge
+            ? BoundedFourRunMerge::RequiredBackingBytes
+            : paged_slot_bytes;
         const uint64_t unit_tail =
             static_cast<uint64_t>(my_indirect_id + 1) * slot_bytes;
         panic_if(my_backing_max_addr < unit_tail,
@@ -1356,11 +1374,30 @@ void IndirectAccessUnit::finishAdaptiveSummary()
             [this](uint32_t pass) {
                 return bounded_grow_plan.population(pass);
             },
-            descriptor_spool_base_vaddr, slot_bytes);
+            descriptor_spool_base_vaddr +
+                (maa->virtual_bounded_global_merge
+                     ? BoundedFourRunMerge::RunStrideBytes : 0),
+            paged_slot_bytes);
         panic_if(spool_result != BoundedDescriptorSpool::Result::Accepted,
                  "I[%d] descriptor spool configuration failed: %s\n",
                  my_indirect_id,
                  BoundedDescriptorSpool::resultName(spool_result));
+        if (maa->virtual_bounded_global_merge) {
+            const std::array<uint32_t, BoundedFourRunMerge::Runs>
+                populations{
+                    bounded_grow_plan.population(0),
+                    bounded_grow_plan.population(1),
+                    bounded_grow_plan.population(2),
+                    bounded_grow_plan.population(3)};
+            const auto merge_result = bounded_global_merge.configure(
+                my_max, populations, descriptor_spool_base_vaddr,
+                slot_bytes);
+            panic_if(merge_result !=
+                         BoundedFourRunMerge::Result::Accepted,
+                     "I[%d] bounded global merge configuration failed: %s\n",
+                     my_indirect_id,
+                     BoundedFourRunMerge::resultName(merge_result));
+        }
         descriptor_spool_bucket_active = true;
         descriptor_spool_bucket_scan_complete = false;
         descriptor_spool_replay_active = false;
@@ -1665,8 +1702,42 @@ bool IndirectAccessUnit::finishDescriptorSpoolBucketing()
             descriptor_spool_bucket_commits,
             descriptor_spool_bucket_attempts -
                 descriptor_spool_bucket_commits);
-    startDescriptorSpoolReplay();
+    if (maa->virtual_bounded_global_merge)
+        startBoundedGlobalRunMaterialization();
+    else
+        startDescriptorSpoolReplay();
     return true;
+}
+void IndirectAccessUnit::startBoundedGlobalRunMaterialization()
+{
+    panic_if(!maa->virtual_bounded_global_merge ||
+                 !bounded_global_merge.configured() ||
+                 descriptor_spool.residentPass() != 0 ||
+                 descriptor_spool.residentDescriptors() !=
+                     descriptor_spool.population(0),
+             "I[%d] bounded global materialization cannot start\n",
+             my_indirect_id);
+    const auto begin = bounded_global_merge.beginMaterialization(0);
+    panic_if(begin != BoundedFourRunMerge::Result::Accepted,
+             "I[%d] resident run materialization failed to start: %s\n",
+             my_indirect_id, BoundedFourRunMerge::resultName(begin));
+    descriptor_spool_bucket_active = false;
+    descriptor_spool_replay_active = false;
+    bounded_global_merge_phase = BoundedGlobalMergePhase::Materialize;
+    bounded_global_merge_run = 0;
+    bounded_global_merge_slice_cursor = 0;
+    bounded_global_merge_chain_head = -1;
+    direct_index_partition = 0;
+    direct_index_next_prefetch_itr = 0;
+    my_i = my_max;
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_run_begin schema=1 unit=%d "
+            "operation_tick=%lu run=0 population=%u source=resident "
+            "sorter=row_offset_table active_limit=%u\n",
+            my_indirect_id, my_decode_start_tick,
+            bounded_global_merge.population(0),
+            BoundedFourRunMerge::MaxActiveDescriptors);
+    scheduleNextExecution(true);
 }
 void IndirectAccessUnit::startDescriptorSpoolReplay()
 {
@@ -1691,6 +1762,437 @@ void IndirectAccessUnit::startDescriptorSpoolReplay()
             descriptor_spool.population(0),
             BoundedDescriptorSpool::MaxActiveDescriptors);
     scheduleNextExecution(true);
+}
+
+void IndirectAccessUnit::resetBoundedGlobalSorterTables()
+{
+    panic_if(offset_table->occupancy() != 0,
+             "I[%d] bounded global sorter retained %d Offset entries\n",
+             my_indirect_id, offset_table->occupancy());
+    offset_table->check_reset();
+    for (int slice = 0; slice < num_RT_slices[my_RT_config]; ++slice) {
+        RT[my_RT_config][slice].check_reset();
+        RT[my_RT_config][slice].reset();
+        my_RT_req_sent[my_RT_config][slice] = false;
+    }
+    bounded_global_merge_slice_cursor = 0;
+    bounded_global_merge_chain_head = -1;
+}
+
+void IndirectAccessUnit::serviceBoundedGlobalRunMaterialization()
+{
+    panic_if(bounded_global_merge_phase !=
+                     BoundedGlobalMergePhase::Materialize ||
+                 bounded_global_merge_run >= BoundedFourRunMerge::Runs ||
+                 !bounded_global_merge.materializing(),
+             "I[%d] bounded global run materializer is not active\n",
+             my_indirect_id);
+
+    if (bounded_global_merge.writeLineReady(false)) {
+        Addr vaddr = 0;
+        uint32_t payload_bytes = 0;
+        std::array<uint8_t, BoundedFourRunMerge::LineBytes> data{};
+        const auto issue = bounded_global_merge.issueWriteLine(
+            false, vaddr, data, payload_bytes);
+        if (issue == BoundedFourRunMerge::Result::NoWriteCredit)
+            return;
+        panic_if(issue != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] sorted run %u full-line issue failed: %s\n",
+                 my_indirect_id, bounded_global_merge_run,
+                 BoundedFourRunMerge::resultName(issue));
+        createBoundedGlobalMergeWritePacket(vaddr, data);
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_sort_write_issue schema=1 unit=%d "
+                "operation_tick=%lu run=%u vaddr=0x%lx "
+                "payload_bytes=%u mode=timing\n",
+                my_indirect_id, my_decode_start_tick,
+                bounded_global_merge_run, vaddr, payload_bytes);
+        scheduleNextExecution(true);
+        return;
+    }
+
+    if (bounded_global_merge_chain_head != -1) {
+        const OffsetTableEntry entry =
+            offset_table->consume_entry(bounded_global_merge_chain_head);
+        static_assert(sizeof(entry.wid) == sizeof(uint32_t));
+        uint32_t descriptor_value = 0;
+        std::memcpy(&descriptor_value, &entry.wid,
+                    sizeof(descriptor_value));
+        const auto staged = bounded_global_merge.stageMaterialized(
+            BoundedFourRunMerge::Descriptor{
+                static_cast<uint16_t>(entry.itr), descriptor_value});
+        panic_if(staged != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] sorted run %u descriptor %d stage failed: %s\n",
+                 my_indirect_id, bounded_global_merge_run, entry.itr,
+                 BoundedFourRunMerge::resultName(staged));
+        updateLatency(0, 0, 0, 1, 0, total_num_RT_subslices);
+        scheduleNextExecution(true);
+        return;
+    }
+
+    while (bounded_global_merge_slice_cursor <
+           static_cast<uint32_t>(num_RT_slices[my_RT_config])) {
+        const int slice = my_RT_slice_order[my_RT_config]
+            [bounded_global_merge_slice_cursor];
+        Addr grow_addr = 0;
+        Addr line_addr = 0;
+        int head = -1;
+        int words = 0;
+        uint64_t comparisons = 0;
+        if (RT[my_RT_config][slice].claim_entry_send_sorted(
+                grow_addr, line_addr, head, words, comparisons)) {
+            panic_if(head < 0 || words <= 0,
+                     "I[%d] sorted RowTable claim is empty\n",
+                     my_indirect_id);
+            bounded_global_merge_chain_head = head;
+            bounded_global_merge_sort_comparisons += comparisons;
+            panic_if(comparisons >=
+                         static_cast<uint64_t>(
+                             std::numeric_limits<int>::max()),
+                     "I[%d] sorted RowTable comparison charge overflow\n",
+                     my_indirect_id);
+            updateLatency(0, 0, 0,
+                          static_cast<int>(comparisons) + 1, 0,
+                          total_num_RT_subslices);
+            DPRINTF(MAAVirtualTrace,
+                    "event=bounded_global_sort_claim schema=1 unit=%d "
+                    "operation_tick=%lu run=%u slice_rank=%u slice=%d "
+                    "grow=%lu line=0x%lx words=%d comparisons=%lu\n",
+                    my_indirect_id, my_decode_start_tick,
+                    bounded_global_merge_run,
+                    bounded_global_merge_slice_cursor, slice, grow_addr,
+                    line_addr, words, comparisons);
+            scheduleNextExecution(true);
+            return;
+        }
+        bounded_global_merge_slice_cursor++;
+    }
+
+    if (bounded_global_merge.writeLineReady(true)) {
+        Addr vaddr = 0;
+        uint32_t payload_bytes = 0;
+        std::array<uint8_t, BoundedFourRunMerge::LineBytes> data{};
+        const auto issue = bounded_global_merge.issueWriteLine(
+            true, vaddr, data, payload_bytes);
+        if (issue == BoundedFourRunMerge::Result::NoWriteCredit)
+            return;
+        panic_if(issue != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] sorted run %u final-line issue failed: %s\n",
+                 my_indirect_id, bounded_global_merge_run,
+                 BoundedFourRunMerge::resultName(issue));
+        createBoundedGlobalMergeWritePacket(vaddr, data);
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_sort_write_issue schema=1 unit=%d "
+                "operation_tick=%lu run=%u vaddr=0x%lx "
+                "payload_bytes=%u mode=timing final=1\n",
+                my_indirect_id, my_decode_start_tick,
+                bounded_global_merge_run, vaddr, payload_bytes);
+        scheduleNextExecution(true);
+        return;
+    }
+    if (bounded_global_merge.outstandingWriteCount() != 0)
+        return;
+
+    const uint32_t completed_run = bounded_global_merge_run;
+    const auto finish =
+        bounded_global_merge.finishMaterialization(completed_run);
+    panic_if(finish != BoundedFourRunMerge::Result::Accepted,
+             "I[%d] sorted run %u failed closure: %s\n",
+             my_indirect_id, completed_run,
+             BoundedFourRunMerge::resultName(finish));
+    if (completed_run != descriptor_spool.residentPass()) {
+        const auto replay = descriptor_spool.finishReplay(completed_run);
+        panic_if(replay != BoundedDescriptorSpool::Result::Accepted,
+                 "I[%d] sorter input run %u failed replay closure: %s\n",
+                 my_indirect_id, completed_run,
+                 BoundedDescriptorSpool::resultName(replay));
+        descriptor_spool_replay_active = false;
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_run_complete schema=1 unit=%d "
+            "operation_tick=%lu run=%u population=%u write_lines=%u "
+            "write_acks=%u active_hwm=%u sort_comparisons=%lu\n",
+            my_indirect_id, my_decode_start_tick, completed_run,
+            bounded_global_merge.population(completed_run),
+            bounded_global_merge.runLines(completed_run),
+            bounded_global_merge.runLines(completed_run),
+            bounded_global_merge.activeHighWater(),
+            bounded_global_merge_sort_comparisons);
+    resetBoundedGlobalSorterTables();
+
+    if (completed_run + 1 < BoundedFourRunMerge::Runs) {
+        bounded_global_merge_run = completed_run + 1;
+        const auto materialize = bounded_global_merge.beginMaterialization(
+            bounded_global_merge_run);
+        panic_if(materialize != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] sorted run %u cannot begin: %s\n",
+                 my_indirect_id, bounded_global_merge_run,
+                 BoundedFourRunMerge::resultName(materialize));
+        const auto replay =
+            descriptor_spool.beginReplay(bounded_global_merge_run);
+        panic_if(replay != BoundedDescriptorSpool::Result::Accepted,
+                 "I[%d] sorter input run %u cannot begin: %s\n",
+                 my_indirect_id, bounded_global_merge_run,
+                 BoundedDescriptorSpool::resultName(replay));
+        descriptor_spool_replay_active = true;
+        direct_index_partition = bounded_global_merge_run;
+        panic_if(direct_index_phase ==
+                     std::numeric_limits<uint32_t>::max(),
+                 "I[%d] direct-index phase token overflow\n",
+                 my_indirect_id);
+        direct_index_phase++;
+        direct_index_next_prefetch_itr = 0;
+        my_i = 0;
+        my_fill_finished = false;
+        state = Status::Fill;
+        transitionAttributionStage(AttributionStage::Fill,
+                                   "bounded_global_next_sort_run");
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_run_begin schema=1 unit=%d "
+                "operation_tick=%lu run=%u population=%u "
+                "source=timed_unsorted_run sorter=row_offset_table "
+                "active_limit=%u\n",
+                my_indirect_id, my_decode_start_tick,
+                bounded_global_merge_run,
+                bounded_global_merge.population(bounded_global_merge_run),
+                BoundedFourRunMerge::MaxActiveDescriptors);
+        scheduleNextExecution(true);
+        return;
+    }
+
+    const auto merge = bounded_global_merge.beginMerge();
+    panic_if(merge != BoundedFourRunMerge::Result::Accepted,
+             "I[%d] four-head merge cannot begin: %s\n",
+             my_indirect_id, BoundedFourRunMerge::resultName(merge));
+    bounded_global_merge_phase = BoundedGlobalMergePhase::Merge;
+    bounded_global_merge_run = BoundedFourRunMerge::Runs;
+    direct_index_partition = 0;
+    my_i = my_max;
+    my_fill_finished = true;
+    virtual_build_incomplete = false;
+    my_force_cache_determined = true;
+    my_force_cache = direct_index_force_cache;
+    state = Status::Request;
+    transitionAttributionStage(AttributionStage::Request,
+                               "bounded_global_merge_begin");
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_merge_begin schema=1 unit=%d "
+            "operation_tick=%lu runs=4 populations=%u,%u,%u,%u "
+            "heads=4 line_buffers=4 descriptor_bytes=%u\n",
+            my_indirect_id, my_decode_start_tick,
+            bounded_global_merge.population(0),
+            bounded_global_merge.population(1),
+            bounded_global_merge.population(2),
+            bounded_global_merge.population(3),
+            BoundedFourRunMerge::DescriptorBytes);
+    scheduleNextExecution(true);
+}
+
+std::array<uint64_t, 4>
+IndirectAccessUnit::boundedGlobalMergeKey(
+    const BoundedFourRunMerge::Descriptor &descriptor)
+{
+    panic_if(descriptor.iteration >= static_cast<uint32_t>(my_max),
+             "I[%d] merged descriptor iteration %u exceeds %d\n",
+             my_indirect_id, descriptor.iteration, my_max);
+    panic_if(descriptor.value >
+                 (std::numeric_limits<Addr>::max() - my_base_addr) /
+                     static_cast<Addr>(my_word_size),
+             "I[%d] merged descriptor address overflows\n",
+             my_indirect_id);
+    const Addr word_vaddr = my_base_addr +
+        static_cast<Addr>(descriptor.value) * my_word_size;
+    panic_if(word_vaddr < my_min_addr || word_vaddr >= my_max_addr,
+             "I[%d] merged source word 0x%lx is outside A range\n",
+             my_indirect_id, word_vaddr);
+    const Addr line_vaddr = addrBlockAligner(word_vaddr, block_size);
+    const Addr line_paddr = addrBlockAligner(
+        translatePacket(line_vaddr), block_size);
+    const std::vector<int> address = maa->map_addr(line_paddr);
+    const int native_slice = getRowTableIdx(
+        my_RT_config, address[ADDR_CHANNEL_LEVEL], address[ADDR_RANK_LEVEL],
+        address[ADDR_BANKGROUP_LEVEL], address[ADDR_BANK_LEVEL]);
+    uint32_t slice_rank = num_RT_slices[my_RT_config];
+    for (uint32_t rank = 0;
+         rank < static_cast<uint32_t>(num_RT_slices[my_RT_config]); ++rank) {
+        if (my_RT_slice_order[my_RT_config][rank] == native_slice) {
+            slice_rank = rank;
+            break;
+        }
+    }
+    panic_if(slice_rank >=
+                 static_cast<uint32_t>(num_RT_slices[my_RT_config]),
+             "I[%d] merged source slice %d has no RowTable rank\n",
+             my_indirect_id, native_slice);
+    const Addr grow_addr = getGrowAddr(
+        my_RT_config, address[ADDR_BANKGROUP_LEVEL],
+        address[ADDR_BANK_LEVEL], address[ADDR_ROW_LEVEL]);
+    return {slice_rank, grow_addr, line_paddr, descriptor.iteration};
+}
+
+void IndirectAccessUnit::serviceBoundedGlobalMerge()
+{
+    panic_if(bounded_global_merge_phase !=
+                     BoundedGlobalMergePhase::Merge ||
+                 !bounded_global_merge.merging(),
+             "I[%d] bounded global merge service is not active\n",
+             my_indirect_id);
+    for (uint32_t run = 0; run < BoundedFourRunMerge::Runs; ++run) {
+        if (!bounded_global_merge.needsRead(run))
+            continue;
+        Addr vaddr = 0;
+        uint32_t line = 0;
+        const auto next = bounded_global_merge.nextRead(
+            run, vaddr, line);
+        panic_if(next != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] merge run %u read issue failed: %s\n",
+                 my_indirect_id, run,
+                 BoundedFourRunMerge::resultName(next));
+        createBoundedGlobalMergeReadPacket(vaddr, run, line);
+    }
+    if (!bounded_global_merge.readyToSelect())
+        return;
+
+    uint32_t selected = BoundedFourRunMerge::Runs;
+    const auto selected_result = bounded_global_merge.selectHead(
+        [this](const auto &descriptor) {
+            return boundedGlobalMergeKey(descriptor);
+        }, selected);
+    if (selected_result == BoundedFourRunMerge::Result::NoWork) {
+        panic_if(!bounded_global_merge.mergeDone(),
+                 "I[%d] merge lost all heads before closure\n",
+                 my_indirect_id);
+        if (bounded_global_merge_source_pending)
+            return;
+        if (bounded_global_merge_source_ready) {
+            const auto end = bounded_global_merge.endSourceLine();
+            panic_if(end != BoundedFourRunMerge::Result::Accepted,
+                     "I[%d] final A-line cluster failed closure: %s\n",
+                     my_indirect_id,
+                     BoundedFourRunMerge::resultName(end));
+            bounded_global_merge_source_ready = false;
+            bounded_global_merge_source_paddr = 0;
+            bounded_global_merge_source_vaddr = 0;
+            bounded_global_merge_source_data.fill(0);
+        }
+        virtual_final_flush = true;
+        drainVirtualCombiner(true);
+        if (!virtualCombinerEmpty() || virtual_outstanding_writes != 0 ||
+            !maa->allIndirectPacketsSent(my_indirect_id))
+            return;
+        const auto finish = bounded_global_merge.finishMerge();
+        panic_if(finish != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] bounded global merge failed closure: %s\n",
+                 my_indirect_id,
+                 BoundedFourRunMerge::resultName(finish));
+        bounded_global_merge_terminal_acks =
+            descriptor_spool.writeAcks() +
+            bounded_global_merge.sortedWriteAcks() +
+            descriptor_spool.readLineResponses() +
+            bounded_global_merge.readLines() +
+            bounded_global_merge_source_responses +
+            attribution_write_completions;
+        bounded_global_merge_phase = BoundedGlobalMergePhase::Complete;
+        my_fill_finished = false;
+        state = Status::Response;
+        transitionAttributionStage(AttributionStage::Response,
+                                   "bounded_global_merge_complete");
+        scheduleNextExecution(true);
+        return;
+    }
+    panic_if(selected_result != BoundedFourRunMerge::Result::Accepted ||
+                 selected >= BoundedFourRunMerge::Runs,
+             "I[%d] four-head selection failed: %s\n", my_indirect_id,
+             BoundedFourRunMerge::resultName(selected_result));
+    const auto descriptor = bounded_global_merge.head(selected);
+    const auto key = boundedGlobalMergeKey(descriptor);
+    panic_if(bounded_global_merge_last_key_valid &&
+                 key < bounded_global_merge_last_key,
+             "I[%d] four-run merge order regressed at itr=%u\n",
+             my_indirect_id, descriptor.iteration);
+    const Addr line_paddr = key[2];
+    if ((bounded_global_merge_source_pending ||
+         bounded_global_merge_source_ready) &&
+        bounded_global_merge_source_paddr != line_paddr) {
+        panic_if(bounded_global_merge_source_pending ||
+                     !bounded_global_merge_source_ready,
+                 "I[%d] advanced beyond an incomplete A line\n",
+                 my_indirect_id);
+        const auto end = bounded_global_merge.endSourceLine();
+        panic_if(end != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] A-line cluster failed closure: %s\n",
+                 my_indirect_id,
+                 BoundedFourRunMerge::resultName(end));
+        bounded_global_merge_source_ready = false;
+        bounded_global_merge_source_paddr = 0;
+        bounded_global_merge_source_vaddr = 0;
+        bounded_global_merge_source_data.fill(0);
+    }
+    if (!bounded_global_merge_source_pending &&
+        !bounded_global_merge_source_ready) {
+        const Addr word_vaddr = my_base_addr +
+            static_cast<Addr>(descriptor.value) * my_word_size;
+        const Addr line_vaddr = addrBlockAligner(word_vaddr, block_size);
+        const auto begin = bounded_global_merge.beginSourceLine(line_paddr);
+        panic_if(begin != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] A-line cluster 0x%lx cannot begin: %s\n",
+                 my_indirect_id, line_paddr,
+                 BoundedFourRunMerge::resultName(begin));
+        bounded_global_merge_source_pending = true;
+        bounded_global_merge_source_paddr = line_paddr;
+        bounded_global_merge_source_vaddr = line_vaddr;
+        virtual_source_expected++;
+        if (!bounded_global_merge_last_row_valid ||
+            bounded_global_merge_last_slice != key[0] ||
+            bounded_global_merge_last_row != key[1]) {
+            bounded_global_merge_row_groups++;
+            bounded_global_merge_last_row_valid = true;
+            bounded_global_merge_last_slice = key[0];
+            bounded_global_merge_last_row = key[1];
+        }
+        my_force_cache = direct_index_force_cache;
+        recordReorderSurvivalIssue(line_paddr);
+        createReadPacket(line_paddr, 0);
+        return;
+    }
+    if (bounded_global_merge_source_pending)
+        return;
+    panic_if(!bounded_global_merge_source_ready ||
+                 bounded_global_merge_source_paddr != line_paddr,
+             "I[%d] selected descriptor has no matching A response\n",
+             my_indirect_id);
+    const Addr word_vaddr = my_base_addr +
+        static_cast<Addr>(descriptor.value) * my_word_size;
+    const Addr line_vaddr = addrBlockAligner(word_vaddr, block_size);
+    const uint32_t wid = (word_vaddr - line_vaddr) / my_word_size;
+    panic_if(wid >= static_cast<uint32_t>(my_words_per_cl),
+             "I[%d] merged descriptor word id %u is invalid\n",
+             my_indirect_id, wid);
+    if (!reserveVirtualCombineBank(descriptor.iteration)) {
+        scheduleExecuteInstructionEvent(1);
+        return;
+    }
+    direct_index_partition = selected;
+    if (!insertVirtualCombineWord(
+            descriptor.iteration,
+            bounded_global_merge_source_data.data() + wid * my_word_size)) {
+        scheduleExecuteInstructionEvent(1);
+        return;
+    }
+    const auto retired = bounded_global_merge.recordRetirement(line_paddr);
+    panic_if(retired != BoundedFourRunMerge::Result::Accepted,
+             "I[%d] merged descriptor %u retirement failed: %s\n",
+             my_indirect_id, descriptor.iteration,
+             BoundedFourRunMerge::resultName(retired));
+    const auto consumed = bounded_global_merge.consumeHead(selected);
+    panic_if(consumed != BoundedFourRunMerge::Result::Accepted,
+             "I[%d] merge run %u head consumption failed: %s\n",
+             my_indirect_id, selected,
+             BoundedFourRunMerge::resultName(consumed));
+    recordReorderSurvivalIssuedEntries(1);
+    bounded_global_merge_last_key = key;
+    bounded_global_merge_last_key_valid = true;
+    scheduleExecuteInstructionEvent(1);
 }
 BoundedRangePassTracker::Range
 IndirectAccessUnit::directIndexSourceGrowRange()
@@ -2151,6 +2653,25 @@ void IndirectAccessUnit::fillRowTable(
                 waitForElement = true;
                 break;
             }
+            if (maa->virtual_bounded_global_merge &&
+                bounded_global_merge_phase ==
+                    BoundedGlobalMergePhase::Materialize) {
+                panic_if(bounded_global_merge_run !=
+                             static_cast<uint32_t>(direct_index_partition),
+                         "I[%d] sorter run %u does not match pass %d\n",
+                         my_indirect_id, bounded_global_merge_run,
+                         direct_index_partition);
+                panic_if(!direct_index_pending_lines.empty() ||
+                             descriptorSpoolReadSlotsUsed() != 0 ||
+                             descriptor_spool_current_valid ||
+                             !direct_index_ready_lines.empty() ||
+                             !direct_index_words.empty(),
+                         "I[%d] sorter run %u reached its drain with "
+                         "buffered descriptor input\n",
+                         my_indirect_id, bounded_global_merge_run);
+                needDrain = true;
+                break;
+            }
             if (isVirtualLoad() && isDirectIndexLoad() &&
                 direct_index_partition + 1 < direct_index_partitions) {
                 panic_if(!direct_index_pending_lines.empty() ||
@@ -2490,6 +3011,8 @@ void IndirectAccessUnit::fillRowTable(
                              BoundedGrowPassPlan::resultName(commit_result));
                     (*maa->stats.IND_BoundedBucketWords[my_indirect_id])++;
                     descriptor_spool_bucket_commits++;
+                    if (maa->virtual_bounded_global_merge)
+                        trackVirtualIteration(logical_itr, true);
                     discardDirectIndex(
                         my_i, direct_index_value,
                         DirectIndexDiscardReason::DescriptorInserted);
@@ -2589,8 +3112,14 @@ void IndirectAccessUnit::fillRowTable(
                         grow_addr, logical_itr, idx, wid, my_RT_idx);
                 bool first_CL_access;
                 attribution_row_insert_attempts++;
+                int row_payload = wid;
+                if (maa->virtual_bounded_global_merge &&
+                    bounded_global_merge.configured()) {
+                    static_assert(sizeof(row_payload) == sizeof(idx));
+                    std::memcpy(&row_payload, &idx, sizeof(idx));
+                }
                 bool inserted = RT[my_RT_config][my_RT_idx].insert(
-                    grow_addr, block_paddr, logical_itr, wid,
+                    grow_addr, block_paddr, logical_itr, row_payload,
                     first_CL_access);
                 num_rowtable_accesses++;
                 if (!inserted) {
@@ -2732,7 +3261,9 @@ void IndirectAccessUnit::fillRowTable(
             virtual_iteration_selected ||
             (!condition_taken &&
              (!isDirectIndexLoad() || direct_index_partition == 0));
-        if (isVirtualLoad() && track_virtual_iteration)
+        if (isVirtualLoad() && track_virtual_iteration &&
+            !(maa->virtual_bounded_global_merge &&
+              descriptor_spool_replay_active))
             trackVirtualIteration(logical_itr, condition_taken);
         if (isDirectIndexLoad()) {
             if ((descriptor_spool_replay_active || resident_bucket) &&
@@ -3089,6 +3620,29 @@ void IndirectAccessUnit::executeInstruction() {
         bounded_range_pass.reset();
         bounded_grow_plan.reset();
         descriptor_spool.reset();
+        bounded_global_merge.reset();
+        bounded_global_merge_phase = BoundedGlobalMergePhase::None;
+        bounded_global_merge_run = 0;
+        bounded_global_merge_slice_cursor = 0;
+        bounded_global_merge_chain_head = -1;
+        bounded_global_merge_sort_comparisons = 0;
+        bounded_global_merge_row_groups = 0;
+        bounded_global_merge_source_responses = 0;
+        bounded_global_merge_terminal_acks = 0;
+        bounded_global_merge_last_key_valid = false;
+        bounded_global_merge_last_key.fill(0);
+        bounded_global_merge_last_row_valid = false;
+        bounded_global_merge_last_slice = 0;
+        bounded_global_merge_last_row = 0;
+        for (auto &slot : bounded_global_merge_read_slots)
+            slot = BoundedGlobalMergeReadSlot();
+        for (auto &slot : bounded_global_merge_write_slots)
+            slot = BoundedGlobalMergeWriteSlot();
+        bounded_global_merge_source_pending = false;
+        bounded_global_merge_source_ready = false;
+        bounded_global_merge_source_paddr = 0;
+        bounded_global_merge_source_vaddr = 0;
+        bounded_global_merge_source_data.fill(0);
         descriptor_spool_bucket_active = false;
         descriptor_spool_bucket_scan_complete = false;
         descriptor_spool_replay_active = false;
@@ -3390,6 +3944,17 @@ void IndirectAccessUnit::executeInstruction() {
                 my_indirect_id, __func__, my_instruction->print(), my_fill_finished ? "true" : "false");
         if (scheduleNextExecution()) {
             break;
+        }
+        if (maa->virtual_bounded_global_merge &&
+            bounded_global_merge_phase ==
+                BoundedGlobalMergePhase::Materialize) {
+            if (my_fill_start_tick != 0) {
+                (*maa->stats.IND_CyclesFill[my_indirect_id]) +=
+                    maa->getTicksToCycles(curTick() - my_fill_start_tick);
+                my_fill_start_tick = 0;
+            }
+            serviceBoundedGlobalRunMaterialization();
+            return;
         }
         if (usesBoundedSourceResponses())
             (*maa->stats.IND_VirtBuildRounds[my_indirect_id])++;
@@ -3730,6 +4295,14 @@ void IndirectAccessUnit::executeInstruction() {
             my_request_start_tick = curTick();
             startVirtualRequestInterval();
         }
+        if (maa->virtual_bounded_global_merge &&
+            bounded_global_merge_phase == BoundedGlobalMergePhase::Merge) {
+            if (scheduleNextExecution())
+                break;
+            accountVirtualRequestInterval();
+            serviceBoundedGlobalMerge();
+            return;
+        }
         if (usesBoundedSourceResponses()) {
             virtual_trace_request_calls++;
             if ((virtual_trace_request_calls &
@@ -3987,8 +4560,20 @@ void IndirectAccessUnit::executeInstruction() {
                                           virtual_first_page_ready_tick);
             }
             if (maa->virtual_index_range_passes) {
-                finishBoundedRangePass(direct_index_partition,
-                                       "final_drained");
+                if (maa->virtual_bounded_global_merge) {
+                    panic_if(bounded_global_merge_phase !=
+                                 BoundedGlobalMergePhase::Complete,
+                             "I[%d] bounded global merge reached Response "
+                             "before terminal closure\n",
+                             my_indirect_id);
+                    for (int pass = 0;
+                         pass < direct_index_partitions; ++pass)
+                        finishBoundedRangePass(
+                            pass, "global_merge_drained");
+                } else {
+                    finishBoundedRangePass(direct_index_partition,
+                                           "final_drained");
+                }
                 const auto result = bounded_range_pass.finish();
                 panic_if(
                     result != BoundedRangePassTracker::Result::Accepted,
@@ -4033,6 +4618,160 @@ void IndirectAccessUnit::executeInstruction() {
                 direct_index_max_lines;
             (*maa->stats.IND_VirtIndexWordHighWater[my_indirect_id]) +=
                 direct_index_max_words;
+        }
+        if (maa->virtual_bounded_global_merge) {
+            const bool read_slots_empty = std::none_of(
+                bounded_global_merge_read_slots.begin(),
+                bounded_global_merge_read_slots.end(),
+                [](const auto &slot) { return slot.valid; });
+            const bool write_slots_empty = std::none_of(
+                bounded_global_merge_write_slots.begin(),
+                bounded_global_merge_write_slots.end(),
+                [](const auto &slot) { return slot.valid; });
+            panic_if(
+                bounded_global_merge_phase !=
+                        BoundedGlobalMergePhase::Complete ||
+                    !bounded_global_merge.configured() ||
+                    bounded_global_merge.materializing() ||
+                    bounded_global_merge.merging() ||
+                    bounded_global_merge.population(0) != 4096 ||
+                    bounded_global_merge.population(1) != 4096 ||
+                    bounded_global_merge.population(2) != 4096 ||
+                    bounded_global_merge.population(3) != 4096 ||
+                    bounded_global_merge.activeHighWater() >
+                        BoundedFourRunMerge::MaxActiveDescriptors ||
+                    bounded_global_merge.materializedRecords() !=
+                        static_cast<uint32_t>(my_max) ||
+                    bounded_global_merge.sortedWriteLines() != 1536 ||
+                    bounded_global_merge.sortedWriteAcks() != 1536 ||
+                    bounded_global_merge.readLines() != 1536 ||
+                    bounded_global_merge.readRecords() !=
+                        static_cast<uint32_t>(my_max) ||
+                    bounded_global_merge.headHighWater() >
+                        BoundedFourRunMerge::Runs ||
+                    bounded_global_merge.maxMaterializationCarryBytes() >
+                        BoundedFourRunMerge::MaxCarryBytes ||
+                    bounded_global_merge.maxReaderCarryBytes() >
+                        BoundedFourRunMerge::MaxCarryBytes ||
+                    bounded_global_merge.sourceLineIssues() !=
+                        bounded_global_merge_source_responses ||
+                    bounded_global_merge.sourceLineIssues() +
+                            bounded_global_merge.coalescedDescriptors() !=
+                        static_cast<uint32_t>(my_max) ||
+                    bounded_global_merge.retiredDescriptors() !=
+                        static_cast<uint32_t>(my_max) ||
+                    bounded_range_pass.admissions() !=
+                        static_cast<uint32_t>(my_max) ||
+                    bounded_range_pass.retirements() !=
+                        static_cast<uint32_t>(my_max) ||
+                    bounded_global_merge.outstandingWriteCount() != 0 ||
+                    bounded_global_merge_source_pending ||
+                    bounded_global_merge_source_ready ||
+                    !read_slots_empty || !write_slots_empty,
+                "I[%d] bounded global merge failed terminal accounting\n",
+                my_indirect_id);
+            (*maa->stats
+                  .IND_BoundedGlobalMergePopulations[my_indirect_id]) +=
+                BoundedFourRunMerge::Runs;
+            (*maa->stats
+                  .IND_BoundedGlobalMergeActiveHWM[my_indirect_id]) +=
+                bounded_global_merge.activeHighWater();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeDescriptorRecords[my_indirect_id]) +=
+                bounded_global_merge.materializedRecords();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeDescriptorBytes[my_indirect_id]) +=
+                static_cast<uint64_t>(
+                    bounded_global_merge.materializedRecords()) *
+                BoundedFourRunMerge::DescriptorBytes;
+            (*maa->stats
+                  .IND_BoundedGlobalMergeSortReadLines[my_indirect_id]) +=
+                descriptor_spool.readLinesIssued();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeSortedWriteLines[my_indirect_id]) +=
+                bounded_global_merge.sortedWriteLines();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeSortComparisons[my_indirect_id]) +=
+                bounded_global_merge_sort_comparisons;
+            (*maa->stats
+                  .IND_BoundedGlobalMergeMergeReadLines[my_indirect_id]) +=
+                bounded_global_merge.readLines();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeMergeComparisons[my_indirect_id]) +=
+                bounded_global_merge.comparisons();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeMergeHeadHWM[my_indirect_id]) +=
+                bounded_global_merge.headHighWater();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeALineIssues[my_indirect_id]) +=
+                bounded_global_merge.sourceLineIssues();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeCoalesced[my_indirect_id]) +=
+                bounded_global_merge.coalescedDescriptors();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeRowGroups[my_indirect_id]) +=
+                bounded_global_merge_row_groups;
+            (*maa->stats
+                  .IND_BoundedGlobalMergeAdmissions[my_indirect_id]) +=
+                bounded_range_pass.admissions();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeRetirements[my_indirect_id]) +=
+                bounded_global_merge.retiredDescriptors();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeRunWriteAcks[my_indirect_id]) +=
+                bounded_global_merge.sortedWriteAcks();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeTerminalAcks[my_indirect_id]) +=
+                bounded_global_merge_terminal_acks;
+            (*maa->stats
+                  .IND_BoundedGlobalMergeFallbacks[my_indirect_id]) += 0;
+            (*maa->stats
+                  .IND_BoundedGlobalMergeControlBytes[my_indirect_id]) +=
+                bounded_global_merge.chargedControlBytes();
+            (*maa->stats
+                  .IND_BoundedGlobalMergeBackingBytes[my_indirect_id]) +=
+                BoundedFourRunMerge::RequiredBackingBytes;
+            DPRINTF(MAAVirtualTrace,
+                    "event=bounded_global_merge_complete schema=1 unit=%d "
+                    "operation_tick=%lu populations=4 "
+                    "population_0=%u population_1=%u population_2=%u "
+                    "population_3=%u active_hwm=%u records=%u "
+                    "record_bytes=%lu sort_read_lines=%u "
+                    "sorted_write_lines=%u sort_comparisons=%lu "
+                    "merge_read_lines=%u merge_comparisons=%lu "
+                    "head_hwm=%u a_line_issues=%u coalesced=%u "
+                    "row_groups=%u admissions=%u retirements=%u "
+                    "run_write_acks=%u terminal_acks=%u "
+                    "sort_carry_hwm=%u merge_carry_hwm=%u fallback=0 "
+                    "control_bytes=%lu backing_bytes=%lu mode=timing\n",
+                    my_indirect_id, my_decode_start_tick,
+                    bounded_global_merge.population(0),
+                    bounded_global_merge.population(1),
+                    bounded_global_merge.population(2),
+                    bounded_global_merge.population(3),
+                    bounded_global_merge.activeHighWater(),
+                    bounded_global_merge.materializedRecords(),
+                    static_cast<uint64_t>(
+                        bounded_global_merge.materializedRecords()) *
+                        BoundedFourRunMerge::DescriptorBytes,
+                    descriptor_spool.readLinesIssued(),
+                    bounded_global_merge.sortedWriteLines(),
+                    bounded_global_merge_sort_comparisons,
+                    bounded_global_merge.readLines(),
+                    bounded_global_merge.comparisons(),
+                    bounded_global_merge.headHighWater(),
+                    bounded_global_merge.sourceLineIssues(),
+                    bounded_global_merge.coalescedDescriptors(),
+                    bounded_global_merge_row_groups,
+                    bounded_range_pass.admissions(),
+                    bounded_global_merge.retiredDescriptors(),
+                    bounded_global_merge.sortedWriteAcks(),
+                    bounded_global_merge_terminal_acks,
+                    bounded_global_merge.maxMaterializationCarryBytes(),
+                    bounded_global_merge.maxReaderCarryBytes(),
+                    static_cast<unsigned long>(
+                        bounded_global_merge.chargedControlBytes()),
+                    BoundedFourRunMerge::RequiredBackingBytes);
         }
         if (descriptor_spool.configured()) {
             panic_if(descriptor_spool.classifiedDescriptors() !=
@@ -4229,6 +4968,31 @@ void IndirectAccessUnit::executeInstruction() {
             descriptor_spool_base_vaddr = 0;
             descriptor_spool_index_page_paddrs.fill(0);
             descriptor_spool_index_page_valid.fill(false);
+        }
+        if (maa->virtual_bounded_global_merge) {
+            bounded_global_merge.reset();
+            bounded_global_merge_phase = BoundedGlobalMergePhase::None;
+            bounded_global_merge_run = 0;
+            bounded_global_merge_slice_cursor = 0;
+            bounded_global_merge_chain_head = -1;
+            bounded_global_merge_sort_comparisons = 0;
+            bounded_global_merge_row_groups = 0;
+            bounded_global_merge_source_responses = 0;
+            bounded_global_merge_terminal_acks = 0;
+            bounded_global_merge_last_key_valid = false;
+            bounded_global_merge_last_key.fill(0);
+            bounded_global_merge_last_row_valid = false;
+            bounded_global_merge_last_slice = 0;
+            bounded_global_merge_last_row = 0;
+            for (auto &slot : bounded_global_merge_read_slots)
+                slot = BoundedGlobalMergeReadSlot();
+            for (auto &slot : bounded_global_merge_write_slots)
+                slot = BoundedGlobalMergeWriteSlot();
+            bounded_global_merge_source_pending = false;
+            bounded_global_merge_source_ready = false;
+            bounded_global_merge_source_paddr = 0;
+            bounded_global_merge_source_vaddr = 0;
+            bounded_global_merge_source_data.fill(0);
         }
         finishReorderSurvival();
         DPRINTF(MAAIssueDigest,
@@ -4497,6 +5261,77 @@ void IndirectAccessUnit::createDescriptorSpoolReadPacket(
             BoundedDescriptorSpool::MaxOutstandingReadLines,
             read_ahead ? "next_pass_read_ahead" : "demand");
 }
+void IndirectAccessUnit::createBoundedGlobalMergeReadPacket(
+    Addr vaddr, uint32_t run, uint32_t line)
+{
+    panic_if(run >= BoundedFourRunMerge::Runs,
+             "I[%d] global-merge read run %u is invalid\n",
+             my_indirect_id, run);
+    const Addr paddr = translatePacket(
+        vaddr, BaseMMU::Read, BoundedFourRunMerge::LineBytes);
+    panic_if(bounded_global_merge_read_slots[run].valid,
+             "I[%d] global-merge run %u already owns a read\n",
+             my_indirect_id, run);
+    panic_if(std::any_of(
+                 bounded_global_merge_read_slots.begin(),
+                 bounded_global_merge_read_slots.end(),
+                 [paddr](const auto &slot) {
+                     return slot.valid && slot.paddr == paddr;
+                 }),
+             "I[%d] duplicate global-merge read 0x%lx\n",
+             my_indirect_id, paddr);
+    bounded_global_merge_read_slots[run] =
+        BoundedGlobalMergeReadSlot{true, paddr, vaddr, run, line};
+    RequestPtr req = std::make_shared<Request>(
+        paddr, BoundedFourRunMerge::LineBytes, flags, maa->requestorId);
+    req->setRegion(my_backing_addr_range_id);
+    PacketPtr pkt = new Packet(req, MemCmd::ReadReq);
+    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->allocate();
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                    maa->getClockEdge(Cycles(0)), true);
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_merge_read_issue schema=1 unit=%d "
+            "operation_tick=%lu run=%u line=%u vaddr=0x%lx "
+            "paddr=0x%lx payload_bytes=%u mode=timing\n",
+            my_indirect_id, my_decode_start_tick, run, line, vaddr, paddr,
+            bounded_global_merge.runLinePayloadBytes(run, line));
+}
+void IndirectAccessUnit::createBoundedGlobalMergeWritePacket(
+    Addr vaddr,
+    const std::array<uint8_t, BoundedFourRunMerge::LineBytes> &data)
+{
+    const Addr paddr = translatePacket(
+        vaddr, BaseMMU::Write, BoundedFourRunMerge::LineBytes);
+    panic_if(maa->hasOutstandingPacket(paddr),
+             "I[%d] sorted-run address 0x%lx is already owned\n",
+             my_indirect_id, paddr);
+    panic_if(std::any_of(
+                 bounded_global_merge_write_slots.begin(),
+                 bounded_global_merge_write_slots.end(),
+                 [paddr](const auto &slot) {
+                     return slot.valid && slot.paddr == paddr;
+                 }),
+             "I[%d] duplicate sorted-run write 0x%lx\n",
+             my_indirect_id, paddr);
+    auto slot = std::find_if(
+        bounded_global_merge_write_slots.begin(),
+        bounded_global_merge_write_slots.end(),
+        [](const auto &candidate) { return !candidate.valid; });
+    panic_if(slot == bounded_global_merge_write_slots.end(),
+             "I[%d] sorted-run write scoreboard exceeded finite capacity\n",
+             my_indirect_id);
+    *slot = BoundedGlobalMergeWriteSlot{true, paddr, vaddr};
+    RequestPtr req = std::make_shared<Request>(
+        paddr, BoundedFourRunMerge::LineBytes, flags, maa->requestorId);
+    req->setRegion(my_backing_addr_range_id);
+    PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
+    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->allocate();
+    pkt->setData(data.data());
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                    maa->getClockEdge(Cycles(0)), true);
+}
 void IndirectAccessUnit::createDescriptorSpoolWritePacket(
     Addr vaddr,
     const std::array<uint8_t, BoundedDescriptorSpool::LineBytes> &data)
@@ -4573,7 +5408,63 @@ void IndirectAccessUnit::cacheWritePacketSent(Addr addr) {
         DPRINTF(MAAIndirect, "I[%d] %s: expected: %d, received: %d!\n", my_indirect_id, __func__, my_expected_responses, my_received_responses);
     }
 }
-bool IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr, bool is_block_cached) {
+bool IndirectAccessUnit::receiveBoundedGlobalMerge(
+    Addr addr, uint8_t *dataptr, bool is_block_cached)
+{
+    if (!maa->virtual_bounded_global_merge)
+        return false;
+    if (bounded_global_merge_source_pending &&
+        addr == bounded_global_merge_source_paddr) {
+        accountReadResponse(addr, is_block_cached);
+        std::memcpy(bounded_global_merge_source_data.data(), dataptr,
+                    BoundedFourRunMerge::LineBytes);
+        bounded_global_merge_source_pending = false;
+        bounded_global_merge_source_ready = true;
+        bounded_global_merge_source_responses++;
+        virtual_source_received++;
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_a_line_response schema=1 unit=%d "
+                "operation_tick=%lu paddr=0x%lx cached=%d\n",
+                my_indirect_id, my_decode_start_tick, addr,
+                is_block_cached);
+        scheduleNextExecution(true);
+        return true;
+    }
+    auto slot = std::find_if(
+        bounded_global_merge_read_slots.begin(),
+        bounded_global_merge_read_slots.end(),
+        [addr](const auto &candidate) {
+            return candidate.valid && candidate.paddr == addr;
+        });
+    if (slot == bounded_global_merge_read_slots.end())
+        return false;
+    accountReadResponse(addr, is_block_cached);
+    std::array<uint8_t, BoundedFourRunMerge::LineBytes> data{};
+    std::memcpy(data.data(), dataptr, data.size());
+    const uint32_t run = slot->run;
+    const uint32_t line = slot->line;
+    const Addr vaddr = slot->vaddr;
+    *slot = BoundedGlobalMergeReadSlot();
+    const auto accepted = bounded_global_merge.acceptRead(run, line, data);
+    panic_if(accepted != BoundedFourRunMerge::Result::Accepted,
+             "I[%d] global-merge read run %u line %u failed: %s\n",
+             my_indirect_id, run, line,
+             BoundedFourRunMerge::resultName(accepted));
+    DPRINTF(MAAVirtualTrace,
+            "event=bounded_global_merge_read_response schema=1 unit=%d "
+            "operation_tick=%lu run=%u line=%u vaddr=0x%lx "
+            "paddr=0x%lx cached=%d\n",
+            my_indirect_id, my_decode_start_tick, run, line, vaddr, addr,
+            is_block_cached);
+    scheduleNextExecution(true);
+    return true;
+}
+bool
+IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
+                             bool is_block_cached)
+{
+    if (receiveBoundedGlobalMerge(addr, dataptr, is_block_cached))
+        return true;
     if (receiveDescriptorSpool(addr, dataptr, is_block_cached))
         return true;
     if (receiveDirectIndex(addr, dataptr, is_block_cached))
@@ -5958,6 +6849,29 @@ void IndirectAccessUnit::transitionAttributionStage(
 }
 
 void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
+    auto global_write = std::find_if(
+        bounded_global_merge_write_slots.begin(),
+        bounded_global_merge_write_slots.end(),
+        [addr](const auto &slot) {
+            return slot.valid && slot.paddr == addr;
+        });
+    if (global_write != bounded_global_merge_write_slots.end()) {
+        const Addr vaddr = global_write->vaddr;
+        *global_write = BoundedGlobalMergeWriteSlot();
+        const auto ack = bounded_global_merge.acknowledgeWrite(vaddr);
+        panic_if(ack != BoundedFourRunMerge::Result::Accepted,
+                 "I[%d] sorted-run write ack 0x%lx failed: %s\n",
+                 my_indirect_id, addr,
+                 BoundedFourRunMerge::resultName(ack));
+        DPRINTF(MAAVirtualTrace,
+                "event=bounded_global_sort_write_ack schema=1 unit=%d "
+                "operation_tick=%lu vaddr=0x%lx paddr=0x%lx "
+                "outstanding=%u\n",
+                my_indirect_id, my_decode_start_tick, vaddr, addr,
+                bounded_global_merge.outstandingWriteCount());
+        scheduleNextExecution(true);
+        return;
+    }
     auto spool_write = std::find_if(
         descriptor_spool_write_slots.begin(),
         descriptor_spool_write_slots.end(),
