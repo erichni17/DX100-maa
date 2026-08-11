@@ -913,6 +913,11 @@ static void conj_grad_maa(int colidx[],
             int k_max = rowstr[j_max];
             float *curr_q = &q[j_base];
             maa_const<int>(j_base, r4);
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+            // Ordinary SPD streams are not virtualized. Bound the row-pointer
+            // tiles to the 4K physical consumer window explicitly.
+            maa_const<int>(j_max, r5);
+#endif
             maa_const<int>(k_max, r3);
             maa_const<int>(0, r6);
             maa_const<int>(-1, r7);
@@ -1191,6 +1196,10 @@ static void conj_grad_maa(int colidx[],
         int k_max = rowstr[j_max];
         float *curr_r = &r[j_base];
         maa_const<int>(j_base, r4);
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+        // Keep the residual multiply's row-pointer streams physically bounded.
+        maa_const<int>(j_max, r5);
+#endif
         maa_const<int>(k_max, r3);
         maa_const<int>(0, r6);
         maa_const<int>(-1, r7);

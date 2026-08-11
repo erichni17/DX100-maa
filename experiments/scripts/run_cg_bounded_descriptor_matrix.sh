@@ -8,6 +8,12 @@ fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
+mode=${CG_MATRIX_MODE:-full}
+case $mode in
+    full) completion_marker=matrix.complete ;;
+    bounded-precheck) completion_marker=precheck.complete ;;
+    *) echo "unsupported CG_MATRIX_MODE: $mode" >&2; exit 2 ;;
+esac
 gem5_source=$(realpath "$2")
 native16_source=$(realpath "$3")
 native4_source=$(realpath "$4")
@@ -27,7 +33,7 @@ ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 mkdir -p "$out/input"
 record_exit() {
     local rc=$?
-    if [[ ! -e $out/matrix.complete && $rc -eq 0 ]]; then
+    if [[ ! -e $out/$completion_marker && $rc -eq 0 ]]; then
         rc=125
     fi
     printf '%s\n' "$rc" > "$out/matrix.exit"
@@ -61,6 +67,7 @@ git -C "$root" archive --format=tar "$source_commit" -- \
 {
     printf 'source_commit=%s\n' "$source_commit"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'mode=%s\n' "$mode"
     printf 'comparison=three-binaries-three-checkpoints\n'
     printf 'input_mode=precomputed-cg-data-header\n'
     printf 'maa_mem_size_bytes=2147483648\n'
@@ -105,16 +112,6 @@ make_checkpoint() {
         > "$out/checkpoint-$label.identity.sha256"
 }
 
-checkpoint_jobs=()
-make_checkpoint native16 "$native16" 0 & checkpoint_jobs+=("native16:$!")
-make_checkpoint native4 "$native4" 0 & checkpoint_jobs+=("native4:$!")
-make_checkpoint bounded "$bounded" 1 & checkpoint_jobs+=("bounded:$!")
-for job in "${checkpoint_jobs[@]}"; do
-    label=${job%%:*}
-    pid=${job#*:}
-    wait "$pid" || { echo "$label checkpoint failed" >&2; exit 1; }
-done
-
 common=(
     --listener-mode=off
     "$config"
@@ -146,6 +143,7 @@ common=(
 run_arm() {
     local label=$1 binary=$2 checkpoint=$3 logical=$4 physical=$5
     local rows=$6 offsets=$7 bounded_mode=$8 bypass=$9
+    local max_tick=${10:-0}
     local arm="$out/$label"
     mkdir -p "$arm/run"
     local treatment=(
@@ -174,6 +172,9 @@ run_arm() {
     if [[ $bypass -eq 1 ]]; then
         treatment+=(--maa_virtual_descriptor_spool_source_bypass_cache)
     fi
+    if [[ $max_tick -gt 0 ]]; then
+        treatment+=(--abs-max-tick "$max_tick")
+    fi
     printf '%q ' "$gem5" --outdir="$arm/run" "${common[@]}" \
         "${treatment[@]}" > "$arm/command.txt"
     printf '\n' >> "$arm/command.txt"
@@ -187,6 +188,48 @@ run_arm() {
     printf '%s\n' "$rc" > "$arm/exit_code"
     return "$rc"
 }
+
+if [[ $mode == bounded-precheck ]]; then
+    make_checkpoint bounded "$bounded" 1
+    checkpoint_tick=$(sed -nE \
+        's/^Exiting @ tick ([0-9]+) because checkpoint$/\1/p' \
+        "$out/checkpoint-bounded.log")
+    [[ $checkpoint_tick =~ ^[0-9]+$ ]]
+    max_tick=$((checkpoint_tick + 2000000000))
+    printf 'checkpoint_tick=%s\nmax_tick=%s\n' "$checkpoint_tick" "$max_tick" \
+        > "$out/precheck-window.txt"
+    run_arm bounded4_cached "$bounded" "$out/checkpoint-bounded" \
+        16384 4096 16 4096 1 0 "$max_tick"
+    arm="$out/bounded4_cached"
+    [[ $(cat "$arm/exit_code") -eq 0 ]]
+    [[ $(grep -Ec '^Exiting @ tick [0-9]+ because simulate\(\) limit reached$' \
+        "$arm/run.log") -eq 1 ]]
+    ! grep -Eq 'panic:|fatal:|Program aborted' "$arm/run.log" "$arm/time.log"
+    grep -Fxq 'num_tile_elements=16384' "$arm/run/config.ini"
+    grep -Fxq 'physical_tile_elements=4096' "$arm/run/config.ini"
+    grep -Fxq 'num_offset_table_entries=4096' "$arm/run/config.ini"
+    grep -Fxq 'num_offset_table_epoch_entries=4096' "$arm/run/config.ini"
+    grep -Fxq 'num_row_table_rows_per_slice=16' "$arm/run/config.ini"
+    scans=$(awk '$1 ~ /IND_DescriptorSpoolBScans$/ { total += $2 } END { print total+0 }' \
+        "$arm/run/stats.txt")
+    external=$(awk '$1 ~ /IND_DescriptorSpoolExternalDescriptors$/ { total += $2 } END { print total+0 }' \
+        "$arm/run/stats.txt")
+    [[ $scans -gt 0 && $external -gt 0 ]]
+    printf 'descriptor_scans=%s\ndescriptor_external=%s\n' "$scans" "$external" \
+        > "$out/precheck-mechanism.txt"
+    touch "$out/precheck.complete"
+    exit 0
+fi
+
+checkpoint_jobs=()
+make_checkpoint native16 "$native16" 0 & checkpoint_jobs+=("native16:$!")
+make_checkpoint native4 "$native4" 0 & checkpoint_jobs+=("native4:$!")
+make_checkpoint bounded "$bounded" 1 & checkpoint_jobs+=("bounded:$!")
+for job in "${checkpoint_jobs[@]}"; do
+    label=${job%%:*}
+    pid=${job#*:}
+    wait "$pid" || { echo "$label checkpoint failed" >&2; exit 1; }
+done
 
 jobs=()
 run_arm native16 "$native16" "$out/checkpoint-native16" \

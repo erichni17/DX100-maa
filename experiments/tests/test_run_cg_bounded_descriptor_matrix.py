@@ -58,8 +58,16 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertIn("result=PASS", self.runner)
         self.assertIn("$scans -gt 0", self.runner)
         self.assertIn("$external -gt 0", self.runner)
-        self.assertIn("! -e $out/matrix.complete", self.runner)
+        self.assertIn("! -e $out/$completion_marker", self.runner)
         self.assertIn("trap 'exit 143' TERM", self.runner)
+
+    def test_bounded_precheck_crosses_prior_failure_without_controls(self):
+        self.assertIn("bounded-precheck", self.runner)
+        self.assertIn("checkpoint_tick + 2000000000", self.runner)
+        self.assertIn('--abs-max-tick "$max_tick"', self.runner)
+        self.assertIn("simulate\\(\\) limit reached", self.runner)
+        self.assertIn("precheck.complete", self.runner)
+        self.assertIn("descriptor_scans", self.runner)
 
 
 if __name__ == "__main__":

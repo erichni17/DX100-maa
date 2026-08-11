@@ -56,6 +56,14 @@ class CGBoundedVirtualContractTests(unittest.TestCase):
         self.assertGreaterEqual(
             self.source.count("j_base += row_tile_size"), 2
         )
+        bounded_row_limit = (
+            "#ifdef MAA_BOUNDED_VIRTUAL_GATHER\n"
+            "            // Ordinary SPD streams are not virtualized."
+        )
+        self.assertIn(bounded_row_limit, self.source)
+        self.assertGreaterEqual(
+            self.source.count("maa_const<int>(j_max, r5);"), 4
+        )
 
     def test_ordinary_spd_producers_use_physical_capacity(self):
         self.assertIn(
