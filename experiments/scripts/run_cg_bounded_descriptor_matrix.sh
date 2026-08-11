@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-    echo "usage: $0 OUTDIR GEM5 CG_BINARY RAMULATOR_LIBRARY" >&2
+if [[ $# -ne 5 ]]; then
+    echo "usage: $0 OUTDIR GEM5 CG_BINARY RAMULATOR_LIBRARY CG_DATA_HEADER" >&2
     exit 2
 fi
 
@@ -11,6 +11,7 @@ out=$(realpath -m "$1")
 gem5_source=$(realpath "$2")
 binary_source=$(realpath "$3")
 ramulator_source=$(realpath "$4")
+data_header_source=$(realpath "$5")
 config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
@@ -22,16 +23,26 @@ ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 }
 
 mkdir -p "$out/input" "$out/checkpoint"
-trap 'rc=$?; printf "%s\n" "$rc" > "$out/matrix.exit"' EXIT
+record_exit() {
+    local rc=$?
+    if [[ ! -e $out/matrix.complete && $rc -eq 0 ]]; then
+        rc=125
+    fi
+    printf '%s\n' "$rc" > "$out/matrix.exit"
+}
+trap record_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cp --reflink=auto "$gem5_source" "$out/input/gem5.opt"
 cp --reflink=auto "$binary_source" "$out/input/cg_maa_16K_bounded"
 cp --reflink=auto "$ramulator_source" "$out/input/libramulator.so"
+cp --reflink=auto "$data_header_source" "$out/input/cg_data_4C.h"
 chmod 0555 "$out/input/gem5.opt" "$out/input/cg_maa_16K_bounded"
 gem5="$out/input/gem5.opt"
 binary="$out/input/cg_maa_16K_bounded"
 ramulator="$out/input/libramulator.so"
 source_commit=$(git -C "$root" rev-parse HEAD)
-sha256sum "$gem5" "$binary" "$ramulator" "$config" \
+sha256sum "$gem5" "$binary" "$ramulator" "$out/input/cg_data_4C.h" "$config" \
     "$ramulator_config" "$0" > "$out/input/artifact_sha256.txt"
 git -C "$root" archive --format=tar "$source_commit" -- \
     src/mem/MAA configs/common configs/deprecated/example/se.py \
@@ -42,6 +53,7 @@ git -C "$root" archive --format=tar "$source_commit" -- \
     printf 'source_commit=%s\n' "$source_commit"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'comparison=one_binary_one_checkpoint\n'
+    printf 'input_mode=precomputed-cg-data-header\n'
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 
@@ -52,6 +64,8 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB \
     --max-checkpoints=1 --cmd "$binary" --options MAA \
     > "$out/checkpoint.log" 2>&1
+grep -Fq 'Using data from file!' "$out/checkpoint.log"
+! grep -Fq 'makea started!' "$out/checkpoint.log"
 grep -Fq 'CG_BOUNDED_VIRTUAL_LAYOUT logical=16384' "$out/checkpoint.log"
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' \
     "$out/checkpoint.log") -eq 1 ]]

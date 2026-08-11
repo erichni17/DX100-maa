@@ -18,6 +18,13 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertIn("comparison=one_binary_one_checkpoint", self.runner)
         self.assertEqual(self.runner.count("--max-checkpoints=1"), 1)
 
+    def test_requires_and_freezes_precomputed_input(self):
+        self.assertIn("CG_DATA_HEADER", self.runner)
+        self.assertIn('cp --reflink=auto "$data_header_source"', self.runner)
+        self.assertIn("input_mode=precomputed-cg-data-header", self.runner)
+        self.assertIn("Using data from file!", self.runner)
+        self.assertIn("makea started!", self.runner)
+
     def test_has_matched_controls_and_two_bounded_arms(self):
         for arm in (
             "matched16",
@@ -37,6 +44,8 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertIn("result=PASS", self.runner)
         self.assertIn("$scans -gt 0", self.runner)
         self.assertIn("$external -gt 0", self.runner)
+        self.assertIn("! -e $out/matrix.complete", self.runner)
+        self.assertIn("trap 'exit 143' TERM", self.runner)
 
 
 if __name__ == "__main__":
