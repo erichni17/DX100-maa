@@ -9,11 +9,23 @@ fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
 mode=${CG_MATRIX_MODE:-full}
+precheck_checkpoint_source=${CG_PRECHECK_CHECKPOINT_SOURCE:-}
 case $mode in
     full) completion_marker=matrix.complete ;;
     bounded-precheck) completion_marker=precheck.complete ;;
     *) echo "unsupported CG_MATRIX_MODE: $mode" >&2; exit 2 ;;
 esac
+if [[ -n $precheck_checkpoint_source ]]; then
+    [[ $mode == bounded-precheck ]] || {
+        echo "CG_PRECHECK_CHECKPOINT_SOURCE requires bounded-precheck mode" >&2
+        exit 2
+    }
+    precheck_checkpoint_source=$(realpath "$precheck_checkpoint_source")
+    [[ -d $precheck_checkpoint_source ]] || {
+        echo "checkpoint source is not a directory: $precheck_checkpoint_source" >&2
+        exit 2
+    }
+fi
 gem5_source=$(realpath "$2")
 native16_source=$(realpath "$3")
 native4_source=$(realpath "$4")
@@ -76,6 +88,8 @@ git -C "$root" archive --format=tar "$source_commit" -- \
     printf 'bounded_logical_elements=16384\n'
     printf 'bounded_physical_elements=4096\n'
     printf 'bounded_consumer_elements=4096\n'
+    printf 'precheck_checkpoint=%s\n' \
+        "${precheck_checkpoint_source:-fresh}"
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 
@@ -192,15 +206,30 @@ run_arm() {
 }
 
 if [[ $mode == bounded-precheck ]]; then
-    make_checkpoint bounded "$bounded" 1
-    checkpoint_tick=$(sed -nE \
-        's/^Exiting @ tick ([0-9]+) because checkpoint$/\1/p' \
-        "$out/checkpoint-bounded.log")
+    checkpoint="$out/checkpoint-bounded"
+    if [[ -n $precheck_checkpoint_source ]]; then
+        checkpoint=$precheck_checkpoint_source
+        checkpoint_dirs=("$checkpoint"/cpt.[0-9]*)
+        [[ ${#checkpoint_dirs[@]} -eq 1 && -d ${checkpoint_dirs[0]} ]]
+        checkpoint_tick=${checkpoint_dirs[0]##*/cpt.}
+        printf '%s\n' "$checkpoint" > "$out/precheck-checkpoint-source.txt"
+        (
+            cd "$checkpoint"
+            find . -type f -print0 | sort -z | xargs -0 sha256sum
+        ) > "$out/precheck-checkpoint-source.files.sha256"
+        sha256sum "$out/precheck-checkpoint-source.files.sha256" \
+            > "$out/precheck-checkpoint-source.identity.sha256"
+    else
+        make_checkpoint bounded "$bounded" 1
+        checkpoint_tick=$(sed -nE \
+            's/^Exiting @ tick ([0-9]+) because checkpoint$/\1/p' \
+            "$out/checkpoint-bounded.log")
+    fi
     [[ $checkpoint_tick =~ ^[0-9]+$ ]]
     max_tick=$((checkpoint_tick + 2000000000))
     printf 'checkpoint_tick=%s\nmax_tick=%s\n' "$checkpoint_tick" "$max_tick" \
         > "$out/precheck-window.txt"
-    run_arm bounded4_cached "$bounded" "$out/checkpoint-bounded" \
+    run_arm bounded4_cached "$bounded" "$checkpoint" \
         16384 4096 16 4096 1 0 "$max_tick"
     arm="$out/bounded4_cached"
     [[ $(cat "$arm/exit_code") -eq 0 ]]

@@ -71,6 +71,21 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertIn("precheck.complete", self.runner)
         self.assertIn("descriptor_scans", self.runner)
 
+    def test_bounded_precheck_can_reuse_a_fingerprinted_checkpoint(self):
+        for token in (
+            "CG_PRECHECK_CHECKPOINT_SOURCE",
+            "precheck-checkpoint-source.txt",
+            "precheck-checkpoint-source.files.sha256",
+            "precheck-checkpoint-source.identity.sha256",
+            'checkpoint_dirs=("$checkpoint"/cpt.[0-9]*)',
+            'run_arm bounded4_cached "$bounded" "$checkpoint"',
+        ):
+            self.assertIn(token, self.runner)
+        self.assertIn(
+            "CG_PRECHECK_CHECKPOINT_SOURCE requires bounded-precheck mode",
+            self.runner,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
