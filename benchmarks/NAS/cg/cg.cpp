@@ -1,9 +1,9 @@
 /*
 MIT License
 
-Copyright (c) 2021 Parallel Applications Modelling Group - GMAP 
+Copyright (c) 2021 Parallel Applications Modelling Group - GMAP
 	GMAP website: https://gmap.pucrs.br
-	
+
 	Pontifical Catholic University of Rio Grande do Sul (PUCRS)
 	Av. Ipiranga, 6681, Porto Alegre - Brazil, 90619-900
 
@@ -27,7 +27,7 @@ SOFTWARE.
 
 ------------------------------------------------------------------------------
 
-The original NPB 3.4.1 version was written in Fortran and belongs to: 
+The original NPB 3.4.1 version was written in Fortran and belongs to:
 	http://www.nas.nasa.gov/Software/NPB/
 
 Authors of the Fortran code:
@@ -40,7 +40,7 @@ Authors of the Fortran code:
 The serial C++ version is a translation of the original NPB 3.4.1
 Serial C++ version: https://github.com/GMAP/NPB-CPP/tree/master/NPB-SER
 
-Authors of the C++ code: 
+Authors of the C++ code:
 	Dalvan Griebler <dalvangriebler@gmail.com>
 	Gabriell Araujo <hexenoften@gmail.com>
  	Júnior Löff <loffjh@gmail.com>
@@ -52,7 +52,7 @@ OpenMP version: https://github.com/GMAP/NPB-CPP/tree/master/NPB-OMP
 
 Authors of the OpenMP code:
 	Júnior Löff <loffjh@gmail.com>
-	
+
 */
 
 #include "MAA.hpp"
@@ -94,6 +94,17 @@ Authors of the OpenMP code:
 #define CGITMAX 4
 // Run for one iteration so GEM5 does not die!
 #define NITER 1
+
+#ifndef MAA_CONSUMER_TILE_SIZE
+#define MAA_CONSUMER_TILE_SIZE TILE_SIZE
+#endif
+
+static_assert(MAA_CONSUMER_TILE_SIZE > 0,
+              "consumer tile size must be positive");
+static_assert(MAA_CONSUMER_TILE_SIZE <= TILE_SIZE,
+              "consumer tile cannot exceed the logical gather tile");
+static_assert(TILE_SIZE % MAA_CONSUMER_TILE_SIZE == 0,
+              "logical gather tile must contain whole consumer pages");
 
 #ifdef CG_FP_ENABLE
 static uint64_t mix_fingerprint(uint64_t value) {
@@ -210,7 +221,7 @@ virtual_gather_backing_for_thread(int tid)
 
 /*
  * ---------------------------------------------------------------------
- * note: please observe that in the routine conj_grad_base three 
+ * note: please observe that in the routine conj_grad_base three
  * implementations of the sparse matrix-vector multiply have
  * been supplied. the default matrix-vector multiply is not
  * loop unrolled. the alternate implementations are unrolled
@@ -219,7 +230,7 @@ virtual_gather_backing_for_thread(int tid)
  * architecture. if reporting timing results, any of these three may
  * be used without penalty.
  * ---------------------------------------------------------------------
- * class specific parameters: 
+ * class specific parameters:
  * it appears here for reference only.
  * these are their values, however, this info is imported in the npbparams.h
  * include file, which is written by the sys/setparams.c program.
@@ -536,6 +547,7 @@ int main(int argc, char **argv) {
 #ifdef GEM5
 #ifdef MAA_BOUNDED_VIRTUAL_GATHER
     std::cout << "CG_BOUNDED_VIRTUAL_LAYOUT logical=" << TILE_SIZE
+              << " consumer=" << MAA_CONSUMER_TILE_SIZE
               << " maa_mem_size=" << MEM_SIZE
               << " payload_words=" << NUM_CORES * TILE_SIZE
               << " descriptor_units=" << virtual_descriptor_spool_units
@@ -562,7 +574,7 @@ int main(int argc, char **argv) {
 	 * values of j used in indexing rowstr go from 0 --> lastrow-firstrow
 	 * values of colidx which are col indexes go from firstcol --> lastcol
 	 * so:
-	 * shift the col index vals from actual (firstcol --> lastcol) 
+	 * shift the col index vals from actual (firstcol --> lastcol)
 	 * to local, i.e., (0 --> lastcol-firstcol)
 	 * ---------------------------------------------------------------------
 	 */
@@ -690,7 +702,7 @@ int main(int argc, char **argv) {
 
 /*
  * ---------------------------------------------------------------------
- * floating point arrays here are named as in NPB1 spec discussion of 
+ * floating point arrays here are named as in NPB1 spec discussion of
  * CG algorithm
  * ---------------------------------------------------------------------
  */
@@ -752,8 +764,18 @@ static void conj_grad_maa(int colidx[],
     const int lastrow_firstrow_plus1 = lastrow - firstrow + 1;
     const int lastcol_firstcol_plus1 = lastcol - firstcol + 1;
     const int lastcol_firstcol_plus1_divisible_by_32 = (int)(lastcol_firstcol_plus1 / total_thread_iters) * total_thread_iters;
-    const int lastrow_firstrow_plus1_divisible_by_64K = ((int)(lastrow_firstrow_plus1 / (NUM_CORES * TILE_SIZE))) * NUM_CORES * TILE_SIZE;
-    const int tile_size = TILE_SIZE;
+    const int row_tile_size = MAA_CONSUMER_TILE_SIZE;
+#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+    // The bounded path pages even the final row block, so one loop can keep
+    // the 16K gather window and clamp every ordinary consumer to 4K.
+    const int lastrow_firstrow_plus1_divisible_by_64K =
+        lastrow_firstrow_plus1;
+#else
+    const int lastrow_firstrow_plus1_divisible_by_64K =
+        (lastrow_firstrow_plus1 / (NUM_CORES * row_tile_size)) *
+        NUM_CORES * row_tile_size;
+#endif
+    const int tile_size = row_tile_size;
     float *my_q = &q[tid * 8];
     float *my_z = &z[tid * 8];
     float *my_r = &r[tid * 8];
@@ -836,11 +858,11 @@ static void conj_grad_maa(int colidx[],
 		 * q = A.p
 		 * the partition submatrix-vector multiply: use workspace w
 		 * ---------------------------------------------------------------------
-		 * 
-		 * note: this version of the multiply is actually (slightly: maybe %5) 
-		 * faster on the sp2 on 16 nodes than is the unrolled-by-2 version 
-		 * below. on the Cray t3d, the reverse is TRUE, i.e., the 
-		 * unrolled-by-two version is some 10% faster.  
+		 *
+		 * note: this version of the multiply is actually (slightly: maybe %5)
+		 * faster on the sp2 on 16 nodes than is the unrolled-by-2 version
+		 * below. on the Cray t3d, the reverse is TRUE, i.e., the
+		 * unrolled-by-two version is some 10% faster.
 		 * the unrolled-by-8 version below is significantly faster
 		 * on the Cray t3d - overall speed of code is 1.5 times faster.
 		 */
@@ -879,8 +901,14 @@ static void conj_grad_maa(int colidx[],
 
         maa_const<int>(lastrow_firstrow_plus1_divisible_by_64K, r5);
 #pragma omp for nowait
-        for (int j_base = 0; j_base < lastrow_firstrow_plus1_divisible_by_64K; j_base += TILE_SIZE) {
-            int j_max = j_base + TILE_SIZE < lastrow_firstrow_plus1_divisible_by_64K ? j_base + TILE_SIZE : lastrow_firstrow_plus1_divisible_by_64K;
+        for (int j_base = 0;
+             j_base < lastrow_firstrow_plus1_divisible_by_64K;
+             j_base += row_tile_size) {
+            int j_max =
+                j_base + row_tile_size <
+                        lastrow_firstrow_plus1_divisible_by_64K
+                    ? j_base + row_tile_size
+                    : lastrow_firstrow_plus1_divisible_by_64K;
             int k_base = rowstr[j_base];
             int k_max = rowstr[j_max];
             float *curr_q = &q[j_base];
@@ -894,39 +922,59 @@ static void conj_grad_maa(int colidx[],
             maa_stream_load<int>(&rowstr[1], r4, r5, r1, t3);
             // [t0 t1 t4 t5 t6 t7] available
             for (; k_base < k_max; k_base += TILE_SIZE) {
-                maa_const(k_base, r2);
-                // t0 = j
-                // t1 = k that is not needed
-                maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
-                // [t1 t4 t5 t6 t7] available
-
                 const int gather_size = k_max - k_base < TILE_SIZE
                                             ? k_max - k_base
                                             : TILE_SIZE;
-                // Full bounded gathers consume colidx directly. Partial tails
-                // retain the staged path because the bounded engine is an
-                // exact logical16K/physical4K mechanism.
-#ifdef MAA_BOUNDED_VIRTUAL_GATHER
-                if (gather_size != TILE_SIZE)
-#endif
-                    maa_stream_load<int>(colidx, r2, r3, r1, t6);
-                // [t1 t4 t5 t7] available
-
-                // t4 = p[colidx[k]]
-                // free t6
-#ifdef MAA_VIRTUAL_GATHER
 #ifdef MAA_BOUNDED_VIRTUAL_GATHER
                 if (gather_size == TILE_SIZE) {
+                    // Reorder one complete logical window, then consume its
+                    // coherent backing through physical-sized SPD pages.
+                    maa_const<int>(k_base, r2);
                     maa_const<int>(k_base + gather_size, r3);
                     maa_indirect_load_virtual_index<float>(
                         p, reinterpret_cast<uint32_t *>(colidx), t4,
                         virtual_gather_backing_for_thread(tid), r2, r3, r1);
-                } else
-#endif
-                {
-                    maa_indirect_load_virtual<float>(
-                        p, t6, t4, virtual_gather_backing_for_thread(tid));
+                    wait_ready(t4);
                 }
+                for (int page_offset = 0; page_offset < gather_size;
+                     page_offset += MAA_CONSUMER_TILE_SIZE) {
+                    const int page_size =
+                        gather_size - page_offset < MAA_CONSUMER_TILE_SIZE
+                            ? gather_size - page_offset
+                            : MAA_CONSUMER_TILE_SIZE;
+                    maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+
+                    if (gather_size == TILE_SIZE) {
+                        maa_const<int>(page_offset, r2);
+                        maa_const<int>(page_offset + page_size, r3);
+                        maa_stream_load<float>(
+                            virtual_gather_backing_for_thread(tid), r2, r3,
+                            r1, t4);
+                    } else {
+                        const int page_base = k_base + page_offset;
+                        maa_const<int>(page_base, r2);
+                        maa_const<int>(page_base + page_size, r3);
+                        maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                        maa_indirect_load<float>(p, t6, t4);
+                    }
+
+                    const int page_base = k_base + page_offset;
+                    maa_const<int>(page_base, r2);
+                    maa_const<int>(page_base + page_size, r3);
+                    maa_stream_load<float>(a, r2, r3, r1, t5);
+                    maa_alu_vector<float>(t4, t5, t7,
+                                          Operation_t::MUL_OP);
+                    maa_indirect_rmw_vector(curr_q, t0, t7,
+                                            Operation_t::ADD_OP);
+                    wait_ready(t7);
+                }
+#else
+                maa_const(k_base, r2);
+                maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+                maa_stream_load<int>(colidx, r2, r3, r1, t6);
+#ifdef MAA_VIRTUAL_GATHER
+                maa_indirect_load_virtual<float>(
+                    p, t6, t4, virtual_gather_backing_for_thread(tid));
                 wait_ready(t4);
                 maa_const<int>(0, r2);
                 maa_const<int>(gather_size, r3);
@@ -937,19 +985,12 @@ static void conj_grad_maa(int colidx[],
 #else
                 maa_indirect_load<float>(p, t6, t4);
 #endif
-                // [t1 t5 t6 t7] available
-
-                // t5 = a[k]
                 maa_stream_load<float>(a, r2, r3, r1, t5);
-                // [t1 t6 t7] available
-
-                // t7 = a[k] * p[colidx[k]]
                 maa_alu_vector<float>(t4, t5, t7, Operation_t::MUL_OP);
-                // [t1 t6] available
-
-                // q[j] += t7
-                maa_indirect_rmw_vector(curr_q, t0, t7, Operation_t::ADD_OP);
+                maa_indirect_rmw_vector(curr_q, t0, t7,
+                                        Operation_t::ADD_OP);
                 wait_ready(t7);
+#endif
             }
         }
 
@@ -1138,8 +1179,14 @@ static void conj_grad_maa(int colidx[],
 
     maa_const<int>(lastrow_firstrow_plus1_divisible_by_64K, r5);
 #pragma omp for nowait
-    for (int j_base = 0; j_base < lastrow_firstrow_plus1_divisible_by_64K; j_base += TILE_SIZE) {
-        int j_max = j_base + TILE_SIZE < lastrow_firstrow_plus1_divisible_by_64K ? j_base + TILE_SIZE : lastrow_firstrow_plus1_divisible_by_64K;
+    for (int j_base = 0;
+         j_base < lastrow_firstrow_plus1_divisible_by_64K;
+         j_base += row_tile_size) {
+        int j_max =
+            j_base + row_tile_size <
+                    lastrow_firstrow_plus1_divisible_by_64K
+                ? j_base + row_tile_size
+                : lastrow_firstrow_plus1_divisible_by_64K;
         int k_base = rowstr[j_base];
         int k_max = rowstr[j_max];
         float *curr_r = &r[j_base];
@@ -1153,39 +1200,57 @@ static void conj_grad_maa(int colidx[],
         maa_stream_load<int>(&rowstr[1], r4, r5, r1, t3);
         // [t0 t1 t4 t5 t6 t7] available
         for (; k_base < k_max; k_base += TILE_SIZE) {
-            maa_const(k_base, r2);
-            // t0 = j
-            // t1 = k that is not needed
-            maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
-            // [t1 t4 t5 t6 t7] available
-
             const int gather_size = k_max - k_base < TILE_SIZE
                                         ? k_max - k_base
                                         : TILE_SIZE;
-            // Full bounded gathers consume colidx directly. Partial tails
-            // retain the staged path because the bounded engine is an
-            // exact logical16K/physical4K mechanism.
-#ifdef MAA_BOUNDED_VIRTUAL_GATHER
-            if (gather_size != TILE_SIZE)
-#endif
-                maa_stream_load<int>(colidx, r2, r3, r1, t6);
-            // [t1 t4 t5 t7] available
-
-            // t4 = z[colidx[k]]
-            // free t6
-#ifdef MAA_VIRTUAL_GATHER
 #ifdef MAA_BOUNDED_VIRTUAL_GATHER
             if (gather_size == TILE_SIZE) {
+                maa_const<int>(k_base, r2);
                 maa_const<int>(k_base + gather_size, r3);
                 maa_indirect_load_virtual_index<float>(
                     z, reinterpret_cast<uint32_t *>(colidx), t4,
                     virtual_gather_backing_for_thread(tid), r2, r3, r1);
-            } else
-#endif
-            {
-                maa_indirect_load_virtual<float>(
-                    z, t6, t4, virtual_gather_backing_for_thread(tid));
+                wait_ready(t4);
             }
+            for (int page_offset = 0; page_offset < gather_size;
+                 page_offset += MAA_CONSUMER_TILE_SIZE) {
+                const int page_size =
+                    gather_size - page_offset < MAA_CONSUMER_TILE_SIZE
+                        ? gather_size - page_offset
+                        : MAA_CONSUMER_TILE_SIZE;
+                maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+
+                if (gather_size == TILE_SIZE) {
+                    maa_const<int>(page_offset, r2);
+                    maa_const<int>(page_offset + page_size, r3);
+                    maa_stream_load<float>(
+                        virtual_gather_backing_for_thread(tid), r2, r3, r1,
+                        t4);
+                } else {
+                    const int page_base = k_base + page_offset;
+                    maa_const<int>(page_base, r2);
+                    maa_const<int>(page_base + page_size, r3);
+                    maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                    maa_indirect_load<float>(z, t6, t4);
+                }
+
+                const int page_base = k_base + page_offset;
+                maa_const<int>(page_base, r2);
+                maa_const<int>(page_base + page_size, r3);
+                maa_stream_load<float>(a, r2, r3, r1, t5);
+                maa_alu_vector<float>(t4, t5, t7,
+                                      Operation_t::MUL_OP);
+                maa_indirect_rmw_vector(curr_r, t0, t7,
+                                        Operation_t::ADD_OP);
+                wait_ready(t7);
+            }
+#else
+            maa_const(k_base, r2);
+            maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+            maa_stream_load<int>(colidx, r2, r3, r1, t6);
+#ifdef MAA_VIRTUAL_GATHER
+            maa_indirect_load_virtual<float>(
+                z, t6, t4, virtual_gather_backing_for_thread(tid));
             wait_ready(t4);
             maa_const<int>(0, r2);
             maa_const<int>(gather_size, r3);
@@ -1196,19 +1261,12 @@ static void conj_grad_maa(int colidx[],
 #else
             maa_indirect_load<float>(z, t6, t4);
 #endif
-            // [t1 t5 t6 t7] available
-
-            // t5 = a[k]
             maa_stream_load<float>(a, r2, r3, r1, t5);
-            // [t1 t6 t7] available
-
-            // t7 = a[k] * z[colidx[k]]
             maa_alu_vector<float>(t4, t5, t7, Operation_t::MUL_OP);
-            // [t1 t6] available
-
-            // r[j] += t7
-            maa_indirect_rmw_vector(curr_r, t0, t7, Operation_t::ADD_OP);
+            maa_indirect_rmw_vector(curr_r, t0, t7,
+                                    Operation_t::ADD_OP);
             wait_ready(t7);
+#endif
         }
     }
 
@@ -1369,7 +1427,7 @@ static void conj_grad_maa(int colidx[],
 
 /*
  * ---------------------------------------------------------------------
- * floating point arrays here are named as in NPB1 spec discussion of 
+ * floating point arrays here are named as in NPB1 spec discussion of
  * CG algorithm
  * ---------------------------------------------------------------------
  */
@@ -1435,11 +1493,11 @@ static void conj_grad_base(int colidx[],
 		 * q = A.p
 		 * the partition submatrix-vector multiply: use workspace w
 		 * ---------------------------------------------------------------------
-		 * 
-		 * note: this version of the multiply is actually (slightly: maybe %5) 
-		 * faster on the sp2 on 16 nodes than is the unrolled-by-2 version 
-		 * below. on the Cray t3d, the reverse is TRUE, i.e., the 
-		 * unrolled-by-two version is some 10% faster.  
+		 *
+		 * note: this version of the multiply is actually (slightly: maybe %5)
+		 * faster on the sp2 on 16 nodes than is the unrolled-by-2 version
+		 * below. on the Cray t3d, the reverse is TRUE, i.e., the
+		 * unrolled-by-two version is some 10% faster.
 		 * the unrolled-by-8 version below is significantly faster
 		 * on the Cray t3d - overall speed of code is 1.5 times faster.
 		 */

@@ -326,7 +326,9 @@ MAA::MAA(const MAAParams &p)
     streamAccessUnits = new StreamAccessUnit[num_maas];
     streamAccessIdle = new bool[num_maas];
     for (int i = 0; i < num_maas; i++) {
-        streamAccessUnits[i].allocate(i, num_request_table_addresses, num_request_table_entries_per_address, num_tile_elements, this);
+        streamAccessUnits[i].allocate(i, num_request_table_addresses,
+                                      num_request_table_entries_per_address,
+                                      physical_tile_elements, this);
         streamAccessIdle[i] = true;
     }
     indirectAccessUnits = new IndirectAccessUnit[num_indirect_units_total];
@@ -339,13 +341,14 @@ MAA::MAA(const MAAParams &p)
     aluUnits = new ALUUnit[num_maas];
     aluUnitsIdle = new bool[num_maas];
     for (int i = 0; i < num_maas; i++) {
-        aluUnits[i].allocate(this, i, p.ALU_lane_latency, p.num_ALU_lanes, num_tile_elements);
+        aluUnits[i].allocate(this, i, p.ALU_lane_latency,
+                             p.num_ALU_lanes, physical_tile_elements);
         aluUnitsIdle[i] = true;
     }
     rangeUnits = new RangeFuserUnit[num_maas];
     rangeUnitsIdle = new bool[num_maas];
     for (int i = 0; i < num_maas; i++) {
-        rangeUnits[i].allocate(num_tile_elements, this, i);
+        rangeUnits[i].allocate(physical_tile_elements, this, i);
         rangeUnitsIdle[i] = true;
     }
     invalidatorIdle = true;

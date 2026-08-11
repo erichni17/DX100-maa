@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-    echo "usage: $0 OUTDIR GEM5 CG_BINARY RAMULATOR_LIBRARY CG_DATA_HEADER" >&2
+if [[ $# -ne 7 ]]; then
+    echo "usage: $0 OUTDIR GEM5 NATIVE16 NATIVE4 BOUNDED RAMULATOR CG_DATA_HEADER" >&2
     exit 2
 fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
 gem5_source=$(realpath "$2")
-binary_source=$(realpath "$3")
-ramulator_source=$(realpath "$4")
-data_header_source=$(realpath "$5")
+native16_source=$(realpath "$3")
+native4_source=$(realpath "$4")
+bounded_source=$(realpath "$5")
+ramulator_source=$(realpath "$6")
+data_header_source=$(realpath "$7")
 config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 
@@ -22,7 +24,7 @@ ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
     exit 1
 }
 
-mkdir -p "$out/input" "$out/checkpoint"
+mkdir -p "$out/input"
 record_exit() {
     local rc=$?
     if [[ ! -e $out/matrix.complete && $rc -eq 0 ]]; then
@@ -33,17 +35,24 @@ record_exit() {
 trap record_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
 cp --reflink=auto "$gem5_source" "$out/input/gem5.opt"
-cp --reflink=auto "$binary_source" "$out/input/cg_maa_16K_bounded"
+cp --reflink=auto "$native16_source" "$out/input/cg_maa_16K_fp"
+cp --reflink=auto "$native4_source" "$out/input/cg_maa_4K_fp"
+cp --reflink=auto "$bounded_source" "$out/input/cg_maa_16K_bounded"
 cp --reflink=auto "$ramulator_source" "$out/input/libramulator.so"
 cp --reflink=auto "$data_header_source" "$out/input/cg_data_4C.h"
-chmod 0555 "$out/input/gem5.opt" "$out/input/cg_maa_16K_bounded"
+chmod 0555 "$out/input/gem5.opt" "$out/input"/cg_maa_*
+
 gem5="$out/input/gem5.opt"
-binary="$out/input/cg_maa_16K_bounded"
+native16="$out/input/cg_maa_16K_fp"
+native4="$out/input/cg_maa_4K_fp"
+bounded="$out/input/cg_maa_16K_bounded"
 ramulator="$out/input/libramulator.so"
 source_commit=$(git -C "$root" rev-parse HEAD)
-sha256sum "$gem5" "$binary" "$ramulator" "$out/input/cg_data_4C.h" "$config" \
-    "$ramulator_config" "$0" > "$out/input/artifact_sha256.txt"
+sha256sum "$gem5" "$native16" "$native4" "$bounded" "$ramulator" \
+    "$out/input/cg_data_4C.h" "$config" "$ramulator_config" "$0" \
+    > "$out/input/artifact_sha256.txt"
 git -C "$root" archive --format=tar "$source_commit" -- \
     src/mem/MAA configs/common configs/deprecated/example/se.py \
     benchmarks/NAS/cg/cg.cpp benchmarks/NAS/cg/Makefile \
@@ -52,36 +61,64 @@ git -C "$root" archive --format=tar "$source_commit" -- \
 {
     printf 'source_commit=%s\n' "$source_commit"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'comparison=one_binary_one_checkpoint\n'
+    printf 'comparison=three-binaries-three-checkpoints\n'
     printf 'input_mode=precomputed-cg-data-header\n'
     printf 'maa_mem_size_bytes=2147483648\n'
+    printf 'bounded_logical_elements=16384\n'
+    printf 'bounded_physical_elements=4096\n'
+    printf 'bounded_consumer_elements=4096\n'
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 
 library_dir=$(dirname "$ramulator")
 export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
-    "$gem5" --listener-mode=off --outdir="$out/checkpoint" \
-    "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB \
-    --max-checkpoints=1 --cmd "$binary" --options MAA \
-    > "$out/checkpoint.log" 2>&1
-grep -Fq 'Using data from file!' "$out/checkpoint.log"
-! grep -Fq 'makea started!' "$out/checkpoint.log"
-grep -Fq 'CG_BOUNDED_VIRTUAL_LAYOUT logical=16384' "$out/checkpoint.log"
-grep -Fq 'maa_mem_size=2147483648' "$out/checkpoint.log"
-[[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' \
-    "$out/checkpoint.log") -eq 1 ]]
-(
-    cd "$out/checkpoint"
-    find . -type f -print0 | sort -z | xargs -0 sha256sum
-) > "$out/checkpoint.files.sha256"
-sha256sum "$out/checkpoint.files.sha256" > "$out/checkpoint.identity.sha256"
+
+make_checkpoint() {
+    local label=$1 binary=$2 expect_layout=$3
+    local checkpoint="$out/checkpoint-$label"
+    mkdir -p "$checkpoint"
+    set +e
+    OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
+        "$gem5" --listener-mode=off --outdir="$checkpoint" \
+        "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB \
+        --max-checkpoints=1 --cmd "$binary" --options MAA \
+        > "$out/checkpoint-$label.log" 2>&1
+    local rc=$?
+    set -e
+    printf '%s\n' "$rc" > "$out/checkpoint-$label.exit"
+    [[ $rc -eq 0 ]]
+    grep -Fq 'Using data from file!' "$out/checkpoint-$label.log"
+    ! grep -Fq 'makea started!' "$out/checkpoint-$label.log"
+    grep -Fq 'maa_mem_size=2147483648' "$out/checkpoint-$label.log" || \
+        [[ $expect_layout -eq 0 ]]
+    if [[ $expect_layout -eq 1 ]]; then
+        grep -Fq 'CG_BOUNDED_VIRTUAL_LAYOUT logical=16384 consumer=4096' \
+            "$out/checkpoint-$label.log"
+    fi
+    [[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' \
+        "$out/checkpoint-$label.log") -eq 1 ]]
+    (
+        cd "$checkpoint"
+        find . -type f -print0 | sort -z | xargs -0 sha256sum
+    ) > "$out/checkpoint-$label.files.sha256"
+    sha256sum "$out/checkpoint-$label.files.sha256" \
+        > "$out/checkpoint-$label.identity.sha256"
+}
+
+checkpoint_jobs=()
+make_checkpoint native16 "$native16" 0 & checkpoint_jobs+=("native16:$!")
+make_checkpoint native4 "$native4" 0 & checkpoint_jobs+=("native4:$!")
+make_checkpoint bounded "$bounded" 1 & checkpoint_jobs+=("bounded:$!")
+for job in "${checkpoint_jobs[@]}"; do
+    label=${job%%:*}
+    pid=${job#*:}
+    wait "$pid" || { echo "$label checkpoint failed" >&2; exit 1; }
+done
 
 common=(
     --listener-mode=off
     "$config"
     --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB
-    --checkpoint-dir "$out/checkpoint"
     --sys-clock 3.2GHz --cpu-clock 3.2GHz
     --caches --l1d_size=32kB --l1d_assoc=8
     --l1d-hwp-type=StridePrefetcher --l1d_mshrs=16 --l1d_write_buffers=8
@@ -93,8 +130,7 @@ common=(
     --l3_write_buffers=128 --l3_ports=4 --cacheline_size=64
     --mem-type Ramulator2 --ramulator-config "$ramulator_config"
     --mem-channels=2 --maa_ncbus_width=32
-    --maa --maa_num_maas=1 --maa_num_tile_elements=16384
-    --maa_l2_uncacheable --maa_l3_uncacheable
+    --maa --maa_num_maas=1 --maa_l2_uncacheable --maa_l3_uncacheable
     --maa_num_initial_row_table_slices=16
     --maa_num_row_table_entries_per_subslice_row=8
     --maa_virtual_combine_slots=384 --maa_virtual_combine_words=4096
@@ -104,20 +140,24 @@ common=(
     --maa_virtual_index_buffer_lines=4
     --maa_virtual_descriptor_spool_read_credits=24
     --maa_virtual_index_filter_words_per_cycle=64
-    --cmd "$binary" --options MAA --prog-interval=1000
+    --options MAA --prog-interval=1000
 )
 
 run_arm() {
-    local label=$1 physical=$2 rows=$3 offsets=$4 bounded=$5 bypass=$6
+    local label=$1 binary=$2 checkpoint=$3 logical=$4 physical=$5
+    local rows=$6 offsets=$7 bounded_mode=$8 bypass=$9
     local arm="$out/$label"
     mkdir -p "$arm/run"
     local treatment=(
+        --checkpoint-dir "$checkpoint"
+        --cmd "$binary"
+        --maa_num_tile_elements="$logical"
         --maa_physical_tile_elements="$physical"
         --maa_num_row_table_rows_per_slice="$rows"
         --maa_num_offset_table_entries="$offsets"
         --maa_num_offset_table_epoch_entries="$offsets"
     )
-    if [[ $bounded -eq 1 ]]; then
+    if [[ $bounded_mode -eq 1 ]]; then
         treatment+=(
             --maa_virtual_grow_order
             --maa_virtual_index_partitions=64
@@ -149,11 +189,14 @@ run_arm() {
 }
 
 jobs=()
-run_arm matched16 16384 64 16384 0 0 & jobs+=("matched16:$!")
-# With two memory channels, 16 rows/slice is the 4096-line-slot geometry.
-run_arm matched4 4096 16 4096 0 0 & jobs+=("matched4:$!")
-run_arm bounded4_cached 4096 16 4096 1 0 & jobs+=("bounded4_cached:$!")
-run_arm bounded4_bypass 4096 16 4096 1 1 & jobs+=("bounded4_bypass:$!")
+run_arm native16 "$native16" "$out/checkpoint-native16" \
+    16384 16384 64 16384 0 0 & jobs+=("native16:$!")
+run_arm native4 "$native4" "$out/checkpoint-native4" \
+    4096 4096 16 4096 0 0 & jobs+=("native4:$!")
+run_arm bounded4_cached "$bounded" "$out/checkpoint-bounded" \
+    16384 4096 16 4096 1 0 & jobs+=("bounded4_cached:$!")
+run_arm bounded4_bypass "$bounded" "$out/checkpoint-bounded" \
+    16384 4096 16 4096 1 1 & jobs+=("bounded4_bypass:$!")
 failed=0
 for job in "${jobs[@]}"; do
     label=${job%%:*}
@@ -167,7 +210,7 @@ done
 
 printf 'arm\toutput_hash\tsimTicks\tdescriptor_scans\tdescriptor_external\tread_stalls\tcontrol_bytes_sum\n' \
     > "$out/results.tsv"
-for label in matched16 matched4 bounded4_cached bounded4_bypass; do
+for label in native16 native4 bounded4_cached bounded4_bypass; do
     arm="$out/$label"
     log="$arm/run.log"
     stats="$arm/run/stats.txt"
