@@ -33,10 +33,12 @@ ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 mkdir -p "$out/input"
 record_exit() {
     local rc=$?
+    trap - EXIT
     if [[ ! -e $out/$completion_marker && $rc -eq 0 ]]; then
         rc=125
     fi
     printf '%s\n' "$rc" > "$out/matrix.exit"
+    exit "$rc"
 }
 trap record_exit EXIT
 trap 'exit 130' INT

@@ -59,6 +59,8 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertIn("$scans -gt 0", self.runner)
         self.assertIn("$external -gt 0", self.runner)
         self.assertIn("! -e $out/$completion_marker", self.runner)
+        self.assertIn("trap - EXIT", self.runner)
+        self.assertIn('exit "$rc"', self.runner)
         self.assertIn("trap 'exit 143' TERM", self.runner)
 
     def test_bounded_precheck_crosses_prior_failure_without_controls(self):

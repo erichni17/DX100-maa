@@ -145,6 +145,18 @@ class DescriptorSpoolLiveContractTest(unittest.TestCase):
         self.assertIn("descriptorIndexWordPaddr", self.indirect)
         self.assertIn("captureDescriptorIndexPage", self.indirect)
         self.assertIn("MaxDescriptorIndexPages = 17", self.header)
+        self.assertGreaterEqual(
+            self.indirect.count("first_source_byte_offset"), 4
+        )
+        self.assertGreaterEqual(
+            self.indirect.count(
+                "first_word_vaddr = my_index_addr + first_source_byte_offset"
+            ),
+            2,
+        )
+        self.assertNotIn(
+            "const Addr first_page = my_index_addr &", self.indirect
+        )
         self.assertIn("descriptor.iteration", self.indirect)
         self.assertNotIn("sourcePage", self.spool)
         self.assertIn("BoundedDescriptorSpool::unpack", self.indirect)

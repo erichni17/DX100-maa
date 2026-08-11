@@ -1541,7 +1541,22 @@ IndirectAccessUnit::captureDescriptorIndexPage(uint32_t iteration,
              "I[%d] descriptor index virtual address overflows\n",
              my_indirect_id);
     const Addr word_vaddr = my_index_addr + byte_offset;
-    const Addr first_page = my_index_addr &
+    panic_if(my_index_min < 0 ||
+                 static_cast<uint64_t>(my_index_min) >
+                     std::numeric_limits<Addr>::max() / sizeof(uint32_t),
+             "I[%d] descriptor first source index is not representable: %d\n",
+             my_indirect_id, my_index_min);
+    const Addr first_source_byte_offset =
+        static_cast<Addr>(my_index_min) * sizeof(uint32_t);
+    panic_if(my_index_addr >
+                 std::numeric_limits<Addr>::max() -
+                     first_source_byte_offset,
+             "I[%d] descriptor first source address overflows\n",
+             my_indirect_id);
+    // The finite page map describes this instruction's logical window, not
+    // every earlier element in the application's index array.
+    const Addr first_word_vaddr = my_index_addr + first_source_byte_offset;
+    const Addr first_page = first_word_vaddr &
         ~(static_cast<Addr>(DescriptorIndexPageBytes) - 1);
     const uint64_t page = (word_vaddr - first_page) /
         DescriptorIndexPageBytes;
@@ -1587,7 +1602,20 @@ IndirectAccessUnit::descriptorIndexWordPaddr(uint32_t iteration) const
              "I[%d] replay descriptor index virtual address overflows\n",
              my_indirect_id);
     const Addr word_vaddr = my_index_addr + byte_offset;
-    const Addr first_page = my_index_addr &
+    panic_if(my_index_min < 0 ||
+                 static_cast<uint64_t>(my_index_min) >
+                     std::numeric_limits<Addr>::max() / sizeof(uint32_t),
+             "I[%d] replay first source index is not representable: %d\n",
+             my_indirect_id, my_index_min);
+    const Addr first_source_byte_offset =
+        static_cast<Addr>(my_index_min) * sizeof(uint32_t);
+    panic_if(my_index_addr >
+                 std::numeric_limits<Addr>::max() -
+                     first_source_byte_offset,
+             "I[%d] replay first source address overflows\n",
+             my_indirect_id);
+    const Addr first_word_vaddr = my_index_addr + first_source_byte_offset;
+    const Addr first_page = first_word_vaddr &
         ~(static_cast<Addr>(DescriptorIndexPageBytes) - 1);
     const uint64_t source_page = (word_vaddr - first_page) /
         DescriptorIndexPageBytes;
