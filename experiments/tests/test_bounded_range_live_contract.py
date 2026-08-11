@@ -392,6 +392,16 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             r"const int pass = directIndexRetirementPass\(\)",
         ):
             self.assertRegex(self.indirect, pattern)
+        self.assertRegex(
+            self.indirect,
+            r"direct_index_partitions\s*=\s*isDirectIndexLoad\(\)\s*\?\s*"
+            r"direct_index_max_partitions\s*:\s*1;",
+        )
+        self.assertRegex(
+            self.indirect,
+            r"directIndexPassForGrow\(Addr grow_addr\) const \{\s*"
+            r"if \(!usesBoundedDirectIndexPasses\(\)\)",
+        )
 
     def test_index_high_water_uses_configured_finite_capacity(self) -> None:
         self.assertIn("index_buffer_lines=4", self.runner)

@@ -53,25 +53,42 @@ class DirectIndexLivenessContractTest(unittest.TestCase):
                 "case Status::Request:"
             )
         ]
+        issue = source[
+            source.index(
+                "IndirectAccessUnit::issueVirtualSource("
+            ) : source.index(
+                "IndirectAccessUnit::issueBoundedGlobalSourceLine()"
+            )
+        ]
         bounded_response = source[
             source.index("const bool bounded_response_load") : source.index(
                 "uint8_t new_data[block_size]"
             )
         ]
         drain = source[
-            source.index("bool IndirectAccessUnit::drainVirtualResponses") :
-            source.index("bool IndirectAccessUnit::reserveVirtualCombineBank")
+            source.index(
+                "bool IndirectAccessUnit::drainVirtualResponses"
+            ) : source.index(
+                "bool IndirectAccessUnit::reserveVirtualCombineBank"
+            )
         ]
         placement = source[
-            source.index("Addr IndirectAccessUnit::backingWordAddr") :
-            source.index("void IndirectAccessUnit::drainVirtualCombiner")
+            source.index(
+                "Addr IndirectAccessUnit::backingWordAddr"
+            ) : source.index("void IndirectAccessUnit::drainVirtualCombiner")
         ]
 
         # Request issue retains the source line plus the OffsetTable-chain
         # head/count. Response capture uses wid to select A's returned word.
-        self.assertIn("claim_entry_send(\n                                addr", build)
-        self.assertIn("VirtualSourceReservation{source_head", build)
-        self.assertIn("createReadPacket(source_addr", build)
+        self.assertIn(
+            "claim_entry_send(\n                                addr", build
+        )
+        self.assertIn(
+            "issueVirtualSource(\n                                addr", build
+        )
+        self.assertIn("VirtualSourceReservation{", issue)
+        self.assertIn("source_head, source_words, source_rt_idx", issue)
+        self.assertIn("createReadPacket(source_addr", issue)
         self.assertIn("slot->next_itr = virtual_head", bounded_response)
         self.assertIn("offset_table->peek_entry(itr)", bounded_response)
         self.assertIn("dataptr + entry.wid * my_word_size", bounded_response)
@@ -89,7 +106,7 @@ class DirectIndexLivenessContractTest(unittest.TestCase):
         # These are all consumers downstream of successful admission. A later
         # direct-index refill may populate new iterations, but none of these
         # consumers rereads the admitted feeder value.
-        for consumer in (build, bounded_response, drain, placement):
+        for consumer in (build, issue, bounded_response, drain, placement):
             self.assertNotIn("peekDirectIndex(", consumer)
             self.assertNotIn("direct_index_value", consumer)
 

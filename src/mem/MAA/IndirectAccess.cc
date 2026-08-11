@@ -1235,7 +1235,7 @@ IndirectAccessUnit::currentDirectIndexWord(int itr) const
     return word->second;
 }
 uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
-    if (!maa->virtual_index_range_passes)
+    if (!usesBoundedDirectIndexPasses())
         return grow_addr % direct_index_partitions;
     const uint32_t pass = bounded_range_pass.passForGrow(grow_addr);
     panic_if(pass >= static_cast<uint32_t>(direct_index_partitions),
@@ -1246,7 +1246,7 @@ uint32_t IndirectAccessUnit::directIndexPassForGrow(Addr grow_addr) const {
 uint64_t IndirectAccessUnit::directIndexRangeKey(
     uint32_t, Addr grow_addr, int iteration) const
 {
-    if (!maa->virtual_index_range_passes ||
+    if (!usesBoundedDirectIndexPasses() ||
         maa->virtual_index_range_policy != 3)
         return grow_addr;
     if (direct_index_iteration_fallback)
@@ -3783,7 +3783,8 @@ void IndirectAccessUnit::executeInstruction() {
         my_index_stride = 1;
         direct_index_next_prefetch_itr = 0;
         direct_index_partition = 0;
-        direct_index_partitions = direct_index_max_partitions;
+        direct_index_partitions = isDirectIndexLoad()
+            ? direct_index_max_partitions : 1;
         direct_index_phase = 1;
         direct_index_partition_barrier = false;
         bounded_range_pass.reset();
