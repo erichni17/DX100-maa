@@ -768,6 +768,9 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_INDEX);
 }
+bool IndirectAccessUnit::usesBoundedDirectIndexPasses() const {
+    return isDirectIndexLoad() && maa->virtual_index_range_passes;
+}
 bool IndirectAccessUnit::usesBoundedSourceResponses() const {
     return isVirtualLoad() ||
            (my_instruction != nullptr &&
@@ -2386,7 +2389,7 @@ int IndirectAccessUnit::directIndexRetirementPass() const {
     return pass;
 }
 void IndirectAccessUnit::finishBoundedRangePass(int pass, const char *reason) {
-    if (!maa->virtual_index_range_passes)
+    if (!usesBoundedDirectIndexPasses())
         return;
     if (descriptor_spool.configured()) {
         if (maa->virtual_bounded_global_merge) {
@@ -2925,8 +2928,8 @@ void IndirectAccessUnit::fillRowTable(
                         "total=%d policy=%s\n", my_indirect_id,
                         completed_partition, direct_index_partition,
                         direct_index_partitions,
-                        maa->virtual_index_range_passes ? "grow_range" :
-                                                         "grow_modulo");
+                        usesBoundedDirectIndexPasses() ? "grow_range" :
+                                                        "grow_modulo");
                 break;
             }
             if (my_dst_tile != -1) {
@@ -3192,7 +3195,7 @@ void IndirectAccessUnit::fillRowTable(
                 selected_pass = descriptor_spool.residentPass();
             } else if (descriptor_spool_replay_active) {
                 selected_pass = direct_index_partition;
-            } else if (maa->virtual_index_range_passes &&
+            } else if (usesBoundedDirectIndexPasses() &&
                 maa->virtual_index_range_policy == 3) {
                 if (direct_index_iteration_fallback) {
                     selected_pass = bounded_range_pass.passForGrow(
@@ -3318,7 +3321,7 @@ void IndirectAccessUnit::fillRowTable(
                         panic_if(!reorder_survival.admit(),
                                  "I[%d] could not record reorder admission\n",
                                  my_indirect_id);
-                    if (maa->virtual_index_range_passes) {
+                    if (usesBoundedDirectIndexPasses()) {
                         const auto result =
                             maa->virtual_index_range_policy == 3 &&
                                     !direct_index_iteration_fallback
@@ -3453,7 +3456,7 @@ void IndirectAccessUnit::fillRowTable(
                          direct_index_partition,
                          BoundedRangePassTracker::resultName(retired));
             }
-            if (maa->virtual_index_range_passes) {
+            if (usesBoundedDirectIndexPasses()) {
                 const bool grouped_descriptor =
                     descriptor_spool_replay_active || resident_bucket;
                 const auto inspection_result = grouped_descriptor
@@ -4522,7 +4525,7 @@ void IndirectAccessUnit::executeInstruction() {
                 if (debug::MAAReorderTrace &&
                     reorder_survival.drainPending())
                     closeReorderSurvivalEpoch(false);
-                if (maa->virtual_index_range_passes) {
+                if (usesBoundedDirectIndexPasses()) {
                     const auto drain_result =
                         bounded_range_pass.recordDrain(
                             direct_index_partition);
@@ -4689,7 +4692,7 @@ void IndirectAccessUnit::executeInstruction() {
                     maa->getTicksToCycles(virtual_all_pages_ready_tick -
                                           virtual_first_page_ready_tick);
             }
-            if (maa->virtual_index_range_passes) {
+            if (usesBoundedDirectIndexPasses()) {
                 if (maa->virtual_bounded_global_merge) {
                     panic_if(bounded_global_merge_phase !=
                                  BoundedGlobalMergePhase::Complete,
@@ -5324,7 +5327,7 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
                     maa->getClockEdge(Cycles(latency)),
                     direct_index_force_cache);
     (*maa->stats.IND_VirtIndexLineReads[my_indirect_id])++;
-    if (maa->virtual_index_range_passes) {
+    if (usesBoundedDirectIndexPasses()) {
         if (direct_index_summary_active)
             (*maa->stats
                   .IND_BoundedSummaryLineReads[my_indirect_id])++;
@@ -6635,7 +6638,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     target->valid_words |= word_bit;
     virtual_combine_words++;
     attribution_combiner_words++;
-    if (maa->virtual_index_range_passes) {
+    if (usesBoundedDirectIndexPasses()) {
         const int pass = directIndexRetirementPass();
         const auto result = bounded_range_pass.recordRetirement(itr, pass);
         panic_if(result != BoundedRangePassTracker::Result::Accepted,

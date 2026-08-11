@@ -505,6 +505,7 @@ protected:
                          unsigned size = 64);
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
+    bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
     void fillDescriptorSpoolWindow(bool read_ahead = false);

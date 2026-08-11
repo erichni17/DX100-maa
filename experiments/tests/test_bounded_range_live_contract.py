@@ -368,6 +368,31 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         ):
             self.assertIn(token, self.runner)
 
+    def test_bounded_pass_state_is_scoped_to_direct_index_operations(
+        self,
+    ) -> None:
+        header = (ROOT / "src/mem/MAA/IndirectAccess.hh").read_text()
+        self.assertIn("bool usesBoundedDirectIndexPasses() const;", header)
+        self.assertRegex(
+            self.indirect,
+            r"bool IndirectAccessUnit::usesBoundedDirectIndexPasses\(\) const "
+            r"\{\s*return isDirectIndexLoad\(\)\s*&&\s*"
+            r"maa->virtual_index_range_passes;\s*\}",
+        )
+        for pattern in (
+            r"else if \(usesBoundedDirectIndexPasses\(\)\s*&&\s*"
+            r"maa->virtual_index_range_policy == 3\)",
+            r"if \(usesBoundedDirectIndexPasses\(\)\) \{\s*"
+            r"const auto result =",
+            r"if \(usesBoundedDirectIndexPasses\(\)\) \{\s*"
+            r"const auto drain_result =",
+            r"if \(usesBoundedDirectIndexPasses\(\)\) \{\s*"
+            r"if \(maa->virtual_bounded_global_merge\)",
+            r"if \(usesBoundedDirectIndexPasses\(\)\) \{\s*"
+            r"const int pass = directIndexRetirementPass\(\)",
+        ):
+            self.assertRegex(self.indirect, pattern)
+
     def test_index_high_water_uses_configured_finite_capacity(self) -> None:
         self.assertIn("index_buffer_lines=4", self.runner)
         self.assertIn(
