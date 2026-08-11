@@ -536,6 +536,7 @@ int main(int argc, char **argv) {
 #ifdef GEM5
 #ifdef MAA_BOUNDED_VIRTUAL_GATHER
     std::cout << "CG_BOUNDED_VIRTUAL_LAYOUT logical=" << TILE_SIZE
+              << " maa_mem_size=" << MEM_SIZE
               << " payload_words=" << NUM_CORES * TILE_SIZE
               << " descriptor_units=" << virtual_descriptor_spool_units
               << " descriptor_slot_bytes="

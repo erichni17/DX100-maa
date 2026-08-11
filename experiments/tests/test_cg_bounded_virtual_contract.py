@@ -41,6 +41,9 @@ class CGBoundedVirtualContractTests(unittest.TestCase):
         self.assertIn("virtual_descriptor_spool_words", self.source)
         self.assertIn("add_mem_region(virtual_gather_storage", self.source)
 
+    def test_layout_reports_compiled_memory_size(self):
+        self.assertIn('<< " maa_mem_size=" << MEM_SIZE', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

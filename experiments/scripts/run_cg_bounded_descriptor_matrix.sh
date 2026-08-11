@@ -54,6 +54,7 @@ git -C "$root" archive --format=tar "$source_commit" -- \
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'comparison=one_binary_one_checkpoint\n'
     printf 'input_mode=precomputed-cg-data-header\n'
+    printf 'maa_mem_size_bytes=2147483648\n'
     printf 'timeout=none\n'
 } > "$out/manifest.txt"
 
@@ -67,6 +68,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
 grep -Fq 'Using data from file!' "$out/checkpoint.log"
 ! grep -Fq 'makea started!' "$out/checkpoint.log"
 grep -Fq 'CG_BOUNDED_VIRTUAL_LAYOUT logical=16384' "$out/checkpoint.log"
+grep -Fq 'maa_mem_size=2147483648' "$out/checkpoint.log"
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' \
     "$out/checkpoint.log") -eq 1 ]]
 (
@@ -148,9 +150,10 @@ run_arm() {
 
 jobs=()
 run_arm matched16 16384 64 16384 0 0 & jobs+=("matched16:$!")
-run_arm matched4 4096 32 4096 0 0 & jobs+=("matched4:$!")
-run_arm bounded4_cached 4096 32 4096 1 0 & jobs+=("bounded4_cached:$!")
-run_arm bounded4_bypass 4096 32 4096 1 1 & jobs+=("bounded4_bypass:$!")
+# With two memory channels, 16 rows/slice is the 4096-line-slot geometry.
+run_arm matched4 4096 16 4096 0 0 & jobs+=("matched4:$!")
+run_arm bounded4_cached 4096 16 4096 1 0 & jobs+=("bounded4_cached:$!")
+run_arm bounded4_bypass 4096 16 4096 1 1 & jobs+=("bounded4_bypass:$!")
 failed=0
 for job in "${jobs[@]}"; do
     label=${job%%:*}

@@ -22,8 +22,10 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertIn("CG_DATA_HEADER", self.runner)
         self.assertIn('cp --reflink=auto "$data_header_source"', self.runner)
         self.assertIn("input_mode=precomputed-cg-data-header", self.runner)
+        self.assertIn("maa_mem_size_bytes=2147483648", self.runner)
         self.assertIn("Using data from file!", self.runner)
         self.assertIn("makea started!", self.runner)
+        self.assertIn("maa_mem_size=2147483648", self.runner)
 
     def test_has_matched_controls_and_two_bounded_arms(self):
         for arm in (
@@ -38,6 +40,9 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertIn("--maa_physical_tile_elements=\"$physical\"", self.runner)
         self.assertIn("--maa_virtual_descriptor_spool_read_credits=24", self.runner)
         self.assertIn("--maa_virtual_index_filter_words_per_cycle=64", self.runner)
+        self.assertIn("run_arm matched4 4096 16 4096", self.runner)
+        self.assertIn("run_arm bounded4_cached 4096 16 4096", self.runner)
+        self.assertIn("run_arm bounded4_bypass 4096 16 4096", self.runner)
 
     def test_validation_fails_closed(self):
         self.assertIn("x_q5=88c0975669c7062d", self.runner)
