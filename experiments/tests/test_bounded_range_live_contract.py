@@ -404,7 +404,18 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         )
 
     def test_index_high_water_uses_configured_finite_capacity(self) -> None:
-        self.assertIn("index_buffer_lines=4", self.runner)
+        self.assertIn(
+            "index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-4}",
+            self.runner,
+        )
+        self.assertIn(
+            "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,1024]",
+            self.runner,
+        )
+        self.assertIn(
+            "printf 'virtual_index_buffer_lines=%s\\n'",
+            self.runner,
+        )
         self.assertIn(
             "index_hwm_capacity=$((index_buffer_lines * 4 * 16))",
             self.runner,

@@ -77,7 +77,7 @@ index_force_cache=${MAA_VIRTUAL_INDEX_FORCE_CACHE:-0}
 partition_keep_combiner=${MAA_VIRTUAL_PARTITION_KEEP_COMBINER:-0}
 index_filter_words_per_cycle=${MAA_VIRTUAL_INDEX_FILTER_WORDS_PER_CYCLE:-4}
 require_index_filter_wait=${MAA_REQUIRE_INDEX_FILTER_WAIT:-0}
-index_buffer_lines=4
+index_buffer_lines=${MAA_VIRTUAL_INDEX_BUFFER_LINES:-4}
 # IND_VirtIndexWordHighWater is a sum of per-instruction-unit peaks. This
 # runner has four units and 16 FP32 words per cache line.
 index_hwm_capacity=$((index_buffer_lines * 4 * 16))
@@ -130,6 +130,10 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 [[ $descriptor_spool_read_credits -ge 1 &&
    $descriptor_spool_read_credits -le 32 ]] || {
     echo "MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_CREDITS must be in [1,32]" >&2
+    exit 2
+}
+[[ $index_buffer_lines -ge 1 && $index_buffer_lines -le 1024 ]] || {
+    echo "MAA_VIRTUAL_INDEX_BUFFER_LINES must be in [1,1024]" >&2
     exit 2
 }
 [[ $bounded_global_merge == 0 || $bounded_global_merge == 1 ]] || {
@@ -614,6 +618,7 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
         "$partition_keep_combiner"
     printf 'virtual_index_filter_words_per_cycle=%s\n' \
         "$index_filter_words_per_cycle"
+    printf 'virtual_index_buffer_lines=%s\n' "$index_buffer_lines"
     printf 'require_index_filter_wait=%s\n' "$require_index_filter_wait"
     printf 'cache_pollution_bytes=%s\n' \
         "$((polluted * 32 * 1024 * 1024))"
@@ -718,6 +723,7 @@ cp -- "$root/experiments/analysis/hybrid_overhead_attribution.py" \
     printf 'MAA_DESCRIPTOR_SPOOL_VARIANT=%q ' "$descriptor_spool_variant"
     printf 'MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD=%q ' \
         "$descriptor_spool_read_ahead"
+    printf 'MAA_VIRTUAL_INDEX_BUFFER_LINES=%q ' "$index_buffer_lines"
     printf 'MAA_VIRTUAL_BOUNDED_GLOBAL_MERGE=%q ' \
         "$bounded_global_merge"
     printf '%q %q %q %q %q\n' "${DX100_FROZEN_RUNNER_PATH:-$0}" \
