@@ -4936,8 +4936,10 @@ void IndirectAccessUnit::executeInstruction() {
                              descriptor_spool_bucket_commits +
                                  descriptor_spool_filter_retry_inspections ||
                          direct_index_max_lines >
-                             static_cast<int>(
-                                 descriptor_spool.readCredits()) ||
+                             std::max(
+                                 direct_index_buffer_lines,
+                                 static_cast<int>(
+                                     descriptor_spool.readCredits())) ||
                          descriptorSpoolReadSlotsUsed() != 0 ||
                          std::any_of(
                              descriptor_spool_read_slots.begin(),

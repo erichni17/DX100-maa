@@ -437,6 +437,12 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
             self.indirect,
             r"line_capacity = maa->virtual_index_descriptor_spool",
         )
+        self.assertRegex(
+            self.indirect,
+            r"direct_index_max_lines >\s*std::max\(\s*"
+            r"direct_index_buffer_lines,\s*static_cast<int>\(\s*"
+            r"descriptor_spool\.readCredits\(\)\)\)",
+        )
 
     def test_filter_retry_accounting_includes_offset_epoch_drains(
         self,
