@@ -47,6 +47,15 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
             "--maa_virtual_descriptor_spool_read_credits=24", self.runner
         )
         self.assertIn(
+            "bounded_index_buffer_lines=${CG_BOUNDED_INDEX_BUFFER_LINES:-4}",
+            self.runner,
+        )
+        self.assertIn(
+            '--maa_virtual_index_buffer_lines="$bounded_index_buffer_lines"',
+            self.runner,
+        )
+        self.assertIn("bounded_index_buffer_lines=%s", self.runner)
+        self.assertIn(
             "--maa_virtual_index_filter_words_per_cycle=64", self.runner
         )
         self.assertIn("16384 16384 64 16384 0 0", self.runner)

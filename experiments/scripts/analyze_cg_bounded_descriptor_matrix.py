@@ -116,6 +116,18 @@ def read_config(path: Path) -> dict[str, str]:
     return values
 
 
+def positive_manifest_integer(
+    manifest: dict[str, str], key: str, maximum: int
+) -> int:
+    try:
+        value = int(manifest[key])
+    except (KeyError, ValueError) as error:
+        fail(f"manifest has invalid {key}: {error}")
+    if not 1 <= value <= maximum:
+        fail(f"manifest {key}={value} is outside [1,{maximum}]")
+    return value
+
+
 def first_stats(path: Path) -> dict[str, float]:
     section = 0
     values: dict[str, float] = {}
@@ -181,6 +193,10 @@ def suffix_sum(stats: dict[str, float], suffix: str) -> int:
 def analyze(campaign: Path) -> dict:
     if not campaign.is_dir():
         fail(f"campaign is not a directory: {campaign}")
+    manifest = read_config(campaign / "manifest.txt")
+    expected_index_lines = positive_manifest_integer(
+        manifest, "bounded_index_buffer_lines", 1024
+    )
     rows: dict[str, dict] = {}
     for arm in ARMS:
         arm_dir = campaign / arm
@@ -206,6 +222,14 @@ def analyze(campaign: Path) -> dict:
         for key, expected in EXPECTED_CONFIG[arm].items():
             if config.get(key) != expected:
                 fail(f"{arm}: {key}={config.get(key)!r}, expected {expected!r}")
+        if config.get("virtual_index_buffer_lines") != str(
+            expected_index_lines
+        ):
+            fail(
+                f"{arm}: virtual_index_buffer_lines="
+                f"{config.get('virtual_index_buffer_lines')!r}, expected "
+                f"{expected_index_lines!r}"
+            )
 
         stats = first_stats(arm_dir / "run/stats.txt")
         if stats.get("simTicks", 0) <= 0:
@@ -247,6 +271,7 @@ def analyze(campaign: Path) -> dict:
         "schema": 1,
         "campaign": str(campaign.resolve()),
         "status": "accepted",
+        "bounded_index_buffer_lines": expected_index_lines,
         "correctness_contract": {
             "benchmark_fingerprint_pass": True,
             "coarse_per_element_reference": "native4 x_q5 and z_q5",

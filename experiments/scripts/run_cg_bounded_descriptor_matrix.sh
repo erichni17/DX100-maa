@@ -10,6 +10,12 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=$(realpath -m "$1")
 mode=${CG_MATRIX_MODE:-full}
 precheck_checkpoint_source=${CG_PRECHECK_CHECKPOINT_SOURCE:-}
+bounded_index_buffer_lines=${CG_BOUNDED_INDEX_BUFFER_LINES:-4}
+[[ $bounded_index_buffer_lines =~ ^[1-9][0-9]*$ &&
+   $bounded_index_buffer_lines -le 1024 ]] || {
+    echo "CG_BOUNDED_INDEX_BUFFER_LINES must be in [1,1024]" >&2
+    exit 2
+}
 case $mode in
     full) completion_marker=matrix.complete ;;
     bounded-precheck) completion_marker=precheck.complete ;;
@@ -93,6 +99,8 @@ git -C "$root" archive --format=tar "$source_commit" -- \
     printf 'bounded_logical_elements=16384\n'
     printf 'bounded_physical_elements=4096\n'
     printf 'bounded_consumer_elements=4096\n'
+    printf 'bounded_index_buffer_lines=%s\n' \
+        "$bounded_index_buffer_lines"
     printf 'precheck_checkpoint=%s\n' \
         "${precheck_checkpoint_source:-fresh}"
     printf 'timeout=none\n'
@@ -155,7 +163,7 @@ common=(
     --maa_virtual_combine_ways=4 --maa_virtual_response_slots=96
     --maa_virtual_response_word_pool=480 --maa_virtual_words_per_cycle=4
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes
-    --maa_virtual_index_buffer_lines=4
+    --maa_virtual_index_buffer_lines="$bounded_index_buffer_lines"
     --maa_virtual_descriptor_spool_read_credits=24
     --maa_virtual_index_filter_words_per_cycle=64
     --options MAA --prog-interval=1000
