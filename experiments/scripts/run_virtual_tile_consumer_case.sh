@@ -1558,6 +1558,9 @@ elif [[ $virtual -eq 1 ]]; then
                 exit 1
             }
             if [[ $index_descriptor_spool -eq 1 ]]; then
+                descriptor_control_bound=$((
+                    2048 + 128 * descriptor_spool_read_credits
+                ))
                 [[ $bounded_bucket_words -eq 16384 &&
                    $bounded_replay_words -eq 0 &&
                    $bounded_replay_lines -eq 0 &&
@@ -1568,7 +1571,7 @@ elif [[ $virtual -eq 1 ]]; then
                    $descriptor_write_hwm -gt 0 &&
                    $descriptor_write_hwm -le 16 &&
                    $descriptor_control_bytes -gt 0 &&
-                   $descriptor_control_bytes -le 4096 ]] || {
+                   $descriptor_control_bytes -le $descriptor_control_bound ]] || {
                     echo "invalid common finite descriptor-spool counters" >&2
                     exit 1
                 }
