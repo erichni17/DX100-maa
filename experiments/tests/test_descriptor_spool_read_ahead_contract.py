@@ -113,6 +113,7 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
             "MAA_VIRTUAL_DESCRIPTOR_SPOOL_WRITE_CREDITS",
             "--maa_virtual_descriptor_spool_write_credits",
             "virtual_descriptor_spool_write_credits=",
+            "descriptor_write_hwm -le $descriptor_spool_write_credits",
         ):
             self.assertIn(token, self.case_runner)
 

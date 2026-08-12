@@ -1578,7 +1578,7 @@ elif [[ $virtual -eq 1 ]]; then
                    $descriptor_read_lines -eq $descriptor_write_lines &&
                    $descriptor_read_bytes -eq $descriptor_write_bytes &&
                    $descriptor_write_hwm -gt 0 &&
-                   $descriptor_write_hwm -le 16 &&
+                   $descriptor_write_hwm -le $descriptor_spool_write_credits &&
                    $descriptor_control_bytes -gt 0 &&
                    $descriptor_control_bytes -le $descriptor_control_bound ]] || {
                     echo "invalid common finite descriptor-spool counters" >&2
