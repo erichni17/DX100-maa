@@ -66,6 +66,9 @@ RELATIVE_TOLERANCES = {
     "rnorm": 1.0e-3,
     "zeta": 1.0e-10,
 }
+EXPECTED_EXACT_FINGERPRINT = {
+    "x_q5": "88c0975669c7062d",
+}
 FINGERPRINT_KEYS = (
     "mode",
     "elements",
@@ -161,6 +164,12 @@ def parse_fingerprint(log_text: str, arm: str) -> dict[str, str]:
         fail(f"{arm}: unexpected fingerprint problem identity")
     if values["nonfinite_x"] != "0" or values["nonfinite_z"] != "0":
         fail(f"{arm}: non-finite output")
+    for key, expected in EXPECTED_EXACT_FINGERPRINT.items():
+        if values[key] != expected:
+            fail(
+                f"{arm}: exact semantic fingerprint {key}="
+                f"{values[key]}, expected {expected}"
+            )
     return values
 
 
@@ -180,9 +189,12 @@ def validate_fingerprint(arm: str, values: dict[str, str], reference: dict[str, 
     }
     if exceeded:
         fail(f"{arm}: numerical drift exceeds bounds: {exceeded}")
-    for key in ("x_q5", "z_q5"):
+    for key in EXPECTED_EXACT_FINGERPRINT:
         if values[key] != reference[key]:
-            fail(f"{arm}: coarse per-element fingerprint {key} differs from native4")
+            fail(
+                f"{arm}: exact semantic fingerprint {key} differs "
+                "from native4"
+            )
     return errors
 
 
@@ -274,7 +286,8 @@ def analyze(campaign: Path) -> dict:
         "bounded_index_buffer_lines": expected_index_lines,
         "correctness_contract": {
             "benchmark_fingerprint_pass": True,
-            "coarse_per_element_reference": "native4 x_q5 and z_q5",
+            "exact_semantic_fingerprint": EXPECTED_EXACT_FINGERPRINT,
+            "diagnostic_fingerprints": ("x_raw", "z_raw", "x_q6", "z_q5", "z_q6"),
             "relative_tolerances": RELATIVE_TOLERANCES,
         },
         "rows": rows,
