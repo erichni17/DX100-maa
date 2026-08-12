@@ -34,6 +34,7 @@ ramulator_source=$(realpath "$6")
 data_header_source=$(realpath "$7")
 config="$root/configs/deprecated/example/se.py"
 ramulator_config="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
+analyzer_source="$root/experiments/scripts/analyze_cg_bounded_descriptor_matrix.py"
 
 [[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 2; }
 [[ -z $(git -C "$root" status --short) ]] || {
@@ -62,7 +63,9 @@ cp --reflink=auto "$native4_source" "$out/input/cg_maa_4K_fp"
 cp --reflink=auto "$bounded_source" "$out/input/cg_maa_16K_bounded"
 cp --reflink=auto "$ramulator_source" "$out/input/libramulator.so"
 cp --reflink=auto "$data_header_source" "$out/input/cg_data_4C.h"
+cp --reflink=auto "$analyzer_source" "$out/input/analyze_cg_bounded_descriptor_matrix.py"
 chmod 0555 "$out/input/gem5.opt" "$out/input"/cg_maa_*
+chmod 0444 "$out/input/analyze_cg_bounded_descriptor_matrix.py"
 
 gem5="$out/input/gem5.opt"
 native16="$out/input/cg_maa_16K_fp"
@@ -72,11 +75,13 @@ ramulator="$out/input/libramulator.so"
 source_commit=$(git -C "$root" rev-parse HEAD)
 sha256sum "$gem5" "$native16" "$native4" "$bounded" "$ramulator" \
     "$out/input/cg_data_4C.h" "$config" "$ramulator_config" "$0" \
+    "$out/input/analyze_cg_bounded_descriptor_matrix.py" \
     > "$out/input/artifact_sha256.txt"
 git -C "$root" archive --format=tar "$source_commit" -- \
     src/mem/MAA configs/common configs/deprecated/example/se.py \
     benchmarks/NAS/cg/cg.cpp benchmarks/NAS/cg/Makefile \
     experiments/scripts/run_cg_bounded_descriptor_matrix.sh \
+    experiments/scripts/analyze_cg_bounded_descriptor_matrix.py \
     > "$out/input/source.tar"
 {
     printf 'source_commit=%s\n' "$source_commit"
@@ -282,39 +287,6 @@ for job in "${jobs[@]}"; do
 done
 [[ $failed -eq 0 ]]
 
-printf 'arm\toutput_hash\tsimTicks\tdescriptor_scans\tdescriptor_external\tread_stalls\tcontrol_bytes_sum\n' \
-    > "$out/results.tsv"
-for label in native16 native4 bounded4_cached bounded4_bypass; do
-    arm="$out/$label"
-    log="$arm/run.log"
-    stats="$arm/run/stats.txt"
-    [[ $(cat "$arm/exit_code") -eq 0 ]]
-    [[ $(grep -Fxc 'ROI End!!!' "$log") -eq 1 ]]
-    [[ $(grep -Fxc 'Validation started' "$log") -eq 1 ]]
-    [[ $(grep -Fxc 'Validation ended' "$log") -eq 1 ]]
-    [[ $(grep -Ec '^CG_FINGERPRINT .* x_q5=88c0975669c7062d .* result=PASS$' \
-        "$log") -eq 1 ]]
-    [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
-        "$log") -eq 1 ]]
-    read -r ticks scans external stalls control < <(
-        awk '
-            /^---------- Begin Simulation Statistics/ { section++ }
-            section == 1 && $1 == "simTicks" { ticks=$2 }
-            section == 1 && $1 ~ /IND_DescriptorSpoolBScans$/ { scans+=$2 }
-            section == 1 && $1 ~ /IND_DescriptorSpoolExternalDescriptors$/ { external+=$2 }
-            section == 1 && $1 ~ /IND_DescriptorSpoolReadCreditStalls$/ { stalls+=$2 }
-            section == 1 && $1 ~ /IND_DescriptorSpoolControlBytes$/ { control+=$2 }
-            END { print ticks+0, scans+0, external+0, stalls+0, control+0 }
-        ' "$stats")
-    hash=$(sed -nE 's/^CG_FINGERPRINT .* x_q5=([0-9a-f]+) .* result=PASS$/\1/p' \
-        "$log")
-    if [[ $label == bounded4_* ]]; then
-        [[ $scans -gt 0 && $external -gt 0 && $stalls -gt 0 ]]
-    else
-        [[ $scans -eq 0 && $external -eq 0 ]]
-    fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$hash" \
-        "$ticks" "$scans" "$external" "$stalls" "$control" \
-        >> "$out/results.tsv"
-done
+python3 "$out/input/analyze_cg_bounded_descriptor_matrix.py" \
+    "$out" --write
 touch "$out/matrix.complete"

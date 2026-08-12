@@ -54,10 +54,12 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
         self.assertGreaterEqual(self.runner.count("16384 4096 16 4096 1"), 2)
 
     def test_validation_fails_closed(self):
-        self.assertIn("x_q5=88c0975669c7062d", self.runner)
-        self.assertIn("result=PASS", self.runner)
-        self.assertIn("$scans -gt 0", self.runner)
-        self.assertIn("$external -gt 0", self.runner)
+        self.assertIn("analyze_cg_bounded_descriptor_matrix.py", self.runner)
+        self.assertIn('"$out" --write', self.runner)
+        self.assertIn(
+            '"$out/input/analyze_cg_bounded_descriptor_matrix.py"',
+            self.runner,
+        )
         self.assertIn("! -e $out/$completion_marker", self.runner)
         self.assertIn("trap - EXIT", self.runner)
         self.assertIn('exit "$rc"', self.runner)
