@@ -425,6 +425,19 @@ class BoundedRangeLiveContractTest(unittest.TestCase):
         )
         self.assertNotIn("index_hwm -le 64", self.runner)
 
+    def test_descriptor_spooling_does_not_clamp_index_feeder_depth(
+        self,
+    ) -> None:
+        self.assertIn(
+            "const size_t line_capacity =\n"
+            "        static_cast<size_t>(direct_index_buffer_lines);",
+            self.indirect,
+        )
+        self.assertNotRegex(
+            self.indirect,
+            r"line_capacity = maa->virtual_index_descriptor_spool",
+        )
+
     def test_filter_retry_accounting_includes_offset_epoch_drains(
         self,
     ) -> None:

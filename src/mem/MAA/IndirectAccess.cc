@@ -811,11 +811,11 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
         fillDescriptorSpoolWindow();
         return;
     }
-    const size_t line_capacity = maa->virtual_index_descriptor_spool
-        ? std::min<size_t>(direct_index_buffer_lines,
-                           BoundedDescriptorSpool::
-                               DefaultOutstandingReadLines)
-        : static_cast<size_t>(direct_index_buffer_lines);
+    // The B-stream feeder and descriptor replay use separate state.  Keep
+    // the configured B feeder depth even when descriptor spooling is active;
+    // descriptor replay remains independently bounded by its read credits.
+    const size_t line_capacity =
+        static_cast<size_t>(direct_index_buffer_lines);
     panic_if(line_capacity == 0,
              "I[%d] direct-index feeder has zero line capacity\n",
              my_indirect_id);
