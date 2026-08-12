@@ -1386,7 +1386,8 @@ void IndirectAccessUnit::finishAdaptiveSummary()
                 (maa->virtual_bounded_global_merge
                      ? BoundedFourRunMerge::RunStrideBytes : 0),
             paged_slot_bytes,
-            maa->virtual_descriptor_spool_read_credits);
+            maa->virtual_descriptor_spool_read_credits,
+            maa->virtual_descriptor_spool_write_credits);
         panic_if(spool_result != BoundedDescriptorSpool::Result::Accepted,
                  "I[%d] descriptor spool configuration failed: %s\n",
                  my_indirect_id,
@@ -1643,8 +1644,8 @@ IndirectAccessUnit::descriptorSpoolControlBytes() const
         sizeof(bool) + sizeof(uint32_t) +
         sizeof(BoundedDescriptorSpool::Descriptor) +
         sizeof(DirectIndexWord);
-    constexpr size_t write_scoreboard_bytes =
-        BoundedDescriptorSpool::MaxOutstandingWrites *
+    const size_t write_scoreboard_bytes =
+        maa->virtual_descriptor_spool_write_credits *
         sizeof(DescriptorSpoolWriteSlot);
     // Four existing read slots gain fixed read-ahead/demand/use tags through
     // their charged sizeof above. Charge the finite overlap sequencer and its
@@ -5519,7 +5520,7 @@ void IndirectAccessUnit::createDescriptorSpoolWritePacket(
             my_indirect_id, my_decode_start_tick, vaddr, paddr,
             BoundedDescriptorSpool::LineBytes,
             descriptor_spool.outstandingWriteCount(),
-            BoundedDescriptorSpool::MaxOutstandingWrites);
+            descriptor_spool.writeCredits());
 }
 void IndirectAccessUnit::memReadPacketSent(Addr addr) {
     DPRINTF(MAAIndirect, "I[%d] %s: mem read packet 0x%lx sent\n", my_indirect_id, __func__, addr);

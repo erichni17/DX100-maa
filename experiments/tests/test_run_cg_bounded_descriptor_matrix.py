@@ -51,10 +51,21 @@ class CGBoundedDescriptorMatrixTests(unittest.TestCase):
             self.runner,
         )
         self.assertIn(
+            "bounded_descriptor_write_credits="
+            "${CG_BOUNDED_DESCRIPTOR_WRITE_CREDITS:-16}",
+            self.runner,
+        )
+        self.assertIn(
             '--maa_virtual_index_buffer_lines="$bounded_index_buffer_lines"',
             self.runner,
         )
         self.assertIn("bounded_index_buffer_lines=%s", self.runner)
+        self.assertIn("bounded_descriptor_write_credits=%s", self.runner)
+        self.assertIn(
+            "--maa_virtual_descriptor_spool_write_credits="
+            '"$bounded_descriptor_write_credits"',
+            self.runner,
+        )
         self.assertIn(
             "--maa_virtual_index_filter_words_per_cycle=64", self.runner
         )

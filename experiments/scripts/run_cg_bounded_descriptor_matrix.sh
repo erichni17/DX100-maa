@@ -11,9 +11,15 @@ out=$(realpath -m "$1")
 mode=${CG_MATRIX_MODE:-full}
 precheck_checkpoint_source=${CG_PRECHECK_CHECKPOINT_SOURCE:-}
 bounded_index_buffer_lines=${CG_BOUNDED_INDEX_BUFFER_LINES:-4}
+bounded_descriptor_write_credits=${CG_BOUNDED_DESCRIPTOR_WRITE_CREDITS:-16}
 [[ $bounded_index_buffer_lines =~ ^[1-9][0-9]*$ &&
    $bounded_index_buffer_lines -le 1024 ]] || {
     echo "CG_BOUNDED_INDEX_BUFFER_LINES must be in [1,1024]" >&2
+    exit 2
+}
+[[ $bounded_descriptor_write_credits =~ ^[1-9][0-9]*$ &&
+   $bounded_descriptor_write_credits -le 32 ]] || {
+    echo "CG_BOUNDED_DESCRIPTOR_WRITE_CREDITS must be in [1,32]" >&2
     exit 2
 }
 case $mode in
@@ -101,6 +107,8 @@ git -C "$root" archive --format=tar "$source_commit" -- \
     printf 'bounded_consumer_elements=4096\n'
     printf 'bounded_index_buffer_lines=%s\n' \
         "$bounded_index_buffer_lines"
+    printf 'bounded_descriptor_write_credits=%s\n' \
+        "$bounded_descriptor_write_credits"
     printf 'precheck_checkpoint=%s\n' \
         "${precheck_checkpoint_source:-fresh}"
     printf 'timeout=none\n'
@@ -165,6 +173,7 @@ common=(
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes
     --maa_virtual_index_buffer_lines="$bounded_index_buffer_lines"
     --maa_virtual_descriptor_spool_read_credits=24
+    --maa_virtual_descriptor_spool_write_credits="$bounded_descriptor_write_credits"
     --maa_virtual_index_filter_words_per_cycle=64
     --options MAA --prog-interval=1000
 )

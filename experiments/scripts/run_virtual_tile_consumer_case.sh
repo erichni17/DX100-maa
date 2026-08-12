@@ -70,6 +70,7 @@ index_range_policy=${MAA_VIRTUAL_INDEX_RANGE_POLICY:-0}
 index_descriptor_spool=${MAA_VIRTUAL_INDEX_DESCRIPTOR_SPOOL:-0}
 descriptor_spool_read_ahead=${MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_AHEAD:-0}
 descriptor_spool_read_credits=${MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_CREDITS:-4}
+descriptor_spool_write_credits=${MAA_VIRTUAL_DESCRIPTOR_SPOOL_WRITE_CREDITS:-16}
 bounded_global_merge=${MAA_VIRTUAL_BOUNDED_GLOBAL_MERGE:-0}
 descriptor_spool_variant=${MAA_DESCRIPTOR_SPOOL_VARIANT:-resident_first}
 index_range_boundaries=${MAA_VIRTUAL_INDEX_RANGE_BOUNDARIES:-}
@@ -130,6 +131,11 @@ index_hwm_capacity=$((index_buffer_lines * 4 * 16))
 [[ $descriptor_spool_read_credits -ge 1 &&
    $descriptor_spool_read_credits -le 32 ]] || {
     echo "MAA_VIRTUAL_DESCRIPTOR_SPOOL_READ_CREDITS must be in [1,32]" >&2
+    exit 2
+}
+[[ $descriptor_spool_write_credits -ge 1 &&
+   $descriptor_spool_write_credits -le 32 ]] || {
+    echo "MAA_VIRTUAL_DESCRIPTOR_SPOOL_WRITE_CREDITS must be in [1,32]" >&2
     exit 2
 }
 [[ $index_buffer_lines -ge 1 && $index_buffer_lines -le 1024 ]] || {
@@ -609,6 +615,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
         "$descriptor_spool_read_ahead"
     printf 'virtual_descriptor_spool_read_credits=%s\n' \
         "$descriptor_spool_read_credits"
+    printf 'virtual_descriptor_spool_write_credits=%s\n' \
+        "$descriptor_spool_write_credits"
     printf 'virtual_bounded_global_merge=%s\n' "$bounded_global_merge"
     printf 'descriptor_spool_variant=%s\n' "$descriptor_spool_variant"
     printf 'virtual_index_range_boundaries=%s\n' \
@@ -886,6 +894,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "${index_descriptor_spool_args[@]}" \
     "${descriptor_spool_read_ahead_args[@]}" \
     --maa_virtual_descriptor_spool_read_credits="$descriptor_spool_read_credits" \
+    --maa_virtual_descriptor_spool_write_credits="$descriptor_spool_write_credits" \
     "${bounded_global_merge_args[@]}" \
     "${index_cache_args[@]}" \
     "${partition_combiner_args[@]}" \

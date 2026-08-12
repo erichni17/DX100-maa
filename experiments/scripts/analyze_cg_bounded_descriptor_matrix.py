@@ -209,6 +209,9 @@ def analyze(campaign: Path) -> dict:
     expected_index_lines = positive_manifest_integer(
         manifest, "bounded_index_buffer_lines", 1024
     )
+    expected_write_credits = positive_manifest_integer(
+        manifest, "bounded_descriptor_write_credits", 32
+    )
     rows: dict[str, dict] = {}
     for arm in ARMS:
         arm_dir = campaign / arm
@@ -241,6 +244,14 @@ def analyze(campaign: Path) -> dict:
                 f"{arm}: virtual_index_buffer_lines="
                 f"{config.get('virtual_index_buffer_lines')!r}, expected "
                 f"{expected_index_lines!r}"
+            )
+        if config.get("virtual_descriptor_spool_write_credits") != str(
+            expected_write_credits
+        ):
+            fail(
+                f"{arm}: virtual_descriptor_spool_write_credits="
+                f"{config.get('virtual_descriptor_spool_write_credits')!r}, "
+                f"expected {expected_write_credits!r}"
             )
 
         stats = first_stats(arm_dir / "run/stats.txt")
@@ -284,6 +295,7 @@ def analyze(campaign: Path) -> dict:
         "campaign": str(campaign.resolve()),
         "status": "accepted",
         "bounded_index_buffer_lines": expected_index_lines,
+        "bounded_descriptor_write_credits": expected_write_credits,
         "correctness_contract": {
             "benchmark_fingerprint_pass": True,
             "exact_semantic_fingerprint": EXPECTED_EXACT_FINGERPRINT,

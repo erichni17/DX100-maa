@@ -96,6 +96,26 @@ class DescriptorSpoolReadAheadContractTest(unittest.TestCase):
             self.assertIn(token, self.case_runner)
         self.assertIn("MAA_DESCRIPTOR_SPOOL_READ_CREDITS", self.matrix)
 
+    def test_write_credit_knob_reaches_runtime_and_runner(self) -> None:
+        options = (SOURCE_ROOT / "configs/common/Options.py").read_text()
+        config = (SOURCE_ROOT / "configs/common/MAAConfig.py").read_text()
+        simobject = (SOURCE_ROOT / "src/mem/MAA/MAA.py").read_text()
+        self.assertIn("--maa_virtual_descriptor_spool_write_credits", options)
+        self.assertIn(
+            'opts["virtual_descriptor_spool_write_credits"]', config
+        )
+        self.assertRegex(
+            simobject,
+            r"virtual_descriptor_spool_write_credits\s*=\s*"
+            r"Param\.Unsigned\(\s*16,",
+        )
+        for token in (
+            "MAA_VIRTUAL_DESCRIPTOR_SPOOL_WRITE_CREDITS",
+            "--maa_virtual_descriptor_spool_write_credits",
+            "virtual_descriptor_spool_write_credits=",
+        ):
+            self.assertIn(token, self.case_runner)
+
     def test_pass_tags_demand_observation_and_promotion_are_causal(
         self,
     ) -> None:

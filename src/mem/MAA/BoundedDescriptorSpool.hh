@@ -37,7 +37,8 @@ class BoundedDescriptorSpool
     static constexpr uint32_t DescriptorBytes = 6;
     static constexpr uint32_t MaxCarryBytes = 5;
     static_assert(MaxCarryBytes == DescriptorBytes - 1);
-    static constexpr uint32_t MaxOutstandingWrites = 16;
+    static constexpr uint32_t DefaultOutstandingWrites = 16;
+    static constexpr uint32_t MaxOutstandingWrites = 32;
     static constexpr uint32_t DefaultOutstandingReadLines = 4;
     static constexpr uint32_t MaxOutstandingReadLines = 32;
 
@@ -75,7 +76,8 @@ class BoundedDescriptorSpool
     Result configure(uint32_t logical, uint32_t passes,
                      uint32_t resident_pass, Population population,
                      uint64_t backing_base, uint64_t backing_bytes,
-                     uint32_t read_credits = DefaultOutstandingReadLines)
+                     uint32_t read_credits = DefaultOutstandingReadLines,
+                     uint32_t write_credits = DefaultOutstandingWrites)
     {
         reset();
         if (logical == 0 || logical > MaxLogicalDescriptors || passes < 2 ||
@@ -83,7 +85,8 @@ class BoundedDescriptorSpool
             passes - 1 > MaxExternalPasses || backing_base == 0 ||
             backing_base % LineBytes != 0 ||
             backing_bytes % LineBytes != 0 || read_credits == 0 ||
-            read_credits > MaxOutstandingReadLines)
+            read_credits > MaxOutstandingReadLines || write_credits == 0 ||
+            write_credits > MaxOutstandingWrites)
             return Result::InvalidConfiguration;
 
         uint64_t offset = 0;
@@ -123,6 +126,7 @@ class BoundedDescriptorSpool
         externalBytes = offset;
         externalCapacityBytes = backing_bytes;
         readCreditLimit = read_credits;
+        writeCreditLimit = write_credits;
         configuredFlag = true;
         return Result::Accepted;
     }
@@ -142,6 +146,7 @@ class BoundedDescriptorSpool
         externalPayload = 0;
         externalCapacityBytes = 0;
         readCreditLimit = DefaultOutstandingReadLines;
+        writeCreditLimit = DefaultOutstandingWrites;
         totalClassified = 0;
         totalResident = 0;
         totalDescriptorsWritten = 0;
@@ -225,6 +230,7 @@ class BoundedDescriptorSpool
     }
     uint64_t requiredBackingBytes() const { return externalBytes; }
     uint32_t readCredits() const { return readCreditLimit; }
+    uint32_t writeCredits() const { return writeCreditLimit; }
     uint64_t externalPayloadBytes() const { return externalPayload; }
     uint64_t reservedBackingBytes() const { return externalCapacityBytes; }
     uint64_t passBase(uint32_t pass) const
@@ -331,7 +337,7 @@ class BoundedDescriptorSpool
             return Result::ResidentPass;
         if (!lineReady(pass, allow_partial))
             return Result::NoWork;
-        if (outstandingWrites == MaxOutstandingWrites)
+        if (outstandingWrites == writeCreditLimit)
             return Result::NoWriteCredit;
 
         const uint32_t external = passExternalIndices[pass];
@@ -343,9 +349,9 @@ class BoundedDescriptorSpool
         data = stagingLines[external];
 
         uint32_t slot = 0;
-        while (slot < MaxOutstandingWrites && outstandingWriteValid[slot])
+        while (slot < writeCreditLimit && outstandingWriteValid[slot])
             ++slot;
-        if (slot == MaxOutstandingWrites)
+        if (slot == writeCreditLimit)
             return Result::NoWriteCredit;
         outstandingWriteValid[slot] = true;
         outstandingWriteAcked[slot] = false;
@@ -378,7 +384,7 @@ class BoundedDescriptorSpool
 
     Result acknowledgeWrite(uint64_t address)
     {
-        for (uint32_t slot = 0; slot < MaxOutstandingWrites; ++slot) {
+        for (uint32_t slot = 0; slot < writeCreditLimit; ++slot) {
             if (outstandingWriteAddresses[slot] != address)
                 continue;
             if (!outstandingWriteValid[slot])
@@ -548,7 +554,7 @@ class BoundedDescriptorSpool
             MaxExternalPasses * (LineBytes + MaxCarryBytes + 2);
         const size_t pass_control = MaxPasses *
             (9 * sizeof(uint32_t) + 4 * sizeof(uint64_t) + 2);
-        const size_t write_scoreboard = MaxOutstandingWrites *
+        const size_t write_scoreboard = writeCreditLimit *
             (sizeof(uint64_t) + 2 * sizeof(uint8_t));
         const size_t read_scoreboard = readCreditLimit *
             (2 * sizeof(uint32_t) + sizeof(uint8_t));
@@ -605,6 +611,7 @@ class BoundedDescriptorSpool
     uint64_t externalPayload = 0;
     uint64_t externalCapacityBytes = 0;
     uint32_t readCreditLimit = DefaultOutstandingReadLines;
+    uint32_t writeCreditLimit = DefaultOutstandingWrites;
     uint32_t totalClassified = 0;
     uint32_t totalResident = 0;
     uint32_t totalDescriptorsWritten = 0;

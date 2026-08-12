@@ -133,6 +133,10 @@ class MAA(ClockedObject):
         4,
         "Bounded 64-byte descriptor lines allowed in flight",
     )
+    virtual_descriptor_spool_write_credits = Param.Unsigned(
+        16,
+        "Bounded descriptor backing writes allowed in flight",
+    )
     virtual_descriptor_spool_source_bypass_cache = Param.Bool(
         False,
         "Bypass cache only for descriptor-spooled A-source reads",

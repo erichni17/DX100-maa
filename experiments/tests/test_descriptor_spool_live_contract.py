@@ -46,7 +46,8 @@ class DescriptorSpoolLiveContractTest(unittest.TestCase):
             "DescriptorBits = 46",
             "DescriptorBytes = 6",
             "MaxCarryBytes = 5",
-            "MaxOutstandingWrites = 16",
+            "DefaultOutstandingWrites = 16",
+            "MaxOutstandingWrites = 32",
             "DefaultOutstandingReadLines = 4",
             "MaxOutstandingReadLines = 32",
             "readCredits",
@@ -69,6 +70,11 @@ class DescriptorSpoolLiveContractTest(unittest.TestCase):
             "write_scoreboard_bytes",
         ):
             self.assertIn(token, self.indirect)
+        self.assertIn("writeCreditLimit", self.spool)
+        self.assertIn(
+            "MAA_VIRTUAL_DESCRIPTOR_SPOOL_WRITE_CREDITS must be in [1,32]",
+            self.runner,
+        )
 
     def test_functional_mechanism_has_no_operation_sized_checker_state(
         self,

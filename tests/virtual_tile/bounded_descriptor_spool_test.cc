@@ -23,6 +23,8 @@ testResidentFirstDenseLayoutAndExactClosure()
     static_assert(BoundedDescriptorSpool::MaxCarryBytes == 5);
     static_assert(BoundedDescriptorSpool::DefaultOutstandingReadLines == 4);
     static_assert(BoundedDescriptorSpool::MaxOutstandingReadLines == 32);
+    static_assert(BoundedDescriptorSpool::DefaultOutstandingWrites == 16);
+    static_assert(BoundedDescriptorSpool::MaxOutstandingWrites == 32);
 
     BoundedDescriptorSpool spool;
     constexpr uint64_t base = 0x100000;
@@ -34,6 +36,8 @@ testResidentFirstDenseLayoutAndExactClosure()
            Result::Accepted);
     assert(spool.readCredits() ==
            BoundedDescriptorSpool::DefaultOutstandingReadLines);
+    assert(spool.writeCredits() ==
+           BoundedDescriptorSpool::DefaultOutstandingWrites);
     assert(spool.residentPass() == 0);
     assert(spool.externalSegments() == 3);
     assert(spool.population(0) == 4096);
@@ -115,7 +119,7 @@ testResidentFirstDenseLayoutAndExactClosure()
     assert(spool.writeLinesIssued() == 1152);
     assert(spool.writeAcks() == 1152);
     assert(spool.outstandingWriteHighWater() ==
-           BoundedDescriptorSpool::MaxOutstandingWrites);
+           BoundedDescriptorSpool::DefaultOutstandingWrites);
     assert(spool.beginReplay(spool.residentPass()) == Result::ResidentPass);
 
     for (uint32_t pass = 1; pass < populations.size(); ++pass) {
