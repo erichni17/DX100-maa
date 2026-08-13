@@ -79,12 +79,14 @@ int main(int argc, char **argv) {
 
 #ifdef MAA_XRAGE_RUNTIME_ARMS
     if (cl.maa_arm != "native16" && cl.maa_arm != "fused16" &&
-        cl.maa_arm != "native16x3" && cl.maa_arm != "fused4" &&
+        cl.maa_arm != "native16x3" && cl.maa_arm != "native4x3" &&
+        cl.maa_arm != "fused4" &&
         cl.maa_arm != "compact16" && cl.maa_arm != "direct4" &&
         cl.maa_arm != "compact16x3" && cl.maa_arm != "direct4x3" &&
         cl.maa_arm != "direct4warm" && cl.maa_arm != "direct4prefetch" &&
         cl.maa_arm != "direct4fusedprefetch") {
         std::cerr << "Runtime XRAGE arm must be native16, native16x3, "
+                     "native4x3, "
                      "fused16, fused4, compact16, compact16x3, direct4, "
                      "direct4x3, direct4warm, direct4prefetch, or "
                      "direct4fusedprefetch"
@@ -94,7 +96,8 @@ int main(int argc, char **argv) {
     for (auto &config : cl.configs) {
         config->maa_arm = cl.maa_arm;
         config->maa_result_scale =
-            cl.maa_arm == "native16x3" || cl.maa_arm == "compact16x3" ||
+            cl.maa_arm == "native16x3" || cl.maa_arm == "native4x3" ||
+                    cl.maa_arm == "compact16x3" ||
                     cl.maa_arm == "direct4x3"
                 ? 3
                 : 1;

@@ -650,7 +650,8 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 #endif
 #endif
             const bool maa_multiply = maa_result_scale == 3 &&
-                (maa_arm == "native16x3" || maa_arm == "direct4x3");
+                (maa_arm == "native16x3" || maa_arm == "native4x3" ||
+                 maa_arm == "direct4x3");
             wait_ready(maa_multiply ? tile3 : tile2);
 #ifdef MAA_XRAGE_RUNTIME_ARMS
             if (maa_arm == "compact16x3") {

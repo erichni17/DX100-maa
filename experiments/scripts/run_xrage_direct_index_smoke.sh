@@ -163,7 +163,7 @@ case "$arm" in
         maa_logical_tile_elements=16384
         workload_chunk_elements=16384
         ;;
-    fused_4k)
+    fused_4k|native_4k)
         maa_logical_tile_elements=4096
         workload_chunk_elements=4096
         ;;
@@ -207,7 +207,7 @@ if [[ -n $guest_abi ]]; then
 fi
 if [[ -n $guest_arm ]]; then
     case "$guest_arm" in
-        native16|native16x3|fused16|fused4|compact16|compact16x3|direct4|direct4x3|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
+        native16|native16x3|native4x3|fused16|fused4|compact16|compact16x3|direct4|direct4x3|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
         *)
             echo "unsupported XRAGE_GUEST_ARM: $guest_arm" >&2
             exit 2
@@ -215,12 +215,14 @@ if [[ -n $guest_arm ]]; then
     esac
 fi
 if [[ $result_scale == 3 ]]; then
-    [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
+    [[ $guest_arm == native16x3 || $guest_arm == native4x3 ||
+       $guest_arm == compact16x3 ||
        $guest_arm == direct4x3 ]] || {
-        echo "scale 3 requires native16x3, compact16x3, or direct4x3 guest arm" >&2
+        echo "scale 3 requires native16x3, native4x3, compact16x3, or direct4x3 guest arm" >&2
         exit 2
     }
-elif [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
+elif [[ $guest_arm == native16x3 || $guest_arm == native4x3 ||
+        $guest_arm == compact16x3 ||
         $guest_arm == direct4x3 ]]; then
     echo "x3 guest arms require XRAGE_RESULT_SCALE=3" >&2
     exit 2
@@ -238,6 +240,13 @@ if [[ $guest_arm == direct4x3 ]]; then
 elif [[ $direct_retirement_line_handoff -ne 0 ]]; then
     echo "line handoff is only valid for the direct4x3 guest arm" >&2
     exit 2
+fi
+if [[ $guest_arm == native4x3 ]]; then
+    [[ $arm == native_4k && $physical -eq 4096 &&
+       $maa_logical_tile_elements -eq 4096 ]] || {
+        echo "native4x3 requires the native_4k arm with 4K logical and physical tiles" >&2
+        exit 2
+    }
 fi
 if [[ -n $debug_flags ]]; then
     [[ $debug_flags =~ ^[A-Za-z0-9_,]+$ ]] || {

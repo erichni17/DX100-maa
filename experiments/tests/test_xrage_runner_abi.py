@@ -107,14 +107,14 @@ class XrageRunnerAbiTest(unittest.TestCase):
             self.assertIn("retirement_cache_size=%s", script)
             self.assertIn("--maa_retirement_cache_size", script)
             self.assertIn("XRAGE_L3_PORTS", script)
-            self.assertIn("--l3_ports=\"$l3_ports\"", script)
+            self.assertIn('--l3_ports="$l3_ports"', script)
             self.assertIn("MAA_VIRTUAL_RESPONSE_SLOTS", script)
             self.assertIn("MAA_VIRTUAL_RESPONSE_WORD_POOL", script)
             self.assertIn(
-                "--maa_virtual_response_slots=\"$response_slots\"", script
+                '--maa_virtual_response_slots="$response_slots"', script
             )
             self.assertIn(
-                "--maa_virtual_response_word_pool=\"$response_word_pool\"",
+                '--maa_virtual_response_word_pool="$response_word_pool"',
                 script,
             )
             self.assertIn("resolved retirement-cache size", script)
@@ -184,6 +184,86 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn("direct4x3 mechanism did not close exactly", runner)
         self.assertIn("XRAGE_SIMULATOR_PROVENANCE", runner)
         self.assertIn("provenance_gem5_sha256", runner)
+
+    def test_native_4k_x3_arm_is_nontransparent_and_has_a_4k_abi(self):
+        runner = RUNNER.read_text(encoding="utf-8")
+        main = (ROOT / "benchmarks/spatter/src/main.cc").read_text(
+            encoding="utf-8"
+        )
+        configuration = (
+            ROOT / "benchmarks/spatter/src/Spatter/Configuration.cc"
+        ).read_text(encoding="utf-8")
+        cmake = (ROOT / "benchmarks/spatter/src/CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        spatter_cmake = (
+            ROOT / "benchmarks/spatter/src/Spatter/CMakeLists.txt"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("spatter_maa_xrage_runtime_verify_4K", cmake)
+        self.assertIn("Spatter_MAA_XRAGE_Runtime_Verify_4K", spatter_cmake)
+        self.assertIn("TILE_SIZE=4096", cmake)
+        self.assertIn("native4x3", main)
+        self.assertIn("native4x3", configuration)
+        self.assertIn("fused_4k|native_4k", runner)
+        self.assertIn("native4x3 requires the native_4k arm", runner)
+        self.assertIn(
+            '--maa_transparent_spd_mode="$([[ $guest_arm == direct4x3 ]] && echo 3 || echo 0)"',
+            runner,
+        )
+
+    def test_native_4k_x3_runner_emits_a_4k_nontransparent_restore_abi(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            gem5 = tmp / "gem5.opt"
+            binary = tmp / "spatter_maa_xrage_runtime_verify_4K"
+            input_json = tmp / "input.json"
+            gem5.write_text(
+                "#!/bin/sh\n"
+                'for arg in "$@"; do\n'
+                '  case $arg in --outdir=*) mkdir -p "${arg#--outdir=}/cpt.1" ;; esac\n'
+                "done\n",
+                encoding="ascii",
+            )
+            gem5.chmod(0o755)
+            binary.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
+            binary.chmod(0o755)
+            input_json.write_text("[]\n", encoding="ascii")
+            output = tmp / "output"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DX100_ROOT_OVERRIDE": str(ROOT),
+                    "XRAGE_ARM": "native_4k",
+                    "XRAGE_GUEST_ARM": "native4x3",
+                    "XRAGE_RESULT_SCALE": "3",
+                    "MAA_GUEST_ABI_TILE_ELEMENTS": "4096",
+                }
+            )
+
+            result = subprocess.run(
+                [
+                    str(RUNNER),
+                    str(gem5),
+                    str(binary),
+                    str(input_json),
+                    str(output),
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("exact gather verifier did not pass", result.stderr)
+            manifest = (output / "manifest.txt").read_text(encoding="utf-8")
+            restore = (output / "restore.command").read_text(encoding="utf-8")
+            self.assertIn("arm=native_4k", manifest)
+            self.assertIn("guest_arm=native4x3", manifest)
+            self.assertIn("physical_tile_elements=4096", manifest)
+            self.assertIn("maa_logical_tile_elements=4096", manifest)
+            self.assertIn("--maa_transparent_spd_mode=0", restore)
 
 
 if __name__ == "__main__":
