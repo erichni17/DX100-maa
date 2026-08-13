@@ -57,6 +57,21 @@ class HybridMacroProfileContractTest(unittest.TestCase):
             "virtual_max_outstanding_writes=$max_outstanding_writes", runner
         )
 
+    def test_line_handoff_arguments_follow_case_selection(self):
+        runner = (
+            ROOT / "experiments/scripts/run_virtual_tile_consumer_case.sh"
+        ).read_text()
+        case_override = "direct_retirement_line_handoff=1"
+        argument_build = "direct_retirement_line_handoff_args=()"
+        self.assertEqual(1, runner.count(case_override))
+        self.assertEqual(1, runner.count(argument_build))
+        self.assertLess(runner.index(case_override), runner.index(argument_build))
+        self.assertIn(
+            '"direct_retirement_line_handoff=$([[ '
+            "$direct_retirement_line_handoff -eq 1 ]] && echo true || echo false)\"",
+            runner,
+        )
+
     def test_matrix_parser_is_deterministic_and_fail_closed(self):
         parser = ROOT / "experiments/scripts/parse_hybrid_macro_profile.py"
         with tempfile.TemporaryDirectory() as temporary:

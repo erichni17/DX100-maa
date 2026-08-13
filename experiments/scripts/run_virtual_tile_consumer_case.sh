@@ -316,12 +316,6 @@ partition_combiner_args=()
 if [[ $partition_keep_combiner == 1 ]]; then
     partition_combiner_args+=(--maa_virtual_partition_keep_combiner)
 fi
-direct_retirement_line_handoff_args=()
-if [[ $direct_retirement_line_handoff == 1 ]]; then
-    direct_retirement_line_handoff_args+=(
-        --maa_direct_retirement_line_handoff
-    )
-fi
 extra_maa_args=()
 if [[ -n $extra_maa_args_file ]]; then
     extra_maa_args_file=$(realpath "$extra_maa_args_file")
@@ -548,6 +542,15 @@ paged_reload_cold_4k)
     exit 2
     ;;
 esac
+
+# Case selection can enable the line-granular producer/consumer handoff. Build
+# its CLI arguments only after those per-case overrides have been applied.
+direct_retirement_line_handoff_args=()
+if [[ $direct_retirement_line_handoff == 1 ]]; then
+    direct_retirement_line_handoff_args+=(
+        --maa_direct_retirement_line_handoff
+    )
+fi
 
 if [[ $index_partitions -ne 1 &&
       ( $virtual -ne 1 || $direct -ne 1 || $reload_only -eq 1 ) ]]; then
