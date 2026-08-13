@@ -577,22 +577,53 @@ direct_line_acks=$(
 direct_page_fallback_lines=$(
     first_roi_stat system.maa.direct_retirement_page_fallback_lines
 )
+direct_read_issues=$(
+    first_roi_stat system.maa.direct_retirement_read_issues
+)
 direct_read_responses=$(
     first_roi_stat system.maa.direct_retirement_read_responses
+)
+direct_alu_issues=$(
+    first_roi_stat system.maa.direct_retirement_alu_issues
 )
 direct_alu_completions=$(
     first_roi_stat system.maa.direct_retirement_alu_completions
 )
+direct_write_issues=$(
+    first_roi_stat system.maa.direct_retirement_write_issues
+)
 direct_write_responses=$(
     first_roi_stat system.maa.direct_retirement_write_responses
 )
+direct_credit_high_water=$(
+    first_roi_stat system.maa.direct_retirement_credit_high_water
+)
+direct_credit_stalls=$(
+    first_roi_stat system.maa.direct_retirement_credit_stalls
+)
+direct_address_stalls=$(
+    first_roi_stat system.maa.direct_retirement_address_stalls
+)
+direct_retries=$(first_roi_stat system.maa.direct_retirement_retries)
+direct_overlap_ticks=$(
+    first_roi_stat system.maa.direct_retirement_overlap_ticks
+)
+direct_active_stage_high_water=$(
+    first_roi_stat system.maa.direct_retirement_active_stage_high_water
+)
 direct_context_high_water=$(
     first_roi_stat system.maa.direct_retirement_context_high_water
+)
+direct_context_full_stalls=$(
+    first_roi_stat system.maa.direct_retirement_context_full_stalls
 )
 direct_request_record_high_water=$(
     first_roi_stat system.maa.direct_retirement_request_record_high_water
 )
 direct_fallbacks=$(first_roi_stat system.maa.direct_retirement_fallbacks)
+direct_early_line_overflows=$(
+    first_roi_stat system.maa.direct_retirement_early_line_overflows
+)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
@@ -608,6 +639,10 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     }
 done
 if [[ $guest_arm == direct4x3 ]]; then
+    grep -q '^system\.maa\.direct_retirement_early_line_overflows ' "$stats" || {
+        echo "direct4x3 early-line overflow statistic is missing" >&2
+        exit 1
+    }
     gather_length=$(sed -n 's/^MAA gather execution \([0-9]*\)\/16384$/\1/p' \
         "$log" | tail -1)
     [[ -n $gather_length && $gather_length -gt 0 &&
@@ -620,10 +655,13 @@ if [[ $guest_arm == direct4x3 ]]; then
     [[ $direct_descriptors -eq $expected_descriptors &&
        $direct_page_acks -eq $((expected_descriptors * 4)) &&
        $((direct_line_acks + direct_page_fallback_lines)) -eq "$expected_direct_lines" &&
+       $direct_read_issues -eq $expected_direct_lines &&
        $direct_read_responses -eq $expected_direct_lines &&
+       $direct_alu_issues -eq $expected_direct_lines &&
        $direct_alu_completions -eq $expected_direct_lines &&
+       $direct_write_issues -eq $expected_direct_lines &&
        $direct_write_responses -eq $expected_direct_lines &&
-       $direct_fallbacks -eq 0 ]] || {
+       $direct_fallbacks -eq 0 && $direct_early_line_overflows -eq 0 ]] || {
         echo "direct4x3 mechanism did not close exactly" >&2
         exit 1
     }
@@ -649,8 +687,11 @@ if [[ $guest_arm == direct4x3 ]]; then
         if [[ $expected_descriptors -eq 4 ]]; then
             [[ $expected_direct_lines -eq 8192 &&
                $direct_line_acks -eq 8192 &&
+               $direct_read_issues -eq 8192 &&
                $direct_read_responses -eq 8192 &&
+               $direct_alu_issues -eq 8192 &&
                $direct_alu_completions -eq 8192 &&
+               $direct_write_issues -eq 8192 &&
                $direct_write_responses -eq 8192 &&
                $direct_context_high_water -ge 2 &&
                $direct_context_high_water -le 4 &&
@@ -713,11 +754,18 @@ fi
     printf '\tcpu_data_reads\tcpu_data_writes'
     printf '\tdirect_retirement_line_handoff\tdirect_descriptors'
     printf '\tdirect_page_acks\tdirect_line_acks'
-    printf '\tdirect_page_fallback_lines\tdirect_read_responses'
-    printf '\tdirect_alu_completions\tdirect_write_responses'
+    printf '\tdirect_page_fallback_lines\tdirect_read_issues'
+    printf '\tdirect_read_responses\tdirect_alu_issues'
+    printf '\tdirect_alu_completions\tdirect_write_issues'
+    printf '\tdirect_write_responses\tdirect_credit_high_water'
+    printf '\tdirect_credit_stalls\tdirect_address_stalls'
+    printf '\tdirect_retries\tdirect_overlap_ticks'
+    printf '\tdirect_active_stage_high_water'
     printf '\tdirect_context_high_water'
-    printf '\tdirect_request_record_high_water\tdirect_fallbacks\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tdirect_context_full_stalls'
+    printf '\tdirect_request_record_high_water\tdirect_fallbacks'
+    printf '\tdirect_early_line_overflows\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
         "$index_words" "$index_partitions" "$index_filter_words" \
@@ -734,10 +782,15 @@ fi
         "$cpu_committed_instructions" "$cpu_data_reads" "$cpu_data_writes" \
         "$direct_retirement_line_handoff" "$direct_descriptors" \
         "$direct_page_acks" "$direct_line_acks" \
-        "$direct_page_fallback_lines" "$direct_read_responses" \
-        "$direct_alu_completions" "$direct_write_responses" \
-        "$direct_context_high_water" "$direct_request_record_high_water" \
-        "$direct_fallbacks"
+        "$direct_page_fallback_lines" "$direct_read_issues" \
+        "$direct_read_responses" "$direct_alu_issues" \
+        "$direct_alu_completions" "$direct_write_issues" \
+        "$direct_write_responses" "$direct_credit_high_water" \
+        "$direct_credit_stalls" "$direct_address_stalls" \
+        "$direct_retries" "$direct_overlap_ticks" \
+        "$direct_active_stage_high_water" "$direct_context_high_water" \
+        "$direct_context_full_stalls" "$direct_request_record_high_water" \
+        "$direct_fallbacks" "$direct_early_line_overflows"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '
