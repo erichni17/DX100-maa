@@ -45,6 +45,19 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only by the API"):
             runner.make_arms("cg", True, True, [])
 
+    def test_page_zero_prearm_is_independently_selectable(self) -> None:
+        arms = runner.make_arms("api", True, False, [], True)
+        prearm = arms[-1]
+        self.assertEqual(prearm["name"], "hybrid_token_stream_ld_page0_prearm")
+        self.assertEqual(
+            prearm["selector"], "token_stream_ld_page0_prearm 4096"
+        )
+        self.assertEqual(
+            prearm["role"], "token_stream_ld_page0_prearm_correctness_control"
+        )
+        with self.assertRaisesRegex(ValueError, "only by the API"):
+            runner.make_arms("cg", True, False, [], True)
+
     def test_gapbs_hybrid_matrix_fails_closed_when_not_wired(self) -> None:
         with self.assertRaisesRegex(ValueError, "no wired general hybrid"):
             runner.make_arms("gapbs-pr", True, False, [])
@@ -218,6 +231,26 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             commit.index("spd->wakeup_waiting_units"),
             commit.index("completeMaterialize"),
         )
+
+    def test_page_zero_prearm_is_explicit_and_exact(self) -> None:
+        source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
+        guest = (
+            ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("isPageZeroPrearmMaterialization", source)
+        for marker in (
+            "instruction->src2SpdID != instruction->src1SpdID",
+            "instruction->datatype != Instruction::DataType::FLOAT64_TYPE",
+            "rf->getData<int>(instruction->src1RegID) != 0",
+            "virtualPageBackingAddr[instruction->src1SpdID]",
+            "event=page_materialization_prearm schema=1",
+        ):
+            self.assertIn(marker, source)
+        prearm, producer = guest.split("if (token_stream_ld_page0_prearm)", 1)[
+            1
+        ].split('if (mode == "paged_staged"', 1)
+        self.assertIn("maa_stream_load_virtual_page_prearm<double>", prearm)
+        self.assertIn("maa_indirect_load_virtual", producer)
 
     def test_gapbs_adds_native4_controls_without_false_hybrid_target(
         self,

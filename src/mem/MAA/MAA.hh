@@ -491,7 +491,7 @@ public:
     const AddrRangeList &getAddrRanges(int core_id) const { return cpuPortAddrRanges[core_id]; }
     void setTileReady(int tileID, int wordSize);
     void resetVirtualPageReady(int tokenTileID, Addr backingAddr,
-                               int wordSize);
+                               int backingRangeID, int wordSize);
     void setVirtualPageReady(int tokenTileID, int pageID,
                              uint64_t transactionID);
     void setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
@@ -543,6 +543,7 @@ protected:
     std::vector<uint64_t> virtualPageGeneration;
     std::vector<uint64_t> virtualPageConsumedGeneration;
     std::vector<Addr> virtualPageBackingAddr;
+    std::vector<int> virtualPageBackingRangeID;
     std::vector<int> virtualPageWordSize;
     std::vector<Tick> virtualProducerRegistrationTick;
     std::vector<Tick> virtualPageLastReadyTick;
@@ -656,6 +657,10 @@ protected:
         Fallback,
     };
     bool isTokenBoundPageMaterialization(InstructionPtr instruction) const;
+    // Admit no speculative generic dependency: this recognizes only the
+    // explicit page-zero prearm ABI marker and binds it to a virtual producer
+    // before it can enter the ordinary stream path.
+    bool isPageZeroPrearmMaterialization(InstructionPtr instruction) const;
     PageMaterializationSubmit submitPageMaterialization(
         InstructionPtr instruction);
     bool dispatchTransparentMicroOp(

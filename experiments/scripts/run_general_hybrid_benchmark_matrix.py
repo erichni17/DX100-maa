@@ -88,6 +88,7 @@ def selector_payload(workload: str, selector: str) -> str:
             "stream_control": "paged",
             "page_gated": "paged_overlap",
             "token_stream_ld": "token_stream_ld",
+            "token_stream_ld_page0_prearm": "token_stream_ld_page0_prearm",
             "token_stream_ld_pingpong": "token_stream_ld_pingpong",
         }
         return f"{api_modes.get(selector, selector)} 4096"
@@ -111,6 +112,7 @@ def make_arms(
     has_hybrid: bool,
     pingpong: bool,
     future: list[dict[str, str]],
+    page0_prearm: bool = False,
 ) -> list[dict[str, object]]:
     if has_hybrid and workload in ("gapbs-pr", "gapbs-bfs"):
         raise ValueError(
@@ -136,7 +138,7 @@ def make_arms(
         },
     ]
     if not has_hybrid:
-        if pingpong or future:
+        if pingpong or page0_prearm or future:
             raise ValueError("hybrid-only arms require --hybrid")
         return arms
     for selector, role in (
@@ -152,6 +154,23 @@ def make_arms(
                 "checkpoint_group": "hybrid",
                 "selector": selector_payload(workload, selector),
                 "role": role,
+            }
+        )
+    if page0_prearm:
+        if workload != "api":
+            raise ValueError(
+                "the page-zero prearm guest is supported only by the API "
+                "microbenchmark"
+            )
+        selector = "token_stream_ld_page0_prearm"
+        arms.append(
+            {
+                "name": f"hybrid_{selector}",
+                "profile": "hybrid",
+                "binary": "hybrid",
+                "checkpoint_group": "hybrid",
+                "selector": selector_payload(workload, selector),
+                "role": "token_stream_ld_page0_prearm_correctness_control",
             }
         )
     if pingpong:
@@ -430,6 +449,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replicas", type=int, default=1)
     parser.add_argument("--mem-channels", type=int, default=2)
     parser.add_argument("--pingpong", action="store_true")
+    parser.add_argument("--page0-prearm", action="store_true")
     parser.add_argument(
         "--future-arm", action="append", default=[], type=parse_future_arm
     )
@@ -473,6 +493,7 @@ def main() -> int:
             args.hybrid is not None,
             args.pingpong,
             args.future_arm,
+            args.page0_prearm,
         )
         require_inputs(args)
         render_options(args.native16_options, None, args.workload_input)
@@ -622,6 +643,10 @@ def main() -> int:
         "extra_gem5_args": args.extra_gem5_arg,
         "interpretation": {
             "token_stream_ld": "one-page correctness control",
+            "token_stream_ld_page0_prearm": (
+                "page-zero prearm correctness control; dormant until its "
+                "exact virtual producer registers"
+            ),
             "token_stream_ld_pingpong": (
                 "optional two-alternating-page correctness control"
             ),

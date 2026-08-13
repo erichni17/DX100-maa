@@ -56,6 +56,7 @@ main(int argc, char **argv)
         mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_staged_conditional" &&
         mode != "token_stream_ld" &&
+        mode != "token_stream_ld_page0_prearm" &&
         mode != "token_stream_ld_pingpong" &&
         mode != "transparent" && mode != "transparent_ready" &&
         mode != "transparent_displaced" && mode != "paged_displaced" &&
@@ -66,7 +67,7 @@ main(int argc, char **argv)
         std::cerr << "mode must be native, native_direct, paged, "
                      "paged_overlap, "
                      "paged_staged, paged_staged_conditional, "
-                     "token_stream_ld[_pingpong], transparent, "
+                     "token_stream_ld[_page0_prearm|_pingpong], transparent, "
                      "transparent_ready, transparent_displaced, "
                      "paged_displaced, transparent_reload_warm/"
                      "transparent_reload_cold, or paged_reload_warm/"
@@ -84,6 +85,7 @@ main(int argc, char **argv)
          mode == "transparent_reload_warm" ||
          mode == "transparent_reload_cold" ||
          mode == "token_stream_ld" ||
+         mode == "token_stream_ld_page0_prearm" ||
          mode == "token_stream_ld_pingpong") &&
         page_elements != 4096) {
         std::cerr << "cache-residency controls require four 4096-element pages"
@@ -240,9 +242,19 @@ main(int argc, char **argv)
         const int completion_tile = get_new_tile<double>();
         const int page_tile = get_new_tile<double>();
         const int alternate_page_tile = get_new_tile<double>();
+        const bool token_stream_ld_page0_prearm =
+            mode == "token_stream_ld_page0_prearm";
 
         maa_const(0, min_reg);
         maa_const(total_elements, max_reg);
+        // Queue only the first local 4K materializer before its producer.
+        // The MAA holds this exact token/backing/range tuple dormant until
+        // the matching virtual gather registers the token generation.
+        if (token_stream_ld_page0_prearm) {
+            maa_stream_load_virtual_page_prearm<double>(
+                backing, completion_tile, page_min_reg, page_max_reg,
+                page_stride_reg, page_tile);
+        }
         if (mode == "paged_staged" ||
             mode == "paged_staged_conditional") {
             const int idx_tile = get_new_tile<uint32_t>();
@@ -270,7 +282,8 @@ main(int argc, char **argv)
         const bool wait_before_consumer = mode == "transparent_ready" ||
                                           cache_displaced || reload_only;
         const bool overlap_pages = mode == "paged_overlap";
-        const bool token_stream_ld = mode == "token_stream_ld";
+        const bool token_stream_ld = mode == "token_stream_ld" ||
+            token_stream_ld_page0_prearm;
         const bool token_stream_ld_pingpong =
             mode == "token_stream_ld_pingpong";
         if (wait_before_consumer) {
@@ -368,12 +381,14 @@ main(int argc, char **argv)
                 if (!token_stream_ld || offset != 0)
                     wait_ready(page_tile);
                 if (token_stream_ld) {
-                    // Immutable page-local registers let this instruction be
-                    // admitted while the producer still owns its logical
-                    // range registers.
-                    maa_stream_load_virtual_page<double>(
-                        backing + offset, completion_tile, page_min_reg,
-                        page_max_reg, page_stride_reg, page_tile);
+                    if (!token_stream_ld_page0_prearm || offset != 0) {
+                        // Immutable page-local registers let this instruction
+                        // be admitted while the producer still owns its
+                        // logical range registers.
+                        maa_stream_load_virtual_page<double>(
+                            backing + offset, completion_tile, page_min_reg,
+                            page_max_reg, page_stride_reg, page_tile);
+                    }
                     maa_alu_scalar<double>(
                         page_tile, scale_reg, output_tile,
                         Operation_t::MUL_OP);

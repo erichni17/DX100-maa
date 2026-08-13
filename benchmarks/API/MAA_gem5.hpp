@@ -374,6 +374,30 @@ inline void maa_stream_load_virtual_page(
     *INSTR_baseaddr = (uint64_t)backing;
     __asm__ __volatile__("mfence;");
 }
+// This is deliberately a distinct ABI marker, not a relaxed ordinary stream
+// dependency.  The duplicated completion token is accepted only for page 0
+// while its exact virtual producer is pending registration.
+template <class T1>
+inline void maa_stream_load_virtual_page_prearm(
+    T1 *backing, int completion_token, int min_reg, int max_reg,
+    int stride_reg, int dst_tile) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::STREAM_LD << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)dst_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)completion_token << 56) |
+        ((uint64_t)completion_token << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) |
+        ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)backing;
+    __asm__ __volatile__("mfence;");
+}
 template <class T1>
 inline void maa_stream_prefetch(T1 *data, int min_reg, int max_reg,
                                 int stride_reg, int token_tile) {
