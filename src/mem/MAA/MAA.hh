@@ -13,6 +13,7 @@
 
 #include "base/trace.hh"
 #include "base/types.hh"
+#include "mem/MAA/DirectRetirementPortRetry.hh"
 #include "mem/MAA/HybridConsumerContextQueue.hh"
 #include "mem/MAA/HybridMacroEventTracker.hh"
 #include "mem/MAA/IF.hh"
@@ -601,7 +602,7 @@ protected:
     std::array<DirectRetirementRequestRecord,
                DirectRetirementRequestRecordCount>
         directRetirementRequestRecords{};
-    PacketPtr directRetirementRetryPacket = nullptr;
+    DirectRetirementPortRetry<Packet> directRetirementRetryPackets;
     uint64_t directRetirementTraceOccurrence = 0;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);

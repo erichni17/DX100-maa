@@ -165,6 +165,36 @@ class HybridConsumerContextQueue
         });
     }
 
+    /**
+     * Move arbitration past an exact cache request without claiming its
+     * credit. This is used only when that request's physical cache port
+     * already owns its one retry packet, allowing another context/port to be
+     * considered. Owner incarnation and every request field are checked
+     * before the bounded round-robin cursor can move.
+     */
+    bool defer(const Request &request)
+    {
+        Context *context = find(request.owner);
+        if (context == nullptr)
+            return false;
+        Pipeline::Request pending_request{};
+        uint8_t *next = nullptr;
+        if (request.request.kind == Pipeline::Kind::ReadBacking) {
+            pending_request = context->pipeline.pendingRead();
+            next = &nextReadContext;
+        } else if (request.request.kind ==
+                   Pipeline::Kind::WriteDestination) {
+            pending_request = context->pipeline.pendingWrite();
+            next = &nextWriteContext;
+        } else {
+            return false;
+        }
+        if (!sameRequest(pending_request, request.request))
+            return false;
+        *next = nextContext(context);
+        return assertInvariants();
+    }
+
     bool accept(const Request &request)
     {
         Context *context = find(request.owner);
@@ -340,6 +370,16 @@ class HybridConsumerContextQueue
         return lhs.tokenTile == rhs.tokenTile &&
             lhs.generation == rhs.generation &&
             lhs.incarnation == rhs.incarnation;
+    }
+
+    static bool sameRequest(const Pipeline::Request &lhs,
+                            const Pipeline::Request &rhs)
+    {
+        return lhs.kind != Pipeline::Kind::None && lhs.kind == rhs.kind &&
+            lhs.line == rhs.line && lhs.buffer == rhs.buffer &&
+            lhs.port == rhs.port && lhs.address == rhs.address &&
+            lhs.size == rhs.size &&
+            lhs.transactionID == rhs.transactionID;
     }
 
     Context *find(const ContextKey &key)

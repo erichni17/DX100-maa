@@ -1330,7 +1330,7 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
         HybridConsumerContextQueue::chargedControlBytes() +
         sizeof(directRetirementExecutions) +
         sizeof(directRetirementRequestRecords) +
-        sizeof(directRetirementRetryPacket) +
+        DirectRetirementPortRetry<Packet>::chargedControlBytes() +
         producer_line_metadata_bytes;
     stats.direct_retirement_descriptors++;
     stats.direct_retirement_context_high_water = std::max(
@@ -1374,7 +1374,8 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             "generation=%lu incarnation=%lu token=%d source=0x%lx "
             "destination=0x%lx scope=terminal_fp64_mul_dense_store "
             "context_credits=%u fixed_contexts=%u active_contexts=%u "
-            "request_records=%lu "
+            "request_records=%lu retry_packet_slots=%u "
+            "retry_packet_slot_bytes=%lu "
             "payload_bytes=%lu control_bytes=%lu total_bytes=%lu "
             "producer_line_metadata_bytes=%lu backing_span_bytes=%lu "
             "private_page_payload_bytes=0\n",
@@ -1385,6 +1386,8 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             HybridConsumerContextQueue::ContextCount,
             directRetirementContexts.activeContexts(),
             DirectRetirementRequestRecordCount,
+            DirectRetirementPortRetry<Packet>::PortCount,
+            DirectRetirementPortRetry<Packet>::chargedControlBytes(),
             charged_payload_bytes, charged_control_bytes,
             charged_payload_bytes + charged_control_bytes,
             producer_line_metadata_bytes,
@@ -1559,6 +1562,8 @@ MAA::scheduleDirectRetirementEvent(int latency)
 void
 MAA::notifyDirectRetirementPortEvent(uint8_t port)
 {
+    panic_if(port >= DirectRetirementPortRetry<Packet>::PortCount,
+             "Direct-retirement wake named invalid cache port %u\n", port);
     if (directRetirementContexts.activeContexts() != 0)
         scheduleDirectRetirementEvent();
     DPRINTF(MAAVirtualTrace,
@@ -1575,10 +1580,16 @@ MAA::finishDirectRetirement(
         findDirectRetirementExecution(key);
     HybridConsumerContextQueue::Snapshot snapshot;
     bool retry_owned = false;
-    if (directRetirementRetryPacket != nullptr) {
+    for (uint8_t port = 0;
+         port < DirectRetirementPortRetry<Packet>::PortCount; ++port) {
+        PacketPtr packet = directRetirementRetryPackets.packet(port);
+        if (packet == nullptr)
+            continue;
         auto *state = dynamic_cast<DirectRetirementSenderState *>(
-            directRetirementRetryPacket->senderState);
-        retry_owned = state != nullptr &&
+            packet->senderState);
+        panic_if(state == nullptr || state->callbackPort != port,
+                 "Direct-retirement retry lost exact port provenance\n");
+        retry_owned = retry_owned ||
             sameDirectRetirementKey(state->request.owner, key);
     }
     panic_if(execution == nullptr ||
@@ -1657,13 +1668,21 @@ MAA::serviceDirectRetirement()
         }
     }
 
-    auto accepted = [this](
+    auto claim = [this](
         const HybridConsumerContextQueue::Request &request) {
         DirectRetirementExecution *execution =
             findDirectRetirementExecution(request.owner);
         panic_if(execution == nullptr ||
                      !directRetirementContexts.accept(request),
                  "Direct-retirement accepted packet had stale ownership\n");
+    };
+
+    auto issued = [this](
+        const HybridConsumerContextQueue::Request &request) {
+        DirectRetirementExecution *execution =
+            findDirectRetirementExecution(request.owner);
+        panic_if(execution == nullptr,
+                 "Direct-retirement issued packet had stale ownership\n");
         const auto stage =
             request.request.kind == HybridConsumerPipeline::Kind::ReadBacking
             ? HybridMacroEventTracker::Stage::PageFill
@@ -1698,38 +1717,6 @@ MAA::serviceDirectRetirement()
                 directRetirementOutstandingRequestCount());
     };
 
-    if (directRetirementRetryPacket != nullptr) {
-        auto *state = dynamic_cast<DirectRetirementSenderState *>(
-            directRetirementRetryPacket->senderState);
-        panic_if(state == nullptr ||
-                     findDirectRetirementExecution(state->request.owner) ==
-                         nullptr,
-                 "Direct-retirement retry lost sender identity\n");
-        const Addr paddr = directRetirementRetryPacket->getAddr();
-        const auto deferred = my_deferred_pkt_map.find(paddr);
-        if (hasOutstandingPacket(paddr) ||
-            hasDirectRetirementOutstandingAddress(paddr) ||
-            (deferred != my_deferred_pkt_map.end() &&
-             !deferred->second.empty())) {
-            stats.direct_retirement_address_stalls++;
-            return;
-        }
-        if (!sendPacketCache(directRetirementRetryPacket)) {
-            stats.direct_retirement_retries++;
-            return;
-        }
-        const HybridConsumerContextQueue::Request request = state->request;
-        directRetirementRetryPacket = nullptr;
-        panic_if(!reserveDirectRetirementRequest(paddr, request),
-                 "Direct-retirement retry duplicated address 0x%lx\n", paddr);
-        stats.direct_retirement_request_record_high_water = std::max(
-            stats.direct_retirement_request_record_high_water.value(),
-            static_cast<double>(
-                directRetirementOutstandingRequestCount()));
-        accepted(request);
-        return;
-    }
-
     auto discardUnsentPacket = [](PacketPtr packet) {
         auto *state = dynamic_cast<DirectRetirementSenderState *>(
             packet->popSenderState());
@@ -1739,27 +1726,114 @@ MAA::serviceDirectRetirement()
         delete packet;
     };
 
+    // Each translated physical port owns at most one refused packet. Retry
+    // every independently unblocked port before considering fresh work; a
+    // still-blocked bank cannot stop another bank's retained request.
+    for (uint8_t port = 0;
+         port < DirectRetirementPortRetry<Packet>::PortCount; ++port) {
+        PacketPtr packet = directRetirementRetryPackets.packet(port);
+        if (packet == nullptr)
+            continue;
+        auto *state = dynamic_cast<DirectRetirementSenderState *>(
+            packet->senderState);
+        panic_if(state == nullptr ||
+                     state->callbackPort != port ||
+                     findDirectRetirementExecution(state->request.owner) ==
+                         nullptr,
+                 "Direct-retirement retry lost sender/port identity\n");
+        const Addr paddr = packet->getAddr();
+        const auto deferred = my_deferred_pkt_map.find(paddr);
+        if (hasOutstandingPacket(paddr) ||
+            hasDirectRetirementOutstandingAddress(paddr) ||
+            (deferred != my_deferred_pkt_map.end() &&
+             !deferred->second.empty())) {
+            stats.direct_retirement_address_stalls++;
+            continue;
+        }
+        uint8_t actual_port = DirectRetirementPortRetry<Packet>::PortCount;
+        if (!sendPacketCache(packet, &actual_port)) {
+            panic_if(actual_port != port,
+                     "Direct-retirement retry changed physical port\n");
+            stats.direct_retirement_retries++;
+            continue;
+        }
+        const HybridConsumerContextQueue::Request request = state->request;
+        panic_if(actual_port != port ||
+                     !directRetirementRetryPackets.release(port, packet),
+                 "Direct-retirement retry released the wrong port packet\n");
+        panic_if(!reserveDirectRetirementRequest(paddr, request),
+                 "Direct-retirement retry duplicated address 0x%lx\n", paddr);
+        stats.direct_retirement_request_record_high_water = std::max(
+            stats.direct_retirement_request_record_high_water.value(),
+            static_cast<double>(
+                directRetirementOutstandingRequestCount()));
+        issued(request);
+    }
+
+    struct PendingPacket
+    {
+        HybridConsumerContextQueue::Request request{};
+        PacketPtr packet = nullptr;
+        uint8_t port = DirectRetirementPortRetry<Packet>::PortCount;
+    };
+
+    // A blocked-port contender remains pending in its finite context. Rotate
+    // past at most the four exact context requests to find another physical
+    // bank; defer() authenticates the full owner/incarnation/request before
+    // moving the corresponding read or write cursor.
+    auto selectPacket = [this, &discardUnsentPacket](bool write) {
+        PendingPacket selected;
+        for (uint8_t scan = 0;
+             scan < HybridConsumerContextQueue::ContextCount; ++scan) {
+            const HybridConsumerContextQueue::Request request = write
+                ? directRetirementContexts.pendingWrite()
+                : directRetirementContexts.pendingRead();
+            if (request.request.kind == HybridConsumerPipeline::Kind::None)
+                return selected;
+            PacketPtr packet = makeDirectRetirementPacket(request);
+            auto *state = dynamic_cast<DirectRetirementSenderState *>(
+                packet->senderState);
+            panic_if(state == nullptr ||
+                         !sameDirectRetirementRequest(state->request,
+                                                     request) ||
+                         state->callbackPort >=
+                             DirectRetirementPortRetry<Packet>::PortCount,
+                     "Direct-retirement candidate lost sender identity\n");
+            const uint8_t port = state->callbackPort;
+            if (!directRetirementRetryPackets.occupied(port))
+                return PendingPacket{request, packet, port};
+            discardUnsentPacket(packet);
+            panic_if(!directRetirementContexts.defer(request),
+                     "Direct-retirement could not defer an exact blocked-port "
+                     "request\n");
+        }
+        return selected;
+    };
+
     for (unsigned attempt = 0;
          attempt < DirectRetirementRequestRecordCount +
                        HybridConsumerContextQueue::ContextCount + 2;
          ++attempt) {
-        const auto write = directRetirementContexts.pendingWrite();
+        PendingPacket pending = selectPacket(true);
+        if (pending.packet == nullptr)
+            pending = selectPacket(false);
         const auto compute = directRetirementContexts.pendingCompute();
-        const auto read = directRetirementContexts.pendingRead();
-        if (write.request.kind == HybridConsumerPipeline::Kind::None &&
-            compute.request.kind == HybridConsumerPipeline::Kind::None &&
-            read.request.kind == HybridConsumerPipeline::Kind::None) {
-            if (directRetirementContexts.totalCreditsInUse() ==
-                DirectRetirementRequestRecordCount)
+        if (pending.packet == nullptr &&
+            compute.request.kind == HybridConsumerPipeline::Kind::None) {
+            const bool no_cache_request =
+                directRetirementContexts.pendingRead().request.kind ==
+                    HybridConsumerPipeline::Kind::None &&
+                directRetirementContexts.pendingWrite().request.kind ==
+                    HybridConsumerPipeline::Kind::None;
+            if (no_cache_request &&
+                directRetirementContexts.totalCreditsInUse() ==
+                    DirectRetirementRequestRecordCount)
                 stats.direct_retirement_credit_stalls++;
             return;
         }
-        if (write.request.kind != HybridConsumerPipeline::Kind::None ||
-            read.request.kind != HybridConsumerPipeline::Kind::None) {
-            const auto request =
-                write.request.kind != HybridConsumerPipeline::Kind::None
-                ? write : read;
-            PacketPtr packet = makeDirectRetirementPacket(request);
+        if (pending.packet != nullptr) {
+            const auto request = pending.request;
+            PacketPtr packet = pending.packet;
             const Addr paddr = packet->getAddr();
             const auto deferred = my_deferred_pkt_map.find(paddr);
             if (hasOutstandingPacket(paddr) ||
@@ -1770,20 +1844,27 @@ MAA::serviceDirectRetirement()
                 stats.direct_retirement_address_stalls++;
                 return;
             }
-            if (!sendPacketCache(packet)) {
-                panic_if(directRetirementRetryPacket != nullptr,
-                         "Direct-retirement created a second retry packet\n");
-                directRetirementRetryPacket = packet;
+            uint8_t actual_port =
+                DirectRetirementPortRetry<Packet>::PortCount;
+            if (!sendPacketCache(packet, &actual_port)) {
+                panic_if(actual_port != pending.port ||
+                             !directRetirementRetryPackets.arm(
+                                 pending.port, packet),
+                         "Direct-retirement could not retain exactly one "
+                         "packet for physical port %u\n", pending.port);
+                claim(request);
                 stats.direct_retirement_retries++;
-                return;
+                continue;
             }
-            panic_if(!reserveDirectRetirementRequest(paddr, request),
+            panic_if(actual_port != pending.port ||
+                         !reserveDirectRetirementRequest(paddr, request),
                      "Direct-retirement duplicated address 0x%lx\n", paddr);
             stats.direct_retirement_request_record_high_water = std::max(
                 stats.direct_retirement_request_record_high_water.value(),
                 static_cast<double>(
                     directRetirementOutstandingRequestCount()));
-            accepted(request);
+            claim(request);
+            issued(request);
             continue;
         }
         panic_if(compute.request.kind == HybridConsumerPipeline::Kind::None,
@@ -2624,7 +2705,7 @@ MAA::drain()
 {
     logicalSpdBridge->closeAdmission();
     panic_if(directRetirementContexts.activeContexts() != 0 ||
-                 directRetirementRetryPacket != nullptr ||
+                 directRetirementRetryPackets.count() != 0 ||
                  directRetirementOutstandingRequestCount() != 0,
              "Direct-retirement checkpoint/drain requested with live line "
              "credits; serialization is unsupported\n");
@@ -2638,7 +2719,7 @@ void
 MAA::drainResume()
 {
     panic_if(directRetirementContexts.activeContexts() != 0 ||
-                 directRetirementRetryPacket != nullptr ||
+                 directRetirementRetryPackets.count() != 0 ||
                  directRetirementOutstandingRequestCount() != 0,
              "Direct-retirement drain resumed with live line credits\n");
     panic_if(!logicalSpdBridge->allQuiescent(),
