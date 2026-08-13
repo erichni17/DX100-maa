@@ -310,6 +310,7 @@ MAA::MAA(const MAAParams &p)
     virtualPageGeneration.assign(num_tiles, 0);
     virtualPageConsumedGeneration.assign(num_tiles, 0);
     virtualPageBackingAddr.assign(num_tiles, 0);
+    virtualPageBackingRangeID.assign(num_tiles, -1);
     virtualPageWordSize.assign(num_tiles, 0);
     virtualProducerRegistrationTick.assign(num_tiles, 0);
     virtualPageLastReadyTick.assign(num_tiles, 0);
@@ -1215,9 +1216,42 @@ MAA::isTokenBoundPageMaterialization(InstructionPtr instruction) const
     return instruction != nullptr &&
         instruction->opcode == Instruction::OpcodeType::STREAM_LD &&
         instruction->src1SpdID >= 0 &&
+        instruction->src2SpdID == -1 &&
         instruction->src1SpdID < static_cast<int>(num_tiles) &&
         ifile->isCompletionOnlyTile(instruction->maa_id,
                                     instruction->src1SpdID);
+}
+
+bool
+MAA::isPageZeroPrearmMaterialization(InstructionPtr instruction) const
+{
+    if (instruction == nullptr ||
+        instruction->opcode != Instruction::OpcodeType::STREAM_LD ||
+        instruction->src1SpdID < 0 || instruction->dst1SpdID < 0 ||
+        instruction->src2SpdID != instruction->src1SpdID ||
+        instruction->condSpdID != -1 ||
+        instruction->datatype != Instruction::DataType::FLOAT64_TYPE ||
+        instruction->src1RegID < 0 || instruction->src2RegID < 0 ||
+        instruction->src3RegID < 0 ||
+        rf->getData<int>(instruction->src1RegID) != 0 ||
+        rf->getData<int>(instruction->src2RegID) !=
+            static_cast<int>(HybridConsumerPipeline::ProducerPageElements) ||
+        rf->getData<int>(instruction->src3RegID) != 1)
+        return false;
+
+    // Before registration, the duplicated token is an ABI-level dormant
+    // marker, not a usable stream dependency.  It cannot enter the IF or
+    // issue traffic.  Registration itself is performed only by the virtual
+    // gather opcodes and subsequently binds this marker to their token,
+    // backing address, datatype, and the local page-zero range above.
+    if (virtualPageGeneration[instruction->src1SpdID] == 0)
+        return true;
+    return virtualPageBackingAddr[instruction->src1SpdID] ==
+               instruction->baseAddr &&
+           virtualPageBackingRangeID[instruction->src1SpdID] ==
+               instruction->addrRangeID &&
+           virtualPageWordSize[instruction->src1SpdID] ==
+               instruction->WordSize();
 }
 
 bool
@@ -1243,8 +1277,9 @@ MAA::pageMaterializerOwnsDestination(int maaID, int firstTile,
 MAA::PageMaterializationSubmit
 MAA::submitPageMaterialization(InstructionPtr instruction)
 {
-    panic_if(!isTokenBoundPageMaterialization(instruction),
-             "Page materializer requires token-bound STREAM_LD\n");
+    panic_if(!isTokenBoundPageMaterialization(instruction) &&
+                 !isPageZeroPrearmMaterialization(instruction),
+             "Page materializer requires an exact token-bound STREAM_LD\n");
     const int token = instruction->src1SpdID;
     const int wordBytes = instruction->WordSize();
     const int tileWords = wordBytes / sizeof(uint32_t);
@@ -3521,7 +3556,23 @@ void MAA::dispatchInstruction() {
         if (*recv_it == true) {
             InstructionPtr instruction = *instruction_it;
             PacketPtr pkt = *pkt_it;
-            if (isTokenBoundPageMaterialization(instruction)) {
+            const bool prearm =
+                !isTokenBoundPageMaterialization(instruction) &&
+                isPageZeroPrearmMaterialization(instruction);
+            if (isTokenBoundPageMaterialization(instruction) || prearm) {
+                if (prearm &&
+                    virtualPageGeneration[instruction->src1SpdID] == 0) {
+                    DPRINTF(MAAVirtualTrace,
+                            "event=page_materialization_prearm schema=1 "
+                            "occurrence=%lu token=%d base=0x%lx range=%d "
+                            "minimum=0 maximum=%u stride=1 "
+                            "producer_opcode=virtual_gather "
+                            "marker=dual_token\n",
+                            pageMaterializationTraceOccurrence++,
+                            instruction->src1SpdID, instruction->baseAddr,
+                            instruction->addrRangeID,
+                            HybridConsumerPipeline::ProducerPageElements);
+                }
                 const PageMaterializationSubmit submitted =
                     submitPageMaterialization(instruction);
                 if (submitted == PageMaterializationSubmit::Retry) {
@@ -3663,6 +3714,7 @@ void MAA::dispatchInstruction() {
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX) {
                     resetVirtualPageReady(
                         instruction->dst1SpdID, instruction->backingAddr,
+                        instruction->backingAddrRangeID,
                         instruction->WordSize());
                 }
                 if (instruction->dst2SpdID != -1) {
@@ -3874,7 +3926,7 @@ void MAA::setTileReady(int tileID, int wordSize) {
     }
 }
 void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
-                                int wordSize) {
+                                int backingRangeID, int wordSize) {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
              "invalid virtual completion token tile %d\n", tokenTileID);
     panic_if(findDirectRetirementExecution(
@@ -3925,6 +3977,7 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
              tokenTileID);
     ++virtualPageGeneration[tokenTileID];
     virtualPageBackingAddr[tokenTileID] = backingAddr;
+    virtualPageBackingRangeID[tokenTileID] = backingRangeID;
     virtualPageWordSize[tokenTileID] = wordSize;
     virtualProducerRegistrationTick[tokenTileID] = curTick();
     virtualPageLastReadyTick[tokenTileID] = 0;

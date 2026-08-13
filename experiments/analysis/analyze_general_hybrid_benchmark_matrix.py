@@ -245,6 +245,9 @@ def materializer_trace(
         "materializer_activation_retries": len(
             events.get("page_materialization_activation_retry", [])
         ),
+        "materializer_prearms": len(
+            events.get("page_materialization_prearm", [])
+        ),
         "materializer_fallback_events": fallback_events,
         "materializer_admission_fallback_events": len(
             events.get("page_materialization_fallback", [])
@@ -360,6 +363,12 @@ def validate_materializer(
         raise ValueError(
             f"{arm}: materializer fell back to ordinary STREAM_LD"
         )
+    if role == "token_stream_ld_page0_prearm_correctness_control":
+        prearms = report["materializer_prearms"]
+        if prearms != 1 or report["materializer_activation_retries"] < 1:
+            raise ValueError(
+                f"{arm}: page-zero prearm lacks one dormant exact admission"
+            )
     # No direct-retirement descriptor is used by these non-fused token arms.
     if materializer_stat(stats, "direct_retirement_fallbacks") != 0:
         raise ValueError(f"{arm}: direct-retirement fallback stat is nonzero")
@@ -593,6 +602,7 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "materializer_contexts_open",
         "materializer_activation_count_max",
         "materializer_activation_retries",
+        "materializer_prearms",
         "materializer_fallback_events",
         "materializer_forwarded_lines",
         "materializer_cache_read_lines",
