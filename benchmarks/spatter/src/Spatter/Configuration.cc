@@ -465,7 +465,7 @@ Configuration<Spatter::Serial>::Configuration(const size_t id,
     pattern_scatter_int.resize(pattern_scatter.size());
     for (size_t i = 0; i < pattern_scatter.size(); ++i)
         pattern_scatter_int[i] = static_cast<int>(pattern_scatter[i]);
-#ifdef MAA_VIRTUAL_BACKED_GATHER
+#if defined(MAA_VIRTUAL_BACKED_GATHER) || defined(MAA_XRAGE_RUNTIME_ARMS)
     virtual_backing.resize(pattern.size());
 #endif
 }
@@ -513,7 +513,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
     add_mem_region(pattern_int.data(), &pattern_int.data()[pattern_int.size()]); // 6
     add_mem_region(sparse.data(), &sparse.data()[sparse.size()]);                // 7
     add_mem_region(dense.data(), &dense.data()[dense.size()]);                   // 8
-#ifdef MAA_VIRTUAL_BACKED_GATHER
+#if defined(MAA_VIRTUAL_BACKED_GATHER) || defined(MAA_XRAGE_RUNTIME_ARMS)
     // Intermediate memory region for the transparent virtual-tile control.
     add_mem_region(virtual_backing.data(),
                    &virtual_backing.data()[virtual_backing.size()]);
@@ -576,7 +576,16 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             const int chunk_end =
                 std::min(j + maa_tile_size, pattern_length);
             maa_const(chunk_end, reg2);
-            if (maa_arm == "direct4fusedprefetch") {
+            if (maa_arm == "direct4x3") {
+                maa_indirect_load_virtual_index<double>(
+                    sparse.data(),
+                    reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
+                    virtual_backing.data() + j, reg1, reg2, reg3);
+                maa_virtual_tile_alu_scalar_store<double>(
+                    virtual_backing.data() + j, dense.data() + j, tile2,
+                    tile1, tile3, reg4, reg1, reg2, reg3,
+                    Operation_t::MUL_OP);
+            } else if (maa_arm == "direct4fusedprefetch") {
                 maa_indirect_load_virtual_index_prefetch<double>(
                     sparse.data(),
                     reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
@@ -640,9 +649,9 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
             maa_stream_store<double>(dense.data(), reg1, reg2, reg3, tile2);
 #endif
 #endif
-            const bool native_multiply =
-                maa_result_scale == 3 && maa_arm == "native16x3";
-            wait_ready(native_multiply ? tile3 : tile2);
+            const bool maa_multiply = maa_result_scale == 3 &&
+                (maa_arm == "native16x3" || maa_arm == "direct4x3");
+            wait_ready(maa_multiply ? tile3 : tile2);
 #ifdef MAA_XRAGE_RUNTIME_ARMS
             if (maa_arm == "compact16x3") {
                 for (int k = j; k < chunk_end; ++k)

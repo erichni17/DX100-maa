@@ -145,6 +145,24 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn("maa_indirect_load_virtual_index_prefetch", source)
         self.assertIn("direct4fusedprefetch", runner)
 
+    def test_direct_multiply_uses_finite_retirement_pipeline(self):
+        configuration = (
+            ROOT / "benchmarks/spatter/src/Spatter/Configuration.cc"
+        ).read_text(encoding="utf-8")
+        main = (ROOT / "benchmarks/spatter/src/main.cc").read_text(
+            encoding="utf-8"
+        )
+        runner = RUNNER.read_text(encoding="utf-8")
+        for source in (configuration, main, runner):
+            self.assertIn("direct4x3", source)
+        self.assertIn(
+            "maa_virtual_tile_alu_scalar_store<double>", configuration
+        )
+        self.assertIn("MAA_DIRECT_RETIREMENT_LINE_HANDOFF", runner)
+        self.assertIn("--maa_direct_retirement_line_handoff", runner)
+        self.assertIn("direct_retirement_producer_line_acks", runner)
+        self.assertIn("direct4x3 mechanism did not close exactly", runner)
+
 
 if __name__ == "__main__":
     unittest.main()

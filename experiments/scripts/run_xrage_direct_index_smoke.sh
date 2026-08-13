@@ -40,6 +40,7 @@ logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
 result_scale=${XRAGE_RESULT_SCALE:-1}
+direct_retirement_line_handoff=${MAA_DIRECT_RETIREMENT_LINE_HANDOFF:-0}
 debug_args=()
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
@@ -121,6 +122,11 @@ debug_args=()
     echo "XRAGE_RESULT_SCALE must be 1 or 3" >&2
     exit 2
 }
+[[ $direct_retirement_line_handoff == 0 ||
+   $direct_retirement_line_handoff == 1 ]] || {
+    echo "MAA_DIRECT_RETIREMENT_LINE_HANDOFF must be 0 or 1" >&2
+    exit 2
+}
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
     echo "XRAGE_SIMULATOR_SOURCE_COMMIT must be a full Git commit" >&2
     exit 2
@@ -174,7 +180,7 @@ if [[ -n $guest_abi ]]; then
 fi
 if [[ -n $guest_arm ]]; then
     case "$guest_arm" in
-        native16|native16x3|fused16|fused4|compact16|compact16x3|direct4|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
+        native16|native16x3|fused16|fused4|compact16|compact16x3|direct4|direct4x3|direct4warm|direct4prefetch|direct4fusedprefetch) ;;
         *)
             echo "unsupported XRAGE_GUEST_ARM: $guest_arm" >&2
             exit 2
@@ -182,12 +188,24 @@ if [[ -n $guest_arm ]]; then
     esac
 fi
 if [[ $result_scale == 3 ]]; then
-    [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ]] || {
-        echo "scale 3 requires native16x3 or compact16x3 guest arm" >&2
+    [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
+       $guest_arm == direct4x3 ]] || {
+        echo "scale 3 requires native16x3, compact16x3, or direct4x3 guest arm" >&2
         exit 2
     }
-elif [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ]]; then
+elif [[ $guest_arm == native16x3 || $guest_arm == compact16x3 ||
+        $guest_arm == direct4x3 ]]; then
     echo "x3 guest arms require XRAGE_RESULT_SCALE=3" >&2
+    exit 2
+fi
+if [[ $guest_arm == direct4x3 ]]; then
+    [[ $arm == direct_index_4k && $physical -eq 4096 &&
+       $maa_logical_tile_elements -eq 16384 ]] || {
+        echo "direct4x3 requires a 16K logical / 4K physical direct-index arm" >&2
+        exit 2
+    }
+elif [[ $direct_retirement_line_handoff -ne 0 ]]; then
+    echo "line handoff is only valid for the direct4x3 guest arm" >&2
     exit 2
 fi
 if [[ -n $debug_flags ]]; then
@@ -225,6 +243,8 @@ fi
     printf 'arm=%s\n' "$arm"
     printf 'guest_arm=%s\n' "$guest_arm"
     printf 'result_scale=%s\n' "$result_scale"
+    printf 'direct_retirement_line_handoff=%s\n' \
+        "$direct_retirement_line_handoff"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
@@ -302,6 +322,7 @@ restore_cmd=(
     --maa_num_indirect_units_per_maa="$indirect_units"
     --maa_num_tile_elements="$maa_logical_tile_elements"
     --maa_physical_tile_elements="$physical"
+    --maa_transparent_spd_mode="$([[ $guest_arm == direct4x3 ]] && echo 3 || echo 0)"
     --maa_l2_uncacheable --maa_l3_uncacheable
     --maa_num_initial_row_table_slices="$row_table_slices"
     --maa_num_row_table_rows_per_slice="$row_table_rows"
@@ -318,6 +339,9 @@ restore_cmd=(
     --maa_retirement_cache_size="$retirement_cache_size"
     --maa_virtual_masked_writes --cmd "$binary" --options "$options"
 )
+if [[ $direct_retirement_line_handoff == 1 ]]; then
+    restore_cmd+=(--maa_direct_retirement_line_handoff)
+fi
 if [[ $grow_order == 1 ]]; then
     restore_cmd+=(--maa_virtual_grow_order)
 fi
@@ -386,6 +410,20 @@ read -r retirement_cache_count retirement_cache_matches < <(
     echo "resolved retirement-cache size does not match the manifest" >&2
     exit 1
 }
+expected_line_handoff=$(
+    [[ $direct_retirement_line_handoff -eq 1 ]] && echo true || echo false
+)
+grep -Fqx "direct_retirement_line_handoff=$expected_line_handoff" \
+    "$out/run/config.ini" || {
+    echo "resolved direct-retirement line handoff differs from manifest" >&2
+    exit 1
+}
+if [[ $guest_arm == direct4x3 ]]; then
+    grep -Fqx "transparent_spd_mode=3" "$out/run/config.ini" || {
+        echo "direct4x3 did not activate direct retirement" >&2
+        exit 1
+    }
+fi
 
 hash=$(sed -n 's/^MAA_GATHER_VERIFY_PASS .* hash=\([0-9]*\)$/\1/p' "$log" | tail -1)
 stats_blocks=$(awk '$1 == "simTicks" { count++ } END { print count + 0 }' \
@@ -461,6 +499,26 @@ cpu_data_writes=$(
     sum_first_roi_matching \
         '^system\.cpu[0-9]+\.dcache\.WriteReq_T\.accesses::switch_cpus[0-9]+\.data$'
 )
+direct_descriptors=$(first_roi_stat system.maa.direct_retirement_descriptors)
+direct_page_acks=$(
+    first_roi_stat system.maa.direct_retirement_producer_acks
+)
+direct_line_acks=$(
+    first_roi_stat system.maa.direct_retirement_producer_line_acks
+)
+direct_page_fallback_lines=$(
+    first_roi_stat system.maa.direct_retirement_page_fallback_lines
+)
+direct_read_responses=$(
+    first_roi_stat system.maa.direct_retirement_read_responses
+)
+direct_alu_completions=$(
+    first_roi_stat system.maa.direct_retirement_alu_completions
+)
+direct_write_responses=$(
+    first_roi_stat system.maa.direct_retirement_write_responses
+)
+direct_fallbacks=$(first_roi_stat system.maa.direct_retirement_fallbacks)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
     "$index_filter_wait_events" "$index_filter_wait_cycles" \
@@ -474,6 +532,40 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
         exit 1
     }
 done
+if [[ $guest_arm == direct4x3 ]]; then
+    gather_length=$(sed -n 's/^MAA gather execution \([0-9]*\)\/16384$/\1/p' \
+        "$log" | tail -1)
+    [[ -n $gather_length && $gather_length -gt 0 &&
+       $((gather_length % 16384)) -eq 0 ]] || {
+        echo "direct4x3 requires complete 16K logical chunks" >&2
+        exit 1
+    }
+    expected_descriptors=$((gather_length / 16384))
+    expected_direct_lines=$((expected_descriptors * 2048))
+    [[ $direct_descriptors -eq $expected_descriptors &&
+       $direct_page_acks -eq $((expected_descriptors * 4)) &&
+       $((direct_line_acks + direct_page_fallback_lines)) -eq "$expected_direct_lines" &&
+       $direct_read_responses -eq $expected_direct_lines &&
+       $direct_alu_completions -eq $expected_direct_lines &&
+       $direct_write_responses -eq $expected_direct_lines &&
+       $direct_fallbacks -eq 0 ]] || {
+        echo "direct4x3 mechanism did not close exactly" >&2
+        exit 1
+    }
+    if [[ $direct_retirement_line_handoff -eq 1 ]]; then
+        [[ $direct_line_acks -eq $expected_direct_lines &&
+           $direct_page_fallback_lines -eq 0 ]] || {
+            echo "direct4x3 line handoff fell back to page visibility" >&2
+            exit 1
+        }
+    else
+        [[ $direct_line_acks -eq 0 &&
+           $direct_page_fallback_lines -eq $expected_direct_lines ]] || {
+            echo "direct4x3 page control exposed producer lines early" >&2
+            exit 1
+        }
+    fi
+fi
 if [[ $index_partitions -eq 1 ]]; then
     [[ $index_filter_words -eq 0 && $index_filter_cycles -eq 0 &&
        $index_filter_wait_events -eq 0 && $index_filter_wait_cycles -eq 0 ]] || {
@@ -516,8 +608,13 @@ fi
     printf '\tmaa_indirect_instructions\tmaa_stream_read_instructions'
     printf '\tmaa_stream_write_instructions\tmaa_scalar_alu_instructions'
     printf '\tmaa_scalar_alu_cycles\tcpu_committed_instructions'
-    printf '\tcpu_data_reads\tcpu_data_writes\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tcpu_data_reads\tcpu_data_writes'
+    printf '\tdirect_retirement_line_handoff\tdirect_descriptors'
+    printf '\tdirect_page_acks\tdirect_line_acks'
+    printf '\tdirect_page_fallback_lines\tdirect_read_responses'
+    printf '\tdirect_alu_completions\tdirect_write_responses'
+    printf '\tdirect_fallbacks\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
         "$index_words" "$index_partitions" "$index_filter_words" \
@@ -531,7 +628,12 @@ fi
         "$maa_instructions" "$maa_indirect_instructions" \
         "$maa_stream_read_instructions" "$maa_stream_write_instructions" \
         "$maa_scalar_alu_instructions" "$maa_scalar_alu_cycles" \
-        "$cpu_committed_instructions" "$cpu_data_reads" "$cpu_data_writes"
+        "$cpu_committed_instructions" "$cpu_data_reads" "$cpu_data_writes" \
+        "$direct_retirement_line_handoff" "$direct_descriptors" \
+        "$direct_page_acks" "$direct_line_acks" \
+        "$direct_page_fallback_lines" "$direct_read_responses" \
+        "$direct_alu_completions" "$direct_write_responses" \
+        "$direct_fallbacks"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(
     awk '
