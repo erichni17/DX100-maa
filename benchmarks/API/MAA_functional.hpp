@@ -84,6 +84,11 @@ inline void wait_ready(int SPD_id) {
     while (get_tile_ready(SPD_id) == 0)
         ;
 }
+inline void wait_virtual_page(int completion_tile, int page) {
+    // Functional virtual gathers complete synchronously as one generation.
+    (void)page;
+    wait_ready(completion_tile);
+}
 inline uint16_t get_tile_size(int SPD_id) {
     return SPD_size_noncacheable[SPD_id];
 }
@@ -548,6 +553,16 @@ inline void maa_stream_load(T1 *data, int min_reg, int max_reg, int stride_reg, 
     }
     set_tile_size(dst_tile, idx);
     set_tile_ready(dst_tile, 1);
+}
+template <class T1>
+inline void maa_stream_load_virtual_page(
+    T1 *backing, int completion_token, int min_reg, int max_reg,
+    int stride_reg, int dst_tile) {
+    // Functional virtual gathers retire backing data synchronously. Preserve
+    // the token-bearing page-base/local-bounds ABI while using the ordinary
+    // dense stream semantics.
+    (void)completion_token;
+    maa_stream_load(backing, min_reg, max_reg, stride_reg, dst_tile);
 }
 template <class T1>
 inline void maa_stream_prefetch(T1 *data, int min_reg, int max_reg,

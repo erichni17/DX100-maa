@@ -341,6 +341,39 @@ inline void maa_stream_load(T1 *data, int min_reg, int max_reg, int stride_reg, 
     *INSTR_baseaddr = (uint64_t)data;                                                                           // baseaddr
     __asm__ __volatile__("mfence;");
 }
+/**
+ * Materialize one dense page of a live virtual-gather backing allocation into
+ * an ordinary SPD tile.  This is an ordinary STREAM_LD with the otherwise
+ * unused source-tile field bound to the virtual completion token.  The MAA can
+ * therefore wait on exact producer-line WriteResp visibility without fusing or
+ * interpreting any downstream ALU, RMW, or store operation.
+ *
+ * The ABI is page-base plus local bounds: callers pass backing + page_offset
+ * and scalar bounds [0, page_elements).  Hardware derives the producer page
+ * from the backing-address offset within the live generation; min_reg is never
+ * a page identity.
+ */
+template <class T1>
+inline void maa_stream_load_virtual_page(
+    T1 *backing, int completion_token, int min_reg, int max_reg,
+    int stride_reg, int dst_tile) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::STREAM_LD << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)dst_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)completion_token << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) |
+        ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)backing;
+    __asm__ __volatile__("mfence;");
+}
 template <class T1>
 inline void maa_stream_prefetch(T1 *data, int min_reg, int max_reg,
                                 int stride_reg, int token_tile) {

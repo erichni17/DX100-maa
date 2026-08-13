@@ -4,6 +4,10 @@ CXX_FLAGS += -std=c++11 -O3 -Wall -g3 -fopenmp
 GEM5_INCLUDE = -I$(GEM5_HOME)/include/ -I$(GEM5_HOME)/util/m5/src/
 MAA_INCLUDE = -I$(MAA_HOME)
 GEM5_LIB = -L$(GEM5_HOME)/util/m5/build/x86/out
+M5OP_SRC = $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
+ifeq ($(wildcard $(M5OP_SRC)),)
+	M5OP_SRC = $(GEM5_HOME)/util/m5/src/abi/x86/m5op.S
+endif
 
 SUITE = cg
 
@@ -30,7 +34,7 @@ ifndef DUMP
 	MAA_BINARIES += $(SUITE)_maa_32K $(SUITE)_maa_64K
 	MAA_BINARIES += $(SUITE)_maa_4C $(SUITE)_maa_8C
 	MAA_BINARIES += $(SUITE)_maa_4K_fp $(SUITE)_maa_16K_fp $(SUITE)_maa_16K_virtual
-	MAA_BINARIES += $(SUITE)_maa_16K_bounded
+	MAA_BINARIES += $(SUITE)_maa_16K_bounded $(SUITE)_maa_16K_general_fp
 endif
 
 .PHONY: all FUNC GEM5 clean
@@ -87,6 +91,9 @@ endef
 %_maa_16K_bounded: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DMAA_VIRTUAL_GATHER -DMAA_BOUNDED_VIRTUAL_GATHER -DMAA_CONSUMER_TILE_SIZE=4096 -DCG_FP_ENABLE -DNUM_CORES=4 -DTILE_SIZE=16384)
 
+%_maa_16K_general_fp: cg.cpp m5op.o
+	$(call build_binary,-DMAA -DMAA_VIRTUAL_GATHER -DMAA_GENERAL_VIRTUAL_CONSUMER -DMAA_CONSUMER_TILE_SIZE=4096 -DCG_FP_ENABLE -DNUM_CORES=4 -DTILE_SIZE=16384)
+
 %_maa_32K: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DNUM_CORES=4 -DTILE_SIZE=32768)
 
@@ -99,7 +106,7 @@ endef
 %_maa_8C: cg.cpp m5op.o
 	$(call build_binary,-DMAA -DNUM_CORES=8 -DTILE_SIZE=16384)
 
-m5op.o: $(GEM5_HOME)/util/m5/build/x86/abi/x86/m5op.S
+m5op.o: $(M5OP_SRC)
 	$(CXX) $(GEM5_INCLUDE) $(CXX_FLAGS) -c $^ -o $@.tmp
 	mv $@.tmp $@
 

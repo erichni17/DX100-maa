@@ -20,15 +20,20 @@ if [[ -e $out ]]; then
 fi
 mkdir -p "$out"
 
-binary="$out/test_virtual_tile_consumer_T16384"
-"${CXX:-g++}" -I"$root/benchmarks/API" -I"$root/include" \
-    -I"$root/util/m5/src" -std=c++11 -O3 -Wall -Wextra -g3 -fopenmp \
-    -DGEM5 -DTILE_SIZE=16384 -DNUM_CORES=4 -DMAA_MEM_SIZE=0x80000000 \
-    "$m5op" "$source" -o "$binary"
+for tile_size in 4096 16384; do
+    binary="$out/test_virtual_tile_consumer_T${tile_size}"
+    "${CXX:-g++}" -I"$root/benchmarks/API" -I"$root/include" \
+        -I"$root/util/m5/src" -std=c++11 -O3 -Wall -Wextra -g3 -fopenmp \
+        -DGEM5 -DTILE_SIZE="$tile_size" -DNUM_CORES=4 \
+        -DMAA_MEM_SIZE=0x80000000 "$m5op" "$source" -o "$binary"
+done
 
 {
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'logical_elements=16384\n'
+    printf 'logical_elements=4096,16384\n'
 } > "$out/manifest.txt"
-sha256sum "$source" "$0" "$binary" > "$out/artifact_sha256.txt"
+sha256sum "$source" "$0" \
+    "$out/test_virtual_tile_consumer_T4096" \
+    "$out/test_virtual_tile_consumer_T16384" \
+    > "$out/artifact_sha256.txt"

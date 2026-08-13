@@ -55,6 +55,8 @@ main(int argc, char **argv)
     if (mode != "native" && mode != "native_direct" &&
         mode != "paged" && mode != "paged_overlap" &&
         mode != "paged_staged" && mode != "paged_staged_conditional" &&
+        mode != "token_stream_ld" &&
+        mode != "token_stream_ld_pingpong" &&
         mode != "transparent" && mode != "transparent_ready" &&
         mode != "transparent_displaced" && mode != "paged_displaced" &&
         mode != "transparent_reload_warm" &&
@@ -63,7 +65,8 @@ main(int argc, char **argv)
         mode != "paged_reload_cold") {
         std::cerr << "mode must be native, native_direct, paged, "
                      "paged_overlap, "
-                     "paged_staged, paged_staged_conditional, transparent, "
+                     "paged_staged, paged_staged_conditional, "
+                     "token_stream_ld[_pingpong], transparent, "
                      "transparent_ready, transparent_displaced, "
                      "paged_displaced, transparent_reload_warm/"
                      "transparent_reload_cold, or paged_reload_warm/"
@@ -79,7 +82,9 @@ main(int argc, char **argv)
     if ((mode == "transparent" || mode == "transparent_ready" ||
          mode == "transparent_displaced" || mode == "paged_displaced" ||
          mode == "transparent_reload_warm" ||
-         mode == "transparent_reload_cold") &&
+         mode == "transparent_reload_cold" ||
+         mode == "token_stream_ld" ||
+         mode == "token_stream_ld_pingpong") &&
         page_elements != 4096) {
         std::cerr << "cache-residency controls require four 4096-element pages"
                   << std::endl;
@@ -89,8 +94,13 @@ main(int argc, char **argv)
     };
     if (!deferred_treatment && !validate_treatment())
         return 2;
-    if (TILE_SIZE != total_elements) {
-        std::cerr << "test requires a 16K logical tile" << std::endl;
+    const bool native_4k_build =
+        TILE_SIZE == 4096 && page_elements == 4096 &&
+        (mode == "native" || mode == "native_direct");
+    if (TILE_SIZE != total_elements && !native_4k_build) {
+        std::cerr << "test requires a 16K logical tile, except for the "
+                     "native 4K control"
+                  << std::endl;
         return 2;
     }
 
@@ -229,6 +239,7 @@ main(int argc, char **argv)
     } else {
         const int completion_tile = get_new_tile<double>();
         const int page_tile = get_new_tile<double>();
+        const int alternate_page_tile = get_new_tile<double>();
 
         maa_const(0, min_reg);
         maa_const(total_elements, max_reg);
@@ -259,6 +270,9 @@ main(int argc, char **argv)
         const bool wait_before_consumer = mode == "transparent_ready" ||
                                           cache_displaced || reload_only;
         const bool overlap_pages = mode == "paged_overlap";
+        const bool token_stream_ld = mode == "token_stream_ld";
+        const bool token_stream_ld_pingpong =
+            mode == "token_stream_ld_pingpong";
         if (wait_before_consumer) {
             // The ready control removes producer/consumer overlap without
             // changing the consumer. Displaced and reload-only modes share
@@ -290,11 +304,51 @@ main(int argc, char **argv)
                 backing, destination, completion_tile, page_tile,
                 output_tile, scale_reg, page_min_reg, page_max_reg,
                 page_stride_reg, Operation_t::MUL_OP);
-        } else if (!overlap_pages && !wait_before_consumer) {
+        } else if (!overlap_pages && !token_stream_ld &&
+                   !token_stream_ld_pingpong &&
+                   !wait_before_consumer) {
             wait_ready(completion_tile);
         }
 
-        if (!transparent) {
+        if (token_stream_ld_pingpong) {
+            for (int offset = 0; offset < total_elements;
+                 offset += 2 * page_elements) {
+                const int first_count = std::min(
+                    page_elements, total_elements - offset);
+                const int second_offset = offset + page_elements;
+                const int second_count = std::min(
+                    page_elements, total_elements - second_offset);
+                wait_ready(page_tile);
+                wait_ready(alternate_page_tile);
+                maa_const(0, min_reg);
+                maa_const(first_count, max_reg);
+                maa_stream_load_virtual_page<double>(
+                    backing + offset, completion_tile, min_reg, max_reg,
+                    stride_reg, page_tile);
+                if (second_count > 0) {
+                    maa_const(second_count, max_reg);
+                    maa_stream_load_virtual_page<double>(
+                        backing + second_offset, completion_tile, min_reg,
+                        max_reg, stride_reg, alternate_page_tile);
+                }
+                maa_const(first_count, max_reg);
+                maa_alu_scalar<double>(page_tile, scale_reg, output_tile,
+                                       Operation_t::MUL_OP);
+                maa_stream_store<double>(
+                    destination + offset, min_reg, max_reg, stride_reg,
+                    output_tile);
+                if (second_count > 0) {
+                    maa_const(second_count, max_reg);
+                    maa_alu_scalar<double>(
+                        alternate_page_tile, scale_reg, output_tile,
+                        Operation_t::MUL_OP);
+                    maa_stream_store<double>(
+                        destination + second_offset, min_reg, max_reg,
+                        stride_reg, output_tile);
+                }
+            }
+            wait_ready(completion_tile);
+        } else if (!transparent) {
             for (int offset = 0; offset < total_elements;
                  offset += page_elements) {
                 const int count = std::min(page_elements,
@@ -305,14 +359,20 @@ main(int argc, char **argv)
                 wait_ready(page_tile);
                 maa_const(0, min_reg);
                 maa_const(count, max_reg);
-                maa_stream_load<double>(backing + offset, min_reg, max_reg,
-                                        stride_reg, page_tile);
+                if (token_stream_ld) {
+                    maa_stream_load_virtual_page<double>(
+                        backing + offset, completion_tile, min_reg, max_reg,
+                        stride_reg, page_tile);
+                } else {
+                    maa_stream_load<double>(backing + offset, min_reg,
+                                            max_reg, stride_reg, page_tile);
+                }
                 maa_alu_scalar<double>(page_tile, scale_reg, output_tile,
                                        Operation_t::MUL_OP);
                 maa_stream_store<double>(destination + offset, min_reg,
                                          max_reg, stride_reg, output_tile);
             }
-            if (overlap_pages)
+            if (overlap_pages || token_stream_ld)
                 wait_ready(completion_tile);
         }
     }

@@ -121,6 +121,12 @@ static ReferenceErrors check_scalar_reference() {
 #elif defined(GEM5_MAGIC)
 #include "MAA_gem5_magic.hpp"
 #endif
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#include <MAA_virtual_materialize.hpp>
+
+static MAAVirtualConsumerMode virtual_consumer_mode =
+    MAAVirtualConsumerMode::StreamControl;
+#endif
 int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
 int tiles3[NUM_CORES], tiles4[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
@@ -228,8 +234,18 @@ void gradzatz_MAA() {
         maa_const<int>(0, backing_start_reg);
 #endif
 #pragma omp for
-        for (int c = 0; c < num_corners; c += TILE_SIZE) {
+        for (int c = 0; c < num_corners;
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+             c += MAA_CONSUMER_TILE_SIZE
+#else
+             c += TILE_SIZE
+#endif
+        ) {
             maa_const<int>(c, reg0);
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+            maa_const<int>(std::min(num_corners,
+                                    c + MAA_CONSUMER_TILE_SIZE), reg1);
+#endif
             // Step1: Load corner_type
             maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2, tile0);
             // Step2: Perform comparison
@@ -256,15 +272,94 @@ void gradzatz_MAA() {
         int *tileCondPtr = get_cacheable_tile_pointer<int>(tileCond);
         DATATYPE *tile5Ptr = get_cacheable_tile_pointer<DATATYPE>(tile5);
         DATATYPE *tile2Ptr = get_cacheable_tile_pointer<DATATYPE>(tile2);
+#ifndef MAA_GENERAL_VIRTUAL_CONSUMER
         DATATYPE *tile0Ptr = get_cacheable_tile_pointer<DATATYPE>(tile0);
+#endif
 #ifdef UME_GRADZATZ_VERIFY
+#ifndef MAA_GENERAL_VIRTUAL_CONSUMER
         int *tile5IndexPtr = get_cacheable_tile_pointer<int>(tile5);
+#endif
         uint64_t local_gather_errors = 0;
         uint64_t local_gather_lanes = 0;
 #endif
 #pragma omp for
         for (int c = 0; c < num_corners; c += TILE_SIZE) {
             const int gather_size = std::min(num_corners - c, TILE_SIZE);
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+            maa_const<int>(c, reg0);
+            maa_const<int>(c + gather_size, reg1);
+            maa_indirect_load_virtual_index<DATATYPE>(
+                point_gradient.data(),
+                reinterpret_cast<uint32_t *>(c_to_p_map.data()), tile0,
+                virtual_gather_backing[omp_thread_id], reg0, reg1, reg2);
+            if (gather_size == TILE_SIZE)
+                maa_virtual_consumer_begin(virtual_consumer_mode, tile0);
+            else
+                // Preserve an exact four-page materializer ABI: partial
+                // logical tails drain, then reload through ordinary STREAM_LD.
+                wait_ready(tile0);
+
+            for (int page_offset = 0; page_offset < gather_size;
+                 page_offset += MAA_CONSUMER_TILE_SIZE) {
+                const int page_size =
+                    std::min(gather_size - page_offset,
+                             MAA_CONSUMER_TILE_SIZE);
+                const int page_begin = c + page_offset;
+                maa_const<int>(page_begin, reg0);
+                maa_const<int>(page_begin + page_size, reg1);
+
+                maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2,
+                                     tile5);
+                maa_alu_scalar<int>(tile5, reg2, tileCond,
+                                    Operation_t::GTE_OP);
+                maa_stream_load<int>(c_to_z_map.data(), reg0, reg1, reg2,
+                                     tile3, tileCond);
+                maa_indirect_load<DATATYPE>(zone_volume.data(), tile3, tile2,
+                                            tileCond);
+
+                maa_const<int>(0, backing_start_reg);
+                maa_const<int>(page_size, backing_end_reg);
+                if (gather_size == TILE_SIZE) {
+                    maa_virtual_consumer_load_page<DATATYPE>(
+                        virtual_consumer_mode,
+                        virtual_gather_backing[omp_thread_id] + page_offset,
+                        tile0, page_offset / MAA_CONSUMER_TILE_SIZE,
+                        backing_start_reg, backing_end_reg, reg2, tile5);
+                } else {
+                    maa_stream_load<DATATYPE>(
+                        virtual_gather_backing[omp_thread_id] + page_offset,
+                        backing_start_reg, backing_end_reg, reg2, tile5);
+                }
+                wait_ready(tile2);
+                wait_ready(tile5);
+
+#ifdef UME_GRADZATZ_VERIFY
+                for (int i = 0; i < page_size; ++i) {
+                    if (tileCondPtr[i] == 0)
+                        continue;
+                    if (value_bits(tile5Ptr[i]) !=
+                        value_bits(point_gradient[
+                            c_to_p_map[page_begin + i]]))
+                        local_gather_errors++;
+                    local_gather_lanes++;
+                }
+#endif
+
+#pragma omp simd simdlen(4)
+                for (int i = 0; i < page_size; ++i) {
+                    if (tileCondPtr[i] == 1) {
+                        const DATATYPE c_z_vol_ratio =
+                            corner_volume[page_begin + i] / tile2Ptr[i];
+                        tile5Ptr[i] = tile5Ptr[i] * c_z_vol_ratio;
+                    }
+                }
+                maa_indirect_rmw_vector<DATATYPE>(
+                    zone_gradient.data(), tile3, tile5,
+                    Operation_t::ADD_OP, tileCond);
+            }
+            if (gather_size == TILE_SIZE)
+                maa_virtual_consumer_end(virtual_consumer_mode, tile0);
+#else
             maa_const<int>(c, reg0);
             // Step1: Load corner_type
             maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2, tile0);
@@ -320,6 +415,7 @@ void gradzatz_MAA() {
 
             // Step8: Accumulate zone_gradient
             maa_indirect_rmw_vector<DATATYPE>(zone_gradient.data(), tile3, tile5, Operation_t::ADD_OP, tileCond);
+#endif
         }
         wait_ready(tile5);
 #ifdef UME_GRADZATZ_VERIFY
@@ -437,6 +533,15 @@ int main(int argc, char *argv[]) {
         return 2;
     }
     int n = static_cast<int>(parsed_n);
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+    if (argc != 3) {
+        std::cerr << "general virtual consumer requires a deferred selector "
+                     "path after n"
+                  << std::endl;
+        return 2;
+    }
+    const std::string virtual_consumer_selector = argv[2];
+#endif
 #if defined(UME_GRADZATZ_VERIFY) || defined(UME_GRADZATZ_FIXED_INPUT)
 #ifdef UME_GRADZATZ_VERIFY
     if (n != 4097) {
@@ -528,6 +633,24 @@ int main(int argc, char *argv[]) {
     cout << "Starting checkpoint" << endl;
     m5_checkpoint(0, 0);
     cout << "checkpoint done" << endl;
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+    try {
+        virtual_consumer_mode =
+            maa_read_virtual_consumer_mode(virtual_consumer_selector);
+        if (virtual_consumer_mode ==
+            MAAVirtualConsumerMode::TokenStreamLoadPingPong)
+            throw std::runtime_error(
+                "GZZ does not have two free alternating consumer tiles");
+    } catch (const std::exception &error) {
+        std::cerr << "GZZ virtual consumer selector: " << error.what()
+                  << std::endl;
+        return 2;
+    }
+    std::cout << "UME_GZZ_VIRTUAL_CONSUMER mode="
+              << maa_virtual_consumer_mode_name(virtual_consumer_mode)
+              << " logical=" << TILE_SIZE
+              << " consumer=" << MAA_CONSUMER_TILE_SIZE << std::endl;
+#endif
 #endif
     alloc_MAA();
     init_MAA();

@@ -88,6 +88,12 @@ Authors of the OpenMP code:
 #include "MAA_gem5_magic.hpp"
 #endif
 
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#include "MAA_virtual_materialize.hpp"
+static MAAVirtualConsumerMode virtual_consumer_mode =
+    MAAVirtualConsumerMode::StreamControl;
+#endif
+
 // #define DO_VERIFY
 #define MAA_VER 2
 // Reduce cgitmax to 4 so we can run the benchmark in a reasonable time
@@ -460,6 +466,17 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::string mode = argv[1];
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+    const bool deferred_virtual_consumer = mode == "MAA_DEFERRED";
+    const std::string virtual_consumer_selector =
+        deferred_virtual_consumer && argc > 2 ? argv[2] : "";
+    if (deferred_virtual_consumer && virtual_consumer_selector.empty()) {
+        std::cerr << "MAA_DEFERRED requires a selector path" << std::endl;
+        return 1;
+    }
+    if (deferred_virtual_consumer)
+        mode = "MAA";
+#endif
     std::cout << "Mode: " << mode << std::endl;
 
     int i, j, k, it;
@@ -558,6 +575,26 @@ int main(int argc, char **argv) {
               << std::endl;
 #endif
     m5_checkpoint(0, 0);
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+    if (deferred_virtual_consumer) {
+        try {
+            virtual_consumer_mode =
+                maa_read_virtual_consumer_mode(virtual_consumer_selector);
+            if (virtual_consumer_mode ==
+                MAAVirtualConsumerMode::TokenStreamLoadPingPong)
+                throw std::runtime_error(
+                    "CG does not have two free alternating consumer tiles");
+        } catch (const std::exception &error) {
+            std::cerr << "CG virtual consumer selector: " << error.what()
+                      << std::endl;
+            return 1;
+        }
+    }
+    std::cout << "CG_VIRTUAL_CONSUMER mode="
+              << maa_virtual_consumer_mode_name(virtual_consumer_mode)
+              << " logical=" << TILE_SIZE
+              << " consumer=" << MAA_CONSUMER_TILE_SIZE << std::endl;
+#endif
 #endif
 
     std::cout << "\n\n NAS Parallel Benchmarks 4.1 Parallel C++ version with OpenMP - CG Benchmark" << std::endl;
@@ -765,7 +802,8 @@ static void conj_grad_maa(int colidx[],
     const int lastcol_firstcol_plus1 = lastcol - firstcol + 1;
     const int lastcol_firstcol_plus1_divisible_by_32 = (int)(lastcol_firstcol_plus1 / total_thread_iters) * total_thread_iters;
     const int row_tile_size = MAA_CONSUMER_TILE_SIZE;
-#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+#if defined(MAA_BOUNDED_VIRTUAL_GATHER) || \
+    defined(MAA_GENERAL_VIRTUAL_CONSUMER)
     // The bounded path pages even the final row block, so one loop can keep
     // the 16K gather window and clamp every ordinary consumer to 4K.
     const int lastrow_firstrow_plus1_divisible_by_64K =
@@ -913,7 +951,8 @@ static void conj_grad_maa(int colidx[],
             int k_max = rowstr[j_max];
             float *curr_q = &q[j_base];
             maa_const<int>(j_base, r4);
-#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+#if defined(MAA_BOUNDED_VIRTUAL_GATHER) || \
+    defined(MAA_GENERAL_VIRTUAL_CONSUMER)
             // Ordinary SPD streams are not virtualized. Bound the row-pointer
             // tiles to the 4K physical consumer window explicitly.
             maa_const<int>(j_max, r5);
@@ -973,6 +1012,52 @@ static void conj_grad_maa(int colidx[],
                                             Operation_t::ADD_OP);
                     wait_ready(t7);
                 }
+#elif defined(MAA_GENERAL_VIRTUAL_CONSUMER)
+                if (gather_size == TILE_SIZE) {
+                    maa_const<int>(k_base, r2);
+                    maa_const<int>(k_base + gather_size, r3);
+                    maa_indirect_load_virtual_index<float>(
+                        p, reinterpret_cast<uint32_t *>(colidx), t6,
+                        virtual_gather_backing_for_thread(tid), r2, r3, r1);
+                    maa_virtual_consumer_begin(virtual_consumer_mode, t6);
+                }
+                for (int page_offset = 0; page_offset < gather_size;
+                     page_offset += MAA_CONSUMER_TILE_SIZE) {
+                    const int page_size =
+                        gather_size - page_offset < MAA_CONSUMER_TILE_SIZE
+                            ? gather_size - page_offset
+                            : MAA_CONSUMER_TILE_SIZE;
+                    maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+
+                    if (gather_size == TILE_SIZE) {
+                        maa_const<int>(0, r2);
+                        maa_const<int>(page_size, r3);
+                        maa_virtual_consumer_load_page<float>(
+                            virtual_consumer_mode,
+                            virtual_gather_backing_for_thread(tid) +
+                                page_offset,
+                            t6, page_offset / MAA_CONSUMER_TILE_SIZE, r2,
+                            r3, r1, t4);
+                    } else {
+                        const int page_base = k_base + page_offset;
+                        maa_const<int>(page_base, r2);
+                        maa_const<int>(page_base + page_size, r3);
+                        maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                        maa_indirect_load<float>(p, t6, t4);
+                    }
+
+                    const int page_base = k_base + page_offset;
+                    maa_const<int>(page_base, r2);
+                    maa_const<int>(page_base + page_size, r3);
+                    maa_stream_load<float>(a, r2, r3, r1, t5);
+                    maa_alu_vector<float>(t4, t5, t7,
+                                          Operation_t::MUL_OP);
+                    maa_indirect_rmw_vector(curr_q, t0, t7,
+                                            Operation_t::ADD_OP);
+                    wait_ready(t7);
+                }
+                if (gather_size == TILE_SIZE)
+                    maa_virtual_consumer_end(virtual_consumer_mode, t6);
 #else
                 maa_const(k_base, r2);
                 maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
@@ -1196,7 +1281,8 @@ static void conj_grad_maa(int colidx[],
         int k_max = rowstr[j_max];
         float *curr_r = &r[j_base];
         maa_const<int>(j_base, r4);
-#ifdef MAA_BOUNDED_VIRTUAL_GATHER
+#if defined(MAA_BOUNDED_VIRTUAL_GATHER) || \
+    defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         // Keep the residual multiply's row-pointer streams physically bounded.
         maa_const<int>(j_max, r5);
 #endif
@@ -1253,6 +1339,51 @@ static void conj_grad_maa(int colidx[],
                                         Operation_t::ADD_OP);
                 wait_ready(t7);
             }
+#elif defined(MAA_GENERAL_VIRTUAL_CONSUMER)
+            if (gather_size == TILE_SIZE) {
+                maa_const<int>(k_base, r2);
+                maa_const<int>(k_base + gather_size, r3);
+                maa_indirect_load_virtual_index<float>(
+                    z, reinterpret_cast<uint32_t *>(colidx), t6,
+                    virtual_gather_backing_for_thread(tid), r2, r3, r1);
+                maa_virtual_consumer_begin(virtual_consumer_mode, t6);
+            }
+            for (int page_offset = 0; page_offset < gather_size;
+                 page_offset += MAA_CONSUMER_TILE_SIZE) {
+                const int page_size =
+                    gather_size - page_offset < MAA_CONSUMER_TILE_SIZE
+                        ? gather_size - page_offset
+                        : MAA_CONSUMER_TILE_SIZE;
+                maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
+
+                if (gather_size == TILE_SIZE) {
+                    maa_const<int>(0, r2);
+                    maa_const<int>(page_size, r3);
+                    maa_virtual_consumer_load_page<float>(
+                        virtual_consumer_mode,
+                        virtual_gather_backing_for_thread(tid) + page_offset,
+                        t6, page_offset / MAA_CONSUMER_TILE_SIZE, r2, r3,
+                        r1, t4);
+                } else {
+                    const int page_base = k_base + page_offset;
+                    maa_const<int>(page_base, r2);
+                    maa_const<int>(page_base + page_size, r3);
+                    maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                    maa_indirect_load<float>(z, t6, t4);
+                }
+
+                const int page_base = k_base + page_offset;
+                maa_const<int>(page_base, r2);
+                maa_const<int>(page_base + page_size, r3);
+                maa_stream_load<float>(a, r2, r3, r1, t5);
+                maa_alu_vector<float>(t4, t5, t7,
+                                      Operation_t::MUL_OP);
+                maa_indirect_rmw_vector(curr_r, t0, t7,
+                                        Operation_t::ADD_OP);
+                wait_ready(t7);
+            }
+            if (gather_size == TILE_SIZE)
+                maa_virtual_consumer_end(virtual_consumer_mode, t6);
 #else
             maa_const(k_base, r2);
             maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
