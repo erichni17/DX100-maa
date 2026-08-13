@@ -18,6 +18,7 @@
 #include "debug/MAAMemPort.hh"
 #include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/ALU.hh"
+#include "mem/MAA/DirectRetirementPortDomain.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/IndirectAccess.hh"
 #include "mem/MAA/Invalidator.hh"
@@ -1185,6 +1186,8 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             first + tile_words <= static_cast<int>(num_tiles);
     };
     const bool direct_eligible =
+        DirectRetirementPortDomain::eligible(num_cores,
+                                              cacheSidePorts.size()) &&
         num_tile_elements == HybridConsumerPipeline::LogicalElements &&
         physical_tile_elements ==
             HybridConsumerPipeline::ProducerPageElements &&
@@ -1562,14 +1565,24 @@ MAA::scheduleDirectRetirementEvent(int latency)
 void
 MAA::notifyDirectRetirementPortEvent(uint8_t port)
 {
-    panic_if(port >= DirectRetirementPortRetry<Packet>::PortCount,
-             "Direct-retirement wake named invalid cache port %u\n", port);
-    if (directRetirementContexts.activeContexts() != 0)
+    const uint8_t active_contexts = directRetirementContexts.activeContexts();
+    if (!DirectRetirementPortDomain::contains(port)) {
+        // Cache-side callbacks are sized by runtime num_cores, while direct
+        // retirement deliberately has exactly four retry slots.  An
+        // out-of-domain callback when inactive is unrelated wake traffic; a
+        // live context would violate admission's fixed-domain contract.
+        panic_if(!DirectRetirementPortDomain::harmlessInactiveWake(
+                     port, active_contexts),
+                 "Direct-retirement live context received out-of-domain "
+                 "cache-port wake %u (active=%u)\n", port, active_contexts);
+        return;
+    }
+    if (active_contexts != 0)
         scheduleDirectRetirementEvent();
     DPRINTF(MAAVirtualTrace,
             "event=direct_retirement_port_wake schema=1 occurrence=%lu "
             "port=%u active_contexts=%u\n", directRetirementTraceOccurrence++,
-            port, directRetirementContexts.activeContexts());
+            port, active_contexts);
 }
 
 void

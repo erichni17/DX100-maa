@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 
+#include "mem/MAA/DirectRetirementPortDomain.hh"
 #include "mem/MAA/DirectRetirementPortRetry.hh"
 #include "mem/MAA/HybridConsumerContextQueue.hh"
 
@@ -28,6 +29,7 @@ struct RetryPacket
 };
 
 using Retry = gem5::DirectRetirementPortRetry<RetryPacket>;
+using Domain = gem5::DirectRetirementPortDomain;
 
 Queue::Descriptor
 descriptor(uint16_t token_tile, uint64_t base)
@@ -165,6 +167,25 @@ testByteAccounting()
               << " control_bytes=" << Retry::chargedControlBytes() << '\n';
 }
 
+void
+testFixedRuntimePortDomain()
+{
+    static_assert(Domain::PortCount == Retry::PortCount);
+    CHECK(Domain::eligible(4, 4));
+    CHECK(!Domain::eligible(5, 5));
+    CHECK(!Domain::eligible(4, 5));
+    CHECK(!Domain::eligible(5, 4));
+    CHECK(Domain::contains(3));
+    CHECK(!Domain::contains(4));
+
+    // cacheSidePorts follows num_cores, so a five-core configuration can
+    // receive a port-four retry callback even without direct work. It must
+    // be ignored rather than indexing the four-slot retry table.
+    CHECK(Domain::harmlessInactiveWake(4, 0));
+    CHECK(!Domain::harmlessInactiveWake(4, 1));
+    CHECK(!Domain::harmlessInactiveWake(3, 0));
+}
+
 } // anonymous namespace
 
 int
@@ -173,6 +194,7 @@ main()
     testExactFixedSlotOwnership();
     testBlockedBankDoesNotStopAnotherBank();
     testByteAccounting();
+    testFixedRuntimePortDomain();
     std::cout << "direct retirement per-port retry tests passed\n";
     return 0;
 }
