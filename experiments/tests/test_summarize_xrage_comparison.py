@@ -15,6 +15,26 @@ SPEC.loader.exec_module(MODULE)
 
 
 class SummarizeXrageComparisonTest(unittest.TestCase):
+    def test_x3_guest_arms_are_geometry_specific(self):
+        self.assertEqual(
+            MODULE.expected_guest_arm(
+                {"arm": "native", "result_scale": "3"}
+            ),
+            "native16x3",
+        )
+        self.assertEqual(
+            MODULE.expected_guest_arm(
+                {"arm": "native_4k", "result_scale": "3"}
+            ),
+            "native4x3",
+        )
+        self.assertEqual(
+            MODULE.expected_guest_arm(
+                {"arm": "direct_index_4k", "result_scale": "3"}
+            ),
+            "direct4x3",
+        )
+
     def test_dirty_source_requires_matching_frozen_simulator(self):
         trusted = ("a" * 40, "b" * 64)
         MODULE.verify_source_provenance(

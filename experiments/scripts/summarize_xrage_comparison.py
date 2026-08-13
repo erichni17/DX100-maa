@@ -57,6 +57,18 @@ SUM_STAT_FIELDS = {
     "stream_spd_write_cycles": r"system\.maa\.S\d+_STR_CyclesSPDWriteAccess",
     "memory_controller_reads": r"system\.mem_ctrls\d+\.numReads::maa",
 }
+EXPECTED_GUEST_ARMS = {
+    ("native", 1): "native16",
+    ("native", 3): "native16x3",
+    ("native_4k", 3): "native4x3",
+    ("fused", 1): "fused16",
+    ("fused_4k", 1): "fused4",
+    ("compact", 1): "compact16",
+    ("compact", 3): "compact16x3",
+    ("direct_index_16k", 1): "direct4",
+    ("direct_index_4k", 1): "direct4",
+    ("direct_index_4k", 3): "direct4x3",
+}
 
 
 def fail(message: str) -> None:
@@ -180,6 +192,14 @@ def require_integer(row: dict[str, str], field: str, label: str) -> int:
         raise AssertionError from error
 
 
+def expected_guest_arm(manifest: dict[str, str]) -> str | None:
+    try:
+        scale = int(manifest.get("result_scale", "1"))
+    except ValueError:
+        fail(f"invalid result_scale={manifest.get('result_scale')!r}")
+    return EXPECTED_GUEST_ARMS.get((manifest.get("arm", ""), scale))
+
+
 def read_run(
     label: str,
     root: Path,
@@ -242,15 +262,8 @@ def read_run(
     output_length, output_hash = passes[0]
     guest_arm = manifest.get("guest_arm", "")
     if guest_arm:
-        expected_guest_arm = {
-            "native": "native16",
-            "fused": "fused16",
-            "fused_4k": "fused4",
-            "compact": "compact16",
-            "direct_index_16k": "direct4",
-            "direct_index_4k": "direct4",
-        }.get(manifest.get("arm", ""))
-        if guest_arm != expected_guest_arm:
+        expected_arm = expected_guest_arm(manifest)
+        if guest_arm != expected_arm:
             fail(
                 f"{label} arm/guest-arm mismatch: "
                 f"{manifest.get('arm', '')}/{guest_arm}"
@@ -287,7 +300,9 @@ def read_run(
             f"{label} consumed {index_words} direct-index words for "
             f"{output_length} outputs"
         )
-    if arm in {"native", "fused", "fused_4k"} and (writes or index_words):
+    if arm in {"native", "native_4k", "fused", "fused_4k"} and (
+        writes or index_words
+    ):
         fail(f"{label} unexpectedly activated virtual machinery")
 
     config = configparser.RawConfigParser(strict=False)
