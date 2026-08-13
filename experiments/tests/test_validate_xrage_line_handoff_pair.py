@@ -8,6 +8,7 @@ from experiments.scripts.validate_xrage_line_handoff_pair import (
     stats_blocks,
     unique_config_value,
     validate_four_descriptor_line_mechanism,
+    validate_required_multicontext,
     verifier_record,
 )
 
@@ -136,6 +137,23 @@ class RawEvidenceTest(unittest.TestCase):
             broken[field] = invalid
             with self.assertRaises(ValueError, msg=field):
                 validate_four_descriptor_line_mechanism(broken)
+
+    def test_required_multicontext_gate_binds_population_and_concurrency(self):
+        page = {
+            "direct_descriptors": "4",
+            "direct_context_high_water": "4",
+        }
+        line = dict(page)
+        validate_required_multicontext(page, line, 4, 4)
+
+        for field, value, message in (
+            ("direct_descriptors", "3", "descriptor count"),
+            ("direct_context_high_water", "3", "context high-water"),
+        ):
+            broken = dict(line)
+            broken[field] = value
+            with self.assertRaisesRegex(ValueError, message):
+                validate_required_multicontext(page, broken, 4, 4)
 
 
 if __name__ == "__main__":

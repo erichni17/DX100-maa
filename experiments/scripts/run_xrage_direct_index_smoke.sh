@@ -42,6 +42,8 @@ guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
 result_scale=${XRAGE_RESULT_SCALE:-1}
 direct_retirement_line_handoff=${MAA_DIRECT_RETIREMENT_LINE_HANDOFF:-0}
+expected_direct_descriptors=${XRAGE_EXPECTED_DIRECT_DESCRIPTORS:-0}
+expected_direct_context_high_water=${XRAGE_EXPECTED_DIRECT_CONTEXT_HIGH_WATER:-0}
 debug_args=()
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
@@ -126,6 +128,19 @@ debug_args=()
 [[ $direct_retirement_line_handoff == 0 ||
    $direct_retirement_line_handoff == 1 ]] || {
     echo "MAA_DIRECT_RETIREMENT_LINE_HANDOFF must be 0 or 1" >&2
+    exit 2
+}
+[[ $expected_direct_descriptors -ge 0 &&
+   $expected_direct_context_high_water -ge 0 ]] || {
+    echo "expected direct descriptor/context counts must be non-negative" >&2
+    exit 2
+}
+[[ ($expected_direct_descriptors -eq 0 &&
+     $expected_direct_context_high_water -eq 0) ||
+   ($expected_direct_descriptors -gt 0 &&
+     $expected_direct_context_high_water -gt 0 &&
+     $expected_direct_context_high_water -le $expected_direct_descriptors) ]] || {
+    echo "expected direct descriptor/context counts must be paired and ordered" >&2
     exit 2
 }
 [[ $simulator_source_commit =~ ^[0-9a-f]{40}$ ]] || {
@@ -268,6 +283,9 @@ fi
     printf 'result_scale=%s\n' "$result_scale"
     printf 'direct_retirement_line_handoff=%s\n' \
         "$direct_retirement_line_handoff"
+    printf 'expected_direct_descriptors=%s\n' "$expected_direct_descriptors"
+    printf 'expected_direct_context_high_water=%s\n' \
+        "$expected_direct_context_high_water"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
@@ -585,6 +603,19 @@ if [[ $guest_arm == direct4x3 ]]; then
         echo "direct4x3 mechanism did not close exactly" >&2
         exit 1
     }
+    if [[ $expected_direct_descriptors -gt 0 ]]; then
+        [[ $direct_descriptors -eq $expected_direct_descriptors ]] || {
+            echo "direct4x3 did not exercise the required descriptor count" >&2
+            exit 1
+        }
+        if [[ $direct_retirement_line_handoff -eq 1 ]]; then
+            [[ $direct_context_high_water -eq \
+               $expected_direct_context_high_water ]] || {
+                echo "direct4x3 did not exercise the required context high-water" >&2
+                exit 1
+            }
+        fi
+    fi
     if [[ $direct_retirement_line_handoff -eq 1 ]]; then
         [[ $direct_line_acks -eq $expected_direct_lines &&
            $direct_page_fallback_lines -eq 0 ]] || {

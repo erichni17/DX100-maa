@@ -165,6 +165,11 @@ class XrageRunnerAbiTest(unittest.TestCase):
         self.assertIn("direct_retirement_request_record_high_water", runner)
         self.assertIn("expected_direct_lines -eq 8192", runner)
         self.assertIn("direct_context_high_water -ge 2", runner)
+        self.assertIn("XRAGE_EXPECTED_DIRECT_DESCRIPTORS", runner)
+        self.assertIn("XRAGE_EXPECTED_DIRECT_CONTEXT_HIGH_WATER", runner)
+        self.assertIn(
+            "direct_descriptors -eq $expected_direct_descriptors", runner
+        )
         self.assertIn("direct4x3 mechanism did not close exactly", runner)
         self.assertIn("XRAGE_SIMULATOR_PROVENANCE", runner)
         self.assertIn("provenance_gem5_sha256", runner)

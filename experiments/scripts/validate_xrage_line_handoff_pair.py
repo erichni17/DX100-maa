@@ -175,6 +175,29 @@ def validate_four_descriptor_line_mechanism(result):
         )
 
 
+def validate_required_multicontext(
+    page, line, expected_descriptors, expected_context_high_water
+):
+    """Bind a promotion claim to the intended steady-state population."""
+    observed_page = int(page["direct_descriptors"])
+    observed_line = int(line["direct_descriptors"])
+    if (
+        observed_page != expected_descriptors
+        or observed_line != expected_descriptors
+    ):
+        raise ValueError(
+            "matched pair did not exercise the required descriptor count: "
+            f"page={observed_page} line={observed_line} "
+            f"expected={expected_descriptors}"
+        )
+    observed_contexts = int(line["direct_context_high_water"])
+    if observed_contexts != expected_context_high_water:
+        raise ValueError(
+            "line treatment did not exercise the required context high-water: "
+            f"observed={observed_contexts} expected={expected_context_high_water}"
+        )
+
+
 def validate_arm(arm, expected_line_handoff):
     for name in ("checkpoint.exit", "restore.exit"):
         if (arm / name).read_text(encoding="ascii").strip() != "0":
@@ -292,7 +315,25 @@ def main():
     parser.add_argument("--simulator-provenance", required=True, type=Path)
     parser.add_argument("--guest-build-manifest", required=True, type=Path)
     parser.add_argument("--guest-build-artifacts", required=True, type=Path)
+    parser.add_argument("--expected-descriptors", type=int)
+    parser.add_argument("--expected-context-high-water", type=int)
     args = parser.parse_args()
+
+    if (args.expected_descriptors is None) != (
+        args.expected_context_high_water is None
+    ):
+        parser.error(
+            "--expected-descriptors and --expected-context-high-water "
+            "must be provided together"
+        )
+    if args.expected_descriptors is not None and (
+        args.expected_descriptors <= 0
+        or args.expected_context_high_water <= 0
+        or args.expected_context_high_water > args.expected_descriptors
+    ):
+        parser.error(
+            "expected descriptor/context counts must be positive and ordered"
+        )
 
     page_manifest, page, page_artifacts = validate_arm(args.page_arm, 0)
     line_manifest, line, line_artifacts = validate_arm(args.line_arm, 1)
@@ -316,6 +357,13 @@ def main():
         raise ValueError("page and line checkpoints are not byte-identical")
     if page["output_hash"] != line["output_hash"]:
         raise ValueError("page and line output hashes differ")
+    if args.expected_descriptors is not None:
+        validate_required_multicontext(
+            page,
+            line,
+            args.expected_descriptors,
+            args.expected_context_high_water,
+        )
 
     simulator = key_values(args.simulator_provenance)
     if page_manifest["source_commit"] != simulator["source_commit"]:
@@ -356,6 +404,11 @@ def main():
             line["direct_request_record_high_water"]
         ),
     }
+    if args.expected_descriptors is not None:
+        summary["required_descriptor_count"] = args.expected_descriptors
+        summary[
+            "required_context_high_water"
+        ] = args.expected_context_high_water
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
