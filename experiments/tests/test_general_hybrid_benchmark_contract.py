@@ -2,6 +2,7 @@
 """Deterministic command/selector contract for the matched micro matrix."""
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -94,6 +95,30 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         for command in (checkpoint, restore):
             self.assertIn("--debug-flags=MAAVirtualTrace", command)
             self.assertIn("--debug-file=virtual_trace.log", command)
+
+    def test_config_freeze_preserves_relative_import_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_root = root / "configs"
+            source = config_root / "deprecated" / "example" / "se.py"
+            common = config_root / "common" / "Options.py"
+            source.parent.mkdir(parents=True)
+            common.parent.mkdir(parents=True)
+            source.write_text("from common import Options\n", encoding="utf-8")
+            common.write_text("VALUE = 1\n", encoding="utf-8")
+
+            frozen, identity = runner.freeze_config_tree(
+                source, config_root, root / "frozen-configs"
+            )
+
+            self.assertEqual(
+                frozen,
+                (root / "frozen-configs/deprecated/example/se.py").resolve(),
+            )
+            self.assertTrue(
+                (root / "frozen-configs/common/Options.py").is_file()
+            )
+            self.assertEqual(len(identity["files"]), 2)
 
     def test_future_treatment_is_explicit_not_control_alias(self) -> None:
         arms = runner.make_arms(

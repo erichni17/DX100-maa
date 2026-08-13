@@ -344,7 +344,7 @@ def restore_command(
     ]
 
 
-def tree_identity(path: Path) -> dict[str, str]:
+def tree_identity(path: Path) -> dict[str, object]:
     files: dict[str, str] = {}
     for item in sorted(path.rglob("*")):
         if item.is_file():
@@ -358,6 +358,25 @@ def tree_identity(path: Path) -> dict[str, str]:
         digest.update(value.encode())
         digest.update(b"\n")
     return {"sha256": digest.hexdigest(), "files": files}
+
+
+def freeze_config_tree(
+    config: Path, repository_config_root: Path, destination: Path
+) -> tuple[Path, dict[str, object]]:
+    """Freeze the config with the sibling modules its imports require."""
+    source = config.resolve()
+    config_root = repository_config_root.resolve()
+    try:
+        relative = source.relative_to(config_root)
+    except ValueError:
+        # Preserve at least the immediate sibling modules of a custom config.
+        config_root = source.parent
+        relative = Path(source.name)
+    shutil.copytree(config_root, destination, symlinks=True)
+    frozen_config = destination / relative
+    if not frozen_config.is_file():
+        raise RuntimeError("frozen gem5 config is missing")
+    return frozen_config.resolve(), tree_identity(destination)
 
 
 def run_logged(
@@ -509,7 +528,6 @@ def main() -> int:
         "gem5": args.gem5,
         "ramulator_library": args.ramulator_library,
         "ramulator_config": args.ramulator_config,
-        "config": args.config,
         "native16": args.native16,
         "native4": args.native4,
     }
@@ -523,12 +541,15 @@ def main() -> int:
         "gem5": "gem5.opt",
         "ramulator_library": "libramulator.so",
         "ramulator_config": "ramulator.yaml",
-        "config": "se.py",
     }
     for name, source in source_artifacts.items():
         destination = frozen / fixed_names.get(name, name + source.suffix)
         shutil.copy2(source.resolve(), destination)
         frozen_artifacts[name] = destination.resolve()
+    frozen_config, config_tree_identity = freeze_config_tree(
+        args.config, ROOT / "configs", frozen / "configs"
+    )
+    frozen_artifacts["config"] = frozen_config
     for key in ("gem5", "native16", "native4", "hybrid"):
         if key in frozen_artifacts:
             frozen_artifacts[key].chmod(0o555)
@@ -574,6 +595,10 @@ def main() -> int:
     artifact_identity = {
         name: {"path": str(path), "sha256": sha256_file(path)}
         for name, path in frozen_artifacts.items()
+    }
+    artifact_identity["config_tree"] = {
+        "path": str((frozen / "configs").resolve()),
+        **config_tree_identity,
     }
     manifest: dict[str, object] = {
         "schema": "dx100.general_hybrid_matrix.v1",

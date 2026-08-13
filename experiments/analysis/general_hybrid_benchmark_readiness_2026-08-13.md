@@ -72,6 +72,9 @@ includes forwarded and cache-read line counts.  The ordinary and page-gated
 controls must show no materializer lifecycle events or nonzero materializer
 stats.
 
+The runner freezes the complete gem5 `configs` tree, not only `se.py`, so its
+relative `common` and `ruby` imports are part of the hashed campaign input.
+
 ## Ordinary workload builds
 
 After generating `util/m5/build/x86` (or using the source `m5op.S` directly),
