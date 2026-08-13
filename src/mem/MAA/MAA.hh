@@ -14,6 +14,7 @@
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "mem/MAA/DirectRetirementPortRetry.hh"
+#include "mem/MAA/EarlyProducerLineReadinessLedger.hh"
 #include "mem/MAA/HybridConsumerContextQueue.hh"
 #include "mem/MAA/HybridMacroEventTracker.hh"
 #include "mem/MAA/IF.hh"
@@ -494,7 +495,8 @@ public:
     void setVirtualPageReady(int tokenTileID, int pageID,
                              uint64_t transactionID);
     void setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
-                                  int lineID, uint16_t wordMask,
+                                  uint64_t generation, int lineID,
+                                  uint16_t wordMask,
                                   uint64_t transactionID);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
     uint64_t getVirtualPageReadyTransaction(int tokenTileID,
@@ -583,6 +585,7 @@ protected:
         HybridMacroEventTracker macro{};
     };
     HybridConsumerContextQueue directRetirementContexts;
+    EarlyProducerLineReadinessLedger directRetirementEarlyLineLedger;
     std::array<DirectRetirementExecution,
                HybridConsumerContextQueue::ContextCount>
         directRetirementExecutions{};
@@ -787,6 +790,7 @@ public:
         statistics::Scalar direct_retirement_descriptors;
         statistics::Scalar direct_retirement_producer_acks;
         statistics::Scalar direct_retirement_producer_line_acks;
+        statistics::Scalar direct_retirement_early_line_overflows;
         statistics::Scalar direct_retirement_page_fallback_lines;
         statistics::Scalar direct_retirement_read_issues;
         statistics::Scalar direct_retirement_read_responses;

@@ -146,6 +146,7 @@ protected:
     std::set<Addr> virtual_outstanding_write_lines;
     struct VirtualRetirementWriteMetadata {
         std::vector<std::pair<int, int>> pageWords;
+        uint64_t generation = 0;
         int backingLine = -1;
         uint16_t backingWordMask = 0;
     };
@@ -637,6 +638,9 @@ protected:
 public:
     void createReadPacket(Addr addr, int latency);
 };
+
+static_assert(IndirectAccessUnit::lineHandoffMetadataBytesPerWrite() == 16);
+
 } // namespace gem5
 
 #endif //__MEM_MAA_INDIRECT_ACCESS_HH__

@@ -1300,6 +1300,33 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
     panic_if(submit != HybridConsumerContextQueue::SubmitResult::Accepted,
              "Validated direct-retirement descriptor was not accepted\n");
 
+    const EarlyProducerLineReadinessLedger::Key early_key{
+        static_cast<uint16_t>(token_tile), descriptor.generation,
+        descriptor.backingAddress};
+    EarlyProducerLineReadinessLedger::ReplaySummary early_replay;
+    if (directRetirementEarlyLineLedger.active(early_key)) {
+        panic_if(!directRetirementEarlyLineLedger.replay(
+                     early_key,
+                     [this, &owner, &descriptor](
+                         const EarlyProducerLineReadinessLedger::LineAck
+                             &early_ack) {
+                         return directRetirementContexts.
+                             notifyProducerLineWriteAck(
+                                 owner,
+                                 {descriptor.generation, early_ack.line,
+                                  early_ack.wordMask,
+                                  early_ack.transactionID});
+                     },
+                     &early_replay),
+                 "Direct retirement rejected exact pre-admission line "
+                 "readiness\n");
+        panic_if(!directRetirementEarlyLineLedger.clear(early_key),
+                 "Direct retirement did not consume its early-line ledger "
+                 "slot\n");
+        stats.direct_retirement_producer_line_acks +=
+            early_replay.readyLines;
+    }
+
     DirectRetirementExecution execution;
     execution.active = true;
     execution.key = owner;
@@ -1324,6 +1351,9 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
     spd->setTileNotReady(execution_slot->completionTile, word_size);
     const uint64_t charged_payload_bytes =
         HybridConsumerContextQueue::chargedPayloadBytes();
+    const uint64_t native_spd_payload_bytes =
+        static_cast<uint64_t>(num_tiles) * physical_tile_elements *
+        sizeof(uint32_t);
     const uint64_t producer_line_metadata_bytes =
         direct_retirement_line_handoff
         ? num_indirect_units_total * virtual_max_outstanding_writes *
@@ -1334,6 +1364,7 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
         sizeof(directRetirementExecutions) +
         sizeof(directRetirementRequestRecords) +
         DirectRetirementPortRetry<Packet>::chargedControlBytes() +
+        EarlyProducerLineReadinessLedger::chargedTotalBytes() +
         producer_line_metadata_bytes;
     stats.direct_retirement_descriptors++;
     stats.direct_retirement_context_high_water = std::max(
@@ -1380,6 +1411,9 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             "request_records=%lu retry_packet_slots=%u "
             "retry_packet_slot_bytes=%lu "
             "payload_bytes=%lu control_bytes=%lu total_bytes=%lu "
+            "early_line_ledger_bytes=%lu early_entries_replayed=%u "
+            "early_lines_replayed=%u early_ledger_overflowed=%d "
+            "native_spd_payload_bytes=%lu "
             "producer_line_metadata_bytes=%lu backing_span_bytes=%lu "
             "private_page_payload_bytes=0\n",
             directRetirementTraceOccurrence++, owner.generation,
@@ -1393,6 +1427,9 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             DirectRetirementPortRetry<Packet>::chargedControlBytes(),
             charged_payload_bytes, charged_control_bytes,
             charged_payload_bytes + charged_control_bytes,
+            EarlyProducerLineReadinessLedger::chargedTotalBytes(),
+            early_replay.entries, early_replay.readyLines,
+            early_replay.overflowed, native_spd_payload_bytes,
             producer_line_metadata_bytes,
             static_cast<uint64_t>(descriptor.logicalElements) *
                 descriptor.wordBytes);
@@ -1648,6 +1685,8 @@ MAA::finishDirectRetirement(
                 stats.direct_retirement_fallbacks.value()));
     panic_if(!directRetirementContexts.retire(key),
              "Direct-retirement scheduler did not retire after final ACK\n");
+    (void)directRetirementEarlyLineLedger.clear(
+        {key.tokenTile, key.generation, execution->backingAddress});
     *execution = DirectRetirementExecution{};
     setTileReady(completion_tile, word_bytes);
     DPRINTF(MAAVirtualTrace,
@@ -3107,6 +3146,47 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
     virtualPageWordSize[tokenTileID] = wordSize;
     virtualProducerRegistrationTick[tokenTileID] = curTick();
     virtualPageLastReadyTick[tokenTileID] = 0;
+    if (direct_retirement_line_handoff) {
+        const uint64_t bytes =
+            static_cast<uint64_t>(num_tile_elements) * wordSize;
+        panic_if(wordSize <= 0 ||
+                     bytes % HybridConsumerPipeline::LineBytes != 0 ||
+                     HybridConsumerPipeline::LineBytes % wordSize != 0,
+                 "virtual producer token %d has unsupported line geometry\n",
+                 tokenTileID);
+        const uint64_t lines = bytes / HybridConsumerPipeline::LineBytes;
+        const unsigned words = HybridConsumerPipeline::LineBytes / wordSize;
+        panic_if(lines > EarlyProducerLineReadinessLedger::MaxLines ||
+                     words > 16,
+                 "virtual producer token %d exceeds early-line ledger "
+                 "geometry\n",
+                 tokenTileID);
+        const auto begin = directRetirementEarlyLineLedger.begin(
+            {static_cast<uint16_t>(tokenTileID),
+             virtualPageGeneration[tokenTileID], backingAddr},
+            static_cast<uint16_t>(lines),
+            static_cast<uint16_t>((1U << words) - 1));
+        panic_if(
+            begin == EarlyProducerLineReadinessLedger::BeginResult::Invalid ||
+                begin ==
+                    EarlyProducerLineReadinessLedger::BeginResult::Stale ||
+                begin ==
+                    EarlyProducerLineReadinessLedger::BeginResult::Existing,
+                 "virtual producer token %d could not start a fresh "
+                 "early-line generation\n",
+                 tokenTileID);
+        if (begin == EarlyProducerLineReadinessLedger::BeginResult::Full)
+            stats.direct_retirement_early_line_overflows++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_early_ledger_begin schema=1 "
+                "occurrence=%lu token=%d generation=%lu lines=%lu "
+                "result=%u active_slots=%u storage_bytes=%lu\n",
+                directRetirementTraceOccurrence++, tokenTileID,
+                virtualPageGeneration[tokenTileID], lines,
+                static_cast<unsigned>(begin),
+                directRetirementEarlyLineLedger.activeSlots(),
+                EarlyProducerLineReadinessLedger::chargedTotalBytes());
+    }
 }
 bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || pageID < 0 ||
@@ -3135,30 +3215,69 @@ Tick MAA::getVirtualProducerRegistrationTick(int tokenTileID) const {
     return virtualProducerRegistrationTick[tokenTileID];
 }
 void
-MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr, int lineID,
+MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
+                              uint64_t generation, int lineID,
                               uint16_t wordMask, uint64_t transactionID)
 {
     if (!direct_retirement_line_handoff)
         return;
-    DirectRetirementExecution *execution =
-        findDirectRetirementExecution(
-            tokenTileID, virtualPageGeneration[tokenTileID]);
-    if (execution == nullptr)
+    panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || lineID < 0,
+             "invalid virtual line token=%d line=%d\n", tokenTileID,
+             lineID);
+    if (generation != virtualPageGeneration[tokenTileID] ||
+        backingAddr != virtualPageBackingAddr[tokenTileID]) {
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_producer_line_reject schema=1 "
+                "occurrence=%lu token=%d generation=%lu line=%d "
+                "reason=stale_generation_or_backing\n",
+                directRetirementTraceOccurrence++, tokenTileID, generation,
+                lineID);
         return;
+    }
+    DirectRetirementExecution *execution =
+        findDirectRetirementExecution(tokenTileID, generation);
+    if (execution == nullptr) {
+        const auto result = directRetirementEarlyLineLedger.acknowledge(
+            {static_cast<uint16_t>(tokenTileID), generation, backingAddr},
+            {static_cast<uint16_t>(lineID), wordMask, transactionID});
+        panic_if(result ==
+                     EarlyProducerLineReadinessLedger::AckResult::Invalid,
+                 "Direct-retirement early line acknowledgement is invalid "
+                 "token=%d line=%d transaction=%lu\n",
+                 tokenTileID, lineID, transactionID);
+        if (result ==
+            EarlyProducerLineReadinessLedger::AckResult::Overflow)
+            stats.direct_retirement_early_line_overflows++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_producer_line_early schema=1 "
+                "occurrence=%lu token=%d generation=%lu line=%d "
+                "transaction=%lu result=%u ready_lines=%u\n",
+                directRetirementTraceOccurrence++, tokenTileID, generation,
+                lineID, transactionID, static_cast<unsigned>(result),
+                directRetirementEarlyLineLedger.readyLineCount(
+                    {static_cast<uint16_t>(tokenTileID), generation,
+                     backingAddr}));
+        return;
+    }
     panic_if(execution->backingAddress != backingAddr,
-             "Direct-retirement token %d received a stale line %d\n",
-             tokenTileID, lineID);
+             "Direct-retirement token %d lost exact line provenance\n",
+             tokenTileID);
     HybridConsumerContextQueue::Snapshot before;
     panic_if(!directRetirementContexts.snapshot(execution->key, &before),
              "Direct-retirement producer line lost its owner\n");
     const HybridConsumerPipeline::ProducerLineAck ack{
         execution->key.generation,
         static_cast<uint16_t>(lineID), wordMask, transactionID};
-    panic_if(!directRetirementContexts.notifyProducerLineWriteAck(
-                 execution->key, ack),
-             "Direct-retirement rejected producer line WriteResp "
-             "token=%d line=%d transaction=%lu\n",
-             tokenTileID, lineID, transactionID);
+    if (!directRetirementContexts.notifyProducerLineWriteAck(
+            execution->key, ack)) {
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_producer_line_reject schema=1 "
+                "occurrence=%lu token=%d generation=%lu line=%d "
+                "transaction=%lu reason=duplicate_or_closed\n",
+                directRetirementTraceOccurrence++, tokenTileID, generation,
+                lineID, transactionID);
+        return;
+    }
     HybridConsumerContextQueue::Snapshot after;
     panic_if(!directRetirementContexts.snapshot(execution->key, &after),
              "Direct-retirement producer line lost its snapshot\n");
@@ -3447,6 +3566,10 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(direct_retirement_producer_line_acks,
                statistics::units::Count::get(),
                "producer backing lines completed by exact WriteResp set"),
+      ADD_STAT(direct_retirement_early_line_overflows,
+               statistics::units::Count::get(),
+               "pre-admission line events conservatively left to exact "
+               "page fallback because the fixed ledger was full"),
       ADD_STAT(direct_retirement_page_fallback_lines,
                statistics::units::Count::get(),
                "producer lines released by conservative page closure"),

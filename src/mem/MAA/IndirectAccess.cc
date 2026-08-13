@@ -6228,6 +6228,7 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
              my_indirect_id, write_key);
     auto &metadata = virtual_retirement_write_pages[write_key];
     metadata.pageWords.assign(page_words.begin(), page_words.end());
+    metadata.generation = maa->getVirtualPageGeneration(my_dst_tile);
     const Addr backing_offset = vaddr - my_backing_addr;
     panic_if(backing_offset % block_size + size > block_size,
              "I[%d] virtual retirement write crosses a backing line\n",
@@ -6260,6 +6261,7 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
                  virtual_page_expected_words[page]);
     }
     maa->setVirtualLineWordsReady(my_dst_tile, my_backing_addr,
+                                  metadata->second.generation,
                                   metadata->second.backingLine,
                                   metadata->second.backingWordMask,
                                   write_key);
