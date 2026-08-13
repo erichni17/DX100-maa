@@ -39,6 +39,7 @@ indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
 simulator_provenance=${XRAGE_SIMULATOR_PROVENANCE:-}
+config_tree_sha256=${XRAGE_CONFIG_TREE_SHA256:-}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
@@ -295,6 +296,17 @@ ramulator=$(realpath "$ramulator")
     echo "missing se.py or Ramulator configuration" >&2
     exit 2
 }
+if [[ -n $config_tree_sha256 ]]; then
+    config_tree_sha256=$(realpath "$config_tree_sha256")
+    [[ -f $config_tree_sha256 ]] || {
+        echo "missing frozen config-tree checksum manifest" >&2
+        exit 2
+    }
+    sha256sum --check --status "$config_tree_sha256" || {
+        echo "frozen simulator config tree failed checksum verification" >&2
+        exit 2
+    }
+fi
 options="-f $input"
 if [[ -n $guest_arm ]]; then
     options+=" --maa-arm $guest_arm"
@@ -341,6 +353,7 @@ fi
     printf 'input=%s\n' "$input"
     printf 'se_config=%s\n' "$config"
     printf 'ramulator_config=%s\n' "$ramulator"
+    printf 'config_tree_sha256=%s\n' "$config_tree_sha256"
     printf 'guest_environment=empty\n'
     printf 'data_seed=gem5_fixed_epoch_time\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -352,6 +365,9 @@ artifacts=("$gem5" "$binary" "$input" "$config" "$ramulator" \
     "$runner_snapshot")
 if [[ -n $simulator_provenance ]]; then
     artifacts+=("$simulator_provenance")
+fi
+if [[ -n $config_tree_sha256 ]]; then
+    artifacts+=("$config_tree_sha256")
 fi
 sha256sum "${artifacts[@]}" > "$out/artifact_sha256.txt"
 

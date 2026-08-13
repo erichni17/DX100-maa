@@ -221,8 +221,11 @@ class XrageRunnerAbiTest(unittest.TestCase):
         runner = RUNNER.read_text(encoding="utf-8")
         self.assertIn("XRAGE_SE_CONFIG_OVERRIDE", runner)
         self.assertIn("XRAGE_RAMULATOR_CONFIG_OVERRIDE", runner)
+        self.assertIn("XRAGE_CONFIG_TREE_SHA256", runner)
         self.assertIn("se_config=%s", runner)
         self.assertIn("ramulator_config=%s", runner)
+        self.assertIn("config_tree_sha256=%s", runner)
+        self.assertIn("sha256sum --check --status", runner)
         self.assertIn('artifacts=("$gem5" "$binary" "$input" "$config"', runner)
 
     def test_native_4k_x3_runner_emits_a_4k_nontransparent_restore_abi(self):
