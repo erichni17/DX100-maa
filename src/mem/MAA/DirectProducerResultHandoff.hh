@@ -22,14 +22,26 @@ class DirectProducerResultHandoff
     static constexpr uint16_t ProducerRows = 64;
     static constexpr uint16_t ProducerRowOffsets = 256;
     static constexpr uint8_t WordBytes = sizeof(double);
+    static constexpr uint8_t IndexWordBytes = sizeof(uint32_t);
     static constexpr uint8_t WordsPerLine = 64 / WordBytes;
     static constexpr uint16_t LineBytes = 64;
     static constexpr uint16_t Lines = LogicalElements / WordsPerLine;
+    static constexpr uint64_t IntermediateBytes =
+        uint64_t(LogicalElements) * WordBytes;
+    static constexpr uint64_t IndexBytes =
+        uint64_t(LogicalElements) * IndexWordBytes;
     static constexpr uint8_t PayloadCredits = 16;
     static constexpr uint64_t ScalarThreeBits = 0x4008000000000000ULL;
     static constexpr uint8_t NoBuffer = std::numeric_limits<uint8_t>::max();
 
     enum class SubmitResult : uint8_t { Accepted, Busy, Fallback };
+    enum class ProducerWriteResult : uint8_t
+    {
+        Accepted,
+        AcceptedLineReady,
+        Busy,
+        Rejected,
+    };
     enum class State : uint8_t { Idle, Active, Complete };
     enum class LineState : uint8_t
     {
@@ -59,6 +71,33 @@ class DirectProducerResultHandoff
         int destinationRangeID = -1;
         bool isFP64MultiplyStore = false;
     };
+    struct MemorySpan
+    {
+        uint64_t address = 0;
+        uint64_t bytes = 0;
+        uint64_t registeredMin = 0;
+        uint64_t registeredMax = 0;
+        int registeredRangeID = -1;
+    };
+    /**
+     * Proof obligations that are not encoded by the current XRAGE ABI.
+     * A caller may only assert them after checking exact allocation/VM and
+     * synchronization state; registered-range identity alone is insufficient
+     * because distinct virtual spans may still alias the same physical bytes.
+     */
+    struct LegalityProof
+    {
+        MemorySpan source{};
+        MemorySpan indices{};
+        MemorySpan intermediate{};
+        MemorySpan destination{};
+        bool intermediateDeadAfterConsumer = false;
+        bool producerTokenPrivateToConsumer = false;
+        bool noCpuOrPeerAccessUntilCompletion = false;
+        bool translationsAndAccessSideEffectsPrevalidated = false;
+        bool noHiddenPhysicalAliases = false;
+        bool noIntermediateWriteIssued = false;
+    };
     struct ProducerWord
     {
         uint64_t generation = 0;
@@ -84,12 +123,18 @@ class DirectProducerResultHandoff
     };
 
     static const char *eligibilityFailure(const ProducerDescriptor &producer,
-                                          const ConsumerDescriptor &consumer)
+                                          const ConsumerDescriptor &consumer,
+                                          const LegalityProof &proof)
     {
         if (producer.generation == 0 ||
+            producer.generation >
+                (std::numeric_limits<uint64_t>::max() >> 13) ||
             producer.generation != consumer.generation)
             return "producer/consumer generations do not match";
-        if (producer.tokenTile < 0 || producer.tokenTile != consumer.tokenTile)
+        if (producer.tokenTile < 0 ||
+            producer.tokenTile >=
+                std::numeric_limits<uint16_t>::max() ||
+            producer.tokenTile != consumer.tokenTile)
             return "producer/consumer tokens do not match";
         if (!producer.isVirtualGather || !producer.completionOnlyToken)
             return "producer is not a completion-only virtual gather";
@@ -101,22 +146,60 @@ class DirectProducerResultHandoff
         if (!consumer.isFP64MultiplyStore ||
             consumer.scalarBits != ScalarThreeBits)
             return "consumer is not terminal fp64 multiply-by-three store";
-        const uint64_t bytes = uint64_t(LogicalElements) * WordBytes;
         if (consumer.destinationRangeID < 0 ||
             consumer.destinationAddress % LineBytes != 0 ||
             consumer.destinationRangeMin >= consumer.destinationRangeMax ||
             consumer.destinationAddress < consumer.destinationRangeMin ||
-            bytes > consumer.destinationRangeMax - consumer.destinationAddress)
+            consumer.destinationAddress >= consumer.destinationRangeMax ||
+            IntermediateBytes >
+                consumer.destinationRangeMax - consumer.destinationAddress)
             return "destination is not an aligned full 16K fp64 store";
+        if (!validSpan(proof.source) || !validSpan(proof.indices) ||
+            !validSpan(proof.intermediate) ||
+            !validSpan(proof.destination) ||
+            proof.indices.bytes != IndexBytes ||
+            proof.intermediate.bytes != IntermediateBytes ||
+            proof.destination.bytes != IntermediateBytes ||
+            proof.source.address % WordBytes != 0 ||
+            proof.source.bytes % WordBytes != 0 ||
+            proof.indices.address % IndexWordBytes != 0 ||
+            proof.intermediate.address % LineBytes != 0 ||
+            proof.destination.address % LineBytes != 0 ||
+            proof.destination.address != consumer.destinationAddress ||
+            proof.destination.registeredMin !=
+                consumer.destinationRangeMin ||
+            proof.destination.registeredMax !=
+                consumer.destinationRangeMax ||
+            proof.destination.registeredRangeID !=
+                consumer.destinationRangeID)
+            return "exact A/B/intermediate/C spans are not registered";
+        if (!proof.intermediateDeadAfterConsumer ||
+            !proof.producerTokenPrivateToConsumer)
+            return "intermediate backing or producer token remains observable";
+        if (!proof.noCpuOrPeerAccessUntilCompletion)
+            return "memory can be observed before fused completion";
+        if (!proof.translationsAndAccessSideEffectsPrevalidated)
+            return "faults or translation side effects are not prevalidated";
+        if (!proof.noHiddenPhysicalAliases)
+            return "physical alias freedom is not proven";
+        if (!proof.noIntermediateWriteIssued)
+            return "producer backing traffic already began";
+        if (spansOverlap(proof.intermediate, proof.source) ||
+            spansOverlap(proof.intermediate, proof.indices) ||
+            spansOverlap(proof.intermediate, proof.destination) ||
+            spansOverlap(proof.destination, proof.source) ||
+            spansOverlap(proof.destination, proof.indices))
+            return "a writable intermediate or destination aliases live input";
         return nullptr;
     }
 
     SubmitResult rendezvous(const ProducerDescriptor &newProducer,
-                            const ConsumerDescriptor &newConsumer)
+                            const ConsumerDescriptor &newConsumer,
+                            const LegalityProof &newProof)
     {
         if (state != State::Idle)
             return SubmitResult::Busy;
-        if (eligibilityFailure(newProducer, newConsumer) != nullptr)
+        if (eligibilityFailure(newProducer, newConsumer, newProof) != nullptr)
             return SubmitResult::Fallback;
         producer = newProducer;
         consumer = newConsumer;
@@ -136,6 +219,8 @@ class DirectProducerResultHandoff
         buffers[buffer] = {line, LineState::Capturing};
         lineStates[line] = LineState::Capturing;
         lineBuffers[buffer].fill(std::byte{0});
+        if (creditsInUse() > creditHighWaterValue)
+            creditHighWaterValue = creditsInUse();
         return assertInvariants();
     }
 
@@ -165,6 +250,57 @@ class DirectProducerResultHandoff
             lineStates[line] = LineState::ReadyForALU;
         }
         return assertInvariants();
+    }
+
+    /**
+     * Atomically capture enabled words from one producer combiner line. A
+     * new non-frontier line may consume at most fifteen credits, reserving
+     * one for nextStoreLine so arbitrary Row/Offset order cannot deadlock the
+     * strict destination frontier.
+     */
+    ProducerWriteResult acceptProducerWrite(
+        uint64_t generation, uint16_t line, uint16_t wordMask,
+        const std::byte *payload, std::size_t payloadBytes)
+    {
+        constexpr uint16_t FullMask = (1U << WordsPerLine) - 1;
+        if (state != State::Active || generation != producer.generation ||
+            line >= Lines || wordMask == 0 || (wordMask & ~FullMask) != 0 ||
+            payload == nullptr || payloadBytes != LineBytes)
+            return ProducerWriteResult::Rejected;
+
+        const LineState prior = lineStates[line];
+        if (prior != LineState::Free && prior != LineState::Capturing)
+            return ProducerWriteResult::Rejected;
+        const uint16_t first = line * WordsPerLine;
+        for (uint8_t word = 0; word < WordsPerLine; ++word) {
+            if ((wordMask & (1U << word)) != 0 &&
+                producerWordsPresent.test(first + word))
+                return ProducerWriteResult::Rejected;
+        }
+        if (prior == LineState::Free && line != nextStoreLine &&
+            creditsInUse() >= PayloadCredits - 1)
+            return ProducerWriteResult::Busy;
+        if (prior == LineState::Free && freeBuffer() == NoBuffer)
+            return ProducerWriteResult::Busy;
+        if (prior == LineState::Free && !reserveProducerLine(line))
+            return ProducerWriteResult::Rejected;
+
+        for (uint8_t word = 0; word < WordsPerLine; ++word) {
+            if ((wordMask & (1U << word)) == 0)
+                continue;
+            const uint16_t logical = first + word;
+            ProducerWord producerWord;
+            producerWord.generation = generation;
+            producerWord.row = logical / ProducerRowOffsets;
+            producerWord.offset = logical % ProducerRowOffsets;
+            std::memcpy(producerWord.payload.data(),
+                        payload + word * WordBytes, WordBytes);
+            if (!acceptProducerWord(producerWord))
+                return ProducerWriteResult::Rejected;
+        }
+        return lineStates[line] == LineState::ReadyForALU
+            ? ProducerWriteResult::AcceptedLineReady
+            : ProducerWriteResult::Accepted;
     }
 
     ALURequest pendingALU() const
@@ -199,6 +335,15 @@ class DirectProducerResultHandoff
             std::memcpy(lineBuffers[request.buffer].data() + word * WordBytes,
                         &value, WordBytes);
         }
+        return completeALUExternally(request);
+    }
+
+    // The live bridge may use the existing timed ALU to mutate this exact
+    // credit in place, then invoke only the ownership transition here.
+    bool completeALUExternally(const ALURequest &request)
+    {
+        if (!exactALUInFlight(request) || !aluInFlight)
+            return false;
         buffers[request.buffer].state = LineState::ReadyForStore;
         lineStates[request.line] = LineState::ReadyForStore;
         aluInFlight = false;
@@ -237,6 +382,10 @@ class DirectProducerResultHandoff
         return assertInvariants();
     }
 
+    std::byte *payload(uint8_t buffer)
+    {
+        return buffer < PayloadCredits ? lineBuffers[buffer].data() : nullptr;
+    }
     const std::byte *payload(uint8_t buffer) const
     {
         return buffer < PayloadCredits ? lineBuffers[buffer].data() : nullptr;
@@ -251,6 +400,11 @@ class DirectProducerResultHandoff
     State getState() const { return state; }
     bool complete() const { return state == State::Complete; }
     uint16_t storesAcked() const { return storesAcknowledged; }
+    uint8_t creditHighWater() const { return creditHighWaterValue; }
+    std::size_t producerWordsAccepted() const
+    {
+        return producerWordsPresent.count();
+    }
     uint16_t nextDestinationLine() const { return nextStoreLine; }
     LineState lineState(uint16_t line) const
     {
@@ -267,6 +421,17 @@ class DirectProducerResultHandoff
     static constexpr std::size_t chargedTotalBytes()
     {
         return sizeof(DirectProducerResultHandoff);
+    }
+
+    bool retire()
+    {
+        if (state != State::Complete || !assertInvariants())
+            return false;
+        producer = ProducerDescriptor{};
+        consumer = ConsumerDescriptor{};
+        resetActive();
+        state = State::Idle;
+        return true;
     }
 
     bool assertInvariants() const
@@ -320,6 +485,19 @@ class DirectProducerResultHandoff
             if (buffers[buffer].state == LineState::Free)
                 return buffer;
         return NoBuffer;
+    }
+    static bool validSpan(const MemorySpan &span)
+    {
+        return span.registeredRangeID >= 0 && span.bytes != 0 &&
+            span.registeredMin < span.registeredMax &&
+            span.address >= span.registeredMin &&
+            span.address < span.registeredMax &&
+            span.bytes <= span.registeredMax - span.address;
+    }
+    static bool spansOverlap(const MemorySpan &lhs, const MemorySpan &rhs)
+    {
+        return lhs.address < rhs.address + rhs.bytes &&
+            rhs.address < lhs.address + lhs.bytes;
     }
     uint8_t bufferForLine(uint16_t line) const
     {
@@ -388,6 +566,7 @@ class DirectProducerResultHandoff
         nextStoreLine = 0;
         storesAcknowledged = 0;
         aluInFlight = false;
+        creditHighWaterValue = 0;
     }
 
     State state = State::Idle;
@@ -402,6 +581,7 @@ class DirectProducerResultHandoff
     uint16_t nextStoreLine = 0;
     uint16_t storesAcknowledged = 0;
     bool aluInFlight = false;
+    uint8_t creditHighWaterValue = 0;
 };
 
 static_assert(DirectProducerResultHandoff::LogicalElements == 16384);
