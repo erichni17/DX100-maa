@@ -15,11 +15,22 @@ SPEC.loader.exec_module(MODULE)
 
 
 class SummarizeXrageComparisonTest(unittest.TestCase):
+    def test_gem5_artifact_classifier_excludes_provenance_metadata(self):
+        self.assertTrue(MODULE.is_gem5_binary_artifact(Path("gem5.opt")))
+        self.assertTrue(
+            MODULE.is_gem5_binary_artifact(Path("gem5.opt.ovl_base"))
+        )
+        self.assertTrue(MODULE.is_gem5_binary_artifact(Path("gem5.debug")))
+        self.assertFalse(
+            MODULE.is_gem5_binary_artifact(Path("gem5.provenance.txt"))
+        )
+        self.assertFalse(
+            MODULE.is_gem5_binary_artifact(Path("gem5.build-info.txt"))
+        )
+
     def test_x3_guest_arms_are_geometry_specific(self):
         self.assertEqual(
-            MODULE.expected_guest_arm(
-                {"arm": "native", "result_scale": "3"}
-            ),
+            MODULE.expected_guest_arm({"arm": "native", "result_scale": "3"}),
             "native16x3",
         )
         self.assertEqual(

@@ -23,6 +23,9 @@ FATAL_RE = re.compile(
     r"panic|fatal|segmentation fault|MAA_GATHER_VERIFY_FAIL", re.IGNORECASE
 )
 SIM_TICKS_RE = re.compile(r"^simTicks\s+(\d+)\s+", re.MULTILINE)
+GEM5_BINARY_RE = re.compile(
+    r"^gem5\.(?:opt|fast|debug)(?:[._-][A-Za-z0-9][A-Za-z0-9._-]*)?$"
+)
 REQUIRED_RESULT_FIELDS = {
     "output_hash",
     "roi_simTicks",
@@ -104,6 +107,10 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def is_gem5_binary_artifact(path: Path) -> bool:
+    return GEM5_BINARY_RE.fullmatch(path.name) is not None
+
+
 def verify_artifacts(path: Path, cache: dict[tuple, str]) -> dict[Path, str]:
     verified: dict[Path, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -140,7 +147,7 @@ def read_simulator_provenance(
     simulators = {
         digest
         for artifact, digest in artifacts.items()
-        if artifact.name.startswith("gem5")
+        if is_gem5_binary_artifact(artifact)
     }
     if len(simulators) != 1:
         fail(
@@ -228,7 +235,7 @@ def read_run(
     simulators = {
         digest
         for path, digest in artifacts.items()
-        if path.name.startswith("gem5")
+        if is_gem5_binary_artifact(path)
     }
     if len(simulators) != 1:
         fail(f"{label} has {len(simulators)} distinct gem5 artifact hashes")
