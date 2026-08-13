@@ -2518,6 +2518,11 @@ MAA::servicePageMaterialization()
                                        firstElement + word, value);
             }
         }
+        // setData() marks the individual elements complete but does not wake
+        // functional units. Wake after the whole cache line is committed so
+        // an ordinary dependent ALU/stream chain can consume this line while
+        // the rest of the 4K page is still materializing.
+        spd->wakeup_waiting_units(execution->destinationTile);
         commit = {};
         panic_if(!directRetirementContexts.completeMaterialize(request),
                  "Page materializer rejected an exact SPD line commit\n");

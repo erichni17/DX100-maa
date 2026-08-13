@@ -203,6 +203,22 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         )[0]
         self.assertNotIn("maa_const(", token_body)
 
+    def test_materializer_wakes_consumers_after_each_line_commit(self) -> None:
+        source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
+        commit = source.split(
+            "event=page_materialization_line_commit schema=1", 1
+        )[0].rsplit("for (uint16_t word", 1)[1]
+        self.assertIn("spd->setData", commit)
+        self.assertIn("spd->wakeup_waiting_units", commit)
+        self.assertLess(
+            commit.index("spd->setData"),
+            commit.index("spd->wakeup_waiting_units"),
+        )
+        self.assertLess(
+            commit.index("spd->wakeup_waiting_units"),
+            commit.index("completeMaterialize"),
+        )
+
     def test_gapbs_adds_native4_controls_without_false_hybrid_target(
         self,
     ) -> None:
