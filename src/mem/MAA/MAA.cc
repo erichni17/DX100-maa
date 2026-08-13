@@ -1152,10 +1152,16 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
                          word_size);
     const uint64_t charged_payload_bytes =
         HybridConsumerPipeline::chargedPayloadBytes();
+    const uint64_t producer_line_metadata_bytes =
+        direct_retirement_line_handoff
+        ? num_indirect_units_total * virtual_max_outstanding_writes *
+              IndirectAccessUnit::lineHandoffMetadataBytesPerWrite()
+        : 0;
     const uint64_t charged_control_bytes =
         HybridConsumerPipeline::chargedControlBytes() +
         sizeof(DirectRetirementExecution) +
-        HybridConsumerPipeline::LineBufferCount * sizeof(Addr);
+        HybridConsumerPipeline::LineBufferCount * sizeof(Addr) +
+        producer_line_metadata_bytes;
     stats.direct_retirement_descriptors++;
     stats.direct_retirement_payload_bytes = std::max(
         stats.direct_retirement_payload_bytes.value(),
@@ -1191,13 +1197,15 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             "generation=%lu token=%d source=0x%lx destination=0x%lx "
             "scope=terminal_fp64_mul_dense_store credits=%u "
             "payload_bytes=%lu control_bytes=%lu total_bytes=%lu "
-            "backing_span_bytes=%lu private_page_payload_bytes=0\n",
+            "producer_line_metadata_bytes=%lu backing_span_bytes=%lu "
+            "private_page_payload_bytes=0\n",
             directRetirementTraceOccurrence++, descriptor.generation,
             token_tile, descriptor.backingAddress,
             descriptor.destinationAddress,
             HybridConsumerPipeline::LineBufferCount,
             charged_payload_bytes, charged_control_bytes,
             charged_payload_bytes + charged_control_bytes,
+            producer_line_metadata_bytes,
             static_cast<uint64_t>(descriptor.logicalElements) *
                 descriptor.wordBytes);
     scheduleDirectRetirementEvent();

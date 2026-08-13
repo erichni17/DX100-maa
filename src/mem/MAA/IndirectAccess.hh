@@ -251,6 +251,11 @@ public:
     MAA *maa;
     IndirectAccessUnit();
     ~IndirectAccessUnit();
+    static constexpr size_t lineHandoffMetadataBytesPerWrite()
+    {
+        return sizeof(VirtualRetirementWriteMetadata) -
+            sizeof(std::vector<std::pair<int, int>>);
+    }
     void allocate(int _my_indirect_id,
                   int _num_tile_elements,
                   int _num_offset_table_entries,

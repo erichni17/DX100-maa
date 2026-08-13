@@ -17,8 +17,10 @@ reads without treating an issued write as completed.
 The bounded hardware model remains:
 
 - 16 payload credits x 64 bytes = 1,024 bytes.
-- 4,912 bytes of modeled control state, including a fixed 2 KiB line-readiness
-  ledger.
+- 5,424 bytes of modeled treatment control state with one indirect unit and 64
+  write credits.  This includes the fixed 2 KiB consumer line-readiness ledger
+  and 512 bytes of conservative producer line-ID/mask metadata.  The page-gated
+  control does not provision that 512-byte treatment differential.
 - Full 16K producer reordering state and coherent LLC backing remain required.
 
 This is not fully bounded RowTable virtualization.  It reduces the hybrid's
