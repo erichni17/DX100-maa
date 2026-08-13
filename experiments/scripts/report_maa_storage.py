@@ -88,7 +88,9 @@ def main() -> int:
     logical = integer(maa, "num_tile_elements")
     physical = integer(maa, "physical_tile_elements") or logical
     try:
-        offset_entries = int(maa.get("num_offset_table_entries", "0")) or logical
+        offset_entries = (
+            int(maa.get("num_offset_table_entries", "0")) or logical
+        )
     except ValueError:
         fail("invalid system.maa value for num_offset_table_entries")
     try:
@@ -113,6 +115,9 @@ def main() -> int:
     index_lines = integer(maa, "virtual_index_buffer_lines")
     outstanding_writes = integer(maa, "virtual_max_outstanding_writes")
     native_issue_order = maa.getboolean("virtual_native_issue_order")
+    direct_retirement_line_handoff = maa.getboolean(
+        "direct_retirement_line_handoff", fallback=False
+    )
 
     positive = {
         "num_cores": cores,
@@ -371,11 +376,61 @@ def main() -> int:
     inactive_cpp_response_line_bytes_total = (
         inactive_cpp_response_line_bytes_per_unit * indirect_units
     )
+
+    # Direct retirement owns a second, finite set of credits only when the
+    # line-handoff path is enabled.  Keep this separate from the indirect
+    # virtual buffers above: none of these terms recharges their index,
+    # response, combine, or outstanding-write payloads.
+    #
+    # The C++ constants are verified by the focused charge helpers/unit
+    # output on the 64-bit ABI: queue payload/control = 4096/17728 B,
+    # four retry pointers = 32 B, and the early-line ledger = 1696 B.
+    # Execution and request-record footprints are direct sizeof() charges in
+    # MAA.cc; their 456-B and 72-B record sizes are deliberately kept in the
+    # conservative implementation view rather than claimed as hardware.
+    direct_contexts = 4
+    direct_request_records = 64
+    direct_queue_payload_bytes = 4096
+    direct_queue_control_bytes = 17728
+    direct_execution_record_cpp_bytes = 456
+    direct_request_record_cpp_bytes = 72
+    direct_retry_slots = 4
+    direct_retry_slot_cpp_bytes = 8
+    direct_retry_cpp_bytes = direct_retry_slots * direct_retry_slot_cpp_bytes
+    direct_early_line_ledger_bytes = 1696
+    direct_producer_metadata_bytes = indirect_units * outstanding_writes * 16
+    direct_cpp_static_bytes = (
+        direct_queue_payload_bytes
+        + direct_queue_control_bytes
+        + direct_contexts * direct_execution_record_cpp_bytes
+        + direct_request_records * direct_request_record_cpp_bytes
+        + direct_retry_cpp_bytes
+        + direct_early_line_ledger_bytes
+        + direct_producer_metadata_bytes
+    )
+    # Densely packed semantic floor.  It intentionally does not infer an RTL
+    # encoding for queue scheduler/control state; that state is shown in the
+    # C++ static view instead.
+    direct_execution_record_hardware_bytes = 112
+    direct_request_record_hardware_bytes = 50
+    direct_hardware_lower_bound_bytes = (
+        direct_queue_payload_bytes
+        + direct_contexts * direct_execution_record_hardware_bytes
+        + direct_request_records * direct_request_record_hardware_bytes
+        + direct_retry_cpp_bytes
+        + direct_early_line_ledger_bytes
+        + direct_producer_metadata_bytes
+    )
+    if not direct_retirement_line_handoff:
+        direct_cpp_static_bytes = 0
+        direct_hardware_lower_bound_bytes = 0
+        direct_producer_metadata_bytes = 0
     counted_payload = physical_spd_bytes + active_virtual_payload_total
     bounded_state_total = (
         counted_payload
         + virtual_control_bytes_per_unit * indirect_units
         + completion_increment_bytes
+        + direct_hardware_lower_bound_bytes
     )
     native_comparable_storage = (
         native_spd_bytes
@@ -399,13 +454,22 @@ def main() -> int:
         + allocated_descriptor_lower_bytes
     )
     conservative_cpp_static_bounded_state = (
-        bounded_state_total + inactive_cpp_response_line_bytes_total
+        bounded_state_total
+        + inactive_cpp_response_line_bytes_total
+        + direct_cpp_static_bytes
+        - direct_hardware_lower_bound_bytes
     )
     conservative_cpp_static_comparable_storage = (
-        comparable_storage + inactive_cpp_response_line_bytes_total
+        comparable_storage
+        + inactive_cpp_response_line_bytes_total
+        + direct_cpp_static_bytes
+        - direct_hardware_lower_bound_bytes
     )
     conservative_cpp_static_allocated_storage = (
-        allocated_comparable_storage + inactive_cpp_response_line_bytes_total
+        allocated_comparable_storage
+        + inactive_cpp_response_line_bytes_total
+        + direct_cpp_static_bytes
+        - direct_hardware_lower_bound_bytes
     )
 
     report = {
@@ -427,6 +491,7 @@ def main() -> int:
             "virtual_pages_used": virtual_pages_used,
             "indirect_units": indirect_units,
             "row_table_organizations_allocated": allocated_slices,
+            "direct_retirement_line_handoff": direct_retirement_line_handoff,
         },
         "scratchpad": {
             "native_logical_payload_bytes": native_spd_bytes,
@@ -563,6 +628,110 @@ def main() -> int:
             "incremental_completion_bytes": completion_increment_bytes,
             "assumes_unified_request_response_slots": True,
         },
+        "direct_retirement_line_handoff_state": {
+            "enabled": direct_retirement_line_handoff,
+            "scope": (
+                "additional bounded direct-retirement state only; excludes "
+                "all indirect virtual index/response/combine buffers already "
+                "charged elsewhere in this report"
+            ),
+            "hardware_lower_bound": {
+                "queue_line_payload_bytes": (
+                    direct_queue_payload_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "execution_records": direct_contexts
+                if direct_retirement_line_handoff
+                else 0,
+                "packed_execution_bytes_per_record": (
+                    direct_execution_record_hardware_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "request_records": (
+                    direct_request_records
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "packed_request_bytes_per_record": (
+                    direct_request_record_hardware_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "per_port_retry_slots": (
+                    direct_retry_slots if direct_retirement_line_handoff else 0
+                ),
+                "retry_slot_bytes_64_bit_abi": (
+                    direct_retry_slot_cpp_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "early_line_ledger_bytes": (
+                    direct_early_line_ledger_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "producer_line_metadata_bytes": direct_producer_metadata_bytes,
+                "total_bytes": direct_hardware_lower_bound_bytes,
+                "excludes": (
+                    "queue scheduler/control encoding and C++ object padding; "
+                    "this is a dense semantic lower bound, not an RTL area estimate"
+                ),
+            },
+            "conservative_cpp_static_view": {
+                "queue_payload_bytes": (
+                    direct_queue_payload_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "queue_control_bytes": (
+                    direct_queue_control_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "execution_records": direct_contexts
+                if direct_retirement_line_handoff
+                else 0,
+                "execution_bytes_per_record": (
+                    direct_execution_record_cpp_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "request_records": (
+                    direct_request_records
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "request_bytes_per_record": (
+                    direct_request_record_cpp_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "per_port_retry_slots": (
+                    direct_retry_slots if direct_retirement_line_handoff else 0
+                ),
+                "retry_slot_bytes_64_bit_abi": (
+                    direct_retry_slot_cpp_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "retry_slots_bytes": direct_retry_cpp_bytes
+                if direct_retirement_line_handoff
+                else 0,
+                "early_line_ledger_bytes": (
+                    direct_early_line_ledger_bytes
+                    if direct_retirement_line_handoff
+                    else 0
+                ),
+                "producer_line_metadata_bytes": direct_producer_metadata_bytes,
+                "total_bytes": direct_cpp_static_bytes,
+                "assumptions": (
+                    "C++ static 64-bit ABI view from the fixed MAA.cc arrays; "
+                    "still excludes STL/container and allocator overhead"
+                ),
+            },
+        },
         "counted_payload": {
             "physical_spd_plus_virtual_buffers_bytes": counted_payload,
             "reduction_vs_native_spd_pct": (
@@ -643,6 +812,7 @@ def main() -> int:
             "cache tags, MSHRs, routing state, and outstanding packet payload",
             "ports, wiring, control, and synthesized memory periphery",
             "C++ STL node/vector objects and allocator overhead",
+            "indirect virtual index/response/combine payload already charged above",
         ],
     }
 
@@ -672,6 +842,10 @@ def main() -> int:
         f"{format_bytes(virtual_control_bytes_per_unit)} / indirect unit |",
         "| Incremental completion state | "
         f"{format_bytes(completion_increment_bytes)} |",
+        "| Direct-retirement handoff hardware lower bound | "
+        f"{format_bytes(direct_hardware_lower_bound_bytes)} |",
+        "| Direct-retirement handoff conservative C++ static view | "
+        f"{format_bytes(direct_cpp_static_bytes)} |",
         f"| Physical SPD + bounded virtual payload | {format_bytes(counted_payload)} |",
         "| Physical SPD + bounded payload/control lower bound | "
         f"{format_bytes(bounded_state_total)} |",
@@ -720,7 +894,10 @@ def main() -> int:
         "issue order. Essential tags and bounded control arrays are included as a",
         "bit-count lower bound; ports, arbitration, wiring, and memory periphery are",
         "still excluded. The conservative C++ view additionally counts the inactive",
-        "fixed response-line arrays, but still does not estimate STL/allocator overhead.",
+        "fixed response-line arrays and, when direct_retirement_line_handoff=true,",
+        "the fixed direct-retirement queue, execution records, request records, retry",
+        "slots, early-line ledger, and producer-line metadata. The direct handoff",
+        "views deliberately exclude indirect virtual buffers already charged above.",
     ]
     (output / "maa_storage.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"

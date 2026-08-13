@@ -13,7 +13,11 @@ SCRIPT = ROOT / "experiments" / "scripts" / "report_maa_storage.py"
 
 class StorageReportTest(unittest.TestCase):
     def write_config(
-        self, root: Path, physical: int, native_order: bool
+        self,
+        root: Path,
+        physical: int,
+        native_order: bool,
+        direct_retirement_line_handoff: bool = False,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -34,6 +38,9 @@ class StorageReportTest(unittest.TestCase):
             "virtual_index_buffer_lines": "8",
             "virtual_max_outstanding_writes": "64",
             "virtual_native_issue_order": str(native_order).lower(),
+            "direct_retirement_line_handoff": (
+                str(direct_retirement_line_handoff).lower()
+            ),
         }
         config = configparser.ConfigParser()
         config["system.maa"] = values
@@ -114,6 +121,63 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(
                 report["configuration"]["row_table_organizations_allocated"],
                 [4, 8, 16, 32],
+            )
+
+    def test_direct_retirement_line_handoff_is_flag_gated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            disabled = self.write_config(root, 4096, True)
+            result, output = self.run_report(root, disabled, "direct-index")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            disabled_report = json.loads(
+                (output / "maa_storage.json").read_text()
+            )
+            disabled_state = disabled_report[
+                "direct_retirement_line_handoff_state"
+            ]
+            self.assertFalse(disabled_state["enabled"])
+            self.assertEqual(
+                disabled_state["hardware_lower_bound"]["total_bytes"], 0
+            )
+            self.assertEqual(
+                disabled_state["conservative_cpp_static_view"]["total_bytes"],
+                0,
+            )
+
+            enabled_root = root / "enabled"
+            enabled_root.mkdir()
+            enabled = self.write_config(enabled_root, 4096, True, True)
+            result, output = self.run_report(
+                enabled_root, enabled, "direct-index"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((output / "maa_storage.json").read_text())
+            state = report["direct_retirement_line_handoff_state"]
+            self.assertTrue(state["enabled"])
+            hardware = state["hardware_lower_bound"]
+            self.assertEqual(hardware["queue_line_payload_bytes"], 4096)
+            self.assertEqual(hardware["execution_records"], 4)
+            self.assertEqual(hardware["request_records"], 64)
+            self.assertEqual(hardware["per_port_retry_slots"], 4)
+            self.assertEqual(hardware["retry_slot_bytes_64_bit_abi"], 8)
+            self.assertEqual(hardware["early_line_ledger_bytes"], 1696)
+            self.assertEqual(hardware["producer_line_metadata_bytes"], 1024)
+            self.assertEqual(hardware["total_bytes"], 10496)
+            cpp = state["conservative_cpp_static_view"]
+            self.assertEqual(cpp["queue_payload_bytes"], 4096)
+            self.assertEqual(cpp["queue_control_bytes"], 17728)
+            self.assertEqual(cpp["execution_bytes_per_record"], 456)
+            self.assertEqual(cpp["request_bytes_per_record"], 72)
+            self.assertEqual(cpp["retry_slots_bytes"], 32)
+            self.assertEqual(cpp["total_bytes"], 31008)
+            self.assertEqual(
+                report["bounded_state_lower_bound"][
+                    "physical_spd_virtual_payload_and_control_bytes"
+                ]
+                - disabled_report["bounded_state_lower_bound"][
+                    "physical_spd_virtual_payload_and_control_bytes"
+                ],
+                10496,
             )
 
     def test_native_has_no_incremental_virtual_state(self) -> None:
