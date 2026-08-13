@@ -287,8 +287,14 @@ fi
 mkdir -p "$out"
 runner_snapshot="$out/run_xrage_direct_index_smoke.sh"
 cp "$0" "$runner_snapshot"
-config="$root/configs/deprecated/example/se.py"
-ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
+config=${XRAGE_SE_CONFIG_OVERRIDE:-$root/configs/deprecated/example/se.py}
+ramulator=${XRAGE_RAMULATOR_CONFIG_OVERRIDE:-$root/ext/ramulator2/ramulator2/example_gem5_config.yaml}
+config=$(realpath "$config")
+ramulator=$(realpath "$ramulator")
+[[ -f $config && -f $ramulator ]] || {
+    echo "missing se.py or Ramulator configuration" >&2
+    exit 2
+}
 options="-f $input"
 if [[ -n $guest_arm ]]; then
     options+=" --maa-arm $guest_arm"
@@ -333,6 +339,8 @@ fi
     printf 'num_indirect_units_per_maa=%s\n' "$indirect_units"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
+    printf 'se_config=%s\n' "$config"
+    printf 'ramulator_config=%s\n' "$ramulator"
     printf 'guest_environment=empty\n'
     printf 'data_seed=gem5_fixed_epoch_time\n'
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
