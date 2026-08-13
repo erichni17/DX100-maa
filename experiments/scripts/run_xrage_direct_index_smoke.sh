@@ -29,6 +29,8 @@ retirement_cache_size=${MAA_RETIREMENT_CACHE_SIZE:-1kB}
 combine_slots=${MAA_VIRTUAL_COMBINE_SLOTS:-384}
 combine_words=${MAA_VIRTUAL_COMBINE_WORDS:-4096}
 combine_ways=${MAA_VIRTUAL_COMBINE_WAYS:-4}
+response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
+response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 row_table_slices=${MAA_NUM_INITIAL_ROW_TABLE_SLICES:-32}
 row_table_rows=${MAA_ROW_TABLE_ROWS_PER_SLICE:-64}
 offset_table_entries=${MAA_NUM_OFFSET_TABLE_ENTRIES:-0}
@@ -93,6 +95,10 @@ debug_args=()
 [[ $combine_slots -gt 0 && $combine_words -gt 0 && $combine_ways -gt 0 &&
    $((combine_slots % combine_ways)) -eq 0 ]] || {
     echo "virtual combiner capacity must be positive and slots must be divisible by ways" >&2
+    exit 2
+}
+[[ $response_slots -gt 0 && $response_word_pool -ge 0 ]] || {
+    echo "virtual response slots must be positive and the word pool non-negative" >&2
     exit 2
 }
 [[ $row_table_slices =~ ^(4|8|16|32)$ ]] || {
@@ -303,6 +309,8 @@ fi
     printf 'virtual_combine_slots=%s\n' "$combine_slots"
     printf 'virtual_combine_words=%s\n' "$combine_words"
     printf 'virtual_combine_ways=%s\n' "$combine_ways"
+    printf 'virtual_response_slots=%s\n' "$response_slots"
+    printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
     printf 'initial_row_table_slices=%s\n' "$row_table_slices"
     printf 'row_table_rows_per_slice=%s\n' "$row_table_rows"
     printf 'offset_table_entries=%s\n' "$offset_table_entries"
@@ -375,7 +383,8 @@ restore_cmd=(
     --maa_virtual_combine_slots="$combine_slots"
     --maa_virtual_combine_words="$combine_words"
     --maa_virtual_combine_ways="$combine_ways" --maa_virtual_combine_banks=0
-    --maa_virtual_response_slots=128 --maa_virtual_response_word_pool=480
+    --maa_virtual_response_slots="$response_slots"
+    --maa_virtual_response_word_pool="$response_word_pool"
     --maa_virtual_words_per_cycle=4 --maa_virtual_max_outstanding_writes=64
     --maa_virtual_index_buffer_lines="$index_buffer_lines"
     --maa_virtual_index_partitions="$index_partitions"

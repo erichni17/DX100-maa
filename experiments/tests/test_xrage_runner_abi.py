@@ -106,6 +106,15 @@ class XrageRunnerAbiTest(unittest.TestCase):
             self.assertIn("MAA_RETIREMENT_CACHE_SIZE", script)
             self.assertIn("retirement_cache_size=%s", script)
             self.assertIn("--maa_retirement_cache_size", script)
+            self.assertIn("MAA_VIRTUAL_RESPONSE_SLOTS", script)
+            self.assertIn("MAA_VIRTUAL_RESPONSE_WORD_POOL", script)
+            self.assertIn(
+                "--maa_virtual_response_slots=\"$response_slots\"", script
+            )
+            self.assertIn(
+                "--maa_virtual_response_word_pool=\"$response_word_pool\"",
+                script,
+            )
             self.assertIn("resolved retirement-cache size", script)
 
     def test_virtual_combiner_capacity_is_explicit_and_recorded(self):
