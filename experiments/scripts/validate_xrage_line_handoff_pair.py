@@ -49,11 +49,25 @@ def result_row(path):
 
 
 def exact_checkpoint(arm):
-    checkpoints = list((arm / "checkpoint").glob("cpt.*"))
+    checkpoints = [
+        path
+        for path in (arm / "checkpoint").glob("cpt.*")
+        if path.is_dir() and (path / "m5.cpt").is_file()
+    ]
     if len(checkpoints) != 1:
         raise ValueError(f"expected one checkpoint in {arm}")
     files = sorted(path for path in checkpoints[0].iterdir() if path.is_file())
-    return {path.name: (path.stat().st_size, digest(path)) for path in files}
+    records = {}
+    for path in files:
+        if path.name == "m5.cpt":
+            lines = path.read_bytes().splitlines(keepends=True)
+            if not lines or not lines[0].startswith(b"## checkpoint generated: "):
+                raise ValueError(f"{path} lacks the expected timestamp header")
+            value = hashlib.sha256(b"".join(lines[1:])).hexdigest()
+            records[path.name] = ("normalized_timestamp_header", value)
+        else:
+            records[path.name] = (path.stat().st_size, digest(path))
+    return records
 
 
 def validate_arm(arm, expected_line_handoff):
