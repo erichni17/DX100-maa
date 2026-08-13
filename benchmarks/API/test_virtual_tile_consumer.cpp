@@ -318,8 +318,15 @@ main(int argc, char **argv)
                 const int second_offset = offset + page_elements;
                 const int second_count = std::min(
                     page_elements, total_elements - second_offset);
-                wait_ready(page_tile);
-                wait_ready(alternate_page_tile);
+                // The two tiles are unused on the first pair.  Waiting on
+                // them before submitting the materializers unnecessarily
+                // serializes admission behind the live producer.  Later
+                // pairs still wait for their prior consumers to release the
+                // physical pages before reuse.
+                if (offset != 0) {
+                    wait_ready(page_tile);
+                    wait_ready(alternate_page_tile);
+                }
                 maa_const(0, min_reg);
                 maa_const(first_count, max_reg);
                 maa_stream_load_virtual_page<double>(
@@ -356,7 +363,12 @@ main(int argc, char **argv)
                 if (overlap_pages)
                     wait_virtual_page(completion_tile,
                                       offset / page_elements);
-                wait_ready(page_tile);
+                // The first materialization owns a fresh page tile.  Admit it
+                // immediately so exact producer WriteResp payloads can be
+                // handed off while the gather is still running; only reused
+                // pages need a readiness wait.
+                if (!token_stream_ld || offset != 0)
+                    wait_ready(page_tile);
                 maa_const(0, min_reg);
                 maa_const(count, max_reg);
                 if (token_stream_ld) {
