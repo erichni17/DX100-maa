@@ -1,0 +1,462 @@
+{
+  "arms": {
+    "line-64k": {
+      "a_line_memory_load_latency": 1943938,
+      "a_line_memory_loads": 12734,
+      "alu_compute_cycles": 8192,
+      "alu_instruction_cycles": 0,
+      "config": {
+        "alu_lane_latency": 1,
+        "direct_retirement_line_handoff": true,
+        "max_outstanding_cache_side_packets": 32768,
+        "num_alu_lanes": 16,
+        "num_indirect_units": 1,
+        "num_maas": 1
+      },
+      "cpu_cycles_by_worker": [
+        324187,
+        324187,
+        324187,
+        324187
+      ],
+      "cpu_instructions_by_worker": [
+        297289,
+        284667,
+        187331,
+        94091
+      ],
+      "cpu_instructions_total": 863378,
+      "direct": {
+        "active_stage_high_water": 3,
+        "address_stalls": 0,
+        "alu_completions": 8192,
+        "alu_issues": 8192,
+        "context_full_stalls": 0,
+        "context_high_water": 4,
+        "credit_high_water": 16,
+        "credit_stalls": 0,
+        "descriptors": 4,
+        "fallbacks": 0,
+        "overlap_ticks": 20358146,
+        "page_fallback_lines": 0,
+        "producer_acks": 16,
+        "producer_line_acks": 8192,
+        "read_issues": 8192,
+        "read_responses": 8192,
+        "request_record_high_water": 16,
+        "retries": 10559,
+        "write_issues": 8192,
+        "write_responses": 8192
+      },
+      "dram": {
+        "avg_queue_occupancy_by_channel": [
+          1.91191411,
+          1.96562374
+        ],
+        "queue_empty_total": 257011,
+        "queue_full_total": 2541,
+        "read_commands_total": 15651,
+        "roi_cycles_by_channel": [
+          162352,
+          162352
+        ]
+      },
+      "indirect_cycles": 276357,
+      "indirect_fill_cycles": 217680,
+      "indirect_request_cycles": 58677,
+      "l3": {
+        "mshrs": 256,
+        "read_req_10_maa": 6319,
+        "write_buffers": 128,
+        "write_line_req_9_maa": 8192
+      },
+      "maa_instruction_cycles": 276357,
+      "maa_total_cycles": 324187,
+      "retirement_cache": {
+        "blocked_cycles_total": 12425,
+        "mshrs_per_cache": 16,
+        "no_mshr_causes_total": 1065,
+        "no_write_buffer_causes_total": 110,
+        "write_buffers_per_cache": 16
+      },
+      "sim_ticks": 101470531,
+      "stream_cache_lines": 0,
+      "stream_request_cycles": 0,
+      "virtual_build_rounds": 140,
+      "virtual_full_line_writes": 5613,
+      "virtual_partial_writes": 5244,
+      "virtual_pipeline_overlap_cycles": 55027,
+      "virtual_response_word_pool_stalls": 136,
+      "virtual_write_issues": 10857,
+      "xbar": {
+        "maa_cache_port_bytes": 928704,
+        "maa_cache_port_bytes_by_port": [
+          232512,
+          232128,
+          231552,
+          232512
+        ],
+        "maa_cache_port_packets": 30895,
+        "maa_cache_port_packets_by_port": [
+          7729,
+          7723,
+          7714,
+          7729
+        ],
+        "observed_bytes": 1957760,
+        "observed_packets": 63447,
+        "retirement_cache_bytes": 1029056,
+        "retirement_cache_bytes_by_port": [
+          259968,
+          254528,
+          254784,
+          259776
+        ],
+        "retirement_cache_packets": 32552,
+        "retirement_cache_packets_by_port": [
+          8180,
+          8090,
+          8105,
+          8177
+        ]
+      }
+    },
+    "native16-64k": {
+      "a_line_memory_load_latency": 2752075,
+      "a_line_memory_loads": 8638,
+      "alu_compute_cycles": 4318,
+      "alu_instruction_cycles": 51899,
+      "config": {
+        "alu_lane_latency": 1,
+        "direct_retirement_line_handoff": false,
+        "max_outstanding_cache_side_packets": 32768,
+        "num_alu_lanes": 16,
+        "num_indirect_units": 1,
+        "num_maas": 1
+      },
+      "cpu_cycles_by_worker": [
+        134152,
+        134152,
+        134152,
+        134152
+      ],
+      "cpu_instructions_by_worker": [
+        49887,
+        97339,
+        110957,
+        122383
+      ],
+      "cpu_instructions_total": 380566,
+      "direct": {
+        "active_stage_high_water": 0,
+        "address_stalls": 0,
+        "alu_completions": 0,
+        "alu_issues": 0,
+        "context_full_stalls": 0,
+        "context_high_water": 0,
+        "credit_high_water": 0,
+        "credit_stalls": 0,
+        "descriptors": 0,
+        "fallbacks": 0,
+        "overlap_ticks": 0,
+        "page_fallback_lines": 0,
+        "producer_acks": 0,
+        "producer_line_acks": 0,
+        "read_issues": 0,
+        "read_responses": 0,
+        "request_record_high_water": 0,
+        "retries": 0,
+        "write_issues": 0,
+        "write_responses": 0
+      },
+      "dram": {
+        "avg_queue_occupancy_by_channel": [
+          11.0834532,
+          11.3669634
+        ],
+        "queue_empty_total": 39960,
+        "queue_full_total": 53948,
+        "read_commands_total": 21301,
+        "roi_cycles_by_channel": [
+          67183,
+          67183
+        ]
+      },
+      "indirect_cycles": 50380,
+      "indirect_fill_cycles": 13851,
+      "indirect_request_cycles": 36529,
+      "l3": {
+        "mshrs": 256,
+        "read_req_10_maa": 0,
+        "write_buffers": 128,
+        "write_line_req_9_maa": 0
+      },
+      "maa_instruction_cycles": 192739,
+      "maa_total_cycles": 134152,
+      "retirement_cache": {
+        "blocked_cycles_total": 0,
+        "mshrs_per_cache": 16,
+        "no_mshr_causes_total": 0,
+        "no_write_buffer_causes_total": 0,
+        "write_buffers_per_cache": 16
+      },
+      "sim_ticks": 41989576,
+      "stream_cache_lines": 12288,
+      "stream_request_cycles": 90076,
+      "virtual_build_rounds": 0,
+      "virtual_full_line_writes": 0,
+      "virtual_partial_writes": 0,
+      "virtual_pipeline_overlap_cycles": 0,
+      "virtual_response_word_pool_stalls": 0,
+      "virtual_write_issues": 0,
+      "xbar": {
+        "maa_cache_port_bytes": 1310720,
+        "maa_cache_port_bytes_by_port": [
+          327680,
+          327680,
+          327680,
+          327680
+        ],
+        "maa_cache_port_packets": 32768,
+        "maa_cache_port_packets_by_port": [
+          8192,
+          8192,
+          8192,
+          8192
+        ],
+        "observed_bytes": 1310720,
+        "observed_packets": 32768,
+        "retirement_cache_bytes": 0,
+        "retirement_cache_bytes_by_port": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "retirement_cache_packets": 0,
+        "retirement_cache_packets_by_port": [
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "page-64k": {
+      "a_line_memory_load_latency": 1911706,
+      "a_line_memory_loads": 12734,
+      "alu_compute_cycles": 8192,
+      "alu_instruction_cycles": 0,
+      "config": {
+        "alu_lane_latency": 1,
+        "direct_retirement_line_handoff": false,
+        "max_outstanding_cache_side_packets": 32768,
+        "num_alu_lanes": 16,
+        "num_indirect_units": 1,
+        "num_maas": 1
+      },
+      "cpu_cycles_by_worker": [
+        336293,
+        336293,
+        336293,
+        336293
+      ],
+      "cpu_instructions_by_worker": [
+        295868,
+        285680,
+        94277,
+        191318
+      ],
+      "cpu_instructions_total": 867143,
+      "direct": {
+        "active_stage_high_water": 3,
+        "address_stalls": 0,
+        "alu_completions": 8192,
+        "alu_issues": 8192,
+        "context_full_stalls": 0,
+        "context_high_water": 4,
+        "credit_high_water": 16,
+        "credit_stalls": 0,
+        "descriptors": 4,
+        "fallbacks": 0,
+        "overlap_ticks": 19812587,
+        "page_fallback_lines": 8192,
+        "producer_acks": 16,
+        "producer_line_acks": 0,
+        "read_issues": 8192,
+        "read_responses": 8192,
+        "request_record_high_water": 16,
+        "retries": 1562,
+        "write_issues": 8192,
+        "write_responses": 8192
+      },
+      "dram": {
+        "avg_queue_occupancy_by_channel": [
+          1.88704598,
+          1.90529919
+        ],
+        "queue_empty_total": 269476,
+        "queue_full_total": 3372,
+        "read_commands_total": 15594,
+        "roi_cycles_by_channel": [
+          168415,
+          168415
+        ]
+      },
+      "indirect_cycles": 276532,
+      "indirect_fill_cycles": 218165,
+      "indirect_request_cycles": 58367,
+      "l3": {
+        "mshrs": 256,
+        "read_req_10_maa": 8128,
+        "write_buffers": 128,
+        "write_line_req_9_maa": 8192
+      },
+      "maa_instruction_cycles": 276532,
+      "maa_total_cycles": 336293,
+      "retirement_cache": {
+        "blocked_cycles_total": 13774,
+        "mshrs_per_cache": 16,
+        "no_mshr_causes_total": 1086,
+        "no_write_buffer_causes_total": 94,
+        "write_buffers_per_cache": 16
+      },
+      "sim_ticks": 105259709,
+      "stream_cache_lines": 0,
+      "stream_request_cycles": 0,
+      "virtual_build_rounds": 140,
+      "virtual_full_line_writes": 5667,
+      "virtual_partial_writes": 5131,
+      "virtual_pipeline_overlap_cycles": 56050,
+      "virtual_response_word_pool_stalls": 136,
+      "virtual_write_issues": 10798,
+      "xbar": {
+        "maa_cache_port_bytes": 1044480,
+        "maa_cache_port_bytes_by_port": [
+          261120,
+          261120,
+          261120,
+          261120
+        ],
+        "maa_cache_port_packets": 32704,
+        "maa_cache_port_packets_by_port": [
+          8176,
+          8176,
+          8176,
+          8176
+        ],
+        "observed_bytes": 2062208,
+        "observed_packets": 65076,
+        "retirement_cache_bytes": 1017728,
+        "retirement_cache_bytes_by_port": [
+          255744,
+          253632,
+          252928,
+          255424
+        ],
+        "retirement_cache_packets": 32372,
+        "retirement_cache_packets_by_port": [
+          8111,
+          8075,
+          8075,
+          8111
+        ]
+      }
+    }
+  },
+  "binary_hash_recomputed": true,
+  "campaign": "/data1/nier/dx100-runs/2026-08-13-xrage-direct-x3-multicontext-64k-40dae46c",
+  "derived": {
+    "a_line_memory_load_delta": 4096,
+    "a_line_memory_load_increase_pct": 47.418383885158605,
+    "consumer_read_plus_write_requests": 16384,
+    "indirect_cycle_delta": 225977,
+    "indirect_fill_cycle_delta": 203829,
+    "indirect_request_cycle_delta": 22148,
+    "line_alu_compute_cycle_factor": 1.8971746178786475,
+    "line_alu_compute_cycle_increase": 3874,
+    "line_alu_cycle_delta_as_gap_pct": 2.0385718420291,
+    "line_alu_elements_per_compute_cycle": 8.0,
+    "line_cpu_instruction_delta": 482812,
+    "line_cpu_instruction_increase_pct": 126.86682467692857,
+    "line_dram_queue_empty_factor": 6.431706706706707,
+    "line_dram_queue_full_change_pct": -95.2899088010677,
+    "line_dram_read_command_change_pct": -26.524576310971316,
+    "line_dram_read_command_delta": -5650,
+    "line_gap_cycles_vs_native": 190035,
+    "line_handoff_latency_reduction_pct": 3.5998370468609218,
+    "line_handoff_saved_cycles": 12106,
+    "line_handoff_saved_ticks": 3789178,
+    "line_l3_read_req_10_reduction_pct": 22.256397637795274,
+    "line_l3_read_req_10_reduction_vs_page": 1809,
+    "line_retry_factor_vs_page": 6.759923175416133,
+    "line_retry_increase_vs_page": 8997,
+    "line_slowdown_vs_native": 2.416564792176039,
+    "line_speedup_vs_page": 1.0373426448315324,
+    "line_xbar_byte_delta": 647040,
+    "line_xbar_byte_increase_pct": 49.365234375,
+    "line_xbar_packet_delta": 30679,
+    "line_xbar_packet_increase_pct": 93.6248779296875,
+    "native_alu_elements_per_compute_cycle": 15.17739694302918,
+    "native_stream_bytes_per_request_cycle": 8.730760690972067,
+    "native_stream_lines_per_request_cycle": 0.13641813579643855,
+    "observed_line_credit_fraction": 0.25,
+    "page_slowdown_vs_native": 2.506805712922655,
+    "producer_backing_plus_readback_requests": 19049,
+    "producer_write_request_excess_over_lines": 2665,
+    "producer_write_request_excess_pct": 32.53173828125,
+    "total_line_credit_capacity": 64
+  },
+  "interpretation": {
+    "inference": [
+      "The primary gap is serialized request generation and coherent intermediate materialization, not DRAM bandwidth, credit capacity, or exact-address exclusion.",
+      "Early line handoff likely converts some later L3 reads into closer producer/consumer transfers, but the available counters do not identify every response source.",
+      "Per-line ALU launches waste half the 16-lane FP64 width and add 8,192 scheduling events, but the charged compute-cycle delta is too small to explain most of the 2.417x slowdown."
+    ],
+    "measured": [
+      "The line arm is exact and terminal with four live contexts, 8,192 line acknowledgements, and exact read/ALU/write closure.",
+      "Virtual indirect fill and request cycles dominate the delta; DRAM read commands and queue pressure are lower than native, not higher.",
+      "Only 16 of 64 possible line credits/request records were observed, with zero credit and exact-address stalls.",
+      "Line handoff reduces latency and observed L3 read traffic despite many more downstream cache-send retries than page handoff."
+    ]
+  },
+  "output_hash": "5576400619275092867",
+  "provenance": {
+    "all_exact_verifier_pass": true,
+    "all_exit_statuses_zero": true,
+    "all_terminal_m5_exit": true,
+    "campaign_manifest": {
+      "created_utc": "2026-08-13T03:31:57Z",
+      "source_commit": "40dae46cf32f164c375751f407f45ea9707af7b7",
+      "worktree": "/data1/nier/worktrees/DX100-virtualization-line-handoff-20260812"
+    },
+    "first_roi_stats_only": true,
+    "guest_sha256": "5ce84f74176551306fb3d60820e3f849ff7ecdb0078ca25d53410efd85eb9e02",
+    "guest_source_commit": "3c2bb8210ebf0b2a91cc21c5623fba420c216a16",
+    "input_sha256": "70e3d82973d7a93300db950d2c81e9db5b6a37273b0f21da8344302ce53022d9",
+    "normalized_direct_checkpoint_sha256": {
+      "m5.cpt": [
+        "normalized_timestamp_header",
+        "6ff2844121c5c3856ab1499d3f5167c82d62dbada1fe802e5712df7100d55d65"
+      ],
+      "system.physmem.store0.pmem": [
+        5421104,
+        "23bfbe8088d4b435ba617bef769ddff642e85b2826cab3718bc80d2684925bf5"
+      ]
+    },
+    "same_input": true,
+    "strict_four_context_pair_status": "pass"
+  },
+  "schema": "dx100.xrage_steady_profile.v1",
+  "simulator_sha256": "be050681e8f6b1358ba720e06a7653ad27de0e9ef2965307946e6671fa8b8a2e",
+  "source_commit": "40dae46cf32f164c375751f407f45ea9707af7b7",
+  "source_findings": {
+    "address_exclusion": "Every direct request is rejected while the same physical address is present in generic, direct, or deferred ownership.",
+    "credits": "Each of four contexts owns 16 fixed 64-byte buffers; the fixed request-record array has 64 entries.",
+    "line_alu_charge": "startDirectLine charges ceil(8 FP64 elements / 16 lanes) * 1 cycle for every 64-byte line and schedules one completion event.",
+    "readback_write_path": "The producer writes coherent backing; each consumer line then issues ReadReq, transforms the fixed buffer in place, and retains it through an acknowledged destination WriteReq.",
+    "retry_serialization": "One global directRetirementRetryPacket blocks scheduling until its selected cache port accepts it, even though four ports exist.",
+    "shared_alu": "HybridConsumerContextQueue has one computeInFlight owner; MAA also requires aluUnitsIdle before each 64-byte launch."
+  },
+  "status": "pass"
+}
