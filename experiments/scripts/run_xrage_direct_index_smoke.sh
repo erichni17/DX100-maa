@@ -46,6 +46,7 @@ result_scale=${XRAGE_RESULT_SCALE:-1}
 direct_retirement_line_handoff=${MAA_DIRECT_RETIREMENT_LINE_HANDOFF:-0}
 expected_direct_descriptors=${XRAGE_EXPECTED_DIRECT_DESCRIPTORS:-0}
 expected_direct_context_high_water=${XRAGE_EXPECTED_DIRECT_CONTEXT_HIGH_WATER:-0}
+l3_ports=${XRAGE_L3_PORTS:-4}
 debug_args=()
 
 [[ $physical -gt 0 && $physical -le 16384 ]] || {
@@ -139,6 +140,10 @@ debug_args=()
 [[ $expected_direct_descriptors -ge 0 &&
    $expected_direct_context_high_water -ge 0 ]] || {
     echo "expected direct descriptor/context counts must be non-negative" >&2
+    exit 2
+}
+[[ $l3_ports -gt 0 && $l3_ports -le 16 ]] || {
+    echo "XRAGE_L3_PORTS must be in [1,16]" >&2
     exit 2
 }
 [[ ($expected_direct_descriptors -eq 0 &&
@@ -292,6 +297,7 @@ fi
     printf 'expected_direct_descriptors=%s\n' "$expected_direct_descriptors"
     printf 'expected_direct_context_high_water=%s\n' \
         "$expected_direct_context_high_water"
+    printf 'l3_ports=%s\n' "$l3_ports"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'maa_logical_tile_elements=%s\n' "$maa_logical_tile_elements"
     printf 'workload_chunk_elements=%s\n' "$workload_chunk_elements"
@@ -367,7 +373,7 @@ restore_cmd=(
     --l1i_write_buffers=8 --l2cache --l2_size=256kB --l2_assoc=4
     --l2-hwp-type=StridePrefetcher --l2_mshrs=32
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16
-    --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
+    --l3_mshrs=256 --l3_write_buffers=128 --l3_ports="$l3_ports"
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=2 --maa_ncbus_width=32
     --maa --maa_num_maas=1

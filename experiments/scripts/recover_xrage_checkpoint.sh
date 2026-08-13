@@ -38,6 +38,7 @@ indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
 response_slots=${MAA_VIRTUAL_RESPONSE_SLOTS:-128}
 response_word_pool=${MAA_VIRTUAL_RESPONSE_WORD_POOL:-480}
 words_per_cycle=${MAA_VIRTUAL_WORDS_PER_CYCLE:-4}
+l3_ports=${XRAGE_L3_PORTS:-4}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
 allow_pre_maa_retarget=${XRAGE_ALLOW_PRE_MAA_RETARGET:-0}
@@ -139,6 +140,10 @@ simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$checkpoint_source_comm
 }
 [[ $words_per_cycle -ge 0 ]] || {
     echo "MAA_VIRTUAL_WORDS_PER_CYCLE must be non-negative" >&2
+    exit 2
+}
+[[ $l3_ports -gt 0 && $l3_ports -le 16 ]] || {
+    echo "XRAGE_L3_PORTS must be in [1,16]" >&2
     exit 2
 }
 [[ $allow_pre_maa_retarget == 0 || $allow_pre_maa_retarget == 1 ]] || {
@@ -325,6 +330,7 @@ fi
     printf 'virtual_response_slots=%s\n' "$response_slots"
     printf 'virtual_response_word_pool=%s\n' "$response_word_pool"
     printf 'virtual_words_per_cycle=%s\n' "$words_per_cycle"
+    printf 'l3_ports=%s\n' "$l3_ports"
     printf 'debug_flags=%s\n' "$debug_flags"
     printf 'input=%s\n' "$input"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -357,7 +363,7 @@ restore_cmd=(
     --l1i_write_buffers=8 --l2cache --l2_size=256kB --l2_assoc=4
     --l2-hwp-type=StridePrefetcher --l2_mshrs=32
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16
-    --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
+    --l3_mshrs=256 --l3_write_buffers=128 --l3_ports="$l3_ports"
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=2 --maa_ncbus_width=32
     --maa --maa_num_maas=1

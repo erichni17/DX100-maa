@@ -106,6 +106,8 @@ class XrageRunnerAbiTest(unittest.TestCase):
             self.assertIn("MAA_RETIREMENT_CACHE_SIZE", script)
             self.assertIn("retirement_cache_size=%s", script)
             self.assertIn("--maa_retirement_cache_size", script)
+            self.assertIn("XRAGE_L3_PORTS", script)
+            self.assertIn("--l3_ports=\"$l3_ports\"", script)
             self.assertIn("MAA_VIRTUAL_RESPONSE_SLOTS", script)
             self.assertIn("MAA_VIRTUAL_RESPONSE_WORD_POOL", script)
             self.assertIn(
