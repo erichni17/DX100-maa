@@ -84,17 +84,20 @@ the response-pool increase contributes a smaller final gain.
 
 ## Correctness and closure
 
-Every one of the 12 performance runs passed all of the following:
+Every one of the 12 performance runs passed these common gates:
 
 - exact 65,536-element output hash `5576400619275092867`;
 - checkpoint and restore exit status zero, terminal `m5_exit`, and two stats
   blocks;
-- four direct descriptors and context high-water exactly four;
-- 8,192 producer line acknowledgements and zero page-fallback lines;
-- 8,192 read issues/responses, ALU issues/completions, and destination write
-  issues/responses;
-- zero mechanism fallbacks and zero early-line-ledger overflows;
 - frozen simulator, guest, input, Ramulator, and config-tree hashes.
+
+The four native controls correctly recorded zero direct-path activity. Both
+page-ready direct runs recorded four descriptors, context high-water four, 16
+page acknowledgements, 8,192 page-fallback lines, and zero line
+acknowledgements. All six line-ready direct runs instead recorded 8,192 exact
+line acknowledgements and zero page-fallback lines. Every direct run closed
+8,192 read issues/responses, ALU issues/completions, and destination write
+issues/responses, with zero mechanism fallback or early-ledger overflow.
 
 A successor debug pair compared feeder depth 1 with feeder depth 128 using the
 same final binary and configuration. All four logical instructions and all
@@ -106,9 +109,8 @@ or completion order across concurrent instructions.
 The original campaign aggregation terminated with status 1 because the frozen
 analyzer incorrectly classified `gem5.provenance.txt` as a second gem5 binary.
 No simulation failed. Commit `3ecf9568` restricts binary discovery to actual
-`gem5.opt`, `gem5.fast`, and `gem5.debug` artifacts; 27 focused tests passed,
-and the recovered comparison was written to a new directory without changing
-the frozen campaign.
+`gem5.opt`, `gem5.fast`, and `gem5.debug` artifacts. The recovered comparison
+was written to a new directory without changing the frozen campaign.
 
 ## Storage accounting
 
@@ -149,9 +151,26 @@ overhead, and physical SRAM implementation are not included.
   `/data1/nier/dx100-runs/2026-08-13-xrage-final-digest-3ecf9568`
 - Digest evidence seal SHA-256:
   `54970285f2a909c6c1466c3f5f3ba646f15ffbd959d5af0b11b88e4524941b5c`
+- Final-test successor:
+  `/data1/nier/dx100-runs/2026-08-13-xrage-final-tests-68dca851`
+- Final-test seal SHA-256:
+  `6f62f116a66a2886d9b15c202284ad8eb388b08f6007ca0865042b5943a0dac6`
+- Post-run raw-evidence seal:
+  `/data1/nier/dx100-runs/2026-08-13-xrage-postrun-seal-68dca851`
+- Post-run seal SHA-256:
+  `ef284c3d21f8575cce2e3f490e48f730adf8627e00826859b69856b92f56aaf1`
 
-Final verification at `3ecf9568` passed seven bounded C++ unit suites,
-including sanitizer variants, and 111 Python experiment tests.
+Final verification at report commit `68dca851` passed seven bounded C++ unit
+suites, including sanitizer variants, and 111 Python experiment tests. Their
+logs, exit codes, source status, and runner are included in the sealed
+final-test successor. A separate atomic post-run manifest seals 200 unique raw
+campaign, comparison, storage, digest, and test-evidence files.
+
+An independent read-only reviewer recalculated all four reported throughput
+deltas and validated the storage and evidence seals. It accepted the three
+controlled one-knob observations and accepted 24.379% only under the mixed
+end-to-end qualification used in this report. Its handoff is recorded under
+`xrage-promotion-review-20260813-023425-12406921`.
 
 ## Remaining limits
 
