@@ -313,38 +313,36 @@ main(int argc, char **argv)
         if (token_stream_ld_pingpong) {
             for (int offset = 0; offset < total_elements;
                  offset += 2 * page_elements) {
-                const int first_count = std::min(
-                    page_elements, total_elements - offset);
                 const int second_offset = offset + page_elements;
                 const int second_count = std::min(
                     page_elements, total_elements - second_offset);
                 wait_ready(page_tile);
                 wait_ready(alternate_page_tile);
-                maa_const(0, min_reg);
-                maa_const(first_count, max_reg);
+                // Keep materializer issue independent of the producer's
+                // live min/max/stride register references. Rewriting those
+                // registers here would block CPU admission until production
+                // completes and discard the transient WriteResp payloads.
                 maa_stream_load_virtual_page<double>(
-                    backing + offset, completion_tile, min_reg, max_reg,
-                    stride_reg, page_tile);
+                    backing + offset, completion_tile, page_min_reg,
+                    page_max_reg, page_stride_reg, page_tile);
                 if (second_count > 0) {
-                    maa_const(second_count, max_reg);
                     maa_stream_load_virtual_page<double>(
-                        backing + second_offset, completion_tile, min_reg,
-                        max_reg, stride_reg, alternate_page_tile);
+                        backing + second_offset, completion_tile,
+                        page_min_reg, page_max_reg, page_stride_reg,
+                        alternate_page_tile);
                 }
-                maa_const(first_count, max_reg);
                 maa_alu_scalar<double>(page_tile, scale_reg, output_tile,
                                        Operation_t::MUL_OP);
                 maa_stream_store<double>(
-                    destination + offset, min_reg, max_reg, stride_reg,
-                    output_tile);
+                    destination + offset, page_min_reg, page_max_reg,
+                    page_stride_reg, output_tile);
                 if (second_count > 0) {
-                    maa_const(second_count, max_reg);
                     maa_alu_scalar<double>(
                         alternate_page_tile, scale_reg, output_tile,
                         Operation_t::MUL_OP);
                     maa_stream_store<double>(
-                        destination + second_offset, min_reg, max_reg,
-                        stride_reg, output_tile);
+                        destination + second_offset, page_min_reg,
+                        page_max_reg, page_stride_reg, output_tile);
                 }
             }
             wait_ready(completion_tile);
@@ -357,20 +355,32 @@ main(int argc, char **argv)
                     wait_virtual_page(completion_tile,
                                       offset / page_elements);
                 wait_ready(page_tile);
-                maa_const(0, min_reg);
-                maa_const(count, max_reg);
                 if (token_stream_ld) {
+                    // These immutable page registers are disjoint from the
+                    // live producer's logical-range registers, so the token
+                    // load can be admitted while exact line ACKs still carry
+                    // their response payload.
                     maa_stream_load_virtual_page<double>(
-                        backing + offset, completion_tile, min_reg, max_reg,
-                        stride_reg, page_tile);
+                        backing + offset, completion_tile, page_min_reg,
+                        page_max_reg, page_stride_reg, page_tile);
+                    maa_alu_scalar<double>(
+                        page_tile, scale_reg, output_tile,
+                        Operation_t::MUL_OP);
+                    maa_stream_store<double>(
+                        destination + offset, page_min_reg, page_max_reg,
+                        page_stride_reg, output_tile);
                 } else {
+                    maa_const(0, min_reg);
+                    maa_const(count, max_reg);
                     maa_stream_load<double>(backing + offset, min_reg,
                                             max_reg, stride_reg, page_tile);
+                    maa_alu_scalar<double>(
+                        page_tile, scale_reg, output_tile,
+                        Operation_t::MUL_OP);
+                    maa_stream_store<double>(
+                        destination + offset, min_reg, max_reg, stride_reg,
+                        output_tile);
                 }
-                maa_alu_scalar<double>(page_tile, scale_reg, output_tile,
-                                       Operation_t::MUL_OP);
-                maa_stream_store<double>(destination + offset, min_reg,
-                                         max_reg, stride_reg, output_tile);
             }
             if (overlap_pages || token_stream_ld)
                 wait_ready(completion_tile);

@@ -177,6 +177,33 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             for marker in markers:
                 self.assertIn(marker, source, relative)
 
+    def test_api_materializer_uses_dedicated_page_registers(self) -> None:
+        source = (
+            ROOT / "benchmarks/API/test_virtual_tile_consumer.cpp"
+        ).read_text(encoding="utf-8")
+        pingpong = source.split("if (token_stream_ld_pingpong) {", 1)[1]
+        pingpong, serial = pingpong.split("} else if (!transparent) {", 1)
+        serial = serial.split("if (overlap_pages || token_stream_ld)", 1)[0]
+
+        for branch in (pingpong, serial):
+            self.assertIn("page_min_reg", branch)
+            self.assertIn("page_max_reg", branch)
+            self.assertIn("page_stride_reg", branch)
+        self.assertNotIn("completion_tile, min_reg, max_reg", pingpong)
+        self.assertNotIn("completion_tile, min_reg, max_reg", serial)
+
+        # Rewriting the producer's min/max registers here is an admission
+        # fence: IF::canPushRegister holds the MMIO response until the live
+        # virtual producer releases those source-register references.
+        before_first_materializer = pingpong.split(
+            "maa_stream_load_virtual_page<double>", 1
+        )[0]
+        self.assertNotIn("maa_const(", before_first_materializer)
+        token_body = serial.split("if (token_stream_ld) {", 1)[1].split(
+            "} else {", 1
+        )[0]
+        self.assertNotIn("maa_const(", token_body)
+
     def test_gapbs_adds_native4_controls_without_false_hybrid_target(
         self,
     ) -> None:
