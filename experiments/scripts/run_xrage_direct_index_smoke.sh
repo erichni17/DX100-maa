@@ -36,6 +36,7 @@ offset_table_epoch_entries=${MAA_NUM_OFFSET_TABLE_EPOCH_ENTRIES:-0}
 indirect_units=${MAA_NUM_INDIRECT_UNITS_PER_MAA:-1}
 runner_source_commit=$(git -C "$root" rev-parse HEAD)
 simulator_source_commit=${XRAGE_SIMULATOR_SOURCE_COMMIT:-$runner_source_commit}
+simulator_provenance=${XRAGE_SIMULATOR_PROVENANCE:-}
 logical_override=${MAA_LOGICAL_TILE_ELEMENTS_OVERRIDE:-}
 guest_abi=${MAA_GUEST_ABI_TILE_ELEMENTS:-}
 debug_flags=${XRAGE_DEBUG_FLAGS:-}
@@ -204,6 +205,10 @@ if [[ $guest_arm == direct4x3 ]]; then
         echo "direct4x3 requires a 16K logical / 4K physical direct-index arm" >&2
         exit 2
     }
+    [[ -n $simulator_provenance ]] || {
+        echo "direct4x3 requires XRAGE_SIMULATOR_PROVENANCE" >&2
+        exit 2
+    }
 elif [[ $direct_retirement_line_handoff -ne 0 ]]; then
     echo "line handoff is only valid for the direct4x3 guest arm" >&2
     exit 2
@@ -222,6 +227,23 @@ fi
     echo "missing gem5, XRAGE binary, or input" >&2
     exit 2
 }
+if [[ -n $simulator_provenance ]]; then
+    simulator_provenance=$(realpath "$simulator_provenance")
+    [[ -f $simulator_provenance ]] || {
+        echo "simulator provenance file is missing" >&2
+        exit 2
+    }
+    provenance_commit=$(sed -n 's/^source_commit=//p' "$simulator_provenance")
+    provenance_gem5_sha256=$(
+        sed -n 's/^gem5_sha256=//p' "$simulator_provenance"
+    )
+    actual_gem5_sha256=$(sha256sum "$gem5" | cut -d' ' -f1)
+    [[ $provenance_commit == "$simulator_source_commit" &&
+       $provenance_gem5_sha256 == "$actual_gem5_sha256" ]] || {
+        echo "simulator provenance does not match commit and gem5 binary" >&2
+        exit 2
+    }
+fi
 [[ ! -e $out ]] || {
     echo "refusing to overwrite existing output: $out" >&2
     exit 2
@@ -240,6 +262,7 @@ fi
 {
     printf 'source_commit=%s\n' "$simulator_source_commit"
     printf 'runner_source_commit=%s\n' "$runner_source_commit"
+    printf 'simulator_provenance=%s\n' "$simulator_provenance"
     printf 'arm=%s\n' "$arm"
     printf 'guest_arm=%s\n' "$guest_arm"
     printf 'result_scale=%s\n' "$result_scale"
@@ -276,9 +299,12 @@ fi
 } > "$out/manifest.txt"
 git -C "$root" status --short > "$out/source_status.txt"
 git -C "$root" diff --binary > "$out/source.diff"
-sha256sum "$gem5" "$binary" "$input" "$config" "$ramulator" \
-    "$runner_snapshot" \
-    > "$out/artifact_sha256.txt"
+artifacts=("$gem5" "$binary" "$input" "$config" "$ramulator" \
+    "$runner_snapshot")
+if [[ -n $simulator_provenance ]]; then
+    artifacts+=("$simulator_provenance")
+fi
+sha256sum "${artifacts[@]}" > "$out/artifact_sha256.txt"
 
 checkpoint_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint"
