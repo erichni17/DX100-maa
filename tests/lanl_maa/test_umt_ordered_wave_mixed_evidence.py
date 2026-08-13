@@ -73,7 +73,11 @@ class MixedUmtEvidenceTest(unittest.TestCase):
         self.assertEqual(expected["descriptorCompletionWrites"], 4)
         self.assertEqual(expected["descriptorErrors"], 1)
         self.assertEqual(expected["descriptorUmtInputReads"], 2280)
-        self.assertEqual(expected["descriptorUmtInputLineReads"], 313)
+        self.assertEqual(DRIVER.ISSUE2_MIXED_INPUT_LINE_READS, 315)
+        self.assertEqual(
+            expected["descriptorUmtInputLineReads"],
+            DRIVER.ISSUE2_MIXED_INPUT_LINE_READS,
+        )
         self.assertEqual(expected["descriptorUmtStateInputWrites"], 1168)
         self.assertEqual(
             expected["descriptorUmtStateDenominatorsConsumed"], 1111
