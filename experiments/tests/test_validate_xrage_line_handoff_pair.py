@@ -3,7 +3,11 @@ import unittest
 from pathlib import Path
 
 from experiments.scripts.validate_xrage_line_handoff_pair import (
+    command_has_line_handoff,
     exact_checkpoint,
+    stats_blocks,
+    unique_config_value,
+    verifier_record,
 )
 
 
@@ -47,6 +51,55 @@ class ExactCheckpointTest(unittest.TestCase):
             checkpoint.write_bytes(b"[system]\nvalue=1\n")
             with self.assertRaisesRegex(ValueError, "timestamp header"):
                 exact_checkpoint(arm)
+
+
+class RawEvidenceTest(unittest.TestCase):
+    def test_stats_parser_preserves_first_and_final_blocks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "stats.txt"
+            path.write_text(
+                "---------- Begin Simulation Statistics ----------\n"
+                "simTicks 123 # ROI\n"
+                "system.maa.direct_retirement_descriptors 4\n"
+                "---------- End Simulation Statistics   ----------\n"
+                "---------- Begin Simulation Statistics ----------\n"
+                "simTicks 456 # final\n"
+                "---------- End Simulation Statistics   ----------\n",
+                encoding="ascii",
+            )
+            blocks = stats_blocks(path)
+            self.assertEqual(blocks[0]["simTicks"], "123")
+            self.assertEqual(blocks[0]["system.maa.direct_retirement_descriptors"], "4")
+            self.assertEqual(blocks[1]["simTicks"], "456")
+
+    def test_config_and_command_require_unique_raw_treatment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config.ini"
+            config.write_text("direct_retirement_line_handoff=true\n", encoding="ascii")
+            command = root / "restore.command"
+            command.write_text(
+                "gem5 --maa_direct_retirement_line_handoff --outdir='a b'\n",
+                encoding="ascii",
+            )
+            self.assertEqual(
+                unique_config_value(config, "direct_retirement_line_handoff"),
+                "true",
+            )
+            self.assertTrue(command_has_line_handoff(command))
+            config.write_text(
+                "direct_retirement_line_handoff=true\n"
+                "direct_retirement_line_handoff=false\n",
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "expected one"):
+                unique_config_value(config, "direct_retirement_line_handoff")
+
+    def test_verifier_record_is_exact_and_unique(self):
+        record = "MAA_GATHER_VERIFY_PASS length=65536 hash=12345\n"
+        self.assertEqual(verifier_record(record, Path("log")), (65536, 12345))
+        with self.assertRaisesRegex(ValueError, "expected one"):
+            verifier_record(record + record, Path("log"))
 
 
 if __name__ == "__main__":

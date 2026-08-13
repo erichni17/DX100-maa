@@ -5,12 +5,26 @@ import csv
 import hashlib
 import json
 import re
+import shlex
 from pathlib import Path
 
 TREATMENT_KEYS = {"created_utc", "direct_retirement_line_handoff"}
 TERMINAL_MARKER = re.compile(
     r"Exiting @ tick [0-9]+ because m5_exit instruction encountered"
 )
+VERIFIER_MARKER = re.compile(
+    r"^MAA_GATHER_VERIFY_PASS length=([0-9]+) hash=([0-9]+)$", re.M
+)
+RAW_RESULT_STATS = {
+    "direct_descriptors": "system.maa.direct_retirement_descriptors",
+    "direct_page_acks": "system.maa.direct_retirement_producer_acks",
+    "direct_line_acks": "system.maa.direct_retirement_producer_line_acks",
+    "direct_page_fallback_lines": ("system.maa.direct_retirement_page_fallback_lines"),
+    "direct_read_responses": "system.maa.direct_retirement_read_responses",
+    "direct_alu_completions": "system.maa.direct_retirement_alu_completions",
+    "direct_write_responses": "system.maa.direct_retirement_write_responses",
+    "direct_fallbacks": "system.maa.direct_retirement_fallbacks",
+}
 
 
 def digest(path):
@@ -46,6 +60,55 @@ def result_row(path):
     if len(rows) != 1:
         raise ValueError(f"expected one result row in {path}")
     return rows[0]
+
+
+def stats_blocks(path):
+    blocks = []
+    current = None
+    for line in path.read_text(encoding="ascii", errors="replace").splitlines():
+        if line.startswith("---------- Begin Simulation Statistics"):
+            if current is not None:
+                raise ValueError(f"nested statistics blocks in {path}")
+            current = {}
+            continue
+        if line.startswith("---------- End Simulation Statistics"):
+            if current is None:
+                raise ValueError(f"orphan statistics terminator in {path}")
+            blocks.append(current)
+            current = None
+            continue
+        if current is None:
+            continue
+        fields = line.split()
+        if len(fields) >= 2:
+            current[fields[0]] = fields[1]
+    if current is not None or not blocks:
+        raise ValueError(f"incomplete or missing statistics blocks in {path}")
+    return blocks
+
+
+def unique_config_value(path, key):
+    prefix = f"{key}="
+    values = [
+        line[len(prefix) :]
+        for line in path.read_text(encoding="ascii").splitlines()
+        if line.startswith(prefix)
+    ]
+    if len(values) != 1:
+        raise ValueError(f"expected one {key} in {path}")
+    return values[0]
+
+
+def verifier_record(log, path):
+    matches = VERIFIER_MARKER.findall(log)
+    if len(matches) != 1:
+        raise ValueError(f"expected one exact verifier record in {path}")
+    return tuple(int(value) for value in matches[0])
+
+
+def command_has_line_handoff(path):
+    arguments = shlex.split(path.read_text(encoding="ascii"))
+    return arguments.count("--maa_direct_retirement_line_handoff") == 1
 
 
 def exact_checkpoint(arm):
@@ -85,12 +148,9 @@ def validate_arm(arm, expected_line_handoff):
     log = (arm / "restore.log").read_text(encoding="ascii", errors="replace")
     if not TERMINAL_MARKER.search(log):
         raise ValueError(f"{arm} lacks terminal m5_exit")
-    if "MAA_GATHER_VERIFY_PASS" not in log or re.search(
-        r"panic|fatal|segmentation fault|MAA_GATHER_VERIFY_FAIL", log, re.I
-    ):
+    if re.search(r"panic|fatal|segmentation fault|MAA_GATHER_VERIFY_FAIL", log, re.I):
         raise ValueError(f"{arm} failed exact correctness or fatal-marker checks")
-    if (arm / "run/stats.txt").stat().st_size == 0:
-        raise ValueError(f"{arm} has empty final stats")
+    raw_blocks = stats_blocks(arm / "run/stats.txt")
 
     manifest = key_values(arm / "manifest.txt")
     if manifest.get("guest_arm") != "direct4x3":
@@ -99,9 +159,37 @@ def validate_arm(arm, expected_line_handoff):
         raise ValueError(f"{arm} has the wrong treatment bit")
 
     result = result_row(arm / "result.tsv")
+    expected_bool = "true" if expected_line_handoff else "false"
+    config = arm / "run/config.ini"
+    resolved = {
+        "direct_retirement_line_handoff": expected_bool,
+        "transparent_spd_mode": "3",
+        "num_tile_elements": "16384",
+        "physical_tile_elements": "4096",
+    }
+    for key, expected in resolved.items():
+        if unique_config_value(config, key) != expected:
+            raise ValueError(f"{arm} has the wrong resolved {key}")
+    if command_has_line_handoff(arm / "restore.command") != bool(expected_line_handoff):
+        raise ValueError(f"{arm} restore command has the wrong treatment bit")
+    if int(result["stats_blocks"]) != len(raw_blocks) or len(raw_blocks) != 2:
+        raise ValueError(f"{arm} result has the wrong stats-block count")
+    if int(result["roi_simTicks"]) != int(raw_blocks[0]["simTicks"]):
+        raise ValueError(f"{arm} result does not match raw ROI simTicks")
+    if int(result["final_simTicks"]) != int(raw_blocks[-1]["simTicks"]):
+        raise ValueError(f"{arm} result does not match raw final simTicks")
+    for field, stat in RAW_RESULT_STATS.items():
+        if int(result[field]) != int(raw_blocks[0][stat]):
+            raise ValueError(f"{arm} result does not match raw {stat}")
+
     descriptors = int(result["direct_descriptors"])
     lines = descriptors * 2048
     page_acks = descriptors * 4
+    verified_length, verified_hash = verifier_record(log, arm / "restore.log")
+    if verified_length != descriptors * 16384:
+        raise ValueError(f"{arm} verifier length does not match descriptors")
+    if str(verified_hash) != result["output_hash"]:
+        raise ValueError(f"{arm} result does not match the exact verifier hash")
     common = {
         "direct_page_acks": page_acks,
         "direct_read_responses": lines,
