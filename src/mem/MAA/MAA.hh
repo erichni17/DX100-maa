@@ -10,11 +10,10 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 
 #include "base/trace.hh"
 #include "base/types.hh"
-#include "mem/MAA/HybridConsumerPipeline.hh"
+#include "mem/MAA/HybridConsumerContextQueue.hh"
 #include "mem/MAA/HybridMacroEventTracker.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
@@ -519,7 +518,10 @@ public:
     void resetStats() override;
     bool getAddrRegionPermit(Instruction *instruction);
     void scheduleIssueInstructionEvent(int latency = 0);
-    void completeDirectRetirementALU(int maaID, uint64_t transactionID);
+    void completeDirectRetirementALU(int maaID, uint16_t tokenTile,
+                                     uint64_t generation,
+                                     uint64_t incarnation,
+                                     uint64_t transactionID);
 
 protected:
     std::vector<RequestorID> my_instruction_RIDs;
@@ -557,17 +559,16 @@ protected:
     bool transparentMacroAllReadyBeforeSubmit = false;
     struct DirectRetirementSenderState : public Packet::SenderState
     {
-        HybridConsumerPipeline::Request request{};
+        HybridConsumerContextQueue::Request request{};
         uint8_t callbackPort = HybridConsumerPipeline::PortCount;
     };
     struct DirectRetirementExecution
     {
         bool active = false;
+        HybridConsumerContextQueue::ContextKey key{};
         int coreID = -1;
         int maaID = -1;
-        int tokenTile = -1;
         int completionTile = -1;
-        uint64_t generation = 0;
         uint8_t datatype = 0;
         uint8_t operation = 0;
         uint8_t wordBytes = 0;
@@ -577,17 +578,30 @@ protected:
         int destinationRangeID = -1;
         ContextID contextID = InvalidContextID;
         Addr pc = 0;
-        PacketPtr retryPacket = nullptr;
-        HybridConsumerPipeline::Request aluRequest{};
+        HybridConsumerContextQueue::Request aluRequest{};
         HybridMacroEventTracker macro{};
     };
-    HybridConsumerPipeline directRetirement;
-    DirectRetirementExecution directRetirementExecution;
+    HybridConsumerContextQueue directRetirementContexts;
+    std::array<DirectRetirementExecution,
+               HybridConsumerContextQueue::ContextCount>
+        directRetirementExecutions{};
     // Direct-retirement packets bypass the generic OutstandingPacket payload
-    // machinery because their storage is one of the four LogicalSPD credits.
-    // Keep exact physical-address exclusion shared with that machinery so a
-    // legacy MAA request cannot overtake an in-flight direct ReadReq/WriteReq.
-    std::unordered_set<Addr> directRetirementOutstandingAddresses;
+    // machinery because their storage is one of the fixed queue credits.
+    // These finite records keep exact physical-address and full context-owner
+    // exclusion without a dynamically growing map or hidden payload store.
+    struct DirectRetirementRequestRecord
+    {
+        bool active = false;
+        Addr address = 0;
+        HybridConsumerContextQueue::Request request{};
+    };
+    static constexpr std::size_t DirectRetirementRequestRecordCount =
+        HybridConsumerContextQueue::ContextCount *
+        HybridConsumerPipeline::LineBufferCount;
+    std::array<DirectRetirementRequestRecord,
+               DirectRetirementRequestRecordCount>
+        directRetirementRequestRecords{};
+    PacketPtr directRetirementRetryPacket = nullptr;
     uint64_t directRetirementTraceOccurrence = 0;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
@@ -607,13 +621,35 @@ protected:
     void emitTransparentMacroSummary(uint64_t generation,
                                      Tick producerRegistrationTick);
     PacketPtr makeDirectRetirementPacket(
-        const HybridConsumerPipeline::Request &request);
+        const HybridConsumerContextQueue::Request &request);
     bool recvDirectRetirementTimingResp(PacketPtr pkt,
                                         uint8_t respondingPort);
+    static bool sameDirectRetirementKey(
+        const HybridConsumerContextQueue::ContextKey &lhs,
+        const HybridConsumerContextQueue::ContextKey &rhs);
+    static bool sameDirectRetirementRequest(
+        const HybridConsumerContextQueue::Request &lhs,
+        const HybridConsumerContextQueue::Request &rhs);
+    DirectRetirementExecution *findDirectRetirementExecution(
+        const HybridConsumerContextQueue::ContextKey &key);
+    const DirectRetirementExecution *findDirectRetirementExecution(
+        const HybridConsumerContextQueue::ContextKey &key) const;
+    DirectRetirementExecution *findDirectRetirementExecution(
+        uint16_t tokenTile, uint64_t generation);
+    DirectRetirementExecution *firstInactiveDirectRetirementExecution();
+    bool hasDirectRetirementOutstandingAddress(Addr address) const;
+    bool hasDirectRetirementOutstandingOwner(
+        const HybridConsumerContextQueue::ContextKey &key) const;
+    uint16_t directRetirementOutstandingRequestCount() const;
+    bool reserveDirectRetirementRequest(
+        Addr address, const HybridConsumerContextQueue::Request &request);
+    bool releaseDirectRetirementRequest(
+        Addr address, const HybridConsumerContextQueue::Request &request);
     void serviceDirectRetirement();
     void scheduleDirectRetirementEvent(int latency = 0);
     void notifyDirectRetirementPortEvent(uint8_t port);
-    void finishDirectRetirement();
+    void finishDirectRetirement(
+        const HybridConsumerContextQueue::ContextKey &key);
     struct LogicalSPDSenderState : public Packet::SenderState
     {
         LogicalSPDCacheGem5Bridge::CallbackToken token{};
@@ -763,6 +799,9 @@ public:
         statistics::Scalar direct_retirement_retries;
         statistics::Scalar direct_retirement_overlap_ticks;
         statistics::Scalar direct_retirement_active_stage_high_water;
+        statistics::Scalar direct_retirement_context_high_water;
+        statistics::Scalar direct_retirement_context_full_stalls;
+        statistics::Scalar direct_retirement_request_record_high_water;
         statistics::Scalar direct_retirement_fallbacks;
         statistics::Scalar direct_retirement_payload_bytes;
         statistics::Scalar direct_retirement_control_bytes;

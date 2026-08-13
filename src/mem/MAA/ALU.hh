@@ -51,7 +51,9 @@ public:
      */
     bool startDirectLine(std::byte *data, uint8_t word_bytes,
                          uint8_t datatype, uint8_t operation,
-                         uint64_t scalar_bits, uint64_t transaction);
+                         uint64_t scalar_bits, uint16_t token_tile,
+                         uint64_t generation, uint64_t incarnation,
+                         uint64_t transaction);
 
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);
@@ -86,6 +88,9 @@ protected:
     uint8_t direct_line_datatype = 0;
     uint8_t direct_line_operation = 0;
     uint64_t direct_line_scalar_bits = 0;
+    uint16_t direct_line_token_tile = 0;
+    uint64_t direct_line_generation = 0;
+    uint64_t direct_line_incarnation = 0;
     uint64_t direct_line_transaction = 0;
 
     void executeInstruction();

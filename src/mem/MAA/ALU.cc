@@ -79,6 +79,8 @@ bool
 ALUUnit::startDirectLine(std::byte *data, uint8_t word_bytes,
                          uint8_t datatype, uint8_t operation,
                          uint64_t scalar_bits,
+                         uint16_t token_tile, uint64_t generation,
+                         uint64_t incarnation,
                          uint64_t transaction)
 {
     if (state != Status::Idle || my_instruction != nullptr ||
@@ -87,7 +89,7 @@ ALUUnit::startDirectLine(std::byte *data, uint8_t word_bytes,
         datatype != static_cast<uint8_t>(
                         Instruction::DataType::FLOAT64_TYPE) ||
         operation != static_cast<uint8_t>(Instruction::OPType::MUL_OP) ||
-        transaction == 0)
+        generation == 0 || incarnation == 0 || transaction == 0)
         return false;
 
     direct_line_data = data;
@@ -95,6 +97,9 @@ ALUUnit::startDirectLine(std::byte *data, uint8_t word_bytes,
     direct_line_datatype = datatype;
     direct_line_operation = operation;
     direct_line_scalar_bits = scalar_bits;
+    direct_line_token_tile = token_tile;
+    direct_line_generation = generation;
+    direct_line_incarnation = incarnation;
     direct_line_transaction = transaction;
     state = Status::DirectLine;
 
@@ -956,6 +961,8 @@ void ALUUnit::executeInstruction() {
                          Instruction::DataType::FLOAT64_TYPE) ||
                      direct_line_operation != static_cast<uint8_t>(
                          Instruction::OPType::MUL_OP) ||
+                     direct_line_generation == 0 ||
+                     direct_line_incarnation == 0 ||
                      direct_line_transaction == 0,
                  "A[%d] direct line lost its exact ALU contract\n",
                  my_alu_id);
@@ -971,15 +978,22 @@ void ALUUnit::executeInstruction() {
                         sizeof(value));
         }
         const int maa_id = my_alu_id;
+        const uint16_t token_tile = direct_line_token_tile;
+        const uint64_t generation = direct_line_generation;
+        const uint64_t incarnation = direct_line_incarnation;
         const uint64_t transaction = direct_line_transaction;
         direct_line_data = nullptr;
         direct_line_word_bytes = 0;
         direct_line_datatype = 0;
         direct_line_operation = 0;
         direct_line_scalar_bits = 0;
+        direct_line_token_tile = 0;
+        direct_line_generation = 0;
+        direct_line_incarnation = 0;
         direct_line_transaction = 0;
         state = Status::Idle;
-        maa->completeDirectRetirementALU(maa_id, transaction);
+        maa->completeDirectRetirementALU(
+            maa_id, token_tile, generation, incarnation, transaction);
         break;
     }
     default:

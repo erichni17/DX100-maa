@@ -19,10 +19,18 @@ RAW_RESULT_STATS = {
     "direct_descriptors": "system.maa.direct_retirement_descriptors",
     "direct_page_acks": "system.maa.direct_retirement_producer_acks",
     "direct_line_acks": "system.maa.direct_retirement_producer_line_acks",
-    "direct_page_fallback_lines": ("system.maa.direct_retirement_page_fallback_lines"),
+    "direct_page_fallback_lines": (
+        "system.maa.direct_retirement_page_fallback_lines"
+    ),
     "direct_read_responses": "system.maa.direct_retirement_read_responses",
     "direct_alu_completions": "system.maa.direct_retirement_alu_completions",
     "direct_write_responses": "system.maa.direct_retirement_write_responses",
+    "direct_context_high_water": (
+        "system.maa.direct_retirement_context_high_water"
+    ),
+    "direct_request_record_high_water": (
+        "system.maa.direct_retirement_request_record_high_water"
+    ),
     "direct_fallbacks": "system.maa.direct_retirement_fallbacks",
 }
 
@@ -65,7 +73,9 @@ def result_row(path):
 def stats_blocks(path):
     blocks = []
     current = None
-    for line in path.read_text(encoding="ascii", errors="replace").splitlines():
+    for line in path.read_text(
+        encoding="ascii", errors="replace"
+    ).splitlines():
         if line.startswith("---------- Begin Simulation Statistics"):
             if current is not None:
                 raise ValueError(f"nested statistics blocks in {path}")
@@ -124,7 +134,9 @@ def exact_checkpoint(arm):
     for path in files:
         if path.name == "m5.cpt":
             lines = path.read_bytes().splitlines(keepends=True)
-            if not lines or not lines[0].startswith(b"## checkpoint generated: "):
+            if not lines or not lines[0].startswith(
+                b"## checkpoint generated: "
+            ):
                 raise ValueError(f"{path} lacks the expected timestamp header")
             value = hashlib.sha256(b"".join(lines[1:])).hexdigest()
             records[path.name] = ("normalized_timestamp_header", value)
@@ -133,12 +145,45 @@ def exact_checkpoint(arm):
     return records
 
 
+def validate_four_descriptor_line_mechanism(result):
+    """Require exact finite closure for the four-descriptor line treatment."""
+    if int(result["direct_descriptors"]) != 4:
+        return
+    exact = {
+        "direct_line_acks": 8192,
+        "direct_page_fallback_lines": 0,
+        "direct_read_responses": 8192,
+        "direct_alu_completions": 8192,
+        "direct_write_responses": 8192,
+    }
+    for field, expected in exact.items():
+        if int(result[field]) != expected:
+            raise ValueError(
+                f"four-descriptor line treatment violates {field}={expected}"
+            )
+    context_high_water = int(result["direct_context_high_water"])
+    if context_high_water < 2 or context_high_water > 4:
+        raise ValueError(
+            "four-descriptor line treatment requires context high-water "
+            f"in [2, 4], observed {context_high_water}"
+        )
+    request_high_water = int(result["direct_request_record_high_water"])
+    if request_high_water <= 0 or request_high_water > 64:
+        raise ValueError(
+            "four-descriptor line treatment requires fixed request-record "
+            f"high-water in [1, 64], observed {request_high_water}"
+        )
+
+
 def validate_arm(arm, expected_line_handoff):
     for name in ("checkpoint.exit", "restore.exit"):
         if (arm / name).read_text(encoding="ascii").strip() != "0":
             raise ValueError(f"{arm} has a nonzero {name}")
     driver_exit = arm.parent / f"{arm.name}.driver.exit"
-    if driver_exit.exists() and driver_exit.read_text(encoding="ascii").strip() != "0":
+    if (
+        driver_exit.exists()
+        and driver_exit.read_text(encoding="ascii").strip() != "0"
+    ):
         raise ValueError(f"{arm} has a nonzero driver exit")
     if (arm / "source_status.txt").stat().st_size != 0:
         raise ValueError(f"{arm} used a dirty source tree")
@@ -148,14 +193,21 @@ def validate_arm(arm, expected_line_handoff):
     log = (arm / "restore.log").read_text(encoding="ascii", errors="replace")
     if not TERMINAL_MARKER.search(log):
         raise ValueError(f"{arm} lacks terminal m5_exit")
-    if re.search(r"panic|fatal|segmentation fault|MAA_GATHER_VERIFY_FAIL", log, re.I):
-        raise ValueError(f"{arm} failed exact correctness or fatal-marker checks")
+    if re.search(
+        r"panic|fatal|segmentation fault|MAA_GATHER_VERIFY_FAIL", log, re.I
+    ):
+        raise ValueError(
+            f"{arm} failed exact correctness or fatal-marker checks"
+        )
     raw_blocks = stats_blocks(arm / "run/stats.txt")
 
     manifest = key_values(arm / "manifest.txt")
     if manifest.get("guest_arm") != "direct4x3":
         raise ValueError(f"{arm} is not the direct4x3 arm")
-    if int(manifest["direct_retirement_line_handoff"]) != expected_line_handoff:
+    if (
+        int(manifest["direct_retirement_line_handoff"])
+        != expected_line_handoff
+    ):
         raise ValueError(f"{arm} has the wrong treatment bit")
 
     result = result_row(arm / "result.tsv")
@@ -170,7 +222,9 @@ def validate_arm(arm, expected_line_handoff):
     for key, expected in resolved.items():
         if unique_config_value(config, key) != expected:
             raise ValueError(f"{arm} has the wrong resolved {key}")
-    if command_has_line_handoff(arm / "restore.command") != bool(expected_line_handoff):
+    if command_has_line_handoff(arm / "restore.command") != bool(
+        expected_line_handoff
+    ):
         raise ValueError(f"{arm} restore command has the wrong treatment bit")
     if int(result["stats_blocks"]) != len(raw_blocks) or len(raw_blocks) != 2:
         raise ValueError(f"{arm} result has the wrong stats-block count")
@@ -179,6 +233,10 @@ def validate_arm(arm, expected_line_handoff):
     if int(result["final_simTicks"]) != int(raw_blocks[-1]["simTicks"]):
         raise ValueError(f"{arm} result does not match raw final simTicks")
     for field, stat in RAW_RESULT_STATS.items():
+        if field not in result or stat not in raw_blocks[0]:
+            raise ValueError(
+                f"{arm} lacks required raw multicontext field {field}/{stat}"
+            )
         if int(result[field]) != int(raw_blocks[0][stat]):
             raise ValueError(f"{arm} result does not match raw {stat}")
 
@@ -189,7 +247,9 @@ def validate_arm(arm, expected_line_handoff):
     if verified_length != descriptors * 16384:
         raise ValueError(f"{arm} verifier length does not match descriptors")
     if str(verified_hash) != result["output_hash"]:
-        raise ValueError(f"{arm} result does not match the exact verifier hash")
+        raise ValueError(
+            f"{arm} result does not match the exact verifier hash"
+        )
     common = {
         "direct_page_acks": page_acks,
         "direct_read_responses": lines,
@@ -212,6 +272,8 @@ def validate_arm(arm, expected_line_handoff):
         raise ValueError(
             f"{arm} has line/fallback closure {observed}, expected {expected}"
         )
+    if expected_line_handoff:
+        validate_four_descriptor_line_mechanism(result)
     return manifest, result, artifact_records(arm / "artifact_sha256.txt")
 
 
@@ -235,14 +297,20 @@ def main():
     page_manifest, page, page_artifacts = validate_arm(args.page_arm, 0)
     line_manifest, line, line_artifacts = validate_arm(args.line_arm, 1)
     page_comparable = {
-        key: value for key, value in page_manifest.items() if key not in TREATMENT_KEYS
+        key: value
+        for key, value in page_manifest.items()
+        if key not in TREATMENT_KEYS
     }
     line_comparable = {
-        key: value for key, value in line_manifest.items() if key not in TREATMENT_KEYS
+        key: value
+        for key, value in line_manifest.items()
+        if key not in TREATMENT_KEYS
     }
     if page_comparable != line_comparable:
         raise ValueError("non-treatment manifest fields differ")
-    if [value for value, _ in page_artifacts] != [value for value, _ in line_artifacts]:
+    if [value for value, _ in page_artifacts] != [
+        value for value, _ in line_artifacts
+    ]:
         raise ValueError("page and line artifacts differ")
     if exact_checkpoint(args.page_arm) != exact_checkpoint(args.line_arm):
         raise ValueError("page and line checkpoints are not byte-identical")
@@ -283,9 +351,15 @@ def main():
         "speedup": page_ticks / line_ticks,
         "direct_descriptors": int(page["direct_descriptors"]),
         "expected_result_lines": int(page["direct_descriptors"]) * 2048,
+        "line_context_high_water": int(line["direct_context_high_water"]),
+        "line_request_record_high_water": int(
+            line["direct_request_record_high_water"]
+        ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    args.output.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n"
+    )
     print(
         "PASS XRAGE line handoff pair: "
         f"{page_ticks} -> {line_ticks} simTicks, "

@@ -1347,7 +1347,8 @@ read -r direct_descriptors direct_producer_acks direct_producer_line_acks \
     direct_read_responses direct_alu_issues direct_alu_completions \
     direct_write_issues direct_write_responses direct_credit_hwm \
     direct_credit_stalls direct_address_stalls direct_retries \
-    direct_overlap_ticks direct_active_stage_hwm direct_fallbacks \
+    direct_overlap_ticks direct_active_stage_hwm direct_context_hwm \
+    direct_request_record_hwm direct_fallbacks \
     direct_payload_bytes direct_control_bytes < <(
     awk '
         /^---------- Begin Simulation Statistics/ { section++ }
@@ -1367,6 +1368,8 @@ read -r direct_descriptors direct_producer_acks direct_producer_line_acks \
         section == 1 && $1 == "system.maa.direct_retirement_retries" { re = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_overlap_ticks" { ot = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_active_stage_high_water" { ah = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_context_high_water" { ch = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_request_record_high_water" { rh = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_fallbacks" { fb = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_payload_bytes" { pb = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_control_bytes" { cb = $2 }
@@ -1374,7 +1377,7 @@ read -r direct_descriptors direct_producer_acks direct_producer_line_acks \
             print d + 0, pa + 0, pla + 0, pfl + 0,
                   ri + 0, rr + 0, ai + 0, ac + 0,
                   wi + 0, wr + 0, ch + 0, cs + 0, as + 0, re + 0,
-                  ot + 0, ah + 0, fb + 0, pb + 0, cb + 0
+                  ot + 0, ah + 0, ch + 0, rh + 0, fb + 0, pb + 0, cb + 0
             exit
         }
     ' "$out/run/stats.txt"
@@ -1435,7 +1438,7 @@ elif [[ $virtual -eq 1 ]]; then
     if [[ $direct_retirement -eq 1 ]]; then
         direct_lines=$((16384 * 8 / 64))
         direct_credits=16
-        direct_payload=1024
+        direct_payload=4096
         direct_submits=$(grep -c 'event=direct_retirement_submit schema=1 ' "$trace" || true)
         direct_ack_trace=$(grep -c 'event=direct_retirement_producer_ack schema=1 ' "$trace" || true)
         direct_line_ack_trace=$(grep -c 'event=direct_retirement_producer_line_ready schema=1 ' "$trace" || true)
@@ -1473,6 +1476,9 @@ elif [[ $virtual -eq 1 ]]; then
            $direct_write_issues -eq $direct_lines && \
            $direct_write_responses -eq $direct_lines && \
            $direct_credit_hwm -eq $direct_credits && \
+           $direct_context_hwm -eq 1 && \
+           $direct_request_record_hwm -gt 0 && \
+           $direct_request_record_hwm -le 64 && \
            $direct_fallbacks -eq 0 && \
            $direct_payload_bytes -eq $direct_payload && \
            $direct_control_bytes -gt 0 && \
@@ -1492,15 +1498,15 @@ elif [[ $virtual -eq 1 ]]; then
             echo "direct-retirement closure failed: descriptor=$direct_descriptors page_acks=$direct_producer_acks line_acks=$direct_producer_line_acks page_fallback_lines=$direct_page_fallback_lines reads=$direct_read_issues/$direct_read_responses alu=$direct_alu_issues/$direct_alu_completions writes=$direct_write_issues/$direct_write_responses hwm=$direct_credit_hwm fallback=$direct_fallbacks trace=$direct_submits/$direct_ack_trace/$direct_line_ack_trace/$direct_issue_trace/$direct_response_trace/$direct_alu_issue_trace/$direct_alu_complete_trace/$direct_summary_trace/$direct_retire_trace" >&2
             exit 1
         }
-        grep -Eq "event=direct_retirement_submit schema=1 .*scope=terminal_fp64_mul_dense_store credits=${direct_credits} payload_bytes=${direct_payload} control_bytes=[1-9][0-9]* total_bytes=[1-9][0-9]* backing_span_bytes=131072 private_page_payload_bytes=0$" "$trace" && \
+        grep -Eq "event=direct_retirement_submit schema=1 .*scope=terminal_fp64_mul_dense_store context_credits=${direct_credits} fixed_contexts=4 active_contexts=1 request_records=64 payload_bytes=${direct_payload} control_bytes=[1-9][0-9]* total_bytes=[1-9][0-9]* .*backing_span_bytes=131072 private_page_payload_bytes=0$" "$trace" && \
         grep -Eq "event=direct_retirement_summary schema=1 .*reads=${direct_lines} computes=${direct_lines} writes=${direct_lines} credit_high_water=${direct_credits} .*line_acks=${direct_producer_line_acks} page_fallback_lines=${direct_page_fallback_lines} fallback_count=0$" "$trace" && \
-        grep -Eq "event=direct_retirement_retire schema=1 .*final_write_responses=${direct_lines}$" "$trace" || {
+        grep -Eq "event=direct_retirement_retire schema=1 .*final_write_responses=${direct_lines} remaining_contexts=0$" "$trace" || {
             echo "direct-retirement trace lacks exact no-private-payload or final-WriteResp proof" >&2
             exit 1
         }
         {
-            printf 'descriptors\tproducer_page_acks\tproducer_line_acks\tpage_fallback_lines\tread_issues\tread_responses\talu_issues\talu_completions\twrite_issues\twrite_responses\tcredit_hwm\tcredit_stalls\taddress_stalls\tretries\toverlap_ticks\tactive_stage_hwm\tfallbacks\tpayload_bytes\tcontrol_bytes\n'
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            printf 'descriptors\tproducer_page_acks\tproducer_line_acks\tpage_fallback_lines\tread_issues\tread_responses\talu_issues\talu_completions\twrite_issues\twrite_responses\tcredit_hwm\tcredit_stalls\taddress_stalls\tretries\toverlap_ticks\tactive_stage_hwm\tcontext_hwm\trequest_record_hwm\tfallbacks\tpayload_bytes\tcontrol_bytes\n'
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                 "$direct_descriptors" "$direct_producer_acks" \
                 "$direct_producer_line_acks" "$direct_page_fallback_lines" \
                 "$direct_read_issues" "$direct_read_responses" \
@@ -1509,6 +1515,7 @@ elif [[ $virtual -eq 1 ]]; then
                 "$direct_credit_hwm" "$direct_credit_stalls" \
                 "$direct_address_stalls" "$direct_retries" \
                 "$direct_overlap_ticks" "$direct_active_stage_hwm" \
+                "$direct_context_hwm" "$direct_request_record_hwm" \
                 "$direct_fallbacks" "$direct_payload_bytes" \
                 "$direct_control_bytes"
         } > "$out/direct_retirement.tsv"

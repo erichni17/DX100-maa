@@ -71,6 +71,20 @@ class HybridConsumerContextQueue
         Pipeline::Request request{};
     };
 
+    struct Snapshot
+    {
+        bool complete = false;
+        uint16_t lines = 0;
+        uint16_t completed = 0;
+        uint16_t readsAccepted = 0;
+        uint16_t computesAccepted = 0;
+        uint16_t writesAccepted = 0;
+        uint16_t producerLineAcks = 0;
+        uint16_t producerPageFallbackLines = 0;
+        uint8_t creditsInUse = 0;
+        uint8_t creditHighWater = 0;
+    };
+
     static constexpr std::size_t chargedPayloadBytes();
     static constexpr std::size_t chargedControlBytes();
     static constexpr std::size_t chargedTotalBytes();
@@ -223,6 +237,39 @@ class HybridConsumerContextQueue
     }
 
     bool active(const ContextKey &key) const { return find(key) != nullptr; }
+
+    bool snapshot(const ContextKey &key, Snapshot *result) const
+    {
+        if (result == nullptr)
+            return false;
+        *result = {};
+        const Context *context = find(key);
+        if (context == nullptr)
+            return false;
+        const Pipeline &pipeline = context->pipeline;
+        result->complete = pipeline.complete();
+        result->lines = pipeline.lines();
+        result->completed = pipeline.completed();
+        result->readsAccepted = pipeline.readsAccepted();
+        result->computesAccepted = pipeline.computesAccepted();
+        result->writesAccepted = pipeline.writesAccepted();
+        result->producerLineAcks = pipeline.producerLineAckCount();
+        result->producerPageFallbackLines =
+            pipeline.producerPageFallbackLineCount();
+        result->creditsInUse = pipeline.creditsInUse();
+        result->creditHighWater = pipeline.creditHighWater();
+        return true;
+    }
+
+    uint16_t totalCreditsInUse() const
+    {
+        uint16_t credits = 0;
+        for (const Context &context : contexts) {
+            if (context.active)
+                credits += context.pipeline.creditsInUse();
+        }
+        return credits;
+    }
 
     uint8_t activeContexts() const
     {

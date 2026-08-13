@@ -544,6 +544,12 @@ direct_alu_completions=$(
 direct_write_responses=$(
     first_roi_stat system.maa.direct_retirement_write_responses
 )
+direct_context_high_water=$(
+    first_roi_stat system.maa.direct_retirement_context_high_water
+)
+direct_request_record_high_water=$(
+    first_roi_stat system.maa.direct_retirement_request_record_high_water
+)
 direct_fallbacks=$(first_roi_stat system.maa.direct_retirement_fallbacks)
 for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$index_words" "$index_filter_words" "$index_filter_cycles" \
@@ -552,7 +558,8 @@ for value in "$write_issues" "$write_completions" "$pages_ready" \
     "$offset_table_epoch_drains" \
     "$virtual_build_rounds" "$fill_cycles" \
     "$all_pages_ready_cycles" "$index_outstanding_merges" \
-    "$index_outstanding_wait_cycles" "$indirect_spd_reads"; do
+    "$index_outstanding_wait_cycles" "$indirect_spd_reads" \
+    "$direct_context_high_water" "$direct_request_record_high_water"; do
     [[ -n $value ]] || {
         echo "XRAGE mechanism-counter extraction failed" >&2
         exit 1
@@ -584,6 +591,20 @@ if [[ $guest_arm == direct4x3 ]]; then
             echo "direct4x3 line handoff fell back to page visibility" >&2
             exit 1
         }
+        if [[ $expected_descriptors -eq 4 ]]; then
+            [[ $expected_direct_lines -eq 8192 &&
+               $direct_line_acks -eq 8192 &&
+               $direct_read_responses -eq 8192 &&
+               $direct_alu_completions -eq 8192 &&
+               $direct_write_responses -eq 8192 &&
+               $direct_context_high_water -ge 2 &&
+               $direct_context_high_water -le 4 &&
+               $direct_request_record_high_water -gt 0 &&
+               $direct_request_record_high_water -le 64 ]] || {
+                echo "direct4x3 four-context line treatment failed exact 8192-line closure: contexts=$direct_context_high_water request_records=$direct_request_record_high_water" >&2
+                exit 1
+            }
+        fi
     else
         [[ $direct_line_acks -eq 0 &&
            $direct_page_fallback_lines -eq $expected_direct_lines ]] || {
@@ -639,8 +660,9 @@ fi
     printf '\tdirect_page_acks\tdirect_line_acks'
     printf '\tdirect_page_fallback_lines\tdirect_read_responses'
     printf '\tdirect_alu_completions\tdirect_write_responses'
-    printf '\tdirect_fallbacks\n'
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '\tdirect_context_high_water'
+    printf '\tdirect_request_record_high_water\tdirect_fallbacks\n'
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$hash" "$roi_ticks" "$final_ticks" "$stats_blocks" \
         "$write_issues" "$write_completions" "$pages_ready" \
         "$index_words" "$index_partitions" "$index_filter_words" \
@@ -659,6 +681,7 @@ fi
         "$direct_page_acks" "$direct_line_acks" \
         "$direct_page_fallback_lines" "$direct_read_responses" \
         "$direct_alu_completions" "$direct_write_responses" \
+        "$direct_context_high_water" "$direct_request_record_high_water" \
         "$direct_fallbacks"
 } > "$out/result.tsv"
 read -r dram_reads dram_activates dram_precharges < <(

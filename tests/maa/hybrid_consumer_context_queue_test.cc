@@ -269,6 +269,69 @@ testRetirementRejectsStaleSlotReuse()
 }
 
 void
+testExactFourDescriptorClosureWithoutPageFallback()
+{
+    Queue queue;
+    std::array<Queue::Descriptor, Queue::ContextCount> descriptors{};
+    std::array<Queue::ContextKey, Queue::ContextCount> keys{};
+    for (uint8_t context = 0; context < Queue::ContextCount; ++context) {
+        descriptors[context] = descriptor(
+            context, context + 1, 0x100000 + context * 0x200000);
+        CHECK(queue.submit(descriptors[context], &keys[context]) ==
+              Queue::SubmitResult::Accepted);
+        for (uint16_t line = 0; line < Pipeline::MaxLines; ++line) {
+            CHECK(queue.notifyProducerLineWriteAck(
+                keys[context], lineAck(descriptors[context], line)));
+        }
+    }
+
+    uint32_t closed_lines = 0;
+    while (closed_lines <
+           Queue::ContextCount * static_cast<uint32_t>(Pipeline::MaxLines)) {
+        const auto read = queue.pendingRead();
+        CHECK(read.request.kind == Pipeline::Kind::ReadBacking);
+        CHECK(queue.accept(read));
+        const auto data = payload(static_cast<uint8_t>(read.request.line));
+        CHECK(queue.completeRead(read, data.data(), data.size()));
+
+        const auto compute = queue.pendingCompute();
+        CHECK(compute.request.kind == Pipeline::Kind::Compute);
+        CHECK(queue.accept(compute));
+        // A second compute cannot be exposed while the one shared ALU owns
+        // this request, even though all four contexts are runnable.
+        CHECK(queue.pendingCompute().request.kind == Pipeline::Kind::None);
+        CHECK(queue.completeCompute(compute));
+
+        const auto write = queue.pendingWrite();
+        CHECK(write.request.kind == Pipeline::Kind::WriteDestination);
+        CHECK(queue.accept(write));
+        CHECK(queue.completeWriteAck(write));
+        ++closed_lines;
+    }
+    CHECK(closed_lines == 8192);
+    CHECK(queue.totalCreditsInUse() == 0);
+
+    for (uint8_t context = 0; context < Queue::ContextCount; ++context) {
+        Queue::Snapshot snapshot;
+        CHECK(queue.snapshot(keys[context], &snapshot));
+        CHECK(snapshot.complete);
+        CHECK(snapshot.lines == Pipeline::MaxLines);
+        CHECK(snapshot.completed == Pipeline::MaxLines);
+        CHECK(snapshot.readsAccepted == Pipeline::MaxLines);
+        CHECK(snapshot.computesAccepted == Pipeline::MaxLines);
+        CHECK(snapshot.writesAccepted == Pipeline::MaxLines);
+        CHECK(snapshot.producerLineAcks == Pipeline::MaxLines);
+        CHECK(snapshot.producerPageFallbackLines == 0);
+        CHECK(snapshot.creditsInUse == 0);
+        CHECK(queue.retire(keys[context]));
+    }
+    CHECK(queue.activeContexts() == 0);
+    std::cout << "exact four-context closure lines=" << closed_lines
+              << " descriptor_2_4_page_fallback_lines=0"
+              << " shared_alu=1\n";
+}
+
+void
 testStorageCharge()
 {
     CHECK(Queue::chargedPayloadBytes() == 4096);
@@ -297,6 +360,7 @@ main()
     testOneSharedAluAcrossContexts();
     testRoundRobinSharedCacheArbitration();
     testRetirementRejectsStaleSlotReuse();
+    testExactFourDescriptorClosureWithoutPageFallback();
     testStorageCharge();
     std::cout << "hybrid consumer context queue tests passed\n";
     return 0;

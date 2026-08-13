@@ -63,8 +63,7 @@ MAA::sendPacket(FuncUnitType funcUnit, int maaID, PacketPtr pkt, Tick tick,
         outstanding_it != my_outstanding_pkt_map.end() &&
         outstanding_it->second.virtualRetirement;
     const bool direct_retirement_owns_address =
-        directRetirementOutstandingAddresses.find(paddr) !=
-        directRetirementOutstandingAddresses.end();
+        hasDirectRetirementOutstandingAddress(paddr);
     if (!bypass_deferred_queue &&
         (has_deferred_packets || retirement_owns_address ||
          direct_retirement_owns_address)) {
@@ -255,8 +254,7 @@ void MAA::sendNextDeferredPacket(Addr paddr) {
         deferred_it->second.empty() ||
         my_outstanding_pkt_map.find(paddr) !=
             my_outstanding_pkt_map.end() ||
-        directRetirementOutstandingAddresses.find(paddr) !=
-            directRetirementOutstandingAddresses.end()) {
+        hasDirectRetirementOutstandingAddress(paddr)) {
         return;
     }
 

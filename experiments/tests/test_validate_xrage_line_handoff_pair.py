@@ -7,12 +7,15 @@ from experiments.scripts.validate_xrage_line_handoff_pair import (
     exact_checkpoint,
     stats_blocks,
     unique_config_value,
+    validate_four_descriptor_line_mechanism,
     verifier_record,
 )
 
 
 class ExactCheckpointTest(unittest.TestCase):
-    def make_arm(self, root, timestamp, state=b"[system]\nvalue=1\n", memory=b"memory"):
+    def make_arm(
+        self, root, timestamp, state=b"[system]\nvalue=1\n", memory=b"memory"
+    ):
         arm = root / timestamp
         checkpoint = arm / "checkpoint" / "cpt.123"
         checkpoint.mkdir(parents=True)
@@ -34,7 +37,9 @@ class ExactCheckpointTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             reference = self.make_arm(root, "reference")
-            changed_state = self.make_arm(root, "state", state=b"[system]\nvalue=2\n")
+            changed_state = self.make_arm(
+                root, "state", state=b"[system]\nvalue=2\n"
+            )
             changed_memory = self.make_arm(root, "memory", memory=b"changed")
             self.assertNotEqual(
                 exact_checkpoint(reference), exact_checkpoint(changed_state)
@@ -69,14 +74,18 @@ class RawEvidenceTest(unittest.TestCase):
             )
             blocks = stats_blocks(path)
             self.assertEqual(blocks[0]["simTicks"], "123")
-            self.assertEqual(blocks[0]["system.maa.direct_retirement_descriptors"], "4")
+            self.assertEqual(
+                blocks[0]["system.maa.direct_retirement_descriptors"], "4"
+            )
             self.assertEqual(blocks[1]["simTicks"], "456")
 
     def test_config_and_command_require_unique_raw_treatment(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = root / "config.ini"
-            config.write_text("direct_retirement_line_handoff=true\n", encoding="ascii")
+            config.write_text(
+                "direct_retirement_line_handoff=true\n", encoding="ascii"
+            )
             command = root / "restore.command"
             command.write_text(
                 "gem5 --maa_direct_retirement_line_handoff --outdir='a b'\n",
@@ -100,6 +109,33 @@ class RawEvidenceTest(unittest.TestCase):
         self.assertEqual(verifier_record(record, Path("log")), (65536, 12345))
         with self.assertRaisesRegex(ValueError, "expected one"):
             verifier_record(record + record, Path("log"))
+
+    def test_four_descriptor_line_gate_requires_exact_bounded_closure(self):
+        result = {
+            "direct_descriptors": "4",
+            "direct_line_acks": "8192",
+            "direct_page_fallback_lines": "0",
+            "direct_read_responses": "8192",
+            "direct_alu_completions": "8192",
+            "direct_write_responses": "8192",
+            "direct_context_high_water": "4",
+            "direct_request_record_high_water": "64",
+        }
+        validate_four_descriptor_line_mechanism(result)
+
+        for field, invalid in (
+            ("direct_line_acks", "8191"),
+            ("direct_page_fallback_lines", "1"),
+            ("direct_read_responses", "8191"),
+            ("direct_alu_completions", "8191"),
+            ("direct_write_responses", "8191"),
+            ("direct_context_high_water", "1"),
+            ("direct_request_record_high_water", "65"),
+        ):
+            broken = dict(result)
+            broken[field] = invalid
+            with self.assertRaises(ValueError, msg=field):
+                validate_four_descriptor_line_mechanism(broken)
 
 
 if __name__ == "__main__":

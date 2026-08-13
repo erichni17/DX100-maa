@@ -45,7 +45,9 @@ class XrageRunnerAbiTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 2)
-            self.assertIn("must equal the gem5 logical aperture", result.stderr)
+            self.assertIn(
+                "must equal the gem5 logical aperture", result.stderr
+            )
             self.assertFalse(output.exists())
 
     def test_checkpoint_retarget_is_explicit_and_pre_maa_only(self):
@@ -128,12 +130,14 @@ class XrageRunnerAbiTest(unittest.TestCase):
 
     def test_stream_prefetch_is_an_explicit_guest_arm(self):
         for runner in (RUNNER, RECOVERY):
-            self.assertIn("direct4prefetch", runner.read_text(encoding="utf-8"))
+            self.assertIn(
+                "direct4prefetch", runner.read_text(encoding="utf-8")
+            )
 
     def test_fused_stream_prefetch_is_an_explicit_guest_arm(self):
-        source = (ROOT / "benchmarks/spatter/src/Spatter/Configuration.cc").read_text(
-            encoding="utf-8"
-        )
+        source = (
+            ROOT / "benchmarks/spatter/src/Spatter/Configuration.cc"
+        ).read_text(encoding="utf-8")
         runner = (
             ROOT / "experiments/scripts/run_xrage_direct_index_smoke.sh"
         ).read_text(encoding="utf-8")
@@ -145,14 +149,22 @@ class XrageRunnerAbiTest(unittest.TestCase):
         configuration = (
             ROOT / "benchmarks/spatter/src/Spatter/Configuration.cc"
         ).read_text(encoding="utf-8")
-        main = (ROOT / "benchmarks/spatter/src/main.cc").read_text(encoding="utf-8")
+        main = (ROOT / "benchmarks/spatter/src/main.cc").read_text(
+            encoding="utf-8"
+        )
         runner = RUNNER.read_text(encoding="utf-8")
         for source in (configuration, main, runner):
             self.assertIn("direct4x3", source)
-        self.assertIn("maa_virtual_tile_alu_scalar_store<double>", configuration)
+        self.assertIn(
+            "maa_virtual_tile_alu_scalar_store<double>", configuration
+        )
         self.assertIn("MAA_DIRECT_RETIREMENT_LINE_HANDOFF", runner)
         self.assertIn("--maa_direct_retirement_line_handoff", runner)
         self.assertIn("direct_retirement_producer_line_acks", runner)
+        self.assertIn("direct_retirement_context_high_water", runner)
+        self.assertIn("direct_retirement_request_record_high_water", runner)
+        self.assertIn("expected_direct_lines -eq 8192", runner)
+        self.assertIn("direct_context_high_water -ge 2", runner)
         self.assertIn("direct4x3 mechanism did not close exactly", runner)
         self.assertIn("XRAGE_SIMULATOR_PROVENANCE", runner)
         self.assertIn("provenance_gem5_sha256", runner)
