@@ -36,6 +36,7 @@ void StreamAccessUnit::allocate(int _my_stream_id, unsigned int _num_request_tab
     request_table = new RequestTable(maa, num_request_table_addresses, num_request_table_entries_per_address, my_stream_id, true);
     my_translation_done = false;
     my_instruction = nullptr;
+    my_token_bound_load = false;
 }
 Cycles StreamAccessUnit::updateLatency(int num_spd_condread_accesses, int num_spd_srcread_accesses, int num_spd_write_accesses, int num_requesttable_accesses) {
     if (num_spd_condread_accesses != 0) {
@@ -143,6 +144,11 @@ void StreamAccessUnit::executeInstruction() {
         my_min = maa->rf->getData<int>(my_instruction->src1RegID);
         my_max = maa->rf->getData<int>(my_instruction->src2RegID);
         my_stride = maa->rf->getData<int>(my_instruction->src3RegID);
+        my_token_bound_load =
+            my_instruction->opcode == Instruction::OpcodeType::STREAM_LD &&
+            my_src_tile != -1 &&
+            maa->ifile->isCompletionOnlyTile(my_instruction->maa_id,
+                                              my_src_tile);
         my_element_base = my_instruction->controllerManaged
             ? my_instruction->controllerElementOffset : 0;
         my_element_count = my_instruction->controllerManaged
@@ -260,7 +266,7 @@ void StreamAccessUnit::executeInstruction() {
                         }
                         num_spd_condread_accesses++;
                     }
-                    if (my_src_tile != -1) {
+                    if (my_src_tile != -1 && !my_token_bound_load) {
                         if (!my_instruction->controllerManaged &&
                             !maa->spd->getElementFinished(
                                 my_src_tile, spd_idx, my_word_size,
@@ -359,6 +365,7 @@ void StreamAccessUnit::executeInstruction() {
             if (my_cond_tile != -1 && maa->spd->getTileStatus(my_cond_tile) != SPD::TileStatus::Finished) {
                 DPRINTF(MAAStream, "S[%d] %s: Waiting for cond tile %d to finish...\n", my_stream_id, __func__, my_cond_tile);
             } else if (!my_instruction->controllerManaged &&
+                       !my_token_bound_load &&
                        my_src_tile != -1 &&
                        maa->spd->getTileStatus(my_src_tile) !=
                            SPD::TileStatus::Finished) {

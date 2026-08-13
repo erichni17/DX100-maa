@@ -185,6 +185,8 @@ MAA::MAA(const MAAParams &p)
       mmu(p.mmu),
       logicalSpdEvent([this] { serviceLogicalSPD(); }, name()),
       directRetirementEvent([this] { serviceDirectRetirement(); }, name()),
+      pageMaterializationEvent(
+          [this] { servicePageMaterialization(); }, name()),
       issueInstructionEvent([this] { issueInstruction(); }, name()),
       dispatchInstructionEvent([this] { dispatchInstruction(); }, name()),
       dispatchRegisterEvent([this] { dispatchRegister(); }, name()),
@@ -1103,6 +1105,42 @@ MAA::firstInactiveDirectRetirementExecution()
     return nullptr;
 }
 
+MAA::PageMaterializationExecution *
+MAA::findPageMaterializationExecution(
+    const HybridConsumerContextQueue::ContextKey &key)
+{
+    for (PageMaterializationExecution &execution :
+         pageMaterializationExecutions) {
+        if (execution.active && sameDirectRetirementKey(execution.key, key))
+            return &execution;
+    }
+    return nullptr;
+}
+
+MAA::PageMaterializationExecution *
+MAA::findPageMaterializationExecution(uint16_t tokenTile,
+                                      uint64_t generation)
+{
+    for (PageMaterializationExecution &execution :
+         pageMaterializationExecutions) {
+        if (execution.active && execution.key.tokenTile == tokenTile &&
+            execution.key.generation == generation)
+            return &execution;
+    }
+    return nullptr;
+}
+
+MAA::PageMaterializationExecution *
+MAA::firstInactivePageMaterializationExecution()
+{
+    for (PageMaterializationExecution &execution :
+         pageMaterializationExecutions) {
+        if (!execution.active)
+            return &execution;
+    }
+    return nullptr;
+}
+
 bool
 MAA::hasDirectRetirementOutstandingAddress(Addr address) const
 {
@@ -1169,6 +1207,248 @@ MAA::releaseDirectRetirementRequest(
         return true;
     }
     return false;
+}
+
+bool
+MAA::isTokenBoundPageMaterialization(InstructionPtr instruction) const
+{
+    return instruction != nullptr &&
+        instruction->opcode == Instruction::OpcodeType::STREAM_LD &&
+        instruction->src1SpdID >= 0 &&
+        instruction->src1SpdID < static_cast<int>(num_tiles) &&
+        ifile->isCompletionOnlyTile(instruction->maa_id,
+                                    instruction->src1SpdID);
+}
+
+bool
+MAA::pageMaterializerOwnsDestination(int maaID, int firstTile,
+                                     int wordBytes) const
+{
+    if (firstTile < 0)
+        return false;
+    const int words = wordBytes / sizeof(uint32_t);
+    for (const PageMaterializationExecution &execution :
+         pageMaterializationExecutions) {
+        if (!execution.active || !execution.pageActive ||
+            execution.maaID != maaID)
+            continue;
+        const int ownedWords = execution.wordBytes / sizeof(uint32_t);
+        if (firstTile < execution.destinationTile + ownedWords &&
+            execution.destinationTile < firstTile + words)
+            return true;
+    }
+    return false;
+}
+
+MAA::PageMaterializationSubmit
+MAA::submitPageMaterialization(InstructionPtr instruction)
+{
+    panic_if(!isTokenBoundPageMaterialization(instruction),
+             "Page materializer requires token-bound STREAM_LD\n");
+    const int token = instruction->src1SpdID;
+    const int wordBytes = instruction->WordSize();
+    const int tileWords = wordBytes / sizeof(uint32_t);
+    const int minimum = rf->getData<int>(instruction->src1RegID);
+    const int maximum = rf->getData<int>(instruction->src2RegID);
+    const int stride = rf->getData<int>(instruction->src3RegID);
+    const Addr rootBackingAddress = virtualPageBackingAddr[token];
+    const auto fallback = [this, instruction, token, wordBytes, minimum,
+                           maximum, stride, rootBackingAddress](
+                              const char *reason) {
+        stats.page_materialization_admission_fallbacks++;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_fallback schema=1 "
+                "occurrence=%lu token=%d generation=%lu reason=%s "
+                "base=0x%lx root=0x%lx minimum=%d maximum=%d stride=%d "
+                "word_bytes=%d destination=%d active_contexts=%u\n",
+                pageMaterializationTraceOccurrence++, token,
+                virtualPageGeneration[token], reason,
+                instruction->baseAddr, rootBackingAddress, minimum, maximum,
+                stride, wordBytes, instruction->dst1SpdID,
+                directRetirementContexts.activeContexts(
+                    HybridConsumerPipeline::Mode::MaterializePages));
+        return PageMaterializationSubmit::Fallback;
+    };
+    const bool staticGeometry =
+        direct_retirement_line_handoff &&
+        DirectRetirementPortDomain::eligible(num_cores,
+                                              cacheSidePorts.size()) &&
+        num_tile_elements == HybridConsumerPipeline::LogicalElements &&
+        physical_tile_elements ==
+            HybridConsumerPipeline::ProducerPageElements &&
+        (wordBytes == 4 || wordBytes == 8) && minimum == 0 &&
+        maximum ==
+            static_cast<int>(HybridConsumerPipeline::ProducerPageElements) &&
+        stride == 1 && instruction->condSpdID == -1 &&
+        instruction->dst1SpdID >= 0 &&
+        instruction->dst1SpdID + tileWords <=
+            static_cast<int>(num_tiles) &&
+        (instruction->dst1SpdID + tileWords <= token ||
+         token + tileWords <= instruction->dst1SpdID);
+    uint8_t page = HybridConsumerPipeline::NoProducerPage;
+    const auto admission =
+        HybridConsumerPipeline::classifyMaterializationAdmission(
+            staticGeometry, virtualPageGeneration[token],
+            rootBackingAddress, instruction->baseAddr, minimum, maximum,
+            stride, wordBytes, &page);
+    if (admission ==
+        HybridConsumerPipeline::MaterializationAdmission::Fallback)
+        return fallback(staticGeometry ? "abi" : "static_geometry");
+    if (admission ==
+        HybridConsumerPipeline::MaterializationAdmission::Retry) {
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_activation_retry schema=1 "
+                "occurrence=%lu token=%d reason=producer_unregistered "
+                "activation_count=%lu\n",
+                pageMaterializationTraceOccurrence++, token,
+                pageMaterializationActivationCount);
+        return PageMaterializationSubmit::Retry;
+    }
+    const bool exactGeometry =
+        rootBackingAddress % HybridConsumerPipeline::LineBytes == 0 &&
+        virtualPageWordSize[token] == wordBytes &&
+        virtualPageGeneration[token] != 0;
+    if (!exactGeometry)
+        return fallback("registered_producer_abi");
+
+    const uint64_t generation = virtualPageGeneration[token];
+    PageMaterializationExecution *execution =
+        findPageMaterializationExecution(token, generation);
+    bool newContext = false;
+    EarlyProducerLineReadinessLedger::ReplaySummary replay;
+    if (execution == nullptr) {
+        HybridConsumerContextQueue::ContextKey existing;
+        if (directRetirementContexts.findGeneration(token, generation,
+                                                    &existing))
+            return PageMaterializationSubmit::Retry;
+        execution = firstInactivePageMaterializationExecution();
+        if (execution == nullptr)
+            return fallback("resource_execution_context");
+
+        HybridConsumerContextQueue::Descriptor queueDescriptor;
+        queueDescriptor.tokenTile = token;
+        auto &descriptor = queueDescriptor.consumer;
+        descriptor.mode = HybridConsumerPipeline::Mode::MaterializePages;
+        descriptor.generation = generation;
+        descriptor.logicalElements = HybridConsumerPipeline::LogicalElements;
+        descriptor.wordBytes = wordBytes;
+        descriptor.backingAddress = rootBackingAddress;
+        descriptor.backingRangeMin = instruction->minAddr;
+        descriptor.backingRangeMax = instruction->maxAddr;
+        descriptor.backingRangeID = instruction->addrRangeID;
+        for (uint8_t readyPage = 0;
+             readyPage < HybridConsumerPipeline::ProducerPages;
+             ++readyPage) {
+            if (getVirtualPageReady(token, readyPage))
+                descriptor.producerTransactions[readyPage] =
+                    getVirtualPageReadyTransaction(token, readyPage);
+        }
+        HybridConsumerContextQueue::ContextKey owner;
+        const auto submit = directRetirementContexts.submit(queueDescriptor,
+                                                             &owner);
+        if (submit == HybridConsumerContextQueue::SubmitResult::Full)
+            return fallback("resource_context_queue");
+        if (submit != HybridConsumerContextQueue::SubmitResult::Accepted)
+            return PageMaterializationSubmit::Retry;
+
+        const EarlyProducerLineReadinessLedger::Key earlyKey{
+            static_cast<uint16_t>(token), generation,
+            descriptor.backingAddress};
+        if (directRetirementEarlyLineLedger.active(earlyKey)) {
+            panic_if(!directRetirementEarlyLineLedger.replay(
+                         earlyKey,
+                         [this, &owner, generation](const auto &ack) {
+                             return directRetirementContexts.
+                                 notifyProducerLineWriteAck(
+                                     owner,
+                                     {generation, ack.line, ack.wordMask,
+                                      ack.transactionID});
+                         },
+                         &replay) ||
+                         !directRetirementEarlyLineLedger.clear(earlyKey),
+                     "Page materializer rejected pre-admission readiness\n");
+        }
+        for (uint8_t readyPage = 0;
+             readyPage < HybridConsumerPipeline::ProducerPages;
+             ++readyPage) {
+            if (!getVirtualPageReady(token, readyPage))
+                continue;
+            panic_if(!directRetirementContexts.notifyProducerWriteAck(
+                         owner,
+                         {generation, readyPage,
+                          getVirtualPageReadyTransaction(token, readyPage)}),
+                     "Page materializer rejected acknowledged page %u\n",
+                     readyPage);
+        }
+        *execution = {};
+        execution->active = true;
+        execution->key = owner;
+        execution->coreID = instruction->core_id;
+        execution->maaID = instruction->maa_id;
+        execution->wordBytes = wordBytes;
+        execution->backingAddress = rootBackingAddress;
+        execution->backingRangeID = instruction->addrRangeID;
+        execution->contextID = instruction->CID;
+        execution->pc = instruction->PC;
+        newContext = true;
+    }
+
+    if (execution->pageActive)
+        return PageMaterializationSubmit::Retry;
+    if (execution->coreID != instruction->core_id ||
+        execution->maaID != instruction->maa_id ||
+        execution->wordBytes != wordBytes ||
+        execution->backingAddress != rootBackingAddress ||
+        execution->backingRangeID != instruction->addrRangeID ||
+        execution->contextID != instruction->CID)
+        return fallback("abi_context_identity");
+    if (directRetirementContexts.materializationPageComplete(execution->key,
+                                                              page))
+        return fallback("abi_page_already_materialized");
+    if (pageMaterializerOwnsDestination(instruction->maa_id,
+                                        instruction->dst1SpdID,
+                                        wordBytes))
+        return PageMaterializationSubmit::Retry;
+    for (int offset = 0; offset < tileWords; ++offset) {
+        if (ifile->hasTileReference(instruction->maa_id,
+                                    instruction->dst1SpdID + offset))
+            return PageMaterializationSubmit::Retry;
+    }
+    panic_if(!directRetirementContexts.beginMaterializationPage(
+                 execution->key, page),
+             "Page materializer could not start page %u\n", page);
+    execution->pageActive = true;
+    execution->page = page;
+    execution->destinationTile = instruction->dst1SpdID;
+    spd->setTileIdle(execution->destinationTile, wordBytes);
+    spd->setTileNotReady(execution->destinationTile, wordBytes);
+    spd->setTileService(execution->destinationTile, wordBytes);
+    spd->setSize(execution->destinationTile,
+                 HybridConsumerPipeline::ProducerPageElements);
+    const uint64_t materializerControlBytes =
+        HybridConsumerContextQueue::chargedControlBytes() +
+        sizeof(pageMaterializationExecutions) +
+        sizeof(pageMaterializationCommits) +
+        sizeof(directRetirementRequestRecords) +
+        DirectRetirementPortRetry<Packet>::chargedControlBytes() +
+        EarlyProducerLineReadinessLedger::chargedTotalBytes();
+    DPRINTF(MAAVirtualTrace,
+            "event=page_materialization_submit schema=1 occurrence=%lu "
+            "token=%d generation=%lu incarnation=%lu page=%u "
+            "destination=%d new_context=%d early_lines=%u "
+            "line_buffer_bytes=%lu control_bytes=%lu page_spd_bytes=%lu "
+            "charged_two_page_spd_bytes=%lu activation_count=%lu\n",
+            pageMaterializationTraceOccurrence++, token, generation,
+            execution->key.incarnation, page, execution->destinationTile,
+            newContext, replay.readyLines,
+            HybridConsumerContextQueue::chargedPayloadBytes(),
+            materializerControlBytes,
+            static_cast<uint64_t>(physical_tile_elements) * wordBytes,
+            static_cast<uint64_t>(2) * physical_tile_elements * wordBytes,
+            ++pageMaterializationActivationCount);
+    stats.page_materialization_submissions++;
+    schedulePageMaterializationEvent();
+    return PageMaterializationSubmit::Accepted;
 }
 
 bool
@@ -1495,6 +1775,53 @@ MAA::makeDirectRetirementPacket(
     return packet;
 }
 
+PacketPtr
+MAA::makePageMaterializationPacket(
+    const HybridConsumerContextQueue::Request &request)
+{
+    const PageMaterializationExecution *execution =
+        findPageMaterializationExecution(request.owner);
+    const auto &pipelineRequest = request.request;
+    panic_if(execution == nullptr || !execution->pageActive ||
+                 pipelineRequest.kind !=
+                     HybridConsumerPipeline::Kind::ReadBacking ||
+                 pipelineRequest.size != HybridConsumerPipeline::LineBytes ||
+                 pipelineRequest.buffer >=
+                     HybridConsumerPipeline::LineBufferCount ||
+                 pipelineRequest.line /
+                         directRetirementContexts.producerPageLines(
+                             request.owner) != execution->page,
+             "Page materializer produced an invalid cache-line request\n");
+    panic_if(execution->backingRangeID < 0 ||
+                 getAddrRegion(pipelineRequest.address) !=
+                     execution->backingRangeID,
+             "Page-materializer address 0x%lx escaped its registered range\n",
+             pipelineRequest.address);
+    RequestPtr translationRequest = std::make_shared<Request>(
+        pipelineRequest.address, pipelineRequest.size, Request::Flags(0),
+        requestorId, execution->pc, execution->contextID);
+    ImmediateLogicalSPDTranslation translation;
+    ThreadContext *tc = system->threads[execution->contextID];
+    mmu->translateTiming(translationRequest, tc, &translation,
+                         BaseMMU::Read);
+    panic_if(translation.delayed || !translation.finished ||
+                 translation.fault != NoFault,
+             "Page materializer requires immediate valid translation for "
+             "0x%lx\n", pipelineRequest.address);
+    RequestPtr realRequest = std::make_shared<Request>(
+        translation.address, pipelineRequest.size, Request::Flags(0),
+        requestorId);
+    realRequest->setRegion(execution->backingRangeID);
+    PacketPtr packet = new Packet(realRequest, MemCmd::ReadReq);
+    packet->dataStatic(reinterpret_cast<uint8_t *>(
+        directRetirementContexts.bufferData(request)));
+    auto *state = new DirectRetirementSenderState;
+    state->request = request;
+    state->callbackPort = core_addr(translation.address);
+    packet->pushSenderState(state);
+    return packet;
+}
+
 bool
 MAA::recvDirectRetirementTimingResp(PacketPtr pkt, uint8_t respondingPort)
 {
@@ -1505,7 +1832,11 @@ MAA::recvDirectRetirementTimingResp(PacketPtr pkt, uint8_t respondingPort)
         pkt->popSenderState());
     DirectRetirementExecution *execution = state == nullptr
         ? nullptr : findDirectRetirementExecution(state->request.owner);
-    panic_if(state == nullptr || execution == nullptr ||
+    PageMaterializationExecution *materialization = state == nullptr
+        ? nullptr
+        : findPageMaterializationExecution(state->request.owner);
+    panic_if(state == nullptr || (execution == nullptr) ==
+                                  (materialization == nullptr) ||
                  state->callbackPort != respondingPort,
              "Direct-retirement response lost exact port provenance\n");
     const Addr paddr = pkt->getAddr();
@@ -1513,6 +1844,42 @@ MAA::recvDirectRetirementTimingResp(PacketPtr pkt, uint8_t respondingPort)
              "Direct-retirement response at 0x%lx did not own an exact "
              "address reservation\n", paddr);
     const auto &request = state->request.request;
+    if (materialization != nullptr) {
+        panic_if(!materialization->pageActive ||
+                     request.kind !=
+                         HybridConsumerPipeline::Kind::ReadBacking ||
+                     pkt->cmd != MemCmd::ReadResp ||
+                     pkt->getSize() !=
+                         HybridConsumerPipeline::LineBytes ||
+                     !directRetirementContexts.completeRead(
+                         state->request,
+                         reinterpret_cast<const std::byte *>(
+                             pkt->getConstPtr<uint8_t>()),
+                         pkt->getSize()),
+                 "Page materializer rejected an exact cache ReadResp\n");
+        const Cycles spdLatency = spd->setDataLatency(
+            materialization->destinationTile,
+            HybridConsumerPipeline::LineBytes /
+                materialization->wordBytes);
+        panic_if(!reservePageMaterializationCommit(
+                     state->request, getClockEdge(spdLatency)),
+                 "Page materializer exhausted its charged line commits\n");
+        ++materialization->cacheReadFallbackLines;
+        stats.page_materialization_cache_read_fallback_lines++;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_read_response schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "page=%u line=%u buffer=%u spd_ready_tick=%lu\n",
+                pageMaterializationTraceOccurrence++,
+                materialization->key.tokenTile,
+                materialization->key.generation,
+                materialization->key.incarnation, materialization->page,
+                request.line, request.buffer, getClockEdge(spdLatency));
+        delete state;
+        sendNextDeferredPacket(paddr);
+        schedulePageMaterializationEvent();
+        return true;
+    }
     bool accepted = false;
     if (request.kind == HybridConsumerPipeline::Kind::ReadBacking) {
         panic_if(pkt->cmd != MemCmd::ReadResp ||
@@ -1616,6 +1983,9 @@ MAA::notifyDirectRetirementPortEvent(uint8_t port)
     }
     if (active_contexts != 0)
         scheduleDirectRetirementEvent();
+    if (directRetirementContexts.activeContexts(
+            HybridConsumerPipeline::Mode::MaterializePages) != 0)
+        schedulePageMaterializationEvent();
     DPRINTF(MAAVirtualTrace,
             "event=direct_retirement_port_wake schema=1 occurrence=%lu "
             "port=%u active_contexts=%u\n", directRetirementTraceOccurrence++,
@@ -1696,13 +2066,15 @@ MAA::finishDirectRetirement(
             directRetirementTraceOccurrence++, key.tokenTile, generation,
             key.incarnation, snapshot.writesAccepted,
             directRetirementContexts.activeContexts());
+    schedulePageMaterializationEvent();
     scheduleDispatchInstructionEvent();
 }
 
 void
 MAA::serviceDirectRetirement()
 {
-    if (directRetirementContexts.activeContexts() == 0)
+    if (directRetirementContexts.activeContexts(
+            HybridConsumerPipeline::Mode::TransformAndStore) == 0)
         return;
     for (const DirectRetirementExecution &execution :
          directRetirementExecutions) {
@@ -1714,7 +2086,8 @@ MAA::serviceDirectRetirement()
         if (snapshot.complete) {
             const auto key = execution.key;
             finishDirectRetirement(key);
-            if (directRetirementContexts.activeContexts() != 0)
+            if (directRetirementContexts.activeContexts(
+                    HybridConsumerPipeline::Mode::TransformAndStore) != 0)
                 scheduleDirectRetirementEvent();
             return;
         }
@@ -1788,6 +2161,9 @@ MAA::serviceDirectRetirement()
             continue;
         auto *state = dynamic_cast<DirectRetirementSenderState *>(
             packet->senderState);
+        if (state != nullptr &&
+            findPageMaterializationExecution(state->request.owner) != nullptr)
+            continue;
         panic_if(state == nullptr ||
                      state->callbackPort != port ||
                      findDirectRetirementExecution(state->request.owner) ==
@@ -1839,7 +2215,8 @@ MAA::serviceDirectRetirement()
              scan < HybridConsumerContextQueue::ContextCount; ++scan) {
             const HybridConsumerContextQueue::Request request = write
                 ? directRetirementContexts.pendingWrite()
-                : directRetirementContexts.pendingRead();
+                : directRetirementContexts.pendingRead(
+                      HybridConsumerPipeline::Mode::TransformAndStore);
             if (request.request.kind == HybridConsumerPipeline::Kind::None)
                 return selected;
             PacketPtr packet = makeDirectRetirementPacket(request);
@@ -1873,7 +2250,9 @@ MAA::serviceDirectRetirement()
         if (pending.packet == nullptr &&
             compute.request.kind == HybridConsumerPipeline::Kind::None) {
             const bool no_cache_request =
-                directRetirementContexts.pendingRead().request.kind ==
+                directRetirementContexts.pendingRead(
+                    HybridConsumerPipeline::Mode::TransformAndStore)
+                        .request.kind ==
                     HybridConsumerPipeline::Kind::None &&
                 directRetirementContexts.pendingWrite().request.kind ==
                     HybridConsumerPipeline::Kind::None;
@@ -1951,6 +2330,316 @@ MAA::serviceDirectRetirement()
                 compute.request.line, compute.request.buffer,
                 compute.request.transactionID);
         return;
+    }
+}
+
+bool
+MAA::reservePageMaterializationCommit(
+    const HybridConsumerContextQueue::Request &request, Tick readyTick)
+{
+    if (request.request.kind !=
+            HybridConsumerPipeline::Kind::ReadBacking ||
+        findPageMaterializationExecution(request.owner) == nullptr)
+        return false;
+    for (const PageMaterializationCommit &commit :
+         pageMaterializationCommits) {
+        if (commit.active &&
+            sameDirectRetirementRequest(commit.request, request))
+            return false;
+    }
+    for (PageMaterializationCommit &commit : pageMaterializationCommits) {
+        if (commit.active)
+            continue;
+        commit.active = true;
+        commit.readyTick = readyTick;
+        commit.request = request;
+        return true;
+    }
+    return false;
+}
+
+void
+MAA::finishPageMaterialization(
+    const HybridConsumerContextQueue::ContextKey &key)
+{
+    PageMaterializationExecution *execution =
+        findPageMaterializationExecution(key);
+    HybridConsumerContextQueue::Snapshot snapshot;
+    panic_if(execution == nullptr || !execution->pageActive ||
+                 !directRetirementContexts.materializationPageComplete(
+                     key, execution->page) ||
+                 !directRetirementContexts.snapshot(key, &snapshot),
+             "Page materializer completed without exact page ownership\n");
+    for (const PageMaterializationCommit &commit :
+         pageMaterializationCommits) {
+        panic_if(commit.active &&
+                     sameDirectRetirementKey(commit.request.owner, key),
+                 "Page materializer released SPD before a line commit\n");
+    }
+    panic_if(hasDirectRetirementOutstandingOwner(key),
+             "Page materializer released SPD before a cache response\n");
+    for (uint8_t port = 0;
+         port < DirectRetirementPortRetry<Packet>::PortCount; ++port) {
+        PacketPtr packet = directRetirementRetryPackets.packet(port);
+        if (packet == nullptr)
+            continue;
+        auto *state = dynamic_cast<DirectRetirementSenderState *>(
+            packet->senderState);
+        panic_if(state == nullptr || state->callbackPort != port,
+                 "Page materializer observed malformed shared retry state\n");
+        panic_if(sameDirectRetirementKey(state->request.owner, key),
+                 "Page materializer released SPD with an owned retry\n");
+    }
+    const uint8_t page = execution->page;
+    const int destination = execution->destinationTile;
+    const int wordBytes = execution->wordBytes;
+    spd->setTileFinished(destination, wordBytes);
+    setTileReady(destination, wordBytes);
+    ++execution->pagesMaterialized;
+    stats.page_materialization_pages++;
+    execution->pageActive = false;
+    execution->page = HybridConsumerPipeline::NoProducerPage;
+    execution->destinationTile = -1;
+    DPRINTF(MAAVirtualTrace,
+            "event=page_materialization_page_ready schema=1 occurrence=%lu "
+            "token=%u generation=%lu incarnation=%lu page=%u "
+            "destination=%d lines=%u reads=%u forwarded_lines=%u "
+            "cache_read_fallback_lines=%u pages_materialized=%u\n",
+            pageMaterializationTraceOccurrence++, key.tokenTile,
+            key.generation, key.incarnation, page, destination,
+            directRetirementContexts.producerPageLines(key),
+            snapshot.readsAccepted,
+            execution->forwardedLines,
+            execution->cacheReadFallbackLines,
+            execution->pagesMaterialized);
+    if (snapshot.complete) {
+        panic_if(virtualPageGeneration[key.tokenTile] != key.generation,
+                 "Page materializer token generation changed before retire\n");
+        virtualPageConsumedGeneration[key.tokenTile] = key.generation;
+        panic_if(execution->pagesMaterialized !=
+                     HybridConsumerPipeline::ProducerPages ||
+                     execution->forwardedLines +
+                             execution->cacheReadFallbackLines !=
+                         snapshot.lines ||
+                     snapshot.producerLineAcks +
+                             snapshot.producerPageFallbackLines !=
+                         snapshot.lines,
+                 "Page materializer did not close exact payload/ACK "
+                 "authority\n");
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_summary schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "pages=%u lines=%u forwarded_lines=%u "
+                "cache_read_fallback_lines=%u producer_line_acks=%u "
+                "page_fallback_lines=%u exact_closure=1 "
+                "dispatch_fallbacks=%lu\n",
+                pageMaterializationTraceOccurrence++, key.tokenTile,
+                key.generation, key.incarnation,
+                execution->pagesMaterialized, snapshot.lines,
+                execution->forwardedLines,
+                execution->cacheReadFallbackLines,
+                snapshot.producerLineAcks,
+                snapshot.producerPageFallbackLines,
+                static_cast<uint64_t>(
+                    stats.page_materialization_dispatch_fallbacks.value()));
+        panic_if(!directRetirementContexts.retire(key),
+                 "Page materializer could not retire its 16K lifetime\n");
+        (void)directRetirementEarlyLineLedger.clear(
+            {key.tokenTile, key.generation, execution->backingAddress});
+        *execution = PageMaterializationExecution{};
+        stats.page_materialization_retirements++;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_retire schema=1 occurrence=%lu "
+                "token=%u generation=%lu incarnation=%lu pages=%u\n",
+                pageMaterializationTraceOccurrence++, key.tokenTile,
+                key.generation, key.incarnation,
+                HybridConsumerPipeline::ProducerPages);
+    }
+    scheduleDispatchInstructionEvent();
+    scheduleIssueInstructionEvent();
+}
+
+void
+MAA::schedulePageMaterializationEvent(int latency)
+{
+    const Tick when = getClockEdge(Cycles(latency));
+    if (!pageMaterializationEvent.scheduled())
+        schedule(pageMaterializationEvent, when);
+    else if (when < pageMaterializationEvent.when())
+        reschedule(pageMaterializationEvent, when);
+}
+
+void
+MAA::servicePageMaterialization()
+{
+    if (directRetirementContexts.activeContexts(
+            HybridConsumerPipeline::Mode::MaterializePages) == 0)
+        return;
+
+    Tick nextCommit = MaxTick;
+    for (PageMaterializationCommit &commit :
+         pageMaterializationCommits) {
+        if (!commit.active)
+            continue;
+        if (commit.readyTick > curTick()) {
+            nextCommit = std::min(nextCommit, commit.readyTick);
+            continue;
+        }
+        PageMaterializationExecution *execution =
+            findPageMaterializationExecution(commit.request.owner);
+        const auto request = commit.request;
+        panic_if(execution == nullptr || !execution->pageActive ||
+                     request.request.line /
+                             directRetirementContexts.producerPageLines(
+                                 request.owner) != execution->page,
+                 "Page materializer SPD commit lost page ownership\n");
+        const std::byte *payload =
+            directRetirementContexts.bufferData(request);
+        panic_if(payload == nullptr,
+                 "Page materializer SPD commit lost its line buffer\n");
+        const uint16_t pageLines =
+            directRetirementContexts.producerPageLines(request.owner);
+        const uint16_t pageLine = request.request.line % pageLines;
+        const uint16_t wordsPerLine =
+            HybridConsumerPipeline::LineBytes / execution->wordBytes;
+        const uint32_t firstElement = pageLine * wordsPerLine;
+        for (uint16_t word = 0; word < wordsPerLine; ++word) {
+            if (execution->wordBytes == sizeof(uint32_t)) {
+                uint32_t value = 0;
+                std::memcpy(&value,
+                            payload + word * sizeof(value), sizeof(value));
+                spd->setData<uint32_t>(execution->destinationTile,
+                                       firstElement + word, value);
+            } else {
+                uint64_t value = 0;
+                std::memcpy(&value,
+                            payload + word * sizeof(value), sizeof(value));
+                spd->setData<uint64_t>(execution->destinationTile,
+                                       firstElement + word, value);
+            }
+        }
+        commit = {};
+        panic_if(!directRetirementContexts.completeMaterialize(request),
+                 "Page materializer rejected an exact SPD line commit\n");
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_line_commit schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "page=%u line=%u destination=%d\n",
+                pageMaterializationTraceOccurrence++,
+                request.owner.tokenTile, request.owner.generation,
+                request.owner.incarnation, execution->page,
+                request.request.line, execution->destinationTile);
+        if (directRetirementContexts.materializationPageComplete(
+                request.owner, execution->page)) {
+            finishPageMaterialization(request.owner);
+        }
+    }
+
+    auto discardUnsentPacket = [](PacketPtr packet) {
+        auto *state = dynamic_cast<DirectRetirementSenderState *>(
+            packet->popSenderState());
+        panic_if(state == nullptr,
+                 "Unsent page-materializer packet lost sender state\n");
+        delete state;
+        delete packet;
+    };
+
+    for (uint8_t port = 0;
+         port < DirectRetirementPortRetry<Packet>::PortCount; ++port) {
+        PacketPtr packet = directRetirementRetryPackets.packet(port);
+        if (packet == nullptr)
+            continue;
+        auto *state = dynamic_cast<DirectRetirementSenderState *>(
+            packet->senderState);
+        if (state == nullptr ||
+            findPageMaterializationExecution(state->request.owner) == nullptr)
+            continue;
+        panic_if(state->callbackPort != port,
+                 "Page-materializer retry lost exact port identity\n");
+        const Addr paddr = packet->getAddr();
+        const auto deferred = my_deferred_pkt_map.find(paddr);
+        if (hasOutstandingPacket(paddr) ||
+            hasDirectRetirementOutstandingAddress(paddr) ||
+            (deferred != my_deferred_pkt_map.end() &&
+             !deferred->second.empty())) {
+            schedulePageMaterializationEvent(1);
+            continue;
+        }
+        uint8_t actualPort = DirectRetirementPortRetry<Packet>::PortCount;
+        if (!sendPacketCache(packet, &actualPort)) {
+            panic_if(actualPort != port,
+                     "Page-materializer retry changed physical port\n");
+            continue;
+        }
+        const auto request = state->request;
+        panic_if(actualPort != port ||
+                     !directRetirementRetryPackets.release(port, packet) ||
+                     !reserveDirectRetirementRequest(paddr, request),
+                 "Page-materializer retry lost exact request ownership\n");
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_read_issue schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "line=%u port=%u retry=1\n",
+                pageMaterializationTraceOccurrence++,
+                request.owner.tokenTile, request.owner.generation,
+                request.owner.incarnation, request.request.line, port);
+    }
+
+    for (unsigned attempt = 0;
+         attempt < DirectRetirementRequestRecordCount; ++attempt) {
+        const auto request = directRetirementContexts.pendingRead(
+            HybridConsumerPipeline::Mode::MaterializePages);
+        if (request.request.kind == HybridConsumerPipeline::Kind::None)
+            break;
+        PacketPtr packet = makePageMaterializationPacket(request);
+        auto *state = dynamic_cast<DirectRetirementSenderState *>(
+            packet->senderState);
+        panic_if(state == nullptr || state->callbackPort >=
+                     DirectRetirementPortRetry<Packet>::PortCount,
+                 "Page-materializer candidate lost sender identity\n");
+        const uint8_t port = state->callbackPort;
+        if (directRetirementRetryPackets.occupied(port)) {
+            discardUnsentPacket(packet);
+            panic_if(!directRetirementContexts.defer(request),
+                     "Page materializer could not rotate a blocked port\n");
+            continue;
+        }
+        const Addr paddr = packet->getAddr();
+        const auto deferred = my_deferred_pkt_map.find(paddr);
+        if (hasOutstandingPacket(paddr) ||
+            hasDirectRetirementOutstandingAddress(paddr) ||
+            (deferred != my_deferred_pkt_map.end() &&
+             !deferred->second.empty())) {
+            discardUnsentPacket(packet);
+            schedulePageMaterializationEvent(1);
+            break;
+        }
+        uint8_t actualPort = DirectRetirementPortRetry<Packet>::PortCount;
+        if (!sendPacketCache(packet, &actualPort)) {
+            panic_if(actualPort != port ||
+                         !directRetirementRetryPackets.arm(port, packet) ||
+                         !directRetirementContexts.accept(request),
+                     "Page materializer could not retain a refused request\n");
+            continue;
+        }
+        panic_if(actualPort != port ||
+                     !reserveDirectRetirementRequest(paddr, request) ||
+                     !directRetirementContexts.accept(request),
+                 "Page materializer could not claim an issued request\n");
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_read_issue schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "line=%u port=%u retry=0\n",
+                pageMaterializationTraceOccurrence++,
+                request.owner.tokenTile, request.owner.generation,
+                request.owner.incarnation, request.request.line, port);
+    }
+
+    if (nextCommit != MaxTick) {
+        if (!pageMaterializationEvent.scheduled())
+            schedule(pageMaterializationEvent, nextCommit);
+        else if (nextCommit < pageMaterializationEvent.when())
+            reschedule(pageMaterializationEvent, nextCommit);
     }
 }
 
@@ -2827,6 +3516,44 @@ void MAA::dispatchInstruction() {
         if (*recv_it == true) {
             InstructionPtr instruction = *instruction_it;
             PacketPtr pkt = *pkt_it;
+            if (isTokenBoundPageMaterialization(instruction)) {
+                const PageMaterializationSubmit submitted =
+                    submitPageMaterialization(instruction);
+                if (submitted == PageMaterializationSubmit::Retry) {
+                    ++pkt_it;
+                    ++recv_it;
+                    ++rid_it;
+                    ++instruction_it;
+                    continue;
+                }
+                if (submitted == PageMaterializationSubmit::Accepted) {
+                    DPRINTF(MAAController,
+                            "%s: bounded page materializer %s dispatched\n",
+                            __func__, instruction->print());
+                    pkt->makeTimingResponse();
+                    pkt->headerDelay = pkt->payloadDelay = 0;
+                    cpuSidePorts[0]->schedTimingResp(
+                        pkt, getClockEdge(Cycles(1)));
+                    pkt_it = my_instruction_pkts.erase(pkt_it);
+                    recv_it = my_instruction_recvs.erase(recv_it);
+                    rid_it = my_instruction_RIDs.erase(rid_it);
+                    instruction_it = my_instructions.erase(instruction_it);
+                    delete instruction;
+                    continue;
+                }
+                // The ordinary stream unit is the correctness fallback. Its
+                // completion-only source serializes it behind the complete
+                // virtual producer but contributes no SPD payload reads.
+                instruction->src1MustBeFinished = true;
+                stats.page_materialization_dispatch_fallbacks++;
+                DPRINTF(MAAVirtualTrace,
+                        "event=page_materialization_dispatch_fallback "
+                        "schema=1 occurrence=%lu token=%d base=0x%lx "
+                        "destination=%d reason=admission_fallback\n",
+                        pageMaterializationTraceOccurrence++,
+                        instruction->src1SpdID, instruction->baseAddr,
+                        instruction->dst1SpdID);
+            }
             if (instruction->isLogicalALUScalar()) {
                 if (!submitLogicalSPDDescriptor(instruction, pkt)) {
                     ++pkt_it;
@@ -2878,6 +3605,25 @@ void MAA::dispatchInstruction() {
                 rid_it = my_instruction_RIDs.erase(rid_it);
                 instruction_it = my_instructions.erase(instruction_it);
                 delete instruction;
+                continue;
+            }
+            bool materializerDestinationBusy = false;
+            const int destinations[] = {
+                instruction->dst1SpdID, instruction->dst2SpdID};
+            for (const int destination : destinations) {
+                if (destination == -1)
+                    continue;
+                materializerDestinationBusy =
+                    materializerDestinationBusy ||
+                    pageMaterializerOwnsDestination(
+                        instruction->maa_id, destination,
+                        instruction->getWordSize(destination));
+            }
+            if (materializerDestinationBusy) {
+                ++pkt_it;
+                ++recv_it;
+                ++rid_it;
+                ++instruction_it;
                 continue;
             }
             instruction->src1Status =
@@ -3126,6 +3872,37 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                                 int wordSize) {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles,
              "invalid virtual completion token tile %d\n", tokenTileID);
+    panic_if(findDirectRetirementExecution(
+                 tokenTileID, virtualPageGeneration[tokenTileID]) != nullptr,
+             "virtual completion token %d reused by a live direct consumer\n",
+             tokenTileID);
+    PageMaterializationExecution *oldMaterialization =
+        findPageMaterializationExecution(
+            tokenTileID, virtualPageGeneration[tokenTileID]);
+    if (oldMaterialization != nullptr) {
+        panic_if(oldMaterialization->pageActive ||
+                     hasDirectRetirementOutstandingOwner(
+                         oldMaterialization->key),
+                 "virtual completion token %d reused by a live page "
+                 "materialization\n", tokenTileID);
+        for (const PageMaterializationCommit &commit :
+             pageMaterializationCommits) {
+            panic_if(commit.active && sameDirectRetirementKey(
+                                          commit.request.owner,
+                                          oldMaterialization->key),
+                     "virtual completion token %d reused before its SPD "
+                     "commit\n", tokenTileID);
+        }
+        panic_if(!directRetirementContexts.cancelMaterialization(
+                     oldMaterialization->key),
+                 "virtual completion token %d could not close its idle "
+                 "materializer lifetime\n", tokenTileID);
+        (void)directRetirementEarlyLineLedger.clear(
+            {oldMaterialization->key.tokenTile,
+             oldMaterialization->key.generation,
+             oldMaterialization->backingAddress});
+        *oldMaterialization = PageMaterializationExecution{};
+    }
     const int firstReadyID = num_tiles + tokenTileID * MaxVirtualPages;
     const int lastReadyID = firstReadyID + MaxVirtualPages;
     panic_if(std::any_of(
@@ -3187,6 +3964,9 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                 directRetirementEarlyLineLedger.activeSlots(),
                 EarlyProducerLineReadinessLedger::chargedTotalBytes());
     }
+    // A token-bound page load may already be waiting in the CPU admission
+    // queue. Registration changes its result from Retry to Accepted.
+    scheduleDispatchInstructionEvent(1);
 }
 bool MAA::getVirtualPageReady(int tokenTileID, int pageID) const {
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || pageID < 0 ||
@@ -3217,7 +3997,9 @@ Tick MAA::getVirtualProducerRegistrationTick(int tokenTileID) const {
 void
 MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                               uint64_t generation, int lineID,
-                              uint16_t wordMask, uint64_t transactionID)
+                              uint16_t wordMask, uint64_t transactionID,
+                              const uint8_t *writeRespPayload,
+                              unsigned payloadBytes)
 {
     if (!direct_retirement_line_handoff)
         return;
@@ -3234,9 +4016,14 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                 lineID);
         return;
     }
-    DirectRetirementExecution *execution =
+    DirectRetirementExecution *directExecution =
         findDirectRetirementExecution(tokenTileID, generation);
-    if (execution == nullptr) {
+    PageMaterializationExecution *materialization =
+        findPageMaterializationExecution(tokenTileID, generation);
+    panic_if(directExecution != nullptr && materialization != nullptr,
+             "Token %d generation %lu has two live ACK authorities\n",
+             tokenTileID, generation);
+    if (directExecution == nullptr && materialization == nullptr) {
         const auto result = directRetirementEarlyLineLedger.acknowledge(
             {static_cast<uint16_t>(tokenTileID), generation, backingAddr},
             {static_cast<uint16_t>(lineID), wordMask, transactionID});
@@ -3259,17 +4046,21 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                      backingAddr}));
         return;
     }
-    panic_if(execution->backingAddress != backingAddr,
-             "Direct-retirement token %d lost exact line provenance\n",
+    const auto owner = directExecution != nullptr
+        ? directExecution->key : materialization->key;
+    const Addr ownerBacking = directExecution != nullptr
+        ? directExecution->backingAddress : materialization->backingAddress;
+    panic_if(ownerBacking != backingAddr,
+             "Consumer token %d lost exact line provenance\n",
              tokenTileID);
     HybridConsumerContextQueue::Snapshot before;
-    panic_if(!directRetirementContexts.snapshot(execution->key, &before),
-             "Direct-retirement producer line lost its owner\n");
+    panic_if(!directRetirementContexts.snapshot(owner, &before),
+             "Consumer producer line lost its owner\n");
     const HybridConsumerPipeline::ProducerLineAck ack{
-        execution->key.generation,
+        owner.generation,
         static_cast<uint16_t>(lineID), wordMask, transactionID};
     if (!directRetirementContexts.notifyProducerLineWriteAck(
-            execution->key, ack)) {
+            owner, ack)) {
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_line_reject schema=1 "
                 "occurrence=%lu token=%d generation=%lu line=%d "
@@ -3279,19 +4070,60 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
         return;
     }
     HybridConsumerContextQueue::Snapshot after;
-    panic_if(!directRetirementContexts.snapshot(execution->key, &after),
-             "Direct-retirement producer line lost its snapshot\n");
+    panic_if(!directRetirementContexts.snapshot(owner, &after),
+             "Consumer producer line lost its snapshot\n");
     if (after.producerLineAcks != before.producerLineAcks) {
-        stats.direct_retirement_producer_line_acks++;
+        if (directExecution != nullptr)
+            stats.direct_retirement_producer_line_acks++;
+        else
+            stats.page_materialization_producer_line_acks++;
+    }
+    if (directExecution != nullptr) {
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_line_ready schema=1 "
                 "occurrence=%lu token=%u generation=%lu incarnation=%lu "
                 "line=%d transaction=%lu\n",
-                directRetirementTraceOccurrence++, execution->key.tokenTile,
-                execution->key.generation, execution->key.incarnation,
-                lineID, transactionID);
+                directRetirementTraceOccurrence++, owner.tokenTile,
+                owner.generation, owner.incarnation, lineID, transactionID);
         scheduleDirectRetirementEvent();
+        return;
     }
+
+    const unsigned wordsPerLine =
+        HybridConsumerPipeline::LineBytes / materialization->wordBytes;
+    const uint16_t fullMask = wordsPerLine == 16
+        ? std::numeric_limits<uint16_t>::max()
+        : static_cast<uint16_t>((1U << wordsPerLine) - 1);
+    HybridConsumerContextQueue::Request captured;
+    const bool forwarded = wordMask == fullMask &&
+        writeRespPayload != nullptr &&
+        payloadBytes == HybridConsumerPipeline::LineBytes &&
+        materialization->pageActive &&
+        lineID / directRetirementContexts.producerPageLines(owner) ==
+            materialization->page &&
+        directRetirementContexts.captureMaterializationLine(
+            owner, static_cast<uint16_t>(lineID),
+            reinterpret_cast<const std::byte *>(writeRespPayload),
+            payloadBytes, &captured);
+    Tick commitTick = 0;
+    if (forwarded) {
+        const Cycles spdLatency = spd->setDataLatency(
+            materialization->destinationTile, wordsPerLine);
+        commitTick = getClockEdge(spdLatency);
+        panic_if(!reservePageMaterializationCommit(captured, commitTick),
+                 "Page materializer exhausted forwarded line commits\n");
+        ++materialization->forwardedLines;
+        stats.page_materialization_forwarded_lines++;
+    }
+    DPRINTF(MAAVirtualTrace,
+            "event=page_materialization_producer_line_ready schema=1 "
+            "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+            "page=%u line=%d transaction=%lu forwarded=%d "
+            "commit_tick=%lu\n",
+            pageMaterializationTraceOccurrence++, owner.tokenTile,
+            owner.generation, owner.incarnation, materialization->page,
+            lineID, transactionID, forwarded, commitTick);
+    schedulePageMaterializationEvent();
 }
 
 void
@@ -3344,6 +4176,12 @@ MAA::setVirtualPageReady(int tokenTileID, int pageID,
     DirectRetirementExecution *direct_execution =
         findDirectRetirementExecution(
             tokenTileID, virtualPageGeneration[tokenTileID]);
+    PageMaterializationExecution *materialization =
+        findPageMaterializationExecution(
+            tokenTileID, virtualPageGeneration[tokenTileID]);
+    panic_if(direct_execution != nullptr && materialization != nullptr,
+             "Token %d generation %lu has two live page ACK authorities\n",
+             tokenTileID, virtualPageGeneration[tokenTileID]);
     if (direct_execution != nullptr) {
         const HybridConsumerPipeline::ProducerAck ack{
             direct_execution->key.generation,
@@ -3373,6 +4211,36 @@ MAA::setVirtualPageReady(int tokenTileID, int pageID,
                 direct_execution->key.generation,
                 direct_execution->key.incarnation, pageID, transactionID);
         scheduleDirectRetirementEvent();
+    } else if (materialization != nullptr) {
+        const HybridConsumerPipeline::ProducerAck ack{
+            materialization->key.generation,
+            static_cast<uint8_t>(pageID), transactionID};
+        HybridConsumerContextQueue::Snapshot before;
+        panic_if(!directRetirementContexts.snapshot(
+                     materialization->key, &before) ||
+                     !directRetirementContexts.notifyProducerWriteAck(
+                         materialization->key, ack),
+                 "Page materializer rejected final producer WriteResp "
+                 "token=%d page=%d transaction=%lu\n",
+                 tokenTileID, pageID, transactionID);
+        HybridConsumerContextQueue::Snapshot after;
+        panic_if(!directRetirementContexts.snapshot(
+                     materialization->key, &after),
+                 "Page materializer producer page lost its snapshot\n");
+        stats.page_materialization_page_fallback_lines +=
+            after.producerPageFallbackLines -
+            before.producerPageFallbackLines;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_producer_ack schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "page=%d transaction=%lu fallback_lines=%u\n",
+                pageMaterializationTraceOccurrence++,
+                materialization->key.tokenTile,
+                materialization->key.generation,
+                materialization->key.incarnation, pageID, transactionID,
+                after.producerPageFallbackLines -
+                    before.producerPageFallbackLines);
+        schedulePageMaterializationEvent();
     }
 
     const int readyID =
@@ -3627,6 +4495,41 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(direct_retirement_control_bytes,
                statistics::units::Byte::get(),
                "conservative persistent direct-retirement scheduler state"),
+      ADD_STAT(page_materialization_submissions,
+               statistics::units::Count::get(),
+               "token-bound ordinary STREAM_LD pages admitted by the "
+               "bounded concurrent materializer"),
+      ADD_STAT(page_materialization_pages,
+               statistics::units::Count::get(),
+               "ordinary physical SPD pages completed by the materializer"),
+      ADD_STAT(page_materialization_retirements,
+               statistics::units::Count::get(),
+               "16K token/generation materializer lifetimes retired after "
+               "four exact page closures"),
+      ADD_STAT(page_materialization_forwarded_lines,
+               statistics::units::Count::get(),
+               "full producer WriteResp lines forwarded through charged "
+               "materializer buffers"),
+      ADD_STAT(page_materialization_cache_read_fallback_lines,
+               statistics::units::Count::get(),
+               "ACK-gated coherent backing lines read when producer payload "
+               "forwarding was unavailable"),
+      ADD_STAT(page_materialization_dispatch_fallbacks,
+               statistics::units::Count::get(),
+               "token-bound page loads dispatched on the sole ordinary "
+               "STREAM unit after materializer admission fallback"),
+      ADD_STAT(page_materialization_admission_fallbacks,
+               statistics::units::Count::get(),
+               "materializer admissions rejected for static, ABI, or "
+               "bounded-resource reasons"),
+      ADD_STAT(page_materialization_producer_line_acks,
+               statistics::units::Count::get(),
+               "materializer backing lines exposed by exact producer "
+               "WriteResp authority"),
+      ADD_STAT(page_materialization_page_fallback_lines,
+               statistics::units::Count::get(),
+               "materializer backing lines conservatively exposed by final "
+               "producer page WriteResp authority"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "

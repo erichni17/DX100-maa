@@ -293,7 +293,9 @@ public:
     void memReadPacketSent(Addr addr);
     void cacheWritePacketSent(Addr addr);
     void cacheReadPacketSent(Addr addr);
-    void retirementWriteComplete(Addr addr);
+    void retirementWriteComplete(Addr addr,
+                                 const uint8_t *writeRespPayload = nullptr,
+                                 unsigned payloadBytes = 0);
     bool hasPendingDirectIndexLine(Addr addr) const {
         return direct_index_pending_lines.find(addr) !=
                direct_index_pending_lines.end();
@@ -588,7 +590,9 @@ protected:
                                         Addr final_write_key = 0);
     void trackVirtualRetirementWrite(Addr write_key, Addr vaddr,
                                      unsigned size, uint16_t valid_words);
-    void completeVirtualRetirementWrite(Addr write_key);
+    void completeVirtualRetirementWrite(Addr write_key,
+                                        const uint8_t *writeRespPayload,
+                                        unsigned payloadBytes);
     bool createRetirementWrite(int itr, const uint8_t *data);
     bool createRetirementWrite(Addr vaddr, unsigned size, const uint8_t *data,
                                uint16_t valid_words = 0);

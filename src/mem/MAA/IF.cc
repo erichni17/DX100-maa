@@ -110,6 +110,7 @@ int Instruction::getWordSize(int tile_id) {
         case OpcodeType::ALU_SCALAR:
         case OpcodeType::ALU_VECTOR:
         case OpcodeType::ALU_REDUCE:
+        case OpcodeType::STREAM_LD:
         case OpcodeType::STREAM_ST: {
             return WordSize();
         }
@@ -378,8 +379,9 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                  __func__, tile_id);
     };
     const bool completion_dependency =
-        _instruction.opcode ==
-            Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
+        (_instruction.opcode ==
+             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
+         _instruction.opcode == Instruction::OpcodeType::STREAM_LD) &&
         _instruction.src1SpdID != -1;
     if (!completion_dependency)
         reject_completion_source(_instruction.src1SpdID);

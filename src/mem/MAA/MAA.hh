@@ -497,7 +497,9 @@ public:
     void setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                                   uint64_t generation, int lineID,
                                   uint16_t wordMask,
-                                  uint64_t transactionID);
+                                  uint64_t transactionID,
+                                  const uint8_t *writeRespPayload = nullptr,
+                                  unsigned payloadBytes = 0);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
     uint64_t getVirtualPageReadyTransaction(int tokenTileID,
                                             int pageID) const;
@@ -584,11 +586,32 @@ protected:
         HybridConsumerContextQueue::Request aluRequest{};
         HybridMacroEventTracker macro{};
     };
+    struct PageMaterializationExecution
+    {
+        bool active = false;
+        bool pageActive = false;
+        HybridConsumerContextQueue::ContextKey key{};
+        int coreID = -1;
+        int maaID = -1;
+        int destinationTile = -1;
+        uint8_t page = HybridConsumerPipeline::ProducerPages;
+        uint8_t wordBytes = 0;
+        uint8_t pagesMaterialized = 0;
+        uint16_t forwardedLines = 0;
+        uint16_t cacheReadFallbackLines = 0;
+        Addr backingAddress = 0;
+        int backingRangeID = -1;
+        ContextID contextID = InvalidContextID;
+        Addr pc = 0;
+    };
     HybridConsumerContextQueue directRetirementContexts;
     EarlyProducerLineReadinessLedger directRetirementEarlyLineLedger;
     std::array<DirectRetirementExecution,
                HybridConsumerContextQueue::ContextCount>
         directRetirementExecutions{};
+    std::array<PageMaterializationExecution,
+               HybridConsumerContextQueue::ContextCount>
+        pageMaterializationExecutions{};
     // Direct-retirement packets bypass the generic OutstandingPacket payload
     // machinery because their storage is one of the fixed queue credits.
     // These finite records keep exact physical-address and full context-owner
@@ -606,7 +629,18 @@ protected:
                DirectRetirementRequestRecordCount>
         directRetirementRequestRecords{};
     DirectRetirementPortRetry<Packet> directRetirementRetryPackets;
+    struct PageMaterializationCommit
+    {
+        bool active = false;
+        Tick readyTick = 0;
+        HybridConsumerContextQueue::Request request{};
+    };
+    std::array<PageMaterializationCommit,
+               DirectRetirementRequestRecordCount>
+        pageMaterializationCommits{};
     uint64_t directRetirementTraceOccurrence = 0;
+    uint64_t pageMaterializationTraceOccurrence = 0;
+    uint64_t pageMaterializationActivationCount = 0;
     std::vector<InstructionPtr> my_instructions;
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
     void issueInstruction();
@@ -615,6 +649,15 @@ protected:
     bool submitTransparentDescriptor(InstructionPtr instruction,
                                      bool directFallback = false);
     bool submitDirectRetirementDescriptor(InstructionPtr instruction);
+    enum class PageMaterializationSubmit : uint8_t
+    {
+        Accepted,
+        Retry,
+        Fallback,
+    };
+    bool isTokenBoundPageMaterialization(InstructionPtr instruction) const;
+    PageMaterializationSubmit submitPageMaterialization(
+        InstructionPtr instruction);
     bool dispatchTransparentMicroOp(
         const TransparentSPDController::Request &request);
     void tryIssueTransparentMicroOp();
@@ -641,6 +684,11 @@ protected:
     DirectRetirementExecution *findDirectRetirementExecution(
         uint16_t tokenTile, uint64_t generation);
     DirectRetirementExecution *firstInactiveDirectRetirementExecution();
+    PageMaterializationExecution *findPageMaterializationExecution(
+        const HybridConsumerContextQueue::ContextKey &key);
+    PageMaterializationExecution *findPageMaterializationExecution(
+        uint16_t tokenTile, uint64_t generation);
+    PageMaterializationExecution *firstInactivePageMaterializationExecution();
     bool hasDirectRetirementOutstandingAddress(Addr address) const;
     bool hasDirectRetirementOutstandingOwner(
         const HybridConsumerContextQueue::ContextKey &key) const;
@@ -650,6 +698,16 @@ protected:
     bool releaseDirectRetirementRequest(
         Addr address, const HybridConsumerContextQueue::Request &request);
     void serviceDirectRetirement();
+    PacketPtr makePageMaterializationPacket(
+        const HybridConsumerContextQueue::Request &request);
+    void servicePageMaterialization();
+    void schedulePageMaterializationEvent(int latency = 0);
+    void finishPageMaterialization(
+        const HybridConsumerContextQueue::ContextKey &key);
+    bool reservePageMaterializationCommit(
+        const HybridConsumerContextQueue::Request &request, Tick readyTick);
+    bool pageMaterializerOwnsDestination(int maaID, int firstTile,
+                                        int wordBytes) const;
     void scheduleDirectRetirementEvent(int latency = 0);
     void notifyDirectRetirementPortEvent(uint8_t port);
     void finishDirectRetirement(
@@ -705,7 +763,8 @@ protected:
     void notifyLogicalSPDResponse();
     DrainState drain() override;
     void drainResume() override;
-    EventFunctionWrapper logicalSpdEvent, directRetirementEvent;
+    EventFunctionWrapper logicalSpdEvent, directRetirementEvent,
+        pageMaterializationEvent;
     EventFunctionWrapper issueInstructionEvent, dispatchInstructionEvent,
         dispatchRegisterEvent;
     void scheduleDispatchInstructionEvent(int latency = 0);
@@ -810,6 +869,15 @@ public:
         statistics::Scalar direct_retirement_fallbacks;
         statistics::Scalar direct_retirement_payload_bytes;
         statistics::Scalar direct_retirement_control_bytes;
+        statistics::Scalar page_materialization_submissions;
+        statistics::Scalar page_materialization_pages;
+        statistics::Scalar page_materialization_retirements;
+        statistics::Scalar page_materialization_forwarded_lines;
+        statistics::Scalar page_materialization_cache_read_fallback_lines;
+        statistics::Scalar page_materialization_dispatch_fallbacks;
+        statistics::Scalar page_materialization_admission_fallbacks;
+        statistics::Scalar page_materialization_producer_line_acks;
+        statistics::Scalar page_materialization_page_fallback_lines;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.

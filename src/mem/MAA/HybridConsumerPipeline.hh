@@ -36,6 +36,20 @@ class HybridConsumerPipeline
         LogicalElements * sizeof(uint64_t) / LineBytes;
     static constexpr uint8_t NoBuffer =
         std::numeric_limits<uint8_t>::max();
+    static constexpr uint8_t NoProducerPage = ProducerPages;
+
+    enum class Mode : uint8_t
+    {
+        TransformAndStore = 0,
+        MaterializePages = 1,
+    };
+
+    enum class MaterializationAdmission : uint8_t
+    {
+        Accepted,
+        Retry,
+        Fallback,
+    };
 
     // Charge every persistent byte represented by this scheduler, not only
     // the cache-line data credits. The C++ footprint is conservative
@@ -92,6 +106,7 @@ class HybridConsumerPipeline
 
     struct Descriptor
     {
+        Mode mode = Mode::TransformAndStore;
         uint64_t generation = 0;
         uint32_t logicalElements = 0;
         uint8_t wordBytes = 0;
@@ -161,24 +176,30 @@ class HybridConsumerPipeline
             descriptor.generation >
                 (std::numeric_limits<uint64_t>::max() >> 13))
             return "generation is zero or cannot encode exact requests";
-        if (descriptor.backingRangeID < 0 ||
-            descriptor.destinationRangeID < 0)
-            return "backing and destination ranges must be registered";
+        if (descriptor.backingRangeID < 0)
+            return "backing range must be registered";
         const uint64_t bytes = logicalBytes(descriptor.wordBytes);
-        if (descriptor.backingAddress % LineBytes != 0 ||
-            descriptor.destinationAddress % LineBytes != 0)
-            return "payload addresses must be cache-line aligned";
+        if (descriptor.backingAddress % LineBytes != 0)
+            return "backing address must be cache-line aligned";
         if (!rangeContains(descriptor.backingRangeMin,
                            descriptor.backingRangeMax,
                            descriptor.backingAddress, bytes))
             return "backing range is too small";
-        if (!rangeContains(descriptor.destinationRangeMin,
-                           descriptor.destinationRangeMax,
-                           descriptor.destinationAddress, bytes))
-            return "destination range is too small";
-        if (rangesOverlap(descriptor.backingAddress, bytes,
-                          descriptor.destinationAddress, bytes))
-            return "backing and destination payloads must not overlap";
+        if (descriptor.mode == Mode::TransformAndStore) {
+            if (descriptor.destinationRangeID < 0)
+                return "destination range must be registered";
+            if (descriptor.destinationAddress % LineBytes != 0)
+                return "destination address must be cache-line aligned";
+            if (!rangeContains(descriptor.destinationRangeMin,
+                               descriptor.destinationRangeMax,
+                               descriptor.destinationAddress, bytes))
+                return "destination range is too small";
+            if (rangesOverlap(descriptor.backingAddress, bytes,
+                              descriptor.destinationAddress, bytes))
+                return "backing and destination payloads must not overlap";
+        } else if (descriptor.mode != Mode::MaterializePages) {
+            return "consumer mode is invalid";
+        }
         for (uint8_t page = 0; page < ProducerPages; ++page) {
             const uint64_t transaction =
                 descriptor.producerTransactions[page];
@@ -205,6 +226,9 @@ class HybridConsumerPipeline
         producerAcked.fill(false);
         producerWordsAcked.reset();
         linePhases.fill(LineState::Blocked);
+        materializedPageLines.fill(0);
+        materializedPages.fill(false);
+        activeMaterializationPage = NoProducerPage;
         buffers.fill(Buffer{});
         for (auto &payload : lineBuffers)
             payload.fill(std::byte{0});
@@ -275,23 +299,42 @@ class HybridConsumerPipeline
 
     Request pendingRead() const
     {
-        if (state != State::Active)
+        if (state != State::Active ||
+            (desc.mode == Mode::MaterializePages &&
+             activeMaterializationPage == NoProducerPage))
             return {};
         const uint8_t buffer = freeBuffer();
         if (buffer == NoBuffer)
             return {};
-        const uint16_t count = lineCount();
+        const uint16_t first = readWindowFirstLine();
+        const uint16_t count = readWindowLineCount();
         for (uint16_t offset = 0; offset < count; ++offset) {
-            const uint16_t line = (nextReadSearch + offset) % count;
+            const uint16_t line = first +
+                ((nextReadSearch - first + offset) % count);
             if (linePhases[line] == LineState::ReadyForRead)
                 return makeRequest(Kind::ReadBacking, line, buffer);
         }
         return {};
     }
 
+    Request pendingReadLine(uint16_t line) const
+    {
+        if (desc.mode != Mode::MaterializePages || state != State::Active ||
+            activeMaterializationPage >= ProducerPages ||
+            line >= lineCount() ||
+            producerPage(line) != activeMaterializationPage ||
+            linePhases[line] != LineState::ReadyForRead)
+            return {};
+        const uint8_t buffer = freeBuffer();
+        return buffer == NoBuffer ? Request{}
+                                  : makeRequest(Kind::ReadBacking, line,
+                                                buffer);
+    }
+
     Request pendingCompute() const
     {
-        if (state != State::Active || aluInFlight)
+        if (desc.mode != Mode::TransformAndStore ||
+            state != State::Active || aluInFlight)
             return {};
         for (uint8_t buffer = 0; buffer < LineBufferCount; ++buffer) {
             if (buffers[buffer].state == BufferState::ReadyForCompute)
@@ -303,7 +346,8 @@ class HybridConsumerPipeline
 
     Request pendingWrite() const
     {
-        if (state != State::Active)
+        if (desc.mode != Mode::TransformAndStore ||
+            state != State::Active)
             return {};
         for (uint8_t buffer = 0; buffer < LineBufferCount; ++buffer) {
             if (buffers[buffer].state == BufferState::ReadyForWrite)
@@ -323,16 +367,19 @@ class HybridConsumerPipeline
         switch (request.kind) {
           case Kind::ReadBacking:
             eligible = candidate.state == BufferState::Free &&
-                linePhases[request.line] == LineState::ReadyForRead;
+                linePhases[request.line] == LineState::ReadyForRead &&
+                (desc.mode == Mode::TransformAndStore ||
+                 producerPage(request.line) == activeMaterializationPage);
             break;
           case Kind::Compute:
-            eligible = !aluInFlight &&
+            eligible = desc.mode == Mode::TransformAndStore && !aluInFlight &&
                 candidate.state == BufferState::ReadyForCompute &&
                 candidate.line == request.line &&
                 linePhases[request.line] == LineState::ReadyForCompute;
             break;
           case Kind::WriteDestination:
-            eligible = candidate.state == BufferState::ReadyForWrite &&
+            eligible = desc.mode == Mode::TransformAndStore &&
+                candidate.state == BufferState::ReadyForWrite &&
                 candidate.line == request.line &&
                 linePhases[request.line] == LineState::ReadyForWrite;
             break;
@@ -352,7 +399,10 @@ class HybridConsumerPipeline
           case Kind::ReadBacking:
             buffer.state = BufferState::Reading;
             linePhases[request.line] = LineState::ReadInFlight;
-            nextReadSearch = (request.line + 1) % lineCount();
+            nextReadSearch = request.line + 1;
+            if (nextReadSearch == readWindowFirstLine() +
+                                      readWindowLineCount())
+                nextReadSearch = readWindowFirstLine();
             ++acceptedReads;
             updateCreditHighWater();
             break;
@@ -402,6 +452,42 @@ class HybridConsumerPipeline
         return assertInvariants();
     }
 
+    bool beginMaterializationPage(uint8_t page)
+    {
+        if (desc.mode != Mode::MaterializePages ||
+            (state != State::WaitingForProducer && state != State::Active) ||
+            page >= ProducerPages ||
+            activeMaterializationPage != NoProducerPage ||
+            materializedPages[page])
+            return false;
+        activeMaterializationPage = page;
+        nextReadSearch = page * linesPerProducerPage();
+        return assertInvariants();
+    }
+
+    bool completeMaterialize(const Request &request)
+    {
+        if (desc.mode != Mode::MaterializePages ||
+            activeMaterializationPage >= ProducerPages ||
+            !liveExact(request, Kind::ReadBacking,
+                       BufferState::ReadyForCompute,
+                       LineState::ReadyForCompute) ||
+            producerPage(request.line) != activeMaterializationPage)
+            return false;
+        const uint8_t page = activeMaterializationPage;
+        buffers[request.buffer] = Buffer{};
+        linePhases[request.line] = LineState::Done;
+        ++completedLines;
+        ++materializedPageLines[page];
+        if (materializedPageLines[page] == linesPerProducerPage()) {
+            materializedPages[page] = true;
+            activeMaterializationPage = NoProducerPage;
+        }
+        if (completedLines == lineCount())
+            state = State::Complete;
+        return assertInvariants();
+    }
+
     bool completeWriteAck(const Request &request)
     {
         if (!liveExact(request, Kind::WriteDestination,
@@ -431,18 +517,17 @@ class HybridConsumerPipeline
     {
         if (state != State::Complete || !assertInvariants())
             return false;
-        state = State::Idle;
-        desc = Descriptor{};
-        producerAcked.fill(false);
-        producerWordsAcked.reset();
-        linePhases.fill(LineState::Blocked);
-        buffers.fill(Buffer{});
-        nextReadSearch = 0;
-        completedLines = 0;
-        acceptedReads = acceptedComputes = acceptedWrites = 0;
-        producerLineAcks = producerPageFallbackLines = 0;
-        creditHighWaterValue = 0;
-        aluInFlight = false;
+        reset();
+        return true;
+    }
+
+    bool cancelMaterialization()
+    {
+        if (desc.mode != Mode::MaterializePages ||
+            state == State::Idle || creditsInUse() != 0 ||
+            activeMaterializationPage != NoProducerPage)
+            return false;
+        reset();
         return true;
     }
 
@@ -478,11 +563,27 @@ class HybridConsumerPipeline
                 !owners[line])
                 return false;
         }
+        uint16_t materialized = 0;
+        for (uint8_t page = 0; page < ProducerPages; ++page) {
+            if (materializedPageLines[page] > linesPerProducerPage() ||
+                materializedPages[page] !=
+                    (materializedPageLines[page] == linesPerProducerPage()))
+                return false;
+            materialized += materializedPageLines[page];
+        }
+        const bool transform_invariants =
+            desc.mode == Mode::TransformAndStore
+            ? acceptedComputes <= acceptedReads &&
+                  acceptedWrites <= acceptedComputes &&
+                  completedLines <= acceptedWrites
+            : acceptedComputes == 0 && acceptedWrites == 0 &&
+                  completedLines <= acceptedReads &&
+                  completedLines == materialized && !aluInFlight &&
+                  (activeMaterializationPage == NoProducerPage ||
+                   activeMaterializationPage < ProducerPages);
         return done == completedLines && computing <= 1 &&
                (computing != 0) == aluInFlight &&
-               acceptedComputes <= acceptedReads &&
-               acceptedWrites <= acceptedComputes &&
-               completedLines <= acceptedWrites &&
+               transform_invariants &&
                completedLines <= lineCount() &&
                producerLineAcks + producerPageFallbackLines <= lineCount() &&
                (state != State::Complete ||
@@ -491,6 +592,7 @@ class HybridConsumerPipeline
     }
 
     State getState() const { return state; }
+    Mode mode() const { return desc.mode; }
     bool complete() const { return state == State::Complete; }
     uint16_t lines() const { return lineCount(); }
     uint16_t completed() const { return completedLines; }
@@ -518,6 +620,16 @@ class HybridConsumerPipeline
     {
         return line < lineCount() ? linePhases[line] : LineState::Blocked;
     }
+    uint8_t materializationPage() const { return activeMaterializationPage; }
+    bool materializationPageComplete(uint8_t page) const
+    {
+        return page < ProducerPages && materializedPages[page];
+    }
+    uint16_t materializationPageCompletedLines(uint8_t page) const
+    {
+        return page < ProducerPages ? materializedPageLines[page] : 0;
+    }
+    uint16_t producerPageLines() const { return linesPerProducerPage(); }
 
     static TimingBound optimisticTimingBound(
         uint64_t readOrFillTicks, uint64_t aluTicks, uint64_t writeTicks,
@@ -572,6 +684,53 @@ class HybridConsumerPipeline
         return static_cast<uint8_t>((address >> 6) & (PortCount - 1));
     }
 
+    /**
+     * Decode the ordinary STREAM_LD helper ABI for one physical producer
+     * page.  The instruction base names the selected page, while its dense
+     * element range is always local to that page.  Keeping this contract in
+     * the finite mechanism makes pages one through three impossible to alias
+     * page zero through an element-range interpretation.
+     */
+    static bool materializationPageForInstruction(
+        uint64_t rootBackingAddress, uint64_t instructionBaseAddress,
+        int minimum, int maximum, int stride, uint8_t wordBytes,
+        uint8_t *page)
+    {
+        if (page != nullptr)
+            *page = NoProducerPage;
+        if ((wordBytes != 4 && wordBytes != 8) || minimum != 0 ||
+            maximum != static_cast<int>(ProducerPageElements) ||
+            stride != 1 || instructionBaseAddress < rootBackingAddress)
+            return false;
+        const uint64_t pageBytes =
+            static_cast<uint64_t>(ProducerPageElements) * wordBytes;
+        const uint64_t delta = instructionBaseAddress - rootBackingAddress;
+        if (delta % pageBytes != 0 || delta / pageBytes >= ProducerPages)
+            return false;
+        if (page != nullptr)
+            *page = static_cast<uint8_t>(delta / pageBytes);
+        return true;
+    }
+
+    static MaterializationAdmission classifyMaterializationAdmission(
+        bool staticGeometry, uint64_t producerGeneration,
+        uint64_t rootBackingAddress, uint64_t instructionBaseAddress,
+        int minimum, int maximum, int stride, uint8_t wordBytes,
+        uint8_t *page)
+    {
+        if (page != nullptr)
+            *page = NoProducerPage;
+        if (!staticGeometry)
+            return MaterializationAdmission::Fallback;
+        if (producerGeneration == 0)
+            return MaterializationAdmission::Retry;
+        return materializationPageForInstruction(
+                   rootBackingAddress, instructionBaseAddress, minimum,
+                   maximum, stride, wordBytes, page)
+            ? MaterializationAdmission::Accepted
+            : MaterializationAdmission::Fallback;
+    }
+
   private:
     struct Buffer
     {
@@ -594,6 +753,18 @@ class HybridConsumerPipeline
     {
         return static_cast<uint16_t>(ProducerPageElements * desc.wordBytes /
                                      LineBytes);
+    }
+
+    uint16_t readWindowFirstLine() const
+    {
+        return desc.mode == Mode::MaterializePages
+            ? activeMaterializationPage * linesPerProducerPage() : 0;
+    }
+
+    uint16_t readWindowLineCount() const
+    {
+        return desc.mode == Mode::MaterializePages
+            ? linesPerProducerPage() : lineCount();
     }
 
     uint8_t producerPage(uint16_t line) const
@@ -704,11 +875,32 @@ class HybridConsumerPipeline
         return lhs > max - rhs ? max : lhs + rhs;
     }
 
+    void reset()
+    {
+        state = State::Idle;
+        desc = Descriptor{};
+        producerAcked.fill(false);
+        producerWordsAcked.reset();
+        linePhases.fill(LineState::Blocked);
+        materializedPageLines.fill(0);
+        materializedPages.fill(false);
+        buffers.fill(Buffer{});
+        activeMaterializationPage = NoProducerPage;
+        nextReadSearch = 0;
+        completedLines = 0;
+        acceptedReads = acceptedComputes = acceptedWrites = 0;
+        producerLineAcks = producerPageFallbackLines = 0;
+        creditHighWaterValue = 0;
+        aluInFlight = false;
+    }
+
     State state = State::Idle;
     Descriptor desc{};
     std::array<bool, ProducerPages> producerAcked{};
     std::bitset<LogicalElements> producerWordsAcked{};
     std::array<LineState, MaxLines> linePhases{};
+    std::array<uint16_t, ProducerPages> materializedPageLines{};
+    std::array<bool, ProducerPages> materializedPages{};
     std::array<Buffer, LineBufferCount> buffers{};
     alignas(LineBytes)
         std::array<std::array<std::byte, LineBytes>, LineBufferCount>
@@ -721,6 +913,7 @@ class HybridConsumerPipeline
     uint16_t producerLineAcks = 0;
     uint16_t producerPageFallbackLines = 0;
     uint8_t creditHighWaterValue = 0;
+    uint8_t activeMaterializationPage = NoProducerPage;
     bool aluInFlight = false;
 
     void updateCreditHighWater()

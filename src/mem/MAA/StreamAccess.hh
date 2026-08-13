@@ -124,6 +124,10 @@ protected:
     int my_size;
     int my_element_base;
     int my_element_count;
+    // A completion-only source on an ordinary STREAM_LD is an ordering
+    // token, never an SPD payload. This is the serialized correctness
+    // fallback when the bounded concurrent materializer cannot admit.
+    bool my_token_bound_load;
 
     Addr my_translated_addr;
     bool my_translation_done;

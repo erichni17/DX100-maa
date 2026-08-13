@@ -99,8 +99,8 @@ class HybridConsumerContextQueue
             descriptor.consumer.generation == 0 ||
             Pipeline::validate(descriptor.consumer) != nullptr)
             return SubmitResult::Invalid;
-        if (findGeneration(descriptor.tokenTile,
-                           descriptor.consumer.generation) != nullptr)
+        if (findGenerationContext(descriptor.tokenTile,
+                                  descriptor.consumer.generation) != nullptr)
             return SubmitResult::Duplicate;
 
         Context *context = firstInactive();
@@ -147,6 +147,24 @@ class HybridConsumerContextQueue
         return pending(nextReadContext, [](const Pipeline &pipeline) {
             return pipeline.pendingRead();
         });
+    }
+
+    Request pendingRead(Pipeline::Mode mode) const
+    {
+        return pendingMode(nextReadContext, mode,
+                           [](const Pipeline &pipeline) {
+                               return pipeline.pendingRead();
+                           });
+    }
+
+    Request pendingRead(const ContextKey &key) const
+    {
+        const Context *context = find(key);
+        if (context == nullptr)
+            return {};
+        const Pipeline::Request request = context->pipeline.pendingRead();
+        return request.kind == Pipeline::Kind::None
+            ? Request{} : Request{context->key, request};
     }
 
     Request pendingWrite() const
@@ -248,6 +266,44 @@ class HybridConsumerContextQueue
             assertInvariants();
     }
 
+    bool beginMaterializationPage(const ContextKey &key, uint8_t page)
+    {
+        Context *context = find(key);
+        return context != nullptr &&
+            context->pipeline.beginMaterializationPage(page) &&
+            assertInvariants();
+    }
+
+    bool completeMaterialize(const Request &request)
+    {
+        Context *context = find(request.owner);
+        return context != nullptr &&
+            context->pipeline.completeMaterialize(request.request) &&
+            assertInvariants();
+    }
+
+    bool captureMaterializationLine(const ContextKey &key, uint16_t line,
+                                    const std::byte *payload,
+                                    std::size_t payloadBytes,
+                                    Request *captured)
+    {
+        if (captured != nullptr)
+            *captured = {};
+        Context *context = find(key);
+        if (context == nullptr || payload == nullptr)
+            return false;
+        const Pipeline::Request request =
+            context->pipeline.pendingReadLine(line);
+        if (request.kind == Pipeline::Kind::None ||
+            !context->pipeline.accept(request) ||
+            !context->pipeline.completeRead(request, payload, payloadBytes))
+            return false;
+        nextReadContext = nextContext(context);
+        if (captured != nullptr)
+            *captured = {context->key, request};
+        return assertInvariants();
+    }
+
     std::byte *bufferData(const Request &request)
     {
         Context *context = find(request.owner);
@@ -266,7 +322,63 @@ class HybridConsumerContextQueue
         return assertInvariants();
     }
 
+    bool cancelMaterialization(const ContextKey &key)
+    {
+        Context *context = find(key);
+        if (context == nullptr ||
+            !context->pipeline.cancelMaterialization())
+            return false;
+        context->active = false;
+        context->key = {};
+        return assertInvariants();
+    }
+
     bool active(const ContextKey &key) const { return find(key) != nullptr; }
+
+    bool findGeneration(uint16_t tokenTile, uint64_t generation,
+                        ContextKey *key) const
+    {
+        if (key != nullptr)
+            *key = {};
+        for (const Context &context : contexts) {
+            if (!context.active || context.key.tokenTile != tokenTile ||
+                context.key.generation != generation)
+                continue;
+            if (key != nullptr)
+                *key = context.key;
+            return true;
+        }
+        return false;
+    }
+
+    Pipeline::Mode mode(const ContextKey &key) const
+    {
+        const Context *context = find(key);
+        return context == nullptr ? Pipeline::Mode::TransformAndStore
+                                  : context->pipeline.mode();
+    }
+
+    bool materializationPageComplete(const ContextKey &key,
+                                     uint8_t page) const
+    {
+        const Context *context = find(key);
+        return context != nullptr &&
+            context->pipeline.materializationPageComplete(page);
+    }
+
+    uint8_t materializationPage(const ContextKey &key) const
+    {
+        const Context *context = find(key);
+        return context == nullptr ? Pipeline::NoProducerPage
+                                  : context->pipeline.materializationPage();
+    }
+
+    uint16_t producerPageLines(const ContextKey &key) const
+    {
+        const Context *context = find(key);
+        return context == nullptr ? 0
+                                  : context->pipeline.producerPageLines();
+    }
 
     bool snapshot(const ContextKey &key, Snapshot *result) const
     {
@@ -306,6 +418,14 @@ class HybridConsumerContextQueue
         uint8_t count = 0;
         for (const Context &context : contexts)
             count += context.active;
+        return count;
+    }
+
+    uint8_t activeContexts(Pipeline::Mode mode) const
+    {
+        uint8_t count = 0;
+        for (const Context &context : contexts)
+            count += context.active && context.pipeline.mode() == mode;
         return count;
     }
 
@@ -365,6 +485,22 @@ class HybridConsumerContextQueue
         return {};
     }
 
+    template <class Getter>
+    Request pendingMode(uint8_t start, Pipeline::Mode mode,
+                        Getter getter) const
+    {
+        for (uint8_t offset = 0; offset < ContextCount; ++offset) {
+            const Context &context =
+                contexts[(start + offset) % ContextCount];
+            if (!context.active || context.pipeline.mode() != mode)
+                continue;
+            const Pipeline::Request request = getter(context.pipeline);
+            if (request.kind != Pipeline::Kind::None)
+                return {context.key, request};
+        }
+        return {};
+    }
+
     static bool sameKey(const ContextKey &lhs, const ContextKey &rhs)
     {
         return lhs.tokenTile == rhs.tokenTile &&
@@ -398,7 +534,7 @@ class HybridConsumerContextQueue
         return nullptr;
     }
 
-    Context *findGeneration(uint16_t tokenTile, uint64_t generation)
+    Context *findGenerationContext(uint16_t tokenTile, uint64_t generation)
     {
         for (Context &context : contexts)
             if (context.active && context.key.tokenTile == tokenTile &&

@@ -6247,7 +6247,9 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
     }
 }
 
-void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
+void IndirectAccessUnit::completeVirtualRetirementWrite(
+    Addr write_key, const uint8_t *writeRespPayload,
+    unsigned payloadBytes) {
     auto metadata = virtual_retirement_write_pages.find(write_key);
     panic_if(metadata == virtual_retirement_write_pages.end(),
              "I[%d] completed virtual write 0x%lx has no page metadata\n",
@@ -6264,7 +6266,8 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
                                   metadata->second.generation,
                                   metadata->second.backingLine,
                                   metadata->second.backingWordMask,
-                                  write_key);
+                                  write_key, writeRespPayload,
+                                  payloadBytes);
     for (const auto &[page, words] : metadata->second.pageWords) {
         (void)words;
         markVirtualPageReadyIfComplete(page, write_key);
@@ -7070,7 +7073,8 @@ void IndirectAccessUnit::transitionAttributionStage(
             stage_names[static_cast<size_t>(next)], reason);
 }
 
-void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
+void IndirectAccessUnit::retirementWriteComplete(
+    Addr addr, const uint8_t *writeRespPayload, unsigned payloadBytes) {
     auto global_write = std::find_if(
         bounded_global_merge_write_slots.begin(),
         bounded_global_merge_write_slots.end(),
@@ -7129,7 +7133,7 @@ void IndirectAccessUnit::retirementWriteComplete(Addr addr) {
     panic_if(virtual_outstanding_write_lines.erase(addr) != 1,
              "I[%d] %s: completed address 0x%lx was not outstanding\n",
              my_indirect_id, __func__, addr);
-    completeVirtualRetirementWrite(addr);
+    completeVirtualRetirementWrite(addr, writeRespPayload, payloadBytes);
     (*maa->stats.IND_VirtWriteCompletions[my_indirect_id])++;
     attribution_write_completions++;
     macro_backing_last_ack_tick = curTick();
