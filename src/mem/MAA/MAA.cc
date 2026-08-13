@@ -1669,7 +1669,8 @@ MAA::serviceDirectRetirement()
             ? HybridMacroEventTracker::Stage::PageFill
             : HybridMacroEventTracker::Stage::StreamStore;
         HybridConsumerContextQueue::Snapshot snapshot;
-        panic_if(!directRetirementContexts.snapshot(request.owner, &snapshot) ||
+        panic_if(!directRetirementContexts.snapshot(
+                     request.owner, &snapshot) ||
                      !execution->macro.issue(
                          stage, curTick(), snapshot.creditsInUse) ||
                      !execution->macro.traffic(
