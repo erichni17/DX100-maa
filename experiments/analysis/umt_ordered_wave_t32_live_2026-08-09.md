@@ -62,3 +62,16 @@ The compiled state-model test requires nonzero dual-issue cycles while
 retaining bit-exact results.  This remains a prepared prototype and must not
 be built or interpreted as application evidence until the T32-only live A/B
 is classified.
+
+### Issue-two cold D32 traffic calibration
+
+The exact clean-identity issue-two diagnostic build at `de38dc7c` measured
+D32 input-line reads of 16/16/16/32/91/88 for group counts
+1/7/8/9/31/32.  The first four cases match the issue-width-one oracle.  At
+31 and 32 groups, the dual-issue schedule changes return and admission timing,
+so the inherited 64-line provisional oracle is not valid for this treatment.
+Both cases retained exact guest results, zero descriptor errors, the expected
+work counts, and nonzero dual-issue cycles; only the deliberately provisional
+line-read check failed.  The measured table is now the treatment-specific
+oracle for a final clean-HEAD build and full D32 gate.  This calibration is
+mechanism evidence, not application-performance evidence.

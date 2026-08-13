@@ -12,6 +12,14 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GROUP_COUNTS = [1, 7, 8, 9, 31, 32, 33, 63, 64]
 D32_GROUP_COUNTS = [group for group in GROUP_COUNTS if group <= 32]
+ISSUE2_D32_INPUT_LINE_READS = {
+    1: 16,
+    7: 16,
+    8: 16,
+    9: 32,
+    31: 91,
+    32: 88,
+}
 
 
 def sha256(path):
@@ -81,6 +89,11 @@ def compile_guest(source, binary, group_counts, abi_version):
 def validate(stats, group_counts, abi_version):
     groups = sum(group_counts)
     packet_multipliers = sum((group + 7) // 8 for group in group_counts)
+    input_line_reads = (
+        sum(ISSUE2_D32_INPUT_LINE_READS[group] for group in group_counts)
+        if abi_version == 4
+        else 16 * packet_multipliers
+    )
     expected = {
         "descriptorDoorbells": len(group_counts),
         "descriptorRearms": len(group_counts) - 1,
@@ -114,7 +127,7 @@ def validate(stats, group_counts, abi_version):
         "descriptorUmtStateInstrumentationLogicalBitsFloor": 1106,
         "descriptorUmtStateAuxiliaryLogicalBitsFloor": 17118,
         "descriptorUmtStatePhysicalStorePlusLogicalAuxiliaryBitsFloor": 58078,
-        "descriptorUmtInputLineReads": 16 * packet_multipliers,
+        "descriptorUmtInputLineReads": input_line_reads,
         "descriptorUmtFp64AddSubOperations": 8 * groups,
         "descriptorUmtFp64MultiplyOperations": 0,
         "descriptorUmtFp64DivideOperations": 8 * groups,
