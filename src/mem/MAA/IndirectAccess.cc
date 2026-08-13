@@ -6227,7 +6227,23 @@ void IndirectAccessUnit::trackVirtualRetirementWrite(Addr write_key,
              "I[%d] virtual retirement write 0x%lx has no valid words\n",
              my_indirect_id, write_key);
     auto &metadata = virtual_retirement_write_pages[write_key];
-    metadata.assign(page_words.begin(), page_words.end());
+    metadata.pageWords.assign(page_words.begin(), page_words.end());
+    const Addr backing_offset = vaddr - my_backing_addr;
+    panic_if(backing_offset % block_size + size > block_size,
+             "I[%d] virtual retirement write crosses a backing line\n",
+             my_indirect_id);
+    metadata.backingLine = backing_offset / block_size;
+    if (size == block_size) {
+        metadata.backingWordMask = valid_words == 0
+            ? static_cast<uint16_t>((1U << my_words_per_cl) - 1)
+            : valid_words;
+    } else {
+        const unsigned first_word =
+            (backing_offset % block_size) / my_word_size;
+        const unsigned write_words = size / my_word_size;
+        metadata.backingWordMask = static_cast<uint16_t>(
+            ((1U << write_words) - 1) << first_word);
+    }
 }
 
 void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
@@ -6235,13 +6251,20 @@ void IndirectAccessUnit::completeVirtualRetirementWrite(Addr write_key) {
     panic_if(metadata == virtual_retirement_write_pages.end(),
              "I[%d] completed virtual write 0x%lx has no page metadata\n",
              my_indirect_id, write_key);
-    for (const auto &[page, words] : metadata->second) {
+    for (const auto &[page, words] : metadata->second.pageWords) {
         virtual_page_completed_words[page] += words;
         panic_if(virtual_page_completed_words[page] >
                      virtual_page_expected_words[page],
                  "I[%d] virtual page %d completed too many words: %d/%d\n",
                  my_indirect_id, page, virtual_page_completed_words[page],
                  virtual_page_expected_words[page]);
+    }
+    maa->setVirtualLineWordsReady(my_dst_tile, my_backing_addr,
+                                  metadata->second.backingLine,
+                                  metadata->second.backingWordMask,
+                                  write_key);
+    for (const auto &[page, words] : metadata->second.pageWords) {
+        (void)words;
         markVirtualPageReadyIfComplete(page, write_key);
     }
     virtual_retirement_write_pages.erase(metadata);
@@ -6300,7 +6323,7 @@ bool IndirectAccessUnit::createRetirementWrite(Addr vaddr, unsigned size,
         panic_if(metadata == virtual_retirement_write_pages.end(),
                  "I[%d] idealized write 0x%lx lacks page metadata\n",
                  my_indirect_id, write_key);
-        for (const auto &[page, words] : metadata->second) {
+        for (const auto &[page, words] : metadata->second.pageWords) {
             (void)words;
             markVirtualPageReadyIfComplete(page, write_key);
         }

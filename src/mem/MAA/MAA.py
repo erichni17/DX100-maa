@@ -106,6 +106,10 @@ class MAA(ClockedObject):
         False,
         "Diagnostic upper bound: expose virtual pages at final write issue",
     )
+    direct_retirement_line_handoff = Param.Bool(
+        False,
+        "Expose direct-retirement backing lines after all word WriteResp events",
+    )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",

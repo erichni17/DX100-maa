@@ -148,6 +148,7 @@ MAA::MAA(const MAAParams &p)
       virtual_max_outstanding_writes(p.virtual_max_outstanding_writes),
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_idealized_write_ack(p.virtual_idealized_write_ack),
+      direct_retirement_line_handoff(p.direct_retirement_line_handoff),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
       virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
@@ -1137,6 +1138,7 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
     execution.wordBytes = word_size;
     const double scalar = rf->getData<double>(instruction->dst1RegID);
     std::memcpy(&execution.scalarBits, &scalar, sizeof(scalar));
+    execution.backingAddress = descriptor.backingAddress;
     execution.backingRangeID = instruction->addrRangeID;
     execution.destinationRangeID = instruction->backingAddrRangeID;
     execution.contextID = instruction->CID;
@@ -1168,11 +1170,16 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
             continue;
         const uint64_t transaction =
             getVirtualPageReadyTransaction(token_tile, page);
+        const uint16_t fallback_before =
+            directRetirement.producerPageFallbackLineCount();
         panic_if(!directRetirement.notifyProducerWriteAck(
                      {descriptor.generation, page, transaction}),
                  "Direct retirement rejected already-acknowledged producer "
                  "page %u\n", page);
         stats.direct_retirement_producer_acks++;
+        stats.direct_retirement_page_fallback_lines +=
+            directRetirement.producerPageFallbackLineCount() -
+            fallback_before;
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_ack schema=1 "
                 "occurrence=%lu generation=%lu page=%u transaction=%lu\n",
@@ -1365,6 +1372,10 @@ MAA::finishDirectRetirement()
     const int word_bytes = directRetirementExecution.wordBytes;
     panic_if(virtualPageGeneration[token_tile] != generation,
              "Direct-retirement token generation changed before final ACK\n");
+    panic_if(directRetirement.producerLineAckCount() +
+                 directRetirement.producerPageFallbackLineCount() !=
+                 directRetirement.lines(),
+             "Direct-retirement producer visibility did not close exactly\n");
     virtualPageConsumedGeneration[token_tile] = generation;
     stats.direct_retirement_overlap_ticks += record.overlapTicks;
     stats.direct_retirement_active_stage_high_water = std::max(
@@ -1377,13 +1388,16 @@ MAA::finishDirectRetirement()
             "event=direct_retirement_summary schema=1 occurrence=%lu "
             "generation=%lu reads=%u computes=%u writes=%u "
             "credit_high_water=%u overlap_ticks=%lu "
-            "active_stage_high_water=%lu fallback_count=%lu\n",
+            "active_stage_high_water=%lu line_acks=%u "
+            "page_fallback_lines=%u fallback_count=%lu\n",
             directRetirementTraceOccurrence++, generation,
             directRetirement.readsAccepted(),
             directRetirement.computesAccepted(),
             directRetirement.writesAccepted(),
             directRetirement.creditHighWater(),
             record.overlapTicks, record.activeStageHighWater,
+            directRetirement.producerLineAckCount(),
+            directRetirement.producerPageFallbackLineCount(),
             static_cast<uint64_t>(
                 stats.direct_retirement_fallbacks.value()));
     panic_if(!directRetirement.retire(),
@@ -2756,6 +2770,38 @@ Tick MAA::getVirtualProducerRegistrationTick(int tokenTileID) const {
     return virtualProducerRegistrationTick[tokenTileID];
 }
 void
+MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr, int lineID,
+                              uint16_t wordMask, uint64_t transactionID)
+{
+    if (!direct_retirement_line_handoff ||
+        !directRetirementExecution.active ||
+        directRetirementExecution.tokenTile != tokenTileID)
+        return;
+    panic_if(directRetirementExecution.generation !=
+                 virtualPageGeneration[tokenTileID] ||
+                 directRetirementExecution.backingAddress != backingAddr,
+             "Direct-retirement token %d received a stale line %d\n",
+             tokenTileID, lineID);
+    const uint16_t ready_before = directRetirement.producerLineAckCount();
+    const HybridConsumerPipeline::ProducerLineAck ack{
+        directRetirementExecution.generation,
+        static_cast<uint16_t>(lineID), wordMask, transactionID};
+    panic_if(!directRetirement.notifyProducerLineWriteAck(ack),
+             "Direct-retirement rejected producer line WriteResp "
+             "token=%d line=%d transaction=%lu\n",
+             tokenTileID, lineID, transactionID);
+    if (directRetirement.producerLineAckCount() != ready_before) {
+        stats.direct_retirement_producer_line_acks++;
+        DPRINTF(MAAVirtualTrace,
+                "event=direct_retirement_producer_line_ready schema=1 "
+                "occurrence=%lu generation=%lu line=%d transaction=%lu\n",
+                directRetirementTraceOccurrence++,
+                directRetirementExecution.generation, lineID, transactionID);
+        scheduleDirectRetirementEvent();
+    }
+}
+
+void
 MAA::setVirtualPageReady(int tokenTileID, int pageID,
                          uint64_t transactionID)
 {
@@ -2811,11 +2857,16 @@ MAA::setVirtualPageReady(int tokenTileID, int pageID,
         const HybridConsumerPipeline::ProducerAck ack{
             directRetirementExecution.generation,
             static_cast<uint8_t>(pageID), transactionID};
+        const uint16_t fallback_before =
+            directRetirement.producerPageFallbackLineCount();
         panic_if(!directRetirement.notifyProducerWriteAck(ack),
                  "Direct-retirement rejected final producer WriteResp "
                  "token=%d page=%d transaction=%lu\n",
                  tokenTileID, pageID, transactionID);
         stats.direct_retirement_producer_acks++;
+        stats.direct_retirement_page_fallback_lines +=
+            directRetirement.producerPageFallbackLineCount() -
+            fallback_before;
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_ack schema=1 "
                 "occurrence=%lu generation=%lu page=%d transaction=%lu\n",
@@ -3012,6 +3063,12 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(direct_retirement_producer_acks,
                statistics::units::Count::get(),
                "producer pages exposed by exact final WriteResp"),
+      ADD_STAT(direct_retirement_producer_line_acks,
+               statistics::units::Count::get(),
+               "producer backing lines completed by exact WriteResp set"),
+      ADD_STAT(direct_retirement_page_fallback_lines,
+               statistics::units::Count::get(),
+               "producer lines released by conservative page closure"),
       ADD_STAT(direct_retirement_read_issues, statistics::units::Count::get(),
                "direct-retirement backing line reads issued"),
       ADD_STAT(direct_retirement_read_responses,

@@ -378,6 +378,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_direct_retirement_line_handoff",
+        action="store_true",
+        help=(
+            "Expose a direct-retirement backing line after exact responses "
+            "cover every word in that line"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,

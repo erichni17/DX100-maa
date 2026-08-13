@@ -432,6 +432,7 @@ public:
     unsigned int virtual_max_outstanding_writes;
     bool virtual_masked_writes;
     bool virtual_idealized_write_ack;
+    bool direct_retirement_line_handoff;
     unsigned int virtual_index_buffer_lines;
     bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
@@ -492,6 +493,9 @@ public:
                                int wordSize);
     void setVirtualPageReady(int tokenTileID, int pageID,
                              uint64_t transactionID);
+    void setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
+                                  int lineID, uint16_t wordMask,
+                                  uint64_t transactionID);
     bool getVirtualPageReady(int tokenTileID, int pageID) const;
     uint64_t getVirtualPageReadyTransaction(int tokenTileID,
                                             int pageID) const;
@@ -568,6 +572,7 @@ protected:
         uint8_t operation = 0;
         uint8_t wordBytes = 0;
         uint64_t scalarBits = 0;
+        Addr backingAddress = 0;
         int backingRangeID = -1;
         int destinationRangeID = -1;
         ContextID contextID = InvalidContextID;
@@ -744,6 +749,8 @@ public:
         statistics::Scalar virtual_retirement_queue_deferrals;
         statistics::Scalar direct_retirement_descriptors;
         statistics::Scalar direct_retirement_producer_acks;
+        statistics::Scalar direct_retirement_producer_line_acks;
+        statistics::Scalar direct_retirement_page_fallback_lines;
         statistics::Scalar direct_retirement_read_issues;
         statistics::Scalar direct_retirement_read_responses;
         statistics::Scalar direct_retirement_alu_issues;

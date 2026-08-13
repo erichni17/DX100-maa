@@ -38,6 +38,7 @@ overlap=0
 polluted=0
 transparent_spd_mode=0
 direct_retirement=0
+direct_retirement_line_handoff=0
 debug_flags=${MAA_DEBUG_FLAGS:-MAAVirtualTrace}
 require_physical_trace=${MAA_REQUIRE_PHYSICAL_RECORD_TRACE:-0}
 require_source_issue_digest=${MAA_REQUIRE_SOURCE_ISSUE_DIGEST:-0}
@@ -315,6 +316,12 @@ partition_combiner_args=()
 if [[ $partition_keep_combiner == 1 ]]; then
     partition_combiner_args+=(--maa_virtual_partition_keep_combiner)
 fi
+direct_retirement_line_handoff_args=()
+if [[ $direct_retirement_line_handoff == 1 ]]; then
+    direct_retirement_line_handoff_args+=(
+        --maa_direct_retirement_line_handoff
+    )
+fi
 extra_maa_args=()
 if [[ -n $extra_maa_args_file ]]; then
     extra_maa_args_file=$(realpath "$extra_maa_args_file")
@@ -421,6 +428,17 @@ direct_retirement_4k)
     reload_only=0
     transparent_spd_mode=3
     direct_retirement=1
+    ;;
+direct_retirement_line_4k)
+    mode=transparent
+    page=4096
+    physical=4096
+    virtual=1
+    direct=1
+    reload_only=0
+    transparent_spd_mode=3
+    direct_retirement=1
+    direct_retirement_line_handoff=1
     ;;
 isoarea_serial_4k)
     mode=transparent
@@ -585,6 +603,8 @@ loaded_ramulator=$(awk '$1 == "libramulator.so" { print $3 }' \
     printf 'page_elements=%s\n' "$page"
     printf 'physical_tile_elements=%s\n' "$physical"
     printf 'direct_retirement=%s\n' "$direct_retirement"
+    printf 'direct_retirement_line_handoff=%s\n' \
+        "$direct_retirement_line_handoff"
     if [[ $direct_retirement -eq 1 ]]; then
         printf 'direct_retirement_scope=terminal_fp64_mul_dense_store\n'
     else
@@ -871,6 +891,7 @@ OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     --maa --maa_num_tile_elements=16384 \
     --maa_physical_tile_elements="$physical" \
     --maa_transparent_spd_mode="$transparent_spd_mode" \
+    "${direct_retirement_line_handoff_args[@]}" \
     --maa_num_initial_row_table_slices="$row_slices" \
     --maa_num_row_table_rows_per_slice="$row_rows" \
     --maa_num_row_table_entries_per_subslice_row="$row_entries" \
@@ -916,6 +937,7 @@ config_ini="$out/run/config.ini"
 # values.
 for expected in \
     "transparent_spd_mode=$transparent_spd_mode" \
+    "direct_retirement_line_handoff=$([[ $direct_retirement_line_handoff -eq 1 ]] && echo true || echo false)" \
     "num_initial_row_table_slices=$row_slices" \
     "num_row_table_rows_per_slice=$row_rows" \
     "num_row_table_entries_per_subslice_row=$row_entries" \
@@ -1317,7 +1339,8 @@ read -r fill_sim_ticks request_sim_ticks < <(
         END { print fill + 0, request + 0 }
     ' "$out/run/virtual_trace.log"
 )
-read -r direct_descriptors direct_producer_acks direct_read_issues \
+read -r direct_descriptors direct_producer_acks direct_producer_line_acks \
+    direct_page_fallback_lines direct_read_issues \
     direct_read_responses direct_alu_issues direct_alu_completions \
     direct_write_issues direct_write_responses direct_credit_hwm \
     direct_credit_stalls direct_address_stalls direct_retries \
@@ -1327,6 +1350,8 @@ read -r direct_descriptors direct_producer_acks direct_read_issues \
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 == "system.maa.direct_retirement_descriptors" { d = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_producer_acks" { pa = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_producer_line_acks" { pla = $2 }
+        section == 1 && $1 == "system.maa.direct_retirement_page_fallback_lines" { pfl = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_read_issues" { ri = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_read_responses" { rr = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_alu_issues" { ai = $2 }
@@ -1343,7 +1368,8 @@ read -r direct_descriptors direct_producer_acks direct_read_issues \
         section == 1 && $1 == "system.maa.direct_retirement_payload_bytes" { pb = $2 }
         section == 1 && $1 == "system.maa.direct_retirement_control_bytes" { cb = $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
-            print d + 0, pa + 0, ri + 0, rr + 0, ai + 0, ac + 0,
+            print d + 0, pa + 0, pla + 0, pfl + 0,
+                  ri + 0, rr + 0, ai + 0, ac + 0,
                   wi + 0, wr + 0, ch + 0, cs + 0, as + 0, re + 0,
                   ot + 0, ah + 0, fb + 0, pb + 0, cb + 0
             exit
@@ -1409,6 +1435,7 @@ elif [[ $virtual -eq 1 ]]; then
         direct_payload=1024
         direct_submits=$(grep -c 'event=direct_retirement_submit schema=1 ' "$trace" || true)
         direct_ack_trace=$(grep -c 'event=direct_retirement_producer_ack schema=1 ' "$trace" || true)
+        direct_line_ack_trace=$(grep -c 'event=direct_retirement_producer_line_ready schema=1 ' "$trace" || true)
         direct_issue_trace=$(grep -c 'event=direct_retirement_issue schema=1 ' "$trace" || true)
         direct_response_trace=$(grep -c 'event=direct_retirement_response schema=1 ' "$trace" || true)
         direct_alu_issue_trace=$(grep -c 'event=direct_retirement_alu_issue schema=1 ' "$trace" || true)
@@ -1434,6 +1461,8 @@ elif [[ $virtual -eq 1 ]]; then
         )
         [[ $direct_descriptors -eq 1 && \
            $direct_producer_acks -eq $expected_pages && \
+           $((direct_producer_line_acks + direct_page_fallback_lines)) \
+               -eq $direct_lines && \
            $direct_read_issues -eq $direct_lines && \
            $direct_read_responses -eq $direct_lines && \
            $direct_alu_issues -eq $direct_lines && \
@@ -1451,24 +1480,26 @@ elif [[ $virtual -eq 1 ]]; then
            $trace_backing_bytes -eq 131072 && \
            $direct_submits -eq 1 && \
            $direct_ack_trace -eq $expected_pages && \
+           $direct_line_ack_trace -eq $direct_producer_line_acks && \
            $direct_issue_trace -eq $((direct_lines * 2)) && \
            $direct_response_trace -eq $((direct_lines * 2)) && \
            $direct_alu_issue_trace -eq $direct_lines && \
            $direct_alu_complete_trace -eq $direct_lines && \
            $direct_summary_trace -eq 1 && $direct_retire_trace -eq 1 ]] || {
-            echo "direct-retirement closure failed: descriptor=$direct_descriptors acks=$direct_producer_acks reads=$direct_read_issues/$direct_read_responses alu=$direct_alu_issues/$direct_alu_completions writes=$direct_write_issues/$direct_write_responses hwm=$direct_credit_hwm fallback=$direct_fallbacks trace=$direct_submits/$direct_ack_trace/$direct_issue_trace/$direct_response_trace/$direct_alu_issue_trace/$direct_alu_complete_trace/$direct_summary_trace/$direct_retire_trace" >&2
+            echo "direct-retirement closure failed: descriptor=$direct_descriptors page_acks=$direct_producer_acks line_acks=$direct_producer_line_acks page_fallback_lines=$direct_page_fallback_lines reads=$direct_read_issues/$direct_read_responses alu=$direct_alu_issues/$direct_alu_completions writes=$direct_write_issues/$direct_write_responses hwm=$direct_credit_hwm fallback=$direct_fallbacks trace=$direct_submits/$direct_ack_trace/$direct_line_ack_trace/$direct_issue_trace/$direct_response_trace/$direct_alu_issue_trace/$direct_alu_complete_trace/$direct_summary_trace/$direct_retire_trace" >&2
             exit 1
         }
         grep -Eq "event=direct_retirement_submit schema=1 .*scope=terminal_fp64_mul_dense_store credits=${direct_credits} payload_bytes=${direct_payload} control_bytes=[1-9][0-9]* total_bytes=[1-9][0-9]* backing_span_bytes=131072 private_page_payload_bytes=0$" "$trace" && \
-        grep -Eq "event=direct_retirement_summary schema=1 .*reads=${direct_lines} computes=${direct_lines} writes=${direct_lines} credit_high_water=${direct_credits} .*fallback_count=0$" "$trace" && \
+        grep -Eq "event=direct_retirement_summary schema=1 .*reads=${direct_lines} computes=${direct_lines} writes=${direct_lines} credit_high_water=${direct_credits} .*line_acks=${direct_producer_line_acks} page_fallback_lines=${direct_page_fallback_lines} fallback_count=0$" "$trace" && \
         grep -Eq "event=direct_retirement_retire schema=1 .*final_write_responses=${direct_lines}$" "$trace" || {
             echo "direct-retirement trace lacks exact no-private-payload or final-WriteResp proof" >&2
             exit 1
         }
         {
-            printf 'descriptors\tproducer_acks\tread_issues\tread_responses\talu_issues\talu_completions\twrite_issues\twrite_responses\tcredit_hwm\tcredit_stalls\taddress_stalls\tretries\toverlap_ticks\tactive_stage_hwm\tfallbacks\tpayload_bytes\tcontrol_bytes\n'
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            printf 'descriptors\tproducer_page_acks\tproducer_line_acks\tpage_fallback_lines\tread_issues\tread_responses\talu_issues\talu_completions\twrite_issues\twrite_responses\tcredit_hwm\tcredit_stalls\taddress_stalls\tretries\toverlap_ticks\tactive_stage_hwm\tfallbacks\tpayload_bytes\tcontrol_bytes\n'
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                 "$direct_descriptors" "$direct_producer_acks" \
+                "$direct_producer_line_acks" "$direct_page_fallback_lines" \
                 "$direct_read_issues" "$direct_read_responses" \
                 "$direct_alu_issues" "$direct_alu_completions" \
                 "$direct_write_issues" "$direct_write_responses" \
@@ -1918,7 +1949,7 @@ headers=(case output_hash simTicks fill_sim_ticks request_sim_ticks
     virtual_index_range_boundaries
     virtual_index_force_cache virtual_partition_keep_combiner
     offset_table_entries offset_table_epoch_entries
-    transparent_spd_mode
+    transparent_spd_mode direct_retirement_line_handoff
     virtual_index_filter_words_per_cycle require_index_filter_wait
     response_slots response_word_pool
     virtual_words_per_cycle virtual_max_outstanding_writes
@@ -1997,7 +2028,7 @@ values=("$case_name" "$output_hash" "$ticks" "$fill_sim_ticks"
     "${index_range_boundaries:-none}"
     "$index_force_cache" "$partition_keep_combiner" \
     "$resolved_offset_entries" "$resolved_offset_epoch_entries"
-    "$transparent_spd_mode"
+    "$transparent_spd_mode" "$direct_retirement_line_handoff"
     "$index_filter_words_per_cycle" "$require_index_filter_wait"
     "$response_slots" "$response_word_pool"
     "$words_per_cycle" "$max_outstanding_writes"

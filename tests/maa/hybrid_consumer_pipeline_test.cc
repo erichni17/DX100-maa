@@ -47,6 +47,14 @@ ackFor(const HybridConsumerPipeline::Descriptor &descriptor, uint8_t page)
             descriptor.producerTransactions[page]};
 }
 
+HybridConsumerPipeline::ProducerLineAck
+lineAckFor(const HybridConsumerPipeline::Descriptor &descriptor,
+           uint16_t line, uint16_t wordMask = 0xff,
+           uint64_t transaction = 1000)
+{
+    return {descriptor.generation, line, wordMask, transaction + line};
+}
+
 void
 ackAll(HybridConsumerPipeline &pipeline,
        const HybridConsumerPipeline::Descriptor &descriptor)
@@ -174,6 +182,64 @@ testLateBoundProducerWriteRespIdentity()
 }
 
 void
+testLineWriteRespUnlocksBeforePageClosure()
+{
+    HybridConsumerPipeline pipeline;
+    const auto descriptor = validDescriptor();
+    CHECK(pipeline.submit(descriptor) ==
+          HybridConsumerPipeline::SubmitResult::Accepted);
+
+    auto stale = lineAckFor(descriptor, 17);
+    stale.generation++;
+    CHECK(!pipeline.notifyProducerLineWriteAck(stale));
+    auto invalid = lineAckFor(descriptor, pipeline.lines());
+    CHECK(!pipeline.notifyProducerLineWriteAck(invalid));
+    invalid = lineAckFor(descriptor, 17);
+    invalid.wordMask = 0;
+    CHECK(!pipeline.notifyProducerLineWriteAck(invalid));
+    invalid = lineAckFor(descriptor, 17);
+    invalid.transactionID = 0;
+    CHECK(!pipeline.notifyProducerLineWriteAck(invalid));
+
+    const auto lineAck = lineAckFor(descriptor, 17);
+    CHECK(pipeline.notifyProducerLineWriteAck(lineAck));
+    CHECK(!pipeline.notifyProducerLineWriteAck(lineAck));
+    CHECK(!pipeline.producerPageAcked(0));
+    CHECK(pipeline.producerLineAckCount() == 1);
+    CHECK(pipeline.producerPageFallbackLineCount() == 0);
+    CHECK(pipeline.pendingRead().line == 17);
+
+    const auto read = pipeline.pendingRead();
+    CHECK(pipeline.accept(read));
+    CHECK(pipeline.notifyProducerWriteAck(ackFor(descriptor, 0)));
+    CHECK(pipeline.lineState(17) ==
+          HybridConsumerPipeline::LineState::ReadInFlight);
+    CHECK(pipeline.producerLineAckCount() == 1);
+    CHECK(pipeline.producerPageFallbackLineCount() == 511);
+    CHECK(pipeline.assertInvariants());
+}
+
+void
+testPartialWriteResponsesNeedEveryUniqueWord()
+{
+    HybridConsumerPipeline pipeline;
+    const auto descriptor = validDescriptor();
+    CHECK(pipeline.submit(descriptor) ==
+          HybridConsumerPipeline::SubmitResult::Accepted);
+    CHECK(pipeline.notifyProducerLineWriteAck(
+        lineAckFor(descriptor, 9, 0x03, 2000)));
+    CHECK(pipeline.lineState(9) == HybridConsumerPipeline::LineState::Blocked);
+    CHECK(pipeline.producerLineAckCount() == 0);
+    CHECK(!pipeline.notifyProducerLineWriteAck(
+        lineAckFor(descriptor, 9, 0x02, 3000)));
+    CHECK(pipeline.notifyProducerLineWriteAck(
+        lineAckFor(descriptor, 9, 0xfc, 4000)));
+    CHECK(pipeline.lineState(9) ==
+          HybridConsumerPipeline::LineState::ReadyForRead);
+    CHECK(pipeline.producerLineAckCount() == 1);
+}
+
+void
 testRetrySurvivesSchedulingPreferenceChange()
 {
     HybridConsumerPipeline pipeline;
@@ -266,6 +332,8 @@ testCompleteBothWordGeometries()
         CHECK(pipeline.computesAccepted() == expectedLines);
         CHECK(pipeline.writesAccepted() == expectedLines);
         CHECK(pipeline.completed() == expectedLines);
+        CHECK(pipeline.producerLineAckCount() == 0);
+        CHECK(pipeline.producerPageFallbackLineCount() == expectedLines);
         CHECK(pipeline.assertInvariants());
         CHECK(pipeline.retire());
         CHECK(pipeline.getState() == HybridConsumerPipeline::State::Idle);
@@ -357,6 +425,8 @@ main()
 {
     testFiniteFourCreditOverlap();
     testLateBoundProducerWriteRespIdentity();
+    testLineWriteRespUnlocksBeforePageClosure();
+    testPartialWriteResponsesNeedEveryUniqueWord();
     testRetrySurvivesSchedulingPreferenceChange();
     testNoSyntheticVisibilityOrAcknowledgement();
     testCompleteBothWordGeometries();

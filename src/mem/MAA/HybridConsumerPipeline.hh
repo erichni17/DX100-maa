@@ -2,6 +2,7 @@
 #define __MEM_MAA_HYBRID_CONSUMER_PIPELINE_HH__
 
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -70,6 +71,7 @@ class HybridConsumerPipeline
     enum class LineState : uint8_t
     {
         Blocked,
+        ReadyForRead,
         ReadInFlight,
         ReadyForCompute,
         ComputeInFlight,
@@ -108,6 +110,14 @@ class HybridConsumerPipeline
     {
         uint64_t generation = 0;
         uint8_t page = ProducerPages;
+        uint64_t transactionID = 0;
+    };
+
+    struct ProducerLineAck
+    {
+        uint64_t generation = 0;
+        uint16_t line = MaxLines;
+        uint16_t wordMask = 0;
         uint64_t transactionID = 0;
     };
 
@@ -193,6 +203,7 @@ class HybridConsumerPipeline
             return SubmitResult::Invalid;
         desc = descriptor;
         producerAcked.fill(false);
+        producerWordsAcked.reset();
         linePhases.fill(LineState::Blocked);
         buffers.fill(Buffer{});
         for (auto &payload : lineBuffers)
@@ -200,6 +211,7 @@ class HybridConsumerPipeline
         nextReadSearch = 0;
         completedLines = 0;
         acceptedReads = acceptedComputes = acceptedWrites = 0;
+        producerLineAcks = producerPageFallbackLines = 0;
         creditHighWaterValue = 0;
         aluInFlight = false;
         state = State::WaitingForProducer;
@@ -220,10 +232,45 @@ class HybridConsumerPipeline
         producerAcked[ack.page] = true;
         const uint16_t first = ack.page * linesPerProducerPage();
         const uint16_t end = first + linesPerProducerPage();
-        for (uint16_t line = first; line < end; ++line)
-            linePhases[line] = LineState::Blocked;
+        for (uint16_t line = first; line < end; ++line) {
+            if (linePhases[line] != LineState::Blocked)
+                continue;
+            linePhases[line] = LineState::ReadyForRead;
+            ++producerPageFallbackLines;
+        }
         state = State::Active;
-        return true;
+        return assertInvariants();
+    }
+
+    bool notifyProducerLineWriteAck(const ProducerLineAck &ack)
+    {
+        if ((state != State::WaitingForProducer && state != State::Active) ||
+            ack.generation != desc.generation || ack.line >= lineCount() ||
+            ack.wordMask == 0 ||
+            (ack.wordMask & ~fullProducerLineWordMask()) != 0 ||
+            ack.transactionID == 0 ||
+            linePhases[ack.line] != LineState::Blocked ||
+            producerAcked[producerPage(ack.line)])
+            return false;
+        const uint16_t firstWord = ack.line * producerWordsPerLine();
+        for (uint8_t word = 0; word < producerWordsPerLine(); ++word) {
+            if ((ack.wordMask & (1U << word)) != 0 &&
+                producerWordsAcked.test(firstWord + word))
+                return false;
+        }
+        for (uint8_t word = 0; word < producerWordsPerLine(); ++word) {
+            if ((ack.wordMask & (1U << word)) != 0)
+                producerWordsAcked.set(firstWord + word);
+        }
+        bool complete = true;
+        for (uint8_t word = 0; word < producerWordsPerLine(); ++word)
+            complete = complete && producerWordsAcked.test(firstWord + word);
+        if (!complete)
+            return assertInvariants();
+        linePhases[ack.line] = LineState::ReadyForRead;
+        ++producerLineAcks;
+        state = State::Active;
+        return assertInvariants();
     }
 
     Request pendingRead() const
@@ -236,8 +283,7 @@ class HybridConsumerPipeline
         const uint16_t count = lineCount();
         for (uint16_t offset = 0; offset < count; ++offset) {
             const uint16_t line = (nextReadSearch + offset) % count;
-            if (linePhases[line] == LineState::Blocked &&
-                producerAcked[producerPage(line)])
+            if (linePhases[line] == LineState::ReadyForRead)
                 return makeRequest(Kind::ReadBacking, line, buffer);
         }
         return {};
@@ -277,8 +323,7 @@ class HybridConsumerPipeline
         switch (request.kind) {
           case Kind::ReadBacking:
             eligible = candidate.state == BufferState::Free &&
-                linePhases[request.line] == LineState::Blocked &&
-                producerAcked[producerPage(request.line)];
+                linePhases[request.line] == LineState::ReadyForRead;
             break;
           case Kind::Compute:
             eligible = !aluInFlight &&
@@ -389,11 +434,13 @@ class HybridConsumerPipeline
         state = State::Idle;
         desc = Descriptor{};
         producerAcked.fill(false);
+        producerWordsAcked.reset();
         linePhases.fill(LineState::Blocked);
         buffers.fill(Buffer{});
         nextReadSearch = 0;
         completedLines = 0;
         acceptedReads = acceptedComputes = acceptedWrites = 0;
+        producerLineAcks = producerPageFallbackLines = 0;
         creditHighWaterValue = 0;
         aluInFlight = false;
         return true;
@@ -425,7 +472,9 @@ class HybridConsumerPipeline
             if (linePhases[line] == LineState::Done)
                 ++done;
             const LineState phase = linePhases[line];
-            if (phase != LineState::Blocked && phase != LineState::Done &&
+            if (phase != LineState::Blocked &&
+                phase != LineState::ReadyForRead &&
+                phase != LineState::Done &&
                 !owners[line])
                 return false;
         }
@@ -435,6 +484,9 @@ class HybridConsumerPipeline
                acceptedWrites <= acceptedComputes &&
                completedLines <= acceptedWrites &&
                completedLines <= lineCount() &&
+               producerLineAcks + producerPageFallbackLines <= lineCount() &&
+               (state != State::Complete ||
+                producerLineAcks + producerPageFallbackLines == lineCount()) &&
                (state != State::Complete || completedLines == lineCount());
     }
 
@@ -453,6 +505,11 @@ class HybridConsumerPipeline
         return credits;
     }
     uint8_t creditHighWater() const { return creditHighWaterValue; }
+    uint16_t producerLineAckCount() const { return producerLineAcks; }
+    uint16_t producerPageFallbackLineCount() const
+    {
+        return producerPageFallbackLines;
+    }
     bool producerPageAcked(uint8_t page) const
     {
         return page < ProducerPages && producerAcked[page];
@@ -542,6 +599,18 @@ class HybridConsumerPipeline
     uint8_t producerPage(uint16_t line) const
     {
         return static_cast<uint8_t>(line / linesPerProducerPage());
+    }
+
+    uint8_t producerWordsPerLine() const
+    {
+        return static_cast<uint8_t>(LineBytes / desc.wordBytes);
+    }
+
+    uint16_t fullProducerLineWordMask() const
+    {
+        const uint8_t words = producerWordsPerLine();
+        return words == 16 ? std::numeric_limits<uint16_t>::max()
+                           : static_cast<uint16_t>((1U << words) - 1);
     }
 
     uint8_t freeBuffer() const
@@ -638,6 +707,7 @@ class HybridConsumerPipeline
     State state = State::Idle;
     Descriptor desc{};
     std::array<bool, ProducerPages> producerAcked{};
+    std::bitset<LogicalElements> producerWordsAcked{};
     std::array<LineState, MaxLines> linePhases{};
     std::array<Buffer, LineBufferCount> buffers{};
     alignas(LineBytes)
@@ -648,6 +718,8 @@ class HybridConsumerPipeline
     uint16_t acceptedReads = 0;
     uint16_t acceptedComputes = 0;
     uint16_t acceptedWrites = 0;
+    uint16_t producerLineAcks = 0;
+    uint16_t producerPageFallbackLines = 0;
     uint8_t creditHighWaterValue = 0;
     bool aluInFlight = false;
 

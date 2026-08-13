@@ -144,7 +144,12 @@ protected:
     int virtual_max_outstanding_writes_limit = 0;
     bool virtual_masked_writes = false;
     std::set<Addr> virtual_outstanding_write_lines;
-    std::map<Addr, std::vector<std::pair<int, int>>>
+    struct VirtualRetirementWriteMetadata {
+        std::vector<std::pair<int, int>> pageWords;
+        int backingLine = -1;
+        uint16_t backingWordMask = 0;
+    };
+    std::map<Addr, VirtualRetirementWriteMetadata>
         virtual_retirement_write_pages;
     std::vector<int> virtual_page_logical_words;
     std::vector<int> virtual_page_scanned_words;
