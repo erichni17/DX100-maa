@@ -264,6 +264,35 @@ partialIssueErrorAccountingCase()
     assert(state.dualIssueCycles() == 0);
 }
 
+void
+dividerNoLaneCycleCase()
+{
+    using State = UmtOrderedWaveStreamStateModel<2, 1, 4, 2>;
+    State state;
+    assert(state.configure(2));
+    const auto wave = descriptor(2);
+    for (size_t source = 0; source < UmtOrderedWaveCorners; ++source) {
+        for (size_t group = 0; group < 2; ++group) {
+            assert(state.writeSource(
+                group, source, umtOrderedWaveStreamEncodeFp64(1.0), 0).
+                accepted);
+        }
+    }
+    assert(state.bindDescriptor(wave));
+    assert(state.enqueueDenominator(
+        0, 0, 0, umtOrderedWaveStreamEncodeFp64(1.0)).accepted);
+    assert(state.enqueueDenominator(
+        1, 1, 0, umtOrderedWaveStreamEncodeFp64(1.0)).accepted);
+
+    const uint64_t ready = state.readyCycle();
+    assert(!state.cycle(ready).dividerNoLaneCycle);
+    assert(!state.cycle(ready + 1).dividerNoLaneCycle);
+    assert(state.cycle(ready + 2).dividerNoLaneCycle);
+
+    assert(state.configure(1));
+    assert(!state.cycle(ready + 3).dividerNoLaneCycle);
+}
+
 } // anonymous namespace
 
 int
@@ -302,6 +331,7 @@ main()
     tokenizedCase(64, true);
     capacityBackpressureCase();
     partialIssueErrorAccountingCase();
+    dividerNoLaneCycleCase();
     UmtOrderedWaveStreamState issueEvidence;
     assert(issueEvidence.configure(64));
     auto issueDescriptor = descriptor(64, true);
@@ -323,6 +353,8 @@ main()
     }
     assert(issueEvidence.fpOperationsIssued() > 0);
     assert(issueEvidence.dualIssueCycles() > 0);
+    assert(issueEvidence.bankConflicts() > 0);
+    assert(issueEvidence.writebackStalls() > 0);
 
     UmtOrderedWaveStreamState invalid;
     assert(!invalid.configure(65));

@@ -299,6 +299,15 @@ LANLMAA::LANLMAAStats::LANLMAAStats(statistics::Group *parent)
       ADD_STAT(descriptorUmtStateFpIssueStallCycles,
                statistics::units::Cycle::get(),
                "Cycles with UMT stream tokens but no FP issue"),
+      ADD_STAT(descriptorUmtStateBankReadConflictCycles,
+               statistics::units::Cycle::get(),
+               "Unique UMT pipeline cycles with a ready bank read blocked"),
+      ADD_STAT(descriptorUmtStateWritebackStallCycles,
+               statistics::units::Cycle::get(),
+               "Unique UMT pipeline cycles with a writeback bank blocked"),
+      ADD_STAT(descriptorUmtStateDividerNoLaneCycles,
+               statistics::units::Cycle::get(),
+               "UMT pipeline cycles with a ready divide but no issue lane"),
       ADD_STAT(descriptorUmtStateFpOperationsIssued,
                statistics::units::Count::get(),
                "UMT FP operations issued by the stream scheduler"),
@@ -2607,6 +2616,10 @@ LANLMAA::recordUmtOrderedWaveStreamStats()
         umtOrderedWaveState.tokenBackpressure();
     stats.descriptorUmtStateFpIssueStallCycles +=
         umtOrderedWaveState.fpIssueStalls();
+    stats.descriptorUmtStateBankReadConflictCycles +=
+        umtOrderedWaveState.bankConflicts();
+    stats.descriptorUmtStateWritebackStallCycles +=
+        umtOrderedWaveState.writebackStalls();
     stats.descriptorUmtStateFpOperationsIssued +=
         umtOrderedWaveState.fpOperationsIssued();
     stats.descriptorUmtStateDualIssueCycles +=
@@ -2624,6 +2637,8 @@ LANLMAA::progressUmtFusedCornerBatch()
     if (umtFusedCornerPhase == UmtFusedCornerPhase::Read) {
         if (umtOrderedWaveDescriptor()) {
             const auto progress = umtOrderedWaveState.cycle(cycle);
+            if (progress.dividerNoLaneCycle)
+                ++stats.descriptorUmtStateDividerNoLaneCycles;
             if (progress.error != DescriptorError::None) {
                 ++stats.descriptorUmtStateCapacityErrors;
                 beginDescriptorErrorDrain(progress.error);

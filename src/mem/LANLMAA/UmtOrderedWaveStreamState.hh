@@ -138,6 +138,9 @@ class UmtOrderedWaveStreamStateModel
     {
         std::array<size_t, ComputeTokens> completedOperations{};
         size_t completions = 0;
+        // Transient simulator observability, returned to the gem5 caller for
+        // same-cycle Stats accounting. This is not retained stream state.
+        bool dividerNoLaneCycle = false;
         DescriptorError error = DescriptorError::None;
     };
 
@@ -397,8 +400,10 @@ class UmtOrderedWaveStreamStateModel
                         break;
                     }
                 }
-                if (lane == dividerNextIssue.size())
+                if (lane == dividerNextIssue.size()) {
+                    result.dividerNoLaneCycle = true;
                     break;
+                }
                 if (!reserveNow(token.group, cycle, true, false)) {
                     if (!bankConflictRecorded) {
                         ++bankConflictCycles;

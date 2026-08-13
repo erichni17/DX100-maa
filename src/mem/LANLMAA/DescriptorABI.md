@@ -213,7 +213,8 @@ does not claim to offload the earlier source-assembly physics.
 
 The timing contract constructs the actual sparse dependency DAG and schedules
 it on one FP64 add/sub unit, one FP64 multiplier, eight iterative dividers
-(64-cycle latency and initiation interval), and global issue width one. Per
+(64-cycle latency and 32-cycle initiation interval), and global issue width
+two. Per
 group it charges eight denominator adds, eight divides, and one multiply/add
 pair per nonzero edge. Architecturally retained group state is eight mutable
 sources plus eight denominators; at most twelve coefficients and eight
@@ -228,6 +229,16 @@ to 64 and therefore doubles aggregate semantic retained-state demand.
 The C++ vectors used by the functional simulator are not an SRAM sizing claim.
 The streamed/banked mapping for that 64-group demand remains an open hardware
 gate; synthesis, wiring, power, and physical timing remain unproven.
+
+The `descriptorUmtStateBankReadConflictCycles` and
+`descriptorUmtStateWritebackStallCycles` gem5 statistics export the state
+model's existing unique-cycle event trackers at the descriptor's single
+terminal snapshot. `descriptorUmtStateDividerNoLaneCycles` is incremented
+from a transient per-cycle result when at least one ready divide finds every
+divider lane inside its initiation interval. These gem5 `Stats` scalars and
+the transient result flag are simulation instrumentation: they are not
+architecturally visible or persistent UMT state and add no bits to the state
+model's hardware logical-bit floors.
 
 ## Completion and control records
 

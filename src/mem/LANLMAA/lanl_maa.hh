@@ -354,6 +354,9 @@ class LANLMAA : public ClockedObject
         statistics::Scalar descriptorUmtStateTokenHighWaterMark;
         statistics::Scalar descriptorUmtStateTokenBackpressureEvents;
         statistics::Scalar descriptorUmtStateFpIssueStallCycles;
+        statistics::Scalar descriptorUmtStateBankReadConflictCycles;
+        statistics::Scalar descriptorUmtStateWritebackStallCycles;
+        statistics::Scalar descriptorUmtStateDividerNoLaneCycles;
         statistics::Scalar descriptorUmtStateFpOperationsIssued;
         statistics::Scalar descriptorUmtStateDualIssueCycles;
         statistics::Scalar descriptorUmtStateFpIssueWidth;
