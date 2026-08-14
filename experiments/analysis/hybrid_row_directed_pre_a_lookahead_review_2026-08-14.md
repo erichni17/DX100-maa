@@ -44,8 +44,8 @@ resolved configurations are identical after removing the one treatment line,
 
 | Arm | `simTicks` | Context stalls | Value reads | Pre-A issue/ready/use |
 |---|---:|---:|---:|---:|
-| Control | 7,293,533,199 | 7,728,184 | 1,762,292 | 0 / 0 / 0 |
-| Pre-A lookahead | 7,115,533,855 | 7,006,828 | 1,751,144 | 1,867,518 / 976,580 / 1,867,518 |
+| Control | 7,293,533,199 | 3,864,092 | 881,146 | 0 / 0 / 0 |
+| Pre-A lookahead | 7,115,533,855 | 3,503,414 | 875,572 | 933,759 / 488,290 / 933,759 |
 
 The treatment is 2.4405% lower in ticks, a 1.025015599x speedup. Relative to
 the accepted native16 endpoint of 5,826,927,879 ticks, it reduces the hybrid
@@ -53,7 +53,7 @@ gap from 25.1694% to 22.1147%. Context stalls fall 9.3341%, and 52.2929% of
 the pre-A slots are ready when their A response arrives. Physical value reads
 fall 0.6326%.
 
-`IND_SoaJitValueStalls` rises from 3,850,422 to 7,022,194 because the feature
+`IND_SoaJitValueStalls` rises from 1,925,211 to 3,511,097 because the feature
 starts bounded value work earlier and therefore exposes more value-owner
 backpressure events. That counter increase is not a correctness failure and
 does not contradict the lower end-to-end ticks; the treatment's measured
