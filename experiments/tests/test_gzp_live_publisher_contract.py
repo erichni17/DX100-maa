@@ -26,8 +26,9 @@ def test_gzp_first_touches_publication_spans_before_checkpoint() -> None:
     assert "alignas(4096) static uint32_t soa_predicates" in source
     assert "alignas(4096) static DATATYPE soa_gradient_values" in source
     helper = source[
-        source.index("static void first_touch_soa_publication_buffers()") :
-        source.index("enum class GzpRmwTreatment")
+        source.index(
+            "static void first_touch_soa_publication_buffers()"
+        ) : source.index("enum class GzpRmwTreatment")
     ]
     assert "volatile uint32_t *predicates" in helper
     assert "volatile DATATYPE *values" in helper
@@ -62,3 +63,4 @@ def test_runner_is_uncapped_and_fails_closed() -> None:
     assert "STR_PublishTerminals') -eq 8" in runner
     assert "speedup_claim=0" in runner
     assert "published_predicates=16384" in runner
+    assert "--maa_num_initial_row_table_slices=32" in runner
