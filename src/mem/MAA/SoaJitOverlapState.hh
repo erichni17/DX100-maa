@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,7 +22,9 @@ class SoaJitApplyLanePool
 {
   public:
     static constexpr size_t MaxLanes = 4;
-    static constexpr size_t MaxContexts = 8;
+    // A context identifies one live physical A line.  All 32 entries are
+    // provisioned; a treatment selects a bounded active prefix at runtime.
+    static constexpr size_t MaxContexts = 32;
 
     struct Owner
     {
@@ -142,7 +145,10 @@ class SoaJitValueCoalescer
     static constexpr size_t MaxOwners = 32;
     static constexpr size_t CacheLines = MaxOwners;
     static constexpr size_t MaxPrefetchCredits = 8;
-    static constexpr size_t MaxContexts = 8;
+    // Keep alias identity injective across every provisioned context and its
+    // ordered lookahead slots.  This preserves response ownership even when
+    // a fill is shared by the full context pool.
+    static constexpr size_t MaxContexts = 32;
     static constexpr size_t MaxLookahead = 8;
     static constexpr size_t MaxWaiters = MaxContexts * MaxLookahead;
 
@@ -209,7 +215,7 @@ class SoaJitValueCoalescer
         LineState state = LineState::Free;
         uint64_t generation = 0;
         uint64_t paddr = 0;
-        uint64_t waiterMask = 0;
+        std::bitset<MaxWaiters> waiterMask{};
         uint64_t lru = 0;
         bool prefetchOwned = false;
         std::array<uint8_t, LineBytes> data{};
@@ -250,20 +256,18 @@ class SoaJitValueCoalescer
     }
 
     AliasOutcome requestAlias(uint64_t generation, uint64_t paddr,
-                              uint8_t waiter)
+                              uint16_t waiter)
     {
         if (generation == 0 || waiter >= MaxWaiters)
             return {AliasResult::Invalid, false};
-        const uint64_t bit = uint64_t{1} << waiter;
-
         for (auto &line : cache) {
             if (line.state == LineState::Free || line.paddr != paddr)
                 continue;
             if (line.generation != generation)
                 return {AliasResult::Stale, false};
-            if (line.waiterMask & bit)
+            if (line.waiterMask.test(waiter))
                 return {AliasResult::Duplicate, false};
-            line.waiterMask |= bit;
+            line.waiterMask.set(waiter);
             touch(line);
             return {line.state == LineState::Ready ? AliasResult::Hit
                                                    : AliasResult::Merge,
@@ -288,7 +292,7 @@ class SoaJitValueCoalescer
         victim->state = LineState::Filling;
         victim->generation = generation;
         victim->paddr = paddr;
-        victim->waiterMask = bit;
+        victim->waiterMask.set(waiter);
         victim->prefetchOwned = prefetch_owner != nullptr;
         touch(*victim);
         updateCacheHighWater();
@@ -378,7 +382,7 @@ class SoaJitValueCoalescer
                                           : ResponseResult::Invalid;
     }
 
-    DeliveryResult deliver(uint64_t generation, uint8_t waiter,
+    DeliveryResult deliver(uint64_t generation, uint16_t waiter,
                            uint64_t cycle, Delivery &delivery,
                            uint8_t max_deliveries = 1)
     {
@@ -392,19 +396,18 @@ class SoaJitValueCoalescer
         }
         if (deliveriesThisCycle >= max_deliveries)
             return DeliveryResult::CycleLimited;
-        const uint64_t bit = uint64_t{1} << waiter;
         for (auto &line : cache) {
-            if ((line.waiterMask & bit) == 0)
+            if (!line.waiterMask.test(waiter))
                 continue;
             if (line.generation != generation)
                 return DeliveryResult::Stale;
             if (line.state != LineState::Ready)
                 return DeliveryResult::NotReady;
             delivery.data = line.data;
-            line.waiterMask &= ~bit;
+            line.waiterMask.reset(waiter);
             touch(line);
             deliveriesThisCycle++;
-            if (!cacheEnabled && line.waiterMask == 0)
+            if (!cacheEnabled && line.waiterMask.none())
                 line = CacheLine();
             return DeliveryResult::Delivered;
         }
@@ -417,7 +420,7 @@ class SoaJitValueCoalescer
             if (line.state != LineState::Free &&
                 line.generation == generation &&
                 (line.state == LineState::Filling ||
-                 line.waiterMask != 0))
+                 line.waiterMask.any()))
                 return false;
         }
         for (const auto &credit : prefetch) {
@@ -504,7 +507,7 @@ class SoaJitValueCoalescer
                 return false;
             if (line.state == LineState::Free) {
                 if (line.generation != 0 || line.paddr != 0 ||
-                    line.waiterMask != 0 || line.prefetchOwned)
+                    line.waiterMask.any() || line.prefetchOwned)
                     return false;
                 continue;
             }
@@ -596,7 +599,7 @@ class SoaJitValueCoalescer
         for (auto candidate = cache.begin(); candidate != active_end;
              ++candidate) {
             if (candidate->state != LineState::Ready ||
-                candidate->waiterMask != 0 || candidate->lru >= oldest)
+                candidate->waiterMask.any() || candidate->lru >= oldest)
                 continue;
             oldest = candidate->lru;
             victim = candidate;

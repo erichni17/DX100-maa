@@ -196,8 +196,9 @@ class MAA(ClockedObject):
         "Partition-filter index words examined per cycle (0 is unlimited)",
     )
     soa_jit_active_contexts = Param.Unsigned(
-        1,
-        "Active SoA/JIT A-line contexts (fixed maximum hardware is eight)",
+        8,
+        "Active SoA/JIT A-line contexts (8, 16, or 32; fixed maximum "
+        "hardware is 32)",
     )
     soa_jit_value_lookahead = Param.Unsigned(
         1,
