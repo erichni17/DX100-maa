@@ -95,11 +95,18 @@ class SpdHardwareAccountingTest(unittest.TestCase):
         self.assertEqual(consumer["response_slots"], 96)
         self.assertEqual(consumer["combiner_slots"], 384)
         self.assertEqual(consumer["direct_index_lines"], 4)
+        self.assertEqual(consumer["response_payload_mode"], "packed-word-pool")
         self.assertEqual(
-            consumer["direct_virtual_data_bytes_per_indirect_unit"], 30976
+            consumer["response_packed_word_bytes_per_indirect_unit"], 1920
         )
         self.assertEqual(
-            consumer["direct_virtual_data_bytes_all_indirect_units"], 123904
+            consumer["inactive_response_line_bytes_per_indirect_unit"], 0
+        )
+        self.assertEqual(
+            consumer["direct_virtual_data_bytes_per_indirect_unit"], 26752
+        )
+        self.assertEqual(
+            consumer["direct_virtual_data_bytes_all_indirect_units"], 107008
         )
 
     def test_selected_configuration_is_parameterized(self) -> None:
@@ -109,6 +116,35 @@ class SpdHardwareAccountingTest(unittest.TestCase):
         self.assertEqual(virtual["indirect_units"], 2)
         self.assertEqual(
             virtual["direct_virtual_data_bytes_all_indirect_units"], 61952
+        )
+
+    def test_packed_response_modes_exclude_fixed_line_payloads(self) -> None:
+        pooled = MODULE.virtual_data_capacity(128, 384, 8, 4, 0, 480, 8)
+        self.assertEqual(pooled["response_payload_mode"], "packed-word-pool")
+        self.assertEqual(
+            pooled["response_payload_bytes_per_indirect_unit"], 3840
+        )
+        self.assertEqual(pooled["response_line_bytes_per_indirect_unit"], 0)
+        self.assertEqual(
+            pooled["inactive_response_line_bytes_per_indirect_unit"], 0
+        )
+
+        fixed = MODULE.virtual_data_capacity(8, 16, 1, 4, 3, 0, 4)
+        self.assertEqual(
+            fixed["response_payload_mode"], "packed-words-per-slot"
+        )
+        self.assertEqual(fixed["response_payload_bytes_per_indirect_unit"], 96)
+        self.assertEqual(fixed["response_line_bytes_per_indirect_unit"], 0)
+
+        unpacked = MODULE.virtual_data_capacity(8, 16, 1, 4)
+        self.assertEqual(
+            unpacked["response_payload_mode"], "unpacked-fixed-lines"
+        )
+        self.assertEqual(
+            unpacked["response_line_bytes_per_indirect_unit"], 512
+        )
+        self.assertEqual(
+            unpacked["response_payload_bytes_per_indirect_unit"], 512
         )
 
     def test_bad_topology_is_rejected(self) -> None:

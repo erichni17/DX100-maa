@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
@@ -22,6 +23,7 @@
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/Tables.hh"
+#include "mem/MAA/VirtualResponsePayloadStore.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
@@ -87,7 +89,6 @@ protected:
     struct VirtualResponseSlot {
         bool valid = false;
         int next_itr = -1;
-        std::array<uint8_t, 64> data{};
         std::vector<std::array<uint8_t, 8>> packed_words;
         size_t next_packed_word = 0;
         int reserved_words = 0;
@@ -99,6 +100,7 @@ protected:
         int claim_head = -1;
     };
     std::vector<VirtualResponseSlot> virtual_response_slots;
+    VirtualResponsePayloadStore virtual_response_line_payloads;
     int virtual_response_words = 0;
     int virtual_response_word_pool_limit = 0;
     int virtual_words_per_cycle_limit = 0;

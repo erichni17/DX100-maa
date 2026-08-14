@@ -44,10 +44,16 @@ REQUIRED_SOURCE = {
         "virtual_page_ready_size",
     ),
     "src/mem/MAA/IndirectAccess.hh": (
-        "std::array<uint8_t, 64> data{}",
         "std::vector<VirtualResponseSlot> virtual_response_slots",
+        "VirtualResponsePayloadStore virtual_response_line_payloads",
         "std::vector<VirtualCombineSlot> virtual_combine_slots",
         "std::map<int, DirectIndexWord> direct_index_words",
+    ),
+    "src/mem/MAA/VirtualResponsePayloadStore.hh": (
+        "static constexpr std::size_t LineBytes = 64",
+        "if (!packed)",
+        "lines.resize(slots)",
+        "std::vector<Line> lines",
     ),
     "src/mem/MAA/IndirectAccess.cc": (
         "virtual_response_slots.resize(_virtual_response_slots)",
@@ -56,11 +62,16 @@ REQUIRED_SOURCE = {
         "RT[i] = new RowTableSlice[current_num_RT_slices]",
     ),
 }
-SOURCE_DEFAULTS = {"response_slots": 8, "combine_slots": 16, "index_lines": 1}
+SOURCE_DEFAULTS = {
+    "response_slots": 8,
+    "combine_slots": 16,
+    "index_lines": 1,
+}
 CONSUMER_EXPERIMENT = {
     "response_slots": 96,
     "combine_slots": 384,
     "index_lines": 4,
+    "response_word_pool": 480,
 }
 RUNTIME_LOGICAL_SLOTS_PER_MAA = 2
 RUNTIME_PAGE_ELEMENTS = 2048
@@ -89,6 +100,9 @@ def virtual_data_capacity(
     combine_slots: int,
     index_lines: int,
     indirect_units: int,
+    response_words: int = 0,
+    response_word_pool: int = 0,
+    word_bytes: int = 4,
 ) -> dict:
     """Return explicit line-data capacity, excluding C++ metadata."""
     if any(
@@ -103,11 +117,41 @@ def virtual_data_capacity(
         raise ValueError(
             "virtual capacities and indirect-units must be positive"
         )
-    generic_per_unit = (response_slots + combine_slots) * 64
+    if response_words < 0 or response_word_pool < 0:
+        raise ValueError("packed response capacities must be nonnegative")
+    if word_bytes not in (4, 8):
+        raise ValueError("virtual response word bytes must be 4 or 8")
+    if response_word_pool:
+        response_mode = "packed-word-pool"
+        response_payload_per_unit = response_word_pool * word_bytes
+    elif response_words:
+        response_mode = "packed-words-per-slot"
+        response_payload_per_unit = (
+            response_slots * response_words * word_bytes
+        )
+    else:
+        response_mode = "unpacked-fixed-lines"
+        response_payload_per_unit = response_slots * 64
+    generic_per_unit = response_payload_per_unit + combine_slots * 64
     direct_per_unit = generic_per_unit + index_lines * 64
     return {
         "response_slots": response_slots,
-        "response_line_bytes_per_indirect_unit": response_slots * 64,
+        "response_payload_mode": response_mode,
+        "response_words_per_slot": response_words,
+        "response_word_pool": response_word_pool,
+        "response_word_bytes": word_bytes,
+        "response_line_bytes_per_indirect_unit": (
+            response_slots * 64
+            if response_mode == "unpacked-fixed-lines"
+            else 0
+        ),
+        "response_packed_word_bytes_per_indirect_unit": (
+            response_payload_per_unit
+            if response_mode != "unpacked-fixed-lines"
+            else 0
+        ),
+        "response_payload_bytes_per_indirect_unit": response_payload_per_unit,
+        "inactive_response_line_bytes_per_indirect_unit": 0,
         "combiner_slots": combine_slots,
         "combiner_line_bytes_per_indirect_unit": combine_slots * 64,
         "generic_virtual_data_bytes_per_indirect_unit": generic_per_unit,
@@ -130,6 +174,9 @@ def ledger(
     index_lines: int = 1,
     indirect_units: int = 4,
     maas: int = 4,
+    response_words: int = 0,
+    response_word_pool: int = 0,
+    word_bytes: int = 4,
 ) -> dict:
     if cores <= 0 or tiles_per_core <= 0 or maas <= 0:
         raise ValueError("cores, tiles-per-core, and MAAs must be positive")
@@ -144,7 +191,13 @@ def ledger(
     transparent_payload_total = visible_physical_spd + private_payload_total
     native_payload_total = tiles * native16
     selected_virtual = virtual_data_capacity(
-        response_slots, combine_slots, index_lines, indirect_units
+        response_slots,
+        combine_slots,
+        index_lines,
+        indirect_units,
+        response_words,
+        response_word_pool,
+        word_bytes,
     )
     return {
         "source_checked": checked_sources(),
@@ -200,7 +253,8 @@ def ledger(
                 "The index window is map-backed DirectIndexWord entries, not a "
                 "64-byte C++ array.  64 B/line is the bounded 16xuint32_t data "
                 "capacity; map/node bytes and packed-response vector allocation "
-                "are not synthesized-bit counts."
+                "are not synthesized-bit counts. Packed response modes do not "
+                "also charge inactive fixed response lines."
             ),
         },
         "named_virtual_points": {
@@ -248,16 +302,22 @@ def main() -> int:
     parser.add_argument("--index-lines", type=int, default=1)
     parser.add_argument("--indirect-units", type=int, default=4)
     parser.add_argument("--maas", type=int, default=4)
+    parser.add_argument("--response-words", type=int, default=0)
+    parser.add_argument("--response-word-pool", type=int, default=0)
+    parser.add_argument("--word-bytes", type=int, default=4)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = ledger(
-        args.cores,
-        args.tiles_per_core,
-        args.response_slots,
-        args.combine_slots,
-        args.index_lines,
-        args.indirect_units,
-        args.maas,
+        cores=args.cores,
+        tiles_per_core=args.tiles_per_core,
+        response_slots=args.response_slots,
+        combine_slots=args.combine_slots,
+        index_lines=args.index_lines,
+        indirect_units=args.indirect_units,
+        maas=args.maas,
+        response_words=args.response_words,
+        response_word_pool=args.response_word_pool,
+        word_bytes=args.word_bytes,
     )
     text = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output:

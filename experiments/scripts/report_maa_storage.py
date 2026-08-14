@@ -332,12 +332,15 @@ def main() -> int:
 
     combine_payload_per_unit = combine_slots * 64
     if response_pool:
+        response_storage_mode = "packed-word-pool"
         response_payload_per_unit = response_pool * args.word_bytes
     elif response_words:
+        response_storage_mode = "packed-words-per-slot"
         response_payload_per_unit = (
             response_slots * response_words * args.word_bytes
         )
     else:
+        response_storage_mode = "unpacked-fixed-lines"
         response_payload_per_unit = response_slots * 64
     index_payload_per_unit = index_lines * 64
     configured_virtual_payload_per_unit = (
@@ -363,16 +366,10 @@ def main() -> int:
     active_virtual_payload_total = (
         active_virtual_payload_per_unit * indirect_units
     )
-    # The simulator keeps the legacy full-line array in every response slot
-    # even when packed responses use the bounded word pool instead. A
-    # specialized hardware implementation can union or remove this inactive
-    # array, so keep it outside the active lower bound and expose it as a
-    # separate conservative implementation view.
-    inactive_cpp_response_line_bytes_per_unit = (
-        response_slots * 64
-        if args.mechanism != "native" and (response_pool or response_words)
-        else 0
-    )
+    # Packed response slots retain only useful-word vectors plus metadata.
+    # The fixed line store is instantiated exclusively for unpacked mode and
+    # is already included in response_payload_per_unit above.
+    inactive_cpp_response_line_bytes_per_unit = 0
     inactive_cpp_response_line_bytes_total = (
         inactive_cpp_response_line_bytes_per_unit * indirect_units
     )
@@ -567,11 +564,22 @@ def main() -> int:
             ),
         },
         "virtual_data_buffers": {
+            "source_response_storage_mode": response_storage_mode,
+            "source_response_slots_per_indirect_unit": response_slots,
+            "unpacked_line_bytes_per_slot": (
+                64 if response_storage_mode == "unpacked-fixed-lines" else 0
+            ),
+            "packed_word_bytes": args.word_bytes,
+            "packed_words_per_slot": response_words,
+            "packed_word_pool_per_indirect_unit": response_pool,
             "configured_index_feeder_bytes_per_indirect_unit": (
                 index_payload_per_unit
             ),
             "configured_source_response_bytes_per_indirect_unit": (
                 response_payload_per_unit
+            ),
+            "configured_source_response_bytes_all_indirect_units": (
+                response_payload_per_unit * indirect_units
             ),
             "configured_destination_combiner_bytes_per_indirect_unit": (
                 combine_payload_per_unit
@@ -584,6 +592,9 @@ def main() -> int:
             ),
             "active_source_response_bytes_per_indirect_unit": (
                 active_response_payload
+            ),
+            "active_source_response_bytes_all_indirect_units": (
+                active_response_payload * indirect_units
             ),
             "active_destination_combiner_bytes_per_indirect_unit": (
                 active_combine_payload
@@ -601,12 +612,15 @@ def main() -> int:
                 inactive_cpp_response_line_bytes_total
             ),
             "inactive_cpp_response_line_note": (
-                "Legacy 64-byte arrays remain allocated in each C++ response "
-                "slot while packed responses use the bounded word pool. They "
-                "are not required by the selected hardware mode."
+                "No inactive fixed response-line payload is allocated. The "
+                "bounded line store exists only in unpacked mode; packed mode "
+                "retains useful words plus response metadata."
             ),
         },
         "incremental_virtual_control_lower_bound": {
+            "source_response_metadata_bits_per_slot": (
+                active_response_metadata_bits // response_slots
+            ),
             "index_feeder_metadata_bits_per_indirect_unit": (
                 active_index_metadata_bits
             ),
@@ -780,8 +794,8 @@ def main() -> int:
         },
         "conservative_cpp_static_storage_view": {
             "scope": (
-                "candidate-only addition of inactive fixed response-line "
-                "arrays; still excludes STL/container and allocator overhead"
+                "active payload plus fixed-width lower bounds; packed-word "
+                "STL/container and allocator overhead remains excluded"
             ),
             "inactive_fixed_response_line_bytes": (
                 inactive_cpp_response_line_bytes_total
@@ -835,7 +849,7 @@ def main() -> int:
         f"| Configured physical SPD payload | {format_bytes(physical_spd_bytes)} |",
         f"| Active direct-index B feeder | {format_bytes(active_index_payload)} / indirect unit |",
         f"| Active source-response payload | {format_bytes(active_response_payload)} / indirect unit |",
-        "| Inactive fixed C++ response-line arrays | "
+        "| Inactive fixed C++ response-line payload | "
         f"{format_bytes(inactive_cpp_response_line_bytes_per_unit)} / indirect unit |",
         f"| Active destination-combiner payload | {format_bytes(active_combine_payload)} / indirect unit |",
         "| Incremental virtual tags/control (lower bound) | "
@@ -882,8 +896,8 @@ def main() -> int:
         "**"
         f"{report['allocated_model_storage_lower_bound']['reduction_vs_native_pct']:.3f}%"
         "**.",
-        "Conservative candidate-only reduction after also counting inactive "
-        "fixed C++ response-line arrays: "
+        "Conservative C++ static-view reduction (no inactive packed-mode "
+        "response lines): "
         "**"
         f"{report['conservative_cpp_static_storage_view']['comparable_reduction_vs_native_pct']:.3f}%"
         "**.",
@@ -893,8 +907,8 @@ def main() -> int:
         "readiness, but this does not prove native-equivalent descriptor lifetime or",
         "issue order. Essential tags and bounded control arrays are included as a",
         "bit-count lower bound; ports, arbitration, wiring, and memory periphery are",
-        "still excluded. The conservative C++ view additionally counts the inactive",
-        "fixed response-line arrays and, when direct_retirement_line_handoff=true,",
+        "still excluded. The conservative C++ view has no inactive fixed response",
+        "lines; when direct_retirement_line_handoff=true it additionally counts",
         "the fixed direct-retirement queue, execution records, request records, retry",
         "slots, early-line ledger, and producer-line metadata. The direct handoff",
         "views deliberately exclude indirect virtual buffers already charged above.",
