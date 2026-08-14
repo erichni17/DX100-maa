@@ -140,13 +140,11 @@ def parse_restore_arm_gem5_arg(value: str) -> tuple[str, str]:
 
 def restore_arm_gem5_args(
     values: list[tuple[str, str]], arms: list[dict[str, object]]
-) -> dict[str, str]:
+) -> dict[str, list[str]]:
     """Validate a fail-closed arm-to-restore-option mapping."""
-    mapping: dict[str, str] = {}
+    mapping: dict[str, list[str]] = {}
     for arm, argument in values:
-        if arm in mapping:
-            raise ValueError(f"duplicate restore arm gem5 arg: {arm}")
-        mapping[arm] = argument
+        mapping.setdefault(arm, []).append(argument)
     known_arms = {str(arm["name"]) for arm in arms}
     unknown = sorted(set(mapping) - known_arms)
     if unknown:
@@ -155,10 +153,10 @@ def restore_arm_gem5_args(
 
 
 def restore_args_for_arm(
-    extra: list[str], mapping: dict[str, str], arm_name: str
+    extra: list[str], mapping: dict[str, list[str]], arm_name: str
 ) -> list[str]:
     """Return global restore options plus the option for this arm, if any."""
-    return [*extra, *([mapping[arm_name]] if arm_name in mapping else [])]
+    return [*extra, *mapping.get(arm_name, [])]
 
 
 def make_arms(

@@ -158,15 +158,17 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(
             mapping,
             {
-                "hybrid_token_stream_ld": (
+                "hybrid_token_stream_ld": [
                     "--maa_virtual_masked_fragment_slots=8"
-                )
+                ]
             },
         )
-        with self.assertRaisesRegex(ValueError, "duplicate"):
+        self.assertEqual(
             runner.restore_arm_gem5_args(
                 [("native16", "--a=1"), ("native16", "--b=2")], arms
-            )
+            ),
+            {"native16": ["--a=1", "--b=2"]},
+        )
         with self.assertRaisesRegex(ValueError, "unknown"):
             runner.restore_arm_gem5_args([("missing", "--a=1")], arms)
         for malformed in ("native16", "native16=not-an-option", "=--a=1"):
@@ -225,9 +227,9 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             self.assertEqual(
                 plan["restore_arm_gem5_args"],
                 {
-                    "hybrid_token_stream_ld": (
+                    "hybrid_token_stream_ld": [
                         "--maa_virtual_masked_fragment_slots=8"
-                    )
+                    ]
                 },
             )
         self.assertEqual(
