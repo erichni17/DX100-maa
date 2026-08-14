@@ -156,11 +156,13 @@ public:
         "SRV",
         "FNS",
         "MAX"};
-    Addr baseAddr, backingAddr, indexAddr, logicalSourceBackingAddr;
+    Addr baseAddr, backingAddr, indexAddr, predicateAddr;
+    Addr logicalSourceBackingAddr;
     Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
-    Addr indexMinAddr, indexMaxAddr;
+    Addr indexMinAddr, indexMaxAddr, predicateMinAddr, predicateMaxAddr;
     Addr logicalSourceMinAddr, logicalSourceMaxAddr;
     int8_t addrRangeID, backingAddrRangeID, indexAddrRangeID;
+    int8_t predicateAddrRangeID;
     int8_t logicalSourceAddrRangeID;
     int16_t src1RegID, src2RegID, src3RegID, dst1RegID, dst2RegID;
     int16_t src1SpdID, src2SpdID;
@@ -209,6 +211,18 @@ public:
     bool isLogicalALUScalar() const {
         return opcode == OpcodeType::ALU_SCALAR && src1LogicalID != -1 &&
                src2LogicalID == -1 && dst1LogicalID != -1;
+    }
+    /**
+     * Guarded no-old-result SoA/JIT form of ordinary vector RMW.
+     *
+     * Ordinary INDIR_RMW_VECTOR keeps both SPD sources.  This form has no SPD
+     * input or condition tile, forbids dst1 (the legacy old-value result), and
+     * uses dst2 only as a completion token.  backing/index/predicate addresses
+     * are delivered in instruction words 3/4/5 respectively.
+     */
+    bool isSoaJitRmw() const {
+        return opcode == OpcodeType::INDIR_RMW_VECTOR &&
+               src1SpdID == -1 && src2SpdID == -1 && condSpdID == -1;
     }
 };
 
