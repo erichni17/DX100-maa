@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -101,6 +102,7 @@ initializeInputs(uint64_t &selected, uint64_t &rejected)
                 expected[indices[operation][i]] += values[operation][i];
                 ++selected;
             } else {
+                indices[operation][i] = UINT32_MAX;
                 ++rejected;
             }
         }
@@ -169,7 +171,7 @@ warmChecksum(const LogicalFloat &warm_source)
 }
 
 void
-runSoa(int warm_mode)
+runSoa(int warm_mode, bool masked_indices)
 {
     const int min_reg = get_new_reg<int>(0);
     const int max_reg = get_new_reg<int>(kLogical);
@@ -178,13 +180,33 @@ runSoa(int warm_mode)
     for (int operation = 0; operation < kOperations; ++operation) {
         if (warm_mode)
             warmArrayForOperation(operation, warm_mode == 1);
-        maa_indirect_rmw_vector_soa_jit<float>(
-            actual.data(), indices[operation].data(),
-            values[operation].data(), predicates[operation].data(),
-            min_reg, max_reg, stride_reg, completion_tile,
-            Operation_t::ADD_OP);
+        if (masked_indices) {
+            maa_indirect_rmw_vector_soa_jit_masked_indices<float>(
+                actual.data(), indices[operation].data(),
+                values[operation].data(), min_reg, max_reg, stride_reg,
+                completion_tile, Operation_t::ADD_OP);
+        } else {
+            maa_indirect_rmw_vector_soa_jit<float>(
+                actual.data(), indices[operation].data(),
+                values[operation].data(), predicates[operation].data(),
+                min_reg, max_reg, stride_reg, completion_tile,
+                Operation_t::ADD_OP);
+        }
         wait_ready(completion_tile);
     }
+}
+
+std::string
+readModeSelector(const char *path)
+{
+    std::ifstream input(path);
+    std::string mode;
+    std::string extra;
+    if (!input || !(input >> mode) || (input >> extra)) {
+        std::cerr << "invalid SoA mode selector: " << path << std::endl;
+        std::exit(2);
+    }
+    return mode;
 }
 
 } // namespace
@@ -192,14 +214,22 @@ runSoa(int warm_mode)
 int
 main(int argc, char **argv)
 {
-    const std::string mode = argc > 1 ? argv[1] : "soa";
-    if (mode != "ordinary" && mode != "soa" && mode != "soa-warm" &&
-        mode != "soa-warm-control") {
-        std::cerr << "mode must be ordinary, soa, soa-warm, or "
-                  << "soa-warm-control" << std::endl;
+    const std::string requested_mode = argc > 1 ? argv[1] : "soa";
+    if (requested_mode != "ordinary" && requested_mode != "soa" &&
+        requested_mode != "soa-warm" &&
+        requested_mode != "soa-warm-control" &&
+        requested_mode != "soa-masked-index" &&
+        requested_mode != "selector") {
+        std::cerr << "mode must be ordinary, soa, soa-warm, "
+                  << "soa-warm-control, soa-masked-index, or selector"
+                  << std::endl;
         return 2;
     }
-    if (mode != "ordinary" && TILE_SIZE != kLogical) {
+    if (requested_mode == "selector" && argc != 3) {
+        std::cerr << "selector mode requires one path" << std::endl;
+        return 2;
+    }
+    if (requested_mode != "ordinary" && TILE_SIZE != kLogical) {
         std::cerr << "SoA test requires TILE_SIZE=16384" << std::endl;
         return 2;
     }
@@ -210,8 +240,17 @@ main(int argc, char **argv)
     std::cout << "HYBRID_RMW_SOA_LAYOUT mem_size="
               << static_cast<uint64_t>(MEM_SIZE)
               << " logical=" << kLogical << " tile=" << TILE_SIZE
-              << " mode=" << mode << std::endl;
+              << " mode=" << requested_mode << std::endl;
     m5_checkpoint(0, 0);
+
+    const std::string mode = requested_mode == "selector"
+        ? readModeSelector(argv[2]) : requested_mode;
+    if (mode != "soa" && mode != "soa-masked-index" &&
+        requested_mode == "selector") {
+        std::cerr << "selector treatment must be soa or soa-masked-index"
+                  << std::endl;
+        return 2;
+    }
 
     alloc_MAA();
     init_MAA();
@@ -231,7 +270,8 @@ main(int argc, char **argv)
     if (mode == "ordinary")
         runOrdinary();
     else
-        runSoa(mode == "soa-warm" ? 1 : mode == "soa-warm-control" ? 2 : 0);
+        runSoa(mode == "soa-warm" ? 1 : mode == "soa-warm-control" ? 2 : 0,
+               mode == "soa-masked-index");
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
 

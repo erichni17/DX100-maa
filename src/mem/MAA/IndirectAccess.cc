@@ -850,6 +850,10 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
 bool IndirectAccessUnit::isSoaJitRmw() const {
     return my_instruction != nullptr && my_instruction->isSoaJitRmw();
 }
+bool IndirectAccessUnit::isSoaJitMaskedIndexRmw() const {
+    return my_instruction != nullptr &&
+           my_instruction->isSoaJitMaskedIndexRmw();
+}
 bool IndirectAccessUnit::usesBoundedDirectIndexPasses() const {
     return isDirectIndexLoad() && !isSoaJitRmw() &&
            maa->virtual_index_range_passes;
@@ -1593,6 +1597,13 @@ bool IndirectAccessUnit::ensureSoaPredicate(int itr)
 }
 bool IndirectAccessUnit::soaPredicateValue(int itr)
 {
+    if (isSoaJitMaskedIndexRmw()) {
+        panic_if(itr != my_i,
+                 "I[%d] masked-index classification lost sequential order "
+                 "%d/%d\n",
+                 my_indirect_id, itr, my_i);
+        return peekDirectIndex(itr) != SoaJitSafety::MaskedIndexInactive;
+    }
     if (my_predicate_addr == 0)
         return true;
     const int64_t source = soaSourcePosition(itr);
@@ -5377,6 +5388,14 @@ void IndirectAccessUnit::executeInstruction() {
                 }
             }
             validateSoaJitAddressSpans();
+            panic_if(isSoaJitMaskedIndexRmw() &&
+                         !SoaJitSafety::maskedIndexMarkerOutsideLegalRange(
+                             my_base_addr, my_min_addr, my_max_addr,
+                             my_word_size),
+                     "I[%d] masked-index sentinel can name a legal A word "
+                     "in [0x%lx,0x%lx) from base 0x%lx\n",
+                     my_indirect_id, my_min_addr, my_max_addr,
+                     my_base_addr);
             panic_if(soa_jit_next_generation == 0 ||
                          soa_jit_next_generation ==
                              std::numeric_limits<uint64_t>::max(),
@@ -6297,6 +6316,9 @@ void IndirectAccessUnit::executeInstruction() {
                     "event=soa_jit_complete schema=2 unit=%d "
                     "operation_tick=%lu generation=%lu logical=%d "
                     "selected=%lu predicate_rejected=%lu "
+                    "predicate_mode=%s masked_index_compare_bits=%lu "
+                    "masked_index_mode_state_bits=%lu "
+                    "masked_index_additional_buffer_bytes=%lu "
                     "predicate_lines=%lu/%lu predicate_hits=%lu "
                     "predicate_uses=%lu predicate_stalls=%lu "
                     "predicate_credits=%d predicate_hwm=%lu "
@@ -6322,6 +6344,17 @@ void IndirectAccessUnit::executeInstruction() {
                     my_indirect_id, my_decode_start_tick,
                     soa_jit_generation, my_max, soa_jit_selected,
                     soa_jit_predicate_rejected,
+                    isSoaJitMaskedIndexRmw() ? "masked_index" :
+                        my_predicate_addr == 0 ? "unpredicated" :
+                                                 "separate_array",
+                    static_cast<unsigned long>(
+                        isSoaJitMaskedIndexRmw()
+                            ? SoaJitSafety::MaskedIndexCompareBits : 0),
+                    static_cast<unsigned long>(
+                        isSoaJitMaskedIndexRmw()
+                            ? SoaJitSafety::MaskedIndexModeStateBits : 0),
+                    static_cast<unsigned long>(
+                        SoaJitSafety::MaskedIndexAdditionalBufferBytes),
                     soa_jit_predicate_line_issues,
                     soa_jit_predicate_line_responses,
                     soa_jit_predicate_line_hits,
