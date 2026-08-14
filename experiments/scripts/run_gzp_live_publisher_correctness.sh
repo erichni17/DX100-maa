@@ -90,7 +90,7 @@ checkpoint_rc=$?
 set -e
 printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
 [[ $checkpoint_rc -eq 0 ]]
-[[ $(rg -c '^Exiting @ tick [0-9]+ because checkpoint$' \
+[[ $(grep -E -c '^Exiting @ tick [0-9]+ because checkpoint$' \
           "$out/checkpoint.log" || true) -eq 1 ]]
 
 set +e
@@ -100,14 +100,14 @@ restore_rc=$?
 set -e
 printf '%s\n' "$restore_rc" > "$out/restore.exit"
 [[ $restore_rc -eq 0 ]]
-[[ $(rg -c '^UME_REFERENCE_PASS point_volume_errors=0 point_gradient_errors=0 ' \
+[[ $(grep -E -c '^UME_REFERENCE_PASS point_volume_errors=0 point_gradient_errors=0 ' \
           "$out/restore.log" || true) -eq 1 ]]
 terminal='UME_GZP_TERMINAL treatment=soa_jit_correctness full_windows=1 volume_only_windows=0 published_predicates=16384 published_gradient_values=16384'
-[[ $(rg -c "^$terminal .*publisher=response_bearing_spd_to_coherent performance_promotable=0 result=PASS$" \
+[[ $(grep -E -c "^$terminal .*publisher=response_bearing_spd_to_coherent performance_promotable=0 result=PASS$" \
           "$out/restore.log" || true) -eq 1 ]]
-[[ $(rg -c '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
+[[ $(grep -E -c '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
           "$out/restore.log" || true) -eq 1 ]]
-[[ $(rg -ic 'panic|fatal|assert|abort|segmentation fault|error:' \
+[[ $(grep -E -i -c 'panic|fatal|assert|abort|segmentation fault|error:' \
           "$out/restore.log" || true) -eq 0 ]]
 
 stats="$out/run/stats.txt"
@@ -127,13 +127,13 @@ max_stat() {
 [[ $(sum_stat 'STR_PublishTerminals') -eq 8 ]]
 [[ $(max_stat 'STR_PublishCreditHWM') -eq 8 ]]
 [[ $(sum_stat 'STR_PublishCreditStalls') -gt 0 ]]
-[[ $(rg -c 'event=spd_publish_issue ' "$trace" || true) -eq 2048 ]]
-[[ $(rg -c 'event=spd_publish_accept ' "$trace" || true) -eq 2048 ]]
-[[ $(rg -c 'event=spd_publish_response ' "$trace" || true) -eq 2048 ]]
-[[ $(rg -c 'event=spd_publish_terminal ' "$trace" || true) -eq 8 ]]
+[[ $(grep -F -c 'event=spd_publish_issue ' "$trace" || true) -eq 2048 ]]
+[[ $(grep -F -c 'event=spd_publish_accept ' "$trace" || true) -eq 2048 ]]
+[[ $(grep -F -c 'event=spd_publish_response ' "$trace" || true) -eq 2048 ]]
+[[ $(grep -F -c 'event=spd_publish_terminal ' "$trace" || true) -eq 8 ]]
 for resolved in num_tile_elements=16384 physical_tile_elements=4096 \
     num_offset_table_entries=16384 num_offset_table_epoch_entries=16384; do
-    rg -Fx "$resolved" "$out/run/config.ini"
+    grep -F -x "$resolved" "$out/run/config.ini"
 done
 
 {
