@@ -550,6 +550,11 @@ protected:
     std::vector<std::array<uint64_t, MaxVirtualPages>>
         virtualPageReadyTransaction;
     std::vector<uint64_t> virtualPageGeneration;
+    // Payload retention has its own monotonically allocated incarnation at
+    // producer registration, before a consumer-context incarnation exists.
+    // Every payload descriptor, RAM tag, lookup, take, clear, and trace uses
+    // this exact lifetime identity in addition to generation/backing.
+    std::vector<uint64_t> virtualPagePayloadIncarnation;
     std::vector<uint64_t> virtualPageConsumedGeneration;
     std::vector<Addr> virtualPageBackingAddr;
     std::vector<int> virtualPageBackingRangeID;
@@ -638,7 +643,6 @@ protected:
         HybridConsumerContextQueue::Request request{};
         InactiveProducerLinePayloadCapture::Key key{};
         uint16_t line = 0;
-        uint64_t transactionID = 0;
         InactiveProducerLinePayloadCapture::LookupPipeline timing{};
     };
     InactivePayloadLookup inactivePayloadLookup;

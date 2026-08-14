@@ -1,103 +1,141 @@
-# Inactive producer-payload capture: pre-review sweep plan
+# Inactive producer-payload capture: bounded repair contract
 
-## Status
+## Status and scope
 
-No gem5 simulation has been launched. This is a guarded handoff for review
-after the conflict-policy correction. Focused optimized/ASan/UBSan unit tests,
-related materializer/ledger/context tests, and the final MAA incremental build
-have passed. The full optimized gem5 build reached MAA after restoring its
-ignored Ramulator dependencies. Its unrelated `StreamAccess.cc`
-incomplete-`FaultBase` blocker was accepted separately as parent commit
-`3b6a8696`; the preserved `-j12` full link is still in progress and is not a
-promotion result.
+This is a default-off hardware contract for retaining selected authoritative
+64-byte producer `WriteResp` payloads until their materializer page becomes
+active. It does not expand SPD visibility, cache ports, materializer line
+buffers, commit records, or response pools. A retained hit is copied into the
+existing charged materializer buffer after the modeled lookup cycle and uses
+the existing delayed SPD commit. Every miss or drop uses the unchanged exact
+coherent `ReadBacking` path.
 
-The ignored dependency copies are deliberately untracked: from
-`/data1/nier/worktrees/DX100-virtualization-line-handoff-20260812/ext/ramulator2/ramulator2/ext/`
-to this worktree's corresponding directory, `spdlog` tree digest
-`5d7e476d115d0341c7efde8da498ce5e1b8c36d293d6dbc3e8341f98a7176d0d`
-and `yaml-cpp` tree digest
-`b2ae93f55a5ddda69fd37870fab0ae0572ffb3a3ccf45cfea3b156c2e51adf5b`.
-`argparse` remains empty in both worktrees and was not copied.
+No gem5 workload result is claimed here. Promotion still requires an exact
+same-checkpoint default-off comparison and full correctness closure.
 
-The matched API control to preserve is key `7228541527853630339`: 2,048 full
-producer writes, 492 forwarded lines, and 1,556 coherent `ReadBacking`
-fallback lines. Capacity outcomes must be compared only against a same
-checkpoint control with that exact closure.
+## Constant-time lifetime and RAM organization
 
-Trace analyzer `784980f0` reports 288 uncontended fallback opportunities for
-latest-owner/512 and warns that first-owner can retain the wrong epoch region.
-That is why the review matrix compares both policies before judging the capture
-mechanism; it is not evidence of a measured new treatment result.
+- Capacity is exactly 0, 64, 128, 256, or 512 lines; 0 is the default.
+- There are four direct-mapped lifetime descriptors. `tokenTile[1:0]` selects
+  one descriptor and the complete `(tokenTile, generation,
+  payloadIncarnation, backingAddress)` tag is checked at that index. There is
+  no four-way CAM, priority encoder, or descriptor search.
+- A descriptor collision replaces the selected descriptor in one operation.
+  The displaced lifetime immediately becomes coherent-fallback-only. Its RAM
+  tags may remain stale; replacement and retirement never walk the RAM. The
+  descriptor's stored-line count reports the exact number displaced, which is
+  added to the explicit global drop counter without inspecting any entry.
+- A write that selects a stale RAM tag reclaims exactly that entry. A write
+  that selects another live tag follows the configured equal-cost
+  `first-owner` or `latest-owner` policy.
+- Clear/retirement invalidates only the selected exact descriptor. It performs
+  no entry-wide clear and no page replay walk. The host-only exhaustive
+  `assertInvariants()` diagnostic may scan entries in unit tests; it is not a
+  lifecycle or modeled hardware operation.
+- Every MAA registration allocates a monotonically increasing payload
+  incarnation before any consumer-context incarnation exists. That payload
+  incarnation is present in all descriptor/RAM/output identities and in begin,
+  capture, lookup, replay, summary, and retirement-related trace provenance.
 
-## Fixed hardware model
+## Port, timing, and collision semantics
 
-- Default off: `--maa_inactive_page_payload_capture_lines=0`.
-- Direct-indexed power-of-two line array; no associative scan and no page
-  replay walk.
-- One full-line write port and one selected-line read port, each accepting one
-  MAA clock-cycle access. Same-cycle write collisions drop to coherent
-  fallback; a busy read retries the selected line.
-- A one-entry hit/miss lookup pipeline delays both outcomes one MAA cycle. A
-  miss may issue `ReadBacking` only at pipeline completion.
-- A lookup issued at MAA cycle N completes at N+1. A hit's output register
-  directly feeds the existing materializer buffer at N+1 and is charged only
-  the normal SPD data latency from that edge; the capture RAM access is not
-  charged a second time.
-- The pipeline has one 64-byte output register and one fixed request/tag
-  latch. Neither expands a cache port, materializer buffer/commit pool,
-  response/combiner pool, row/offset scope, or physical SPD.
-- `first-owner` is the default direct-index policy. `latest-owner` overwrites
-  the same selected entry, including its exact key, line, transaction, and
-  payload, at the same storage and port cost. The evicted owner deterministically
-  uses coherent fallback.
+The storage is one direct-index 1R1W RAM. Each port accepts at most one access
+per MAA cycle and each access takes one MAA cycle.
 
-The runtime trace records `conflict_policy`, write/read ports, access cycles,
-and `port_time_unit=maa_cycles`. It also records captures, replays, conflicts,
-write-port drops, and fallback reads separately for logical pages 0--3.
+A write issued at cycle N is held in the one-entry write input latch and
+becomes the RAM value at N+1. If read and write select the same index at N, the
+read returns the pre-write value regardless of software call order
+(read-before-write SRAM semantics). A second same-cycle read retries; a second
+same-cycle producer write cannot be retained and is counted as a global drop
+before coherent fallback.
 
-## Provisioned capture storage
+A probe at N copies an exact hit into the sole 64-byte output register and
+reports completion at N+1; a miss is delayed by the same cycle. The output tag
+contains the complete payload lifetime, line, and producer transaction. It is
+authoritative until `take()`. If latest-owner replaces the RAM entry during
+N-to-N+1, `take()` authenticates and consumes the old output latch without
+panicking and without erasing or consuming the replacement RAM transaction.
 
-The table includes the capture array, exact tags/control, and the fixed
-64-byte read-pipeline output register. The fixed lookup-latch control bytes
-are also emitted by the runtime trace as
-`inactive_payload_lookup_latch_control_bytes`; they are not hidden in this
-table because they do not vary by capacity.
+## Outcome and trace attribution
 
-| Lines | Array payload (B) | Tag/control (B) | Read-pipeline payload (B) | Variable total (B) |
-| ---: | ---: | ---: | ---: | ---: |
-| 64 | 4,096 | 2,163 | 64 | 6,323 |
-| 128 | 8,192 | 4,019 | 64 | 12,275 |
-| 256 | 16,384 | 7,731 | 64 | 24,179 |
-| 512 | 32,768 | 15,155 | 64 | 47,987 |
+Materializer closure remains exact per execution:
 
-The tag/control value includes exact identity, transaction tag, validity,
-four lifetime descriptors, page-attribution and policy counters, finite-port
-next-cycle state, and the policy selector. It does not claim synthesized SRAM
-periphery, wiring, or host-container overhead.
+```text
+forwarded_lines + staged_direct_lines + cache_read_fallback_lines
+    == producer_lines
+producer_line_acks + page_fallback_lines == producer_lines
+```
 
-## Review-gated same-checkpoint matrix
+Capture conflicts, descriptor displacement, untracked/stale/invalid attempts,
+port drops, lookup hits/misses, and high-water occupancy can cross overlapping
+materializer lifetimes. Their summary fields are therefore explicitly named
+`global_inactive_payload_*`; they are cumulative device counters, not
+per-owner fields. Per-owner page fields are limited to that execution's exact
+coherent fallback reads. `Captured` and `Overwritten` both count a successful
+new retention; `Overwritten` additionally counts one global displaced-payload
+drop. `Full` remains in the trace enum ABI but the direct-mapped descriptor
+implementation never returns it.
 
-After review, run the unchanged API selector from one frozen hybrid checkpoint:
-one default-off control plus capacities 64, 128, 256, and 512 for both
-`first-owner` and `latest-owner`. All treatment arms use
-`token_stream_ld`; only these two capture options differ:
+## Exact packed hardware lower-bound equations
+
+The equations below use packed RTL bits and never host `sizeof` values.
+
+```text
+key_bits                 = token 16 + generation 64
+                         + payload incarnation 64 + backing address 64
+                         = 208
+RAM_tag_bits_per_entry   = key 208 + line 16 + transaction 64 + valid 1
+                         = 289
+descriptor_bits_each     = valid 1 + key 208 + line_count 16
+                         + nine 16-bit lifetime counters
+                         + four pages * four 16-bit page counters
+                         = 625
+four_descriptor_bits     = 2,500
+read_port_state_bits     = next_available_cycle 64
+write_port_state_bits    = next_available_cycle 64 + pending 1
+                         + completion_cycle 64 + RAM_index log2(capacity)
+                         + write_payload 512 + write_tag 289
+                         = 930 + log2(capacity)
+output_latch_bits        = output_payload 512 + output_tag 289 = 801
+global_capture_control   = capacity 10 + policy 1
+                         + occupancy 10 + high_water 10 = 31
+MAA_lookup_control_bits  = context owner 144 + exact request 170
+                         + payload incarnation/backing suffix 128
+                         + valid/completion/result 68 = 510
+```
+
+The complete capture lower bound is:
+
+```text
+capture_bits(C) = C*512 RAM payload + C*289 RAM tags
+                + 2500 descriptors + 64 read-port state
+                + (930 + log2(C)) write-port state
+                + 512 output payload + 289 output tag
+                + 31 global capture control
+combined_bits(C) = capture_bits(C) + 510 MAA lookup control
+```
+
+| Lines | RAM payload (B) | RAM tag bits | Non-payload control bits excluding RAM tags | Capture total including 64B output (B, rounded once) | MAA lookup bits | Combined (B, rounded once) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 4,096 | 18,496 | 3,820 | 6,950 | 510 | 7,014 |
+| 128 | 8,192 | 36,992 | 3,821 | 13,358 | 510 | 13,422 |
+| 256 | 16,384 | 73,984 | 3,822 | 26,174 | 510 | 26,238 |
+| 512 | 32,768 | 147,968 | 3,823 | 51,806 | 510 | 51,870 |
+
+The trace reports every term independently in bits, plus rounded legacy byte
+fields. `host_capture_object_bytes` and `host_lookup_object_bytes` are labeled
+diagnostics only and are never added to the packed hardware equations.
+
+## Review-gated experiment matrix
+
+After independent acceptance, compare one default-off control with capacities
+64, 128, 256, and 512 under both policies from one frozen checkpoint:
 
 ```text
 --maa_inactive_page_payload_capture_lines={64,128,256,512}
 --maa_inactive_page_payload_capture_conflict_policy={first-owner,latest-owner}
 ```
 
-For every terminal exact arm, report overall and per-page values for:
-
-- captures, replays, conflicts, first-owner conflicts, latest-owner
-  overwrites/evictions, and write-port drops;
-- `cache_read_fallback_lines`, plus `page0`--`page3` fallback reads;
-- lookup hits, misses, and read-port stalls;
-- `simTicks`, exact output key, producer-line ACK closure, and all terminal
-  exits.
-
-Select no point unless it exact-passes and reduces fallback reads in the
-affected tail pages *and* reduces `simTicks` sufficiently to justify its
-variable bytes. A weak first-owner result with later-page fallback concentration
-is a placement-policy finding, not a mechanism rejection; compare its equal
-cost latest-owner arm before any conclusion.
+An arm is promotable only if correctness and terminal closure pass, ordinary
+SPD visibility is unchanged, exact output identity matches, and any reduction
+in coherent fallback or time justifies the explicit combined storage above.

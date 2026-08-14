@@ -237,7 +237,7 @@ MAA::MAA(const MAAParams &p)
     panic_if(!InactiveProducerLinePayloadCapture::validCapacity(
                  inactive_page_payload_capture_lines),
              "Inactive producer payload capture capacity %u must be zero or "
-             "a power of two no larger than %u\n",
+             "one of 64/128/256/%u\n",
              inactive_page_payload_capture_lines,
              InactiveProducerLinePayloadCapture::MaxEntries);
     panic_if(
@@ -352,6 +352,7 @@ MAA::MAA(const MAAParams &p)
     for (auto &transactions : virtualPageReadyTransaction)
         transactions.fill(0);
     virtualPageGeneration.assign(num_tiles, 0);
+    virtualPagePayloadIncarnation.assign(num_tiles, 0);
     virtualPageConsumedGeneration.assign(num_tiles, 0);
     virtualPageBackingAddr.assign(num_tiles, 0);
     virtualPageBackingRangeID.assign(num_tiles, -1);
@@ -1587,10 +1588,12 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
         InactiveProducerLinePayloadCapture::provisionedTotalBytes(
             inactive_page_payload_capture_lines) +
         (inactive_page_payload_capture_lines == 0
-             ? 0 : sizeof(inactivePayloadLookup));
+             ? 0 : InactiveProducerLinePayloadCapture::bitsToBytes(
+                 InactiveProducerLinePayloadCapture::MAALookupControlBits));
     DPRINTF(MAAVirtualTrace,
             "event=page_materialization_submit schema=1 occurrence=%lu "
             "token=%d generation=%lu incarnation=%lu page=%u "
+            "payload_incarnation=%lu "
             "destination=%d new_context=%d early_lines=%u "
             "line_buffer_bytes=%lu control_bytes=%lu "
             "inactive_payload_capacity=%u inactive_payload_bytes=%lu "
@@ -1604,7 +1607,9 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
             "direct_stage_control_bytes=%lu page_spd_bytes=%lu "
             "charged_two_page_spd_bytes=%lu activation_count=%lu\n",
             pageMaterializationTraceOccurrence++, token, generation,
-            execution->key.incarnation, page, execution->destinationTile,
+            execution->key.incarnation, page,
+            virtualPagePayloadIncarnation[token],
+            execution->destinationTile,
             newContext, replay.readyLines,
             HybridConsumerContextQueue::chargedPayloadBytes(),
             materializerControlBytes,
@@ -1617,7 +1622,9 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
                 provisionedReadPipelinePayloadBytes(
                     inactive_page_payload_capture_lines),
             inactive_page_payload_capture_lines == 0
-                ? 0 : sizeof(inactivePayloadLookup),
+                ? 0 : InactiveProducerLinePayloadCapture::bitsToBytes(
+                    InactiveProducerLinePayloadCapture::
+                        MAALookupControlBits),
             InactiveProducerLinePayloadCapture::WritePortCount,
             InactiveProducerLinePayloadCapture::ReadPortCount,
             InactiveProducerLinePayloadCapture::conflictPolicyName(
@@ -1788,6 +1795,7 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
                  "slot\n");
         (void)inactiveProducerLinePayloadCapture.clear(
             {early_key.tokenTile, early_key.generation,
+             virtualPagePayloadIncarnation[early_key.tokenTile],
              early_key.backingAddress});
         stats.direct_retirement_producer_line_acks +=
             early_replay.readyLines;
@@ -2251,7 +2259,9 @@ MAA::finishDirectRetirement(
     (void)directRetirementEarlyLineLedger.clear(
         {key.tokenTile, key.generation, execution->backingAddress});
     (void)inactiveProducerLinePayloadCapture.clear(
-        {key.tokenTile, key.generation, execution->backingAddress});
+        {key.tokenTile, key.generation,
+         virtualPagePayloadIncarnation[key.tokenTile],
+         execution->backingAddress});
     *execution = DirectRetirementExecution{};
     setTileReady(completion_tile, word_bytes);
     DPRINTF(MAAVirtualTrace,
@@ -2599,6 +2609,7 @@ MAA::startInactiveProducerPayloadLookup(
         return InactivePayloadLookupStart::NotApplicable;
     const InactiveProducerLinePayloadCapture::Key key{
         execution->key.tokenTile, execution->key.generation,
+        virtualPagePayloadIncarnation[execution->key.tokenTile],
         execution->backingAddress};
     InactiveProducerLinePayloadCapture::Line retained;
     const auto probe = inactiveProducerLinePayloadCapture.probe(
@@ -2623,14 +2634,15 @@ MAA::startInactiveProducerPayloadLookup(
     inactivePayloadLookup.request = request;
     inactivePayloadLookup.key = key;
     inactivePayloadLookup.line = request.request.line;
-    inactivePayloadLookup.transactionID = retained.transactionID;
     DPRINTF(MAAVirtualTrace,
             "event=page_materialization_inactive_payload_lookup schema=1 "
             "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+            "payload_incarnation=%lu "
             "line=%u result=%u issue_cycle=%lu completion_cycle=%lu "
             "access_cycles=%u port_time_unit=maa_cycles\n",
             pageMaterializationTraceOccurrence++, request.owner.tokenTile,
             request.owner.generation, request.owner.incarnation,
+            key.incarnation,
             request.request.line, static_cast<unsigned>(probe),
             static_cast<uint64_t>(curCycle()),
             inactivePayloadLookup.timing.completionCycle(),
@@ -2648,7 +2660,6 @@ MAA::consumeInactiveProducerPayload()
     const auto request = inactivePayloadLookup.request;
     const auto key = inactivePayloadLookup.key;
     const uint16_t line = inactivePayloadLookup.line;
-    const uint64_t transactionID = inactivePayloadLookup.transactionID;
     const auto result = inactivePayloadLookup.timing.result();
     if (result == InactiveProducerLinePayloadCapture::ProbeResult::Miss) {
         stats.page_materialization_inactive_payload_lookup_misses++;
@@ -2657,6 +2668,10 @@ MAA::consumeInactiveProducerPayload()
     }
     panic_if(result != InactiveProducerLinePayloadCapture::ProbeResult::Hit,
              "Inactive payload lookup completed with invalid result\n");
+    const uint64_t transactionID =
+        inactiveProducerLinePayloadCapture.pipelinedTransactionID();
+    panic_if(transactionID == 0,
+             "Inactive payload hit lost its authoritative output tag\n");
     stats.page_materialization_inactive_payload_lookup_hits++;
     PageMaterializationExecution *execution =
         findPageMaterializationExecution(request.owner);
@@ -2680,7 +2695,8 @@ MAA::consumeInactiveProducerPayload()
     const Tick commitTick = getClockEdge(spdLatency);
     panic_if(!reservePageMaterializationCommit(captured, commitTick) ||
                  !inactiveProducerLinePayloadCapture.take(
-                     key, line),
+                     key, line, transactionID,
+                     static_cast<uint64_t>(curCycle())),
              "Page materializer could not consume exact inactive payload\n");
     inactivePayloadLookup = InactivePayloadLookup{};
     ++execution->forwardedLines;
@@ -2689,10 +2705,12 @@ MAA::consumeInactiveProducerPayload()
     DPRINTF(MAAVirtualTrace,
             "event=page_materialization_inactive_payload_replay schema=1 "
             "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+            "payload_incarnation=%lu "
             "page=%u line=%u transaction=%lu lookup_cycles=%u "
             "port_time_unit=maa_cycles commit_tick=%lu\n",
             pageMaterializationTraceOccurrence++, execution->key.tokenTile,
             execution->key.generation, execution->key.incarnation,
+            key.incarnation,
             execution->page, line, transactionID,
             InactiveProducerLinePayloadCapture::PortAccessCycles,
             commitTick);
@@ -2771,68 +2789,72 @@ MAA::finishPageMaterialization(
                  "Page materializer did not close exact payload/ACK "
                  "authority\n");
         const InactiveProducerLinePayloadCapture::Key payloadKey{
-            key.tokenTile, key.generation, execution->backingAddress};
-        const auto inactivePayload =
-            inactiveProducerLinePayloadCapture.summary(payloadKey);
+            key.tokenTile, key.generation,
+            virtualPagePayloadIncarnation[key.tokenTile],
+            execution->backingAddress};
+        if (inactiveProducerLinePayloadCapture.active(payloadKey)) {
+            panic_if(inactiveProducerLinePayloadCapture.summary(payloadKey)
+                         .storedLines != 0,
+                     "Page materializer retired with live exact payloads\n");
+        }
         uint16_t fallbackReadsPerPage = 0;
         for (uint16_t fallback : execution->cacheReadFallbackLinesPerPage)
             fallbackReadsPerPage += fallback;
         panic_if(fallbackReadsPerPage != execution->cacheReadFallbackLines,
                  "Page materializer fallback page "
                  "attribution did not close\n");
-        const auto writePortStalls =
-            stats
-                .page_materialization_inactive_payload_write_port_stalls
-                .value();
-        const auto readPortStalls =
-            stats
-                .page_materialization_inactive_payload_read_port_stalls
-                .value();
+        const auto globalFirstOwnerConflicts = static_cast<uint64_t>(
+            stats.page_materialization_inactive_payload_first_owner_conflicts
+                .value());
+        const auto globalLatestOwnerOverwrites = static_cast<uint64_t>(
+            stats.page_materialization_inactive_payload_latest_owner_overwrites
+                .value());
+        const auto globalLatestOwnerEvictions = static_cast<uint64_t>(
+            stats.page_materialization_inactive_payload_latest_owner_evictions
+                .value());
         DPRINTF(MAAVirtualTrace,
                 "event=page_materialization_summary schema=1 "
                 "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "payload_incarnation=%lu "
                 "pages=%u lines=%u forwarded_lines=%u staged_direct_lines=%u "
                 "cache_read_fallback_lines=%u producer_line_acks=%u "
                 "page_fallback_lines=%u exact_closure=1 "
-                "dispatch_fallbacks=%lu inactive_payload_capacity=%u "
+                "global_dispatch_fallbacks=%lu "
+                "inactive_payload_capacity=%u "
                 "inactive_payload_conflict_policy=%s "
-                "inactive_payload_captures=%u inactive_payload_replays=%u "
-                "inactive_payload_stored=%u inactive_payload_conflicts=%u "
-                "inactive_payload_drops=%u "
-                "inactive_payload_write_port_drops=%u "
-                "inactive_payload_first_owner_conflicts=%u "
-                "inactive_payload_latest_owner_overwrites=%u "
-                "inactive_payload_latest_owner_evictions=%u "
-                "inactive_payload_write_port_stalls=%lu "
-                "inactive_payload_read_port_stalls=%lu "
-                "inactive_payload_page0_captures=%u "
-                "inactive_payload_page0_replays=%u "
-                "inactive_payload_page0_conflicts=%u "
-                "inactive_payload_page0_write_port_drops=%u "
-                "inactive_payload_page1_captures=%u "
-                "inactive_payload_page1_replays=%u "
-                "inactive_payload_page1_conflicts=%u "
-                "inactive_payload_page1_write_port_drops=%u "
-                "inactive_payload_page2_captures=%u "
-                "inactive_payload_page2_replays=%u "
-                "inactive_payload_page2_conflicts=%u "
-                "inactive_payload_page2_write_port_drops=%u "
-                "inactive_payload_page3_captures=%u "
-                "inactive_payload_page3_replays=%u "
-                "inactive_payload_page3_conflicts=%u "
-                "inactive_payload_page3_write_port_drops=%u "
+                "global_inactive_payload_captures=%lu "
+                "global_inactive_payload_replays=%lu "
+                "global_inactive_payload_conflicts=%lu "
+                "global_inactive_payload_drops=%lu "
+                "global_inactive_payload_first_owner_conflicts=%lu "
+                "global_inactive_payload_latest_owner_overwrites=%lu "
+                "global_inactive_payload_latest_owner_evictions=%lu "
+                "global_inactive_payload_write_port_stalls=%lu "
+                "global_inactive_payload_read_port_stalls=%lu "
                 "inactive_payload_page0_fallback_reads=%u "
                 "inactive_payload_page1_fallback_reads=%u "
                 "inactive_payload_page2_fallback_reads=%u "
                 "inactive_payload_page3_fallback_reads=%u "
-                "inactive_payload_lookup_hits=%lu "
-                "inactive_payload_lookup_misses=%lu "
-                "inactive_payload_high_water=%u inactive_payload_bytes=%lu "
+                "global_inactive_payload_lookup_hits=%lu "
+                "global_inactive_payload_lookup_misses=%lu "
+                "global_inactive_payload_high_water=%lu "
+                "inactive_payload_ram_payload_bits=%lu "
+                "inactive_payload_ram_tag_bits=%lu "
+                "inactive_payload_descriptor_bits=%lu "
+                "inactive_payload_read_port_state_bits=%lu "
+                "inactive_payload_write_port_state_bits=%lu "
+                "inactive_payload_output_payload_bits=%lu "
+                "inactive_payload_output_tag_bits=%lu "
+                "inactive_payload_maa_lookup_control_bits=%lu "
+                "inactive_payload_hardware_total_bits=%lu "
+                "inactive_payload_bytes=%lu "
                 "inactive_payload_tag_control_bytes=%lu "
                 "inactive_payload_read_pipeline_payload_bytes=%lu "
-                "inactive_payload_lookup_latch_control_bytes=%lu\n",
+                "inactive_payload_lookup_latch_control_bytes=%lu "
+                "inactive_payload_host_capture_object_bytes=%lu "
+                "inactive_payload_host_lookup_object_bytes=%lu\n",
                 pageMaterializationTraceOccurrence++, key.tokenTile,
-                key.generation, key.incarnation,
+                key.generation, key.incarnation, payloadKey.incarnation,
                 execution->pagesMaterialized, snapshot.lines,
                 execution->forwardedLines,
                 execution->stagedDirectLines,
@@ -2841,34 +2863,30 @@ MAA::finishPageMaterialization(
                 snapshot.producerPageFallbackLines,
                 static_cast<uint64_t>(
                     stats.page_materialization_dispatch_fallbacks.value()),
-                inactivePayload.capacity,
+                inactive_page_payload_capture_lines,
                 InactiveProducerLinePayloadCapture::conflictPolicyName(
                     inactive_page_payload_capture_conflict_policy),
-                inactivePayload.capturedLines,
-                inactivePayload.replayedLines, inactivePayload.storedLines,
-                inactivePayload.conflicts, inactivePayload.drops,
-                inactivePayload.writePortDrops,
-                inactivePayload.firstOwnerConflicts,
-                inactivePayload.latestOwnerOverwrites,
-                inactivePayload.latestOwnerEvictions,
-                static_cast<uint64_t>(writePortStalls),
-                static_cast<uint64_t>(readPortStalls),
-                inactivePayload.capturedLinesPerPage[0],
-                inactivePayload.replayedLinesPerPage[0],
-                inactivePayload.conflictsPerPage[0],
-                inactivePayload.writePortDropsPerPage[0],
-                inactivePayload.capturedLinesPerPage[1],
-                inactivePayload.replayedLinesPerPage[1],
-                inactivePayload.conflictsPerPage[1],
-                inactivePayload.writePortDropsPerPage[1],
-                inactivePayload.capturedLinesPerPage[2],
-                inactivePayload.replayedLinesPerPage[2],
-                inactivePayload.conflictsPerPage[2],
-                inactivePayload.writePortDropsPerPage[2],
-                inactivePayload.capturedLinesPerPage[3],
-                inactivePayload.replayedLinesPerPage[3],
-                inactivePayload.conflictsPerPage[3],
-                inactivePayload.writePortDropsPerPage[3],
+                static_cast<uint64_t>(
+                    stats.page_materialization_inactive_payload_captures
+                        .value()),
+                static_cast<uint64_t>(
+                    stats.page_materialization_inactive_payload_replays
+                        .value()),
+                static_cast<uint64_t>(
+                    stats.page_materialization_inactive_payload_conflicts
+                        .value()),
+                static_cast<uint64_t>(
+                    stats.page_materialization_inactive_payload_drops
+                        .value()),
+                globalFirstOwnerConflicts,
+                globalLatestOwnerOverwrites,
+                globalLatestOwnerEvictions,
+                static_cast<uint64_t>(stats
+                    .page_materialization_inactive_payload_write_port_stalls
+                    .value()),
+                static_cast<uint64_t>(stats
+                    .page_materialization_inactive_payload_read_port_stalls
+                    .value()),
                 execution->cacheReadFallbackLinesPerPage[0],
                 execution->cacheReadFallbackLinesPerPage[1],
                 execution->cacheReadFallbackLinesPerPage[2],
@@ -2879,16 +2897,46 @@ MAA::finishPageMaterialization(
                 static_cast<uint64_t>(
                     stats.page_materialization_inactive_payload_lookup_misses
                         .value()),
-                inactivePayload.highWater,
+                static_cast<uint64_t>(
+                    stats.page_materialization_inactive_payload_high_water
+                        .value()),
+                InactiveProducerLinePayloadCapture::provisionedPayloadBits(
+                    inactive_page_payload_capture_lines),
+                InactiveProducerLinePayloadCapture::provisionedTagBits(
+                    inactive_page_payload_capture_lines),
+                InactiveProducerLinePayloadCapture::provisionedDescriptorBits(
+                    inactive_page_payload_capture_lines),
+                InactiveProducerLinePayloadCapture::
+                    provisionedReadPortStateBits(
+                        inactive_page_payload_capture_lines),
+                InactiveProducerLinePayloadCapture::
+                    provisionedWritePortStateBits(
+                        inactive_page_payload_capture_lines),
+                inactive_page_payload_capture_lines == 0 ? 0 :
+                    InactiveProducerLinePayloadCapture::OutputPayloadBits,
+                InactiveProducerLinePayloadCapture::
+                    provisionedOutputTagBits(
+                        inactive_page_payload_capture_lines),
+                inactive_page_payload_capture_lines == 0 ? 0 :
+                    InactiveProducerLinePayloadCapture::MAALookupControlBits,
+                InactiveProducerLinePayloadCapture::provisionedTotalBits(
+                    inactive_page_payload_capture_lines) +
+                    (inactive_page_payload_capture_lines == 0 ? 0 :
+                        InactiveProducerLinePayloadCapture::
+                            MAALookupControlBits),
                 InactiveProducerLinePayloadCapture::provisionedPayloadBytes(
-                    inactivePayload.capacity),
+                    inactive_page_payload_capture_lines),
                 InactiveProducerLinePayloadCapture::provisionedControlBytes(
-                    inactivePayload.capacity),
+                    inactive_page_payload_capture_lines),
                 InactiveProducerLinePayloadCapture::
                     provisionedReadPipelinePayloadBytes(
-                        inactivePayload.capacity),
-                inactivePayload.capacity == 0
-                    ? 0 : sizeof(inactivePayloadLookup));
+                        inactive_page_payload_capture_lines),
+                inactive_page_payload_capture_lines == 0 ? 0 :
+                    InactiveProducerLinePayloadCapture::bitsToBytes(
+                        InactiveProducerLinePayloadCapture::
+                            MAALookupControlBits),
+                sizeof(inactiveProducerLinePayloadCapture),
+                sizeof(inactivePayloadLookup));
         panic_if(!directRetirementContexts.retire(key),
              "Page materializer could not retire its 16K lifetime\n");
         (void)directRetirementEarlyLineLedger.clear(
@@ -4475,6 +4523,7 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
         (void)inactiveProducerLinePayloadCapture.clear(
             {oldMaterialization->key.tokenTile,
              oldMaterialization->key.generation,
+             virtualPagePayloadIncarnation[tokenTileID],
              oldMaterialization->backingAddress});
         *oldMaterialization = PageMaterializationExecution{};
     }
@@ -4490,10 +4539,13 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
     virtualPageReady[tokenTileID].fill(false);
     virtualPageReadyTransaction[tokenTileID].fill(0);
     panic_if(virtualPageGeneration[tokenTileID] ==
-                 std::numeric_limits<uint64_t>::max(),
-             "virtual completion token %d generation overflow\n",
+                     std::numeric_limits<uint64_t>::max() ||
+                 virtualPagePayloadIncarnation[tokenTileID] ==
+                     std::numeric_limits<uint64_t>::max(),
+             "virtual completion token %d generation/incarnation overflow\n",
              tokenTileID);
     ++virtualPageGeneration[tokenTileID];
+    ++virtualPagePayloadIncarnation[tokenTileID];
     virtualPageBackingAddr[tokenTileID] = backingAddr;
     virtualPageBackingRangeID[tokenTileID] = backingRangeID;
     virtualPageWordSize[tokenTileID] = wordSize;
@@ -4540,12 +4592,15 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                 directRetirementEarlyLineLedger.activeSlots(),
                 EarlyProducerLineReadinessLedger::chargedTotalBytes());
         if (inactive_page_payload_capture_lines != 0) {
+            uint16_t descriptorDisplacedLines = 0;
             const auto captureBegin = inactiveProducerLinePayloadCapture.begin(
                 {static_cast<uint16_t>(tokenTileID),
-                 virtualPageGeneration[tokenTileID], backingAddr},
+                 virtualPageGeneration[tokenTileID],
+                 virtualPagePayloadIncarnation[tokenTileID], backingAddr},
                 static_cast<uint16_t>(lines),
                 static_cast<uint16_t>(inactive_page_payload_capture_lines),
-                inactive_page_payload_capture_conflict_policy);
+                inactive_page_payload_capture_conflict_policy,
+                &descriptorDisplacedLines);
             panic_if(captureBegin ==
                          InactiveProducerLinePayloadCapture::
                              BeginResult::Invalid ||
@@ -4560,6 +4615,8 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
             if (captureBegin ==
                 InactiveProducerLinePayloadCapture::BeginResult::Full)
                 stats.page_materialization_inactive_payload_drops++;
+            stats.page_materialization_inactive_payload_drops +=
+                descriptorDisplacedLines;
             stats.page_materialization_inactive_payload_bytes =
                 InactiveProducerLinePayloadCapture::provisionedPayloadBytes(
                     inactive_page_payload_capture_lines) +
@@ -4569,19 +4626,30 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
             stats.page_materialization_inactive_payload_control_bytes =
                 InactiveProducerLinePayloadCapture::provisionedControlBytes(
                     inactive_page_payload_capture_lines) +
-                sizeof(inactivePayloadLookup);
+                InactiveProducerLinePayloadCapture::bitsToBytes(
+                    InactiveProducerLinePayloadCapture::
+                        MAALookupControlBits);
             DPRINTF(MAAVirtualTrace,
                     "event=page_materialization_inactive_payload_begin "
                     "schema=1 occurrence=%lu token=%d generation=%lu "
+                    "payload_incarnation=%lu descriptor_index=%u "
+                    "descriptor_displaced_lines=%u "
                     "capacity_lines=%u payload_bytes=%lu "
                     "tag_control_bytes=%lu write_ports=%u read_ports=%u "
                     "conflict_policy=%s "
                     "read_pipeline_payload_bytes=%lu "
                     "lookup_latch_control_bytes=%lu "
+                    "host_capture_object_bytes=%lu "
+                    "host_lookup_object_bytes=%lu "
                     "port_access_cycles=%u port_time_unit=maa_cycles "
-                    "result=%u\n",
+                    "descriptor_collision=replaces_to_coherent_fallback "
+                    "clear_policy=lazy_descriptor_only result=%u\n",
                     pageMaterializationTraceOccurrence++, tokenTileID,
                     virtualPageGeneration[tokenTileID],
+                    virtualPagePayloadIncarnation[tokenTileID],
+                    InactiveProducerLinePayloadCapture::
+                        descriptorIndexForToken(tokenTileID),
+                    descriptorDisplacedLines,
                     inactive_page_payload_capture_lines,
                     InactiveProducerLinePayloadCapture::
                         provisionedPayloadBytes(
@@ -4596,6 +4664,10 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                     InactiveProducerLinePayloadCapture::
                         provisionedReadPipelinePayloadBytes(
                             inactive_page_payload_capture_lines),
+                    InactiveProducerLinePayloadCapture::bitsToBytes(
+                        InactiveProducerLinePayloadCapture::
+                            MAALookupControlBits),
+                    sizeof(inactiveProducerLinePayloadCapture),
                     sizeof(inactivePayloadLookup),
                     InactiveProducerLinePayloadCapture::PortAccessCycles,
                     static_cast<unsigned>(captureBegin));
@@ -4678,6 +4750,53 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
     auto &writePortStalls =
         stats
             .page_materialization_inactive_payload_write_port_stalls;
+    const auto accountInactivePayloadOutcome =
+        [this, &firstOwnerConflicts, &latestOwnerOverwrites,
+         &latestOwnerEvictions, &writePortStalls](
+            InactiveProducerLinePayloadCapture::CaptureResult result) {
+        using Result = InactiveProducerLinePayloadCapture::CaptureResult;
+        switch (result) {
+          case Result::Captured:
+            stats.page_materialization_inactive_payload_captures++;
+            break;
+          case Result::Overwritten:
+            // The new payload is retained and the displaced one becomes an
+            // explicit global coherent-fallback drop.
+            stats.page_materialization_inactive_payload_captures++;
+            stats.page_materialization_inactive_payload_conflicts++;
+            stats.page_materialization_inactive_payload_drops++;
+            latestOwnerOverwrites++;
+            latestOwnerEvictions++;
+            break;
+          case Result::Conflict:
+            stats.page_materialization_inactive_payload_conflicts++;
+            stats.page_materialization_inactive_payload_drops++;
+            firstOwnerConflicts++;
+            break;
+          case Result::PortBusy:
+            writePortStalls++;
+            stats.page_materialization_inactive_payload_drops++;
+            break;
+          case Result::Untracked:
+          case Result::Stale:
+          case Result::Invalid:
+            // These outcomes have no live lifetime descriptor to carry a
+            // per-owner tally. They close only in the explicitly global stat.
+            stats.page_materialization_inactive_payload_drops++;
+            break;
+          case Result::Disabled:
+          case Result::Duplicate:
+            break;
+        }
+        if (result == Result::Captured || result == Result::Overwritten) {
+            stats.page_materialization_inactive_payload_high_water =
+                std::max(
+                    stats.page_materialization_inactive_payload_high_water
+                        .value(),
+                    static_cast<double>(inactiveProducerLinePayloadCapture
+                                            .occupancyHighWater()));
+        }
+    };
     DirectRetirementExecution *directExecution =
         findDirectRetirementExecution(tokenTileID, generation);
     PageMaterializationExecution *materialization =
@@ -4702,47 +4821,22 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
         if (fullAuthoritativePayload &&
             result != EarlyProducerLineReadinessLedger::AckResult::Duplicate) {
             captureResult = inactiveProducerLinePayloadCapture.capture(
-                {static_cast<uint16_t>(tokenTileID), generation, backingAddr},
+                {static_cast<uint16_t>(tokenTileID), generation,
+                 virtualPagePayloadIncarnation[tokenTileID], backingAddr},
                 static_cast<uint16_t>(lineID), transactionID,
                 reinterpret_cast<const std::byte *>(writeRespPayload),
                 payloadBytes, static_cast<uint64_t>(curCycle()));
-            if (captureResult ==
-                InactiveProducerLinePayloadCapture::CaptureResult::Captured) {
-                stats.page_materialization_inactive_payload_captures++;
-                stats.page_materialization_inactive_payload_high_water =
-                    std::max(
-                        stats.page_materialization_inactive_payload_high_water
-                            .value(),
-                        static_cast<double>(
-                            inactiveProducerLinePayloadCapture
-                                .occupancyHighWater()));
-            } else if (captureResult ==
-                       InactiveProducerLinePayloadCapture::
-                           CaptureResult::Conflict) {
-                stats.page_materialization_inactive_payload_conflicts++;
-                stats.page_materialization_inactive_payload_drops++;
-                firstOwnerConflicts++;
-            } else if (captureResult ==
-                       InactiveProducerLinePayloadCapture::
-                           CaptureResult::Overwritten) {
-                stats.page_materialization_inactive_payload_conflicts++;
-                stats.page_materialization_inactive_payload_drops++;
-                latestOwnerOverwrites++;
-                latestOwnerEvictions++;
-            } else if (captureResult ==
-                       InactiveProducerLinePayloadCapture::
-                           CaptureResult::PortBusy) {
-                writePortStalls++;
-                stats.page_materialization_inactive_payload_drops++;
-            }
+            accountInactivePayloadOutcome(captureResult);
         }
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_line_early schema=1 "
-                "occurrence=%lu token=%d generation=%lu line=%d "
+                "occurrence=%lu token=%d generation=%lu "
+                "payload_incarnation=%lu line=%d "
                 "transaction=%lu result=%u ready_lines=%u "
                 "inactive_payload_capture=%u\n",
                 directRetirementTraceOccurrence++, tokenTileID, generation,
-                lineID, transactionID, static_cast<unsigned>(result),
+                virtualPagePayloadIncarnation[tokenTileID], lineID,
+                transactionID, static_cast<unsigned>(result),
                 directRetirementEarlyLineLedger.readyLineCount(
                     {static_cast<uint16_t>(tokenTileID), generation,
                      backingAddr}), static_cast<unsigned>(captureResult));
@@ -4804,45 +4898,21 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
         InactiveProducerLinePayloadCapture::CaptureResult::Disabled;
     if (!activePageLine && fullAuthoritativePayload) {
         inactiveCapture = inactiveProducerLinePayloadCapture.capture(
-            {owner.tokenTile, owner.generation, ownerBacking},
+            {owner.tokenTile, owner.generation,
+             virtualPagePayloadIncarnation[owner.tokenTile], ownerBacking},
             static_cast<uint16_t>(lineID), transactionID,
             reinterpret_cast<const std::byte *>(writeRespPayload),
             payloadBytes, static_cast<uint64_t>(curCycle()));
-        if (inactiveCapture ==
-            InactiveProducerLinePayloadCapture::CaptureResult::Captured) {
-            stats.page_materialization_inactive_payload_captures++;
-            stats.page_materialization_inactive_payload_high_water =
-                std::max(
-                    stats.page_materialization_inactive_payload_high_water
-                        .value(),
-                    static_cast<double>(
-                        inactiveProducerLinePayloadCapture
-                            .occupancyHighWater()));
-        } else if (inactiveCapture ==
-                   InactiveProducerLinePayloadCapture::
-                       CaptureResult::Conflict) {
-            stats.page_materialization_inactive_payload_conflicts++;
-            stats.page_materialization_inactive_payload_drops++;
-            firstOwnerConflicts++;
-        } else if (inactiveCapture ==
-                   InactiveProducerLinePayloadCapture::
-                       CaptureResult::Overwritten) {
-            stats.page_materialization_inactive_payload_conflicts++;
-            stats.page_materialization_inactive_payload_drops++;
-            latestOwnerOverwrites++;
-            latestOwnerEvictions++;
-        } else if (inactiveCapture ==
-                   InactiveProducerLinePayloadCapture::
-                       CaptureResult::PortBusy) {
-            writePortStalls++;
-            stats.page_materialization_inactive_payload_drops++;
-        }
+        accountInactivePayloadOutcome(inactiveCapture);
         DPRINTF(MAAVirtualTrace,
                 "event=page_materialization_inactive_payload_capture "
                 "schema=1 occurrence=%lu token=%u generation=%lu "
-                "incarnation=%lu line=%d transaction=%lu result=%u\n",
+                "incarnation=%lu payload_incarnation=%lu line=%d "
+                "transaction=%lu result=%u\n",
                 pageMaterializationTraceOccurrence++, owner.tokenTile,
-                owner.generation, owner.incarnation, lineID, transactionID,
+                owner.generation, owner.incarnation,
+                virtualPagePayloadIncarnation[owner.tokenTile], lineID,
+                transactionID,
                 static_cast<unsigned>(inactiveCapture));
     }
     bool directStaged = false;
@@ -5399,12 +5469,13 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                "materializer buffers and delayed commits"),
       ADD_STAT(page_materialization_inactive_payload_conflicts,
                statistics::units::Count::get(),
-               "direct-indexed inactive payload captures rejected by an "
-               "occupied different exact tag"),
+               "direct-indexed inactive payload captures meeting a live "
+               "different exact tag under either conflict policy"),
       ADD_STAT(page_materialization_inactive_payload_drops,
                statistics::units::Count::get(),
                "full inactive producer payloads deterministically left to "
-               "coherent fallback after unavailable capture state"),
+               "coherent fallback after conflict, eviction, port, untracked, "
+               "stale, invalid, or descriptor-full outcomes"),
       ADD_STAT(page_materialization_inactive_payload_first_owner_conflicts,
                statistics::units::Count::get(),
                "direct-index collisions retained by the first-owner policy"),
@@ -5437,11 +5508,11 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                "the fixed capture"),
       ADD_STAT(page_materialization_inactive_payload_bytes,
                statistics::units::Byte::get(),
-               "configured inactive producer full-line payload storage"),
+               "configured packed payload RAM plus one 64-byte output latch"),
       ADD_STAT(page_materialization_inactive_payload_control_bytes,
                statistics::units::Byte::get(),
-               "configured inactive producer payload tags and control "
-               "storage"),
+               "configured packed RAM tags, direct descriptors, port state, "
+               "output tag, and MAA lookup control"),
       ADD_STAT(page_materialization_cache_read_fallback_lines,
                statistics::units::Count::get(),
                "ACK-gated coherent backing lines read when producer payload "

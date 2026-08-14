@@ -10,26 +10,30 @@
 namespace gem5 {
 
 /**
- * Direct-indexed, fixed-capacity retention for authoritative producer lines
- * whose full WriteResp arrived before that logical 4K page was active.
+ * Fixed-capacity, direct-indexed retention for authoritative producer lines
+ * whose logical 4K page is not active yet.
  *
- * This deliberately has no associative search or page replay walk on the
- * materializer path.  Capture and consumption calculate the same power-of-two
- * index from the exact token/generation/backing-line identity.  A different
- * live line at that index follows the configured equal-cost policy:
- * first-owner drops the new payload, while latest-owner overwrites the same
- * selected entry.  The displaced owner always retains coherent ReadBacking
- * fallback. `probe()` and `take()` inspect only that one entry.
- * One explicitly modeled write port and one read port each accept a
- * one-MAA-clock-cycle access. The `nowCycle` arguments are MAA ClockedObject
- * cycle ordinals, never raw gem5 ticks. A colliding write is dropped to
- * coherent fallback; a
- * colliding read reports PortBusy so the caller retries the same selected
- * line before it can issue ReadBacking.
+ * There are exactly four direct-mapped lifetime descriptors. tokenTile[1:0]
+ * selects one descriptor and the complete lifetime tag is checked there; no
+ * descriptor CAM or four-way search exists. Beginning a colliding lifetime
+ * replaces that descriptor in O(1). The displaced lifetime and all of its
+ * still-tagged RAM lines fall back coherently. Retirement invalidates only its
+ * selected descriptor. Stale RAM tags are intentionally left in place and
+ * reclaimed when a later write selects the same RAM index.
  *
- * Retained bytes are private until the caller has copied them into an existing
- * charged materializer buffer and reserved its ordinary delayed SPD commit.
- * The capture never changes SPD state or dependent visibility itself.
+ * The payload array is one direct-index RAM with one synchronous read port and
+ * one synchronous write port. Each accepts at most one access per MAA cycle
+ * and completes in one cycle. The model buffers one pending write until its
+ * completion edge, which gives an exact read-before-write result when both
+ * ports select the same index in one cycle, independent of call order.
+ * A probe copies the selected old/new RAM value into the sole 64-byte output
+ * register. That register, including its exact lifetime/line/transaction tag,
+ * remains authoritative until take(): a later latest-owner write can neither
+ * change the replayed bytes nor cause take() to consume the replacement.
+ *
+ * Retained bytes remain private until the caller copies a completed hit into
+ * an already charged materializer buffer and schedules ordinary delayed SPD
+ * visibility. Misses use the unchanged coherent ReadBacking path.
  */
 class InactiveProducerLinePayloadCapture
 {
@@ -54,6 +58,7 @@ class InactiveProducerLinePayloadCapture
     {
         uint16_t tokenTile = NoTokenTile;
         uint64_t generation = 0;
+        uint64_t incarnation = 0;
         uint64_t backingAddress = 0;
     };
 
@@ -76,7 +81,6 @@ class InactiveProducerLinePayloadCapture
         uint16_t firstOwnerConflicts = 0;
         uint16_t latestOwnerOverwrites = 0;
         uint16_t latestOwnerEvictions = 0;
-        uint16_t highWater = 0;
         std::array<uint16_t, LogicalPageCount> capturedLinesPerPage{};
         std::array<uint16_t, LogicalPageCount> replayedLinesPerPage{};
         std::array<uint16_t, LogicalPageCount> conflictsPerPage{};
@@ -89,7 +93,7 @@ class InactiveProducerLinePayloadCapture
         Started,
         Replaced,
         Existing,
-        Full,
+        Full, // Kept for trace ABI; direct mapping never returns Full.
         Stale,
         Invalid,
     };
@@ -118,12 +122,7 @@ class InactiveProducerLinePayloadCapture
         Invalid,
     };
 
-    /**
-     * One-entry MAA-cycle lookup pipeline timing. `arm()` records the
-     * selected-line tag/data result at the read port, and `ready()` exposes
-     * it no earlier than the next MAA clock cycle. It intentionally carries
-     * no request payload; the capture owns the one 64-byte output register.
-     */
+    /** One-entry MAA-cycle timing latch; payload lives in the output latch. */
     class LookupPipeline
     {
       public:
@@ -154,8 +153,11 @@ class InactiveProducerLinePayloadCapture
     };
 
     BeginResult begin(const Key &key, uint16_t lineCount, uint16_t capacity,
-                      ConflictPolicy policy = ConflictPolicy::FirstOwner)
+                      ConflictPolicy policy = ConflictPolicy::FirstOwner,
+                      uint16_t *displacedLines = nullptr)
     {
+        if (displacedLines != nullptr)
+            *displacedLines = 0;
         if (!validKey(key) || lineCount == 0 ||
             lineCount % LogicalPageCount != 0 || !validCapacity(capacity))
             return BeginResult::Invalid;
@@ -167,38 +169,43 @@ class InactiveProducerLinePayloadCapture
             return BeginResult::Invalid;
         configuredCapacity = capacity;
         configuredPolicy = policy;
-        Slot *slot = findToken(key.tokenTile);
-        if (slot != nullptr) {
-            if (slot->key.generation > key.generation)
-                return BeginResult::Stale;
-            if (sameKey(slot->key, key))
-                return slot->lineCount == lineCount
-                    ? BeginResult::Existing : BeginResult::Invalid;
-            clearEntries(slot->key);
-            reset(*slot, key, lineCount);
-            return BeginResult::Replaced;
+
+        Slot &slot = slots[descriptorIndex(key.tokenTile)];
+        if (!slot.active) {
+            reset(slot, key, lineCount);
+            return BeginResult::Started;
         }
-        slot = firstInactive();
-        if (slot == nullptr)
-            return BeginResult::Full;
-        reset(*slot, key, lineCount);
-        return BeginResult::Started;
+        if (sameKey(slot.key, key))
+            return slot.lineCount == lineCount ? BeginResult::Existing
+                                               : BeginResult::Invalid;
+        if (slot.key.tokenTile == key.tokenTile && newer(slot.key, key))
+            return BeginResult::Stale;
+
+        // Constant-time lazy invalidation: replacing the one selected
+        // descriptor never walks or clears the payload RAM.
+        if (displacedLines != nullptr)
+            *displacedLines = slot.storedLines;
+        reset(slot, key, lineCount);
+        return BeginResult::Replaced;
     }
 
     CaptureResult capture(const Key &key, uint16_t line,
                           uint64_t transactionID, const std::byte *payload,
                           std::size_t payloadBytes, uint64_t nowCycle)
     {
+        advanceWrite(nowCycle);
         if (configuredCapacity == 0)
             return CaptureResult::Disabled;
         if (!validKey(key) || transactionID == 0 || payload == nullptr ||
             payloadBytes != LineBytes)
             return CaptureResult::Invalid;
-        Slot *slot = findToken(key.tokenTile);
-        if (slot == nullptr)
-            return CaptureResult::Untracked;
-        if (!sameKey(slot->key, key))
-            return CaptureResult::Stale;
+        Slot *slot = findExact(key);
+        if (slot == nullptr) {
+            const Slot &selected = slots[descriptorIndex(key.tokenTile)];
+            return selected.active &&
+                    selected.key.tokenTile == key.tokenTile
+                ? CaptureResult::Stale : CaptureResult::Untracked;
+        }
         if (line >= slot->lineCount)
             return CaptureResult::Invalid;
         if (!reservePort(writePortNextAvailableCycle, nowCycle)) {
@@ -207,106 +214,127 @@ class InactiveProducerLinePayloadCapture
             ++slot->writePortDropsPerPage[pageIndex(*slot, line)];
             return CaptureResult::PortBusy;
         }
-        Entry &entry = entries[index(key, line)];
-        if (entry.valid) {
-            if (sameEntry(entry, key, line))
-                return CaptureResult::Duplicate;
-            Slot *evicted = nullptr;
-            if (configuredPolicy == ConflictPolicy::LatestOwner) {
-                evicted = findExact(entry.key);
-                if (evicted == nullptr || evicted->storedLines == 0)
-                    return CaptureResult::Invalid;
-            }
-            ++slot->conflicts;
-            ++slot->conflictsPerPage[pageIndex(*slot, line)];
-            if (configuredPolicy == ConflictPolicy::FirstOwner) {
-                ++slot->drops;
-                ++slot->firstOwnerConflicts;
-                return CaptureResult::Conflict;
-            }
-            --evicted->storedLines;
-            ++evicted->drops;
-            ++evicted->latestOwnerEvictions;
-            ++slot->latestOwnerOverwrites;
-            std::memcpy(entry.payload.data(), payload, LineBytes);
-            entry.key = key;
-            entry.line = line;
-            entry.transactionID = transactionID;
-            ++slot->storedLines;
-            ++slot->capturedLines;
-            ++slot->capturedLinesPerPage[pageIndex(*slot, line)];
-            return CaptureResult::Overwritten;
+
+        const uint16_t selectedIndex = index(key, line);
+        const Entry &resident = entries[selectedIndex];
+        if (!resident.valid) {
+            armWrite(selectedIndex, key, line, transactionID, payload,
+                     nowCycle);
+            accountCapture(*slot, line);
+            ++validEntries;
+            if (validEntries > highWater)
+                highWater = validEntries;
+            return CaptureResult::Captured;
         }
-        std::memcpy(entry.payload.data(), payload, LineBytes);
-        entry.key = key;
-        entry.line = line;
-        entry.transactionID = transactionID;
-        entry.valid = true;
-        ++slot->storedLines;
-        ++slot->capturedLines;
-        ++slot->capturedLinesPerPage[pageIndex(*slot, line)];
-        ++activeEntries;
-        if (activeEntries > highWater)
-            highWater = activeEntries;
-        return CaptureResult::Captured;
+        if (sameEntry(resident, key, line)) {
+            // A line is exact down to its closing WriteResp transaction.
+            return resident.transactionID == transactionID
+                ? CaptureResult::Duplicate : CaptureResult::Invalid;
+        }
+
+        Slot *residentOwner = findExact(resident.key);
+        if (residentOwner == nullptr) {
+            // The selected RAM tag is stale because its direct lifetime
+            // descriptor was retired/replaced. Reclaim it without a scan,
+            // conflict, occupancy change, or policy-dependent arbitration.
+            armWrite(selectedIndex, key, line, transactionID, payload,
+                     nowCycle);
+            accountCapture(*slot, line);
+            return CaptureResult::Captured;
+        }
+
+        ++slot->conflicts;
+        ++slot->conflictsPerPage[pageIndex(*slot, line)];
+        if (configuredPolicy == ConflictPolicy::FirstOwner) {
+            ++slot->drops;
+            ++slot->firstOwnerConflicts;
+            return CaptureResult::Conflict;
+        }
+
+        --residentOwner->storedLines;
+        ++residentOwner->drops;
+        ++residentOwner->latestOwnerEvictions;
+        ++slot->latestOwnerOverwrites;
+        armWrite(selectedIndex, key, line, transactionID, payload, nowCycle);
+        accountCapture(*slot, line);
+        return CaptureResult::Overwritten;
     }
 
     ProbeResult probe(const Key &key, uint16_t line, uint64_t nowCycle,
                       Line *result)
     {
+        advanceWrite(nowCycle);
         if (result != nullptr)
             *result = {};
         if (configuredCapacity == 0)
             return ProbeResult::Disabled;
         if (!validKey(key))
             return ProbeResult::Invalid;
-        const Slot *slot = findToken(key.tokenTile);
-        if (slot != nullptr && sameKey(slot->key, key) &&
-            line >= slot->lineCount)
+        const Slot *slot = findExact(key);
+        if (slot != nullptr && line >= slot->lineCount)
             return ProbeResult::Invalid;
-        // Even if this owner was not allocated a lifetime descriptor (all
-        // four slots were busy) or its old generation remains in a slot, the
-        // configured direct-indexed RAM performs one exact-tag lookup. That
-        // makes this an ordinary timed Miss instead of a zero-time bypass.
+        // The single output register is occupied until its exact hit is
+        // consumed. A caller cannot overwrite authoritative replay bytes with
+        // a later probe, even after the physical read port becomes free.
+        if (output.valid)
+            return ProbeResult::PortBusy;
         if (!reservePort(readPortNextAvailableCycle, nowCycle))
             return ProbeResult::PortBusy;
+
         const Entry &entry = entries[index(key, line)];
+        output = OutputLatch{};
         if (!entry.valid || !sameEntry(entry, key, line))
             return ProbeResult::Miss;
-        std::memcpy(readPipelinePayload.data(), entry.payload.data(),
-                    LineBytes);
+        std::memcpy(output.payload.data(), entry.payload.data(), LineBytes);
+        output.key = key;
+        output.line = line;
+        output.transactionID = entry.transactionID;
+        output.valid = true;
         if (result != nullptr)
-            *result = {line, entry.transactionID, readPipelinePayload.data()};
+            *result = {line, entry.transactionID, output.payload.data()};
         return ProbeResult::Hit;
     }
 
-    /** Consume exactly the line previously probed by the materializer. */
-    bool take(const Key &key, uint16_t line)
+    /** Consume the authoritative output latch, never a replacement RAM tag. */
+    bool take(const Key &key, uint16_t line, uint64_t transactionID,
+              uint64_t nowCycle)
     {
-        if (configuredCapacity == 0)
+        advanceWrite(nowCycle);
+        if (configuredCapacity == 0 || !output.valid ||
+            output.transactionID != transactionID || output.line != line ||
+            !sameKey(output.key, key))
             return false;
+
+        const uint16_t selectedIndex = index(key, line);
+        Entry &entry = entries[selectedIndex];
+        const bool pendingReplacement = pendingWrite.active &&
+            pendingWrite.index == selectedIndex;
+        if (sameEntry(entry, key, line) &&
+            entry.transactionID == transactionID) {
+            entry = Entry{};
+            if (!pendingReplacement)
+                --validEntries;
+            Slot *slot = findExact(key);
+            if (slot != nullptr && !pendingReplacement)
+                --slot->storedLines;
+        }
         Slot *slot = findExact(key);
-        if (slot == nullptr || line >= slot->lineCount)
-            return false;
-        Entry &entry = entries[index(key, line)];
-        if (!entry.valid || !sameEntry(entry, key, line))
-            return false;
-        entry = Entry{};
-        --slot->storedLines;
-        ++slot->replayedLines;
-        ++slot->replayedLinesPerPage[pageIndex(*slot, line)];
-        --activeEntries;
+        if (slot != nullptr) {
+            ++slot->replayedLines;
+            ++slot->replayedLinesPerPage[pageIndex(*slot, line)];
+        }
+        output = OutputLatch{};
         return true;
     }
 
+    /** O(1): invalidate only the direct-mapped lifetime descriptor. */
     bool clear(const Key &key)
     {
         Slot *slot = findExact(key);
         if (slot == nullptr)
             return false;
-        clearEntries(key);
         *slot = Slot{};
-        return assertInvariants();
+        return true;
     }
 
     bool active(const Key &key) const { return findExact(key) != nullptr; }
@@ -315,7 +343,6 @@ class InactiveProducerLinePayloadCapture
     {
         Summary result;
         result.capacity = configuredCapacity;
-        result.highWater = highWater;
         const Slot *slot = findExact(key);
         if (slot == nullptr)
             return result;
@@ -335,38 +362,113 @@ class InactiveProducerLinePayloadCapture
         return result;
     }
 
-    uint16_t occupancy() const { return activeEntries; }
+    uint16_t occupancy() const { return validEntries; }
     uint16_t occupancyHighWater() const { return highWater; }
     ConflictPolicy conflictPolicy() const { return configuredPolicy; }
-    const std::byte *pipelinedPayload() const
+    const std::byte *pipelinedPayload() const { return output.payload.data(); }
+    uint64_t pipelinedTransactionID() const
     {
-        return readPipelinePayload.data();
+        return output.valid ? output.transactionID : 0;
+    }
+
+    static constexpr uint8_t descriptorIndexForToken(uint16_t tokenTile)
+    {
+        return static_cast<uint8_t>(tokenTile & (SlotCount - 1));
+    }
+
+    uint16_t selectedEntry(const Key &key, uint16_t line) const
+    {
+        return configuredCapacity == 0 ? 0 : index(key, line);
     }
 
     static constexpr bool validCapacity(uint16_t capacity)
     {
         return capacity == 0 ||
-            (capacity <= MaxEntries && (capacity & (capacity - 1)) == 0);
+            (capacity >= 64 && capacity <= MaxEntries &&
+             (capacity & (capacity - 1)) == 0);
     }
 
     static constexpr const char *conflictPolicyName(ConflictPolicy policy)
     {
-        return policy == ConflictPolicy::FirstOwner
-            ? "first-owner" : "latest-owner";
+        return policy == ConflictPolicy::FirstOwner ? "first-owner"
+                                                    : "latest-owner";
+    }
+
+    // Packed RTL lower-bound equations. These never use host sizeof().
+    static constexpr std::size_t KeyBits = 16 + 64 + 64 + 64;
+    static constexpr std::size_t EntryTagBits =
+        KeyBits + 16 + 64 + 1;
+    static constexpr std::size_t DescriptorBits =
+        1 + KeyBits + 16 + 9 * 16 +
+        4 * LogicalPageCount * 16;
+    static constexpr std::size_t OutputTagBits = EntryTagBits;
+    static constexpr std::size_t OutputPayloadBits = LineBytes * 8;
+    static constexpr std::size_t GlobalControlBits = 10 + 1 + 10 + 10;
+    // Context owner + complete materializer request + payload-only identity
+    // suffix + one-cycle hit/miss timing state.
+    static constexpr std::size_t MAALookupControlBits =
+        (16 + 64 + 64) + (2 + 16 + 5 + 3 + 64 + 16 + 64) +
+        (64 + 64) + (1 + 64 + 3);
+
+    static constexpr std::size_t bitsToBytes(std::size_t bits)
+    {
+        return (bits + 7) / 8;
+    }
+
+    static constexpr std::size_t indexBits(uint16_t capacity)
+    {
+        std::size_t bits = 0;
+        while (capacity > 1) {
+            capacity >>= 1;
+            ++bits;
+        }
+        return bits;
+    }
+
+    static constexpr std::size_t provisionedPayloadBits(uint16_t capacity)
+    {
+        return static_cast<std::size_t>(capacity) * LineBytes * 8;
     }
 
     static constexpr std::size_t provisionedPayloadBytes(uint16_t capacity)
     {
-        return static_cast<std::size_t>(capacity) * LineBytes;
+        return bitsToBytes(provisionedPayloadBits(capacity));
+    }
+
+    static constexpr std::size_t provisionedTagBits(uint16_t capacity)
+    {
+        return static_cast<std::size_t>(capacity) * EntryTagBits;
     }
 
     static constexpr std::size_t provisionedTagBytes(uint16_t capacity)
     {
-        // Exact token/generation/backing allocation, backing-line ID, and
-        // closing producer WriteResp transaction per direct-indexed entry.
-        return static_cast<std::size_t>(capacity) *
-            (sizeof(uint16_t) + sizeof(uint64_t) * 2 + sizeof(uint16_t) +
-             sizeof(uint64_t) + sizeof(bool));
+        return bitsToBytes(provisionedTagBits(capacity));
+    }
+
+    static constexpr std::size_t provisionedDescriptorBits(uint16_t capacity)
+    {
+        return capacity == 0 ? 0 : SlotCount * DescriptorBits;
+    }
+
+    static constexpr std::size_t provisionedReadPortStateBits(
+        uint16_t capacity)
+    {
+        return capacity == 0 ? 0 : 64;
+    }
+
+    static constexpr std::size_t provisionedWritePortStateBits(
+        uint16_t capacity)
+    {
+        // next-available cycle + pending valid/completion/index + complete
+        // one-entry write input latch (payload plus exact tag).
+        return capacity == 0 ? 0
+            : 64 + 1 + 64 + indexBits(capacity) +
+                OutputPayloadBits + EntryTagBits;
+    }
+
+    static constexpr std::size_t provisionedOutputTagBits(uint16_t capacity)
+    {
+        return capacity == 0 ? 0 : OutputTagBits;
     }
 
     static constexpr std::size_t
@@ -375,64 +477,58 @@ class InactiveProducerLinePayloadCapture
         return capacity == 0 ? 0 : LineBytes;
     }
 
+    static constexpr std::size_t provisionedControlBits(uint16_t capacity)
+    {
+        return capacity == 0 ? 0
+            : provisionedTagBits(capacity) +
+                provisionedDescriptorBits(capacity) +
+                provisionedReadPortStateBits(capacity) +
+                provisionedWritePortStateBits(capacity) +
+                provisionedOutputTagBits(capacity) + GlobalControlBits;
+    }
+
     static constexpr std::size_t provisionedControlBytes(uint16_t capacity)
     {
-        // Four producer lifetime descriptors, capacity/occupancy state, and
-        // explicit next-available MAA-cycle registers for finite RAM ports.
-        // Entry tags are separately visible through provisionedTagBytes().
-        return provisionedTagBytes(capacity) +
-            SlotCount * (sizeof(uint16_t) + sizeof(uint64_t) * 2 +
-                         sizeof(uint16_t) * (10 + LogicalPageCount * 4) +
-                         sizeof(bool)) +
-            sizeof(uint16_t) * 3 +
-            sizeof(uint8_t) +
-            (WritePortCount + ReadPortCount) * sizeof(uint64_t);
+        return bitsToBytes(provisionedControlBits(capacity));
+    }
+
+    static constexpr std::size_t provisionedTotalBits(uint16_t capacity)
+    {
+        return provisionedPayloadBits(capacity) +
+            (capacity == 0 ? 0 : OutputPayloadBits) +
+            provisionedControlBits(capacity);
     }
 
     static constexpr std::size_t provisionedTotalBytes(uint16_t capacity)
     {
-        return provisionedPayloadBytes(capacity) +
-            provisionedReadPipelinePayloadBytes(capacity) +
-            provisionedControlBytes(capacity);
+        return bitsToBytes(provisionedTotalBits(capacity));
     }
 
+    /** Host-only exhaustive diagnostic; never called by lifecycle methods. */
     bool assertInvariants() const
     {
-        if (!validCapacity(configuredCapacity) || activeEntries >
+        if (!validCapacity(configuredCapacity) || validEntries >
                 configuredCapacity || highWater > configuredCapacity)
             return false;
         uint16_t entriesInUse = 0;
-        for (uint16_t index = 0; index < configuredCapacity; ++index) {
-            const Entry &entry = entries[index];
+        for (uint16_t i = 0; i < configuredCapacity; ++i) {
+            const Entry &entry = logicalEntry(i);
             if (!entry.valid)
                 continue;
-            const Slot *slot = findExact(entry.key);
-            if (slot == nullptr || entry.line >= slot->lineCount ||
-                entry.transactionID == 0 || index !=
-                    this->index(entry.key, entry.line))
+            if (!validKey(entry.key) || entry.transactionID == 0 ||
+                i != index(entry.key, entry.line))
                 return false;
             ++entriesInUse;
         }
-        if (entriesInUse != activeEntries)
+        if (entriesInUse != validEntries)
             return false;
-        for (uint8_t slotIndex = 0; slotIndex < SlotCount; ++slotIndex) {
-            const Slot &slot = slots[slotIndex];
-            if (!slot.active) {
-                if (slot.key.generation != 0 || slot.lineCount != 0 ||
-                    slot.storedLines != 0 || slot.capturedLines != 0 ||
-                    slot.replayedLines != 0 || slot.conflicts != 0 ||
-                    slot.drops != 0 || slot.writePortDrops != 0 ||
-                    slot.firstOwnerConflicts != 0 ||
-                    slot.latestOwnerOverwrites != 0 ||
-                    slot.latestOwnerEvictions != 0 ||
-                    anyNonzero(slot.capturedLinesPerPage) ||
-                    anyNonzero(slot.replayedLinesPerPage) ||
-                    anyNonzero(slot.conflictsPerPage) ||
-                    anyNonzero(slot.writePortDropsPerPage))
-                    return false;
+        for (uint8_t i = 0; i < SlotCount; ++i) {
+            const Slot &slot = slots[i];
+            if (!slot.active)
                 continue;
-            }
-            if (!validKey(slot.key) || slot.lineCount == 0 ||
+            if (!validKey(slot.key) ||
+                descriptorIndex(slot.key.tokenTile) != i ||
+                slot.lineCount == 0 ||
                 slot.replayedLines > slot.capturedLines ||
                 slot.drops != slot.firstOwnerConflicts +
                     slot.writePortDrops + slot.latestOwnerEvictions ||
@@ -445,15 +541,10 @@ class InactiveProducerLinePayloadCapture
                 return false;
             uint16_t owned = 0;
             for (uint16_t entry = 0; entry < configuredCapacity; ++entry)
-                owned += entries[entry].valid &&
-                    sameKey(entries[entry].key, slot.key);
+                owned += logicalEntry(entry).valid &&
+                    sameKey(logicalEntry(entry).key, slot.key);
             if (owned != slot.storedLines)
                 return false;
-            for (uint8_t other = slotIndex + 1; other < SlotCount; ++other) {
-                if (slots[other].active &&
-                    slots[other].key.tokenTile == slot.key.tokenTile)
-                    return false;
-            }
         }
         return true;
     }
@@ -488,16 +579,47 @@ class InactiveProducerLinePayloadCapture
         bool valid = false;
     };
 
+    struct PendingWrite
+    {
+        Entry entry{};
+        uint16_t index = 0;
+        uint64_t completionCycle = 0;
+        bool active = false;
+    };
+
+    struct OutputLatch
+    {
+        std::array<std::byte, LineBytes> payload{};
+        Key key{};
+        uint16_t line = 0;
+        uint64_t transactionID = 0;
+        bool valid = false;
+    };
+
+    static constexpr uint8_t descriptorIndex(uint16_t tokenTile)
+    {
+        return descriptorIndexForToken(tokenTile);
+    }
+
     static bool validKey(const Key &key)
     {
-        return key.tokenTile != NoTokenTile && key.generation != 0;
+        return key.tokenTile != NoTokenTile && key.generation != 0 &&
+            key.incarnation != 0;
     }
 
     static bool sameKey(const Key &lhs, const Key &rhs)
     {
         return lhs.tokenTile == rhs.tokenTile &&
             lhs.generation == rhs.generation &&
+            lhs.incarnation == rhs.incarnation &&
             lhs.backingAddress == rhs.backingAddress;
+    }
+
+    static bool newer(const Key &lhs, const Key &rhs)
+    {
+        return lhs.generation > rhs.generation ||
+            (lhs.generation == rhs.generation &&
+             lhs.incarnation > rhs.incarnation);
     }
 
     static bool sameEntry(const Entry &entry, const Key &key, uint16_t line)
@@ -519,36 +641,20 @@ class InactiveProducerLinePayloadCapture
         return total;
     }
 
-    static bool anyNonzero(
-        const std::array<uint16_t, LogicalPageCount> &values)
-    {
-        for (uint16_t value : values)
-            if (value != 0)
-                return true;
-        return false;
-    }
-
     uint16_t index(const Key &key, uint16_t line) const
     {
-        // All permitted capacities are powers of two. Mix immutable identity
-        // fields without a scan or victim arbitration.
         const uint64_t mixed = (key.backingAddress >> 6) ^ key.generation ^
+            (key.incarnation << 7) ^
             (static_cast<uint64_t>(key.tokenTile) << 17) ^ line;
         return static_cast<uint16_t>(mixed & (configuredCapacity - 1));
     }
 
-    template <std::size_t PortCount>
-    static bool reservePort(
-        std::array<uint64_t, PortCount> &nextAvailableCycle,
-        uint64_t nowCycle)
+    static bool reservePort(uint64_t &nextAvailableCycle, uint64_t nowCycle)
     {
-        for (uint8_t port = 0; port < PortCount; ++port) {
-            if (nextAvailableCycle[port] > nowCycle)
-                continue;
-            nextAvailableCycle[port] = nowCycle + PortAccessCycles;
-            return true;
-        }
-        return false;
+        if (nextAvailableCycle > nowCycle)
+            return false;
+        nextAvailableCycle = nowCycle + PortAccessCycles;
+        return true;
     }
 
     static void reset(Slot &slot, const Key &key, uint16_t lineCount)
@@ -559,81 +665,78 @@ class InactiveProducerLinePayloadCapture
         slot.lineCount = lineCount;
     }
 
-    void clearEntries(const Key &key)
+    static void accountCapture(Slot &slot, uint16_t line)
     {
-        for (uint16_t index = 0; index < configuredCapacity; ++index) {
-            Entry &entry = entries[index];
-            if (!entry.valid || !sameKey(entry.key, key))
-                continue;
-            entry = Entry{};
-            --activeEntries;
-        }
+        ++slot.storedLines;
+        ++slot.capturedLines;
+        ++slot.capturedLinesPerPage[pageIndex(slot, line)];
     }
 
-    Slot *findToken(uint16_t tokenTile)
+    void armWrite(uint16_t selectedIndex, const Key &key, uint16_t line,
+                  uint64_t transactionID, const std::byte *payload,
+                  uint64_t nowCycle)
     {
-        for (Slot &slot : slots)
-            if (slot.active && slot.key.tokenTile == tokenTile)
-                return &slot;
-        return nullptr;
+        pendingWrite = PendingWrite{};
+        std::memcpy(pendingWrite.entry.payload.data(), payload, LineBytes);
+        pendingWrite.entry.key = key;
+        pendingWrite.entry.line = line;
+        pendingWrite.entry.transactionID = transactionID;
+        pendingWrite.entry.valid = true;
+        pendingWrite.index = selectedIndex;
+        pendingWrite.completionCycle = nowCycle + PortAccessCycles;
+        pendingWrite.active = true;
     }
 
-    const Slot *findToken(uint16_t tokenTile) const
+    void advanceWrite(uint64_t nowCycle)
     {
-        for (const Slot &slot : slots)
-            if (slot.active && slot.key.tokenTile == tokenTile)
-                return &slot;
-        return nullptr;
+        if (!pendingWrite.active ||
+            pendingWrite.completionCycle > nowCycle)
+            return;
+        entries[pendingWrite.index] = pendingWrite.entry;
+        pendingWrite = PendingWrite{};
+    }
+
+    const Entry &logicalEntry(uint16_t selectedIndex) const
+    {
+        return pendingWrite.active && pendingWrite.index == selectedIndex
+            ? pendingWrite.entry : entries[selectedIndex];
     }
 
     Slot *findExact(const Key &key)
     {
-        for (Slot &slot : slots)
-            if (slot.active && sameKey(slot.key, key))
-                return &slot;
-        return nullptr;
+        Slot &slot = slots[descriptorIndex(key.tokenTile)];
+        return slot.active && sameKey(slot.key, key) ? &slot : nullptr;
     }
 
     const Slot *findExact(const Key &key) const
     {
-        for (const Slot &slot : slots)
-            if (slot.active && sameKey(slot.key, key))
-                return &slot;
-        return nullptr;
-    }
-
-    Slot *firstInactive()
-    {
-        for (Slot &slot : slots)
-            if (!slot.active)
-                return &slot;
-        return nullptr;
+        const Slot &slot = slots[descriptorIndex(key.tokenTile)];
+        return slot.active && sameKey(slot.key, key) ? &slot : nullptr;
     }
 
     std::array<Entry, MaxEntries> entries{};
     std::array<Slot, SlotCount> slots{};
+    PendingWrite pendingWrite{};
+    OutputLatch output{};
     uint16_t configuredCapacity = 0;
     ConflictPolicy configuredPolicy = ConflictPolicy::FirstOwner;
-    uint16_t activeEntries = 0;
+    uint16_t validEntries = 0;
     uint16_t highWater = 0;
-    std::array<uint64_t, WritePortCount> writePortNextAvailableCycle{};
-    std::array<uint64_t, ReadPortCount> readPortNextAvailableCycle{};
-    // Fixed one-line output register, held stable while LookupPipeline is
-    // pending and copied into an existing charged materializer buffer only on
-    // lookup completion.
-    std::array<std::byte, LineBytes> readPipelinePayload{};
+    uint64_t writePortNextAvailableCycle = 0;
+    uint64_t readPortNextAvailableCycle = 0;
 };
 
 static_assert(InactiveProducerLinePayloadCapture::MaxEntries == 512);
 static_assert(InactiveProducerLinePayloadCapture::LineBytes == 64);
-static_assert(InactiveProducerLinePayloadCapture::LogicalPageCount == 4);
+static_assert(InactiveProducerLinePayloadCapture::SlotCount == 4);
+static_assert((InactiveProducerLinePayloadCapture::SlotCount &
+               (InactiveProducerLinePayloadCapture::SlotCount - 1)) == 0);
 static_assert(InactiveProducerLinePayloadCapture::PortAccessCycles == 1);
-static_assert(
-    InactiveProducerLinePayloadCapture::provisionedPayloadBytes(64) == 4096);
-static_assert(
-    InactiveProducerLinePayloadCapture::provisionedPayloadBytes(512) == 32768);
-static_assert(InactiveProducerLinePayloadCapture::provisionedTagBytes(512) ==
-              14848);
+static_assert(InactiveProducerLinePayloadCapture::KeyBits == 208);
+static_assert(InactiveProducerLinePayloadCapture::EntryTagBits == 289);
+static_assert(InactiveProducerLinePayloadCapture::DescriptorBits == 625);
+static_assert(InactiveProducerLinePayloadCapture::MAALookupControlBits ==
+              510);
 
 } // namespace gem5
 
