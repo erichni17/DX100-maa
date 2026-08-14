@@ -76,6 +76,25 @@ ticks (+0.012078%) and +52196819 post-first-A ticks (+10.384201%). Total ROI
 simTicks are +1.294467% for dummy-control versus baseline and +6.292396% for
 values-warm versus dummy-control.
 
+## Observed LLC value-line behavior
+
+The L3's requestor/role counters identify roles 9 and 12 as the two operation
+value streams: their access counts sum exactly to the 29,689 JIT value reads.
+In the baseline they report 27,641 MAA hits and 2,048 MAA misses, or a 93.1%
+observed LLC hit rate. The 2,048 misses are exactly one miss for each of the
+1,024 sequential value lines in each operation. In the values-warm arm, all
+29,689 later MAA value accesses are hits; the same 2,048 line fills are instead
+attributed to the CPU warming loads.
+
+Despite eliminating the later MAA misses, values-warm increases summed
+`IND_CyclesRequest` from 1,605,930 cycles in the dummy control to 1,772,693
+cycles. This CPU treatment therefore is not a model of a free hardware
+prefetch: accessing an MAA-registered region from the CPU can introduce
+coherence/invalidation and timing effects absent from an internal prefetcher.
+The counters do establish a narrower result: most current value requests
+already wait on LLC hits, so overlapping those serialized hit responses is a
+higher-priority optimization than merely eliminating the first miss per line.
+
 ## Interpretation
 
 This narrow CPU-warm experiment did not show an acceleration: values-warm is
