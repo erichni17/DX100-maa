@@ -529,6 +529,16 @@ protected:
     };
     std::array<BackedRmwWriteSlot, BackedRmwWriteSlots>
         backed_rmw_writes{};
+    struct BackedRmwAReadSlot
+    {
+        bool valid = false;
+        Addr paddr = 0;
+        int head = -1;
+        uint32_t words = 0;
+        uint32_t generation = 0;
+    };
+    std::array<BackedRmwAReadSlot, BackedRmwWriteSlots>
+        backed_rmw_a_reads{};
     struct BackedRmwRecordLineSlot
     {
         bool valid = false;
@@ -541,6 +551,7 @@ protected:
     uint32_t backed_rmw_generation = 0;
     uint32_t backed_rmw_value_hwm = 0;
     uint32_t backed_rmw_write_hwm = 0;
+    uint32_t backed_rmw_a_read_hwm = 0;
     uint64_t backed_rmw_record_responses = 0;
     uint64_t backed_rmw_record_line_reads = 0;
     uint64_t backed_rmw_selected = 0;

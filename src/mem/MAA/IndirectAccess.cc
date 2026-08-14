@@ -2940,6 +2940,7 @@ void IndirectAccessUnit::checkTileReady() {
         my_instruction->opcode !=
             Instruction::OpcodeType::INDIR_LD_INDEX &&
         !isVirtualLoad() &&
+        !isBackedRmw() &&
         my_instruction->opcode !=
             Instruction::OpcodeType::INDIR_ST_SCALAR &&
         my_instruction->opcode !=
@@ -3669,7 +3670,8 @@ void IndirectAccessUnit::fillRowTable(
                     }
                 }
             }
-        } else if (my_dst_tile != -1 && !isVirtualLoad()) {
+        } else if (my_dst_tile != -1 && !isVirtualLoad() &&
+                   !isBackedRmw()) {
             DPRINTF(MAAIndirect,
                     "I[%d] %s: SPD[%d][%d] = %u (cond not taken)\n",
                     my_indirect_id, __func__, my_dst_tile, logical_itr, 0);
@@ -4143,12 +4145,15 @@ void IndirectAccessUnit::executeInstruction() {
             slot = BackedRmwValueSlot();
         for (auto &slot : backed_rmw_writes)
             slot = BackedRmwWriteSlot();
+        for (auto &slot : backed_rmw_a_reads)
+            slot = BackedRmwAReadSlot();
         for (auto &slot : backed_rmw_record_lines)
             slot = BackedRmwRecordLineSlot();
         backed_rmw_record_line_victim = 0;
         backed_rmw_generation = 0;
         backed_rmw_value_hwm = 0;
         backed_rmw_write_hwm = 0;
+        backed_rmw_a_read_hwm = 0;
         backed_rmw_record_responses = 0;
         backed_rmw_record_line_reads = 0;
         backed_rmw_selected = 0;
@@ -4600,10 +4605,16 @@ void IndirectAccessUnit::executeInstruction() {
                                 break;
                             }
                             Addr committed_addr = 0;
+                            int committed_head = -1;
+                            int committed_words = 0;
                             const bool committed =
-                                RT[my_RT_config][RT_idx].get_entry_send(
-                                    committed_addr, my_fill_finished);
-                            panic_if(!committed || committed_addr != addr,
+                                RT[my_RT_config][RT_idx].claim_entry_send(
+                                    committed_addr, committed_head,
+                                    committed_words, my_fill_finished,
+                                    maa->virtual_grow_order, true);
+                            panic_if(!committed || committed_addr != addr ||
+                                         committed_head != virtual_head ||
+                                         committed_words != virtual_words,
                                      "I[%d] backed source claim changed "
                                      "between operand fetch and A issue\n",
                                      my_indirect_id);
@@ -4717,6 +4728,41 @@ void IndirectAccessUnit::executeInstruction() {
                                     rowtable_latency);
                         } else {
                             my_expected_responses++;
+                            if (isFullScopeBackedRmw()) {
+                                auto read_slot = std::find_if(
+                                    backed_rmw_a_reads.begin(),
+                                    backed_rmw_a_reads.end(),
+                                    [](const auto &slot) {
+                                        return !slot.valid;
+                                    });
+                                panic_if(
+                                    read_slot == backed_rmw_a_reads.end(),
+                                    "I[%d] backed RMW A-read scoreboard "
+                                    "overflow\n",
+                                    my_indirect_id);
+                                panic_if(std::any_of(
+                                             backed_rmw_a_reads.begin(),
+                                             backed_rmw_a_reads.end(),
+                                             [addr](const auto &slot) {
+                                                 return slot.valid &&
+                                                     slot.paddr == addr;
+                                             }),
+                                         "I[%d] duplicate backed RMW "
+                                         "A-read for 0x%lx\n",
+                                         my_indirect_id, addr);
+                                *read_slot = BackedRmwAReadSlot{
+                                    true, addr, virtual_head,
+                                    static_cast<uint32_t>(virtual_words),
+                                    backed_rmw_generation};
+                                const uint32_t used = std::count_if(
+                                    backed_rmw_a_reads.begin(),
+                                    backed_rmw_a_reads.end(),
+                                    [](const auto &slot) {
+                                        return slot.valid;
+                                    });
+                                backed_rmw_a_read_hwm = std::max(
+                                    backed_rmw_a_read_hwm, used);
+                            }
                             if (isBackedRmw())
                                 backed_rmw_a_reads_inflight++;
                             recordReorderSurvivalIssue(addr);
@@ -5480,6 +5526,10 @@ void IndirectAccessUnit::executeInstruction() {
                          std::any_of(
                              backed_rmw_writes.begin(),
                              backed_rmw_writes.end(),
+                             [](const auto &slot) { return slot.valid; }) ||
+                         std::any_of(
+                             backed_rmw_a_reads.begin(),
+                             backed_rmw_a_reads.end(),
                              [](const auto &slot) { return slot.valid; }),
                      "I[%d] backed RMW failed exact terminal closure\n",
                      my_indirect_id);
@@ -5489,6 +5539,8 @@ void IndirectAccessUnit::executeInstruction() {
                 sizeof(backed_rmw_record_lines);
             constexpr uint64_t write_control_bytes =
                 sizeof(backed_rmw_writes);
+            constexpr uint64_t a_read_control_bytes =
+                sizeof(backed_rmw_a_reads);
             DPRINTF(MAAVirtualTrace,
                     "event=backed_rmw_complete schema=2 unit=%d "
                     "operation_tick=%lu generation=%u logical=%d "
@@ -5504,6 +5556,8 @@ void IndirectAccessUnit::executeInstruction() {
                     "diagnostic_value_slots=%u value_hwm=%u "
                     "diagnostic_value_bytes=%lu write_slots=%u "
                     "write_hwm=%u write_control_bytes=%lu "
+                    "a_read_slots=%u a_read_hwm=%u "
+                    "a_read_control_bytes=%lu "
                     "a_write_issues=%lu a_write_acks=%lu "
                     "generation_exact=1 publication=timed_guest_cache_stores "
                     "evidence_scope=api_mechanism promotable=0 "
@@ -5532,7 +5586,9 @@ void IndirectAccessUnit::executeInstruction() {
                     response_control_bytes, BackedRmwValueSlots,
                     backed_rmw_value_hwm, value_control_bytes,
                     BackedRmwWriteSlots, backed_rmw_write_hwm,
-                    write_control_bytes, backed_rmw_write_issues,
+                    write_control_bytes, BackedRmwWriteSlots,
+                    backed_rmw_a_read_hwm, a_read_control_bytes,
+                    backed_rmw_write_issues,
                     backed_rmw_write_acks);
             for (auto &slot : backed_rmw_record_lines)
                 slot = BackedRmwRecordLineSlot();
@@ -6079,6 +6135,25 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                      virtual_claim_grow_addr, RT_idx, grow_addr);
         }
         virtual_source_reservations.erase(reservation);
+    } else if (isFullScopeBackedRmw()) {
+        auto read_slot = std::find_if(
+            backed_rmw_a_reads.begin(), backed_rmw_a_reads.end(),
+            [addr](const auto &slot) {
+                return slot.valid && slot.paddr == addr;
+            });
+        if (read_slot == backed_rmw_a_reads.end())
+            return false;
+        panic_if(read_slot->generation != backed_rmw_generation ||
+                     read_slot->head < 0 || read_slot->words == 0,
+                 "I[%d] backed A response 0x%lx has stale ownership\n",
+                 my_indirect_id, addr);
+        entries = offset_table->get_entry_recv(read_slot->head);
+        panic_if(entries.size() != read_slot->words,
+                 "I[%d] backed A response 0x%lx consumed %u/%u words\n",
+                 my_indirect_id, addr,
+                 static_cast<uint32_t>(entries.size()), read_slot->words);
+        *read_slot = BackedRmwAReadSlot();
+        recordReorderSurvivalIssuedEntries(entries.size());
     } else {
         entries = RT[my_RT_config][RT_idx].get_entry_recv(
             grow_addr, addr, reorder_RT);

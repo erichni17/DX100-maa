@@ -41,6 +41,12 @@ class BackedRmwContractTest(unittest.TestCase):
         self.assertIn("BackedRmwResponseRecords = 64", self.hh)
 
     def test_generation_and_exact_write_ack_gate_completion(self) -> None:
+        self.assertIn("!isVirtualLoad() &&\n        !isBackedRmw()", self.cc)
+        self.assertIn(
+            "my_dst_tile != -1 && !isVirtualLoad() &&\n"
+            "                   !isBackedRmw()",
+            self.cc,
+        )
         self.assertIn("generation != backed_rmw_generation", self.cc)
         self.assertIn(
             "backed_rmw_write_issues != backed_rmw_write_acks", self.cc
@@ -48,6 +54,13 @@ class BackedRmwContractTest(unittest.TestCase):
         self.assertIn("MemCmd::WriteReq", self.cc)
         self.assertIn("event=backed_rmw_write_ack schema=1", self.cc)
         self.assertIn("generation_exact=1", self.cc)
+        self.assertIn("BackedRmwAReadSlot", self.hh)
+        self.assertIn("a_read_control_bytes", self.cc)
+        self.assertIn("backed RMW A-read scoreboard", self.cc)
+        self.assertIn(
+            "entries = offset_table->get_entry_recv(read_slot->head)",
+            self.cc,
+        )
 
     def test_publication_is_timed_and_claim_is_scoped(self) -> None:
         self.assertIn("Publication is deliberately inside the ROI", self.bench)
