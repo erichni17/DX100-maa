@@ -1167,16 +1167,17 @@ static void conj_grad_maa(int colidx[],
                             r1, t4);
                     } else {
                         const int page_base = k_base + page_offset;
-                        maa_const<int>(page_base, r2);
-                        maa_const<int>(page_base + page_size, r3);
-                        maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                        maa_const<int>(0, r2);
+                        maa_const<int>(page_size, r3);
+                        maa_stream_load<int>(&colidx[page_base], r2, r3,
+                                             r1, t6);
                         maa_indirect_load<float>(p, t6, t4);
                     }
 
                     const int page_base = k_base + page_offset;
-                    maa_const<int>(page_base, r2);
-                    maa_const<int>(page_base + page_size, r3);
-                    maa_stream_load<float>(a, r2, r3, r1, t5);
+                    maa_const<int>(0, r2);
+                    maa_const<int>(page_size, r3);
+                    maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);
                     maa_alu_vector<float>(t4, t5, t7,
                                           Operation_t::MUL_OP);
                     maa_indirect_rmw_vector(curr_q, t0, t7,
@@ -1211,16 +1212,17 @@ static void conj_grad_maa(int colidx[],
                             page_min_reg, page_max_reg, page_stride_reg, t4);
                     } else {
                         const int page_base = k_base + page_offset;
-                        maa_const<int>(page_base, r2);
-                        maa_const<int>(page_base + page_size, r3);
-                        maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                        maa_const<int>(0, r2);
+                        maa_const<int>(page_size, r3);
+                        maa_stream_load<int>(&colidx[page_base], r2, r3,
+                                             r1, t6);
                         maa_indirect_load<float>(p, t6, t4);
                     }
 
                     const int page_base = k_base + page_offset;
-                    maa_const<int>(page_base, r2);
-                    maa_const<int>(page_base + page_size, r3);
-                    maa_stream_load<float>(a, r2, r3, r1, t5);
+                    maa_const<int>(0, r2);
+                    maa_const<int>(page_size, r3);
+                    maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);
                     maa_alu_vector<float>(t4, t5, t7,
                                           Operation_t::MUL_OP);
                     maa_indirect_rmw_vector(curr_q, t0, t7,
@@ -1502,16 +1504,17 @@ static void conj_grad_maa(int colidx[],
                         t4);
                 } else {
                     const int page_base = k_base + page_offset;
-                    maa_const<int>(page_base, r2);
-                    maa_const<int>(page_base + page_size, r3);
-                    maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                    maa_const<int>(0, r2);
+                    maa_const<int>(page_size, r3);
+                    maa_stream_load<int>(&colidx[page_base], r2, r3, r1,
+                                         t6);
                     maa_indirect_load<float>(z, t6, t4);
                 }
 
                 const int page_base = k_base + page_offset;
-                maa_const<int>(page_base, r2);
-                maa_const<int>(page_base + page_size, r3);
-                maa_stream_load<float>(a, r2, r3, r1, t5);
+                maa_const<int>(0, r2);
+                maa_const<int>(page_size, r3);
+                maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);
                 maa_alu_vector<float>(t4, t5, t7,
                                       Operation_t::MUL_OP);
                 maa_indirect_rmw_vector(curr_r, t0, t7,
@@ -1548,16 +1551,17 @@ static void conj_grad_maa(int colidx[],
                         page_min_reg, page_max_reg, page_stride_reg, t4);
                 } else {
                     const int page_base = k_base + page_offset;
-                    maa_const<int>(page_base, r2);
-                    maa_const<int>(page_base + page_size, r3);
-                    maa_stream_load<int>(colidx, r2, r3, r1, t6);
+                    maa_const<int>(0, r2);
+                    maa_const<int>(page_size, r3);
+                    maa_stream_load<int>(&colidx[page_base], r2, r3, r1,
+                                         t6);
                     maa_indirect_load<float>(z, t6, t4);
                 }
 
                 const int page_base = k_base + page_offset;
-                maa_const<int>(page_base, r2);
-                maa_const<int>(page_base + page_size, r3);
-                maa_stream_load<float>(a, r2, r3, r1, t5);
+                maa_const<int>(0, r2);
+                maa_const<int>(page_size, r3);
+                maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);
                 maa_alu_vector<float>(t4, t5, t7,
                                       Operation_t::MUL_OP);
 #ifdef CG_LOGICAL16_RMW

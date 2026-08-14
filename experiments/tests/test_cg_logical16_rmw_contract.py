@@ -94,6 +94,20 @@ class CGLogical16RmwContractTests(unittest.TestCase):
             self.assertEqual(self.source.count(token), 2)
         self.assertGreaterEqual(self.source.count("maa_const<int>(0, r4);"), 2)
 
+    def test_virtual_mode_ordinary_spd_operands_are_page_rebased(self):
+        # The virtual gather owns logical k positions, but the ordinary
+        # colidx/a consumers are real 4K SPD tiles.  Their base address,
+        # rather than their SPD index, carries the absolute page position.
+        for token in (
+            "maa_stream_load<int>(&colidx[page_base], r2, r3,",
+            "maa_stream_load<float>(&a[page_base], r2, r3, r1, t5);",
+        ):
+            self.assertEqual(self.source.count(token), 4)
+        self.assertNotIn("maa_const<int>(page_base, r2);", self.source)
+        self.assertNotIn(
+            "maa_const<int>(page_base + page_size, r3);", self.source
+        )
+
     def test_terminal_closes_staging_and_requires_dynamic_use(self):
         self.assertIn("index_words == full_windows * TILE_SIZE", self.source)
         self.assertIn("value_words == full_windows * TILE_SIZE", self.source)
