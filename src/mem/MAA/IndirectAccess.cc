@@ -113,6 +113,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_words_per_cycle,
                                   int _virtual_max_outstanding_writes,
                                   bool _virtual_masked_writes,
+                                  int _soa_jit_predicate_active_credits,
                                   int _virtual_index_buffer_lines,
                                   bool _virtual_index_force_cache,
                                   int _virtual_index_partitions,
@@ -178,6 +179,14 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              my_indirect_id);
     virtual_max_outstanding_writes_limit = _virtual_max_outstanding_writes;
     virtual_masked_writes = _virtual_masked_writes;
+    panic_if(_soa_jit_predicate_active_credits != 1 &&
+                 _soa_jit_predicate_active_credits != 4 &&
+                 _soa_jit_predicate_active_credits != 8 &&
+                 _soa_jit_predicate_active_credits != 16,
+             "I[%d] SoA/JIT predicate credits must be 1/4/8/16, got %d\n",
+             my_indirect_id, _soa_jit_predicate_active_credits);
+    soa_jit_predicate_active_credits =
+        _soa_jit_predicate_active_credits;
     panic_if(_virtual_index_buffer_lines <= 0 ||
                  _virtual_index_buffer_lines > 1024,
              "I[%d] direct-index buffer lines (%d) must be in [1,1024]\n",
@@ -678,8 +687,8 @@ void IndirectAccessUnit::check_reset() {
                  !direct_index_words.empty(),
              "I[%d] direct-index buffer is not empty at reset\n",
              my_indirect_id);
-    panic_if(soa_predicate_line.pending || soa_predicate_line.valid,
-             "I[%d] SoA/JIT predicate line is not empty at reset\n",
+    panic_if(!soaPredicateLinesEmpty(),
+             "I[%d] SoA/JIT predicate feeder is not empty at reset\n",
              my_indirect_id);
     panic_if(!soaJitContextsEmpty(),
              "I[%d] SoA/JIT A-line scoreboard is not empty at reset\n",
@@ -1317,6 +1326,8 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
                           sizeof(uint32_t), "predicate")},
     }};
     const size_t span_count = my_predicate_addr == 0 ? 3 : 4;
+    soa_predicate_min_paddr = 0;
+    soa_predicate_max_paddr = 0;
     inside(spans[0], my_min_addr, my_max_addr);
     inside(spans[1], my_backing_min_addr, my_backing_max_addr);
     inside(spans[2], my_index_min_addr, my_index_max_addr);
@@ -1338,7 +1349,6 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
                      spans[second].begin, spans[second].end);
         }
     }
-
     // This synchronous full-span prewalk is a simulator legality check, not
     // modeled hardware latency; its translation/checking cost is deliberately
     // absent from simulated time. Responses are classified by block-aligned
@@ -1392,7 +1402,131 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
                      spans[second].physicalEnd);
         }
     }
+    if (my_predicate_addr != 0) {
+        soa_predicate_min_paddr = spans[3].physicalBegin;
+        soa_predicate_max_paddr = spans[3].physicalEnd;
+    }
 }
+size_t
+IndirectAccessUnit::soaPredicateSlotsUsed() const
+{
+    return std::count_if(
+        soa_predicate_lines.begin(), soa_predicate_lines.end(),
+        [](const SoaPredicateLine &line) {
+            return line.pending || line.valid;
+        });
+}
+
+bool
+IndirectAccessUnit::soaPredicateLinesEmpty() const
+{
+    return soaPredicateSlotsUsed() == 0;
+}
+
+IndirectAccessUnit::SoaPredicateLine *
+IndirectAccessUnit::findSoaPredicateLine(Addr block_vaddr)
+{
+    auto line = std::find_if(
+        soa_predicate_lines.begin(), soa_predicate_lines.end(),
+        [block_vaddr](const SoaPredicateLine &candidate) {
+            return (candidate.pending || candidate.valid) &&
+                   candidate.blockVaddr == block_vaddr;
+        });
+    return line == soa_predicate_lines.end() ? nullptr : &*line;
+}
+
+const IndirectAccessUnit::SoaPredicateLine *
+IndirectAccessUnit::findSoaPredicateLine(Addr block_vaddr) const
+{
+    auto line = std::find_if(
+        soa_predicate_lines.begin(), soa_predicate_lines.end(),
+        [block_vaddr](const SoaPredicateLine &candidate) {
+            return (candidate.pending || candidate.valid) &&
+                   candidate.blockVaddr == block_vaddr;
+        });
+    return line == soa_predicate_lines.end() ? nullptr : &*line;
+}
+
+void
+IndirectAccessUnit::serviceSoaPredicateFeeder(int itr)
+{
+    if (my_predicate_addr == 0)
+        return;
+    panic_if(!isSoaJitRmw() || itr < 0 || itr >= my_max ||
+                 soa_jit_generation == 0,
+             "I[%d] invalid SoA/JIT predicate feeder service\n",
+             my_indirect_id);
+    panic_if(soa_jit_predicate_active_credits <= 0 ||
+                 soa_jit_predicate_active_credits >
+                     static_cast<int>(SoaPredicateMaxLines),
+             "I[%d] invalid active predicate credits %d\n",
+             my_indirect_id, soa_jit_predicate_active_credits);
+
+    size_t used = soaPredicateSlotsUsed();
+    panic_if(used > static_cast<size_t>(soa_jit_predicate_active_credits),
+             "I[%d] predicate feeder occupancy %lu exceeds credits %d\n",
+             my_indirect_id, static_cast<unsigned long>(used),
+             soa_jit_predicate_active_credits);
+    for (int candidate = itr;
+         candidate < my_max &&
+             used < static_cast<size_t>(soa_jit_predicate_active_credits);
+         ++candidate) {
+        const int64_t source = soaSourcePosition(candidate);
+        panic_if(source < 0,
+                 "I[%d] negative SoA/JIT predicate position %ld\n",
+                 my_indirect_id, source);
+        const Addr vaddr = my_predicate_addr +
+            static_cast<Addr>(source) * sizeof(uint32_t);
+        const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+        if (findSoaPredicateLine(block_vaddr) != nullptr)
+            continue;
+
+        auto free_line = std::find_if(
+            soa_predicate_lines.begin(), soa_predicate_lines.end(),
+            [](const SoaPredicateLine &line) {
+                return !line.pending && !line.valid;
+            });
+        panic_if(free_line == soa_predicate_lines.end(),
+                 "I[%d] predicate feeder has no free fixed slot\n",
+                 my_indirect_id);
+        const Addr block_paddr = addrBlockAligner(
+            translatePacket(block_vaddr), block_size);
+        panic_if(std::any_of(
+                     soa_predicate_lines.begin(),
+                     soa_predicate_lines.end(),
+                     [block_vaddr, block_paddr](const SoaPredicateLine &line) {
+                         return (line.pending || line.valid) &&
+                                line.blockVaddr != block_vaddr &&
+                                line.blockPaddr == block_paddr;
+                     }),
+                 "I[%d] predicate lines with distinct vaddrs alias paddr "
+                 "0x%lx\n",
+                 my_indirect_id, block_paddr);
+
+        *free_line = SoaPredicateLine();
+        free_line->blockVaddr = block_vaddr;
+        free_line->blockPaddr = block_paddr;
+        free_line->generation = soa_jit_generation;
+        free_line->pending = true;
+        used++;
+        soa_jit_predicate_line_issues++;
+        soa_jit_predicate_feeder_high_water = std::max<uint64_t>(
+            soa_jit_predicate_feeder_high_water, used);
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_predicate_issue schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu slot=%lu "
+                "vaddr=0x%lx paddr=0x%lx candidate=%d occupancy=%lu "
+                "active_credits=%d\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                static_cast<unsigned long>(std::distance(
+                    soa_predicate_lines.begin(), free_line)),
+                block_vaddr, block_paddr, candidate,
+                static_cast<unsigned long>(used),
+                soa_jit_predicate_active_credits);
+        createSoaPredicateReadPacket(block_paddr, rowtable_latency);
+    }
+}
+
 bool IndirectAccessUnit::ensureSoaPredicate(int itr)
 {
     if (!isSoaJitRmw() || my_predicate_addr == 0)
@@ -1414,22 +1548,39 @@ bool IndirectAccessUnit::ensureSoaPredicate(int itr)
              my_predicate_max_addr);
     const Addr vaddr = my_predicate_addr + byte_offset;
     const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
-    if (soa_predicate_line.valid &&
-        soa_predicate_line.blockVaddr == block_vaddr)
+    serviceSoaPredicateFeeder(itr);
+    SoaPredicateLine *line = findSoaPredicateLine(block_vaddr);
+    panic_if(line == nullptr || line->generation != soa_jit_generation,
+             "I[%d] predicate feeder lost current itr %d generation %lu\n",
+             my_indirect_id, itr, soa_jit_generation);
+    if (line->valid) {
+        soa_jit_predicate_line_hits++;
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_predicate_hit schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu itr=%d vaddr=0x%lx "
+                "paddr=0x%lx occupancy=%lu active_credits=%d\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                itr, block_vaddr, line->blockPaddr,
+                static_cast<unsigned long>(soaPredicateSlotsUsed()),
+                soa_jit_predicate_active_credits);
         return true;
-    if (soa_predicate_line.pending)
-        return false;
-    soa_predicate_line = SoaPredicateLine();
-    soa_predicate_line.pending = true;
-    soa_predicate_line.blockVaddr = block_vaddr;
-    soa_predicate_line.blockPaddr = addrBlockAligner(
-        translatePacket(block_vaddr), block_size);
-    soa_jit_predicate_line_issues++;
-    createSoaPredicateReadPacket(soa_predicate_line.blockPaddr,
-                                 rowtable_latency);
+    }
+    panic_if(!line->pending,
+             "I[%d] predicate feeder current line is neither ready nor "
+             "pending\n",
+             my_indirect_id);
+    soa_jit_predicate_feeder_stalls++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_predicate_stall schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu itr=%d paddr=0x%lx "
+            "occupancy=%lu active_credits=%d\n",
+            my_indirect_id, my_decode_start_tick, soa_jit_generation, itr,
+            line->blockPaddr,
+            static_cast<unsigned long>(soaPredicateSlotsUsed()),
+            soa_jit_predicate_active_credits);
     return false;
 }
-bool IndirectAccessUnit::soaPredicateValue(int itr) const
+bool IndirectAccessUnit::soaPredicateValue(int itr)
 {
     if (my_predicate_addr == 0)
         return true;
@@ -1437,43 +1588,93 @@ bool IndirectAccessUnit::soaPredicateValue(int itr) const
     const Addr vaddr = my_predicate_addr +
         static_cast<Addr>(source) * sizeof(uint32_t);
     const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
-    panic_if(!soa_predicate_line.valid ||
-                 soa_predicate_line.blockVaddr != block_vaddr,
+    SoaPredicateLine *line = findSoaPredicateLine(block_vaddr);
+    panic_if(line == nullptr || !line->valid || line->pending ||
+                 line->generation != soa_jit_generation,
              "I[%d] SoA/JIT predicate line for itr %d is not resident\n",
              my_indirect_id, itr);
     uint32_t predicate = 0;
     std::memcpy(&predicate,
-                soa_predicate_line.data.data() + (vaddr - block_vaddr),
+                line->data.data() + (vaddr - block_vaddr),
                 sizeof(predicate));
+    soa_jit_predicate_uses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_predicate_use schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu itr=%d source=%ld "
+            "paddr=0x%lx value=%u uses=%lu\n",
+            my_indirect_id, my_decode_start_tick, soa_jit_generation, itr,
+            source, line->blockPaddr, predicate,
+            soa_jit_predicate_uses);
     return predicate != 0;
 }
 void IndirectAccessUnit::discardSoaPredicateIfDone(int itr)
 {
-    if (my_predicate_addr == 0 || !soa_predicate_line.valid)
+    if (my_predicate_addr == 0)
         return;
+    const int64_t current_source = soaSourcePosition(itr);
+    const Addr current_vaddr = my_predicate_addr +
+        static_cast<Addr>(current_source) * sizeof(uint32_t);
+    const Addr current_block_vaddr =
+        addrBlockAligner(current_vaddr, block_size);
+    SoaPredicateLine *line = findSoaPredicateLine(current_block_vaddr);
+    panic_if(line == nullptr || !line->valid || line->pending ||
+                 line->generation != soa_jit_generation,
+             "I[%d] cannot discard unowned predicate line for itr %d\n",
+             my_indirect_id, itr);
     const int next = itr + 1;
     if (next >= my_max) {
-        soa_predicate_line = SoaPredicateLine();
+        *line = SoaPredicateLine();
         return;
     }
     const int64_t source = soaSourcePosition(next);
     const Addr next_vaddr = my_predicate_addr +
         static_cast<Addr>(source) * sizeof(uint32_t);
     if (addrBlockAligner(next_vaddr, block_size) !=
-        soa_predicate_line.blockVaddr)
-        soa_predicate_line = SoaPredicateLine();
+        current_block_vaddr)
+        *line = SoaPredicateLine();
 }
 bool IndirectAccessUnit::receiveSoaPredicate(
     Addr addr, uint8_t *dataptr, bool is_block_cached)
 {
-    if (!isSoaJitRmw() || !soa_predicate_line.pending ||
-        soa_predicate_line.blockPaddr != addr)
+    if (!isSoaJitRmw())
         return false;
+    auto line = std::find_if(
+        soa_predicate_lines.begin(), soa_predicate_lines.end(),
+        [addr](const SoaPredicateLine &candidate) {
+            return (candidate.pending || candidate.valid) &&
+                   candidate.blockPaddr == addr;
+        });
+    if (line == soa_predicate_lines.end()) {
+        panic_if(soa_predicate_min_paddr <= addr &&
+                     addr < soa_predicate_max_paddr,
+                 "I[%d] unknown predicate response paddr 0x%lx for "
+                 "generation %lu\n",
+                 my_indirect_id, addr, soa_jit_generation);
+        return false;
+    }
+    panic_if(!line->pending || line->valid,
+             "I[%d] duplicate predicate response at paddr 0x%lx\n",
+             my_indirect_id, addr);
+    panic_if(line->generation != soa_jit_generation ||
+                 soa_jit_generation == 0,
+             "I[%d] stale predicate response at paddr 0x%lx: slot=%lu "
+             "active=%lu\n",
+             my_indirect_id, addr, line->generation, soa_jit_generation);
     accountReadResponse(addr, is_block_cached);
-    std::memcpy(soa_predicate_line.data.data(), dataptr, block_size);
-    soa_predicate_line.pending = false;
-    soa_predicate_line.valid = true;
+    std::memcpy(line->data.data(), dataptr, block_size);
+    line->pending = false;
+    line->valid = true;
     soa_jit_predicate_line_responses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_predicate_response schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu slot=%lu vaddr=0x%lx "
+            "paddr=0x%lx responses=%lu occupancy=%lu active_credits=%d\n",
+            my_indirect_id, my_decode_start_tick, soa_jit_generation,
+            static_cast<unsigned long>(std::distance(
+                soa_predicate_lines.begin(), line)),
+            line->blockVaddr, addr, soa_jit_predicate_line_responses,
+            static_cast<unsigned long>(soaPredicateSlotsUsed()),
+            soa_jit_predicate_active_credits);
     scheduleNextExecution(true);
     return true;
 }
@@ -3905,7 +4106,7 @@ IndirectAccessUnit::hasLiveSoaJitState() const
 {
     return soa_jit_operation_active ||
            (my_instruction != nullptr && my_instruction->isSoaJitRmw()) ||
-           soa_predicate_line.pending || soa_predicate_line.valid ||
+           !soaPredicateLinesEmpty() ||
            !soaJitContextsEmpty();
 }
 
@@ -4365,12 +4566,16 @@ bool IndirectAccessUnit::completeSoaJitWrite(Addr addr)
 }
 void IndirectAccessUnit::checkSoaJitTerminal()
 {
+    const uint64_t expected_predicate_uses =
+        my_predicate_addr == 0 ? 0 : static_cast<uint64_t>(my_max);
     panic_if(!isSoaJitRmw() || soa_jit_generation == 0 ||
                  !soa_jit_all_rows_claimed || !soaJitContextsEmpty() ||
                  offset_table->occupancy() != 0 ||
-                 soa_predicate_line.pending || soa_predicate_line.valid ||
+                 !soaPredicateLinesEmpty() ||
                  soa_jit_selected + soa_jit_predicate_rejected !=
                      static_cast<uint64_t>(my_max) ||
+                 soa_jit_predicate_line_hits != expected_predicate_uses ||
+                 soa_jit_predicate_uses != expected_predicate_uses ||
                  soa_jit_value_read_issues !=
                      soa_jit_value_read_responses ||
                  soa_jit_value_fills !=
@@ -4384,6 +4589,9 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                  soa_jit_a_write_issues != soa_jit_a_write_responses ||
                  soa_jit_predicate_line_issues !=
                      soa_jit_predicate_line_responses ||
+                 soa_jit_predicate_feeder_high_water >
+                     static_cast<uint64_t>(
+                         soa_jit_predicate_active_credits) ||
                  soa_jit_context_high_water >
                      static_cast<uint64_t>(soa_jit_active_contexts) ||
                  soa_jit_value_cache_high_water >
@@ -4721,7 +4929,10 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_words.clear();
         direct_index_max_lines = 0;
         direct_index_max_words = 0;
-        soa_predicate_line = SoaPredicateLine();
+        soa_predicate_min_paddr = 0;
+        soa_predicate_max_paddr = 0;
+        for (auto &line : soa_predicate_lines)
+            line = SoaPredicateLine();
         for (auto &context : soa_jit_contexts)
             context = SoaJitContext();
         soa_jit_value_coalescer.configure(
@@ -4734,6 +4945,10 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_predicate_rejected = 0;
         soa_jit_predicate_line_issues = 0;
         soa_jit_predicate_line_responses = 0;
+        soa_jit_predicate_line_hits = 0;
+        soa_jit_predicate_uses = 0;
+        soa_jit_predicate_feeder_stalls = 0;
+        soa_jit_predicate_feeder_high_water = 0;
         soa_jit_a_read_issues = 0;
         soa_jit_a_read_responses = 0;
         soa_jit_value_read_issues = 0;
@@ -5804,6 +6019,20 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats
                   .IND_SoaJitPredicateLineResponses[my_indirect_id]) +=
                 soa_jit_predicate_line_responses;
+            (*maa->stats.IND_SoaJitPredicateLineHits[my_indirect_id]) +=
+                soa_jit_predicate_line_hits;
+            (*maa->stats.IND_SoaJitPredicateUses[my_indirect_id]) +=
+                soa_jit_predicate_uses;
+            (*maa->stats.IND_SoaJitPredicateFeederStalls[my_indirect_id]) +=
+                soa_jit_predicate_feeder_stalls;
+            (*maa->stats.IND_SoaJitPredicateActiveCredits[my_indirect_id]) +=
+                soa_jit_predicate_active_credits;
+            (*maa->stats
+                  .IND_SoaJitPredicateFeederHighWater[my_indirect_id]) +=
+                soa_jit_predicate_feeder_high_water;
+            (*maa->stats
+                  .IND_SoaJitPredicateFeederStateBytes[my_indirect_id]) +=
+                SoaPredicateFeederStateBytes;
             (*maa->stats.IND_SoaJitAReadIssues[my_indirect_id]) +=
                 soa_jit_a_read_issues;
             (*maa->stats.IND_SoaJitAReadResponses[my_indirect_id]) +=
@@ -5854,7 +6083,11 @@ void IndirectAccessUnit::executeInstruction() {
                     "event=soa_jit_complete schema=2 unit=%d "
                     "operation_tick=%lu generation=%lu logical=%d "
                     "selected=%lu predicate_rejected=%lu "
-                    "predicate_lines=%lu/%lu a_reads=%lu/%lu "
+                    "predicate_lines=%lu/%lu predicate_hits=%lu "
+                    "predicate_uses=%lu predicate_stalls=%lu "
+                    "predicate_credits=%d predicate_hwm=%lu "
+                    "predicate_state_bytes=%lu predicate_host_bytes=%lu "
+                    "a_reads=%lu/%lu "
                     "value_reads=%lu/%lu fills=%lu cached=%lu "
                     "hits=%lu merged=%lu evictions=%lu "
                     "deliveries=%lu value_stalls=%lu aliases=%lu "
@@ -5871,6 +6104,15 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_predicate_rejected,
                     soa_jit_predicate_line_issues,
                     soa_jit_predicate_line_responses,
+                    soa_jit_predicate_line_hits,
+                    soa_jit_predicate_uses,
+                    soa_jit_predicate_feeder_stalls,
+                    soa_jit_predicate_active_credits,
+                    soa_jit_predicate_feeder_high_water,
+                    static_cast<unsigned long>(
+                        SoaPredicateFeederStateBytes),
+                    static_cast<unsigned long>(
+                        sizeof(soa_predicate_lines)),
                     soa_jit_a_read_issues, soa_jit_a_read_responses,
                     soa_jit_value_read_issues,
                     soa_jit_value_read_responses,

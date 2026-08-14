@@ -285,6 +285,7 @@ public:
                   int _virtual_words_per_cycle,
                   int _virtual_max_outstanding_writes,
                   bool _virtual_masked_writes,
+                  int _soa_jit_predicate_active_credits,
                   int _virtual_index_buffer_lines,
                   bool _virtual_index_force_cache,
                   int _virtual_index_partitions,
@@ -331,6 +332,8 @@ protected:
     Addr my_backing_min_addr, my_backing_max_addr;
     Addr my_index_addr, my_index_min_addr, my_index_max_addr;
     Addr my_predicate_addr, my_predicate_min_addr, my_predicate_max_addr;
+    Addr soa_predicate_min_paddr = 0;
+    Addr soa_predicate_max_paddr = 0;
     int8_t my_addr_range_id, my_backing_addr_range_id, my_index_addr_range_id;
     int8_t my_predicate_addr_range_id;
     int my_index_min, my_index_stride;
@@ -490,15 +493,26 @@ protected:
     std::map<int, DirectIndexWord> direct_index_words;
     int direct_index_max_lines = 0;
     int direct_index_max_words = 0;
+    static constexpr size_t SoaPredicateMaxLines = 16;
+    static constexpr size_t SoaPredicateLineDataBytes = 64;
     struct SoaPredicateLine
     {
-        bool pending = false;
-        bool valid = false;
         Addr blockVaddr = 0;
         Addr blockPaddr = 0;
-        std::array<uint8_t, 64> data{};
+        uint64_t generation = 0;
+        bool pending = false;
+        bool valid = false;
+        std::array<uint8_t, SoaPredicateLineDataBytes> data{};
     };
-    SoaPredicateLine soa_predicate_line;
+    static_assert(sizeof(bool) == 1,
+                  "predicate feeder byte accounting requires byte bools");
+    static constexpr size_t SoaPredicateLineStateBytes =
+        2 * sizeof(Addr) + sizeof(uint64_t) + 2 * sizeof(bool) +
+        SoaPredicateLineDataBytes;
+    static constexpr size_t SoaPredicateFeederStateBytes =
+        SoaPredicateMaxLines * SoaPredicateLineStateBytes;
+    std::array<SoaPredicateLine, SoaPredicateMaxLines> soa_predicate_lines{};
+    int soa_jit_predicate_active_credits = 1;
     enum class SoaJitContextState : uint8_t
     {
         Free,
@@ -560,6 +574,10 @@ protected:
     uint64_t soa_jit_predicate_rejected = 0;
     uint64_t soa_jit_predicate_line_issues = 0;
     uint64_t soa_jit_predicate_line_responses = 0;
+    uint64_t soa_jit_predicate_line_hits = 0;
+    uint64_t soa_jit_predicate_uses = 0;
+    uint64_t soa_jit_predicate_feeder_stalls = 0;
+    uint64_t soa_jit_predicate_feeder_high_water = 0;
     uint64_t soa_jit_a_read_issues = 0;
     uint64_t soa_jit_a_read_responses = 0;
     uint64_t soa_jit_value_read_issues = 0;
@@ -648,8 +666,13 @@ protected:
                             DirectIndexDiscardReason reason);
     bool receiveDirectIndex(Addr addr, uint8_t *dataptr,
                             bool is_block_cached);
+    size_t soaPredicateSlotsUsed() const;
+    bool soaPredicateLinesEmpty() const;
+    SoaPredicateLine *findSoaPredicateLine(Addr block_vaddr);
+    const SoaPredicateLine *findSoaPredicateLine(Addr block_vaddr) const;
+    void serviceSoaPredicateFeeder(int itr);
     bool ensureSoaPredicate(int itr);
-    bool soaPredicateValue(int itr) const;
+    bool soaPredicateValue(int itr);
     void discardSoaPredicateIfDone(int itr);
     bool receiveSoaPredicate(Addr addr, uint8_t *dataptr,
                              bool is_block_cached);

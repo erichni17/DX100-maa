@@ -47,12 +47,15 @@ def test_shape_rejects_old_value_and_uses_completion_only_dst2():
     )
 
 
-def test_fixed_bounded_overlap_storage_and_no_operation_sized_payload():
+def test_fixed_bounded_overlap_and_predicate_storage():
     header = read("src/mem/MAA/IndirectAccess.hh")
-    begin = header.index("struct SoaPredicateLine")
+    begin = header.index("SoaPredicateMaxLines")
     end = header.index("int my_dst_tile", begin)
     soa_state = header[begin:end]
-    assert "std::array<uint8_t, 64> data" in soa_state
+    assert "SoaPredicateMaxLines = 16" in soa_state
+    assert "std::array<uint8_t, SoaPredicateLineDataBytes> data" in soa_state
+    assert "std::array<SoaPredicateLine, SoaPredicateMaxLines>" in soa_state
+    assert "SoaPredicateFeederStateBytes" in soa_state
     assert "std::array<uint8_t, 64> aLine" in soa_state
     assert "sizeof(SoaJitContext) <= 512" in soa_state
     assert "SoaJitValueCoalescer::MaxLookahead> lookahead" in soa_state
@@ -98,6 +101,9 @@ def test_full_window_and_timed_jit_protocol_have_exact_drain():
         "soa_jit_value_deliveries != soa_jit_selected",
         "soa_jit_a_write_issues != soa_jit_a_write_responses",
         "soa_jit_predicate_line_issues !=",
+        "soa_jit_predicate_line_hits != expected_predicate_uses",
+        "soa_jit_predicate_uses != expected_predicate_uses",
+        "soa_jit_predicate_feeder_high_water >",
     ):
         assert invariant in terminal
 

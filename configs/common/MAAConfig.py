@@ -180,6 +180,11 @@ def _get_maa_opts(options):
             options, "maa_inactive_page_masked_fragment_retention_lines"
         )
 
+    if hasattr(options, "maa_soa_jit_predicate_active_credits"):
+        opts["soa_jit_predicate_active_credits"] = getattr(
+            options, "maa_soa_jit_predicate_active_credits"
+        )
+
     if hasattr(options, "maa_virtual_index_buffer_lines"):
         opts["virtual_index_buffer_lines"] = getattr(
             options, "maa_virtual_index_buffer_lines"

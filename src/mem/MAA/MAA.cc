@@ -162,6 +162,8 @@ MAA::MAA(const MAAParams &p)
       virtual_masked_writes(p.virtual_masked_writes),
       virtual_idealized_write_ack(p.virtual_idealized_write_ack),
       direct_retirement_line_handoff(p.direct_retirement_line_handoff),
+      soa_jit_predicate_active_credits(
+          p.soa_jit_predicate_active_credits),
       virtual_index_buffer_lines(p.virtual_index_buffer_lines),
       virtual_index_force_cache(p.virtual_index_force_cache),
       virtual_index_partitions(p.virtual_index_partitions),
@@ -221,6 +223,12 @@ MAA::MAA(const MAAParams &p)
     panic_if(logical_spd_cache_mode > 1,
              "Invalid logical SPD cache mode %u (expected 0 or 1)\n",
              logical_spd_cache_mode);
+    panic_if(soa_jit_predicate_active_credits != 1 &&
+                 soa_jit_predicate_active_credits != 4 &&
+                 soa_jit_predicate_active_credits != 8 &&
+                 soa_jit_predicate_active_credits != 16,
+             "SoA/JIT predicate credits must be one of 1/4/8/16, got %u\n",
+             soa_jit_predicate_active_credits);
     panic_if(page_materialization_wakeup_batches >
                  HybridConsumerPipeline::MaxEarlyWakeupBatches,
              "Page materialization wakeup batches %u exceed maximum %u\n",
@@ -647,6 +655,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_words_per_cycle,
                                         virtual_max_outstanding_writes,
                                         virtual_masked_writes,
+                                        soa_jit_predicate_active_credits,
                                         virtual_index_buffer_lines,
                                         virtual_index_force_cache,
                                         virtual_index_partitions,
@@ -6352,6 +6361,36 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateLineResponses"),
             statistics::units::Count::get(),
             "exact timed cache-line responses for optional SoA predicates"));
+        IND_SoaJitPredicateLineHits.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateLineHits"),
+            statistics::units::Count::get(),
+            "ordered predicate lookups that hit a valid feeder line"));
+        IND_SoaJitPredicateUses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateUses"),
+            statistics::units::Count::get(),
+            "predicate words consumed in logical iteration order"));
+        IND_SoaJitPredicateFeederStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateFeederStalls"),
+            statistics::units::Count::get(),
+            "ordered predicate lookups stalled on a pending feeder line"));
+        IND_SoaJitPredicateActiveCredits.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateActiveCredits"),
+            statistics::units::Count::get(),
+            "sum of active predicate credits across completed operations"));
+        IND_SoaJitPredicateFeederHighWater.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPredicateFeederHighWater"),
+                statistics::units::Count::get(),
+                "sum of per-operation predicate slot high-water marks"));
+        IND_SoaJitPredicateFeederStateBytes.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPredicateFeederStateBytes"),
+                statistics::units::Byte::get(),
+                "sum of fixed predicate feeder state bytes per operation"));
         IND_SoaJitAReadIssues.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAReadIssues"),
             statistics::units::Count::get(),

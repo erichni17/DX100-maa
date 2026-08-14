@@ -139,6 +139,10 @@ class MAA(ClockedObject):
         "Fixed inactive masked-fragment entries across four lifetime "
         "partitions (0 disables; 512/1024/2048/4096)",
     )
+    soa_jit_predicate_active_credits = Param.Unsigned(
+        1,
+        "Active SoA/JIT predicate-line credits (one of 1/4/8/16)",
+    )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",

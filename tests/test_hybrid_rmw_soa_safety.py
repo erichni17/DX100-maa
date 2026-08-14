@@ -94,8 +94,7 @@ def test_drain_fails_closed_for_queued_and_active_soa_protocol_state():
     for state in (
         "soa_jit_operation_active",
         "my_instruction != nullptr",
-        "soa_predicate_line.pending",
-        "soa_predicate_line.valid",
+        "!soaPredicateLinesEmpty()",
         "!soaJitContextsEmpty()",
     ):
         assert state in unit_live

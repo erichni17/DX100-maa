@@ -444,6 +444,7 @@ public:
     bool virtual_masked_writes;
     bool virtual_idealized_write_ack;
     bool direct_retirement_line_handoff;
+    unsigned int soa_jit_predicate_active_credits;
     unsigned int virtual_index_buffer_lines;
     bool virtual_index_force_cache;
     unsigned int virtual_index_partitions;
@@ -1101,6 +1102,14 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitPredicateRejected;
         std::vector<statistics::Scalar *> IND_SoaJitPredicateLineReads;
         std::vector<statistics::Scalar *> IND_SoaJitPredicateLineResponses;
+        std::vector<statistics::Scalar *> IND_SoaJitPredicateLineHits;
+        std::vector<statistics::Scalar *> IND_SoaJitPredicateUses;
+        std::vector<statistics::Scalar *> IND_SoaJitPredicateFeederStalls;
+        std::vector<statistics::Scalar *> IND_SoaJitPredicateActiveCredits;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPredicateFeederHighWater;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPredicateFeederStateBytes;
         std::vector<statistics::Scalar *> IND_SoaJitAReadIssues;
         std::vector<statistics::Scalar *> IND_SoaJitAReadResponses;
         std::vector<statistics::Scalar *> IND_SoaJitValueReadIssues;
