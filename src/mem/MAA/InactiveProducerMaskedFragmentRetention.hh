@@ -16,11 +16,15 @@ namespace gem5 {
  * Bounded retention of masked producer WriteResp fragments for inactive
  * materializer pages.
  *
- * Four tokenTile[1:0]-selected descriptors own four static capacity
- * partitions. Within a partition, line[1:0] selects one of four independent
- * one-write-port banks and line[...:2] directly selects an entry. There are
- * no associative searches, maps, queues, or replacement scans. A collision
- * retains the first exact owner and poisons the incoming logical line.
+ * Four two-XOR token-selected descriptors own four static capacity
+ * partitions. The selector is the low two bits of binary-reflected Gray code:
+ * {tokenTile[2] ^ tokenTile[1], tokenTile[1] ^ tokenTile[0]}. This preserves
+ * the direct partition lookup while distributing both consecutive tokens and
+ * the six-tile stride used by GZP. Within a partition, line[1:0] selects one
+ * of four independent one-write-port banks and line[...:2] directly selects
+ * an entry. There are no associative searches, maps, queues, or replacement
+ * scans. A collision retains the first exact owner and poisons the incoming
+ * logical line.
  *
  * Each descriptor also owns one poison bit per possible logical line. Once a
  * fragment is lost, overlaps an accepted word, collides, or fails exact
@@ -442,7 +446,10 @@ class InactiveProducerMaskedFragmentRetention
 
     static constexpr uint8_t descriptorIndexForToken(uint16_t tokenTile)
     {
-        return static_cast<uint8_t>(tokenTile & (DescriptorCount - 1));
+        // Low Gray-code bits need only two XOR gates and no stored state.
+        // Unlike tokenTile[1:0], they cycle 3+6k across every partition.
+        const uint16_t gray = tokenTile ^ (tokenTile >> 1);
+        return static_cast<uint8_t>(gray & (DescriptorCount - 1));
     }
     static constexpr uint8_t bankIndexForLine(uint16_t line)
     {
