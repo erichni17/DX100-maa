@@ -147,6 +147,8 @@ MAA::MAA(const MAAParams &p)
       virtual_combine_words(p.virtual_combine_words),
       virtual_combine_ways(p.virtual_combine_ways),
       virtual_combine_victim_policy(p.virtual_combine_victim_policy),
+      virtual_page_ordered_combiner_drain(
+          p.virtual_page_ordered_combiner_drain),
       virtual_combine_banks(p.virtual_combine_banks),
       virtual_response_slots(p.virtual_response_slots),
       virtual_response_words(p.virtual_response_words),
@@ -5667,6 +5669,15 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPartialWrites"),
             statistics::units::Count::get(),
             "number of partial-word virtual retirement writes"));
+        IND_VirtPageOrderedDrainSelections.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtPageOrderedDrainSelections"),
+            statistics::units::Count::get(),
+            "full virtual-combiner lines selected by logical output page"));
+        IND_VirtPageOrderedDrainDeferrals.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtPageOrderedDrainDeferrals"),
+            statistics::units::Count::get(),
+            "page-ordered selections that deferred a later full line"));
         IND_VirtPipelineCyclesIdle.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtPipelineCyclesIdle"),
             statistics::units::Count::get(),

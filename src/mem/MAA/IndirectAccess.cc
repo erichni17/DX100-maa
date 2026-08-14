@@ -132,6 +132,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] virtual combiner must have at least one slot\n",
              my_indirect_id);
     virtual_combine_slots.resize(_virtual_combine_slots);
+    virtual_combine_page_ready.reset(_virtual_combine_slots);
     virtual_combine_words_configured = _virtual_combine_words;
     virtual_combine_ways = _virtual_combine_ways;
     panic_if(virtual_combine_ways != 0 &&
@@ -3773,6 +3774,7 @@ void IndirectAccessUnit::executeInstruction() {
             slot = VirtualResponseSlot();
         for (auto &slot : virtual_combine_slots)
             slot = VirtualCombineSlot();
+        virtual_combine_page_ready.reset(virtual_combine_slots.size());
         offset_table->reset();
         for (int i = 0; i < num_RT_slices[my_RT_config]; i++) {
             RT[my_RT_config][i].reset();
@@ -6612,11 +6614,24 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         panic_if(victim_idx == -1,
                  "I[%d] virtual combiner has no valid victim\n", my_indirect_id);
         auto &victim = virtual_combine_slots[victim_idx];
+        const bool victim_was_full =
+            victim.valid_words == ((1U << my_words_per_cl) - 1);
+        bool victim_page_ready = maa->virtual_page_ordered_combiner_drain &&
+            victim_was_full;
+        auto retire_full_victim = [&]() {
+            if (!victim_page_ready)
+                return;
+            panic_if(!virtual_combine_page_ready.retireFullLine(victim_idx),
+                     "I[%d] full combiner victim %d is absent from "
+                     "page-ready metadata\n", my_indirect_id, victim_idx);
+            victim_page_ready = false;
+        };
         if (virtual_masked_writes && victim.valid_words != 0 &&
             virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
             const int words = __builtin_popcount(victim.valid_words);
             if (createRetirementWrite(victim.line_vaddr, block_size,
                                       victim.data.data(), victim.valid_words)) {
+                retire_full_victim();
                 virtual_combine_words -= words;
                 virtual_partial_word_writes++;
                 victim.valid_words = 0;
@@ -6630,6 +6645,7 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                         my_word_size,
                         victim.data.data() + victim_word * my_word_size))
                     break;
+                retire_full_victim();
                 victim.valid_words &= ~(1U << victim_word);
                 panic_if(virtual_combine_words == 0,
                          "I[%d] virtual word accounting underflow\n",
@@ -6668,6 +6684,21 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
              my_indirect_id, word, line_vaddr);
     std::memcpy(target->data.data() + word * my_word_size, data, my_word_size);
     target->valid_words |= word_bit;
+    if (maa->virtual_page_ordered_combiner_drain &&
+        target->valid_words == ((1U << my_words_per_cl) - 1)) {
+        const Addr output_begin = my_backing_addr;
+        const Addr output_end = backingWordAddr(my_max - 1) + my_word_size;
+        uint32_t page = 0;
+        panic_if(output_end <= output_begin ||
+                     !VirtualCombinerPageOrder::linePage(
+                         target->line_vaddr, output_begin, output_end,
+                         my_word_size, page) ||
+                     page >= VirtualCombinerPageOrder::MaxPages ||
+                     !virtual_combine_page_ready.enqueue(
+                         target - virtual_combine_slots.data(), page),
+                 "I[%d] could not enqueue full combiner line 0x%lx in "
+                 "page-ready metadata\n", my_indirect_id, target->line_vaddr);
+    }
     virtual_combine_words++;
     attribution_combiner_words++;
     if (usesBoundedDirectIndexPasses()) {
@@ -6689,8 +6720,51 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
 
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
+    if (maa->virtual_page_ordered_combiner_drain && my_max > 0) {
+        const Addr output_begin = my_backing_addr;
+        const Addr output_end = backingWordAddr(my_max - 1) + my_word_size;
+        panic_if(output_end <= output_begin,
+                 "I[%d] page-ordered combiner output range wrapped\n",
+                 my_indirect_id);
+
+        // The selector is a fixed MaxPages (16) ready-head encoder.  Full
+        // lines entered their intrusive page queue on the partial-to-full
+        // transition, so no combiner slot is compared here.
+        while (virtual_outstanding_writes <
+               virtual_max_outstanding_writes_limit) {
+            uint32_t selected_page = 0;
+            const int selected =
+                virtual_combine_page_ready.firstReady(selected_page);
+            if (selected == -1)
+                break;
+            auto &slot = virtual_combine_slots[selected];
+            panic_if(!slot.valid || slot.valid_words != full_mask,
+                     "I[%d] page-ready slot %d is not a full combiner line\n",
+                     my_indirect_id, selected);
+            if (!createRetirementWrite(slot.line_vaddr, block_size,
+                                       slot.data.data()))
+                break;
+            (*maa->stats.IND_VirtPageOrderedDrainSelections[my_indirect_id])++;
+            if (virtual_combine_page_ready.hasReadyLater(selected_page)) {
+                (*maa->stats.IND_VirtPageOrderedDrainDeferrals[
+                    my_indirect_id])++;
+            }
+            panic_if(!virtual_combine_page_ready.retireFullLine(selected),
+                     "I[%d] page-ready slot %d could not retire\n",
+                     my_indirect_id, selected);
+            virtual_full_line_writes++;
+            panic_if(virtual_combine_words < my_words_per_cl,
+                     "I[%d] virtual full-line accounting underflow\n",
+                     my_indirect_id);
+            virtual_combine_words -= my_words_per_cl;
+            slot = VirtualCombineSlot();
+        }
+    }
     for (auto &slot : virtual_combine_slots) {
         if (!slot.valid)
+            continue;
+        if (maa->virtual_page_ordered_combiner_drain &&
+            slot.valid_words == full_mask)
             continue;
         if (slot.valid_words == full_mask &&
             virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {

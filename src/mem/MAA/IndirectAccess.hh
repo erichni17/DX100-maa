@@ -22,6 +22,7 @@
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/Tables.hh"
+#include "mem/MAA/VirtualCombinerPageOrder.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
@@ -130,6 +131,7 @@ protected:
         std::array<uint8_t, 64> data{};
     };
     std::vector<VirtualCombineSlot> virtual_combine_slots;
+    VirtualCombinerPageOrder virtual_combine_page_ready;
     int virtual_combine_words_configured = 0;
     int virtual_combine_ways = 0;
     int virtual_combine_victim_policy = 0;

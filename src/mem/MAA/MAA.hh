@@ -429,6 +429,7 @@ public:
     unsigned int virtual_combine_words;
     unsigned int virtual_combine_ways;
     unsigned int virtual_combine_victim_policy;
+    bool virtual_page_ordered_combiner_drain;
     unsigned int virtual_combine_banks;
     unsigned int virtual_response_slots;
     unsigned int virtual_response_words;
@@ -979,6 +980,8 @@ public:
         std::vector<statistics::Scalar *> IND_VirtCombineWordHighWater;
         std::vector<statistics::Scalar *> IND_VirtFullLineWrites;
         std::vector<statistics::Scalar *> IND_VirtPartialWrites;
+        std::vector<statistics::Scalar *> IND_VirtPageOrderedDrainSelections;
+        std::vector<statistics::Scalar *> IND_VirtPageOrderedDrainDeferrals;
         std::vector<statistics::Scalar *> IND_VirtCombineBankAccesses;
         std::vector<statistics::Scalar *> IND_VirtCombineBankConflictCycles;
         std::vector<statistics::Scalar *> IND_VirtWriteIssues;
