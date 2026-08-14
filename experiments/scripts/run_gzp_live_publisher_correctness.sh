@@ -24,7 +24,9 @@ m5op="$root/util/m5/src/abi/x86/m5op.S"
 mkdir -p "$out/artifacts"
 binary="$out/artifacts/gradzatp_gzp_live_publisher"
 selector="$out/artifacts/selector.txt"
+guest_env="$out/artifacts/guest.env"
 printf '%s\n' 'token_stream_ld soa_jit' > "$selector"
+printf '%s\n' 'OMP_NUM_THREADS=1' 'OMP_PROC_BIND=false' > "$guest_env"
 n=65536
 expected_publications=32
 expected_lines=8192
@@ -42,6 +44,7 @@ checkpoint_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint"
     "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB
     --max-checkpoints=1 --cmd "$binary" --options "$options"
+    --env "$guest_env"
 )
 restore_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/run"
@@ -73,7 +76,7 @@ restore_cmd=(
     --maa_virtual_words_per_cycle=4
     --maa_virtual_max_outstanding_writes=64 --maa_virtual_masked_writes
     --maa_direct_retirement_line_handoff
-    --cmd "$binary" --options "$options"
+    --cmd "$binary" --options "$options" --env "$guest_env"
 )
 
 {
@@ -86,7 +89,7 @@ restore_cmd=(
     printf 'restore_command='; printf '%q ' "${restore_cmd[@]}"; printf '\n'
 } > "$out/manifest.txt"
 sha256sum "$source_file" "$binary" "$gem5" "$config" "$ramulator" \
-    "$selector" > "$out/artifact_sha256.txt"
+    "$selector" "$guest_env" > "$out/artifact_sha256.txt"
 
 set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=1 \
