@@ -608,11 +608,19 @@ void IndirectAccessUnit::check_reset() {
     panic_if(virtual_combine_words != 0,
              "I[%d] virtual combiner still accounts for %d words\n",
              my_indirect_id, virtual_combine_words);
-    panic_if(maa->allIndirectPacketsSent(my_indirect_id) == false, "All indirect packets are not sent!\n");
-    panic_if(my_decode_start_tick != 0, "Decode start tick is not 0: %lu!\n", my_decode_start_tick);
-    panic_if(my_fill_start_tick != 0, "Fill start tick is not 0: %lu!\n", my_fill_start_tick);
-    panic_if(my_build_start_tick != 0, "Build start tick is not 0: %lu!\n", my_build_start_tick);
-    panic_if(my_request_start_tick != 0, "Request start tick is not 0: %lu!\n", my_request_start_tick);
+    panic_if(!virtual_combine_payload.empty(),
+             "I[%d] virtual combiner payload pool still owns %zu words\n",
+             my_indirect_id, virtual_combine_payload.used());
+    panic_if(!maa->allIndirectPacketsSent(my_indirect_id),
+             "All indirect packets are not sent!\n");
+    panic_if(my_decode_start_tick != 0,
+             "Decode start tick is not 0: %lu!\n", my_decode_start_tick);
+    panic_if(my_fill_start_tick != 0,
+             "Fill start tick is not 0: %lu!\n", my_fill_start_tick);
+    panic_if(my_build_start_tick != 0,
+             "Build start tick is not 0: %lu!\n", my_build_start_tick);
+    panic_if(my_request_start_tick != 0,
+             "Request start tick is not 0: %lu!\n", my_request_start_tick);
     panic_if(virtual_request_reason != VirtualRequestReason::None ||
                  virtual_request_reason_tick != 0 ||
                  virtual_request_attributed_ticks != 0 ||
@@ -3682,6 +3690,15 @@ void IndirectAccessUnit::executeInstruction() {
         panic_if(virtual_combine_words_limit <= 0,
                  "I[%d] virtual combiner must hold at least one word\n",
                  my_indirect_id);
+        if (isVirtualLoad()) {
+            const auto reset_result = virtual_combine_payload.reset(
+                static_cast<size_t>(virtual_combine_words_limit));
+            panic_if(reset_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not reset %d-word virtual payload "
+                     "pool: %s\n",
+                     my_indirect_id, virtual_combine_words_limit,
+                     VirtualCombinePayloadStore::resultName(reset_result));
+        }
         maa->stats.numInst++;
         (*maa->stats.IND_NumInsts[my_indirect_id])++;
         if (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
@@ -6569,6 +6586,11 @@ bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
 bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                                                    const uint8_t *data) {
     // Each logical gather iteration owns one non-aliasing backing-array word.
+    panic_if(virtual_combine_payload.used() !=
+                 static_cast<size_t>(virtual_combine_words),
+             "I[%d] virtual payload occupancy mismatch: %zu != %d\n",
+             my_indirect_id, virtual_combine_payload.used(),
+             virtual_combine_words);
     const Addr vaddr = backingWordAddr(itr);
     const Addr line_vaddr = vaddr & ~(block_size - 1);
     const unsigned word = (vaddr - line_vaddr) / my_word_size;
@@ -6591,10 +6613,13 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         if (!slot.valid && free_slot == nullptr)
             free_slot = &slot;
     }
-    if (virtual_combine_words == virtual_combine_words_limit)
+    if (virtual_combine_payload.full())
         drainVirtualCombiner(false);
-    const bool word_capacity_full =
-        virtual_combine_words == virtual_combine_words_limit;
+    panic_if(virtual_combine_payload.used() !=
+                 static_cast<size_t>(virtual_combine_words),
+             "I[%d] virtual payload occupancy diverged after drain\n",
+             my_indirect_id);
+    const bool word_capacity_full = virtual_combine_payload.full();
     const bool line_capacity_full = target == nullptr && free_slot == nullptr;
     if (word_capacity_full || line_capacity_full) {
         int victim_idx = -1;
@@ -6638,25 +6663,53 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
             victim_page_ready = false;
         };
         if (virtual_masked_writes && victim.valid_words != 0 &&
-            virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+            virtual_outstanding_writes <
+                virtual_max_outstanding_writes_limit) {
             const int words = __builtin_popcount(victim.valid_words);
+            VirtualCombinePayloadStore::LineData line_data{};
+            const auto copy_result = virtual_combine_payload.copyLine(
+                victim.word_refs, victim.valid_words, my_word_size, line_data);
+            panic_if(copy_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not stage masked victim 0x%lx: %s\n",
+                     my_indirect_id, victim.line_vaddr,
+                     VirtualCombinePayloadStore::resultName(copy_result));
             if (createRetirementWrite(victim.line_vaddr, block_size,
-                                      victim.data.data(), victim.valid_words)) {
+                                      line_data.data(), victim.valid_words)) {
                 retire_full_victim();
+                const auto release_result =
+                    virtual_combine_payload.releaseMasked(
+                        victim.word_refs, victim.valid_words);
+                panic_if(
+                    release_result != VirtualCombinePayloadStore::Result::Ok,
+                    "I[%d] could not release masked victim 0x%lx: %s\n",
+                    my_indirect_id, victim.line_vaddr,
+                    VirtualCombinePayloadStore::resultName(release_result));
                 virtual_combine_words -= words;
                 virtual_partial_word_writes++;
                 victim.valid_words = 0;
             }
         } else {
             while (victim.valid_words != 0 &&
-                   virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+                   virtual_outstanding_writes <
+                       virtual_max_outstanding_writes_limit) {
                 unsigned victim_word = __builtin_ctz(victim.valid_words);
+                const uint8_t *word_data = virtual_combine_payload.data(
+                    victim.word_refs[victim_word]);
+                panic_if(word_data == nullptr,
+                         "I[%d] victim 0x%lx word %u has no payload\n",
+                         my_indirect_id, victim.line_vaddr, victim_word);
                 if (!createRetirementWrite(
                         victim.line_vaddr + victim_word * my_word_size,
-                        my_word_size,
-                        victim.data.data() + victim_word * my_word_size))
+                        my_word_size, word_data))
                     break;
                 retire_full_victim();
+                const auto release_result = virtual_combine_payload.release(
+                    victim.word_refs[victim_word]);
+                panic_if(
+                    release_result != VirtualCombinePayloadStore::Result::Ok,
+                    "I[%d] could not release victim 0x%lx word %u: %s\n",
+                    my_indirect_id, victim.line_vaddr, victim_word,
+                    VirtualCombinePayloadStore::resultName(release_result));
                 victim.valid_words &= ~(1U << victim_word);
                 panic_if(virtual_combine_words == 0,
                          "I[%d] virtual word accounting underflow\n",
@@ -6681,6 +6734,17 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         target = free_slot;
     panic_if(target == nullptr,
              "I[%d] virtual combiner has no insertion slot\n", my_indirect_id);
+    panic_if(target->valid_words & word_bit,
+             "I[%d] duplicate virtual output word %d at 0x%lx\n",
+             my_indirect_id, word, line_vaddr);
+    const auto allocate_result = virtual_combine_payload.allocate(
+        data, my_word_size, target->word_refs[word]);
+    if (allocate_result == VirtualCombinePayloadStore::Result::Exhausted)
+        return false;
+    panic_if(allocate_result != VirtualCombinePayloadStore::Result::Ok,
+             "I[%d] could not allocate virtual output word %d at 0x%lx: %s\n",
+             my_indirect_id, word, line_vaddr,
+             VirtualCombinePayloadStore::resultName(allocate_result));
     if (!target->valid) {
         target->valid = true;
         target->line_vaddr = line_vaddr;
@@ -6690,10 +6754,6 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         virtual_max_combine_occupancy =
             std::max(virtual_max_combine_occupancy, occupancy);
     }
-    panic_if(target->valid_words & word_bit,
-             "I[%d] duplicate virtual output word %d at 0x%lx\n",
-             my_indirect_id, word, line_vaddr);
-    std::memcpy(target->data.data() + word * my_word_size, data, my_word_size);
     target->valid_words |= word_bit;
     if (maa->virtual_page_ordered_combiner_drain &&
         target->valid_words == ((1U << my_words_per_cl) - 1)) {
@@ -6724,6 +6784,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
              "I[%d] virtual combiner exceeded word capacity: %d/%d\n",
              my_indirect_id, virtual_combine_words,
              virtual_combine_words_limit);
+    panic_if(virtual_combine_payload.used() !=
+                 static_cast<size_t>(virtual_combine_words),
+             "I[%d] virtual payload occupancy mismatch after insert\n",
+             my_indirect_id);
     virtual_max_combine_words =
         std::max(virtual_max_combine_words, virtual_combine_words);
     return true;
@@ -6731,6 +6795,10 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
 
 void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
     const uint16_t full_mask = (1U << my_words_per_cl) - 1;
+    panic_if(virtual_combine_payload.used() !=
+                 static_cast<size_t>(virtual_combine_words),
+             "I[%d] virtual payload occupancy mismatch before drain\n",
+             my_indirect_id);
     if (maa->virtual_page_ordered_combiner_drain && my_max > 0) {
         const Addr output_begin = my_backing_addr;
         const Addr output_end = backingWordAddr(my_max - 1) + my_word_size;
@@ -6752,8 +6820,15 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             panic_if(!slot.valid || slot.valid_words != full_mask,
                      "I[%d] page-ready slot %d is not a full combiner line\n",
                      my_indirect_id, selected);
+            VirtualCombinePayloadStore::LineData line_data{};
+            const auto copy_result = virtual_combine_payload.copyLine(
+                slot.word_refs, slot.valid_words, my_word_size, line_data);
+            panic_if(copy_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not stage page-ready slot %d: %s\n",
+                     my_indirect_id, selected,
+                     VirtualCombinePayloadStore::resultName(copy_result));
             if (!createRetirementWrite(slot.line_vaddr, block_size,
-                                       slot.data.data()))
+                                       line_data.data()))
                 break;
             (*maa->stats.IND_VirtPageOrderedDrainSelections[my_indirect_id])++;
             if (virtual_combine_page_ready.hasReadyLater(selected_page)) {
@@ -6763,6 +6838,12 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             panic_if(!virtual_combine_page_ready.retireFullLine(selected),
                      "I[%d] page-ready slot %d could not retire\n",
                      my_indirect_id, selected);
+            const auto release_result = virtual_combine_payload.releaseMasked(
+                slot.word_refs, slot.valid_words);
+            panic_if(release_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not release page-ready slot %d: %s\n",
+                     my_indirect_id, selected,
+                     VirtualCombinePayloadStore::resultName(release_result));
             virtual_full_line_writes++;
             panic_if(virtual_combine_words < my_words_per_cl,
                      "I[%d] virtual full-line accounting underflow\n",
@@ -6778,10 +6859,24 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             slot.valid_words == full_mask)
             continue;
         if (slot.valid_words == full_mask &&
-            virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+            virtual_outstanding_writes <
+                virtual_max_outstanding_writes_limit) {
+            VirtualCombinePayloadStore::LineData line_data{};
+            const auto copy_result = virtual_combine_payload.copyLine(
+                slot.word_refs, slot.valid_words, my_word_size, line_data);
+            panic_if(copy_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not stage full combiner line 0x%lx: %s\n",
+                     my_indirect_id, slot.line_vaddr,
+                     VirtualCombinePayloadStore::resultName(copy_result));
             if (!createRetirementWrite(slot.line_vaddr, block_size,
-                                       slot.data.data()))
+                                       line_data.data()))
                 continue;
+            const auto release_result = virtual_combine_payload.releaseMasked(
+                slot.word_refs, slot.valid_words);
+            panic_if(release_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not release full combiner line 0x%lx: %s\n",
+                     my_indirect_id, slot.line_vaddr,
+                     VirtualCombinePayloadStore::resultName(release_result));
             virtual_full_line_writes++;
             panic_if(virtual_combine_words < my_words_per_cl,
                      "I[%d] virtual full-line accounting underflow\n",
@@ -6793,10 +6888,26 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         if (!flush_partial)
             continue;
         if (virtual_masked_writes && slot.valid_words != 0 &&
-            virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+            virtual_outstanding_writes <
+                virtual_max_outstanding_writes_limit) {
             const int words = __builtin_popcount(slot.valid_words);
+            VirtualCombinePayloadStore::LineData line_data{};
+            const auto copy_result = virtual_combine_payload.copyLine(
+                slot.word_refs, slot.valid_words, my_word_size, line_data);
+            panic_if(copy_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not stage masked combiner line 0x%lx: %s\n",
+                     my_indirect_id, slot.line_vaddr,
+                     VirtualCombinePayloadStore::resultName(copy_result));
             if (createRetirementWrite(slot.line_vaddr, block_size,
-                                      slot.data.data(), slot.valid_words)) {
+                                      line_data.data(), slot.valid_words)) {
+                const auto release_result =
+                    virtual_combine_payload.releaseMasked(
+                        slot.word_refs, slot.valid_words);
+                panic_if(
+                    release_result != VirtualCombinePayloadStore::Result::Ok,
+                    "I[%d] could not release masked combiner line 0x%lx: %s\n",
+                    my_indirect_id, slot.line_vaddr,
+                    VirtualCombinePayloadStore::resultName(release_result));
                 virtual_combine_words -= words;
                 virtual_partial_word_writes++;
                 slot = VirtualCombineSlot();
@@ -6804,12 +6915,24 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
             continue;
         }
         while (slot.valid_words != 0 &&
-               virtual_outstanding_writes < virtual_max_outstanding_writes_limit) {
+               virtual_outstanding_writes <
+                   virtual_max_outstanding_writes_limit) {
             unsigned word = __builtin_ctz(slot.valid_words);
+            const uint8_t *word_data = virtual_combine_payload.data(
+                slot.word_refs[word]);
+            panic_if(word_data == nullptr,
+                     "I[%d] combiner line 0x%lx word %u has no payload\n",
+                     my_indirect_id, slot.line_vaddr, word);
             if (!createRetirementWrite(
                     slot.line_vaddr + word * my_word_size, my_word_size,
-                    slot.data.data() + word * my_word_size))
+                    word_data))
                 break;
+            const auto release_result = virtual_combine_payload.release(
+                slot.word_refs[word]);
+            panic_if(release_result != VirtualCombinePayloadStore::Result::Ok,
+                     "I[%d] could not release line 0x%lx word %u: %s\n",
+                     my_indirect_id, slot.line_vaddr, word,
+                     VirtualCombinePayloadStore::resultName(release_result));
             slot.valid_words &= ~(1U << word);
             panic_if(virtual_combine_words == 0,
                      "I[%d] virtual word accounting underflow\n", my_indirect_id);
@@ -6827,13 +6950,19 @@ void IndirectAccessUnit::drainVirtualCombiner(bool flush_partial) {
         macro_backing_credit_stall_tick = curTick();
         macro_backing_credit_stalls++;
     }
+    panic_if(virtual_combine_payload.used() !=
+                 static_cast<size_t>(virtual_combine_words),
+             "I[%d] virtual payload occupancy mismatch after drain\n",
+             my_indirect_id);
 }
 
 bool IndirectAccessUnit::virtualCombinerEmpty() const {
-    return std::all_of(virtual_combine_slots.begin(), virtual_combine_slots.end(),
-                       [](const VirtualCombineSlot &slot) {
-                           return !slot.valid;
-                       });
+    return virtual_combine_payload.empty() &&
+        std::all_of(virtual_combine_slots.begin(),
+                    virtual_combine_slots.end(),
+                    [](const VirtualCombineSlot &slot) {
+                        return !slot.valid;
+                    });
 }
 
 bool IndirectAccessUnit::boundedSourceResponsesComplete() const {

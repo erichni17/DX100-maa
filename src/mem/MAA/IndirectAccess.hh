@@ -23,6 +23,7 @@
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/Tables.hh"
+#include "mem/MAA/VirtualCombinePayloadStore.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
 #include "mem/MAA/VirtualResponsePayloadStore.hh"
 #include "mem/packet.hh"
@@ -130,9 +131,11 @@ protected:
         bool valid = false;
         Addr line_vaddr = 0;
         uint16_t valid_words = 0;
-        std::array<uint8_t, 64> data{};
+        VirtualCombinePayloadStore::LineRefs word_refs =
+            VirtualCombinePayloadStore::emptyLineRefs();
     };
     std::vector<VirtualCombineSlot> virtual_combine_slots;
+    VirtualCombinePayloadStore virtual_combine_payload;
     VirtualCombinerPageOrder virtual_combine_page_ready;
     int virtual_combine_words_configured = 0;
     int virtual_combine_ways = 0;
