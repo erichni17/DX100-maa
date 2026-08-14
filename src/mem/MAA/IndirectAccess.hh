@@ -293,6 +293,7 @@ public:
                   int _num_cores,
                   MAA *_maa);
     Status getState() const { return state; }
+    bool hasLiveSoaJitState() const;
     bool scheduleNextExecution(bool force = false);
     void scheduleExecuteInstructionEvent(int latency = 0);
     void setInstruction(Instruction *_instruction);
@@ -518,6 +519,7 @@ protected:
                   "SoA/JIT RMW context exceeds the 128-byte budget");
     static constexpr size_t SoaJitContexts = 1;
     std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
+    bool soa_jit_operation_active = false;
     bool soa_jit_all_rows_claimed = false;
     uint64_t soa_jit_next_generation = 1;
     uint64_t soa_jit_generation = 0;

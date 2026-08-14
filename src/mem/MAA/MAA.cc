@@ -4200,6 +4200,24 @@ MAA::notifyLogicalSPDResponse()
     scheduleLogicalSPDEvent();
 }
 
+bool
+MAA::hasLiveSoaJitState() const
+{
+    if (ifile->hasLiveSoaJitRmw())
+        return true;
+    if (std::any_of(my_instructions.begin(), my_instructions.end(),
+                    [](const InstructionPtr instruction) {
+                        return instruction != nullptr &&
+                               instruction->isSoaJitRmw();
+                    }))
+        return true;
+    for (unsigned int unit = 0; unit < num_indirect_units_total; ++unit) {
+        if (indirectAccessUnits[unit].hasLiveSoaJitState())
+            return true;
+    }
+    return false;
+}
+
 DrainState
 MAA::drain()
 {
@@ -4220,6 +4238,10 @@ MAA::drain()
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD checkpoint/drain requested with live state; "
              "serialization is unsupported\n");
+    panic_if(hasLiveSoaJitState(),
+             "SoA/JIT checkpoint/drain requested with a live instruction, "
+             "packet, context, read, or WriteResp; serialization is "
+             "unsupported\n");
     return DrainState::Drained;
 }
 
@@ -4239,6 +4261,8 @@ MAA::drainResume()
              "Direct-retirement drain resumed with live line credits\n");
     panic_if(!logicalSpdBridge->allQuiescent(),
              "Logical SPD drain resumed with non-quiescent live state\n");
+    panic_if(hasLiveSoaJitState(),
+             "SoA/JIT drain resumed with live protocol state\n");
     logicalSpdBridge->reopenAdmission();
 }
 

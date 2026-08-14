@@ -1,8 +1,11 @@
 #include "mem/MAA/IF.hh"
-#include "mem/MAA/MAA.hh"
-#include "debug/MAAController.hh"
-#include "mem/MAA/SPD.hh"
+
 #include <cassert>
+
+#include "debug/MAAController.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/SPD.hh"
+#include "mem/MAA/SoaJitSafety.hh"
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -62,6 +65,8 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              core_id(-1),
                              maa_id(-1),
                              func_unit_id(-1),
+                             memoryPermitReserved(false),
+                             memoryPermitGranted(false),
                              controllerManaged(false),
                              controllerAction(
                                  TransparentSPDController::Action::None),
@@ -177,7 +182,7 @@ int Instruction::getWordSize(int tile_id) {
         }
     } else if (tile_id == dst2SpdID) {
         if (isSoaJitRmw())
-            return WordSize();
+            return SoaJitSafety::CompletionTokenBytes;
         switch (opcode) {
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::RANGE_LOOP: {
@@ -191,6 +196,55 @@ int Instruction::getWordSize(int tile_id) {
     }
     assert(false);
     return -1;
+}
+size_t
+Instruction::getMemoryAccesses(
+    std::array<MemoryAccess, MaxMemoryAccesses> &accesses) const
+{
+    accesses.fill(MemoryAccess{});
+    size_t count = 0;
+    auto append = [&](int8_t region, AccessType type) {
+        if (region < 0 || type == AccessType::COMPUTE)
+            return;
+        for (size_t index = 0; index < count; ++index) {
+            if (accesses[index].regionID != region)
+                continue;
+            if (type == AccessType::WRITE)
+                accesses[index].type = AccessType::WRITE;
+            return;
+        }
+        panic_if(count == accesses.size(),
+                 "Instruction memory-access set overflowed\n");
+        accesses[count++] = {region, type};
+    };
+
+    if (isSoaJitRmw()) {
+        append(addrRangeID, AccessType::WRITE);
+        append(backingAddrRangeID, AccessType::READ);
+        append(indexAddrRangeID, AccessType::READ);
+        if (predicateAddr != 0)
+            append(predicateAddrRangeID, AccessType::READ);
+    } else {
+        append(addrRangeID, accessType);
+    }
+    return count;
+}
+bool
+Instruction::hasMemoryHazard(const Instruction &other) const
+{
+    std::array<MemoryAccess, MaxMemoryAccesses> mine;
+    std::array<MemoryAccess, MaxMemoryAccesses> theirs;
+    const size_t mine_count = getMemoryAccesses(mine);
+    const size_t their_count = other.getMemoryAccesses(theirs);
+    for (size_t lhs = 0; lhs < mine_count; ++lhs) {
+        for (size_t rhs = 0; rhs < their_count; ++rhs) {
+            if (mine[lhs].regionID == theirs[rhs].regionID &&
+                (mine[lhs].type == AccessType::WRITE ||
+                 theirs[rhs].type == AccessType::WRITE))
+                return true;
+        }
+    }
+    return false;
 }
 int Instruction::WordSize() {
     switch (datatype) {
@@ -469,12 +523,12 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
                     return false;
                 }
             }
-            if (_instruction.addrRangeID == instructions[maa_id][i].addrRangeID) {
-                if ((_instruction.accessType == Instruction::AccessType::WRITE && instructions[maa_id][i].accessType != Instruction::AccessType::COMPUTE) || // WAR hazard
-                    (_instruction.accessType == Instruction::AccessType::READ && instructions[maa_id][i].accessType == Instruction::AccessType::WRITE)) {    // RAW hazard
-                    DPRINTF(MAAController, "%s: %s cannot be pushed b/c of %s!\n", __func__, _instruction.print(), instructions[maa_id][i].print());
-                    return false;
-                }
+            if (_instruction.hasMemoryHazard(instructions[maa_id][i])) {
+                DPRINTF(MAAController,
+                        "%s: %s cannot be pushed b/c of memory-region "
+                        "hazard with %s!\n", __func__,
+                        _instruction.print(), instructions[maa_id][i].print());
+                return false;
             }
         }
     }
@@ -549,6 +603,18 @@ bool IF::isCompletionOnlyTile(int maa_id, int tile_id) const {
     panic_if(tile_id < 0 || tile_id >= static_cast<int>(num_tiles),
              "Invalid tile id %d\n", tile_id);
     return completion_only_tiles[maa_id][tile_id];
+}
+bool
+IF::hasLiveSoaJitRmw() const
+{
+    for (unsigned int maa_id = 0; maa_id < num_maas; ++maa_id) {
+        for (unsigned int slot = 0; slot < num_instructions_per_maa; ++slot) {
+            if (valids[maa_id][slot] &&
+                instructions[maa_id][slot].isSoaJitRmw())
+                return true;
+        }
+    }
+    return false;
 }
 Instruction *IF::getReady(FuncUnitType funcUniType, int maa_id) {
     int rand_base = rand() % num_instructions_per_maa;

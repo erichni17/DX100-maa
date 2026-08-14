@@ -1,10 +1,14 @@
 #include "mem/MAA/Invalidator.hh"
+
+#include <algorithm>
+#include <array>
+#include <cassert>
+
 #include "base/logging.hh"
 #include "base/trace.hh"
+#include "debug/MAAInvalidator.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
-#include "debug/MAAInvalidator.hh"
-#include <cassert>
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
@@ -55,6 +59,8 @@ void Invalidator::allocate(int _num_maas,
     state = Status::Idle;
 }
 bool Invalidator::getAddrRegionPermit(Instruction *instruction) {
+    if (instruction->isSoaJitRmw())
+        return getSoaJitAddrRegionPermit(instruction);
     int8_t region_id = instruction->addrRangeID;
     int maa_id = instruction->maa_id;
     if (instruction->accessType == Instruction::AccessType::COMPUTE) {
@@ -204,6 +210,166 @@ bool Invalidator::getAddrRegionPermit(Instruction *instruction) {
     panic_if(true, "Instruction %s is not in any state!\n", instruction->print());
     return false;
 }
+bool
+Invalidator::getSoaJitAddrRegionPermit(Instruction *instruction)
+{
+    using Access = Instruction::MemoryAccess;
+    using AccessType = Instruction::AccessType;
+    enum class Action : uint8_t
+    {
+        UseShared,
+        UseModified,
+        TransitionShared,
+        TransitionModified,
+    };
+
+    panic_if(!instruction->hasValidSoaJitRmwOperands(),
+             "Malformed SoA/JIT instruction requested region permits\n");
+    panic_if(instruction->maa_id < 0 || instruction->maa_id >= num_maas,
+             "SoA/JIT instruction has invalid MAA id %d\n",
+             instruction->maa_id);
+    panic_if(instruction->addrRangeID < 0 ||
+                 instruction->backingAddrRangeID < 0 ||
+                 instruction->indexAddrRangeID < 0 ||
+                 (instruction->predicateAddr != 0 &&
+                  instruction->predicateAddrRangeID < 0),
+             "SoA/JIT instruction is missing a registered region\n");
+    std::array<Access, Instruction::MaxMemoryAccesses> accesses;
+    const size_t count = instruction->getMemoryAccesses(accesses);
+    panic_if(count == 0, "SoA/JIT instruction has no memory regions\n");
+    for (size_t index = 0; index < count; ++index) {
+        panic_if(accesses[index].regionID >= num_tiles,
+                 "SoA/JIT region %d exceeds Invalidator region table\n",
+                 accesses[index].regionID);
+    }
+
+    const int maa_id = instruction->maa_id;
+    if (instruction->memoryPermitGranted)
+        return true;
+
+    if (instruction->memoryPermitReserved) {
+        bool waiting = false;
+        for (size_t index = 0; index < count; ++index) {
+            RGStatus &status = rg_status[maa_id][accesses[index].regionID];
+            if (accesses[index].type == AccessType::READ) {
+                if (status == RGStatus::TransientShared) {
+                    waiting = true;
+                } else if (status == RGStatus::UnusedShared) {
+                    status = RGStatus::UsingShared;
+                } else {
+                    panic_if(status != RGStatus::UsingShared &&
+                                 status != RGStatus::UsingModified,
+                             "Reserved SoA/JIT READ region %d diverged to "
+                             "%s\n", accesses[index].regionID,
+                             rg_status_names[static_cast<uint8_t>(status)]);
+                }
+            } else {
+                if (status == RGStatus::TransientModified) {
+                    waiting = true;
+                } else if (status == RGStatus::UnusedModified) {
+                    status = RGStatus::UsingModified;
+                } else {
+                    panic_if(status != RGStatus::UsingModified,
+                             "Reserved SoA/JIT WRITE region %d diverged to "
+                             "%s\n", accesses[index].regionID,
+                             rg_status_names[static_cast<uint8_t>(status)]);
+                }
+            }
+        }
+        if (waiting)
+            return false;
+        instruction->memoryPermitGranted = true;
+        return true;
+    }
+
+    std::array<Action, Instruction::MaxMemoryAccesses> actions;
+    for (size_t index = 0; index < count; ++index) {
+        const int region_id = accesses[index].regionID;
+        const RGStatus status = rg_status[maa_id][region_id];
+        if (accesses[index].type == AccessType::READ) {
+            if (status == RGStatus::Invalid) {
+                for (int other = 0; other < num_maas; ++other) {
+                    const RGStatus peer = rg_status[other][region_id];
+                    if (peer == RGStatus::TransientModified ||
+                        peer == RGStatus::UnusedModified ||
+                        peer == RGStatus::UsingModified)
+                        return false;
+                }
+                actions[index] = Action::TransitionShared;
+            } else if (status == RGStatus::UnusedShared ||
+                       status == RGStatus::UsedShared) {
+                actions[index] = Action::UseShared;
+            } else if (status == RGStatus::UsedModified) {
+                actions[index] = Action::UseModified;
+            } else {
+                return false;
+            }
+        } else {
+            if (status == RGStatus::Invalid ||
+                status == RGStatus::UsedShared) {
+                for (int other = 0; other < num_maas; ++other) {
+                    const RGStatus peer = rg_status[other][region_id];
+                    if (peer == RGStatus::TransientModified ||
+                        peer == RGStatus::UnusedModified ||
+                        peer == RGStatus::UsingModified ||
+                        peer == RGStatus::TransientShared ||
+                        peer == RGStatus::UnusedShared ||
+                        peer == RGStatus::UsingShared)
+                        return false;
+                }
+                actions[index] = Action::TransitionModified;
+            } else if (status == RGStatus::UnusedModified ||
+                       status == RGStatus::UsedModified) {
+                actions[index] = Action::UseModified;
+            } else {
+                return false;
+            }
+        }
+    }
+
+    bool has_transient = false;
+    for (size_t index = 0; index < count; ++index) {
+        const int region_id = accesses[index].regionID;
+        switch (actions[index]) {
+          case Action::UseShared:
+            rg_status[maa_id][region_id] = RGStatus::UsingShared;
+            break;
+          case Action::UseModified:
+            rg_status[maa_id][region_id] = RGStatus::UsingModified;
+            break;
+          case Action::TransitionShared:
+            for (int other = 0; other < num_maas; ++other) {
+                if (rg_status[other][region_id] == RGStatus::UsedModified)
+                    rg_status[other][region_id] = RGStatus::UsedShared;
+            }
+            rg_status[maa_id][region_id] = RGStatus::TransientShared;
+            has_transient = true;
+            break;
+          case Action::TransitionModified:
+            for (int other = 0; other < num_maas; ++other) {
+                if (rg_status[other][region_id] == RGStatus::UsedModified ||
+                    rg_status[other][region_id] == RGStatus::UsedShared)
+                    rg_status[other][region_id] = RGStatus::Invalid;
+            }
+            rg_status[maa_id][region_id] = RGStatus::TransientModified;
+            has_transient = true;
+            break;
+        }
+    }
+    instruction->memoryPermitReserved = true;
+    if (!has_transient) {
+        instruction->memoryPermitGranted = true;
+        return true;
+    }
+    panic_if(std::find(soaTransientInstructions.begin(),
+                       soaTransientInstructions.end(), instruction) !=
+                 soaTransientInstructions.end(),
+             "SoA/JIT instruction already has a pending permit transition\n");
+    soaTransientInstructions.push_back(instruction);
+    soaTransientTicks.push_back(maa->getClockEdge(Cycles(100)));
+    scheduleTransientInstructionEvent(100);
+    return false;
+}
 void Invalidator::transientInstruction() {
     auto instruction_it = transientInstructions.begin();
     auto tick_it = transientTicks.begin();
@@ -242,11 +408,51 @@ void Invalidator::transientInstruction() {
     if (packet_remaining) {
         scheduleTransientInstructionEvent(maa->getTicksToCycles(tick_remaining));
     }
+    auto soa_instruction_it = soaTransientInstructions.begin();
+    auto soa_tick_it = soaTransientTicks.begin();
+    while (soa_instruction_it != soaTransientInstructions.end() &&
+           soa_tick_it != soaTransientTicks.end()) {
+        Instruction *instruction = *soa_instruction_it;
+        const Tick tick = *soa_tick_it;
+        if (tick > curTick()) {
+            scheduleTransientInstructionEvent(
+                maa->getTicksToCycles(tick - curTick()));
+            break;
+        }
+        std::array<Instruction::MemoryAccess,
+                   Instruction::MaxMemoryAccesses> accesses;
+        const size_t count = instruction->getMemoryAccesses(accesses);
+        panic_if(!instruction->memoryPermitReserved ||
+                     instruction->memoryPermitGranted,
+                 "SoA/JIT transient completed without reserved ownership\n");
+        for (size_t index = 0; index < count; ++index) {
+            RGStatus &status =
+                rg_status[instruction->maa_id][accesses[index].regionID];
+            if (status == RGStatus::TransientShared)
+                status = RGStatus::UnusedShared;
+            else if (status == RGStatus::TransientModified)
+                status = RGStatus::UnusedModified;
+            else
+                panic_if(status != RGStatus::UsingShared &&
+                             status != RGStatus::UsingModified,
+                         "SoA/JIT reserved region %d left transient in %s\n",
+                         accesses[index].regionID,
+                         rg_status_names[static_cast<uint8_t>(status)]);
+        }
+        transient_happenned = true;
+        soa_instruction_it =
+            soaTransientInstructions.erase(soa_instruction_it);
+        soa_tick_it = soaTransientTicks.erase(soa_tick_it);
+    }
     if (transient_happenned) {
         maa->scheduleIssueInstructionEvent();
     }
 }
 void Invalidator::finishInstruction(Instruction *instruction) {
+    if (instruction->isSoaJitRmw()) {
+        finishSoaJitAddrRegionPermit(instruction);
+        return;
+    }
     if (instruction->accessType == Instruction::AccessType::READ) {
         panic_if(rg_status[instruction->maa_id][instruction->addrRangeID] != RGStatus::UsingShared && rg_status[instruction->maa_id][instruction->addrRangeID] != RGStatus::UsingModified, "Instruction %s is not in UsingShared or UsingModified state: %s!\n", instruction->print(), rg_status_names[(uint8_t)(rg_status[instruction->maa_id][instruction->addrRangeID])]);
         if (rg_status[instruction->maa_id][instruction->addrRangeID] == RGStatus::UsingShared) {
@@ -261,6 +467,37 @@ void Invalidator::finishInstruction(Instruction *instruction) {
         rg_status[instruction->maa_id][instruction->addrRangeID] = RGStatus::UsedModified;
         DPRINTF(MAAInvalidator, "Region[%d][%d] changed to UsedModified because of finishing WRITE for instruction %s!\n", instruction->maa_id, instruction->addrRangeID, instruction->print());
     }
+}
+void
+Invalidator::finishSoaJitAddrRegionPermit(Instruction *instruction)
+{
+    panic_if(!instruction->memoryPermitReserved ||
+                 !instruction->memoryPermitGranted,
+             "SoA/JIT instruction retired without all region permits\n");
+    std::array<Instruction::MemoryAccess,
+               Instruction::MaxMemoryAccesses> accesses;
+    const size_t count = instruction->getMemoryAccesses(accesses);
+    for (size_t index = 0; index < count; ++index) {
+        RGStatus &status =
+            rg_status[instruction->maa_id][accesses[index].regionID];
+        if (accesses[index].type == Instruction::AccessType::READ) {
+            panic_if(status != RGStatus::UsingShared &&
+                         status != RGStatus::UsingModified,
+                     "SoA/JIT READ region %d retired in %s\n",
+                     accesses[index].regionID,
+                     rg_status_names[static_cast<uint8_t>(status)]);
+            status = status == RGStatus::UsingShared
+                ? RGStatus::UsedShared : RGStatus::UsedModified;
+        } else {
+            panic_if(status != RGStatus::UsingModified,
+                     "SoA/JIT WRITE region %d retired in %s\n",
+                     accesses[index].regionID,
+                     rg_status_names[static_cast<uint8_t>(status)]);
+            status = RGStatus::UsedModified;
+        }
+    }
+    instruction->memoryPermitGranted = false;
+    instruction->memoryPermitReserved = false;
 }
 int Invalidator::get_cl_id(int tile_id, int element_id, int word_size) {
     return (int)((tile_id * num_tile_elements * 4 + element_id * word_size) / 64);

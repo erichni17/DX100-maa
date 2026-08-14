@@ -20,6 +20,7 @@
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/SPD.hh"
+#include "mem/MAA/SoaJitSafety.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
 #include "sim/cur_tick.hh"
@@ -1238,6 +1239,11 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
 {
     panic_if(!isSoaJitRmw(),
              "I[%d] SoA/JIT span validation used by another shape\n",
+             my_indirect_id);
+    panic_if(!SoaJitSafety::typedOperandsAligned(
+                 my_base_addr, my_backing_addr, my_index_addr,
+                 my_predicate_addr, my_word_size),
+             "I[%d] misaligned typed SoA/JIT operand reached decode\n",
              my_indirect_id);
     if (my_max == 0)
         return;
@@ -3352,17 +3358,53 @@ void IndirectAccessUnit::fillRowTable(
                 : maa->spd->getData<uint32_t>(my_idx_tile, logical_itr);
             if (!isDirectIndexLoad())
                 num_spd_read_condidx_accesses++;
+            if (isSoaJitRmw()) {
+                const Addr available = my_max_addr - my_min_addr;
+                panic_if(my_base_addr < my_min_addr ||
+                             my_base_addr >= my_max_addr ||
+                             available < static_cast<Addr>(my_word_size) ||
+                             my_max_addr - my_base_addr <
+                                 static_cast<Addr>(my_word_size) ||
+                             static_cast<Addr>(idx) >
+                                 (my_max_addr - my_base_addr - my_word_size) /
+                                     my_word_size,
+                         "I[%d] SoA/JIT A word %u exceeds registered "
+                         "range [0x%lx, 0x%lx)\n",
+                         my_indirect_id, idx, my_min_addr, my_max_addr);
+            }
             Addr vaddr = my_base_addr + my_word_size * idx;
-            panic_if(vaddr < my_min_addr || vaddr >= my_max_addr, "I[%d] %s: vaddr 0x%lx out of range [0x%lx, 0x%lx)!\n", my_indirect_id, __func__, vaddr, my_min_addr, my_max_addr);
+            panic_if(vaddr < my_min_addr || vaddr >= my_max_addr ||
+                         static_cast<Addr>(my_word_size) >
+                             my_max_addr - vaddr,
+                     "I[%d] %s: word [0x%lx, 0x%lx) out of range "
+                     "[0x%lx, 0x%lx)!\n",
+                     my_indirect_id, __func__, vaddr,
+                     vaddr + my_word_size, my_min_addr, my_max_addr);
             Addr block_vaddr = addrBlockAligner(vaddr, block_size);
-            DPRINTF(MAAIndirect, "I[%d] %s: baseaddr = 0x%lx idx = %u wordsize = %d vaddr = 0x%lx!\n", my_indirect_id, __func__, my_base_addr, idx, my_word_size, vaddr);
+            panic_if(isSoaJitRmw() &&
+                         ((vaddr % my_word_size) != 0 ||
+                          vaddr - block_vaddr + my_word_size > block_size),
+                     "I[%d] unsafe SoA/JIT A word at line end 0x%lx\n",
+                     my_indirect_id, vaddr);
+            DPRINTF(MAAIndirect,
+                    "I[%d] %s: baseaddr = 0x%lx idx = %u wordsize = %d "
+                    "vaddr = 0x%lx!\n",
+                    my_indirect_id, __func__, my_base_addr, idx,
+                    my_word_size, vaddr);
             Addr paddr = translatePacket(block_vaddr);
             Addr block_paddr = addrBlockAligner(paddr, block_size);
-            DPRINTF(MAAIndirect, "I[%d] %s: idx = %u, addr = 0x%lx!\n", my_indirect_id, __func__, idx, block_paddr);
+            DPRINTF(MAAIndirect,
+                    "I[%d] %s: idx = %u, addr = 0x%lx!\n",
+                    my_indirect_id, __func__, idx, block_paddr);
             uint16_t wid = (vaddr - block_vaddr) / my_word_size;
             std::vector<int> addr_vec = maa->map_addr(block_paddr);
-            my_RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
-            Addr grow_addr = getGrowAddr(my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
+            my_RT_idx = getRowTableIdx(
+                my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL],
+                addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL],
+                addr_vec[ADDR_BANK_LEVEL]);
+            Addr grow_addr = getGrowAddr(
+                my_RT_config, addr_vec[ADDR_BANKGROUP_LEVEL],
+                addr_vec[ADDR_BANK_LEVEL], addr_vec[ADDR_ROW_LEVEL]);
             if (direct_index_summary_active) {
                 panic_if(grow_addr > std::numeric_limits<uint32_t>::max(),
                          "I[%d] translated grow 0x%lx exceeds bounded "
@@ -3839,6 +3881,14 @@ bool IndirectAccessUnit::soaJitContextsEmpty() const
             return context.state == SoaJitContextState::Free;
         });
 }
+bool
+IndirectAccessUnit::hasLiveSoaJitState() const
+{
+    return soa_jit_operation_active ||
+           (my_instruction != nullptr && my_instruction->isSoaJitRmw()) ||
+           soa_predicate_line.pending || soa_predicate_line.valid ||
+           !soaJitContextsEmpty();
+}
 bool IndirectAccessUnit::serviceSoaJitBuild()
 {
     panic_if(!isSoaJitRmw() || !my_fill_finished,
@@ -3907,6 +3957,10 @@ void IndirectAccessUnit::issueSoaJitValueRead(SoaJitContext &context)
              my_backing_max_addr);
     const Addr vaddr = my_backing_addr + byte_offset;
     const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+    panic_if((vaddr % my_word_size) != 0 ||
+                 vaddr - block_vaddr + my_word_size > block_size,
+             "I[%d] unsafe SoA/JIT value word at line end 0x%lx\n",
+             my_indirect_id, vaddr);
     context.valuePaddr = addrBlockAligner(
         translatePacket(block_vaddr), block_size);
     context.logicalItr = entry.itr;
@@ -4408,6 +4462,10 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_a_write_responses = 0;
         soa_jit_context_stalls = 0;
         soa_jit_context_high_water = 0;
+        panic_if(soa_jit_operation_active,
+                 "I[%d] retained a live SoA/JIT operation at decode\n",
+                 my_indirect_id);
+        soa_jit_operation_active = isSoaJitRmw();
         if (isDirectIndexLoad()) {
             panic_if(direct_index_partitions != 1 && !isVirtualLoad(),
                      "I[%d] direct-index partitioning is only supported by "
@@ -5950,6 +6008,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_unique_CL_addrs.clear();
         my_unique_ROW_addrs.clear();
         descriptor_spool_operation = false;
+        soa_jit_operation_active = false;
         my_instruction = nullptr;
         break;
     }

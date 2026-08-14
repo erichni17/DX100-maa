@@ -765,6 +765,7 @@ protected:
         uint16_t tokenTile, uint64_t generation);
     PageMaterializationExecution *firstInactivePageMaterializationExecution();
     bool hasDirectRetirementOutstandingAddress(Addr address) const;
+    bool hasLiveSoaJitState() const;
     bool hasDirectRetirementOutstandingOwner(
         const HybridConsumerContextQueue::ContextKey &key) const;
     uint16_t directRetirementOutstandingRequestCount() const;

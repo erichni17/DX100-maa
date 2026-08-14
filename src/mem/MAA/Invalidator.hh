@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "base/types.hh"
 #include "mem/packet.hh"
@@ -72,6 +73,8 @@ public:
     Status getState() const { return state; }
 
 protected:
+    bool getSoaJitAddrRegionPermit(Instruction *instruction);
+    void finishSoaJitAddrRegionPermit(Instruction *instruction);
     void executeInstruction();
     void transientInstruction();
     void createMyPacket();
@@ -99,6 +102,8 @@ protected:
     PacketPtr my_pkt;
     std::vector<Instruction *> transientInstructions;
     std::vector<Tick> transientTicks;
+    std::vector<Instruction *> soaTransientInstructions;
+    std::vector<Tick> soaTransientTicks;
 };
 } // namespace gem5
 

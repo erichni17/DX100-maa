@@ -1,6 +1,7 @@
 #ifndef __MEM_MAA_IF_HH__
 #define __MEM_MAA_IF_HH__
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -123,6 +124,12 @@ public:
         COMPUTE = 2,
         MAX
     };
+    struct MemoryAccess
+    {
+        int8_t regionID = -1;
+        AccessType type = AccessType::COMPUTE;
+    };
+    static constexpr size_t MaxMemoryAccesses = 4;
     std::string datatype_names[6] = {
         "UINT32",
         "INT32",
@@ -198,6 +205,11 @@ public:
     int core_id;
     int maa_id;
     int func_unit_id;
+    // Invalidator ownership is protocol state, not a statistic.  SoA/JIT can
+    // reserve several registered regions atomically before any one of them is
+    // exposed to execution.
+    bool memoryPermitReserved;
+    bool memoryPermitGranted;
     bool controllerManaged;
     TransparentSPDController::Action controllerAction;
     uint64_t controllerTransactionID;
@@ -229,6 +241,9 @@ public:
                src1RegID != -1 && src2RegID != -1 && src3RegID != -1 &&
                dst1RegID == -1 && dst2RegID == -1;
     }
+    size_t getMemoryAccesses(
+        std::array<MemoryAccess, MaxMemoryAccesses> &accesses) const;
+    bool hasMemoryHazard(const Instruction &other) const;
 };
 
 class IF {
@@ -275,6 +290,7 @@ public:
     bool canPushRegister(Register _reg);
     bool hasTileReference(int maa_id, int tile_id);
     bool isCompletionOnlyTile(int maa_id, int tile_id) const;
+    bool hasLiveSoaJitRmw() const;
     Instruction *getReady(FuncUnitType funcUniType, int maa_id = -1);
     void finishInstructionCompute(Instruction *instruction);
     void finishInstructionInvalidate(Instruction *instruction, int tile_id, uint8_t tile_status);

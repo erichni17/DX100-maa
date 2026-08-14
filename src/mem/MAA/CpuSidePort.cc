@@ -16,6 +16,7 @@
 #include "mem/MAA/MAA.hh"
 #include "mem/MAA/RangeFuser.hh"
 #include "mem/MAA/SPD.hh"
+#include "mem/MAA/SoaJitSafety.hh"
 #include "mem/MAA/StreamAccess.hh"
 #include "mem/packet.hh"
 #include "params/MAA.hh"
@@ -350,6 +351,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     Instruction::AccessType::COMPUTE) {
                     current_instruction->addrRangeID =
                         getAddrRegion(current_instruction->baseAddr);
+                    panic_if(current_instruction->addrRangeID < 0,
+                             "Base address 0x%lx is not in a registered "
+                             "memory region\n",
+                             current_instruction->baseAddr);
                     current_instruction->minAddr =
                         addrRegions[current_instruction->addrRangeID].first;
                     current_instruction->maxAddr =
@@ -548,6 +553,15 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                          "Rejected malformed SoA/JIT RMW before word-five "
                          "dispatch\n");
                 current_instruction->predicateAddr = data;
+                const int soa_word_size = current_instruction->WordSize();
+                panic_if(
+                    !SoaJitSafety::typedOperandsAligned(
+                        current_instruction->baseAddr,
+                        current_instruction->backingAddr,
+                        current_instruction->indexAddr,
+                        current_instruction->predicateAddr, soa_word_size),
+                    "Rejected misaligned typed SoA/JIT A, value, index, or "
+                    "predicate operand before timed request dispatch\n");
                 if (data != 0) {
                     current_instruction->predicateAddrRangeID =
                         getAddrRegion(data);
