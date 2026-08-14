@@ -4424,14 +4424,25 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                 if (stagedMask == fullMask) {
                     const Cycles spdLatency = spd->setDataLatency(
                         materialization->destinationTile, wordsPerLine);
-                    panic_if(!reservePageMaterializationDirectCommit(
-                                 owner, static_cast<uint16_t>(lineID),
-                                 getClockEdge(spdLatency)),
-                             "Page materializer exhausted direct staged "
-                             "commits\n");
-                    directCompleted = true;
-                    ++materialization->stagedDirectLines;
-                    stats.page_materialization_staged_direct_lines++;
+                    if (reservePageMaterializationDirectCommit(
+                            owner, static_cast<uint16_t>(lineID),
+                            getClockEdge(spdLatency))) {
+                        panic_if(!directRetirementContexts.
+                                     beginMaterializeDirect(
+                                         owner,
+                                         static_cast<uint16_t>(lineID)),
+                                 "Page materializer could not seal direct "
+                                 "staged line\n");
+                        directCompleted = true;
+                        ++materialization->stagedDirectLines;
+                        stats.page_materialization_staged_direct_lines++;
+                    } else {
+                        // The payload is still private and the line remains
+                        // ReadyForRead, so the normal coherent cache path
+                        // can replace it without an early visibility leak.
+                        materialization->stagedDisallowed.set(pageLine);
+                        countDirectFallback();
+                    }
                 }
             }
         }

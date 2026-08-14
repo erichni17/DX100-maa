@@ -606,15 +606,17 @@ protected:
         uint16_t stagedDirectLines = 0;
         uint16_t stagedDirectFragments = 0;
         uint16_t stagedDirectFallbackLines = 0;
-        // Fixed active-page control only: 64 line eligibility bits plus the
-        // maximum 4-byte geometry's 1024 word bits. No line payload lives
-        // here; payload is written into the already allocated SPD page.
-        std::bitset<HybridConsumerPipeline::ProducerPageElements /
-                    sizeof(uint32_t)> stagedWords{};
-        std::bitset<HybridConsumerPipeline::ProducerPageElements /
-                    HybridConsumerPipeline::LineBytes> stagedDisallowed{};
-        std::bitset<HybridConsumerPipeline::ProducerPageElements /
-                    HybridConsumerPipeline::LineBytes> stagedFallbackCounted{};
+        // Fixed active-page control only.  A producer page contains one bit
+        // per logical word (4096); FP64 has 512 64-byte lines, so line maps
+        // must cover the maximum geometry. No line payload lives here.
+        static constexpr std::size_t MaxStagedWords =
+            HybridConsumerPipeline::ProducerPageElements;
+        static constexpr std::size_t MaxStagedLines =
+            HybridConsumerPipeline::ProducerPageElements * sizeof(uint64_t) /
+            HybridConsumerPipeline::LineBytes;
+        std::bitset<MaxStagedWords> stagedWords{};
+        std::bitset<MaxStagedLines> stagedDisallowed{};
+        std::bitset<MaxStagedLines> stagedFallbackCounted{};
         uint16_t cacheReadFallbackLines = 0;
         Addr backingAddress = 0;
         int backingRangeID = -1;

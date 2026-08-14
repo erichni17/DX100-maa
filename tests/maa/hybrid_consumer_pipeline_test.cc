@@ -257,11 +257,45 @@ testDirectMaterializationCompletionNeedsCompleteAuthenticatedLine()
     CHECK(pipeline.producerLineWordMask(0) == 0xff);
     CHECK(pipeline.lineState(0) ==
           HybridConsumerPipeline::LineState::ReadyForRead);
+    // No direct-commit slot means coherent ReadBacking remains legal.
+    CHECK(pipeline.pendingRead().line == 0);
+    CHECK(pipeline.beginMaterializeDirect(0));
+    CHECK(pipeline.lineState(0) ==
+          HybridConsumerPipeline::LineState::DirectMaterializeInFlight);
+    CHECK(pipeline.pendingRead().kind == HybridConsumerPipeline::Kind::None);
     CHECK(pipeline.completeMaterializeDirect(0));
     CHECK(pipeline.lineState(0) == HybridConsumerPipeline::LineState::Done);
     CHECK(pipeline.completed() == 1);
     CHECK(pipeline.readsAccepted() == 0);
     CHECK(pipeline.assertInvariants());
+}
+
+void
+testDirectMaterializationLastLineBounds()
+{
+    for (uint8_t wordBytes : {uint8_t{4}, uint8_t{8}}) {
+        HybridConsumerPipeline pipeline;
+        auto descriptor = validDescriptor(wordBytes);
+        descriptor.mode = HybridConsumerPipeline::Mode::MaterializePages;
+        CHECK(pipeline.submit(descriptor) ==
+              HybridConsumerPipeline::SubmitResult::Accepted);
+        CHECK(pipeline.beginMaterializationPage(0));
+        const uint16_t lines = static_cast<uint16_t>(
+            HybridConsumerPipeline::ProducerPageElements * wordBytes /
+            HybridConsumerPipeline::LineBytes);
+        const uint16_t line = lines - 1;
+        const uint16_t mask = wordBytes == 4 ? 0xffff : 0x00ff;
+        CHECK(pipeline.notifyProducerLineWriteAck(
+            lineAckFor(descriptor, line, mask, 9000)));
+        CHECK(pipeline.producerLineWordMask(line) == mask);
+        CHECK(pipeline.beginMaterializeDirect(line));
+        CHECK(pipeline.pendingRead().kind ==
+              HybridConsumerPipeline::Kind::None);
+        CHECK(pipeline.completeMaterializeDirect(line));
+        CHECK(pipeline.lineState(line) ==
+              HybridConsumerPipeline::LineState::Done);
+        CHECK(pipeline.assertInvariants());
+    }
 }
 
 void
@@ -453,6 +487,7 @@ main()
     testLineWriteRespUnlocksBeforePageClosure();
     testPartialWriteResponsesNeedEveryUniqueWord();
     testDirectMaterializationCompletionNeedsCompleteAuthenticatedLine();
+    testDirectMaterializationLastLineBounds();
     testRetrySurvivesSchedulingPreferenceChange();
     testNoSyntheticVisibilityOrAcknowledgement();
     testCompleteBothWordGeometries();
