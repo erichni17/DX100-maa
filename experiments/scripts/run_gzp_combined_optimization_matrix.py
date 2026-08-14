@@ -538,7 +538,9 @@ def trace_totals(
 ) -> dict[str, int]:
     """Require terminal trace closure for predicate, value, A, and pre-A traffic."""
     rows: list[dict[str, int]] = []
-    for line in path.read_text(errors="replace").splitlines():
+    # Full GZP traces are several GiB per arm. Stream them so post-processing
+    # remains bounded by the 61 terminal records rather than trace size.
+    for line in path.open(errors="replace"):
         if "event=soa_jit_complete" not in line or "terminal=1" not in line:
             continue
         event = fields(line)
