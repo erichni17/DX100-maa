@@ -110,6 +110,10 @@ class MAA(ClockedObject):
         False,
         "Expose direct-retirement backing lines after all word WriteResp events",
     )
+    page_materialization_wakeup_batches = Param.Unsigned(
+        0,
+        "Early dependent wakeups per materialized 4K-element page (0 keeps page-level wakeup only; 1..16 are evenly spaced line milestones)",
+    )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",

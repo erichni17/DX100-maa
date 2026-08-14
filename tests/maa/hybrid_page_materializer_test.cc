@@ -177,6 +177,30 @@ testFourPageABIAndPreRegistrationRetry()
 }
 
 void
+testBoundedEarlyWakeupMilestones()
+{
+    constexpr uint16_t pageLines =
+        Pipeline::ProducerPageElements * sizeof(uint64_t) /
+        Pipeline::LineBytes;
+    static_assert(pageLines == 512);
+    CHECK(!Pipeline::isEarlyWakeupLine(127, pageLines, 0));
+    CHECK(!Pipeline::isEarlyWakeupLine(0, pageLines,
+                                       Pipeline::MaxEarlyWakeupBatches + 1));
+
+    // Four early batches select 1/5, 2/5, 3/5, and 4/5 completion
+    // milestones. The final line is left to the existing page-ready wakeup.
+    constexpr std::array<uint16_t, 4> expected{{102, 204, 307, 409}};
+    for (uint16_t line = 0; line < pageLines; ++line) {
+        bool selected = false;
+        for (const uint16_t expectedLine : expected)
+            selected = selected || line == expectedLine;
+        CHECK(Pipeline::isEarlyWakeupLine(line, pageLines, 4) == selected);
+    }
+    CHECK(!Pipeline::isEarlyWakeupLine(pageLines - 1, pageLines, 4));
+    CHECK(!Pipeline::isEarlyWakeupLine(pageLines, pageLines, 4));
+}
+
+void
 driveCacheReadPage(Queue &queue, const Queue::ContextKey &owner,
                    uint8_t destination, uint64_t &tick,
                    BoundedCommitHarness &commits)
@@ -288,6 +312,7 @@ int
 main()
 {
     testFourPageABIAndPreRegistrationRetry();
+    testBoundedEarlyWakeupMilestones();
     testLateAckForwardingCommitTickAndTwoChargedPages();
     std::cout << "hybrid page materializer tests passed\n";
     return 0;

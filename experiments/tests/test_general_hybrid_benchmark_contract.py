@@ -275,6 +275,46 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertIn("maa_stream_load_virtual_page_prearm<double>", prearm)
         self.assertIn("maa_indirect_load_virtual", producer)
 
+    def test_batched_materializer_wakeup_is_opt_in_and_exact(self) -> None:
+        source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
+        policy = (ROOT / "src/mem/MAA/HybridConsumerPipeline.hh").read_text(
+            encoding="utf-8"
+        )
+        options = (ROOT / "configs/common/Options.py").read_text(
+            encoding="utf-8"
+        )
+        config = (ROOT / "configs/common/MAAConfig.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("MaxEarlyWakeupBatches = 16", policy)
+        self.assertIn("isEarlyWakeupLine", policy)
+        self.assertIn("page_materialization_wakeup_batches", source)
+        self.assertIn("page_materialization_wakeup_batches", options)
+        self.assertIn("page_materialization_wakeup_batches", config)
+        self.assertIn(
+            "page_materialization_wakeup_batches = Param.Unsigned(\n        0,",
+            (ROOT / "src/mem/MAA/MAA.py").read_text(encoding="utf-8"),
+        )
+        service = source.split("MAA::servicePageMaterialization()", 1)[
+            1
+        ].split("auto discardUnsentPacket", 1)[0]
+        self.assertIn(
+            "virtualPageGeneration[request.owner.tokenTile]", service
+        )
+        commit = source.split(
+            "event=page_materialization_line_commit schema=1", 1
+        )[0].rsplit("for (uint16_t word", 1)[1]
+        self.assertIn("isEarlyWakeupLine", commit)
+        self.assertIn("spd->wakeup_waiting_units", commit)
+        self.assertLess(
+            commit.index("spd->wakeup_waiting_units"),
+            commit.index("completeMaterialize"),
+        )
+        batched_block = commit.split(
+            "if (HybridConsumerPipeline::isEarlyWakeupLine(", 1
+        )[1]
+        self.assertNotIn("isPageZeroPrearmMaterialization", batched_block)
+
     def test_gapbs_adds_native4_controls_without_false_hybrid_target(
         self,
     ) -> None:
