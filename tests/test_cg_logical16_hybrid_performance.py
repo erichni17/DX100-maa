@@ -13,14 +13,16 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             ROOT / "experiments/scripts/run_cg_logical16_hybrid_performance.sh"
         ).read_text()
 
-    def test_one_selector_and_one_checkpoint_are_shared_by_every_arm(self):
-        self.assertIn("residual_soa_jit.selector", self.runner)
+    def test_one_checkpoint_is_shared_by_cpu_and_response_bearing_arms(self):
+        self.assertIn("control.selector", self.runner)
+        self.assertIn("treatment.selector", self.runner)
+        self.assertIn("residual_soa_jit_response_bearing", self.runner)
         self.assertIn(
-            "checkpoint is selector-identical and treatment-neutral",
+            "checkpoint is identical",
             self.runner,
         )
         self.assertIn(
-            "comparison=one_guest_one_selector_one_checkpoint_treatment_flags_only",
+            "comparison=one_guest_one_checkpoint_response_bearing_publisher_only",
             self.runner,
         )
         self.assertIn('cmp -s "$out/checkpoint.files.sha256"', self.runner)
@@ -39,21 +41,12 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
         ):
             self.assertIn(token, self.runner)
 
-    def test_treatment_is_explicit_and_control_has_no_extra_flags(self):
-        self.assertIn(
-            "usage: $0 GEM5_BIN OUTDIR [TREATMENT_GEM5_FLAG ...]", self.runner
-        )
-        self.assertIn(
-            "at least one explicit simulator-only treatment flag is required",
-            self.runner,
-        )
-        self.assertIn(
-            '[[ $arm == control ]] || command+=("${treatment_flags[@]}")',
-            self.runner,
-        )
+    def test_treatment_is_only_the_post_checkpoint_publisher_selector(self):
+        self.assertIn("usage: $0 GEM5_BIN OUTDIR", self.runner)
+        self.assertIn("selector=$control_selector", self.runner)
+        self.assertIn("selector=$treatment_selector", self.runner)
         self.assertIn("--maa_soa_jit_value_prefetch_credits=0", self.runner)
-        self.assertIn("normalize_config", self.runner)
-        self.assertIn("treatment_config_lines", self.runner)
+        self.assertNotIn("treatment_flags", self.runner)
 
     def test_validates_exact_outputs_provenance_and_mechanism_ledgers(self):
         for token in (
@@ -65,6 +58,10 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             "IND_SoaJitValueFills",
             "IND_SoaJitAReadIssues",
             "IND_SoaJitAWriteResponses",
+            "STR_PublishIssues",
+            "STR_PublishWriteResponses",
+            "STR_PublishTerminals",
+            "STR_PublishOverlapIssues",
             "simTicks",
             "provenance.txt",
         ):
@@ -99,6 +96,14 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
     def test_stat_sum_emits_a_numeric_line_not_a_literal_escape(self):
         self.assertIn('printf "%.0f\\n", sum', self.runner)
         self.assertNotIn('printf "%.0f\\\\n", sum', self.runner)
+
+    def test_rejects_a_slower_or_non_publishing_candidate(self):
+        self.assertIn("response-bearing candidate is slower", self.runner)
+        self.assertIn("[[ ${publish_issues[$control]} -eq 0", self.runner)
+        self.assertIn(
+            "[[ ${ticks[$treatment]} -le ${ticks[$control]} ]]", self.runner
+        )
+        self.assertIn("decision=PERFORMANCE_PROMOTABLE", self.runner)
 
 
 if __name__ == "__main__":

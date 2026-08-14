@@ -21,13 +21,16 @@ sparse window. The selected general-hybrid arm retains exactly one callsite
 for each role.
 
 For each selected residual window, the unchanged range loop, virtual gather,
-and FP32 multiply produce four 4K physical pages. After exact tile completion,
-the guest validates each page length and row index, then copies the row indices
-and FP32 product bits in page/lane order into per-thread `index[16384]` and
-`value[16384]` arrays. One existing `maa_indirect_rmw_vector_soa_jit<float>`
-call consumes those arrays with a null predicate and waits for its completion
-token before buffer reuse. The MAA therefore builds one full 16K Row/Offset
-epoch and retains the existing duplicate-chain insertion order.
+and FP32 multiply produce four 4K physical pages. The performance treatment
+uses the existing response-bearing SPD publisher to copy each exact 64B line
+from the separate Row/Offset and FP32 product tiles into per-thread
+`index[16384]` and `value[16384]` coherent backing. Each source stays live
+until its own WriteResp terminal; there is no CPU read, copy, cache prefetch,
+or hidden 16K producer payload. One existing
+`maa_indirect_rmw_vector_soa_jit<float>` call then consumes those arrays with a
+null predicate and waits for its completion token before buffer reuse. The MAA
+therefore builds one full 16K Row/Offset epoch and retains the existing
+duplicate-chain insertion order.
 
 The eight staging arrays are ordinary registered guest memory:
 
@@ -35,17 +38,21 @@ The eight staging arrays are ordinary registered guest memory:
 4 owners * 16,384 words * 4 bytes * 2 roles = 524,288 bytes
 ```
 
-They are external producer storage, not window-sized MAA state. This first
-vertical slice intentionally uses coherent CPU copies after SPD completion.
-That traffic is simulated, but it is not the intended accelerator publisher,
-so every marker and the runner declare `performance_promotable=0` and
-`speedup_claim=0`. No GZP predicate, map, or fused operation is reused.
+They are external producer storage, not window-sized MAA state. The legacy
+`residual_soa_jit` selector remains a CPU-staged provenance control. The new
+`residual_soa_jit_response_bearing` selector uses two 4K physical producer
+tiles, two sets of eight 64B retained publisher credits (1,024 B payload), and
+no hidden logical16 payload or CPU copy. Its terminal reports every published
+page/word count; the gate closes publisher issue/accept/WriteResp/terminal
+traffic against the exact dynamic window count and requires actual non-stream
+overlap. No GZP predicate, map, or fused operation is reused.
 
 ## Selector and fail-closed checks
 
 The new `cg_maa_16K_general_fp_rmw` binary accepts only
 `MAA_DEFERRED SELECTOR`. Its selector must contain exactly a virtual consumer
-and one of `legacy_4k` or `residual_soa_jit`; missing, extra, and unknown tokens
+and one of `legacy_4k`, `residual_soa_jit`, or
+`residual_soa_jit_response_bearing`; missing, extra, and unknown tokens
 fail before the ROI. The compile-time treatment additionally requires logical
 16K, physical consumer 4K, gem5, MAA, and the existing general consumer.
 
@@ -69,25 +76,15 @@ CG supplies a null predicate, so the pinned p16 predicate feeder must report no
 predicate traffic; it is a resolved portfolio setting, not an asserted CG
 speedup source. The v32 value-owner selection is active for JIT value reads.
 
-This smoke is correctness/provenance evidence only. It does not validate class
-C input, the four iterative `q` RMW phases, partial-tail conversion, multiple
-replicas, speedup, area, or the concurrent selectable apply-lane work. A future
-performance treatment should replace the CPU copy with the independently
-validated response-bearing SPD publisher while preserving this exact operand
-and selector contract.
+The exact performance gate restores both CPU control and response-bearing
+treatment from one pre-selector checkpoint with at least two deterministic
+replicas and no default timeout. It rejects any fingerprint, terminal, traffic,
+configuration, or checkpoint mismatch; it also rejects a slower treatment.
+This still does not convert the iterative `q` RMW phases or partial tails.
 
 ## Validation performed in this checkpoint
 
 - The focused CG contract suite passes all 8 checks.
-- The existing generic bounded SoA/JIT contract suite passes all 10 checks.
-- The new `CG_NA=1024` guest compiles and links with `-Wall -Wextra -Werror`;
-  only the NAS file's pre-existing unused-parameter warnings are explicitly
-  suppressed by the smoke build.
-- The legacy general-hybrid CG compile path also passes strict syntax checking.
-- The runner passes `bash -n`, and the patch passes `git diff --check`.
-
-No exact live gem5 smoke was run. This worktree has no production binary, and
-the available binaries were built from older or concurrently modified MAA
-trees that do not reproduce the combined p16/v32 source at this checkpoint.
-Using one would violate the runner's provenance purpose. The runner is the
-explicit remaining live-validation boundary.
+- Static and compiler validation are recorded with the implementation commit.
+- Live promotion requires the gate's committed-source build and all terminal
+  closures; no historical CPU-staged result is reusable for this treatment.

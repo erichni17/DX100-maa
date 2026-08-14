@@ -33,6 +33,9 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         )
         self.assertIn('treatment == "legacy_4k"', self.source)
         self.assertIn('treatment == "residual_soa_jit"', self.source)
+        self.assertIn(
+            'treatment == "residual_soa_jit_response_bearing"', self.source
+        )
         self.assertIn('mode != "MAA_DEFERRED" || argc != 3', self.source)
         self.assertIn("read_cg_treatment_selector", self.source)
 
@@ -50,7 +53,7 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         )
         self.assertIn("nullptr,", self.source[soa : soa + 300])
 
-    def test_producer_preserves_exact_page_operands_and_order(self):
+    def test_cpu_staging_control_preserves_exact_page_operands_and_order(self):
         producer = self.source[
             self.source.index(
                 "const bool soa_residual_full_window"
@@ -72,7 +75,7 @@ class CGLogical16RmwContractTests(unittest.TestCase):
             producer.index("wait_ready(t7)"),
         )
 
-    def test_residual_staging_never_cpu_reads_past_the_physical_spd_page(self):
+    def test_cpu_control_never_reads_past_the_physical_spd_page(self):
         producer = self.source[
             self.source.index(
                 "const bool soa_residual_full_window"
@@ -87,11 +90,11 @@ class CGLogical16RmwContractTests(unittest.TestCase):
             )
         ]
         self.assertNotIn("get_cacheable_tile_pointer", staging)
-        self.assertIn("outside the 4K physical tile", staging)
+        self.assertIn("4096 beyond the physical tile", staging)
         self.assertIn("maa_const<int>(0, r2);", staging)
         self.assertIn("maa_const<int>(page_size, r3);", staging)
         self.assertIn(
-            "maa_stream_store<uint32_t>(index_dst, r2, r3, r1, t0);",
+            "maa_stream_store<uint32_t>(index_dst, r2, r3, r1,",
             staging,
         )
         self.assertIn(
@@ -106,7 +109,7 @@ class CGLogical16RmwContractTests(unittest.TestCase):
             staging.index("wait_ready(t7)"),
         )
 
-    def test_logical_window_storage_is_external_and_accounted(self):
+    def test_logical_window_storage_and_response_publisher_are_accounted(self):
         self.assertIn(
             "static uint32_t cg_soa_indices[NUM_CORES][TILE_SIZE]", self.source
         )
@@ -116,8 +119,41 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         self.assertIn("add_mem_region(cg_soa_indices[core]", self.source)
         self.assertIn("add_mem_region(cg_soa_values[core]", self.source)
         self.assertIn("external_staging_bytes=", self.source)
-        self.assertIn("producer=cpu_after_spd_completion", self.source)
-        self.assertIn("performance_promotable=0", self.source)
+        self.assertIn('"cpu_after_spd_completion"', self.source)
+        self.assertIn("response_bearing_spd_overlap", self.source)
+        self.assertIn("dedicated_physical_payload_bytes=", self.source)
+        self.assertIn("publisher_credit_payload_bytes=", self.source)
+        self.assertIn("hidden_logical16_payload_bytes=0", self.source)
+        self.assertIn("cpu_untimed_copy_bytes=", self.source)
+
+    def test_response_publisher_keeps_4k_payloads_and_has_no_cpu_copy(self):
+        producer = self.source[
+            self.source.index(
+                "const bool soa_residual_full_window"
+            ) : self.source.index(
+                "#else\n            maa_const(k_base",
+                self.source.index("const bool soa_residual_full_window"),
+            )
+        ]
+        response = producer[
+            producer.index(
+                "if (soa_residual_response_bearing)"
+            ) : producer.index(
+                "} else {\n                        // The provenance control",
+                producer.index("if (soa_residual_response_bearing)"),
+            )
+        ]
+        self.assertEqual(
+            response.count("maa_publish_spd_page_logical16_response_bearing"),
+            2,
+        )
+        self.assertIn("MAA_CONSUMER_TILE_SIZE", response)
+        self.assertIn("wait_ready(t4)", response)
+        self.assertIn("wait_ready(t5)", response)
+        self.assertNotIn("maa_stream_store", response)
+        self.assertNotIn("std::atomic_thread_fence", response)
+        self.assertIn("cg_soa_published_index_words", response)
+        self.assertIn("cg_soa_published_value_words", response)
 
     def test_row_pointer_streams_use_page_local_physical_positions(self):
         for token in (

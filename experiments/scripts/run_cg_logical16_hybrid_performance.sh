@@ -1,38 +1,15 @@
 #!/usr/bin/env bash
-# Exact shared-checkpoint performance gate for the CG residual SoA/JIT path.
+# Exact shared-checkpoint performance gate for the CG response-bearing handoff.
 set -euo pipefail
 
-if [[ $# -lt 2 ]]; then
-    echo "usage: $0 GEM5_BIN OUTDIR [TREATMENT_GEM5_FLAG ...]" >&2
-    echo "example: $0 build/X86/gem5.opt /tmp/cg-gate --maa_soa_jit_pre_a_value_lookahead" >&2
+if [[ $# -ne 2 ]]; then
+    echo "usage: $0 GEM5_BIN OUTDIR" >&2
     exit 2
 fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 gem5=$(realpath "$1")
 out=$(realpath -m "$2")
-shift 2
-treatment_flags=("$@")
-[[ ${#treatment_flags[@]} -gt 0 ]] || {
-    echo "at least one explicit simulator-only treatment flag is required" >&2
-    exit 2
-}
-for flag in "${treatment_flags[@]}"; do
-    [[ $flag == --maa_soa_jit_* ]] || {
-        echo "treatment flag is not an explicit SoA/JIT simulator flag: $flag" >&2
-        exit 2
-    }
-done
-treatment_config_lines=()
-pre_a_treatment=false
-for flag in "${treatment_flags[@]}"; do
-    resolved=${flag#--}
-    resolved=${resolved//-/_}
-    [[ $resolved == *=* ]] || resolved+="=true"
-    treatment_config_lines+=("$resolved")
-    [[ $resolved == 'maa_soa_jit_pre_a_value_lookahead=true' ]] && \
-        pre_a_treatment=true
-done
 
 config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
@@ -58,9 +35,15 @@ timeout_command=()
 }
 
 mkdir -p "$out/bin" "$out/input" "$out/checkpoint" "$out/runs"
-selector="$out/input/residual_soa_jit.selector"
-printf '%s\n' 'token_stream_ld residual_soa_jit' > "$selector"
-chmod 0444 "$selector"
+checkpoint_selector="$out/input/checkpoint.selector"
+control_selector="$out/input/control.selector"
+treatment_selector="$out/input/treatment.selector"
+# CG reaches m5_checkpoint before parsing a selector. This neutral selector
+# is therefore checkpoint-identical to both post-restore producer choices.
+printf '%s\n' 'token_stream_ld residual_soa_jit' > "$checkpoint_selector"
+printf '%s\n' 'token_stream_ld residual_soa_jit' > "$control_selector"
+printf '%s\n' 'token_stream_ld residual_soa_jit_response_bearing' > "$treatment_selector"
+chmod 0444 "$checkpoint_selector" "$control_selector" "$treatment_selector"
 
 guest="$out/bin/cg_logical16_hybrid_gate"
 "$cxx" -I"$root/benchmarks/API" -I"$root/include" -I"$root/util/m5/src" \
@@ -72,31 +55,32 @@ guest="$out/bin/cg_logical16_hybrid_gate"
     "$root/util/m5/src/abi/x86/m5op.S" "$source_file" -o "$guest"
 
 source_commit=$(git -C "$root" rev-parse HEAD)
-sha256sum "$gem5" "$guest" "$selector" "$source_file" "$config" "$ramulator" "$0" \
+sha256sum "$gem5" "$guest" "$checkpoint_selector" "$control_selector" "$treatment_selector" "$source_file" "$config" "$ramulator" "$0" \
     > "$out/input/artifact_sha256.txt"
-selector_sha=$(sha256sum "$selector" | awk '{print $1}')
+checkpoint_selector_sha=$(sha256sum "$checkpoint_selector" | awk '{print $1}')
+control_selector_sha=$(sha256sum "$control_selector" | awk '{print $1}')
+treatment_selector_sha=$(sha256sum "$treatment_selector" | awk '{print $1}')
 {
     printf 'source_commit=%s\n' "$source_commit"
-    printf 'comparison=one_guest_one_selector_one_checkpoint_treatment_flags_only\n'
-    printf 'selector_sha256=%s\n' "$selector_sha"
+    printf 'comparison=one_guest_one_checkpoint_response_bearing_publisher_only\n'
+    printf 'checkpoint_selector_sha256=%s\n' "$checkpoint_selector_sha"
+    printf 'control_selector_sha256=%s\n' "$control_selector_sha"
+    printf 'treatment_selector_sha256=%s\n' "$treatment_selector_sha"
     printf 'replicas=%s\n' "$replicas"
     printf 'logical_elements=16384\nphysical_tile_elements=4096\n'
     printf 'offset_table_entries=16384\noffset_table_epoch_entries=16384\n'
     printf 'soa_jit_predicate_active_credits=16\nsoa_jit_active_value_owners=32\n'
-    printf 'sequential_value_prefetch_credits=0\n'
+    printf 'publisher_line_credits_per_stream=8\n'
     printf 'timeout_seconds=%s\nparallel_restores=%s\n' "$timeout_seconds" "$((replicas * 2))"
-    printf 'treatment_flags='
-    printf '%q ' "${treatment_flags[@]}"
-    printf '\n'
 } > "$out/manifest.txt"
 
-# The selector is supplied before m5_checkpoint but CG consumes it only after
-# restore; therefore this one checkpoint is selector-identical and treatment-neutral.
+# CG consumes its selector only after restore, so the checkpoint is identical
+# and treatment-neutral while the control/treatment producer differs only then.
 set +e
 OMP_PROC_BIND=false OMP_NUM_THREADS=4 "${timeout_command[@]}" \
     "$gem5" --listener-mode=off --outdir="$out/checkpoint" "$config" \
     --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB --max-checkpoints=1 \
-    --cmd "$guest" --options "MAA_DEFERRED $selector" \
+    --cmd "$guest" --options "MAA_DEFERRED $checkpoint_selector" \
     > "$out/checkpoint.log" 2>&1
 checkpoint_rc=$?
 set -e
@@ -124,7 +108,7 @@ common=(
     --maa_num_offset_table_entries=16384 --maa_num_offset_table_epoch_entries=16384
     --maa_num_initial_row_table_slices=16 --maa_soa_jit_predicate_active_credits=16
     --maa_soa_jit_active_value_owners=32 --maa_soa_jit_value_prefetch_credits=0
-    --cmd "$guest" --options "MAA_DEFERRED $selector" --checkpoint-dir "$out/checkpoint"
+    --cmd "$guest" --checkpoint-dir "$out/checkpoint"
 )
 
 stat_sum() {
@@ -136,26 +120,21 @@ stat_sum() {
     ' "$stats"
 }
 
-normalize_config() {
-    # The only permitted resolved-config delta is the supplied treatment flag.
-    local config_file=$1 joined line
-    joined=$(IFS='|'; printf '%s' "${treatment_config_lines[*]}")
-    awk -v permitted="$joined" '
-        BEGIN { split(permitted, lines, "|") }
-        { for (i in lines) if ($0 == lines[i]) next; print }
-    ' "$config_file" | sha256sum | awk '{print $1}'
-}
-
-header=$'arm\treplica\tsimTicks\tfingerprint_sha256\tterminal_sha256\tconfig_common_sha256\tselected\tterminal_completions\tvalue_read_issues\tvalue_read_responses\tvalue_fills\ta_read_issues\ta_read_responses\ta_write_issues\ta_write_responses\tpre_a_issues\tpre_a_ready\tpre_a_uses'
+header=$'arm\treplica\tsimTicks\tfingerprint_sha256\tterminal_sha256\tconfig_sha256\tselected\tterminal_completions\tvalue_read_issues\tvalue_read_responses\tvalue_fills\ta_read_issues\ta_read_responses\ta_write_issues\ta_write_responses\tpublish_issues\tpublish_accepts\tpublish_responses\tpublish_terminals\tpublish_overlap'
 printf '%s\n' "$header" > "$out/matrix.tsv"
-declare -A ticks fingerprints terminals configs selected value_issues a_read_issues a_write_issues pre_a_issues
+declare -A ticks fingerprints terminals configs selected value_issues a_read_issues a_write_issues publish_issues publish_accepts publish_responses publish_terminals publish_overlap
 
 run_arm() {
     local arm=$1 replica=$2
     local name="${arm}_r${replica}"
     local run="$out/runs/$name"
-    local -a command=("$gem5" --outdir="$run" "${common[@]}")
-    [[ $arm == control ]] || command+=("${treatment_flags[@]}")
+    local selector
+    if [[ $arm == control ]]; then
+        selector=$control_selector
+    else
+        selector=$treatment_selector
+    fi
+    local -a command=("$gem5" --outdir="$run" "${common[@]}" --options "MAA_DEFERRED $selector")
     mkdir -p "$run"
     printf '%q ' "${command[@]}" > "$run/command.txt"; printf '\n' >> "$run/command.txt"
     set +e
@@ -165,7 +144,11 @@ run_arm() {
     printf '%s\n' "$rc" > "$run/restore.exit"
     [[ $rc -eq 0 ]]
     [[ $(grep -Ec '^CG_FINGERPRINT .* result=PASS$' "$run/restore.log") -eq 1 ]]
-    [[ $(grep -Ec '^CG_LOGICAL16_RMW_TERMINAL treatment=residual_soa_jit .* result=PASS$' "$run/restore.log") -eq 1 ]]
+    if [[ $arm == control ]]; then
+        [[ $(grep -Ec '^CG_LOGICAL16_RMW_TERMINAL treatment=residual_soa_jit .*producer=cpu_after_spd_completion .*performance_promotable=0 result=PASS$' "$run/restore.log") -eq 1 ]]
+    else
+        [[ $(grep -Ec '^CG_LOGICAL16_RMW_TERMINAL treatment=residual_soa_jit_response_bearing .*producer=response_bearing_spd_overlap .*performance_promotable=1 result=PASS$' "$run/restore.log") -eq 1 ]]
+    fi
     [[ $(grep -Fxc 'ROI End!!!' "$run/restore.log") -eq 1 ]]
     [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' "$run/restore.log") -eq 1 ]]
     [[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' "$run/restore.log") -eq 0 ]]
@@ -173,40 +156,42 @@ run_arm() {
         num_offset_table_entries=16384 num_offset_table_epoch_entries=16384 \
         soa_jit_predicate_active_credits=16 soa_jit_active_value_owners=32 \
         soa_jit_value_prefetch_credits=0; do grep -Fqx "$resolved" "$run/config.ini"; done
-    if [[ $arm == control ]]; then
-        [[ $pre_a_treatment == false ]] || grep -Fqx 'soa_jit_pre_a_value_lookahead=false' "$run/config.ini"
-    else
-        for resolved in "${treatment_config_lines[@]}"; do
-            grep -Fqx "$resolved" "$run/config.ini"
-        done
-    fi
     cmp -s "$out/checkpoint.files.sha256" <(cd "$out/checkpoint" && find . -type f -print0 | sort -z | xargs -0 sha256sum)
 
-    local instruction terminal value_responses fills a_read_responses a_write_responses pre_a_ready pre_a_uses
+    local instruction terminal value_responses fills a_read_responses a_write_responses expected_publish
     instruction=$(stat_sum "$run/stats.txt" IND_SoaJitInstructions); terminal=$(stat_sum "$run/stats.txt" IND_SoaJitTerminalCompletions)
     selected[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitSelected)
     value_issues[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueReadIssues); value_responses=$(stat_sum "$run/stats.txt" IND_SoaJitValueReadResponses); fills=$(stat_sum "$run/stats.txt" IND_SoaJitValueFills)
     a_read_issues[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitAReadIssues); a_read_responses=$(stat_sum "$run/stats.txt" IND_SoaJitAReadResponses)
     a_write_issues[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitAWriteIssues); a_write_responses=$(stat_sum "$run/stats.txt" IND_SoaJitAWriteResponses)
-    pre_a_issues[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitPreAValueIssues); pre_a_ready=$(stat_sum "$run/stats.txt" IND_SoaJitPreAValueReadyAtAResponse); pre_a_uses=$(stat_sum "$run/stats.txt" IND_SoaJitPreAValueUses)
+    publish_issues[$name]=$(stat_sum "$run/stats.txt" STR_PublishIssues); publish_accepts[$name]=$(stat_sum "$run/stats.txt" STR_PublishAccepts)
+    publish_responses[$name]=$(stat_sum "$run/stats.txt" STR_PublishWriteResponses); publish_terminals[$name]=$(stat_sum "$run/stats.txt" STR_PublishTerminals)
+    publish_overlap[$name]=$(stat_sum "$run/stats.txt" STR_PublishOverlapIssues)
     [[ $instruction -gt 0 && $instruction -eq $terminal && ${selected[$name]} -gt 0 ]]
     [[ ${value_issues[$name]} -eq $value_responses && $value_responses -eq $fills ]]
     [[ ${a_read_issues[$name]} -eq $a_read_responses && ${a_read_issues[$name]} -eq ${a_write_issues[$name]} && ${a_write_issues[$name]} -eq $a_write_responses ]]
-    if [[ $arm == treatment && $pre_a_treatment == true ]]; then
-        [[ ${pre_a_issues[$name]} -gt 0 && ${pre_a_issues[$name]} -eq $pre_a_uses && $pre_a_ready -le $pre_a_uses ]]
+    if [[ $arm == treatment ]]; then
+        expected_publish=$((instruction * 2048))
+        [[ ${publish_issues[$name]} -eq $expected_publish ]]
+        [[ ${publish_accepts[$name]} -eq $expected_publish ]]
+        [[ ${publish_responses[$name]} -eq $expected_publish ]]
+        [[ ${publish_terminals[$name]} -eq $((instruction * 8)) ]]
+        [[ ${publish_overlap[$name]} -gt 0 ]]
     else
-        [[ ${pre_a_issues[$name]} -eq 0 && $pre_a_ready -eq 0 && $pre_a_uses -eq 0 ]]
+        [[ ${publish_issues[$name]} -eq 0 && ${publish_accepts[$name]} -eq 0 ]]
+        [[ ${publish_responses[$name]} -eq 0 && ${publish_terminals[$name]} -eq 0 ]]
+        [[ ${publish_overlap[$name]} -eq 0 ]]
     fi
     ticks[$name]=$(awk '$1 == "simTicks" { print $2; exit }' "$run/stats.txt")
     [[ ${ticks[$name]} =~ ^[1-9][0-9]*$ ]]
     fingerprints[$name]=$(grep '^CG_FINGERPRINT ' "$run/restore.log" | sha256sum | awk '{print $1}')
     terminals[$name]=$(grep '^CG_LOGICAL16_RMW_TERMINAL ' "$run/restore.log" | sha256sum | awk '{print $1}')
-    configs[$name]=$(normalize_config "$run/config.ini")
+    configs[$name]=$(sha256sum "$run/config.ini" | awk '{print $1}')
     {
-        printf 'source_commit=%s\ngem5_sha256=%s\nguest_sha256=%s\nselector_sha256=%s\ncheckpoint_sha256=%s\n' "$source_commit" "$(sha256sum "$gem5" | awk '{print $1}')" "$(sha256sum "$guest" | awk '{print $1}')" "$selector_sha" "$checkpoint_sha"
-        printf 'config_common_sha256=%s\nsimTicks=%s\nfingerprint_sha256=%s\nterminal_sha256=%s\n' "${configs[$name]}" "${ticks[$name]}" "${fingerprints[$name]}" "${terminals[$name]}"
+        printf 'source_commit=%s\ngem5_sha256=%s\nguest_sha256=%s\nselector_sha256=%s\ncheckpoint_sha256=%s\n' "$source_commit" "$(sha256sum "$gem5" | awk '{print $1}')" "$(sha256sum "$guest" | awk '{print $1}')" "$(sha256sum "$selector" | awk '{print $1}')" "$checkpoint_sha"
+        printf 'config_sha256=%s\nsimTicks=%s\nfingerprint_sha256=%s\nterminal_sha256=%s\n' "${configs[$name]}" "${ticks[$name]}" "${fingerprints[$name]}" "${terminals[$name]}"
     } > "$run/provenance.txt"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$arm" "$replica" "${ticks[$name]}" "${fingerprints[$name]}" "${terminals[$name]}" "${configs[$name]}" "${selected[$name]}" "$terminal" "${value_issues[$name]}" "$value_responses" "$fills" "${a_read_issues[$name]}" "$a_read_responses" "${a_write_issues[$name]}" "$a_write_responses" "${pre_a_issues[$name]}" "$pre_a_ready" "$pre_a_uses" > "$run/result.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$arm" "$replica" "${ticks[$name]}" "${fingerprints[$name]}" "${terminals[$name]}" "${configs[$name]}" "${selected[$name]}" "$terminal" "${value_issues[$name]}" "$value_responses" "$fills" "${a_read_issues[$name]}" "$a_read_responses" "${a_write_issues[$name]}" "$a_write_responses" "${publish_issues[$name]}" "${publish_accepts[$name]}" "${publish_responses[$name]}" "${publish_terminals[$name]}" "${publish_overlap[$name]}" > "$run/result.tsv"
 }
 
 pids=()
@@ -219,21 +204,28 @@ for ((replica = 1; replica <= replicas; replica++)); do
     cat "$out/runs/control_r${replica}/result.tsv"
     cat "$out/runs/treatment_r${replica}/result.tsv"
 done >> "$out/matrix.tsv"
-while IFS=$'\t' read -r arm replica tick fingerprint terminal config select _ value_issue _ _ a_read _ a_write _ pre_a_issue _ _; do
+while IFS=$'\t' read -r arm replica tick fingerprint terminal config select _ value_issue _ _ a_read _ a_write _ publish_issue publish_accept publish_response publish_terminal publish_over; do
     name="${arm}_r${replica}"
     ticks[$name]=$tick; fingerprints[$name]=$fingerprint
     terminals[$name]=$terminal; configs[$name]=$config
     selected[$name]=$select; value_issues[$name]=$value_issue
     a_read_issues[$name]=$a_read; a_write_issues[$name]=$a_write
-    pre_a_issues[$name]=$pre_a_issue
+    publish_issues[$name]=$publish_issue; publish_accepts[$name]=$publish_accept
+    publish_responses[$name]=$publish_response; publish_terminals[$name]=$publish_terminal
+    publish_overlap[$name]=$publish_over
 done < <(tail -n +2 "$out/matrix.tsv")
 for ((replica = 1; replica <= replicas; replica++)); do
     control="control_r$replica"; treatment="treatment_r$replica"
-    [[ ${fingerprints[$control]} == ${fingerprints[$treatment]} && ${terminals[$control]} == ${terminals[$treatment]} && ${configs[$control]} == ${configs[$treatment]} ]]
+    [[ ${fingerprints[$control]} == ${fingerprints[$treatment]} && ${configs[$control]} == ${configs[$treatment]} ]]
     [[ ${selected[$control]} -eq ${selected[$treatment]} && ${a_read_issues[$control]} -eq ${a_read_issues[$treatment]} && ${a_write_issues[$control]} -eq ${a_write_issues[$treatment]} ]]
+    [[ ${publish_issues[$control]} -eq 0 && ${publish_issues[$treatment]} -gt 0 ]]
+    [[ ${ticks[$treatment]} -le ${ticks[$control]} ]] || {
+        echo "response-bearing candidate is slower in replica $replica" >&2
+        exit 1
+    }
 done
 {
-    printf 'decision=VALID_MEASURED_PAIR\nshared_checkpoint_sha256=%s\n' "$checkpoint_sha"
+    printf 'decision=PERFORMANCE_PROMOTABLE\nshared_checkpoint_sha256=%s\n' "$checkpoint_sha"
     for ((replica = 1; replica <= replicas; replica++)); do control="control_r$replica"; treatment="treatment_r$replica"; awk -v r="$replica" -v c="${ticks[$control]}" -v t="${ticks[$treatment]}" 'BEGIN { printf "replica_%s_control_simTicks=%s\\nreplica_%s_treatment_simTicks=%s\\nreplica_%s_speedup=%.9f\\n", r,c,r,t,r,c/t }'; done
 } > "$out/decision.txt"
 touch "$out/gate.complete"

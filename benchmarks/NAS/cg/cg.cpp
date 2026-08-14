@@ -127,6 +127,7 @@ enum class CgRmwTreatment
 {
     Legacy4K,
     ResidualSoaJit,
+    ResidualSoaJitResponseBearing,
 };
 
 struct CgTreatmentSelector
@@ -143,14 +144,26 @@ alignas(64) static float cg_soa_values[NUM_CORES][TILE_SIZE];
 static uint64_t cg_soa_full_windows[NUM_CORES] = {};
 static uint64_t cg_soa_index_words[NUM_CORES] = {};
 static uint64_t cg_soa_value_words[NUM_CORES] = {};
+static uint64_t cg_soa_published_pages[NUM_CORES] = {};
+static uint64_t cg_soa_published_index_words[NUM_CORES] = {};
+static uint64_t cg_soa_published_value_words[NUM_CORES] = {};
+static uint32_t cg_soa_publisher_generation[NUM_CORES] = {};
 static uint64_t cg_legacy_residual_words[NUM_CORES] = {};
 
 static const char *
 cg_rmw_treatment_name(CgRmwTreatment treatment)
 {
+    if (treatment == CgRmwTreatment::ResidualSoaJitResponseBearing)
+        return "residual_soa_jit_response_bearing";
     return treatment == CgRmwTreatment::ResidualSoaJit
         ? "residual_soa_jit"
         : "legacy_4k";
+}
+
+static bool
+cg_rmw_uses_response_bearing_publisher(CgRmwTreatment treatment)
+{
+    return treatment == CgRmwTreatment::ResidualSoaJitResponseBearing;
 }
 
 static CgTreatmentSelector
@@ -181,9 +194,12 @@ read_cg_treatment_selector(const std::string &path)
         rmw = CgRmwTreatment::Legacy4K;
     else if (treatment == "residual_soa_jit")
         rmw = CgRmwTreatment::ResidualSoaJit;
+    else if (treatment == "residual_soa_jit_response_bearing")
+        rmw = CgRmwTreatment::ResidualSoaJitResponseBearing;
     else
         throw std::runtime_error(
-            "CG RMW treatment must be legacy_4k or residual_soa_jit");
+            "CG RMW treatment must be legacy_4k, residual_soa_jit, or "
+            "residual_soa_jit_response_bearing");
     return {consumer_mode, rmw};
 }
 #endif
@@ -692,12 +708,28 @@ int main(int argc, char **argv) {
 #ifdef CG_LOGICAL16_RMW
     std::cout << "CG_LOGICAL16_RMW_SELECTION treatment="
               << cg_rmw_treatment_name(cg_rmw_treatment)
-              << " slice=residual_spmv producer=cpu_after_spd_completion"
+              << " slice=residual_spmv producer="
+              << (cg_rmw_uses_response_bearing_publisher(cg_rmw_treatment)
+                      ? "response_bearing_spd_overlap"
+                      : "cpu_after_spd_completion")
               << " logical=" << TILE_SIZE
               << " physical=" << MAA_CONSUMER_TILE_SIZE
               << " external_staging_bytes="
               << sizeof(cg_soa_indices) + sizeof(cg_soa_values)
-              << " performance_promotable=0" << std::endl;
+              << " dedicated_physical_payload_bytes="
+              << 2 * MAA_CONSUMER_TILE_SIZE * sizeof(float)
+              << " publisher_credit_payload_bytes=" << 2 * 8 * 64
+              << " coherent_index_backing_bytes=" << sizeof(cg_soa_indices)
+              << " coherent_value_backing_bytes=" << sizeof(cg_soa_values)
+              << " hidden_logical16_payload_bytes=0"
+              << " cpu_untimed_copy_bytes="
+              << (cg_rmw_uses_response_bearing_publisher(cg_rmw_treatment)
+                      ? 0
+                      : sizeof(cg_soa_indices) + sizeof(cg_soa_values))
+              << " performance_promotable="
+              << (cg_rmw_uses_response_bearing_publisher(cg_rmw_treatment)
+                      ? 1
+                      : 0) << std::endl;
 #endif
 #endif
 #endif
@@ -810,28 +842,53 @@ int main(int argc, char **argv) {
             uint64_t full_windows = 0;
             uint64_t index_words = 0;
             uint64_t value_words = 0;
+            uint64_t published_pages = 0;
+            uint64_t published_index_words = 0;
+            uint64_t published_value_words = 0;
             uint64_t legacy_words = 0;
             for (int core = 0; core < NUM_CORES; ++core) {
                 full_windows += cg_soa_full_windows[core];
                 index_words += cg_soa_index_words[core];
                 value_words += cg_soa_value_words[core];
+                published_pages += cg_soa_published_pages[core];
+                published_index_words += cg_soa_published_index_words[core];
+                published_value_words += cg_soa_published_value_words[core];
                 legacy_words += cg_legacy_residual_words[core];
             }
             const bool staged_counts_close =
                 index_words == full_windows * TILE_SIZE &&
                 value_words == full_windows * TILE_SIZE;
+            const bool published_counts_close =
+                published_pages == full_windows * 4 &&
+                published_index_words == full_windows * TILE_SIZE &&
+                published_value_words == full_windows * TILE_SIZE;
             const bool treatment_used =
                 cg_rmw_treatment == CgRmwTreatment::Legacy4K
-                    ? full_windows == 0 && index_words == 0 && value_words == 0
+                    ? full_windows == 0 && index_words == 0 &&
+                          value_words == 0 && published_pages == 0
+                    : cg_rmw_uses_response_bearing_publisher(
+                          cg_rmw_treatment)
+                    ? full_windows > 0 && published_counts_close
                     : full_windows > 0 && staged_counts_close;
             std::cout << "CG_LOGICAL16_RMW_TERMINAL treatment="
                       << cg_rmw_treatment_name(cg_rmw_treatment)
                       << " slice=residual_spmv full_windows=" << full_windows
                       << " staged_index_words=" << index_words
                       << " staged_value_words=" << value_words
+                      << " published_pages=" << published_pages
+                      << " published_index_words=" << published_index_words
+                      << " published_value_words=" << published_value_words
                       << " legacy_words=" << legacy_words
-                      << " producer=cpu_after_spd_completion"
-                      << " performance_promotable=0 result="
+                      << " producer="
+                      << (cg_rmw_uses_response_bearing_publisher(
+                              cg_rmw_treatment)
+                              ? "response_bearing_spd_overlap"
+                              : "cpu_after_spd_completion")
+                      << " performance_promotable="
+                      << (cg_rmw_uses_response_bearing_publisher(
+                              cg_rmw_treatment)
+                              ? 1
+                              : 0) << " result="
                       << (treatment_used ? "PASS" : "FAIL") << std::endl;
             if (!treatment_used)
                 std::abort();
@@ -1524,8 +1581,12 @@ static void conj_grad_maa(int colidx[],
 #elif defined(MAA_GENERAL_VIRTUAL_CONSUMER)
 #ifdef CG_LOGICAL16_RMW
             const bool soa_residual_full_window =
-                cg_rmw_treatment == CgRmwTreatment::ResidualSoaJit &&
+                (cg_rmw_treatment == CgRmwTreatment::ResidualSoaJit ||
+                 cg_rmw_uses_response_bearing_publisher(cg_rmw_treatment)) &&
                 gather_size == TILE_SIZE;
+            const bool soa_residual_response_bearing =
+                soa_residual_full_window &&
+                cg_rmw_uses_response_bearing_publisher(cg_rmw_treatment);
 #endif
             if (gather_size == TILE_SIZE) {
                 maa_const<int>(k_base, r2);
@@ -1544,6 +1605,14 @@ static void conj_grad_maa(int colidx[],
                 maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
 
                 if (gather_size == TILE_SIZE) {
+                    if (soa_residual_response_bearing) {
+                        // The publisher reuses these three registers for its
+                        // authenticated logical page identity below. Restore
+                        // the physical 4K consumer bounds before every page.
+                        maa_const<int>(0, page_min_reg);
+                        maa_const<int>(MAA_CONSUMER_TILE_SIZE, page_max_reg);
+                        maa_const<int>(1, page_stride_reg);
+                    }
                     maa_virtual_consumer_load_page<float>(
                         virtual_consumer_mode,
                         virtual_gather_backing_for_thread(tid) + page_offset,
@@ -1566,36 +1635,80 @@ static void conj_grad_maa(int colidx[],
                                       Operation_t::MUL_OP);
 #ifdef CG_LOGICAL16_RMW
                 if (soa_residual_full_window) {
-                    // These are exactly the index/value operands that the
-                    // legacy page-local RMW would consume. Preserve their
-                    // page and bit order in external guest memory, but do
-                    // not expose the physical SPD page to a CPU cache
-                    // stream: a sequential CPU read can prefetch element
-                    // 4096, which is outside the 4K physical tile.
                     uint32_t *index_dst =
                         cg_soa_indices[tid] + page_offset;
                     float *value_dst = cg_soa_values[tid] + page_offset;
-                    maa_const<int>(0, r2);
-                    maa_const<int>(page_size, r3);
-                    maa_stream_store<uint32_t>(index_dst, r2, r3, r1, t0);
-                    maa_stream_store<float>(value_dst, r2, r3, r1, t7);
-                    wait_ready(t0);
-                    wait_ready(t7);
-                    std::atomic_thread_fence(std::memory_order_seq_cst);
-                    for (int word = 0; word < page_size; ++word) {
-                        if (index_dst[word] >=
-                            static_cast<uint32_t>(j_max - j_base)) {
-                            std::cerr << "CG logical-16 producer index out of "
-                                         "range: page="
-                                      << page_offset << " word=" << word
-                                      << " index=" << index_dst[word]
-                                      << " rows=" << j_max - j_base
-                                      << std::endl;
+                    if (soa_residual_response_bearing) {
+                        // The existing Row/Offset range result and FP32
+                        // product remain separate 4K physical SPD tiles.
+                        // Publish their exact 64B lines to ordinary coherent
+                        // backing and wait only on authenticated WriteResp
+                        // completion; no CPU reads, copies, or 16K producer
+                        // payload are introduced. t4/t5 are dead after the
+                        // multiply and serve solely as bounded completion
+                        // tokens until the next physical page reuses them.
+                        const uint32_t logical_page =
+                            page_offset / MAA_CONSUMER_TILE_SIZE;
+                        const uint32_t index_generation =
+                            ++cg_soa_publisher_generation[tid];
+                        if (index_generation == 0) {
+                            std::cerr << "CG response-bearing publisher "
+                                         "generation wrapped" << std::endl;
                             std::abort();
                         }
+                        const uint32_t value_generation =
+                            ++cg_soa_publisher_generation[tid];
+                        if (value_generation == 0) {
+                            std::cerr << "CG response-bearing publisher "
+                                         "generation wrapped" << std::endl;
+                            std::abort();
+                        }
+                        maa_const<uint32_t>(logical_page, page_min_reg);
+                        maa_const<uint32_t>(page_offset, page_max_reg);
+                        maa_const<uint32_t>(index_generation,
+                                            page_stride_reg);
+                        maa_publish_spd_page_logical16_response_bearing<
+                            uint32_t>(cg_soa_indices[tid], logical_page, t0,
+                                      t4, page_min_reg, page_max_reg,
+                                      page_stride_reg);
+                        maa_const<uint32_t>(value_generation,
+                                            page_stride_reg);
+                        maa_publish_spd_page_logical16_response_bearing<float>(
+                            cg_soa_values[tid], logical_page, t7, t5,
+                            page_min_reg, page_max_reg, page_stride_reg);
+                        wait_ready(t4);
+                        wait_ready(t5);
+                        cg_soa_published_pages[tid]++;
+                        cg_soa_published_index_words[tid] += page_size;
+                        cg_soa_published_value_words[tid] += page_size;
+                    } else {
+                        // The provenance control preserves the former CPU
+                        // staging behavior. It never exposes a 4K SPD page
+                        // to a CPU cache stream, which could prefetch element
+                        // 4096 beyond the physical tile.
+                        maa_const<int>(0, r2);
+                        maa_const<int>(page_size, r3);
+                        maa_stream_store<uint32_t>(index_dst, r2, r3, r1,
+                                                   t0);
+                        maa_stream_store<float>(value_dst, r2, r3, r1, t7);
+                        wait_ready(t0);
+                        wait_ready(t7);
+                        std::atomic_thread_fence(std::memory_order_seq_cst);
+                        for (int word = 0; word < page_size; ++word) {
+                            if (index_dst[word] >=
+                                static_cast<uint32_t>(j_max - j_base)) {
+                                std::cerr << "CG logical-16 producer index "
+                                             "out of range: page="
+                                          << page_offset << " word=" << word
+                                          << " index=" << index_dst[word]
+                                          << " rows=" << j_max - j_base
+                                          << std::endl;
+                                std::abort();
+                            }
+                        }
+                        cg_soa_index_words[tid] += page_size;
+                        cg_soa_value_words[tid] += page_size;
                     }
-                    cg_soa_index_words[tid] += page_size;
-                    cg_soa_value_words[tid] += page_size;
                 } else
 #endif
                 {
@@ -1611,10 +1724,12 @@ static void conj_grad_maa(int colidx[],
                 maa_virtual_consumer_end(virtual_consumer_mode, t6);
 #ifdef CG_LOGICAL16_RMW
             if (soa_residual_full_window) {
-                // Staging is charged as coherent CPU traffic. This is a
-                // correctness/provenance slice, not a promotable performance
-                // treatment; the arrays remain immutable through completion.
-                std::atomic_thread_fence(std::memory_order_seq_cst);
+                // Publication and consumption meet only through registered
+                // coherent backing. The response-bearing arm has already
+                // closed every page's WriteResp fence; the CPU-staged control
+                // keeps its existing fence for a same-checkpoint A/B.
+                if (!soa_residual_response_bearing)
+                    std::atomic_thread_fence(std::memory_order_seq_cst);
                 maa_const<int>(0, r2);
                 maa_const<int>(TILE_SIZE, r3);
                 maa_const<int>(1, r1);
