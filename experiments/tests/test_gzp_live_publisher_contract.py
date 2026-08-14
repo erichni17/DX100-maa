@@ -63,5 +63,5 @@ def test_runner_is_uncapped_and_fails_closed() -> None:
     assert "STR_PublishTerminals') -eq 8" in runner
     assert "speedup_claim=0" in runner
     assert "published_predicates=16384" in runner
-    assert "--maa_num_initial_row_table_slices=32" in runner
+    assert "--maa_num_initial_row_table_slices=16" in runner
     assert "--mem-channels=2" in runner

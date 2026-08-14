@@ -58,7 +58,7 @@ restore_cmd=(
     --cacheline_size=64 --mem-type Ramulator2
     --ramulator-config "$ramulator" --mem-channels=2
     --maa --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
-    --maa_num_initial_row_table_slices=32
+    --maa_num_initial_row_table_slices=16
     --maa_num_row_table_rows_per_slice=64
     --maa_num_row_table_entries_per_subslice_row=8
     --maa_num_offset_table_entries=16384
@@ -135,7 +135,7 @@ max_stat() {
 [[ $(grep -F -c 'event=spd_publish_response ' "$trace" || true) -eq 2048 ]]
 [[ $(grep -F -c 'event=spd_publish_terminal ' "$trace" || true) -eq 8 ]]
 for resolved in num_tile_elements=16384 physical_tile_elements=4096 \
-    num_initial_row_table_slices=32 \
+    num_initial_row_table_slices=16 \
     num_offset_table_entries=16384 num_offset_table_epoch_entries=16384; do
     grep -F -x "$resolved" "$out/run/config.ini"
 done
