@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Static contract checks for the correctness-first GZP integration."""
 
+import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "experiments/analysis"))
+import analyze_gzp_soa_jit_correctness as analyzer  # noqa: E402
 
 
 def text(path: str) -> str:
@@ -89,3 +94,39 @@ def test_analyzer_gates_volume_performance_and_publisher_correctness() -> None:
     ):
         assert required in analyzer
     assert "host time is not used" in analyzer.lower()
+
+
+def _completion(predicate_lines: int, unit: int = 1) -> str:
+    return (
+        "event=soa_jit_complete logical=16384 unit={} generation=1 "
+        "selected=16384 predicate_rejected=0 predicate_lines={}/{} "
+        "a_reads=1/1 value_reads=1/1 value_prefetch=0/0 a_writes=1/1 "
+        "hits=16383 merged=0 aliases=16384 prefetch_promotions=0 "
+        "prefetch_discards=0 prefetch_credits=0 prefetch_hwm=0 "
+        "context_hwm=1\n"
+    ).format(unit, predicate_lines, predicate_lines)
+
+
+def test_predicate_geometry_accepts_1025_and_records_resolved_count(tmp_path):
+    trace = tmp_path / "trace.log"
+    trace.write_text(_completion(1025), encoding="utf-8")
+
+    result = analyzer.validate_soa_trace(trace, 1)
+
+    assert result["predicate_lines_per_operation"] == 1025
+    assert result["trace_predicate_line_total"] == 1025
+
+
+@pytest.mark.parametrize(
+    "contents, message",
+    [
+        (_completion(1023), "not 1024 or 1025"),
+        (_completion(1024) + _completion(1025, unit=2), "changes"),
+    ],
+)
+def test_predicate_geometry_is_fail_closed(tmp_path, contents, message):
+    trace = tmp_path / "trace.log"
+    trace.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        analyzer.validate_soa_trace(trace, 2 if "unit=2" in contents else 1)
