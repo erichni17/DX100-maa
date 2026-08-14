@@ -100,6 +100,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_combine_victim_policy"
         )
 
+    if hasattr(options, "maa_virtual_page_ordered_combiner_drain"):
+        opts["virtual_page_ordered_combiner_drain"] = getattr(
+            options, "maa_virtual_page_ordered_combiner_drain"
+        )
+
     if hasattr(options, "maa_virtual_combine_banks"):
         opts["virtual_combine_banks"] = getattr(
             options, "maa_virtual_combine_banks"

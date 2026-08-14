@@ -86,6 +86,10 @@ class MAA(ClockedObject):
         0,
         "Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words",
     )
+    virtual_page_ordered_combiner_drain = Param.Bool(
+        False,
+        "Prioritize full virtual-combiner lines by 4K logical output page",
+    )
     virtual_response_slots = Param.Unsigned(
         8, "Retained source responses used by virtual gather retirement"
     )

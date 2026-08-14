@@ -340,6 +340,12 @@ def addNoISAOptions(parser):
         help="Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words",
     )
     parser.add_argument(
+        "--maa_virtual_page_ordered_combiner_drain",
+        default=False,
+        action="store_true",
+        help="Prioritize full virtual-combiner lines by 4K logical output page",
+    )
+    parser.add_argument(
         "--maa_virtual_response_slots",
         type=int,
         default=8,
