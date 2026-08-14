@@ -125,3 +125,22 @@ def test_runner_requires_same_checkpoint_exact_runtime_ledger(tmp_path: Path):
     assert plan["n"] == 16384
     assert plan["arms"] == ["separate_predicate", "masked_index"]
     assert plan["geometry"] == {"logical": 16384, "physical_spd": 4096}
+
+
+def test_stats_parser_ignores_nonfinite_derived_formulas(tmp_path: Path):
+    path = tmp_path / "stats.txt"
+    path.write_text(
+        "---------- Begin Simulation Statistics ----------\n"
+        "simTicks 123\n"
+        "system.maa.unrelatedFormula inf\n"
+        "system.maa.I0_IND_CyclesFill 17\n"
+        "---------- End Simulation Statistics   ----------\n"
+    )
+    spec = __import__("importlib.util").util.spec_from_file_location(
+        "gzp_masked_runner",
+        ROOT / "experiments/scripts/run_gzp_masked_index_pair.py",
+    )
+    module = __import__("importlib.util").util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    stats = module.first_stats(path)
+    assert stats == {"simTicks": 123, "system.maa.I0_IND_CyclesFill": 17}
