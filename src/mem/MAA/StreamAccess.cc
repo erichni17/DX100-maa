@@ -1,13 +1,16 @@
 #include "mem/MAA/StreamAccess.hh"
-#include "base/types.hh"
-#include "mem/MAA/MAA.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/SPD.hh"
+
+#include <cassert>
+
 #include "base/trace.hh"
+#include "base/types.hh"
 #include "debug/MAAStream.hh"
 #include "debug/MAATrace.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/MAA.hh"
+#include "mem/MAA/SPD.hh"
 #include "sim/cur_tick.hh"
-#include <cassert>
+#include "sim/faults.hh"
 
 #ifndef TRACING_ON
 #define TRACING_ON 1
