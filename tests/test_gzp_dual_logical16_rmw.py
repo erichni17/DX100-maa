@@ -92,6 +92,7 @@ def test_one_window_runner_is_shared_checkpoint_and_fail_closed() -> None:
         '"token_stream_ld dual_logical16"',
         '"shared_checkpoint": True',
         '"full_gzp_authorized": False',
+        '"--debug-flags=MAAVirtualTrace,MAATrace"',
         '"--maa_soa_jit_pre_a_value_lookahead"',
         "EXPECTED_PUBLISH_LINES = 4 * 256",
         '"STR_PublishWriteResponses"',

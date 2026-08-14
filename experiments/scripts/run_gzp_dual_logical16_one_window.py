@@ -335,6 +335,7 @@ def main() -> int:
         "logical_elements": 16384,
         "physical_spd_elements": 4096,
         "pre_a_value_lookahead": True,
+        "trace_flags": ["MAAVirtualTrace", "MAATrace"],
         "full_gzp_authorized": False,
     }
     if not args.execute:
@@ -439,6 +440,14 @@ def main() -> int:
                 args.l3_ports,
                 extra,
             )
+            virtual_trace_flag = "--debug-flags=MAAVirtualTrace"
+            if command.count(virtual_trace_flag) != 1:
+                raise RuntimeError(
+                    "restore command lost its virtual trace flag"
+                )
+            command[
+                command.index(virtual_trace_flag)
+            ] = "--debug-flags=MAAVirtualTrace,MAATrace"
             if matrix.tree_identity(checkpoint) != checkpoint_identity:
                 raise RuntimeError("shared checkpoint changed before restore")
             if common.run_logged(command, run / "restore.log", env):
