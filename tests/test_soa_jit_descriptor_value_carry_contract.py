@@ -19,6 +19,13 @@ def test_default_off_knob_is_wired_end_to_end():
     assert "Param.Bool(\n        False," in knob[:200]
     option = options[options.index('"--maa_soa_jit_descriptor_value_carry"') :]
     assert 'action="store_true"' in option[:300]
+    for text in (simobject, options, config, maa_header, indirect_header):
+        assert "soa_jit_descriptor_value_carry_fill_credits" in text
+    credits = options[
+        options.index('"--maa_soa_jit_descriptor_value_carry_fill_credits"') :
+    ]
+    assert "default=1" in credits[:300]
+    assert "choices=(1, 4, 8, 16)" in credits[:300]
 
 
 def test_offset_payload_is_zero_growth_for_fp32_and_fp64():
@@ -37,8 +44,15 @@ def test_fill_owner_and_terminal_ledgers_are_exact_and_bounded():
     header = read("src/mem/MAA/IndirectAccess.hh")
     source = read("src/mem/MAA/IndirectAccess.cc")
     assert "std::array<uint8_t, 64> data" in header
-    assert "SoaJitFillValueModeledBytes == 73" in header
+    assert "SoaJitFillValueMaxCredits = 16" in header
+    assert "SoaJitFillValueOwnerModeledBytes == 75" in header
+    assert "SoaJitFillValuePoolModeledBytes == 1200" in header
     assert "sizeof(SoaJitFillValueLine) == 80" in header
+    assert "SoaJitFillValueMaxCredits>) == 1280" in header
+    assert "uint16_t blockOrdinal" in header
+    assert "serviceSoaJitCarriedValueFeeder" in source
+    assert "soaJitFillValueOwnersUsed" in source
+    assert "discardSoaJitCarriedValueIfDone" in source
     assert "readSoaJitCarriedValue" in source
     assert "receiveSoaJitCarriedValue" in source
     assert source.index("receiveSoaJitCarriedValue(addr") < source.index(
@@ -55,7 +69,8 @@ def test_fill_owner_and_terminal_ledgers_are_exact_and_bounded():
         "soa_jit_carried_operands != soa_jit_selected",
         "soa_jit_carried_applies != soa_jit_selected",
         "soa_jit_value_read_issues != 0",
-        "SoaJitFillValueState::Empty",
+        "!soaJitFillValueOwnersEmpty()",
+        "soa_jit_carry_fill_owner_high_water >",
     ):
         assert invariant in terminal
     assert "carry_entry_incremental_bytes=0" in source
@@ -96,14 +111,16 @@ def test_fill_value_stall_precedes_predicate_accounting():
     assert carried < predicate < selected
 
 
-def test_micro_is_shared_checkpoint_exact_two_rep_control_treatment():
+def test_micro_is_shared_checkpoint_exact_two_rep_credit_sweep():
     runner = read(
-        "experiments/scripts/run_soa_jit_descriptor_value_carry_micro.sh"
+        "experiments/scripts/"
+        "run_soa_jit_descriptor_value_carry_fill_credits_sweep.sh"
     )
     assert "c8l8-checkpoint" in runner
     assert "for rep in 1 2" in runner
-    assert "for arm in control treatment" in runner
+    assert "for arm in control carry_c1 carry_c4 carry_c8 carry_c16" in runner
     assert "--maa_soa_jit_descriptor_value_carry" in runner
+    assert "--maa_soa_jit_descriptor_value_carry_fill_credits" in runner
     assert "output_hash=" in runner
     assert '"$expected_hash"' in runner
     assert "IND_CyclesFill" in runner
@@ -116,6 +133,8 @@ def test_micro_is_shared_checkpoint_exact_two_rep_control_treatment():
     assert "source_diff_sha256" not in runner
     assert "worktree_clean=" in runner
     assert "carry_entry_incremental_bytes=0" in runner
-    assert "carry_unit_incremental_modeled_bytes=73" in runner
-    assert "carry_unit_host_bytes=80" in runner
-    assert "SOA_JIT_DESCRIPTOR_VALUE_CARRY_MICRO_PASS" in runner
+    assert "pool_modeled_bytes=1200" in runner
+    assert "pool_host_bytes=1280" in runner
+    assert "active_selector_bits=2" in runner
+    assert 'decision = "reject"' in runner
+    assert "SOA_JIT_DESCRIPTOR_VALUE_CARRY_FILL_CREDITS_SWEEP_PASS" in runner

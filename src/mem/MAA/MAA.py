@@ -214,6 +214,11 @@ class MAA(ClockedObject):
         "Fetch selected values sequentially during Fill and carry each "
         "operand in its retained Offset descriptor",
     )
+    soa_jit_descriptor_value_carry_fill_credits = Param.Unsigned(
+        1,
+        "Active sequential Fill line owners for descriptor value carry "
+        "(1, 4, 8, or 16; fixed maximum hardware is 16)",
+    )
     soa_jit_value_prefetch_credits = Param.Unsigned(
         0,
         "Active sequential SoA/JIT value-line prefetch credits "

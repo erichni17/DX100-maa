@@ -187,6 +187,8 @@ MAA::MAA(const MAAParams &p)
       soa_jit_value_cache_enable(p.soa_jit_value_cache_enable),
       soa_jit_descriptor_value_carry(
           p.soa_jit_descriptor_value_carry),
+      soa_jit_descriptor_value_carry_fill_credits(
+          p.soa_jit_descriptor_value_carry_fill_credits),
       soa_jit_value_prefetch_credits(p.soa_jit_value_prefetch_credits),
       soa_jit_active_value_owners(p.soa_jit_active_value_owners),
       soa_jit_apply_lanes(p.soa_jit_apply_lanes),
@@ -641,6 +643,8 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
     for (int i = 0; i < memSidePorts.size(); i++) {
         memSidePorts[i]->allocate(i);
     }
+    const auto carryFillCredits =
+        soa_jit_descriptor_value_carry_fill_credits;
     for (int i = 0; i < num_indirect_units_total; i++) {
         indirectAccessUnits[i].allocate(i, num_tile_elements,
                                         num_offset_table_entries,
@@ -670,6 +674,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         soa_jit_value_lookahead,
                                         soa_jit_value_cache_enable,
                                         soa_jit_descriptor_value_carry,
+                                        carryFillCredits,
                                         soa_jit_value_prefetch_credits,
                                         soa_jit_active_value_owners,
                                         soa_jit_apply_lanes,

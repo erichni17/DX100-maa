@@ -493,6 +493,16 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_soa_jit_descriptor_value_carry_fill_credits",
+        type=int,
+        default=1,
+        choices=(1, 4, 8, 16),
+        help=(
+            "Active sequential Fill line owners for descriptor value carry; "
+            "fixed hardware maximum is 16"
+        ),
+    )
+    parser.add_argument(
         "--maa_soa_jit_value_prefetch_credits",
         type=int,
         default=0,

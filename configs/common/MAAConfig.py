@@ -210,6 +210,11 @@ def _get_maa_opts(options):
             options, "maa_soa_jit_descriptor_value_carry"
         )
 
+    if hasattr(options, "maa_soa_jit_descriptor_value_carry_fill_credits"):
+        opts["soa_jit_descriptor_value_carry_fill_credits"] = getattr(
+            options, "maa_soa_jit_descriptor_value_carry_fill_credits"
+        )
+
     if hasattr(options, "maa_soa_jit_value_prefetch_credits"):
         opts["soa_jit_value_prefetch_credits"] = getattr(
             options, "maa_soa_jit_value_prefetch_credits"
