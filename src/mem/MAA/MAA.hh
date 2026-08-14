@@ -568,6 +568,9 @@ protected:
     std::vector<int> virtualPageWordSize;
     std::vector<Tick> virtualProducerRegistrationTick;
     std::vector<Tick> virtualPageLastReadyTick;
+    // One bounded owner entry per configured SPD tile.  Publisher payload is
+    // retained only in StreamAccess's eight line credits.
+    std::vector<int> responseBearingPublishCompletionOwner;
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
     uint64_t transparentTraceOccurrence = 0;
@@ -717,7 +720,16 @@ protected:
     uint64_t pageMaterializationTraceOccurrence = 0;
     uint64_t pageMaterializationActivationCount = 0;
     std::vector<InstructionPtr> my_instructions;
-    uint8_t getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst);
+    int getInstructionTileWordSize(InstructionPtr instruction,
+                                   int tile_id);
+    bool responseBearingPublishDestinationBusy(int maa_id, int first_tile,
+                                               int word_size) const;
+    void reserveResponseBearingPublishCompletion(int maa_id, int first_tile,
+                                                 int word_size);
+    void releaseResponseBearingPublishCompletion(int maa_id, int first_tile,
+                                                 int word_size);
+    uint8_t getTileStatus(InstructionPtr instruction, int tile_id,
+                          bool is_dst);
     void issueInstruction();
     void dispatchInstruction();
     void dispatchRegister();
@@ -1266,6 +1278,14 @@ public:
         std::vector<statistics::Scalar *> STR_NumWordsInserted;
         std::vector<statistics::Scalar *> STR_NumCacheLineInserted;
         std::vector<statistics::Scalar *> STR_NumRTFull;
+        /** Guarded response-bearing SPD publication. */
+        std::vector<statistics::Scalar *> STR_PublishIssues;
+        std::vector<statistics::Scalar *> STR_PublishAccepts;
+        std::vector<statistics::Scalar *> STR_PublishRetries;
+        std::vector<statistics::Scalar *> STR_PublishWriteResponses;
+        std::vector<statistics::Scalar *> STR_PublishCreditHWM;
+        std::vector<statistics::Scalar *> STR_PublishCreditStalls;
+        std::vector<statistics::Scalar *> STR_PublishTerminals;
         std::vector<statistics::Formula *> STR_AvgWordsPerCacheLine;
         std::vector<statistics::Formula *> STR_AvgCacheLinesPerInst;
         std::vector<statistics::Formula *> STR_AvgRTFullsPerInst;

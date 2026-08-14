@@ -228,7 +228,7 @@ void ALUUnit::executeInstruction() {
             my_instruction->controllerManaged || my_cond_tile == -1;
         my_src1_tile_ready = my_instruction->controllerManaged;
         my_src2_tile_ready =
-            my_instruction->opcode == Instruction::OpcodeType::ALU_SCALAR;
+            my_instruction->opcode != Instruction::OpcodeType::ALU_VECTOR;
 
         // Setting the state of the instruction and ALU unit
         DPRINTF(MAAALU, "A[%d] %s: state set to work for request %s!\n", my_alu_id, __func__, my_instruction->print());

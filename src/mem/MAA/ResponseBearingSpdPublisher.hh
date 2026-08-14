@@ -343,6 +343,10 @@ class ResponseBearingSpdPublisher
     }
 
     bool active() const { return activeFlag; }
+    // Live integration holds the producing SPD tile for the entire active
+    // lifetime. Payloads are captured per line, but conservative source reuse
+    // is authorized only after the final ACK and successful reset().
+    bool sourceReusable() const { return !activeFlag; }
     bool empty() const { return occupiedCreditCount == 0; }
     bool retryPending() const { return retryCredit != Credits; }
     bool requestPrepared() const { return preparedCredit != Credits; }

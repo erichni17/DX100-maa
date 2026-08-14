@@ -474,8 +474,14 @@ bool MAA::sendOutstandingMemPacket() {
                 panic_if(chosen->packet->needsResponse(), "%s write packet %s needs response!\n", __func__, chosen->packet->print());
                 OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
                 my_outstanding_pkt_map.erase(paddr);
-                panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
-                panic_if(tmp.funcUnits[0] != FuncUnitType::INDIRECT, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::INDIRECT]);
+                panic_if(tmp.maaIDs.size() != 1,
+                         "%s multiple write packes coalesced into one!\n",
+                         __func__);
+                panic_if(tmp.funcUnits[0] != FuncUnitType::INDIRECT,
+                         "%s: func unit type %d does not match with %d\n",
+                         __func__,
+                         func_unit_names[(uint8_t)tmp.funcUnits[0]],
+                         func_unit_names[(uint8_t)FuncUnitType::INDIRECT]);
                 my_num_outstanding_indirect_pkts[tmp.maaIDs[0]]--;
                 sendNextDeferredPacket(paddr);
                 indirectAccessUnits[tmp.maaIDs[0]].memWritePacketSent(paddr);
@@ -582,21 +588,47 @@ bool MAA::sendOutstandingCachePacket() {
                 break;
             }
             DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
-            if (sendPacketCache(it->packet) == false) {
-                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+            const Addr paddr = it->paddr;
+            const OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
+            panic_if(tmp.maaIDs.size() != 1 ||
+                         tmp.funcUnits[0] != FuncUnitType::STREAM,
+                     "%s stream write lost its exact owner\n", __func__);
+            StreamAccessUnit &stream =
+                streamAccessUnits[tmp.maaIDs[0]];
+            const bool response_bearing =
+                stream.isResponseBearingPublishPacket(it->packet);
+            const bool needs_response = it->packet->needsResponse();
+            if (response_bearing) {
+                panic_if(!needs_response,
+                         "%s publisher WriteReq lost its response\n",
+                         __func__);
+            } else {
+                panic_if(needs_response,
+                         "%s unrecognized response-bearing stream write "
+                         "%s\n", __func__, it->packet->print());
+            }
+            StreamAccessUnit::ResponseBearingPublishAttempt attempt;
+            if (response_bearing) {
+                attempt = stream.responseBearingPublishPacketAttempt(
+                    it->packet);
+            }
+            if (!sendPacketCache(it->packet)) {
+                DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
+                        core);
+                if (response_bearing)
+                    stream.responseBearingPublishPacketRetried(it->packet);
                 cache_bus_blocked[core] = true;
                 break;
             } else {
-                Addr paddr = it->paddr;
-                panic_if(it->packet->needsResponse(), "%s write packet %s needs response!\n", __func__, it->packet->print());
-                OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
-                my_outstanding_pkt_map.erase(paddr);
-                panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
-                panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::STREAM]);
-                my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
-                sendNextDeferredPacket(paddr);
-                streamAccessUnits[tmp.maaIDs[0]].writePacketSent(
-                    it->paddr, true);
+                if (response_bearing) {
+                    my_outstanding_pkt_map[paddr].sent = true;
+                    stream.responseBearingPublishPacketAccepted(attempt);
+                } else {
+                    my_outstanding_pkt_map.erase(paddr);
+                    my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
+                    sendNextDeferredPacket(paddr);
+                    stream.writePacketSent(paddr, true);
+                }
                 it = my_outstanding_stream_cache_write_pkts[core].erase(it);
                 stats.port_cache_WR_packets += 1;
             }
@@ -643,21 +675,51 @@ bool MAA::sendOutstandingCachePacket() {
                     break;
                 }
                 DPRINTF(MAAPort, "%s: trying sending %s to cache\n", __func__, it->packet->print());
-                if (sendPacketCache(it->packet) == false) {
-                    DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__, core);
+                const Addr paddr = it->paddr;
+                const OutstandingPacket tmp =
+                    my_outstanding_pkt_map[paddr];
+                panic_if(tmp.maaIDs.size() != 1 ||
+                             tmp.funcUnits[0] != FuncUnitType::STREAM,
+                         "%s stream write lost its exact owner\n",
+                         __func__);
+                StreamAccessUnit &stream =
+                    streamAccessUnits[tmp.maaIDs[0]];
+                const bool response_bearing =
+                    stream.isResponseBearingPublishPacket(it->packet);
+                const bool needs_response = it->packet->needsResponse();
+                if (response_bearing) {
+                    panic_if(!needs_response,
+                             "%s publisher WriteReq lost its response\n",
+                             __func__);
+                } else {
+                    panic_if(needs_response,
+                             "%s unrecognized response-bearing stream "
+                             "write %s\n", __func__, it->packet->print());
+                }
+                StreamAccessUnit::ResponseBearingPublishAttempt attempt;
+                if (response_bearing) {
+                    attempt = stream.responseBearingPublishPacketAttempt(
+                        it->packet);
+                }
+                if (!sendPacketCache(it->packet)) {
+                    DPRINTF(MAAPort, "%s: send failed for bus %d\n",
+                            __func__, core);
+                    if (response_bearing)
+                        stream.responseBearingPublishPacketRetried(
+                            it->packet);
                     cache_bus_blocked[core] = true;
                     break;
                 } else {
-                    Addr paddr = it->paddr;
-                    panic_if(it->packet->needsResponse(), "%s write packet %s needs response!\n", __func__, it->packet->print());
-                    OutstandingPacket tmp = my_outstanding_pkt_map[paddr];
-                    my_outstanding_pkt_map.erase(paddr);
-                    panic_if(tmp.maaIDs.size() != 1, "%s multiple write packes coalesced into one!\n", __func__);
-                    panic_if(tmp.funcUnits[0] != FuncUnitType::STREAM, "%s: func unit type %d does not match with %d\n", __func__, func_unit_names[(uint8_t)tmp.funcUnits[0]], func_unit_names[(uint8_t)FuncUnitType::STREAM]);
-                    my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
-                    sendNextDeferredPacket(paddr);
-                    streamAccessUnits[tmp.maaIDs[0]].writePacketSent(
-                        it->paddr, true);
+                    if (response_bearing) {
+                        my_outstanding_pkt_map[paddr].sent = true;
+                        stream.responseBearingPublishPacketAccepted(
+                            attempt);
+                    } else {
+                        my_outstanding_pkt_map.erase(paddr);
+                        my_num_outstanding_stream_pkts[tmp.maaIDs[0]]--;
+                        sendNextDeferredPacket(paddr);
+                        stream.writePacketSent(paddr, true);
+                    }
                     it = my_outstanding_stream_mem_write_pkts[core].erase(it);
                     stats.port_cache_WR_packets += 1;
                 }
@@ -727,7 +789,21 @@ void MAA::recvTimingResp(PacketPtr pkt, bool cached) {
                 panic_if(indirectAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>(), tmp.cached) == false, "%s: received %s but rejected from indirectAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
             }
         } else if (tmp.funcUnits[i] == FuncUnitType::STREAM) {
-            panic_if(streamAccessUnits[tmp.maaIDs[i]].recvData(pkt->getAddr(), pkt->getPtr<uint8_t>()) == false, "%s: received %s but rejected from streamAccessUnits[%d]\n", __func__, pkt->print(), tmp.maaIDs[i]);
+            if (pkt->cmd == MemCmd::WriteResp) {
+                panic_if(!streamAccessUnits[tmp.maaIDs[i]]
+                              .isResponseBearingPublishPacket(pkt),
+                         "%s: stream WriteResp %s lacks exact publisher "
+                         "ownership\n", __func__, pkt->print());
+                my_num_outstanding_stream_pkts[tmp.maaIDs[i]]--;
+                streamAccessUnits[tmp.maaIDs[i]]
+                    .responseBearingPublishWriteResponse(pkt);
+            } else {
+                panic_if(!streamAccessUnits[tmp.maaIDs[i]].recvData(
+                             pkt->getAddr(), pkt->getPtr<uint8_t>()),
+                         "%s: received %s but rejected from "
+                         "streamAccessUnits[%d]\n",
+                         __func__, pkt->print(), tmp.maaIDs[i]);
+            }
         } else {
             panic("Invalid func unit type\n");
         }

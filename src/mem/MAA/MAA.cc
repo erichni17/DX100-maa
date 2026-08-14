@@ -378,6 +378,7 @@ MAA::MAA(const MAAParams &p)
     virtualPageWordSize.assign(num_tiles, 0);
     virtualProducerRegistrationTick.assign(num_tiles, 0);
     virtualPageLastReadyTick.assign(num_tiles, 0);
+    responseBearingPublishCompletionOwner.assign(num_tiles, -1);
     num_cores_per_maas = num_cores / num_maas;
     requestorId = p.system->getRequestorId(this);
     spd = new SPD(this, num_tiles, num_tile_elements,
@@ -780,8 +781,19 @@ void MAA::issueInstruction() {
                         panic_if(streamAccessUnits[maa_id].getState() != StreamAccessUnit::Status::Idle, "StreamAccessUnit[%d] is not idle!\n", maa_id);
                         Instruction *inst = ifile->getReady(FuncUnitType::STREAM, maa_id);
                         if (inst != nullptr) {
-                            if (inst->dst1SpdID != -1) {
-                                spd->setTileService(inst->dst1SpdID, inst->getWordSize(inst->dst1SpdID));
+                            const int publisher_completion =
+                                StreamAccessUnit::
+                                    responseBearingPublishCompletionTile(
+                                        inst);
+                            if (publisher_completion != -1) {
+                                spd->setTileService(
+                                    publisher_completion,
+                                    getInstructionTileWordSize(
+                                        inst, publisher_completion));
+                            } else if (inst->dst1SpdID != -1) {
+                                spd->setTileService(
+                                    inst->dst1SpdID,
+                                    inst->getWordSize(inst->dst1SpdID));
                             }
                             inst->func_unit_id = maa_id;
                             streamAccessUnits[maa_id].setInstruction(inst);
@@ -865,14 +877,79 @@ void MAA::issueInstruction() {
         stats.cycles_IDLE += getTicksToCycles(curTick() - my_last_idle_tick);
     }
 }
-uint8_t MAA::getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst) {
+int
+MAA::getInstructionTileWordSize(InstructionPtr instruction, int tile_id)
+{
+    panic_if(instruction == nullptr || tile_id == -1,
+             "Cannot classify an absent instruction tile\n");
+
+    // IF deliberately retains the legacy STREAM_ST ABI, in which dst1 is
+    // absent.  The guarded response-bearing form uses dst1 only as its
+    // completion token, with the same width as the published source.
+    if (StreamAccessUnit::isResponseBearingPublishInstruction(instruction) &&
+        tile_id == StreamAccessUnit::responseBearingPublishCompletionTile(
+                       instruction)) {
+        return instruction->WordSize();
+    }
+    return instruction->getWordSize(tile_id);
+}
+
+bool
+MAA::responseBearingPublishDestinationBusy(int maa_id, int first_tile,
+                                           int word_size) const
+{
+    const int tile_words = word_size / sizeof(uint32_t);
+    panic_if(maa_id < 0 || maa_id >= static_cast<int>(num_maas) ||
+                 first_tile < 0 ||
+                 first_tile + tile_words > static_cast<int>(num_tiles),
+             "Invalid publisher completion span maa=%d tile=%d words=%d\n",
+             maa_id, first_tile, tile_words);
+    for (int offset = 0; offset < tile_words; ++offset) {
+        if (responseBearingPublishCompletionOwner[first_tile + offset] != -1)
+            return true;
+    }
+    return false;
+}
+
+void
+MAA::reserveResponseBearingPublishCompletion(int maa_id, int first_tile,
+                                             int word_size)
+{
+    panic_if(responseBearingPublishDestinationBusy(
+                 maa_id, first_tile, word_size),
+             "Publisher completion span is already reserved\n");
+    const int tile_words = word_size / sizeof(uint32_t);
+    for (int offset = 0; offset < tile_words; ++offset)
+        responseBearingPublishCompletionOwner[first_tile + offset] = maa_id;
+}
+
+void
+MAA::releaseResponseBearingPublishCompletion(int maa_id, int first_tile,
+                                             int word_size)
+{
+    const int tile_words = word_size / sizeof(uint32_t);
+    panic_if(first_tile < 0 ||
+                 first_tile + tile_words > static_cast<int>(num_tiles),
+             "Invalid publisher completion release tile=%d words=%d\n",
+             first_tile, tile_words);
+    for (int offset = 0; offset < tile_words; ++offset) {
+        panic_if(responseBearingPublishCompletionOwner[
+                     first_tile + offset] != maa_id,
+                 "Publisher completion release lost owner maa=%d tile=%d\n",
+                 maa_id, first_tile + offset);
+        responseBearingPublishCompletionOwner[first_tile + offset] = -1;
+    }
+}
+uint8_t
+MAA::getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst)
+{
     if (tile_id == -1)
         return (uint8_t)(Instruction::TileStatus::Finished);
 
     bool is_dirty = spd->getTileDirty(tile_id);
     SPD::TileStatus status = spd->getTileStatus(tile_id);
-    if (instruction->getWordSize(tile_id) == 8) {
-        if (spd->getTileDirty(tile_id + 1) == true) {
+    if (getInstructionTileWordSize(instruction, tile_id) == 8) {
+        if (spd->getTileDirty(tile_id + 1)) {
             is_dirty = true;
         }
         panic_if(spd->getTileStatus(tile_id + 1) != status, "Tile[%d] and Tile[%d] have different statuses %s != %s\n",
@@ -4241,6 +4318,18 @@ DrainState
 MAA::drain()
 {
     logicalSpdBridge->closeAdmission();
+    for (int stream = 0; stream < num_maas; ++stream) {
+        panic_if(!streamAccessUnits[stream]
+                      .responseBearingPublisherQuiescent(),
+                 "Response-bearing SPD publisher %d cannot be checkpointed "
+                 "with live credits/retries/responses\n", stream);
+    }
+    panic_if(std::any_of(
+                 responseBearingPublishCompletionOwner.begin(),
+                 responseBearingPublishCompletionOwner.end(),
+                 [](int owner) { return owner != -1; }),
+             "Response-bearing SPD publisher cannot be checkpointed with a "
+             "queued completion reservation\n");
     panic_if(std::any_of(
                  pendingPageZeroPrearms.begin(),
                  pendingPageZeroPrearms.end(),
@@ -4267,6 +4356,18 @@ MAA::drain()
 void
 MAA::drainResume()
 {
+    for (int stream = 0; stream < num_maas; ++stream) {
+        panic_if(!streamAccessUnits[stream]
+                      .responseBearingPublisherQuiescent(),
+                 "Response-bearing SPD publisher %d resumed with live "
+                 "credits/retries/responses\n", stream);
+    }
+    panic_if(std::any_of(
+                 responseBearingPublishCompletionOwner.begin(),
+                 responseBearingPublishCompletionOwner.end(),
+                 [](int owner) { return owner != -1; }),
+             "Response-bearing SPD publisher resumed with a queued "
+             "completion reservation\n");
     panic_if(std::any_of(
                  pendingPageZeroPrearms.begin(),
                  pendingPageZeroPrearms.end(),
@@ -4460,16 +4561,38 @@ void MAA::dispatchInstruction() {
                 continue;
             }
             bool materializerDestinationBusy = false;
+            const bool responseBearingPublish =
+                StreamAccessUnit::isResponseBearingPublishInstruction(
+                    instruction);
             const int destinations[] = {
                 instruction->dst1SpdID, instruction->dst2SpdID};
             for (const int destination : destinations) {
                 if (destination == -1)
                     continue;
+                const int destinationWordSize =
+                    getInstructionTileWordSize(instruction, destination);
                 materializerDestinationBusy =
                     materializerDestinationBusy ||
                     pageMaterializerOwnsDestination(
                         instruction->maa_id, destination,
-                        instruction->getWordSize(destination));
+                        destinationWordSize) ||
+                    responseBearingPublishDestinationBusy(
+                        instruction->maa_id, destination,
+                        destinationWordSize);
+            }
+            if (responseBearingPublish && !materializerDestinationBusy) {
+                const int completion =
+                    StreamAccessUnit::responseBearingPublishCompletionTile(
+                        instruction);
+                const int tileWords = instruction->WordSize() /
+                    sizeof(uint32_t);
+                for (int offset = 0; offset < tileWords; ++offset) {
+                    if (ifile->hasTileReference(
+                            instruction->maa_id, completion + offset)) {
+                        materializerDestinationBusy = true;
+                        break;
+                    }
+                }
             }
             if (materializerDestinationBusy) {
                 ++pkt_it;
@@ -4496,13 +4619,35 @@ void MAA::dispatchInstruction() {
             instruction->dst2Status =
                 (Instruction::TileStatus)getTileStatus(
                     instruction, instruction->dst2SpdID, true);
-            if (ifile->pushInstruction(*instruction)) {
-                DPRINTF(MAAController, "%s: %s dispatched!\n", __func__, instruction->print());
+            Instruction queuedInstruction = *instruction;
+            if (responseBearingPublish) {
+                queuedInstruction.controllerTransactionID =
+                    StreamAccessUnit::
+                        ResponseBearingPublishInstructionTag;
+                queuedInstruction.controllerDstSlot =
+                    instruction->dst1SpdID;
+                queuedInstruction.dst1SpdID = -1;
+                queuedInstruction.dst1Status =
+                    Instruction::TileStatus::Finished;
+            }
+            if (ifile->pushInstruction(queuedInstruction)) {
+                DPRINTF(MAAController, "%s: %s dispatched!\n", __func__,
+                        instruction->print());
                 if (instruction->dst1SpdID != -1) {
                     assert(instruction->dst1SpdID != instruction->src1SpdID);
                     assert(instruction->dst1SpdID != instruction->src2SpdID);
-                    spd->setTileIdle(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
-                    spd->setTileNotReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
+                    const int dst1_word_size =
+                        getInstructionTileWordSize(
+                            instruction, instruction->dst1SpdID);
+                    spd->setTileIdle(
+                        instruction->dst1SpdID, dst1_word_size);
+                    spd->setTileNotReady(
+                        instruction->dst1SpdID, dst1_word_size);
+                    if (responseBearingPublish) {
+                        reserveResponseBearingPublishCompletion(
+                            instruction->maa_id,
+                            instruction->dst1SpdID, dst1_word_size);
+                    }
                 }
                 if (instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
@@ -4580,9 +4725,24 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     controller_request.dstSlot = instruction->controllerDstSlot;
     controller_request.elementOffset = instruction->controllerElementOffset;
     controller_request.transactionID = instruction->controllerTransactionID;
-    if (instruction->dst1SpdID != -1) {
-        spd->setTileFinished(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
-        setTileReady(instruction->dst1SpdID, instruction->getWordSize(instruction->dst1SpdID));
+    const int publisher_completion =
+        StreamAccessUnit::responseBearingPublishCompletionTile(instruction);
+    if (publisher_completion != -1) {
+        const int word_size = instruction->WordSize();
+        panic_if(instruction->dst1SpdID != -1,
+                 "Publisher retained a guest completion tile inside IF\n");
+        spd->setTileFinished(publisher_completion, word_size);
+        setTileReady(publisher_completion, word_size);
+        // IF sees the completion only at the terminal transition, allowing it
+        // to wake queued consumers without asking legacy getWordSize() to
+        // classify the guarded STREAM_ST destination.
+        instruction->dst1SpdID = publisher_completion;
+    } else if (instruction->dst1SpdID != -1) {
+        const int dst1_word_size = getInstructionTileWordSize(
+            instruction, instruction->dst1SpdID);
+        spd->setTileFinished(
+            instruction->dst1SpdID, dst1_word_size);
+        setTileReady(instruction->dst1SpdID, dst1_word_size);
     }
     if (instruction->dst2SpdID != -1) {
         spd->setTileFinished(instruction->dst2SpdID, instruction->getWordSize(instruction->dst2SpdID));
@@ -4597,6 +4757,12 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     ifile->finishInstructionCompute(instruction);
     if (num_maas > 1)
         invalidator->finishInstruction(instruction);
+    if (publisher_completion != -1) {
+        instruction->dst1SpdID = -1;
+        releaseResponseBearingPublishCompletion(
+            instruction->maa_id, publisher_completion,
+            instruction->WordSize());
+    }
     switch (instruction->funcUniType) {
     case FuncUnitType::STREAM: {
         streamAccessIdle[instruction->func_unit_id] = true;
@@ -6945,26 +7111,120 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         STR_NumWordsInserted.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumWordsInserted"), statistics::units::Count::get(), "number of words inserted to the request table"));
         STR_NumCacheLineInserted.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumCacheLineInserted"), statistics::units::Count::get(), "number of cachelines inserted to the request table"));
         STR_NumRTFull.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_NumRTFull"), statistics::units::Count::get(), "number of request table full events"));
-        STR_AvgWordsPerCacheLine.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgWordsPerCacheLine"), statistics::units::Count::get(), "average number of words per cacheline"));
-        STR_AvgCacheLinesPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgCacheLinesPerInst"), statistics::units::Count::get(), "average number of cachelines per stream instruction"));
-        STR_AvgRTFullsPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgRTFullsPerInst"), statistics::units::Count::get(), "average number of request table full events per stream instruction"));
-        STR_CyclesRequest.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_CyclesRequest"), statistics::units::Count::get(), "number of cycles in the REQUEST stage"));
-        STR_CyclesRTAccess.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_CyclesRTAccess"), statistics::units::Count::get(), "number of cycles for request table access"));
-        STR_CyclesSPDReadAccess.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_CyclesSPDReadAccess"), statistics::units::Count::get(), "number of cycles for SPD read access"));
-        STR_CyclesSPDWriteAccess.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_CyclesSPDWriteAccess"), statistics::units::Count::get(), "number of cycles for SPD write access"));
-        STR_AvgCyclesRequestPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgCyclesRequestPerInst"), statistics::units::Count::get(), "average number of cycles in the REQUEST stage per stream instruction"));
-        STR_AvgCyclesRTAccessPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgCyclesRTAccessPerInst"), statistics::units::Count::get(), "average number of cycles for request table access per stream instruction"));
-        STR_AvgCyclesSPDReadAccessPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgCyclesSPDReadAccessPerInst"), statistics::units::Count::get(), "average number of cycles for SPD read access per stream instruction"));
-        STR_AvgCyclesSPDWriteAccessPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgCyclesSPDWriteAccessPerInst"), statistics::units::Count::get(), "average number of cycles for SPD write access per stream instruction"));
-        STR_LoadsCacheAccessing.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_LoadsCacheAccessing"), statistics::units::Count::get(), "number of loads accessed from cache"));
-        STR_AvgLoadsCacheAccessingPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgLoadsCacheAccessingPerInst"), statistics::units::Count::get(), "average number of loads accessed from cache per stream instruction"));
-        STR_Evicts.push_back(new statistics::Scalar(this, MAKE_STREAM_STAT_NAME("STR_Evicts"), statistics::units::Count::get(), "number of evict accesses to the cache side port"));
-        STR_AvgEvictssPerInst.push_back(new statistics::Formula(this, MAKE_STREAM_STAT_NAME("STR_AvgEvictssPerInst"), statistics::units::Count::get(), "average number of evict accesses to the cache side port per stream instruction"));
+        STR_PublishIssues.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishIssues"),
+            statistics::units::Count::get(),
+            "exact response-bearing SPD publisher WriteReq issues"));
+        STR_PublishAccepts.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishAccepts"),
+            statistics::units::Count::get(),
+            "publisher WriteReqs accepted by the cache path"));
+        STR_PublishRetries.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishRetries"),
+            statistics::units::Count::get(),
+            "publisher cache-path request refusals retaining retry "
+            "ownership"));
+        STR_PublishWriteResponses.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishWriteResponses"),
+            statistics::units::Count::get(),
+            "unique exact publisher WriteResp completions"));
+        STR_PublishCreditHWM.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishCreditHWM"),
+            statistics::units::Count::get(),
+            "maximum live publisher payload credits"));
+        STR_PublishCreditStalls.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishCreditStalls"),
+            statistics::units::Count::get(),
+            "publisher service observations blocked by all eight credits"));
+        STR_PublishTerminals.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishTerminals"),
+            statistics::units::Count::get(),
+            "publisher operations completed after the final unique ACK"));
+        STR_AvgWordsPerCacheLine.push_back(new statistics::Formula(
+            this, MAKE_STREAM_STAT_NAME("STR_AvgWordsPerCacheLine"),
+            statistics::units::Count::get(),
+            "average number of words per cacheline"));
+        STR_AvgCacheLinesPerInst.push_back(new statistics::Formula(
+            this, MAKE_STREAM_STAT_NAME("STR_AvgCacheLinesPerInst"),
+            statistics::units::Count::get(),
+            "average number of cachelines per stream instruction"));
+        STR_AvgRTFullsPerInst.push_back(new statistics::Formula(
+            this, MAKE_STREAM_STAT_NAME("STR_AvgRTFullsPerInst"),
+            statistics::units::Count::get(),
+            "average number of request table full events per stream "
+            "instruction"));
+        STR_CyclesRequest.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_CyclesRequest"),
+            statistics::units::Count::get(),
+            "number of cycles in the REQUEST stage"));
+        STR_CyclesRTAccess.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_CyclesRTAccess"),
+            statistics::units::Count::get(),
+            "number of cycles for request table access"));
+        STR_CyclesSPDReadAccess.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_CyclesSPDReadAccess"),
+            statistics::units::Count::get(),
+            "number of cycles for SPD read access"));
+        STR_CyclesSPDWriteAccess.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_CyclesSPDWriteAccess"),
+            statistics::units::Count::get(),
+            "number of cycles for SPD write access"));
+        STR_AvgCyclesRequestPerInst.push_back(new statistics::Formula(
+            this, MAKE_STREAM_STAT_NAME("STR_AvgCyclesRequestPerInst"),
+            statistics::units::Count::get(),
+            "average number of cycles in the REQUEST stage per stream "
+            "instruction"));
+        STR_AvgCyclesRTAccessPerInst.push_back(new statistics::Formula(
+            this, MAKE_STREAM_STAT_NAME("STR_AvgCyclesRTAccessPerInst"),
+            statistics::units::Count::get(),
+            "average number of cycles for request table access per stream "
+            "instruction"));
+        STR_AvgCyclesSPDReadAccessPerInst.push_back(
+            new statistics::Formula(
+                this,
+                MAKE_STREAM_STAT_NAME("STR_AvgCyclesSPDReadAccessPerInst"),
+                statistics::units::Count::get(),
+                "average number of cycles for SPD read access per stream "
+                "instruction"));
+        STR_AvgCyclesSPDWriteAccessPerInst.push_back(
+            new statistics::Formula(
+                this,
+                MAKE_STREAM_STAT_NAME("STR_AvgCyclesSPDWriteAccessPerInst"),
+                statistics::units::Count::get(),
+                "average number of cycles for SPD write access per stream "
+                "instruction"));
+        STR_LoadsCacheAccessing.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_LoadsCacheAccessing"),
+            statistics::units::Count::get(),
+            "number of loads accessed from cache"));
+        STR_AvgLoadsCacheAccessingPerInst.push_back(
+            new statistics::Formula(
+                this,
+                MAKE_STREAM_STAT_NAME("STR_AvgLoadsCacheAccessingPerInst"),
+                statistics::units::Count::get(),
+                "average number of loads accessed from cache per stream "
+                "instruction"));
+        STR_Evicts.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_Evicts"),
+            statistics::units::Count::get(),
+            "number of evict accesses to the cache side port"));
+        STR_AvgEvictssPerInst.push_back(new statistics::Formula(
+            this, MAKE_STREAM_STAT_NAME("STR_AvgEvictssPerInst"),
+            statistics::units::Count::get(),
+            "average number of evict accesses to the cache side port per "
+            "stream instruction"));
 
         (*STR_NumInsts[stream_id]).flags(statistics::nozero);
         (*STR_NumWordsInserted[stream_id]).flags(statistics::nozero);
         (*STR_NumCacheLineInserted[stream_id]).flags(statistics::nozero);
         (*STR_NumRTFull[stream_id]).flags(statistics::nozero);
+        (*STR_PublishIssues[stream_id]).flags(statistics::nozero);
+        (*STR_PublishAccepts[stream_id]).flags(statistics::nozero);
+        (*STR_PublishRetries[stream_id]).flags(statistics::nozero);
+        (*STR_PublishWriteResponses[stream_id]).flags(statistics::nozero);
+        (*STR_PublishCreditHWM[stream_id]).flags(statistics::nozero);
+        (*STR_PublishCreditStalls[stream_id]).flags(statistics::nozero);
+        (*STR_PublishTerminals[stream_id]).flags(statistics::nozero);
         (*STR_CyclesRequest[stream_id]).flags(statistics::nozero);
         (*STR_CyclesRTAccess[stream_id]).flags(statistics::nozero);
         (*STR_CyclesSPDReadAccess[stream_id]).flags(statistics::nozero);

@@ -358,6 +358,57 @@ testFp64GeometryAlignmentCompletionAndAccounting()
               << " total_bytes=" << Fp64Publisher::chargedBytes() << '\n';
 }
 
+void
+testSourceReuseWaitsForFinalAckAndReset()
+{
+    using TinyPublisher =
+        gem5::ResponseBearingSpdPublisher<4, 1, 1>;
+    TinyPublisher publisher;
+    CHECK(publisher.sourceReusable());
+    CHECK(publisher.begin(41, 1, 0x800000, 1) ==
+          TinyPublisher::BeginResult::Started);
+    CHECK(!publisher.sourceReusable());
+
+    // With one credit, every line before the terminal line is captured,
+    // issued, ACKed, and released. The source nevertheless remains leased:
+    // later lines have not yet been captured from it.
+    for (uint16_t line = 0; line + 1 < publisher.expectedLines(); ++line) {
+        const auto bytes = linePayload<TinyPublisher>(line, 1);
+        const auto identity = publisher.identity(0, line);
+        CHECK(publisher.enqueue(identity, bytes.data(), bytes.size()) ==
+              TinyPublisher::EnqueueResult::Accepted);
+        TinyPublisher::Request request;
+        CHECK(publisher.prepareRequest(&request) ==
+              TinyPublisher::RequestResult::Prepared);
+        CHECK(publisher.recordSend(request, true) ==
+              TinyPublisher::SendResult::Accepted);
+        CHECK(publisher.acknowledge({identity, true}) ==
+              TinyPublisher::AckResult::Accepted);
+        CHECK(!publisher.complete());
+        CHECK(!publisher.sourceReusable());
+    }
+
+    const uint16_t finalLine = publisher.expectedLines() - 1;
+    const auto finalBytes = linePayload<TinyPublisher>(finalLine, 1);
+    const auto finalIdentity = publisher.identity(0, finalLine);
+    CHECK(publisher.enqueue(finalIdentity, finalBytes.data(),
+                            finalBytes.size()) ==
+          TinyPublisher::EnqueueResult::Accepted);
+    TinyPublisher::Request finalRequest;
+    CHECK(publisher.prepareRequest(&finalRequest) ==
+          TinyPublisher::RequestResult::Prepared);
+    CHECK(publisher.recordSend(finalRequest, true) ==
+          TinyPublisher::SendResult::Accepted);
+    CHECK(!publisher.complete());
+    CHECK(!publisher.sourceReusable());
+    CHECK(publisher.acknowledge({finalIdentity, true}) ==
+          TinyPublisher::AckResult::Accepted);
+    CHECK(publisher.complete());
+    CHECK(!publisher.sourceReusable());
+    CHECK(publisher.reset() == TinyPublisher::ResetResult::Reset);
+    CHECK(publisher.sourceReusable());
+}
+
 } // anonymous namespace
 
 int
@@ -370,6 +421,7 @@ main()
     testGenerationReuseIsRejectedAndOldResponseStaysStale();
     testFp32FourPageIdentityAndChargedByteAccounting();
     testFp64GeometryAlignmentCompletionAndAccounting();
+    testSourceReuseWaitsForFinalAckAndReset();
     std::cout << "response-bearing SPD publisher tests passed\n";
     return 0;
 }

@@ -442,6 +442,56 @@ inline void maa_stream_store(T1 *data, int min_reg, int max_reg,
     *INSTR_baseaddr = (uint64_t)data;                                                                           // baseaddr
     __asm__ __volatile__("mfence;");
 }
+
+/**
+ * Publish one completed physical 4K-element SPD tile into a coherent backing
+ * page using exact response-bearing 64B WriteReqs.
+ *
+ * This is a guarded extension of STREAM_ST: ordinary stores always encode
+ * tdst1=NA, while this form uses tdst1 as a completion-only tile.  The three
+ * scalar registers contain, respectively, logical page (0..3), logical
+ * element offset (page*4096), and a nonzero uint32_t generation.  Hardware
+ * rejects every partial shape.  The source and completion tiles remain not
+ * ready until every unique WriteResp returns, so waiting on completion_tile
+ * is the publication fence.
+ */
+template <class T1>
+inline void maa_publish_spd_page_response_bearing(
+    T1 *page_backing, int src_tile, int completion_tile,
+    int logical_page_reg, int logical_offset_reg, int generation_reg) {
+    static_assert(sizeof(T1) == 4 || sizeof(T1) == 8,
+                  "SPD publication supports only FP32/FP64-width elements");
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::STREAM_ST << 32) |
+        ((uint64_t)data_type << 24) |
+        ((uint64_t)NA_UINT8 << 16) |
+        ((uint64_t)completion_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)src_tile << 56) |
+        ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) |
+        ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)logical_page_reg << 24) |
+        ((uint64_t)logical_offset_reg << 16) |
+        ((uint64_t)generation_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)page_backing;
+    __asm__ __volatile__("mfence;");
+}
+
+/** Address one of four physical pages in a single logical-16K SoA array. */
+template <class T1>
+inline void maa_publish_spd_page_logical16_response_bearing(
+    T1 *logical16_backing, unsigned logical_page, int src_tile,
+    int completion_tile, int logical_page_reg, int logical_offset_reg,
+    int generation_reg) {
+    if (logical_page >= 4)
+        __builtin_trap();
+    maa_publish_spd_page_response_bearing(
+        logical16_backing + logical_page * 4096, src_tile,
+        completion_tile, logical_page_reg, logical_offset_reg,
+        generation_reg);
+}
 template <class T1>
 inline void maa_indirect_load(T1 *data, int idx_tile, int dst_tile, int cond_tile = -1) {
     DataType data_type = get_data_type<T1>();

@@ -2,17 +2,19 @@
 #define __MEM_MAA_STREAMACCESS_HH__
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
 
+#include "arch/generic/mmu.hh"
 #include "base/types.hh"
+#include "mem/MAA/IF.hh"
+#include "mem/MAA/ResponseBearingSpdPublisher.hh"
+#include "mem/MAA/Tables.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
-#include "mem/MAA/IF.hh"
-#include "mem/MAA/Tables.hh"
 
 namespace gem5 {
 
@@ -20,7 +22,62 @@ class MAA;
 
 class StreamAccessUnit : public BaseMMU::Translation {
 public:
-    enum class Status : uint8_t {
+    // IF intentionally knows only the legacy STREAM_ST shape.  MAA replaces
+    // the guarded guest tdst1 with this bounded internal tag while the
+    // instruction is resident in IF, then restores the completion identity
+    // for terminal dependency wakeup.
+    static constexpr uint64_t ResponseBearingPublishInstructionTag =
+        0x525350445055424cULL;
+
+    static bool isResponseBearingPublishInstruction(
+        const Instruction *instruction) {
+        if (instruction == nullptr || instruction->controllerManaged ||
+            instruction->opcode != Instruction::OpcodeType::STREAM_ST)
+            return false;
+        return instruction->dst1SpdID != -1 ||
+            (instruction->controllerTransactionID ==
+                 ResponseBearingPublishInstructionTag &&
+             instruction->controllerDstSlot != -1);
+    }
+
+    static int responseBearingPublishCompletionTile(
+        const Instruction *instruction) {
+        if (!isResponseBearingPublishInstruction(instruction))
+            return -1;
+        return instruction->dst1SpdID != -1
+            ? instruction->dst1SpdID
+            : instruction->controllerDstSlot;
+    }
+
+    // FP32 uses one 16 KiB byte chunk and FP64 uses two.  Both geometries
+    // share these exact eight payload credits; there is no second datatype-
+    // specific payload bank.
+    using ResponsePublisher =
+        ResponseBearingSpdPublisher<sizeof(uint32_t), 2, 8>;
+
+    struct ResponseBearingPublishSenderState : public Packet::SenderState
+    {
+        ResponsePublisher::Identity identity{};
+        int streamID = -1;
+        uint64_t guestGeneration = 0;
+        uint32_t logicalPage = 0;
+        uint32_t logicalElementOffset = 0;
+        Addr physicalAddress = 0;
+        bool transportAccepted = false;
+        uint32_t retryCount = 0;
+    };
+
+    struct ResponseBearingPublishAttempt
+    {
+        ResponsePublisher::Identity identity{};
+        uint64_t guestGeneration = 0;
+        uint32_t logicalPage = 0;
+        Addr physicalAddress = 0;
+        uint32_t retryCount = 0;
+    };
+
+    enum class Status : uint8_t
+    {
         Idle = 0,
         Decode = 1,
         Request = 2,
@@ -96,6 +153,16 @@ public:
     bool recvData(const Addr addr, uint8_t *dataptr);
     void writePacketSent(Addr addr, bool transportAccepted = false);
     void readPacketSent(Addr addr);
+    bool isResponseBearingPublishPacket(PacketPtr pkt) const;
+    ResponseBearingPublishAttempt responseBearingPublishPacketAttempt(
+        PacketPtr pkt);
+    void responseBearingPublishPacketAccepted(
+        const ResponseBearingPublishAttempt &attempt);
+    void responseBearingPublishPacketRetried(PacketPtr pkt);
+    void responseBearingPublishWriteResponse(PacketPtr pkt);
+    bool responseBearingPublisherQuiescent() const {
+        return !my_response_bearing_publish && !response_publisher.active();
+    }
 
     /* Related to BaseMMU::Translation Inheretance */
     void markDelayed() override {}
@@ -129,10 +196,28 @@ protected:
     // fallback when the bounded concurrent materializer cannot admit.
     bool my_token_bound_load;
 
+    // A guarded STREAM_ST with tdst1 present publishes exactly one completed
+    // physical 4K-element tile.  tdst1 is a completion-only output token;
+    // rsrc1/2/3 contain logical page, logical element offset, and generation.
+    bool my_response_bearing_publish;
+    int my_publish_completion_tile;
+    ResponsePublisher response_publisher;
+    uint64_t response_publisher_sequence;
+    uint64_t my_publish_guest_generation;
+    uint32_t my_publish_logical_page;
+    uint32_t my_publish_logical_element_offset;
+    uint64_t my_publish_credit_stall_observations;
+
     Addr my_translated_addr;
     bool my_translation_done;
 
     void createReadPacket(Addr addr, int latency);
+    void executeResponseBearingPublish();
+    void captureAndIssueResponseBearingLine();
+    PacketPtr makeResponseBearingPublishPacket(
+        const ResponsePublisher::Request &request);
+    ResponseBearingPublishSenderState *responseBearingPublishState(
+        PacketPtr pkt) const;
     Addr translatePacket(Addr vaddr);
     void executeInstruction();
     EventFunctionWrapper executeInstructionEvent;
