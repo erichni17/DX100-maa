@@ -935,6 +935,22 @@ int main(int argc, char *argv[]) {
     build_scalar_reference();
 #endif
 
+#ifdef UME_GZP_SOA_JIT_RMW
+    // The SoA/JIT consumer deliberately rejects a logical source whose guest
+    // pages do not form one contiguous physical routing span.  Allocate the
+    // two buffers in separate sequential passes before the checkpoint; if
+    // first touch were left to alternating predicate/gradient publications,
+    // their physical pages would be interleaved.  These zeros are allocation
+    // state only.  Every full-window result byte is still replaced after
+    // restore by a response-bearing modeled cache write before consumption.
+    for (int core = 0; core < NUM_CORES; ++core)
+        std::fill(soa_predicates[core],
+                  soa_predicates[core] + TILE_SIZE, 0U);
+    for (int core = 0; core < NUM_CORES; ++core)
+        std::fill(soa_gradient_values[core],
+                  soa_gradient_values[core] + TILE_SIZE, DATATYPE{0});
+#endif
+
 #ifdef GEM5
     cout << "Starting checkpoint" << endl;
     m5_checkpoint(0, 0);

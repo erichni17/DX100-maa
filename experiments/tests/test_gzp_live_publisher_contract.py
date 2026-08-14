@@ -21,6 +21,15 @@ def test_gzp_has_no_host_result_staging_loop() -> None:
     assert block.count("wait_ready(soa_") == 2
 
 
+def test_publication_backings_are_prefaulted_before_checkpoint() -> None:
+    source = read("benchmarks/UME/gradzatp.cpp")
+    checkpoint = source.index('cout << "Starting checkpoint"')
+    predicate_touch = source.index("std::fill(soa_predicates[core]")
+    gradient_touch = source.index("std::fill(soa_gradient_values[core]")
+    assert predicate_touch < gradient_touch < checkpoint
+    assert "first touch were left to alternating" in source
+
+
 def test_publisher_accounting_includes_overlap() -> None:
     header = read("src/mem/MAA/MAA.hh")
     implementation = read("src/mem/MAA/StreamAccess.cc")
