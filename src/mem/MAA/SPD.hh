@@ -87,6 +87,15 @@ public:
                 "%s: tile[%d] element[%d] tile_element[%d] finished\n",
                 __func__, tile_id, element_id, tile_element_id);
     }
+    // Hidden materializer stores use the existing SPD payload array but must
+    // not publish element readiness.  The page-ready path remains the sole
+    // architectural visibility authority.
+    template <typename T>
+    void stageData(int tile_id, int element_id, T _data) {
+        check_tile_element_id(tile_id, element_id, sizeof(T));
+        *((T *)(tiles_data + tile_id * physical_tile_elements * 4 +
+                element_id * sizeof(T))) = _data;
+    }
     void setFakeData(int tile_id, int element_id, int word_size) {
         check_tile_element_id(tile_id, element_id, word_size);
         int tile_element_id = tile_id * physical_tile_elements +

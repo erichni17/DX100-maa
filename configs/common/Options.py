@@ -407,6 +407,14 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_page_materialization_direct_spd_fragments",
+        action="store_true",
+        help=(
+            "Stage authenticated active-page masked producer words directly "
+            "in the allocated SPD page (default: disabled)"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,

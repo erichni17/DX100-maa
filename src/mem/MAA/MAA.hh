@@ -2,6 +2,7 @@
 #define __MEM_MAA_MAA_HH__
 
 #include <array>
+#include <bitset>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -410,6 +411,7 @@ public:
     unsigned int logical_spd_cache_mode;
     unsigned int page_materialization_wakeup_batches;
     unsigned int page_materialization_fragment_buffers;
+    bool page_materialization_direct_spd_fragments;
     unsigned int num_regs;
     unsigned int num_instructions_per_core;
     unsigned int num_instructions_per_maa;
@@ -601,6 +603,18 @@ protected:
         uint8_t wordBytes = 0;
         uint8_t pagesMaterialized = 0;
         uint16_t forwardedLines = 0;
+        uint16_t stagedDirectLines = 0;
+        uint16_t stagedDirectFragments = 0;
+        uint16_t stagedDirectFallbackLines = 0;
+        // Fixed active-page control only: 64 line eligibility bits plus the
+        // maximum 4-byte geometry's 1024 word bits. No line payload lives
+        // here; payload is written into the already allocated SPD page.
+        std::bitset<HybridConsumerPipeline::ProducerPageElements /
+                    sizeof(uint32_t)> stagedWords{};
+        std::bitset<HybridConsumerPipeline::ProducerPageElements /
+                    HybridConsumerPipeline::LineBytes> stagedDisallowed{};
+        std::bitset<HybridConsumerPipeline::ProducerPageElements /
+                    HybridConsumerPipeline::LineBytes> stagedFallbackCounted{};
         uint16_t cacheReadFallbackLines = 0;
         Addr backingAddress = 0;
         int backingRangeID = -1;
@@ -645,8 +659,11 @@ protected:
     struct PageMaterializationCommit
     {
         bool active = false;
+        bool directStaged = false;
         Tick readyTick = 0;
         HybridConsumerContextQueue::Request request{};
+        HybridConsumerContextQueue::ContextKey owner{};
+        uint16_t line = HybridConsumerPipeline::MaxLines;
     };
     std::array<PageMaterializationCommit,
                DirectRetirementRequestRecordCount>
@@ -725,6 +742,9 @@ protected:
         const HybridConsumerContextQueue::ContextKey &key);
     bool reservePageMaterializationCommit(
         const HybridConsumerContextQueue::Request &request, Tick readyTick);
+    bool reservePageMaterializationDirectCommit(
+        const HybridConsumerContextQueue::ContextKey &key, uint16_t line,
+        Tick readyTick);
     bool pageMaterializerOwnsDestination(int maaID, int firstTile,
                                         int wordBytes) const;
     void scheduleDirectRetirementEvent(int latency = 0);
@@ -899,6 +919,9 @@ public:
         statistics::Scalar page_materialization_admission_fallbacks;
         statistics::Scalar page_materialization_producer_line_acks;
         statistics::Scalar page_materialization_page_fallback_lines;
+        statistics::Scalar page_materialization_staged_direct_lines;
+        statistics::Scalar page_materialization_staged_direct_fragments;
+        statistics::Scalar page_materialization_staged_direct_fallback_lines;
         // Smart writeback queue (Phase 0 instrumentation): number of indirect
         // writebacks issued to a DRAM row already left open by the previous
         // write to that bank. rowhit / WR_packets = MAA-side write row-hit rate.

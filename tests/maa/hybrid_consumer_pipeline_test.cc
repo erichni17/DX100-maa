@@ -240,6 +240,31 @@ testPartialWriteResponsesNeedEveryUniqueWord()
 }
 
 void
+testDirectMaterializationCompletionNeedsCompleteAuthenticatedLine()
+{
+    HybridConsumerPipeline pipeline;
+    auto descriptor = validDescriptor();
+    descriptor.mode = HybridConsumerPipeline::Mode::MaterializePages;
+    CHECK(pipeline.submit(descriptor) ==
+          HybridConsumerPipeline::SubmitResult::Accepted);
+    CHECK(pipeline.beginMaterializationPage(0));
+    CHECK(pipeline.notifyProducerLineWriteAck(
+        lineAckFor(descriptor, 0, 0x03, 7000)));
+    CHECK(pipeline.producerLineWordMask(0) == 0x03);
+    CHECK(!pipeline.completeMaterializeDirect(0));
+    CHECK(pipeline.notifyProducerLineWriteAck(
+        lineAckFor(descriptor, 0, 0xfc, 8000)));
+    CHECK(pipeline.producerLineWordMask(0) == 0xff);
+    CHECK(pipeline.lineState(0) ==
+          HybridConsumerPipeline::LineState::ReadyForRead);
+    CHECK(pipeline.completeMaterializeDirect(0));
+    CHECK(pipeline.lineState(0) == HybridConsumerPipeline::LineState::Done);
+    CHECK(pipeline.completed() == 1);
+    CHECK(pipeline.readsAccepted() == 0);
+    CHECK(pipeline.assertInvariants());
+}
+
+void
 testRetrySurvivesSchedulingPreferenceChange()
 {
     HybridConsumerPipeline pipeline;
@@ -427,6 +452,7 @@ main()
     testLateBoundProducerWriteRespIdentity();
     testLineWriteRespUnlocksBeforePageClosure();
     testPartialWriteResponsesNeedEveryUniqueWord();
+    testDirectMaterializationCompletionNeedsCompleteAuthenticatedLine();
     testRetrySurvivesSchedulingPreferenceChange();
     testNoSyntheticVisibilityOrAcknowledgement();
     testCompleteBothWordGeometries();

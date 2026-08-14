@@ -539,6 +539,26 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         )
         self.assertIn("BufferState::ProducerFragments", pipeline)
 
+    def test_direct_spd_fragment_staging_is_opt_in_and_payload_free(
+        self,
+    ) -> None:
+        sim_object = (ROOT / "src/mem/MAA/MAA.py").read_text(encoding="utf-8")
+        options = (ROOT / "configs/common/Options.py").read_text(
+            encoding="utf-8"
+        )
+        config = (ROOT / "configs/common/MAAConfig.py").read_text(
+            encoding="utf-8"
+        )
+        header = (ROOT / "src/mem/MAA/MAA.hh").read_text(encoding="utf-8")
+        source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
+        for text in (sim_object, options, config):
+            self.assertIn("page_materialization_direct_spd_fragments", text)
+        self.assertIn("Param.Bool(\n        False,", sim_object)
+        self.assertIn("spd->stageData", source)
+        self.assertIn("reservePageMaterializationDirectCommit", source)
+        self.assertIn("stagedWords", header)
+        self.assertNotIn("directStagePayload", header)
+
     def test_gapbs_adds_native4_controls_without_false_hybrid_target(
         self,
     ) -> None:
