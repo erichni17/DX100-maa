@@ -485,6 +485,16 @@ def addNoISAOptions(parser):
         help="Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
     parser.add_argument(
+        "--maa_soa_jit_value_prefetch_credits",
+        type=int,
+        default=0,
+        choices=(0, 1, 2, 4, 8),
+        help=(
+            "Active sequential SoA/JIT value-line prefetch credits; "
+            "zero disables and fixed hardware maximum is eight"
+        ),
+    )
+    parser.add_argument(
         "--maa_soa_jit_active_value_owners",
         type=int,
         default=4,

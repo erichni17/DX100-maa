@@ -233,6 +233,10 @@ def test_storage_ledger_separates_fixed_provision_from_active_knobs():
         "selected_value_owner_entry_bytes_per_maa",
         "active_apply_lanes",
         "active_apply_lane_hwm",
+        "fixed_prefetch_credits",
+        "fixed_prefetch_credit_bytes",
+        "active_prefetch_credits",
+        "fixed_prefetch_cursor_bytes",
     ):
         assert field in storage
 
@@ -255,6 +259,65 @@ def test_value_owner_pool_plumbing_restricts_runtime_selection():
     assert "choices=(4, 8, 16, 32, 64, 128)" in options
     assert "soa_jit_active_value_owners = Param.Unsigned" in simobject
     assert 'opts["soa_jit_active_value_owners"]' in config
+
+
+def test_sequential_value_prefetch_is_disabled_bounded_and_exactly_owned():
+    state = read("src/mem/MAA/SoaJitOverlapState.hh")
+    header = read("src/mem/MAA/IndirectAccess.hh")
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    options = read("configs/common/Options.py")
+    simobject = read("src/mem/MAA/MAA.py")
+    config = read("configs/common/MAAConfig.py")
+
+    assert "MaxPrefetchCredits = 8" in state
+    assert "count == 0 || count == 1 || count == 2 || count == 4" in state
+    assert "uint64_t vaddr = 0" in state
+    assert "uint64_t paddr = 0" in state
+    assert "credit.vaddr == vaddr" in state
+    assert "first >= activePrefetchCredits && credit.valid" in state
+    assert "SoaJitValuePrefetchCursor" in header
+    assert "SoaJitValuePrefetchMaxScans" in header
+    assert "sizeof(SoaJitValuePrefetchCursor) <= 16" in header
+
+    assert '"--maa_soa_jit_value_prefetch_credits"' in options
+    knob = options[options.index('"--maa_soa_jit_value_prefetch_credits"') :]
+    assert "default=0" in knob
+    assert "choices=(0, 1, 2, 4, 8)" in knob
+    assert "soa_jit_value_prefetch_credits = Param.Unsigned" in simobject
+    param = simobject[
+        simobject.index("soa_jit_value_prefetch_credits = Param.Unsigned") :
+    ]
+    assert "0," in param
+    assert 'opts["soa_jit_value_prefetch_credits"]' in config
+
+    assert "serviceSoaJitValuePrefetch" in source
+    assert source.count("soa_jit_value_coalescer.configure(") == 2
+    assert (
+        source.count(
+            "soa_jit_value_cache_enable, soa_jit_value_prefetch_credits"
+        )
+        == 2
+    )
+    assert "translatePacket(block_vaddr)" in source
+    assert "reservePrefetch" in source
+    assert "createSoaJitReadPacket(block_paddr" in source
+    assert "PrefetchPromote" in source
+    assert "PrefetchDiscard" in source
+    assert "soaJitValuePrefetchComplete()" in source
+    assert "soa_jit_value_prefetch_issues !=" in source
+    assert "soa_jit_value_prefetch_promotions +" in source
+    for counter in (
+        "IND_SoaJitValuePrefetchIssues",
+        "IND_SoaJitValuePrefetchResponses",
+        "IND_SoaJitValuePrefetchPromotions",
+        "IND_SoaJitValuePrefetchDiscards",
+        "IND_SoaJitValuePrefetchOwned",
+        "IND_SoaJitValuePrefetchCreditStalls",
+        "IND_SoaJitValuePrefetchActiveCredits",
+        "IND_SoaJitValuePrefetchHighWater",
+    ):
+        assert counter in read("src/mem/MAA/MAA.hh")
+        assert counter in read("src/mem/MAA/MAA.cc")
 
 
 def test_context_pool_is_fixed_32_with_exact_runtime_choices_and_storage():

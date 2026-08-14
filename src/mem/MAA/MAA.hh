@@ -461,6 +461,7 @@ public:
     unsigned int soa_jit_active_contexts;
     unsigned int soa_jit_value_lookahead;
     bool soa_jit_value_cache_enable;
+    unsigned int soa_jit_value_prefetch_credits;
     unsigned int soa_jit_active_value_owners;
     unsigned int soa_jit_apply_lanes;
     bool virtual_partition_keep_combiner;
@@ -1137,6 +1138,17 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitValueDeliveries;
         std::vector<statistics::Scalar *> IND_SoaJitValueStalls;
         std::vector<statistics::Scalar *> IND_SoaJitValueCacheHighWater;
+        std::vector<statistics::Scalar *> IND_SoaJitValuePrefetchIssues;
+        std::vector<statistics::Scalar *> IND_SoaJitValuePrefetchResponses;
+        std::vector<statistics::Scalar *> IND_SoaJitValuePrefetchPromotions;
+        std::vector<statistics::Scalar *> IND_SoaJitValuePrefetchDiscards;
+        std::vector<statistics::Scalar *> IND_SoaJitValuePrefetchOwned;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitValuePrefetchCreditStalls;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitValuePrefetchActiveCredits;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitValuePrefetchHighWater;
         std::vector<statistics::Scalar *> IND_SoaJitLookaheadIssues;
         std::vector<statistics::Scalar *> IND_SoaJitLookaheadResponses;
         std::vector<statistics::Scalar *> IND_SoaJitLookaheadStalls;

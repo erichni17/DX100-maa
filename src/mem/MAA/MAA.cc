@@ -185,6 +185,7 @@ MAA::MAA(const MAAParams &p)
       soa_jit_active_contexts(p.soa_jit_active_contexts),
       soa_jit_value_lookahead(p.soa_jit_value_lookahead),
       soa_jit_value_cache_enable(p.soa_jit_value_cache_enable),
+      soa_jit_value_prefetch_credits(p.soa_jit_value_prefetch_credits),
       soa_jit_active_value_owners(p.soa_jit_active_value_owners),
       soa_jit_apply_lanes(p.soa_jit_apply_lanes),
       virtual_partition_keep_combiner(p.virtual_partition_keep_combiner),
@@ -666,6 +667,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         soa_jit_active_contexts,
                                         soa_jit_value_lookahead,
                                         soa_jit_value_cache_enable,
+                                        soa_jit_value_prefetch_credits,
                                         soa_jit_active_value_owners,
                                         soa_jit_apply_lanes,
                                         rowtable_latency,
@@ -6622,6 +6624,48 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueCacheHighWater"),
             statistics::units::Count::get(),
             "sum of per-instruction fixed value-cache high water"));
+        IND_SoaJitValuePrefetchIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValuePrefetchIssues"),
+            statistics::units::Count::get(),
+            "sequential value-line prefetch read issues"));
+        IND_SoaJitValuePrefetchResponses.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitValuePrefetchResponses"),
+            statistics::units::Count::get(),
+            "exact sequential value-line prefetch responses"));
+        IND_SoaJitValuePrefetchPromotions.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitValuePrefetchPromotions"),
+            statistics::units::Count::get(),
+            "prefetch responses promoted to waiting demand aliases"));
+        IND_SoaJitValuePrefetchDiscards.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitValuePrefetchDiscards"),
+            statistics::units::Count::get(),
+            "prefetch responses without coalescer demand waiters"));
+        IND_SoaJitValuePrefetchOwned.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValuePrefetchOwned"),
+            statistics::units::Count::get(),
+            "sequential candidates already owned by demand state"));
+        IND_SoaJitValuePrefetchCreditStalls.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitValuePrefetchCreditStalls"),
+                statistics::units::Count::get(),
+                "sequential candidates blocked by active prefetch credits"));
+        IND_SoaJitValuePrefetchActiveCredits.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitValuePrefetchActiveCredits"),
+                statistics::units::Count::get(),
+                "sum of active prefetch credits across completed operations"));
+        IND_SoaJitValuePrefetchHighWater.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitValuePrefetchHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-operation prefetch-credit high-water marks"));
         IND_SoaJitLookaheadIssues.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitLookaheadIssues"),
             statistics::units::Count::get(),

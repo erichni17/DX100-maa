@@ -205,6 +205,11 @@ def _get_maa_opts(options):
             options, "maa_soa_jit_value_cache_enable"
         )
 
+    if hasattr(options, "maa_soa_jit_value_prefetch_credits"):
+        opts["soa_jit_value_prefetch_credits"] = getattr(
+            options, "maa_soa_jit_value_prefetch_credits"
+        )
+
     if hasattr(options, "maa_soa_jit_active_value_owners"):
         opts["soa_jit_active_value_owners"] = getattr(
             options, "maa_soa_jit_active_value_owners"

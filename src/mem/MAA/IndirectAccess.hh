@@ -293,6 +293,7 @@ public:
                   int _soa_jit_active_contexts,
                   int _soa_jit_value_lookahead,
                   bool _soa_jit_value_cache_enable,
+                  int _soa_jit_value_prefetch_credits,
                   int _soa_jit_active_value_owners,
                   int _soa_jit_apply_lanes,
                   Cycles _rowtable_latency,
@@ -555,12 +556,25 @@ protected:
     static constexpr size_t SoaJitContexts =
         SoaJitValueCoalescer::MaxContexts;
     std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
+    struct SoaJitValuePrefetchCursor
+    {
+        Addr lastBlockVaddr = 0;
+        uint32_t nextLogical = 0;
+        bool lastBlockValid = false;
+    };
+    static_assert(sizeof(SoaJitValuePrefetchCursor) <= 16,
+                  "SoA/JIT value-prefetch cursor exceeds 16 bytes");
+    static constexpr size_t SoaJitValuePrefetchMaxScans =
+        SoaJitValueCoalescer::MaxPrefetchCredits *
+        SoaJitValueCoalescer::LineBytes / sizeof(uint32_t);
     bool soa_jit_operation_active = false;
     SoaJitValueCoalescer soa_jit_value_coalescer;
     int soa_jit_active_contexts = 1;
     int soa_jit_value_lookahead = 1;
     bool soa_jit_value_cache_enable = false;
+    int soa_jit_value_prefetch_credits = 0;
     int soa_jit_active_value_owners = 4;
+    SoaJitValuePrefetchCursor soa_jit_value_prefetch_cursor;
     int soa_jit_apply_lanes = 1;
     SoaJitApplyLanePool soa_jit_apply_lane_pool;
     bool soa_jit_all_rows_claimed = false;
@@ -586,6 +600,13 @@ protected:
     uint64_t soa_jit_value_deliveries = 0;
     uint64_t soa_jit_value_stalls = 0;
     uint64_t soa_jit_value_cache_high_water = 0;
+    uint64_t soa_jit_value_prefetch_issues = 0;
+    uint64_t soa_jit_value_prefetch_responses = 0;
+    uint64_t soa_jit_value_prefetch_promotions = 0;
+    uint64_t soa_jit_value_prefetch_discards = 0;
+    uint64_t soa_jit_value_prefetch_owned = 0;
+    uint64_t soa_jit_value_prefetch_credit_stalls = 0;
+    uint64_t soa_jit_value_prefetch_high_water = 0;
     uint64_t soa_jit_lookahead_issues = 0;
     uint64_t soa_jit_lookahead_responses = 0;
     uint64_t soa_jit_lookahead_stalls = 0;
@@ -674,6 +695,8 @@ protected:
     bool receiveSoaPredicate(Addr addr, uint8_t *dataptr,
                              bool is_block_cached);
     int64_t soaSourcePosition(int logical_itr) const;
+    bool serviceSoaJitValuePrefetch();
+    bool soaJitValuePrefetchComplete() const;
     bool serviceSoaJitBuild();
     bool receiveSoaJitData(Addr addr, uint8_t *dataptr,
                            bool is_block_cached);

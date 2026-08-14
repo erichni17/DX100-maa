@@ -237,11 +237,20 @@ class SoaJitValueCoalescer
                count == 64 || count == 128;
     }
 
+    static constexpr bool isValidActivePrefetchCreditCount(uint8_t count)
+    {
+        return count == 0 || count == 1 || count == 2 || count == 4 ||
+               count == 8;
+    }
+
     void configure(bool cache_enable, uint8_t prefetch_credits,
                    size_t active_owners = 4)
     {
         cacheEnabled = cache_enable;
-        activePrefetchCredits = prefetch_credits;
+        activePrefetchCredits =
+            isValidActivePrefetchCreditCount(prefetch_credits)
+                ? prefetch_credits
+                : MaxPrefetchCredits + 1;
         activeOwnerLines = isValidActiveOwnerCount(active_owners)
             ? static_cast<uint8_t>(active_owners) : 0;
     }
@@ -261,7 +270,8 @@ class SoaJitValueCoalescer
     AliasOutcome requestAlias(uint64_t generation, uint64_t paddr,
                               uint16_t waiter)
     {
-        if (generation == 0 || waiter >= MaxWaiters)
+        if (generation == 0 || (paddr % LineBytes) != 0 ||
+            waiter >= MaxWaiters)
             return {AliasResult::Invalid, false};
         for (auto &line : cache) {
             if (line.state == LineState::Free || line.paddr != paddr)
@@ -308,7 +318,8 @@ class SoaJitValueCoalescer
                                    uint64_t paddr)
     {
         if (generation == 0 || activePrefetchCredits == 0 ||
-            activePrefetchCredits > MaxPrefetchCredits)
+            activePrefetchCredits > MaxPrefetchCredits ||
+            (vaddr % LineBytes) != 0 || (paddr % LineBytes) != 0)
             return PrefetchResult::Invalid;
         for (const auto &line : cache) {
             if (line.state == LineState::Free || line.paddr != paddr)
@@ -319,8 +330,10 @@ class SoaJitValueCoalescer
         for (const auto &credit : prefetch) {
             if (!credit.valid || credit.paddr != paddr)
                 continue;
-            return credit.generation == generation
-                ? PrefetchResult::AlreadyOwned : PrefetchResult::Stale;
+            if (credit.generation != generation)
+                return PrefetchResult::Stale;
+            return credit.vaddr == vaddr
+                ? PrefetchResult::AlreadyOwned : PrefetchResult::Invalid;
         }
         if (prefetchCount() >= activePrefetchCredits)
             return PrefetchResult::Full;
@@ -335,9 +348,13 @@ class SoaJitValueCoalescer
     }
 
     ResponseResult acceptResponse(uint64_t generation, uint64_t paddr,
-                                  const uint8_t *data, size_t bytes)
+                                  const uint8_t *data, size_t bytes,
+                                  uint64_t *owned_vaddr = nullptr)
     {
-        if (generation == 0 || data == nullptr || bytes != LineBytes)
+        if (owned_vaddr != nullptr)
+            *owned_vaddr = 0;
+        if (generation == 0 || (paddr % LineBytes) != 0 ||
+            data == nullptr || bytes != LineBytes)
             return ResponseResult::Invalid;
 
         CacheLine *owned_fill = nullptr;
@@ -369,6 +386,8 @@ class SoaJitValueCoalescer
                        candidate.paddr == paddr;
             });
         if (credit != prefetch.end()) {
+            if (owned_vaddr != nullptr)
+                *owned_vaddr = credit->vaddr;
             *credit = PrefetchCredit();
             if (prefetch_shadow != nullptr) {
                 makeReady(*prefetch_shadow, data);
@@ -487,6 +506,10 @@ class SoaJitValueCoalescer
     bool prefetchComplete() const { return prefetchCount() == 0; }
     size_t prefetchHwm() const { return prefetchHighWater; }
     size_t cacheHwm() const { return cacheHighWater; }
+    size_t activePrefetchCreditCount() const
+    {
+        return activePrefetchCredits;
+    }
     size_t activeOwnerCount() const { return activeOwnerLines; }
     const std::array<CacheLine, CacheLines> &cacheLines() const
     {
@@ -501,7 +524,7 @@ class SoaJitValueCoalescer
     bool assertInvariants() const
     {
         if (!isValidActiveOwnerCount(activeOwnerLines) ||
-            activePrefetchCredits > MaxPrefetchCredits ||
+            !isValidActivePrefetchCreditCount(activePrefetchCredits) ||
             prefetchCount() > activePrefetchCredits)
             return false;
         for (size_t first = 0; first < cache.size(); ++first) {
@@ -538,13 +561,17 @@ class SoaJitValueCoalescer
         }
         for (size_t first = 0; first < prefetch.size(); ++first) {
             const auto &credit = prefetch[first];
+            if (first >= activePrefetchCredits && credit.valid)
+                return false;
             if (!credit.valid) {
                 if (credit.generation != 0 || credit.paddr != 0 ||
                     credit.vaddr != 0)
                     return false;
                 continue;
             }
-            if (credit.generation == 0)
+            if (credit.generation == 0 ||
+                (credit.vaddr % LineBytes) != 0 ||
+                (credit.paddr % LineBytes) != 0)
                 return false;
             for (size_t second = first + 1;
                  second < prefetch.size(); ++second) {

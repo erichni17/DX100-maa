@@ -209,6 +209,11 @@ class MAA(ClockedObject):
         False,
         "Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
+    soa_jit_value_prefetch_credits = Param.Unsigned(
+        0,
+        "Active sequential SoA/JIT value-line prefetch credits "
+        "(0 disables; fixed maximum hardware is eight)",
+    )
     soa_jit_active_value_owners = Param.Unsigned(
         4,
         "Active SoA/JIT value owners (4, 8, 16, 32, 64, or 128; "

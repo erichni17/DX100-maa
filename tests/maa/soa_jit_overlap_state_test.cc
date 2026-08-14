@@ -274,8 +274,11 @@ testPrefetchAndAliasShareOneOwner()
     CHECK(state.fillingCount() == 1);
     CHECK(state.prefetchCount() == 1);
     const auto data = payload(12);
-    CHECK(state.acceptResponse(3, 0x8000, data.data(), data.size()) ==
+    uint64_t owned_vaddr = 0;
+    CHECK(state.acceptResponse(
+              3, 0x8000, data.data(), data.size(), &owned_vaddr) ==
           SoaJitValueCoalescer::ResponseResult::PrefetchPromote);
+    CHECK(owned_vaddr == 0x4000);
     CHECK(state.prefetchCount() == 0);
     SoaJitValueCoalescer::Delivery delivery;
     CHECK(state.deliver(3, 0, 7, delivery) ==
@@ -284,8 +287,68 @@ testPrefetchAndAliasShareOneOwner()
 
     CHECK(state.reservePrefetch(3, 0x4040, 0x8040) ==
           SoaJitValueCoalescer::PrefetchResult::Issue);
-    CHECK(state.acceptResponse(3, 0x8040, data.data(), data.size()) ==
+    CHECK(state.reservePrefetch(3, 0x5040, 0x8040) ==
+          SoaJitValueCoalescer::PrefetchResult::Invalid);
+    owned_vaddr = 0;
+    CHECK(state.acceptResponse(
+              3, 0x8040, data.data(), data.size(), &owned_vaddr) ==
           SoaJitValueCoalescer::ResponseResult::PrefetchDiscard);
+    CHECK(owned_vaddr == 0x4040);
+    CHECK(state.assertInvariants());
+}
+
+void
+testPrefetchCreditsFailClosedAndBoundActivePrefix()
+{
+    SoaJitValueCoalescer state;
+    state.configure(true, 1);
+    state.reset();
+    CHECK(state.activePrefetchCreditCount() == 1);
+    CHECK(state.reservePrefetch(4, 0x6000, 0xa000) ==
+          SoaJitValueCoalescer::PrefetchResult::Issue);
+    CHECK(state.reservePrefetch(4, 0x6040, 0xa040) ==
+          SoaJitValueCoalescer::PrefetchResult::Full);
+    CHECK(state.prefetchCount() == 1);
+    CHECK(state.prefetchHwm() == 1);
+    CHECK(state.assertInvariants());
+
+    state.configure(true, 3);
+    state.reset();
+    CHECK(!state.assertInvariants());
+    CHECK(state.reservePrefetch(5, 0x7000, 0xb000) ==
+          SoaJitValueCoalescer::PrefetchResult::Invalid);
+
+    state.configure(true, 1);
+    state.reset();
+    CHECK(state.reservePrefetch(5, 0x7001, 0xb000) ==
+          SoaJitValueCoalescer::PrefetchResult::Invalid);
+    CHECK(state.reservePrefetch(5, 0x7000, 0xb001) ==
+          SoaJitValueCoalescer::PrefetchResult::Invalid);
+}
+
+void
+testPrefetchResponsesPreserveReorderedVaPaOwnership()
+{
+    SoaJitValueCoalescer state;
+    state.configure(false, 2);
+    state.reset();
+    CHECK(state.reservePrefetch(6, 0x8000, 0xc000) ==
+          SoaJitValueCoalescer::PrefetchResult::Issue);
+    CHECK(state.reservePrefetch(6, 0x8040, 0xd000) ==
+          SoaJitValueCoalescer::PrefetchResult::Issue);
+    const auto data = payload(41);
+    uint64_t owned_vaddr = 0;
+    CHECK(state.acceptResponse(
+              6, 0xd000, data.data(), data.size(), &owned_vaddr) ==
+          SoaJitValueCoalescer::ResponseResult::PrefetchDiscard);
+    CHECK(owned_vaddr == 0x8040);
+    CHECK(state.prefetchCount() == 1);
+    owned_vaddr = 0;
+    CHECK(state.acceptResponse(
+              6, 0xc000, data.data(), data.size(), &owned_vaddr) ==
+          SoaJitValueCoalescer::ResponseResult::PrefetchDiscard);
+    CHECK(owned_vaddr == 0x8000);
+    CHECK(state.prefetchComplete());
     CHECK(state.assertInvariants());
 }
 
@@ -354,6 +417,8 @@ main()
     testReadyHitMergeAndOneDeliveryPerContextCycle();
     testSelectableDeliveryAndIndependentApplyLanes();
     testPrefetchAndAliasShareOneOwner();
+    testPrefetchCreditsFailClosedAndBoundActivePrefix();
+    testPrefetchResponsesPreserveReorderedVaPaOwnership();
     testFailClosedResponseIdentity();
     testPredicateBoundsAndReorderedResponses();
     std::cout << "SOA_JIT_OVERLAP_STATE_TEST_PASS\n";

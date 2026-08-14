@@ -121,6 +121,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _soa_jit_active_contexts,
                                   int _soa_jit_value_lookahead,
                                   bool _soa_jit_value_cache_enable,
+                                  int _soa_jit_value_prefetch_credits,
                                   int _soa_jit_active_value_owners,
                                   int _soa_jit_apply_lanes,
                                   Cycles _rowtable_latency,
@@ -217,14 +218,26 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     soa_jit_active_contexts = _soa_jit_active_contexts;
     soa_jit_value_lookahead = _soa_jit_value_lookahead;
     soa_jit_value_cache_enable = _soa_jit_value_cache_enable;
+    panic_if(_soa_jit_value_prefetch_credits < 0 ||
+                 _soa_jit_value_prefetch_credits >
+                     static_cast<int>(
+                         SoaJitValueCoalescer::MaxPrefetchCredits) ||
+                 !SoaJitValueCoalescer::isValidActivePrefetchCreditCount(
+                     static_cast<uint8_t>(
+                         _soa_jit_value_prefetch_credits)),
+             "I[%d] SoA/JIT value prefetch credits (%d) must be "
+             "0, 1, 2, 4, or 8\n",
+             my_indirect_id, _soa_jit_value_prefetch_credits);
+    soa_jit_value_prefetch_credits = _soa_jit_value_prefetch_credits;
     panic_if(!SoaJitValueCoalescer::isValidActiveOwnerCount(
                  _soa_jit_active_value_owners),
              "I[%d] SoA/JIT active value owners (%d) must be 4, 8, 16, "
              "32, 64, or 128\n",
              my_indirect_id, _soa_jit_active_value_owners);
     soa_jit_active_value_owners = _soa_jit_active_value_owners;
-    soa_jit_value_coalescer.configure(soa_jit_value_cache_enable, 0,
-                                      soa_jit_active_value_owners);
+    soa_jit_value_coalescer.configure(
+        soa_jit_value_cache_enable, soa_jit_value_prefetch_credits,
+        soa_jit_active_value_owners);
     panic_if(!SoaJitApplyLanePool::isValidActiveLaneCount(
                  _soa_jit_apply_lanes),
              "I[%d] SoA/JIT apply lanes (%d) must be 1, 2, or 4\n",
@@ -4103,7 +4116,8 @@ IndirectAccessUnit::hasLiveSoaJitState() const
     return soa_jit_operation_active ||
            (my_instruction != nullptr && my_instruction->isSoaJitRmw()) ||
            !soaPredicateLinesEmpty() ||
-           !soaJitContextsEmpty();
+           !soaJitContextsEmpty() ||
+           !soa_jit_value_coalescer.prefetchComplete();
 }
 
 size_t
@@ -4126,6 +4140,114 @@ IndirectAccessUnit::soaJitLookaheadOccupancy() const
         occupancy += context->lookaheadOccupancy;
     return occupancy;
 }
+
+bool
+IndirectAccessUnit::soaJitValuePrefetchComplete() const
+{
+    return soa_jit_value_prefetch_credits == 0 ||
+           (soa_jit_value_prefetch_cursor.nextLogical ==
+                static_cast<uint32_t>(my_max) &&
+            soa_jit_value_coalescer.prefetchComplete());
+}
+
+bool
+IndirectAccessUnit::serviceSoaJitValuePrefetch()
+{
+    if (soa_jit_value_prefetch_credits == 0)
+        return false;
+    panic_if(!isSoaJitRmw() || soa_jit_generation == 0 || my_max < 0 ||
+                 (my_word_size != 4 && my_word_size != 8) ||
+                 soa_jit_value_prefetch_cursor.nextLogical >
+                     static_cast<uint32_t>(my_max) ||
+                 (soa_jit_value_prefetch_cursor.nextLogical == 0 &&
+                  (soa_jit_value_prefetch_cursor.lastBlockValid ||
+                   soa_jit_value_prefetch_cursor.lastBlockVaddr != 0)) ||
+                 (soa_jit_value_prefetch_cursor.nextLogical != 0 &&
+                  !soa_jit_value_prefetch_cursor.lastBlockValid) ||
+                 soa_jit_value_coalescer.activePrefetchCreditCount() !=
+                     static_cast<size_t>(soa_jit_value_prefetch_credits),
+             "I[%d] invalid SoA/JIT value-prefetch feeder state\n",
+             my_indirect_id);
+
+    bool progressed = false;
+    size_t scans = 0;
+    // A legal stream has positive element stride and 32- or 64-bit values,
+    // so at most sixteen consecutive logical elements share one 64-B line.
+    // This static scan cap can discover every active credit without an
+    // unbounded same-cycle walk.  A new line is committed only after the
+    // exact (generation, VA, PA) reservation succeeds.
+    while (soa_jit_value_prefetch_cursor.nextLogical <
+               static_cast<uint32_t>(my_max) &&
+           scans++ < SoaJitValuePrefetchMaxScans) {
+        const uint32_t logical =
+            soa_jit_value_prefetch_cursor.nextLogical;
+        const int64_t source = soaSourcePosition(logical);
+        panic_if(source < 0,
+                 "I[%d] negative SoA/JIT prefetch source position %ld\n",
+                 my_indirect_id, source);
+        const uint64_t byte_offset =
+            static_cast<uint64_t>(source) * my_word_size;
+        const Addr span = my_backing_max_addr - my_backing_addr;
+        panic_if(span < static_cast<Addr>(my_word_size) ||
+                     byte_offset > span - my_word_size,
+                 "I[%d] SoA/JIT prefetch source %ld exceeds "
+                 "[0x%lx, 0x%lx)\n",
+                 my_indirect_id, source, my_backing_min_addr,
+                 my_backing_max_addr);
+        const Addr block_vaddr = addrBlockAligner(
+            my_backing_addr + byte_offset, block_size);
+        if (soa_jit_value_prefetch_cursor.lastBlockValid &&
+            soa_jit_value_prefetch_cursor.lastBlockVaddr == block_vaddr) {
+            soa_jit_value_prefetch_cursor.nextLogical++;
+            progressed = true;
+            continue;
+        }
+
+        const Addr block_paddr = addrBlockAligner(
+            translatePacket(block_vaddr), block_size);
+        const auto result = soa_jit_value_coalescer.reservePrefetch(
+            soa_jit_generation, block_vaddr, block_paddr);
+        if (result == SoaJitValueCoalescer::PrefetchResult::Full) {
+            soa_jit_value_prefetch_credit_stalls++;
+            break;
+        }
+        panic_if(result == SoaJitValueCoalescer::PrefetchResult::Stale ||
+                     result ==
+                         SoaJitValueCoalescer::PrefetchResult::Invalid,
+                 "I[%d] invalid SoA/JIT prefetch owner logical=%u "
+                 "vaddr=0x%lx paddr=0x%lx result=%d\n",
+                 my_indirect_id, logical, block_vaddr, block_paddr,
+                 static_cast<int>(result));
+
+        soa_jit_value_prefetch_cursor.lastBlockVaddr = block_vaddr;
+        soa_jit_value_prefetch_cursor.lastBlockValid = true;
+        soa_jit_value_prefetch_cursor.nextLogical++;
+        progressed = true;
+        if (result ==
+            SoaJitValueCoalescer::PrefetchResult::AlreadyOwned) {
+            soa_jit_value_prefetch_owned++;
+            continue;
+        }
+        panic_if(result != SoaJitValueCoalescer::PrefetchResult::Issue,
+                 "I[%d] unknown SoA/JIT prefetch reservation result\n",
+                 my_indirect_id);
+        soa_jit_value_prefetch_issues++;
+        soa_jit_value_prefetch_high_water = std::max<uint64_t>(
+            soa_jit_value_prefetch_high_water,
+            soa_jit_value_coalescer.prefetchCount());
+        createSoaJitReadPacket(block_paddr, rowtable_latency);
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_value_prefetch_issue schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu logical=%u "
+                "vaddr=0x%lx paddr=0x%lx occupancy=%lu credits=%d\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                logical, block_vaddr, block_paddr,
+                soa_jit_value_coalescer.prefetchCount(),
+                soa_jit_value_prefetch_credits);
+    }
+    return progressed;
+}
+
 bool IndirectAccessUnit::serviceSoaJitBuild()
 {
     panic_if(!isSoaJitRmw() || !my_fill_finished,
@@ -4529,18 +4651,55 @@ bool IndirectAccessUnit::receiveSoaJitData(
             return true;
         }
     }
+    Addr prefetch_vaddr = 0;
     const auto response = soa_jit_value_coalescer.acceptResponse(
-        soa_jit_generation, addr, dataptr, block_size);
-    panic_if(response !=
-                 SoaJitValueCoalescer::ResponseResult::CacheFill,
+        soa_jit_generation, addr, dataptr, block_size, &prefetch_vaddr);
+    panic_if(response == SoaJitValueCoalescer::ResponseResult::Duplicate ||
+                 response ==
+                     SoaJitValueCoalescer::ResponseResult::Stale ||
+                 response ==
+                     SoaJitValueCoalescer::ResponseResult::Unknown ||
+                 response ==
+                     SoaJitValueCoalescer::ResponseResult::Invalid,
              "I[%d] SoA/JIT received stale/duplicate/unknown value "
              "response 0x%lx result=%d\n",
              my_indirect_id, addr, static_cast<int>(response));
     accountReadResponse(addr, is_block_cached);
-    soa_jit_value_read_responses++;
-    soa_jit_value_fills++;
-    if (is_block_cached)
-        soa_jit_value_cached_responses++;
+    if (response == SoaJitValueCoalescer::ResponseResult::CacheFill) {
+        panic_if(prefetch_vaddr != 0,
+                 "I[%d] demand value response retained prefetch VA "
+                 "0x%lx\n",
+                 my_indirect_id, prefetch_vaddr);
+        soa_jit_value_read_responses++;
+        soa_jit_value_fills++;
+        if (is_block_cached)
+            soa_jit_value_cached_responses++;
+    } else {
+        panic_if(
+            response !=
+                    SoaJitValueCoalescer::ResponseResult::PrefetchPromote &&
+                response !=
+                    SoaJitValueCoalescer::ResponseResult::PrefetchDiscard,
+                 "I[%d] unknown SoA/JIT value response result=%d\n",
+                 my_indirect_id, static_cast<int>(response));
+        soa_jit_value_prefetch_responses++;
+        if (response ==
+            SoaJitValueCoalescer::ResponseResult::PrefetchPromote)
+            soa_jit_value_prefetch_promotions++;
+        else
+            soa_jit_value_prefetch_discards++;
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_value_prefetch_response schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu vaddr=0x%lx "
+                "paddr=0x%lx action=%s cached=%d responses=%lu\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                prefetch_vaddr, addr,
+                response ==
+                        SoaJitValueCoalescer::ResponseResult::PrefetchPromote
+                    ? "promote"
+                    : "discard",
+                is_block_cached, soa_jit_value_prefetch_responses);
+    }
     scheduleNextExecution(true);
     return true;
 }
@@ -4581,6 +4740,14 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                      soa_jit_value_read_responses ||
                  soa_jit_value_fills !=
                      soa_jit_value_read_responses ||
+                 soa_jit_value_prefetch_issues !=
+                     soa_jit_value_prefetch_responses ||
+                 soa_jit_value_prefetch_responses !=
+                     soa_jit_value_prefetch_promotions +
+                         soa_jit_value_prefetch_discards ||
+                 soa_jit_value_prefetch_high_water >
+                     static_cast<uint64_t>(
+                         soa_jit_value_prefetch_credits) ||
                  soa_jit_lookahead_issues != soa_jit_selected ||
                  soa_jit_lookahead_responses != soa_jit_selected ||
                  soa_jit_aliases_applied != soa_jit_selected ||
@@ -4605,6 +4772,7 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                  !soa_jit_apply_lane_pool.assertInvariants() ||
                  !soa_jit_value_coalescer.assertInvariants() ||
                  soa_jit_value_coalescer.fillingCount() != 0 ||
+                 !soaJitValuePrefetchComplete() ||
                  !soa_jit_value_coalescer.clearGeneration(
                      soa_jit_generation),
              "I[%d] SoA/JIT terminal accounting failed\n",
@@ -4622,6 +4790,9 @@ void IndirectAccessUnit::executeInstruction() {
             my_indirect_id, attribution_event_occurrence++,
             my_decode_start_tick, attribution_execute_sequence++,
             status_names[static_cast<int>(state)], my_i);
+    if (state != Status::Idle && isSoaJitRmw() &&
+        soa_jit_generation != 0)
+        serviceSoaJitValuePrefetch();
     switch (state) {
     case Status::Idle: {
         assert(my_instruction != nullptr);
@@ -4938,8 +5109,10 @@ void IndirectAccessUnit::executeInstruction() {
         for (auto &context : soa_jit_contexts)
             context = SoaJitContext();
         soa_jit_value_coalescer.configure(
-            soa_jit_value_cache_enable, 0, soa_jit_active_value_owners);
+            soa_jit_value_cache_enable, soa_jit_value_prefetch_credits,
+            soa_jit_active_value_owners);
         soa_jit_value_coalescer.reset();
+        soa_jit_value_prefetch_cursor = SoaJitValuePrefetchCursor();
         soa_jit_apply_lane_pool.configure(soa_jit_apply_lanes);
         soa_jit_apply_lane_pool.reset();
         soa_jit_all_rows_claimed = false;
@@ -4964,6 +5137,13 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_value_deliveries = 0;
         soa_jit_value_stalls = 0;
         soa_jit_value_cache_high_water = 0;
+        soa_jit_value_prefetch_issues = 0;
+        soa_jit_value_prefetch_responses = 0;
+        soa_jit_value_prefetch_promotions = 0;
+        soa_jit_value_prefetch_discards = 0;
+        soa_jit_value_prefetch_owned = 0;
+        soa_jit_value_prefetch_credit_stalls = 0;
+        soa_jit_value_prefetch_high_water = 0;
         soa_jit_lookahead_issues = 0;
         soa_jit_lookahead_responses = 0;
         soa_jit_lookahead_stalls = 0;
@@ -5675,6 +5855,11 @@ void IndirectAccessUnit::executeInstruction() {
                 transitionAttributionStage(AttributionStage::Build,
                                            "soa_context_released");
             } else {
+                if (!soaJitValuePrefetchComplete()) {
+                    if (soa_jit_value_coalescer.prefetchComplete())
+                        scheduleExecuteInstructionEvent(1);
+                    break;
+                }
                 checkSoaJitTerminal();
                 state = Status::Response;
                 transitionAttributionStage(AttributionStage::Response,
@@ -6062,6 +6247,25 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_value_stalls;
             (*maa->stats.IND_SoaJitValueCacheHighWater[my_indirect_id]) +=
                 soa_jit_value_cache_high_water;
+            (*maa->stats.IND_SoaJitValuePrefetchIssues[my_indirect_id]) +=
+                soa_jit_value_prefetch_issues;
+            (*maa->stats.IND_SoaJitValuePrefetchResponses[my_indirect_id]) +=
+                soa_jit_value_prefetch_responses;
+            (*maa->stats
+                  .IND_SoaJitValuePrefetchPromotions[my_indirect_id]) +=
+                soa_jit_value_prefetch_promotions;
+            (*maa->stats.IND_SoaJitValuePrefetchDiscards[my_indirect_id]) +=
+                soa_jit_value_prefetch_discards;
+            (*maa->stats.IND_SoaJitValuePrefetchOwned[my_indirect_id]) +=
+                soa_jit_value_prefetch_owned;
+            (*maa->stats
+                  .IND_SoaJitValuePrefetchCreditStalls[my_indirect_id]) +=
+                soa_jit_value_prefetch_credit_stalls;
+            (*maa->stats
+                  .IND_SoaJitValuePrefetchActiveCredits[my_indirect_id]) +=
+                soa_jit_value_prefetch_credits;
+            (*maa->stats.IND_SoaJitValuePrefetchHighWater[my_indirect_id]) +=
+                soa_jit_value_prefetch_high_water;
             (*maa->stats.IND_SoaJitLookaheadIssues[my_indirect_id]) +=
                 soa_jit_lookahead_issues;
             (*maa->stats.IND_SoaJitLookaheadResponses[my_indirect_id]) +=
@@ -6110,6 +6314,10 @@ void IndirectAccessUnit::executeInstruction() {
                     "max_value_owners=%lu "
                     "context_slots=%lu "
                     "lookahead_slots_per_context=%lu "
+                    "value_prefetch=%lu/%lu prefetch_promotions=%lu "
+                    "prefetch_discards=%lu prefetch_owned=%lu "
+                    "prefetch_credit_stalls=%lu prefetch_credits=%d "
+                    "prefetch_hwm=%lu "
                     "terminal=1\n",
                     my_indirect_id, my_decode_start_tick,
                     soa_jit_generation, my_max, soa_jit_selected,
@@ -6152,7 +6360,15 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_active_value_owners,
                     SoaJitValueCoalescer::MaxOwners,
                     SoaJitContexts,
-                    SoaJitValueCoalescer::MaxLookahead);
+                    SoaJitValueCoalescer::MaxLookahead,
+                    soa_jit_value_prefetch_issues,
+                    soa_jit_value_prefetch_responses,
+                    soa_jit_value_prefetch_promotions,
+                    soa_jit_value_prefetch_discards,
+                    soa_jit_value_prefetch_owned,
+                    soa_jit_value_prefetch_credit_stalls,
+                    soa_jit_value_prefetch_credits,
+                    soa_jit_value_prefetch_high_water);
             constexpr size_t fixed_context_bytes = sizeof(SoaJitContext);
             constexpr size_t fixed_contexts_bytes =
                 sizeof(soa_jit_contexts);
@@ -6190,6 +6406,11 @@ void IndirectAccessUnit::executeInstruction() {
                 sizeof(SoaJitApplyLanePool::Owner);
             constexpr size_t fixed_apply_lane_pool_bytes =
                 sizeof(SoaJitApplyLanePool);
+            constexpr size_t fixed_prefetch_credit_bytes =
+                sizeof(SoaJitValueCoalescer::PrefetchCredit) *
+                SoaJitValueCoalescer::MaxPrefetchCredits;
+            constexpr size_t fixed_prefetch_cursor_bytes =
+                sizeof(SoaJitValuePrefetchCursor);
             constexpr size_t baseline_predicate_lines = 1;
             constexpr size_t baseline_predicate_modeled_bytes =
                 baseline_predicate_lines * SoaPredicateLineStateBytes;
@@ -6198,7 +6419,8 @@ void IndirectAccessUnit::executeInstruction() {
                 baseline_predicate_modeled_bytes;
             constexpr size_t incremental_overlap_bytes =
                 fixed_contexts_bytes + fixed_value_owner_bytes +
-                fixed_apply_lane_pool_bytes;
+                fixed_apply_lane_pool_bytes +
+                fixed_prefetch_cursor_bytes;
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_storage schema=2 unit=%d "
                     "operation_tick=%lu generation=%lu "
@@ -6233,7 +6455,10 @@ void IndirectAccessUnit::executeInstruction() {
                     "active_value_owner_payload_bytes=%lu "
                     "selected_value_owner_entry_bytes_per_unit=%lu "
                     "selected_value_owner_entry_bytes_per_maa=%lu "
-                    "cache_enable=%d\n",
+                    "cache_enable=%d fixed_prefetch_credits=%lu "
+                    "fixed_prefetch_credit_bytes=%lu "
+                    "active_prefetch_credits=%d "
+                    "fixed_prefetch_cursor_bytes=%lu\n",
                     my_indirect_id, my_decode_start_tick,
                     soa_jit_generation, fixed_context_bytes,
                     SoaJitContexts, fixed_contexts_bytes,
@@ -6270,7 +6495,11 @@ void IndirectAccessUnit::executeInstruction() {
                         SoaJitValueCoalescer::LineBytes,
                     selected_value_owner_entry_bytes,
                     selected_value_owner_entry_bytes_per_maa,
-                    soa_jit_value_cache_enable);
+                    soa_jit_value_cache_enable,
+                    SoaJitValueCoalescer::MaxPrefetchCredits,
+                    fixed_prefetch_credit_bytes,
+                    soa_jit_value_prefetch_credits,
+                    fixed_prefetch_cursor_bytes);
         }
         if (maa->virtual_bounded_global_merge) {
             const bool read_slots_empty = std::none_of(
