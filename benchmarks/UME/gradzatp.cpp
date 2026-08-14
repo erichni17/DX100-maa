@@ -203,8 +203,8 @@ static_assert(sizeof(int) == sizeof(uint32_t),
 // storage.  Each completed physical 4K predicate/product page reaches them
 // only through bounded response-bearing cache writes.  The logical SoA/JIT
 // consumer still covers all 16K entries in one Row/Offset epoch.
-alignas(64) static uint32_t soa_predicates[NUM_CORES][TILE_SIZE];
-alignas(64) static DATATYPE soa_gradient_values[NUM_CORES][TILE_SIZE];
+alignas(4096) static uint32_t soa_predicates[NUM_CORES][TILE_SIZE];
+alignas(4096) static DATATYPE soa_gradient_values[NUM_CORES][TILE_SIZE];
 
 static void first_touch_soa_publication_buffers() {
     constexpr size_t PageBytes = 4096;

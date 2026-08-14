@@ -23,6 +23,8 @@ def test_gzp_has_no_host_result_staging_loop() -> None:
 
 def test_gzp_first_touches_publication_spans_before_checkpoint() -> None:
     source = read("benchmarks/UME/gradzatp.cpp")
+    assert "alignas(4096) static uint32_t soa_predicates" in source
+    assert "alignas(4096) static DATATYPE soa_gradient_values" in source
     helper = source[
         source.index("static void first_touch_soa_publication_buffers()") :
         source.index("enum class GzpRmwTreatment")
