@@ -89,7 +89,8 @@ sha256sum "$source_file" "$binary" "$gem5" "$config" "$ramulator" \
     "$selector" > "$out/artifact_sha256.txt"
 
 set +e
-"${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
+OMP_PROC_BIND=false OMP_NUM_THREADS=1 \
+    "${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
 checkpoint_rc=$?
 set -e
 printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
