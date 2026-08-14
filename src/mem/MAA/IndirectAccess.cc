@@ -203,12 +203,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     direct_index_max_partitions = _virtual_index_partitions;
     direct_index_filter_words_per_cycle =
         _virtual_index_filter_words_per_cycle;
-    panic_if(_soa_jit_active_contexts < 1 ||
-                 _soa_jit_active_contexts >
-                     static_cast<int>(SoaJitContexts),
-             "I[%d] SoA/JIT active contexts (%d) must be in [1,%d]\n",
-             my_indirect_id, _soa_jit_active_contexts,
-             static_cast<int>(SoaJitContexts));
+    panic_if(_soa_jit_active_contexts != 8 &&
+                 _soa_jit_active_contexts != 16 &&
+                 _soa_jit_active_contexts != 32,
+             "I[%d] SoA/JIT active contexts (%d) must be 8, 16, or 32\n",
+             my_indirect_id, _soa_jit_active_contexts);
     panic_if(_soa_jit_value_lookahead != 1 &&
                  _soa_jit_value_lookahead != 2 &&
                  _soa_jit_value_lookahead != 4 &&
@@ -4246,7 +4245,7 @@ IndirectAccessUnit::issueSoaJitValueRead(
              my_indirect_id, vaddr);
     const Addr value_paddr = addrBlockAligner(
         translatePacket(block_vaddr), block_size);
-    const uint8_t waiter = static_cast<uint8_t>(
+    const uint16_t waiter = static_cast<uint16_t>(
         context_index * SoaJitValueCoalescer::MaxLookahead + slot_index);
     const auto request = soa_jit_value_coalescer.requestAlias(
         soa_jit_generation, value_paddr, waiter);
@@ -4365,7 +4364,7 @@ IndirectAccessUnit::serviceSoaJitLookahead()
             SoaJitLookaheadSlot &slot = context.lookahead[slot_index];
             if (slot.state != SoaJitLookaheadState::Waiting)
                 continue;
-            const uint8_t waiter = static_cast<uint8_t>(
+            const uint16_t waiter = static_cast<uint16_t>(
                 context_index * SoaJitValueCoalescer::MaxLookahead +
                 slot_index);
             SoaJitValueCoalescer::Delivery delivery;
@@ -6178,6 +6177,9 @@ void IndirectAccessUnit::executeInstruction() {
             constexpr size_t fixed_context_bytes = sizeof(SoaJitContext);
             constexpr size_t fixed_contexts_bytes =
                 sizeof(soa_jit_contexts);
+            const size_t active_contexts_bytes =
+                static_cast<size_t>(soa_jit_active_contexts) *
+                fixed_context_bytes;
             constexpr size_t fixed_value_owner_bytes =
                 sizeof(SoaJitValueCoalescer);
             constexpr size_t fixed_apply_lane_owner_bytes =
@@ -6196,8 +6198,9 @@ void IndirectAccessUnit::executeInstruction() {
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_storage schema=1 unit=%d "
                     "operation_tick=%lu generation=%lu "
-                    "fixed_context_bytes=%lu fixed_contexts=8 "
+                    "fixed_context_bytes=%lu fixed_contexts=%lu "
                     "fixed_contexts_bytes=%lu "
+                    "active_contexts_bytes=%lu "
                     "max_physical_value_owner_lines=%lu "
                     "fixed_value_owner_bytes=%lu "
                     "fixed_value_owner_payload_bytes=%lu "
@@ -6221,7 +6224,9 @@ void IndirectAccessUnit::executeInstruction() {
                     "cache_enable=%d\n",
                     my_indirect_id, my_decode_start_tick,
                     soa_jit_generation, fixed_context_bytes,
-                    fixed_contexts_bytes, SoaJitValueCoalescer::MaxOwners,
+                    SoaJitContexts, fixed_contexts_bytes,
+                    active_contexts_bytes,
+                    SoaJitValueCoalescer::MaxOwners,
                     fixed_value_owner_bytes,
                     SoaJitValueCoalescer::MaxOwners *
                         SoaJitValueCoalescer::LineBytes,

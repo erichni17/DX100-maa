@@ -32,17 +32,18 @@ payload(uint8_t seed)
 }
 
 void
-testEightContextsShareOneFill()
+testThirtyTwoContextsShareOneFill()
 {
     SoaJitValueCoalescer state;
     state.configure(true, 0);
     state.reset();
     constexpr uint64_t generation = 7;
     constexpr uint64_t address = 0x1000;
-    for (uint8_t context = 0;
+    for (uint16_t context = 0;
          context < SoaJitValueCoalescer::MaxContexts; ++context) {
-        const uint8_t waiter =
-            context * SoaJitValueCoalescer::MaxLookahead;
+        const uint16_t waiter =
+            context * SoaJitValueCoalescer::MaxLookahead +
+            SoaJitValueCoalescer::MaxLookahead - 1;
         const auto request = state.requestAlias(generation, address, waiter);
         CHECK(request.result ==
               (context == 0 ? SoaJitValueCoalescer::AliasResult::Fill
@@ -53,15 +54,20 @@ testEightContextsShareOneFill()
     CHECK(state.acceptResponse(
               generation, address, data.data(), data.size()) ==
           SoaJitValueCoalescer::ResponseResult::CacheFill);
-    for (uint8_t context = 0;
+    for (uint16_t context = 0;
          context < SoaJitValueCoalescer::MaxContexts; ++context) {
         SoaJitValueCoalescer::Delivery delivery;
-        const uint8_t waiter =
-            context * SoaJitValueCoalescer::MaxLookahead;
+        const uint16_t waiter =
+            context * SoaJitValueCoalescer::MaxLookahead +
+            SoaJitValueCoalescer::MaxLookahead - 1;
         CHECK(state.deliver(generation, waiter, 11 + context, delivery) ==
               SoaJitValueCoalescer::DeliveryResult::Delivered);
         CHECK(delivery.data == data);
     }
+    CHECK(state.requestAlias(
+              generation, address,
+              static_cast<uint16_t>(SoaJitValueCoalescer::MaxWaiters))
+              .result == SoaJitValueCoalescer::AliasResult::Invalid);
     CHECK(state.assertInvariants());
 }
 
@@ -193,6 +199,8 @@ testSelectableDeliveryAndIndependentApplyLanes()
     lanes.beginCycle(92);
     CHECK(lanes.currentCycleOccupancy() == 0);
     CHECK(lanes.grant(92, 12, 0x1100, 4, 8));
+    CHECK(lanes.grant(92, 12, 0x1140, 31, 32));
+    CHECK(!lanes.grant(92, 12, 0x1180, 32, 32));
     CHECK(lanes.assertInvariants());
 
     lanes.configure(3);
@@ -289,7 +297,7 @@ testPredicateBoundsAndReorderedResponses()
 int
 main()
 {
-    testEightContextsShareOneFill();
+    testThirtyTwoContextsShareOneFill();
     testFourFillsFifthMissRetryAndEviction();
     testSelectableOwnerPoolBoundsAndFailClosedConfiguration();
     testReadyHitMergeAndOneDeliveryPerContextCycle();

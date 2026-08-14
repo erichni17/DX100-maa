@@ -61,6 +61,7 @@ def test_fixed_bounded_overlap_and_predicate_storage():
     assert "SoaJitValueCoalescer::MaxLookahead> lookahead" in soa_state
     assert "SoaJitValueCoalescer::MaxContexts" in soa_state
     assert "std::array<SoaJitContext, SoaJitContexts>" in soa_state
+    assert "MaxContexts = 32" in read("src/mem/MAA/SoaJitOverlapState.hh")
     assert "std::vector" not in soa_state
     assert "4096" not in soa_state
 
@@ -235,6 +236,29 @@ def test_value_owner_pool_plumbing_restricts_runtime_selection():
     assert "choices=(4, 8, 16, 32)" in options
     assert "soa_jit_active_value_owners = Param.Unsigned" in simobject
     assert 'opts["soa_jit_active_value_owners"]' in config
+
+
+def test_context_pool_is_fixed_32_with_exact_runtime_choices_and_storage():
+    state = read("src/mem/MAA/SoaJitOverlapState.hh")
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    options = read("configs/common/Options.py")
+    simobject = read("src/mem/MAA/MAA.py")
+
+    assert "MaxContexts = 32" in state
+    assert "MaxWaiters = MaxContexts * MaxLookahead" in state
+    assert "std::bitset<MaxWaiters> waiterMask" in state
+    assert "uint16_t waiter" in state
+    assert "_soa_jit_active_contexts != 8" in source
+    assert "_soa_jit_active_contexts != 16" in source
+    assert "_soa_jit_active_contexts != 32" in source
+    assert "fixed_contexts=%lu" in source
+    assert "active_contexts_bytes=%lu" in source
+    assert "choices=(8, 16, 32)" in options
+    assert (
+        "default=8"
+        in options[options.index('"--maa_soa_jit_active_contexts"') :]
+    )
+    assert "hardware is 32" in simobject
 
 
 def test_apply_lane_pool_is_fixed_owned_ordered_and_fail_closed():
