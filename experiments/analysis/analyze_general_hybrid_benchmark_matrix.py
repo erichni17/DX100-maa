@@ -358,6 +358,35 @@ OPTIONAL_MATERIALIZER_STATS = (
     "page_materialization_staged_direct_fallback_lines",
 )
 
+OPTIONAL_RETENTION_STATS = (
+    "page_materialization_inactive_payload_captures",
+    "page_materialization_inactive_payload_replays",
+    "page_materialization_inactive_payload_conflicts",
+    "page_materialization_inactive_payload_drops",
+    "page_materialization_inactive_payload_first_owner_conflicts",
+    "page_materialization_inactive_payload_write_port_stalls",
+    "page_materialization_inactive_payload_read_port_stalls",
+    "page_materialization_inactive_payload_lookup_hits",
+    "page_materialization_inactive_payload_lookup_misses",
+    "page_materialization_inactive_payload_high_water",
+    "page_materialization_inactive_payload_bytes",
+    "page_materialization_inactive_payload_control_bytes",
+    "page_materialization_inactive_masked_fragments_accepted",
+    "page_materialization_inactive_masked_words_merged",
+    "page_materialization_inactive_masked_lines_reconstructed",
+    "page_materialization_inactive_masked_replay_hits",
+    "page_materialization_inactive_masked_replay_misses",
+    "page_materialization_inactive_masked_tag_conflicts",
+    "page_materialization_inactive_masked_overlap_poison",
+    "page_materialization_inactive_masked_write_port_poison",
+    "page_materialization_inactive_masked_stale_untracked_drops",
+    "page_materialization_inactive_masked_read_port_stalls",
+    "page_materialization_inactive_masked_clears",
+    "page_materialization_inactive_masked_high_water",
+    "page_materialization_inactive_masked_bytes",
+    "page_materialization_inactive_masked_control_bytes",
+)
+
 
 def materializer_stat(stats: dict[str, float], suffix: str) -> int:
     name = f"system.maa.{suffix}"
@@ -462,6 +491,10 @@ def validate_materializer(
         "page_materialization_staged_direct_fragments",
         "page_materialization_staged_direct_fallback_lines",
     ):
+        value = optional_materializer_stat(stats, stat_name)
+        if value is not None:
+            report[f"stat_{stat_name}"] = value
+    for stat_name in OPTIONAL_RETENTION_STATS:
         value = optional_materializer_stat(stats, stat_name)
         if value is not None:
             report[f"stat_{stat_name}"] = value
@@ -737,6 +770,19 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "stat_page_materialization_staged_direct_lines",
         "stat_page_materialization_staged_direct_fragments",
         "stat_page_materialization_staged_direct_fallback_lines",
+        "stat_page_materialization_inactive_masked_fragments_accepted",
+        "stat_page_materialization_inactive_masked_words_merged",
+        "stat_page_materialization_inactive_masked_lines_reconstructed",
+        "stat_page_materialization_inactive_masked_replay_hits",
+        "stat_page_materialization_inactive_masked_replay_misses",
+        "stat_page_materialization_inactive_masked_tag_conflicts",
+        "stat_page_materialization_inactive_masked_overlap_poison",
+        "stat_page_materialization_inactive_masked_write_port_poison",
+        "stat_page_materialization_inactive_masked_stale_untracked_drops",
+        "stat_page_materialization_inactive_masked_read_port_stalls",
+        "stat_page_materialization_inactive_masked_high_water",
+        "stat_page_materialization_inactive_masked_bytes",
+        "stat_page_materialization_inactive_masked_control_bytes",
         "stat_page_materialization_producer_line_acks",
         "stat_page_materialization_page_fallback_lines",
         "materializer_nonforwarded_ready_lines",

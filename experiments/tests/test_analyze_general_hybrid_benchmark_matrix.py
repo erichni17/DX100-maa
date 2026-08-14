@@ -134,6 +134,66 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
         self.assertEqual(report["materializer_forwarded_lines"], 5)
         self.assertEqual(next(iter(contexts.values()))["forwarded_lines"], 5)
 
+    def test_masked_retention_stats_are_preserved_for_attribution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "virtual_trace.log"
+            trace.write_text(closed_token_trace(), encoding="utf-8")
+            stats_path = root / "stats.txt"
+            stats = STATS.format(
+                submits=4,
+                pages=4,
+                retires=1,
+                forwarded=3,
+                fragment_lines=1,
+                fragment_stalls=0,
+                cache_reads=1,
+                dispatch_fallbacks=0,
+                admission_fallbacks=0,
+                producer_line_acks=3,
+                page_fallback_lines=1,
+                direct_fallbacks=0,
+            )
+            stats = stats.replace(
+                "---------- End Simulation Statistics   ----------",
+                "system.maa.page_materialization_inactive_masked_lines_reconstructed 2048\n"
+                "system.maa.page_materialization_inactive_masked_replay_hits 1536\n"
+                "system.maa.page_materialization_inactive_masked_replay_misses 512\n"
+                "system.maa.page_materialization_inactive_masked_write_port_poison 7\n"
+                "---------- End Simulation Statistics   ----------",
+            )
+            stats_path.write_text(stats, encoding="utf-8")
+            report = analyzer.validate_materializer(
+                "hybrid/1",
+                "api",
+                "token_stream_ld_correctness_control",
+                "token_stream_ld 4096",
+                analyzer.first_stats(stats_path),
+                trace,
+            )
+        self.assertEqual(
+            report[
+                "stat_page_materialization_inactive_masked_lines_reconstructed"
+            ],
+            2048,
+        )
+        self.assertEqual(
+            report["stat_page_materialization_inactive_masked_replay_hits"],
+            1536,
+        )
+        self.assertEqual(
+            report["stat_page_materialization_inactive_masked_replay_misses"],
+            512,
+        )
+        self.assertEqual(
+            report[
+                "stat_page_materialization_inactive_masked_write_port_poison"
+            ],
+            7,
+        )
+
     def make_matrix(self, root: Path, mismatch: bool = False) -> None:
         arms = [
             {
