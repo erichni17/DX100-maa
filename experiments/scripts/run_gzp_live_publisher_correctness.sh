@@ -78,7 +78,7 @@ restore_cmd=(
 
 {
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
-    printf 'scope=GZP_FP32_logical16_physical4K_live_publisher_correctness\n'
+    printf 'scope=GZP_FP32_logical16_physical4K_live_publisher_single_owner_correctness\n'
     printf 'speedup_claim=0\n'
     printf 'publisher_credits=8\nexpected_publications=%s\n' \
         "$expected_publications"
@@ -98,7 +98,7 @@ printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
           "$out/checkpoint.log" || true) -eq 1 ]]
 
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
+OMP_PROC_BIND=false OMP_NUM_THREADS=1 \
     "${restore_cmd[@]}" > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e

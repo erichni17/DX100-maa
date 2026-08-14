@@ -32,10 +32,11 @@ is active; the matching trace issue records carry `overlap=0|1`.
 
 The uncapped runner
 `experiments/scripts/run_gzp_live_publisher_correctness.sh` uses no timeout
-command.  Its four-window/owner exact gate uses 65,536 corners so the immutable
-value and index vectors follow the production mmap allocation regime; the
-smaller 16,384-corner malloc layout fails the unchanged SoA/JIT contiguous
-physical-routing guard before consumption.  The gate requires:
+command.  Its single-active-owner exact gate runs four consecutive full
+windows over 65,536 corners so the immutable value and index vectors follow
+the production mmap allocation regime; the smaller 16,384-corner malloc
+layout fails the unchanged SoA/JIT contiguous physical-routing guard before
+consumption.  The gate requires:
 
 - the scalar reference and GZP terminal markers to pass with zero errors;
 - exactly 32 publications and 8,192 issue/accept/response events;
@@ -46,6 +47,16 @@ physical-routing guard before consumption.  The gate requires:
 The full-corpus analyzer also fails closed unless the 61 full windows close
 488 publications and 124,928 issue/accept/response events at an eight-credit
 high-water.
+
+Four active owners are not yet safe.  A 65,536-corner diagnostic run cleared
+the span guard and overlapped a live SoA/JIT RMW with another owner's
+publication, but gem5 aborted in `SnoopFilter::lookupSnoop` at its invariant
+for coherent snoop packets.  At that boundary the trace had 1,976 publisher
+issues, 1,975 accepts, 1,968 responses, and seven complete page terminals;
+the failure was not a publisher terminal or identity check.  Fixing that
+shared coherent-crossbar interaction would require work outside this slice
+and outside the files authorized for this task.  The committed exact runner
+therefore activates one OpenMP owner and does not claim multi-owner safety.
 
 ## Validation and evidence boundary
 

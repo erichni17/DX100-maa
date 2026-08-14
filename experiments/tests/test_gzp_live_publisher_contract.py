@@ -52,6 +52,8 @@ def test_runner_is_uncapped_and_fails_closed() -> None:
     assert "n=65536" in runner
     assert "expected_publications=32" in runner
     assert "expected_lines=8192" in runner
+    assert "OMP_NUM_THREADS=1" in runner
+    assert "single_owner_correctness" in runner
     assert "STR_PublishIssues') -eq $expected_lines" in runner
     assert "STR_PublishWriteResponses') -eq $expected_lines" in runner
     assert "STR_PublishTerminals') -eq $expected_publications" in runner
