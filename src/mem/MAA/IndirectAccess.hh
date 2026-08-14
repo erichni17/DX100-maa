@@ -325,7 +325,9 @@ protected:
     Addr my_base_addr, my_backing_addr, my_min_addr, my_max_addr;
     Addr my_backing_min_addr, my_backing_max_addr;
     Addr my_index_addr, my_index_min_addr, my_index_max_addr;
+    Addr my_predicate_addr, my_predicate_min_addr, my_predicate_max_addr;
     int8_t my_addr_range_id, my_backing_addr_range_id, my_index_addr_range_id;
+    int8_t my_predicate_addr_range_id;
     int my_index_min, my_index_stride;
     struct DirectIndexWord
     {
@@ -483,6 +485,55 @@ protected:
     std::map<int, DirectIndexWord> direct_index_words;
     int direct_index_max_lines = 0;
     int direct_index_max_words = 0;
+    struct SoaPredicateLine
+    {
+        bool pending = false;
+        bool valid = false;
+        Addr blockVaddr = 0;
+        Addr blockPaddr = 0;
+        std::array<uint8_t, 64> data{};
+    };
+    SoaPredicateLine soa_predicate_line;
+    enum class SoaJitContextState : uint8_t
+    {
+        Free,
+        AwaitARead,
+        AwaitValueRead,
+        AwaitAWriteResp,
+    };
+    struct SoaJitContext
+    {
+        std::array<uint8_t, 64> aLine{};
+        Addr aPaddr = 0;
+        Addr valuePaddr = 0;
+        uint64_t generation = 0;
+        int nextOffset = -1;
+        int remaining = 0;
+        int logicalItr = -1;
+        uint16_t aWord = 0;
+        uint16_t valueWord = 0;
+        SoaJitContextState state = SoaJitContextState::Free;
+    };
+    static_assert(sizeof(SoaJitContext) <= 128,
+                  "SoA/JIT RMW context exceeds the 128-byte budget");
+    static constexpr size_t SoaJitContexts = 1;
+    std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
+    bool soa_jit_all_rows_claimed = false;
+    uint64_t soa_jit_next_generation = 1;
+    uint64_t soa_jit_generation = 0;
+    uint64_t soa_jit_selected = 0;
+    uint64_t soa_jit_predicate_rejected = 0;
+    uint64_t soa_jit_predicate_line_issues = 0;
+    uint64_t soa_jit_predicate_line_responses = 0;
+    uint64_t soa_jit_a_read_issues = 0;
+    uint64_t soa_jit_a_read_responses = 0;
+    uint64_t soa_jit_value_read_issues = 0;
+    uint64_t soa_jit_value_read_responses = 0;
+    uint64_t soa_jit_aliases_applied = 0;
+    uint64_t soa_jit_a_write_issues = 0;
+    uint64_t soa_jit_a_write_responses = 0;
+    uint64_t soa_jit_context_stalls = 0;
+    uint64_t soa_jit_context_high_water = 0;
     int my_dst_tile, my_src_tile, my_src_reg, my_cond_tile, my_max;
     int my_idx_tile;
     bool my_cond_tile_ready, my_idx_tile_ready, my_src_tile_ready;
@@ -525,6 +576,7 @@ protected:
                          unsigned size = 64);
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
+    bool isSoaJitRmw() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
@@ -549,6 +601,23 @@ protected:
                             DirectIndexDiscardReason reason);
     bool receiveDirectIndex(Addr addr, uint8_t *dataptr,
                             bool is_block_cached);
+    bool ensureSoaPredicate(int itr);
+    bool soaPredicateValue(int itr) const;
+    void discardSoaPredicateIfDone(int itr);
+    bool receiveSoaPredicate(Addr addr, uint8_t *dataptr,
+                             bool is_block_cached);
+    int64_t soaSourcePosition(int logical_itr) const;
+    bool serviceSoaJitBuild();
+    bool receiveSoaJitData(Addr addr, uint8_t *dataptr,
+                           bool is_block_cached);
+    void issueSoaJitValueRead(SoaJitContext &context);
+    void applySoaJitValue(SoaJitContext &context,
+                          const uint8_t *value);
+    void issueSoaJitWrite(SoaJitContext &context);
+    bool completeSoaJitWrite(Addr addr);
+    void validateSoaJitAddressSpans();
+    bool soaJitContextsEmpty() const;
+    void checkSoaJitTerminal() const;
     bool receiveDescriptorSpool(Addr addr, uint8_t *dataptr,
                                 bool is_block_cached);
     bool loadDescriptorSpoolCurrent(uint32_t cursor);
@@ -587,6 +656,8 @@ protected:
         Addr vaddr,
         const std::array<uint8_t, BoundedDescriptorSpool::LineBytes> &data);
     void createDirectIndexReadPacket(Addr addr, int latency);
+    void createSoaPredicateReadPacket(Addr addr, int latency);
+    void createSoaJitReadPacket(Addr addr, int latency);
     void accountReadResponse(Addr addr, bool is_block_cached);
     Addr backingWordAddr(int itr) const;
     void validateRetirementWriteRange(Addr vaddr, unsigned size,

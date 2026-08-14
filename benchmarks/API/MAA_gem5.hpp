@@ -77,6 +77,7 @@ volatile uint64_t *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc;
 volatile uint64_t *INSTR_baseaddr;
 volatile uint64_t *INSTR_backingaddr;
 volatile uint64_t *INSTR_indexaddr;
+volatile uint64_t *INSTR_predicateaddr;
 volatile uint16_t *VIRTUAL_PAGE_READY_noncacheable;
 uint64_t MAA_end_addr;
 int8_t region_count;
@@ -121,7 +122,9 @@ void alloc_MAA() {
     current_addr += 8;
     INSTR_indexaddr = (volatile uint64_t *)(current_addr);
     current_addr += 8;
-    current_addr += INSTRUCTION_FILE_SIZE - 5 * sizeof(uint64_t);
+    INSTR_predicateaddr = (volatile uint64_t *)(current_addr);
+    current_addr += 8;
+    current_addr += INSTRUCTION_FILE_SIZE - 6 * sizeof(uint64_t);
     VIRTUAL_PAGE_READY_noncacheable = (volatile uint16_t *)(current_addr);
     current_addr += VIRTUAL_PAGE_READY_SIZE;
     MAA_end_addr = current_addr;
@@ -700,8 +703,7 @@ inline void maa_indirect_rmw_vector_soa_jit(
     *INSTR_baseaddr = (uint64_t)data;
     *INSTR_backingaddr = (uint64_t)values;
     *INSTR_indexaddr = (uint64_t)indices;
-    volatile uint64_t *const predicate_addr = INSTR_indexaddr + 1;
-    *predicate_addr = (uint64_t)predicates;
+    *INSTR_predicateaddr = (uint64_t)predicates;
     __asm__ __volatile__("mfence;" ::: "memory");
 }
 template <class T1>

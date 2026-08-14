@@ -321,6 +321,31 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         "sentinel, got 0x%016lx\n", data);
                     break;
                 }
+                if (current_instruction->isSoaJitRmw()) {
+                    panic_if(
+                        !current_instruction->hasValidSoaJitRmwOperands(),
+                        "Rejected SoA/JIT RMW ABI shape: dst1(old value) "
+                        "must be absent, dst2(completion) and all three "
+                        "range registers must be present, and register "
+                        "destinations must be absent\n");
+                    panic_if(
+                        current_instruction->src1RegID >= num_regs ||
+                            current_instruction->src2RegID >= num_regs ||
+                            current_instruction->src3RegID >= num_regs ||
+                            current_instruction->dst2SpdID < 0 ||
+                            current_instruction->dst2SpdID >=
+                                static_cast<int>(num_tiles),
+                        "Rejected SoA/JIT RMW register or completion-token "
+                        "range before address-word dispatch\n");
+                    panic_if(
+                        current_instruction->optype !=
+                                Instruction::OPType::ADD_OP &&
+                            current_instruction->optype !=
+                                Instruction::OPType::MIN_OP &&
+                            current_instruction->optype !=
+                                Instruction::OPType::MAX_OP,
+                        "SoA/JIT RMW supports only ADD/MIN/MAX\n");
+                }
                 if (current_instruction->accessType !=
                     Instruction::AccessType::COMPUTE) {
                     current_instruction->addrRangeID =
@@ -341,6 +366,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR)
                     break;
+                if (current_instruction->isSoaJitRmw())
+                    break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController, "%s: %s received!\n", __func__, current_instruction->print());
                 respond_immediately = false;
@@ -359,6 +386,7 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             Instruction::OpcodeType::INDIR_LD_SPD_STREAM &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR &&
+                        !current_instruction->isSoaJitRmw() &&
                         !current_instruction->isLogicalALUScalar(),
                     "Backing address is only valid for virtual or fused "
                     "indirect loads or logical ALU_SCALAR!\n");
@@ -385,6 +413,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     addrRegions[current_instruction->backingAddrRangeID].first;
                 current_instruction->backingMaxAddr = addrRegions[
                     current_instruction->backingAddrRangeID].second;
+                if (current_instruction->isSoaJitRmw())
+                    break;
                 if (current_instruction->opcode ==
                     Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX)
                     break;
@@ -407,6 +437,7 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_INDEX &&
+                        !current_instruction->isSoaJitRmw() &&
                         !current_instruction->isLogicalALUScalar(),
                     "Instruction word four is only valid for direct-index "
                     "loads or logical ALU_SCALAR source backing!\n");
@@ -495,11 +526,47 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     addrRegions[current_instruction->indexAddrRangeID].first;
                 current_instruction->indexMaxAddr =
                     addrRegions[current_instruction->indexAddrRangeID].second;
+                if (current_instruction->isSoaJitRmw())
+                    break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController,
                         "%s: %s received with index address 0x%lx!\n",
                         __func__, current_instruction->print(),
                         current_instruction->indexAddr);
+                respond_immediately = false;
+                scheduleDispatchInstructionEvent();
+                break;
+            }
+            case 5: {
+                panic_if(instruction_id == -1,
+                         "Received predicate address before instruction "
+                         "header!\n");
+                panic_if(!current_instruction->isSoaJitRmw(),
+                         "Instruction word five is only valid for the "
+                         "guarded SoA/JIT RMW shape\n");
+                panic_if(!current_instruction->hasValidSoaJitRmwOperands(),
+                         "Rejected malformed SoA/JIT RMW before word-five "
+                         "dispatch\n");
+                current_instruction->predicateAddr = data;
+                if (data != 0) {
+                    current_instruction->predicateAddrRangeID =
+                        getAddrRegion(data);
+                    panic_if(current_instruction->predicateAddrRangeID < 0,
+                             "Predicate address 0x%lx is not in a "
+                             "registered memory region\n", data);
+                    current_instruction->predicateMinAddr = addrRegions[
+                        current_instruction->predicateAddrRangeID].first;
+                    current_instruction->predicateMaxAddr = addrRegions[
+                        current_instruction->predicateAddrRangeID].second;
+                }
+                my_instruction_recvs[instruction_id] = true;
+                DPRINTF(MAAController,
+                        "%s: %s received with values=0x%lx indices=0x%lx "
+                        "predicates=0x%lx!\n",
+                        __func__, current_instruction->print(),
+                        current_instruction->backingAddr,
+                        current_instruction->indexAddr,
+                        current_instruction->predicateAddr);
                 respond_immediately = false;
                 scheduleDispatchInstructionEvent();
                 break;
