@@ -11,9 +11,10 @@ sole-arm gem5 options.
 
 The runner is fail-closed.  In particular, it refuses source roots that are
 incomplete or whose checkpoint/artifact identities no longer match their
-manifest.  A candidate result is reported only after the source checkpoint is
-identical both before and after restore and the candidate has the same exact
-workload certificate as the selected source control.
+manifest.  A candidate result is reported only after a private staged
+checkpoint matches the recorded source identity both before and after restore,
+and the candidate has the same exact workload certificate as the selected
+source control.
 """
 
 from __future__ import annotations
@@ -659,6 +660,27 @@ def tree_identity_for_regular_tree(
     return {"sha256": digest.hexdigest(), "files": files}
 
 
+def freeze_checkpoint_tree(
+    source: Path, destination: Path, expected: dict[str, object]
+) -> dict[str, object]:
+    """Copy a checkpoint privately and prove the copy is the recorded tree.
+
+    Filesystem permissions cannot make a tree immutable against a writer with
+    sufficient authority.  The source is therefore checked both sides of the
+    copy, and the private copy is checked before launch and again afterwards.
+    """
+    source = require_directory(source, "source checkpoint")
+    before = tree_identity_for_regular_tree(source, "source checkpoint")
+    if before != expected:
+        raise RuntimeError("source checkpoint identity changed before staging")
+    shutil.copytree(source, destination, symlinks=False)
+    after = tree_identity_for_regular_tree(source, "source checkpoint")
+    staged = tree_identity_for_regular_tree(destination, "staged checkpoint")
+    if before != after or after != expected or staged != expected:
+        raise RuntimeError("source checkpoint changed while being staged")
+    return staged
+
+
 def run_logged(
     command: list[str], log: Path, environment: dict[str, str]
 ) -> int:
@@ -707,6 +729,16 @@ def validate_terminal_run(
     if selector is not None and selector.split()[0].startswith(
         "token_stream_ld"
     ):
+        # first_stats is intentionally permissive for the matrix analyzer and
+        # would silently overwrite duplicate names.  Replay provenance is
+        # stricter: every materializer counter must occur exactly once in the
+        # first ROI, including producer ACK and page-fallback closure counters.
+        for stat_name in ANALYZER.MATERIALIZER_STATS:
+            stats[f"system.maa.{stat_name}"] = float(
+                exact_first_roi_nonnegative_integer(
+                    stats_path, f"system.maa.{stat_name}", label
+                )
+            )
         trace = require_file(
             run_dir / "gem5" / "virtual_trace.log",
             f"{label} materializer trace",
@@ -1199,6 +1231,12 @@ def execute(
     try:
         inputs = output / "inputs"
         inputs.mkdir()
+        staged_checkpoint = inputs / "checkpoint"
+        staged_checkpoint_identity = freeze_checkpoint_tree(
+            Path(source["checkpoint"]),
+            staged_checkpoint,
+            dict(source["checkpoint_identity"]),
+        )
         candidate_gem5 = inputs / "candidate_gem5.opt"
         candidate_gem5_hash = freeze_file(
             require_file(args.gem5, "candidate gem5"), candidate_gem5
@@ -1258,16 +1296,13 @@ def execute(
             Path(source["selector_path"]),
             selector,
         )
-        before = source_checkpoint(
-            source_root, manifest, args.checkpoint_group
-        )[1]
         command = rebase_recorded_restore_command(
             list(source["recorded_restore_command"]),
             Path(source["source_config"]),
             candidate_gem5,
             candidate_config,
             run / "gem5",
-            Path(source["checkpoint"]),
+            staged_checkpoint,
             guest,
             options,
             ramulator_config,
@@ -1275,15 +1310,18 @@ def execute(
         )
         rc = run_logged(command, run / "restore.log", environment)
         try:
-            after = source_checkpoint(
-                source_root, manifest, args.checkpoint_group
-            )[1]
+            staged_checkpoint_after = tree_identity_for_regular_tree(
+                staged_checkpoint, "staged checkpoint"
+            )
         except ValueError as error:
             raise RuntimeError(
-                "source checkpoint mutated during restore"
+                "staged checkpoint mutated during restore"
             ) from error
-        if after != before or after != source["checkpoint_identity"]:
-            raise RuntimeError("source checkpoint mutated during restore")
+        if (
+            staged_checkpoint_after != staged_checkpoint_identity
+            or staged_checkpoint_after != source["checkpoint_identity"]
+        ):
+            raise RuntimeError("staged checkpoint mutated during restore")
         if rc != 0:
             raise RuntimeError(f"treatment restore failed with rc={rc}")
         treatment = validate_terminal_run(
@@ -1308,8 +1346,9 @@ def execute(
             "source_commit": manifest.get("source_commit"),
             "source_status": manifest.get("source_status"),
             "checkpoint_group": args.checkpoint_group,
-            "checkpoint_identity_before": before,
-            "checkpoint_identity_after": after,
+            "checkpoint": str(staged_checkpoint),
+            "checkpoint_identity_before": staged_checkpoint_identity,
+            "checkpoint_identity_after": staged_checkpoint_after,
             "control_arm": source["control"],
             "control_records": source["control_records"],
             "recorded_restore_command_sha256": source[

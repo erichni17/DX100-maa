@@ -383,7 +383,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("checkpoint identity mismatch", stderr)
 
-    def test_restore_time_checkpoint_mutation_is_rejected_after_run(
+    def test_restore_time_staged_checkpoint_mutation_is_rejected_after_run(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -426,10 +426,15 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 self.write_file(
                     log.parent / "gem5/virtual_trace.log", TOKEN_TRACE
                 )
-                self.write_file(
-                    source_root / "checkpoints/hybrid/gem5/m5.cpt",
-                    "mutated after restore\n",
+                checkpoint = next(
+                    Path(value.split("=", 1)[1])
+                    for value in command
+                    if value.startswith("--checkpoint-dir=")
                 )
+                self.assertEqual(checkpoint, root / "out/inputs/checkpoint")
+                replacement = checkpoint / "replacement.cpt"
+                self.write_file(replacement, "swapped after restore\n")
+                replacement.replace(checkpoint / "m5.cpt")
                 return 0
 
             def fake_subprocess(command, **kwargs):
@@ -453,7 +458,55 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 runner.subprocess, "run", side_effect=fake_subprocess
             ):
                 with self.assertRaisesRegex(
-                    RuntimeError, "checkpoint mutated"
+                    RuntimeError, "staged checkpoint mutated"
+                ):
+                    runner.execute(
+                        args,
+                        source_root,
+                        manifest,
+                        runner.sha256_file(source_root / "manifest.json"),
+                        source,
+                    )
+            self.assertEqual(
+                (root / "out/campaign.exit").read_text(encoding="utf-8"), "1\n"
+            )
+
+    def test_source_checkpoint_change_after_plan_is_rejected_before_staging(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root, manifest = self.make_source(root)
+            rc, _, stderr = self.plan(source_root, root)
+            self.assertEqual(rc, 0, stderr)
+            self.assertFalse((root / "out").exists())
+            gem5 = root / "candidate-gem5"
+            config = root / "candidate.py"
+            source = runner.selected_source(
+                source_root, manifest, "hybrid", "hybrid_token_stream_ld"
+            )
+            checkpoint = source_root / "checkpoints/hybrid/gem5"
+            replacement = checkpoint / "replacement.cpt"
+            self.write_file(replacement, "swapped after planning\n")
+            replacement.replace(checkpoint / "m5.cpt")
+            args = type(
+                "Args",
+                (),
+                {
+                    "out": root / "out",
+                    "gem5": gem5,
+                    "config": config,
+                    "treatment_name": "candidate",
+                    "checkpoint_group": "hybrid",
+                    "sole_arm_gem5_arg": [],
+                },
+            )()
+            with patch.object(
+                runner, "source_clean", return_value=("local", "clean")
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "source checkpoint identity changed before staging",
                 ):
                     runner.execute(
                         args,
@@ -821,6 +874,31 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 self.assertIn(
                     f"{stat}={new} does not match trace closure", stderr
                 )
+
+    def test_duplicate_first_roi_materializer_stats_are_rejected(self) -> None:
+        for stat in runner.ANALYZER.MATERIALIZER_STATS:
+            with self.subTest(
+                stat=stat
+            ), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, _ = self.make_source(root)
+                stats = (
+                    source
+                    / "arms/hybrid_token_stream_ld/replica-1/gem5/stats.txt"
+                )
+                text = stats.read_text(encoding="utf-8")
+                marker = f"system.maa.{stat} "
+                line = next(
+                    line
+                    for line in text.splitlines()
+                    if line.startswith(marker)
+                )
+                self.write_file(
+                    stats, text.replace(line, line + "\n" + line, 1)
+                )
+                rc, _, stderr = self.plan(source, root)
+                self.assertEqual(rc, 1)
+                self.assertIn(f"{stat} is not a nonnegative integer", stderr)
 
     def test_recorded_command_must_match_every_manifest_provenance_field(
         self,
