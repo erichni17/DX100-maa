@@ -23,6 +23,7 @@
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
 #include "mem/MAA/SoaJitOverlapState.hh"
+#include "mem/MAA/SoaJitResultPipeline.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
@@ -558,6 +559,7 @@ protected:
     static constexpr size_t SoaJitContexts =
         SoaJitValueCoalescer::MaxContexts;
     std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
+    SoaJitResultPipeline soa_jit_result_pipeline;
     struct SoaJitValuePrefetchCursor
     {
         Addr lastBlockVaddr = 0;
@@ -717,6 +719,7 @@ protected:
     bool completeSoaJitWrite(Addr addr);
     void validateSoaJitAddressSpans();
     bool soaJitContextsEmpty() const;
+    void observeSoaJitResultPipeline();
     size_t soaJitActiveContextCount() const;
     size_t soaJitLookaheadOccupancy() const;
     void checkSoaJitTerminal();

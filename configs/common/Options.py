@@ -466,8 +466,11 @@ def addNoISAOptions(parser):
         "--maa_soa_jit_active_contexts",
         type=int,
         default=8,
-        choices=(8, 16, 32),
-        help="Active SoA/JIT A-line contexts; fixed hardware maximum is 32",
+        choices=(8, 16, 32, 64),
+        help=(
+            "Active SoA/JIT A-line contexts; 64 enables the default-off "
+            "two-region result pipeline in fixed 4KiB payload hardware"
+        ),
     )
     parser.add_argument(
         "--maa_soa_jit_value_lookahead",

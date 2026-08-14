@@ -197,8 +197,8 @@ class MAA(ClockedObject):
     )
     soa_jit_active_contexts = Param.Unsigned(
         8,
-        "Active SoA/JIT A-line contexts (8, 16, or 32; fixed maximum "
-        "hardware is 32)",
+        "Active SoA/JIT A-line contexts (8, 16, 32, or default-off 64; "
+        "fixed maximum hardware is 64)",
     )
     soa_jit_value_lookahead = Param.Unsigned(
         1,

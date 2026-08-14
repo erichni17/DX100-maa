@@ -207,8 +207,9 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
         _virtual_index_filter_words_per_cycle;
     panic_if(_soa_jit_active_contexts != 8 &&
                  _soa_jit_active_contexts != 16 &&
-                 _soa_jit_active_contexts != 32,
-             "I[%d] SoA/JIT active contexts (%d) must be 8, 16, or 32\n",
+                 _soa_jit_active_contexts != 32 &&
+                 _soa_jit_active_contexts != 64,
+             "I[%d] SoA/JIT active contexts (%d) must be 8, 16, 32, or 64\n",
              my_indirect_id, _soa_jit_active_contexts);
     panic_if(_soa_jit_value_lookahead != 1 &&
                  _soa_jit_value_lookahead != 2 &&
@@ -4124,6 +4125,29 @@ bool IndirectAccessUnit::soaJitContextsEmpty() const
             return context.state == SoaJitContextState::Free;
         });
 }
+
+void
+IndirectAccessUnit::observeSoaJitResultPipeline()
+{
+    std::array<uint8_t, SoaJitResultPipeline::Regions> reads{};
+    std::array<uint8_t, SoaJitResultPipeline::Regions> writes{};
+    for (size_t index = 0;
+         index < static_cast<size_t>(soa_jit_active_contexts); ++index) {
+        const size_t region = SoaJitResultPipeline::regionForLine(index);
+        panic_if(region >= SoaJitResultPipeline::Regions,
+                 "I[%d] SoA/JIT result context %lu exceeds fixed regions\n",
+                 my_indirect_id, index);
+        if (soa_jit_contexts[index].state ==
+            SoaJitContextState::AwaitARead)
+            reads[region]++;
+        else if (soa_jit_contexts[index].state ==
+                 SoaJitContextState::AwaitAWriteResp)
+            writes[region]++;
+    }
+    panic_if(!soa_jit_result_pipeline.observe(curTick(), reads, writes),
+             "I[%d] invalid SoA/JIT result-pipeline observation\n",
+             my_indirect_id);
+}
 bool
 IndirectAccessUnit::hasLiveSoaJitState() const
 {
@@ -4303,6 +4327,7 @@ bool IndirectAccessUnit::serviceSoaJitBuild()
         context->issueOffset = head;
         context->remaining = words;
         context->state = SoaJitContextState::AwaitARead;
+        observeSoaJitResultPipeline();
         const size_t context_index = std::distance(
             soa_jit_contexts.begin(), context);
         soa_jit_context_high_water = std::max<uint64_t>(
@@ -4647,6 +4672,7 @@ void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
     pkt->allocate();
     pkt->setData(context.aLine.data());
     context.state = SoaJitContextState::AwaitAWriteResp;
+    observeSoaJitResultPipeline();
     soa_jit_a_write_issues++;
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
                     maa->getClockEdge(Cycles(0)), true);
@@ -4694,6 +4720,7 @@ bool IndirectAccessUnit::receiveSoaJitData(
                          my_indirect_id);
             }
             context.state = SoaJitContextState::Active;
+            observeSoaJitResultPipeline();
             fillSoaJitLookahead(context_index);
             scheduleNextExecution(true);
             return true;
@@ -4769,6 +4796,7 @@ bool IndirectAccessUnit::completeSoaJitWrite(Addr addr)
                 my_indirect_id, my_decode_start_tick, soa_jit_generation,
                 addr);
         context = SoaJitContext();
+        observeSoaJitResultPipeline();
         return true;
     }
     return false;
@@ -4828,6 +4856,8 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                                            soa_jit_value_lookahead) ||
                  soa_jit_apply_lane_high_water >
                      static_cast<uint64_t>(soa_jit_apply_lanes) ||
+                 !soa_jit_result_pipeline.assertInvariants(
+                     soa_jit_active_contexts) ||
                  !soa_jit_apply_lane_pool.assertInvariants() ||
                  !soa_jit_value_coalescer.assertInvariants() ||
                  soa_jit_value_coalescer.fillingCount() != 0 ||
@@ -5167,6 +5197,7 @@ void IndirectAccessUnit::executeInstruction() {
             line = SoaPredicateLine();
         for (auto &context : soa_jit_contexts)
             context = SoaJitContext();
+        soa_jit_result_pipeline.reset(curTick());
         soa_jit_value_coalescer.configure(
             soa_jit_value_cache_enable, soa_jit_value_prefetch_credits,
             soa_jit_active_value_owners);
@@ -6370,6 +6401,98 @@ void IndirectAccessUnit::executeInstruction() {
             (*maa->stats.IND_SoaJitContextStalls[my_indirect_id]) +=
                 soa_jit_context_stalls;
             (*maa->stats.IND_SoaJitTerminalCompletions[my_indirect_id])++;
+            const auto &result_read_hwm =
+                soa_jit_result_pipeline.aReadHighWater();
+            const auto &result_write_hwm =
+                soa_jit_result_pipeline.aWriteHighWater();
+            const auto &result_traffic_hwm =
+                soa_jit_result_pipeline.activeLineHighWater();
+            constexpr size_t fixed_result_context_bytes =
+                sizeof(SoaJitContext);
+            constexpr size_t fixed_result_contexts_bytes =
+                sizeof(soa_jit_contexts);
+            constexpr size_t fixed_result_payload_bytes =
+                SoaJitResultPipeline::FixedPayloadBytes;
+            constexpr size_t fixed_result_nonpayload_bytes =
+                fixed_result_contexts_bytes - fixed_result_payload_bytes;
+            constexpr size_t baseline_result_contexts_bytes =
+                SoaJitResultPipeline::BaselineLines *
+                fixed_result_context_bytes;
+            constexpr size_t incremental_result_contexts_bytes =
+                fixed_result_contexts_bytes -
+                baseline_result_contexts_bytes;
+            constexpr size_t incremental_result_nonpayload_bytes =
+                (fixed_result_context_bytes -
+                 SoaJitResultPipeline::LineBytes) *
+                (SoaJitResultPipeline::MaxLines -
+                 SoaJitResultPipeline::BaselineLines);
+            constexpr size_t fixed_result_waiter_mask_bytes =
+                SoaJitValueCoalescer::MaxWaiters / 8 *
+                SoaJitValueCoalescer::CacheLines;
+            constexpr size_t baseline_result_waiter_mask_bytes =
+                SoaJitResultPipeline::BaselineLines *
+                SoaJitValueCoalescer::MaxLookahead / 8 *
+                SoaJitValueCoalescer::CacheLines;
+            constexpr size_t incremental_result_waiter_mask_bytes =
+                fixed_result_waiter_mask_bytes -
+                baseline_result_waiter_mask_bytes;
+            constexpr size_t incremental_result_total_nonpayload_bytes =
+                incremental_result_nonpayload_bytes +
+                incremental_result_waiter_mask_bytes;
+            constexpr size_t incremental_result_total_state_bytes =
+                incremental_result_contexts_bytes +
+                incremental_result_waiter_mask_bytes;
+            static_assert(SoaJitValueCoalescer::MaxWaiters % 8 == 0);
+            DPRINTF(MAAVirtualTrace,
+                    "event=soa_jit_result_pipeline schema=1 unit=%d "
+                    "operation_tick=%lu generation=%lu active_contexts=%d "
+                    "regions=%lu lines_per_region=%lu "
+                    "region_payload_bytes=%lu fixed_result_payload_bytes=%lu "
+                    "active_result_payload_bytes=%lu "
+                    "incremental_result_payload_bytes_vs_32=%lu "
+                    "fixed_result_context_bytes=%lu "
+                    "fixed_result_contexts_bytes=%lu "
+                    "fixed_result_nonpayload_bytes=%lu "
+                    "baseline_32_result_contexts_bytes=%lu "
+                    "incremental_result_contexts_bytes_vs_32=%lu "
+                    "incremental_result_nonpayload_bytes_vs_32=%lu "
+                    "fixed_result_waiter_mask_bytes=%lu "
+                    "baseline_32_result_waiter_mask_bytes=%lu "
+                    "incremental_result_waiter_mask_bytes_vs_32=%lu "
+                    "incremental_result_total_nonpayload_bytes_vs_32=%lu "
+                    "incremental_result_total_state_bytes_vs_32=%lu "
+                    "a_read_hwm_r0=%u a_read_hwm_r1=%u "
+                    "a_write_hwm_r0=%u a_write_hwm_r1=%u "
+                    "traffic_hwm_r0=%u traffic_hwm_r1=%u "
+                    "read_write_overlap_ticks=%lu "
+                    "dual_region_overlap_ticks=%lu "
+                    "serialized_write_only_ticks=%lu terminal=1\n",
+                    my_indirect_id, my_decode_start_tick,
+                    soa_jit_generation, soa_jit_active_contexts,
+                    SoaJitResultPipeline::Regions,
+                    SoaJitResultPipeline::LinesPerRegion,
+                    SoaJitResultPipeline::RegionPayloadBytes,
+                    fixed_result_payload_bytes,
+                    SoaJitResultPipeline::activePayloadBytes(
+                        soa_jit_active_contexts),
+                    SoaJitResultPipeline::incrementalPayloadBytesVsBaseline(),
+                    fixed_result_context_bytes,
+                    fixed_result_contexts_bytes,
+                    fixed_result_nonpayload_bytes,
+                    baseline_result_contexts_bytes,
+                    incremental_result_contexts_bytes,
+                    incremental_result_nonpayload_bytes,
+                    fixed_result_waiter_mask_bytes,
+                    baseline_result_waiter_mask_bytes,
+                    incremental_result_waiter_mask_bytes,
+                    incremental_result_total_nonpayload_bytes,
+                    incremental_result_total_state_bytes,
+                    result_read_hwm[0], result_read_hwm[1],
+                    result_write_hwm[0], result_write_hwm[1],
+                    result_traffic_hwm[0], result_traffic_hwm[1],
+                    soa_jit_result_pipeline.resultReadWriteOverlapTicks(),
+                    soa_jit_result_pipeline.dualRegionResultOverlapTicks(),
+                    soa_jit_result_pipeline.serializedWriteOnlyTicks());
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_complete schema=2 unit=%d "
                     "operation_tick=%lu generation=%lu logical=%d "
@@ -6468,6 +6591,13 @@ void IndirectAccessUnit::executeInstruction() {
             constexpr size_t fixed_context_bytes = sizeof(SoaJitContext);
             constexpr size_t fixed_contexts_bytes =
                 sizeof(soa_jit_contexts);
+            static_assert(
+                SoaJitContexts == SoaJitResultPipeline::MaxLines,
+                "SoA/JIT contexts must equal the fixed result-line budget");
+            static_assert(
+                SoaJitResultPipeline::FixedPayloadBytes ==
+                    SoaJitContexts * SoaJitResultPipeline::LineBytes,
+                "SoA/JIT result payload must remain exactly 4 KiB");
             const size_t active_contexts_bytes =
                 static_cast<size_t>(soa_jit_active_contexts) *
                 fixed_context_bytes;
