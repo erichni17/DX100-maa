@@ -56,7 +56,7 @@ restore_cmd=(
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
-    --ramulator-config "$ramulator" --mem-channels=1
+    --ramulator-config "$ramulator" --mem-channels=2
     --maa --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
     --maa_num_initial_row_table_slices=32
     --maa_num_row_table_rows_per_slice=64
@@ -78,6 +78,7 @@ restore_cmd=(
     printf 'scope=GZP_FP32_logical16_physical4K_live_publisher_correctness\n'
     printf 'speedup_claim=0\n'
     printf 'publisher_credits=8\nexpected_publications=8\n'
+    printf 'mem_channels=2\n'
     printf 'checkpoint_command='; printf '%q ' "${checkpoint_cmd[@]}"; printf '\n'
     printf 'restore_command='; printf '%q ' "${restore_cmd[@]}"; printf '\n'
 } > "$out/manifest.txt"
