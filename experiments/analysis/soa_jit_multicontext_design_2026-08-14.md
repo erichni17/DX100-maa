@@ -253,8 +253,10 @@ one-context/no-cache run may bridge to the current implementation, but it is
 diagnostic and must not be used to attribute the C1-versus-C8 speedup.
 
 Both matched arms must have identical final byte hash and logical stats,
-distinct nonzero generations, exact terminal closure, zero error stats, and
-the same value-cache fill count; otherwise the timing comparison is invalid.
+distinct nonzero generations, exact terminal closure, and zero error stats.
+Different scheduling can legitimately change value-cache reuse, eviction, and
+therefore the physical fill count; report and attribute that delta rather than
+rejecting the timing comparison.
 Report `simTicks`, SoA instruction begin-to-final-WriteResp ticks, context
 occupancy/full-stall cycles, fill/hit/merge/eviction/no-victim counts, A
 read/write response latencies, cache-port retry/capacity stalls, physical
