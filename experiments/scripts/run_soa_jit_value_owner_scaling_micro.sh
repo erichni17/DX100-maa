@@ -15,9 +15,16 @@ config="$root/configs/deprecated/example/se.py"
 ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 cxx=${CXX:-g++}
 expected_hash=2761840269561229581
+timeout_seconds=${SOA_JIT_OWNER_TIMEOUT_SECONDS:-0}
 
 [[ -x $gem5 ]] || { echo "missing gem5: $gem5" >&2; exit 2; }
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
+[[ $timeout_seconds =~ ^[0-9]+$ ]] || {
+    echo "SOA_JIT_OWNER_TIMEOUT_SECONDS must be a non-negative integer" >&2
+    exit 2
+}
+timeout_command=()
+((timeout_seconds == 0)) || timeout_command=(timeout "$timeout_seconds")
 [[ -z $(git -C "$root" status --porcelain) ]] || {
     echo "source worktree must be clean for provenance" >&2; exit 2;
 }
@@ -31,7 +38,7 @@ guest="$out/bin/test_hybrid_rmw_soa_T16384"
     "$root/util/m5/src/abi/x86/m5op.S" \
     "$root/benchmarks/API/test_hybrid_rmw_soa.cpp" -o "$guest"
 
-timeout 300 "$gem5" --listener-mode=off --outdir="$out/checkpoint/soa16" \
+"${timeout_command[@]}" "$gem5" --listener-mode=off --outdir="$out/checkpoint/soa16" \
     "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB \
     --max-checkpoints=1 --cmd "$guest" --options=soa \
     >"$out/checkpoint/soa16/checkpoint.log" 2>&1
@@ -79,9 +86,10 @@ declare -A evictions value_stalls context_stalls cache_hwm terminal
 printf 'arm\treplica\towners\tsimTicks\toutput_hash\tselected\trejected\tvalue_reads\tvalue_responses\tfills\tdeliveries\taliases\ta_reads\ta_responses\twrites\twrite_responses\tevictions\tvalue_stalls\tcontext_stalls\tcache_hwm\n' >"$out/matrix.tsv"
 
 run_arm() {
-    local name=$1 replica=$2 owners=$3 run="$out/runs/$name"
+    local name=$1 replica=$2 owners=$3
+    local run="$out/runs/$name"
     mkdir -p "$run"
-    timeout 1800 "$gem5" --listener-mode=off --outdir="$run" "$config" \
+    "${timeout_command[@]}" "$gem5" --listener-mode=off --outdir="$run" "$config" \
         --cpu-type X86O3CPU -r 1 -n 4 --mem-size 2GB \
         --checkpoint-dir="$out/checkpoint/soa16" --sys-clock 3.2GHz \
         --cpu-clock 3.2GHz --caches --l1d_size=32kB --l1d_assoc=8 \

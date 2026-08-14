@@ -38,3 +38,18 @@ def test_owner_scaling_gate_closes_traffic_and_rejects_nonbeneficial_capacity():
         in runner
     )
     assert "decision=REJECT" in runner
+
+
+def test_owner_scaling_gate_has_safe_locals_and_optional_timeout():
+    runner = (
+        ROOT / "experiments/scripts/run_soa_jit_value_owner_scaling_micro.sh"
+    ).read_text()
+
+    assert "SOA_JIT_OWNER_TIMEOUT_SECONDS:-0" in runner
+    assert (
+        "((timeout_seconds == 0)) || "
+        'timeout_command=(timeout "$timeout_seconds")' in runner
+    )
+    assert "local name=$1 replica=$2 owners=$3\n" in runner
+    assert 'local run="$out/runs/$name"\n' in runner
+    assert 'owners=$3 run="$out/runs/$name"' not in runner
