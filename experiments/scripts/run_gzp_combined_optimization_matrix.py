@@ -5,9 +5,9 @@ This runner is deliberately restore-only.  It reuses the frozen GZP masked
 index checkpoint and guest, while taking the gem5 executable from the caller.
 The frozen checkpoint has already consumed the guest mode selector, so every
 arm must remain in masked-index mode.  The matrix attributes pre-A scheduling
-and active owner capacity from a replicated masked/owner32 baseline to a
-replicated masked/pre-A/owner128 endpoint.  No wall-clock metric participates
-in the decision.
+and active owner capacity from a replicated masked/owner32 baseline, then
+selects the lowest-simTicks measured arm rather than assuming the largest
+owner prefix is best.  No wall-clock metric participates in the decision.
 """
 
 from __future__ import annotations
@@ -873,7 +873,7 @@ def require_deterministic(
 
 def validate_matrix(
     rows: list[dict[str, int | str | bool]]
-) -> tuple[list[dict[str, object]], bool, str]:
+) -> tuple[list[dict[str, object]], bool, str, str]:
     if len(rows) != len(run_specs()):
         raise RuntimeError("matrix is missing an arm or replica")
     for key in (
@@ -888,14 +888,19 @@ def validate_matrix(
                 f"same-checkpoint semantic invariant changed: {key}"
             )
     baseline = ARMS[0]["name"]
-    endpoint = ARMS[-1]["name"]
     require_deterministic(rows, baseline)
-    require_deterministic(rows, endpoint)
+    for arm in ARMS:
+        if len(arm["replicas"]) > 1:
+            require_deterministic(rows, str(arm["name"]))
     baseline_ticks = int(arm_rows(rows, baseline)[0]["simTicks"])
-    endpoint_rows = arm_rows(rows, endpoint)
-    endpoint_beats_baseline = all(
-        int(row["simTicks"]) < baseline_ticks for row in endpoint_rows
-    )
+    arm_ticks = {
+        str(arm["name"]): int(
+            arm_rows(rows, str(arm["name"]))[0]["simTicks"]
+        )
+        for arm in ARMS
+    }
+    selected_arm = min(arm_ticks, key=arm_ticks.get)
+    selected_beats_baseline = arm_ticks[selected_arm] < baseline_ticks
     adjacent: list[dict[str, object]] = []
     for index in range(len(ARMS) - 1):
         control_arm = str(ARMS[index]["name"])
@@ -918,12 +923,12 @@ def validate_matrix(
             }
         )
     reason = (
-        "both deterministic masked/pre-A/owner128 endpoint replicas beat the "
-        "deterministic masked/owner32/pre-A-off baseline by simTicks"
-        if endpoint_beats_baseline
-        else "the endpoint does not beat the deterministic baseline in both replicas"
+        f"{selected_arm} has the lowest measured simTicks and beats the "
+        "deterministic masked/owner32/pre-A-off baseline"
+        if selected_beats_baseline
+        else "no measured arm beats the deterministic baseline"
     )
-    return adjacent, endpoint_beats_baseline, reason
+    return adjacent, selected_beats_baseline, selected_arm, reason
 
 
 def validate_materialized_commands(
@@ -1080,7 +1085,7 @@ def execute(
             for record in records
         ]
         write_matrix(args.outdir, rows)
-        adjacent, promote, reason = validate_matrix(rows)
+        adjacent, promote, selected_arm, reason = validate_matrix(rows)
         atomic_json(
             args.outdir / "manifest.json",
             {
@@ -1110,7 +1115,11 @@ def execute(
             {
                 "decision": "PROMOTE" if promote else "REJECT",
                 "reason": reason,
-                "endpoint": ARMS[-1]["name"],
+                "selected_arm": selected_arm,
+                "selected_simTicks": int(
+                    arm_rows(rows, selected_arm)[0]["simTicks"]
+                ),
+                "sweep_endpoint": ARMS[-1]["name"],
                 "baseline": ARMS[0]["name"],
                 "promotion_metric": "simTicks",
                 "host_time_metric_authorized": False,

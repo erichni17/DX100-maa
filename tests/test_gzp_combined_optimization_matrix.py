@@ -286,6 +286,9 @@ def test_fake_execution_emits_manifest_matrix_and_simticks_only_decision(
     assert len(matrix["rows"]) == 6
     assert len(manifest["runs"]) == 6
     assert decision["decision"] == "PROMOTE"
+    assert decision["selected_arm"] == "masked-owner128-pre-a-on"
+    assert decision["selected_simTicks"] == 800
+    assert decision["sweep_endpoint"] == "masked-owner128-pre-a-on"
     assert decision["promotion_metric"] == "simTicks"
     assert decision["host_time_metric_authorized"] is False
     assert len(decision["adjacent_deltas"]) == 3
