@@ -62,7 +62,7 @@ restore_cmd=(
     --l2_write_buffers=16 --l3cache --l3_size=8MB --l3_assoc=16
     --l3_mshrs=256 --l3_write_buffers=128 --l3_ports=4
     --cacheline_size=64 --mem-type Ramulator2
-    --ramulator-config "$ramulator" --mem-channels=1
+    --ramulator-config "$ramulator" --mem-channels=2
     --maa --maa_num_tile_elements=16384 --maa_physical_tile_elements=4096
     --maa_num_initial_row_table_slices=32
     --maa_num_row_table_rows_per_slice=64

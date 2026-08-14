@@ -42,7 +42,7 @@ consumption.  The gate requires:
 - exactly 32 publications and 8,192 issue/accept/response events;
 - exactly eight credits at high-water with a nonzero credit-stall count;
 - the configured logical 16K / physical 4K geometry, including 32 RowTable
-  slices (16,384 bounded entries); and
+  slices across two modeled memory channels (16,384 bounded entries); and
 - a clean source worktree so its manifest commit identifies the tested code.
 
 The full-corpus analyzer also fails closed unless the 61 full windows close

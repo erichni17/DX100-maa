@@ -53,6 +53,7 @@ def test_runner_is_uncapped_and_fails_closed() -> None:
     assert "expected_publications=32" in runner
     assert "expected_lines=8192" in runner
     assert "--maa_num_initial_row_table_slices=32" in runner
+    assert "--mem-channels=2" in runner
     assert runner.count("OMP_NUM_THREADS=1") == 3
     assert "single_owner_correctness" in runner
     assert '--env "$guest_env"' in runner
