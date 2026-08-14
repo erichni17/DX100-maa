@@ -189,9 +189,26 @@ def validate_soa_stats(
             "IND_SoaJitAReadResponses",
             "IND_SoaJitValueReadIssues",
             "IND_SoaJitValueReadResponses",
+            "IND_SoaJitValueFills",
+            "IND_SoaJitValueCachedResponses",
+            "IND_SoaJitValueHits",
+            "IND_SoaJitValueMergedWaiters",
+            "IND_SoaJitValueEvictions",
+            "IND_SoaJitValueDeliveries",
+            "IND_SoaJitValueStalls",
+            "IND_SoaJitValueCacheHighWater",
+            "IND_SoaJitLookaheadIssues",
+            "IND_SoaJitLookaheadResponses",
+            "IND_SoaJitLookaheadStalls",
+            "IND_SoaJitLookaheadHighWater",
             "IND_SoaJitAliasesApplied",
             "IND_SoaJitAWriteIssues",
             "IND_SoaJitAWriteResponses",
+            "IND_SoaJitActiveContexts",
+            "IND_SoaJitActiveValueOwners",
+            "IND_SoaJitActiveApplyLanes",
+            "IND_SoaJitApplyLaneHighWater",
+            "IND_SoaJitContextStalls",
             "IND_SoaJitContextHighWater",
             "IND_SoaJitTerminalCompletions",
         )
@@ -219,8 +236,20 @@ def validate_soa_stats(
     if (
         soa["IND_SoaJitValueReadIssues"] != soa["IND_SoaJitSelected"]
         or soa["IND_SoaJitAliasesApplied"] != soa["IND_SoaJitSelected"]
+        or soa["IND_SoaJitValueDeliveries"] != soa["IND_SoaJitSelected"]
+        or soa["IND_SoaJitLookaheadIssues"] != soa["IND_SoaJitSelected"]
+        or soa["IND_SoaJitLookaheadResponses"] != soa["IND_SoaJitSelected"]
     ):
         raise ValueError("SoA/JIT selected/value/alias totals differ")
+    if (
+        soa["IND_SoaJitValueFills"] != soa["IND_SoaJitValueReadResponses"]
+        or soa["IND_SoaJitValueCachedResponses"] > soa["IND_SoaJitValueFills"]
+        or soa["IND_SoaJitValueCacheHighWater"]
+        > soa["IND_SoaJitActiveValueOwners"]
+        or soa["IND_SoaJitApplyLaneHighWater"]
+        > soa["IND_SoaJitActiveApplyLanes"]
+    ):
+        raise ValueError("SoA/JIT bounded overlap accounting is invalid")
     if soa["IND_SoaJitAReadIssues"] != soa["IND_SoaJitAWriteIssues"]:
         raise ValueError("SoA/JIT A read/write issue totals differ")
     if soa["IND_SoaJitContextHighWater"] < expected_instructions:
@@ -589,18 +618,35 @@ def analyze(root: Path) -> dict[str, object]:
         raise ValueError("cross-arm exact output fingerprints differ")
     if len(predicate_identities) != 1:
         raise ValueError("hybrid arms disclosed different predicate buffers")
-    current_ticks = [
-        int(record["simTicks"])
-        for record in records
-        if record["arm"] == "current_hybrid"
-    ]
-    volume_ticks = [
-        int(record["simTicks"])
-        for record in records
-        if record["arm"] == "volume_only_soa_jit"
-    ]
-    current_median = statistics.median(current_ticks)
-    volume_median = statistics.median(volume_ticks)
+    ticks_by_arm = {
+        name: [
+            int(record["simTicks"])
+            for record in records
+            if record["arm"] == name
+        ]
+        for name in expected_arms
+    }
+    medians = {
+        name: statistics.median(values)
+        for name, values in ticks_by_arm.items()
+    }
+    native16_median = medians["native16"]
+    native4_median = medians["native4"]
+    current_median = medians["current_hybrid"]
+    volume_median = medians["volume_only_soa_jit"]
+    if native4_median <= native16_median:
+        raise ValueError(
+            "native4 does not expose a virtualization opportunity"
+        )
+
+    def position(ticks: float) -> dict[str, float]:
+        return {
+            "gap_vs_native16_percent": (ticks / native16_median - 1.0) * 100.0,
+            "speedup_vs_native4": native4_median / ticks,
+            "opportunity_recovered_fraction": (native4_median - ticks)
+            / (native4_median - native16_median),
+        }
+
     return {
         "schema": "dx100.gzp_soa_jit_analysis.v2",
         "status": "PASS",
@@ -611,15 +657,17 @@ def analyze(root: Path) -> dict[str, object]:
         "performance_comparisons": manifest["performance_comparisons"],
         "performance": {
             "metric": "simTicks",
+            "native16_median": native16_median,
+            "native4_median": native4_median,
             "current_hybrid_median": current_median,
             "volume_only_soa_jit_median": volume_median,
             "speedup_current_over_volume_only": (
                 current_median / volume_median
             ),
+            "current_hybrid_position": position(current_median),
+            "volume_only_soa_jit_position": position(volume_median),
         },
-        "blocker": (
-            "response-bearing SPD publisher is not wired to a guest opcode"
-        ),
+        "blocker": None,
     }
 
 
@@ -655,6 +703,34 @@ def main() -> int:
                 performance["volume_only_soa_jit_median"],
             ),
             "",
+            "| design | median simTicks | gap vs native16 | "
+            "speedup vs native4 | opportunity recovered |",
+            "|---|---:|---:|---:|---:|",
+            "| current hybrid | {} | {:.3f}% | {:.6f}x | {:.3f}% |".format(
+                performance["current_hybrid_median"],
+                performance["current_hybrid_position"][
+                    "gap_vs_native16_percent"
+                ],
+                performance["current_hybrid_position"]["speedup_vs_native4"],
+                performance["current_hybrid_position"][
+                    "opportunity_recovered_fraction"
+                ]
+                * 100.0,
+            ),
+            "| volume SoA/JIT | {} | {:.3f}% | {:.6f}x | {:.3f}% |".format(
+                performance["volume_only_soa_jit_median"],
+                performance["volume_only_soa_jit_position"][
+                    "gap_vs_native16_percent"
+                ],
+                performance["volume_only_soa_jit_position"][
+                    "speedup_vs_native4"
+                ],
+                performance["volume_only_soa_jit_position"][
+                    "opportunity_recovered_fraction"
+                ]
+                * 100.0,
+            ),
+            "",
             "| arm | replica | simTicks | RMW instructions |",
             "|---|---:|---:|---:|",
         ]
@@ -663,6 +739,32 @@ def main() -> int:
                 "| {arm} | {replica} | {simTicks} | "
                 "{numInst_INDRMW} |".format(**record)
             )
+        soa_records = [
+            record
+            for record in report["records"]
+            if "IND_SoaJitValueReadIssues" in record
+        ]
+        if soa_records:
+            lines.extend(
+                [
+                    "",
+                    "## SoA/JIT mechanism counters",
+                    "",
+                    "| arm | value reads | cached responses | hits | "
+                    "merged | evictions | value stalls | context stalls |",
+                    "|---|---:|---:|---:|---:|---:|---:|---:|",
+                ]
+            )
+            for record in soa_records:
+                lines.append(
+                    "| {arm} | {IND_SoaJitValueReadIssues} | "
+                    "{IND_SoaJitValueCachedResponses} | "
+                    "{IND_SoaJitValueHits} | "
+                    "{IND_SoaJitValueMergedWaiters} | "
+                    "{IND_SoaJitValueEvictions} | "
+                    "{IND_SoaJitValueStalls} | "
+                    "{IND_SoaJitContextStalls} |".format(**record)
+                )
         (output / "gzp_soa_jit_correctness.md").write_text(
             "\n".join(lines) + "\n", encoding="utf-8"
         )
