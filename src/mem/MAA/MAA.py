@@ -132,7 +132,7 @@ class MAA(ClockedObject):
     )
     inactive_page_payload_capture_conflict_policy = Param.String(
         "first-owner",
-        "Equal-cost direct-index collision policy: first-owner or latest-owner",
+        "Direct-index collision policy; only first-owner is supported",
     )
     virtual_index_buffer_lines = Param.Unsigned(
         1,

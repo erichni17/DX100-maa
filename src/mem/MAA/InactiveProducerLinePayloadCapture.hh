@@ -31,8 +31,8 @@ namespace gem5 {
  * miss path even while its stale RAM tag awaits O(1) reclamation. A hit copies
  * the selected old/new RAM value into the sole 64-byte output register. That
  * register, including its exact lifetime/line/transaction tag, remains
- * authoritative until take(): a later latest-owner write or descriptor
- * replacement can neither change the replayed bytes nor cause take() to
+ * authoritative until take(): a later descriptor replacement can neither
+ * change the replayed bytes nor cause take() to
  * consume the replacement.
  *
  * Retained bytes remain private until the caller copies a completed hit into
@@ -51,12 +51,6 @@ class InactiveProducerLinePayloadCapture
     static constexpr uint8_t PortAccessCycles = 1;
     static constexpr uint16_t NoTokenTile =
         std::numeric_limits<uint16_t>::max();
-
-    enum class ConflictPolicy : uint8_t
-    {
-        FirstOwner,
-        LatestOwner,
-    };
 
     struct Key
     {
@@ -83,8 +77,6 @@ class InactiveProducerLinePayloadCapture
         uint16_t drops = 0;
         uint16_t writePortDrops = 0;
         uint16_t firstOwnerConflicts = 0;
-        uint16_t latestOwnerOverwrites = 0;
-        uint16_t latestOwnerEvictions = 0;
         std::array<uint16_t, LogicalPageCount> capturedLinesPerPage{};
         std::array<uint16_t, LogicalPageCount> replayedLinesPerPage{};
         std::array<uint16_t, LogicalPageCount> conflictsPerPage{};
@@ -117,12 +109,10 @@ class InactiveProducerLinePayloadCapture
         Captured,
         Duplicate,
         Conflict,
-        Overwritten,
         PortBusy,
         Untracked,
         Stale,
         Invalid,
-        OverwrittenLatched,
     };
 
     enum class ProbeResult : uint8_t
@@ -167,7 +157,6 @@ class InactiveProducerLinePayloadCapture
     };
 
     BeginResult begin(const Key &key, uint16_t lineCount, uint16_t capacity,
-                      ConflictPolicy policy = ConflictPolicy::FirstOwner,
                       uint16_t *displacedLines = nullptr)
     {
         if (displacedLines != nullptr)
@@ -179,10 +168,7 @@ class InactiveProducerLinePayloadCapture
             return BeginResult::Disabled;
         if (configuredCapacity != 0 && configuredCapacity != capacity)
             return BeginResult::Invalid;
-        if (configuredCapacity != 0 && configuredPolicy != policy)
-            return BeginResult::Invalid;
         configuredCapacity = capacity;
-        configuredPolicy = policy;
 
         Slot &slot = slots[descriptorIndex(key.tokenTile)];
         if (!slot.active) {
@@ -259,26 +245,9 @@ class InactiveProducerLinePayloadCapture
 
         ++slot->conflicts;
         ++slot->conflictsPerPage[pageIndex(*slot, line)];
-        if (configuredPolicy == ConflictPolicy::FirstOwner) {
-            ++slot->drops;
-            ++slot->firstOwnerConflicts;
-            return CaptureResult::Conflict;
-        }
-
-        const bool residentLatched = output.valid &&
-            sameKey(output.key, resident.key) &&
-            output.line == resident.line &&
-            output.transactionID == resident.transactionID;
-        --residentOwner->storedLines;
-        if (!residentLatched) {
-            ++residentOwner->drops;
-            ++residentOwner->latestOwnerEvictions;
-        }
-        ++slot->latestOwnerOverwrites;
-        armWrite(selectedIndex, key, line, transactionID, payload, nowCycle);
-        accountCapture(*slot, line);
-        return residentLatched ? CaptureResult::OverwrittenLatched
-                               : CaptureResult::Overwritten;
+        ++slot->drops;
+        ++slot->firstOwnerConflicts;
+        return CaptureResult::Conflict;
     }
 
     ProbeResult probe(const Key &key, uint16_t line, uint64_t nowCycle,
@@ -392,8 +361,6 @@ class InactiveProducerLinePayloadCapture
         result.drops = slot->drops;
         result.writePortDrops = slot->writePortDrops;
         result.firstOwnerConflicts = slot->firstOwnerConflicts;
-        result.latestOwnerOverwrites = slot->latestOwnerOverwrites;
-        result.latestOwnerEvictions = slot->latestOwnerEvictions;
         result.capturedLinesPerPage = slot->capturedLinesPerPage;
         result.replayedLinesPerPage = slot->replayedLinesPerPage;
         result.conflictsPerPage = slot->conflictsPerPage;
@@ -403,7 +370,6 @@ class InactiveProducerLinePayloadCapture
 
     uint16_t occupancy() const { return validEntries; }
     uint16_t occupancyHighWater() const { return highWater; }
-    ConflictPolicy conflictPolicy() const { return configuredPolicy; }
     const std::byte *pipelinedPayload() const { return output.payload.data(); }
     uint64_t pipelinedTransactionID() const
     {
@@ -427,22 +393,18 @@ class InactiveProducerLinePayloadCapture
              (capacity & (capacity - 1)) == 0);
     }
 
-    static constexpr const char *conflictPolicyName(ConflictPolicy policy)
-    {
-        return policy == ConflictPolicy::FirstOwner ? "first-owner"
-                                                    : "latest-owner";
-    }
+    static constexpr const char *conflictPolicyName() { return "first-owner"; }
 
     // Packed RTL lower-bound equations. These never use host sizeof().
     static constexpr std::size_t KeyBits = 16 + 64 + 64 + 64;
     static constexpr std::size_t EntryTagBits =
         KeyBits + 16 + 64 + 1;
     static constexpr std::size_t DescriptorBits =
-        1 + KeyBits + 16 + 9 * 16 +
+        1 + KeyBits + 16 + 7 * 16 +
         4 * LogicalPageCount * 16;
     static constexpr std::size_t OutputTagBits = EntryTagBits;
     static constexpr std::size_t OutputPayloadBits = LineBytes * 8;
-    static constexpr std::size_t GlobalControlBits = 10 + 1 + 10 + 10;
+    static constexpr std::size_t GlobalControlBits = 10 + 10 + 10;
     // Context owner + complete materializer request + payload-only identity
     // suffix + one-cycle hit/miss timing state.
     static constexpr std::size_t MAALookupControlBits =
@@ -600,9 +562,8 @@ class InactiveProducerLinePayloadCapture
                 slot.lineCount == 0 ||
                 slot.replayedLines > slot.capturedLines ||
                 slot.drops != slot.firstOwnerConflicts +
-                    slot.writePortDrops + slot.latestOwnerEvictions ||
-                slot.conflicts != slot.firstOwnerConflicts +
-                    slot.latestOwnerOverwrites ||
+                    slot.writePortDrops ||
+                slot.conflicts != slot.firstOwnerConflicts ||
                 sum(slot.capturedLinesPerPage) != slot.capturedLines ||
                 sum(slot.replayedLinesPerPage) != slot.replayedLines ||
                 sum(slot.conflictsPerPage) != slot.conflicts ||
@@ -630,8 +591,6 @@ class InactiveProducerLinePayloadCapture
         uint16_t drops = 0;
         uint16_t writePortDrops = 0;
         uint16_t firstOwnerConflicts = 0;
-        uint16_t latestOwnerOverwrites = 0;
-        uint16_t latestOwnerEvictions = 0;
         std::array<uint16_t, LogicalPageCount> capturedLinesPerPage{};
         std::array<uint16_t, LogicalPageCount> replayedLinesPerPage{};
         std::array<uint16_t, LogicalPageCount> conflictsPerPage{};
@@ -806,7 +765,6 @@ class InactiveProducerLinePayloadCapture
     PendingWrite pendingWrite{};
     OutputLatch output{};
     uint16_t configuredCapacity = 0;
-    ConflictPolicy configuredPolicy = ConflictPolicy::FirstOwner;
     uint16_t validEntries = 0;
     uint16_t highWater = 0;
     uint64_t writePortNextAvailableCycle = 0;
@@ -821,7 +779,7 @@ static_assert((InactiveProducerLinePayloadCapture::SlotCount &
 static_assert(InactiveProducerLinePayloadCapture::PortAccessCycles == 1);
 static_assert(InactiveProducerLinePayloadCapture::KeyBits == 208);
 static_assert(InactiveProducerLinePayloadCapture::EntryTagBits == 289);
-static_assert(InactiveProducerLinePayloadCapture::DescriptorBits == 625);
+static_assert(InactiveProducerLinePayloadCapture::DescriptorBits == 593);
 static_assert(InactiveProducerLinePayloadCapture::MAALookupControlBits ==
               510);
 static_assert(

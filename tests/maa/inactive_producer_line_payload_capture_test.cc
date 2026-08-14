@@ -170,9 +170,7 @@ testDescriptorCollisionAndLazyStaleReclamation()
         capture.capture(displaced, 0, 301, bytes.data(), bytes.size(), 300);
     CHECK(displacedCapture == Capture::CaptureResult::Captured);
     uint16_t displacedLines = 0;
-    CHECK(capture.begin(replacement, 2048, 64,
-                        Capture::ConflictPolicy::FirstOwner,
-                        &displacedLines) ==
+    CHECK(capture.begin(replacement, 2048, 64, &displacedLines) ==
           Capture::BeginResult::Replaced);
     CHECK(displacedLines == 1);
     CHECK(!capture.active(displaced));
@@ -223,7 +221,7 @@ testDescriptorCollisionAndLazyStaleReclamation()
 }
 
 void
-testFirstOwnerAndLatestOwnerCollisions()
+testFirstOwnerCollisions()
 {
     auto firstBytes = payload(0x500);
     auto latestBytes = payload(0x600);
@@ -244,71 +242,8 @@ testFirstOwnerAndLatestOwnerCollisions()
     CHECK(firstOwner.summary(latest).firstOwnerConflicts == 1);
     CHECK(firstOwner.summary(latest).drops == 1);
 
-    Capture latestOwner;
-    CHECK(latestOwner.begin(first, 2048, 64,
-                            Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(latestOwner.begin(latest, 2048, 64,
-                            Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(latestOwner.capture(first, 0, 501, firstBytes.data(),
-                              firstBytes.size(), 500) ==
-          Capture::CaptureResult::Captured);
-    const uint16_t latestCollision = collidingLine(
-        latestOwner, latest, latestOwner.selectedEntry(first, 0));
-    CHECK(latestOwner.capture(latest, latestCollision, 502,
-                              latestBytes.data(), latestBytes.size(), 501) ==
-          Capture::CaptureResult::Overwritten);
-    CHECK(latestOwner.summary(first).storedLines == 0);
-    CHECK(latestOwner.summary(first).latestOwnerEvictions == 1);
-    CHECK(latestOwner.summary(latest).latestOwnerOverwrites == 1);
-    CHECK(latestOwner.assertInvariants());
-}
-
-void
-testLatestOwnerProbeOverwriteTakeUsesOutputLatch()
-{
-    Capture capture;
-    const auto probed = key(6, 71, 6, 0xa00000);
-    const auto writer = key(7, 72, 7, 0xb00000);
-    auto oldBytes = payload(0x700);
-    auto newBytes = payload(0x800);
-    CHECK(capture.begin(probed, 2048, 64,
-                        Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(capture.begin(writer, 2048, 64,
-                        Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(capture.capture(probed, 0, 601, oldBytes.data(), oldBytes.size(),
-                          600) == Capture::CaptureResult::Captured);
-    const uint16_t writerLine = collidingLine(
-        capture, writer, capture.selectedEntry(probed, 0));
-
-    Capture::Line retained;
-    CHECK(capture.probe(probed, 0, 601, &retained) ==
-          Capture::ProbeResult::Hit);
-    CHECK(retained.transactionID == 601);
-    CHECK(word(retained.payload, 0) == 0x700);
-    CHECK(capture.capture(writer, writerLine, 602, newBytes.data(),
-                          newBytes.size(), 601) ==
-          Capture::CaptureResult::OverwrittenLatched);
-    CHECK(capture.summary(probed).storedLines == 0);
-    CHECK(capture.summary(probed).drops == 0);
-    CHECK(capture.summary(probed).latestOwnerEvictions == 0);
-
-    // At N+1 the replacement is in RAM, but take authenticates and consumes
-    // transaction 601 from the output latch. It must not erase transaction
-    // 602 or panic because mutable RAM no longer carries the probed tag.
-    CHECK(!capture.take(probed, 0, 999, 602));
-    CHECK(capture.take(probed, 0, 601, 602));
-    CHECK(capture.summary(probed).replayedLines == 1);
-    CHECK(capture.probe(writer, writerLine, 603, &retained) ==
-          Capture::ProbeResult::Hit);
-    CHECK(retained.transactionID == 602);
-    CHECK(word(retained.payload, 0) == 0x800);
-    CHECK(capture.take(writer, writerLine, 602, 604));
-    CHECK(capture.occupancy() == 0);
-    CHECK(capture.assertInvariants());
+    CHECK(firstOwner.summary(first).storedLines == 1);
+    CHECK(firstOwner.assertInvariants());
 }
 
 void
@@ -332,9 +267,8 @@ testDescriptorReplacementAfterLatchedHitClosesExactly()
           Capture::ProbeResult::Hit);
     CHECK(retained.transactionID == 651);
     uint16_t displacedLines = 0;
-    CHECK(capture.begin(replacement, 2048, 64,
-                        Capture::ConflictPolicy::FirstOwner,
-                        &displacedLines) == Capture::BeginResult::Replaced);
+    CHECK(capture.begin(replacement, 2048, 64, &displacedLines) ==
+          Capture::BeginResult::Replaced);
     // Line zero survives in the authoritative output latch. Only unlatched
     // line one becomes a coherent-fallback drop at descriptor displacement.
     CHECK(displacedLines == 1);
@@ -441,7 +375,6 @@ void
 testClearPreservesAuthoritativeOutputLatchAcrossRaces()
 {
     auto oldBytes = payload(0x8c0);
-    auto newBytes = payload(0x8d0);
 
     Capture resident;
     const auto residentOwner = key(15, 81, 16, 0x1200000);
@@ -463,76 +396,51 @@ testClearPreservesAuthoritativeOutputLatchAcrossRaces()
     CHECK(word(retained.payload, 0) == 0x8c0);
     CHECK(resident.take(residentOwner, 0, 691, 703));
 
-    Capture raced;
-    const auto probed = key(16, 82, 17, 0x1300000);
-    const auto writer = key(17, 83, 18, 0x1400000);
-    CHECK(raced.begin(probed, 2048, 64,
-                      Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(raced.begin(writer, 2048, 64,
-                      Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(raced.capture(probed, 0, 701, oldBytes.data(), oldBytes.size(),
-                        710) == Capture::CaptureResult::Captured);
-    const uint16_t writerLine = collidingLine(
-        raced, writer, raced.selectedEntry(probed, 0));
-    CHECK(raced.probe(probed, 0, 711, &retained) ==
-          Capture::ProbeResult::Hit);
-    CHECK(raced.capture(writer, writerLine, 702, newBytes.data(),
-                        newBytes.size(), 711) ==
-          Capture::CaptureResult::OverwrittenLatched);
-    CHECK(raced.summary(probed).storedLines == 0);
-    const auto racedClear = raced.clear(probed);
-    CHECK(racedClear.cleared);
-    CHECK(racedClear.discardedLines == 0);
-    CHECK(racedClear.survivingLatchedLines == 1);
-    CHECK(raced.take(probed, 0, 701, 712));
-    CHECK(raced.probe(writer, writerLine, 713, &retained) ==
-          Capture::ProbeResult::Hit);
-    CHECK(retained.transactionID == 702);
-    CHECK(word(retained.payload, 0) == 0x8d0);
-    CHECK(raced.assertInvariants());
 }
 
 void
 testSameCycleReadBeforeWriteAndFinitePorts()
 {
-    Capture capture;
     const auto oldOwner = key(10, 81, 8, 0xc00000);
     const auto newOwner = key(11, 82, 9, 0xd00000);
     auto oldBytes = payload(0x900);
     auto newBytes = payload(0xa00);
-    CHECK(capture.begin(oldOwner, 2048, 64,
-                        Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(capture.begin(newOwner, 2048, 64,
-                        Capture::ConflictPolicy::LatestOwner) ==
-          Capture::BeginResult::Started);
-    CHECK(capture.capture(oldOwner, 0, 701, oldBytes.data(), oldBytes.size(),
-                          700) == Capture::CaptureResult::Captured);
-    const uint16_t collision = collidingLine(
-        capture, newOwner, capture.selectedEntry(oldOwner, 0));
-
-    // Call the write first to prove the model's same-cycle result does not
-    // depend on C++ call order: synchronous RAM returns the old word.
-    CHECK(capture.capture(newOwner, collision, 702, newBytes.data(),
-                          newBytes.size(), 701) ==
-          Capture::CaptureResult::Overwritten);
-    Capture::Line retained;
-    CHECK(capture.probe(oldOwner, 0, 701, &retained) ==
-          Capture::ProbeResult::Hit);
-    CHECK(retained.transactionID == 701);
-    CHECK(word(retained.payload, 0) == 0x900);
-    CHECK(capture.probe(newOwner, collision, 701, &retained) ==
-          Capture::ProbeResult::PortBusy);
-    CHECK(capture.capture(newOwner, collision + 1, 703, newBytes.data(),
-                          newBytes.size(), 701) ==
-          Capture::CaptureResult::PortBusy);
-    CHECK(capture.take(oldOwner, 0, 701, 702));
-    CHECK(capture.probe(newOwner, collision, 702, &retained) ==
-          Capture::ProbeResult::Hit);
-    CHECK(retained.transactionID == 702);
-    CHECK(capture.assertInvariants());
+    auto verifyCallOrder = [&](bool captureFirst) {
+        Capture capture;
+        CHECK(capture.begin(oldOwner, 2048, 64) ==
+              Capture::BeginResult::Started);
+        CHECK(capture.begin(newOwner, 2048, 64) ==
+              Capture::BeginResult::Started);
+        CHECK(capture.capture(oldOwner, 0, 701, oldBytes.data(),
+                              oldBytes.size(), 700) ==
+              Capture::CaptureResult::Captured);
+        const uint16_t collision = collidingLine(
+            capture, newOwner, capture.selectedEntry(oldOwner, 0));
+        Capture::Line retained;
+        const auto captureConflict = [&] {
+            CHECK(capture.capture(newOwner, collision, 702, newBytes.data(),
+                                  newBytes.size(), 701) ==
+                  Capture::CaptureResult::Conflict);
+        };
+        const auto probeOld = [&] {
+            CHECK(capture.probe(oldOwner, 0, 701, &retained) ==
+                  Capture::ProbeResult::Hit);
+            CHECK(retained.transactionID == 701);
+            CHECK(word(retained.payload, 0) == 0x900);
+        };
+        if (captureFirst) {
+            captureConflict();
+            probeOld();
+        } else {
+            probeOld();
+            captureConflict();
+        }
+        CHECK(capture.take(oldOwner, 0, 701, 702));
+        CHECK(capture.summary(newOwner).firstOwnerConflicts == 1);
+        CHECK(capture.assertInvariants());
+    };
+    verifyCallOrder(true);
+    verifyCallOrder(false);
 }
 
 void
@@ -542,17 +450,15 @@ testOutcomeClosure()
     // explicit coherent-fallback/global-accounting outcome. This guards the
     // MAA switch against silently omitting Full/Untracked/port/conflict-like
     // cases when enum values evolve.
-    constexpr std::array<Capture::CaptureResult, 10> outcomes = {
+    constexpr std::array<Capture::CaptureResult, 8> outcomes = {
         Capture::CaptureResult::Disabled,
         Capture::CaptureResult::Captured,
         Capture::CaptureResult::Duplicate,
         Capture::CaptureResult::Conflict,
-        Capture::CaptureResult::Overwritten,
         Capture::CaptureResult::PortBusy,
         Capture::CaptureResult::Untracked,
         Capture::CaptureResult::Stale,
         Capture::CaptureResult::Invalid,
-        Capture::CaptureResult::OverwrittenLatched,
     };
     uint16_t retained = 0;
     uint16_t redundant = 0;
@@ -560,8 +466,6 @@ testOutcomeClosure()
     for (const auto outcome : outcomes) {
         switch (outcome) {
           case Capture::CaptureResult::Captured:
-          case Capture::CaptureResult::Overwritten:
-          case Capture::CaptureResult::OverwrittenLatched:
             ++retained;
             break;
           case Capture::CaptureResult::Duplicate:
@@ -577,7 +481,7 @@ testOutcomeClosure()
             break;
         }
     }
-    CHECK(retained == 3);
+    CHECK(retained == 1);
     CHECK(redundant == 1);
     CHECK(fallbackOrGlobal == 6);
     CHECK(retained + redundant + fallbackOrGlobal == outcomes.size());
@@ -600,9 +504,9 @@ testExactPackedHardwareStorageEquations()
     CHECK(Capture::provisionedPayloadBytes(512) == 32768);
     CHECK(Capture::KeyBits == 208);
     CHECK(Capture::EntryTagBits == 289);
-    CHECK(Capture::DescriptorBits == 625);
+    CHECK(Capture::DescriptorBits == 593);
     CHECK(Capture::provisionedTagBits(512) == 512 * 289);
-    CHECK(Capture::provisionedDescriptorBits(512) == 4 * 625);
+    CHECK(Capture::provisionedDescriptorBits(512) == 4 * 593);
     CHECK(Capture::provisionedReadPortStateBits(512) == 64);
     CHECK(Capture::provisionedWritePortStateBits(512) == 939);
     CHECK(Capture::provisionedOutputTagBits(512) == 289);
@@ -611,12 +515,13 @@ testExactPackedHardwareStorageEquations()
     CHECK(Capture::PayloadIncarnationBitsPerToken == 64);
     CHECK(Capture::provisionedMAAPersistentStateBits(0, 32) == 0);
     CHECK(Capture::provisionedMAAPersistentStateBits(64, 32) == 2048);
-    CHECK(Capture::provisionedMAAControlBits(64, 32) == 24874);
-    CHECK(Capture::provisionedMAAControlBits(512, 32) == 154349);
-    CHECK(Capture::provisionedCombinedTotalBytes(64, 32) == 7270);
-    CHECK(Capture::provisionedCombinedTotalBytes(128, 32) == 13678);
-    CHECK(Capture::provisionedCombinedTotalBytes(256, 32) == 26494);
-    CHECK(Capture::provisionedCombinedTotalBytes(512, 32) == 52126);
+    CHECK(Capture::GlobalControlBits == 30);
+    CHECK(Capture::provisionedMAAControlBits(64, 32) == 24745);
+    CHECK(Capture::provisionedMAAControlBits(512, 32) == 154220);
+    CHECK(Capture::provisionedCombinedTotalBytes(64, 32) == 7254);
+    CHECK(Capture::provisionedCombinedTotalBytes(128, 32) == 13662);
+    CHECK(Capture::provisionedCombinedTotalBytes(256, 32) == 26478);
+    CHECK(Capture::provisionedCombinedTotalBytes(512, 32) == 52110);
     CHECK(Capture::provisionedControlBits(512) ==
           Capture::provisionedTagBits(512) +
               Capture::provisionedDescriptorBits(512) +
@@ -624,10 +529,10 @@ testExactPackedHardwareStorageEquations()
               Capture::provisionedWritePortStateBits(512) +
               Capture::provisionedOutputTagBits(512) +
               Capture::GlobalControlBits);
-    CHECK(Capture::provisionedControlBytes(64) == 2790);
-    CHECK(Capture::provisionedControlBytes(512) == 18974);
-    CHECK(Capture::provisionedTotalBytes(64) == 6950);
-    CHECK(Capture::provisionedTotalBytes(512) == 51806);
+    CHECK(Capture::provisionedControlBytes(64) == 2774);
+    CHECK(Capture::provisionedControlBytes(512) == 18958);
+    CHECK(Capture::provisionedTotalBytes(64) == 6934);
+    CHECK(Capture::provisionedTotalBytes(512) == 51790);
 
     // Host layout is diagnostic only and is deliberately not used by any
     // packed hardware lower-bound equation above.
@@ -660,8 +565,7 @@ main()
     testDefaultOffAndExactIncarnationIdentity();
     testOneCycleHitMissAndPageScopedReplay();
     testDescriptorCollisionAndLazyStaleReclamation();
-    testFirstOwnerAndLatestOwnerCollisions();
-    testLatestOwnerProbeOverwriteTakeUsesOutputLatch();
+    testFirstOwnerCollisions();
     testDescriptorReplacementAfterLatchedHitClosesExactly();
     testClearDirectRetirementHandoffAccountsOnce();
     testClearCompletedMaterializerHasZeroLiveLines();

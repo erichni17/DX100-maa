@@ -127,13 +127,6 @@ MAA::MAA(const MAAParams &p)
           p.page_materialization_direct_spd_fragments),
       inactive_page_payload_capture_lines(
           p.inactive_page_payload_capture_lines),
-      inactive_page_payload_capture_conflict_policy(
-              p.inactive_page_payload_capture_conflict_policy ==
-                  "latest-owner"
-              ? InactiveProducerLinePayloadCapture::ConflictPolicy::
-                    LatestOwner
-              : InactiveProducerLinePayloadCapture::ConflictPolicy::
-                    FirstOwner),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -240,11 +233,9 @@ MAA::MAA(const MAAParams &p)
              "one of 64/128/256/%u\n",
              inactive_page_payload_capture_lines,
              InactiveProducerLinePayloadCapture::MaxEntries);
-    panic_if(
-        p.inactive_page_payload_capture_conflict_policy != "first-owner" &&
-            p.inactive_page_payload_capture_conflict_policy != "latest-owner",
+    panic_if(p.inactive_page_payload_capture_conflict_policy != "first-owner",
              "Inactive producer payload capture conflict policy '%s' must be "
-             "first-owner or latest-owner\n",
+             "first-owner; latest-owner is not supported\n",
              p.inactive_page_payload_capture_conflict_policy.c_str());
     panic_if(inactive_page_payload_capture_lines != 0 &&
                  !direct_retirement_line_handoff,
@@ -1631,8 +1622,7 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
                 inactive_page_payload_capture_lines, num_tiles),
             InactiveProducerLinePayloadCapture::WritePortCount,
             InactiveProducerLinePayloadCapture::ReadPortCount,
-            InactiveProducerLinePayloadCapture::conflictPolicyName(
-                inactive_page_payload_capture_conflict_policy),
+            InactiveProducerLinePayloadCapture::conflictPolicyName(),
             InactiveProducerLinePayloadCapture::PortAccessCycles,
             sizeof(execution->stagedWords) +
                 sizeof(execution->stagedDisallowed) +
@@ -2873,8 +2863,7 @@ MAA::finishPageMaterialization(
                 static_cast<uint64_t>(
                     stats.page_materialization_dispatch_fallbacks.value()),
                 inactive_page_payload_capture_lines,
-                InactiveProducerLinePayloadCapture::conflictPolicyName(
-                    inactive_page_payload_capture_conflict_policy),
+                InactiveProducerLinePayloadCapture::conflictPolicyName(),
                 static_cast<uint64_t>(
                     stats.page_materialization_inactive_payload_captures
                         .value()),
@@ -4614,7 +4603,6 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                  virtualPagePayloadIncarnation[tokenTileID], backingAddr},
                 static_cast<uint16_t>(lines),
                 static_cast<uint16_t>(inactive_page_payload_capture_lines),
-                inactive_page_payload_capture_conflict_policy,
                 &descriptorDisplacedLines);
             panic_if(captureBegin ==
                          InactiveProducerLinePayloadCapture::
@@ -4675,8 +4663,7 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                             inactive_page_payload_capture_lines),
                     InactiveProducerLinePayloadCapture::WritePortCount,
                     InactiveProducerLinePayloadCapture::ReadPortCount,
-                    InactiveProducerLinePayloadCapture::conflictPolicyName(
-                        inactive_page_payload_capture_conflict_policy),
+                    InactiveProducerLinePayloadCapture::conflictPolicyName(),
                     InactiveProducerLinePayloadCapture::
                         provisionedReadPipelinePayloadBytes(
                             inactive_page_payload_capture_lines),
@@ -4763,40 +4750,16 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
     auto &firstOwnerConflicts =
         stats
             .page_materialization_inactive_payload_first_owner_conflicts;
-    auto &latestOwnerOverwrites =
-        stats
-            .page_materialization_inactive_payload_latest_owner_overwrites;
-    auto &latestOwnerEvictions =
-        stats
-            .page_materialization_inactive_payload_latest_owner_evictions;
     auto &writePortStalls =
         stats
             .page_materialization_inactive_payload_write_port_stalls;
     const auto accountInactivePayloadOutcome =
-        [this, &firstOwnerConflicts, &latestOwnerOverwrites,
-         &latestOwnerEvictions, &writePortStalls](
+        [this, &firstOwnerConflicts, &writePortStalls](
             InactiveProducerLinePayloadCapture::CaptureResult result) {
         using Result = InactiveProducerLinePayloadCapture::CaptureResult;
         switch (result) {
           case Result::Captured:
             stats.page_materialization_inactive_payload_captures++;
-            break;
-          case Result::Overwritten:
-            // The new payload is retained and the displaced one becomes an
-            // explicit global coherent-fallback drop.
-            stats.page_materialization_inactive_payload_captures++;
-            stats.page_materialization_inactive_payload_conflicts++;
-            stats.page_materialization_inactive_payload_drops++;
-            latestOwnerOverwrites++;
-            latestOwnerEvictions++;
-            break;
-          case Result::OverwrittenLatched:
-            // The old RAM word was replaced, but its authenticated output
-            // latch remains authoritative and will replay. Count the new
-            // retention/conflict without a false old-owner drop or eviction.
-            stats.page_materialization_inactive_payload_captures++;
-            stats.page_materialization_inactive_payload_conflicts++;
-            latestOwnerOverwrites++;
             break;
           case Result::Conflict:
             stats.page_materialization_inactive_payload_conflicts++;
@@ -4818,8 +4781,7 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
           case Result::Duplicate:
             break;
         }
-        if (result == Result::Captured || result == Result::Overwritten ||
-            result == Result::OverwrittenLatched) {
+        if (result == Result::Captured) {
             stats.page_materialization_inactive_payload_high_water =
                 std::max(
                     stats.page_materialization_inactive_payload_high_water
@@ -5512,11 +5474,12 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                "direct-index collisions retained by the first-owner policy"),
       ADD_STAT(page_materialization_inactive_payload_latest_owner_overwrites,
                statistics::units::Count::get(),
-               "direct-index collisions replaced by the latest-owner policy"),
+               "reserved ABI field; always zero because latest-owner is "
+               "unsupported"),
       ADD_STAT(page_materialization_inactive_payload_latest_owner_evictions,
                statistics::units::Count::get(),
-               "previous retained payloads displaced to coherent fallback "
-               "by latest-owner replacement"),
+               "reserved ABI field; always zero because latest-owner is "
+               "unsupported"),
       ADD_STAT(page_materialization_inactive_payload_write_port_stalls,
                statistics::units::Count::get(),
                "full inactive producer WriteResp payloads dropped because "
