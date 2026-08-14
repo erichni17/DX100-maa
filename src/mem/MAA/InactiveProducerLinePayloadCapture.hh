@@ -26,10 +26,14 @@ namespace gem5 {
  * and completes in one cycle. The model buffers one pending write until its
  * completion edge, which gives an exact read-before-write result when both
  * ports select the same index in one cycle, independent of call order.
- * A probe copies the selected old/new RAM value into the sole 64-byte output
- * register. That register, including its exact lifetime/line/transaction tag,
- * remains authoritative until take(): a later latest-owner write can neither
- * change the replayed bytes nor cause take() to consume the replacement.
+ * A probe requires the selected exact lifetime descriptor before it may hit a
+ * RAM tag. A displaced or retired lifetime therefore takes the ordinary timed
+ * miss path even while its stale RAM tag awaits O(1) reclamation. A hit copies
+ * the selected old/new RAM value into the sole 64-byte output register. That
+ * register, including its exact lifetime/line/transaction tag, remains
+ * authoritative until take(): a later latest-owner write or descriptor
+ * replacement can neither change the replayed bytes nor cause take() to
+ * consume the replacement.
  *
  * Retained bytes remain private until the caller copies a completed hit into
  * an already charged materializer buffer and schedules ordinary delayed SPD
@@ -109,6 +113,7 @@ class InactiveProducerLinePayloadCapture
         Untracked,
         Stale,
         Invalid,
+        OverwrittenLatched,
     };
 
     enum class ProbeResult : uint8_t
@@ -183,8 +188,16 @@ class InactiveProducerLinePayloadCapture
 
         // Constant-time lazy invalidation: replacing the one selected
         // descriptor never walks or clears the payload RAM.
-        if (displacedLines != nullptr)
-            *displacedLines = slot.storedLines;
+        if (displacedLines != nullptr) {
+            const bool latchedLineSurvives = output.valid &&
+                sameKey(output.key, slot.key) &&
+                output.line < slot.lineCount &&
+                sameEntry(logicalEntry(index(output.key, output.line)),
+                          output.key, output.line) &&
+                logicalEntry(index(output.key, output.line)).transactionID ==
+                    output.transactionID;
+            *displacedLines = slot.storedLines - latchedLineSurvives;
+        }
         reset(slot, key, lineCount);
         return BeginResult::Replaced;
     }
@@ -251,13 +264,20 @@ class InactiveProducerLinePayloadCapture
             return CaptureResult::Conflict;
         }
 
+        const bool residentLatched = output.valid &&
+            sameKey(output.key, resident.key) &&
+            output.line == resident.line &&
+            output.transactionID == resident.transactionID;
         --residentOwner->storedLines;
-        ++residentOwner->drops;
-        ++residentOwner->latestOwnerEvictions;
+        if (!residentLatched) {
+            ++residentOwner->drops;
+            ++residentOwner->latestOwnerEvictions;
+        }
         ++slot->latestOwnerOverwrites;
         armWrite(selectedIndex, key, line, transactionID, payload, nowCycle);
         accountCapture(*slot, line);
-        return CaptureResult::Overwritten;
+        return residentLatched ? CaptureResult::OverwrittenLatched
+                               : CaptureResult::Overwritten;
     }
 
     ProbeResult probe(const Key &key, uint16_t line, uint64_t nowCycle,
@@ -280,6 +300,14 @@ class InactiveProducerLinePayloadCapture
             return ProbeResult::PortBusy;
         if (!reservePort(readPortNextAvailableCycle, nowCycle))
             return ProbeResult::PortBusy;
+
+        // Descriptor replacement/clear lazily leaves RAM tags in place. The
+        // exact direct-mapped descriptor is the O(1) coherence authority, so
+        // an absent descriptor must not authenticate one of those stale tags.
+        // It still consumes the ordinary synchronous read opportunity and is
+        // exposed by LookupPipeline only after the same one-cycle miss delay.
+        if (slot == nullptr)
+            return ProbeResult::Miss;
 
         const Entry &entry = entries[index(key, line)];
         output = OutputLatch{};
@@ -409,6 +437,7 @@ class InactiveProducerLinePayloadCapture
     static constexpr std::size_t MAALookupControlBits =
         (16 + 64 + 64) + (2 + 16 + 5 + 3 + 64 + 16 + 64) +
         (64 + 64) + (1 + 64 + 3);
+    static constexpr std::size_t PayloadIncarnationBitsPerToken = 64;
 
     static constexpr std::size_t bitsToBytes(std::size_t bits)
     {
@@ -502,6 +531,35 @@ class InactiveProducerLinePayloadCapture
     static constexpr std::size_t provisionedTotalBytes(uint16_t capacity)
     {
         return bitsToBytes(provisionedTotalBits(capacity));
+    }
+
+    static constexpr std::size_t provisionedMAAPersistentStateBits(
+        uint16_t capacity, std::size_t tokenCount)
+    {
+        return capacity == 0 ? 0
+            : tokenCount * PayloadIncarnationBitsPerToken;
+    }
+
+    static constexpr std::size_t provisionedMAAControlBits(
+        uint16_t capacity, std::size_t tokenCount)
+    {
+        return capacity == 0 ? 0
+            : provisionedControlBits(capacity) + MAALookupControlBits +
+                provisionedMAAPersistentStateBits(capacity, tokenCount);
+    }
+
+    static constexpr std::size_t provisionedCombinedTotalBits(
+        uint16_t capacity, std::size_t tokenCount)
+    {
+        return capacity == 0 ? 0
+            : provisionedPayloadBits(capacity) + OutputPayloadBits +
+                provisionedMAAControlBits(capacity, tokenCount);
+    }
+
+    static constexpr std::size_t provisionedCombinedTotalBytes(
+        uint16_t capacity, std::size_t tokenCount)
+    {
+        return bitsToBytes(provisionedCombinedTotalBits(capacity, tokenCount));
     }
 
     /** Host-only exhaustive diagnostic; never called by lifecycle methods. */
@@ -737,6 +795,8 @@ static_assert(InactiveProducerLinePayloadCapture::EntryTagBits == 289);
 static_assert(InactiveProducerLinePayloadCapture::DescriptorBits == 625);
 static_assert(InactiveProducerLinePayloadCapture::MAALookupControlBits ==
               510);
+static_assert(
+    InactiveProducerLinePayloadCapture::PayloadIncarnationBitsPerToken == 64);
 
 } // namespace gem5
 

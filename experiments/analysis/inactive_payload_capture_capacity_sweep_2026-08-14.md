@@ -23,8 +23,14 @@ same-checkpoint default-off comparison and full correctness closure.
 - A descriptor collision replaces the selected descriptor in one operation.
   The displaced lifetime immediately becomes coherent-fallback-only. Its RAM
   tags may remain stale; replacement and retirement never walk the RAM. The
-  descriptor's stored-line count reports the exact number displaced, which is
-  added to the explicit global drop counter without inspecting any entry.
+  descriptor's stored-line count reports the exact number displaced, excluding
+  at most the one hit already authenticated in the output latch; only that
+  unlatched count is added to the explicit global drop counter without
+  inspecting any entry.
+- A probe can hit only when the selected exact descriptor is active. A probe
+  after descriptor replacement or clear consumes the ordinary RAM read port
+  opportunity and completes as a coherent backing miss after one cycle; it
+  cannot authenticate a stale RAM tag.
 - A write that selects a stale RAM tag reclaims exactly that entry. A write
   that selects another live tag follows the configured equal-cost
   `first-owner` or `latest-owner` policy.
@@ -49,12 +55,16 @@ read returns the pre-write value regardless of software call order
 same-cycle producer write cannot be retained and is counted as a global drop
 before coherent fallback.
 
-A probe at N copies an exact hit into the sole 64-byte output register and
-reports completion at N+1; a miss is delayed by the same cycle. The output tag
-contains the complete payload lifetime, line, and producer transaction. It is
-authoritative until `take()`. If latest-owner replaces the RAM entry during
-N-to-N+1, `take()` authenticates and consumes the old output latch without
-panicking and without erasing or consuming the replacement RAM transaction.
+A probe at N copies an active-descriptor exact hit into the sole 64-byte output
+register and reports completion at N+1; a miss is delayed by the same cycle.
+The output tag contains the complete payload lifetime, line, and producer
+transaction. It is authoritative until `take()`. If latest-owner replaces the
+RAM entry during N-to-N+1, `take()` authenticates and consumes the old output
+latch without panicking and without erasing or consuming the replacement RAM
+transaction.
+The latched payload counts as a replay, not a drop/eviction. The same rule holds
+if its lifetime descriptor is replaced before delayed `take()`; every other
+line displaced with that descriptor is a coherent-fallback drop.
 
 ## Outcome and trace attribution
 
@@ -102,6 +112,7 @@ global_capture_control   = capacity 10 + policy 1
 MAA_lookup_control_bits  = context owner 144 + exact request 170
                          + payload incarnation/backing suffix 128
                          + valid/completion/result 68 = 510
+MAA_persistent_payload_incarnation_bits(T) = 64 * token_count T
 ```
 
 The complete capture lower bound is:
@@ -112,18 +123,23 @@ capture_bits(C) = C*512 RAM payload + C*289 RAM tags
                 + (930 + log2(C)) write-port state
                 + 512 output payload + 289 output tag
                 + 31 global capture control
-combined_bits(C) = capture_bits(C) + 510 MAA lookup control
+combined_bits(C,T) = capture_bits(C) + 510 MAA lookup control
+                   + 64*T persistent payload incarnations
 ```
 
-| Lines | RAM payload (B) | RAM tag bits | Non-payload control bits excluding RAM tags | Capture total including 64B output (B, rounded once) | MAA lookup bits | Combined (B, rounded once) |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 64 | 4,096 | 18,496 | 3,820 | 6,950 | 510 | 7,014 |
-| 128 | 8,192 | 36,992 | 3,821 | 13,358 | 510 | 13,422 |
-| 256 | 16,384 | 73,984 | 3,822 | 26,174 | 510 | 26,238 |
-| 512 | 32,768 | 147,968 | 3,823 | 51,806 | 510 | 51,870 |
+The concrete table uses the configured 32 token tiles, so the persistent term
+is 2,048 bits (256 bytes).
 
-The trace reports every term independently in bits, plus rounded legacy byte
-fields. `host_capture_object_bytes` and `host_lookup_object_bytes` are labeled
+| Lines | RAM payload (B) | RAM tag bits | Non-payload control bits excluding RAM tags | Capture total including 64B output (B, rounded once) | MAA lookup bits | Persistent incarnation bits (32 tokens) | Combined (B, rounded once) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 4,096 | 18,496 | 3,820 | 6,950 | 510 | 2,048 | 7,270 |
+| 128 | 8,192 | 36,992 | 3,821 | 13,358 | 510 | 2,048 | 13,678 |
+| 256 | 16,384 | 73,984 | 3,822 | 26,174 | 510 | 2,048 | 26,494 |
+| 512 | 32,768 | 147,968 | 3,823 | 51,806 | 510 | 2,048 | 52,126 |
+
+The trace reports every term independently in bits, including
+`64*num_tiles`, plus the exact combined total and rounded legacy byte fields.
+`host_capture_object_bytes` and `host_lookup_object_bytes` are labeled
 diagnostics only and are never added to the packed hardware equations.
 
 ## Review-gated experiment matrix

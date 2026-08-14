@@ -178,6 +178,16 @@ testDescriptorCollisionAndLazyStaleReclamation()
     CHECK(!capture.active(displaced));
     CHECK(capture.active(replacement));
 
+    // The displaced descriptor is the coherence authority. Its stale exact
+    // RAM tag must be a normal one-cycle miss, never a retained hit.
+    Capture::Line retained;
+    CHECK(capture.probe(displaced, 0, 301, &retained) ==
+          Capture::ProbeResult::Miss);
+    Capture::LookupPipeline displacedMiss;
+    CHECK(displacedMiss.arm(301, Capture::ProbeResult::Miss));
+    CHECK(!displacedMiss.ready(301));
+    CHECK(displacedMiss.ready(302));
+
     // Descriptor replacement did not scan the RAM: the stale physical tag is
     // still counted. A direct-index collision reclaims precisely that tag.
     CHECK(capture.occupancy() == 1);
@@ -195,12 +205,18 @@ testDescriptorCollisionAndLazyStaleReclamation()
     CHECK(capture.clear(replacement));
     CHECK(!capture.active(replacement));
     CHECK(capture.occupancy() == 1);
+    CHECK(capture.probe(replacement, replacementLine, 302, &retained) ==
+          Capture::ProbeResult::Miss);
+    Capture::LookupPipeline clearedMiss;
+    CHECK(clearedMiss.arm(302, Capture::ProbeResult::Miss));
+    CHECK(!clearedMiss.ready(302));
+    CHECK(clearedMiss.ready(303));
     CHECK(capture.begin(successor, 2048, 64) ==
           Capture::BeginResult::Started);
     const uint16_t successorLine =
         collidingLine(capture, successor, staleIndex);
     CHECK(capture.capture(successor, successorLine, 303, bytes.data(),
-                          bytes.size(), 302) ==
+                          bytes.size(), 303) ==
           Capture::CaptureResult::Captured);
     CHECK(capture.occupancy() == 1);
     CHECK(capture.assertInvariants());
@@ -275,19 +291,71 @@ testLatestOwnerProbeOverwriteTakeUsesOutputLatch()
     CHECK(word(retained.payload, 0) == 0x700);
     CHECK(capture.capture(writer, writerLine, 602, newBytes.data(),
                           newBytes.size(), 601) ==
-          Capture::CaptureResult::Overwritten);
+          Capture::CaptureResult::OverwrittenLatched);
+    CHECK(capture.summary(probed).storedLines == 0);
+    CHECK(capture.summary(probed).drops == 0);
+    CHECK(capture.summary(probed).latestOwnerEvictions == 0);
 
     // At N+1 the replacement is in RAM, but take authenticates and consumes
     // transaction 601 from the output latch. It must not erase transaction
     // 602 or panic because mutable RAM no longer carries the probed tag.
     CHECK(!capture.take(probed, 0, 999, 602));
     CHECK(capture.take(probed, 0, 601, 602));
+    CHECK(capture.summary(probed).replayedLines == 1);
     CHECK(capture.probe(writer, writerLine, 603, &retained) ==
           Capture::ProbeResult::Hit);
     CHECK(retained.transactionID == 602);
     CHECK(word(retained.payload, 0) == 0x800);
     CHECK(capture.take(writer, writerLine, 602, 604));
     CHECK(capture.occupancy() == 0);
+    CHECK(capture.assertInvariants());
+}
+
+void
+testDescriptorReplacementAfterLatchedHitClosesExactly()
+{
+    Capture capture;
+    const auto oldOwner = key(4, 75, 10, 0xc00000);
+    const auto replacement = key(8, 76, 11, 0xd00000);
+    auto bytes = payload(0x880);
+    CHECK(Capture::descriptorIndexForToken(oldOwner.tokenTile) ==
+          Capture::descriptorIndexForToken(replacement.tokenTile));
+    CHECK(capture.begin(oldOwner, 2048, 64) ==
+          Capture::BeginResult::Started);
+    CHECK(capture.capture(oldOwner, 0, 651, bytes.data(), bytes.size(), 650) ==
+          Capture::CaptureResult::Captured);
+    CHECK(capture.capture(oldOwner, 1, 652, bytes.data(), bytes.size(), 651) ==
+          Capture::CaptureResult::Captured);
+
+    Capture::Line retained;
+    CHECK(capture.probe(oldOwner, 0, 652, &retained) ==
+          Capture::ProbeResult::Hit);
+    CHECK(retained.transactionID == 651);
+    uint16_t displacedLines = 0;
+    CHECK(capture.begin(replacement, 2048, 64,
+                        Capture::ConflictPolicy::FirstOwner,
+                        &displacedLines) == Capture::BeginResult::Replaced);
+    // Line zero survives in the authoritative output latch. Only unlatched
+    // line one becomes a coherent-fallback drop at descriptor displacement.
+    CHECK(displacedLines == 1);
+    CHECK(capture.summary(replacement).storedLines == 0);
+    CHECK(capture.take(oldOwner, 0, 651, 660));
+    CHECK(capture.occupancy() == 1);
+
+    CHECK(capture.probe(oldOwner, 1, 661, &retained) ==
+          Capture::ProbeResult::Miss);
+    Capture::LookupPipeline miss;
+    CHECK(miss.arm(661, Capture::ProbeResult::Miss));
+    CHECK(!miss.ready(661));
+    CHECK(miss.ready(662));
+
+    const uint16_t replacementLine = collidingLine(
+        capture, replacement, capture.selectedEntry(oldOwner, 1));
+    CHECK(capture.capture(replacement, replacementLine, 653, bytes.data(),
+                          bytes.size(), 662) ==
+          Capture::CaptureResult::Captured);
+    CHECK(capture.occupancy() == 1);
+    CHECK(capture.summary(replacement).storedLines == 1);
     CHECK(capture.assertInvariants());
 }
 
@@ -339,7 +407,7 @@ testOutcomeClosure()
     // explicit coherent-fallback/global-accounting outcome. This guards the
     // MAA switch against silently omitting Full/Untracked/port/conflict-like
     // cases when enum values evolve.
-    constexpr std::array<Capture::CaptureResult, 9> outcomes = {
+    constexpr std::array<Capture::CaptureResult, 10> outcomes = {
         Capture::CaptureResult::Disabled,
         Capture::CaptureResult::Captured,
         Capture::CaptureResult::Duplicate,
@@ -349,6 +417,7 @@ testOutcomeClosure()
         Capture::CaptureResult::Untracked,
         Capture::CaptureResult::Stale,
         Capture::CaptureResult::Invalid,
+        Capture::CaptureResult::OverwrittenLatched,
     };
     uint16_t retained = 0;
     uint16_t redundant = 0;
@@ -357,6 +426,7 @@ testOutcomeClosure()
         switch (outcome) {
           case Capture::CaptureResult::Captured:
           case Capture::CaptureResult::Overwritten:
+          case Capture::CaptureResult::OverwrittenLatched:
             ++retained;
             break;
           case Capture::CaptureResult::Duplicate:
@@ -372,7 +442,7 @@ testOutcomeClosure()
             break;
         }
     }
-    CHECK(retained == 2);
+    CHECK(retained == 3);
     CHECK(redundant == 1);
     CHECK(fallbackOrGlobal == 6);
     CHECK(retained + redundant + fallbackOrGlobal == outcomes.size());
@@ -403,6 +473,15 @@ testExactPackedHardwareStorageEquations()
     CHECK(Capture::provisionedOutputTagBits(512) == 289);
     CHECK(Capture::provisionedReadPipelinePayloadBytes(512) == 64);
     CHECK(Capture::MAALookupControlBits == 510);
+    CHECK(Capture::PayloadIncarnationBitsPerToken == 64);
+    CHECK(Capture::provisionedMAAPersistentStateBits(0, 32) == 0);
+    CHECK(Capture::provisionedMAAPersistentStateBits(64, 32) == 2048);
+    CHECK(Capture::provisionedMAAControlBits(64, 32) == 24874);
+    CHECK(Capture::provisionedMAAControlBits(512, 32) == 154349);
+    CHECK(Capture::provisionedCombinedTotalBytes(64, 32) == 7270);
+    CHECK(Capture::provisionedCombinedTotalBytes(128, 32) == 13678);
+    CHECK(Capture::provisionedCombinedTotalBytes(256, 32) == 26494);
+    CHECK(Capture::provisionedCombinedTotalBytes(512, 32) == 52126);
     CHECK(Capture::provisionedControlBits(512) ==
           Capture::provisionedTagBits(512) +
               Capture::provisionedDescriptorBits(512) +
@@ -431,6 +510,10 @@ testExactPackedHardwareStorageEquations()
               << " output_tag_bits=" << Capture::OutputTagBits
               << " maa_lookup_control_bits="
               << Capture::MAALookupControlBits
+              << " persistent_incarnation_bits_32_tokens="
+              << Capture::provisionedMAAPersistentStateBits(512, 32)
+              << " combined_total_bits_32_tokens="
+              << Capture::provisionedCombinedTotalBits(512, 32)
               << " host_object_bytes=" << sizeof(Capture) << '\n';
 }
 
@@ -444,6 +527,7 @@ main()
     testDescriptorCollisionAndLazyStaleReclamation();
     testFirstOwnerAndLatestOwnerCollisions();
     testLatestOwnerProbeOverwriteTakeUsesOutputLatch();
+    testDescriptorReplacementAfterLatchedHitClosesExactly();
     testSameCycleReadBeforeWriteAndFinitePorts();
     testOutcomeClosure();
     testExactPackedHardwareStorageEquations();
