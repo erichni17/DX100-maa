@@ -85,6 +85,7 @@ def test_feeder_is_bounded_ordered_and_one_packet_per_slot():
 
 def test_response_generation_duplicate_and_unknown_routes_fail_closed():
     source = read("src/mem/MAA/IndirectAccess.cc")
+    header = read("src/mem/MAA/IndirectAccess.hh")
     receive = between(
         source,
         "IndirectAccessUnit::receiveSoaPredicate",
@@ -92,13 +93,28 @@ def test_response_generation_duplicate_and_unknown_routes_fail_closed():
     )
     assert "candidate.blockPaddr == addr" in receive
     assert "if (line == soa_predicate_lines.end())" in receive
-    assert "unknown predicate response paddr" in receive
     assert "return false" in receive
     assert "!line->pending || line->valid" in receive
     assert "line->generation != soa_jit_generation" in receive
+    assert receive.index(
+        "line->generation != soa_jit_generation"
+    ) < receive.index("!line->pending || line->valid")
     assert receive.index("accountReadResponse") < receive.index(
         "soa_jit_predicate_line_responses++"
     )
+    assert "soa_predicate_min_paddr" not in source
+    assert "soa_predicate_max_paddr" not in source
+    assert "soa_predicate_min_paddr" not in header
+    assert "soa_predicate_max_paddr" not in header
+
+    jit_receive = between(
+        source,
+        "IndirectAccessUnit::receiveSoaJitData",
+        "bool IndirectAccessUnit::completeSoaJitWrite",
+    )
+    assert "context.aPaddr == addr" in jit_receive
+    assert "soa_jit_value_coalescer.acceptResponse" in jit_receive
+    assert "stale/duplicate/unknown value" in jit_receive
 
     port = read("src/mem/MAA/Port.cc")
     assert "already in the" in port

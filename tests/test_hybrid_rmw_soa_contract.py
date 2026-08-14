@@ -109,14 +109,19 @@ def test_full_window_and_timed_jit_protocol_have_exact_drain():
         assert invariant in terminal
 
 
-def test_all_soa_buffers_have_disjoint_physical_routing_spans():
+def test_all_soa_buffers_have_exact_disjoint_physical_cache_lines():
     source = read("src/mem/MAA/IndirectAccess.cc")
     begin = source.index("validateSoaJitAddressSpans")
     validator = source[begin : source.index("ensureSoaPredicate", begin)]
     assert "SoA/JIT byte spans overlap" in validator
-    assert "non-contiguous physical" in validator
-    assert "SoA/JIT physical routing spans overlap" in validator
+    assert "std::map<Addr, PhysicalLineOwner> physical_lines" in validator
+    assert "physical_lines.emplace" in validator
+    assert "SoA/JIT physical cache-line alias within" in validator
+    assert "SoA/JIT physical cache-line alias across" in validator
+    assert "paddr != expected_paddr" not in validator
+    assert "non-contiguous physical" not in validator
     assert "simulator legality check, not" in validator
+    assert "modeled hardware latency or state" in validator
     assert "absent from simulated time" in validator
     decode = source[source.index("case Status::Decode") :]
     assert decode.index("validateSoaJitAddressSpans();") < decode.index(

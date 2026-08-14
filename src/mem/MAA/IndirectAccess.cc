@@ -1296,8 +1296,6 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
         const char *name;
         Addr begin;
         Addr end;
-        Addr physicalBegin = 0;
-        Addr physicalEnd = 0;
     };
 
     const int64_t last_source = soaSourcePosition(my_max - 1);
@@ -1341,8 +1339,6 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
                           sizeof(uint32_t), "predicate")},
     }};
     const size_t span_count = my_predicate_addr == 0 ? 3 : 4;
-    soa_predicate_min_paddr = 0;
-    soa_predicate_max_paddr = 0;
     inside(spans[0], my_min_addr, my_max_addr);
     inside(spans[1], my_backing_min_addr, my_backing_max_addr);
     inside(spans[2], my_index_min_addr, my_index_max_addr);
@@ -1364,36 +1360,42 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
                      spans[second].begin, spans[second].end);
         }
     }
+    struct PhysicalLineOwner
+    {
+        size_t span;
+        Addr vaddr;
+    };
     // This synchronous full-span prewalk is a simulator legality check, not
-    // modeled hardware latency; its translation/checking cost is deliberately
-    // absent from simulated time. Responses are classified by block-aligned
-    // physical address, so byte-disjoint virtual layouts are insufficient
-    // when aliases or shared cache lines exist. Fail closed unless every
-    // routing span is physically contiguous, then reject overlap at cache-line
-    // granularity.
+    // modeled hardware latency or state; its temporary host-side ledger and
+    // translation/checking cost are deliberately absent from simulated time.
+    // Runtime requests translate each virtual block independently, so physical
+    // adjacency is irrelevant. Response routing is address-only, however, and
+    // therefore requires every routed virtual cache line to have a unique
+    // physical cache line across and within all spans.
+    std::map<Addr, PhysicalLineOwner> physical_lines;
     for (size_t index = 0; index < span_count; ++index) {
-        Span &span = spans[index];
+        const Span &span = spans[index];
         const Addr first_block = addrBlockAligner(span.begin, block_size);
         const Addr last_block = addrBlockAligner(span.end - 1, block_size);
-        Addr expected_paddr = 0;
         for (Addr block = first_block;; block += block_size) {
             const Addr paddr = addrBlockAligner(
                 translatePacket(block), block_size);
-            if (block == first_block) {
-                span.physicalBegin = paddr;
-            } else {
-                panic_if(paddr != expected_paddr,
-                         "I[%d] SoA/JIT %s has a non-contiguous physical "
-                         "routing span at vaddr=0x%lx paddr=0x%lx "
-                         "expected=0x%lx\n",
-                         my_indirect_id, span.name, block, paddr,
-                         expected_paddr);
+            const auto inserted = physical_lines.emplace(
+                paddr, PhysicalLineOwner{index, block});
+            if (!inserted.second) {
+                const PhysicalLineOwner &owner = inserted.first->second;
+                panic_if(owner.span == index,
+                         "I[%d] SoA/JIT physical cache-line alias within "
+                         "%s: vaddr=0x%lx and vaddr=0x%lx map to "
+                         "paddr=0x%lx\n",
+                         my_indirect_id, span.name, owner.vaddr, block,
+                         paddr);
+                panic("I[%d] SoA/JIT physical cache-line alias across "
+                      "%s and %s: vaddr=0x%lx and vaddr=0x%lx map to "
+                      "paddr=0x%lx\n",
+                      my_indirect_id, spans[owner.span].name, span.name,
+                      owner.vaddr, block, paddr);
             }
-            panic_if(paddr >
-                         std::numeric_limits<Addr>::max() - block_size,
-                     "I[%d] SoA/JIT %s physical routing span overflows\n",
-                     my_indirect_id, span.name);
-            expected_paddr = paddr + block_size;
             if (block == last_block)
                 break;
             panic_if(block >
@@ -1401,25 +1403,6 @@ IndirectAccessUnit::validateSoaJitAddressSpans()
                      "I[%d] SoA/JIT %s virtual routing span overflows\n",
                      my_indirect_id, span.name);
         }
-        span.physicalEnd = expected_paddr;
-    }
-    for (size_t first = 0; first < span_count; ++first) {
-        for (size_t second = first + 1; second < span_count; ++second) {
-            panic_if(overlaps(spans[first].physicalBegin,
-                              spans[first].physicalEnd,
-                              spans[second].physicalBegin,
-                              spans[second].physicalEnd),
-                     "I[%d] SoA/JIT physical routing spans overlap: "
-                     "%s=[0x%lx,0x%lx) %s=[0x%lx,0x%lx)\n",
-                     my_indirect_id, spans[first].name,
-                     spans[first].physicalBegin, spans[first].physicalEnd,
-                     spans[second].name, spans[second].physicalBegin,
-                     spans[second].physicalEnd);
-        }
-    }
-    if (my_predicate_addr != 0) {
-        soa_predicate_min_paddr = spans[3].physicalBegin;
-        soa_predicate_max_paddr = spans[3].physicalEnd;
     }
 }
 size_t
@@ -1659,22 +1642,20 @@ bool IndirectAccessUnit::receiveSoaPredicate(
             return (candidate.pending || candidate.valid) &&
                    candidate.blockPaddr == addr;
         });
-    if (line == soa_predicate_lines.end()) {
-        panic_if(soa_predicate_min_paddr <= addr &&
-                     addr < soa_predicate_max_paddr,
-                 "I[%d] unknown predicate response paddr 0x%lx for "
-                 "generation %lu\n",
-                 my_indirect_id, addr, soa_jit_generation);
+    // Predicate ownership is exact: an unmatched response may belong to an
+    // active A/value request and must continue to those exact scoreboards.
+    // receiveSoaJitData() panics if none of them owns it, so unknown responses
+    // still fail closed without guessing from a physical address interval.
+    if (line == soa_predicate_lines.end())
         return false;
-    }
-    panic_if(!line->pending || line->valid,
-             "I[%d] duplicate predicate response at paddr 0x%lx\n",
-             my_indirect_id, addr);
     panic_if(line->generation != soa_jit_generation ||
                  soa_jit_generation == 0,
              "I[%d] stale predicate response at paddr 0x%lx: slot=%lu "
              "active=%lu\n",
              my_indirect_id, addr, line->generation, soa_jit_generation);
+    panic_if(!line->pending || line->valid,
+             "I[%d] duplicate predicate response at paddr 0x%lx\n",
+             my_indirect_id, addr);
     accountReadResponse(addr, is_block_cached);
     std::memcpy(line->data.data(), dataptr, block_size);
     line->pending = false;
@@ -4952,8 +4933,6 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_words.clear();
         direct_index_max_lines = 0;
         direct_index_max_words = 0;
-        soa_predicate_min_paddr = 0;
-        soa_predicate_max_paddr = 0;
         for (auto &line : soa_predicate_lines)
             line = SoaPredicateLine();
         for (auto &context : soa_jit_contexts)

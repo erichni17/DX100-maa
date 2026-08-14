@@ -334,8 +334,6 @@ protected:
     Addr my_backing_min_addr, my_backing_max_addr;
     Addr my_index_addr, my_index_min_addr, my_index_max_addr;
     Addr my_predicate_addr, my_predicate_min_addr, my_predicate_max_addr;
-    Addr soa_predicate_min_paddr = 0;
-    Addr soa_predicate_max_paddr = 0;
     int8_t my_addr_range_id, my_backing_addr_range_id, my_index_addr_range_id;
     int8_t my_predicate_addr_range_id;
     int my_index_min, my_index_stride;
