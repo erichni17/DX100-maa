@@ -1585,11 +1585,8 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
         sizeof(directRetirementRequestRecords) +
         DirectRetirementPortRetry<Packet>::chargedControlBytes() +
         EarlyProducerLineReadinessLedger::chargedTotalBytes() +
-        InactiveProducerLinePayloadCapture::provisionedTotalBytes(
-            inactive_page_payload_capture_lines) +
-        (inactive_page_payload_capture_lines == 0
-             ? 0 : InactiveProducerLinePayloadCapture::bitsToBytes(
-                 InactiveProducerLinePayloadCapture::MAALookupControlBits));
+        InactiveProducerLinePayloadCapture::provisionedCombinedTotalBytes(
+            inactive_page_payload_capture_lines, num_tiles);
     DPRINTF(MAAVirtualTrace,
             "event=page_materialization_submit schema=1 occurrence=%lu "
             "token=%d generation=%lu incarnation=%lu page=%u "
@@ -1600,6 +1597,8 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
             "inactive_payload_tag_control_bytes=%lu "
             "inactive_payload_read_pipeline_payload_bytes=%lu "
             "inactive_payload_lookup_latch_control_bytes=%lu "
+            "inactive_payload_persistent_incarnation_bits=%lu "
+            "inactive_payload_hardware_total_bits=%lu "
             "inactive_payload_write_ports=%u inactive_payload_read_ports=%u "
             "inactive_payload_conflict_policy=%s "
             "inactive_payload_port_access_cycles=%u "
@@ -1625,6 +1624,11 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
                 ? 0 : InactiveProducerLinePayloadCapture::bitsToBytes(
                     InactiveProducerLinePayloadCapture::
                         MAALookupControlBits),
+            InactiveProducerLinePayloadCapture::
+                provisionedMAAPersistentStateBits(
+                    inactive_page_payload_capture_lines, num_tiles),
+            InactiveProducerLinePayloadCapture::provisionedCombinedTotalBits(
+                inactive_page_payload_capture_lines, num_tiles),
             InactiveProducerLinePayloadCapture::WritePortCount,
             InactiveProducerLinePayloadCapture::ReadPortCount,
             InactiveProducerLinePayloadCapture::conflictPolicyName(
@@ -2846,6 +2850,7 @@ MAA::finishPageMaterialization(
                 "inactive_payload_output_payload_bits=%lu "
                 "inactive_payload_output_tag_bits=%lu "
                 "inactive_payload_maa_lookup_control_bits=%lu "
+                "inactive_payload_persistent_incarnation_bits=%lu "
                 "inactive_payload_hardware_total_bits=%lu "
                 "inactive_payload_bytes=%lu "
                 "inactive_payload_tag_control_bytes=%lu "
@@ -2919,11 +2924,12 @@ MAA::finishPageMaterialization(
                         inactive_page_payload_capture_lines),
                 inactive_page_payload_capture_lines == 0 ? 0 :
                     InactiveProducerLinePayloadCapture::MAALookupControlBits,
-                InactiveProducerLinePayloadCapture::provisionedTotalBits(
-                    inactive_page_payload_capture_lines) +
-                    (inactive_page_payload_capture_lines == 0 ? 0 :
-                        InactiveProducerLinePayloadCapture::
-                            MAALookupControlBits),
+                InactiveProducerLinePayloadCapture::
+                    provisionedMAAPersistentStateBits(
+                        inactive_page_payload_capture_lines, num_tiles),
+                InactiveProducerLinePayloadCapture::
+                    provisionedCombinedTotalBits(
+                        inactive_page_payload_capture_lines, num_tiles),
                 InactiveProducerLinePayloadCapture::provisionedPayloadBytes(
                     inactive_page_payload_capture_lines),
                 InactiveProducerLinePayloadCapture::provisionedControlBytes(
@@ -4624,11 +4630,10 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                     provisionedReadPipelinePayloadBytes(
                         inactive_page_payload_capture_lines);
             stats.page_materialization_inactive_payload_control_bytes =
-                InactiveProducerLinePayloadCapture::provisionedControlBytes(
-                    inactive_page_payload_capture_lines) +
                 InactiveProducerLinePayloadCapture::bitsToBytes(
                     InactiveProducerLinePayloadCapture::
-                        MAALookupControlBits);
+                        provisionedMAAControlBits(
+                            inactive_page_payload_capture_lines, num_tiles));
             DPRINTF(MAAVirtualTrace,
                     "event=page_materialization_inactive_payload_begin "
                     "schema=1 occurrence=%lu token=%d generation=%lu "
@@ -4639,6 +4644,8 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                     "conflict_policy=%s "
                     "read_pipeline_payload_bytes=%lu "
                     "lookup_latch_control_bytes=%lu "
+                    "persistent_incarnation_bits=%lu "
+                    "hardware_total_bits=%lu "
                     "host_capture_object_bytes=%lu "
                     "host_lookup_object_bytes=%lu "
                     "port_access_cycles=%u port_time_unit=maa_cycles "
@@ -4667,6 +4674,12 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                     InactiveProducerLinePayloadCapture::bitsToBytes(
                         InactiveProducerLinePayloadCapture::
                             MAALookupControlBits),
+                    InactiveProducerLinePayloadCapture::
+                        provisionedMAAPersistentStateBits(
+                            inactive_page_payload_capture_lines, num_tiles),
+                    InactiveProducerLinePayloadCapture::
+                        provisionedCombinedTotalBits(
+                            inactive_page_payload_capture_lines, num_tiles),
                     sizeof(inactiveProducerLinePayloadCapture),
                     sizeof(inactivePayloadLookup),
                     InactiveProducerLinePayloadCapture::PortAccessCycles,
@@ -4768,6 +4781,14 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
             latestOwnerOverwrites++;
             latestOwnerEvictions++;
             break;
+          case Result::OverwrittenLatched:
+            // The old RAM word was replaced, but its authenticated output
+            // latch remains authoritative and will replay. Count the new
+            // retention/conflict without a false old-owner drop or eviction.
+            stats.page_materialization_inactive_payload_captures++;
+            stats.page_materialization_inactive_payload_conflicts++;
+            latestOwnerOverwrites++;
+            break;
           case Result::Conflict:
             stats.page_materialization_inactive_payload_conflicts++;
             stats.page_materialization_inactive_payload_drops++;
@@ -4788,7 +4809,8 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
           case Result::Duplicate:
             break;
         }
-        if (result == Result::Captured || result == Result::Overwritten) {
+        if (result == Result::Captured || result == Result::Overwritten ||
+            result == Result::OverwrittenLatched) {
             stats.page_materialization_inactive_payload_high_water =
                 std::max(
                     stats.page_materialization_inactive_payload_high_water
@@ -5512,7 +5534,8 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
       ADD_STAT(page_materialization_inactive_payload_control_bytes,
                statistics::units::Byte::get(),
                "configured packed RAM tags, direct descriptors, port state, "
-               "output tag, and MAA lookup control"),
+               "output tag, MAA lookup control, and persistent per-token "
+               "payload incarnation state"),
       ADD_STAT(page_materialization_cache_read_fallback_lines,
                statistics::units::Count::get(),
                "ACK-gated coherent backing lines read when producer payload "
