@@ -113,77 +113,89 @@ def validate_soa_trace(
     completions = 0
     context_hwm_max = 0
     generations: set[tuple[int, int]] = set()
-    for line in path.read_text(
-        encoding="utf-8", errors="replace"
-    ).splitlines():
-        fields = general.fields(line)
-        if fields.get("event") != "soa_jit_complete":
-            continue
-        completions += 1
-        if int(fields.get("logical", "-1"), 0) != 16384:
-            raise ValueError("SoA trace completion has wrong logical length")
-        generation = (
-            int(fields.get("unit", "-1"), 0),
-            int(fields.get("generation", "-1"), 0),
-        )
-        if (
-            generation in generations
-            or generation[0] < 0
-            or generation[1] <= 0
-        ):
-            raise ValueError("SoA trace repeated or has an invalid generation")
-        generations.add(generation)
-        selected = int(fields.get("selected", "-1"), 0)
-        rejected = int(fields.get("predicate_rejected", "-1"), 0)
-        if selected + rejected != 16384:
-            raise ValueError(
-                "SoA trace predicate classification did not close"
+    with path.open(encoding="utf-8", errors="replace") as trace:
+        for line in trace:
+            fields = general.fields(line)
+            if fields.get("event") != "soa_jit_complete":
+                continue
+            completions += 1
+            if int(fields.get("logical", "-1"), 0) != 16384:
+                raise ValueError(
+                    "SoA trace completion has wrong logical length"
+                )
+            generation = (
+                int(fields.get("unit", "-1"), 0),
+                int(fields.get("generation", "-1"), 0),
             )
-        predicate = pair(fields, "predicate_lines")
-        a_reads = pair(fields, "a_reads")
-        value_reads = pair(fields, "value_reads")
-        value_prefetch = pair(fields, "value_prefetch")
-        a_writes = pair(fields, "a_writes")
-        if any(
-            left != right
-            for left, right in (
-                predicate,
-                a_reads,
-                value_reads,
-                value_prefetch,
-                a_writes,
+            if (
+                generation in generations
+                or generation[0] < 0
+                or generation[1] <= 0
+            ):
+                raise ValueError(
+                    "SoA trace repeated or has an invalid generation"
+                )
+            generations.add(generation)
+            selected = int(fields.get("selected", "-1"), 0)
+            rejected = int(fields.get("predicate_rejected", "-1"), 0)
+            if selected + rejected != 16384:
+                raise ValueError(
+                    "SoA trace predicate classification did not close"
+                )
+            predicate = pair(fields, "predicate_lines")
+            a_reads = pair(fields, "a_reads")
+            value_reads = pair(fields, "value_reads")
+            value_prefetch = pair(fields, "value_prefetch")
+            a_writes = pair(fields, "a_writes")
+            if any(
+                left != right
+                for left, right in (
+                    predicate,
+                    a_reads,
+                    value_reads,
+                    value_prefetch,
+                    a_writes,
+                )
+            ):
+                raise ValueError(
+                    "SoA trace request/response accounting did not close"
+                )
+            if predicate[0] != 1024 or a_reads[0] != a_writes[0]:
+                raise ValueError(
+                    "SoA trace predicate/A-line accounting differs"
+                )
+            hits = int(fields.get("hits", "-1"), 0)
+            merged = int(fields.get("merged", "-1"), 0)
+            if (
+                value_reads[0] + hits + merged != selected
+                or int(fields.get("aliases", "-1"), 0) != selected
+            ):
+                raise ValueError(
+                    "SoA trace selected/value/alias accounting differs"
+                )
+            prefetch_promotions = int(
+                fields.get("prefetch_promotions", "-1"), 0
             )
-        ):
-            raise ValueError(
-                "SoA trace request/response accounting did not close"
+            prefetch_discards = int(
+                fields.get("prefetch_discards", "-1"), 0
             )
-        if predicate[0] != 1024 or a_reads[0] != a_writes[0]:
-            raise ValueError("SoA trace predicate/A-line accounting differs")
-        hits = int(fields.get("hits", "-1"), 0)
-        merged = int(fields.get("merged", "-1"), 0)
-        if (
-            value_reads[0] + hits + merged != selected
-            or int(fields.get("aliases", "-1"), 0) != selected
-        ):
-            raise ValueError(
-                "SoA trace selected/value/alias accounting differs"
+            prefetch_credits = int(
+                fields.get("prefetch_credits", "-1"), 0
             )
-        prefetch_promotions = int(
-            fields.get("prefetch_promotions", "-1"), 0
-        )
-        prefetch_discards = int(fields.get("prefetch_discards", "-1"), 0)
-        prefetch_credits = int(fields.get("prefetch_credits", "-1"), 0)
-        prefetch_hwm = int(fields.get("prefetch_hwm", "-1"), 0)
-        if (
-            value_prefetch[1] != prefetch_promotions + prefetch_discards
-            or prefetch_credits < 0
-            or not 0 <= prefetch_hwm <= prefetch_credits
-        ):
-            raise ValueError("SoA trace prefetch accounting is invalid")
-        context_hwm = int(fields.get("context_hwm", "-1"), 0)
-        if context_hwm < 1:
-            raise ValueError("SoA trace has invalid context high-water")
-        context_hwm_max = max(context_hwm_max, context_hwm)
+            prefetch_hwm = int(fields.get("prefetch_hwm", "-1"), 0)
+            if (
+                value_prefetch[1]
+                != prefetch_promotions + prefetch_discards
+                or prefetch_credits < 0
+                or not 0 <= prefetch_hwm <= prefetch_credits
+            ):
+                raise ValueError("SoA trace prefetch accounting is invalid")
+            context_hwm = int(fields.get("context_hwm", "-1"), 0)
+            if context_hwm < 1:
+                raise ValueError(
+                    "SoA trace has invalid context high-water"
+                )
+            context_hwm_max = max(context_hwm_max, context_hwm)
     if completions != expected_completions:
         raise ValueError(
             f"expected {expected_completions} SoA completions, "
@@ -529,6 +541,8 @@ def analyze(root: Path) -> dict[str, object]:
                 "output_hash": key,
                 "numInst_INDRMW": rmw,
                 "materializer_retires": mechanism["materializer_retires"],
+                "cycles_fill": sum_stat(stats, "IND_CyclesFill"),
+                "cycles_request": sum_stat(stats, "IND_CyclesRequest"),
             }
             if selector is not None:
                 treatment = one_marker(log, "UME_GZP_RMW_TREATMENT ")
@@ -773,13 +787,15 @@ def main() -> int:
                 * 100.0,
             ),
             "",
-            "| arm | replica | simTicks | RMW instructions |",
-            "|---|---:|---:|---:|",
+            "| arm | replica | simTicks | RMW instructions | fill cycles | "
+            "request cycles |",
+            "|---|---:|---:|---:|---:|---:|",
         ]
         for record in report["records"]:
             lines.append(
                 "| {arm} | {replica} | {simTicks} | "
-                "{numInst_INDRMW} |".format(**record)
+                "{numInst_INDRMW} | {cycles_fill} | "
+                "{cycles_request} |".format(**record)
             )
         soa_records = [
             record
