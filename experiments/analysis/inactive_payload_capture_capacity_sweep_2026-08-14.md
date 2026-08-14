@@ -55,6 +55,25 @@ read returns the pre-write value regardless of software call order
 same-cycle producer write cannot be retained and is counted as a global drop
 before coherent fallback.
 
+For a latest-owner collision, one `eviction_undecided` bit travels with that
+existing pending-write latch. The collision immediately counts the new capture,
+conflict, and latest-owner overwrite, but it does not yet count the resident as
+dropped. The complete call-order truth table is:
+
+| Cycle-N order/outcome | Drop | Latest eviction | Old replay |
+| --- | ---: | ---: | ---: |
+| probe old, then overwrite | 0 | 0 | 1 |
+| overwrite, then probe old | 0 | 0 | 1 |
+| overwrite, no matching probe before N+1 | 1 at N+1 | 1 at N+1 | 0 |
+| overwrite, then clear/replace old descriptor in N | 1 at clear/replace | 1 at clear/replace | 0 |
+
+The matching same-cycle probe clears the undecided bit when it authenticates
+the pre-write RAM tag. Otherwise the N+1 write edge commits the single positive
+drop/eviction event before installing the new word. Clear and descriptor
+replacement close the same event immediately when removing the old descriptor
+makes any later same-cycle hit impossible. There is no counter rollback,
+entry scan, owner queue, or state proportional to traffic.
+
 A probe at N copies an active-descriptor exact hit into the sole 64-byte output
 register and reports completion at N+1; a miss is delayed by the same cycle.
 The output tag contains the complete payload lifetime, line, and producer
@@ -82,8 +101,9 @@ materializer lifetimes. Their summary fields are therefore explicitly named
 `global_inactive_payload_*`; they are cumulative device counters, not
 per-owner fields. Per-owner page fields are limited to that execution's exact
 coherent fallback reads. `Captured` and `Overwritten` both count a successful
-new retention; `Overwritten` additionally counts one global displaced-payload
-drop. `Full` remains in the trace enum ABI but the direct-mapped descriptor
+new retention. `Overwritten` starts the one-bit disposition above; only its
+unrescued resolution counts one global displaced-payload drop and latest-owner
+eviction. `Full` remains in the trace enum ABI but the direct-mapped descriptor
 implementation never returns it.
 
 ## Exact packed hardware lower-bound equations
@@ -103,9 +123,10 @@ descriptor_bits_each     = valid 1 + key 208 + line_count 16
 four_descriptor_bits     = 2,500
 read_port_state_bits     = next_available_cycle 64
 write_port_state_bits    = next_available_cycle 64 + pending 1
+                         + eviction_undecided 1
                          + completion_cycle 64 + RAM_index log2(capacity)
                          + write_payload 512 + write_tag 289
-                         = 930 + log2(capacity)
+                         = 931 + log2(capacity)
 output_latch_bits        = output_payload 512 + output_tag 289 = 801
 global_capture_control   = capacity 10 + policy 1
                          + occupancy 10 + high_water 10 = 31
@@ -120,7 +141,7 @@ The complete capture lower bound is:
 ```text
 capture_bits(C) = C*512 RAM payload + C*289 RAM tags
                 + 2500 descriptors + 64 read-port state
-                + (930 + log2(C)) write-port state
+                + (931 + log2(C)) write-port state
                 + 512 output payload + 289 output tag
                 + 31 global capture control
 combined_bits(C,T) = capture_bits(C) + 510 MAA lookup control
@@ -132,10 +153,10 @@ is 2,048 bits (256 bytes).
 
 | Lines | RAM payload (B) | RAM tag bits | Non-payload control bits excluding RAM tags | Capture total including 64B output (B, rounded once) | MAA lookup bits | Persistent incarnation bits (32 tokens) | Combined (B, rounded once) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 64 | 4,096 | 18,496 | 3,820 | 6,950 | 510 | 2,048 | 7,270 |
-| 128 | 8,192 | 36,992 | 3,821 | 13,358 | 510 | 2,048 | 13,678 |
-| 256 | 16,384 | 73,984 | 3,822 | 26,174 | 510 | 2,048 | 26,494 |
-| 512 | 32,768 | 147,968 | 3,823 | 51,806 | 510 | 2,048 | 52,126 |
+| 64 | 4,096 | 18,496 | 3,821 | 6,950 | 510 | 2,048 | 7,270 |
+| 128 | 8,192 | 36,992 | 3,822 | 13,358 | 510 | 2,048 | 13,678 |
+| 256 | 16,384 | 73,984 | 3,823 | 26,174 | 510 | 2,048 | 26,494 |
+| 512 | 32,768 | 147,968 | 3,824 | 51,806 | 510 | 2,048 | 52,126 |
 
 The trace reports every term independently in bits, including
 `64*num_tiles`, plus the exact combined total and rounded legacy byte fields.
@@ -143,6 +164,12 @@ The trace reports every term independently in bits, including
 diagnostics only and are never added to the packed hardware equations.
 
 ## Review-gated experiment matrix
+
+The GZP policy screen retained 12.5%, 25%, and 50% at the 512-, 1024-, and
+2048-line opportunities under first-owner, versus 0%, 0%, and approximately
+0.019% under latest-owner. First-owner is therefore the intended candidate;
+latest-owner remains a correctness-complete diagnostic arm, not a promotion
+candidate on this evidence.
 
 After independent acceptance, compare one default-off control with capacities
 64, 128, 256, and 512 under both policies from one frozen checkpoint:

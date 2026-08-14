@@ -1800,9 +1800,11 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
         const auto payloadClear = inactiveProducerLinePayloadCapture.clear(
             {early_key.tokenTile, early_key.generation,
              virtualPagePayloadIncarnation[early_key.tokenTile],
-             early_key.backingAddress});
+             early_key.backingAddress}, static_cast<uint64_t>(curCycle()));
         stats.page_materialization_inactive_payload_drops +=
-            payloadClear.discardedLines;
+            payloadClear.discardedLines + payloadClear.resolvedDrops;
+        stats.page_materialization_inactive_payload_latest_owner_evictions +=
+            payloadClear.resolvedLatestOwnerEvictions;
         stats.direct_retirement_producer_line_acks +=
             early_replay.readyLines;
     }
@@ -2267,9 +2269,11 @@ MAA::finishDirectRetirement(
     const auto payloadClear = inactiveProducerLinePayloadCapture.clear(
         {key.tokenTile, key.generation,
          virtualPagePayloadIncarnation[key.tokenTile],
-         execution->backingAddress});
+         execution->backingAddress}, static_cast<uint64_t>(curCycle()));
     stats.page_materialization_inactive_payload_drops +=
-        payloadClear.discardedLines;
+        payloadClear.discardedLines + payloadClear.resolvedDrops;
+    stats.page_materialization_inactive_payload_latest_owner_evictions +=
+        payloadClear.resolvedLatestOwnerEvictions;
     *execution = DirectRetirementExecution{};
     setTileReady(completion_tile, word_bytes);
     DPRINTF(MAAVirtualTrace,
@@ -2620,9 +2624,13 @@ MAA::startInactiveProducerPayloadLookup(
         virtualPagePayloadIncarnation[execution->key.tokenTile],
         execution->backingAddress};
     InactiveProducerLinePayloadCapture::Line retained;
+    InactiveProducerLinePayloadCapture::AccountingDelta resolved;
     const auto probe = inactiveProducerLinePayloadCapture.probe(
         key, request.request.line, static_cast<uint64_t>(curCycle()),
-        &retained);
+        &retained, &resolved);
+    stats.page_materialization_inactive_payload_drops += resolved.drops;
+    stats.page_materialization_inactive_payload_latest_owner_evictions +=
+        resolved.latestOwnerEvictions;
     if (probe == InactiveProducerLinePayloadCapture::ProbeResult::PortBusy) {
         stats.page_materialization_inactive_payload_read_port_stalls++;
         return InactivePayloadLookupStart::ReadPortBusy;
@@ -2701,11 +2709,16 @@ MAA::consumeInactiveProducerPayload()
     // charged materializer buffer at this edge, then uses the unchanged SPD
     // data latency. Do not charge the RAM access a second time.
     const Tick commitTick = getClockEdge(spdLatency);
-    panic_if(!reservePageMaterializationCommit(captured, commitTick) ||
-                 !inactiveProducerLinePayloadCapture.take(
-                     key, line, transactionID,
-                     static_cast<uint64_t>(curCycle())),
+    panic_if(!reservePageMaterializationCommit(captured, commitTick),
+             "Page materializer could not reserve inactive payload commit\n");
+    InactiveProducerLinePayloadCapture::AccountingDelta resolved;
+    panic_if(!inactiveProducerLinePayloadCapture.take(
+                 key, line, transactionID,
+                 static_cast<uint64_t>(curCycle()), &resolved),
              "Page materializer could not consume exact inactive payload\n");
+    stats.page_materialization_inactive_payload_drops += resolved.drops;
+    stats.page_materialization_inactive_payload_latest_owner_evictions +=
+        resolved.latestOwnerEvictions;
     inactivePayloadLookup = InactivePayloadLookup{};
     ++execution->forwardedLines;
     stats.page_materialization_forwarded_lines++;
@@ -2805,6 +2818,13 @@ MAA::finishPageMaterialization(
                          .storedLines != 0,
                      "Page materializer retired with live exact payloads\n");
         }
+        const auto payloadClear =
+            inactiveProducerLinePayloadCapture.clear(
+                payloadKey, static_cast<uint64_t>(curCycle()));
+        stats.page_materialization_inactive_payload_drops +=
+            payloadClear.discardedLines + payloadClear.resolvedDrops;
+        stats.page_materialization_inactive_payload_latest_owner_evictions +=
+            payloadClear.resolvedLatestOwnerEvictions;
         uint16_t fallbackReadsPerPage = 0;
         for (uint16_t fallback : execution->cacheReadFallbackLinesPerPage)
             fallbackReadsPerPage += fallback;
@@ -2951,10 +2971,6 @@ MAA::finishPageMaterialization(
              "Page materializer could not retire its 16K lifetime\n");
         (void)directRetirementEarlyLineLedger.clear(
             {key.tokenTile, key.generation, execution->backingAddress});
-        const auto payloadClear =
-            inactiveProducerLinePayloadCapture.clear(payloadKey);
-        stats.page_materialization_inactive_payload_drops +=
-            payloadClear.discardedLines;
         *execution = PageMaterializationExecution{};
         stats.page_materialization_retirements++;
         DPRINTF(MAAVirtualTrace,
@@ -4537,9 +4553,12 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
             {oldMaterialization->key.tokenTile,
              oldMaterialization->key.generation,
              virtualPagePayloadIncarnation[tokenTileID],
-             oldMaterialization->backingAddress});
+             oldMaterialization->backingAddress},
+            static_cast<uint64_t>(curCycle()));
         stats.page_materialization_inactive_payload_drops +=
-            payloadClear.discardedLines;
+            payloadClear.discardedLines + payloadClear.resolvedDrops;
+        stats.page_materialization_inactive_payload_latest_owner_evictions +=
+            payloadClear.resolvedLatestOwnerEvictions;
         *oldMaterialization = PageMaterializationExecution{};
     }
     const int firstReadyID = num_tiles + tokenTileID * MaxVirtualPages;
@@ -4608,6 +4627,7 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                 EarlyProducerLineReadinessLedger::chargedTotalBytes());
         if (inactive_page_payload_capture_lines != 0) {
             uint16_t descriptorDisplacedLines = 0;
+            InactiveProducerLinePayloadCapture::AccountingDelta resolved;
             const auto captureBegin = inactiveProducerLinePayloadCapture.begin(
                 {static_cast<uint16_t>(tokenTileID),
                  virtualPageGeneration[tokenTileID],
@@ -4615,7 +4635,8 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                 static_cast<uint16_t>(lines),
                 static_cast<uint16_t>(inactive_page_payload_capture_lines),
                 inactive_page_payload_capture_conflict_policy,
-                &descriptorDisplacedLines);
+                static_cast<uint64_t>(curCycle()),
+                &descriptorDisplacedLines, &resolved);
             panic_if(captureBegin ==
                          InactiveProducerLinePayloadCapture::
                              BeginResult::Invalid ||
@@ -4631,7 +4652,10 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                 InactiveProducerLinePayloadCapture::BeginResult::Full)
                 stats.page_materialization_inactive_payload_drops++;
             stats.page_materialization_inactive_payload_drops +=
-                descriptorDisplacedLines;
+                descriptorDisplacedLines + resolved.drops;
+            stats
+                .page_materialization_inactive_payload_latest_owner_evictions
+                    += resolved.latestOwnerEvictions;
             stats.page_materialization_inactive_payload_bytes =
                 InactiveProducerLinePayloadCapture::provisionedPayloadBytes(
                     inactive_page_payload_capture_lines) +
@@ -4775,20 +4799,22 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
     const auto accountInactivePayloadOutcome =
         [this, &firstOwnerConflicts, &latestOwnerOverwrites,
          &latestOwnerEvictions, &writePortStalls](
-            InactiveProducerLinePayloadCapture::CaptureResult result) {
+            InactiveProducerLinePayloadCapture::CaptureResult result,
+            const InactiveProducerLinePayloadCapture::AccountingDelta
+                &resolved) {
         using Result = InactiveProducerLinePayloadCapture::CaptureResult;
+        stats.page_materialization_inactive_payload_drops += resolved.drops;
+        latestOwnerEvictions += resolved.latestOwnerEvictions;
         switch (result) {
           case Result::Captured:
             stats.page_materialization_inactive_payload_captures++;
             break;
           case Result::Overwritten:
-            // The new payload is retained and the displaced one becomes an
-            // explicit global coherent-fallback drop.
+            // The new payload is retained. The old payload's eviction remains
+            // undecided through this cycle's read-before-write opportunity.
             stats.page_materialization_inactive_payload_captures++;
             stats.page_materialization_inactive_payload_conflicts++;
-            stats.page_materialization_inactive_payload_drops++;
             latestOwnerOverwrites++;
-            latestOwnerEvictions++;
             break;
           case Result::OverwrittenLatched:
             // The old RAM word was replaced, but its authenticated output
@@ -4849,6 +4875,7 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
             stats.direct_retirement_early_line_overflows++;
         InactiveProducerLinePayloadCapture::CaptureResult captureResult =
             InactiveProducerLinePayloadCapture::CaptureResult::Disabled;
+        InactiveProducerLinePayloadCapture::AccountingDelta resolved;
         if (fullAuthoritativePayload &&
             result != EarlyProducerLineReadinessLedger::AckResult::Duplicate) {
             captureResult = inactiveProducerLinePayloadCapture.capture(
@@ -4856,8 +4883,8 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                  virtualPagePayloadIncarnation[tokenTileID], backingAddr},
                 static_cast<uint16_t>(lineID), transactionID,
                 reinterpret_cast<const std::byte *>(writeRespPayload),
-                payloadBytes, static_cast<uint64_t>(curCycle()));
-            accountInactivePayloadOutcome(captureResult);
+                payloadBytes, static_cast<uint64_t>(curCycle()), &resolved);
+            accountInactivePayloadOutcome(captureResult, resolved);
         }
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_line_early schema=1 "
@@ -4927,14 +4954,15 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
             materialization->page;
     InactiveProducerLinePayloadCapture::CaptureResult inactiveCapture =
         InactiveProducerLinePayloadCapture::CaptureResult::Disabled;
+    InactiveProducerLinePayloadCapture::AccountingDelta resolved;
     if (!activePageLine && fullAuthoritativePayload) {
         inactiveCapture = inactiveProducerLinePayloadCapture.capture(
             {owner.tokenTile, owner.generation,
              virtualPagePayloadIncarnation[owner.tokenTile], ownerBacking},
             static_cast<uint16_t>(lineID), transactionID,
             reinterpret_cast<const std::byte *>(writeRespPayload),
-            payloadBytes, static_cast<uint64_t>(curCycle()));
-        accountInactivePayloadOutcome(inactiveCapture);
+            payloadBytes, static_cast<uint64_t>(curCycle()), &resolved);
+        accountInactivePayloadOutcome(inactiveCapture, resolved);
         DPRINTF(MAAVirtualTrace,
                 "event=page_materialization_inactive_payload_capture "
                 "schema=1 occurrence=%lu token=%u generation=%lu "
@@ -5515,8 +5543,8 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                "direct-index collisions replaced by the latest-owner policy"),
       ADD_STAT(page_materialization_inactive_payload_latest_owner_evictions,
                statistics::units::Count::get(),
-               "previous retained payloads displaced to coherent fallback "
-               "by latest-owner replacement"),
+               "resident payloads finally evicted by latest-owner after the "
+               "same-cycle read opportunity"),
       ADD_STAT(page_materialization_inactive_payload_write_port_stalls,
                statistics::units::Count::get(),
                "full inactive producer WriteResp payloads dropped because "

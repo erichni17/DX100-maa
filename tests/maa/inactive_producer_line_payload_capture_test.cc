@@ -172,7 +172,7 @@ testDescriptorCollisionAndLazyStaleReclamation()
     uint16_t displacedLines = 0;
     CHECK(capture.begin(replacement, 2048, 64,
                         Capture::ConflictPolicy::FirstOwner,
-                        &displacedLines) ==
+                        300, &displacedLines) ==
           Capture::BeginResult::Replaced);
     CHECK(displacedLines == 1);
     CHECK(!capture.active(displaced));
@@ -259,7 +259,13 @@ testFirstOwnerAndLatestOwnerCollisions()
     CHECK(latestOwner.capture(latest, latestCollision, 502,
                               latestBytes.data(), latestBytes.size(), 501) ==
           Capture::CaptureResult::Overwritten);
+    CHECK(latestOwner.summary(first).drops == 0);
+    CHECK(latestOwner.summary(first).latestOwnerEvictions == 0);
+    const auto latestEdge = latestOwner.advance(502);
+    CHECK(latestEdge.drops == 1);
+    CHECK(latestEdge.latestOwnerEvictions == 1);
     CHECK(latestOwner.summary(first).storedLines == 0);
+    CHECK(latestOwner.summary(first).drops == 1);
     CHECK(latestOwner.summary(first).latestOwnerEvictions == 1);
     CHECK(latestOwner.summary(latest).latestOwnerOverwrites == 1);
     CHECK(latestOwner.assertInvariants());
@@ -285,13 +291,18 @@ testLatestOwnerProbeOverwriteTakeUsesOutputLatch()
         capture, writer, capture.selectedEntry(probed, 0));
 
     Capture::Line retained;
-    CHECK(capture.probe(probed, 0, 601, &retained) ==
+    Capture::AccountingDelta resolved;
+    CHECK(capture.probe(probed, 0, 601, &retained, &resolved) ==
           Capture::ProbeResult::Hit);
+    CHECK(resolved.drops == 0);
+    CHECK(resolved.latestOwnerEvictions == 0);
     CHECK(retained.transactionID == 601);
     CHECK(word(retained.payload, 0) == 0x700);
     CHECK(capture.capture(writer, writerLine, 602, newBytes.data(),
-                          newBytes.size(), 601) ==
+                          newBytes.size(), 601, &resolved) ==
           Capture::CaptureResult::OverwrittenLatched);
+    CHECK(resolved.drops == 0);
+    CHECK(resolved.latestOwnerEvictions == 0);
     CHECK(capture.summary(probed).storedLines == 0);
     CHECK(capture.summary(probed).drops == 0);
     CHECK(capture.summary(probed).latestOwnerEvictions == 0);
@@ -300,7 +311,9 @@ testLatestOwnerProbeOverwriteTakeUsesOutputLatch()
     // transaction 601 from the output latch. It must not erase transaction
     // 602 or panic because mutable RAM no longer carries the probed tag.
     CHECK(!capture.take(probed, 0, 999, 602));
-    CHECK(capture.take(probed, 0, 601, 602));
+    CHECK(capture.take(probed, 0, 601, 602, &resolved));
+    CHECK(resolved.drops == 0);
+    CHECK(resolved.latestOwnerEvictions == 0);
     CHECK(capture.summary(probed).replayedLines == 1);
     CHECK(capture.probe(writer, writerLine, 603, &retained) ==
           Capture::ProbeResult::Hit);
@@ -334,7 +347,8 @@ testDescriptorReplacementAfterLatchedHitClosesExactly()
     uint16_t displacedLines = 0;
     CHECK(capture.begin(replacement, 2048, 64,
                         Capture::ConflictPolicy::FirstOwner,
-                        &displacedLines) == Capture::BeginResult::Replaced);
+                        652, &displacedLines) ==
+          Capture::BeginResult::Replaced);
     // Line zero survives in the authoritative output latch. Only unlatched
     // line one becomes a coherent-fallback drop at descriptor displacement.
     CHECK(displacedLines == 1);
@@ -508,19 +522,38 @@ testSameCycleReadBeforeWriteAndFinitePorts()
     CHECK(capture.begin(newOwner, 2048, 64,
                         Capture::ConflictPolicy::LatestOwner) ==
           Capture::BeginResult::Started);
+    uint64_t globalCaptures = 0;
+    uint64_t globalConflicts = 0;
+    uint64_t globalDrops = 0;
+    uint64_t globalLatestOwnerOverwrites = 0;
+    uint64_t globalLatestOwnerEvictions = 0;
+    uint64_t globalWritePortStalls = 0;
+    uint64_t globalReplays = 0;
+    Capture::AccountingDelta resolved;
     CHECK(capture.capture(oldOwner, 0, 701, oldBytes.data(), oldBytes.size(),
-                          700) == Capture::CaptureResult::Captured);
+                          700, &resolved) ==
+          Capture::CaptureResult::Captured);
+    CHECK(resolved.drops == 0);
+    CHECK(resolved.latestOwnerEvictions == 0);
+    ++globalCaptures;
     const uint16_t collision = collidingLine(
         capture, newOwner, capture.selectedEntry(oldOwner, 0));
 
     // Call the write first to prove the model's same-cycle result does not
     // depend on C++ call order: synchronous RAM returns the old word.
     CHECK(capture.capture(newOwner, collision, 702, newBytes.data(),
-                          newBytes.size(), 701) ==
+                          newBytes.size(), 701, &resolved) ==
           Capture::CaptureResult::Overwritten);
+    CHECK(resolved.drops == 0);
+    CHECK(resolved.latestOwnerEvictions == 0);
+    ++globalCaptures;
+    ++globalConflicts;
+    ++globalLatestOwnerOverwrites;
     Capture::Line retained;
-    CHECK(capture.probe(oldOwner, 0, 701, &retained) ==
+    CHECK(capture.probe(oldOwner, 0, 701, &retained, &resolved) ==
           Capture::ProbeResult::Hit);
+    CHECK(resolved.drops == 0);
+    CHECK(resolved.latestOwnerEvictions == 0);
     CHECK(retained.transactionID == 701);
     CHECK(word(retained.payload, 0) == 0x900);
     CHECK(capture.probe(newOwner, collision, 701, &retained) ==
@@ -528,11 +561,107 @@ testSameCycleReadBeforeWriteAndFinitePorts()
     CHECK(capture.capture(newOwner, collision + 1, 703, newBytes.data(),
                           newBytes.size(), 701) ==
           Capture::CaptureResult::PortBusy);
-    CHECK(capture.take(oldOwner, 0, 701, 702));
+    ++globalDrops;
+    ++globalWritePortStalls;
+    CHECK(capture.take(oldOwner, 0, 701, 702, &resolved));
+    globalDrops += resolved.drops;
+    globalLatestOwnerEvictions += resolved.latestOwnerEvictions;
+    ++globalReplays;
+    CHECK(capture.summary(oldOwner).drops == 0);
+    CHECK(capture.summary(oldOwner).latestOwnerEvictions == 0);
+    CHECK(capture.summary(oldOwner).replayedLines == 1);
     CHECK(capture.probe(newOwner, collision, 702, &retained) ==
           Capture::ProbeResult::Hit);
     CHECK(retained.transactionID == 702);
+    CHECK(globalCaptures == 2);
+    CHECK(globalConflicts == 1);
+    CHECK(globalDrops == 1);
+    CHECK(globalLatestOwnerOverwrites == 1);
+    CHECK(globalLatestOwnerEvictions == 0);
+    CHECK(globalWritePortStalls == 1);
+    CHECK(globalReplays == 1);
     CHECK(capture.assertInvariants());
+}
+
+void
+testLatestOwnerUnlatchedLifecycleOutcomesCloseOnce()
+{
+    auto oldBytes = payload(0xb00);
+    auto newBytes = payload(0xc00);
+
+    Capture cleared;
+    const auto clearOld = key(20, 91, 20, 0x1500000);
+    const auto clearWriter = key(21, 92, 21, 0x1600000);
+    CHECK(cleared.begin(clearOld, 2048, 64,
+                        Capture::ConflictPolicy::LatestOwner, 800) ==
+          Capture::BeginResult::Started);
+    CHECK(cleared.begin(clearWriter, 2048, 64,
+                        Capture::ConflictPolicy::LatestOwner, 800) ==
+          Capture::BeginResult::Started);
+    CHECK(cleared.capture(clearOld, 0, 801, oldBytes.data(), oldBytes.size(),
+                          810) == Capture::CaptureResult::Captured);
+    const uint16_t clearCollision = collidingLine(
+        cleared, clearWriter, cleared.selectedEntry(clearOld, 0));
+    CHECK(cleared.capture(clearWriter, clearCollision, 802,
+                          newBytes.data(), newBytes.size(), 811) ==
+          Capture::CaptureResult::Overwritten);
+
+    // Clearing the pre-write owner in N makes a later N probe impossible, so
+    // the still-undecided overwrite closes as exactly one monotonic eviction.
+    const auto clearResult = cleared.clear(clearOld, 811);
+    CHECK(clearResult.cleared);
+    CHECK(clearResult.discardedLines == 0);
+    CHECK(clearResult.resolvedDrops == 1);
+    CHECK(clearResult.resolvedLatestOwnerEvictions == 1);
+    CHECK(clearResult.survivingLatchedLines == 0);
+    const auto clearEdge = cleared.advance(812);
+    CHECK(clearEdge.drops == 0);
+    CHECK(clearEdge.latestOwnerEvictions == 0);
+    Capture::Line retained;
+    CHECK(cleared.probe(clearWriter, clearCollision, 812, &retained) ==
+          Capture::ProbeResult::Hit);
+    CHECK(retained.transactionID == 802);
+    CHECK(cleared.take(clearWriter, clearCollision, 802, 813));
+    CHECK(cleared.assertInvariants());
+
+    Capture replaced;
+    const auto replaceOld = key(22, 93, 22, 0x1700000);
+    const auto replaceWriter = key(23, 94, 23, 0x1800000);
+    const auto descriptorSuccessor = key(26, 95, 24, 0x1900000);
+    CHECK(Capture::descriptorIndexForToken(replaceOld.tokenTile) ==
+          Capture::descriptorIndexForToken(descriptorSuccessor.tokenTile));
+    CHECK(replaced.begin(replaceOld, 2048, 64,
+                         Capture::ConflictPolicy::LatestOwner, 820) ==
+          Capture::BeginResult::Started);
+    CHECK(replaced.begin(replaceWriter, 2048, 64,
+                         Capture::ConflictPolicy::LatestOwner, 820) ==
+          Capture::BeginResult::Started);
+    CHECK(replaced.capture(replaceOld, 0, 811, oldBytes.data(),
+                           oldBytes.size(), 830) ==
+          Capture::CaptureResult::Captured);
+    const uint16_t replaceCollision = collidingLine(
+        replaced, replaceWriter, replaced.selectedEntry(replaceOld, 0));
+    CHECK(replaced.capture(replaceWriter, replaceCollision, 812,
+                           newBytes.data(), newBytes.size(), 831) ==
+          Capture::CaptureResult::Overwritten);
+    uint16_t displacedLines = 0;
+    Capture::AccountingDelta resolved;
+    CHECK(replaced.begin(descriptorSuccessor, 2048, 64,
+                         Capture::ConflictPolicy::LatestOwner, 831,
+                         &displacedLines, &resolved) ==
+          Capture::BeginResult::Replaced);
+    CHECK(displacedLines == 0);
+    CHECK(resolved.drops == 1);
+    CHECK(resolved.latestOwnerEvictions == 1);
+    const auto replaceEdge = replaced.advance(832);
+    CHECK(replaceEdge.drops == 0);
+    CHECK(replaceEdge.latestOwnerEvictions == 0);
+    CHECK(replaced.summary(replaceWriter).storedLines == 1);
+    const auto writerClear = replaced.clear(replaceWriter, 833);
+    CHECK(writerClear.discardedLines == 1);
+    CHECK(writerClear.resolvedDrops == 0);
+    CHECK(writerClear.resolvedLatestOwnerEvictions == 0);
+    CHECK(replaced.assertInvariants());
 }
 
 void
@@ -604,15 +733,15 @@ testExactPackedHardwareStorageEquations()
     CHECK(Capture::provisionedTagBits(512) == 512 * 289);
     CHECK(Capture::provisionedDescriptorBits(512) == 4 * 625);
     CHECK(Capture::provisionedReadPortStateBits(512) == 64);
-    CHECK(Capture::provisionedWritePortStateBits(512) == 939);
+    CHECK(Capture::provisionedWritePortStateBits(512) == 940);
     CHECK(Capture::provisionedOutputTagBits(512) == 289);
     CHECK(Capture::provisionedReadPipelinePayloadBytes(512) == 64);
     CHECK(Capture::MAALookupControlBits == 510);
     CHECK(Capture::PayloadIncarnationBitsPerToken == 64);
     CHECK(Capture::provisionedMAAPersistentStateBits(0, 32) == 0);
     CHECK(Capture::provisionedMAAPersistentStateBits(64, 32) == 2048);
-    CHECK(Capture::provisionedMAAControlBits(64, 32) == 24874);
-    CHECK(Capture::provisionedMAAControlBits(512, 32) == 154349);
+    CHECK(Capture::provisionedMAAControlBits(64, 32) == 24875);
+    CHECK(Capture::provisionedMAAControlBits(512, 32) == 154350);
     CHECK(Capture::provisionedCombinedTotalBytes(64, 32) == 7270);
     CHECK(Capture::provisionedCombinedTotalBytes(128, 32) == 13678);
     CHECK(Capture::provisionedCombinedTotalBytes(256, 32) == 26494);
@@ -668,6 +797,7 @@ main()
     testClearCancelReuseDiscardsRetainedLines();
     testClearPreservesAuthoritativeOutputLatchAcrossRaces();
     testSameCycleReadBeforeWriteAndFinitePorts();
+    testLatestOwnerUnlatchedLifecycleOutcomesCloseOnce();
     testOutcomeClosure();
     testExactPackedHardwareStorageEquations();
     std::cout << "inactive producer line payload capture tests passed\n";

@@ -26,6 +26,10 @@ namespace gem5 {
  * and completes in one cycle. The model buffers one pending write until its
  * completion edge, which gives an exact read-before-write result when both
  * ports select the same index in one cycle, independent of call order.
+ * A latest-owner overwrite carries one eviction-undecided bit in that existing
+ * write latch. A same-cycle read of the displaced tag clears the bit;
+ * otherwise the write edge resolves exactly one monotonic drop/eviction
+ * accounting event.
  * A probe requires the selected exact lifetime descriptor before it may hit a
  * RAM tag. A displaced or retired lifetime therefore takes the ordinary timed
  * miss path even while its stale RAM tag awaits O(1) reclamation. A hit copies
@@ -94,6 +98,8 @@ class InactiveProducerLinePayloadCapture
     struct ClearResult
     {
         uint16_t discardedLines = 0;
+        uint16_t resolvedDrops = 0;
+        uint16_t resolvedLatestOwnerEvictions = 0;
         uint8_t survivingLatchedLines = 0;
         bool cleared = false;
 
@@ -136,6 +142,12 @@ class InactiveProducerLinePayloadCapture
         Invalid,
     };
 
+    struct AccountingDelta
+    {
+        uint16_t drops = 0;
+        uint16_t latestOwnerEvictions = 0;
+    };
+
     /** One-entry MAA-cycle timing latch; payload lives in the output latch. */
     class LookupPipeline
     {
@@ -168,8 +180,12 @@ class InactiveProducerLinePayloadCapture
 
     BeginResult begin(const Key &key, uint16_t lineCount, uint16_t capacity,
                       ConflictPolicy policy = ConflictPolicy::FirstOwner,
-                      uint16_t *displacedLines = nullptr)
+                      uint64_t nowCycle = 0,
+                      uint16_t *displacedLines = nullptr,
+                      AccountingDelta *resolved = nullptr)
     {
+        resetAccounting(resolved);
+        advanceWrite(nowCycle, resolved);
         if (displacedLines != nullptr)
             *displacedLines = 0;
         if (!validKey(key) || lineCount == 0 ||
@@ -197,6 +213,7 @@ class InactiveProducerLinePayloadCapture
 
         // Constant-time lazy invalidation: replacing the one selected
         // descriptor never walks or clears the payload RAM.
+        resolvePendingEvictionFor(slot.key, resolved);
         if (displacedLines != nullptr)
             *displacedLines = discardedLines(slot);
         reset(slot, key, lineCount);
@@ -205,9 +222,11 @@ class InactiveProducerLinePayloadCapture
 
     CaptureResult capture(const Key &key, uint16_t line,
                           uint64_t transactionID, const std::byte *payload,
-                          std::size_t payloadBytes, uint64_t nowCycle)
+                          std::size_t payloadBytes, uint64_t nowCycle,
+                          AccountingDelta *resolved = nullptr)
     {
-        advanceWrite(nowCycle);
+        resetAccounting(resolved);
+        advanceWrite(nowCycle, resolved);
         if (configuredCapacity == 0)
             return CaptureResult::Disabled;
         if (!validKey(key) || transactionID == 0 || payload == nullptr ||
@@ -233,7 +252,7 @@ class InactiveProducerLinePayloadCapture
         const Entry &resident = entries[selectedIndex];
         if (!resident.valid) {
             armWrite(selectedIndex, key, line, transactionID, payload,
-                     nowCycle);
+                     nowCycle, false);
             accountCapture(*slot, line);
             ++validEntries;
             if (validEntries > highWater)
@@ -252,7 +271,7 @@ class InactiveProducerLinePayloadCapture
             // descriptor was retired/replaced. Reclaim it without a scan,
             // conflict, occupancy change, or policy-dependent arbitration.
             armWrite(selectedIndex, key, line, transactionID, payload,
-                     nowCycle);
+                     nowCycle, false);
             accountCapture(*slot, line);
             return CaptureResult::Captured;
         }
@@ -270,21 +289,19 @@ class InactiveProducerLinePayloadCapture
             output.line == resident.line &&
             output.transactionID == resident.transactionID;
         --residentOwner->storedLines;
-        if (!residentLatched) {
-            ++residentOwner->drops;
-            ++residentOwner->latestOwnerEvictions;
-        }
         ++slot->latestOwnerOverwrites;
-        armWrite(selectedIndex, key, line, transactionID, payload, nowCycle);
+        armWrite(selectedIndex, key, line, transactionID, payload, nowCycle,
+                 !residentLatched);
         accountCapture(*slot, line);
         return residentLatched ? CaptureResult::OverwrittenLatched
                                : CaptureResult::Overwritten;
     }
 
     ProbeResult probe(const Key &key, uint16_t line, uint64_t nowCycle,
-                      Line *result)
+                      Line *result, AccountingDelta *resolved = nullptr)
     {
-        advanceWrite(nowCycle);
+        resetAccounting(resolved);
+        advanceWrite(nowCycle, resolved);
         if (result != nullptr)
             *result = {};
         if (configuredCapacity == 0)
@@ -319,6 +336,9 @@ class InactiveProducerLinePayloadCapture
         output.line = line;
         output.transactionID = entry.transactionID;
         output.valid = true;
+        if (pendingWrite.active && pendingWrite.evictionPending &&
+            pendingWrite.index == index(key, line))
+            pendingWrite.evictionPending = false;
         if (result != nullptr)
             *result = {line, entry.transactionID, output.payload.data()};
         return ProbeResult::Hit;
@@ -326,9 +346,10 @@ class InactiveProducerLinePayloadCapture
 
     /** Consume the authoritative output latch, never a replacement RAM tag. */
     bool take(const Key &key, uint16_t line, uint64_t transactionID,
-              uint64_t nowCycle)
+              uint64_t nowCycle, AccountingDelta *resolved = nullptr)
     {
-        advanceWrite(nowCycle);
+        resetAccounting(resolved);
+        advanceWrite(nowCycle, resolved);
         if (configuredCapacity == 0 || !output.valid ||
             output.transactionID != transactionID || output.line != line ||
             !sameKey(output.key, key))
@@ -362,14 +383,22 @@ class InactiveProducerLinePayloadCapture
      * remains replayable after clear and is therefore never a discard. If a
      * same-index replacement already removed that line from storedLines, the
      * latch is still reported as surviving without subtracting it twice.
+     * resolvedDrops/evictions report any older pending overwrite closed by
+     * this call's write edge or by removal of the displaced descriptor.
      */
-    ClearResult clear(const Key &key)
+    ClearResult clear(const Key &key, uint64_t nowCycle = 0)
     {
+        AccountingDelta resolved;
+        advanceWrite(nowCycle, &resolved);
         Slot *slot = findExact(key);
         if (slot == nullptr)
-            return {};
+            return {0, resolved.drops, resolved.latestOwnerEvictions, 0,
+                    false};
+        resolvePendingEvictionFor(slot->key, &resolved);
         const ClearResult result{
             discardedLines(*slot),
+            resolved.drops,
+            resolved.latestOwnerEvictions,
             static_cast<uint8_t>(outputSurvives(*slot)),
             true};
         *slot = Slot{};
@@ -377,6 +406,14 @@ class InactiveProducerLinePayloadCapture
     }
 
     bool active(const Key &key) const { return findExact(key) != nullptr; }
+
+    /** Apply the synchronous write edge and return newly final outcomes. */
+    AccountingDelta advance(uint64_t nowCycle)
+    {
+        AccountingDelta resolved;
+        advanceWrite(nowCycle, &resolved);
+        return resolved;
+    }
 
     Summary summary(const Key &key) const
     {
@@ -499,10 +536,11 @@ class InactiveProducerLinePayloadCapture
     static constexpr std::size_t provisionedWritePortStateBits(
         uint16_t capacity)
     {
-        // next-available cycle + pending valid/completion/index + complete
-        // one-entry write input latch (payload plus exact tag).
+        // next-available cycle + pending valid/eviction-undecided/completion/
+        // index + complete one-entry write input latch (payload plus exact
+        // tag).
         return capacity == 0 ? 0
-            : 64 + 1 + 64 + indexBits(capacity) +
+            : 64 + 1 + 1 + 64 + indexBits(capacity) +
                 OutputPayloadBits + EntryTagBits;
     }
 
@@ -579,6 +617,11 @@ class InactiveProducerLinePayloadCapture
         if (!validCapacity(configuredCapacity) || validEntries >
                 configuredCapacity || highWater > configuredCapacity)
             return false;
+        if (pendingWrite.evictionPending &&
+            (!pendingWrite.active || configuredPolicy !=
+                    ConflictPolicy::LatestOwner ||
+             !entries[pendingWrite.index].valid))
+            return false;
         uint16_t entriesInUse = 0;
         for (uint16_t i = 0; i < configuredCapacity; ++i) {
             const Entry &entry = logicalEntry(i);
@@ -653,6 +696,7 @@ class InactiveProducerLinePayloadCapture
         Entry entry{};
         uint16_t index = 0;
         uint64_t completionCycle = 0;
+        bool evictionPending = false;
         bool active = false;
     };
 
@@ -761,7 +805,7 @@ class InactiveProducerLinePayloadCapture
 
     void armWrite(uint16_t selectedIndex, const Key &key, uint16_t line,
                   uint64_t transactionID, const std::byte *payload,
-                  uint64_t nowCycle)
+                  uint64_t nowCycle, bool evictionPending)
     {
         pendingWrite = PendingWrite{};
         std::memcpy(pendingWrite.entry.payload.data(), payload, LineBytes);
@@ -771,14 +815,46 @@ class InactiveProducerLinePayloadCapture
         pendingWrite.entry.valid = true;
         pendingWrite.index = selectedIndex;
         pendingWrite.completionCycle = nowCycle + PortAccessCycles;
+        pendingWrite.evictionPending = evictionPending;
         pendingWrite.active = true;
     }
 
-    void advanceWrite(uint64_t nowCycle)
+    static void resetAccounting(AccountingDelta *resolved)
+    {
+        if (resolved != nullptr)
+            *resolved = AccountingDelta{};
+    }
+
+    void resolvePendingEviction(AccountingDelta *resolved)
+    {
+        if (!pendingWrite.evictionPending)
+            return;
+        const Entry &resident = entries[pendingWrite.index];
+        Slot *residentOwner = findExact(resident.key);
+        if (residentOwner != nullptr) {
+            ++residentOwner->drops;
+            ++residentOwner->latestOwnerEvictions;
+        }
+        if (resolved != nullptr) {
+            ++resolved->drops;
+            ++resolved->latestOwnerEvictions;
+        }
+        pendingWrite.evictionPending = false;
+    }
+
+    void resolvePendingEvictionFor(const Key &key, AccountingDelta *resolved)
+    {
+        if (pendingWrite.evictionPending &&
+            sameKey(entries[pendingWrite.index].key, key))
+            resolvePendingEviction(resolved);
+    }
+
+    void advanceWrite(uint64_t nowCycle, AccountingDelta *resolved)
     {
         if (!pendingWrite.active ||
             pendingWrite.completionCycle > nowCycle)
             return;
+        resolvePendingEviction(resolved);
         entries[pendingWrite.index] = pendingWrite.entry;
         pendingWrite = PendingWrite{};
     }
