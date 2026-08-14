@@ -151,6 +151,25 @@ outstanding A read, at effectively no payload-storage cost, but leaves a large
 application gap. It should be combined with traffic elimination rather than
 treated as the final hybrid optimization.
 
+### Pre-A plus existing owner capacity
+
+The exact two-replica composition gate at
+`/data1/nier/dx100-runs/2026-08-14-soa-owner-prea32-64-ef039c96-r3`
+keeps pre-A enabled in both arms and changes only the active value-owner count
+from 32 to 64. Both replicas produce the exact hash `2761840269561229581` and
+identical semantic work. The 32-owner arm takes 73,527,456 ticks and the
+64-owner arm takes 72,364,974 ticks: **1.016064153x**, or 1.5810% fewer ticks.
+Value-read evictions fall from 18,323 to 11,350 and value stalls fall from
+927,093 to 106,454. Every issued pre-A request is used in each arm; the larger
+owner window legitimately permits more early issues, so their counts are not
+required to match across arms.
+
+This comparison adds no storage to the current model: all 128 owner records
+are already physically provisioned, and the knob only activates 64 rather than
+32 of them. It is accepted micro evidence that owner capacity still helps after
+pre-A overlap, not an application-level speedup claim. Full GZP and CG
+composition gates remain required.
+
 ## Promotion status
 
 The API experiment establishes optimized gather feasibility. GZP is exact but
