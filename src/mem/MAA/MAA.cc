@@ -2661,6 +2661,20 @@ MAA::consumeInactiveProducerPayload()
     const auto result = inactivePayloadLookup.timing.result();
     if (result == InactiveProducerLinePayloadCapture::ProbeResult::Miss) {
         stats.page_materialization_inactive_payload_lookup_misses++;
+        // Keep only a fixed exact fallback identity.  Its snapshotted buffer
+        // is deliberately not trusted after the one-cycle lookup.
+        bool retained = false;
+        for (InactivePayloadFallback &fallback :
+             inactivePayloadFallbacks) {
+            if (fallback.pending)
+                continue;
+            fallback.pending = true;
+            fallback.request = request;
+            retained = true;
+            break;
+        }
+        panic_if(!retained,
+                 "Inactive payload fallback table exhausted\n");
         inactivePayloadLookup = InactivePayloadLookup{};
         return false;
     }
@@ -2935,7 +2949,8 @@ MAA::finishPageMaterialization(
                         InactiveProducerLinePayloadCapture::
                             MAALookupControlBits),
                 sizeof(inactiveProducerLinePayloadCapture),
-                sizeof(inactivePayloadLookup));
+                sizeof(inactivePayloadLookup) +
+                    sizeof(inactivePayloadFallbacks));
         panic_if(!directRetirementContexts.retire(key),
              "Page materializer could not retire its 16K lifetime\n");
         (void)directRetirementEarlyLineLedger.clear(
@@ -3129,14 +3144,40 @@ MAA::servicePageMaterialization()
             schedulePageMaterializationEvent(1);
             return;
         }
-        resolvedInactivePayloadRequest = inactivePayloadLookup.request;
         if (consumeInactiveProducerPayload()) {
             schedulePageMaterializationEvent(1);
             return;
         }
-        // The one-cycle timed miss may now use the ordinary coherent fallback
-        // path. It is intentionally issued below only after lookup completion.
-        resolvedInactivePayloadMiss = true;
+    }
+
+    uint8_t resolvedInactivePayloadFallback =
+        HybridConsumerContextQueue::ContextCount;
+    for (uint8_t offset = 0;
+         offset < HybridConsumerContextQueue::ContextCount; ++offset) {
+        const uint8_t index = (nextInactivePayloadFallback + offset) %
+            HybridConsumerContextQueue::ContextCount;
+        InactivePayloadFallback &fallback = inactivePayloadFallbacks[index];
+        if (!fallback.pending)
+            continue;
+        const auto rebind = directRetirementContexts.rebindMaterializationRead(
+            fallback.request, &resolvedInactivePayloadRequest);
+        if (rebind == HybridConsumerContextQueue::MaterializationReadRebind::
+                          Rebound) {
+            // The one-cycle timed miss may now use the ordinary coherent
+            // fallback path.  It is intentionally issued below only with a
+            // fresh exact line credit, never its pre-lookup buffer.
+            resolvedInactivePayloadMiss = true;
+            resolvedInactivePayloadFallback = index;
+            nextInactivePayloadFallback =
+                (index + 1) % HybridConsumerContextQueue::ContextCount;
+            break;
+        } else if (rebind ==
+                   HybridConsumerContextQueue::MaterializationReadRebind::
+                       Closed) {
+            // A same-line direct capture/commit won the race.  The old miss
+            // has no remaining line to issue and must not be retried.
+            fallback = InactivePayloadFallback{};
+        }
     }
 
     for (unsigned attempt = 0;
@@ -3172,6 +3213,10 @@ MAA::servicePageMaterialization()
             discardUnsentPacket(packet);
             panic_if(!directRetirementContexts.defer(request),
                      "Page materializer could not rotate a blocked port\n");
+            if (completingInactivePayloadMiss) {
+                schedulePageMaterializationEvent(1);
+                break;
+            }
             continue;
         }
         const Addr paddr = packet->getAddr();
@@ -3190,12 +3235,18 @@ MAA::servicePageMaterialization()
                          !directRetirementRetryPackets.arm(port, packet) ||
                          !directRetirementContexts.accept(request),
                      "Page materializer could not retain a refused request\n");
+            if (completingInactivePayloadMiss)
+                inactivePayloadFallbacks[resolvedInactivePayloadFallback] =
+                    InactivePayloadFallback{};
             continue;
         }
         panic_if(actualPort != port ||
                      !reserveDirectRetirementRequest(paddr, request) ||
                      !directRetirementContexts.accept(request),
                  "Page materializer could not claim an issued request\n");
+        if (completingInactivePayloadMiss)
+            inactivePayloadFallbacks[resolvedInactivePayloadFallback] =
+                InactivePayloadFallback{};
         DPRINTF(MAAVirtualTrace,
                 "event=page_materialization_read_issue schema=1 "
                 "occurrence=%lu token=%u generation=%lu incarnation=%lu "
@@ -4677,7 +4728,8 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                         provisionedCombinedTotalBits(
                             inactive_page_payload_capture_lines, num_tiles),
                     sizeof(inactiveProducerLinePayloadCapture),
-                    sizeof(inactivePayloadLookup),
+                    sizeof(inactivePayloadLookup) +
+                        sizeof(inactivePayloadFallbacks),
                     InactiveProducerLinePayloadCapture::PortAccessCycles,
                     static_cast<unsigned>(captureBegin));
         }

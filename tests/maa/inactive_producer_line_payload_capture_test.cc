@@ -511,17 +511,17 @@ testExactPackedHardwareStorageEquations()
     CHECK(Capture::provisionedWritePortStateBits(512) == 939);
     CHECK(Capture::provisionedOutputTagBits(512) == 289);
     CHECK(Capture::provisionedReadPipelinePayloadBytes(512) == 64);
-    CHECK(Capture::MAALookupControlBits == 510);
+    CHECK(Capture::MAALookupControlBits == 1772);
     CHECK(Capture::PayloadIncarnationBitsPerToken == 64);
     CHECK(Capture::provisionedMAAPersistentStateBits(0, 32) == 0);
     CHECK(Capture::provisionedMAAPersistentStateBits(64, 32) == 2048);
     CHECK(Capture::GlobalControlBits == 30);
-    CHECK(Capture::provisionedMAAControlBits(64, 32) == 24745);
-    CHECK(Capture::provisionedMAAControlBits(512, 32) == 154220);
-    CHECK(Capture::provisionedCombinedTotalBytes(64, 32) == 7254);
-    CHECK(Capture::provisionedCombinedTotalBytes(128, 32) == 13662);
-    CHECK(Capture::provisionedCombinedTotalBytes(256, 32) == 26478);
-    CHECK(Capture::provisionedCombinedTotalBytes(512, 32) == 52110);
+    CHECK(Capture::provisionedMAAControlBits(64, 32) == 26007);
+    CHECK(Capture::provisionedMAAControlBits(512, 32) == 155482);
+    CHECK(Capture::provisionedCombinedTotalBytes(64, 32) == 7411);
+    CHECK(Capture::provisionedCombinedTotalBytes(128, 32) == 13819);
+    CHECK(Capture::provisionedCombinedTotalBytes(256, 32) == 26636);
+    CHECK(Capture::provisionedCombinedTotalBytes(512, 32) == 52268);
     CHECK(Capture::provisionedControlBits(512) ==
           Capture::provisionedTagBits(512) +
               Capture::provisionedDescriptorBits(512) +
