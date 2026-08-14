@@ -40,6 +40,8 @@ EXPECTED_FULL_SELECTED = 949_411
 EXPECTED_FULL_REJECTED = 50_013
 EXPECTED_REFERENCE_ELEMENTS = 1_180_000
 EXPECTED_SEPARATE_PREDICATE_LINES = 62_525
+FROZEN_ACTIVE_CONTEXTS = 8
+COMPOSED_ACTIVE_CONTEXTS = 32
 EXPECTED_FROZEN_MANIFEST_SHA256 = (
     "4a80c9e71fe26e4f7795e1abad88d288a18c206dc78f17171a4e27ad43208e69"
 )
@@ -247,6 +249,12 @@ def template() -> list[str]:
         raise RuntimeError(
             "frozen command must start from the 32-owner control"
         )
+    if command_value(command, "--maa_soa_jit_active_contexts") != str(
+        FROZEN_ACTIVE_CONTEXTS
+    ):
+        raise RuntimeError(
+            "frozen command must start from the archived 8-context control"
+        )
     if "--maa_soa_jit_pre_a_value_lookahead" in command:
         raise RuntimeError("frozen command must start with pre-A disabled")
     if option_argument(command, "--cmd") != str(paths["guest"]):
@@ -353,6 +361,7 @@ def campaign_plan(
         "full_windows": FULL_WINDOWS,
         "parallel_restores": len(run_specs()),
         "timeout_seconds": None,
+        "fixed_active_contexts": COMPOSED_ACTIVE_CONTEXTS,
         "simulated_metric": "simTicks",
         "host_time_metric_authorized": False,
         "expected_output_hash": EXPECTED_OUTPUT_HASH,
@@ -387,6 +396,11 @@ def materialize_command(
     replace_command_value(command, "--outdir", str(gem5_out))
     replace_command_value(
         command, "--maa_soa_jit_active_value_owners", str(spec["owners"])
+    )
+    replace_command_value(
+        command,
+        "--maa_soa_jit_active_contexts",
+        str(COMPOSED_ACTIVE_CONTEXTS),
     )
     replace_option_argument(command, "--options", f"{ELEMENTS} {selector}")
     pre_a_flag = "--maa_soa_jit_pre_a_value_lookahead"
@@ -930,6 +944,12 @@ def validate_materialized_commands(
         ):
             raise RuntimeError(
                 "materialized owner capacity does not match arm"
+            )
+        if command_value(command, "--maa_soa_jit_active_contexts") != str(
+            COMPOSED_ACTIVE_CONTEXTS
+        ):
+            raise RuntimeError(
+                "materialized context capacity does not match optimized hybrid"
             )
         has_pre_a = "--maa_soa_jit_pre_a_value_lookahead" in command
         if has_pre_a != bool(spec["pre_a"]):

@@ -71,6 +71,7 @@ def write_frozen_fixture(tmp_path: Path, runner):
         "--maa_num_tile_elements=16384",
         "--maa_physical_tile_elements=4096",
         "--maa_soa_jit_value_cache_enable",
+        "--maa_soa_jit_active_contexts=8",
         "--maa_soa_jit_active_value_owners=32",
         "--cmd",
         str(guest),
@@ -190,6 +191,7 @@ def test_plan_is_restore_only_with_the_fixed_seven_run_shape(tmp_path: Path):
     assert plan["timeout_seconds"] is None
     assert plan["simulated_metric"] == "simTicks"
     assert plan["host_time_metric_authorized"] is False
+    assert plan["fixed_active_contexts"] == 32
     assert [
         (arm["owners"], arm["pre_a"], arm["replicas"]) for arm in plan["arms"]
     ] == [
@@ -234,6 +236,10 @@ def test_materialized_arms_only_change_selector_owner_pre_a_and_outdir(
         == str(runner.frozen_paths()["checkpoint"])
         for command in commands
     )
+    assert {
+        runner.command_value(command, "--maa_soa_jit_active_contexts")
+        for command in commands
+    } == {"32"}
     assert (
         sum(
             "--maa_soa_jit_pre_a_value_lookahead" in command
