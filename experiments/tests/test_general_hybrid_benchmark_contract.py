@@ -605,7 +605,7 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertRegex(
             source,
             r"!directStaged && !forwarded && wordMask != fullMask\s+&&\s+"
-            r"materialization->pageActive",
+            r"activePageLine",
         )
         self.assertIn("captureMaterializationFragment(", source)
 
@@ -632,14 +632,19 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             encoding="utf-8"
         )
         header = (ROOT / "src/mem/MAA/MAA.hh").read_text(encoding="utf-8")
+        page_state = (
+            ROOT / "src/mem/MAA/HybridPageMaterializationState.hh"
+        ).read_text(encoding="utf-8")
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
         for text in (sim_object, options, config):
             self.assertIn("page_materialization_direct_spd_fragments", text)
         self.assertIn("Param.Bool(\n        False,", sim_object)
         self.assertIn("spd->stageData", source)
         self.assertIn("reservePageMaterializationDirectCommit", source)
-        self.assertIn("stagedWords", header)
+        self.assertIn("HybridPageMaterializationState activePages", header)
+        self.assertIn("stagedWords", page_state)
         self.assertNotIn("directStagePayload", header)
+        self.assertNotIn("directStagePayload", page_state)
 
     def test_gapbs_adds_native4_controls_without_false_hybrid_target(
         self,

@@ -105,6 +105,22 @@ class InactivePayloadFallbackTable
         return cleared;
     }
 
+    uint8_t clearPage(const ContextKey &owner, uint8_t page,
+                      uint16_t pageLines)
+    {
+        if (page >= Queue::Pipeline::ProducerPages || pageLines == 0)
+            return 0;
+        uint8_t cleared = 0;
+        for (Entry &entry : entries) {
+            if (!entry.pending || !sameKey(entry.request.owner, owner) ||
+                entry.request.request.line / pageLines != page)
+                continue;
+            entry = {};
+            ++cleared;
+        }
+        return cleared;
+    }
+
     uint8_t pendingCount() const
     {
         uint8_t count = 0;

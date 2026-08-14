@@ -439,6 +439,83 @@ testValidationAndExactIdentity()
 }
 
 void
+testTwoDisjointMaterializationPagesShareCreditsExactly()
+{
+    auto defaultDescriptor = validDescriptor();
+    defaultDescriptor.mode = HybridConsumerPipeline::Mode::MaterializePages;
+    HybridConsumerPipeline serialized;
+    CHECK(serialized.submit(defaultDescriptor) ==
+          HybridConsumerPipeline::SubmitResult::Accepted);
+    CHECK(serialized.activeMaterializationPageCapacity() == 1);
+    CHECK(serialized.beginMaterializationPage(0));
+    CHECK(!serialized.beginMaterializationPage(2));
+    CHECK(serialized.activeMaterializationPageCount() == 1);
+
+    auto descriptor = defaultDescriptor;
+    descriptor.activeMaterializationPages = 2;
+    HybridConsumerPipeline pipeline;
+    CHECK(pipeline.submit(descriptor) ==
+          HybridConsumerPipeline::SubmitResult::Accepted);
+    CHECK(pipeline.beginMaterializationPage(0));
+    CHECK(pipeline.beginMaterializationPage(2));
+    CHECK(!pipeline.beginMaterializationPage(0));
+    CHECK(!pipeline.beginMaterializationPage(1));
+    CHECK(pipeline.activeMaterializationPageCount() == 2);
+    CHECK(pipeline.materializationPageActive(0));
+    CHECK(!pipeline.materializationPageActive(1));
+    CHECK(pipeline.materializationPageActive(2));
+
+    const uint16_t pageLines = pipeline.producerPageLines();
+    const uint16_t pageTwoLine = 2 * pageLines;
+    CHECK(pipeline.notifyProducerLineWriteAck(
+        lineAckFor(descriptor, 0, 0xff, 0x12000)));
+    CHECK(pipeline.notifyProducerLineWriteAck(
+        lineAckFor(descriptor, pageTwoLine, 0xff, 0x13000)));
+
+    const auto bytes = payload(0x31);
+    const auto pageZeroRead = pipeline.pendingRead();
+    CHECK(pageZeroRead.line == 0);
+    CHECK(pipeline.accept(pageZeroRead));
+    CHECK(pipeline.completeRead(pageZeroRead, bytes.data(), bytes.size()));
+    const auto pageTwoRead = pipeline.pendingRead();
+    CHECK(pageTwoRead.line == pageTwoLine);
+    CHECK(pipeline.accept(pageTwoRead));
+    CHECK(pipeline.completeRead(pageTwoRead, bytes.data(), bytes.size()));
+
+    auto crossPageAlias = pageTwoRead;
+    crossPageAlias.line = pageZeroRead.line;
+    CHECK(!pipeline.completeMaterialize(crossPageAlias));
+    CHECK(pipeline.completeMaterialize(pageZeroRead));
+    CHECK(!pipeline.completeMaterialize(pageZeroRead));
+
+    // Retire exactly page zero while page two still owns a distinct line and
+    // credit. No response from the closed page can alias that live owner.
+    for (uint16_t line = 1; line < pageLines; ++line) {
+        CHECK(pipeline.notifyProducerLineWriteAck(
+            lineAckFor(descriptor, line, 0xff, 0x14000)));
+        CHECK(pipeline.beginMaterializeDirect(line));
+        CHECK(pipeline.completeMaterializeDirect(line));
+    }
+    CHECK(pipeline.materializationPageComplete(0));
+    CHECK(!pipeline.materializationPageActive(0));
+    CHECK(pipeline.materializationPageActive(2));
+    CHECK(pipeline.activeMaterializationPageCount() == 1);
+    CHECK(pipeline.creditsInUse() == 1);
+    CHECK(!pipeline.completeRead(pageZeroRead, bytes.data(), bytes.size()));
+    CHECK(pipeline.completeMaterialize(pageTwoRead));
+    CHECK(pipeline.creditsInUse() == 0);
+    CHECK(pipeline.beginMaterializationPage(1));
+    CHECK(pipeline.activeMaterializationPageCount() == 2);
+    CHECK(pipeline.assertInvariants());
+
+    auto invalid = descriptor;
+    invalid.activeMaterializationPages = 0;
+    CHECK(HybridConsumerPipeline::validate(invalid) != nullptr);
+    invalid.activeMaterializationPages = 3;
+    CHECK(HybridConsumerPipeline::validate(invalid) != nullptr);
+}
+
+void
 testTimingBoundsAreNotSchedulerClaims()
 {
     constexpr uint64_t fill = 674828;
@@ -492,6 +569,7 @@ main()
     testNoSyntheticVisibilityOrAcknowledgement();
     testCompleteBothWordGeometries();
     testValidationAndExactIdentity();
+    testTwoDisjointMaterializationPagesShareCreditsExactly();
     testTimingBoundsAreNotSchedulerClaims();
     std::cout << "hybrid consumer pipeline tests passed\n";
     return 0;

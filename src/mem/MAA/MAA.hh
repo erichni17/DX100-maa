@@ -19,6 +19,7 @@
 #include "mem/MAA/EarlyProducerLineReadinessLedger.hh"
 #include "mem/MAA/HybridConsumerContextQueue.hh"
 #include "mem/MAA/HybridMacroEventTracker.hh"
+#include "mem/MAA/HybridPageMaterializationState.hh"
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/InactivePayloadFallbackTable.hh"
 #include "mem/MAA/InactiveProducerLinePayloadCapture.hh"
@@ -412,6 +413,7 @@ public:
     unsigned int physical_tile_elements;
     unsigned int transparent_spd_mode;
     unsigned int logical_spd_cache_mode;
+    unsigned int page_materialization_active_pages;
     unsigned int page_materialization_wakeup_batches;
     unsigned int page_materialization_fragment_buffers;
     bool page_materialization_direct_spd_fragments;
@@ -605,29 +607,16 @@ protected:
     struct PageMaterializationExecution
     {
         bool active = false;
-        bool pageActive = false;
         HybridConsumerContextQueue::ContextKey key{};
         int coreID = -1;
         int maaID = -1;
-        int destinationTile = -1;
-        uint8_t page = HybridConsumerPipeline::ProducerPages;
         uint8_t wordBytes = 0;
         uint8_t pagesMaterialized = 0;
+        HybridPageMaterializationState activePages{};
         uint16_t forwardedLines = 0;
         uint16_t stagedDirectLines = 0;
         uint16_t stagedDirectFragments = 0;
         uint16_t stagedDirectFallbackLines = 0;
-        // Fixed active-page control only.  A producer page contains one bit
-        // per logical word (4096); FP64 has 512 64-byte lines, so line maps
-        // must cover the maximum geometry. No line payload lives here.
-        static constexpr std::size_t MaxStagedWords =
-            HybridConsumerPipeline::ProducerPageElements;
-        static constexpr std::size_t MaxStagedLines =
-            HybridConsumerPipeline::ProducerPageElements * sizeof(uint64_t) /
-            HybridConsumerPipeline::LineBytes;
-        std::bitset<MaxStagedWords> stagedWords{};
-        std::bitset<MaxStagedLines> stagedDisallowed{};
-        std::bitset<MaxStagedLines> stagedFallbackCounted{};
         uint16_t cacheReadFallbackLines = 0;
         std::array<uint16_t, HybridConsumerPipeline::ProducerPages>
             cacheReadFallbackLinesPerPage{};
@@ -767,6 +756,9 @@ protected:
     bool hasDirectRetirementOutstandingAddress(Addr address) const;
     bool hasDirectRetirementOutstandingOwner(
         const HybridConsumerContextQueue::ContextKey &key) const;
+    bool hasDirectRetirementOutstandingPage(
+        const HybridConsumerContextQueue::ContextKey &key, uint8_t page,
+        uint16_t pageLines) const;
     uint16_t directRetirementOutstandingRequestCount() const;
     bool reserveDirectRetirementRequest(
         Addr address, const HybridConsumerContextQueue::Request &request);
@@ -778,7 +770,7 @@ protected:
     void servicePageMaterialization();
     void schedulePageMaterializationEvent(int latency = 0);
     void finishPageMaterialization(
-        const HybridConsumerContextQueue::ContextKey &key);
+        const HybridConsumerContextQueue::ContextKey &key, uint8_t page);
     bool reservePageMaterializationCommit(
         const HybridConsumerContextQueue::Request &request, Tick readyTick);
     bool reservePageMaterializationDirectCommit(
@@ -959,6 +951,9 @@ public:
         statistics::Scalar page_materialization_submissions;
         statistics::Scalar page_materialization_pages;
         statistics::Scalar page_materialization_retirements;
+        statistics::Scalar page_materialization_active_page_high_water;
+        statistics::Scalar page_materialization_dual_page_admissions;
+        statistics::Scalar page_materialization_active_page_capacity_stalls;
         statistics::Scalar page_materialization_forwarded_lines;
         statistics::Scalar page_materialization_fragment_accumulated_lines;
         statistics::Scalar page_materialization_fragment_buffer_stalls;

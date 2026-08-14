@@ -96,6 +96,8 @@ class HybridConsumerContextQueue
         uint16_t producerPageFallbackLines = 0;
         uint8_t creditsInUse = 0;
         uint8_t creditHighWater = 0;
+        uint8_t activeMaterializationPages = 0;
+        uint8_t activeMaterializationPageCapacity = 0;
     };
 
     static constexpr std::size_t chargedPayloadBytes();
@@ -196,14 +198,14 @@ class HybridConsumerContextQueue
         if (stale.request.kind != Pipeline::Kind::ReadBacking)
             return MaterializationReadRebind::Closed;
         const Context *context = find(stale.owner);
+        const uint16_t pageLines = context == nullptr ? 0 :
+            context->pipeline.producerPageLines();
+        const uint8_t page = pageLines == 0 ? Pipeline::NoProducerPage :
+            static_cast<uint8_t>(stale.request.line / pageLines);
         if (context == nullptr ||
             context->pipeline.mode() != Pipeline::Mode::MaterializePages ||
             stale.request.line >= context->pipeline.lines() ||
-            context->pipeline.materializationPage() >=
-                Pipeline::ProducerPages ||
-            stale.request.line /
-                    context->pipeline.producerPageLines() !=
-                context->pipeline.materializationPage() ||
+            !context->pipeline.materializationPageActive(page) ||
             context->pipeline.lineState(stale.request.line) !=
                 Pipeline::LineState::ReadyForRead) {
             return MaterializationReadRebind::Closed;
@@ -471,6 +473,27 @@ class HybridConsumerContextQueue
                                   : context->pipeline.materializationPage();
     }
 
+    bool materializationPageActive(const ContextKey &key, uint8_t page) const
+    {
+        const Context *context = find(key);
+        return context != nullptr &&
+            context->pipeline.materializationPageActive(page);
+    }
+
+    uint8_t activeMaterializationPageCount(const ContextKey &key) const
+    {
+        const Context *context = find(key);
+        return context == nullptr ? 0 :
+            context->pipeline.activeMaterializationPageCount();
+    }
+
+    uint8_t activeMaterializationPageCapacity(const ContextKey &key) const
+    {
+        const Context *context = find(key);
+        return context == nullptr ? 0 :
+            context->pipeline.activeMaterializationPageCapacity();
+    }
+
     uint16_t producerPageLines(const ContextKey &key) const
     {
         const Context *context = find(key);
@@ -498,6 +521,10 @@ class HybridConsumerContextQueue
             pipeline.producerPageFallbackLineCount();
         result->creditsInUse = pipeline.creditsInUse();
         result->creditHighWater = pipeline.creditHighWater();
+        result->activeMaterializationPages =
+            pipeline.activeMaterializationPageCount();
+        result->activeMaterializationPageCapacity =
+            pipeline.activeMaterializationPageCapacity();
         return true;
     }
 

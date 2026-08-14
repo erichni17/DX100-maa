@@ -7,11 +7,27 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from experiments.scripts.report_maa_storage import (
+    materializer_active_page_accounting,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "experiments" / "scripts" / "report_maa_storage.py"
 
 
 class StorageReportTest(unittest.TestCase):
+    def test_materializer_destination_identity_uses_exact_minimum_bits(
+        self,
+    ) -> None:
+        packed = materializer_active_page_accounting(2, 1, 4096, 8)
+        self.assertEqual(packed["destination_bits"], 0)
+        self.assertEqual(packed["packed_page_control_bits"], 5176)
+        self.assertEqual(packed["additional_control_bits_per_context"], 5178)
+        self.assertEqual(
+            packed["additional_result_payload_bytes_all_contexts"],
+            131072,
+        )
+
     def write_config(
         self,
         root: Path,
@@ -22,6 +38,7 @@ class StorageReportTest(unittest.TestCase):
         response_pool: int = 480,
         inactive_masked_retention_lines: int = 0,
         inactive_payload_capture_lines: int = 0,
+        materializer_active_pages: int = 1,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -45,6 +62,9 @@ class StorageReportTest(unittest.TestCase):
             "virtual_native_issue_order": str(native_order).lower(),
             "direct_retirement_line_handoff": (
                 str(direct_retirement_line_handoff).lower()
+            ),
+            "page_materialization_active_pages": str(
+                materializer_active_pages
             ),
             "inactive_page_masked_fragment_retention_lines": str(
                 inactive_masked_retention_lines
@@ -220,6 +240,172 @@ class StorageReportTest(unittest.TestCase):
                     "physical_spd_virtual_payload_and_control_bytes"
                 ],
                 10496,
+            )
+
+    def test_two_active_materializer_pages_charge_8k_result_sensitivity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline_config = self.write_config(
+                root, 4096, True, direct_retirement_line_handoff=True
+            )
+            result, output = self.run_report(
+                root, baseline_config, "direct-index"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            baseline = json.loads((output / "maa_storage.json").read_text())
+            baseline_state = baseline["page_materialization_active_page_state"]
+            self.assertFalse(baseline_state["enabled"])
+            self.assertEqual(baseline_state["configured_capacity"], 1)
+            self.assertEqual(
+                baseline_state["packed_hardware_accounting"][
+                    "additional_control_bytes_all_contexts"
+                ],
+                0,
+            )
+
+            dual_root = root / "dual"
+            dual_root.mkdir()
+            dual_config = self.write_config(
+                dual_root,
+                4096,
+                True,
+                direct_retirement_line_handoff=True,
+                materializer_active_pages=2,
+            )
+            result, output = self.run_report(
+                dual_root, dual_config, "direct-index"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            dual = json.loads((output / "maa_storage.json").read_text())
+            state = dual["page_materialization_active_page_state"]
+            self.assertTrue(state["enabled"])
+            self.assertEqual(
+                state["classification"],
+                "8K active-result sensitivity; not iso-area 4K",
+            )
+            self.assertFalse(state["iso_area_4k_target"])
+            self.assertEqual(state["configured_capacity"], 2)
+            self.assertEqual(state["shared_line_buffers"], 16)
+            self.assertEqual(state["shared_cache_ports"], 4)
+            self.assertEqual(state["physical_spd_elements_per_tile"], 4096)
+            self.assertEqual(state["physical_spd_capacity_delta_elements"], 0)
+            packed = state["packed_hardware_accounting"]
+            self.assertEqual(packed["destination_bits"], 5)
+            self.assertEqual(packed["staging_map_bits_per_active_page"], 5120)
+            self.assertEqual(packed["counter_bits_per_active_page"], 53)
+            self.assertEqual(packed["packed_page_control_bits"], 5181)
+            self.assertEqual(
+                packed["additional_control_bits_per_context"], 5183
+            )
+            self.assertEqual(
+                packed["additional_control_bytes_per_context"], 648
+            )
+            self.assertEqual(
+                packed["additional_control_bits_all_contexts"], 20732
+            )
+            self.assertEqual(
+                packed["additional_control_bytes_all_contexts"], 2592
+            )
+            self.assertEqual(packed["result_elements_per_active_page"], 4096)
+            self.assertEqual(
+                packed["configured_active_result_elements_per_context"],
+                8192,
+            )
+            self.assertEqual(
+                packed["additional_result_elements_per_context"], 4096
+            )
+            self.assertEqual(
+                packed["additional_result_elements_all_contexts"], 16384
+            )
+            self.assertEqual(
+                packed["additional_result_payload_bytes_per_context"],
+                32768,
+            )
+            self.assertEqual(
+                packed["additional_result_payload_bytes_all_contexts"],
+                131072,
+            )
+            self.assertEqual(packed["additional_payload_bytes"], 131072)
+            for field in (
+                "additional_cache_ports",
+                "additional_line_buffers",
+                "additional_physical_spd_elements",
+            ):
+                self.assertEqual(packed[field], 0)
+            self.assertEqual(
+                dual["scratchpad"]["physical_payload_bytes"],
+                baseline["scratchpad"]["physical_payload_bytes"],
+            )
+            self.assertEqual(
+                dual["counted_payload"][
+                    "physical_spd_plus_virtual_buffers_bytes"
+                ]
+                - baseline["counted_payload"][
+                    "physical_spd_plus_virtual_buffers_bytes"
+                ],
+                131072,
+            )
+            for section in (
+                "bounded_state_lower_bound",
+                "comparable_storage_lower_bound",
+                "allocated_model_storage_lower_bound",
+            ):
+                key = (
+                    "physical_spd_virtual_payload_and_control_bytes"
+                    if section == "bounded_state_lower_bound"
+                    else "configured_total_bytes"
+                )
+                self.assertEqual(
+                    dual[section][key] - baseline[section][key], 133664
+                )
+
+            for invalid_capacity in (0, 3):
+                case = root / f"invalid-{invalid_capacity}"
+                case.mkdir()
+                invalid = self.write_config(
+                    case,
+                    4096,
+                    True,
+                    direct_retirement_line_handoff=True,
+                    materializer_active_pages=invalid_capacity,
+                )
+                result, _ = self.run_report(case, invalid, "direct-index")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "page_materialization_active_pages must be one or two",
+                    result.stderr,
+                )
+
+            non_4k_root = root / "non-4k"
+            non_4k_root.mkdir()
+            non_4k = self.write_config(
+                non_4k_root,
+                2048,
+                True,
+                direct_retirement_line_handoff=True,
+                materializer_active_pages=2,
+            )
+            result, _ = self.run_report(non_4k_root, non_4k, "direct-index")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("8K-result sensitivity", result.stderr)
+
+            no_handoff_root = root / "no-handoff"
+            no_handoff_root.mkdir()
+            no_handoff = self.write_config(
+                no_handoff_root,
+                4096,
+                True,
+                materializer_active_pages=2,
+            )
+            result, _ = self.run_report(
+                no_handoff_root, no_handoff, "direct-index"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "two active materializer pages require",
+                result.stderr.lower(),
             )
 
     def test_inactive_masked_retention_valid_capacities_and_exact_totals(

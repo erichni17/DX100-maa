@@ -150,6 +150,11 @@ def _get_maa_opts(options):
             options, "maa_direct_retirement_line_handoff"
         )
 
+    if hasattr(options, "maa_page_materialization_active_pages"):
+        opts["page_materialization_active_pages"] = getattr(
+            options, "maa_page_materialization_active_pages"
+        )
+
     if hasattr(options, "maa_page_materialization_wakeup_batches"):
         opts["page_materialization_wakeup_batches"] = getattr(
             options, "maa_page_materialization_wakeup_batches"

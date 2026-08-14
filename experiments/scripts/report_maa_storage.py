@@ -31,6 +31,28 @@ INACTIVE_MASKED_MAA_LOOKUP_CONTROL_BITS = (
 )
 INACTIVE_MASKED_INCARNATION_BITS_PER_TOKEN = 64
 
+# Exact packed equations from HybridPageMaterializationState.hh. Capacity two
+# adds one tagged live-page slot per each of the four exact context records.
+# It reuses cache-line buffers/ports and does not change per-tile SPD geometry,
+# but a second active page consumes another full 4K result destination. Thus
+# capacity two is explicitly an 8K-result sensitivity, not an iso-area 4K
+# materializer.
+MATERIALIZER_ACTIVE_PAGE_CAPACITIES = (1, 2)
+MATERIALIZER_CONTEXTS = 4
+MATERIALIZER_PAGE_IDENTITY_BITS = 2
+MATERIALIZER_MAX_STAGED_WORDS = 4096
+MATERIALIZER_MAX_STAGED_LINES = 512
+MATERIALIZER_STAGING_MAP_BITS = (
+    MATERIALIZER_MAX_STAGED_WORDS + 2 * MATERIALIZER_MAX_STAGED_LINES
+)
+MATERIALIZER_LINE_COUNTER_BITS = 10
+MATERIALIZER_FRAGMENT_COUNTER_BITS = 13
+MATERIALIZER_PER_PAGE_COUNTER_BITS = (
+    4 * MATERIALIZER_LINE_COUNTER_BITS + MATERIALIZER_FRAGMENT_COUNTER_BITS
+)
+MATERIALIZER_CAPACITY_CONFIG_BITS = 1
+MATERIALIZER_ACTIVE_PAGE_BITMAP_DELTA_BITS = 1
+
 
 def fail(message: str) -> None:
     raise SystemExit(f"MAA storage report failed: {message}")
@@ -184,6 +206,83 @@ def inactive_masked_retention_accounting(
     }
 
 
+def materializer_active_page_accounting(
+    capacity: int, tile_count: int, page_elements: int, word_bytes: int
+) -> dict[str, int]:
+    """Mirror packed control and active-result occupancy for capacity two."""
+    if capacity not in MATERIALIZER_ACTIVE_PAGE_CAPACITIES:
+        fail(
+            "page_materialization_active_pages must be one or two, got "
+            f"{capacity}"
+        )
+    destination_bits = 0 if tile_count <= 1 else bits_for_values(tile_count)
+    packed_page_control_bits = (
+        1
+        + MATERIALIZER_PAGE_IDENTITY_BITS
+        + destination_bits
+        + MATERIALIZER_STAGING_MAP_BITS
+        + MATERIALIZER_PER_PAGE_COUNTER_BITS
+    )
+    additional_bits_per_context = 0
+    if capacity == 2:
+        additional_bits_per_context = (
+            packed_page_control_bits
+            + MATERIALIZER_CAPACITY_CONFIG_BITS
+            + MATERIALIZER_ACTIVE_PAGE_BITMAP_DELTA_BITS
+        )
+    additional_bits_all_contexts = (
+        additional_bits_per_context * MATERIALIZER_CONTEXTS
+    )
+    additional_result_elements_per_context = (
+        page_elements if capacity == 2 else 0
+    )
+    additional_result_elements_all_contexts = (
+        additional_result_elements_per_context * MATERIALIZER_CONTEXTS
+    )
+    additional_result_bytes_per_context = (
+        additional_result_elements_per_context * word_bytes
+    )
+    additional_result_bytes_all_contexts = (
+        additional_result_elements_all_contexts * word_bytes
+    )
+    return {
+        "capacity": capacity,
+        "contexts": MATERIALIZER_CONTEXTS,
+        "destination_bits": destination_bits,
+        "staging_map_bits_per_active_page": MATERIALIZER_STAGING_MAP_BITS,
+        "counter_bits_per_active_page": MATERIALIZER_PER_PAGE_COUNTER_BITS,
+        "packed_page_control_bits": packed_page_control_bits,
+        "additional_control_bits_per_context": additional_bits_per_context,
+        "additional_control_bytes_per_context": bits_to_bytes(
+            additional_bits_per_context
+        ),
+        "additional_control_bits_all_contexts": (additional_bits_all_contexts),
+        "additional_control_bytes_all_contexts": bits_to_bytes(
+            additional_bits_all_contexts
+        ),
+        "result_elements_per_active_page": page_elements,
+        "configured_active_result_elements_per_context": (
+            capacity * page_elements
+        ),
+        "additional_result_elements_per_context": (
+            additional_result_elements_per_context
+        ),
+        "additional_result_elements_all_contexts": (
+            additional_result_elements_all_contexts
+        ),
+        "additional_result_payload_bytes_per_context": (
+            additional_result_bytes_per_context
+        ),
+        "additional_result_payload_bytes_all_contexts": (
+            additional_result_bytes_all_contexts
+        ),
+        "additional_payload_bytes": additional_result_bytes_all_contexts,
+        "additional_cache_ports": 0,
+        "additional_line_buffers": 0,
+        "additional_physical_spd_elements": 0,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("config", type=Path)
@@ -260,6 +359,22 @@ def main() -> int:
         "direct_retirement_line_handoff", fallback=False
     )
     try:
+        materializer_active_pages = int(
+            maa.get("page_materialization_active_pages", "1")
+        )
+    except ValueError:
+        fail("invalid system.maa value for page_materialization_active_pages")
+    if materializer_active_pages not in MATERIALIZER_ACTIVE_PAGE_CAPACITIES:
+        fail(
+            "page_materialization_active_pages must be one or two, got "
+            f"{materializer_active_pages}"
+        )
+    if materializer_active_pages == 2 and not direct_retirement_line_handoff:
+        fail(
+            "two active materializer pages require "
+            "direct_retirement_line_handoff=true"
+        )
+    try:
         inactive_masked_retention_entries = int(
             maa.get("inactive_page_masked_fragment_retention_lines", "0")
         )
@@ -325,6 +440,14 @@ def main() -> int:
         fail(
             "physical tile capacity must divide and not exceed logical capacity"
         )
+    if (
+        materializer_active_pages == 2
+        and physical != MATERIALIZER_MAX_STAGED_WORDS
+    ):
+        fail(
+            "two active materializer pages are only defined as an explicit "
+            "8K-result sensitivity with 4K physical destinations"
+        )
     if not 1 <= offset_entries <= logical:
         fail("Offset-Table capacity must be within the logical tile capacity")
     if not 1 <= offset_epoch_entries <= offset_entries:
@@ -354,6 +477,18 @@ def main() -> int:
     )
     inactive_masked_retention_bytes = inactive_masked_retention[
         "combined_total_bytes"
+    ]
+    materializer_active_page_state = materializer_active_page_accounting(
+        materializer_active_pages,
+        tiles,
+        MATERIALIZER_MAX_STAGED_WORDS,
+        args.word_bytes,
+    )
+    materializer_active_page_control_bytes = materializer_active_page_state[
+        "additional_control_bytes_all_contexts"
+    ]
+    materializer_active_page_result_bytes = materializer_active_page_state[
+        "additional_result_payload_bytes_all_contexts"
     ]
     native_spd_bytes = tiles * logical * 4
     physical_spd_bytes = tiles * physical * 4
@@ -620,13 +755,18 @@ def main() -> int:
         direct_cpp_static_bytes = 0
         direct_hardware_lower_bound_bytes = 0
         direct_producer_metadata_bytes = 0
-    counted_payload = physical_spd_bytes + active_virtual_payload_total
+    counted_payload = (
+        physical_spd_bytes
+        + active_virtual_payload_total
+        + materializer_active_page_result_bytes
+    )
     bounded_state_total = (
         counted_payload
         + virtual_control_bytes_per_unit * indirect_units
         + completion_increment_bytes
         + direct_hardware_lower_bound_bytes
         + inactive_masked_retention_bytes
+        + materializer_active_page_control_bytes
     )
     native_comparable_storage = (
         native_spd_bytes
@@ -688,6 +828,7 @@ def main() -> int:
             "indirect_units": indirect_units,
             "row_table_organizations_allocated": allocated_slices,
             "direct_retirement_line_handoff": direct_retirement_line_handoff,
+            "page_materialization_active_pages": materializer_active_pages,
             "inactive_page_masked_fragment_retention_lines": (
                 inactive_masked_retention_entries
             ),
@@ -980,6 +1121,22 @@ def main() -> int:
             "token_tiles": tiles if inactive_masked_retention_entries else 0,
             "packed_hardware_accounting": inactive_masked_retention,
         },
+        "page_materialization_active_page_state": {
+            "enabled": materializer_active_pages == 2,
+            "classification": (
+                "8K active-result sensitivity; not iso-area 4K"
+                if materializer_active_pages == 2
+                else "default single 4K active result"
+            ),
+            "iso_area_4k_target": False,
+            "default_capacity": 1,
+            "configured_capacity": materializer_active_pages,
+            "shared_line_buffers": 16,
+            "shared_cache_ports": 4,
+            "physical_spd_elements_per_tile": physical,
+            "physical_spd_capacity_delta_elements": 0,
+            "packed_hardware_accounting": materializer_active_page_state,
+        },
         "counted_payload": {
             "physical_spd_plus_virtual_buffers_bytes": counted_payload,
             "reduction_vs_native_spd_pct": (
@@ -1096,6 +1253,11 @@ def main() -> int:
         f"{format_bytes(direct_cpp_static_bytes)} |",
         "| Inactive masked-fragment retention packed hardware | "
         f"{format_bytes(inactive_masked_retention_bytes)} |",
+        "| Two-active-page materializer packed additional control | "
+        f"{format_bytes(materializer_active_page_control_bytes)} |",
+        "| Two-active-page materializer additional active-result payload "
+        "(sensitivity charge) | "
+        f"{format_bytes(materializer_active_page_result_bytes)} |",
         f"| Physical SPD + bounded virtual payload | {format_bytes(counted_payload)} |",
         "| Physical SPD + bounded payload/control lower bound | "
         f"{format_bytes(bounded_state_total)} |",
@@ -1151,6 +1313,11 @@ def main() -> int:
         "Enabled inactive masked-fragment retention is charged once as one shared",
         "packed structure, including its lookup/fallback control and persistent",
         "per-token incarnation state; the default capacity of zero charges nothing.",
+        "Capacity-two materialization is an explicit 8K active-result sensitivity,",
+        "not an iso-area 4K optimization. It charges one additional packed tagged",
+        "page slot and one additional 4K result destination in each exact context,",
+        "while reusing the existing line buffers and cache ports. Per-tile physical",
+        "SPD geometry is unchanged; the default capacity of one charges no delta.",
     ]
     (output / "maa_storage.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"

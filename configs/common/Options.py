@@ -392,6 +392,16 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_page_materialization_active_pages",
+        type=int,
+        default=1,
+        choices=(1, 2),
+        help=(
+            "Allow one or two disjoint materializer pages for one exact "
+            "token/generation/incarnation (default: one)"
+        ),
+    )
+    parser.add_argument(
         "--maa_page_materialization_wakeup_batches",
         type=int,
         default=0,

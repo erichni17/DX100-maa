@@ -6,6 +6,7 @@
 #include <iostream>
 
 #include "mem/MAA/HybridConsumerContextQueue.hh"
+#include "mem/MAA/HybridPageMaterializationState.hh"
 #include "mem/MAA/InactivePayloadFallbackTable.hh"
 
 using gem5::HybridConsumerContextQueue;
@@ -24,6 +25,48 @@ namespace {
 using Queue = HybridConsumerContextQueue;
 using Pipeline = Queue::Pipeline;
 using Fallbacks = gem5::InactivePayloadFallbackTable;
+using ActivePages = gem5::HybridPageMaterializationState;
+
+void
+testPackedTwoPageStateAndExactSlotRetirement()
+{
+    CHECK(ActivePages::validCapacity(1));
+    CHECK(ActivePages::validCapacity(2));
+    CHECK(!ActivePages::validCapacity(0));
+    CHECK(!ActivePages::validCapacity(3));
+    CHECK(ActivePages::bitsForValues(32) == 5);
+    CHECK(ActivePages::packedPageControlBits(32) == 5181);
+    CHECK(ActivePages::packedCapacityTwoAdditionalBits(32) == 5183);
+    CHECK(ActivePages::packedCapacityTwoAdditionalBytes(32) == 648);
+    CHECK(ActivePages::CapacityTwoAdditionalResultElements == 4096);
+
+    ActivePages pages;
+    CHECK(pages.activate(1, 8, 1) ==
+          ActivePages::ActivationResult::Accepted);
+    CHECK(pages.activate(3, 12, 1) ==
+          ActivePages::ActivationResult::AtCapacity);
+    CHECK(pages.activate(1, 9, 2) ==
+          ActivePages::ActivationResult::Duplicate);
+    CHECK(pages.activate(3, 12, 2) ==
+          ActivePages::ActivationResult::Accepted);
+    CHECK(pages.activeCount() == 2);
+    auto *pageOne = pages.findLine(512, 512);
+    auto *pageThree = pages.findLine(3 * 512, 512);
+    CHECK(pageOne != nullptr && pageOne->page == 1 &&
+          pageOne->destinationTile == 8);
+    CHECK(pageThree != nullptr && pageThree->page == 3 &&
+          pageThree->destinationTile == 12);
+    pageOne->stagedWords.set(17);
+    pageThree->stagedWords.set(29);
+    pageThree->forwardedLines = 7;
+    CHECK(pages.retire(1));
+    CHECK(pages.find(1) == nullptr);
+    pageThree = pages.find(3);
+    CHECK(pageThree != nullptr && pageThree->stagedWords.test(29));
+    CHECK(pageThree->forwardedLines == 7);
+    CHECK(pages.activeCount() == 1);
+    CHECK(!pages.retire(1));
+}
 
 Queue::Descriptor
 materializerDescriptor()
@@ -133,6 +176,61 @@ class BoundedCommitHarness
                DestinationPages>
         visible{};
 };
+
+void
+testTwoPageLineCreditCommitAndFallbackOwnership()
+{
+    auto descriptor = materializerDescriptor();
+    descriptor.consumer.activeMaterializationPages = 2;
+    Queue queue;
+    Queue::ContextKey owner;
+    CHECK(queue.submit(descriptor, &owner) == Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+    CHECK(queue.beginMaterializationPage(owner, 2));
+    CHECK(queue.activeMaterializationPageCount(owner) == 2);
+    CHECK(queue.activeMaterializationPageCapacity(owner) == 2);
+
+    const uint16_t pageLines = queue.producerPageLines(owner);
+    const uint16_t pageTwoLine = 2 * pageLines;
+    CHECK(queue.notifyProducerLineWriteAck(
+        owner, {owner.generation, 0, 0xff, 0x4100}));
+    CHECK(queue.notifyProducerLineWriteAck(
+        owner, {owner.generation, pageTwoLine, 0xff, 0x4200}));
+    const auto zeroBytes = linePayload(0x1000);
+    const auto twoBytes = linePayload(0x2000);
+    Queue::Request pageZero;
+    Queue::Request pageTwo;
+    CHECK(queue.captureMaterializationLine(
+        owner, 0, zeroBytes.data(), zeroBytes.size(), &pageZero));
+    CHECK(queue.captureMaterializationLine(
+        owner, pageTwoLine, twoBytes.data(), twoBytes.size(), &pageTwo));
+    CHECK(pageZero.request.buffer != pageTwo.request.buffer);
+    CHECK(pageZero.request.transactionID != pageTwo.request.transactionID);
+
+    BoundedCommitHarness commits;
+    CHECK(commits.reserve(pageZero, 30, 0));
+    CHECK(commits.reserve(pageTwo, 30, 1));
+    CHECK(commits.service(29, queue, owner) == 0);
+    CHECK(commits.service(30, queue, owner) == 2);
+    CHECK(commits.word(0, 0) == 0x1000);
+    CHECK(commits.word(1, 0) == 0x2000);
+    CHECK(!queue.completeMaterialize(pageZero));
+    auto staleLifetime = pageTwo;
+    ++staleLifetime.owner.incarnation;
+    CHECK(!queue.completeMaterialize(staleLifetime));
+    CHECK(queue.materializationPageActive(owner, 0));
+    CHECK(queue.materializationPageActive(owner, 2));
+
+    // Page-scoped cleanup removes only page zero's exact fallback identity;
+    // page two remains independently tracked under the same owner.
+    Fallbacks fallbacks;
+    CHECK(fallbacks.retain(pageZero));
+    CHECK(fallbacks.retain(pageTwo));
+    CHECK(fallbacks.clearPage(owner, 0, pageLines) == 1);
+    CHECK(fallbacks.pendingCount() == 1);
+    CHECK(fallbacks.clearPage(owner, 2, pageLines) == 1);
+    CHECK(fallbacks.pendingCount() == 0);
+}
 
 void
 testFourPageABIAndPreRegistrationRetry()
@@ -694,7 +792,9 @@ testLateAckForwardingCommitTickAndTwoChargedPages()
 int
 main()
 {
+    testPackedTwoPageStateAndExactSlotRetirement();
     testFourPageABIAndPreRegistrationRetry();
+    testTwoPageLineCreditCommitAndFallbackOwnership();
     testBoundedEarlyWakeupMilestones();
     testAuthenticatedMaskedFragmentAccumulation();
     testMaskedFragmentBoundAndFallbackSafety();

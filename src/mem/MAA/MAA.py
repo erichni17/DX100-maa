@@ -114,6 +114,10 @@ class MAA(ClockedObject):
         False,
         "Expose direct-retirement backing lines after all word WriteResp events",
     )
+    page_materialization_active_pages = Param.Unsigned(
+        1,
+        "Exact materializer pages active per token/generation/incarnation (1 preserves serialized default; maximum 2)",
+    )
     page_materialization_wakeup_batches = Param.Unsigned(
         0,
         "Early dependent wakeups per materialized 4K-element page (0 keeps page-level wakeup only; 1..16 are evenly spaced line milestones)",

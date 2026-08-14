@@ -37,6 +37,8 @@ class HybridConsumerPipeline
     static constexpr uint8_t NoBuffer =
         std::numeric_limits<uint8_t>::max();
     static constexpr uint8_t NoProducerPage = ProducerPages;
+    static constexpr uint8_t DefaultActiveMaterializationPages = 1;
+    static constexpr uint8_t MaxActiveMaterializationPages = 2;
     // Fragment accumulation reuses the existing charged line buffers.  It
     // cannot provision hidden payload or retain more partial lines than the
     // ordinary materializer already has cache-response credits.
@@ -150,6 +152,8 @@ class HybridConsumerPipeline
     struct Descriptor
     {
         Mode mode = Mode::TransformAndStore;
+        uint8_t activeMaterializationPages =
+            DefaultActiveMaterializationPages;
         uint64_t generation = 0;
         uint32_t logicalElements = 0;
         uint8_t wordBytes = 0;
@@ -211,6 +215,11 @@ class HybridConsumerPipeline
 
     static const char *validate(const Descriptor &descriptor)
     {
+        if (descriptor.activeMaterializationPages <
+                DefaultActiveMaterializationPages ||
+            descriptor.activeMaterializationPages >
+                MaxActiveMaterializationPages)
+            return "active materializer page capacity must be one or two";
         if (descriptor.logicalElements != LogicalElements)
             return "logical consumer must contain exactly 16384 elements";
         if (descriptor.wordBytes != 4 && descriptor.wordBytes != 8)
@@ -271,7 +280,7 @@ class HybridConsumerPipeline
         linePhases.fill(LineState::Blocked);
         materializedPageLines.fill(0);
         materializedPages.fill(false);
-        activeMaterializationPage = NoProducerPage;
+        activeMaterializationPages.reset();
         buffers.fill(Buffer{});
         for (auto &payload : lineBuffers)
             payload.fill(std::byte{0});
@@ -393,9 +402,8 @@ class HybridConsumerPipeline
             desc.mode != Mode::MaterializePages ||
             (state != State::WaitingForProducer &&
              state != State::Active) ||
-            activeMaterializationPage >= ProducerPages ||
+            !materializationPageActive(producerPage(line)) ||
             line >= lineCount() ||
-            producerPage(line) != activeMaterializationPage ||
             payload == nullptr || payloadBytes != LineBytes ||
             wordMask == 0 || wordMask == fullProducerLineWordMask() ||
             (wordMask & ~fullProducerLineWordMask()) != 0 ||
@@ -456,9 +464,7 @@ class HybridConsumerPipeline
                                             bufferIndex);
         buffer.state = BufferState::Reading;
         linePhases[line] = LineState::ReadInFlight;
-        nextReadSearch = line + 1;
-        if (nextReadSearch == readWindowFirstLine() + readWindowLineCount())
-            nextReadSearch = readWindowFirstLine();
+        advanceReadSearch(line);
         ++acceptedReads;
         if (!completeRead(request, lineBuffers[bufferIndex].data(), LineBytes))
             return FragmentCapture::Ineligible;
@@ -482,17 +488,17 @@ class HybridConsumerPipeline
     {
         if (state != State::Active ||
             (desc.mode == Mode::MaterializePages &&
-             activeMaterializationPage == NoProducerPage))
+             activeMaterializationPageCount() == 0))
             return {};
         const uint8_t buffer = freeBuffer();
         if (buffer == NoBuffer)
             return {};
-        const uint16_t first = readWindowFirstLine();
-        const uint16_t count = readWindowLineCount();
+        const uint16_t count = lineCount();
         for (uint16_t offset = 0; offset < count; ++offset) {
-            const uint16_t line = first +
-                ((nextReadSearch - first + offset) % count);
-            if (linePhases[line] == LineState::ReadyForRead)
+            const uint16_t line = (nextReadSearch + offset) % count;
+            if (linePhases[line] == LineState::ReadyForRead &&
+                (desc.mode != Mode::MaterializePages ||
+                 materializationPageActive(producerPage(line))))
                 return makeRequest(Kind::ReadBacking, line, buffer);
         }
         return {};
@@ -501,9 +507,8 @@ class HybridConsumerPipeline
     Request pendingReadLine(uint16_t line) const
     {
         if (desc.mode != Mode::MaterializePages || state != State::Active ||
-            activeMaterializationPage >= ProducerPages ||
             line >= lineCount() ||
-            producerPage(line) != activeMaterializationPage ||
+            !materializationPageActive(producerPage(line)) ||
             linePhases[line] != LineState::ReadyForRead)
             return {};
         const uint8_t buffer = freeBuffer();
@@ -550,7 +555,7 @@ class HybridConsumerPipeline
             eligible = candidate.state == BufferState::Free &&
                 linePhases[request.line] == LineState::ReadyForRead &&
                 (desc.mode == Mode::TransformAndStore ||
-                 producerPage(request.line) == activeMaterializationPage);
+                 materializationPageActive(producerPage(request.line)));
             break;
           case Kind::Compute:
             eligible = desc.mode == Mode::TransformAndStore && !aluInFlight &&
@@ -580,10 +585,7 @@ class HybridConsumerPipeline
           case Kind::ReadBacking:
             buffer.state = BufferState::Reading;
             linePhases[request.line] = LineState::ReadInFlight;
-            nextReadSearch = request.line + 1;
-            if (nextReadSearch == readWindowFirstLine() +
-                                      readWindowLineCount())
-                nextReadSearch = readWindowFirstLine();
+            advanceReadSearch(request.line);
             ++acceptedReads;
             updateCreditHighWater();
             break;
@@ -638,31 +640,34 @@ class HybridConsumerPipeline
         if (desc.mode != Mode::MaterializePages ||
             (state != State::WaitingForProducer && state != State::Active) ||
             page >= ProducerPages ||
-            activeMaterializationPage != NoProducerPage ||
+            activeMaterializationPages.test(page) ||
+            activeMaterializationPageCount() >=
+                desc.activeMaterializationPages ||
             materializedPages[page])
             return false;
-        activeMaterializationPage = page;
-        nextReadSearch = page * linesPerProducerPage();
+        const bool first = activeMaterializationPageCount() == 0;
+        activeMaterializationPages.set(page);
+        if (first)
+            nextReadSearch = page * linesPerProducerPage();
         return assertInvariants();
     }
 
     bool completeMaterialize(const Request &request)
     {
         if (desc.mode != Mode::MaterializePages ||
-            activeMaterializationPage >= ProducerPages ||
             !liveExact(request, Kind::ReadBacking,
                        BufferState::ReadyForCompute,
                        LineState::ReadyForCompute) ||
-            producerPage(request.line) != activeMaterializationPage)
+            !materializationPageActive(producerPage(request.line)))
             return false;
-        const uint8_t page = activeMaterializationPage;
+        const uint8_t page = producerPage(request.line);
         buffers[request.buffer] = Buffer{};
         linePhases[request.line] = LineState::Done;
         ++completedLines;
         ++materializedPageLines[page];
         if (materializedPageLines[page] == linesPerProducerPage()) {
             materializedPages[page] = true;
-            activeMaterializationPage = NoProducerPage;
+            activeMaterializationPages.reset(page);
         }
         if (completedLines == lineCount())
             state = State::Complete;
@@ -706,7 +711,7 @@ class HybridConsumerPipeline
     {
         if (desc.mode != Mode::MaterializePages ||
             state == State::Idle || creditsInUse() != 0 ||
-            activeMaterializationPage != NoProducerPage)
+            activeMaterializationPageCount() != 0)
             return false;
         reset();
         return true;
@@ -729,6 +734,9 @@ class HybridConsumerPipeline
             if (buffer.line >= lineCount() || owners[buffer.line])
                 return false;
             owners[buffer.line] = true;
+            if (desc.mode == Mode::MaterializePages &&
+                !materializationPageActive(producerPage(buffer.line)))
+                return false;
             if (buffer.state == BufferState::ProducerFragments) {
                 const bool completing =
                     linePhases[buffer.line] == LineState::ReadyForRead &&
@@ -748,6 +756,10 @@ class HybridConsumerPipeline
             if (linePhases[line] == LineState::Done)
                 ++done;
             const LineState phase = linePhases[line];
+            if (desc.mode == Mode::MaterializePages &&
+                phase == LineState::DirectMaterializeInFlight &&
+                !materializationPageActive(producerPage(line)))
+                return false;
             if (phase != LineState::Blocked &&
                 phase != LineState::ReadyForRead &&
                 phase != LineState::DirectMaterializeInFlight &&
@@ -763,6 +775,14 @@ class HybridConsumerPipeline
                 return false;
             materialized += materializedPageLines[page];
         }
+        if (activeMaterializationPageCount() >
+            desc.activeMaterializationPages)
+            return false;
+        for (uint8_t page = 0; page < ProducerPages; ++page) {
+            if (activeMaterializationPages.test(page) &&
+                materializedPages[page])
+                return false;
+        }
         const bool transform_invariants =
             desc.mode == Mode::TransformAndStore
             ? acceptedComputes <= acceptedReads &&
@@ -770,9 +790,7 @@ class HybridConsumerPipeline
                   completedLines <= acceptedWrites
             : acceptedComputes == 0 && acceptedWrites == 0 &&
                   completedLines <= acceptedReads + directMaterializedLines &&
-                  completedLines == materialized && !aluInFlight &&
-                  (activeMaterializationPage == NoProducerPage ||
-                   activeMaterializationPage < ProducerPages);
+                  completedLines == materialized && !aluInFlight;
         return done == completedLines && computing <= 1 &&
                (computing != 0) == aluInFlight &&
                transform_invariants &&
@@ -812,7 +830,25 @@ class HybridConsumerPipeline
     {
         return line < lineCount() ? linePhases[line] : LineState::Blocked;
     }
-    uint8_t materializationPage() const { return activeMaterializationPage; }
+    uint8_t materializationPage() const
+    {
+        for (uint8_t page = 0; page < ProducerPages; ++page)
+            if (activeMaterializationPages.test(page))
+                return page;
+        return NoProducerPage;
+    }
+    bool materializationPageActive(uint8_t page) const
+    {
+        return page < ProducerPages && activeMaterializationPages.test(page);
+    }
+    uint8_t activeMaterializationPageCount() const
+    {
+        return static_cast<uint8_t>(activeMaterializationPages.count());
+    }
+    uint8_t activeMaterializationPageCapacity() const
+    {
+        return desc.activeMaterializationPages;
+    }
     bool materializationPageComplete(uint8_t page) const
     {
         return page < ProducerPages && materializedPages[page];
@@ -838,19 +874,18 @@ class HybridConsumerPipeline
     bool completeMaterializeDirect(uint16_t line)
     {
         if (desc.mode != Mode::MaterializePages ||
-            activeMaterializationPage >= ProducerPages ||
             line >= lineCount() ||
-            producerPage(line) != activeMaterializationPage ||
+            !materializationPageActive(producerPage(line)) ||
             linePhases[line] != LineState::DirectMaterializeInFlight)
             return false;
-        const uint8_t page = activeMaterializationPage;
+        const uint8_t page = producerPage(line);
         linePhases[line] = LineState::Done;
         ++completedLines;
         ++directMaterializedLines;
         ++materializedPageLines[page];
         if (materializedPageLines[page] == linesPerProducerPage()) {
             materializedPages[page] = true;
-            activeMaterializationPage = NoProducerPage;
+            activeMaterializationPages.reset(page);
         }
         if (completedLines == lineCount())
             state = State::Complete;
@@ -860,9 +895,8 @@ class HybridConsumerPipeline
     bool beginMaterializeDirect(uint16_t line)
     {
         if (desc.mode != Mode::MaterializePages ||
-            activeMaterializationPage >= ProducerPages ||
             line >= lineCount() ||
-            producerPage(line) != activeMaterializationPage ||
+            !materializationPageActive(producerPage(line)) ||
             linePhases[line] != LineState::ReadyForRead)
             return false;
         linePhases[line] = LineState::DirectMaterializeInFlight;
@@ -994,18 +1028,6 @@ class HybridConsumerPipeline
                                      LineBytes);
     }
 
-    uint16_t readWindowFirstLine() const
-    {
-        return desc.mode == Mode::MaterializePages
-            ? activeMaterializationPage * linesPerProducerPage() : 0;
-    }
-
-    uint16_t readWindowLineCount() const
-    {
-        return desc.mode == Mode::MaterializePages
-            ? linesPerProducerPage() : lineCount();
-    }
-
     uint8_t producerPage(uint16_t line) const
     {
         return static_cast<uint8_t>(line / linesPerProducerPage());
@@ -1029,6 +1051,13 @@ class HybridConsumerPipeline
             if (buffers[index].state == BufferState::Free)
                 return index;
         return NoBuffer;
+    }
+
+    void advanceReadSearch(uint16_t line)
+    {
+        nextReadSearch = static_cast<uint16_t>(line + 1);
+        if (nextReadSearch == lineCount())
+            nextReadSearch = 0;
     }
 
     Request makeRequest(Kind kind, uint16_t line, uint8_t buffer) const
@@ -1058,6 +1087,9 @@ class HybridConsumerPipeline
     {
         if (state != State::Active || request.buffer >= LineBufferCount ||
             request.line >= lineCount() || request.kind != kind)
+            return false;
+        if (desc.mode == Mode::MaterializePages &&
+            !materializationPageActive(producerPage(request.line)))
             return false;
         const Request expected = makeRequest(kind, request.line,
                                              request.buffer);
@@ -1126,7 +1158,7 @@ class HybridConsumerPipeline
         materializedPageLines.fill(0);
         materializedPages.fill(false);
         buffers.fill(Buffer{});
-        activeMaterializationPage = NoProducerPage;
+        activeMaterializationPages.reset();
         nextReadSearch = 0;
         completedLines = 0;
         directMaterializedLines = 0;
@@ -1160,7 +1192,7 @@ class HybridConsumerPipeline
     ProducerLineAck fragmentEligibleAck{};
     bool fragmentEligibleAckValid = false;
     uint8_t creditHighWaterValue = 0;
-    uint8_t activeMaterializationPage = NoProducerPage;
+    std::bitset<ProducerPages> activeMaterializationPages{};
     bool aluInFlight = false;
 
     void updateCreditHighWater()
