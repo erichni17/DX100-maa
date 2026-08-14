@@ -683,15 +683,21 @@ StreamAccessUnit::captureAndIssueResponseBearingLine()
              my_stream_id, ordinal);
     ++my_sent_requests;
     (*maa->stats.STR_PublishIssues[my_stream_id])++;
+    const bool overlaps_non_stream =
+        maa->hasNonStreamActivity(my_stream_id);
+    if (overlaps_non_stream)
+        (*maa->stats.STR_PublishOverlapIssues[my_stream_id])++;
     DPRINTF(MAATrace,
             "event=spd_publish_issue schema=1 unit=%d logical_page=%u "
             "logical_offset=%u generation=%lu ordinal=%u "
-            "virtual_address=0x%lx physical_address=0x%lx credits=%lu\n",
+            "virtual_address=0x%lx physical_address=0x%lx credits=%lu "
+            "overlap=%d\n",
             my_stream_id, my_publish_logical_page,
             my_publish_logical_element_offset,
             my_publish_guest_generation, ordinal, identity.address,
             packet->getAddr(), static_cast<unsigned long>(
-                                   response_publisher.occupiedCredits()));
+                                   response_publisher.occupiedCredits()),
+            overlaps_non_stream ? 1 : 0);
     maa->sendPacket(FuncUnitType::STREAM, my_stream_id, packet,
                     my_SPD_read_finish_tick, true);
 }

@@ -886,6 +886,7 @@ public:
     Tick my_last_idle_tick;
     Tick my_last_reset_tick;
     bool allFuncUnitsIdle();
+    bool hasNonStreamActivity(int streamID) const;
     Tick getCurTick();
 
 public:
@@ -1285,6 +1286,7 @@ public:
         std::vector<statistics::Scalar *> STR_PublishWriteResponses;
         std::vector<statistics::Scalar *> STR_PublishCreditHWM;
         std::vector<statistics::Scalar *> STR_PublishCreditStalls;
+        std::vector<statistics::Scalar *> STR_PublishOverlapIssues;
         std::vector<statistics::Scalar *> STR_PublishTerminals;
         std::vector<statistics::Formula *> STR_AvgWordsPerCacheLine;
         std::vector<statistics::Formula *> STR_AvgCacheLinesPerInst;
