@@ -14,7 +14,8 @@ def test_owner_scaling_gate_is_shared_checkpoint_two_replica_and_default_off():
     assert "run_arm control_r2 2 32; run_arm treatment_r2 2 64" in runner
     assert '"$out/checkpoint/soa16"' in runner
     assert "shared_checkpoint_m5_cpt_sha256" in runner
-    assert "soa_jit_pre_a_value_lookahead=false" in runner
+    assert "SOA_JIT_OWNER_PRE_A:-false" in runner
+    assert '"soa_jit_pre_a_value_lookahead=$pre_a_mode"' in runner
     assert "maa_soa_jit_value_prefetch_credits=0" in runner
 
 
@@ -55,3 +56,6 @@ def test_owner_scaling_gate_has_safe_locals_and_optional_timeout():
     assert 'owners=$3 run="$out/runs/$name"' not in runner
     assert 'printf "%.0f\\n", sum; exit' in runner
     assert 'printf "%.0f\\\\n", sum; exit' not in runner
+    assert "SOA_JIT_OWNER_PRE_A:-false" in runner
+    assert '"soa_jit_pre_a_value_lookahead=$pre_a_mode"' in runner
+    assert "IND_SoaJitPreAValueReadyAtAResponse" in runner

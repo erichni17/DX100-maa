@@ -16,6 +16,7 @@ ramulator="$root/ext/ramulator2/ramulator2/example_gem5_config.yaml"
 cxx=${CXX:-g++}
 expected_hash=2761840269561229581
 timeout_seconds=${SOA_JIT_OWNER_TIMEOUT_SECONDS:-0}
+pre_a_mode=${SOA_JIT_OWNER_PRE_A:-false}
 
 [[ -x $gem5 ]] || { echo "missing gem5: $gem5" >&2; exit 2; }
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
@@ -23,8 +24,14 @@ timeout_seconds=${SOA_JIT_OWNER_TIMEOUT_SECONDS:-0}
     echo "SOA_JIT_OWNER_TIMEOUT_SECONDS must be a non-negative integer" >&2
     exit 2
 }
+[[ $pre_a_mode == false || $pre_a_mode == true ]] || {
+    echo "SOA_JIT_OWNER_PRE_A must be false or true" >&2
+    exit 2
+}
 timeout_command=()
 ((timeout_seconds == 0)) || timeout_command=(timeout "$timeout_seconds")
+pre_a_args=()
+[[ $pre_a_mode == false ]] || pre_a_args=(--maa_soa_jit_pre_a_value_lookahead)
 [[ -z $(git -C "$root" status --porcelain) ]] || {
     echo "source worktree must be clean for provenance" >&2; exit 2;
 }
@@ -64,7 +71,7 @@ checkpoint_sha=$(sha256sum "$checkpoint_state" | awk '{print $1}')
         'physical_tile_elements=4096' 'active_contexts=32' \
         'value_lookahead=8' 'value_cache_enable=true' \
         'predicate_active_credits=16' 'index_buffer_lines=4' \
-        'apply_lanes=1' 'pre_a_value_lookahead=false' \
+        'apply_lanes=1' "pre_a_value_lookahead=$pre_a_mode" \
         'sequential_value_prefetch_credits=0' 'owners_control=32' \
         'owners_treatment=64' 'replicas=2'
 } >"$out/manifest.txt"
@@ -83,7 +90,8 @@ stat_sum() {
 declare -A ticks hashes selected rejected value_issues value_responses fills
 declare -A deliveries aliases a_reads a_responses writes write_responses
 declare -A evictions value_stalls context_stalls cache_hwm terminal
-printf 'arm\treplica\towners\tsimTicks\toutput_hash\tselected\trejected\tvalue_reads\tvalue_responses\tfills\tdeliveries\taliases\ta_reads\ta_responses\twrites\twrite_responses\tevictions\tvalue_stalls\tcontext_stalls\tcache_hwm\n' >"$out/matrix.tsv"
+declare -A pre_a_issues pre_a_ready pre_a_uses
+printf 'arm\treplica\towners\tpre_a\tsimTicks\toutput_hash\tselected\trejected\tvalue_reads\tvalue_responses\tfills\tdeliveries\taliases\ta_reads\ta_responses\twrites\twrite_responses\tevictions\tvalue_stalls\tcontext_stalls\tcache_hwm\tpre_a_issues\tpre_a_ready\tpre_a_uses\n' >"$out/matrix.tsv"
 
 run_arm() {
     local name=$1 replica=$2 owners=$3
@@ -109,22 +117,28 @@ run_arm() {
         --maa_soa_jit_value_lookahead=8 --maa_soa_jit_value_cache_enable \
         --maa_soa_jit_value_prefetch_credits=0 \
         --maa_soa_jit_active_value_owners="$owners" --maa_soa_jit_apply_lanes=1 \
-        --cmd="$guest" >"$run/restore.log" 2>&1
+        "${pre_a_args[@]}" --cmd="$guest" >"$run/restore.log" 2>&1
     [[ $(grep -Fxc 'ROI Ended' "$run/restore.log" || true) -eq 1 ]]
     [[ $(grep -Ec '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' "$run/restore.log" || true) -eq 1 ]]
     [[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' "$run/restore.log" || true) -eq 0 ]]
     result=$(grep -E '^HYBRID_RMW_SOA_RESULT ' "$run/restore.log" || true)
     [[ $(grep -Ec '^HYBRID_RMW_SOA_RESULT ' "$run/restore.log" || true) -eq 1 && $result =~ mode=soa && $result =~ logical=16384 && $result =~ operations=2 && $result =~ errors=0 ]]
-    for resolved in "soa_jit_active_value_owners=$owners" soa_jit_active_contexts=32 soa_jit_value_lookahead=8 soa_jit_value_cache_enable=true soa_jit_value_prefetch_credits=0 soa_jit_pre_a_value_lookahead=false soa_jit_apply_lanes=1; do grep -Fqx "$resolved" "$run/config.ini"; done
+    for resolved in "soa_jit_active_value_owners=$owners" soa_jit_active_contexts=32 soa_jit_value_lookahead=8 soa_jit_value_cache_enable=true soa_jit_value_prefetch_credits=0 "soa_jit_pre_a_value_lookahead=$pre_a_mode" soa_jit_apply_lanes=1; do grep -Fqx "$resolved" "$run/config.ini"; done
     selected[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitSelected); rejected[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitPredicateRejected)
     value_issues[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueReadIssues); value_responses[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueReadResponses); fills[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueFills)
     deliveries[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueDeliveries); aliases[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitAliasesApplied)
     a_reads[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitAReadIssues); a_responses[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitAReadResponses); writes[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitAWriteIssues); write_responses[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitAWriteResponses)
     evictions[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueEvictions); value_stalls[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueStalls); context_stalls[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitContextStalls); cache_hwm[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueCacheHighWater); terminal[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitTerminalCompletions)
+    pre_a_issues[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitPreAValueIssues); pre_a_ready[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitPreAValueReadyAtAResponse); pre_a_uses[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitPreAValueUses)
     [[ ${terminal[$name]} -eq 2 && $((selected[$name] + rejected[$name])) -eq 32768 && ${value_issues[$name]} -eq ${value_responses[$name]} && ${value_responses[$name]} -eq ${fills[$name]} && ${deliveries[$name]} -eq ${selected[$name]} && ${aliases[$name]} -eq ${selected[$name]} && ${a_reads[$name]} -eq ${a_responses[$name]} && ${a_reads[$name]} -eq ${writes[$name]} && ${writes[$name]} -eq ${write_responses[$name]} && ${cache_hwm[$name]} -ge 2 && ${cache_hwm[$name]} -le $((owners * 2)) ]]
+    if [[ $pre_a_mode == true ]]; then
+        [[ ${pre_a_issues[$name]} -gt 0 && ${pre_a_issues[$name]} -eq ${pre_a_uses[$name]} && ${pre_a_ready[$name]} -gt 0 && ${pre_a_ready[$name]} -le ${pre_a_uses[$name]} ]]
+    else
+        [[ ${pre_a_issues[$name]} -eq 0 && ${pre_a_ready[$name]} -eq 0 && ${pre_a_uses[$name]} -eq 0 ]]
+    fi
     hashes[$name]=$(sed -n 's/.* output_hash=\([0-9][0-9]*\).*/\1/p' <<<"$result"); ticks[$name]=$(awk '$1 == "simTicks" { print $2; exit }' "$run/stats.txt")
     [[ ${hashes[$name]} == "$expected_hash" && ${ticks[$name]} =~ ^[1-9][0-9]*$ ]]
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$replica" "$owners" "${ticks[$name]}" "${hashes[$name]}" "${selected[$name]}" "${rejected[$name]}" "${value_issues[$name]}" "${value_responses[$name]}" "${fills[$name]}" "${deliveries[$name]}" "${aliases[$name]}" "${a_reads[$name]}" "${a_responses[$name]}" "${writes[$name]}" "${write_responses[$name]}" "${evictions[$name]}" "${value_stalls[$name]}" "${context_stalls[$name]}" "${cache_hwm[$name]}" >>"$out/matrix.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$replica" "$owners" "$pre_a_mode" "${ticks[$name]}" "${hashes[$name]}" "${selected[$name]}" "${rejected[$name]}" "${value_issues[$name]}" "${value_responses[$name]}" "${fills[$name]}" "${deliveries[$name]}" "${aliases[$name]}" "${a_reads[$name]}" "${a_responses[$name]}" "${writes[$name]}" "${write_responses[$name]}" "${evictions[$name]}" "${value_stalls[$name]}" "${context_stalls[$name]}" "${cache_hwm[$name]}" "${pre_a_issues[$name]}" "${pre_a_ready[$name]}" "${pre_a_uses[$name]}" >>"$out/matrix.tsv"
 }
 
 run_arm control_r1 1 32; run_arm treatment_r1 1 64
@@ -132,7 +146,7 @@ run_arm control_r2 2 32; run_arm treatment_r2 2 64
 decision=PROMOTE
 for replica in 1 2; do
     control=control_r$replica; treatment=treatment_r$replica
-    [[ ${hashes[$control]} == ${hashes[$treatment]} && ${selected[$control]} -eq ${selected[$treatment]} && ${rejected[$control]} -eq ${rejected[$treatment]} && ${a_reads[$control]} -eq ${a_reads[$treatment]} && ${writes[$control]} -eq ${writes[$treatment]} ]]
+    [[ ${hashes[$control]} == ${hashes[$treatment]} && ${selected[$control]} -eq ${selected[$treatment]} && ${rejected[$control]} -eq ${rejected[$treatment]} && ${a_reads[$control]} -eq ${a_reads[$treatment]} && ${writes[$control]} -eq ${writes[$treatment]} && ${pre_a_issues[$control]} -eq ${pre_a_issues[$treatment]} && ${pre_a_uses[$control]} -eq ${pre_a_uses[$treatment]} ]]
     if [[ ${ticks[$treatment]} -ge ${ticks[$control]} || ${evictions[$treatment]} -ge ${evictions[$control]} ]]; then decision=REJECT; fi
 done
 {
