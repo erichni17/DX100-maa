@@ -85,6 +85,10 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             "--maa_direct_retirement_line_handoff",
             runner.common_restore_args(Path("ramulator.yaml"), 2),
         )
+        self.assertIn(
+            "--l3_ports=8",
+            runner.common_restore_args(Path("ramulator.yaml"), 2, 8),
+        )
 
     def test_checkpoint_and_restore_capture_materializer_trace(self) -> None:
         checkpoint = runner.checkpoint_command(
@@ -104,11 +108,13 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             "hybrid",
             Path("ramulator.yaml"),
             2,
+            8,
             [],
         )
         for command in (checkpoint, restore):
             self.assertIn("--debug-flags=MAAVirtualTrace", command)
             self.assertIn("--debug-file=virtual_trace.log", command)
+        self.assertIn("--l3_ports=8", restore)
 
     def test_config_freeze_preserves_relative_import_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

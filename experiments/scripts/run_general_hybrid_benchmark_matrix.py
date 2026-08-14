@@ -76,9 +76,7 @@ def copy_stable_artifact(source: Path, destination: Path) -> str:
     frozen = sha256_file(destination)
     if before != after or after != frozen:
         destination.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"artifact changed while being frozen: {source}"
-        )
+        raise RuntimeError(f"artifact changed while being frozen: {source}")
     return frozen
 
 
@@ -240,7 +238,7 @@ def profile_args(profile_name: str) -> list[str]:
 
 
 def common_restore_args(
-    ramulator_config: Path, mem_channels: int
+    ramulator_config: Path, mem_channels: int, l3_ports: int = 4
 ) -> list[str]:
     return [
         "--cpu-type",
@@ -277,7 +275,7 @@ def common_restore_args(
         "--l3_assoc=16",
         "--l3_mshrs=256",
         "--l3_write_buffers=128",
-        "--l3_ports=4",
+        f"--l3_ports={l3_ports}",
         "--cacheline_size=64",
         "--mem-type",
         "Ramulator2",
@@ -357,6 +355,7 @@ def restore_command(
     profile: str,
     ramulator_config: Path,
     mem_channels: int,
+    l3_ports: int,
     extra: list[str],
 ) -> list[str]:
     return [
@@ -366,7 +365,7 @@ def restore_command(
         "--debug-flags=MAAVirtualTrace",
         "--debug-file=virtual_trace.log",
         str(config),
-        *common_restore_args(ramulator_config, mem_channels),
+        *common_restore_args(ramulator_config, mem_channels, l3_ports),
         f"--checkpoint-dir={checkpoint}",
         *profile_args(profile),
         *extra,
@@ -462,6 +461,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--replicas", type=int, default=1)
     parser.add_argument("--mem-channels", type=int, default=2)
+    parser.add_argument(
+        "--l3-ports",
+        type=int,
+        default=4,
+        help=(
+            "LLC acceptance ports (default: 4); use a separate campaign for "
+            "each sensitivity point"
+        ),
+    )
     parser.add_argument("--pingpong", action="store_true")
     parser.add_argument("--page0-prearm", action="store_true")
     parser.add_argument(
@@ -472,6 +480,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.replicas < 1 or args.mem_channels < 1:
         parser.error("replicas and memory channels must be positive")
+    if not 1 <= args.l3_ports <= 16:
+        parser.error("--l3-ports must be in [1, 16]")
     if args.hybrid and "{selector}" not in args.hybrid_options:
         parser.error("--hybrid-options must contain {selector}")
     if not args.hybrid and args.hybrid_options:
@@ -529,6 +539,7 @@ def main() -> int:
             "profiles": PROFILE,
             "arms": arms,
             "replicas": args.replicas,
+            "l3_ports": args.l3_ports,
             "note": (
                 "token_stream_ld arms are correctness controls; explicit "
                 "future arms are not assumed equivalent"
@@ -657,6 +668,7 @@ def main() -> int:
         "arms": arms,
         "replicas": args.replicas,
         "mem_channels": args.mem_channels,
+        "l3_ports": args.l3_ports,
         "options": options,
         "selector_path": str(selector) if args.hybrid else None,
         "artifacts": artifact_identity,
@@ -731,6 +743,7 @@ def main() -> int:
                     str(arm["profile"]),
                     frozen_ramulator_config,
                     args.mem_channels,
+                    args.l3_ports,
                     args.extra_gem5_arg,
                 )
                 rc = run_logged(command, run_dir / "restore.log", environment)
