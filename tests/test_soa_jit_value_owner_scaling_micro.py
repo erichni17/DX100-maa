@@ -53,3 +53,5 @@ def test_owner_scaling_gate_has_safe_locals_and_optional_timeout():
     assert "local name=$1 replica=$2 owners=$3\n" in runner
     assert 'local run="$out/runs/$name"\n' in runner
     assert 'owners=$3 run="$out/runs/$name"' not in runner
+    assert 'printf "%.0f\\n", sum; exit' in runner
+    assert 'printf "%.0f\\\\n", sum; exit' not in runner

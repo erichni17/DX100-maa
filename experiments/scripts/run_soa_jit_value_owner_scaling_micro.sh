@@ -75,7 +75,7 @@ stat_sum() {
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 ~ ("_" suffix "$") { sum += $2 }
         /^---------- End Simulation Statistics/ && section == 1 {
-            printf "%.0f\\n", sum; exit
+            printf "%.0f\n", sum; exit
         }
     ' "$stats"
 }
@@ -137,7 +137,7 @@ for replica in 1 2; do
 done
 {
     printf 'decision=%s\n' "$decision"
-    for replica in 1 2; do control=control_r$replica; treatment=treatment_r$replica; awk -v r="$replica" -v c="${ticks[$control]}" -v t="${ticks[$treatment]}" -v ce="${evictions[$control]}" -v te="${evictions[$treatment]}" 'BEGIN { printf "replica_%s_speedup=%.9f\\nreplica_%s_evictions=%s_to_%s\\n", r, c/t, r, ce, te }'; done
+    for replica in 1 2; do control=control_r$replica; treatment=treatment_r$replica; awk -v r="$replica" -v c="${ticks[$control]}" -v t="${ticks[$treatment]}" -v ce="${evictions[$control]}" -v te="${evictions[$treatment]}" 'BEGIN { printf "replica_%s_speedup=%.9f\nreplica_%s_evictions=%s_to_%s\n", r, c/t, r, ce, te }'; done
     printf '%s\n' 'decision_requires_lower_simTicks_and_lower_evictions_in_both_replicas'
 } >"$out/summary.txt"
 cat "$out/matrix.tsv"; cat "$out/summary.txt"; echo SOA_JIT_VALUE_OWNER_SCALING_MICRO_PASS
