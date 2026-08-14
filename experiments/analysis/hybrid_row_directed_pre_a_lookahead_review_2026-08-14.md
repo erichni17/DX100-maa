@@ -2,13 +2,34 @@
 
 Date: 2026-08-14
 Scope: logical/metadata 16K Row/Offset reorder with physical 4K SPD and backing
-Status: implementation handoff; no gem5 run was launched for this review
+Status: implemented and micro-validated; promote only to the CG/volume-only generality gate
 
 ## Recommendation
 
-Make one narrow scheduler change: after a SoA/JIT context claims an exact Row chain and issues its A-line read, allow that context to fill and issue its existing ordered value lookahead while it is in `AwaitARead`. Keep delivery and arithmetic gated on the matching A response and the transition to `Active`.
+Make one narrow scheduler change: after a SoA/JIT context claims an exact Row chain and issues its A-line read, allow that context to fill and issue its existing ordered value lookahead while it is in `AwaitARead`. Values may become ready in the existing slots, but ordered apply and arithmetic remain gated on the matching A response and the transition to `Active`.
 
 This is smaller and more general than changing the producer/page protocol. It adds no value requests, queues, owners, ports, payload storage, or guest-visible tokens. It overlaps two already-required read streams whose addresses are known at Row claim. Do not widen the index feeder, add sequential value prefetch, widen apply, retain more backing, or add page-priority retirement as part of this slice.
+
+## Implementation and measured result
+
+Implementation checkpoint: `a8af96f20f6aed09010a32c50986a62cc1664389`
+
+Runner-fix/source checkpoint: `c186059f6ee87e705bbbc5d0b5707c9dbb0a523e`
+
+Raw root: `/data1/nier/dx100-runs/2026-08-14-hybrid-pre-a-lookahead-c186059f-r2`
+
+Both replicas restored the same checkpoint, used the same gem5/guest hashes, and were deterministic:
+
+| Arm | Replica 1 ticks | Replica 2 ticks | Value reads | Pre-A issue/ready/use |
+|---|---:|---:|---:|---:|
+| Control, knob off | 75,100,907 | 75,100,907 | 18,390 | 0 / 0 / 0 |
+| Treatment, knob on | 74,629,216 | 74,629,216 | 16,382 | 793 / 491 / 793 |
+
+Treatment is 0.6281% lower in `simTicks` (1.006320460x speedup) in each replica and issues 10.9190% fewer physical value reads. Context stalls fall from 34,981 to 33,062 (-5.4858%); lookahead stalls fall from 966,451 to 822,169 (-14.9291%). Of 793 exact slots issued before A, 491 (61.9168%) are already ready at A activation and all 793 close at ordered use.
+
+Correctness and comparability pass: exact output hash `2761840269561229581`, 29,689 selected plus 3,079 rejected aliases, 126/126 A reads and 126/126 A writes, two terminal completions, zero errors, empty terminal state, and zero sequential-prefetch issues/responses/promotions/discards in every arm. The only command treatment delta is `--maa_soa_jit_pre_a_value_lookahead`; logical/metadata 16K, physical 4K, predicate credits 16, index lines 4, contexts 32, lookahead 8, value cache enabled, owners 32, and apply lanes 1 are fixed.
+
+Per the gem5 evidence checklist, this supports promotion to paired NAS CG and GZP volume-only tests. It does **not** justify default-on status or a full publisher-backed GZP claim. No full GZP run was launched.
 
 ## Why this is the next experiment
 
@@ -30,8 +51,8 @@ The detailed GZP counts come from checkpoint `28b5682767f8`: 61 SoA/JIT operatio
 1. The response-bearing publisher makes each physical 4K page visible only after its exact `WriteResp`; GZP waits before reusing the physical SPD source.
 2. The SoA/JIT Fill phase builds the complete logical 16K Row/Offset topology before Build begins. Thus a claimed Row chain contains exact, stable value addresses.
 3. `serviceSoaJitBuild()` claims a row, installs an `AwaitARead` context, and issues its A-line read.
-4. `fillSoaJitLookahead()` and `issueSoaJitValueRead()` currently require `Active`, so the exact value stream waits for the A response even though its addresses do not depend on A data.
-5. `receiveSoaJitData()` copies the matching A line, changes the context to `Active`, and only then starts lookahead; delivery applies aliases in Offset-chain order.
+4. Before this patch, `fillSoaJitLookahead()` and `issueSoaJitValueRead()` required `Active`, so the exact value stream waited for the A response even though its addresses did not depend on A data.
+5. The patch permits bounded fill and slot readiness in `AwaitARead`; `receiveSoaJitData()` still authenticates/copies the matching A line before changing the context to `Active`, and apply still follows Offset-chain order.
 
 Changing publisher overlap first would require a page token/ownership contract across StreamAccess, the guest, and IndirectAccess. It is not the smallest safe change. Pre-A lookahead deliberately leaves producer readiness, backing publication, SPD reuse, and consumer page availability unchanged.
 
@@ -45,7 +66,7 @@ At Row claim in `serviceSoaJitBuild()`:
 4. Do not call the apply/delivery path until the exact A response transitions the context to `Active`.
 5. On that transition, consume any ready prefix immediately; otherwise continue through the unchanged waiter/owner machinery.
 
-The implementation should be a feature-gated eligibility change, not a second prefetch structure. Infer pre-A status from `context.state == AwaitARead`; no per-context payload bit is required.
+The implementation is a feature-gated eligibility change, not a second prefetch structure. It infers issue eligibility from `context.state == AwaitARead` and uses one bounded per-context ordered-prefix count so `PreAValueUses` increments only at actual apply.
 
 ## Required invariants
 
@@ -72,7 +93,7 @@ At a correct terminal, `PreAValueIssues == PreAValueUses > 0`; `PreAValueReadyAt
 
 ## Hardware cost
 
-- Performance state: **0 bytes**; reuse the existing 32 active contexts, eight ordered lookahead entries per context, selected 32 value owners, waiters, request ports, and MSHRs.
+- Performance state: one 8-bit ordered-prefix count per context (32 logical bytes at the fixed 32-context maximum); it fits existing `SoaJitContext` padding, so the compiled context object does not grow. All payload/lookahead/owner state is reused.
 - Datapath/storage: **no new payload RAM, tags, queues, owners, or ports**.
 - Control: one per-unit enable bit and eligibility logic allowing existing fill/issue work in `AwaitARead`; apply remains gated by `Active`.
 - Observability: three optional 64-bit counters per indirect unit (24 bytes if implemented in hardware; simulator-only counters otherwise).
@@ -85,8 +106,8 @@ Use one clean checkpoint per paired campaign. Do not mix commits or completed ch
 
 | Gate | Workload | Arms | Repetitions | Fixed configuration |
 |---|---|---|---:|---|
-| Unit | `run_soa_jit_overlap_state_unit.sh` plus new AwaitARead cases | control, pre-A | 1 | State-only; include early response, merged owner, retry, generation reuse, and A-response-before/after-value cases. |
-| Micro correctness/performance | `test_hybrid_rmw_soa` | `pre_a=0`, `pre_a=1` | 2 each | logical/metadata 16K; physical/backing 4K; contexts 32; lookahead 8; predicate credits 16; value owners 32; apply lanes 1; sequential prefetch 0. |
+| Unit/contract (passed) | optimized+sanitized `run_soa_jit_overlap_state_unit.sh` and `test_soa_jit_pre_a_lookahead.py` | state and source contracts | 1 | Covers exact owner/merge/retry/generation state plus identity-before-issue, AwaitARead eligibility, Active-only apply, default-off plumbing, and terminal closure. |
+| Micro correctness/performance (passed) | `test_hybrid_rmw_soa` | `pre_a=0`, `pre_a=1` | 2 each | logical/metadata 16K; physical/backing 4K; contexts 32; lookahead 8; predicate credits 16; value owners 32; apply lanes 1; sequential prefetch 0. |
 | Generality | NAS CG residual SoA/JIT | `pre_a=0`, `pre_a=1` | 3 each | Same knobs and checkpoint; identical input/checkpoint and output validation. |
 | Integrated benefit | GZP volume-only SoA/JIT | `pre_a=0`, `pre_a=1` | 3 each | Same knobs and checkpoint; use the performance-authorized volume-only path. |
 | Publisher guardrail | Full publisher-backed GZP SoA/JIT | `pre_a=0`, `pre_a=1` | 1 correctness run, then 3 each only after both arms pass | Same knobs; require clean publisher and two-terminal ledgers before treating timing as evidence. |
@@ -102,5 +123,7 @@ The existing full publisher-backed GZP campaign is not performance-authorized un
 - `src/mem/MAA/IndirectAccess.hh`, `src/mem/MAA/MAA.hh`, and `src/mem/MAA/MAA.cc`: feature gate plumbing and attribution counters.
 - `src/mem/MAA/MAA.py`, `configs/common/Options.py`, and `configs/common/MAAConfig.py`: one disabled-by-default experiment knob.
 - `tests/`: AwaitARead state/ordering unit cases and the existing SoA/JIT overlap-state runner.
+- `experiments/scripts/run_soa_jit_pre_a_lookahead_matrix.sh`: single-checkpoint, two-replica control/treatment driver and exact promotion checks.
+- `experiments/analysis/hybrid_row_directed_pre_a_lookahead_micro_2026-08-14.tsv`: committed compact result table; raw outputs remain outside Git.
 
 No first-slice changes belong in `StreamAccess.cc`, `benchmarks/API/MAA_gem5.hpp`, or `benchmarks/UME/gradzatp.cpp`. Keeping those untouched is part of the experiment's isolation.
