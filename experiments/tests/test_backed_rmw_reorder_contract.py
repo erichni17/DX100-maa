@@ -57,7 +57,9 @@ class BackedRmwContractTest(unittest.TestCase):
         self.assertIn("descriptor_write_acks=%u", self.cc)
         self.assertIn("descriptor_read_responses=%u", self.cc)
 
-    def test_matrix_has_exact_three_arms(self) -> None:
+    def test_matrix_has_exact_four_arms_and_fixed_guest_abi(self) -> None:
+        self.assertIn("-DTILE_SIZE=16384", self.runner)
+        self.assertIn('-DPHYSICAL_PAGE="$tile"', self.runner)
         self.assertIn("run_arm native16 native 16384 16384 64", self.runner)
         self.assertIn("run_arm native4 native 4096 4096 32", self.runner)
         self.assertIn("run_arm backed16meta backed 4096 16384 64", self.runner)

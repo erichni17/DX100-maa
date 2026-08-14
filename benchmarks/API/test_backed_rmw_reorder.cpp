@@ -16,8 +16,12 @@
 
 namespace {
 
+#ifndef PHYSICAL_PAGE
+#define PHYSICAL_PAGE TILE_SIZE
+#endif
+
 constexpr int Logical = 16384;
-constexpr int Physical = TILE_SIZE;
+constexpr int Physical = PHYSICAL_PAGE;
 constexpr uint32_t Generation = 7;
 constexpr size_t DescriptorSlotBytes = 3 * 4096 * 6;
 constexpr size_t DescriptorUnits = 4;

@@ -20,7 +20,7 @@ build_guest() {
     local label=$1 tile=$2
     g++ -I"$root/benchmarks/API" -I"$root/include" \
         -I"$root/util/m5/src" -std=c++17 -O3 -Wall -Wextra -g3 \
-        -DGEM5 -DTILE_SIZE="$tile" -DNUM_CORES=4 \
+        -DGEM5 -DTILE_SIZE=16384 -DPHYSICAL_PAGE="$tile" -DNUM_CORES=4 \
         -DMAA_MEM_SIZE=0x80000000 \
         "$m5op" \
         "$root/benchmarks/API/test_backed_rmw_reorder.cpp" \
