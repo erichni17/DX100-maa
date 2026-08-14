@@ -21,44 +21,28 @@ def lifecycle(arrivals, reads, activation=None):
 
 
 class HybridPayloadRetentionTest(unittest.TestCase):
-    def test_owner_policy_changes_direct_index_collision_winner(self):
+    def test_first_owner_retains_the_first_direct_index_arrival(self):
         line_zero = Identity(7, 3, 0)
         line_two = Identity(7, 3, 64)
         base = lifecycle(
             [Arrival(1, line_zero, 0), Arrival(2, line_two, 0)],
             [FallbackRead(4, line_zero, 0), FallbackRead(5, line_two, 0)],
         )
-        first = simulate(base, 64, "first_owner_wins")
-        latest = simulate(base, 64, "latest_owner_wins")
+        first = simulate(base, 64)
         self.assertEqual(
             first["per_page"][0]["predicted_fallback_lines_avoided"], 1
         )
-        self.assertEqual(
-            latest["per_page"][0]["predicted_fallback_lines_avoided"], 1
-        )
-        # The result is one in both cases, but the retained identity differs;
-        # verify it by making the first line the only observed fallback below.
+        # Verify the retained identity by making the first line the only
+        # observed fallback below.
         first_only = simulate(
             lifecycle(
                 [Arrival(1, line_zero, 0), Arrival(2, line_two, 0)],
                 [FallbackRead(4, line_zero, 0)],
             ),
             64,
-            "first_owner_wins",
-        )
-        latest_only = simulate(
-            lifecycle(
-                [Arrival(1, line_zero, 0), Arrival(2, line_two, 0)],
-                [FallbackRead(4, line_zero, 0)],
-            ),
-            64,
-            "latest_owner_wins",
         )
         self.assertEqual(
             first_only["totals"]["predicted_fallback_lines_avoided"], 1
-        )
-        self.assertEqual(
-            latest_only["totals"]["predicted_fallback_lines_avoided"], 0
         )
 
     def test_multi_read_cycle_is_reported_not_arbitrated(self):
@@ -72,7 +56,6 @@ class HybridPayloadRetentionTest(unittest.TestCase):
                 ],
             ),
             64,
-            "first_owner_wins",
         )
         self.assertEqual(report["totals"]["read_port_conflicts"], 1)
         self.assertEqual(
@@ -89,7 +72,6 @@ class HybridPayloadRetentionTest(unittest.TestCase):
                 [FallbackRead(2, Identity(2, 2, 0), 0)],
             ),
             64,
-            "latest_owner_wins",
         )
         self.assertEqual(
             report["totals"]["predicted_fallback_lines_avoided"], 0

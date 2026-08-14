@@ -432,11 +432,11 @@ def addNoISAOptions(parser):
     )
     parser.add_argument(
         "--maa_inactive_page_payload_capture_conflict_policy",
-        choices=("first-owner", "latest-owner"),
+        choices=("first-owner",),
         default="first-owner",
         help=(
             "Direct-index collision policy for inactive producer payload "
-            "capture; equal storage and port cost"
+            "capture; only first-owner is supported"
         ),
     )
     parser.add_argument(

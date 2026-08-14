@@ -414,8 +414,6 @@ public:
     unsigned int page_materialization_fragment_buffers;
     bool page_materialization_direct_spd_fragments;
     unsigned int inactive_page_payload_capture_lines;
-    InactiveProducerLinePayloadCapture::ConflictPolicy
-        inactive_page_payload_capture_conflict_policy;
     unsigned int num_regs;
     unsigned int num_instructions_per_core;
     unsigned int num_instructions_per_maa;

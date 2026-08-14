@@ -31,7 +31,7 @@ from typing import (
 )
 
 CAPACITIES = (64, 128, 256, 512)
-POLICIES = ("first_owner_wins", "latest_owner_wins")
+POLICY = "first_owner_wins"
 EVENT_RE = re.compile(
     r"^(?P<tick>[0-9]+): (?P<component>[A-Za-z0-9_.-]+): "
     r"event=(?P<event>[A-Za-z0-9_]+)"
@@ -569,14 +569,10 @@ def reconstruct(events: Sequence[Event], clock_ticks: int) -> dict:
     }
 
 
-def simulate(
-    lifecycle: Mapping[str, object], capacity: int, policy: str
-) -> dict:
+def simulate(lifecycle: Mapping[str, object], capacity: int) -> dict:
     """Replay exactly recorded access opportunities under one read/write port."""
     if capacity not in CAPACITIES:
         raise ValueError(f"unsupported capacity {capacity}")
-    if policy not in POLICIES:
-        raise ValueError(f"unsupported policy {policy}")
     arrivals = lifecycle["arrivals"]
     reads = lifecycle["reads"]
     activation = lifecycle["activation_ticks"]
@@ -643,16 +639,12 @@ def simulate(
             arrival = writes[0]
             index = arrival.identity.line % capacity
             incumbent = slots[index]
-            if (
-                incumbent is None
-                or incumbent == arrival.identity
-                or policy == "latest_owner_wins"
-            ):
+            if incumbent is None or incumbent == arrival.identity:
                 slots[index] = arrival.identity
                 captures[arrival.page] += 1
     return {
         "capacity_lines": capacity,
-        "policy": policy,
+        "policy": POLICY,
         "per_page": [
             {
                 "page": page,
@@ -681,11 +673,7 @@ def simulate(
 
 def build_report(events: Sequence[Event], clock_ticks: int) -> dict:
     lifecycle = reconstruct(events, clock_ticks)
-    results = [
-        simulate(lifecycle, capacity, policy)
-        for policy in POLICIES
-        for capacity in CAPACITIES
-    ]
+    results = [simulate(lifecycle, capacity) for capacity in CAPACITIES]
     return {
         "kind": "hybrid_payload_retention_trace_audit",
         "method": {
@@ -693,7 +681,7 @@ def build_report(events: Sequence[Event], clock_ticks: int) -> dict:
             "cycle_rule": "one write and one read access per recorded MAA cycle; no same-cycle ordering is assumed",
             "identity": "token,generation,line",
             "index": "line % capacity_lines",
-            "policies": list(POLICIES),
+            "policy": POLICY,
             "capacities_lines": list(CAPACITIES),
         },
         "observed": {
