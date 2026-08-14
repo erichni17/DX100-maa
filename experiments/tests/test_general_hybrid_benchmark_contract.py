@@ -5,6 +5,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "experiments/scripts/run_general_hybrid_benchmark_matrix.py"
@@ -132,6 +133,25 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
                 (root / "frozen-configs/common/Options.py").is_file()
             )
             self.assertEqual(len(identity["files"]), 2)
+
+    def test_artifact_freeze_rejects_a_concurrent_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "frozen"
+            source.write_bytes(b"stable input")
+            self.assertEqual(
+                runner.copy_stable_artifact(source, destination),
+                runner.sha256_file(source),
+            )
+            with patch.object(
+                runner,
+                "sha256_file",
+                side_effect=("before", "after", "frozen"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "changed"):
+                    runner.copy_stable_artifact(source, destination)
+            self.assertFalse(destination.exists())
 
     def test_future_treatment_is_explicit_not_control_alias(self) -> None:
         arms = runner.make_arms(

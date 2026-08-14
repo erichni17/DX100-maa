@@ -68,6 +68,20 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def copy_stable_artifact(source: Path, destination: Path) -> str:
+    """Copy an immutable experiment input, rejecting concurrent rewrites."""
+    before = sha256_file(source)
+    shutil.copy2(source, destination)
+    after = sha256_file(source)
+    frozen = sha256_file(destination)
+    if before != after or after != frozen:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"artifact changed while being frozen: {source}"
+        )
+    return frozen
+
+
 def atomic_text(path: Path, content: str) -> None:
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(content, encoding="utf-8")
@@ -563,9 +577,12 @@ def main() -> int:
         "ramulator_library": "libramulator.so",
         "ramulator_config": "ramulator.yaml",
     }
+    frozen_hashes: dict[str, str] = {}
     for name, source in source_artifacts.items():
         destination = frozen / fixed_names.get(name, name + source.suffix)
-        shutil.copy2(source.resolve(), destination)
+        frozen_hashes[name] = copy_stable_artifact(
+            source.resolve(), destination
+        )
         frozen_artifacts[name] = destination.resolve()
     frozen_config, config_tree_identity = freeze_config_tree(
         args.config, ROOT / "configs", frozen / "configs"
@@ -614,7 +631,10 @@ def main() -> int:
         else "",
     }
     artifact_identity = {
-        name: {"path": str(path), "sha256": sha256_file(path)}
+        name: {
+            "path": str(path),
+            "sha256": frozen_hashes.get(name, sha256_file(path)),
+        }
         for name, path in frozen_artifacts.items()
     }
     artifact_identity["config_tree"] = {
