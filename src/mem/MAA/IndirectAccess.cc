@@ -3229,13 +3229,18 @@ bool IndirectAccessUnit::checkElementReady() {
     if (idx_ready && descriptor_spool_replay_active) {
         operand_itr = currentDirectIndexWord(my_i).logical_itr;
     }
+    uint64_t carried_value = 0;
+    const bool carried_value_ready =
+        !isSoaJitRmw() || !soa_jit_descriptor_value_carry || !idx_ready ||
+        readSoaJitCarriedValue(operand_itr, carried_value);
     bool cond_ready = isSoaJitRmw()
-        ? (!idx_ready || ensureSoaPredicate(operand_itr))
+        ? (!idx_ready || !carried_value_ready ||
+           ensureSoaPredicate(operand_itr))
         : (my_cond_tile == -1 || !idx_ready ||
            maa->spd->getElementFinished(
                my_cond_tile, operand_itr, 4,
                (uint8_t)FuncUnitType::INDIRECT, my_indirect_id));
-    idx_ready = idx_ready && cond_ready;
+    idx_ready = idx_ready && carried_value_ready && cond_ready;
     bool src_ready = idx_ready &&
         (isSoaJitRmw() ||
         (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||

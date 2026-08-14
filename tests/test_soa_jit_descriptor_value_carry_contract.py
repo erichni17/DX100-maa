@@ -79,6 +79,16 @@ def test_request_uses_carried_bits_in_existing_chain_order():
 
 def test_fill_value_stall_precedes_predicate_accounting():
     source = read("src/mem/MAA/IndirectAccess.cc")
+    readiness = source[
+        source.index(
+            "bool IndirectAccessUnit::checkElementReady"
+        ) : source.index("void IndirectAccessUnit::fillRowTable")
+    ]
+    carried_ready = readiness.index(
+        "readSoaJitCarriedValue(operand_itr, carried_value)"
+    )
+    predicate_ready = readiness.index("ensureSoaPredicate(operand_itr)")
+    assert carried_ready < predicate_ready
     fill = source[source.index("void IndirectAccessUnit::fillRowTable") :]
     carried = fill.index("readSoaJitCarriedValue(logical_itr, carried_value)")
     predicate = fill.index("soaPredicateValue(logical_itr)")
@@ -101,6 +111,10 @@ def test_micro_is_shared_checkpoint_exact_two_rep_control_treatment():
     assert "IND_SoaJitValueReadIssues" in runner
     assert "END { print value }" in runner
     assert "classification=inherited/partitioned" in runner
+    assert "committed_source_archive_sha256=" in runner
+    assert 'git -C "$root" archive --format=tar HEAD' in runner
+    assert "source_diff_sha256" not in runner
+    assert "worktree_clean=" in runner
     assert "carry_entry_incremental_bytes=0" in runner
     assert "carry_unit_incremental_modeled_bytes=73" in runner
     assert "carry_unit_host_bytes=80" in runner

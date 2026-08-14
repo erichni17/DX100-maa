@@ -15,6 +15,12 @@ checkpoint=/data1/nier/dx100-runs/2026-08-14-soa-jit-overlap-premerge-fast/c8l8-
 guest=/data1/nier/dx100-runs/2026-08-14-soa-jit-capacity-combined-fbec9dbe-r1/input/guest
 expected_hash=2761840269561229581
 timeout_seconds=${DX100_TIMEOUT_SECONDS:-0}
+committed_source_paths=(
+    configs/common/MAAConfig.py configs/common/Options.py
+    src/mem/MAA/IndirectAccess.cc src/mem/MAA/IndirectAccess.hh
+    src/mem/MAA/MAA.cc src/mem/MAA/MAA.hh src/mem/MAA/MAA.py
+    src/mem/MAA/Tables.cc src/mem/MAA/Tables.hh
+)
 
 [[ -x $gem5 ]] || { echo "missing gem5: $gem5" >&2; exit 2; }
 [[ -f $config && -f $ramulator && -d $checkpoint && -x $guest ]] || exit 2
@@ -167,7 +173,11 @@ done
 
 {
     printf 'source_commit='; git -C "$root" rev-parse HEAD
-    printf 'source_diff_sha256='; git -C "$root" diff --binary | sha256sum | awk '{print $1}'
+    printf 'committed_source_archive_sha256='
+    git -C "$root" archive --format=tar HEAD -- \
+        "${committed_source_paths[@]}" | sha256sum | awk '{print $1}'
+    printf 'committed_source_paths=%s\n' "${committed_source_paths[*]}"
+    printf 'worktree_clean='; [[ -z $(git -C "$root" status --porcelain) ]] && echo true || echo false
     printf 'gem5_sha256='; sha256sum "$gem5" | awk '{print $1}'
     printf 'guest_sha256='; sha256sum "$guest" | awk '{print $1}'
     printf 'checkpoint=%s\nexpected_hash=%s\n' "$checkpoint" "$expected_hash"
