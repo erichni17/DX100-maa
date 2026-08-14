@@ -95,6 +95,11 @@ def _get_maa_opts(options):
             options, "maa_virtual_combine_ways"
         )
 
+    if hasattr(options, "maa_virtual_combine_victim_slots"):
+        opts["virtual_combine_victim_slots"] = getattr(
+            options, "maa_virtual_combine_victim_slots"
+        )
+
     if hasattr(options, "maa_virtual_combine_victim_policy"):
         opts["virtual_combine_victim_policy"] = getattr(
             options, "maa_virtual_combine_victim_policy"

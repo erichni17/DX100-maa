@@ -426,6 +426,7 @@ public:
     unsigned int virtual_combine_slots;
     unsigned int virtual_combine_words;
     unsigned int virtual_combine_ways;
+    unsigned int virtual_combine_victim_slots;
     unsigned int virtual_combine_victim_policy;
     unsigned int virtual_combine_banks;
     unsigned int virtual_response_slots;
@@ -952,6 +953,11 @@ public:
         std::vector<statistics::Scalar *> IND_VirtOutstandingWriteHighWater;
         std::vector<statistics::Scalar *> IND_VirtCombineLineHighWater;
         std::vector<statistics::Scalar *> IND_VirtCombineWordHighWater;
+        std::vector<statistics::Scalar *> IND_VirtCombineVictimHits;
+        std::vector<statistics::Scalar *> IND_VirtCombineVictimInserts;
+        std::vector<statistics::Scalar *> IND_VirtCombineVictimEvictions;
+        std::vector<statistics::Scalar *> IND_VirtCombineVictimHighWater;
+        std::vector<statistics::Scalar *> IND_VirtCombinePagePriorityEvictions;
         std::vector<statistics::Scalar *> IND_VirtFullLineWrites;
         std::vector<statistics::Scalar *> IND_VirtPartialWrites;
         std::vector<statistics::Scalar *> IND_VirtCombineBankAccesses;

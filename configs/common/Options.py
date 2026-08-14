@@ -333,11 +333,17 @@ def addNoISAOptions(parser):
         help="Virtual destination-combiner associativity (0 is fully associative)",
     )
     parser.add_argument(
+        "--maa_virtual_combine_victim_slots",
+        type=int,
+        default=0,
+        help="Fully-associative overflow slots carved from the virtual combiner",
+    )
+    parser.add_argument(
         "--maa_virtual_combine_victim_policy",
         type=int,
         default=0,
-        choices=(0, 1, 2),
-        help="Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words",
+        choices=(0, 1, 2, 3, 4),
+        help="Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words, 3=lowest line, 4=highest line",
     )
     parser.add_argument(
         "--maa_virtual_response_slots",

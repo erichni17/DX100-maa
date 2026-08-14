@@ -144,6 +144,7 @@ MAA::MAA(const MAAParams &p)
       virtual_combine_slots(p.virtual_combine_slots),
       virtual_combine_words(p.virtual_combine_words),
       virtual_combine_ways(p.virtual_combine_ways),
+      virtual_combine_victim_slots(p.virtual_combine_victim_slots),
       virtual_combine_victim_policy(p.virtual_combine_victim_policy),
       virtual_combine_banks(p.virtual_combine_banks),
       virtual_response_slots(p.virtual_response_slots),
@@ -600,6 +601,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_combine_slots,
                                         virtual_combine_words,
                                         virtual_combine_ways,
+                                        virtual_combine_victim_slots,
                                         virtual_combine_victim_policy,
                                         virtual_combine_banks,
                                         virtual_response_slots,
@@ -5483,6 +5485,27 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineWordHighWater"),
             statistics::units::Count::get(),
             "sum of per-instruction peak buffered virtual combiner words"));
+        IND_VirtCombineVictimHits.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineVictimHits"),
+            statistics::units::Count::get(),
+            "virtual destination-combiner victim-region lookup hits"));
+        IND_VirtCombineVictimInserts.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineVictimInserts"),
+            statistics::units::Count::get(),
+            "virtual destination-combiner victim-region line inserts"));
+        IND_VirtCombineVictimEvictions.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineVictimEvictions"),
+            statistics::units::Count::get(),
+            "virtual destination-combiner victim-region line evictions"));
+        IND_VirtCombineVictimHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_VirtCombineVictimHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction peak occupied victim-region lines"));
+        IND_VirtCombinePagePriorityEvictions.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_VirtCombinePagePriorityEvictions"),
+            statistics::units::Count::get(),
+            "virtual destination-combiner low/high-line-priority evictions"));
         IND_VirtFullLineWrites.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtFullLineWrites"),
             statistics::units::Count::get(),

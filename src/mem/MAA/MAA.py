@@ -82,9 +82,13 @@ class MAA(ClockedObject):
         0,
         "Virtual destination-combiner associativity (0 is fully associative)",
     )
+    virtual_combine_victim_slots = Param.Unsigned(
+        0,
+        "Fully-associative overflow slots carved from the virtual combiner",
+    )
     virtual_combine_victim_policy = Param.Unsigned(
         0,
-        "Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words",
+        "Virtual combiner victim policy: 0=round-robin, 1=fewest words, 2=most words, 3=lowest line, 4=highest line",
     )
     virtual_response_slots = Param.Unsigned(
         8, "Retained source responses used by virtual gather retirement"

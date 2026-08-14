@@ -103,6 +103,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _virtual_combine_slots,
                                   int _virtual_combine_words,
                                   int _virtual_combine_ways,
+                                  int _virtual_combine_victim_slots,
                                   int _virtual_combine_victim_policy,
                                   int _virtual_combine_banks,
                                   int _virtual_response_slots,
@@ -134,15 +135,28 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     virtual_combine_slots.resize(_virtual_combine_slots);
     virtual_combine_words_configured = _virtual_combine_words;
     virtual_combine_ways = _virtual_combine_ways;
+    virtual_combine_victim_slots = _virtual_combine_victim_slots;
+    panic_if(virtual_combine_victim_slots < 0 ||
+                 virtual_combine_victim_slots >= _virtual_combine_slots,
+             "I[%d] virtual combiner victim slots (%d) must be in [0,%d)\n",
+             my_indirect_id, virtual_combine_victim_slots,
+             _virtual_combine_slots);
+    panic_if(virtual_combine_victim_slots != 0 && virtual_combine_ways == 0,
+             "I[%d] victim region requires finite virtual combiner ways\n",
+             my_indirect_id);
+    virtual_combine_primary_slots = _virtual_combine_slots -
+        virtual_combine_victim_slots;
     panic_if(virtual_combine_ways != 0 &&
-                 (_virtual_combine_slots % virtual_combine_ways) != 0,
-             "I[%d] virtual combiner slots (%d) must divide into %d ways\n",
-             my_indirect_id, _virtual_combine_slots, virtual_combine_ways);
+                 (virtual_combine_primary_slots % virtual_combine_ways) != 0,
+             "I[%d] primary virtual combiner slots (%d) must divide into "
+             "%d ways\n",
+             my_indirect_id, virtual_combine_primary_slots,
+             virtual_combine_ways);
     if (virtual_combine_ways != 0)
         virtual_combine_set_victims.resize(
-            _virtual_combine_slots / virtual_combine_ways, 0);
+            virtual_combine_primary_slots / virtual_combine_ways, 0);
     panic_if(_virtual_combine_victim_policy < 0 ||
-                 _virtual_combine_victim_policy > 2,
+                 _virtual_combine_victim_policy > 4,
              "I[%d] invalid virtual combiner victim policy %d\n",
              my_indirect_id, _virtual_combine_victim_policy);
     virtual_combine_victim_policy = _virtual_combine_victim_policy;
@@ -151,7 +165,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
              "I[%d] banked virtual combiner requires finite associativity\n",
              my_indirect_id);
     const int virtual_combine_sets = virtual_combine_ways == 0
-        ? 1 : _virtual_combine_slots / virtual_combine_ways;
+        ? 1 : virtual_combine_primary_slots / virtual_combine_ways;
     panic_if(virtual_combine_banks > virtual_combine_sets,
              "I[%d] virtual combiner banks (%d) exceed sets (%d)\n",
              my_indirect_id, virtual_combine_banks, virtual_combine_sets);
@@ -3745,6 +3759,12 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_source_expected = 0;
         virtual_source_received = 0;
         virtual_combine_victim = 0;
+        virtual_combine_victim_region_victim = 0;
+        virtual_combine_victim_hits = 0;
+        virtual_combine_victim_inserts = 0;
+        virtual_combine_victim_evictions = 0;
+        virtual_combine_page_priority_evictions = 0;
+        virtual_max_combine_victim_occupancy = 0;
         std::fill(virtual_combine_set_victims.begin(),
                   virtual_combine_set_victims.end(), 0);
         virtual_full_line_writes = 0;
@@ -4632,17 +4652,35 @@ void IndirectAccessUnit::executeInstruction() {
         if (isVirtualLoad()) {
             DPRINTF(MAAIndirect,
                     "I[%d] virtual combining: slots=%zu max_occupancy=%d "
-                    "max_words=%d/%d full_lines=%d partial_words=%d\n",
+                    "max_words=%d/%d full_lines=%d partial_words=%d "
+                    "victim_slots=%d hits=%d inserts=%d evictions=%d "
+                    "victim_high_water=%d page_priority_evictions=%d\n",
                     my_indirect_id, virtual_combine_slots.size(),
                     virtual_max_combine_occupancy, virtual_max_combine_words,
                     virtual_combine_words_limit, virtual_full_line_writes,
-                    virtual_partial_word_writes);
+                    virtual_partial_word_writes, virtual_combine_victim_slots,
+                    virtual_combine_victim_hits,
+                    virtual_combine_victim_inserts,
+                    virtual_combine_victim_evictions,
+                    virtual_max_combine_victim_occupancy,
+                    virtual_combine_page_priority_evictions);
             (*maa->stats.IND_VirtOutstandingWriteHighWater[my_indirect_id]) +=
                 virtual_max_outstanding_writes;
             (*maa->stats.IND_VirtCombineLineHighWater[my_indirect_id]) +=
                 virtual_max_combine_occupancy;
             (*maa->stats.IND_VirtCombineWordHighWater[my_indirect_id]) +=
                 virtual_max_combine_words;
+            (*maa->stats.IND_VirtCombineVictimHits[my_indirect_id]) +=
+                virtual_combine_victim_hits;
+            (*maa->stats.IND_VirtCombineVictimInserts[my_indirect_id]) +=
+                virtual_combine_victim_inserts;
+            (*maa->stats.IND_VirtCombineVictimEvictions[my_indirect_id]) +=
+                virtual_combine_victim_evictions;
+            (*maa->stats.IND_VirtCombineVictimHighWater[my_indirect_id]) +=
+                virtual_max_combine_victim_occupancy;
+            (*maa->stats
+                 .IND_VirtCombinePagePriorityEvictions[my_indirect_id]) +=
+                virtual_combine_page_priority_evictions;
             (*maa->stats.IND_VirtFullLineWrites[my_indirect_id]) +=
                 virtual_full_line_writes;
             (*maa->stats.IND_VirtPartialWrites[my_indirect_id]) +=
@@ -6538,7 +6576,7 @@ bool IndirectAccessUnit::reserveVirtualCombineBank(int itr) {
     const Addr vaddr = backingWordAddr(itr);
     const Addr line_vaddr = vaddr & ~(block_size - 1);
     const int ways = virtual_combine_ways;
-    const int num_sets = virtual_combine_slots.size() / ways;
+    const int num_sets = virtual_combine_primary_slots / ways;
     const int set = (line_vaddr / block_size) % num_sets;
     const int bank = set % virtual_combine_banks;
     if (virtual_combine_bank_used[bank]) {
@@ -6563,8 +6601,8 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
     VirtualCombineSlot *target = nullptr;
     VirtualCombineSlot *free_slot = nullptr;
     const int ways = virtual_combine_ways == 0
-        ? virtual_combine_slots.size() : virtual_combine_ways;
-    const int num_sets = virtual_combine_slots.size() / ways;
+        ? virtual_combine_primary_slots : virtual_combine_ways;
+    const int num_sets = virtual_combine_primary_slots / ways;
     const int set = virtual_combine_ways == 0
         ? 0 : (line_vaddr / block_size) % num_sets;
     const int set_begin = set * ways;
@@ -6578,19 +6616,43 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
         if (!slot.valid && free_slot == nullptr)
             free_slot = &slot;
     }
+    VirtualCombineSlot *free_victim_slot = nullptr;
+    const int victim_begin = virtual_combine_primary_slots;
+    const int victim_end = victim_begin + virtual_combine_victim_slots;
+    for (int idx = victim_begin; idx < victim_end; ++idx) {
+        auto &slot = virtual_combine_slots[idx];
+        if (slot.valid && slot.line_vaddr == line_vaddr) {
+            target = &slot;
+            virtual_combine_victim_hits++;
+            break;
+        }
+        if (!slot.valid && free_victim_slot == nullptr)
+            free_victim_slot = &slot;
+    }
     if (virtual_combine_words == virtual_combine_words_limit)
         drainVirtualCombiner(false);
     const bool word_capacity_full =
         virtual_combine_words == virtual_combine_words_limit;
-    const bool line_capacity_full = target == nullptr && free_slot == nullptr;
+    const bool line_capacity_full =
+        target == nullptr && free_slot == nullptr &&
+        free_victim_slot == nullptr;
     if (word_capacity_full || line_capacity_full) {
         int victim_idx = -1;
-        const int victim_start = virtual_combine_ways == 0
-            ? virtual_combine_victim
-            : virtual_combine_set_victims[set];
+        const bool choose_victim_region =
+            virtual_combine_victim_slots != 0 &&
+            (line_capacity_full || (word_capacity_full && target != nullptr));
+        const int replacement_begin = choose_victim_region ? victim_begin :
+            set_begin;
+        const int replacement_ways = choose_victim_region ?
+            virtual_combine_victim_slots : ways;
+        const int victim_start = choose_victim_region ?
+            virtual_combine_victim_region_victim :
+            (virtual_combine_ways == 0 ? virtual_combine_victim :
+             virtual_combine_set_victims[set]);
         int victim_words = 0;
-        for (int offset = 0; offset < ways; ++offset) {
-            const int idx = set_begin + (victim_start + offset) % ways;
+        for (int offset = 0; offset < replacement_ways; ++offset) {
+            const int idx = replacement_begin +
+                (victim_start + offset) % replacement_ways;
             const auto &candidate = virtual_combine_slots[idx];
             if (!candidate.valid || &candidate == target)
                 continue;
@@ -6600,7 +6662,13 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
                 (virtual_combine_victim_policy == 1 &&
                  candidate_words < victim_words) ||
                 (virtual_combine_victim_policy == 2 &&
-                 candidate_words > victim_words)) {
+                 candidate_words > victim_words) ||
+                (virtual_combine_victim_policy == 3 &&
+                 candidate.line_vaddr <
+                     virtual_combine_slots[victim_idx].line_vaddr) ||
+                (virtual_combine_victim_policy == 4 &&
+                 candidate.line_vaddr >
+                     virtual_combine_slots[victim_idx].line_vaddr)) {
                 victim_idx = idx;
                 victim_words = candidate_words;
                 if (virtual_combine_victim_policy == 0)
@@ -6642,16 +6710,24 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
             return false;
         if (target == &victim)
             target = nullptr;
+        if (victim_idx >= victim_begin)
+            virtual_combine_victim_evictions++;
+        if (virtual_combine_victim_policy == 3 ||
+            virtual_combine_victim_policy == 4)
+            virtual_combine_page_priority_evictions++;
         victim = VirtualCombineSlot();
         free_slot = &victim;
-        if (virtual_combine_ways == 0)
+        if (choose_victim_region)
+            virtual_combine_victim_region_victim =
+                (victim_idx - victim_begin + 1) % virtual_combine_victim_slots;
+        else if (virtual_combine_ways == 0)
             virtual_combine_victim = (victim_idx + 1) % ways;
         else
             virtual_combine_set_victims[set] =
                 (victim_idx - set_begin + 1) % ways;
     }
     if (target == nullptr)
-        target = free_slot;
+        target = free_slot != nullptr ? free_slot : free_victim_slot;
     panic_if(target == nullptr,
              "I[%d] virtual combiner has no insertion slot\n", my_indirect_id);
     if (!target->valid) {
@@ -6662,6 +6738,17 @@ bool IndirectAccessUnit::insertVirtualCombineWord(int itr,
             [](const VirtualCombineSlot &slot) { return slot.valid; });
         virtual_max_combine_occupancy =
             std::max(virtual_max_combine_occupancy, occupancy);
+        if (target >= virtual_combine_slots.data() + victim_begin) {
+            virtual_combine_victim_inserts++;
+            const int victim_occupancy = std::count_if(
+                virtual_combine_slots.begin() + victim_begin,
+                virtual_combine_slots.end(),
+                [](const VirtualCombineSlot &slot) {
+                    return slot.valid;
+                });
+            virtual_max_combine_victim_occupancy = std::max(
+                virtual_max_combine_victim_occupancy, victim_occupancy);
+        }
     }
     panic_if(target->valid_words & word_bit,
              "I[%d] duplicate virtual output word %d at 0x%lx\n",

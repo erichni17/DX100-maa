@@ -132,6 +132,8 @@ protected:
     std::vector<VirtualCombineSlot> virtual_combine_slots;
     int virtual_combine_words_configured = 0;
     int virtual_combine_ways = 0;
+    int virtual_combine_victim_slots = 0;
+    int virtual_combine_primary_slots = 0;
     int virtual_combine_victim_policy = 0;
     int virtual_combine_banks = 0;
     std::vector<int> virtual_combine_set_victims;
@@ -169,6 +171,12 @@ protected:
     int virtual_source_received = 0;
     uint64_t virtual_trace_request_calls = 0;
     int virtual_combine_victim = 0;
+    int virtual_combine_victim_region_victim = 0;
+    int virtual_combine_victim_hits = 0;
+    int virtual_combine_victim_inserts = 0;
+    int virtual_combine_victim_evictions = 0;
+    int virtual_combine_page_priority_evictions = 0;
+    int virtual_max_combine_victim_occupancy = 0;
     int virtual_full_line_writes = 0;
     int virtual_partial_word_writes = 0;
     int virtual_max_combine_occupancy = 0;
@@ -269,6 +277,7 @@ public:
                   int _virtual_combine_slots,
                   int _virtual_combine_words,
                   int _virtual_combine_ways,
+                  int _virtual_combine_victim_slots,
                   int _virtual_combine_victim_policy,
                   int _virtual_combine_banks,
                   int _virtual_response_slots,
