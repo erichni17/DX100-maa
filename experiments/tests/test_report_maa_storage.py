@@ -20,6 +20,8 @@ class StorageReportTest(unittest.TestCase):
         direct_retirement_line_handoff: bool = False,
         response_words: int = 0,
         response_pool: int = 480,
+        inactive_masked_retention_lines: int = 0,
+        inactive_payload_capture_lines: int = 0,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -43,6 +45,12 @@ class StorageReportTest(unittest.TestCase):
             "virtual_native_issue_order": str(native_order).lower(),
             "direct_retirement_line_handoff": (
                 str(direct_retirement_line_handoff).lower()
+            ),
+            "inactive_page_masked_fragment_retention_lines": str(
+                inactive_masked_retention_lines
+            ),
+            "inactive_page_payload_capture_lines": str(
+                inactive_payload_capture_lines
             ),
         }
         config = configparser.ConfigParser()
@@ -84,7 +92,9 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads((output / "maa_storage.json").read_text())
             control = report["incremental_virtual_control_lower_bound"]
-            self.assertEqual(control["metadata_bytes_per_indirect_unit"], 20537)
+            self.assertEqual(
+                control["metadata_bytes_per_indirect_unit"], 20537
+            )
             self.assertEqual(
                 report["bounded_state_lower_bound"][
                     "physical_spd_virtual_payload_and_control_bytes"
@@ -107,7 +117,9 @@ class StorageReportTest(unittest.TestCase):
             )
             self.assertEqual(buffers["unpacked_line_bytes_per_slot"], 0)
             self.assertEqual(
-                buffers["configured_destination_combiner_bytes_per_indirect_unit"],
+                buffers[
+                    "configured_destination_combiner_bytes_per_indirect_unit"
+                ],
                 32768,
             )
             self.assertEqual(
@@ -209,6 +221,215 @@ class StorageReportTest(unittest.TestCase):
                 ],
                 10496,
             )
+
+    def test_inactive_masked_retention_valid_capacities_and_exact_totals(
+        self,
+    ) -> None:
+        expected = {
+            512: {
+                "payload_bits": 262144,
+                "payload_and_output_bytes": 32832,
+                "control_bits": 170364,
+                "control_bytes": 21296,
+                "combined_total_bits": 436840,
+                "combined_total_bytes": 54605,
+                "bounded_state": 647058,
+                "comparable": 917906,
+                "allocated": 1522514,
+            },
+            1024: {
+                "payload_bits": 524288,
+                "payload_and_output_bytes": 65600,
+                "control_bits": 326528,
+                "control_bytes": 40816,
+                "combined_total_bits": 855148,
+                "combined_total_bytes": 106894,
+                "bounded_state": 699347,
+                "comparable": 970195,
+                "allocated": 1574803,
+            },
+            2048: {
+                "payload_bits": 1048576,
+                "payload_and_output_bytes": 131136,
+                "control_bits": 638852,
+                "control_bytes": 79857,
+                "combined_total_bits": 1691760,
+                "combined_total_bytes": 211470,
+                "bounded_state": 803923,
+                "comparable": 1074771,
+                "allocated": 1679379,
+            },
+            4096: {
+                "payload_bits": 2097152,
+                "payload_and_output_bytes": 262208,
+                "control_bits": 1263496,
+                "control_bytes": 157937,
+                "combined_total_bits": 3364980,
+                "combined_total_bytes": 420623,
+                "bounded_state": 1013076,
+                "comparable": 1283924,
+                "allocated": 1888532,
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline_config = self.write_config(root, 4096, True, True)
+            result, output = self.run_report(
+                root, baseline_config, "direct-index"
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            baseline = json.loads((output / "maa_storage.json").read_text())
+            baseline_retention = baseline[
+                "inactive_masked_fragment_retention_state"
+            ]
+            self.assertFalse(baseline_retention["enabled"])
+            self.assertEqual(
+                baseline_retention["packed_hardware_accounting"][
+                    "combined_total_bytes"
+                ],
+                0,
+            )
+
+            for capacity, values in expected.items():
+                with self.subTest(capacity=capacity):
+                    case_root = root / str(capacity)
+                    case_root.mkdir()
+                    config = self.write_config(
+                        case_root,
+                        4096,
+                        True,
+                        True,
+                        inactive_masked_retention_lines=capacity,
+                    )
+                    result, output = self.run_report(
+                        case_root, config, "direct-index"
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    report = json.loads(
+                        (output / "maa_storage.json").read_text()
+                    )
+                    state = report["inactive_masked_fragment_retention_state"]
+                    self.assertTrue(state["enabled"])
+                    self.assertEqual(state["descriptor_partitions"], 4)
+                    self.assertEqual(state["write_banks"], 4)
+                    self.assertEqual(state["token_tiles"], 32)
+                    packed = state["packed_hardware_accounting"]
+                    self.assertEqual(packed["capacity_entries"], capacity)
+                    self.assertEqual(
+                        packed["entries_per_partition"], capacity // 4
+                    )
+                    self.assertEqual(
+                        packed["entries_per_bank_per_partition"],
+                        capacity // 16,
+                    )
+                    self.assertEqual(
+                        packed["payload_bits"], values["payload_bits"]
+                    )
+                    self.assertEqual(
+                        packed["payload_and_output_bytes"],
+                        values["payload_and_output_bytes"],
+                    )
+                    self.assertEqual(
+                        packed["control_bits"], values["control_bits"]
+                    )
+                    self.assertEqual(
+                        packed["control_bytes"], values["control_bytes"]
+                    )
+                    self.assertEqual(
+                        packed["lookup_pipeline_control_bits"], 510
+                    )
+                    self.assertEqual(
+                        packed["fallback_rebind_control_bits"], 1262
+                    )
+                    self.assertEqual(packed["maa_lookup_control_bits"], 1772)
+                    self.assertEqual(
+                        packed["persistent_token_incarnation_bits"], 2048
+                    )
+                    self.assertEqual(
+                        packed["combined_total_bits"],
+                        values["combined_total_bits"],
+                    )
+                    self.assertEqual(
+                        packed["combined_total_bits"],
+                        packed["payload_bits"]
+                        + packed["output_payload_bits"]
+                        + packed["control_bits"]
+                        + packed["maa_lookup_control_bits"]
+                        + packed["persistent_token_incarnation_bits"],
+                    )
+                    self.assertEqual(
+                        packed["combined_total_bytes"],
+                        values["combined_total_bytes"],
+                    )
+                    self.assertEqual(
+                        report["bounded_state_lower_bound"][
+                            "physical_spd_virtual_payload_and_control_bytes"
+                        ],
+                        values["bounded_state"],
+                    )
+                    self.assertEqual(
+                        report["comparable_storage_lower_bound"][
+                            "configured_total_bytes"
+                        ],
+                        values["comparable"],
+                    )
+                    self.assertEqual(
+                        report["allocated_model_storage_lower_bound"][
+                            "configured_total_bytes"
+                        ],
+                        values["allocated"],
+                    )
+                    self.assertEqual(
+                        report["bounded_state_lower_bound"][
+                            "physical_spd_virtual_payload_and_control_bytes"
+                        ]
+                        - baseline["bounded_state_lower_bound"][
+                            "physical_spd_virtual_payload_and_control_bytes"
+                        ],
+                        values["combined_total_bytes"],
+                    )
+
+    def test_inactive_masked_retention_config_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid = self.write_config(
+                root, 4096, True, True, inactive_masked_retention_lines=513
+            )
+            result, _ = self.run_report(root, invalid, "direct-index")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("zero or one of 512/1024/2048/4096", result.stderr)
+
+            missing_handoff_root = root / "missing-handoff"
+            missing_handoff_root.mkdir()
+            missing_handoff = self.write_config(
+                missing_handoff_root,
+                4096,
+                True,
+                inactive_masked_retention_lines=2048,
+            )
+            result, _ = self.run_report(
+                missing_handoff_root, missing_handoff, "direct-index"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "requires direct_retirement_line_handoff=true", result.stderr
+            )
+
+            exclusive_root = root / "exclusive"
+            exclusive_root.mkdir()
+            exclusive = self.write_config(
+                exclusive_root,
+                4096,
+                True,
+                True,
+                inactive_masked_retention_lines=2048,
+                inactive_payload_capture_lines=64,
+            )
+            result, _ = self.run_report(
+                exclusive_root, exclusive, "direct-index"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("mutually exclusive", result.stderr)
 
     def test_unpacked_mode_retains_one_fixed_line_per_slot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
