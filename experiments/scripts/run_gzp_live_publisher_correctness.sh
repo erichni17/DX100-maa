@@ -115,7 +115,9 @@ trace="$out/run/virtual_trace.log"
 [[ -s $stats && -s $trace ]]
 sum_stat() {
     local suffix=$1
-    awk -v suffix="$suffix" '$1 ~ suffix "$" { value += $2 } END { print value+0 }' "$stats"
+    awk -v suffix="$suffix" \
+        '$1 ~ suffix "$" { value[$1]=$2 } END { for (name in value) total += value[name]; print total+0 }' \
+        "$stats"
 }
 max_stat() {
     local suffix=$1
