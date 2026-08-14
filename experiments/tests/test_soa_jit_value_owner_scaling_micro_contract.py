@@ -7,7 +7,7 @@ def test_value_owner_sweep_is_exact_bounded_and_uncapped_by_default():
         root / "experiments/scripts/run_soa_jit_value_owner_scaling_micro.sh"
     ).read_text(encoding="utf-8")
 
-    assert "for owners in 32 64 128 256" in runner
+    assert "for owners in 32 64 128" in runner
     assert "--maa_soa_jit_active_contexts=32" in runner
     assert "--maa_soa_jit_value_lookahead=8" in runner
     assert "timeout_seconds=${DX100_TIMEOUT_SECONDS:-0}" in runner

@@ -60,7 +60,7 @@ run_gem5() {
 }
 
 printf 'owners\tsimTicks\tvalue_reads\tcached_responses\thits\tmerged\tevictions\tvalue_stalls\tcontext_stalls\tcache_hwm\tcoalescer_bytes\tactive_payload_bytes\n' >"$out/results.tsv"
-for owners in 32 64 128 256; do
+for owners in 32 64 128; do
     run="$out/v$owners"
     mkdir "$run"
     run_gem5 "$gem5" --listener-mode=off --outdir="$run" \
