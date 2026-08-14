@@ -12,6 +12,7 @@ namespace gem5 {
 Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              backingAddr(0xFFFFFFFFFFFFFFFF),
                              indexAddr(0xFFFFFFFFFFFFFFFF),
+                             predicateAddr(0),
                              logicalSourceBackingAddr(0xFFFFFFFFFFFFFFFF),
                              minAddr(0xFFFFFFFFFFFFFFFF),
                              maxAddr(0xFFFFFFFFFFFFFFFF),
@@ -19,11 +20,14 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              backingMaxAddr(0xFFFFFFFFFFFFFFFF),
                              indexMinAddr(0xFFFFFFFFFFFFFFFF),
                              indexMaxAddr(0xFFFFFFFFFFFFFFFF),
+                             predicateMinAddr(0xFFFFFFFFFFFFFFFF),
+                             predicateMaxAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSourceMinAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSourceMaxAddr(0xFFFFFFFFFFFFFFFF),
                              addrRangeID(-1),
                              backingAddrRangeID(-1),
                              indexAddrRangeID(-1),
+                             predicateAddrRangeID(-1),
                              logicalSourceAddrRangeID(-1),
                              src1RegID(-1),
                              src2RegID(-1),
@@ -172,6 +176,8 @@ int Instruction::getWordSize(int tile_id) {
             assert(false);
         }
     } else if (tile_id == dst2SpdID) {
+        if (isSoaJitRmw())
+            return WordSize();
         switch (opcode) {
         case OpcodeType::INDIR_LD_VIRTUAL_INDEX:
         case OpcodeType::RANGE_LOOP: {
@@ -490,7 +496,8 @@ bool IF::pushInstruction(Instruction _instruction, int *inserted_slot,
             _instruction.opcode == Instruction::OpcodeType::STREAM_PREFETCH;
     }
     if (_instruction.dst2SpdID != -1)
-        completion_only_tiles[maa_id][_instruction.dst2SpdID] = false;
+        completion_only_tiles[maa_id][_instruction.dst2SpdID] =
+            _instruction.isSoaJitRmw();
     DPRINTF(MAAController, "%s: %s pushed to instruction[%d]!\n", __func__, _instruction.print(), free_instruction_slot);
     return true;
 }
