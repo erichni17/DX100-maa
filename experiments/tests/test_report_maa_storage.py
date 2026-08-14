@@ -33,6 +33,7 @@ class StorageReportTest(unittest.TestCase):
             "num_row_table_rows_per_slice": "64",
             "num_row_table_entries_per_subslice_row": "8",
             "virtual_combine_slots": "384",
+            "virtual_combine_words": "4096",
             "virtual_combine_ways": "4",
             "virtual_response_slots": "128",
             "virtual_response_words": str(response_words),
@@ -83,19 +84,19 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads((output / "maa_storage.json").read_text())
             control = report["incremental_virtual_control_lower_bound"]
-            self.assertEqual(control["metadata_bytes_per_indirect_unit"], 9271)
+            self.assertEqual(control["metadata_bytes_per_indirect_unit"], 20537)
             self.assertEqual(
                 report["bounded_state_lower_bound"][
                     "physical_spd_virtual_payload_and_control_bytes"
                 ],
-                562499,
+                581957,
             )
             comparable = report["comparable_storage_lower_bound"]
             self.assertEqual(
                 comparable["retained_shared_descriptor_bytes"], 254464
             )
             self.assertEqual(comparable["native_total_bytes"], 2417152)
-            self.assertEqual(comparable["configured_total_bytes"], 833347)
+            self.assertEqual(comparable["configured_total_bytes"], 852805)
             buffers = report["virtual_data_buffers"]
             self.assertEqual(
                 buffers["source_response_storage_mode"], "packed-word-pool"
@@ -105,6 +106,17 @@ class StorageReportTest(unittest.TestCase):
                 3840,
             )
             self.assertEqual(buffers["unpacked_line_bytes_per_slot"], 0)
+            self.assertEqual(
+                buffers["configured_destination_combiner_bytes_per_indirect_unit"],
+                32768,
+            )
+            self.assertEqual(
+                buffers["destination_combiner_word_pool_per_indirect_unit"],
+                4096,
+            )
+            self.assertEqual(
+                buffers["destination_combiner_reference_bits"], 12
+            )
             control = report["incremental_virtual_control_lower_bound"]
             self.assertEqual(
                 control["source_response_metadata_bits_per_slot"], 190
@@ -121,16 +133,16 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(
                 conservative["inactive_fixed_response_line_bytes"], 0
             )
-            self.assertEqual(conservative["bounded_state_bytes"], 562499)
+            self.assertEqual(conservative["bounded_state_bytes"], 581957)
             self.assertEqual(
-                conservative["comparable_configured_bytes"], 833347
+                conservative["comparable_configured_bytes"], 852805
             )
             allocated = report["allocated_model_storage_lower_bound"]
             self.assertEqual(
                 allocated["retained_shared_descriptor_bytes"], 861120
             )
             self.assertEqual(allocated["native_total_bytes"], 3023808)
-            self.assertEqual(allocated["configured_total_bytes"], 1437955)
+            self.assertEqual(allocated["configured_total_bytes"], 1457413)
             metadata = report["retained_logical_metadata"]
             self.assertEqual(
                 metadata["allocated_row_entry_capacity_per_indirect_unit"],

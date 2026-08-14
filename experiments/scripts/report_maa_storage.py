@@ -109,6 +109,7 @@ def main() -> int:
         maa, "num_row_table_entries_per_subslice_row"
     )
     combine_slots = integer(maa, "virtual_combine_slots")
+    combine_words = integer(maa, "virtual_combine_words")
     response_slots = integer(maa, "virtual_response_slots")
     response_words = integer(maa, "virtual_response_words")
     response_pool = integer(maa, "virtual_response_word_pool")
@@ -255,6 +256,10 @@ def main() -> int:
         response_slots * (response_words or words_per_line)
     )
     response_pool_pointer_bits = bits_for_values(response_pool_words + 1)
+    effective_combine_words = combine_words or (
+        combine_slots * words_per_line
+    )
+    combine_reference_bits = bits_for_values(effective_combine_words)
 
     index_metadata_bits_per_unit = index_lines * (
         args.address_bits
@@ -276,7 +281,14 @@ def main() -> int:
         + iteration_bits  # claimed chain head
     )
     combine_metadata_bits_per_unit = combine_slots * (
-        1 + args.address_bits + words_per_line
+        1
+        + args.address_bits
+        + words_per_line
+        + words_per_line * combine_reference_bits
+    )
+    combine_allocator_bits_per_unit = (
+        effective_combine_words * (1 + combine_reference_bits)
+        + bits_for_values(effective_combine_words + 1)
     )
     combine_sets = (
         1
@@ -309,7 +321,9 @@ def main() -> int:
         )
         active_response_metadata_bits = response_metadata_bits_per_unit
         active_combine_metadata_bits = (
-            combine_metadata_bits_per_unit + combine_replacement_bits_per_unit
+            combine_metadata_bits_per_unit
+            + combine_allocator_bits_per_unit
+            + combine_replacement_bits_per_unit
         )
         active_write_metadata_bits = outstanding_write_bits_per_unit
         active_page_counter_bits = page_counter_bits_per_unit
@@ -330,7 +344,7 @@ def main() -> int:
         active_completion_increment_bits / 8
     )
 
-    combine_payload_per_unit = combine_slots * 64
+    combine_payload_per_unit = effective_combine_words * 8
     if response_pool:
         response_storage_mode = "packed-word-pool"
         response_payload_per_unit = response_pool * args.word_bytes
@@ -584,6 +598,13 @@ def main() -> int:
             "configured_destination_combiner_bytes_per_indirect_unit": (
                 combine_payload_per_unit
             ),
+            "destination_combiner_line_tags_per_indirect_unit": (
+                combine_slots
+            ),
+            "destination_combiner_word_pool_per_indirect_unit": (
+                effective_combine_words
+            ),
+            "destination_combiner_reference_bits": combine_reference_bits,
             "configured_total_bytes_per_indirect_unit": (
                 configured_virtual_payload_per_unit
             ),
@@ -629,6 +650,11 @@ def main() -> int:
             ),
             "destination_combiner_metadata_bits_per_indirect_unit": (
                 active_combine_metadata_bits
+            ),
+            "destination_combiner_allocator_bits_per_indirect_unit": (
+                combine_allocator_bits_per_unit
+                if args.mechanism != "native"
+                else 0
             ),
             "outstanding_write_metadata_bits_per_indirect_unit": (
                 active_write_metadata_bits
