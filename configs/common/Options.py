@@ -421,6 +421,25 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_inactive_page_payload_capture_lines",
+        type=int,
+        default=0,
+        choices=(0, 64, 128, 256, 512),
+        help=(
+            "Default-off fixed capture of full 64-byte producer WriteResp "
+            "payloads received before their 4K materializer page is active"
+        ),
+    )
+    parser.add_argument(
+        "--maa_inactive_page_payload_capture_conflict_policy",
+        choices=("first-owner", "latest-owner"),
+        default="first-owner",
+        help=(
+            "Direct-index collision policy for inactive producer payload "
+            "capture; equal storage and port cost"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,

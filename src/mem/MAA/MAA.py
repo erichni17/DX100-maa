@@ -126,6 +126,14 @@ class MAA(ClockedObject):
         False,
         "Stage authenticated active-page masked producer words directly in SPD",
     )
+    inactive_page_payload_capture_lines = Param.Unsigned(
+        0,
+        "Fixed inactive-page full WriteResp payload capture lines (0 disables; maximum 512)",
+    )
+    inactive_page_payload_capture_conflict_policy = Param.String(
+        "first-owner",
+        "Equal-cost direct-index collision policy: first-owner or latest-owner",
+    )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",

@@ -165,6 +165,16 @@ def _get_maa_opts(options):
             options, "maa_page_materialization_direct_spd_fragments"
         )
 
+    if hasattr(options, "maa_inactive_page_payload_capture_lines"):
+        opts["inactive_page_payload_capture_lines"] = getattr(
+            options, "maa_inactive_page_payload_capture_lines"
+        )
+
+    if hasattr(options, "maa_inactive_page_payload_capture_conflict_policy"):
+        opts["inactive_page_payload_capture_conflict_policy"] = getattr(
+            options, "maa_inactive_page_payload_capture_conflict_policy"
+        )
+
     if hasattr(options, "maa_virtual_index_buffer_lines"):
         opts["virtual_index_buffer_lines"] = getattr(
             options, "maa_virtual_index_buffer_lines"
