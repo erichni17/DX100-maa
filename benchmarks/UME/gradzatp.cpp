@@ -9,6 +9,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -229,20 +230,105 @@ enum class GzpRmwTreatment
 {
     Legacy4K,
     VolumeOnlySoaJit,
+    VolumeMaskedIndexSoaJit,
     SoaJitCorrectness,
 };
 
 static GzpRmwTreatment gzp_rmw_treatment = GzpRmwTreatment::Legacy4K;
 static std::atomic<uint64_t> soa_full_windows{0};
 static std::atomic<uint64_t> soa_volume_only_windows{0};
+static std::atomic<uint64_t> soa_masked_index_windows{0};
 static std::atomic<uint64_t> soa_published_predicates{0};
 static std::atomic<uint64_t> soa_published_gradient_values{0};
 static uint64_t soa_predicate_hash = 0;
 static uint64_t soa_predicate_active = 0;
 
+struct GzpMaskedIndexLedger
+{
+    uint64_t selected = 0;
+    uint64_t rejected = 0;
+    uint64_t full_window_selected = 0;
+    uint64_t full_window_rejected = 0;
+    uint64_t active_uint32_max = 0;
+    uint64_t active_illegal_index = 0;
+    uint64_t inactive_legal_index = 0;
+    uint64_t inactive_non_sentinel = 0;
+    uint64_t index_hash = 1469598103934665603ULL;
+};
+
+static GzpMaskedIndexLedger gzp_masked_index_ledger;
+
+static void encode_and_audit_gzp_masked_indices(size_t num_points) {
+    static_assert(static_cast<uint32_t>(-1) == UINT32_MAX,
+                  "GZP inactive int must encode UINT32_MAX");
+    const size_t full_window_elements =
+        corner_type.size() / TILE_SIZE * TILE_SIZE;
+
+    // Preserve the original RNG stream and every active index by applying the
+    // inactive encoding only after both random maps have been initialized.
+    for (size_t c = 0; c < corner_type.size(); ++c) {
+        if (corner_type[c] < 1)
+            c_to_p_map[c] = -1;
+    }
+
+    GzpMaskedIndexLedger ledger;
+    for (size_t c = 0; c < corner_type.size(); ++c) {
+        const bool selected = corner_type[c] > 0;
+        const uint32_t index = static_cast<uint32_t>(c_to_p_map[c]);
+        const bool sentinel = index == UINT32_MAX;
+        const bool legal = c_to_p_map[c] >= 0 &&
+                           static_cast<size_t>(c_to_p_map[c]) < num_points;
+
+        if (selected) {
+            ledger.selected++;
+            if (c < full_window_elements)
+                ledger.full_window_selected++;
+            if (sentinel)
+                ledger.active_uint32_max++;
+            if (!legal)
+                ledger.active_illegal_index++;
+        } else {
+            ledger.rejected++;
+            if (c < full_window_elements)
+                ledger.full_window_rejected++;
+            if (legal)
+                ledger.inactive_legal_index++;
+            if (!sentinel)
+                ledger.inactive_non_sentinel++;
+        }
+        ledger.index_hash ^= (static_cast<uint64_t>(c) << 32) ^ index;
+        ledger.index_hash *= 1099511628211ULL;
+    }
+
+    const bool exact =
+        ledger.selected + ledger.rejected == corner_type.size() &&
+        ledger.selected == soa_predicate_active &&
+        ledger.active_uint32_max == 0 &&
+        ledger.active_illegal_index == 0 &&
+        ledger.inactive_legal_index == 0 &&
+        ledger.inactive_non_sentinel == 0;
+    if (!exact) {
+        std::cerr << "UME_GZP_MASKED_INDEX_LEDGER result=FAIL"
+                  << " selected=" << ledger.selected
+                  << " rejected=" << ledger.rejected
+                  << " predicate_selected=" << soa_predicate_active
+                  << " active_uint32_max=" << ledger.active_uint32_max
+                  << " active_illegal_index="
+                  << ledger.active_illegal_index
+                  << " inactive_legal_index="
+                  << ledger.inactive_legal_index
+                  << " inactive_non_sentinel="
+                  << ledger.inactive_non_sentinel << std::endl;
+        std::abort();
+    }
+    gzp_masked_index_ledger = ledger;
+}
+
 static const char *gzp_rmw_treatment_name(GzpRmwTreatment treatment) {
     if (treatment == GzpRmwTreatment::VolumeOnlySoaJit)
         return "volume_only_soa_jit";
+    if (treatment == GzpRmwTreatment::VolumeMaskedIndexSoaJit)
+        return "volume_masked_index_soa_jit";
     if (treatment == GzpRmwTreatment::SoaJitCorrectness)
         return "soa_jit_correctness";
     return "legacy_4k";
@@ -251,6 +337,8 @@ static const char *gzp_rmw_treatment_name(GzpRmwTreatment treatment) {
 static const char *gzp_rmw_publisher_name(GzpRmwTreatment treatment) {
     if (treatment == GzpRmwTreatment::VolumeOnlySoaJit)
         return "precheckpoint_uint32_predicate";
+    if (treatment == GzpRmwTreatment::VolumeMaskedIndexSoaJit)
+        return "masked_index_no_predicate_publication";
     if (treatment == GzpRmwTreatment::SoaJitCorrectness)
         return "response_bearing_spd_to_coherent";
     return "none";
@@ -258,6 +346,21 @@ static const char *gzp_rmw_publisher_name(GzpRmwTreatment treatment) {
 
 static int gzp_rmw_performance_promotable(GzpRmwTreatment treatment) {
     return treatment == GzpRmwTreatment::SoaJitCorrectness ? 0 : 1;
+}
+
+static int gzp_separate_predicate_publications(
+    GzpRmwTreatment treatment) {
+    return treatment == GzpRmwTreatment::VolumeOnlySoaJit ||
+                   treatment == GzpRmwTreatment::SoaJitCorrectness
+               ? 1
+               : 0;
+}
+
+static uint64_t gzp_separate_predicate_publication_bytes(
+    GzpRmwTreatment treatment) {
+    return gzp_separate_predicate_publications(treatment) == 0
+               ? 0
+               : corner_predicate_soa.size() * sizeof(uint32_t);
 }
 
 static uint64_t hash_soa_predicates(const std::vector<uint32_t> &values) {
@@ -283,7 +386,7 @@ static GzpSelector read_gzp_selector(const std::string &path) {
     if (!(input >> consumer) || (input >> treatment && input >> extra))
         throw std::runtime_error(
             "GZP selector must contain CONSUMER "
-            "[legacy_4k|volume_soa_jit|soa_jit]");
+            "[legacy_4k|volume_soa_jit|volume_masked_index|soa_jit]");
 
     MAAVirtualConsumerMode consumer_mode;
     if (consumer == "stream_control")
@@ -301,6 +404,8 @@ static GzpSelector read_gzp_selector(const std::string &path) {
     if (!treatment.empty() && treatment != "legacy_4k") {
         if (treatment == "volume_soa_jit")
             rmw = GzpRmwTreatment::VolumeOnlySoaJit;
+        else if (treatment == "volume_masked_index")
+            rmw = GzpRmwTreatment::VolumeMaskedIndexSoaJit;
         else if (treatment == "soa_jit")
             rmw = GzpRmwTreatment::SoaJitCorrectness;
         else
@@ -406,17 +511,20 @@ void gradzatp_MAA() {
                    point_normal.data() + point_normal.size()); // 15
 #endif
 #ifdef UME_GZP_SOA_JIT_RMW
-    // 7 fixed API ranges + 9 GZP ranges + 4 virtual-gather ranges + these 8
-    // per-owner ranges + one immutable predicate range = 29, below the
-    // architectural maximum of 32.
-    for (int core = 0; core < NUM_CORES; ++core) {
-        add_mem_region(soa_predicates[core],
-                       soa_predicates[core] + TILE_SIZE);
-        add_mem_region(soa_gradient_values[core],
-                       soa_gradient_values[core] + TILE_SIZE);
+    // Existing arms retain their original publication registrations. The
+    // opt-in masked-index volume arm names none of these predicate/product
+    // arrays, so it does not publish a separate predicate region.
+    if (gzp_rmw_treatment != GzpRmwTreatment::VolumeMaskedIndexSoaJit) {
+        for (int core = 0; core < NUM_CORES; ++core) {
+            add_mem_region(soa_predicates[core],
+                           soa_predicates[core] + TILE_SIZE);
+            add_mem_region(soa_gradient_values[core],
+                           soa_gradient_values[core] + TILE_SIZE);
+        }
+        add_mem_region(corner_predicate_soa.data(),
+                       corner_predicate_soa.data() +
+                           corner_predicate_soa.size());
     }
-    add_mem_region(corner_predicate_soa.data(),
-                   corner_predicate_soa.data() + corner_predicate_soa.size());
 #endif
     std::cout << "ROI Begin" << std::endl;
     m5_work_begin(0, 0);
@@ -485,8 +593,17 @@ void gradzatp_MAA() {
 #else
                 false;
 #endif
+            const bool soa_masked_index_full_window =
+#ifdef UME_GZP_SOA_JIT_RMW
+                gzp_rmw_treatment ==
+                    GzpRmwTreatment::VolumeMaskedIndexSoaJit &&
+                gather_size == TILE_SIZE;
+#else
+                false;
+#endif
             const bool soa_volume_full_window =
-                soa_both_full_window || soa_volume_only_full_window;
+                soa_both_full_window || soa_volume_only_full_window ||
+                soa_masked_index_full_window;
             maa_const<int>(c, reg0);
             maa_const<int>(c + gather_size, reg1);
             maa_indirect_load_virtual_index<DATATYPE>(
@@ -501,25 +618,40 @@ void gradzatp_MAA() {
                 // it cannot silently enter the mechanism fallback path.
                 wait_ready(tile3);
 
-            if (soa_volume_only_full_window) {
+            if (soa_volume_only_full_window ||
+                soa_masked_index_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
-                // The predicate was published before checkpoint creation and
-                // remains immutable. The direct index and corner_volume value
-                // streams are read through the timed SoA/JIT cache path.
+                // Both treatments keep the same immutable index/value streams
+                // and FP32 update order. The opt-in arm classifies UINT32_MAX
+                // directly and therefore names no separate predicate array.
                 maa_const<int>(0, reg0);
                 maa_const<int>(TILE_SIZE, reg1);
                 maa_const<int>(1, reg2);
-                maa_indirect_rmw_vector_soa_jit<DATATYPE>(
-                    point_volume.data(),
-                    reinterpret_cast<const uint32_t *>(
-                        c_to_p_map.data() + c),
-                    corner_volume.data() + c,
-                    corner_predicate_soa.data() + c, reg0, reg1, reg2,
-                    soa_volume_completion_tiles[omp_thread_id],
-                    Operation_t::ADD_OP);
+                if (soa_masked_index_full_window) {
+                    maa_indirect_rmw_vector_soa_jit_masked_indices<DATATYPE>(
+                        point_volume.data(),
+                        reinterpret_cast<const uint32_t *>(
+                            c_to_p_map.data() + c),
+                        corner_volume.data() + c, reg0, reg1, reg2,
+                        soa_volume_completion_tiles[omp_thread_id],
+                        Operation_t::ADD_OP);
+                } else {
+                    maa_indirect_rmw_vector_soa_jit<DATATYPE>(
+                        point_volume.data(),
+                        reinterpret_cast<const uint32_t *>(
+                            c_to_p_map.data() + c),
+                        corner_volume.data() + c,
+                        corner_predicate_soa.data() + c, reg0, reg1, reg2,
+                        soa_volume_completion_tiles[omp_thread_id],
+                        Operation_t::ADD_OP);
+                }
                 wait_ready(soa_volume_completion_tiles[omp_thread_id]);
-                soa_volume_only_windows.fetch_add(
-                    1, std::memory_order_relaxed);
+                if (soa_masked_index_full_window)
+                    soa_masked_index_windows.fetch_add(
+                        1, std::memory_order_relaxed);
+                else
+                    soa_volume_only_windows.fetch_add(
+                        1, std::memory_order_relaxed);
 #endif
             }
 
@@ -801,12 +933,34 @@ void gradzatp_MAA() {
               << " full_windows=" << soa_full_windows.load()
               << " volume_only_windows="
               << soa_volume_only_windows.load()
+              << " masked_index_windows="
+              << soa_masked_index_windows.load()
               << " published_predicates=" << soa_published_predicates.load()
               << " published_gradient_values="
               << soa_published_gradient_values.load()
               << " predicate_hash=" << soa_predicate_hash
+              << " ledger_selected=" << gzp_masked_index_ledger.selected
+              << " ledger_rejected=" << gzp_masked_index_ledger.rejected
+              << " ledger_full_selected="
+              << gzp_masked_index_ledger.full_window_selected
+              << " ledger_full_rejected="
+              << gzp_masked_index_ledger.full_window_rejected
+              << " active_uint32_max="
+              << gzp_masked_index_ledger.active_uint32_max
+              << " active_illegal_index="
+              << gzp_masked_index_ledger.active_illegal_index
+              << " inactive_legal_index="
+              << gzp_masked_index_ledger.inactive_legal_index
+              << " inactive_non_sentinel="
+              << gzp_masked_index_ledger.inactive_non_sentinel
+              << " index_hash=" << gzp_masked_index_ledger.index_hash
               << " publisher="
               << gzp_rmw_publisher_name(gzp_rmw_treatment)
+              << " predicate_publications="
+              << gzp_separate_predicate_publications(gzp_rmw_treatment)
+              << " predicate_publication_bytes="
+              << gzp_separate_predicate_publication_bytes(
+                     gzp_rmw_treatment)
               << " performance_promotable="
               << gzp_rmw_performance_promotable(gzp_rmw_treatment)
               << " result=PASS" << std::endl;
@@ -947,6 +1101,10 @@ int main(int argc, char *argv[]) {
         ;
     }
 
+#ifdef UME_GZP_SOA_JIT_RMW
+    encode_and_audit_gzp_masked_indices(num_points);
+#endif
+
 #if defined(UME_GATHER_VERIFY) || defined(UME_FIXED_INPUT)
     mark_points_without_active_corners();
 #endif
@@ -995,6 +1153,11 @@ int main(int argc, char *argv[]) {
               << " completion=explicit_spd_wait"
               << " publisher="
               << gzp_rmw_publisher_name(gzp_rmw_treatment)
+              << " predicate_publications="
+              << gzp_separate_predicate_publications(gzp_rmw_treatment)
+              << " predicate_publication_bytes="
+              << gzp_separate_predicate_publication_bytes(
+                     gzp_rmw_treatment)
               << " performance_promotable="
               << gzp_rmw_performance_promotable(gzp_rmw_treatment)
               << std::endl;
@@ -1004,6 +1167,23 @@ int main(int argc, char *argv[]) {
               << " hash=" << soa_predicate_hash
               << " semantic=corner_type_gt_0 phase=pre_checkpoint"
               << " immutable=1" << std::endl;
+    std::cout << "UME_GZP_MASKED_INDEX_LEDGER result=PASS"
+              << " selected=" << gzp_masked_index_ledger.selected
+              << " rejected=" << gzp_masked_index_ledger.rejected
+              << " full_selected="
+              << gzp_masked_index_ledger.full_window_selected
+              << " full_rejected="
+              << gzp_masked_index_ledger.full_window_rejected
+              << " active_uint32_max="
+              << gzp_masked_index_ledger.active_uint32_max
+              << " active_illegal_index="
+              << gzp_masked_index_ledger.active_illegal_index
+              << " inactive_legal_index="
+              << gzp_masked_index_ledger.inactive_legal_index
+              << " inactive_non_sentinel="
+              << gzp_masked_index_ledger.inactive_non_sentinel
+              << " index_hash=" << gzp_masked_index_ledger.index_hash
+              << " exact_equivalence=1" << std::endl;
 #endif
 #endif
 #endif
