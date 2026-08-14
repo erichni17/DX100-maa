@@ -86,9 +86,9 @@ testDefaultOffCapacityAndHardwareMath()
     CHECK(Retention::validCapacity(0));
     constexpr std::array<uint16_t, 4> capacities{{512, 1024, 2048, 4096}};
     constexpr std::array<std::size_t, 4> combinedBits{{
-        435578, 853886, 1690498, 3363718}};
+        436840, 855148, 1691760, 3364980}};
     constexpr std::array<std::size_t, 4> combinedBytes{{
-        54448, 106736, 211313, 420465}};
+        54605, 106894, 211470, 420623}};
     for (std::size_t index = 0; index < capacities.size(); ++index) {
         const uint16_t capacity = capacities[index];
         CHECK(Retention::validCapacity(capacity));
@@ -104,6 +104,7 @@ testDefaultOffCapacityAndHardwareMath()
         CHECK(Retention::provisionedCombinedTotalBits(capacity, 32) ==
               Retention::provisionedTotalBits(capacity) +
                   Retention::MAALookupControlBits + 32 * 64);
+        CHECK(Retention::MAALookupControlBits == 1772);
         CHECK(Retention::provisionedCombinedTotalBits(capacity, 32) ==
               combinedBits[index]);
         CHECK(Retention::provisionedCombinedTotalBytes(capacity, 32) ==

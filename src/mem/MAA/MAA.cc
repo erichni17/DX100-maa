@@ -2741,6 +2741,13 @@ MAA::consumeInactiveProducerPayload()
         if (result ==
             InactiveProducerMaskedFragmentRetention::ProbeResult::Miss) {
             stats.page_materialization_inactive_masked_replay_misses++;
+            // The request's snapshotted buffer is not authoritative after
+            // the one-cycle read. Retain its exact request identity, but
+            // never treat the snapshotted buffer field as authority. The
+            // shared table must rebind a current free buffer immediately
+            // before coherent cache issue.
+            panic_if(!inactivePayloadFallbacks.retain(request),
+                     "Inactive masked-fragment fallback table exhausted\n");
             inactiveMaskedFragmentLookup = InactiveMaskedFragmentLookup{};
             return false;
         }
@@ -2896,6 +2903,9 @@ MAA::finishPageMaterialization(
     (void)inactivePayloadFallbacks.clearOwner(key);
     if (sameDirectRetirementKey(inactivePayloadLookup.request.owner, key))
         inactivePayloadLookup = InactivePayloadLookup{};
+    if (sameDirectRetirementKey(inactiveMaskedFragmentLookup.request.owner,
+                                key))
+        inactiveMaskedFragmentLookup = InactiveMaskedFragmentLookup{};
     const uint8_t page = execution->page;
     const int destination = execution->destinationTile;
     const int wordBytes = execution->wordBytes;
@@ -4701,6 +4711,10 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
         if (sameDirectRetirementKey(inactivePayloadLookup.request.owner,
                                     oldMaterialization->key))
             inactivePayloadLookup = InactivePayloadLookup{};
+        if (sameDirectRetirementKey(
+                inactiveMaskedFragmentLookup.request.owner,
+                oldMaterialization->key))
+            inactiveMaskedFragmentLookup = InactiveMaskedFragmentLookup{};
         (void)directRetirementEarlyLineLedger.clear(
             {oldMaterialization->key.tokenTile,
              oldMaterialization->key.generation,

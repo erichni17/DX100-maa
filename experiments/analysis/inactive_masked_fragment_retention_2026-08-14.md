@@ -35,6 +35,12 @@ otherwise the active path or coherent backing fallback proceeds unchanged.
   latch. Reads and writes take one MAA cycle and same-cycle reads observe the
   pre-write RAM value. The latch survives RAM replacement and descriptor
   clear until exact `take()` authentication.
+- A lookup miss retains exact request identity in the shared fixed four-slot
+  inactive-fallback table, but its snapshotted buffer field is never
+  authoritative. Immediately before coherent issue it rebinds exact owner and
+  logical line through `HybridConsumerContextQueue` to the current line state
+  and a fresh free buffer. A closed line is discarded and a credit-starved
+  line waits boundedly.
 - Non-overlapping words for the same exact line/lifetime merge. The completing
   fragment's exact transaction identifies the reconstructed line.
 - Every live descriptor owns 2,048 logical-line poison bits. An overlap,
@@ -77,7 +83,10 @@ read_state_bits            = shared next cycle 64
 output_bits                = payload 512 + valid/key/line/transaction 289
 counter_bits               = 13 64-bit event counters
                            + occupancy/high-water 2*13 = 858
-MAA_lookup_control_bits    = 510
+lookup_pipeline_bits       = 510
+fallback_rebind_bits       = 4 * (valid 1 + owner 144 + request 170)
+                           + round-robin cursor 2 = 1,262
+MAA_lookup_control_bits    = 510 + 1,262 = 1,772
 persistent_incarnation(T)  = 64*T
 ```
 
@@ -89,10 +98,10 @@ tiles and rounds to bytes only after summing bits.
 
 | Entries | Payload + output (B) | Control (B) | Combined bits | Combined (B) |
 | ---: | ---: | ---: | ---: | ---: |
-| 512 | 32,832 | 21,296 | 435,578 | 54,448 |
-| 1,024 | 65,600 | 40,816 | 853,886 | 106,736 |
-| 2,048 | 131,136 | 79,857 | 1,690,498 | 211,313 |
-| 4,096 | 262,208 | 157,937 | 3,363,718 | 420,465 |
+| 512 | 32,832 | 21,296 | 436,840 | 54,605 |
+| 1,024 | 65,600 | 40,816 | 855,148 | 106,894 |
+| 2,048 | 131,136 | 79,857 | 1,691,760 | 211,470 |
+| 4,096 | 262,208 | 157,937 | 3,364,980 | 420,623 |
 
 ## Statistics and validation boundary
 

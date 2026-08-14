@@ -557,6 +557,9 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         mechanism = (
             ROOT / "src/mem/MAA/InactiveProducerMaskedFragmentRetention.hh"
         ).read_text(encoding="utf-8")
+        fallback = (
+            ROOT / "src/mem/MAA/InactivePayloadFallbackTable.hh"
+        ).read_text(encoding="utf-8")
         knob = "inactive_page_masked_fragment_retention_lines"
         for text in (sim_object, options, config, source):
             self.assertIn(knob, text)
@@ -567,6 +570,13 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertIn("DescriptorCount = 4", mechanism)
         self.assertIn("BankCount = 4", mechanism)
         self.assertIn("std::bitset<MaxLogicalLines> poison", mechanism)
+        self.assertIn("InactivePayloadFallbackTable::ControlBits", mechanism)
+        self.assertIn("rebindMaterializationRead", fallback)
+        self.assertRegex(
+            source,
+            r"inactive_masked_replay_misses\+\+;[\s\S]+?"
+            r"inactivePayloadFallbacks\.retain\(request\)",
+        )
 
     def test_inactive_retention_preserves_active_fragment_accumulation(
         self,

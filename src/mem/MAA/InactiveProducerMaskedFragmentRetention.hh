@@ -8,6 +8,8 @@
 #include <cstring>
 #include <limits>
 
+#include "mem/MAA/InactivePayloadFallbackTable.hh"
+
 namespace gem5 {
 
 /**
@@ -474,9 +476,12 @@ class InactiveProducerMaskedFragmentRetention
         DescriptorCount * MaxLogicalLines;
     static constexpr std::size_t OutputTagBits = 1 + KeyBits + 16 + 64;
     static constexpr std::size_t CounterBits = 13 * 64 + 2 * 13;
-    static constexpr std::size_t MAALookupControlBits =
+    static constexpr std::size_t LookupPipelineControlBits =
         (16 + 64 + 64) + (2 + 16 + 5 + 3 + 64 + 16 + 64) +
         (64 + 64) + (1 + 64 + 3);
+    static constexpr std::size_t MAALookupControlBits =
+        LookupPipelineControlBits +
+        InactivePayloadFallbackTable::ControlBits;
     static constexpr std::size_t IncarnationBitsPerToken = 64;
 
     static constexpr std::size_t bitsToBytes(std::size_t bits)

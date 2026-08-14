@@ -2,6 +2,7 @@
 #define __MEM_MAA_INACTIVE_PAYLOAD_FALLBACK_TABLE_HH__
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 #include "mem/MAA/HybridConsumerContextQueue.hh"
@@ -9,7 +10,7 @@
 namespace gem5 {
 
 /**
- * Fixed four-slot holding table for exact inactive-payload lookup misses.
+ * Fixed four-slot holding table for exact inactive-retention lookup misses.
  *
  * A fallback holds only a stale request identity.  Before coherent issue, it
  * must be rebound through HybridConsumerContextQueue, so a retained entry
@@ -26,6 +27,14 @@ class InactivePayloadFallbackTable
 
     static constexpr uint8_t SlotCount = Queue::ContextCount;
     static constexpr uint8_t NoSlot = SlotCount;
+    static constexpr std::size_t OwnerBits = 16 + 64 + 64;
+    static constexpr std::size_t PipelineRequestBits =
+        2 + 16 + 5 + 3 + 64 + 16 + 64;
+    static constexpr std::size_t EntryBits =
+        1 + OwnerBits + PipelineRequestBits;
+    static constexpr std::size_t CursorBits = 2;
+    static constexpr std::size_t ControlBits =
+        SlotCount * EntryBits + CursorBits;
 
     enum class ResolveResult : uint8_t
     {
@@ -123,5 +132,8 @@ class InactivePayloadFallbackTable
 };
 
 } // namespace gem5
+
+static_assert(gem5::InactivePayloadFallbackTable::SlotCount == 4);
+static_assert(gem5::InactivePayloadFallbackTable::ControlBits == 1262);
 
 #endif // __MEM_MAA_INACTIVE_PAYLOAD_FALLBACK_TABLE_HH__
