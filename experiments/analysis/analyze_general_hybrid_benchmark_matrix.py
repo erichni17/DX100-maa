@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 import sys
@@ -163,8 +164,10 @@ def opcode_report(stats: dict[str, float]) -> dict[str, int]:
     report: dict[str, int] = {}
     for suffix in OPCODE_STATS:
         name = f"system.maa.{suffix}"
-        value = stats.get(name)
-        if value is None or not value.is_integer():
+        # These gem5 counters are declared with statistics::nozero, so a
+        # missing line in a complete ROI window means an exact zero.
+        value = stats.get(name, 0.0)
+        if not value.is_integer():
             raise ValueError(f"missing or non-integral opcode stat {name}")
         report[suffix] = int(value)
     return report
@@ -641,6 +644,14 @@ def read_exit(path: Path) -> int:
         raise ValueError(f"invalid exit marker: {path}") from error
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def analyze(root: Path) -> dict[str, object]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema") != "dx100.general_hybrid_matrix.v1":
@@ -666,11 +677,31 @@ def analyze(root: Path) -> dict[str, object]:
             f"missing required arms: {sorted(required - set(arm_names))}"
         )
 
+    restore_runs = manifest.get("restore_runs")
+    if not isinstance(restore_runs, list):
+        raise ValueError("manifest lacks restore-run selector provenance")
+    restore_metadata: dict[tuple[str, int], dict[str, object]] = {}
+    for value in restore_runs:
+        if not isinstance(value, dict):
+            raise ValueError("invalid restore-run metadata")
+        key = (str(value.get("arm")), int(value.get("replica", 0)))
+        if key in restore_metadata:
+            raise ValueError(f"duplicate restore-run metadata: {key}")
+        restore_metadata[key] = value
+    expected_runs = {
+        (arm_name, replica)
+        for arm_name in arm_names
+        for replica in range(1, replicas + 1)
+    }
+    if set(restore_metadata) != expected_runs:
+        raise ValueError("restore-run metadata does not match arm replicas")
+
     records: list[dict[str, object]] = []
     for arm in arms:
         arm_name = str(arm["name"])
         selector = arm.get("selector")
         for replica in range(1, replicas + 1):
+            metadata = restore_metadata[(arm_name, replica)]
             run = root / "arms" / arm_name / f"replica-{replica}"
             if read_exit(run / "restore.exit") != 0:
                 raise ValueError(f"{arm_name}/{replica}: nonzero restore exit")
@@ -683,20 +714,42 @@ def analyze(root: Path) -> dict[str, object]:
                     f"{arm_name}/{replica}: expected exactly one terminal m5_exit"
                 )
             if selector is not None:
-                treatment = (
-                    (run / "treatment.txt").read_text(encoding="utf-8").strip()
-                )
+                selector_value = metadata.get("selector_path")
+                selector_hash = metadata.get("selector_sha256")
+                if not isinstance(selector_value, str) or not isinstance(
+                    selector_hash, str
+                ):
+                    raise ValueError(
+                        f"{arm_name}/{replica}: missing selector provenance"
+                    )
+                selector_path = Path(selector_value).resolve()
+                try:
+                    selector_path.relative_to((root / "checkpoints").resolve())
+                except ValueError as error:
+                    raise ValueError(
+                        f"{arm_name}/{replica}: selector is outside checkpoints"
+                    ) from error
+                if sha256_file(selector_path) != selector_hash:
+                    raise ValueError(
+                        f"{arm_name}/{replica}: selector hash mismatch"
+                    )
+                treatment = selector_path.read_text(encoding="utf-8").strip()
                 if treatment != selector:
                     raise ValueError(
                         f"{arm_name}/{replica}: selector mismatch"
                     )
                 selected_mode = str(selector).split()[0]
-                if f"mode={selected_mode}" not in log and not (
-                    workload == "api" and f"mode={selected_mode}" in log
-                ):
+                if f"mode={selected_mode}" not in log:
                     raise ValueError(
                         f"{arm_name}/{replica}: no restored selector marker"
                     )
+            elif (
+                metadata.get("selector_path") is not None
+                or metadata.get("selector_sha256") is not None
+            ):
+                raise ValueError(
+                    f"{arm_name}/{replica}: native arm has selector metadata"
+                )
             key, marker = correctness(workload, log)
             stats = first_stats(run / "gem5/stats.txt")
             role = str(arm["role"])

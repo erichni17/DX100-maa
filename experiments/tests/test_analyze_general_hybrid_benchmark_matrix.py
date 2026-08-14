@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed fixtures for general hybrid correctness/contention analysis."""
 
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -112,6 +113,12 @@ def legacy_summary_trace() -> str:
 
 
 class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
+    def test_nozero_opcode_counters_are_exact_zero_when_absent(self) -> None:
+        report = analyzer.opcode_report({"system.maa.cycles_TOTAL": 9.0})
+        self.assertEqual(report["cycles_TOTAL"], 9)
+        self.assertEqual(report["numInst_INDRMW"], 0)
+        self.assertEqual(report["cycles_INDRMW"], 0)
+
     def test_legacy_global_dispatch_field_is_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / "trace.log"
@@ -212,32 +219,66 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
                 "profile": "native16",
                 "role": "native_control",
                 "selector": None,
+                "checkpoint_group": "native16",
             },
             {
                 "name": "native4",
                 "profile": "native4",
                 "role": "native_control",
                 "selector": None,
+                "checkpoint_group": "native4",
             },
             {
                 "name": "hybrid_stream_control",
                 "profile": "hybrid",
                 "role": "ordinary_stream_control",
                 "selector": "paged 4096",
+                "checkpoint_group": "hybrid_stream_control",
             },
             {
                 "name": "hybrid_page_gated",
                 "profile": "hybrid",
                 "role": "page_gated_stream_control",
                 "selector": "paged_overlap 4096",
+                "checkpoint_group": "hybrid_page_gated",
             },
             {
                 "name": "hybrid_token_stream_ld",
                 "profile": "hybrid",
                 "role": "token_stream_ld_correctness_control",
                 "selector": "token_stream_ld 4096",
+                "checkpoint_group": "hybrid_token_stream_ld",
             },
         ]
+        restore_runs = []
+        for arm in arms:
+            selector_path = None
+            selector_sha256 = None
+            if arm["selector"] is not None:
+                selector_path = (
+                    root
+                    / "checkpoints"
+                    / str(arm["checkpoint_group"])
+                    / "treatment.txt"
+                )
+                selector_path.parent.mkdir(parents=True)
+                selector_path.write_text(
+                    str(arm["selector"]) + "\n", encoding="utf-8"
+                )
+                selector_sha256 = hashlib.sha256(
+                    selector_path.read_bytes()
+                ).hexdigest()
+            restore_runs.append(
+                {
+                    "arm": arm["name"],
+                    "replica": 1,
+                    "checkpoint_group": arm["checkpoint_group"],
+                    "selector_path": (
+                        str(selector_path.resolve()) if selector_path else None
+                    ),
+                    "selector_sha256": selector_sha256,
+                }
+            )
         (root / "manifest.json").write_text(
             json.dumps(
                 {
@@ -245,6 +286,7 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
                     "workload": "api",
                     "replicas": 1,
                     "arms": arms,
+                    "restore_runs": restore_runs,
                 }
             ),
             encoding="utf-8",
@@ -261,10 +303,6 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
                 f"page_elements=4096 hash={value} errors=0\n" + EXIT,
                 encoding="utf-8",
             )
-            if arm["selector"] is not None:
-                (run / "treatment.txt").write_text(
-                    str(arm["selector"]) + "\n", encoding="utf-8"
-                )
             is_token = str(arm["role"]).startswith("token_stream_ld_")
             (run / "gem5/stats.txt").write_text(
                 STATS.format(
@@ -371,14 +409,15 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
                 token["rmw_instruction_count_ratio_vs_native16"], 4.0
             )
 
-    def test_missing_opcode_counter_fails_closed(self) -> None:
+    def test_nonintegral_opcode_counter_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.make_matrix(root)
             stats = root / "arms/native16/replica-1/gem5/stats.txt"
             stats.write_text(
                 stats.read_text().replace(
-                    "system.maa.cycles_INDRMW 400\n", ""
+                    "system.maa.cycles_INDRMW 400\n",
+                    "system.maa.cycles_INDRMW 400.5\n",
                 ),
                 encoding="utf-8",
             )
