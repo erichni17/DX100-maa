@@ -82,28 +82,34 @@ created or reused application contexts while retaining the exact close checks.
 | hybrid token materializer | 7,351,221,603 | +26.16% | 1.039x |
 
 The current hybrid recovers only 15.76% of the native4-to-native16 opportunity
-on GZP. This is not explained by lost 16K reordering: the hybrid retains the
-full logical Row/Offset window. It is dominated by materializing result pages
-from coherent backing storage.
+on GZP. This is not explained by lost 16K gather reordering: the hybrid retains
+the full logical Row/Offset window. The remaining application schedule still
+executes the two indirect RMWs and their consumers as 4K operations.
 
-The exact trace contains 61 completed materializer lifetimes and 62,464
-backing cache-line reads, exactly 1,024 lines per lifetime. Producer traffic
-contains 378,002 write responses: 377,966 are partial-line writes and only 36
-are full-line writes. All 61 completed lifetimes eventually produce 1,024
-complete lines with no overlapping word masks or writes after a line first
-becomes complete. Therefore:
+An exact same-checkpoint retention campaign tested 0, 2,048, and 4,096 retained
+lines. The 4,096-line arm eliminates all 62,464 backing fallbacks but is
+0.0552% slower than retention off. Every arm passes exact output hash and
+application-reference checks. Therefore:
 
-- retaining only already-complete inactive lines can help API but has almost
-  no opportunity on GZP;
-- a general GZP mechanism must accumulate bounded masked fragments before page
-  activation and release only a sealed, exact line; and
-- 62,464 avoided backing reads is an ideal unbounded mechanism ceiling, not a
-  prediction for a finite direct-index implementation.
+- gather-result backing reads are overlapped or noncritical on GZP;
+- increasing gather retention is not the next optimization target; and
+- the page-local downstream instruction schedule must be widened if the
+  hybrid is to approach native16 application performance.
+
+The measured hybrid/native16 MAA-cycle gap is 4,870,516 cycles. The indirect
+RMW-cycle delta is 4,028,146 cycles, or 82.7047% of that gap. GZP issues 490
+hybrid RMWs versus 124 native16 RMWs because it invokes two RMWs for every 4K
+page instead of twice per logical 16K window. Substituting native16's measured
+RMW-cycle total into the hybrid gives an optimistic ceiling of 6,090,411,905
+ticks, 4.525% slower than native16. This is not a measured speedup and assumes
+free staging, but it identifies logical-16K RMW execution as the next target.
 
 ## Promotion status
 
-The API experiment establishes optimized feasibility. GZP is exact but does
-not yet establish useful application performance; CG is still outstanding.
-The next promotion gate is a reviewed bounded inactive-fragment mechanism,
-followed by fresh same-checkpoint API, GZP, and CG comparisons. Until then,
-report the single-digit API result and the negative GZP result separately.
+The API experiment establishes optimized gather feasibility. GZP is exact but
+does not yet establish useful application performance; CG is still
+outstanding. The next promotion gate is a correctness-first logical-16K RMW
+mechanism, followed by replacement of any logical-window-sized operand arrays
+with bounded just-in-time replay state. Then run fresh same-checkpoint API,
+GZP, and CG comparisons. Until then, report the single-digit API result, the
+negative gather-retention result, and the analytic RMW ceiling separately.

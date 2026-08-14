@@ -15,7 +15,7 @@ current hybrid, still **4.5250%** slower than native16. This is a ceiling, not a
 performance result: it assumes all 4,028,146 excess RMW cycles are removable
 from the critical path and charges no virtual-operand staging or control cost.
 
-The live 4,096-line masked-retention arm eliminates all 62,464 materializer
+The exact 4,096-line masked-retention arm eliminates all 62,464 materializer
 backing-read fallbacks but changes ticks by only +0.0552% (slower). It leaves
 the 490 RMWs and 981 streams unchanged. Gather-only retention therefore cannot
 close the remaining gap.
@@ -61,11 +61,12 @@ Its manifest records source `47f4260c`, gem5 SHA-256
 `a8617956b3ffd65804931a0bd88b8bc3c5c0dfde0663bc05fabf16d85db5446c`,
 and pre-run checkpoint SHA-256
 `25a6f0e98ff4a92d54a26530f0e79f49b3d136a6b6487cd2de5a7a8cf703efd7`.
-The three commands differ only in retention capacity 0/2,048/4,096. They
-produced nonempty ROI stats and no panic, but no `restore.exit`, correctness
-marker, `ROI Ended`, or `m5_exit` marker before the processes disappeared.
-They are exact live mechanism observations, **not completed/correctness-valid
-performance evidence**.
+The three commands differ only in retention capacity 0/2,048/4,096. The
+campaign and successor report pass. Every arm has `restore.exit=0`, exactly
+one `m5_exit`, nonempty ROI statistics, output hash
+`11225737641199706160`, `nonfinite=0`, zero point-volume and
+point-gradient errors, and 1,180,000 checked elements. The frozen checkpoint
+is immutable. These are completed, exact correctness-valid mechanism results.
 
 ## Exact GZP cycle and instruction table
 
@@ -241,8 +242,9 @@ not the bounded low-storage choice.
 
 - The primary matrix has one replica, profile-specific checkpoints, source
   `901daab8`, and a stale nonzero top-level campaign exit.
-- The exact-`47f4260c` retention arms lack terminal/correctness markers and
-  wrapper exits; their ticks must not be promoted as validated speedups.
+- The exact-`47f4260c` retention campaign is terminal and correctness-valid.
+  It promotes the negative result: eliminating all gather backing fallbacks
+  does not improve GZP performance.
 - The 1.2070x RMW result is an analytic ceiling. No virtual-RMW ABI, bounded
   context store, dual-range hazard model, storage/control ledger, or live gem5
   implementation exists at this commit.
