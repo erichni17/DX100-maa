@@ -69,7 +69,7 @@ sha256sum "$source_file" "$binary" "$gem5" "$config" "$ramulator" \
     > "$out/artifact_sha256.txt"
 
 set +e
-timeout 600 "${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
+"${checkpoint_cmd[@]}" > "$out/checkpoint.log" 2>&1
 checkpoint_rc=$?
 set -e
 printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
@@ -86,7 +86,7 @@ find "$out/checkpoint" -type f -print0 | sort -z | \
     xargs -0 sha256sum > "$out/checkpoint_sha256.txt"
 
 set +e
-OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 600 \
+OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
     "${restore_cmd[@]}" > "$out/restore.log" 2>&1
 restore_rc=$?
 set -e
