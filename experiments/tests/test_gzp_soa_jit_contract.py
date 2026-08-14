@@ -18,13 +18,11 @@ def test_gzp_uses_exact_published_predicate_and_completion() -> None:
     assert "volume_soa_jit" in source
     assert "corner_volume.data() + c" in source
     assert "corner_predicate_soa.data() + c" in source
-    assert "const uint32_t selected = tile_cond_ptr[i] != 0" in source
     assert "soa_predicates[omp_thread_id]" in source
-    assert "wait_ready(tile2);" in source
-    assert source.index("wait_ready(tile2);") < source.index(
-        "DATATYPE *tile2_ptr"
-    )
-    assert "0x7fc00001U" in source
+    assert source.count("maa_publish_spd_page_logical16_response_bearing") == 2
+    assert "response_bearing_spd_to_coherent" in source
+    assert "get_cacheable_tile_pointer<DATATYPE>(tile2)" not in source
+    assert "std::atomic_thread_fence" not in source
     assert "wait_ready(soa_volume_completion_tiles" in source
     assert "wait_ready(soa_gradient_completion_tiles" in source
     assert "if (soa_both_full_window)" in source
@@ -59,13 +57,16 @@ def test_runner_is_provenance_frozen_and_execution_gated() -> None:
         assert required in runner
 
 
-def test_analyzer_gates_volume_performance_and_staging_correctness() -> None:
+def test_analyzer_gates_volume_performance_and_publisher_correctness() -> None:
     analyzer = text("experiments/analysis/analyze_gzp_soa_jit_correctness.py")
     for required in (
         "UME_GZP_TERMINAL",
         "IND_SoaJitTerminalCompletions",
         "IND_SoaJitPredicateLineResponses",
         "IND_SoaJitAWriteResponses",
+        "STR_PublishOverlapIssues",
+        "validate_publisher_stats",
+        "EXPECTED_PUBLISH_LINES",
         "validate_soa_trace",
         "EXPECTED_VOLUME_SOA_INSTRUCTIONS = 61",
         '"volume_only_windows": str(EXPECTED_FULL_WINDOWS)',

@@ -745,6 +745,18 @@ bool MAA::allFuncUnitsIdle() {
     }
     return true;
 }
+bool MAA::hasNonStreamActivity(int streamID) const {
+    panic_if(streamID < 0 || streamID >= num_maas,
+             "invalid stream unit %d for overlap accounting\n", streamID);
+    if (!aluUnitsIdle[streamID] || !rangeUnitsIdle[streamID])
+        return true;
+    const int first_indirect = streamID * num_indirect_units_per_maa;
+    for (unsigned int lane = 0; lane < num_indirect_units_per_maa; ++lane) {
+        if (!indirectAccessIdle[first_indirect + lane])
+            return true;
+    }
+    return false;
+}
 bool MAA::getAddrRegionPermit(Instruction *instruction) {
     return invalidator->getAddrRegionPermit(instruction);
 }
@@ -7136,6 +7148,11 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_STREAM_STAT_NAME("STR_PublishCreditStalls"),
             statistics::units::Count::get(),
             "publisher service observations blocked by all eight credits"));
+        STR_PublishOverlapIssues.push_back(new statistics::Scalar(
+            this, MAKE_STREAM_STAT_NAME("STR_PublishOverlapIssues"),
+            statistics::units::Count::get(),
+            "publisher WriteReq issues observed while a non-stream unit "
+            "for the same MAA was active"));
         STR_PublishTerminals.push_back(new statistics::Scalar(
             this, MAKE_STREAM_STAT_NAME("STR_PublishTerminals"),
             statistics::units::Count::get(),
@@ -7224,6 +7241,7 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
         (*STR_PublishWriteResponses[stream_id]).flags(statistics::nozero);
         (*STR_PublishCreditHWM[stream_id]).flags(statistics::nozero);
         (*STR_PublishCreditStalls[stream_id]).flags(statistics::nozero);
+        (*STR_PublishOverlapIssues[stream_id]).flags(statistics::nozero);
         (*STR_PublishTerminals[stream_id]).flags(statistics::nozero);
         (*STR_CyclesRequest[stream_id]).flags(statistics::nozero);
         (*STR_CyclesRTAccess[stream_id]).flags(statistics::nozero);

@@ -3,7 +3,8 @@
 
 Execution is intentionally gated on an explicit lead-provided optimized gem5
 SHA-256.  The volume-only arm is performance-capable; the two-RMW SoA/JIT arm
-uses correctness-only CPU staging after SPD producer completion.
+uses bounded response-bearing SPD publication and remains correctness-only
+until a matched same-binary performance run is accepted.
 """
 
 from __future__ import annotations

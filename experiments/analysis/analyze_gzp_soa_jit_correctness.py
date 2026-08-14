@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed correctness report for the GZP SoA/JIT staging treatment."""
+"""Fail-closed correctness report for the GZP SoA/JIT publisher treatment."""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ import analyze_general_hybrid_benchmark_matrix as general  # noqa: E402
 EXPECTED_HASH = "11225737641199706160"
 EXPECTED_ELEMENTS = "1180000"
 EXPECTED_FULL_WINDOWS = 61
-EXPECTED_STAGED = 999424
+EXPECTED_PUBLISHED = 999424
+EXPECTED_PUBLISH_OPERATIONS = EXPECTED_FULL_WINDOWS * 4 * 2
+EXPECTED_PUBLISH_LINES = EXPECTED_PUBLISH_OPERATIONS * 256
 EXPECTED_VOLUME_SOA_INSTRUCTIONS = 61
 EXPECTED_BOTH_SOA_INSTRUCTIONS = 122
 
@@ -39,6 +41,47 @@ def sum_stat(stats: dict[str, float], suffix: str) -> int:
     if not values or any(not value.is_integer() for value in values):
         raise ValueError(f"missing or non-integral SoA stat {suffix}")
     return int(sum(values))
+
+
+def stream_stats(stats: dict[str, float], suffix: str) -> list[int]:
+    pattern = re.compile(rf"system\.maa\.S\d+_{re.escape(suffix)}$")
+    values = [
+        value for name, value in stats.items() if pattern.fullmatch(name)
+    ]
+    if any(not value.is_integer() for value in values):
+        raise ValueError(f"non-integral publisher stat {suffix}")
+    return [int(value) for value in values]
+
+
+def validate_publisher_stats(stats: dict[str, float]) -> dict[str, int]:
+    def total(suffix: str) -> int:
+        return sum(stream_stats(stats, suffix))
+
+    issues = total("STR_PublishIssues")
+    accepts = total("STR_PublishAccepts")
+    responses = total("STR_PublishWriteResponses")
+    terminals = total("STR_PublishTerminals")
+    high_water = max(stream_stats(stats, "STR_PublishCreditHWM"), default=0)
+    if (issues, accepts, responses) != (
+        EXPECTED_PUBLISH_LINES,
+        EXPECTED_PUBLISH_LINES,
+        EXPECTED_PUBLISH_LINES,
+    ):
+        raise ValueError(
+            "publisher issue/accept/response accounting did not close"
+        )
+    if terminals != EXPECTED_PUBLISH_OPERATIONS or high_water != 8:
+        raise ValueError("publisher terminal or eight-credit bound is invalid")
+    return {
+        "publish_issues": issues,
+        "publish_accepts": accepts,
+        "publish_retries": total("STR_PublishRetries"),
+        "publish_responses": responses,
+        "publish_credit_stalls": total("STR_PublishCreditStalls"),
+        "publish_overlap_issues": total("STR_PublishOverlapIssues"),
+        "publish_terminals": terminals,
+        "publish_credit_hwm": high_water,
+    }
 
 
 def command_option(command_path: Path, option: str) -> str:
@@ -447,8 +490,8 @@ def analyze(root: Path) -> dict[str, object]:
                         "treatment": "legacy_4k",
                         "full_windows": "0",
                         "volume_only_windows": "0",
-                        "staged_predicates": "0",
-                        "staged_gradient_values": "0",
+                        "published_predicates": "0",
+                        "published_gradient_values": "0",
                         "publisher": "none",
                         "performance_promotable": "1",
                         "result": "PASS",
@@ -479,8 +522,8 @@ def analyze(root: Path) -> dict[str, object]:
                         "treatment": "volume_only_soa_jit",
                         "full_windows": "0",
                         "volume_only_windows": str(EXPECTED_FULL_WINDOWS),
-                        "staged_predicates": "0",
-                        "staged_gradient_values": "0",
+                        "published_predicates": "0",
+                        "published_gradient_values": "0",
                         "publisher": "precheckpoint_uint32_predicate",
                         "performance_promotable": "1",
                         "result": "PASS",
@@ -512,9 +555,9 @@ def analyze(root: Path) -> dict[str, object]:
                         "treatment": "soa_jit_correctness",
                         "full_windows": str(EXPECTED_FULL_WINDOWS),
                         "volume_only_windows": "0",
-                        "staged_predicates": str(EXPECTED_STAGED),
-                        "staged_gradient_values": str(EXPECTED_STAGED),
-                        "publisher": "cpu_after_spd_completion",
+                        "published_predicates": str(EXPECTED_PUBLISHED),
+                        "published_gradient_values": str(EXPECTED_PUBLISHED),
+                        "publisher": "response_bearing_spd_to_coherent",
                         "performance_promotable": "0",
                         "result": "PASS",
                     }
@@ -540,6 +583,7 @@ def analyze(root: Path) -> dict[str, object]:
                             EXPECTED_BOTH_SOA_INSTRUCTIONS,
                         )
                     )
+                    record.update(validate_publisher_stats(stats))
             records.append(record)
     if keys != {EXPECTED_HASH}:
         raise ValueError("cross-arm exact output fingerprints differ")

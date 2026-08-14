@@ -199,10 +199,10 @@ static MAAVirtualConsumerMode virtual_consumer_mode =
 static_assert(sizeof(int) == sizeof(uint32_t),
               "GZP SoA/JIT indices require 32-bit int");
 
-// These are ordinary coherent guest-memory staging arrays, not hidden MAA
-// storage.  The correctness-first treatment fills them only after the exact
-// predicate/product SPD producers complete.  A later performance treatment
-// must replace the CPU copy with a response-bearing publisher.
+// These are ordinary coherent guest-memory publication arrays, not hidden MAA
+// storage.  Each completed physical 4K predicate/product page reaches them
+// only through bounded response-bearing cache writes.  The logical SoA/JIT
+// consumer still covers all 16K entries in one Row/Offset epoch.
 alignas(64) static uint32_t soa_predicates[NUM_CORES][TILE_SIZE];
 alignas(64) static DATATYPE soa_gradient_values[NUM_CORES][TILE_SIZE];
 
@@ -216,8 +216,8 @@ enum class GzpRmwTreatment
 static GzpRmwTreatment gzp_rmw_treatment = GzpRmwTreatment::Legacy4K;
 static std::atomic<uint64_t> soa_full_windows{0};
 static std::atomic<uint64_t> soa_volume_only_windows{0};
-static std::atomic<uint64_t> soa_staged_predicates{0};
-static std::atomic<uint64_t> soa_staged_gradient_values{0};
+static std::atomic<uint64_t> soa_published_predicates{0};
+static std::atomic<uint64_t> soa_published_gradient_values{0};
 static uint64_t soa_predicate_hash = 0;
 static uint64_t soa_predicate_active = 0;
 
@@ -233,7 +233,7 @@ static const char *gzp_rmw_publisher_name(GzpRmwTreatment treatment) {
     if (treatment == GzpRmwTreatment::VolumeOnlySoaJit)
         return "precheckpoint_uint32_predicate";
     if (treatment == GzpRmwTreatment::SoaJitCorrectness)
-        return "cpu_after_spd_completion";
+        return "response_bearing_spd_to_coherent";
     return "none";
 }
 
@@ -434,7 +434,7 @@ void gradzatp_MAA() {
 #if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         maa_const<int>(0, backing_start_reg);
 #endif
-#if defined(UME_GATHER_VERIFY) || defined(UME_GZP_SOA_JIT_RMW)
+#ifdef UME_GATHER_VERIFY
         uint32_t *tile_cond_ptr =
             get_cacheable_tile_pointer<uint32_t>(tileCond);
 #endif
@@ -536,6 +536,12 @@ void gradzatp_MAA() {
                                           tile1, tileCond);
 
                 if (gather_size == TILE_SIZE) {
+                    // Publication reuses these three otherwise-immutable page
+                    // registers below.  Restore the page-relative consumer
+                    // bounds before every modeled backing load.
+                    maa_const<int>(0, page_min_reg);
+                    maa_const<int>(MAA_CONSUMER_TILE_SIZE, page_max_reg);
+                    maa_const<int>(1, page_stride_reg);
                     maa_virtual_consumer_load_page<DATATYPE>(
                         virtual_consumer_mode,
                         virtual_gather_backing[omp_thread_id] + page_offset,
@@ -568,33 +574,39 @@ void gradzatp_MAA() {
                                           Operation_t::MUL_OP, tileCond);
                 if (soa_both_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
-                    // tile2 completion depends on the ACK-gated materialized
-                    // gather page, csurf, the exact GTE predicate, and FP32
-                    // MUL. Reading either SPD result before this wait is
-                    // forbidden.
-                    wait_ready(tile2);
-                    DATATYPE *tile2_ptr =
-                        get_cacheable_tile_pointer<DATATYPE>(tile2);
-                    uint32_t *predicate_dst =
-                        soa_predicates[omp_thread_id] + page_offset;
-                    DATATYPE *gradient_dst =
-                        soa_gradient_values[omp_thread_id] + page_offset;
-                    for (int i = 0; i < page_size; ++i) {
-                        const uint32_t selected = tile_cond_ptr[i] != 0;
-                        predicate_dst[i] = selected;
-                        if (selected) {
-                            gradient_dst[i] = tile2_ptr[i];
-                        } else {
-                            // False lanes are poison: the guarded RMW must not
-                            // read or apply their value bytes.
-                            const uint32_t poison = 0x7fc00001U;
-                            std::memcpy(&gradient_dst[i], &poison,
-                                        sizeof(poison));
-                        }
-                    }
-                    soa_staged_predicates.fetch_add(
+                    // The publisher itself waits for each complete producer
+                    // tile, captures one 64B line into one of eight credits,
+                    // and retains that exact payload until WriteResp.  The
+                    // two completion tiles fence visibility and source reuse;
+                    // there is no host-side copy or instantaneous staging.
+                    const uint32_t logical_page =
+                        page_offset / MAA_CONSUMER_TILE_SIZE;
+                    const uint32_t window = c / TILE_SIZE;
+                    const uint32_t predicate_generation =
+                        window * 8 + logical_page * 2 + 1;
+                    const uint32_t gradient_generation =
+                        predicate_generation + 1;
+                    maa_const<uint32_t>(logical_page, page_min_reg);
+                    maa_const<uint32_t>(page_offset, page_max_reg);
+                    maa_const<uint32_t>(predicate_generation,
+                                        page_stride_reg);
+                    maa_publish_spd_page_logical16_response_bearing<uint32_t>(
+                        soa_predicates[omp_thread_id], logical_page,
+                        tileCond,
+                        soa_volume_completion_tiles[omp_thread_id],
+                        page_min_reg, page_max_reg, page_stride_reg);
+                    maa_const<uint32_t>(gradient_generation,
+                                        page_stride_reg);
+                    maa_publish_spd_page_logical16_response_bearing<DATATYPE>(
+                        soa_gradient_values[omp_thread_id], logical_page,
+                        tile2,
+                        soa_gradient_completion_tiles[omp_thread_id],
+                        page_min_reg, page_max_reg, page_stride_reg);
+                    wait_ready(soa_volume_completion_tiles[omp_thread_id]);
+                    wait_ready(soa_gradient_completion_tiles[omp_thread_id]);
+                    soa_published_predicates.fetch_add(
                         page_size, std::memory_order_relaxed);
-                    soa_staged_gradient_values.fetch_add(
+                    soa_published_gradient_values.fetch_add(
                         page_size, std::memory_order_relaxed);
 #endif
                 } else {
@@ -608,10 +620,6 @@ void gradzatp_MAA() {
                 maa_virtual_consumer_end(virtual_consumer_mode, tile3);
             if (soa_both_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
-                // Coherent CPU staging is deliberately conservative.  The
-                // architectural treatment will replace it with ACKed SPD
-                // publication; ordinary STREAM_ST is not a visibility fence.
-                std::atomic_thread_fence(std::memory_order_seq_cst);
                 maa_const<int>(0, reg0);
                 maa_const<int>(TILE_SIZE, reg1);
                 maa_const<int>(1, reg2);
@@ -774,9 +782,9 @@ void gradzatp_MAA() {
               << " full_windows=" << soa_full_windows.load()
               << " volume_only_windows="
               << soa_volume_only_windows.load()
-              << " staged_predicates=" << soa_staged_predicates.load()
-              << " staged_gradient_values="
-              << soa_staged_gradient_values.load()
+              << " published_predicates=" << soa_published_predicates.load()
+              << " published_gradient_values="
+              << soa_published_gradient_values.load()
               << " predicate_hash=" << soa_predicate_hash
               << " publisher="
               << gzp_rmw_publisher_name(gzp_rmw_treatment)
