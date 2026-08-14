@@ -51,6 +51,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mem-channels", type=int, default=2)
     parser.add_argument("--l3-ports", type=int, default=4)
+    parser.add_argument(
+        "--active-contexts", type=int, choices=(8, 16, 32), default=8
+    )
+    parser.add_argument(
+        "--active-value-owners", type=int, choices=(32, 64, 128), default=32
+    )
+    parser.add_argument("--replicas", type=int, choices=range(1, 9), default=1)
     parser.add_argument("--expected-gem5-sha256")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
@@ -272,6 +279,12 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
     }:
         raise RuntimeError(f"{name}: publisher trace ledger failed")
 
+    expected_rmw_instructions = 5 if name == "volume_only" else 2
+    rmw_instructions = optional_sum(stats, "numInst_INDRMW")
+    rmw_cycles = optional_sum(stats, "cycles_INDRMW")
+    if rmw_instructions != expected_rmw_instructions or rmw_cycles <= 0:
+        raise RuntimeError(f"{name}: RMW instruction/cycle ledger failed")
+
     return {
         "arm": name,
         "simTicks": stats["simTicks"],
@@ -285,6 +298,8 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
         "pre_a_ready": soa["IND_SoaJitPreAValueReadyAtAResponse"],
         "indirect_instructions": common.sum_suffix(stats, "IND_NumInsts"),
         "stream_instructions": common.sum_suffix(stats, "STR_NumInsts"),
+        "rmw_instructions": rmw_instructions,
+        "rmw_cycles": rmw_cycles,
         "publish_lines": publish["STR_PublishIssues"],
         "publish_responses": publish["STR_PublishWriteResponses"],
         "publish_retries": publish["STR_PublishRetries"],
@@ -294,15 +309,40 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
     }
 
 
-def compare(rows: list[dict[str, int | str]]) -> dict[str, int | float | str]:
-    baseline, candidate = rows
-    for key in ("output_hash", "index_hash"):
-        if baseline[key] != candidate[key]:
-            raise RuntimeError(f"pair mismatch: {key}")
+def compare(
+    rows: list[dict[str, int | str]], replicas: int
+) -> dict[str, int | float | str | bool]:
+    grouped = {
+        arm: [row for row in rows if row["arm"] == arm] for arm, _ in ARMS
+    }
+    if any(len(grouped[arm]) != replicas for arm, _ in ARMS):
+        raise RuntimeError("replica count mismatch")
+    for replica in range(1, replicas + 1):
+        baseline = grouped["volume_only"][replica - 1]
+        candidate = grouped["dual_logical16"][replica - 1]
+        for key in ("output_hash", "index_hash"):
+            if baseline[key] != candidate[key]:
+                raise RuntimeError(f"replica {replica} pair mismatch: {key}")
+    for arm, _ in ARMS:
+        reference = {
+            key: value
+            for key, value in grouped[arm][0].items()
+            if key != "replica"
+        }
+        if any(
+            {key: value for key, value in row.items() if key != "replica"}
+            != reference
+            for row in grouped[arm][1:]
+        ):
+            raise RuntimeError(f"{arm}: replicas are not deterministic")
+    baseline = grouped["volume_only"][0]
+    candidate = grouped["dual_logical16"][0]
     tick_delta = int(candidate["simTicks"]) - int(baseline["simTicks"])
     decision = "ACCEPT" if tick_delta < 0 else "REJECT"
     return {
         "decision": decision,
+        "replicas": replicas,
+        "deterministic_replicas": True,
         "baseline_simTicks": int(baseline["simTicks"]),
         "candidate_simTicks": int(candidate["simTicks"]),
         "candidate_minus_baseline_ticks": tick_delta,
@@ -312,6 +352,14 @@ def compare(rows: list[dict[str, int | str]]) -> dict[str, int | float | str]:
         - int(baseline["indirect_instructions"]),
         "stream_instruction_delta": int(candidate["stream_instructions"])
         - int(baseline["stream_instructions"]),
+        "baseline_rmw_instructions": int(baseline["rmw_instructions"]),
+        "candidate_rmw_instructions": int(candidate["rmw_instructions"]),
+        "rmw_instruction_delta": int(candidate["rmw_instructions"])
+        - int(baseline["rmw_instructions"]),
+        "baseline_rmw_cycles": int(baseline["rmw_cycles"]),
+        "candidate_rmw_cycles": int(candidate["rmw_cycles"]),
+        "rmw_cycle_delta": int(candidate["rmw_cycles"])
+        - int(baseline["rmw_cycles"]),
         "publisher_serialization_observed": int(
             candidate["publish_credit_stalls"]
         )
@@ -326,7 +374,7 @@ def compare(rows: list[dict[str, int | str]]) -> dict[str, int | float | str]:
 def main() -> int:
     args = parse_args()
     plan = {
-        "schema": "dx100.gzp_dual_logical16_one_window.v1",
+        "schema": "dx100.gzp_dual_logical16_one_window.v2",
         "n": N,
         "arms": [name for name, _ in ARMS],
         "shared_guest": True,
@@ -335,6 +383,9 @@ def main() -> int:
         "logical_elements": 16384,
         "physical_spd_elements": 4096,
         "pre_a_value_lookahead": True,
+        "active_contexts": args.active_contexts,
+        "active_value_owners": args.active_value_owners,
+        "replicas": args.replicas,
         "trace_flags": ["MAAVirtualTrace", "MAATrace"],
         "full_gzp_authorized": False,
     }
@@ -411,71 +462,88 @@ def main() -> int:
             "--maa_virtual_words_per_cycle=4",
             "--maa_virtual_combine_banks=8",
             "--maa_virtual_index_buffer_lines=8",
-            "--maa_soa_jit_active_contexts=8",
+            f"--maa_soa_jit_active_contexts={args.active_contexts}",
             "--maa_soa_jit_value_lookahead=8",
             "--maa_soa_jit_value_cache_enable",
             "--maa_soa_jit_predicate_active_credits=16",
-            "--maa_soa_jit_active_value_owners=32",
+            f"--maa_soa_jit_active_value_owners={args.active_value_owners}",
             "--maa_soa_jit_apply_lanes=1",
             "--maa_soa_jit_pre_a_value_lookahead",
         ]
         rows: list[dict[str, int | str]] = []
         run_records: list[dict[str, str]] = []
-        for name, payload in ARMS:
-            run = args.out / "runs" / name
-            run.mkdir(parents=True)
-            common.atomic_text(selector, payload + "\n")
-            common.atomic_text(run / "frozen_treatment.txt", payload + "\n")
-            selector_hash = common.sha256(selector)
-            command = matrix.restore_command(
-                args.gem5.resolve(),
-                frozen_config,
-                run / "gem5",
-                checkpoint,
-                guest,
-                f"{N} {selector}",
-                "hybrid",
-                ramulator,
-                args.mem_channels,
-                args.l3_ports,
-                extra,
-            )
-            virtual_trace_flag = "--debug-flags=MAAVirtualTrace"
-            if command.count(virtual_trace_flag) != 1:
-                raise RuntimeError(
-                    "restore command lost its virtual trace flag"
+        for replica in range(1, args.replicas + 1):
+            for name, payload in ARMS:
+                run_name = name if args.replicas == 1 else f"{name}_r{replica}"
+                run = args.out / "runs" / run_name
+                run.mkdir(parents=True)
+                common.atomic_text(selector, payload + "\n")
+                common.atomic_text(
+                    run / "frozen_treatment.txt", payload + "\n"
                 )
-            command[
-                command.index(virtual_trace_flag)
-            ] = "--debug-flags=MAAVirtualTrace,MAATrace"
-            if matrix.tree_identity(checkpoint) != checkpoint_identity:
-                raise RuntimeError("shared checkpoint changed before restore")
-            if common.run_logged(command, run / "restore.log", env):
-                raise RuntimeError(f"{name}: restore failed")
-            if common.sha256(selector) != selector_hash:
-                raise RuntimeError(f"{name}: selector changed during restore")
-            if matrix.tree_identity(checkpoint) != checkpoint_identity:
-                raise RuntimeError("shared checkpoint changed during restore")
-            config = (run / "gem5/config.ini").read_text()
-            for required_config in (
-                "num_tile_elements=16384",
-                "physical_tile_elements=4096",
-                "soa_jit_pre_a_value_lookahead=true",
-            ):
-                if required_config not in config:
-                    raise RuntimeError(f"{name}: missing {required_config}")
-            rows.append(analyze_run(name, run))
-            run_records.append(
-                {
-                    "arm": name,
-                    "selector": payload,
-                    "selector_sha256": selector_hash,
-                    "command_sha256": common.sha256(
-                        run / "restore.command.json"
-                    ),
-                }
-            )
-        summary = compare(rows)
+                selector_hash = common.sha256(selector)
+                command = matrix.restore_command(
+                    args.gem5.resolve(),
+                    frozen_config,
+                    run / "gem5",
+                    checkpoint,
+                    guest,
+                    f"{N} {selector}",
+                    "hybrid",
+                    ramulator,
+                    args.mem_channels,
+                    args.l3_ports,
+                    extra,
+                )
+                virtual_trace_flag = "--debug-flags=MAAVirtualTrace"
+                if command.count(virtual_trace_flag) != 1:
+                    raise RuntimeError(
+                        "restore command lost its virtual trace flag"
+                    )
+                command[
+                    command.index(virtual_trace_flag)
+                ] = "--debug-flags=MAAVirtualTrace,MAATrace"
+                if matrix.tree_identity(checkpoint) != checkpoint_identity:
+                    raise RuntimeError(
+                        "shared checkpoint changed before restore"
+                    )
+                if common.run_logged(command, run / "restore.log", env):
+                    raise RuntimeError(f"{run_name}: restore failed")
+                if common.sha256(selector) != selector_hash:
+                    raise RuntimeError(
+                        f"{run_name}: selector changed during restore"
+                    )
+                if matrix.tree_identity(checkpoint) != checkpoint_identity:
+                    raise RuntimeError(
+                        "shared checkpoint changed during restore"
+                    )
+                config = (run / "gem5/config.ini").read_text()
+                for required_config in (
+                    "num_tile_elements=16384",
+                    "physical_tile_elements=4096",
+                    f"soa_jit_active_contexts={args.active_contexts}",
+                    "soa_jit_pre_a_value_lookahead=true",
+                    f"soa_jit_active_value_owners={args.active_value_owners}",
+                ):
+                    if required_config not in config:
+                        raise RuntimeError(
+                            f"{run_name}: missing {required_config}"
+                        )
+                row = analyze_run(name, run)
+                row["replica"] = replica
+                rows.append(row)
+                run_records.append(
+                    {
+                        "arm": name,
+                        "replica": replica,
+                        "selector": payload,
+                        "selector_sha256": selector_hash,
+                        "command_sha256": common.sha256(
+                            run / "restore.command.json"
+                        ),
+                    }
+                )
+        summary = compare(rows, args.replicas)
         manifest = {
             **plan,
             "source": {
