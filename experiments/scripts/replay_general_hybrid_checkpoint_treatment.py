@@ -44,6 +44,9 @@ REPLAY_SCHEMA = "dx100.general_hybrid_single_treatment_replay.v1"
 REPORT_SCHEMA = "dx100.general_hybrid_single_treatment_report.v1"
 SUPPORTED_WORKLOADS = frozenset(("api", "cg", "ume-gzp", "ume-gzz"))
 SAFE_NAME = re.compile(r"[a-z][a-z0-9_-]*\Z")
+LONG_OPTION = re.compile(r"--[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
+NONNEGATIVE_INTEGER = re.compile(r"[0-9]+\Z")
 
 # These are the only replay-safe profiles.  The selected source arm must have
 # exactly this geometry; the source manifest's arbitrary profile payload is
@@ -77,6 +80,7 @@ PROTECTED_OPTION_KEYS = frozenset(
         "--cpu-clock",
         "--mem-channels",
         "--l3-ports",
+        "--l3cache",
         "--l3_size",
         "--l3_assoc",
         "--l3_mshrs",
@@ -150,6 +154,18 @@ def option_key(value: str) -> str:
     return value.split("=", 1)[0]
 
 
+def protected_option_alias(key: str) -> str | None:
+    """Return the protected long option abbreviated by *key*, if any."""
+    matches = sorted(
+        option for option in PROTECTED_OPTION_KEYS if option.startswith(key)
+    )
+    if key in PROTECTED_OPTION_KEYS:
+        return key
+    if matches:
+        return matches[0]
+    return None
+
+
 def parse_sole_arm_gem5_arg(value: str) -> str:
     if not value.startswith("--") or any(
         character.isspace() for character in value
@@ -157,24 +173,58 @@ def parse_sole_arm_gem5_arg(value: str) -> str:
         raise argparse.ArgumentTypeError(
             "sole-arm gem5 arg must be one --option token"
         )
-    if option_key(value) in PROTECTED_OPTION_KEYS:
+    key = option_key(value)
+    if not LONG_OPTION.fullmatch(key):
         raise argparse.ArgumentTypeError(
-            "sole-arm gem5 arg overrides a frozen replay invariant"
+            "sole-arm gem5 arg must use an exact long option name"
+        )
+    protected = protected_option_alias(key)
+    if protected is not None:
+        raise argparse.ArgumentTypeError(
+            "sole-arm gem5 arg overrides or abbreviates a frozen replay "
+            f"invariant: {protected}"
         )
     return value
 
 
+def lexical_absolute(path: Path) -> Path:
+    """Make *path* absolute without resolving symlink components."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def reject_symlink_ancestors(path: Path, label: str) -> Path:
+    absolute = lexical_absolute(path)
+    for component in [*reversed(absolute.parents), absolute]:
+        if component.is_symlink():
+            raise ValueError(
+                f"{label} has a symlinked path component: {component}"
+            )
+    return absolute
+
+
 def require_file(path: Path, label: str) -> Path:
-    if path.is_symlink():
+    absolute = reject_symlink_ancestors(path, label)
+    if not absolute.is_file():
         raise ValueError(f"{label} is not a regular file: {path}")
-    resolved = path.resolve()
-    if not resolved.is_file() or resolved.is_symlink():
-        raise ValueError(f"{label} is not a regular file: {path}")
+    resolved = absolute.resolve(strict=True)
+    if resolved != absolute:
+        raise ValueError(f"{label} has a symlinked path component: {path}")
+    return resolved
+
+
+def require_directory(path: Path, label: str) -> Path:
+    absolute = reject_symlink_ancestors(path, label)
+    if not absolute.is_dir():
+        raise ValueError(f"{label} is not a regular directory: {path}")
+    resolved = absolute.resolve(strict=True)
+    if resolved != absolute:
+        raise ValueError(f"{label} has a symlinked path component: {path}")
     return resolved
 
 
 def inside(path: Path, root: Path, label: str) -> Path:
-    resolved = path.resolve()
+    absolute = reject_symlink_ancestors(path, label)
+    resolved = absolute.resolve(strict=True)
     try:
         resolved.relative_to(root)
     except ValueError as error:
@@ -183,8 +233,7 @@ def inside(path: Path, root: Path, label: str) -> Path:
 
 
 def tree_identity(path: Path) -> dict[str, object]:
-    if not path.is_dir() or path.is_symlink():
-        raise ValueError(f"checkpoint is not a regular directory: {path}")
+    path = require_directory(path, "checkpoint")
     files: dict[str, str] = {}
     for item in sorted(path.rglob("*")):
         if item.is_symlink():
@@ -216,6 +265,38 @@ def regular_text(path: Path, label: str) -> str:
     return resolved.read_text(encoding="utf-8", errors="replace")
 
 
+def exact_first_roi_positive_integer(
+    path: Path, stat_name: str, label: str
+) -> int:
+    text = regular_text(path, label)
+    if ANALYZER.BEGIN not in text or ANALYZER.END not in text:
+        raise ValueError(f"{label}: no complete statistics window")
+    block = text.split(ANALYZER.BEGIN, 1)[1].split(ANALYZER.END, 1)[0]
+    tokens = [
+        words[1]
+        for line in block.splitlines()
+        if len(words := line.split()) >= 2 and words[0] == stat_name
+    ]
+    if len(tokens) != 1 or not POSITIVE_INTEGER.fullmatch(tokens[0]):
+        raise ValueError(f"{label}: {stat_name} is not a positive integer")
+    return int(tokens[0])
+
+
+def exact_first_roi_nonnegative_integer(
+    path: Path, stat_name: str, label: str
+) -> int:
+    text = regular_text(path, label)
+    block = text.split(ANALYZER.BEGIN, 1)[1].split(ANALYZER.END, 1)[0]
+    tokens = [
+        words[1]
+        for line in block.splitlines()
+        if len(words := line.split()) >= 2 and words[0] == stat_name
+    ]
+    if len(tokens) != 1 or not NONNEGATIVE_INTEGER.fullmatch(tokens[0]):
+        raise ValueError(f"{label}: {stat_name} is not a nonnegative integer")
+    return int(tokens[0])
+
+
 def source_artifact(
     source_root: Path, manifest: dict[str, object], name: str
 ) -> tuple[Path, str]:
@@ -237,6 +318,25 @@ def source_artifact(
     actual = sha256_file(path)
     if actual != expected:
         raise ValueError(f"source {name} artifact hash mismatch")
+    return path, actual
+
+
+def source_tree_artifact(
+    source_root: Path, manifest: dict[str, object], name: str
+) -> tuple[Path, dict[str, object]]:
+    artifacts = manifest.get("artifacts")
+    record = artifacts.get(name) if isinstance(artifacts, dict) else None
+    if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+        raise ValueError(f"source matrix has no {name} tree identity")
+    path = inside(
+        require_directory(Path(str(record["path"])), f"source {name}"),
+        source_root,
+        name,
+    )
+    actual = tree_identity_for_regular_tree(path, f"source {name}")
+    expected = {key: record.get(key) for key in ("sha256", "files")}
+    if actual != expected:
+        raise ValueError(f"source {name} tree identity mismatch")
     return path, actual
 
 
@@ -334,8 +434,68 @@ def recorded_restore_command(run_dir: Path, label: str) -> list[str]:
     return command
 
 
+def source_options(manifest: dict[str, object], binary_name: str) -> str:
+    options = manifest.get("options")
+    if not isinstance(options, dict) or not isinstance(
+        options.get(binary_name), str
+    ):
+        raise ValueError("source control has no frozen options string")
+    return str(options[binary_name])
+
+
+def expected_recorded_restore_command(
+    gem5: Path,
+    config: Path,
+    outdir: Path,
+    checkpoint: Path,
+    binary: Path,
+    options: str,
+    profile: str,
+    ramulator_config: Path,
+    mem_channels: int,
+    l3_ports: int,
+    source_args: list[str],
+) -> list[str]:
+    """Reconstruct the sole command authorized by the source manifest."""
+    return [
+        str(gem5),
+        "--listener-mode=off",
+        f"--outdir={outdir}",
+        "--debug-flags=MAAVirtualTrace",
+        "--debug-file=virtual_trace.log",
+        str(config),
+        *common_restore_args(ramulator_config, mem_channels, l3_ports),
+        f"--checkpoint-dir={checkpoint}",
+        *profile_args(profile),
+        *source_args,
+        "--cmd",
+        str(binary),
+        "--options",
+        options,
+    ]
+
+
+def validate_recorded_restore_command(
+    command: list[str], expected: list[str], label: str
+) -> None:
+    if command != expected:
+        mismatch = next(
+            (
+                index
+                for index, pair in enumerate(zip(command, expected))
+                if pair[0] != pair[1]
+            ),
+            min(len(command), len(expected)),
+        )
+        raise ValueError(
+            f"{label}: recorded restore command provenance mismatch "
+            f"at token {mismatch}"
+        )
+
+
 def rebase_recorded_restore_command(
     command: list[str],
+    source_config: Path,
     gem5: Path,
     config: Path,
     outdir: Path,
@@ -375,11 +535,13 @@ def rebase_recorded_restore_command(
             "recorded restore command lacks replay-critical option"
         )
     config_indexes = [
-        index for index, value in enumerate(result) if value.endswith(".py")
+        index
+        for index, value in enumerate(result)
+        if value == str(source_config)
     ]
     if len(config_indexes) != 1:
         raise ValueError(
-            "recorded restore command lacks an unambiguous config"
+            "recorded restore command lacks its exact positional config"
         )
     result[config_indexes[0]] = str(config)
     return [*result, *candidate_args]
@@ -391,13 +553,8 @@ def checked_source_options(
     selector_path: Path,
     destination: Path,
 ) -> str:
-    options = manifest.get("options")
-    if not isinstance(options, dict) or not isinstance(
-        options.get(binary_name), str
-    ):
-        raise ValueError("source control has no frozen options string")
     try:
-        tokens = shlex.split(str(options[binary_name]))
+        tokens = shlex.split(source_options(manifest, binary_name))
     except ValueError as error:
         raise ValueError("source options are not shell-tokenizable") from error
     matches = [
@@ -482,8 +639,7 @@ def freeze_config_tree(
 def tree_identity_for_regular_tree(
     path: Path, label: str
 ) -> dict[str, object]:
-    if not path.is_dir() or path.is_symlink():
-        raise ValueError(f"{label} is not a regular directory")
+    path = require_directory(path, label)
     files: dict[str, str] = {}
     for item in sorted(path.rglob("*")):
         if item.is_symlink():
@@ -545,10 +701,8 @@ def validate_terminal_run(
             raise ValueError(f"{label}: restored selector marker is missing")
     key, certificate = ANALYZER.correctness(workload, log)
     stats_path = require_file(run_dir / "gem5" / "stats.txt", f"{label} stats")
+    ticks = exact_first_roi_positive_integer(stats_path, "simTicks", label)
     stats = ANALYZER.first_stats(stats_path)
-    ticks = stats.get("simTicks")
-    if not isinstance(ticks, float) or not ticks.is_integer() or ticks <= 0:
-        raise ValueError(f"{label}: simTicks is not a positive integer")
     mechanism: dict[str, int] | None = None
     if selector is not None and selector.split()[0].startswith(
         "token_stream_ld"
@@ -560,10 +714,37 @@ def validate_terminal_run(
         mechanism = ANALYZER.validate_materializer(
             label, workload, role, selector, stats, trace
         )
+        _, contexts = ANALYZER.materializer_trace(trace)
+        closure = {
+            "page_materialization_producer_line_acks": sum(
+                ANALYZER.integer_field(
+                    summary, "producer_line_acks", "summary"
+                )
+                for context in contexts.values()
+                for summary in context["summaries"]
+            ),
+            "page_materialization_page_fallback_lines": sum(
+                ANALYZER.integer_field(
+                    summary, "page_fallback_lines", "summary"
+                )
+                for context in contexts.values()
+                for summary in context["summaries"]
+            ),
+        }
+        for stat_name, trace_value in closure.items():
+            stat_value = exact_first_roi_nonnegative_integer(
+                stats_path, f"system.maa.{stat_name}", label
+            )
+            if stat_value != trace_value:
+                raise ValueError(
+                    f"{label}: {stat_name}={stat_value} does not match "
+                    f"trace closure={trace_value}"
+                )
+            mechanism[f"trace_{stat_name}"] = trace_value
     return {
         "correctness_key": key,
         "certificate": certificate,
-        "first_roi_simTicks": int(ticks),
+        "first_roi_simTicks": ticks,
         "restore_log_sha256": sha256_file(run_dir / "restore.log"),
         "stats_sha256": sha256_file(stats_path),
         **({"materializer": mechanism} if mechanism is not None else {}),
@@ -613,6 +794,65 @@ def source_manifest(source_root: Path) -> tuple[dict[str, object], str]:
     return manifest, sha256_file(manifest_path)
 
 
+def canonical_arm_contract(
+    workload: str,
+    arm: dict[str, object],
+    shared_native16_hybrid_checkpoint: bool,
+) -> tuple[str, str | None, str]:
+    """Derive immutable core-arm metadata from workload and arm identity."""
+    name = arm.get("name")
+    core = {
+        "native16": (
+            "native16",
+            "native_direct 16384"
+            if shared_native16_hybrid_checkpoint
+            else None,
+            "native_control",
+        ),
+        "native4": ("native4", None, "native_control"),
+        "hybrid_stream_control": (
+            "hybrid",
+            "paged 4096" if workload == "api" else "stream_control",
+            "ordinary_stream_control",
+        ),
+        "hybrid_page_gated": (
+            "hybrid",
+            "paged_overlap 4096" if workload == "api" else "page_gated",
+            "page_gated_stream_control",
+        ),
+        "hybrid_token_stream_ld": (
+            "hybrid",
+            "token_stream_ld 4096" if workload == "api" else "token_stream_ld",
+            "token_stream_ld_correctness_control",
+        ),
+        "hybrid_token_stream_ld_page0_prearm": (
+            "hybrid",
+            "token_stream_ld_page0_prearm 4096",
+            "token_stream_ld_page0_prearm_correctness_control",
+        ),
+        "hybrid_token_stream_ld_pingpong": (
+            "hybrid",
+            "token_stream_ld_pingpong 4096",
+            "token_stream_ld_two_page_correctness_control",
+        ),
+    }
+    if name in core:
+        profile, selector, role = core[str(name)]
+    else:
+        profile = "hybrid"
+        selector = arm.get("selector")
+        role = "future_explicit_treatment"
+    if (
+        arm.get("profile") != profile
+        or arm.get("selector") != selector
+        or arm.get("role") != role
+    ):
+        raise ValueError(
+            f"{name}: arm role/selector/profile differs from canonical contract"
+        )
+    return profile, selector if isinstance(selector, str) else None, role
+
+
 def selected_source(
     source_root: Path,
     manifest: dict[str, object],
@@ -644,6 +884,20 @@ def selected_source(
         raise ValueError(
             "source matrix is incomplete: required arms are missing"
         )
+    shared_checkpoint = manifest.get(
+        "shared_native16_hybrid_checkpoint", False
+    )
+    if not isinstance(shared_checkpoint, bool):
+        raise ValueError(
+            "source matrix shared-checkpoint contract is malformed"
+        )
+    canonical_contracts = {
+        str(arm["name"]): canonical_arm_contract(
+            str(workload), arm, shared_checkpoint
+        )
+        for arm in arms
+        if isinstance(arm, dict)
+    }
     matches = [
         arm
         for arm in arms
@@ -654,10 +908,14 @@ def selected_source(
     control = matches[0]
     if control.get("checkpoint_group") != checkpoint_group:
         raise ValueError("selected source control/checkpoint group mismatch")
-    role = control.get("role")
-    if not isinstance(role, str) or "control" not in role:
+    (
+        canonical_profile,
+        canonical_selector,
+        canonical_role,
+    ) = canonical_contracts[control_arm]
+    if "control" not in canonical_role:
         raise ValueError("selected source arm is not a control")
-    profile_name = control.get("profile")
+    profile_name = canonical_profile
     profiles = manifest.get("profiles")
     if (
         profile_name not in PROFILE
@@ -666,7 +924,7 @@ def selected_source(
     ):
         raise ValueError("selected source profile mismatch")
     binary_name = control.get("binary")
-    selector = control.get("selector")
+    selector = canonical_selector
     if (
         not isinstance(binary_name, str)
         or not isinstance(selector, str)
@@ -689,7 +947,7 @@ def selected_source(
     for arm in arms:
         assert isinstance(arm, dict)
         arm_name = str(arm["name"])
-        arm_selector = arm.get("selector")
+        _, arm_selector, arm_role = canonical_contracts[arm_name]
         if arm_selector is not None and not isinstance(arm_selector, str):
             raise ValueError(f"{arm_name}: source selector is malformed")
         for replica in range(1, replicas + 1):
@@ -697,7 +955,7 @@ def selected_source(
                 source_root / "arms" / arm_name / f"replica-{replica}",
                 str(workload),
                 arm_selector,
-                str(arm.get("role", "")),
+                arm_role,
                 f"source {arm_name}/{replica}",
             )
             all_keys.add(str(record["correctness_key"]))
@@ -722,6 +980,18 @@ def selected_source(
     source_gem5, source_gem5_hash = source_artifact(
         source_root, manifest, "gem5"
     )
+    source_config, source_config_hash = source_artifact(
+        source_root, manifest, "config"
+    )
+    source_config_tree, source_config_tree_identity = source_tree_artifact(
+        source_root, manifest, "config_tree"
+    )
+    try:
+        source_config.relative_to(source_config_tree)
+    except ValueError as error:
+        raise ValueError(
+            "source config escapes its recorded config tree"
+        ) from error
     ramulator_library, ramulator_library_hash = source_artifact(
         source_root, manifest, "ramulator_library"
     )
@@ -734,8 +1004,24 @@ def selected_source(
         raise ValueError("source matrix memory-channel contract is invalid")
     if not isinstance(l3_ports, int) or not 1 <= l3_ports <= 16:
         raise ValueError("source matrix LLC-port contract is invalid")
-    control_command = recorded_restore_command(
-        source_root / "arms" / control_arm / "replica-1", "source control"
+    control_run = source_root / "arms" / control_arm / "replica-1"
+    control_command = recorded_restore_command(control_run, "source control")
+    source_args = safe_source_args(manifest, control_arm)
+    expected_command = expected_recorded_restore_command(
+        source_gem5,
+        source_config,
+        control_run / "gem5",
+        checkpoint,
+        guest,
+        source_options(manifest, binary_name),
+        profile_name,
+        ramulator_config,
+        mem_channels,
+        l3_ports,
+        source_args,
+    )
+    validate_recorded_restore_command(
+        control_command, expected_command, "source control"
     )
     return {
         "workload": str(workload),
@@ -753,22 +1039,26 @@ def selected_source(
         "guest_hash": guest_hash,
         "source_gem5": source_gem5,
         "source_gem5_hash": source_gem5_hash,
+        "source_config": source_config,
+        "source_config_hash": source_config_hash,
+        "source_config_tree_identity": source_config_tree_identity,
         "ramulator_library": ramulator_library,
         "ramulator_library_hash": ramulator_library_hash,
         "ramulator_config": ramulator_config,
         "ramulator_config_hash": ramulator_config_hash,
         "mem_channels": mem_channels,
         "l3_ports": l3_ports,
-        "source_args": [
-            value for value in control_command if value.startswith("--")
+        "source_args": source_args,
+        "recorded_source_option_keys": [
+            option_key(value)
+            for value in control_command
+            if value.startswith("--")
         ],
         "recorded_restore_command": control_command,
         "recorded_restore_command_sha256": sha256_file(
-            source_root
-            / "arms"
-            / control_arm
-            / "replica-1"
-            / "restore.command.json"
+            require_file(
+                control_run / "restore.command.json", "source control command"
+            )
         ),
     }
 
@@ -796,9 +1086,9 @@ def source_clean() -> tuple[str, str]:
 
 
 def require_nonconflicting_candidate_args(
-    source_args: list[str], candidate_args: list[str]
+    source_option_keys: list[str], candidate_args: list[str]
 ) -> None:
-    source_keys = {option_key(value) for value in source_args}
+    source_keys = set(source_option_keys)
     candidate_keys = [option_key(value) for value in candidate_args]
     if len(candidate_keys) != len(set(candidate_keys)):
         raise ValueError("duplicate sole-arm gem5 option")
@@ -808,10 +1098,22 @@ def require_nonconflicting_candidate_args(
             "sole-arm gem5 option conflicts with frozen source option: "
             + ", ".join(overlap)
         )
+    abbreviations = sorted(
+        {
+            candidate
+            for candidate in candidate_keys
+            if any(source.startswith(candidate) for source in source_keys)
+        }
+    )
+    if abbreviations:
+        raise ValueError(
+            "sole-arm gem5 option abbreviates a frozen source option: "
+            + ", ".join(abbreviations)
+        )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--source-matrix", required=True, type=Path)
     parser.add_argument(
         "--checkpoint-group",
@@ -961,6 +1263,7 @@ def execute(
         )[1]
         command = rebase_recorded_restore_command(
             list(source["recorded_restore_command"]),
+            Path(source["source_config"]),
             candidate_gem5,
             candidate_config,
             run / "gem5",
@@ -1011,6 +1314,10 @@ def execute(
             "control_records": source["control_records"],
             "recorded_restore_command_sha256": source[
                 "recorded_restore_command_sha256"
+            ],
+            "source_config_sha256": source["source_config_hash"],
+            "source_config_tree_sha256": source["source_config_tree_identity"][
+                "sha256"
             ],
         }
         binary_hashes = {
@@ -1093,9 +1400,9 @@ def main() -> int:
             raise ValueError(
                 f"refusing to overwrite existing output: {args.out}"
             )
-        source_root = args.source_matrix.resolve()
-        if not source_root.is_dir() or source_root.is_symlink():
-            raise ValueError("source matrix root is not a regular directory")
+        source_root = require_directory(
+            args.source_matrix, "source matrix root"
+        )
         manifest, manifest_hash = source_manifest(source_root)
         source = selected_source(
             source_root, manifest, args.checkpoint_group, args.control_arm
@@ -1107,7 +1414,8 @@ def main() -> int:
                 "treatment name collides with a source matrix arm"
             )
         require_nonconflicting_candidate_args(
-            list(source["source_args"]), args.sole_arm_gem5_arg
+            list(source["recorded_source_option_keys"]),
+            args.sole_arm_gem5_arg,
         )
         candidate_gem5 = require_file(args.gem5, "candidate gem5")
         candidate_config = require_file(args.config, "candidate config")

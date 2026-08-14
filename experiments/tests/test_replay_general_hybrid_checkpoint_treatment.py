@@ -105,6 +105,19 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
         checkpoint = source / "checkpoints" / "hybrid" / "gem5"
         self.write_file(checkpoint / "m5.cpt", "checkpoint\n")
         identity = runner.tree_identity(checkpoint)
+        selectors = (
+            {
+                "stream": "paged 4096",
+                "page": "paged_overlap 4096",
+                "token": "token_stream_ld 4096",
+            }
+            if workload == "api"
+            else {
+                "stream": "stream_control",
+                "page": "page_gated",
+                "token": "token_stream_ld",
+            }
+        )
         arms = [
             {
                 "name": "native16",
@@ -127,7 +140,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 "profile": "hybrid",
                 "binary": "hybrid",
                 "checkpoint_group": "hybrid",
-                "selector": "paged 4096",
+                "selector": selectors["stream"],
                 "role": "ordinary_stream_control",
             },
             {
@@ -135,7 +148,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 "profile": "hybrid",
                 "binary": "hybrid",
                 "checkpoint_group": "hybrid",
-                "selector": "paged_overlap 4096",
+                "selector": selectors["page"],
                 "role": "page_gated_stream_control",
             },
             {
@@ -143,7 +156,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 "profile": "hybrid",
                 "binary": "hybrid",
                 "checkpoint_group": "hybrid",
-                "selector": "token_stream_ld 4096",
+                "selector": selectors["token"],
                 "role": "token_stream_ld_correctness_control",
             },
         ]
@@ -187,6 +200,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             "gem5": inputs / "gem5.opt",
             "ramulator_library": inputs / "libramulator.so",
             "ramulator_config": inputs / "ramulator.yaml",
+            "config": inputs / "se.py",
             "hybrid": inputs / "hybrid",
         }
         manifest = {
@@ -199,6 +213,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             "arms": arms,
             "mem_channels": 2,
             "l3_ports": 4,
+            "shared_native16_hybrid_checkpoint": False,
             "selector_path": str(selector_path),
             "options": {"hybrid": f"deferred {selector_path}"},
             "extra_gem5_args": [],
@@ -208,6 +223,12 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 key: {"path": str(path), "sha256": runner.sha256_file(path)}
                 for key, path in artifacts.items()
             },
+        }
+        manifest["artifacts"]["config_tree"] = {
+            "path": str(inputs),
+            **runner.tree_identity_for_regular_tree(
+                inputs, "test config tree"
+            ),
         }
         self.write_file(source / "manifest.json", json.dumps(manifest))
         self.write_file(source / "campaign.exit", "0\n")
@@ -266,6 +287,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
         command = [
             "gem5",
             "--outdir=old",
+            "--annotation=decoy.py",
             "se.py",
             *command,
             *runner.profile_args("hybrid"),
@@ -277,6 +299,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
         ]
         command = runner.rebase_recorded_restore_command(
             command,
+            Path("se.py"),
             Path("gem5"),
             Path("se.py"),
             Path("out"),
@@ -292,6 +315,20 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
         )
         self.assertIn("--checkpoint-dir=checkpoint", command)
         self.assertIn("--maa_num_tile_elements=16384", command)
+        self.assertIn("--annotation=decoy.py", command)
+        with self.assertRaisesRegex(Exception, "exact positional config"):
+            runner.rebase_recorded_restore_command(
+                [*command, "se.py"],
+                Path("se.py"),
+                Path("gem5"),
+                Path("candidate.py"),
+                Path("out"),
+                Path("checkpoint"),
+                Path("guest"),
+                "deferred selector",
+                Path("ramulator.yaml"),
+                [],
+            )
 
     def test_cg_and_ume_exact_contracts_are_supported(self) -> None:
         for workload, key in (
@@ -309,6 +346,31 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 self.assertEqual(
                     json.loads(stdout)["source_control_exact_key"], key
                 )
+
+    def test_shared_api_native16_checkpoint_contract_is_supported(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, manifest = self.make_source(root)
+            manifest["shared_native16_hybrid_checkpoint"] = True
+            arm = next(
+                value
+                for value in manifest["arms"]
+                if value["name"] == "native16"
+            )
+            arm["selector"] = "native_direct 16384"
+            run = source / "arms/native16/replica-1"
+            self.write_file(run / "treatment.txt", "native_direct 16384\n")
+            self.write_file(
+                run / "restore.log",
+                "TREATMENT mode=native_direct\n"
+                + self.result_line("api", "native_direct")
+                + EXIT,
+            )
+            self.write_file(source / "manifest.json", json.dumps(manifest))
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 0, stderr)
 
     def test_checkpoint_mutation_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -637,8 +699,64 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 ValueError,
                 "conflicts with frozen source option",
                 runner.require_nonconflicting_candidate_args,
-                ["--l3_size=8MB"],
+                ["--l3_size"],
                 ["--l3_size=16MB"],
+            )
+
+    def test_abbreviated_protected_options_and_cli_aliases_are_rejected(
+        self,
+    ) -> None:
+        for value in (
+            "--l3_s",
+            "--l3_s=16MB",
+            "--maa_num_tile_ele",
+            "--maa_num_tile_ele=8192",
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                Exception, "abbreviates a frozen replay invariant"
+            ):
+                runner.parse_sole_arm_gem5_arg(value)
+        argv = [
+            str(RUNNER),
+            "--source-mat",
+            "source",
+            "--checkpoint-group",
+            "hybrid",
+            "--control-arm",
+            "hybrid_token_stream_ld",
+            "--treatment-name",
+            "candidate",
+            "--out",
+            "out",
+            "--gem5",
+            "gem5",
+            "--config",
+            "config",
+        ]
+        stderr = io.StringIO()
+        with patch("sys.argv", argv), redirect_stderr(
+            stderr
+        ), self.assertRaises(SystemExit):
+            runner.parse_args()
+        self.assertIn(
+            "arguments are required: --source-matrix", stderr.getvalue()
+        )
+
+    def test_candidate_options_keep_only_unique_exact_unprotected_names(
+        self,
+    ) -> None:
+        value = "--maa_virtual_candidate_policy=bounded"
+        self.assertEqual(runner.parse_sole_arm_gem5_arg(value), value)
+        runner.require_nonconflicting_candidate_args(
+            ["--maa_virtual_source_policy"], [value]
+        )
+        with self.assertRaisesRegex(Exception, "duplicate sole-arm"):
+            runner.require_nonconflicting_candidate_args(
+                [], [value, "--maa_virtual_candidate_policy=other"]
+            )
+        with self.assertRaisesRegex(Exception, "abbreviates a frozen source"):
+            runner.require_nonconflicting_candidate_args(
+                ["--maa_virtual_candidate_policy"], ["--maa_virtual_candidate"]
             )
 
     def test_fractional_simticks_and_missing_token_closure_are_rejected(
@@ -649,7 +767,8 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             source, _ = self.make_source(root)
             token_run = source / "arms/hybrid_token_stream_ld/replica-1"
             self.write_file(
-                token_run / "gem5/stats.txt", TOKEN_STATS.format(ticks="1.5")
+                token_run / "gem5/stats.txt",
+                TOKEN_STATS.format(ticks="9007199254740992.5"),
             )
             rc, _, stderr = self.plan(source, root)
             self.assertEqual(rc, 1)
@@ -665,6 +784,141 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("materializer trace", stderr)
 
+    def test_integral_simticks_are_taken_from_the_original_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "stats.txt"
+            exact = 9007199254740993
+            self.write_file(path, STATS.format(ticks=exact))
+            self.assertEqual(
+                runner.exact_first_roi_positive_integer(
+                    path, "simTicks", "test stats"
+                ),
+                exact,
+            )
+
+    def test_materializer_ack_and_page_fallback_stats_match_trace(
+        self,
+    ) -> None:
+        for stat, old, new in (
+            ("page_materialization_producer_line_acks", "4", "3"),
+            ("page_materialization_page_fallback_lines", "0", "1"),
+        ):
+            with self.subTest(
+                stat=stat
+            ), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, _ = self.make_source(root)
+                stats = (
+                    source
+                    / "arms/hybrid_token_stream_ld/replica-1/gem5/stats.txt"
+                )
+                text = stats.read_text(encoding="utf-8").replace(
+                    f"system.maa.{stat} {old}", f"system.maa.{stat} {new}"
+                )
+                self.write_file(stats, text)
+                rc, _, stderr = self.plan(source, root)
+                self.assertEqual(rc, 1)
+                self.assertIn(
+                    f"{stat}={new} does not match trace closure", stderr
+                )
+
+    def test_recorded_command_must_match_every_manifest_provenance_field(
+        self,
+    ) -> None:
+        cases = (
+            "gem5",
+            "config",
+            "checkpoint",
+            "binary",
+            "options",
+            "profile",
+            "ramulator",
+            "manifest_options",
+        )
+        for case in cases:
+            with self.subTest(
+                case=case
+            ), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, manifest = self.make_source(root)
+                command_path = (
+                    source
+                    / "arms/hybrid_token_stream_ld/replica-1/restore.command.json"
+                )
+                command = json.loads(command_path.read_text(encoding="utf-8"))
+                if case == "gem5":
+                    command[0] = str(source / "inputs/hybrid")
+                elif case == "config":
+                    command[command.index(str(source / "inputs/se.py"))] = str(
+                        source / "inputs/hybrid"
+                    )
+                elif case == "checkpoint":
+                    index = next(
+                        i
+                        for i, value in enumerate(command)
+                        if value.startswith("--checkpoint-dir=")
+                    )
+                    command[index] = f"--checkpoint-dir={source / 'inputs'}"
+                elif case == "binary":
+                    command[command.index("--cmd") + 1] = str(
+                        source / "inputs/gem5.opt"
+                    )
+                elif case == "options":
+                    command[command.index("--options") + 1] = "changed"
+                elif case == "profile":
+                    index = command.index("--maa_num_tile_elements=16384")
+                    command[index] = "--maa_num_tile_elements=8192"
+                elif case == "ramulator":
+                    command[command.index("--ramulator-config") + 1] = str(
+                        source / "inputs/hybrid"
+                    )
+                else:
+                    manifest["options"]["hybrid"] = "changed"
+                    self.write_file(
+                        source / "manifest.json", json.dumps(manifest)
+                    )
+                if case != "manifest_options":
+                    self.write_file(command_path, json.dumps(command))
+                rc, _, stderr = self.plan(source, root)
+                self.assertEqual(rc, 1)
+                self.assertIn(
+                    "recorded restore command provenance mismatch", stderr
+                )
+
+    def test_canonical_arm_contract_blocks_role_selector_relabeling(
+        self,
+    ) -> None:
+        for case in ("selector_role", "profile"):
+            with self.subTest(
+                case=case
+            ), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, manifest = self.make_source(root)
+                arm = next(
+                    value
+                    for value in manifest["arms"]
+                    if value["name"] == "hybrid_token_stream_ld"
+                )
+                if case == "selector_role":
+                    arm["selector"] = "paged_overlap 4096"
+                    arm["role"] = "page_gated_stream_control"
+                    run = source / "arms/hybrid_token_stream_ld/replica-1"
+                    self.write_file(
+                        run / "treatment.txt", "paged_overlap 4096\n"
+                    )
+                    self.write_file(
+                        run / "restore.log",
+                        "TREATMENT mode=paged_overlap\n"
+                        + self.result_line("api", "paged_overlap")
+                        + EXIT,
+                    )
+                else:
+                    arm["profile"] = "native4"
+                self.write_file(source / "manifest.json", json.dumps(manifest))
+                rc, _, stderr = self.plan(source, root)
+                self.assertEqual(rc, 1)
+                self.assertIn("canonical contract", stderr)
+
     def test_symlink_evidence_and_missing_recorded_command_are_rejected(
         self,
     ) -> None:
@@ -677,7 +931,17 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             guest.symlink_to(replacement.name)
             rc, _, stderr = self.plan(source, root)
             self.assertEqual(rc, 1)
-            self.assertIn("not a regular file", stderr)
+            self.assertIn("symlinked path component", stderr)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            group = source / "checkpoints/hybrid"
+            real_group = group.with_name("real-hybrid")
+            group.rename(real_group)
+            group.symlink_to(real_group.name, target_is_directory=True)
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("checkpoint has a symlinked path component", stderr)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, _ = self.make_source(root)
@@ -688,6 +952,28 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             rc, _, stderr = self.plan(source, root)
             self.assertEqual(rc, 1)
             self.assertIn("source control command", stderr)
+
+    def test_symlink_source_root_and_evidence_ancestor_are_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            alias = root / "source-alias"
+            alias.symlink_to(source, target_is_directory=True)
+            rc, _, stderr = self.plan(alias, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("source matrix root has a symlinked", stderr)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            gem5_dir = source / "arms/hybrid_token_stream_ld/replica-1/gem5"
+            real_dir = gem5_dir.with_name("real-gem5")
+            gem5_dir.rename(real_dir)
+            gem5_dir.symlink_to(real_dir.name, target_is_directory=True)
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("symlinked path component", stderr)
 
 
 if __name__ == "__main__":
