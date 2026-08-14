@@ -113,6 +113,48 @@ testDefaultOffCapacityAndHardwareMath()
 }
 
 void
+testTokenPartitionHashSpreadsRealAllocationPatterns()
+{
+    // GZP allocates six consecutive int tiles per worker and uses tiles3, the
+    // fourth allocation, as its virtual completion token: token = 3 + 6k.
+    // Plain token[1:0] aliases 3 with 15 and 9 with 21.
+    constexpr std::array<uint16_t, 4> gzpTokens{{3, 9, 15, 21}};
+    constexpr std::array<uint8_t, 4> expectedPartitions{{2, 1, 0, 3}};
+    CHECK((gzpTokens[0] & 3) == (gzpTokens[2] & 3));
+    CHECK((gzpTokens[1] & 3) == (gzpTokens[3] & 3));
+
+    Retention retention;
+    for (std::size_t index = 0; index < gzpTokens.size(); ++index) {
+        const uint16_t token = gzpTokens[index];
+        CHECK(Retention::descriptorIndexForToken(token) ==
+              expectedPartitions[index]);
+        CHECK(retention.begin(
+                  key(token, 12 + index, 2 + index,
+                      0x110000 + index * 0x10000),
+                  1024, 512) == Retention::BeginResult::Started);
+    }
+    CHECK(retention.counters().descriptorFailures == 0);
+
+    // The same combinational selector stays general: every aligned group of
+    // eight consecutive tokens and every eight-token 3+6k sequence places
+    // exactly two tokens in each of the four partitions.
+    std::array<uint8_t, Retention::PartitionCount> consecutiveCounts{};
+    std::array<uint8_t, Retention::PartitionCount> strideCounts{};
+    for (uint16_t index = 0; index < 8; ++index) {
+        ++consecutiveCounts[
+            Retention::descriptorIndexForToken(index)];
+        ++strideCounts[
+            Retention::descriptorIndexForToken(3 + 6 * index)];
+    }
+    for (uint8_t partition = 0;
+         partition < Retention::PartitionCount; ++partition) {
+        CHECK(consecutiveCounts[partition] == 2);
+        CHECK(strideCounts[partition] == 2);
+    }
+    CHECK(retention.assertInvariants());
+}
+
+void
 testFragmentMergeCompleteAndSealGate()
 {
     Retention retention;
@@ -245,7 +287,8 @@ testStaleDescriptorAndInvalidEpochPoison()
 {
     Retention retention;
     const auto oldOwner = key(0, 51, 5, 0x500000);
-    const auto newOwner = key(4, 61, 6, 0x600000);
+    // Tokens 0 and 7 have the same low Gray-code partition.
+    const auto newOwner = key(7, 61, 6, 0x600000);
     const auto bytes = payload(0x600);
     CHECK(retention.begin(oldOwner, 1024, 4096) ==
           Retention::BeginResult::Started);
@@ -282,7 +325,8 @@ testOneCycleReadAndOutputLatchRaces()
 {
     Retention retention;
     const auto owner = key(3, 71, 7, 0x700000);
-    const auto replacement = key(7, 81, 8, 0x800000);
+    // Tokens 3 and 4 have the same low Gray-code partition.
+    const auto replacement = key(4, 81, 8, 0x800000);
     const auto bytes = payload(0x700);
     CHECK(retention.begin(owner, 1024, 4096) ==
           Retention::BeginResult::Started);
@@ -353,6 +397,7 @@ int
 main()
 {
     testDefaultOffCapacityAndHardwareMath();
+    testTokenPartitionHashSpreadsRealAllocationPatterns();
     testFragmentMergeCompleteAndSealGate();
     testSixteenWordLineReconstruction();
     testOverlapAndFirstOwnerConflictPoison();
