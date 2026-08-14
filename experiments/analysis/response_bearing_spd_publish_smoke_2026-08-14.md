@@ -42,3 +42,20 @@ respectively:
 
 The bounded model still unit-tests FP64 geometry, but this timed evidence does
 not promote a live FP64/GZP contract.
+
+## Lead-branch reproduction
+
+After integration, source commit `6fd9c3efd5eb6181335e1c288eb5116cf3d2be51`
+was rebuilt and rerun without a checkpoint or restore wall-clock timeout. The
+evidence is at
+`/data1/nier/dx100-runs/2026-08-14-response-bearing-spd-publish-6fd9c3ef-r1`.
+It passed the same exact CPU/MAA bit hash and protocol closure at
+`simTicks=57,322,507`: 256 issues, 256 accepts, four retained-packet retries,
+256 unique `WriteResp`s, credit high-water eight, 248 credit stalls, and one
+terminal completion. The rebuilt production gem5 SHA-256 is
+`9bf0d7cfca70768b0e7bf4b7fa7bda7700601f4ce1a2c71d61594b9baa5a06b4`.
+
+This reproduction remains correctness evidence only. Its 0.393% tick
+difference from the worker smoke crosses binaries and checkpoints, so it is
+not a performance regression or improvement. Any optimization claim must use
+matched arms from the same binary and frozen checkpoint.
