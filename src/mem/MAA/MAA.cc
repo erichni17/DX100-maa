@@ -123,6 +123,8 @@ MAA::MAA(const MAAParams &p)
           p.page_materialization_wakeup_batches),
       page_materialization_fragment_buffers(
           p.page_materialization_fragment_buffers),
+      page_materialization_direct_spd_fragments(
+          p.page_materialization_direct_spd_fragments),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -1528,6 +1530,20 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
     execution->pageActive = true;
     execution->page = page;
     execution->destinationTile = instruction->dst1SpdID;
+    execution->stagedWords.reset();
+    execution->stagedDisallowed.reset();
+    execution->stagedFallbackCounted.reset();
+    // An ACK predating physical-page activation has no retained exact
+    // payload.  It is irrevocably coherent-read fallback, even if a later
+    // fragment happens to complete the line.
+    const uint16_t pageLines = directRetirementContexts.producerPageLines(
+        execution->key);
+    for (uint16_t pageLine = 0; pageLine < pageLines; ++pageLine) {
+        const uint16_t line = page * pageLines + pageLine;
+        if (directRetirementContexts.producerLineWordMask(execution->key,
+                                                           line) != 0)
+            execution->stagedDisallowed.set(pageLine);
+    }
     spd->setTileIdle(execution->destinationTile, wordBytes);
     spd->setTileNotReady(execution->destinationTile, wordBytes);
     spd->setTileService(execution->destinationTile, wordBytes);
@@ -1545,13 +1561,17 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
             "event=page_materialization_submit schema=1 occurrence=%lu "
             "token=%d generation=%lu incarnation=%lu page=%u "
             "destination=%d new_context=%d early_lines=%u "
-            "line_buffer_bytes=%lu control_bytes=%lu page_spd_bytes=%lu "
+            "line_buffer_bytes=%lu control_bytes=%lu "
+            "direct_stage_control_bytes=%lu page_spd_bytes=%lu "
             "charged_two_page_spd_bytes=%lu activation_count=%lu\n",
             pageMaterializationTraceOccurrence++, token, generation,
             execution->key.incarnation, page, execution->destinationTile,
             newContext, replay.readyLines,
             HybridConsumerContextQueue::chargedPayloadBytes(),
             materializerControlBytes,
+            sizeof(execution->stagedWords) +
+                sizeof(execution->stagedDisallowed) +
+                sizeof(execution->stagedFallbackCounted),
             static_cast<uint64_t>(physical_tile_elements) * wordBytes,
             static_cast<uint64_t>(2) * physical_tile_elements * wordBytes,
             ++pageMaterializationActivationCount);
@@ -2467,6 +2487,37 @@ MAA::reservePageMaterializationCommit(
     return false;
 }
 
+bool
+MAA::reservePageMaterializationDirectCommit(
+    const HybridConsumerContextQueue::ContextKey &key, uint16_t line,
+    Tick readyTick)
+{
+    PageMaterializationExecution *execution =
+        findPageMaterializationExecution(key);
+    if (execution == nullptr || !execution->pageActive ||
+        line / directRetirementContexts.producerPageLines(key) !=
+            execution->page)
+        return false;
+    for (const PageMaterializationCommit &commit :
+         pageMaterializationCommits) {
+        if (commit.active && commit.directStaged &&
+            sameDirectRetirementKey(commit.owner, key) &&
+            commit.line == line)
+            return false;
+    }
+    for (PageMaterializationCommit &commit : pageMaterializationCommits) {
+        if (commit.active)
+            continue;
+        commit.active = true;
+        commit.directStaged = true;
+        commit.readyTick = readyTick;
+        commit.owner = key;
+        commit.line = line;
+        return true;
+    }
+    return false;
+}
+
 void
 MAA::finishPageMaterialization(
     const HybridConsumerContextQueue::ContextKey &key)
@@ -2481,8 +2532,9 @@ MAA::finishPageMaterialization(
              "Page materializer completed without exact page ownership\n");
     for (const PageMaterializationCommit &commit :
          pageMaterializationCommits) {
-        panic_if(commit.active &&
-                     sameDirectRetirementKey(commit.request.owner, key),
+        panic_if(commit.active && sameDirectRetirementKey(
+                     commit.directStaged ? commit.owner : commit.request.owner,
+                     key),
                  "Page materializer released SPD before a line commit\n");
     }
     panic_if(hasDirectRetirementOutstandingOwner(key),
@@ -2513,12 +2565,14 @@ MAA::finishPageMaterialization(
             "event=page_materialization_page_ready schema=1 occurrence=%lu "
             "token=%u generation=%lu incarnation=%lu page=%u "
             "destination=%d lines=%u reads=%u forwarded_lines=%u "
+            "staged_direct_lines=%u "
             "cache_read_fallback_lines=%u pages_materialized=%u\n",
             pageMaterializationTraceOccurrence++, key.tokenTile,
             key.generation, key.incarnation, page, destination,
             directRetirementContexts.producerPageLines(key),
             snapshot.readsAccepted,
             execution->forwardedLines,
+            execution->stagedDirectLines,
             execution->cacheReadFallbackLines,
             execution->pagesMaterialized);
     if (snapshot.complete) {
@@ -2527,7 +2581,7 @@ MAA::finishPageMaterialization(
         virtualPageConsumedGeneration[key.tokenTile] = key.generation;
         panic_if(execution->pagesMaterialized !=
                      HybridConsumerPipeline::ProducerPages ||
-                     execution->forwardedLines +
+            execution->forwardedLines + execution->stagedDirectLines +
                              execution->cacheReadFallbackLines !=
                          snapshot.lines ||
                      snapshot.producerLineAcks +
@@ -2538,7 +2592,7 @@ MAA::finishPageMaterialization(
         DPRINTF(MAAVirtualTrace,
                 "event=page_materialization_summary schema=1 "
                 "occurrence=%lu token=%u generation=%lu incarnation=%lu "
-                "pages=%u lines=%u forwarded_lines=%u "
+                "pages=%u lines=%u forwarded_lines=%u staged_direct_lines=%u "
                 "cache_read_fallback_lines=%u producer_line_acks=%u "
                 "page_fallback_lines=%u exact_closure=1 "
                 "dispatch_fallbacks=%lu\n",
@@ -2546,6 +2600,7 @@ MAA::finishPageMaterialization(
                 key.generation, key.incarnation,
                 execution->pagesMaterialized, snapshot.lines,
                 execution->forwardedLines,
+                execution->stagedDirectLines,
                 execution->cacheReadFallbackLines,
                 snapshot.producerLineAcks,
                 snapshot.producerPageFallbackLines,
@@ -2594,31 +2649,43 @@ MAA::servicePageMaterialization()
             nextCommit = std::min(nextCommit, commit.readyTick);
             continue;
         }
+        const bool directStaged = commit.directStaged;
+        const auto owner = directStaged ? commit.owner : commit.request.owner;
+        const uint16_t line = directStaged ? commit.line :
+            commit.request.request.line;
         PageMaterializationExecution *execution =
-            findPageMaterializationExecution(commit.request.owner);
+            findPageMaterializationExecution(owner);
         const auto request = commit.request;
         panic_if(execution == nullptr || !execution->pageActive ||
-                     request.request.line /
+                     line /
                              directRetirementContexts.producerPageLines(
-                                 request.owner) != execution->page,
+                                 owner) != execution->page,
                  "Page materializer SPD commit lost page ownership\n");
-        const std::byte *payload =
+        const std::byte *payload = directStaged ? nullptr :
             directRetirementContexts.bufferData(request);
-        panic_if(payload == nullptr,
+        panic_if(!directStaged && payload == nullptr,
                  "Page materializer SPD commit lost its line buffer\n");
         const uint16_t pageLines =
-            directRetirementContexts.producerPageLines(request.owner);
-        const uint16_t pageLine = request.request.line % pageLines;
-        panic_if(!sameDirectRetirementKey(execution->key, request.owner) ||
-                     virtualPageGeneration[request.owner.tokenTile] !=
-                         request.owner.generation,
+            directRetirementContexts.producerPageLines(owner);
+        const uint16_t pageLine = line % pageLines;
+        panic_if(!sameDirectRetirementKey(execution->key, owner) ||
+                     (!directStaged &&
+                      virtualPageGeneration[request.owner.tokenTile] !=
+                          request.owner.generation) ||
+                     (directStaged &&
+                      virtualPageGeneration[owner.tokenTile] !=
+                          owner.generation),
                  "Page materializer batched wakeup lost exact generation "
                  "ownership\n");
         const uint16_t wordsPerLine =
             HybridConsumerPipeline::LineBytes / execution->wordBytes;
         const uint32_t firstElement = pageLine * wordsPerLine;
         for (uint16_t word = 0; word < wordsPerLine; ++word) {
-            if (execution->wordBytes == sizeof(uint32_t)) {
+            if (directStaged) {
+                spd->setFakeData(execution->destinationTile,
+                                 firstElement + word,
+                                 execution->wordBytes);
+            } else if (execution->wordBytes == sizeof(uint32_t)) {
                 uint32_t value = 0;
                 std::memcpy(&value,
                             payload + word * sizeof(value), sizeof(value));
@@ -2645,25 +2712,28 @@ MAA::servicePageMaterialization()
                     "page=%u line=%u page_lines=%u batches=%u "
                     "destination=%d\n",
                     pageMaterializationTraceOccurrence++,
-                    request.owner.tokenTile, request.owner.generation,
-                    request.owner.incarnation, execution->page, pageLine,
+                    owner.tokenTile, owner.generation, owner.incarnation,
+                    execution->page, pageLine,
                     pageLines, page_materialization_wakeup_batches,
                     execution->destinationTile);
         }
         commit = {};
-        panic_if(!directRetirementContexts.completeMaterialize(request),
+        panic_if(!(directStaged
+                       ? directRetirementContexts.completeMaterializeDirect(
+                             owner, line)
+                       : directRetirementContexts.completeMaterialize(
+                             request)),
                  "Page materializer rejected an exact SPD line commit\n");
         DPRINTF(MAAVirtualTrace,
                 "event=page_materialization_line_commit schema=1 "
                 "occurrence=%lu token=%u generation=%lu incarnation=%lu "
                 "page=%u line=%u destination=%d\n",
                 pageMaterializationTraceOccurrence++,
-                request.owner.tokenTile, request.owner.generation,
-                request.owner.incarnation, execution->page,
-                request.request.line, execution->destinationTile);
+                owner.tokenTile, owner.generation, owner.incarnation,
+                execution->page, line, execution->destinationTile);
         if (directRetirementContexts.materializationPageComplete(
-                request.owner, execution->page)) {
-            finishPageMaterialization(request.owner);
+                owner, execution->page)) {
+            finishPageMaterialization(owner);
         }
     }
 
@@ -4282,8 +4352,92 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
     const uint16_t fullMask = wordsPerLine == 16
         ? std::numeric_limits<uint16_t>::max()
         : static_cast<uint16_t>((1U << wordsPerLine) - 1);
+    const bool activePageLine = materialization->pageActive &&
+        lineID >= 0 &&
+        lineID / directRetirementContexts.producerPageLines(owner) ==
+            materialization->page;
+    bool directStaged = false;
+    bool directCompleted = false;
+    if (page_materialization_direct_spd_fragments && activePageLine &&
+        wordMask != fullMask) {
+        const uint16_t pageLines =
+            directRetirementContexts.producerPageLines(owner);
+        const uint16_t pageLine = static_cast<uint16_t>(lineID) % pageLines;
+        const bool exactPayload = writeRespPayload != nullptr &&
+            payloadBytes == HybridConsumerPipeline::LineBytes &&
+            wordMask != 0 && (wordMask & ~fullMask) == 0;
+        const auto countDirectFallback = [&]() {
+            if (materialization->stagedFallbackCounted.test(pageLine))
+                return;
+            materialization->stagedFallbackCounted.set(pageLine);
+            ++materialization->stagedDirectFallbackLines;
+            stats.page_materialization_staged_direct_fallback_lines++;
+        };
+        if (!exactPayload) {
+            materialization->stagedDisallowed.set(pageLine);
+            countDirectFallback();
+        }
+        if (exactPayload && materialization->stagedDisallowed.test(pageLine)) {
+            countDirectFallback();
+        } else if (exactPayload) {
+            const uint16_t firstWord = pageLine * wordsPerLine;
+            bool overlap = false;
+            for (uint16_t word = 0; word < wordsPerLine; ++word)
+                overlap = overlap ||
+                    ((wordMask & (1U << word)) != 0 &&
+                     materialization->stagedWords.test(firstWord + word));
+            if (overlap) {
+                materialization->stagedDisallowed.set(pageLine);
+                countDirectFallback();
+            } else {
+                const uint32_t firstElement = pageLine * wordsPerLine;
+                for (uint16_t word = 0; word < wordsPerLine; ++word) {
+                    if ((wordMask & (1U << word)) == 0)
+                        continue;
+                    if (materialization->wordBytes == sizeof(uint32_t)) {
+                        uint32_t value = 0;
+                        std::memcpy(&value,
+                                    writeRespPayload + word * sizeof(value),
+                                    sizeof(value));
+                        spd->stageData<uint32_t>(
+                            materialization->destinationTile,
+                            firstElement + word, value);
+                    } else {
+                        uint64_t value = 0;
+                        std::memcpy(&value,
+                                    writeRespPayload + word * sizeof(value),
+                                    sizeof(value));
+                        spd->stageData<uint64_t>(
+                            materialization->destinationTile,
+                            firstElement + word, value);
+                    }
+                    materialization->stagedWords.set(firstWord + word);
+                }
+                directStaged = true;
+                ++materialization->stagedDirectFragments;
+                stats.page_materialization_staged_direct_fragments++;
+                uint16_t stagedMask = 0;
+                for (uint16_t word = 0; word < wordsPerLine; ++word) {
+                    if (materialization->stagedWords.test(firstWord + word))
+                        stagedMask |= static_cast<uint16_t>(1U << word);
+                }
+                if (stagedMask == fullMask) {
+                    const Cycles spdLatency = spd->setDataLatency(
+                        materialization->destinationTile, wordsPerLine);
+                    panic_if(!reservePageMaterializationDirectCommit(
+                                 owner, static_cast<uint16_t>(lineID),
+                                 getClockEdge(spdLatency)),
+                             "Page materializer exhausted direct staged "
+                             "commits\n");
+                    directCompleted = true;
+                    ++materialization->stagedDirectLines;
+                    stats.page_materialization_staged_direct_lines++;
+                }
+            }
+        }
+    }
     HybridConsumerContextQueue::Request captured;
-    bool forwarded = wordMask == fullMask &&
+    bool forwarded = !directCompleted && wordMask == fullMask &&
         writeRespPayload != nullptr &&
         payloadBytes == HybridConsumerPipeline::LineBytes &&
         materialization->pageActive &&
@@ -4294,7 +4448,8 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
             reinterpret_cast<const std::byte *>(writeRespPayload),
             payloadBytes, &captured);
     auto fragmentCapture = HybridConsumerPipeline::FragmentCapture::Disabled;
-    if (!forwarded && wordMask != fullMask && materialization->pageActive &&
+    if (!directStaged && !forwarded && wordMask != fullMask &&
+        materialization->pageActive &&
         lineID / directRetirementContexts.producerPageLines(owner) ==
             materialization->page) {
         fragmentCapture =
@@ -4754,6 +4909,16 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                statistics::units::Count::get(),
                "materializer backing lines conservatively exposed by final "
                "producer page WriteResp authority"),
+      ADD_STAT(page_materialization_staged_direct_lines,
+               statistics::units::Count::get(),
+               "masked producer lines directly staged in active SPD pages"),
+      ADD_STAT(page_materialization_staged_direct_fragments,
+               statistics::units::Count::get(),
+               "authenticated masked fragments directly staged in SPD"),
+      ADD_STAT(page_materialization_staged_direct_fallback_lines,
+               statistics::units::Count::get(),
+               "direct-stage candidates conservatively returned to coherent "
+               "reads"),
       ADD_STAT(port_mem_WR_rowhit,
                statistics::units::Count::get(),
                "indirect writebacks issued to an already-open DRAM row "

@@ -276,6 +276,7 @@ class HybridConsumerPipeline
             payload.fill(std::byte{0});
         nextReadSearch = 0;
         completedLines = 0;
+        directMaterializedLines = 0;
         acceptedReads = acceptedComputes = acceptedWrites = 0;
         producerLineAcks = producerPageFallbackLines = 0;
         creditHighWaterValue = 0;
@@ -766,7 +767,7 @@ class HybridConsumerPipeline
                   acceptedWrites <= acceptedComputes &&
                   completedLines <= acceptedWrites
             : acceptedComputes == 0 && acceptedWrites == 0 &&
-                  completedLines <= acceptedReads &&
+                  completedLines <= acceptedReads + directMaterializedLines &&
                   completedLines == materialized && !aluInFlight &&
                   (activeMaterializationPage == NoProducerPage ||
                    activeMaterializationPage < ProducerPages);
@@ -819,6 +820,40 @@ class HybridConsumerPipeline
         return page < ProducerPages ? materializedPageLines[page] : 0;
     }
     uint16_t producerPageLines() const { return linesPerProducerPage(); }
+    uint16_t producerLineWordMask(uint16_t line) const
+    {
+        if (line >= lineCount())
+            return 0;
+        const uint16_t first = line * producerWordsPerLine();
+        uint16_t mask = 0;
+        for (uint8_t word = 0; word < producerWordsPerLine(); ++word) {
+            if (producerWordsAcked.test(first + word))
+                mask |= static_cast<uint16_t>(1U << word);
+        }
+        return mask;
+    }
+
+    bool completeMaterializeDirect(uint16_t line)
+    {
+        if (desc.mode != Mode::MaterializePages ||
+            activeMaterializationPage >= ProducerPages ||
+            line >= lineCount() ||
+            producerPage(line) != activeMaterializationPage ||
+            linePhases[line] != LineState::ReadyForRead)
+            return false;
+        const uint8_t page = activeMaterializationPage;
+        linePhases[line] = LineState::Done;
+        ++completedLines;
+        ++directMaterializedLines;
+        ++materializedPageLines[page];
+        if (materializedPageLines[page] == linesPerProducerPage()) {
+            materializedPages[page] = true;
+            activeMaterializationPage = NoProducerPage;
+        }
+        if (completedLines == lineCount())
+            state = State::Complete;
+        return assertInvariants();
+    }
 
     static TimingBound optimisticTimingBound(
         uint64_t readOrFillTicks, uint64_t aluTicks, uint64_t writeTicks,
@@ -1080,6 +1115,7 @@ class HybridConsumerPipeline
         activeMaterializationPage = NoProducerPage;
         nextReadSearch = 0;
         completedLines = 0;
+        directMaterializedLines = 0;
         acceptedReads = acceptedComputes = acceptedWrites = 0;
         producerLineAcks = producerPageFallbackLines = 0;
         fragmentEligibleAck = {};
@@ -1101,6 +1137,7 @@ class HybridConsumerPipeline
             lineBuffers{};
     uint16_t nextReadSearch = 0;
     uint16_t completedLines = 0;
+    uint16_t directMaterializedLines = 0;
     uint16_t acceptedReads = 0;
     uint16_t acceptedComputes = 0;
     uint16_t acceptedWrites = 0;

@@ -118,6 +118,10 @@ class MAA(ClockedObject):
         0,
         "Charged active-page line buffers allowed to accumulate authenticated masked producer fragments (0 disables; maximum 16)",
     )
+    page_materialization_direct_spd_fragments = Param.Bool(
+        False,
+        "Stage authenticated active-page masked producer words directly in SPD",
+    )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",
