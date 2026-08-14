@@ -166,67 +166,71 @@ def materializer_trace(
     """Parse the exact materializer lifecycle without inferring from traffic."""
     events: dict[str, list[dict[str, str]]] = {}
     contexts: dict[tuple[int, ...], dict[str, object]] = {}
-    text = path.read_text(encoding="utf-8", errors="replace")
-    for line in text.splitlines():
-        value = fields(line)
-        event = value.get("event")
-        if event is None or not event.startswith("page_materialization_"):
-            continue
-        events.setdefault(event, []).append(value)
-        if event not in CONTEXT_EVENTS:
-            continue
-        key = tuple(
-            integer_field(value, name, event)
-            for name in ("token", "generation", "incarnation")
-        )
-        context = contexts.setdefault(
-            key,
-            {
-                "submit_pages": [],
-                "ready_pages": [],
-                "retire_pages": [],
-                "summaries": [],
-                "activation_counts": [],
-                "new_contexts": 0,
-                "forwarded_lines": 0,
-                "fragment_accumulated_lines": 0,
-                "fragment_buffer_stalls": 0,
-                "nonforwarded_ready_lines": 0,
-                "cache_read_lines": 0,
-                "line_commits": 0,
-            },
-        )
-        if event == "page_materialization_submit":
-            context["submit_pages"].append(integer_field(value, "page", event))
-            context["activation_counts"].append(
-                integer_field(value, "activation_count", event)
+    with path.open(encoding="utf-8", errors="replace") as trace:
+        for line in trace:
+            value = fields(line)
+            event = value.get("event")
+            if event is None or not event.startswith("page_materialization_"):
+                continue
+            events.setdefault(event, []).append(value)
+            if event not in CONTEXT_EVENTS:
+                continue
+            key = tuple(
+                integer_field(value, name, event)
+                for name in ("token", "generation", "incarnation")
             )
-            context["new_contexts"] += integer_field(
-                value, "new_context", event
+            context = contexts.setdefault(
+                key,
+                {
+                    "submit_pages": [],
+                    "ready_pages": [],
+                    "retire_pages": [],
+                    "summaries": [],
+                    "activation_counts": [],
+                    "new_contexts": 0,
+                    "forwarded_lines": 0,
+                    "fragment_accumulated_lines": 0,
+                    "fragment_buffer_stalls": 0,
+                    "nonforwarded_ready_lines": 0,
+                    "cache_read_lines": 0,
+                    "line_commits": 0,
+                },
             )
-        elif event == "page_materialization_page_ready":
-            context["ready_pages"].append(integer_field(value, "page", event))
-        elif event == "page_materialization_retire":
-            context["retire_pages"].append(
-                integer_field(value, "pages", event)
-            )
-        elif event == "page_materialization_summary":
-            context["summaries"].append(value)
-        elif event == "page_materialization_producer_line_ready":
-            if integer_field(value, "forwarded", event) == 1:
-                context["forwarded_lines"] += 1
-            else:
-                context["nonforwarded_ready_lines"] += 1
-            context["fragment_accumulated_lines"] += int(
-                value.get("fragment_accumulated", "0"), 0
-            )
-            context["fragment_buffer_stalls"] += int(
-                value.get("fragment_buffer_stall", "0"), 0
-            )
-        elif event == "page_materialization_read_response":
-            context["cache_read_lines"] += 1
-        elif event == "page_materialization_line_commit":
-            context["line_commits"] += 1
+            if event == "page_materialization_submit":
+                context["submit_pages"].append(
+                    integer_field(value, "page", event)
+                )
+                context["activation_counts"].append(
+                    integer_field(value, "activation_count", event)
+                )
+                context["new_contexts"] += integer_field(
+                    value, "new_context", event
+                )
+            elif event == "page_materialization_page_ready":
+                context["ready_pages"].append(
+                    integer_field(value, "page", event)
+                )
+            elif event == "page_materialization_retire":
+                context["retire_pages"].append(
+                    integer_field(value, "pages", event)
+                )
+            elif event == "page_materialization_summary":
+                context["summaries"].append(value)
+            elif event == "page_materialization_producer_line_ready":
+                if integer_field(value, "forwarded", event) == 1:
+                    context["forwarded_lines"] += 1
+                else:
+                    context["nonforwarded_ready_lines"] += 1
+                context["fragment_accumulated_lines"] += int(
+                    value.get("fragment_accumulated", "0"), 0
+                )
+                context["fragment_buffer_stalls"] += int(
+                    value.get("fragment_buffer_stall", "0"), 0
+                )
+            elif event == "page_materialization_read_response":
+                context["cache_read_lines"] += 1
+            elif event == "page_materialization_line_commit":
+                context["line_commits"] += 1
 
     fallback_events = sum(
         len(values)
@@ -293,6 +297,12 @@ def materializer_trace(
             int(context["line_commits"]) for context in contexts.values()
         ),
         "materializer_contexts": len(contexts),
+        "materializer_contexts_created": sum(
+            int(context["new_contexts"]) for context in contexts.values()
+        ),
+        "materializer_contexts_reused": sum(
+            int(context["new_contexts"]) == 0 for context in contexts.values()
+        ),
         "materializer_contexts_closed": 0,
         "materializer_contexts_open": len(contexts),
         "materializer_activation_count_max": max(
@@ -466,12 +476,14 @@ def validate_materializer(
         ready = sorted(context["ready_pages"])
         retire_pages = context["retire_pages"]
         summaries = context["summaries"]
+        new_contexts = int(context["new_contexts"])
+        valid_context_origins = {1} if workload == "api" else {0, 1}
         if (
             submits != expected_pages
             or ready != expected_pages
             or retire_pages != [4]
             or len(summaries) != 1
-            or context["new_contexts"] != 1
+            or new_contexts not in valid_context_origins
         ):
             raise ValueError(
                 f"{arm}: materializer context {key} did not close"
@@ -685,6 +697,8 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "materializer_retires",
         "materializer_summaries",
         "materializer_contexts",
+        "materializer_contexts_created",
+        "materializer_contexts_reused",
         "materializer_contexts_closed",
         "materializer_contexts_open",
         "materializer_activation_count_max",

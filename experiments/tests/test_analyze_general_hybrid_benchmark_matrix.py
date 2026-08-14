@@ -45,13 +45,14 @@ system.maa.direct_retirement_fallbacks {direct_fallbacks}
 """
 
 
-def closed_token_trace() -> str:
+def closed_token_trace(*, create_context: bool = True) -> str:
     lines = []
     for page in range(4):
         lines.append(
             "event=page_materialization_submit schema=1 token=7 "
             f"generation=11 incarnation=1 page={page} "
-            f"new_context={int(page == 0)} activation_count={page + 1}"
+            f"new_context={int(create_context and page == 0)} "
+            f"activation_count={page + 1}"
         )
         if page < 3:
             lines.append(
@@ -194,6 +195,8 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
             self.assertEqual(token["materializer_submits"], 4)
             self.assertEqual(token["materializer_pages_ready"], 4)
             self.assertEqual(token["materializer_retires"], 1)
+            self.assertEqual(token["materializer_contexts_created"], 1)
+            self.assertEqual(token["materializer_contexts_reused"], 0)
             self.assertEqual(token["materializer_contexts_open"], 0)
             self.assertEqual(token["materializer_forwarded_lines"], 3)
             self.assertEqual(
@@ -201,6 +204,44 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
             )
             self.assertEqual(token["materializer_fragment_buffer_stalls"], 0)
             self.assertEqual(token["materializer_cache_read_lines"], 1)
+
+    def test_application_may_reuse_exact_preregistered_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trace = root / "virtual_trace.log"
+            trace.write_text(
+                closed_token_trace(create_context=False), encoding="utf-8"
+            )
+            stats_path = root / "stats.txt"
+            stats_path.write_text(
+                STATS.format(
+                    submits=4,
+                    pages=4,
+                    retires=1,
+                    forwarded=3,
+                    fragment_lines=1,
+                    fragment_stalls=0,
+                    cache_reads=1,
+                    dispatch_fallbacks=0,
+                    admission_fallbacks=0,
+                    producer_line_acks=3,
+                    page_fallback_lines=1,
+                    direct_fallbacks=0,
+                ),
+                encoding="utf-8",
+            )
+            report = analyzer.validate_materializer(
+                "ume-gzp-token",
+                "ume-gzp",
+                "token_stream_ld_correctness_control",
+                "token_stream_ld 4096",
+                analyzer.first_stats(stats_path),
+                trace,
+            )
+            self.assertEqual(report["materializer_contexts_created"], 0)
+            self.assertEqual(report["materializer_contexts_reused"], 1)
+            self.assertEqual(report["materializer_contexts_closed"], 1)
+            self.assertEqual(report["materializer_contexts_open"], 0)
 
     def test_fragment_stat_trace_mismatch_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
