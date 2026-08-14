@@ -1,5 +1,6 @@
 #include "mem/MAA/IndirectAccess.hh"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -548,7 +549,8 @@ IndirectAccessUnit::finishReorderSurvival()
              "reconcile: %lu/%lu\n",
              my_indirect_id, reorder_survival.totalAdmissions,
              reorder_survival.totalIssuedEntries);
-    const bool predicate_present = my_cond_tile != -1;
+    const bool predicate_present = my_cond_tile != -1 ||
+        (isSoaJitRmw() && my_predicate_addr != 0);
     const char *classification =
         reorder_survival.preserves16K(predicate_present)
         ? "preserved"
@@ -655,6 +657,12 @@ void IndirectAccessUnit::check_reset() {
                  !direct_index_ready_lines.empty() ||
                  !direct_index_words.empty(),
              "I[%d] direct-index buffer is not empty at reset\n",
+             my_indirect_id);
+    panic_if(soa_predicate_line.pending || soa_predicate_line.valid,
+             "I[%d] SoA/JIT predicate line is not empty at reset\n",
+             my_indirect_id);
+    panic_if(!soaJitContextsEmpty(),
+             "I[%d] SoA/JIT A-line scoreboard is not empty at reset\n",
              my_indirect_id);
     panic_if(descriptor_spool_bucket_active ||
                  descriptor_spool_bucket_scan_complete ||
@@ -779,10 +787,15 @@ bool IndirectAccessUnit::isDirectIndexLoad() const {
            (my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
             my_instruction->opcode ==
-                Instruction::OpcodeType::INDIR_LD_INDEX);
+                Instruction::OpcodeType::INDIR_LD_INDEX ||
+            isSoaJitRmw());
+}
+bool IndirectAccessUnit::isSoaJitRmw() const {
+    return my_instruction != nullptr && my_instruction->isSoaJitRmw();
 }
 bool IndirectAccessUnit::usesBoundedDirectIndexPasses() const {
-    return isDirectIndexLoad() && maa->virtual_index_range_passes;
+    return isDirectIndexLoad() && !isSoaJitRmw() &&
+           maa->virtual_index_range_passes;
 }
 bool IndirectAccessUnit::usesBoundedSourceResponses() const {
     return isVirtualLoad() ||
@@ -1210,6 +1223,234 @@ bool IndirectAccessUnit::ensureDirectIndex(int itr) {
     if (descriptor_spool_replay_active)
         return loadDescriptorSpoolCurrent(itr);
     return direct_index_words.find(itr) != direct_index_words.end();
+}
+int64_t IndirectAccessUnit::soaSourcePosition(int logical_itr) const
+{
+    panic_if(!isSoaJitRmw() || logical_itr < 0 || logical_itr >= my_max,
+             "I[%d] invalid SoA/JIT logical iteration %d/%d\n",
+             my_indirect_id, logical_itr, my_max);
+    return static_cast<int64_t>(my_index_min) +
+           static_cast<int64_t>(logical_itr) * my_index_stride;
+}
+
+void
+IndirectAccessUnit::validateSoaJitAddressSpans()
+{
+    panic_if(!isSoaJitRmw(),
+             "I[%d] SoA/JIT span validation used by another shape\n",
+             my_indirect_id);
+    if (my_max == 0)
+        return;
+
+    struct Span
+    {
+        const char *name;
+        Addr begin;
+        Addr end;
+        Addr physicalBegin = 0;
+        Addr physicalEnd = 0;
+    };
+
+    const int64_t last_source = soaSourcePosition(my_max - 1);
+    panic_if(last_source < 0 ||
+                 static_cast<uint64_t>(last_source) ==
+                     std::numeric_limits<Addr>::max(),
+             "I[%d] invalid final SoA/JIT source position %ld\n",
+             my_indirect_id, last_source);
+    const Addr source_elements = static_cast<Addr>(last_source) + 1;
+    const auto checkedEnd = [this](Addr begin, Addr elements,
+                                   Addr element_bytes, const char *name) {
+        panic_if(elements >
+                     (std::numeric_limits<Addr>::max() - begin) /
+                         element_bytes,
+                 "I[%d] SoA/JIT %s byte span overflows\n",
+                 my_indirect_id, name);
+        return begin + elements * element_bytes;
+    };
+    const auto inside = [this](const Span &span, Addr minimum,
+                               Addr maximum) {
+        panic_if(span.begin < minimum || span.begin >= maximum ||
+                     span.end <= span.begin || span.end > maximum,
+                 "I[%d] SoA/JIT %s span [0x%lx,0x%lx) exceeds "
+                 "registered range [0x%lx,0x%lx)\n",
+                 my_indirect_id, span.name, span.begin, span.end,
+                 minimum, maximum);
+    };
+
+    std::array<Span, 4> spans{{
+        {"mutable-A", my_base_addr, my_max_addr},
+        {"values", my_backing_addr,
+         checkedEnd(my_backing_addr, source_elements, my_word_size,
+                    "values")},
+        {"indices", my_index_addr,
+         checkedEnd(my_index_addr, source_elements, sizeof(uint32_t),
+                    "indices")},
+        {"predicate", my_predicate_addr,
+         my_predicate_addr == 0
+             ? 0
+             : checkedEnd(my_predicate_addr, source_elements,
+                          sizeof(uint32_t), "predicate")},
+    }};
+    const size_t span_count = my_predicate_addr == 0 ? 3 : 4;
+    inside(spans[0], my_min_addr, my_max_addr);
+    inside(spans[1], my_backing_min_addr, my_backing_max_addr);
+    inside(spans[2], my_index_min_addr, my_index_max_addr);
+    if (span_count == 4)
+        inside(spans[3], my_predicate_min_addr, my_predicate_max_addr);
+
+    const auto overlaps = [](Addr first_begin, Addr first_end,
+                             Addr second_begin, Addr second_end) {
+        return first_begin < second_end && second_begin < first_end;
+    };
+    for (size_t first = 0; first < span_count; ++first) {
+        for (size_t second = first + 1; second < span_count; ++second) {
+            panic_if(overlaps(spans[first].begin, spans[first].end,
+                              spans[second].begin, spans[second].end),
+                     "I[%d] SoA/JIT byte spans overlap: %s=[0x%lx,0x%lx) "
+                     "%s=[0x%lx,0x%lx)\n",
+                     my_indirect_id, spans[first].name, spans[first].begin,
+                     spans[first].end, spans[second].name,
+                     spans[second].begin, spans[second].end);
+        }
+    }
+
+    // This synchronous full-span prewalk is a simulator legality check, not
+    // modeled hardware latency; its translation/checking cost is deliberately
+    // absent from simulated time. Responses are classified by block-aligned
+    // physical address, so byte-disjoint virtual layouts are insufficient
+    // when aliases or shared cache lines exist. Fail closed unless every
+    // routing span is physically contiguous, then reject overlap at cache-line
+    // granularity.
+    for (size_t index = 0; index < span_count; ++index) {
+        Span &span = spans[index];
+        const Addr first_block = addrBlockAligner(span.begin, block_size);
+        const Addr last_block = addrBlockAligner(span.end - 1, block_size);
+        Addr expected_paddr = 0;
+        for (Addr block = first_block;; block += block_size) {
+            const Addr paddr = addrBlockAligner(
+                translatePacket(block), block_size);
+            if (block == first_block) {
+                span.physicalBegin = paddr;
+            } else {
+                panic_if(paddr != expected_paddr,
+                         "I[%d] SoA/JIT %s has a non-contiguous physical "
+                         "routing span at vaddr=0x%lx paddr=0x%lx "
+                         "expected=0x%lx\n",
+                         my_indirect_id, span.name, block, paddr,
+                         expected_paddr);
+            }
+            panic_if(paddr >
+                         std::numeric_limits<Addr>::max() - block_size,
+                     "I[%d] SoA/JIT %s physical routing span overflows\n",
+                     my_indirect_id, span.name);
+            expected_paddr = paddr + block_size;
+            if (block == last_block)
+                break;
+            panic_if(block >
+                         std::numeric_limits<Addr>::max() - block_size,
+                     "I[%d] SoA/JIT %s virtual routing span overflows\n",
+                     my_indirect_id, span.name);
+        }
+        span.physicalEnd = expected_paddr;
+    }
+    for (size_t first = 0; first < span_count; ++first) {
+        for (size_t second = first + 1; second < span_count; ++second) {
+            panic_if(overlaps(spans[first].physicalBegin,
+                              spans[first].physicalEnd,
+                              spans[second].physicalBegin,
+                              spans[second].physicalEnd),
+                     "I[%d] SoA/JIT physical routing spans overlap: "
+                     "%s=[0x%lx,0x%lx) %s=[0x%lx,0x%lx)\n",
+                     my_indirect_id, spans[first].name,
+                     spans[first].physicalBegin, spans[first].physicalEnd,
+                     spans[second].name, spans[second].physicalBegin,
+                     spans[second].physicalEnd);
+        }
+    }
+}
+bool IndirectAccessUnit::ensureSoaPredicate(int itr)
+{
+    if (!isSoaJitRmw() || my_predicate_addr == 0)
+        return true;
+    const int64_t source = soaSourcePosition(itr);
+    panic_if(source < 0,
+             "I[%d] negative SoA/JIT predicate position %ld\n",
+             my_indirect_id, source);
+    const uint64_t byte_offset =
+        static_cast<uint64_t>(source) * sizeof(uint32_t);
+    const Addr bytes = my_predicate_max_addr - my_predicate_addr;
+    panic_if(my_predicate_addr < my_predicate_min_addr ||
+                 my_predicate_addr >= my_predicate_max_addr ||
+                 bytes < sizeof(uint32_t) ||
+                 byte_offset > bytes - sizeof(uint32_t),
+             "I[%d] SoA/JIT predicate position %ld exceeds "
+             "[0x%lx, 0x%lx)\n",
+             my_indirect_id, source, my_predicate_min_addr,
+             my_predicate_max_addr);
+    const Addr vaddr = my_predicate_addr + byte_offset;
+    const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+    if (soa_predicate_line.valid &&
+        soa_predicate_line.blockVaddr == block_vaddr)
+        return true;
+    if (soa_predicate_line.pending)
+        return false;
+    soa_predicate_line = SoaPredicateLine();
+    soa_predicate_line.pending = true;
+    soa_predicate_line.blockVaddr = block_vaddr;
+    soa_predicate_line.blockPaddr = addrBlockAligner(
+        translatePacket(block_vaddr), block_size);
+    soa_jit_predicate_line_issues++;
+    createSoaPredicateReadPacket(soa_predicate_line.blockPaddr,
+                                 rowtable_latency);
+    return false;
+}
+bool IndirectAccessUnit::soaPredicateValue(int itr) const
+{
+    if (my_predicate_addr == 0)
+        return true;
+    const int64_t source = soaSourcePosition(itr);
+    const Addr vaddr = my_predicate_addr +
+        static_cast<Addr>(source) * sizeof(uint32_t);
+    const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+    panic_if(!soa_predicate_line.valid ||
+                 soa_predicate_line.blockVaddr != block_vaddr,
+             "I[%d] SoA/JIT predicate line for itr %d is not resident\n",
+             my_indirect_id, itr);
+    uint32_t predicate = 0;
+    std::memcpy(&predicate,
+                soa_predicate_line.data.data() + (vaddr - block_vaddr),
+                sizeof(predicate));
+    return predicate != 0;
+}
+void IndirectAccessUnit::discardSoaPredicateIfDone(int itr)
+{
+    if (my_predicate_addr == 0 || !soa_predicate_line.valid)
+        return;
+    const int next = itr + 1;
+    if (next >= my_max) {
+        soa_predicate_line = SoaPredicateLine();
+        return;
+    }
+    const int64_t source = soaSourcePosition(next);
+    const Addr next_vaddr = my_predicate_addr +
+        static_cast<Addr>(source) * sizeof(uint32_t);
+    if (addrBlockAligner(next_vaddr, block_size) !=
+        soa_predicate_line.blockVaddr)
+        soa_predicate_line = SoaPredicateLine();
+}
+bool IndirectAccessUnit::receiveSoaPredicate(
+    Addr addr, uint8_t *dataptr, bool is_block_cached)
+{
+    if (!isSoaJitRmw() || !soa_predicate_line.pending ||
+        soa_predicate_line.blockPaddr != addr)
+        return false;
+    accountReadResponse(addr, is_block_cached);
+    std::memcpy(soa_predicate_line.data.data(), dataptr, block_size);
+    soa_predicate_line.pending = false;
+    soa_predicate_line.valid = true;
+    soa_jit_predicate_line_responses++;
+    scheduleNextExecution(true);
+    return true;
 }
 uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
     if (descriptor_spool_replay_active) {
@@ -2723,6 +2964,7 @@ void IndirectAccessUnit::checkTileReady() {
     if (my_instruction->opcode != Instruction::OpcodeType::INDIR_LD &&
         my_instruction->opcode !=
             Instruction::OpcodeType::INDIR_LD_INDEX &&
+        !isSoaJitRmw() &&
         !isVirtualLoad() &&
         my_instruction->opcode !=
             Instruction::OpcodeType::INDIR_ST_SCALAR &&
@@ -2742,12 +2984,15 @@ bool IndirectAccessUnit::checkElementReady() {
     if (idx_ready && descriptor_spool_replay_active) {
         operand_itr = currentDirectIndexWord(my_i).logical_itr;
     }
-    bool cond_ready = my_cond_tile == -1 || !idx_ready ||
-        maa->spd->getElementFinished(
-            my_cond_tile, operand_itr, 4,
-            (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
+    bool cond_ready = isSoaJitRmw()
+        ? (!idx_ready || ensureSoaPredicate(operand_itr))
+        : (my_cond_tile == -1 || !idx_ready ||
+           maa->spd->getElementFinished(
+               my_cond_tile, operand_itr, 4,
+               (uint8_t)FuncUnitType::INDIRECT, my_indirect_id));
     idx_ready = idx_ready && cond_ready;
     bool src_ready = idx_ready &&
+        (isSoaJitRmw() ||
         (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
          my_instruction->opcode ==
              Instruction::OpcodeType::INDIR_LD_INDEX ||
@@ -2758,7 +3003,7 @@ bool IndirectAccessUnit::checkElementReady() {
              Instruction::OpcodeType::INDIR_ST_SCALAR ||
              maa->spd->getElementFinished(
              my_src_tile, operand_itr, my_word_size,
-             (uint8_t)FuncUnitType::INDIRECT, my_indirect_id));
+             (uint8_t)FuncUnitType::INDIRECT, my_indirect_id)));
     if (!cond_ready) {
         DPRINTF(MAAIndirect,
                 "I[%d] %s: cond tile[%d] element[%d] not ready, "
@@ -2983,9 +3228,16 @@ void IndirectAccessUnit::fillRowTable(
         if (my_cond_tile != -1) {
             num_spd_read_condidx_accesses++;
         }
-        const bool condition_taken =
-            my_cond_tile == -1 ||
-            maa->spd->getData<uint32_t>(my_cond_tile, logical_itr) != 0;
+        const bool condition_taken = isSoaJitRmw()
+            ? soaPredicateValue(logical_itr)
+            : (my_cond_tile == -1 ||
+               maa->spd->getData<uint32_t>(my_cond_tile, logical_itr) != 0);
+        if (isSoaJitRmw()) {
+            if (condition_taken)
+                soa_jit_selected++;
+            else
+                soa_jit_predicate_rejected++;
+        }
         bool direct_index_descriptor_inserted = false;
         bool direct_index_predicate_rejected = false;
         bool direct_index_partition_rejected = false;
@@ -3407,7 +3659,7 @@ void IndirectAccessUnit::fillRowTable(
                     }
                     if (usesBoundedSourceResponses())
                         my_RT_req_sent[my_RT_config][my_RT_idx] = false;
-                    if (!descriptor_spool_operation) {
+                    if (!descriptor_spool_operation && !isSoaJitRmw()) {
                         my_unique_WORD_addrs.insert(vaddr);
                         my_unique_CL_addrs.insert(block_paddr);
                         my_unique_ROW_addrs.insert(
@@ -3545,6 +3797,8 @@ void IndirectAccessUnit::fillRowTable(
                     : direct_index_predicate_rejected
                         ? DirectIndexDiscardReason::PredicateRejected
                         : DirectIndexDiscardReason::PartitionRejected);
+            if (isSoaJitRmw())
+                discardSoaPredicateIfDone(logical_itr);
             if (commit_grow_ordinal) {
                 const auto commit_result =
                     bounded_grow_plan.commitReplayOrdinal(
@@ -3576,6 +3830,242 @@ void IndirectAccessUnit::chargeDirectIndexFilterLatency(int words) {
     else
         my_direct_index_filter_finish_tick += maa->getCyclesToTicks(latency);
     (*maa->stats.IND_VirtIndexFilterCycles[my_indirect_id]) += latency;
+}
+bool IndirectAccessUnit::soaJitContextsEmpty() const
+{
+    return std::all_of(
+        soa_jit_contexts.begin(), soa_jit_contexts.end(),
+        [](const SoaJitContext &context) {
+            return context.state == SoaJitContextState::Free;
+        });
+}
+bool IndirectAccessUnit::serviceSoaJitBuild()
+{
+    panic_if(!isSoaJitRmw() || !my_fill_finished,
+             "I[%d] invalid SoA/JIT build state\n", my_indirect_id);
+    auto context = std::find_if(
+        soa_jit_contexts.begin(), soa_jit_contexts.end(),
+        [](const SoaJitContext &candidate) {
+            return candidate.state == SoaJitContextState::Free;
+        });
+    if (context == soa_jit_contexts.end()) {
+        soa_jit_context_stalls++;
+        return false;
+    }
+    for (int rt_idx = 0; rt_idx < num_RT_slices[my_RT_config]; ++rt_idx) {
+        Addr addr = 0;
+        int head = -1;
+        int words = 0;
+        if (!RT[my_RT_config][rt_idx].claim_entry_send(
+                addr, head, words, true, false, true))
+            continue;
+        panic_if(head < 0 || words <= 0,
+                 "I[%d] SoA/JIT claimed an empty A line\n",
+                 my_indirect_id);
+        *context = SoaJitContext();
+        context->aPaddr = addr;
+        context->generation = soa_jit_generation;
+        context->nextOffset = head;
+        context->remaining = words;
+        context->state = SoaJitContextState::AwaitARead;
+        soa_jit_context_high_water = std::max<uint64_t>(
+            soa_jit_context_high_water, 1);
+        soa_jit_a_read_issues++;
+        recordReorderSurvivalIssue(addr);
+        createReadPacket(addr, rowtable_latency);
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_a_read_issue schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu addr=0x%lx "
+                "head=%d aliases=%d contexts=1\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                addr, head, words);
+        return true;
+    }
+    soa_jit_all_rows_claimed = true;
+    return false;
+}
+void IndirectAccessUnit::issueSoaJitValueRead(SoaJitContext &context)
+{
+    panic_if(context.generation != soa_jit_generation ||
+                 context.nextOffset < 0 || context.remaining <= 0,
+             "I[%d] invalid SoA/JIT value-read context\n",
+             my_indirect_id);
+    const OffsetTableEntry entry =
+        offset_table->peek_entry(context.nextOffset);
+    const int64_t source = soaSourcePosition(entry.itr);
+    panic_if(source < 0,
+             "I[%d] negative SoA/JIT value position %ld\n",
+             my_indirect_id, source);
+    const uint64_t byte_offset =
+        static_cast<uint64_t>(source) * my_word_size;
+    const Addr span = my_backing_max_addr - my_backing_addr;
+    panic_if(span < static_cast<Addr>(my_word_size) ||
+                 byte_offset > span - my_word_size,
+             "I[%d] SoA/JIT value position %ld exceeds "
+             "[0x%lx, 0x%lx)\n",
+             my_indirect_id, source, my_backing_min_addr,
+             my_backing_max_addr);
+    const Addr vaddr = my_backing_addr + byte_offset;
+    const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+    context.valuePaddr = addrBlockAligner(
+        translatePacket(block_vaddr), block_size);
+    context.logicalItr = entry.itr;
+    context.aWord = static_cast<uint16_t>(entry.wid);
+    context.valueWord = static_cast<uint16_t>(
+        (vaddr - block_vaddr) / my_word_size);
+    context.state = SoaJitContextState::AwaitValueRead;
+    soa_jit_value_read_issues++;
+    createSoaJitReadPacket(context.valuePaddr, rowtable_latency);
+}
+void IndirectAccessUnit::applySoaJitValue(
+    SoaJitContext &context, const uint8_t *value)
+{
+    uint8_t *destination =
+        context.aLine.data() + context.aWord * my_word_size;
+#define APPLY_SOA_JIT(TYPE) \
+    do { \
+        TYPE lhs{}; \
+        TYPE rhs{}; \
+        std::memcpy(&lhs, destination, sizeof(TYPE)); \
+        std::memcpy(&rhs, value, sizeof(TYPE)); \
+        if (my_instruction->optype == Instruction::OPType::ADD_OP) \
+            lhs += rhs; \
+        else if (my_instruction->optype == Instruction::OPType::MIN_OP) \
+            lhs = lhs < rhs ? lhs : rhs; \
+        else if (my_instruction->optype == Instruction::OPType::MAX_OP) \
+            lhs = lhs > rhs ? lhs : rhs; \
+        else \
+            panic("I[%d] invalid SoA/JIT RMW operation\n", \
+                  my_indirect_id); \
+        std::memcpy(destination, &lhs, sizeof(TYPE)); \
+    } while (false)
+    switch (my_instruction->datatype) {
+      case Instruction::DataType::UINT32_TYPE: APPLY_SOA_JIT(uint32_t); break;
+      case Instruction::DataType::INT32_TYPE: APPLY_SOA_JIT(int32_t); break;
+      case Instruction::DataType::FLOAT32_TYPE: APPLY_SOA_JIT(float); break;
+      case Instruction::DataType::UINT64_TYPE: APPLY_SOA_JIT(uint64_t); break;
+      case Instruction::DataType::INT64_TYPE: APPLY_SOA_JIT(int64_t); break;
+      case Instruction::DataType::FLOAT64_TYPE: APPLY_SOA_JIT(double); break;
+      default: panic("I[%d] invalid SoA/JIT datatype\n", my_indirect_id);
+    }
+#undef APPLY_SOA_JIT
+}
+void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
+{
+    panic_if(context.generation != soa_jit_generation ||
+                 context.nextOffset != -1 || context.remaining != 0,
+             "I[%d] SoA/JIT A write issued before alias drain\n",
+             my_indirect_id);
+    RequestPtr req = std::make_shared<Request>(
+        context.aPaddr, block_size, flags, maa->requestorId);
+    req->setRegion(my_addr_range_id);
+    PacketPtr pkt = new Packet(req, MemCmd::WriteReq);
+    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->allocate();
+    pkt->setData(context.aLine.data());
+    context.state = SoaJitContextState::AwaitAWriteResp;
+    soa_jit_a_write_issues++;
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                    maa->getClockEdge(Cycles(0)), true);
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_a_write_issue schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu addr=0x%lx aliases=%lu\n",
+            my_indirect_id, my_decode_start_tick, soa_jit_generation,
+            context.aPaddr, soa_jit_aliases_applied);
+}
+bool IndirectAccessUnit::receiveSoaJitData(
+    Addr addr, uint8_t *dataptr, bool is_block_cached)
+{
+    if (!isSoaJitRmw())
+        return false;
+    for (auto &context : soa_jit_contexts) {
+        if (context.state == SoaJitContextState::AwaitARead &&
+            context.aPaddr == addr) {
+            panic_if(context.generation != soa_jit_generation,
+                     "I[%d] stale SoA/JIT A response generation\n",
+                     my_indirect_id);
+            accountReadResponse(addr, is_block_cached);
+            std::memcpy(context.aLine.data(), dataptr, block_size);
+            soa_jit_a_read_responses++;
+            recordReorderSurvivalIssuedEntries(context.remaining);
+            issueSoaJitValueRead(context);
+            return true;
+        }
+        if (context.state == SoaJitContextState::AwaitValueRead &&
+            context.valuePaddr == addr) {
+            panic_if(context.generation != soa_jit_generation,
+                     "I[%d] stale SoA/JIT value response generation\n",
+                     my_indirect_id);
+            accountReadResponse(addr, is_block_cached);
+            soa_jit_value_read_responses++;
+            const uint8_t *value =
+                dataptr + context.valueWord * my_word_size;
+            applySoaJitValue(context, value);
+            const int expected_offset = context.nextOffset;
+            const OffsetTableEntry consumed =
+                offset_table->consume_entry(context.nextOffset);
+            panic_if(consumed.itr != context.logicalItr ||
+                         consumed.wid != context.aWord,
+                     "I[%d] SoA/JIT alias identity changed at offset %d\n",
+                     my_indirect_id, expected_offset);
+            context.remaining--;
+            soa_jit_aliases_applied++;
+            if (context.nextOffset == -1) {
+                panic_if(context.remaining != 0,
+                         "I[%d] SoA/JIT alias chain ended with %d entries\n",
+                         my_indirect_id, context.remaining);
+                issueSoaJitWrite(context);
+            } else {
+                panic_if(context.remaining <= 0,
+                         "I[%d] SoA/JIT alias chain exceeded its count\n",
+                         my_indirect_id);
+                issueSoaJitValueRead(context);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+bool IndirectAccessUnit::completeSoaJitWrite(Addr addr)
+{
+    for (auto &context : soa_jit_contexts) {
+        if (context.state != SoaJitContextState::AwaitAWriteResp ||
+            context.aPaddr != addr)
+            continue;
+        panic_if(context.generation != soa_jit_generation ||
+                     context.nextOffset != -1 || context.remaining != 0,
+                 "I[%d] invalid exact SoA/JIT WriteResp owner\n",
+                 my_indirect_id);
+        soa_jit_a_write_responses++;
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_a_write_response schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu addr=0x%lx\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                addr);
+        context = SoaJitContext();
+        return true;
+    }
+    return false;
+}
+void IndirectAccessUnit::checkSoaJitTerminal() const
+{
+    panic_if(!isSoaJitRmw() || soa_jit_generation == 0 ||
+                 !soa_jit_all_rows_claimed || !soaJitContextsEmpty() ||
+                 offset_table->occupancy() != 0 ||
+                 soa_predicate_line.pending || soa_predicate_line.valid ||
+                 soa_jit_selected + soa_jit_predicate_rejected !=
+                     static_cast<uint64_t>(my_max) ||
+                 soa_jit_value_read_issues != soa_jit_selected ||
+                 soa_jit_value_read_responses != soa_jit_selected ||
+                 soa_jit_aliases_applied != soa_jit_selected ||
+                 soa_jit_a_read_issues != soa_jit_a_read_responses ||
+                 soa_jit_a_read_issues != soa_jit_a_write_issues ||
+                 soa_jit_a_write_issues != soa_jit_a_write_responses ||
+                 soa_jit_predicate_line_issues !=
+                     soa_jit_predicate_line_responses ||
+                 soa_jit_context_high_water > SoaJitContexts,
+             "I[%d] SoA/JIT terminal accounting failed\n",
+             my_indirect_id);
 }
 void IndirectAccessUnit::executeInstruction() {
     if (state == Status::Idle) {
@@ -3645,6 +4135,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_base_addr = my_instruction->baseAddr;
         my_backing_addr = my_instruction->backingAddr;
         my_index_addr = my_instruction->indexAddr;
+        my_predicate_addr = my_instruction->predicateAddr;
         my_idx_tile = my_instruction->src1SpdID;
         my_src_tile = my_instruction->src2SpdID;
         my_src_reg = my_instruction->src1RegID;
@@ -3674,8 +4165,12 @@ void IndirectAccessUnit::executeInstruction() {
                 Instruction::OpcodeType::INDIR_LD_INDEX ||
             isVirtualLoad()) {
             my_word_size = my_instruction->getWordSize(my_dst_tile);
-        } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR ||
-                   my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_VECTOR) {
+        } else if (isSoaJitRmw()) {
+            my_word_size = my_instruction->WordSize();
+        } else if (my_instruction->opcode ==
+                       Instruction::OpcodeType::INDIR_ST_VECTOR ||
+                   my_instruction->opcode ==
+                       Instruction::OpcodeType::INDIR_RMW_VECTOR) {
             my_word_size = my_instruction->getWordSize(my_src_tile);
         } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR ||
                    my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR) {
@@ -3718,7 +4213,8 @@ void IndirectAccessUnit::executeInstruction() {
         my_cond_tile_ready = (my_cond_tile == -1) ? true : false;
         my_idx_tile_ready = false;
         my_src_tile_ready =
-            (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
+            (isSoaJitRmw() ||
+             my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
              my_instruction->opcode ==
                  Instruction::OpcodeType::INDIR_LD_INDEX ||
              isVirtualLoad() ||
@@ -3808,7 +4304,7 @@ void IndirectAccessUnit::executeInstruction() {
         my_index_stride = 1;
         direct_index_next_prefetch_itr = 0;
         direct_index_partition = 0;
-        direct_index_partitions = isDirectIndexLoad()
+        direct_index_partitions = isDirectIndexLoad() && !isSoaJitRmw()
             ? direct_index_max_partitions : 1;
         direct_index_phase = 1;
         direct_index_partition_barrier = false;
@@ -3894,6 +4390,24 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_words.clear();
         direct_index_max_lines = 0;
         direct_index_max_words = 0;
+        soa_predicate_line = SoaPredicateLine();
+        for (auto &context : soa_jit_contexts)
+            context = SoaJitContext();
+        soa_jit_all_rows_claimed = false;
+        soa_jit_generation = 0;
+        soa_jit_selected = 0;
+        soa_jit_predicate_rejected = 0;
+        soa_jit_predicate_line_issues = 0;
+        soa_jit_predicate_line_responses = 0;
+        soa_jit_a_read_issues = 0;
+        soa_jit_a_read_responses = 0;
+        soa_jit_value_read_issues = 0;
+        soa_jit_value_read_responses = 0;
+        soa_jit_aliases_applied = 0;
+        soa_jit_a_write_issues = 0;
+        soa_jit_a_write_responses = 0;
+        soa_jit_context_stalls = 0;
+        soa_jit_context_high_water = 0;
         if (isDirectIndexLoad()) {
             panic_if(direct_index_partitions != 1 && !isVirtualLoad(),
                      "I[%d] direct-index partitioning is only supported by "
@@ -3920,8 +4434,27 @@ void IndirectAccessUnit::executeInstruction() {
                      "I[%d] streamed-index length %d exceeds logical tile "
                      "capacity %d\n",
                      my_indirect_id, my_max, num_tile_elements);
+            if (isSoaJitRmw()) {
+                panic_if(!my_instruction->hasValidSoaJitRmwOperands(),
+                         "I[%d] malformed SoA/JIT RMW reached decode\n",
+                         my_indirect_id);
+                panic_if(maa->virtual_index_range_passes ||
+                             maa->virtual_index_descriptor_spool ||
+                             maa->virtual_bounded_global_merge,
+                         "I[%d] SoA/JIT RMW does not admit range passes, "
+                         "descriptor spooling, or GZP/global merge\n",
+                         my_indirect_id);
+                panic_if(my_max > offset_table->capacity() ||
+                             my_max > static_cast<int>(
+                                          maa->num_offset_table_epoch_entries),
+                         "I[%d] SoA/JIT RMW requires one full logical "
+                         "Row/Offset window: logical=%d capacity=%d "
+                         "epoch=%u\n",
+                         my_indirect_id, my_max, offset_table->capacity(),
+                         maa->num_offset_table_epoch_entries);
+            }
             my_idx_tile_ready = true;
-            if (maa->virtual_index_range_passes) {
+            if (maa->virtual_index_range_passes && !isSoaJitRmw()) {
                 panic_if(!isVirtualLoad(),
                          "I[%d] bounded range passes require a virtual load\n",
                          my_indirect_id);
@@ -4022,6 +4555,10 @@ void IndirectAccessUnit::executeInstruction() {
         my_index_min_addr = my_instruction->indexMinAddr;
         my_index_max_addr = my_instruction->indexMaxAddr;
         my_index_addr_range_id = my_instruction->indexAddrRangeID;
+        my_predicate_min_addr = my_instruction->predicateMinAddr;
+        my_predicate_max_addr = my_instruction->predicateMaxAddr;
+        my_predicate_addr_range_id =
+            my_instruction->predicateAddrRangeID;
         if (isVirtualLoad()) {
             panic_if(my_backing_addr_range_id < 0,
                      "I[%d] virtual backing has no registered region\n",
@@ -4043,6 +4580,59 @@ void IndirectAccessUnit::executeInstruction() {
                      "[0x%lx, 0x%lx)\n",
                      my_indirect_id, my_index_addr, my_index_min_addr,
                      my_index_max_addr);
+        }
+        if (isSoaJitRmw()) {
+            panic_if(my_backing_addr_range_id < 0 ||
+                         my_backing_addr < my_backing_min_addr ||
+                         my_backing_addr >= my_backing_max_addr,
+                     "I[%d] SoA/JIT values base 0x%lx has no valid "
+                     "registered range\n",
+                     my_indirect_id, my_backing_addr);
+            if (my_max != 0) {
+                const int64_t last_source = soaSourcePosition(my_max - 1);
+                panic_if(last_source < 0,
+                         "I[%d] SoA/JIT range begins below zero\n",
+                         my_indirect_id);
+                const Addr value_span =
+                    my_backing_max_addr - my_backing_addr;
+                const Addr index_span =
+                    my_index_max_addr - my_index_addr;
+                const uint64_t last_value_offset =
+                    static_cast<uint64_t>(last_source) * my_word_size;
+                const uint64_t last_index_offset =
+                    static_cast<uint64_t>(last_source) * sizeof(uint32_t);
+                panic_if(value_span < static_cast<Addr>(my_word_size) ||
+                             index_span < sizeof(uint32_t) ||
+                             last_value_offset >
+                                 value_span - my_word_size ||
+                             last_index_offset >
+                                 index_span - sizeof(uint32_t),
+                         "I[%d] SoA/JIT values or indices span exceeds its "
+                         "registered range\n",
+                         my_indirect_id);
+                if (my_predicate_addr != 0) {
+                    const Addr predicate_span =
+                        my_predicate_max_addr - my_predicate_addr;
+                    panic_if(my_predicate_addr_range_id < 0 ||
+                                 my_predicate_addr <
+                                     my_predicate_min_addr ||
+                                 my_predicate_addr >=
+                                     my_predicate_max_addr ||
+                                 predicate_span < sizeof(uint32_t) ||
+                                 last_index_offset >
+                                     predicate_span - sizeof(uint32_t),
+                             "I[%d] SoA/JIT predicate span exceeds its "
+                             "registered range\n",
+                             my_indirect_id);
+                }
+            }
+            validateSoaJitAddressSpans();
+            panic_if(soa_jit_next_generation == 0 ||
+                         soa_jit_next_generation ==
+                             std::numeric_limits<uint64_t>::max(),
+                     "I[%d] SoA/JIT generation exhausted\n",
+                     my_indirect_id);
+            soa_jit_generation = soa_jit_next_generation++;
         }
 
         // Setting the state of the instruction and stream unit
@@ -4073,6 +4663,10 @@ void IndirectAccessUnit::executeInstruction() {
         fillRowTable(finished, waitForFinish, waitForElement, needDrain,
                      num_spd_read_condidx_accesses, num_rowtable_accesses,
                      num_direct_index_filter_words);
+        panic_if(isSoaJitRmw() && needDrain,
+                 "I[%d] SoA/JIT RMW could not retain one full logical "
+                 "Row/Offset window; increase metadata capacity\n",
+                 my_indirect_id);
         bool buildReady = false;
         if (waitForFinish) {
             DPRINTF(MAAVirtualTrace,
@@ -4177,6 +4771,17 @@ void IndirectAccessUnit::executeInstruction() {
         if (my_fill_start_tick != 0) {
             (*maa->stats.IND_CyclesFill[my_indirect_id]) += maa->getTicksToCycles(curTick() - my_fill_start_tick);
             my_fill_start_tick = 0;
+        }
+        if (isSoaJitRmw()) {
+            const bool issued = serviceSoaJitBuild();
+            updateLatency(0, 0, 0, issued ? 1 : 0, 0,
+                          total_num_RT_subslices);
+            state = Status::Request;
+            transitionAttributionStage(AttributionStage::Request,
+                                       issued ? "soa_a_read" :
+                                                "soa_rows_drained");
+            scheduleNextExecution(true);
+            return;
         }
         const bool native_order_claim =
             usesBoundedSourceResponses() && maa->virtual_native_issue_order;
@@ -4450,6 +5055,35 @@ void IndirectAccessUnit::executeInstruction() {
             accountVirtualRequestInterval();
             serviceBoundedGlobalMerge();
             return;
+        }
+        if (isSoaJitRmw()) {
+            if (my_build_start_tick != 0) {
+                (*maa->stats.IND_CyclesBuild[my_indirect_id]) +=
+                    maa->getTicksToCycles(curTick() - my_build_start_tick);
+                my_build_start_tick = 0;
+            }
+            if (!soaJitContextsEmpty())
+                break;
+            if (!soa_jit_all_rows_claimed) {
+                if (my_request_start_tick != 0) {
+                    finishVirtualRequestInterval();
+                    (*maa->stats.IND_CyclesRequest[my_indirect_id]) +=
+                        maa->getTicksToCycles(
+                            curTick() - my_request_start_tick);
+                    my_request_start_tick = 0;
+                }
+                state = Status::Build;
+                transitionAttributionStage(AttributionStage::Build,
+                                           "soa_context_released");
+            } else {
+                checkSoaJitTerminal();
+                state = Status::Response;
+                transitionAttributionStage(AttributionStage::Response,
+                                           "soa_exact_drain");
+                my_fill_finished = false;
+            }
+            scheduleNextExecution(true);
+            break;
         }
         if (usesBoundedSourceResponses()) {
             virtual_trace_request_calls++;
@@ -4777,6 +5411,58 @@ void IndirectAccessUnit::executeInstruction() {
                 direct_index_max_lines;
             (*maa->stats.IND_VirtIndexWordHighWater[my_indirect_id]) +=
                 direct_index_max_words;
+        }
+        if (isSoaJitRmw()) {
+            checkSoaJitTerminal();
+            (*maa->stats.IND_SoaJitInstructions[my_indirect_id])++;
+            (*maa->stats.IND_SoaJitSelected[my_indirect_id]) +=
+                soa_jit_selected;
+            (*maa->stats.IND_SoaJitPredicateRejected[my_indirect_id]) +=
+                soa_jit_predicate_rejected;
+            (*maa->stats.IND_SoaJitPredicateLineReads[my_indirect_id]) +=
+                soa_jit_predicate_line_issues;
+            (*maa->stats
+                  .IND_SoaJitPredicateLineResponses[my_indirect_id]) +=
+                soa_jit_predicate_line_responses;
+            (*maa->stats.IND_SoaJitAReadIssues[my_indirect_id]) +=
+                soa_jit_a_read_issues;
+            (*maa->stats.IND_SoaJitAReadResponses[my_indirect_id]) +=
+                soa_jit_a_read_responses;
+            (*maa->stats.IND_SoaJitValueReadIssues[my_indirect_id]) +=
+                soa_jit_value_read_issues;
+            (*maa->stats.IND_SoaJitValueReadResponses[my_indirect_id]) +=
+                soa_jit_value_read_responses;
+            (*maa->stats.IND_SoaJitAliasesApplied[my_indirect_id]) +=
+                soa_jit_aliases_applied;
+            (*maa->stats.IND_SoaJitAWriteIssues[my_indirect_id]) +=
+                soa_jit_a_write_issues;
+            (*maa->stats.IND_SoaJitAWriteResponses[my_indirect_id]) +=
+                soa_jit_a_write_responses;
+            (*maa->stats.IND_SoaJitContextHighWater[my_indirect_id]) +=
+                soa_jit_context_high_water;
+            (*maa->stats.IND_SoaJitContextStalls[my_indirect_id]) +=
+                soa_jit_context_stalls;
+            (*maa->stats.IND_SoaJitTerminalCompletions[my_indirect_id])++;
+            DPRINTF(MAAVirtualTrace,
+                    "event=soa_jit_complete schema=1 unit=%d "
+                    "operation_tick=%lu generation=%lu logical=%d "
+                    "selected=%lu predicate_rejected=%lu "
+                    "predicate_lines=%lu/%lu a_reads=%lu/%lu "
+                    "value_reads=%lu/%lu aliases=%lu "
+                    "a_writes=%lu/%lu context_hwm=%lu stalls=%lu "
+                    "terminal=1\n",
+                    my_indirect_id, my_decode_start_tick,
+                    soa_jit_generation, my_max, soa_jit_selected,
+                    soa_jit_predicate_rejected,
+                    soa_jit_predicate_line_issues,
+                    soa_jit_predicate_line_responses,
+                    soa_jit_a_read_issues, soa_jit_a_read_responses,
+                    soa_jit_value_read_issues,
+                    soa_jit_value_read_responses,
+                    soa_jit_aliases_applied, soa_jit_a_write_issues,
+                    soa_jit_a_write_responses,
+                    soa_jit_context_high_water,
+                    soa_jit_context_stalls);
         }
         if (maa->virtual_bounded_global_merge) {
             const bool read_slots_empty = std::none_of(
@@ -5237,18 +5923,19 @@ void IndirectAccessUnit::executeInstruction() {
         } else {
             maa->stats.cycles_INDRMW += total_cycles;
         }
-        if (descriptor_spool_operation) {
+        if (descriptor_spool_operation || isSoaJitRmw()) {
             panic_if(!my_unique_WORD_addrs.empty() ||
                          !my_unique_CL_addrs.empty() ||
                          !my_unique_ROW_addrs.empty(),
-                     "I[%d] descriptor spool populated legacy uniqueness "
-                     "sets\n",
+                     "I[%d] bounded indirect path populated legacy "
+                     "uniqueness sets\n",
                      my_indirect_id);
             DPRINTF(MAAVirtualTrace,
                     "event=bounded_identity_accounting schema=1 unit=%d "
                     "operation_tick=%lu identity_check=trace_side "
-                    "legacy_unique_sets=suppressed\n",
-                    my_indirect_id, my_decode_start_tick);
+                    "legacy_unique_sets=suppressed path=%s\n",
+                    my_indirect_id, my_decode_start_tick,
+                    isSoaJitRmw() ? "soa_jit" : "descriptor_spool");
         } else {
             setRowTableConfig(my_base_addr, my_unique_CL_addrs.size(),
                               my_unique_ROW_addrs.size());
@@ -5334,8 +6021,11 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
     }
     read_pkt->headerDelay = read_pkt->payloadDelay = 0;
     read_pkt->allocate();
-    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, read_pkt, maa->getClockEdge(Cycles(latency)), my_force_cache);
-    DPRINTF(MAAIndirect, "I[%d] %s: created %s for mem\n", my_indirect_id, __func__, read_pkt->print());
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, read_pkt,
+                    maa->getClockEdge(Cycles(latency)),
+                    isSoaJitRmw() ? true : my_force_cache);
+    DPRINTF(MAAIndirect, "I[%d] %s: created %s for mem\n",
+            my_indirect_id, __func__, read_pkt->print());
 }
 void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
     if (isVirtualLoad()) {
@@ -5353,7 +6043,7 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
     read_pkt->allocate();
     maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, read_pkt,
                     maa->getClockEdge(Cycles(latency)),
-                    direct_index_force_cache);
+                    isSoaJitRmw() ? true : direct_index_force_cache);
     (*maa->stats.IND_VirtIndexLineReads[my_indirect_id])++;
     if (usesBoundedDirectIndexPasses()) {
         if (direct_index_summary_active)
@@ -5367,6 +6057,28 @@ void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
     DPRINTF(MAAIndirect,
             "I[%d] %s: created direct-index read %s\n",
             my_indirect_id, __func__, read_pkt->print());
+}
+void IndirectAccessUnit::createSoaPredicateReadPacket(Addr addr, int latency)
+{
+    RequestPtr req = std::make_shared<Request>(
+        addr, block_size, flags, maa->requestorId);
+    req->setRegion(my_predicate_addr_range_id);
+    PacketPtr pkt = new Packet(req, MemCmd::ReadReq);
+    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->allocate();
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                    maa->getClockEdge(Cycles(latency)), true);
+}
+void IndirectAccessUnit::createSoaJitReadPacket(Addr addr, int latency)
+{
+    RequestPtr req = std::make_shared<Request>(
+        addr, block_size, flags, maa->requestorId);
+    req->setRegion(my_backing_addr_range_id);
+    PacketPtr pkt = new Packet(req, MemCmd::ReadReq);
+    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->allocate();
+    maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, pkt,
+                    maa->getClockEdge(Cycles(latency)), true);
 }
 void IndirectAccessUnit::createDescriptorSpoolReadPacket(
     Addr vaddr, uint32_t pass, uint32_t line, bool read_ahead)
@@ -5636,6 +6348,10 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
     if (receiveDescriptorSpool(addr, dataptr, is_block_cached))
         return true;
     if (receiveDirectIndex(addr, dataptr, is_block_cached))
+        return true;
+    if (receiveSoaPredicate(addr, dataptr, is_block_cached))
+        return true;
+    if (receiveSoaJitData(addr, dataptr, is_block_cached))
         return true;
     std::vector addr_vec = maa->map_addr(addr);
     int RT_idx = getRowTableIdx(my_RT_config, addr_vec[ADDR_CHANNEL_LEVEL], addr_vec[ADDR_RANK_LEVEL], addr_vec[ADDR_BANKGROUP_LEVEL], addr_vec[ADDR_BANK_LEVEL]);
@@ -7289,6 +8005,13 @@ void IndirectAccessUnit::transitionAttributionStage(
 
 void IndirectAccessUnit::retirementWriteComplete(
     Addr addr, const uint8_t *writeRespPayload, unsigned payloadBytes) {
+    if (isSoaJitRmw()) {
+        panic_if(!completeSoaJitWrite(addr),
+                 "I[%d] SoA/JIT received unmatched WriteResp 0x%lx\n",
+                 my_indirect_id, addr);
+        scheduleNextExecution(true);
+        return;
+    }
     auto global_write = std::find_if(
         bounded_global_merge_write_slots.begin(),
         bounded_global_merge_write_slots.end(),
