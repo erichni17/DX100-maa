@@ -33,6 +33,8 @@ system.maa.page_materialization_submissions {submits}
 system.maa.page_materialization_pages {pages}
 system.maa.page_materialization_retirements {retires}
 system.maa.page_materialization_forwarded_lines {forwarded}
+system.maa.page_materialization_fragment_accumulated_lines {fragment_lines}
+system.maa.page_materialization_fragment_buffer_stalls {fragment_stalls}
 system.maa.page_materialization_cache_read_fallback_lines {cache_reads}
 system.maa.page_materialization_dispatch_fallbacks {dispatch_fallbacks}
 system.maa.page_materialization_admission_fallbacks {admission_fallbacks}
@@ -55,7 +57,9 @@ def closed_token_trace() -> str:
             lines.append(
                 "event=page_materialization_producer_line_ready schema=1 "
                 f"token=7 generation=11 incarnation=1 page={page} "
-                f"line={page} forwarded=1"
+                f"line={page} forwarded=1 "
+                f"fragment_accumulated={int(page == 0)} "
+                "fragment_buffer_stall=0"
             )
         else:
             lines.extend(
@@ -157,6 +161,8 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
                     pages=4 if is_token else 0,
                     retires=1 if is_token else 0,
                     forwarded=3 if is_token else 0,
+                    fragment_lines=1 if is_token else 0,
+                    fragment_stalls=0,
                     cache_reads=1 if is_token else 0,
                     dispatch_fallbacks=0,
                     admission_fallbacks=0,
@@ -190,7 +196,28 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
             self.assertEqual(token["materializer_retires"], 1)
             self.assertEqual(token["materializer_contexts_open"], 0)
             self.assertEqual(token["materializer_forwarded_lines"], 3)
+            self.assertEqual(
+                token["materializer_fragment_accumulated_lines"], 1
+            )
+            self.assertEqual(token["materializer_fragment_buffer_stalls"], 0)
             self.assertEqual(token["materializer_cache_read_lines"], 1)
+
+    def test_fragment_stat_trace_mismatch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_matrix(root)
+            stats = root / (
+                "arms/hybrid_token_stream_ld/replica-1/gem5/stats.txt"
+            )
+            stats.write_text(
+                stats.read_text().replace(
+                    "page_materialization_fragment_accumulated_lines 1",
+                    "page_materialization_fragment_accumulated_lines 0",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "does not match trace"):
+                analyzer.analyze(root)
 
     def test_cross_arm_mismatch_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

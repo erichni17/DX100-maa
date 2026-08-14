@@ -292,8 +292,13 @@ class HybridConsumerContextQueue
         Context *context = find(key);
         if (context == nullptr || payload == nullptr)
             return false;
-        const Pipeline::Request request =
-            context->pipeline.pendingReadLine(line);
+        Pipeline::Request request = context->pipeline.pendingReadLine(line);
+        // A complete producer line is strictly more useful than an incomplete
+        // retained fragment set.  Reclaim one charged accumulator rather than
+        // lose an otherwise directly forwardable full WriteResp.
+        if (request.kind == Pipeline::Kind::None &&
+            context->pipeline.discardOneMaterializationFragment())
+            request = context->pipeline.pendingReadLine(line);
         if (request.kind == Pipeline::Kind::None ||
             !context->pipeline.accept(request) ||
             !context->pipeline.completeRead(request, payload, payloadBytes))
@@ -302,6 +307,26 @@ class HybridConsumerContextQueue
         if (captured != nullptr)
             *captured = {context->key, request};
         return assertInvariants();
+    }
+
+    Pipeline::FragmentCapture captureMaterializationFragment(
+        const ContextKey &key, const Pipeline::ProducerLineAck &ack,
+        const std::byte *payload, std::size_t payloadBytes,
+        uint8_t fragmentBufferLimit, Request *captured)
+    {
+        if (captured != nullptr)
+            *captured = {};
+        Context *context = find(key);
+        if (context == nullptr)
+            return Pipeline::FragmentCapture::Ineligible;
+        Pipeline::Request request;
+        const auto result = context->pipeline.captureMaterializationFragment(
+            ack, payload, payloadBytes, fragmentBufferLimit, &request);
+        if (result == Pipeline::FragmentCapture::Captured &&
+            captured != nullptr)
+            *captured = {context->key, request};
+        return assertInvariants() ? result
+                                  : Pipeline::FragmentCapture::Ineligible;
     }
 
     std::byte *bufferData(const Request &request)

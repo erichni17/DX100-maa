@@ -189,6 +189,8 @@ def materializer_trace(
                 "activation_counts": [],
                 "new_contexts": 0,
                 "forwarded_lines": 0,
+                "fragment_accumulated_lines": 0,
+                "fragment_buffer_stalls": 0,
                 "nonforwarded_ready_lines": 0,
                 "cache_read_lines": 0,
                 "line_commits": 0,
@@ -215,6 +217,12 @@ def materializer_trace(
                 context["forwarded_lines"] += 1
             else:
                 context["nonforwarded_ready_lines"] += 1
+            context["fragment_accumulated_lines"] += int(
+                value.get("fragment_accumulated", "0"), 0
+            )
+            context["fragment_buffer_stalls"] += int(
+                value.get("fragment_buffer_stall", "0"), 0
+            )
         elif event == "page_materialization_read_response":
             context["cache_read_lines"] += 1
         elif event == "page_materialization_line_commit":
@@ -261,6 +269,14 @@ def materializer_trace(
         "materializer_forwarded_lines": sum(
             int(context["forwarded_lines"]) for context in contexts.values()
         ),
+        "materializer_fragment_accumulated_lines": sum(
+            int(context["fragment_accumulated_lines"])
+            for context in contexts.values()
+        ),
+        "materializer_fragment_buffer_stalls": sum(
+            int(context["fragment_buffer_stalls"])
+            for context in contexts.values()
+        ),
         "materializer_nonforwarded_ready_lines": sum(
             int(context["nonforwarded_ready_lines"])
             for context in contexts.values()
@@ -298,11 +314,27 @@ MATERIALIZER_STATS = (
     "page_materialization_page_fallback_lines",
 )
 
+OPTIONAL_MATERIALIZER_STATS = (
+    "page_materialization_fragment_accumulated_lines",
+    "page_materialization_fragment_buffer_stalls",
+)
+
 
 def materializer_stat(stats: dict[str, float], suffix: str) -> int:
     name = f"system.maa.{suffix}"
     if name not in stats or not stats[name].is_integer():
         raise ValueError(f"missing or non-integral materializer stat {name}")
+    return int(stats[name])
+
+
+def optional_materializer_stat(
+    stats: dict[str, float], suffix: str
+) -> int | None:
+    name = f"system.maa.{suffix}"
+    if name not in stats:
+        return None
+    if not stats[name].is_integer():
+        raise ValueError(f"non-integral materializer stat {name}")
     return int(stats[name])
 
 
@@ -334,6 +366,10 @@ def validate_materializer(
         for name in MATERIALIZER_STATS:
             if materializer_stat(stats, name) != 0:
                 raise ValueError(f"{arm}: control has nonzero {name}")
+        for name in OPTIONAL_MATERIALIZER_STATS:
+            value = optional_materializer_stat(stats, name)
+            if value not in (None, 0):
+                raise ValueError(f"{arm}: control has nonzero {name}")
         return report
     if not token_arm:
         return report
@@ -357,6 +393,24 @@ def validate_materializer(
             raise ValueError(
                 f"{arm}: {stat_name}={stat_values[stat_name]} does not "
                 f"match trace {trace_name}={report[trace_name]}"
+            )
+    optional_expected = {
+        "page_materialization_fragment_accumulated_lines": (
+            "materializer_fragment_accumulated_lines"
+        ),
+        "page_materialization_fragment_buffer_stalls": (
+            "materializer_fragment_buffer_stalls"
+        ),
+    }
+    for stat_name, trace_name in optional_expected.items():
+        value = optional_materializer_stat(stats, stat_name)
+        if value is None:
+            continue
+        report[f"stat_{stat_name}"] = value
+        if value != report[trace_name]:
+            raise ValueError(
+                f"{arm}: {stat_name}={value} does not match trace "
+                f"{trace_name}={report[trace_name]}"
             )
     if (
         report["materializer_fallback_events"] != 0
@@ -614,7 +668,11 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "materializer_prearm_activations",
         "materializer_fallback_events",
         "materializer_forwarded_lines",
+        "materializer_fragment_accumulated_lines",
+        "materializer_fragment_buffer_stalls",
         "materializer_cache_read_lines",
+        "stat_page_materialization_fragment_accumulated_lines",
+        "stat_page_materialization_fragment_buffer_stalls",
         "stat_page_materialization_producer_line_acks",
         "stat_page_materialization_page_fallback_lines",
         "materializer_nonforwarded_ready_lines",

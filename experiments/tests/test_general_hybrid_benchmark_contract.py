@@ -391,6 +391,33 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         )[1]
         self.assertNotIn("isPageZeroPrearmMaterialization", batched_block)
 
+    def test_masked_fragment_accumulation_is_bounded_and_default_off(
+        self,
+    ) -> None:
+        sim_object = (ROOT / "src/mem/MAA/MAA.py").read_text(encoding="utf-8")
+        options = (ROOT / "configs/common/Options.py").read_text(
+            encoding="utf-8"
+        )
+        config = (ROOT / "configs/common/MAAConfig.py").read_text(
+            encoding="utf-8"
+        )
+        pipeline = (ROOT / "src/mem/MAA/HybridConsumerPipeline.hh").read_text(
+            encoding="utf-8"
+        )
+        for text in (sim_object, options, config):
+            self.assertIn("page_materialization_fragment_buffers", text)
+        self.assertIn(
+            "page_materialization_fragment_buffers = Param.Unsigned(\n"
+            "        0,",
+            sim_object,
+        )
+        self.assertIn("choices=range(0, 17)", options)
+        self.assertIn(
+            "MaxMaterializationFragmentBuffers =\n        LineBufferCount",
+            pipeline,
+        )
+        self.assertIn("BufferState::ProducerFragments", pipeline)
+
     def test_gapbs_adds_native4_controls_without_false_hybrid_target(
         self,
     ) -> None:

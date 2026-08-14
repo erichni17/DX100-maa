@@ -201,6 +201,157 @@ testBoundedEarlyWakeupMilestones()
 }
 
 void
+testAuthenticatedMaskedFragmentAccumulation()
+{
+    Queue queue;
+    const auto descriptor = materializerDescriptor();
+    Queue::ContextKey owner;
+    CHECK(queue.submit(descriptor, &owner) == Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+
+    auto low = linePayload(0x100);
+    auto high = linePayload(0x200);
+    const Pipeline::ProducerLineAck lowAck{
+        owner.generation, 0, 0x0f, 0x500};
+    CHECK(queue.notifyProducerLineWriteAck(owner, lowAck));
+    Queue::Request captured;
+    CHECK(queue.captureMaterializationFragment(
+              owner, lowAck, low.data(), low.size(), 1, &captured) ==
+          Pipeline::FragmentCapture::Accumulated);
+    CHECK(captured.request.kind == Pipeline::Kind::None);
+    CHECK(queue.pendingRead(owner).request.kind == Pipeline::Kind::None);
+
+    // The exact ACK is single-use. A duplicate response cannot mutate the
+    // retained payload or manufacture completion.
+    CHECK(!queue.notifyProducerLineWriteAck(owner, lowAck));
+    CHECK(queue.captureMaterializationFragment(
+              owner, lowAck, high.data(), high.size(), 1, &captured) ==
+          Pipeline::FragmentCapture::Ineligible);
+
+    const Pipeline::ProducerLineAck highAck{
+        owner.generation, 0, 0xf0, 0x501};
+    CHECK(queue.notifyProducerLineWriteAck(owner, highAck));
+    CHECK(queue.captureMaterializationFragment(
+              owner, highAck, high.data(), high.size(), 1, &captured) ==
+          Pipeline::FragmentCapture::Captured);
+    CHECK(captured.request.kind == Pipeline::Kind::ReadBacking);
+
+    BoundedCommitHarness commits;
+    CHECK(commits.reserve(captured, 20, 0));
+    CHECK(commits.service(19, queue, owner) == 0);
+    CHECK(!commits.wordVisible(0, 0));
+    CHECK(!commits.wordVisible(0, 7));
+    CHECK(commits.service(20, queue, owner) == 1);
+    for (uint8_t word = 0; word < 4; ++word)
+        CHECK(commits.word(0, word) == uint64_t{0x100} + word);
+    for (uint8_t word = 4; word < 8; ++word)
+        CHECK(commits.word(0, word) == uint64_t{0x200} + word);
+
+    // A missing final response payload cannot complete from stale bytes. The
+    // partial buffer is abandoned and the now-ready line remains a coherent
+    // backing-read candidate.
+    const Pipeline::ProducerLineAck partial{
+        owner.generation, 1, 0x0f, 0x510};
+    CHECK(queue.notifyProducerLineWriteAck(owner, partial));
+    CHECK(queue.captureMaterializationFragment(
+              owner, partial, low.data(), low.size(), 1, &captured) ==
+          Pipeline::FragmentCapture::Accumulated);
+    const Pipeline::ProducerLineAck missingPayload{
+        owner.generation, 1, 0xf0, 0x511};
+    CHECK(queue.notifyProducerLineWriteAck(owner, missingPayload));
+    CHECK(queue.captureMaterializationFragment(
+              owner, missingPayload, nullptr, 0, 1, &captured) ==
+          Pipeline::FragmentCapture::Ineligible);
+    Queue::Snapshot snapshot;
+    CHECK(queue.snapshot(owner, &snapshot));
+    CHECK(snapshot.creditsInUse == 0);
+    CHECK(queue.pendingRead(owner).request.line == 1);
+
+    // If an earlier authenticated fragment was not retained, accepting the
+    // final fragment must report an incomplete sequence, release its private
+    // buffer, and leave the line on coherent fallback. This is not a buffer
+    // capacity stall.
+    const Pipeline::ProducerLineAck missed{
+        owner.generation, 2, 0x0f, 0x520};
+    CHECK(queue.notifyProducerLineWriteAck(owner, missed));
+    const Pipeline::ProducerLineAck finalOnly{
+        owner.generation, 2, 0xf0, 0x521};
+    CHECK(queue.notifyProducerLineWriteAck(owner, finalOnly));
+    CHECK(queue.captureMaterializationFragment(
+              owner, finalOnly, high.data(), high.size(), 1, &captured) ==
+          Pipeline::FragmentCapture::Incomplete);
+    CHECK(queue.snapshot(owner, &snapshot));
+    CHECK(snapshot.creditsInUse == 0);
+    CHECK(queue.pendingRead(owner).request.line == 1 ||
+          queue.pendingRead(owner).request.line == 2);
+}
+
+void
+testMaskedFragmentBoundAndFallbackSafety()
+{
+    Queue queue;
+    const auto descriptor = materializerDescriptor();
+    Queue::ContextKey owner;
+    CHECK(queue.submit(descriptor, &owner) == Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+    const auto payload = linePayload(0x300);
+
+    constexpr uint8_t limit = 2;
+    for (uint16_t line = 0; line < limit; ++line) {
+        const Pipeline::ProducerLineAck ack{
+            owner.generation, line, 0x01,
+            static_cast<uint64_t>(0x600 + line)};
+        CHECK(queue.notifyProducerLineWriteAck(owner, ack));
+        Queue::Request captured;
+        CHECK(queue.captureMaterializationFragment(
+                  owner, ack, payload.data(), payload.size(), limit,
+                  &captured) == Pipeline::FragmentCapture::Accumulated);
+    }
+    const Pipeline::ProducerLineAck overflow{
+        owner.generation, limit, 0x01, 0x700};
+    CHECK(queue.notifyProducerLineWriteAck(owner, overflow));
+    Queue::Request captured;
+    CHECK(queue.captureMaterializationFragment(
+              owner, overflow, payload.data(), payload.size(), limit,
+              &captured) == Pipeline::FragmentCapture::NoBuffer);
+
+    // Final page authority discards incomplete private fragments and exposes
+    // all still-blocked lines only through the coherent cache-read path.
+    CHECK(queue.notifyProducerWriteAck(
+        owner, {owner.generation, 0, 0x800}));
+    Queue::Snapshot snapshot;
+    CHECK(queue.snapshot(owner, &snapshot));
+    CHECK(snapshot.creditsInUse == 0);
+    CHECK(queue.pendingRead(owner).request.kind ==
+          Pipeline::Kind::ReadBacking);
+}
+
+void
+testMaskedFragmentDefaultOffPreservesCacheFallback()
+{
+    Queue queue;
+    const auto descriptor = materializerDescriptor();
+    Queue::ContextKey owner;
+    CHECK(queue.submit(descriptor, &owner) == Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+    const auto payload = linePayload(0x400);
+    Queue::Request captured;
+    for (const auto ack : {
+             Pipeline::ProducerLineAck{owner.generation, 0, 0x0f, 0x900},
+             Pipeline::ProducerLineAck{owner.generation, 0, 0xf0, 0x901}}) {
+        CHECK(queue.notifyProducerLineWriteAck(owner, ack));
+        CHECK(queue.captureMaterializationFragment(
+                  owner, ack, payload.data(), payload.size(), 0,
+                  &captured) == Pipeline::FragmentCapture::Disabled);
+    }
+    Queue::Snapshot snapshot;
+    CHECK(queue.snapshot(owner, &snapshot));
+    CHECK(snapshot.creditsInUse == 0);
+    CHECK(snapshot.producerLineAcks == 1);
+    CHECK(queue.pendingRead(owner).request.line == 0);
+}
+
+void
 driveCacheReadPage(Queue &queue, const Queue::ContextKey &owner,
                    uint8_t destination, uint64_t &tick,
                    BoundedCommitHarness &commits)
@@ -313,6 +464,9 @@ main()
 {
     testFourPageABIAndPreRegistrationRetry();
     testBoundedEarlyWakeupMilestones();
+    testAuthenticatedMaskedFragmentAccumulation();
+    testMaskedFragmentBoundAndFallbackSafety();
+    testMaskedFragmentDefaultOffPreservesCacheFallback();
     testLateAckForwardingCommitTickAndTwoChargedPages();
     std::cout << "hybrid page materializer tests passed\n";
     return 0;

@@ -409,6 +409,7 @@ public:
     unsigned int transparent_spd_mode;
     unsigned int logical_spd_cache_mode;
     unsigned int page_materialization_wakeup_batches;
+    unsigned int page_materialization_fragment_buffers;
     unsigned int num_regs;
     unsigned int num_instructions_per_core;
     unsigned int num_instructions_per_maa;
@@ -891,6 +892,8 @@ public:
         statistics::Scalar page_materialization_pages;
         statistics::Scalar page_materialization_retirements;
         statistics::Scalar page_materialization_forwarded_lines;
+        statistics::Scalar page_materialization_fragment_accumulated_lines;
+        statistics::Scalar page_materialization_fragment_buffer_stalls;
         statistics::Scalar page_materialization_cache_read_fallback_lines;
         statistics::Scalar page_materialization_dispatch_fallbacks;
         statistics::Scalar page_materialization_admission_fallbacks;

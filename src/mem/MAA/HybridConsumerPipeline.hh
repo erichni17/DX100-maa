@@ -37,6 +37,11 @@ class HybridConsumerPipeline
     static constexpr uint8_t NoBuffer =
         std::numeric_limits<uint8_t>::max();
     static constexpr uint8_t NoProducerPage = ProducerPages;
+    // Fragment accumulation reuses the existing charged line buffers.  It
+    // cannot provision hidden payload or retain more partial lines than the
+    // ordinary materializer already has cache-response credits.
+    static constexpr uint8_t MaxMaterializationFragmentBuffers =
+        LineBufferCount;
     // The opt-in live integration may wake blocked dependent units at a
     // small, deterministic set of line commits before page readiness.  Keep
     // this finite so it cannot silently recreate the rejected per-line scan.
@@ -75,6 +80,16 @@ class HybridConsumerPipeline
         Accepted,
         Retry,
         Fallback,
+    };
+
+    enum class FragmentCapture : uint8_t
+    {
+        Disabled,
+        Ineligible,
+        NoBuffer,
+        Incomplete,
+        Accumulated,
+        Captured,
     };
 
     // Charge every persistent byte represented by this scheduler, not only
@@ -123,6 +138,7 @@ class HybridConsumerPipeline
     enum class BufferState : uint8_t
     {
         Free,
+        ProducerFragments,
         Reading,
         ReadyForCompute,
         Computing,
@@ -270,6 +286,8 @@ class HybridConsumerPipeline
 
     bool notifyProducerWriteAck(const ProducerAck &ack)
     {
+        fragmentEligibleAck = {};
+        fragmentEligibleAckValid = false;
         if ((state != State::WaitingForProducer && state != State::Active) ||
             ack.generation != desc.generation || ack.page >= ProducerPages ||
             ack.transactionID == 0 || producerAcked[ack.page])
@@ -282,6 +300,14 @@ class HybridConsumerPipeline
         producerAcked[ack.page] = true;
         const uint16_t first = ack.page * linesPerProducerPage();
         const uint16_t end = first + linesPerProducerPage();
+        // Final page authority makes every still-blocked line coherently
+        // readable.  Any incomplete speculative fragment set for that page
+        // must release its charged buffer before cache fallback arbitration.
+        for (Buffer &buffer : buffers) {
+            if (buffer.state == BufferState::ProducerFragments &&
+                buffer.line >= first && buffer.line < end)
+                buffer = Buffer{};
+        }
         for (uint16_t line = first; line < end; ++line) {
             if (linePhases[line] != LineState::Blocked)
                 continue;
@@ -294,6 +320,8 @@ class HybridConsumerPipeline
 
     bool notifyProducerLineWriteAck(const ProducerLineAck &ack)
     {
+        fragmentEligibleAck = {};
+        fragmentEligibleAckValid = false;
         if ((state != State::WaitingForProducer && state != State::Active) ||
             ack.generation != desc.generation || ack.line >= lineCount() ||
             ack.wordMask == 0 ||
@@ -316,11 +344,136 @@ class HybridConsumerPipeline
         for (uint8_t word = 0; word < producerWordsPerLine(); ++word)
             complete = complete && producerWordsAcked.test(firstWord + word);
         if (!complete)
-            return assertInvariants();
+            return rememberFragmentEligibleAck(ack) && assertInvariants();
         linePhases[ack.line] = LineState::ReadyForRead;
         ++producerLineAcks;
         state = State::Active;
-        return assertInvariants();
+        return rememberFragmentEligibleAck(ack) && assertInvariants();
+    }
+
+    /**
+     * Retain one authenticated masked WriteResp for the active materializer
+     * page.  notifyProducerLineWriteAck() must have accepted this exact,
+     * non-overlapping word mask first.  Bytes remain private in an already
+     * charged line buffer until every word is present; only then is an exact
+     * ReadBacking-shaped request returned for the normal delayed SPD commit.
+     */
+    FragmentCapture captureMaterializationFragment(
+        const ProducerLineAck &ack, const std::byte *payload,
+        std::size_t payloadBytes, uint8_t fragmentBufferLimit,
+        Request *captured)
+    {
+        if (captured != nullptr)
+            *captured = {};
+        const bool authenticated = fragmentEligibleAckValid &&
+            ack.generation == fragmentEligibleAck.generation &&
+            ack.line == fragmentEligibleAck.line &&
+            ack.wordMask == fragmentEligibleAck.wordMask &&
+            ack.transactionID == fragmentEligibleAck.transactionID;
+        if (!authenticated)
+            return FragmentCapture::Ineligible;
+        fragmentEligibleAck = {};
+        fragmentEligibleAckValid = false;
+        const uint16_t line = ack.line;
+        const uint16_t wordMask = ack.wordMask;
+        const auto abandonReadyAccumulator = [this, line]() {
+            if (linePhases[line] != LineState::ReadyForRead)
+                return;
+            for (Buffer &buffer : buffers) {
+                if (buffer.state == BufferState::ProducerFragments &&
+                    buffer.line == line)
+                    buffer = Buffer{};
+            }
+        };
+        if (fragmentBufferLimit == 0)
+            return FragmentCapture::Disabled;
+        if (fragmentBufferLimit > MaxMaterializationFragmentBuffers ||
+            desc.mode != Mode::MaterializePages ||
+            (state != State::WaitingForProducer &&
+             state != State::Active) ||
+            activeMaterializationPage >= ProducerPages ||
+            line >= lineCount() ||
+            producerPage(line) != activeMaterializationPage ||
+            payload == nullptr || payloadBytes != LineBytes ||
+            wordMask == 0 || wordMask == fullProducerLineWordMask() ||
+            (wordMask & ~fullProducerLineWordMask()) != 0 ||
+            (linePhases[line] != LineState::Blocked &&
+             linePhases[line] != LineState::ReadyForRead)) {
+            abandonReadyAccumulator();
+            return FragmentCapture::Ineligible;
+        }
+
+        uint8_t bufferIndex = NoBuffer;
+        uint8_t fragmentBuffers = 0;
+        for (uint8_t index = 0; index < LineBufferCount; ++index) {
+            const Buffer &buffer = buffers[index];
+            if (buffer.state != BufferState::ProducerFragments)
+                continue;
+            ++fragmentBuffers;
+            if (buffer.line == line)
+                bufferIndex = index;
+        }
+        if (bufferIndex == NoBuffer) {
+            if (fragmentBuffers >= fragmentBufferLimit)
+                return FragmentCapture::NoBuffer;
+            bufferIndex = freeBuffer();
+            if (bufferIndex == NoBuffer)
+                return FragmentCapture::NoBuffer;
+            buffers[bufferIndex].state = BufferState::ProducerFragments;
+            buffers[bufferIndex].line = line;
+            updateCreditHighWater();
+        }
+
+        Buffer &buffer = buffers[bufferIndex];
+        if (buffer.fragmentWordMask & wordMask) {
+            abandonReadyAccumulator();
+            return FragmentCapture::Ineligible;
+        }
+        for (uint8_t word = 0; word < producerWordsPerLine(); ++word) {
+            if ((wordMask & (1U << word)) == 0)
+                continue;
+            std::memcpy(lineBuffers[bufferIndex].data() +
+                            word * desc.wordBytes,
+                        payload + word * desc.wordBytes, desc.wordBytes);
+        }
+        buffer.fragmentWordMask |= wordMask;
+        if (linePhases[line] == LineState::Blocked)
+            return assertInvariants() ? FragmentCapture::Accumulated
+                                      : FragmentCapture::Ineligible;
+
+        // If some earlier acknowledged fragment was not retained, this line
+        // is deliberately abandoned to coherent cache fallback.  Never fill
+        // missing bytes from an unrelated masked packet payload.
+        if (buffer.fragmentWordMask != fullProducerLineWordMask()) {
+            buffer = Buffer{};
+            return assertInvariants() ? FragmentCapture::Incomplete
+                                      : FragmentCapture::Ineligible;
+        }
+
+        const Request request = makeRequest(Kind::ReadBacking, line,
+                                            bufferIndex);
+        buffer.state = BufferState::Reading;
+        linePhases[line] = LineState::ReadInFlight;
+        nextReadSearch = line + 1;
+        if (nextReadSearch == readWindowFirstLine() + readWindowLineCount())
+            nextReadSearch = readWindowFirstLine();
+        ++acceptedReads;
+        if (!completeRead(request, lineBuffers[bufferIndex].data(), LineBytes))
+            return FragmentCapture::Ineligible;
+        if (captured != nullptr)
+            *captured = request;
+        return FragmentCapture::Captured;
+    }
+
+    bool discardOneMaterializationFragment()
+    {
+        for (Buffer &buffer : buffers) {
+            if (buffer.state != BufferState::ProducerFragments)
+                continue;
+            buffer = Buffer{};
+            return assertInvariants();
+        }
+        return false;
     }
 
     Request pendingRead() const
@@ -574,6 +727,16 @@ class HybridConsumerPipeline
             if (buffer.line >= lineCount() || owners[buffer.line])
                 return false;
             owners[buffer.line] = true;
+            if (buffer.state == BufferState::ProducerFragments) {
+                const bool completing =
+                    linePhases[buffer.line] == LineState::ReadyForRead &&
+                    fragmentEligibleAckValid &&
+                    fragmentEligibleAck.line == buffer.line;
+                if (linePhases[buffer.line] != LineState::Blocked &&
+                    !completing)
+                    return false;
+                continue;
+            }
             const LineState expected = lineStateFor(buffer.state);
             if (linePhases[buffer.line] != expected)
                 return false;
@@ -762,6 +925,7 @@ class HybridConsumerPipeline
     {
         BufferState state = BufferState::Free;
         uint16_t line = MaxLines;
+        uint16_t fragmentWordMask = 0;
     };
 
     static uint64_t logicalBytes(uint8_t wordBytes)
@@ -868,6 +1032,8 @@ class HybridConsumerPipeline
         switch (state) {
           case BufferState::Reading:
             return LineState::ReadInFlight;
+          case BufferState::ProducerFragments:
+            return LineState::Blocked;
           case BufferState::ReadyForCompute:
             return LineState::ReadyForCompute;
           case BufferState::Computing:
@@ -916,6 +1082,8 @@ class HybridConsumerPipeline
         completedLines = 0;
         acceptedReads = acceptedComputes = acceptedWrites = 0;
         producerLineAcks = producerPageFallbackLines = 0;
+        fragmentEligibleAck = {};
+        fragmentEligibleAckValid = false;
         creditHighWaterValue = 0;
         aluInFlight = false;
     }
@@ -938,6 +1106,8 @@ class HybridConsumerPipeline
     uint16_t acceptedWrites = 0;
     uint16_t producerLineAcks = 0;
     uint16_t producerPageFallbackLines = 0;
+    ProducerLineAck fragmentEligibleAck{};
+    bool fragmentEligibleAckValid = false;
     uint8_t creditHighWaterValue = 0;
     uint8_t activeMaterializationPage = NoProducerPage;
     bool aluInFlight = false;
@@ -947,6 +1117,15 @@ class HybridConsumerPipeline
         const uint8_t credits = creditsInUse();
         if (credits > creditHighWaterValue)
             creditHighWaterValue = credits;
+    }
+
+    bool rememberFragmentEligibleAck(const ProducerLineAck &ack)
+    {
+        if (ack.wordMask != fullProducerLineWordMask()) {
+            fragmentEligibleAck = ack;
+            fragmentEligibleAckValid = true;
+        }
+        return true;
     }
 };
 

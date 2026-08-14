@@ -396,6 +396,17 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_page_materialization_fragment_buffers",
+        type=int,
+        default=0,
+        choices=range(0, 17),
+        help=(
+            "Opt in to 1..16 already-charged materializer line buffers for "
+            "authenticated active-page masked-fragment accumulation (0 "
+            "disables)"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,

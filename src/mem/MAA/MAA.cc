@@ -121,6 +121,8 @@ MAA::MAA(const MAAParams &p)
       logical_spd_cache_mode(p.logical_spd_cache_mode),
       page_materialization_wakeup_batches(
           p.page_materialization_wakeup_batches),
+      page_materialization_fragment_buffers(
+          p.page_materialization_fragment_buffers),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -213,6 +215,12 @@ MAA::MAA(const MAAParams &p)
              "Page materialization wakeup batches %u exceed maximum %u\n",
              page_materialization_wakeup_batches,
              HybridConsumerPipeline::MaxEarlyWakeupBatches);
+    panic_if(page_materialization_fragment_buffers >
+                 HybridConsumerPipeline::
+                     MaxMaterializationFragmentBuffers,
+             "Page materialization fragment buffers %u exceed maximum %u\n",
+             page_materialization_fragment_buffers,
+             HybridConsumerPipeline::MaxMaterializationFragmentBuffers);
     panic_if(num_offset_table_entries == 0 ||
                  num_offset_table_entries > num_tile_elements,
              "Offset Table capacity %u must be in [1,%u]\n",
@@ -4275,7 +4283,7 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
         ? std::numeric_limits<uint16_t>::max()
         : static_cast<uint16_t>((1U << wordsPerLine) - 1);
     HybridConsumerContextQueue::Request captured;
-    const bool forwarded = wordMask == fullMask &&
+    bool forwarded = wordMask == fullMask &&
         writeRespPayload != nullptr &&
         payloadBytes == HybridConsumerPipeline::LineBytes &&
         materialization->pageActive &&
@@ -4285,6 +4293,24 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
             owner, static_cast<uint16_t>(lineID),
             reinterpret_cast<const std::byte *>(writeRespPayload),
             payloadBytes, &captured);
+    auto fragmentCapture = HybridConsumerPipeline::FragmentCapture::Disabled;
+    if (!forwarded && wordMask != fullMask && materialization->pageActive &&
+        lineID / directRetirementContexts.producerPageLines(owner) ==
+            materialization->page) {
+        fragmentCapture =
+            directRetirementContexts.captureMaterializationFragment(
+                owner, ack,
+                reinterpret_cast<const std::byte *>(writeRespPayload),
+                payloadBytes,
+                static_cast<uint8_t>(
+                    page_materialization_fragment_buffers),
+                &captured);
+        forwarded = fragmentCapture ==
+            HybridConsumerPipeline::FragmentCapture::Captured;
+        if (fragmentCapture ==
+                HybridConsumerPipeline::FragmentCapture::NoBuffer)
+            stats.page_materialization_fragment_buffer_stalls++;
+    }
     Tick commitTick = 0;
     if (forwarded) {
         const Cycles spdLatency = spd->setDataLatency(
@@ -4294,15 +4320,25 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                  "Page materializer exhausted forwarded line commits\n");
         ++materialization->forwardedLines;
         stats.page_materialization_forwarded_lines++;
+        if (fragmentCapture ==
+            HybridConsumerPipeline::FragmentCapture::Captured)
+            stats.page_materialization_fragment_accumulated_lines++;
     }
     DPRINTF(MAAVirtualTrace,
             "event=page_materialization_producer_line_ready schema=1 "
             "occurrence=%lu token=%u generation=%lu incarnation=%lu "
-            "page=%u line=%d transaction=%lu forwarded=%d "
-            "commit_tick=%lu\n",
+            "page=%u line=%d word_mask=0x%x transaction=%lu forwarded=%d "
+            "fragment_capture=%u fragment_accumulated=%d "
+            "fragment_buffer_stall=%d commit_tick=%lu\n",
             pageMaterializationTraceOccurrence++, owner.tokenTile,
             owner.generation, owner.incarnation, materialization->page,
-            lineID, transactionID, forwarded, commitTick);
+            lineID, wordMask, transactionID, forwarded,
+            static_cast<unsigned>(fragmentCapture),
+            fragmentCapture ==
+                HybridConsumerPipeline::FragmentCapture::Captured,
+            fragmentCapture ==
+                HybridConsumerPipeline::FragmentCapture::NoBuffer,
+            commitTick);
     schedulePageMaterializationEvent();
 }
 
@@ -4690,6 +4726,14 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                statistics::units::Count::get(),
                "full producer WriteResp lines forwarded through charged "
                "materializer buffers"),
+      ADD_STAT(page_materialization_fragment_accumulated_lines,
+               statistics::units::Count::get(),
+               "masked producer lines assembled from authenticated fragments "
+               "in charged active-page materializer buffers"),
+      ADD_STAT(page_materialization_fragment_buffer_stalls,
+               statistics::units::Count::get(),
+               "authenticated active-page masked fragments not retained "
+               "because the configured charged buffer bound was occupied"),
       ADD_STAT(page_materialization_cache_read_fallback_lines,
                statistics::units::Count::get(),
                "ACK-gated coherent backing lines read when producer payload "

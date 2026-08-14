@@ -150,6 +150,11 @@ def _get_maa_opts(options):
             options, "maa_page_materialization_wakeup_batches"
         )
 
+    if hasattr(options, "maa_page_materialization_fragment_buffers"):
+        opts["page_materialization_fragment_buffers"] = getattr(
+            options, "maa_page_materialization_fragment_buffers"
+        )
+
     if hasattr(options, "maa_virtual_index_buffer_lines"):
         opts["virtual_index_buffer_lines"] = getattr(
             options, "maa_virtual_index_buffer_lines"
