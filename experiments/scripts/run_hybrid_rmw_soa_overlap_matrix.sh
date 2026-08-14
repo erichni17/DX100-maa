@@ -66,7 +66,8 @@ printf '%s\n' \
     'fixed_context_slots=8' \
     'fixed_lookahead_slots_per_context=8' \
     'fixed_value_owner_pool_lines=32' \
-    'fixed_apply_lanes=1' \
+    'fixed_apply_lanes=4' \
+    'default_active_apply_lanes=1' \
     'fixed_predicate_lines=16' \
     'default_active_predicate_credits=1' \
     'active_value_prefetch_credits=0' \
@@ -208,7 +209,8 @@ run_soa() {
     local lookahead=$5
     local cache_enable=$6
     local owners=$7
-    local table=$8
+    local lanes=$8
+    local table=$9
     local run="$out/runs/$arm"
     mkdir -p "$run"
     local command
@@ -220,7 +222,8 @@ run_soa() {
     command+=(--maa_virtual_index_buffer_lines="$index_lines"
         --maa_soa_jit_active_contexts="$contexts"
         --maa_soa_jit_value_lookahead="$lookahead"
-        --maa_soa_jit_active_value_owners="$owners")
+        --maa_soa_jit_active_value_owners="$owners"
+        --maa_soa_jit_apply_lanes="$lanes")
     if [[ $cache_enable -eq 1 ]]; then
         command+=(--maa_soa_jit_value_cache_enable)
     fi
@@ -247,6 +250,7 @@ run_soa() {
         "soa_jit_active_contexts=$contexts" \
         "soa_jit_value_lookahead=$lookahead" \
         "soa_jit_active_value_owners=$owners" \
+        "soa_jit_apply_lanes=$lanes" \
         "soa_jit_value_cache_enable=$expected_cache"; do
         grep -Fqx "$resolved" "$run/config.ini" || {
             echo "$arm missing resolved configuration: $resolved" >&2
@@ -258,7 +262,8 @@ run_soa() {
     local value_issues value_responses fills cached hits merged evictions
     local deliveries value_stalls lookahead_issues lookahead_responses
     local lookahead_stalls lookahead_hwm aliases a_read_issues a_read_responses
-    local write_issues write_responses active active_owners context_hwm context_stalls
+    local write_issues write_responses active active_owners active_lanes
+    local apply_hwm context_hwm context_stalls
     local cache_hwm terminal
     instructions=$(stat_sum "$run/stats.txt" IND_SoaJitInstructions)
     selected=$(stat_sum "$run/stats.txt" IND_SoaJitSelected)
@@ -283,6 +288,8 @@ run_soa() {
     lookahead_hwm=$(stat_sum "$run/stats.txt" IND_SoaJitLookaheadHighWater)
     active=$(stat_sum "$run/stats.txt" IND_SoaJitActiveContexts)
     active_owners=$(stat_sum "$run/stats.txt" IND_SoaJitActiveValueOwners)
+    active_lanes=$(stat_sum "$run/stats.txt" IND_SoaJitActiveApplyLanes)
+    apply_hwm=$(stat_sum "$run/stats.txt" IND_SoaJitApplyLaneHighWater)
     aliases=$(stat_sum "$run/stats.txt" IND_SoaJitAliasesApplied)
     a_read_issues=$(stat_sum "$run/stats.txt" IND_SoaJitAReadIssues)
     a_read_responses=$(stat_sum "$run/stats.txt" IND_SoaJitAReadResponses)
@@ -307,6 +314,8 @@ run_soa() {
        $write_issues -eq $write_responses &&
        $active -eq $((2 * contexts)) &&
        $active_owners -eq $((2 * owners)) &&
+       $active_lanes -eq $((2 * lanes)) &&
+       $apply_hwm -ge 2 && $apply_hwm -le $((2 * lanes)) &&
        $context_hwm -ge 2 && $context_hwm -le $((2 * contexts)) &&
        $cache_hwm -ge 2 && $cache_hwm -le "$owners" &&
        $lookahead_hwm -ge 2 &&
@@ -314,10 +323,14 @@ run_soa() {
         echo "$arm failed exact SoA/JIT overlap closure" >&2
         exit 1
     }
+    if [[ $lanes -gt 1 && $apply_hwm -le 2 ]]; then
+        echo "$arm did not exercise independent same-cycle apply lanes" >&2
+        exit 1
+    fi
 
     local terminal_records generations
     terminal_records=$(grep -Ec \
-        "event=soa_jit_complete .*schema=2 .*apply_lanes=1 .*active_value_owners=$owners .*max_value_owners=32 .*context_slots=8 .*lookahead_slots_per_context=8 .*terminal=1" \
+        "event=soa_jit_complete .*schema=2 .*apply_lanes=$lanes .*apply_hwm=[1-4] .*active_value_owners=$owners .*max_value_owners=32 .*context_slots=8 .*lookahead_slots_per_context=8 .*terminal=1" \
         "$run/soa_jit_trace.log" || true)
     generations=$(awk '
         /event=soa_jit_complete/ && /terminal=1/ {
@@ -335,15 +348,20 @@ run_soa() {
         "$run/soa_jit_trace.log"
     grep -Eq "event=soa_jit_complete .*active_value_owners=$owners " \
         "$run/soa_jit_trace.log"
+    if [[ $lanes -gt 1 ]]; then
+        grep -Eq "event=soa_jit_complete .*apply_hwm=[2-4] " \
+            "$run/soa_jit_trace.log"
+    fi
     [[ $(grep -Ec \
-          "event=soa_jit_storage .*fixed_contexts=8 .*max_physical_value_owner_lines=32 .*active_value_owners=$owners .*fixed_apply_lanes=1 .*fixed_predicate_lines=16 .*predicate_active_credits=1 " \
+          "event=soa_jit_storage .*fixed_contexts=8 .*max_physical_value_owner_lines=32 .*fixed_apply_lanes=4 active_apply_lanes=$lanes .*fixed_predicate_lines=16 .*predicate_active_credits=1 .*active_value_owners=$owners " \
           "$run/soa_jit_trace.log" || true) -eq 2 ]]
     grep -m1 'event=soa_jit_storage ' "$run/soa_jit_trace.log" \
         >"$run/storage_ledger.txt"
     record_result "$arm" "$run" "$result" "$guest16_sha"
-    printf '%s\tsoa\t16384\t%s\t%s\t%s\t%s\t%s\t%s\t1\t%s\t%s' \
+    printf '%s\tsoa\t16384\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$arm" "$physical" "$contexts" "$index_lines" "$lookahead" \
-        "$owners" "$cache_enable" "${ticks[$arm]}" "${hashes[$arm]}" >>"$table"
+        "$owners" "$cache_enable" "$lanes" "${ticks[$arm]}" \
+        "${hashes[$arm]}" >>"$table"
     printf '\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$fills" "$cached" "$hits" "$merged" "$evictions" \
         "$deliveries" "$value_stalls" "$lookahead_stalls" \
@@ -354,20 +372,23 @@ run_soa() {
 run_native ordinary_native16 16384 16384 ordinary16 \
     "$binary16" "$guest16_sha"
 run_native ordinary_native4 4096 4096 ordinary4 "$binary4" "$guest4_sha"
-run_soa soa_serial_physical16 16384 1 1 1 0 4 "$out/controls.tsv"
-run_soa baseline_c1_i1_l1_v4 4096 1 1 1 0 4 "$out/matrix.tsv"
-run_soa lookahead4_c1_i8_l4_v4 4096 1 8 4 1 4 "$out/matrix.tsv"
-run_soa lookahead8_c1_i8_l8_v4 4096 1 8 8 1 4 "$out/matrix.tsv"
-run_soa combined_c8_i8_l8_v4 4096 8 8 8 1 4 "$out/matrix.tsv"
-run_soa combined_c8_i8_l8_v8 4096 8 8 8 1 8 "$out/matrix.tsv"
-run_soa combined_c8_i8_l8_v16 4096 8 8 8 1 16 "$out/matrix.tsv"
-run_soa combined_c8_i8_l8_v32 4096 8 8 8 1 32 "$out/matrix.tsv"
+run_soa soa_serial_physical16 16384 1 1 1 0 4 1 "$out/controls.tsv"
+run_soa baseline_c1_i1_l1_v4 4096 1 1 1 0 4 1 "$out/matrix.tsv"
+run_soa lookahead4_c1_i8_l4_v4 4096 1 8 4 1 4 1 "$out/matrix.tsv"
+run_soa lookahead8_c1_i8_l8_v4 4096 1 8 8 1 4 1 "$out/matrix.tsv"
+run_soa combined_c8_i8_l8_v4 4096 8 8 8 1 4 1 "$out/matrix.tsv"
+run_soa combined_c8_i8_l8_v8 4096 8 8 8 1 8 1 "$out/matrix.tsv"
+run_soa combined_c8_i8_l8_v16 4096 8 8 8 1 16 1 "$out/matrix.tsv"
+run_soa combined_c8_i8_l8_v32 4096 8 8 8 1 32 1 "$out/matrix.tsv"
+run_soa apply2_c8_i8_l8_v32 4096 8 8 8 1 32 2 "$out/matrix.tsv"
+run_soa apply4_c8_i8_l8_v32 4096 8 8 8 1 32 4 "$out/matrix.tsv"
 
 reference=${hashes[ordinary_native16]}
 for arm in ordinary_native4 soa_serial_physical16 baseline_c1_i1_l1_v4 \
            lookahead4_c1_i8_l4_v4 lookahead8_c1_i8_l8_v4 \
            combined_c8_i8_l8_v4 combined_c8_i8_l8_v8 \
-           combined_c8_i8_l8_v16 combined_c8_i8_l8_v32; do
+           combined_c8_i8_l8_v16 combined_c8_i8_l8_v32 \
+           apply2_c8_i8_l8_v32 apply4_c8_i8_l8_v32; do
     [[ ${hashes[$arm]} == "$reference" ]] || {
         echo "exact output hash mismatch at $arm" >&2
         exit 1
@@ -378,7 +399,8 @@ done
     printf 'baseline_simTicks=%s\n' "${ticks[baseline_c1_i1_l1_v4]}"
     for arm in lookahead4_c1_i8_l4_v4 lookahead8_c1_i8_l8_v4 \
                combined_c8_i8_l8_v4 combined_c8_i8_l8_v8 \
-               combined_c8_i8_l8_v16 combined_c8_i8_l8_v32; do
+               combined_c8_i8_l8_v16 combined_c8_i8_l8_v32 \
+               apply2_c8_i8_l8_v32 apply4_c8_i8_l8_v32; do
         awk -v arm="$arm" -v base="${ticks[baseline_c1_i1_l1_v4]}" \
             -v candidate="${ticks[$arm]}" 'BEGIN {
                 printf "%s_simTicks=%s\n", arm, candidate
@@ -400,6 +422,8 @@ done
         "$out/runs/combined_c8_i8_l8_v4/storage_ledger.txt"
     sed -n 's/.*event=soa_jit_storage /event=soa_jit_storage /p' \
         "$out/runs/combined_c8_i8_l8_v32/storage_ledger.txt"
+    sed -n 's/.*event=soa_jit_storage /event=soa_jit_storage /p' \
+        "$out/runs/apply4_c8_i8_l8_v32/storage_ledger.txt"
 } >"$out/storage_ledger.txt"
 
 cat "$out/matrix.tsv"

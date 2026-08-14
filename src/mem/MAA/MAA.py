@@ -213,6 +213,11 @@ class MAA(ClockedObject):
         "Active SoA/JIT value owners (4, 8, 16, or 32; "
         "physical maximum is 32)",
     )
+    soa_jit_apply_lanes = Param.Unsigned(
+        1,
+        "Active independent SoA/JIT A-line apply lanes "
+        "(1, 2, or 4; physical maximum is four)",
+    )
     virtual_partition_keep_combiner = Param.Bool(
         False,
         "Retain partial destination-combiner lines across index partitions",

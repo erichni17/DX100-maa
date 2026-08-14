@@ -12,6 +12,120 @@ namespace gem5
 {
 
 /**
+ * Four physically provisioned apply lanes with exact per-cycle ownership.
+ * A runtime treatment may activate one, two, or four lanes.  Each granted
+ * lane owns one generation/A-line/context tuple for the modeled cycle, so a
+ * context cannot advance twice and two contexts cannot alias the same A line.
+ */
+class SoaJitApplyLanePool
+{
+  public:
+    static constexpr size_t MaxLanes = 4;
+    static constexpr size_t MaxContexts = 8;
+
+    struct Owner
+    {
+        bool valid = false;
+        uint64_t generation = 0;
+        uint64_t aPaddr = 0;
+        uint8_t context = 0;
+    };
+
+    static constexpr bool isValidActiveLaneCount(uint8_t count)
+    {
+        return count == 1 || count == 2 || count == 4;
+    }
+
+    void configure(uint8_t active_lanes)
+    {
+        activeLanes = isValidActiveLaneCount(active_lanes)
+            ? active_lanes : 0;
+    }
+
+    void reset()
+    {
+        owners = {};
+        cycleValid = false;
+        lastCycle = 0;
+        usedLanes = 0;
+        nextContext = 0;
+        laneHighWater = 0;
+    }
+
+    bool grant(uint64_t cycle, uint64_t generation, uint64_t a_paddr,
+               uint8_t context, uint8_t context_count)
+    {
+        if (!isValidActiveLaneCount(activeLanes) || generation == 0 ||
+            context_count == 0 || context_count > MaxContexts ||
+            context >= context_count)
+            return false;
+        startCycle(cycle);
+        if (usedLanes >= activeLanes)
+            return false;
+        for (size_t lane = 0; lane < usedLanes; ++lane) {
+            if (owners[lane].context == context ||
+                owners[lane].aPaddr == a_paddr)
+                return false;
+        }
+        owners[usedLanes++] = {true, generation, a_paddr, context};
+        nextContext = (context + 1) % context_count;
+        laneHighWater = std::max(laneHighWater, usedLanes);
+        return true;
+    }
+
+    uint8_t cursor() const { return nextContext; }
+    void beginCycle(uint64_t cycle) { startCycle(cycle); }
+    uint8_t activeLaneCount() const { return activeLanes; }
+    uint8_t currentCycleOccupancy() const { return usedLanes; }
+    uint8_t highWater() const { return laneHighWater; }
+    const std::array<Owner, MaxLanes> &laneOwners() const { return owners; }
+
+    bool assertInvariants() const
+    {
+        if (!isValidActiveLaneCount(activeLanes) ||
+            usedLanes > activeLanes || nextContext >= MaxContexts)
+            return false;
+        for (size_t first = 0; first < owners.size(); ++first) {
+            const auto &owner = owners[first];
+            if (first >= usedLanes) {
+                if (owner.valid || owner.generation != 0 ||
+                    owner.aPaddr != 0 || owner.context != 0)
+                    return false;
+                continue;
+            }
+            if (!owner.valid || owner.generation == 0 ||
+                owner.context >= MaxContexts)
+                return false;
+            for (size_t second = first + 1; second < usedLanes; ++second) {
+                if (owners[second].context == owner.context ||
+                    owners[second].aPaddr == owner.aPaddr)
+                    return false;
+            }
+        }
+        return true;
+    }
+
+  private:
+    std::array<Owner, MaxLanes> owners{};
+    uint64_t lastCycle = 0;
+    uint8_t activeLanes = 1;
+    uint8_t usedLanes = 0;
+    uint8_t nextContext = 0;
+    uint8_t laneHighWater = 0;
+    bool cycleValid = false;
+
+    void startCycle(uint64_t cycle)
+    {
+        if (cycleValid && lastCycle == cycle)
+            return;
+        owners = {};
+        lastCycle = cycle;
+        usedLanes = 0;
+        cycleValid = true;
+    }
+};
+
+/**
  * Fixed hardware state shared by SoA/JIT demand-value reads and the
  * sequential value-stream prefetcher.  Every physical line has exactly one
  * owner: either an active value-owner fill or one of eight payload-free
@@ -130,6 +244,7 @@ class SoaJitValueCoalescer
         lruClock = 1;
         deliveryCycleValid = false;
         lastDeliveryCycle = 0;
+        deliveriesThisCycle = 0;
         prefetchHighWater = 0;
         cacheHighWater = 0;
     }
@@ -264,11 +379,18 @@ class SoaJitValueCoalescer
     }
 
     DeliveryResult deliver(uint64_t generation, uint8_t waiter,
-                           uint64_t cycle, Delivery &delivery)
+                           uint64_t cycle, Delivery &delivery,
+                           uint8_t max_deliveries = 1)
     {
-        if (generation == 0 || waiter >= MaxWaiters)
+        if (generation == 0 || waiter >= MaxWaiters ||
+            !SoaJitApplyLanePool::isValidActiveLaneCount(max_deliveries))
             return DeliveryResult::Invalid;
-        if (deliveryCycleValid && lastDeliveryCycle == cycle)
+        if (!deliveryCycleValid || lastDeliveryCycle != cycle) {
+            deliveryCycleValid = true;
+            lastDeliveryCycle = cycle;
+            deliveriesThisCycle = 0;
+        }
+        if (deliveriesThisCycle >= max_deliveries)
             return DeliveryResult::CycleLimited;
         const uint64_t bit = uint64_t{1} << waiter;
         for (auto &line : cache) {
@@ -281,8 +403,7 @@ class SoaJitValueCoalescer
             delivery.data = line.data;
             line.waiterMask &= ~bit;
             touch(line);
-            deliveryCycleValid = true;
-            lastDeliveryCycle = cycle;
+            deliveriesThisCycle++;
             if (!cacheEnabled && line.waiterMask == 0)
                 line = CacheLine();
             return DeliveryResult::Delivered;
@@ -440,6 +561,7 @@ class SoaJitValueCoalescer
     uint64_t lruClock = 1;
     bool deliveryCycleValid = false;
     uint64_t lastDeliveryCycle = 0;
+    uint8_t deliveriesThisCycle = 0;
     size_t prefetchHighWater = 0;
     size_t cacheHighWater = 0;
 

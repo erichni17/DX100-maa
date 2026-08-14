@@ -122,6 +122,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _soa_jit_value_lookahead,
                                   bool _soa_jit_value_cache_enable,
                                   int _soa_jit_active_value_owners,
+                                  int _soa_jit_apply_lanes,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -225,6 +226,13 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     soa_jit_active_value_owners = _soa_jit_active_value_owners;
     soa_jit_value_coalescer.configure(soa_jit_value_cache_enable, 0,
                                       soa_jit_active_value_owners);
+    panic_if(!SoaJitApplyLanePool::isValidActiveLaneCount(
+                 _soa_jit_apply_lanes),
+             "I[%d] SoA/JIT apply lanes (%d) must be 1, 2, or 4\n",
+             my_indirect_id, _soa_jit_apply_lanes);
+    soa_jit_apply_lanes = _soa_jit_apply_lanes;
+    soa_jit_apply_lane_pool.configure(soa_jit_apply_lanes);
+    soa_jit_apply_lane_pool.reset();
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -4332,6 +4340,7 @@ IndirectAccessUnit::serviceSoaJitLookahead()
 {
     bool progressed = false;
     const size_t context_count = soa_jit_active_contexts;
+    soa_jit_apply_lane_pool.beginCycle(curTick());
     for (size_t context_index = 0; context_index < context_count;
          ++context_index) {
         SoaJitContext &context = soa_jit_contexts[context_index];
@@ -4340,10 +4349,14 @@ IndirectAccessUnit::serviceSoaJitLookahead()
         progressed = fillSoaJitLookahead(context_index) || progressed;
     }
 
-    bool delivery_done = false;
-    for (size_t turn = 0; turn < context_count && !delivery_done; ++turn) {
+    size_t deliveries_done = 0;
+    const size_t delivery_start = soa_jit_apply_lane_pool.cursor();
+    for (size_t turn = 0;
+         turn < context_count &&
+             deliveries_done < static_cast<size_t>(soa_jit_apply_lanes);
+         ++turn) {
         const size_t context_index =
-            (soa_jit_apply_arbiter.nextContext + turn) % context_count;
+            (delivery_start + turn) % context_count;
         SoaJitContext &context = soa_jit_contexts[context_index];
         if (context.state != SoaJitContextState::Active)
             continue;
@@ -4357,7 +4370,8 @@ IndirectAccessUnit::serviceSoaJitLookahead()
                 slot_index);
             SoaJitValueCoalescer::Delivery delivery;
             const auto result = soa_jit_value_coalescer.deliver(
-                soa_jit_generation, waiter, curTick(), delivery);
+                soa_jit_generation, waiter, curTick(), delivery,
+                soa_jit_apply_lanes);
             panic_if(result ==
                          SoaJitValueCoalescer::DeliveryResult::Stale ||
                          result ==
@@ -4367,7 +4381,7 @@ IndirectAccessUnit::serviceSoaJitLookahead()
                      my_indirect_id, context_index, slot_index);
             if (result ==
                 SoaJitValueCoalescer::DeliveryResult::CycleLimited) {
-                delivery_done = true;
+                deliveries_done = soa_jit_apply_lanes;
                 break;
             }
             if (result !=
@@ -4384,57 +4398,56 @@ IndirectAccessUnit::serviceSoaJitLookahead()
             soa_jit_value_deliveries++;
             soa_jit_lookahead_responses++;
             progressed = true;
-            delivery_done = true;
+            deliveries_done++;
             break;
         }
     }
 
-    if (!soa_jit_apply_arbiter.tickValid ||
-        soa_jit_apply_arbiter.lastTick != curTick()) {
-        for (size_t turn = 0; turn < context_count; ++turn) {
-            const size_t context_index =
-                (soa_jit_apply_arbiter.nextContext + turn) %
-                context_count;
-            SoaJitContext &context = soa_jit_contexts[context_index];
-            if (context.state != SoaJitContextState::Active)
+    const size_t apply_start = soa_jit_apply_lane_pool.cursor();
+    for (size_t turn = 0; turn < context_count; ++turn) {
+        if (soa_jit_apply_lane_pool.currentCycleOccupancy() >=
+            soa_jit_apply_lanes)
+            break;
+        const size_t context_index =
+            (apply_start + turn) % context_count;
+        SoaJitContext &context = soa_jit_contexts[context_index];
+        if (context.state != SoaJitContextState::Active)
+            continue;
+        auto slot = std::find_if(
+            context.lookahead.begin(), context.lookahead.end(),
+            [&context](const SoaJitLookaheadSlot &candidate) {
+                return candidate.state == SoaJitLookaheadState::Ready &&
+                       candidate.offset == context.nextOffset;
+            });
+        if (slot != context.lookahead.end()) {
+            panic_if(slot->generation != soa_jit_generation,
+                     "I[%d] stale SoA/JIT ordered alias owner\n",
+                     my_indirect_id);
+            if (!soa_jit_apply_lane_pool.grant(
+                    curTick(), context.generation, context.aPaddr,
+                    context_index, context_count))
                 continue;
-            auto slot = std::find_if(
-                context.lookahead.begin(), context.lookahead.end(),
-                [&context](const SoaJitLookaheadSlot &candidate) {
-                    return candidate.state ==
-                               SoaJitLookaheadState::Ready &&
-                           candidate.offset == context.nextOffset;
-                });
-            if (slot != context.lookahead.end()) {
-                panic_if(slot->generation != soa_jit_generation,
-                         "I[%d] stale SoA/JIT ordered alias owner\n",
-                         my_indirect_id);
-                applySoaJitValue(
-                    context, slot->aWord, slot->value.data());
-                const int expected_offset = context.nextOffset;
-                const OffsetTableEntry consumed =
-                    offset_table->consume_entry(context.nextOffset);
-                panic_if(consumed.itr != slot->logicalItr ||
-                             consumed.wid != slot->aWord ||
-                             expected_offset != slot->offset,
-                         "I[%d] SoA/JIT alias identity changed at "
-                         "offset %d\n",
-                         my_indirect_id, expected_offset);
-                context.remaining--;
-                context.lookaheadOccupancy--;
-                *slot = SoaJitLookaheadSlot();
-                soa_jit_aliases_applied++;
-                soa_jit_apply_arbiter.tickValid = true;
-                soa_jit_apply_arbiter.lastTick = curTick();
-                soa_jit_apply_arbiter.nextContext =
-                    (context_index + 1) % context_count;
-                progressed = true;
-                panic_if(context.remaining < 0,
-                         "I[%d] SoA/JIT alias chain exceeded its count\n",
-                         my_indirect_id);
-                fillSoaJitLookahead(context_index);
-                break;
-            }
+            applySoaJitValue(context, slot->aWord, slot->value.data());
+            const int expected_offset = context.nextOffset;
+            const OffsetTableEntry consumed =
+                offset_table->consume_entry(context.nextOffset);
+            panic_if(consumed.itr != slot->logicalItr ||
+                         consumed.wid != slot->aWord ||
+                         expected_offset != slot->offset,
+                     "I[%d] SoA/JIT alias identity changed at offset %d\n",
+                     my_indirect_id, expected_offset);
+            context.remaining--;
+            context.lookaheadOccupancy--;
+            *slot = SoaJitLookaheadSlot();
+            soa_jit_aliases_applied++;
+            soa_jit_apply_lane_high_water = std::max<uint64_t>(
+                soa_jit_apply_lane_high_water,
+                soa_jit_apply_lane_pool.currentCycleOccupancy());
+            progressed = true;
+            panic_if(context.remaining < 0,
+                     "I[%d] SoA/JIT alias chain exceeded its count\n",
+                     my_indirect_id);
+            fillSoaJitLookahead(context_index);
         }
     }
 
@@ -4607,6 +4620,9 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                  soa_jit_lookahead_high_water >
                      static_cast<uint64_t>(soa_jit_active_contexts *
                                            soa_jit_value_lookahead) ||
+                 soa_jit_apply_lane_high_water >
+                     static_cast<uint64_t>(soa_jit_apply_lanes) ||
+                 !soa_jit_apply_lane_pool.assertInvariants() ||
                  !soa_jit_value_coalescer.assertInvariants() ||
                  soa_jit_value_coalescer.fillingCount() != 0 ||
                  !soa_jit_value_coalescer.clearGeneration(
@@ -4946,7 +4962,8 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_value_coalescer.configure(
             soa_jit_value_cache_enable, 0, soa_jit_active_value_owners);
         soa_jit_value_coalescer.reset();
-        soa_jit_apply_arbiter = SoaJitApplyArbiter();
+        soa_jit_apply_lane_pool.configure(soa_jit_apply_lanes);
+        soa_jit_apply_lane_pool.reset();
         soa_jit_all_rows_claimed = false;
         soa_jit_generation = 0;
         soa_jit_selected = 0;
@@ -4974,6 +4991,7 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_lookahead_stalls = 0;
         soa_jit_lookahead_high_water = 0;
         soa_jit_aliases_applied = 0;
+        soa_jit_apply_lane_high_water = 0;
         soa_jit_a_write_issues = 0;
         soa_jit_a_write_responses = 0;
         soa_jit_context_stalls = 0;
@@ -5660,8 +5678,8 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_context_stalls++;
             if (!soaJitContextsEmpty()) {
                 // A ready value may have been produced after this unit's
-                // single delivery/apply lane was used for curTick(). Keep a
-                // bounded one-cycle wakeup while slots are occupied so the
+                // active delivery/apply lanes were used for curTick(). Keep
+                // a bounded one-cycle wakeup while slots are occupied so an
                 // ordered head cannot wait forever for another response.
                 if (progressed || soaJitLookaheadOccupancy() != 0)
                     scheduleExecuteInstructionEvent(1);
@@ -6078,6 +6096,10 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_active_contexts;
             (*maa->stats.IND_SoaJitActiveValueOwners[my_indirect_id]) +=
                 soa_jit_active_value_owners;
+            (*maa->stats.IND_SoaJitActiveApplyLanes[my_indirect_id]) +=
+                soa_jit_apply_lanes;
+            (*maa->stats.IND_SoaJitApplyLaneHighWater[my_indirect_id]) +=
+                soa_jit_apply_lane_high_water;
             (*maa->stats.IND_SoaJitAliasesApplied[my_indirect_id]) +=
                 soa_jit_aliases_applied;
             (*maa->stats.IND_SoaJitAWriteIssues[my_indirect_id]) +=
@@ -6105,7 +6127,8 @@ void IndirectAccessUnit::executeInstruction() {
                     "lookahead_stalls=%lu "
                     "a_writes=%lu/%lu context_hwm=%lu stalls=%lu "
                     "active_contexts=%d active_lookahead=%d "
-                    "cache_enable=%d apply_lanes=1 active_value_owners=%d "
+                    "cache_enable=%d apply_lanes=%d apply_hwm=%lu "
+                    "active_value_owners=%d "
                     "max_value_owners=%lu "
                     "context_slots=%lu "
                     "lookahead_slots_per_context=%lu "
@@ -6146,6 +6169,8 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_active_contexts,
                     soa_jit_value_lookahead,
                     soa_jit_value_cache_enable,
+                    soa_jit_apply_lanes,
+                    soa_jit_apply_lane_high_water,
                     soa_jit_active_value_owners,
                     SoaJitValueCoalescer::MaxOwners,
                     SoaJitContexts,
@@ -6155,8 +6180,10 @@ void IndirectAccessUnit::executeInstruction() {
                 sizeof(soa_jit_contexts);
             constexpr size_t fixed_value_owner_bytes =
                 sizeof(SoaJitValueCoalescer);
-            constexpr size_t fixed_apply_arbiter_bytes =
-                sizeof(SoaJitApplyArbiter);
+            constexpr size_t fixed_apply_lane_owner_bytes =
+                sizeof(SoaJitApplyLanePool::Owner);
+            constexpr size_t fixed_apply_lane_pool_bytes =
+                sizeof(SoaJitApplyLanePool);
             constexpr size_t baseline_predicate_lines = 1;
             constexpr size_t baseline_predicate_modeled_bytes =
                 baseline_predicate_lines * SoaPredicateLineStateBytes;
@@ -6165,7 +6192,7 @@ void IndirectAccessUnit::executeInstruction() {
                 baseline_predicate_modeled_bytes;
             constexpr size_t incremental_overlap_bytes =
                 fixed_contexts_bytes + fixed_value_owner_bytes +
-                fixed_apply_arbiter_bytes;
+                fixed_apply_lane_pool_bytes;
             DPRINTF(MAAVirtualTrace,
                     "event=soa_jit_storage schema=1 unit=%d "
                     "operation_tick=%lu generation=%lu "
@@ -6174,8 +6201,10 @@ void IndirectAccessUnit::executeInstruction() {
                     "max_physical_value_owner_lines=%lu "
                     "fixed_value_owner_bytes=%lu "
                     "fixed_value_owner_payload_bytes=%lu "
-                    "fixed_apply_lanes=1 "
-                    "fixed_apply_arbiter_bytes=%lu "
+                    "fixed_apply_lanes=%lu active_apply_lanes=%d "
+                    "active_apply_lane_hwm=%lu "
+                    "fixed_apply_lane_owner_bytes=%lu "
+                    "fixed_apply_lane_pool_bytes=%lu "
                     "fixed_predicate_lines=%lu "
                     "fixed_predicate_modeled_bytes=%lu "
                     "fixed_predicate_host_bytes=%lu "
@@ -6196,7 +6225,11 @@ void IndirectAccessUnit::executeInstruction() {
                     fixed_value_owner_bytes,
                     SoaJitValueCoalescer::MaxOwners *
                         SoaJitValueCoalescer::LineBytes,
-                    fixed_apply_arbiter_bytes,
+                    SoaJitApplyLanePool::MaxLanes,
+                    soa_jit_apply_lanes,
+                    soa_jit_apply_lane_high_water,
+                    fixed_apply_lane_owner_bytes,
+                    fixed_apply_lane_pool_bytes,
                     SoaPredicateMaxLines,
                     SoaPredicateFeederStateBytes,
                     sizeof(soa_predicate_lines),

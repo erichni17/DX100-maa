@@ -7,6 +7,7 @@
 #include "mem/MAA/SoaJitOverlapState.hh"
 
 using gem5::SoaJitPredicateFeeder;
+using gem5::SoaJitApplyLanePool;
 using gem5::SoaJitValueCoalescer;
 
 namespace
@@ -151,6 +152,56 @@ testReadyHitMergeAndOneDeliveryPerContextCycle()
 }
 
 void
+testSelectableDeliveryAndIndependentApplyLanes()
+{
+    SoaJitValueCoalescer values;
+    values.configure(true, 0, 8);
+    values.reset();
+    const auto data = payload(17);
+    for (uint8_t waiter = 0; waiter < 5; ++waiter) {
+        const uint64_t address = 0xa000 + 0x40 * waiter;
+        CHECK(values.requestAlias(12, address, waiter).result ==
+              SoaJitValueCoalescer::AliasResult::Fill);
+        CHECK(values.acceptResponse(12, address, data.data(), data.size()) ==
+              SoaJitValueCoalescer::ResponseResult::CacheFill);
+    }
+    for (uint8_t waiter = 0; waiter < 4; ++waiter) {
+        SoaJitValueCoalescer::Delivery delivery;
+        CHECK(values.deliver(12, waiter, 91, delivery, 4) ==
+              SoaJitValueCoalescer::DeliveryResult::Delivered);
+    }
+    SoaJitValueCoalescer::Delivery fifth;
+    CHECK(values.deliver(12, 4, 91, fifth, 4) ==
+          SoaJitValueCoalescer::DeliveryResult::CycleLimited);
+    CHECK(values.deliver(12, 4, 92, fifth, 4) ==
+          SoaJitValueCoalescer::DeliveryResult::Delivered);
+
+    SoaJitApplyLanePool lanes;
+    lanes.configure(4);
+    lanes.reset();
+    lanes.beginCycle(91);
+    CHECK(lanes.grant(91, 12, 0x1000, 0, 8));
+    CHECK(!lanes.grant(91, 12, 0x1040, 0, 8));
+    CHECK(!lanes.grant(91, 12, 0x1000, 1, 8));
+    CHECK(lanes.grant(91, 12, 0x1040, 1, 8));
+    CHECK(lanes.grant(91, 12, 0x1080, 2, 8));
+    CHECK(lanes.grant(91, 12, 0x10c0, 3, 8));
+    CHECK(!lanes.grant(91, 12, 0x1100, 4, 8));
+    CHECK(lanes.currentCycleOccupancy() == 4);
+    CHECK(lanes.highWater() == 4);
+    CHECK(lanes.assertInvariants());
+    lanes.beginCycle(92);
+    CHECK(lanes.currentCycleOccupancy() == 0);
+    CHECK(lanes.grant(92, 12, 0x1100, 4, 8));
+    CHECK(lanes.assertInvariants());
+
+    lanes.configure(3);
+    lanes.reset();
+    CHECK(!lanes.grant(93, 12, 0x1140, 5, 8));
+    CHECK(!lanes.assertInvariants());
+}
+
+void
 testPrefetchAndAliasShareOneOwner()
 {
     SoaJitValueCoalescer state;
@@ -242,6 +293,7 @@ main()
     testFourFillsFifthMissRetryAndEviction();
     testSelectableOwnerPoolBoundsAndFailClosedConfiguration();
     testReadyHitMergeAndOneDeliveryPerContextCycle();
+    testSelectableDeliveryAndIndependentApplyLanes();
     testPrefetchAndAliasShareOneOwner();
     testFailClosedResponseIdentity();
     testPredicateBoundsAndReorderedResponses();

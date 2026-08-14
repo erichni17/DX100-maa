@@ -294,6 +294,7 @@ public:
                   int _soa_jit_value_lookahead,
                   bool _soa_jit_value_cache_enable,
                   int _soa_jit_active_value_owners,
+                  int _soa_jit_apply_lanes,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
@@ -562,13 +563,8 @@ protected:
     int soa_jit_value_lookahead = 1;
     bool soa_jit_value_cache_enable = false;
     int soa_jit_active_value_owners = 4;
-    struct SoaJitApplyArbiter
-    {
-        Tick lastTick = 0;
-        size_t nextContext = 0;
-        bool tickValid = false;
-    };
-    SoaJitApplyArbiter soa_jit_apply_arbiter;
+    int soa_jit_apply_lanes = 1;
+    SoaJitApplyLanePool soa_jit_apply_lane_pool;
     bool soa_jit_all_rows_claimed = false;
     uint64_t soa_jit_next_generation = 1;
     uint64_t soa_jit_generation = 0;
@@ -597,6 +593,7 @@ protected:
     uint64_t soa_jit_lookahead_stalls = 0;
     uint64_t soa_jit_lookahead_high_water = 0;
     uint64_t soa_jit_aliases_applied = 0;
+    uint64_t soa_jit_apply_lane_high_water = 0;
     uint64_t soa_jit_a_write_issues = 0;
     uint64_t soa_jit_a_write_responses = 0;
     uint64_t soa_jit_context_stalls = 0;
