@@ -9,6 +9,7 @@ class BackedRmwContractTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.hh = (ROOT / "src/mem/MAA/IndirectAccess.hh").read_text()
         cls.cc = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
+        cls.cpu_side = (ROOT / "src/mem/MAA/CpuSidePort.cc").read_text()
         cls.api = (ROOT / "benchmarks/API/MAA_gem5.hpp").read_text()
         cls.bench = (
             ROOT / "benchmarks/API/test_backed_rmw_reorder.cpp"
@@ -22,6 +23,10 @@ class BackedRmwContractTest(unittest.TestCase):
         self.assertIn("OpcodeType::INDIR_RMW_VECTOR", self.api)
         self.assertIn("sizeof(MAAIndirectRmwRecord) == 32", self.api)
         self.assertNotIn("INDIR_RMW_VECTOR_BACKED", self.api)
+        self.assertGreaterEqual(
+            self.cpu_side.count("current_instruction->src1SpdID == -1 &&"),
+            3,
+        )
 
     def test_storage_is_one_finite_4k_epoch(self) -> None:
         self.assertIn(

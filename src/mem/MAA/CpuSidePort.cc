@@ -339,7 +339,12 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_SPD_STREAM ||
                     current_instruction->opcode ==
-                        Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR)
+                        Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR ||
+                    (current_instruction->opcode ==
+                         Instruction::OpcodeType::INDIR_RMW_VECTOR &&
+                     current_instruction->src1SpdID == -1 &&
+                     current_instruction->src2SpdID == -1 &&
+                     current_instruction->condSpdID == -1))
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController, "%s: %s received!\n", __func__, current_instruction->print());
