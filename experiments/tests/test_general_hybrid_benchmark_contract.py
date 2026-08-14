@@ -46,6 +46,29 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only by the API"):
             runner.make_arms("cg", True, True, [])
 
+    def test_api_native16_can_share_the_hybrid_checkpoint(self) -> None:
+        arms = runner.share_api_native16_hybrid_checkpoint(
+            "api", runner.make_arms("api", True, False, [])
+        )
+        native16 = arms[0]
+        self.assertEqual(native16["name"], "native16")
+        self.assertEqual(native16["profile"], "native16")
+        self.assertEqual(native16["binary"], "hybrid")
+        self.assertEqual(native16["checkpoint_group"], "hybrid")
+        self.assertEqual(native16["selector"], "native_direct 16384")
+        self.assertEqual(
+            {
+                arm["checkpoint_group"]
+                for arm in arms
+                if arm["name"] != "native4"
+            },
+            {"hybrid"},
+        )
+        with self.assertRaisesRegex(ValueError, "only by the API"):
+            runner.share_api_native16_hybrid_checkpoint(
+                "cg", runner.make_arms("cg", True, False, [])
+            )
+
     def test_page_zero_prearm_is_independently_selectable(self) -> None:
         arms = runner.make_arms("api", True, False, [], True)
         prearm = arms[-1]

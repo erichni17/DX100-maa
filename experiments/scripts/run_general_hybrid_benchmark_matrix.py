@@ -221,6 +221,30 @@ def make_arms(
     return arms
 
 
+def share_api_native16_hybrid_checkpoint(
+    workload: str, arms: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Use one deferred guest checkpoint for the API native16/hybrid pair."""
+    if workload != "api":
+        raise ValueError(
+            "shared native16/hybrid checkpoint is supported only by the API"
+        )
+    shared = [dict(arm) for arm in arms]
+    native16 = next((arm for arm in shared if arm["name"] == "native16"), None)
+    if native16 is None or not any(
+        arm["profile"] == "hybrid" for arm in shared
+    ):
+        raise ValueError("shared checkpoint requires native16 and hybrid arms")
+    native16.update(
+        {
+            "binary": "hybrid",
+            "checkpoint_group": "hybrid",
+            "selector": "native_direct 16384",
+        }
+    )
+    return shared
+
+
 def profile_args(profile_name: str) -> list[str]:
     profile = PROFILE[profile_name]
     return [
@@ -470,6 +494,14 @@ def parse_args() -> argparse.Namespace:
             "each sensitivity point"
         ),
     )
+    parser.add_argument(
+        "--shared-native16-hybrid-checkpoint",
+        action="store_true",
+        help=(
+            "API only: restore native16 and hybrid arms from one deferred "
+            "guest checkpoint to remove address-layout variation"
+        ),
+    )
     parser.add_argument("--pingpong", action="store_true")
     parser.add_argument("--page0-prearm", action="store_true")
     parser.add_argument(
@@ -520,6 +552,15 @@ def main() -> int:
             args.page0_prearm,
         )
         require_inputs(args)
+        if args.shared_native16_hybrid_checkpoint:
+            if args.hybrid is None:
+                raise ValueError("shared checkpoint requires --hybrid")
+            if sha256_file(args.native16) != sha256_file(args.hybrid):
+                raise ValueError(
+                    "shared checkpoint requires identical native16 and "
+                    "hybrid guest binaries"
+                )
+            arms = share_api_native16_hybrid_checkpoint(args.workload, arms)
         render_options(args.native16_options, None, args.workload_input)
         render_options(args.native4_options, None, args.workload_input)
         if args.hybrid:
@@ -540,6 +581,9 @@ def main() -> int:
             "arms": arms,
             "replicas": args.replicas,
             "l3_ports": args.l3_ports,
+            "shared_native16_hybrid_checkpoint": (
+                args.shared_native16_hybrid_checkpoint
+            ),
             "note": (
                 "token_stream_ld arms are correctness controls; explicit "
                 "future arms are not assumed equivalent"
@@ -669,6 +713,9 @@ def main() -> int:
         "replicas": args.replicas,
         "mem_channels": args.mem_channels,
         "l3_ports": args.l3_ports,
+        "shared_native16_hybrid_checkpoint": (
+            args.shared_native16_hybrid_checkpoint
+        ),
         "options": options,
         "selector_path": str(selector) if args.hybrid else None,
         "artifacts": artifact_identity,
