@@ -177,7 +177,7 @@ def first_stats(path: Path) -> dict[str, int]:
         if len(fields) >= 2:
             try:
                 result[fields[0]] = int(float(fields[1]))
-            except ValueError:
+            except (ValueError, OverflowError):
                 pass
     if not complete or not result:
         raise RuntimeError(f"missing complete first stats window: {path}")
