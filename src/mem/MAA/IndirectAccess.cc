@@ -121,6 +121,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _soa_jit_active_contexts,
                                   int _soa_jit_value_lookahead,
                                   bool _soa_jit_value_cache_enable,
+                                  bool _soa_jit_pre_a_value_lookahead,
                                   int _soa_jit_value_prefetch_credits,
                                   int _soa_jit_active_value_owners,
                                   int _soa_jit_apply_lanes,
@@ -218,6 +219,8 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     soa_jit_active_contexts = _soa_jit_active_contexts;
     soa_jit_value_lookahead = _soa_jit_value_lookahead;
     soa_jit_value_cache_enable = _soa_jit_value_cache_enable;
+    soa_jit_pre_a_value_lookahead =
+        _soa_jit_pre_a_value_lookahead;
     panic_if(_soa_jit_value_prefetch_credits < 0 ||
                  _soa_jit_value_prefetch_credits >
                      static_cast<int>(
@@ -4289,6 +4292,8 @@ bool IndirectAccessUnit::serviceSoaJitBuild()
         context->issueOffset = head;
         context->remaining = words;
         context->state = SoaJitContextState::AwaitARead;
+        const size_t context_index = std::distance(
+            soa_jit_contexts.begin(), context);
         soa_jit_context_high_water = std::max<uint64_t>(
             soa_jit_context_high_water,
             soaJitActiveContextCount());
@@ -4302,6 +4307,8 @@ bool IndirectAccessUnit::serviceSoaJitBuild()
                 my_indirect_id, my_decode_start_tick, soa_jit_generation,
                 addr, head, words, soaJitActiveContextCount(),
                 soa_jit_active_contexts);
+        if (soa_jit_pre_a_value_lookahead)
+            fillSoaJitLookahead(context_index);
         return true;
     }
     soa_jit_all_rows_claimed = true;
@@ -4318,8 +4325,11 @@ IndirectAccessUnit::issueSoaJitValueRead(
              my_indirect_id, context_index, slot_index);
     SoaJitContext &context = soa_jit_contexts[context_index];
     SoaJitLookaheadSlot &slot = context.lookahead[slot_index];
+    const bool pre_a =
+        context.state == SoaJitContextState::AwaitARead;
     panic_if(context.generation != soa_jit_generation ||
-                 context.state != SoaJitContextState::Active ||
+                 (context.state != SoaJitContextState::Active &&
+                  !(soa_jit_pre_a_value_lookahead && pre_a)) ||
                  slot.state != SoaJitLookaheadState::Free ||
                  offset < 0 || context.issueOffset != offset ||
                  context.remaining <= 0,
@@ -4376,6 +4386,8 @@ IndirectAccessUnit::issueSoaJitValueRead(
     context.issueOffset = entry.next_itr;
     context.lookaheadOccupancy++;
     soa_jit_lookahead_issues++;
+    if (pre_a)
+        soa_jit_pre_a_value_issues++;
     soa_jit_lookahead_high_water = std::max<uint64_t>(
         soa_jit_lookahead_high_water, soaJitLookaheadOccupancy());
     soa_jit_value_cache_high_water = std::max<uint64_t>(
@@ -4404,18 +4416,20 @@ IndirectAccessUnit::issueSoaJitValueRead(
             "event=soa_jit_value_request schema=1 unit=%d "
             "operation_tick=%lu generation=%lu context=%lu slot=%lu "
             "offset=%d logical_itr=%d paddr=0x%lx action=%s "
-            "cache_occupancy=%lu lookahead=%u/%d\n",
+            "cache_occupancy=%lu lookahead=%u/%d pre_a=%d\n",
             my_indirect_id, my_decode_start_tick, soa_jit_generation,
             context_index, slot_index, offset, entry.itr, value_paddr,
             action, soa_jit_value_coalescer.cacheOccupancy(),
-            context.lookaheadOccupancy, soa_jit_value_lookahead);
+            context.lookaheadOccupancy, soa_jit_value_lookahead, pre_a);
     return true;
 }
 bool
 IndirectAccessUnit::fillSoaJitLookahead(size_t context_index)
 {
     SoaJitContext &context = soa_jit_contexts[context_index];
-    if (context.state != SoaJitContextState::Active)
+    if (context.state != SoaJitContextState::Active &&
+        !(soa_jit_pre_a_value_lookahead &&
+          context.state == SoaJitContextState::AwaitARead))
         return false;
     bool issued = false;
     while (context.issueOffset != -1 &&
@@ -4445,9 +4459,6 @@ IndirectAccessUnit::serviceSoaJitLookahead()
     soa_jit_apply_lane_pool.beginCycle(curTick());
     for (size_t context_index = 0; context_index < context_count;
          ++context_index) {
-        SoaJitContext &context = soa_jit_contexts[context_index];
-        if (context.state != SoaJitContextState::Active)
-            continue;
         progressed = fillSoaJitLookahead(context_index) || progressed;
     }
 
@@ -4460,7 +4471,9 @@ IndirectAccessUnit::serviceSoaJitLookahead()
         const size_t context_index =
             (delivery_start + turn) % context_count;
         SoaJitContext &context = soa_jit_contexts[context_index];
-        if (context.state != SoaJitContextState::Active)
+        if (context.state != SoaJitContextState::Active &&
+            !(soa_jit_pre_a_value_lookahead &&
+              context.state == SoaJitContextState::AwaitARead))
             continue;
         for (size_t slot_index = 0;
              slot_index < context.lookahead.size(); ++slot_index) {
@@ -4540,6 +4553,10 @@ IndirectAccessUnit::serviceSoaJitLookahead()
                      my_indirect_id, expected_offset);
             context.remaining--;
             context.lookaheadOccupancy--;
+            if (context.preAUsesPending != 0) {
+                context.preAUsesPending--;
+                soa_jit_pre_a_value_uses++;
+            }
             *slot = SoaJitLookaheadSlot();
             soa_jit_aliases_applied++;
             soa_jit_apply_lane_high_water = std::max<uint64_t>(
@@ -4607,7 +4624,8 @@ void IndirectAccessUnit::applySoaJitValue(
 void IndirectAccessUnit::issueSoaJitWrite(SoaJitContext &context)
 {
     panic_if(context.generation != soa_jit_generation ||
-                 context.nextOffset != -1 || context.remaining != 0,
+                 context.nextOffset != -1 || context.remaining != 0 ||
+                 context.preAUsesPending != 0,
              "I[%d] SoA/JIT A write issued before alias drain\n",
              my_indirect_id);
     RequestPtr req = std::make_shared<Request>(
@@ -4645,6 +4663,25 @@ bool IndirectAccessUnit::receiveSoaJitData(
             std::memcpy(context.aLine.data(), dataptr, block_size);
             soa_jit_a_read_responses++;
             recordReorderSurvivalIssuedEntries(context.remaining);
+            panic_if(context.preAUsesPending != 0,
+                     "I[%d] retained pre-A use state before A response\n",
+                     my_indirect_id);
+            if (soa_jit_pre_a_value_lookahead) {
+                context.preAUsesPending =
+                    context.lookaheadOccupancy;
+                soa_jit_pre_a_value_ready_at_a_response +=
+                    std::count_if(
+                        context.lookahead.begin(),
+                        context.lookahead.end(),
+                        [](const SoaJitLookaheadSlot &slot) {
+                            return slot.state ==
+                                SoaJitLookaheadState::Ready;
+                        });
+            } else {
+                panic_if(context.lookaheadOccupancy != 0,
+                         "I[%d] disabled pre-A lookahead retained slots\n",
+                         my_indirect_id);
+            }
             context.state = SoaJitContextState::Active;
             fillSoaJitLookahead(context_index);
             scheduleNextExecution(true);
@@ -4710,7 +4747,8 @@ bool IndirectAccessUnit::completeSoaJitWrite(Addr addr)
             context.aPaddr != addr)
             continue;
         panic_if(context.generation != soa_jit_generation ||
-                     context.nextOffset != -1 || context.remaining != 0,
+                     context.nextOffset != -1 || context.remaining != 0 ||
+                     context.preAUsesPending != 0,
                  "I[%d] invalid exact SoA/JIT WriteResp owner\n",
                  my_indirect_id);
         soa_jit_a_write_responses++;
@@ -4752,6 +4790,16 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                  soa_jit_lookahead_responses != soa_jit_selected ||
                  soa_jit_aliases_applied != soa_jit_selected ||
                  soa_jit_value_deliveries != soa_jit_selected ||
+                 soa_jit_pre_a_value_issues >
+                     soa_jit_lookahead_issues ||
+                 (soa_jit_pre_a_value_lookahead
+                      ? (soa_jit_pre_a_value_issues !=
+                             soa_jit_pre_a_value_uses ||
+                         soa_jit_pre_a_value_ready_at_a_response >
+                             soa_jit_pre_a_value_issues)
+                      : (soa_jit_pre_a_value_issues != 0 ||
+                         soa_jit_pre_a_value_ready_at_a_response != 0 ||
+                         soa_jit_pre_a_value_uses != 0)) ||
                  soa_jit_a_read_issues != soa_jit_a_read_responses ||
                  soa_jit_a_read_issues != soa_jit_a_write_issues ||
                  soa_jit_a_write_issues != soa_jit_a_write_responses ||
@@ -5148,6 +5196,9 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_lookahead_responses = 0;
         soa_jit_lookahead_stalls = 0;
         soa_jit_lookahead_high_water = 0;
+        soa_jit_pre_a_value_issues = 0;
+        soa_jit_pre_a_value_ready_at_a_response = 0;
+        soa_jit_pre_a_value_uses = 0;
         soa_jit_aliases_applied = 0;
         soa_jit_apply_lane_high_water = 0;
         soa_jit_a_write_issues = 0;
@@ -6274,6 +6325,13 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_lookahead_stalls;
             (*maa->stats.IND_SoaJitLookaheadHighWater[my_indirect_id]) +=
                 soa_jit_lookahead_high_water;
+            (*maa->stats.IND_SoaJitPreAValueIssues[my_indirect_id]) +=
+                soa_jit_pre_a_value_issues;
+            (*maa->stats
+                  .IND_SoaJitPreAValueReadyAtAResponse[my_indirect_id]) +=
+                soa_jit_pre_a_value_ready_at_a_response;
+            (*maa->stats.IND_SoaJitPreAValueUses[my_indirect_id]) +=
+                soa_jit_pre_a_value_uses;
             (*maa->stats.IND_SoaJitActiveContexts[my_indirect_id]) +=
                 soa_jit_active_contexts;
             (*maa->stats.IND_SoaJitActiveValueOwners[my_indirect_id]) +=
@@ -6307,6 +6365,7 @@ void IndirectAccessUnit::executeInstruction() {
                     "deliveries=%lu value_stalls=%lu aliases=%lu "
                     "lookahead=%lu/%lu lookahead_hwm=%lu "
                     "lookahead_stalls=%lu "
+                    "pre_a_enable=%d pre_a=%lu/%lu/%lu "
                     "a_writes=%lu/%lu context_hwm=%lu stalls=%lu "
                     "active_contexts=%d active_lookahead=%d "
                     "cache_enable=%d apply_lanes=%d apply_hwm=%lu "
@@ -6348,6 +6407,10 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_lookahead_responses,
                     soa_jit_lookahead_high_water,
                     soa_jit_lookahead_stalls,
+                    soa_jit_pre_a_value_lookahead,
+                    soa_jit_pre_a_value_issues,
+                    soa_jit_pre_a_value_ready_at_a_response,
+                    soa_jit_pre_a_value_uses,
                     soa_jit_a_write_issues,
                     soa_jit_a_write_responses,
                     soa_jit_context_high_water,

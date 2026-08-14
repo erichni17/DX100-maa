@@ -185,6 +185,7 @@ MAA::MAA(const MAAParams &p)
       soa_jit_active_contexts(p.soa_jit_active_contexts),
       soa_jit_value_lookahead(p.soa_jit_value_lookahead),
       soa_jit_value_cache_enable(p.soa_jit_value_cache_enable),
+      soa_jit_pre_a_value_lookahead(p.soa_jit_pre_a_value_lookahead),
       soa_jit_value_prefetch_credits(p.soa_jit_value_prefetch_credits),
       soa_jit_active_value_owners(p.soa_jit_active_value_owners),
       soa_jit_apply_lanes(p.soa_jit_apply_lanes),
@@ -667,6 +668,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         soa_jit_active_contexts,
                                         soa_jit_value_lookahead,
                                         soa_jit_value_cache_enable,
+                                        soa_jit_pre_a_value_lookahead,
                                         soa_jit_value_prefetch_credits,
                                         soa_jit_active_value_owners,
                                         soa_jit_apply_lanes,
@@ -6682,6 +6684,21 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitLookaheadHighWater"),
             statistics::units::Count::get(),
             "sum of per-instruction active ordered alias slots"));
+        IND_SoaJitPreAValueIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPreAValueIssues"),
+            statistics::units::Count::get(),
+            "exact lookahead slots assigned while A read is outstanding"));
+        IND_SoaJitPreAValueReadyAtAResponse.push_back(
+            new statistics::Scalar(
+                this,
+                MAKE_INDIRECT_STAT_NAME(
+                    "IND_SoaJitPreAValueReadyAtAResponse"),
+                statistics::units::Count::get(),
+                "pre-A lookahead slots ready when exact A response arrives"));
+        IND_SoaJitPreAValueUses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPreAValueUses"),
+            statistics::units::Count::get(),
+            "pre-A lookahead slots applied after exact A activation"));
         IND_SoaJitActiveContexts.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitActiveContexts"),
             statistics::units::Count::get(),

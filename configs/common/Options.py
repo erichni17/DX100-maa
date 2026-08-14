@@ -485,6 +485,14 @@ def addNoISAOptions(parser):
         help="Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
     parser.add_argument(
+        "--maa_soa_jit_pre_a_value_lookahead",
+        action="store_true",
+        help=(
+            "Issue exact ordered SoA/JIT value lookahead while the claimed "
+            "A-line read is outstanding"
+        ),
+    )
+    parser.add_argument(
         "--maa_soa_jit_value_prefetch_credits",
         type=int,
         default=0,
