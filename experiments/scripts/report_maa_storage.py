@@ -8,6 +8,29 @@ import json
 import math
 from pathlib import Path
 
+# Exact packed RTL constants from InactiveProducerMaskedFragmentRetention.hh;
+# these deliberately do not use or approximate host sizeof().
+INACTIVE_MASKED_RETENTION_CAPACITIES = (0, 512, 1024, 2048, 4096)
+INACTIVE_MASKED_DESCRIPTOR_COUNT = 4
+INACTIVE_MASKED_BANK_COUNT = 4
+INACTIVE_MASKED_MAX_LOGICAL_LINES = 2048
+INACTIVE_MASKED_LINE_BITS = 64 * 8
+INACTIVE_MASKED_KEY_BITS = 16 + 64 + 64 + 64
+INACTIVE_MASKED_ENTRY_TAG_BITS = 1 + INACTIVE_MASKED_KEY_BITS + 16 + 16 + 64
+INACTIVE_MASKED_DESCRIPTOR_BITS = 1 + INACTIVE_MASKED_KEY_BITS + 16 + 4 + 13
+INACTIVE_MASKED_OUTPUT_TAG_BITS = 1 + INACTIVE_MASKED_KEY_BITS + 16 + 64
+INACTIVE_MASKED_COUNTER_BITS = 13 * 64 + 2 * 13
+INACTIVE_MASKED_LOOKUP_PIPELINE_BITS = (
+    (16 + 64 + 64) + (2 + 16 + 5 + 3 + 64 + 16 + 64) + (64 + 64) + (1 + 64 + 3)
+)
+INACTIVE_MASKED_FALLBACK_REBIND_BITS = (
+    4 * (1 + (16 + 64 + 64) + (2 + 16 + 5 + 3 + 64 + 16 + 64)) + 2
+)
+INACTIVE_MASKED_MAA_LOOKUP_CONTROL_BITS = (
+    INACTIVE_MASKED_LOOKUP_PIPELINE_BITS + INACTIVE_MASKED_FALLBACK_REBIND_BITS
+)
+INACTIVE_MASKED_INCARNATION_BITS_PER_TOKEN = 64
+
 
 def fail(message: str) -> None:
     raise SystemExit(f"MAA storage report failed: {message}")
@@ -34,6 +57,10 @@ def bits_for_values(count: int) -> int:
     return math.ceil(math.log2(count))
 
 
+def bits_to_bytes(bits: int) -> int:
+    return (bits + 7) // 8
+
+
 def format_bytes(value: int) -> str:
     units = ("B", "KiB", "MiB", "GiB")
     amount = float(value)
@@ -42,6 +69,119 @@ def format_bytes(value: int) -> str:
             return f"{amount:.2f} {unit}" if unit != "B" else f"{value} B"
         amount /= 1024
     raise AssertionError("unreachable")
+
+
+def inactive_masked_retention_accounting(
+    capacity: int, token_count: int
+) -> dict[str, int]:
+    """Mirror InactiveProducerMaskedFragmentRetention packed equations."""
+    if capacity not in INACTIVE_MASKED_RETENTION_CAPACITIES:
+        fail(
+            "inactive_page_masked_fragment_retention_lines must be zero or "
+            "one of 512/1024/2048/4096, got "
+            f"{capacity}"
+        )
+
+    if capacity == 0:
+        return {
+            "capacity_entries": 0,
+            "entries_per_partition": 0,
+            "entries_per_bank_per_partition": 0,
+            "index_bits": 0,
+            "payload_bits": 0,
+            "output_payload_bits": 0,
+            "payload_and_output_bytes": 0,
+            "ram_tag_bits": 0,
+            "descriptor_bits": 0,
+            "poison_bits": 0,
+            "write_port_state_bits": 0,
+            "read_port_state_bits": 0,
+            "output_tag_bits": 0,
+            "counter_bits": 0,
+            "configured_capacity_bits": 0,
+            "control_bits": 0,
+            "control_bytes": 0,
+            "lookup_pipeline_control_bits": 0,
+            "fallback_rebind_control_bits": 0,
+            "maa_lookup_control_bits": 0,
+            "persistent_token_incarnation_bits": 0,
+            "combined_total_bits": 0,
+            "combined_total_bytes": 0,
+        }
+
+    index_bits = capacity.bit_length() - 1
+    payload_bits = capacity * INACTIVE_MASKED_LINE_BITS
+    ram_tag_bits = capacity * INACTIVE_MASKED_ENTRY_TAG_BITS
+    descriptor_bits = (
+        INACTIVE_MASKED_DESCRIPTOR_COUNT * INACTIVE_MASKED_DESCRIPTOR_BITS
+    )
+    poison_bits = (
+        INACTIVE_MASKED_DESCRIPTOR_COUNT * INACTIVE_MASKED_MAX_LOGICAL_LINES
+    )
+    write_port_state_bits = INACTIVE_MASKED_BANK_COUNT * (
+        64
+        + 1
+        + 64
+        + index_bits
+        + INACTIVE_MASKED_LINE_BITS
+        + INACTIVE_MASKED_ENTRY_TAG_BITS
+    )
+    read_port_state_bits = 64
+    configured_capacity_bits = 13
+    control_bits = (
+        ram_tag_bits
+        + descriptor_bits
+        + poison_bits
+        + write_port_state_bits
+        + read_port_state_bits
+        + INACTIVE_MASKED_OUTPUT_TAG_BITS
+        + INACTIVE_MASKED_COUNTER_BITS
+        + configured_capacity_bits
+    )
+    persistent_token_incarnation_bits = (
+        token_count * INACTIVE_MASKED_INCARNATION_BITS_PER_TOKEN
+    )
+    combined_total_bits = (
+        payload_bits
+        + INACTIVE_MASKED_LINE_BITS
+        + control_bits
+        + INACTIVE_MASKED_MAA_LOOKUP_CONTROL_BITS
+        + persistent_token_incarnation_bits
+    )
+    return {
+        "capacity_entries": capacity,
+        "entries_per_partition": (
+            capacity // INACTIVE_MASKED_DESCRIPTOR_COUNT
+        ),
+        "entries_per_bank_per_partition": (
+            capacity
+            // (INACTIVE_MASKED_DESCRIPTOR_COUNT * INACTIVE_MASKED_BANK_COUNT)
+        ),
+        "index_bits": index_bits,
+        "payload_bits": payload_bits,
+        "output_payload_bits": INACTIVE_MASKED_LINE_BITS,
+        "payload_and_output_bytes": bits_to_bytes(
+            payload_bits + INACTIVE_MASKED_LINE_BITS
+        ),
+        "ram_tag_bits": ram_tag_bits,
+        "descriptor_bits": descriptor_bits,
+        "poison_bits": poison_bits,
+        "write_port_state_bits": write_port_state_bits,
+        "read_port_state_bits": read_port_state_bits,
+        "output_tag_bits": INACTIVE_MASKED_OUTPUT_TAG_BITS,
+        "counter_bits": INACTIVE_MASKED_COUNTER_BITS,
+        "configured_capacity_bits": configured_capacity_bits,
+        "control_bits": control_bits,
+        "control_bytes": bits_to_bytes(control_bits),
+        "lookup_pipeline_control_bits": (INACTIVE_MASKED_LOOKUP_PIPELINE_BITS),
+        "fallback_rebind_control_bits": (INACTIVE_MASKED_FALLBACK_REBIND_BITS),
+        "maa_lookup_control_bits": (INACTIVE_MASKED_MAA_LOOKUP_CONTROL_BITS),
+        "persistent_token_incarnation_bits": (
+            persistent_token_incarnation_bits
+        ),
+        "combined_total_bits": combined_total_bits,
+        "combined_total_bytes": bits_to_bytes(combined_total_bits),
+    }
 
 
 def main() -> int:
@@ -119,6 +259,47 @@ def main() -> int:
     direct_retirement_line_handoff = maa.getboolean(
         "direct_retirement_line_handoff", fallback=False
     )
+    try:
+        inactive_masked_retention_entries = int(
+            maa.get("inactive_page_masked_fragment_retention_lines", "0")
+        )
+    except ValueError:
+        fail(
+            "invalid system.maa value for "
+            "inactive_page_masked_fragment_retention_lines"
+        )
+    if (
+        inactive_masked_retention_entries
+        not in INACTIVE_MASKED_RETENTION_CAPACITIES
+    ):
+        fail(
+            "inactive_page_masked_fragment_retention_lines must be zero or "
+            "one of 512/1024/2048/4096, got "
+            f"{inactive_masked_retention_entries}"
+        )
+    if (
+        inactive_masked_retention_entries
+        and not direct_retirement_line_handoff
+    ):
+        fail(
+            "inactive masked-fragment retention requires "
+            "direct_retirement_line_handoff=true"
+        )
+    if inactive_masked_retention_entries:
+        try:
+            inactive_payload_capture_lines = int(
+                maa.get("inactive_page_payload_capture_lines", "0")
+            )
+        except ValueError:
+            fail(
+                "invalid system.maa value for "
+                "inactive_page_payload_capture_lines"
+            )
+        if inactive_payload_capture_lines != 0:
+            fail(
+                "inactive full-line payload capture and masked-fragment "
+                "retention are mutually exclusive"
+            )
 
     positive = {
         "num_cores": cores,
@@ -168,6 +349,12 @@ def main() -> int:
 
     tiles = cores * tiles_per_core
     indirect_units = maas * indirect_per_maa
+    inactive_masked_retention = inactive_masked_retention_accounting(
+        inactive_masked_retention_entries, tiles
+    )
+    inactive_masked_retention_bytes = inactive_masked_retention[
+        "combined_total_bytes"
+    ]
     native_spd_bytes = tiles * logical * 4
     physical_spd_bytes = tiles * physical * 4
     logical_aperture_bytes = native_spd_bytes
@@ -256,9 +443,7 @@ def main() -> int:
         response_slots * (response_words or words_per_line)
     )
     response_pool_pointer_bits = bits_for_values(response_pool_words + 1)
-    effective_combine_words = combine_words or (
-        combine_slots * words_per_line
-    )
+    effective_combine_words = combine_words or (combine_slots * words_per_line)
     combine_reference_bits = bits_for_values(effective_combine_words)
 
     index_metadata_bits_per_unit = index_lines * (
@@ -286,10 +471,9 @@ def main() -> int:
         + words_per_line
         + words_per_line * combine_reference_bits
     )
-    combine_allocator_bits_per_unit = (
-        effective_combine_words * (1 + combine_reference_bits)
-        + bits_for_values(effective_combine_words + 1)
-    )
+    combine_allocator_bits_per_unit = effective_combine_words * (
+        1 + combine_reference_bits
+    ) + bits_for_values(effective_combine_words + 1)
     combine_sets = (
         1
         if integer(maa, "virtual_combine_ways") == 0
@@ -442,6 +626,7 @@ def main() -> int:
         + virtual_control_bytes_per_unit * indirect_units
         + completion_increment_bytes
         + direct_hardware_lower_bound_bytes
+        + inactive_masked_retention_bytes
     )
     native_comparable_storage = (
         native_spd_bytes
@@ -503,6 +688,9 @@ def main() -> int:
             "indirect_units": indirect_units,
             "row_table_organizations_allocated": allocated_slices,
             "direct_retirement_line_handoff": direct_retirement_line_handoff,
+            "inactive_page_masked_fragment_retention_lines": (
+                inactive_masked_retention_entries
+            ),
         },
         "scratchpad": {
             "native_logical_payload_bytes": native_spd_bytes,
@@ -772,6 +960,26 @@ def main() -> int:
                 ),
             },
         },
+        "inactive_masked_fragment_retention_state": {
+            "enabled": inactive_masked_retention_entries != 0,
+            "scope": (
+                "one MAA-shared packed hardware charge; includes the shared "
+                "lookup pipeline, exact four-slot fallback-rebind table, and "
+                "one persistent 64-bit incarnation per token tile"
+            ),
+            "descriptor_partitions": (
+                INACTIVE_MASKED_DESCRIPTOR_COUNT
+                if inactive_masked_retention_entries
+                else 0
+            ),
+            "write_banks": (
+                INACTIVE_MASKED_BANK_COUNT
+                if inactive_masked_retention_entries
+                else 0
+            ),
+            "token_tiles": tiles if inactive_masked_retention_entries else 0,
+            "packed_hardware_accounting": inactive_masked_retention,
+        },
         "counted_payload": {
             "physical_spd_plus_virtual_buffers_bytes": counted_payload,
             "reduction_vs_native_spd_pct": (
@@ -886,6 +1094,8 @@ def main() -> int:
         f"{format_bytes(direct_hardware_lower_bound_bytes)} |",
         "| Direct-retirement handoff conservative C++ static view | "
         f"{format_bytes(direct_cpp_static_bytes)} |",
+        "| Inactive masked-fragment retention packed hardware | "
+        f"{format_bytes(inactive_masked_retention_bytes)} |",
         f"| Physical SPD + bounded virtual payload | {format_bytes(counted_payload)} |",
         "| Physical SPD + bounded payload/control lower bound | "
         f"{format_bytes(bounded_state_total)} |",
@@ -938,6 +1148,9 @@ def main() -> int:
         "the fixed direct-retirement queue, execution records, request records, retry",
         "slots, early-line ledger, and producer-line metadata. The direct handoff",
         "views deliberately exclude indirect virtual buffers already charged above.",
+        "Enabled inactive masked-fragment retention is charged once as one shared",
+        "packed structure, including its lookup/fallback control and persistent",
+        "per-token incarnation state; the default capacity of zero charges nothing.",
     ]
     (output / "maa_storage.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
