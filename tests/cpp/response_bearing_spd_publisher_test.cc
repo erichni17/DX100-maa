@@ -132,6 +132,8 @@ testBackpressureRetryAndPayloadPersistence()
     CHECK(publisher.recordSend(request, false) ==
           Publisher::SendResult::Backpressured);
     CHECK(publisher.retryPending());
+    CHECK(publisher.acknowledgedLines() == 0);
+    CHECK(publisher.occupiedCredits() == 1);
     CHECK(publisher.prepareRequest(&request) ==
           Publisher::RequestResult::RetryBlocked);
 
@@ -145,6 +147,10 @@ testBackpressureRetryAndPayloadPersistence()
     CHECK(std::memcmp(retry.payload, exactCopy.data(), exactCopy.size()) == 0);
     CHECK(publisher.recordSend(retry, true) ==
           Publisher::SendResult::Accepted);
+    // Cache acceptance owns the retry and payload, but only its exact
+    // WriteResp closes the publisher credit.
+    CHECK(publisher.acknowledgedLines() == 0);
+    CHECK(publisher.occupiedCredits() == 1);
 
     Publisher::Request retained;
     CHECK(publisher.retainedRequest(identity, &retained));
@@ -152,6 +158,8 @@ testBackpressureRetryAndPayloadPersistence()
           0);
     CHECK(publisher.acknowledge({identity, true}) ==
           Publisher::AckResult::Accepted);
+    CHECK(publisher.acknowledgedLines() == 1);
+    CHECK(publisher.occupiedCredits() == 0);
     CHECK(!publisher.retainedRequest(identity, &retained));
     CHECK(publisher.assertInvariants());
 }

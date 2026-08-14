@@ -612,7 +612,10 @@ bool MAA::sendOutstandingCachePacket() {
                 attempt = stream.responseBearingPublishPacketAttempt(
                     it->packet);
             }
-            if (!sendPacketCache(it->packet)) {
+            const bool sent = it->virtualRetirement
+                ? sendPacketRetirementCache(it->packet)
+                : sendPacketCache(it->packet);
+            if (!sent) {
                 DPRINTF(MAAPort, "%s: send failed for bus %d\n", __func__,
                         core);
                 if (response_bearing)
@@ -701,7 +704,10 @@ bool MAA::sendOutstandingCachePacket() {
                     attempt = stream.responseBearingPublishPacketAttempt(
                         it->packet);
                 }
-                if (!sendPacketCache(it->packet)) {
+                const bool sent = it->virtualRetirement
+                    ? sendPacketRetirementCache(it->packet)
+                    : sendPacketCache(it->packet);
+                if (!sent) {
                     DPRINTF(MAAPort, "%s: send failed for bus %d\n",
                             __func__, core);
                     if (response_bearing)

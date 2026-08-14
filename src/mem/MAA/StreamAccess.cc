@@ -698,8 +698,12 @@ StreamAccessUnit::captureAndIssueResponseBearingLine()
             packet->getAddr(), static_cast<unsigned long>(
                                    response_publisher.occupiedCredits()),
             overlaps_non_stream ? 1 : 0);
+    // A cacheable WriteReq is response-bearing but is not itself a legal
+    // upward snoop (NeedsWritable without IsInvalidate). Enter coherence
+    // through the retirement cache so its miss becomes an invalidating
+    // ownership request while the original packet still closes on WriteResp.
     maa->sendPacket(FuncUnitType::STREAM, my_stream_id, packet,
-                    my_SPD_read_finish_tick, true);
+                    my_SPD_read_finish_tick, true, true);
 }
 
 PacketPtr
@@ -749,7 +753,9 @@ StreamAccessUnit::responseBearingPublishPacketAttempt(PacketPtr pkt)
     panic_if(!my_response_bearing_publish || sender == nullptr ||
                  sender->streamID != my_stream_id ||
                  sender->physicalAddress != pkt->getAddr() ||
-                 sender->transportAccepted || pkt->cmd != MemCmd::WriteReq ||
+                 sender->transportAccepted ||
+                 (pkt->cmd != MemCmd::WriteReq &&
+                  pkt->cmd != MemCmd::WriteLineReq) ||
                  !pkt->needsResponse(),
              "S[%d] publisher transport accepted an invalid packet\n",
              my_stream_id);
@@ -792,7 +798,9 @@ StreamAccessUnit::responseBearingPublishPacketRetried(PacketPtr pkt)
     panic_if(!my_response_bearing_publish || sender == nullptr ||
                  sender->streamID != my_stream_id ||
                  sender->physicalAddress != pkt->getAddr() ||
-                 !sender->transportAccepted || pkt->cmd != MemCmd::WriteReq,
+                 !sender->transportAccepted ||
+                 (pkt->cmd != MemCmd::WriteReq &&
+                  pkt->cmd != MemCmd::WriteLineReq),
              "S[%d] publisher retry lost exact packet ownership\n",
              my_stream_id);
     sender->transportAccepted = false;
