@@ -80,7 +80,8 @@ run_arm() {
         --debug-flags=MAAVirtualTrace \
         --debug-file="$out/$label/maa.trace" \
         --outdir="$out/$label/run" "$config" --cpu-type X86O3CPU \
-        -r 1 -n 4 --mem-size 2GB --sys-clock 3.2GHz \
+        -r 1 --checkpoint-dir="$out/$label/checkpoint" \
+        -n 4 --mem-size 2GB --sys-clock 3.2GHz \
         --cpu-clock 3.2GHz --caches --l1d_size=32kB --l1d_assoc=8 \
         --l1d_mshrs=16 --l1d_write_buffers=8 --l1i_size=32kB \
         --l1i_assoc=8 --l1i_mshrs=16 --l1i_write_buffers=8 \
