@@ -698,14 +698,31 @@ def analyze(root: Path) -> dict[str, object]:
         raise ValueError(
             f"cross-arm exact correctness mismatch: {sorted(keys)}"
         )
-    baseline_ticks = [
+    native16_ticks = [
         int(record["simTicks"])
         for record in records
         if record["arm"] == "native16"
     ]
-    baseline = sum(baseline_ticks) / len(baseline_ticks)
+    native4_ticks = [
+        int(record["simTicks"])
+        for record in records
+        if record["arm"] == "native4"
+    ]
+    native16 = sum(native16_ticks) / len(native16_ticks)
+    native4 = sum(native4_ticks) / len(native4_ticks)
+    opportunity = native4 - native16
     for record in records:
-        record["speedup_vs_native16"] = baseline / int(record["simTicks"])
+        ticks = int(record["simTicks"])
+        record["speedup_vs_native16"] = native16 / ticks
+        record["latency_gap_pct_vs_native16"] = (
+            (ticks / native16) - 1.0
+        ) * 100.0
+        record["speedup_vs_native4"] = native4 / ticks
+        record["opportunity_recovered_pct"] = (
+            ((native4 - ticks) / opportunity) * 100.0
+            if opportunity > 0
+            else None
+        )
 
     return {
         "schema": "dx100.general_hybrid_analysis.v1",
@@ -739,6 +756,9 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "correctness_key",
         "simTicks",
         "speedup_vs_native16",
+        "latency_gap_pct_vs_native16",
+        "speedup_vs_native4",
+        "opportunity_recovered_pct",
         "num_stream_loads",
         "num_stream_stores",
         "aggregate_cycles_STRRD_raw",
@@ -807,12 +827,13 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "all stream completions to `cycles_STRRD`, so the table also exposes "
         "store instruction count and total stream request/SPD occupancy.",
         "",
-        "| arm | rep | ticks | speedup | STREAM_LD | STREAM_ST | request cycles | SPD read | SPD write | submits/ready/retire | forwarded/cache-read lines |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| arm | rep | ticks | gap vs native16 | speedup vs native4 | STREAM_LD | STREAM_ST | request cycles | SPD read | SPD write | submits/ready/retire | forwarded/cache-read lines |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for record in records:
         lines.append(
-            "| {arm} | {replica} | {simTicks} | {speedup_vs_native16:.6f} | "
+            "| {arm} | {replica} | {simTicks} | "
+            "{latency_gap_pct_vs_native16:.3f}% | {speedup_vs_native4:.6f} | "
             "{num_stream_loads:g} | {num_stream_stores:g} | "
             "{all_stream_request_cycles:g} | {all_stream_spd_read_cycles:g} | "
             "{all_stream_spd_write_cycles:g} | "

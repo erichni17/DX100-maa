@@ -289,6 +289,9 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
             self.assertEqual(record["num_stream_stores"], 4)
             self.assertEqual(record["aggregate_cycles_STRWR_raw"], 0)
             self.assertEqual(record["all_stream_request_cycles"], 100)
+            self.assertEqual(record["latency_gap_pct_vs_native16"], 0.0)
+            self.assertEqual(record["speedup_vs_native4"], 1.0)
+            self.assertIsNone(record["opportunity_recovered_pct"])
             self.assertIn("charges all stream", record["counter_caveat"])
             token = report["records"][-1]
             self.assertEqual(token["materializer_submits"], 4)
