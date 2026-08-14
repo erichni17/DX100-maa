@@ -115,7 +115,7 @@ terminal="UME_GZP_TERMINAL treatment=soa_jit_correctness full_windows=4 volume_o
           "$out/restore.log" || true) -eq 1 ]]
 [[ $(rg -c '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
           "$out/restore.log" || true) -eq 1 ]]
-[[ $(rg -ic 'panic|fatal|assert|abort|segmentation fault|error:' \
+[[ $(grep -Eic 'panic|fatal|assert|abort|segmentation fault|error:' \
           "$out/restore.log" || true) -eq 0 ]]
 
 stats="$out/run/stats.txt"
@@ -123,7 +123,9 @@ trace="$out/run/virtual_trace.log"
 [[ -s $stats && -s $trace ]]
 sum_stat() {
     local suffix=$1
-    awk -v suffix="$suffix" '$1 ~ suffix "$" { value += $2 } END { print value+0 }' "$stats"
+    awk -v suffix="$suffix" \
+        '$1 ~ suffix "$" { value[$1]=$2 } END { for (name in value) total += value[name]; print total+0 }' \
+        "$stats"
 }
 max_stat() {
     local suffix=$1

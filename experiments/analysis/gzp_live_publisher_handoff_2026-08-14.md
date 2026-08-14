@@ -63,9 +63,20 @@ therefore activates one OpenMP owner and does not claim multi-owner safety.
 
 The guest compiles with `-Wall -Wextra -Werror`, the response-bearing
 publisher unit test passes for FP32 and FP64, the focused Python contracts and
-syntax checks pass, and `build/X86/gem5.opt` builds successfully.  The exact
-one-window gem5 smoke must run from the clean coordination checkpoint; its
-artifact path and measured retry/stall/overlap counts will be appended here.
+syntax checks pass, and `build/X86/gem5.opt` builds successfully.
+
+The exact single-owner smoke from source commit `8f24056f` passed at:
+
+`/data1/nier/worktrees/codex-coordination/sessions/gzp-live-publisher-integration-20260814-20260814-113413-4e72b0d2/smoke-8f24056f`
+
+It reported zero point-volume and point-gradient errors across 245,536 output
+elements, `full_windows=4`, 65,536 published predicates and gradient values,
+and the response-bearing publisher terminal.  The last cumulative stat dump
+and trace both close exactly at 8,192 issues, 8,192 accepts, 8,192 responses,
+and 32 page terminals.  Measured mechanism counters are 3,032 retries, 7,936
+credit-stall observations, 568 overlap issues, and an eight-credit high-water.
+`simTicks=7548328032` is recorded only as run provenance, not as performance
+evidence.
 
 This is correctness evidence only.  `performance_promotable=0` and
 `speedup_claim=0` remain explicit.  No speedup may be claimed without a matched

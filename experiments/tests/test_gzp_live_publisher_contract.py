@@ -60,5 +60,7 @@ def test_runner_is_uncapped_and_fails_closed() -> None:
     assert "STR_PublishIssues') -eq $expected_lines" in runner
     assert "STR_PublishWriteResponses') -eq $expected_lines" in runner
     assert "STR_PublishTerminals') -eq $expected_publications" in runner
+    assert "value[$1]=$2" in runner
+    assert "grep -Eic 'panic|fatal|assert|abort" in runner
     assert "speedup_claim=0" in runner
     assert "published_predicates=$n" in runner
