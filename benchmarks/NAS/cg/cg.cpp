@@ -1113,20 +1113,28 @@ static void conj_grad_maa(int colidx[],
             int k_base = rowstr[j_base];
             int k_max = rowstr[j_max];
             float *curr_q = &q[j_base];
-            maa_const<int>(j_base, r4);
 #if defined(MAA_BOUNDED_VIRTUAL_GATHER) || \
     defined(MAA_GENERAL_VIRTUAL_CONSUMER)
-            // Ordinary SPD streams are not virtualized. Bound the row-pointer
-            // tiles to the 4K physical consumer window explicitly.
-            maa_const<int>(j_max, r5);
+            // Ordinary SPD streams are not virtualized. Rebase each row
+            // pointer page so its physical tile positions remain 0..4K.
+            maa_const<int>(0, r4);
+            maa_const<int>(j_max - j_base, r5);
+#else
+            maa_const<int>(j_base, r4);
 #endif
             maa_const<int>(k_max, r3);
             maa_const<int>(0, r6);
             maa_const<int>(-1, r7);
             // t2 = rowstr[j]
             // t3 = rowstr[j + 1]
+#if defined(MAA_BOUNDED_VIRTUAL_GATHER) || \
+    defined(MAA_GENERAL_VIRTUAL_CONSUMER)
+            maa_stream_load<int>(&rowstr[j_base], r4, r5, r1, t2);
+            maa_stream_load<int>(&rowstr[j_base + 1], r4, r5, r1, t3);
+#else
             maa_stream_load<int>(rowstr, r4, r5, r1, t2);
             maa_stream_load<int>(&rowstr[1], r4, r5, r1, t3);
+#endif
             // [t0 t1 t4 t5 t6 t7] available
             for (; k_base < k_max; k_base += TILE_SIZE) {
                 const int gather_size = k_max - k_base < TILE_SIZE
@@ -1443,19 +1451,27 @@ static void conj_grad_maa(int colidx[],
         int k_base = rowstr[j_base];
         int k_max = rowstr[j_max];
         float *curr_r = &r[j_base];
-        maa_const<int>(j_base, r4);
 #if defined(MAA_BOUNDED_VIRTUAL_GATHER) || \
     defined(MAA_GENERAL_VIRTUAL_CONSUMER)
-        // Keep the residual multiply's row-pointer streams physically bounded.
-        maa_const<int>(j_max, r5);
+        // Keep the residual row-pointer streams in page-local SPD positions.
+        maa_const<int>(0, r4);
+        maa_const<int>(j_max - j_base, r5);
+#else
+        maa_const<int>(j_base, r4);
 #endif
         maa_const<int>(k_max, r3);
         maa_const<int>(0, r6);
         maa_const<int>(-1, r7);
         // t2 = rowstr[j]
         // t3 = rowstr[j + 1]
+#if defined(MAA_BOUNDED_VIRTUAL_GATHER) || \
+    defined(MAA_GENERAL_VIRTUAL_CONSUMER)
+        maa_stream_load<int>(&rowstr[j_base], r4, r5, r1, t2);
+        maa_stream_load<int>(&rowstr[j_base + 1], r4, r5, r1, t3);
+#else
         maa_stream_load<int>(rowstr, r4, r5, r1, t2);
         maa_stream_load<int>(&rowstr[1], r4, r5, r1, t3);
+#endif
         // [t0 t1 t4 t5 t6 t7] available
         for (; k_base < k_max; k_base += TILE_SIZE) {
             const int gather_size = k_max - k_base < TILE_SIZE

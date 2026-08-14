@@ -85,6 +85,15 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         self.assertIn("producer=cpu_after_spd_completion", self.source)
         self.assertIn("performance_promotable=0", self.source)
 
+    def test_row_pointer_streams_use_page_local_physical_positions(self):
+        for token in (
+            "maa_const<int>(j_max - j_base, r5);",
+            "maa_stream_load<int>(&rowstr[j_base], r4, r5, r1, t2);",
+            "maa_stream_load<int>(&rowstr[j_base + 1], r4, r5, r1, t3);",
+        ):
+            self.assertEqual(self.source.count(token), 2)
+        self.assertGreaterEqual(self.source.count("maa_const<int>(0, r4);"), 2)
+
     def test_terminal_closes_staging_and_requires_dynamic_use(self):
         self.assertIn("index_words == full_windows * TILE_SIZE", self.source)
         self.assertIn("value_words == full_windows * TILE_SIZE", self.source)
