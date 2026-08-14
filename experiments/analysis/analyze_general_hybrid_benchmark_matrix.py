@@ -277,6 +277,11 @@ def materializer_trace(
             int(context["fragment_buffer_stalls"])
             for context in contexts.values()
         ),
+        "materializer_staged_direct_lines": sum(
+            int(summary.get("staged_direct_lines", "0"), 0)
+            for context in contexts.values()
+            for summary in context["summaries"]
+        ),
         "materializer_nonforwarded_ready_lines": sum(
             int(context["nonforwarded_ready_lines"])
             for context in contexts.values()
@@ -317,6 +322,9 @@ MATERIALIZER_STATS = (
 OPTIONAL_MATERIALIZER_STATS = (
     "page_materialization_fragment_accumulated_lines",
     "page_materialization_fragment_buffer_stalls",
+    "page_materialization_staged_direct_lines",
+    "page_materialization_staged_direct_fragments",
+    "page_materialization_staged_direct_fallback_lines",
 )
 
 
@@ -342,11 +350,15 @@ def validate_materializer(
     arm: str,
     workload: str,
     role: str,
+    selector: str | None,
     stats: dict[str, float],
     trace_path: Path,
 ) -> dict[str, int]:
     report, contexts = materializer_trace(trace_path)
-    token_arm = role.startswith("token_stream_ld_")
+    selected_mode = selector.split()[0] if selector is not None else ""
+    token_arm = role.startswith(
+        "token_stream_ld_"
+    ) or selected_mode.startswith("token_stream_ld")
     control_arm = role in (
         "ordinary_stream_control",
         "page_gated_stream_control",
@@ -401,6 +413,9 @@ def validate_materializer(
         "page_materialization_fragment_buffer_stalls": (
             "materializer_fragment_buffer_stalls"
         ),
+        "page_materialization_staged_direct_lines": (
+            "materializer_staged_direct_lines"
+        ),
     }
     for stat_name, trace_name in optional_expected.items():
         value = optional_materializer_stat(stats, stat_name)
@@ -412,6 +427,13 @@ def validate_materializer(
                 f"{arm}: {stat_name}={value} does not match trace "
                 f"{trace_name}={report[trace_name]}"
             )
+    for stat_name in (
+        "page_materialization_staged_direct_fragments",
+        "page_materialization_staged_direct_fallback_lines",
+    ):
+        value = optional_materializer_stat(stats, stat_name)
+        if value is not None:
+            report[f"stat_{stat_name}"] = value
     if (
         report["materializer_fallback_events"] != 0
         or stat_values["page_materialization_dispatch_fallbacks"] != 0
@@ -467,6 +489,7 @@ def validate_materializer(
         summary_forwarded = integer_field(
             summary, "forwarded_lines", "summary"
         )
+        summary_staged_direct = int(summary.get("staged_direct_lines", "0"), 0)
         summary_cache_reads = integer_field(
             summary, "cache_read_fallback_lines", "summary"
         )
@@ -479,7 +502,8 @@ def validate_materializer(
         if (
             summary_forwarded != context["forwarded_lines"]
             or summary_cache_reads != context["cache_read_lines"]
-            or summary_forwarded + summary_cache_reads != summary_lines
+            or summary_forwarded + summary_staged_direct + summary_cache_reads
+            != summary_lines
             or summary_producer_acks + summary_page_fallbacks != summary_lines
             or context["line_commits"] != summary_lines
         ):
@@ -586,6 +610,7 @@ def analyze(root: Path) -> dict[str, object]:
                 f"{arm_name}/{replica}",
                 workload,
                 role,
+                None if selector is None else str(selector),
                 stats,
                 run / "gem5/virtual_trace.log",
             )
@@ -670,9 +695,13 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "materializer_forwarded_lines",
         "materializer_fragment_accumulated_lines",
         "materializer_fragment_buffer_stalls",
+        "materializer_staged_direct_lines",
         "materializer_cache_read_lines",
         "stat_page_materialization_fragment_accumulated_lines",
         "stat_page_materialization_fragment_buffer_stalls",
+        "stat_page_materialization_staged_direct_lines",
+        "stat_page_materialization_staged_direct_fragments",
+        "stat_page_materialization_staged_direct_fallback_lines",
         "stat_page_materialization_producer_line_acks",
         "stat_page_materialization_page_fallback_lines",
         "materializer_nonforwarded_ready_lines",
