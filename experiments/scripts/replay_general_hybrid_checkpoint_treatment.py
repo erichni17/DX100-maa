@@ -77,6 +77,10 @@ PROTECTED_OPTION_KEYS = frozenset(
         "--cpu-clock",
         "--mem-channels",
         "--l3-ports",
+        "--l3_size",
+        "--l3_assoc",
+        "--l3_mshrs",
+        "--l3_write_buffers",
         "--cacheline_size",
         "--mem-type",
         "--debug-flags",
@@ -161,6 +165,8 @@ def parse_sole_arm_gem5_arg(value: str) -> str:
 
 
 def require_file(path: Path, label: str) -> Path:
+    if path.is_symlink():
+        raise ValueError(f"{label} is not a regular file: {path}")
     resolved = path.resolve()
     if not resolved.is_file() or resolved.is_symlink():
         raise ValueError(f"{label} is not a regular file: {path}")
@@ -200,7 +206,7 @@ def tree_identity(path: Path) -> dict[str, object]:
 
 def read_exit(path: Path, label: str) -> int:
     try:
-        return int(path.read_text(encoding="utf-8").strip())
+        return int(regular_text(path, f"{label} exit marker").strip())
     except (OSError, ValueError) as error:
         raise ValueError(f"invalid {label} exit marker: {path}") from error
 
@@ -311,35 +317,72 @@ def common_restore_args(
     ]
 
 
-def restore_command(
+def recorded_restore_command(run_dir: Path, label: str) -> list[str]:
+    path = require_file(run_dir / "restore.command.json", f"{label} command")
+    try:
+        command = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"{label}: restore command is not valid JSON"
+        ) from error
+    if (
+        not isinstance(command, list)
+        or not command
+        or any(not isinstance(value, str) or not value for value in command)
+    ):
+        raise ValueError(f"{label}: restore command is malformed")
+    return command
+
+
+def rebase_recorded_restore_command(
+    command: list[str],
     gem5: Path,
     config: Path,
     outdir: Path,
     checkpoint: Path,
     binary: Path,
     options: str,
-    profile: str,
     ramulator_config: Path,
-    mem_channels: int,
-    l3_ports: int,
-    extra: list[str],
+    candidate_args: list[str],
 ) -> list[str]:
-    return [
-        str(gem5),
-        "--listener-mode=off",
-        f"--outdir={outdir}",
-        "--debug-flags=MAAVirtualTrace",
-        "--debug-file=virtual_trace.log",
-        str(config),
-        *common_restore_args(ramulator_config, mem_channels, l3_ports),
-        f"--checkpoint-dir={checkpoint}",
-        *profile_args(profile),
-        *extra,
-        "--cmd",
-        str(binary),
-        "--options",
-        options,
+    """Rebase a recorded source command; never recreate its defaults."""
+    result = list(command)
+    result[0] = str(gem5)
+    replacements = {
+        "--outdir": str(outdir),
+        "--checkpoint-dir": str(checkpoint),
+        "--ramulator-config": str(ramulator_config),
+        "--cmd": str(binary),
+        "--options": options,
+    }
+    seen: set[str] = set()
+    for index, value in enumerate(result):
+        key = option_key(value)
+        if key in replacements:
+            if key in seen:
+                raise ValueError(f"recorded restore command duplicates {key}")
+            seen.add(key)
+            if value == key:
+                if index + 1 >= len(result):
+                    raise ValueError(
+                        f"recorded restore command lacks {key} value"
+                    )
+                result[index + 1] = replacements[key]
+            else:
+                result[index] = f"{key}={replacements[key]}"
+    if seen != set(replacements):
+        raise ValueError(
+            "recorded restore command lacks replay-critical option"
+        )
+    config_indexes = [
+        index for index, value in enumerate(result) if value.endswith(".py")
     ]
+    if len(config_indexes) != 1:
+        raise ValueError(
+            "recorded restore command lacks an unambiguous config"
+        )
+    result[config_indexes[0]] = str(config)
+    return [*result, *candidate_args]
 
 
 def checked_source_options(
@@ -478,7 +521,11 @@ def run_logged(
 
 
 def validate_terminal_run(
-    run_dir: Path, workload: str, selector: str | None, label: str
+    run_dir: Path,
+    workload: str,
+    selector: str | None,
+    role: str,
+    label: str,
 ) -> dict[str, object]:
     if read_exit(run_dir / "restore.exit", label) != 0:
         raise ValueError(f"{label}: nonzero restore exit")
@@ -497,13 +544,29 @@ def validate_terminal_run(
         if f"mode={mode}" not in log:
             raise ValueError(f"{label}: restored selector marker is missing")
     key, certificate = ANALYZER.correctness(workload, log)
-    stats = ANALYZER.first_stats(run_dir / "gem5" / "stats.txt")
+    stats_path = require_file(run_dir / "gem5" / "stats.txt", f"{label} stats")
+    stats = ANALYZER.first_stats(stats_path)
+    ticks = stats.get("simTicks")
+    if not isinstance(ticks, float) or not ticks.is_integer() or ticks <= 0:
+        raise ValueError(f"{label}: simTicks is not a positive integer")
+    mechanism: dict[str, int] | None = None
+    if selector is not None and selector.split()[0].startswith(
+        "token_stream_ld"
+    ):
+        trace = require_file(
+            run_dir / "gem5" / "virtual_trace.log",
+            f"{label} materializer trace",
+        )
+        mechanism = ANALYZER.validate_materializer(
+            label, workload, role, selector, stats, trace
+        )
     return {
         "correctness_key": key,
         "certificate": certificate,
-        "first_roi_simTicks": int(stats["simTicks"]),
+        "first_roi_simTicks": int(ticks),
         "restore_log_sha256": sha256_file(run_dir / "restore.log"),
-        "stats_sha256": sha256_file(run_dir / "gem5" / "stats.txt"),
+        "stats_sha256": sha256_file(stats_path),
+        **({"materializer": mechanism} if mechanism is not None else {}),
     }
 
 
@@ -634,6 +697,7 @@ def selected_source(
                 source_root / "arms" / arm_name / f"replica-{replica}",
                 str(workload),
                 arm_selector,
+                str(arm.get("role", "")),
                 f"source {arm_name}/{replica}",
             )
             all_keys.add(str(record["correctness_key"]))
@@ -670,6 +734,9 @@ def selected_source(
         raise ValueError("source matrix memory-channel contract is invalid")
     if not isinstance(l3_ports, int) or not 1 <= l3_ports <= 16:
         raise ValueError("source matrix LLC-port contract is invalid")
+    control_command = recorded_restore_command(
+        source_root / "arms" / control_arm / "replica-1", "source control"
+    )
     return {
         "workload": str(workload),
         "replicas": replicas,
@@ -692,7 +759,17 @@ def selected_source(
         "ramulator_config_hash": ramulator_config_hash,
         "mem_channels": mem_channels,
         "l3_ports": l3_ports,
-        "source_args": safe_source_args(manifest, control_arm),
+        "source_args": [
+            value for value in control_command if value.startswith("--")
+        ],
+        "recorded_restore_command": control_command,
+        "recorded_restore_command_sha256": sha256_file(
+            source_root
+            / "arms"
+            / control_arm
+            / "replica-1"
+            / "restore.command.json"
+        ),
     }
 
 
@@ -879,22 +956,19 @@ def execute(
             Path(source["selector_path"]),
             selector,
         )
-        extra = [*source["source_args"], *args.sole_arm_gem5_arg]
         before = source_checkpoint(
             source_root, manifest, args.checkpoint_group
         )[1]
-        command = restore_command(
+        command = rebase_recorded_restore_command(
+            list(source["recorded_restore_command"]),
             candidate_gem5,
             candidate_config,
             run / "gem5",
             Path(source["checkpoint"]),
             guest,
             options,
-            str(source["profile"]),
             ramulator_config,
-            int(source["mem_channels"]),
-            int(source["l3_ports"]),
-            extra,
+            args.sole_arm_gem5_arg,
         )
         rc = run_logged(command, run / "restore.log", environment)
         try:
@@ -913,6 +987,7 @@ def execute(
             run,
             str(source["workload"]),
             str(source["selector"]),
+            str(source["control"].get("role", "")),
             args.treatment_name,
         )
         if treatment["correctness_key"] != source["source_control_key"]:
@@ -934,6 +1009,9 @@ def execute(
             "checkpoint_identity_after": after,
             "control_arm": source["control"],
             "control_records": source["control_records"],
+            "recorded_restore_command_sha256": source[
+                "recorded_restore_command_sha256"
+            ],
         }
         binary_hashes = {
             "source_gem5_sha256": source["source_gem5_hash"],

@@ -29,6 +29,51 @@ simTicks {ticks}
 ---------- End Simulation Statistics   ----------
 """
 
+TOKEN_STATS = """---------- Begin Simulation Statistics ----------
+simTicks {ticks}
+system.maa.page_materialization_submissions 4
+system.maa.page_materialization_pages 4
+system.maa.page_materialization_retirements 1
+system.maa.page_materialization_forwarded_lines 4
+system.maa.page_materialization_cache_read_fallback_lines 0
+system.maa.page_materialization_dispatch_fallbacks 0
+system.maa.page_materialization_admission_fallbacks 0
+system.maa.page_materialization_producer_line_acks 4
+system.maa.page_materialization_page_fallback_lines 0
+system.maa.direct_retirement_fallbacks 0
+---------- End Simulation Statistics   ----------
+"""
+
+TOKEN_TRACE = (
+    "\n".join(
+        [
+            "event=page_materialization_submit token=1 generation=1 incarnation=1 page={page} activation_count={count} new_context={new}".format(
+                page=page, count=page + 1, new=1 if page == 0 else 0
+            )
+            for page in range(4)
+        ]
+        + [
+            "event=page_materialization_page_ready token=1 generation=1 incarnation=1 page={page}".format(
+                page=page
+            )
+            for page in range(4)
+        ]
+        + [
+            "event=page_materialization_producer_line_ready token=1 generation=1 incarnation=1 forwarded=1",
+            "event=page_materialization_producer_line_ready token=1 generation=1 incarnation=1 forwarded=1",
+            "event=page_materialization_producer_line_ready token=1 generation=1 incarnation=1 forwarded=1",
+            "event=page_materialization_producer_line_ready token=1 generation=1 incarnation=1 forwarded=1",
+            "event=page_materialization_line_commit token=1 generation=1 incarnation=1",
+            "event=page_materialization_line_commit token=1 generation=1 incarnation=1",
+            "event=page_materialization_line_commit token=1 generation=1 incarnation=1",
+            "event=page_materialization_line_commit token=1 generation=1 incarnation=1",
+            "event=page_materialization_retire token=1 generation=1 incarnation=1 pages=4",
+            "event=page_materialization_summary token=1 generation=1 incarnation=1 exact_closure=1 pages=4 dispatch_fallbacks=0 lines=4 forwarded_lines=4 staged_direct_lines=0 cache_read_fallback_lines=0 producer_line_acks=4 page_fallback_lines=0",
+        ]
+    )
+    + "\n"
+)
+
 
 class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
     def write_file(self, path: Path, text: str) -> None:
@@ -52,6 +97,7 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             "libramulator.so",
             "ramulator.yaml",
             "hybrid",
+            "se.py",
         ):
             self.write_file(inputs / name, name + "\n")
         selector_path = source / "treatment.txt"
@@ -112,10 +158,31 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 + EXIT,
             )
             self.write_file(run / "gem5/stats.txt", STATS.format(ticks=1000))
+            command = [
+                str(inputs / "gem5.opt"),
+                "--listener-mode=off",
+                f"--outdir={run / 'gem5'}",
+                "--debug-flags=MAAVirtualTrace",
+                "--debug-file=virtual_trace.log",
+                str(inputs / "se.py"),
+                *runner.common_restore_args(inputs / "ramulator.yaml", 2, 4),
+                f"--checkpoint-dir={checkpoint}",
+                *runner.profile_args("hybrid"),
+                "--cmd",
+                str(inputs / "hybrid"),
+                "--options",
+                f"deferred {selector_path}",
+            ]
+            self.write_file(run / "restore.command.json", json.dumps(command))
             if arm["selector"] is not None:
                 self.write_file(
                     run / "treatment.txt", str(arm["selector"]) + "\n"
                 )
+            if str(arm["selector"] or "").startswith("token_stream_ld"):
+                self.write_file(
+                    run / "gem5/stats.txt", TOKEN_STATS.format(ticks=1000)
+                )
+                self.write_file(run / "gem5/virtual_trace.log", TOKEN_TRACE)
         artifacts = {
             "gem5": inputs / "gem5.opt",
             "ramulator_library": inputs / "libramulator.so",
@@ -192,18 +259,31 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             self.assertEqual(plan["frozen_source_arm"]["profile"], "hybrid")
             self.assertEqual(plan["source_control_exact_key"], "api-key")
 
-    def test_restore_command_keeps_the_source_matrix_cpu_shape(self) -> None:
-        command = runner.restore_command(
+    def test_recorded_restore_command_is_rebased_without_defaults(
+        self,
+    ) -> None:
+        command = runner.common_restore_args(Path("ramulator.yaml"), 2, 4)
+        command = [
+            "gem5",
+            "--outdir=old",
+            "se.py",
+            *command,
+            *runner.profile_args("hybrid"),
+            "--checkpoint-dir=old-cpt",
+            "--cmd",
+            "old-guest",
+            "--options",
+            "old-options",
+        ]
+        command = runner.rebase_recorded_restore_command(
+            command,
             Path("gem5"),
             Path("se.py"),
             Path("out"),
             Path("checkpoint"),
             Path("guest"),
             "deferred selector",
-            "hybrid",
             Path("ramulator.yaml"),
-            2,
-            4,
             [],
         )
         n_index = command.index("-n")
@@ -278,7 +358,11 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 )
                 log.with_suffix(".exit").write_text("0\n", encoding="utf-8")
                 self.write_file(
-                    log.parent / "gem5/stats.txt", STATS.format(ticks=999)
+                    log.parent / "gem5/stats.txt",
+                    TOKEN_STATS.format(ticks=999),
+                )
+                self.write_file(
+                    log.parent / "gem5/virtual_trace.log", TOKEN_TRACE
                 )
                 self.write_file(
                     source_root / "checkpoints/hybrid/gem5/m5.cpt",
@@ -355,7 +439,11 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 )
                 log.with_suffix(".exit").write_text("0\n", encoding="utf-8")
                 self.write_file(
-                    log.parent / "gem5/stats.txt", STATS.format(ticks=999)
+                    log.parent / "gem5/stats.txt",
+                    TOKEN_STATS.format(ticks=999),
+                )
+                self.write_file(
+                    log.parent / "gem5/virtual_trace.log", TOKEN_TRACE
                 )
                 return 0
 
@@ -437,7 +525,11 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
                 )
                 log.with_suffix(".exit").write_text("0\n", encoding="utf-8")
                 self.write_file(
-                    log.parent / "gem5/stats.txt", STATS.format(ticks=999)
+                    log.parent / "gem5/stats.txt",
+                    TOKEN_STATS.format(ticks=999),
+                )
+                self.write_file(
+                    log.parent / "gem5/virtual_trace.log", TOKEN_TRACE
                 )
                 return 0
 
@@ -529,6 +621,73 @@ class ReplayGeneralHybridCheckpointTreatmentTest(unittest.TestCase):
             self.assertIn("unsupported workload", stderr)
         with self.assertRaisesRegex(Exception, "frozen replay invariant"):
             runner.parse_sole_arm_gem5_arg("--checkpoint-dir=/bad")
+
+    def test_llc_size_and_duplicate_protected_options_are_rejected(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(Exception, "frozen replay invariant"):
+            runner.parse_sole_arm_gem5_arg("--l3_size=16MB")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 0, stderr)
+            # A second use of a protected source option is rejected before a run.
+            self.assertRaisesRegex(
+                ValueError,
+                "conflicts with frozen source option",
+                runner.require_nonconflicting_candidate_args,
+                ["--l3_size=8MB"],
+                ["--l3_size=16MB"],
+            )
+
+    def test_fractional_simticks_and_missing_token_closure_are_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            token_run = source / "arms/hybrid_token_stream_ld/replica-1"
+            self.write_file(
+                token_run / "gem5/stats.txt", TOKEN_STATS.format(ticks="1.5")
+            )
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("simTicks is not a positive integer", stderr)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            (
+                source
+                / "arms/hybrid_token_stream_ld/replica-1/gem5/virtual_trace.log"
+            ).unlink()
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("materializer trace", stderr)
+
+    def test_symlink_evidence_and_missing_recorded_command_are_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            guest = source / "inputs/hybrid"
+            replacement = source / "inputs/real-hybrid"
+            guest.rename(replacement)
+            guest.symlink_to(replacement.name)
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("not a regular file", stderr)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _ = self.make_source(root)
+            (
+                source
+                / "arms/hybrid_token_stream_ld/replica-1/restore.command.json"
+            ).unlink()
+            rc, _, stderr = self.plan(source, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("source control command", stderr)
 
 
 if __name__ == "__main__":
