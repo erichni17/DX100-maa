@@ -134,6 +134,23 @@ requires four controls: ordinary native16, ordinary native4, backed RMW with
 metadata/4K physical SPD. Only the last pair isolates virtualization overhead.
 Ordinary-to-backed comparisons measure the separate API/staging change.
 
+### Accepted pre-A scheduling improvement
+
+The default-off row-directed pre-A treatment now has a complete full GZP
+volume-only pair at
+`/data1/nier/dx100-runs/2026-08-14-gzp-pre-a-pair-f2865321-r2`.
+Both arms use the same binary, guest, selector, checkpoint, and resolved
+configuration except for `soa_jit_pre_a_value_lookahead`; both exit zero with
+exact output hash `11225737641199706160`, the 1,180,000-element reference,
+61/61 SoA/JIT terminals, and closed traffic ledgers.
+
+The control is 7,293,533,199 ticks and the treatment is 7,115,533,855 ticks:
+2.4405% fewer ticks, or 1.025015599x speedup. The native16 gap drops from
+25.1694% to 22.1147%. This validates overlapping exact value requests with an
+outstanding A read, at effectively no payload-storage cost, but leaves a large
+application gap. It should be combined with traffic elimination rather than
+treated as the final hybrid optimization.
+
 ## Promotion status
 
 The API experiment establishes optimized gather feasibility. GZP is exact but

@@ -2,7 +2,7 @@
 
 Date: 2026-08-14
 Scope: logical/metadata 16K Row/Offset reorder with physical 4K SPD and backing
-Status: implemented and micro-validated; promote only to the CG/volume-only generality gate
+Status: implemented, micro-validated, and exact-pass on one full GZP pair; CG gate running
 
 ## Recommendation
 
@@ -30,6 +30,37 @@ Treatment is 0.6281% lower in `simTicks` (1.006320460x speedup) in each replica 
 Correctness and comparability pass: exact output hash `2761840269561229581`, 29,689 selected plus 3,079 rejected aliases, 126/126 A reads and 126/126 A writes, two terminal completions, zero errors, empty terminal state, and zero sequential-prefetch issues/responses/promotions/discards in every arm. The only command treatment delta is `--maa_soa_jit_pre_a_value_lookahead`; logical/metadata 16K, physical 4K, predicate credits 16, index lines 4, contexts 32, lookahead 8, value cache enabled, owners 32, and apply lanes 1 are fixed.
 
 Per the gem5 evidence checklist, this supports promotion to paired NAS CG and GZP volume-only tests. It does **not** justify default-on status or a full publisher-backed GZP claim. No full GZP run was launched.
+
+### Full GZP volume-only result
+
+Raw root: `/data1/nier/dx100-runs/2026-08-14-gzp-pre-a-pair-f2865321-r2`
+
+The promoted same-checkpoint pair is now complete. Both arms exited zero and
+passed exact output hash `11225737641199706160`, zero non-finite values, the
+1,180,000-element scalar reference, the GZP terminal marker, all 61 logical
+16K SoA/JIT completions, and request/response and terminal-state closure. The
+resolved configurations are identical after removing the one treatment line,
+`soa_jit_pre_a_value_lookahead`.
+
+| Arm | `simTicks` | Context stalls | Value reads | Pre-A issue/ready/use |
+|---|---:|---:|---:|---:|
+| Control | 7,293,533,199 | 7,728,184 | 1,762,292 | 0 / 0 / 0 |
+| Pre-A lookahead | 7,115,533,855 | 7,006,828 | 1,751,144 | 1,867,518 / 976,580 / 1,867,518 |
+
+The treatment is 2.4405% lower in ticks, a 1.025015599x speedup. Relative to
+the accepted native16 endpoint of 5,826,927,879 ticks, it reduces the hybrid
+gap from 25.1694% to 22.1147%. Context stalls fall 9.3341%, and 52.2929% of
+the pre-A slots are ready when their A response arrives. Physical value reads
+fall 0.6326%.
+
+`IND_SoaJitValueStalls` rises from 3,850,422 to 7,022,194 because the feature
+starts bounded value work earlier and therefore exposes more value-owner
+backpressure events. That counter increase is not a correctness failure and
+does not contradict the lower end-to-end ticks; the treatment's measured
+benefit is latency overlap and lower context blocking, not additional ports or
+bandwidth. This is one exact paired instance, so it supports the mechanism and
+the next combination experiment but is not yet a multi-replica default-on
+claim.
 
 ## Why this is the next experiment
 
