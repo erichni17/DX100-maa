@@ -352,6 +352,127 @@ testMaskedFragmentDefaultOffPreservesCacheFallback()
 }
 
 void
+makeMaterializationLineReady(Queue &queue, const Queue::ContextKey &owner,
+                             uint16_t line, uint64_t transaction)
+{
+    const Pipeline::ProducerLineAck ack{
+        owner.generation, line, 0xff, transaction};
+    CHECK(queue.notifyProducerLineWriteAck(owner, ack));
+}
+
+void
+testInactiveLookupMissRebindsAfterUnrelatedCapture()
+{
+    Queue queue;
+    Queue::ContextKey owner;
+    CHECK(queue.submit(materializerDescriptor(), &owner) ==
+          Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+    makeMaterializationLineReady(queue, owner, 0, 0x1000);
+    const Queue::Request stale = queue.pendingRead(owner);
+
+    // The one-cycle lookup does not reserve stale.buffer.  An unrelated
+    // producer response can use it before the miss reaches cache fallback.
+    makeMaterializationLineReady(queue, owner, 1, 0x1001);
+    const auto bytes = linePayload(0x810);
+    Queue::Request unrelated;
+    CHECK(queue.captureMaterializationLine(owner, 1, bytes.data(),
+                                           bytes.size(), &unrelated));
+    CHECK(unrelated.request.buffer == stale.request.buffer);
+
+    Queue::Request rebound;
+    CHECK(queue.rebindMaterializationRead(stale, &rebound) ==
+          Queue::MaterializationReadRebind::Rebound);
+    CHECK(rebound.owner.tokenTile == stale.owner.tokenTile);
+    CHECK(rebound.owner.generation == stale.owner.generation);
+    CHECK(rebound.owner.incarnation == stale.owner.incarnation);
+    CHECK(rebound.request.line == stale.request.line);
+    CHECK(rebound.request.address == stale.request.address);
+    CHECK(rebound.request.transactionID == stale.request.transactionID);
+    CHECK(rebound.request.buffer != stale.request.buffer);
+}
+
+void
+testInactiveLookupMissDiscardsSameLineDirectCapture()
+{
+    Queue queue;
+    Queue::ContextKey owner;
+    CHECK(queue.submit(materializerDescriptor(), &owner) ==
+          Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+    makeMaterializationLineReady(queue, owner, 3, 0x1010);
+    const Queue::Request stale = queue.pendingRead(owner);
+    const auto bytes = linePayload(0x820);
+    Queue::Request captured;
+
+    // This models the retained-payload hit path: it remains direct capture
+    // and closes the line before a concurrently completed miss may issue.
+    CHECK(queue.captureMaterializationLine(owner, 3, bytes.data(),
+                                           bytes.size(), &captured));
+    Queue::Request rebound;
+    CHECK(queue.rebindMaterializationRead(stale, &rebound) ==
+          Queue::MaterializationReadRebind::Closed);
+    CHECK(rebound.request.kind == Pipeline::Kind::None);
+}
+
+void
+testInactiveLookupMissWaitsForFreshCredit()
+{
+    Queue queue;
+    Queue::ContextKey owner;
+    CHECK(queue.submit(materializerDescriptor(), &owner) ==
+          Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+    makeMaterializationLineReady(queue, owner, 0, 0x1020);
+    const Queue::Request stale = queue.pendingRead(owner);
+    const auto bytes = linePayload(0x830);
+    std::array<Queue::Request, Pipeline::LineBufferCount> captured{};
+    for (uint16_t line = 1; line <= Pipeline::LineBufferCount; ++line) {
+        makeMaterializationLineReady(queue, owner, line, 0x1020 + line);
+        CHECK(queue.captureMaterializationLine(owner, line, bytes.data(),
+                                               bytes.size(),
+                                               &captured[line - 1]));
+    }
+
+    Queue::Request rebound;
+    CHECK(queue.rebindMaterializationRead(stale, &rebound) ==
+          Queue::MaterializationReadRebind::NoCredit);
+    CHECK(queue.completeMaterialize(captured[0]));
+    CHECK(queue.rebindMaterializationRead(stale, &rebound) ==
+          Queue::MaterializationReadRebind::Rebound);
+    CHECK(rebound.request.line == 0);
+}
+
+void
+testInactiveLookupMissRebindClosesExactPacketRequest()
+{
+    Queue queue;
+    Queue::ContextKey owner;
+    CHECK(queue.submit(materializerDescriptor(), &owner) ==
+          Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+    makeMaterializationLineReady(queue, owner, 0, 0x1030);
+    const Queue::Request stale = queue.pendingRead(owner);
+    const auto bytes = linePayload(0x840);
+    Queue::Request unrelated;
+    makeMaterializationLineReady(queue, owner, 1, 0x1031);
+    CHECK(queue.captureMaterializationLine(owner, 1, bytes.data(),
+                                           bytes.size(), &unrelated));
+
+    Queue::Request rebound;
+    CHECK(queue.rebindMaterializationRead(stale, &rebound) ==
+          Queue::MaterializationReadRebind::Rebound);
+    CHECK(queue.accept(rebound));
+    CHECK(!queue.accept(stale));
+    CHECK(queue.completeRead(rebound, bytes.data(), bytes.size()));
+    CHECK(queue.completeMaterialize(rebound));
+    Queue::Snapshot snapshot;
+    CHECK(queue.snapshot(owner, &snapshot));
+    CHECK(snapshot.readsAccepted == 2);
+    CHECK(snapshot.completed == 1);
+}
+
+void
 driveCacheReadPage(Queue &queue, const Queue::ContextKey &owner,
                    uint8_t destination, uint64_t &tick,
                    BoundedCommitHarness &commits)
@@ -467,6 +588,10 @@ main()
     testAuthenticatedMaskedFragmentAccumulation();
     testMaskedFragmentBoundAndFallbackSafety();
     testMaskedFragmentDefaultOffPreservesCacheFallback();
+    testInactiveLookupMissRebindsAfterUnrelatedCapture();
+    testInactiveLookupMissDiscardsSameLineDirectCapture();
+    testInactiveLookupMissWaitsForFreshCredit();
+    testInactiveLookupMissRebindClosesExactPacketRequest();
     testLateAckForwardingCommitTickAndTwoChargedPages();
     std::cout << "hybrid page materializer tests passed\n";
     return 0;

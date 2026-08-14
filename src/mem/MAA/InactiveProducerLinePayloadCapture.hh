@@ -444,10 +444,15 @@ class InactiveProducerLinePayloadCapture
     static constexpr std::size_t OutputPayloadBits = LineBytes * 8;
     static constexpr std::size_t GlobalControlBits = 10 + 1 + 10 + 10;
     // Context owner + complete materializer request + payload-only identity
-    // suffix + one-cycle hit/miss timing state.
+    // suffix + one-cycle hit/miss timing state, plus four fixed exact-miss
+    // fallback latches (valid + owner + complete request) and their two-bit
+    // round-robin cursor. A fallback never retains a line buffer and must
+    // rebind that request before cache issue.
     static constexpr std::size_t MAALookupControlBits =
         (16 + 64 + 64) + (2 + 16 + 5 + 3 + 64 + 16 + 64) +
-        (64 + 64) + (1 + 64 + 3);
+        (64 + 64) + (1 + 64 + 3) +
+        SlotCount * (1 + (16 + 64 + 64) +
+                     (2 + 16 + 5 + 3 + 64 + 16 + 64)) + 2;
     static constexpr std::size_t PayloadIncarnationBitsPerToken = 64;
 
     static constexpr std::size_t bitsToBytes(std::size_t bits)
@@ -823,7 +828,7 @@ static_assert(InactiveProducerLinePayloadCapture::KeyBits == 208);
 static_assert(InactiveProducerLinePayloadCapture::EntryTagBits == 289);
 static_assert(InactiveProducerLinePayloadCapture::DescriptorBits == 625);
 static_assert(InactiveProducerLinePayloadCapture::MAALookupControlBits ==
-              510);
+              1772);
 static_assert(
     InactiveProducerLinePayloadCapture::PayloadIncarnationBitsPerToken == 64);
 

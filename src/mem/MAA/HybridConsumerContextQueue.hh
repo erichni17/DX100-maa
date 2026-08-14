@@ -71,6 +71,19 @@ class HybridConsumerContextQueue
         Pipeline::Request request{};
     };
 
+    /**
+     * Outcome of revalidating a speculative materializer read after an
+     * asynchronous side lookup.  A lookup must not retain a buffer credit:
+     * another authoritative producer response may consume the old buffer
+     * while the lookup is in flight.
+     */
+    enum class MaterializationReadRebind : uint8_t
+    {
+        Rebound,
+        NoCredit,
+        Closed,
+    };
+
     struct Snapshot
     {
         bool complete = false;
@@ -165,6 +178,43 @@ class HybridConsumerContextQueue
         const Pipeline::Request request = context->pipeline.pendingRead();
         return request.kind == Pipeline::Kind::None
             ? Request{} : Request{context->key, request};
+    }
+
+    /**
+     * Rebind an unaccepted ReadBacking candidate to the current exact
+     * owner/line state.  The returned request can carry a different free
+     * buffer, but it keeps the same owner, line, address, port, and
+     * transaction identity.  A line that was directly captured or otherwise
+     * advanced while the lookup ran is Closed; a still-ready line with every
+     * charged buffer busy is NoCredit.
+     */
+    MaterializationReadRebind rebindMaterializationRead(
+        const Request &stale, Request *rebound) const
+    {
+        if (rebound != nullptr)
+            *rebound = {};
+        if (stale.request.kind != Pipeline::Kind::ReadBacking)
+            return MaterializationReadRebind::Closed;
+        const Context *context = find(stale.owner);
+        if (context == nullptr ||
+            context->pipeline.mode() != Pipeline::Mode::MaterializePages ||
+            stale.request.line >= context->pipeline.lines() ||
+            context->pipeline.materializationPage() >=
+                Pipeline::ProducerPages ||
+            stale.request.line /
+                    context->pipeline.producerPageLines() !=
+                context->pipeline.materializationPage() ||
+            context->pipeline.lineState(stale.request.line) !=
+                Pipeline::LineState::ReadyForRead) {
+            return MaterializationReadRebind::Closed;
+        }
+        const Pipeline::Request fresh =
+            context->pipeline.pendingReadLine(stale.request.line);
+        if (fresh.kind == Pipeline::Kind::None)
+            return MaterializationReadRebind::NoCredit;
+        if (rebound != nullptr)
+            *rebound = {context->key, fresh};
+        return MaterializationReadRebind::Rebound;
     }
 
     Request pendingWrite() const

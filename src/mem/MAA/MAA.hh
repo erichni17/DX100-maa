@@ -646,6 +646,20 @@ protected:
         InactiveProducerLinePayloadCapture::LookupPipeline timing{};
     };
     InactivePayloadLookup inactivePayloadLookup;
+    struct InactivePayloadFallback
+    {
+        bool pending = false;
+        HybridConsumerContextQueue::Request request{};
+    };
+    // One exact proven miss may wait per materializer context.  This fixed
+    // table prevents a credit-stalled miss from blocking or overwriting the
+    // round-robin lookup work of the other three contexts.
+    static_assert(HybridConsumerContextQueue::ContextCount ==
+                  InactiveProducerLinePayloadCapture::SlotCount);
+    std::array<InactivePayloadFallback,
+               HybridConsumerContextQueue::ContextCount>
+        inactivePayloadFallbacks{};
+    uint8_t nextInactivePayloadFallback = 0;
     std::array<DirectRetirementExecution,
                HybridConsumerContextQueue::ContextCount>
         directRetirementExecutions{};
