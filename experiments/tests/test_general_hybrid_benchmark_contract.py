@@ -2,8 +2,12 @@
 """Deterministic command/selector contract for the matched micro matrix."""
 
 import importlib.util
+import io
+import json
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -138,6 +142,110 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             self.assertIn("--debug-flags=MAAVirtualTrace", command)
             self.assertIn("--debug-file=virtual_trace.log", command)
         self.assertIn("--l3_ports=8", restore)
+
+    def test_restore_arm_gem5_args_are_exact_and_fail_closed(self) -> None:
+        arms = runner.make_arms("api", True, False, [])
+        self.assertEqual(runner.restore_arm_gem5_args([], arms), {})
+        mapping = runner.restore_arm_gem5_args(
+            [
+                runner.parse_restore_arm_gem5_arg(
+                    "hybrid_token_stream_ld="
+                    "--maa_virtual_masked_fragment_slots=8"
+                )
+            ],
+            arms,
+        )
+        self.assertEqual(
+            mapping,
+            {
+                "hybrid_token_stream_ld": (
+                    "--maa_virtual_masked_fragment_slots=8"
+                )
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            runner.restore_arm_gem5_args(
+                [("native16", "--a=1"), ("native16", "--b=2")], arms
+            )
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            runner.restore_arm_gem5_args([("missing", "--a=1")], arms)
+        for malformed in ("native16", "native16=not-an-option", "=--a=1"):
+            with self.assertRaises(Exception):
+                runner.parse_restore_arm_gem5_arg(malformed)
+
+    def test_restore_arm_args_are_in_plan_and_not_checkpoint_commands(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs = {
+                name: root / name
+                for name in (
+                    "gem5",
+                    "ramulator.so",
+                    "ramulator.yaml",
+                    "se.py",
+                    "native16",
+                    "native4",
+                    "hybrid",
+                )
+            }
+            for path in inputs.values():
+                path.write_text("input", encoding="utf-8")
+            stdout = io.StringIO()
+            argv = [
+                str(RUNNER),
+                "--workload",
+                "api",
+                "--out",
+                str(root / "out"),
+                "--gem5",
+                str(inputs["gem5"]),
+                "--ramulator-library",
+                str(inputs["ramulator.so"]),
+                "--ramulator-config",
+                str(inputs["ramulator.yaml"]),
+                "--config",
+                str(inputs["se.py"]),
+                "--native16",
+                str(inputs["native16"]),
+                "--native4",
+                str(inputs["native4"]),
+                "--hybrid",
+                str(inputs["hybrid"]),
+                "--hybrid-options",
+                "deferred {selector}",
+                "--shared-native16-hybrid-checkpoint",
+                "--restore-arm-gem5-arg",
+                "hybrid_token_stream_ld=--maa_virtual_masked_fragment_slots=8",
+            ]
+            with patch.object(sys, "argv", argv), redirect_stdout(stdout):
+                self.assertEqual(runner.main(), 0)
+            plan = json.loads(stdout.getvalue())
+            self.assertEqual(
+                plan["restore_arm_gem5_args"],
+                {
+                    "hybrid_token_stream_ld": (
+                        "--maa_virtual_masked_fragment_slots=8"
+                    )
+                },
+            )
+        self.assertEqual(
+            runner.restore_args_for_arm(
+                ["--global=1"],
+                plan["restore_arm_gem5_args"],
+                "hybrid_token_stream_ld",
+            ),
+            ["--global=1", "--maa_virtual_masked_fragment_slots=8"],
+        )
+        checkpoint = runner.checkpoint_command(
+            Path("gem5.opt"),
+            Path("se.py"),
+            Path("checkpoint-out"),
+            Path("micro"),
+            "deferred selector.txt",
+        )
+        self.assertNotIn("--maa_virtual_masked_fragment_slots=8", checkpoint)
 
     def test_config_freeze_preserves_relative_import_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

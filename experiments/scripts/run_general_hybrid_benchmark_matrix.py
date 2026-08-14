@@ -119,6 +119,48 @@ def parse_future_arm(value: str) -> dict[str, str]:
     return {"name": name, "selector": selector}
 
 
+def parse_restore_arm_gem5_arg(value: str) -> tuple[str, str]:
+    """Parse one restore-only arm-specific gem5 option."""
+    if "=" not in value:
+        raise argparse.ArgumentTypeError(
+            "restore arm gem5 arg must be ARM=ARG"
+        )
+    arm, argument = value.split("=", 1)
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+    if not arm or any(character not in allowed for character in arm):
+        raise argparse.ArgumentTypeError("restore arm name is not path-safe")
+    if not argument.startswith("--") or any(
+        character.isspace() for character in argument
+    ):
+        raise argparse.ArgumentTypeError(
+            "restore arm gem5 arg must be one --option token"
+        )
+    return arm, argument
+
+
+def restore_arm_gem5_args(
+    values: list[tuple[str, str]], arms: list[dict[str, object]]
+) -> dict[str, str]:
+    """Validate a fail-closed arm-to-restore-option mapping."""
+    mapping: dict[str, str] = {}
+    for arm, argument in values:
+        if arm in mapping:
+            raise ValueError(f"duplicate restore arm gem5 arg: {arm}")
+        mapping[arm] = argument
+    known_arms = {str(arm["name"]) for arm in arms}
+    unknown = sorted(set(mapping) - known_arms)
+    if unknown:
+        raise ValueError("unknown restore arm gem5 arg: " + ", ".join(unknown))
+    return mapping
+
+
+def restore_args_for_arm(
+    extra: list[str], mapping: dict[str, str], arm_name: str
+) -> list[str]:
+    """Return global restore options plus the option for this arm, if any."""
+    return [*extra, *([mapping[arm_name]] if arm_name in mapping else [])]
+
+
 def make_arms(
     workload: str,
     has_hybrid: bool,
@@ -508,6 +550,17 @@ def parse_args() -> argparse.Namespace:
         "--future-arm", action="append", default=[], type=parse_future_arm
     )
     parser.add_argument("--extra-gem5-arg", action="append", default=[])
+    parser.add_argument(
+        "--restore-arm-gem5-arg",
+        action="append",
+        default=[],
+        type=parse_restore_arm_gem5_arg,
+        metavar="ARM=ARG",
+        help=(
+            "restore only: add one gem5 option to exactly one named arm; "
+            "repeat for other arms"
+        ),
+    )
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     if args.replicas < 1 or args.mem_channels < 1:
@@ -561,6 +614,9 @@ def main() -> int:
                     "hybrid guest binaries"
                 )
             arms = share_api_native16_hybrid_checkpoint(args.workload, arms)
+        restore_arm_args = restore_arm_gem5_args(
+            args.restore_arm_gem5_arg, arms
+        )
         render_options(args.native16_options, None, args.workload_input)
         render_options(args.native4_options, None, args.workload_input)
         if args.hybrid:
@@ -584,6 +640,7 @@ def main() -> int:
             "shared_native16_hybrid_checkpoint": (
                 args.shared_native16_hybrid_checkpoint
             ),
+            "restore_arm_gem5_args": restore_arm_args,
             "note": (
                 "token_stream_ld arms are correctness controls; explicit "
                 "future arms are not assumed equivalent"
@@ -720,6 +777,7 @@ def main() -> int:
         "selector_path": str(selector) if args.hybrid else None,
         "artifacts": artifact_identity,
         "extra_gem5_args": args.extra_gem5_arg,
+        "restore_arm_gem5_args": restore_arm_args,
         "interpretation": {
             "token_stream_ld": "one-page correctness control",
             "token_stream_ld_page0_prearm": (
@@ -791,7 +849,9 @@ def main() -> int:
                     frozen_ramulator_config,
                     args.mem_channels,
                     args.l3_ports,
-                    args.extra_gem5_arg,
+                    restore_args_for_arm(
+                        args.extra_gem5_arg, restore_arm_args, arm_name
+                    ),
                 )
                 rc = run_logged(command, run_dir / "restore.log", environment)
                 if rc != 0:
