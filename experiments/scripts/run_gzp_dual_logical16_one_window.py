@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,9 +24,13 @@ ARMS = (
     ("volume_only", "token_stream_ld volume_masked_index"),
     ("dual_logical16", "token_stream_ld dual_logical16"),
 )
-N = 16384
-EXPECTED_OUTPUT_HASH = "12472729817211538253"
-EXPECTED_PUBLISH_LINES = 4 * 256
+LOGICAL_ELEMENTS = 16384
+EXPECTED_OUTPUT_HASH = {
+    16384: "12472729817211538253",
+    1_000_000: "11225737641199706160",
+}
+EXPECTED_REFERENCE_ELEMENTS = {16384: 196384, 1_000_000: 1180000}
+PUBLISH_LINES_PER_WINDOW = 4 * 256
 SOA_LEDGER_PAIRS = (
     ("IND_SoaJitPredicateLineReads", "IND_SoaJitPredicateLineResponses"),
     ("IND_SoaJitAReadIssues", "IND_SoaJitAReadResponses"),
@@ -58,6 +63,10 @@ def parse_args() -> argparse.Namespace:
         "--active-value-owners", type=int, choices=(32, 64, 128), default=32
     )
     parser.add_argument("--replicas", type=int, choices=range(1, 9), default=1)
+    parser.add_argument(
+        "--n", type=int, choices=EXPECTED_OUTPUT_HASH, default=16384
+    )
+    parser.add_argument("--parallel-restores", action="store_true")
     parser.add_argument("--expected-gem5-sha256")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
@@ -79,7 +88,7 @@ def optional_max(stats: dict[str, int], suffix: str) -> int:
     )
 
 
-def analyze_run(name: str, run: Path) -> dict[str, int | str]:
+def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
     if (run / "restore.exit").read_text().strip() != "0":
         raise RuntimeError(f"{name}: restore wrapper failed")
     log = (run / "restore.log").read_text(errors="replace")
@@ -109,11 +118,11 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
         common.exactly_one(lines, "UME_GZP_TERMINAL ")
     )
     if (
-        output.get("output_hash") != EXPECTED_OUTPUT_HASH
+        output.get("output_hash") != EXPECTED_OUTPUT_HASH[n]
         or output.get("nonfinite") != "0"
         or reference.get("point_volume_errors") != "0"
         or reference.get("point_gradient_errors") != "0"
-        or reference.get("elements") != "196384"
+        or reference.get("elements") != str(EXPECTED_REFERENCE_ELEMENTS[n])
     ):
         raise RuntimeError(f"{name}: exact FP32 output gate failed")
     zero_ledger = (
@@ -129,9 +138,11 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
     ):
         raise RuntimeError(f"{name}: masked-index ledger failed")
 
-    expected_instructions = 1 if name == "volume_only" else 2
-    expected_selected = int(ledger["full_selected"]) * expected_instructions
-    expected_rejected = int(ledger["full_rejected"]) * expected_instructions
+    full_windows = n // LOGICAL_ELEMENTS
+    instruction_multiplier = 1 if name == "volume_only" else 2
+    expected_instructions = full_windows * instruction_multiplier
+    expected_selected = int(ledger["full_selected"]) * instruction_multiplier
+    expected_rejected = int(ledger["full_rejected"]) * instruction_multiplier
     stats = common.first_stats(run / "gem5/stats.txt")
     soa = {
         suffix: common.sum_suffix(stats, suffix)
@@ -189,17 +200,22 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
     trace_path = run / "gem5/virtual_trace.log"
     if not trace_path.is_file():
         raise RuntimeError(f"{name}: missing virtual trace")
-    trace_text = trace_path.read_text(errors="replace")
-    soa_terminals = [
-        common.parse_fields(line)
-        for line in trace_text.splitlines()
-        if "event=soa_jit_complete" in line and "terminal=1" in line
-    ]
+    soa_terminals: list[dict[str, str]] = []
+    publish_trace_counts = {
+        event: 0 for event in ("issue", "accept", "response", "terminal")
+    }
+    with trace_path.open(errors="replace") as trace:
+        for line in trace:
+            if "event=soa_jit_complete" in line and "terminal=1" in line:
+                soa_terminals.append(common.parse_fields(line))
+            for event in publish_trace_counts:
+                if f"event=spd_publish_{event} " in line:
+                    publish_trace_counts[event] += 1
     if len(soa_terminals) != expected_instructions or any(
         entry.get("predicate_mode") != "masked_index"
         or int(entry.get("selected", "-1"))
         + int(entry.get("predicate_rejected", "-1"))
-        != N
+        != LOGICAL_ELEMENTS
         or entry.get("a_reads", "0/1").split("/")[0]
         != entry.get("a_reads", "1/0").split("/")[-1]
         or entry.get("a_writes", "0/1").split("/")[0]
@@ -213,7 +229,9 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
         if name == "volume_only"
         else "dual_logical16_soa_jit"
     )
-    expected_gradient_values = 0 if name == "volume_only" else N
+    expected_gradient_values = (
+        0 if name == "volume_only" else full_windows * LOGICAL_ELEMENTS
+    )
     expected_publisher = (
         "masked_index_no_predicate_publication"
         if name == "volume_only"
@@ -221,8 +239,12 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
     )
     required_terminal = {
         "treatment": expected_treatment,
-        "masked_index_windows": "1" if name == "volume_only" else "0",
-        "dual_logical16_windows": "0" if name == "volume_only" else "1",
+        "masked_index_windows": (
+            str(full_windows) if name == "volume_only" else "0"
+        ),
+        "dual_logical16_windows": (
+            "0" if name == "volume_only" else str(full_windows)
+        ),
         "published_predicates": "0",
         "published_gradient_values": str(expected_gradient_values),
         "published_gradient_bytes": str(expected_gradient_values * 4),
@@ -256,8 +278,10 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
             "STR_PublishOverlapIssues",
         )
     }
-    expected_lines = 0 if name == "volume_only" else EXPECTED_PUBLISH_LINES
-    expected_terminals = 0 if name == "volume_only" else 4
+    expected_lines = (
+        0 if name == "volume_only" else full_windows * PUBLISH_LINES_PER_WINDOW
+    )
+    expected_terminals = 0 if name == "volume_only" else full_windows * 4
     if (
         publish["STR_PublishIssues"] != expected_lines
         or publish["STR_PublishAccepts"] != expected_lines
@@ -267,10 +291,6 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
         != (0 if name == "volume_only" else 8)
     ):
         raise RuntimeError(f"{name}: publisher WriteResp ledger failed")
-    publish_trace_counts = {
-        event: trace_text.count(f"event=spd_publish_{event} ")
-        for event in ("issue", "accept", "response", "terminal")
-    }
     if publish_trace_counts != {
         "issue": expected_lines,
         "accept": expected_lines,
@@ -279,7 +299,11 @@ def analyze_run(name: str, run: Path) -> dict[str, int | str]:
     }:
         raise RuntimeError(f"{name}: publisher trace ledger failed")
 
-    expected_rmw_instructions = 5 if name == "volume_only" else 2
+    tail_rmw_instructions = 2 if n % LOGICAL_ELEMENTS else 0
+    expected_rmw_instructions = (
+        full_windows * (5 if name == "volume_only" else 2)
+        + tail_rmw_instructions
+    )
     rmw_instructions = optional_sum(stats, "numInst_INDRMW")
     rmw_cycles = optional_sum(stats, "cycles_INDRMW")
     if rmw_instructions != expected_rmw_instructions or rmw_cycles <= 0:
@@ -374,8 +398,8 @@ def compare(
 def main() -> int:
     args = parse_args()
     plan = {
-        "schema": "dx100.gzp_dual_logical16_one_window.v2",
-        "n": N,
+        "schema": "dx100.gzp_dual_logical16_gate.v3",
+        "n": args.n,
         "arms": [name for name, _ in ARMS],
         "shared_guest": True,
         "shared_checkpoint": True,
@@ -386,8 +410,9 @@ def main() -> int:
         "active_contexts": args.active_contexts,
         "active_value_owners": args.active_value_owners,
         "replicas": args.replicas,
+        "parallel_restores": args.parallel_restores,
         "trace_flags": ["MAAVirtualTrace", "MAATrace"],
-        "full_gzp_authorized": False,
+        "full_gzp_authorized": args.n == 1_000_000,
     }
     if not args.execute:
         print(json.dumps(plan, indent=2, sort_keys=True))
@@ -434,7 +459,7 @@ def main() -> int:
             frozen_config,
             checkpoint,
             guest,
-            f"{N} {selector}",
+            f"{args.n} {selector}",
         )
         if common.run_logged(
             checkpoint_command, args.out / "checkpoint.log", env
@@ -470,25 +495,23 @@ def main() -> int:
             "--maa_soa_jit_apply_lanes=1",
             "--maa_soa_jit_pre_a_value_lookahead",
         ]
-        rows: list[dict[str, int | str]] = []
-        run_records: list[dict[str, str]] = []
+        jobs: list[dict[str, object]] = []
         for replica in range(1, args.replicas + 1):
             for name, payload in ARMS:
                 run_name = name if args.replicas == 1 else f"{name}_r{replica}"
                 run = args.out / "runs" / run_name
                 run.mkdir(parents=True)
-                common.atomic_text(selector, payload + "\n")
-                common.atomic_text(
-                    run / "frozen_treatment.txt", payload + "\n"
-                )
-                selector_hash = common.sha256(selector)
+                frozen_selector = run / "frozen_treatment.txt"
+                common.atomic_text(frozen_selector, payload + "\n")
+                frozen_selector.chmod(0o444)
+                selector_hash = common.sha256(frozen_selector)
                 command = matrix.restore_command(
                     args.gem5.resolve(),
                     frozen_config,
                     run / "gem5",
                     checkpoint,
                     guest,
-                    f"{N} {selector}",
+                    f"{args.n} {selector}",
                     "hybrid",
                     ramulator,
                     args.mem_channels,
@@ -503,46 +526,105 @@ def main() -> int:
                 command[
                     command.index(virtual_trace_flag)
                 ] = "--debug-flags=MAAVirtualTrace,MAATrace"
-                if matrix.tree_identity(checkpoint) != checkpoint_identity:
-                    raise RuntimeError(
-                        "shared checkpoint changed before restore"
-                    )
-                if common.run_logged(command, run / "restore.log", env):
-                    raise RuntimeError(f"{run_name}: restore failed")
-                if common.sha256(selector) != selector_hash:
-                    raise RuntimeError(
-                        f"{run_name}: selector changed during restore"
-                    )
-                if matrix.tree_identity(checkpoint) != checkpoint_identity:
-                    raise RuntimeError(
-                        "shared checkpoint changed during restore"
-                    )
-                config = (run / "gem5/config.ini").read_text()
-                for required_config in (
-                    "num_tile_elements=16384",
-                    "physical_tile_elements=4096",
-                    f"soa_jit_active_contexts={args.active_contexts}",
-                    "soa_jit_pre_a_value_lookahead=true",
-                    f"soa_jit_active_value_owners={args.active_value_owners}",
-                ):
-                    if required_config not in config:
-                        raise RuntimeError(
-                            f"{run_name}: missing {required_config}"
-                        )
-                row = analyze_run(name, run)
-                row["replica"] = replica
-                rows.append(row)
-                run_records.append(
+                jobs.append(
                     {
                         "arm": name,
+                        "payload": payload,
                         "replica": replica,
-                        "selector": payload,
+                        "run_name": run_name,
+                        "run": run,
+                        "frozen_selector": frozen_selector,
                         "selector_sha256": selector_hash,
-                        "command_sha256": common.sha256(
-                            run / "restore.command.json"
-                        ),
+                        "command": command,
                     }
                 )
+
+        if matrix.tree_identity(checkpoint) != checkpoint_identity:
+            raise RuntimeError("shared checkpoint changed before restores")
+        bwrap = shutil.which("bwrap")
+        if args.parallel_restores and bwrap is None:
+            raise RuntimeError(
+                "parallel restores require bwrap selector isolation"
+            )
+
+        def execute_restore(job: dict[str, object]) -> dict[str, object]:
+            run = job["run"]
+            command = job["command"]
+            if not isinstance(run, Path) or not isinstance(command, list):
+                raise RuntimeError("invalid restore job")
+            if args.parallel_restores:
+                frozen_selector = job["frozen_selector"]
+                if not isinstance(frozen_selector, Path):
+                    raise RuntimeError("invalid frozen selector")
+                command = [
+                    str(bwrap),
+                    "--die-with-parent",
+                    "--bind",
+                    "/",
+                    "/",
+                    "--ro-bind",
+                    str(frozen_selector.resolve()),
+                    str(selector.resolve()),
+                    "--",
+                    *command,
+                ]
+            else:
+                common.atomic_text(selector, str(job["payload"]) + "\n")
+                if common.sha256(selector) != job["selector_sha256"]:
+                    raise RuntimeError(
+                        f"{job['run_name']}: shared selector setup failed"
+                    )
+            if common.run_logged(command, run / "restore.log", env):
+                raise RuntimeError(f"{job['run_name']}: restore failed")
+            frozen_selector = job["frozen_selector"]
+            if (
+                not isinstance(frozen_selector, Path)
+                or common.sha256(frozen_selector) != job["selector_sha256"]
+            ):
+                raise RuntimeError(f"{job['run_name']}: selector changed")
+            if (
+                not args.parallel_restores
+                and common.sha256(selector) != job["selector_sha256"]
+            ):
+                raise RuntimeError(
+                    f"{job['run_name']}: shared selector changed during restore"
+                )
+            return {
+                "arm": job["arm"],
+                "replica": job["replica"],
+                "selector": job["payload"],
+                "selector_sha256": job["selector_sha256"],
+                "command_sha256": common.sha256(run / "restore.command.json"),
+            }
+
+        if args.parallel_restores:
+            with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
+                run_records = list(executor.map(execute_restore, jobs))
+        else:
+            run_records = [execute_restore(job) for job in jobs]
+        if matrix.tree_identity(checkpoint) != checkpoint_identity:
+            raise RuntimeError("shared checkpoint changed during restores")
+
+        rows: list[dict[str, int | str]] = []
+        for job in jobs:
+            run = job["run"]
+            if not isinstance(run, Path):
+                raise RuntimeError("invalid completed restore job")
+            config = (run / "gem5/config.ini").read_text()
+            for required_config in (
+                "num_tile_elements=16384",
+                "physical_tile_elements=4096",
+                f"soa_jit_active_contexts={args.active_contexts}",
+                "soa_jit_pre_a_value_lookahead=true",
+                f"soa_jit_active_value_owners={args.active_value_owners}",
+            ):
+                if required_config not in config:
+                    raise RuntimeError(
+                        f"{job['run_name']}: missing {required_config}"
+                    )
+            row = analyze_run(str(job["arm"]), run, args.n)
+            row["replica"] = int(job["replica"])
+            rows.append(row)
         summary = compare(rows, args.replicas)
         manifest = {
             **plan,
