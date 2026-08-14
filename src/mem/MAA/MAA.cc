@@ -119,6 +119,8 @@ MAA::MAA(const MAAParams &p)
                                  : p.physical_tile_elements),
       transparent_spd_mode(p.transparent_spd_mode),
       logical_spd_cache_mode(p.logical_spd_cache_mode),
+      page_materialization_wakeup_batches(
+          p.page_materialization_wakeup_batches),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -206,6 +208,11 @@ MAA::MAA(const MAAParams &p)
     panic_if(logical_spd_cache_mode > 1,
              "Invalid logical SPD cache mode %u (expected 0 or 1)\n",
              logical_spd_cache_mode);
+    panic_if(page_materialization_wakeup_batches >
+                 HybridConsumerPipeline::MaxEarlyWakeupBatches,
+             "Page materialization wakeup batches %u exceed maximum %u\n",
+             page_materialization_wakeup_batches,
+             HybridConsumerPipeline::MaxEarlyWakeupBatches);
     panic_if(num_offset_table_entries == 0 ||
                  num_offset_table_entries > num_tile_elements,
              "Offset Table capacity %u must be in [1,%u]\n",
@@ -2535,6 +2542,11 @@ MAA::servicePageMaterialization()
         const uint16_t pageLines =
             directRetirementContexts.producerPageLines(request.owner);
         const uint16_t pageLine = request.request.line % pageLines;
+        panic_if(!sameDirectRetirementKey(execution->key, request.owner) ||
+                     virtualPageGeneration[request.owner.tokenTile] !=
+                         request.owner.generation,
+                 "Page materializer batched wakeup lost exact generation "
+                 "ownership\n");
         const uint16_t wordsPerLine =
             HybridConsumerPipeline::LineBytes / execution->wordBytes;
         const uint32_t firstElement = pageLine * wordsPerLine;
@@ -2552,6 +2564,24 @@ MAA::servicePageMaterialization()
                 spd->setData<uint64_t>(execution->destinationTile,
                                        firstElement + word, value);
             }
+        }
+        if (HybridConsumerPipeline::isEarlyWakeupLine(
+                pageLine, pageLines,
+                static_cast<uint8_t>(page_materialization_wakeup_batches))) {
+            // This does not grant a tile-ready credit. It only rechecks
+            // blocked dependents after a selected fully committed line; the
+            // page-level setTileReady() control path remains authoritative.
+            spd->wakeup_waiting_units(execution->destinationTile);
+            DPRINTF(MAAVirtualTrace,
+                    "event=page_materialization_batched_wakeup schema=1 "
+                    "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                    "page=%u line=%u page_lines=%u batches=%u "
+                    "destination=%d\n",
+                    pageMaterializationTraceOccurrence++,
+                    request.owner.tokenTile, request.owner.generation,
+                    request.owner.incarnation, execution->page, pageLine,
+                    pageLines, page_materialization_wakeup_batches,
+                    execution->destinationTile);
         }
         commit = {};
         panic_if(!directRetirementContexts.completeMaterialize(request),

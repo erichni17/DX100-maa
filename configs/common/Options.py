@@ -386,6 +386,16 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_page_materialization_wakeup_batches",
+        type=int,
+        default=0,
+        choices=range(0, 17),
+        help=(
+            "Opt-in early dependent wakeups at evenly spaced fully committed "
+            "lines per 4K materialized page (0 preserves page-level wakeup)"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,

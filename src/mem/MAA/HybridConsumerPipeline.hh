@@ -37,6 +37,32 @@ class HybridConsumerPipeline
     static constexpr uint8_t NoBuffer =
         std::numeric_limits<uint8_t>::max();
     static constexpr uint8_t NoProducerPage = ProducerPages;
+    // The opt-in live integration may wake blocked dependent units at a
+    // small, deterministic set of line commits before page readiness.  Keep
+    // this finite so it cannot silently recreate the rejected per-line scan.
+    static constexpr uint8_t MaxEarlyWakeupBatches = 16;
+
+    static constexpr bool
+    isEarlyWakeupLine(uint16_t pageLine, uint16_t pageLines,
+                      uint8_t batches)
+    {
+        if (batches == 0 || batches > MaxEarlyWakeupBatches ||
+            pageLines == 0 || pageLine >= pageLines ||
+            batches >= pageLines)
+            return false;
+        // Divide a page into batches + 1 intervals.  The final interval is
+        // deliberately reserved for the existing setTileReady() wakeup, so
+        // each configured early wakeup is unique and pre-completion.
+        for (uint8_t batch = 1; batch <= batches; ++batch) {
+            const uint16_t line = static_cast<uint16_t>(
+                (uint32_t{batch} * pageLines + batches) /
+                    (batches + 1) -
+                1);
+            if (pageLine == line)
+                return true;
+        }
+        return false;
+    }
 
     enum class Mode : uint8_t
     {
