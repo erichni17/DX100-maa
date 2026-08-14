@@ -147,6 +147,10 @@ static uint64_t cg_soa_value_words[NUM_CORES] = {};
 static uint64_t cg_soa_published_pages[NUM_CORES] = {};
 static uint64_t cg_soa_published_index_words[NUM_CORES] = {};
 static uint64_t cg_soa_published_value_words[NUM_CORES] = {};
+// This is a source-side ledger for the response-bearing arm's bounded,
+// post-WriteResp coherent-backing verifier.  It does not describe an SPD
+// payload and must close once for every logical16 index word consumed.
+static uint64_t cg_soa_verified_index_words[NUM_CORES] = {};
 static uint32_t cg_soa_publisher_generation[NUM_CORES] = {};
 static uint64_t cg_legacy_residual_words[NUM_CORES] = {};
 
@@ -845,6 +849,7 @@ int main(int argc, char **argv) {
             uint64_t published_pages = 0;
             uint64_t published_index_words = 0;
             uint64_t published_value_words = 0;
+            uint64_t verified_index_words = 0;
             uint64_t legacy_words = 0;
             for (int core = 0; core < NUM_CORES; ++core) {
                 full_windows += cg_soa_full_windows[core];
@@ -853,6 +858,7 @@ int main(int argc, char **argv) {
                 published_pages += cg_soa_published_pages[core];
                 published_index_words += cg_soa_published_index_words[core];
                 published_value_words += cg_soa_published_value_words[core];
+                verified_index_words += cg_soa_verified_index_words[core];
                 legacy_words += cg_legacy_residual_words[core];
             }
             const bool staged_counts_close =
@@ -862,13 +868,16 @@ int main(int argc, char **argv) {
                 published_pages == full_windows * 4 &&
                 published_index_words == full_windows * TILE_SIZE &&
                 published_value_words == full_windows * TILE_SIZE;
+            const bool verified_index_counts_close =
+                verified_index_words == full_windows * TILE_SIZE;
             const bool treatment_used =
                 cg_rmw_treatment == CgRmwTreatment::Legacy4K
                     ? full_windows == 0 && index_words == 0 &&
                           value_words == 0 && published_pages == 0
                     : cg_rmw_uses_response_bearing_publisher(
                           cg_rmw_treatment)
-                    ? full_windows > 0 && published_counts_close
+                    ? full_windows > 0 && published_counts_close &&
+                          verified_index_counts_close
                     : full_windows > 0 && staged_counts_close;
             std::cout << "CG_LOGICAL16_RMW_TERMINAL treatment="
                       << cg_rmw_treatment_name(cg_rmw_treatment)
@@ -878,6 +887,7 @@ int main(int argc, char **argv) {
                       << " published_pages=" << published_pages
                       << " published_index_words=" << published_index_words
                       << " published_value_words=" << published_value_words
+                      << " verified_index_words=" << verified_index_words
                       << " legacy_words=" << legacy_words
                       << " producer="
                       << (cg_rmw_uses_response_bearing_publisher(
@@ -1643,10 +1653,11 @@ static void conj_grad_maa(int colidx[],
                         // product remain separate 4K physical SPD tiles.
                         // Publish their exact 64B lines to ordinary coherent
                         // backing and wait only on authenticated WriteResp
-                        // completion; no CPU reads, copies, or 16K producer
-                        // payload are introduced. t4/t5 are dead after the
-                        // multiply and serve solely as bounded completion
-                        // tokens until the next physical page reuses them.
+                        // completion; no CPU SPD reads, copies, or 16K
+                        // producer payload are introduced. t4/t5 are dead
+                        // after the multiply and serve solely as bounded
+                        // completion tokens until the next physical page
+                        // reuses them.
                         const uint32_t logical_page =
                             page_offset / MAA_CONSUMER_TILE_SIZE;
                         const uint32_t index_generation =
@@ -1678,9 +1689,29 @@ static void conj_grad_maa(int colidx[],
                             page_min_reg, page_max_reg, page_stride_reg);
                         wait_ready(t4);
                         wait_ready(t5);
+                        // Restore the old per-page index-range invariant
+                        // after the two response acknowledgements.  This is
+                        // a bounded 4K read of ordinary coherent backing,
+                        // not an untimed logical16 copy and never a CPU read
+                        // of an SPD tile.  The source-side ledger makes a
+                        // missing verification fail closed at the terminal.
+                        std::atomic_thread_fence(std::memory_order_seq_cst);
+                        for (int word = 0; word < page_size; ++word) {
+                            if (index_dst[word] >=
+                                static_cast<uint32_t>(j_max - j_base)) {
+                                std::cerr << "CG response-bearing producer "
+                                             "index out of range: page="
+                                          << page_offset << " word=" << word
+                                          << " index=" << index_dst[word]
+                                          << " rows=" << j_max - j_base
+                                          << std::endl;
+                                std::abort();
+                            }
+                        }
                         cg_soa_published_pages[tid]++;
                         cg_soa_published_index_words[tid] += page_size;
                         cg_soa_published_value_words[tid] += page_size;
+                        cg_soa_verified_index_words[tid] += page_size;
                     } else {
                         // The provenance control preserves the former CPU
                         // staging behavior. It never exposes a 4K SPD page

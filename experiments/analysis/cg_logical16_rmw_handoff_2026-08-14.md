@@ -25,8 +25,10 @@ and FP32 multiply produce four 4K physical pages. The performance treatment
 uses the existing response-bearing SPD publisher to copy each exact 64B line
 from the separate Row/Offset and FP32 product tiles into per-thread
 `index[16384]` and `value[16384]` coherent backing. Each source stays live
-until its own WriteResp terminal; there is no CPU read, copy, cache prefetch,
-or hidden 16K producer payload. One existing
+until its own WriteResp terminal. A fail-closed verifier then performs a
+bounded 4K CPU read of only the response-published ordinary index backing and
+rechecks each row-block bound; it never reads an SPD tile or copies a logical
+16K payload. Its per-word ledger must close at the terminal. One existing
 `maa_indirect_rmw_vector_soa_jit<float>` call then consumes those arrays with a
 null predicate and waits for its completion token before buffer reuse. The MAA
 therefore builds one full 16K Row/Offset epoch and retains the existing
@@ -80,6 +82,10 @@ The exact performance gate restores both CPU control and response-bearing
 treatment from one pre-selector checkpoint with at least two deterministic
 replicas and no default timeout. It rejects any fingerprint, terminal, traffic,
 configuration, or checkpoint mismatch; it also rejects a slower treatment.
+Because gem5 serializes the post-restore selector pathname in `config.ini`,
+the gate first proves that the checkpoint selector is read-only and has the
+same SHA-256 before and after every restore. It then normalizes exactly one
+occurrence of each arm's selector path and rejects any other config delta.
 This still does not convert the iterative `q` RMW phases or partial tails.
 
 ## Validation performed in this checkpoint

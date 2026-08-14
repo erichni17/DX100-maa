@@ -126,7 +126,9 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         self.assertIn("hidden_logical16_payload_bytes=0", self.source)
         self.assertIn("cpu_untimed_copy_bytes=", self.source)
 
-    def test_response_publisher_keeps_4k_payloads_and_has_no_cpu_copy(self):
+    def test_response_publisher_keeps_4k_payloads_and_restores_range_check(
+        self,
+    ):
         producer = self.source[
             self.source.index(
                 "const bool soa_residual_full_window"
@@ -151,9 +153,14 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         self.assertIn("wait_ready(t4)", response)
         self.assertIn("wait_ready(t5)", response)
         self.assertNotIn("maa_stream_store", response)
-        self.assertNotIn("std::atomic_thread_fence", response)
+        self.assertNotIn("std::memcpy", response)
+        self.assertNotIn("get_cacheable_tile_pointer", response)
+        self.assertIn("std::atomic_thread_fence", response)
+        self.assertIn("index_dst[word] >=", response)
+        self.assertIn("coherent backing", response)
         self.assertIn("cg_soa_published_index_words", response)
         self.assertIn("cg_soa_published_value_words", response)
+        self.assertIn("cg_soa_verified_index_words", response)
 
     def test_row_pointer_streams_use_page_local_physical_positions(self):
         for token in (
@@ -181,6 +188,9 @@ class CGLogical16RmwContractTests(unittest.TestCase):
     def test_terminal_closes_staging_and_requires_dynamic_use(self):
         self.assertIn("index_words == full_windows * TILE_SIZE", self.source)
         self.assertIn("value_words == full_windows * TILE_SIZE", self.source)
+        self.assertIn(
+            "verified_index_words == full_windows * TILE_SIZE", self.source
+        )
         self.assertIn("full_windows > 0 && staged_counts_close", self.source)
         self.assertIn("CG_LOGICAL16_RMW_TERMINAL", self.source)
 

@@ -44,6 +44,7 @@ printf '%s\n' 'token_stream_ld residual_soa_jit' > "$checkpoint_selector"
 printf '%s\n' 'token_stream_ld residual_soa_jit' > "$control_selector"
 printf '%s\n' 'token_stream_ld residual_soa_jit_response_bearing' > "$treatment_selector"
 chmod 0444 "$checkpoint_selector" "$control_selector" "$treatment_selector"
+sha256sum "$checkpoint_selector" > "$out/input/checkpoint.selector.sha256.before"
 
 guest="$out/bin/cg_logical16_hybrid_gate"
 "$cxx" -I"$root/benchmarks/API" -I"$root/include" -I"$root/util/m5/src" \
@@ -88,6 +89,9 @@ printf '%s\n' "$checkpoint_rc" > "$out/checkpoint.exit"
 [[ $checkpoint_rc -eq 0 ]]
 [[ $(grep -Ec '^Exiting @ tick [0-9]+ because checkpoint$' "$out/checkpoint.log") -eq 1 ]]
 ! grep -Eq 'CG_LOGICAL16_RMW_SELECTION|CG_FINGERPRINT|ROI End!!!' "$out/checkpoint.log"
+# The selector consumed to create the checkpoint is immutable.  The arm
+# selector is deliberately a separate read-only path used only after restore.
+cmp -s "$out/input/checkpoint.selector.sha256.before" <(sha256sum "$checkpoint_selector")
 (
     cd "$out/checkpoint"
     find . -type f -print0 | sort -z | xargs -0 sha256sum
@@ -118,6 +122,26 @@ stat_sum() {
         section == 1 && $1 ~ ("_" suffix "$") { sum += $2 }
         /^---------- End Simulation Statistics/ && section == 1 { printf "%.0f\n", sum; exit }
     ' "$stats"
+}
+
+# config.ini serializes --options verbatim.  The sole permitted arm delta is
+# the selector pathname; reject a config where that pathname is absent or
+# appears more than once before normalizing precisely that occurrence.
+normalized_config_sha() {
+    local config_file=$1 selector=$2
+    awk -v selector="$selector" '
+        {
+            line = $0
+            occurrences += gsub(selector, "__CG_ARM_SELECTOR_PATH__", line)
+            print line
+        }
+        END {
+            if (occurrences != 1) {
+                printf "expected exactly one arm selector path in config.ini, saw %d\\n", occurrences > "/dev/stderr"
+                exit 1
+            }
+        }
+    ' "$config_file" | sha256sum | awk '{print $1}'
 }
 
 header=$'arm\treplica\tsimTicks\tfingerprint_sha256\tterminal_sha256\tconfig_sha256\tselected\tterminal_completions\tvalue_read_issues\tvalue_read_responses\tvalue_fills\ta_read_issues\ta_read_responses\ta_write_issues\ta_write_responses\tpublish_issues\tpublish_accepts\tpublish_responses\tpublish_terminals\tpublish_overlap'
@@ -158,7 +182,7 @@ run_arm() {
         soa_jit_value_prefetch_credits=0; do grep -Fqx "$resolved" "$run/config.ini"; done
     cmp -s "$out/checkpoint.files.sha256" <(cd "$out/checkpoint" && find . -type f -print0 | sort -z | xargs -0 sha256sum)
 
-    local instruction terminal value_responses fills a_read_responses a_write_responses expected_publish
+    local instruction terminal value_responses fills a_read_responses a_write_responses expected_publish terminal_line full_windows verified_index_words
     instruction=$(stat_sum "$run/stats.txt" IND_SoaJitInstructions); terminal=$(stat_sum "$run/stats.txt" IND_SoaJitTerminalCompletions)
     selected[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitSelected)
     value_issues[$name]=$(stat_sum "$run/stats.txt" IND_SoaJitValueReadIssues); value_responses=$(stat_sum "$run/stats.txt" IND_SoaJitValueReadResponses); fills=$(stat_sum "$run/stats.txt" IND_SoaJitValueFills)
@@ -171,6 +195,11 @@ run_arm() {
     [[ ${value_issues[$name]} -eq $value_responses && $value_responses -eq $fills ]]
     [[ ${a_read_issues[$name]} -eq $a_read_responses && ${a_read_issues[$name]} -eq ${a_write_issues[$name]} && ${a_write_issues[$name]} -eq $a_write_responses ]]
     if [[ $arm == treatment ]]; then
+        terminal_line=$(grep '^CG_LOGICAL16_RMW_TERMINAL ' "$run/restore.log")
+        full_windows=$(sed -n 's/.* full_windows=\([0-9][0-9]*\).*/\1/p' <<<"$terminal_line")
+        verified_index_words=$(sed -n 's/.* verified_index_words=\([0-9][0-9]*\).*/\1/p' <<<"$terminal_line")
+        [[ $full_windows =~ ^[1-9][0-9]*$ ]]
+        [[ $verified_index_words -eq $((full_windows * 16384)) ]]
         expected_publish=$((instruction * 2048))
         [[ ${publish_issues[$name]} -eq $expected_publish ]]
         [[ ${publish_accepts[$name]} -eq $expected_publish ]]
@@ -186,7 +215,7 @@ run_arm() {
     [[ ${ticks[$name]} =~ ^[1-9][0-9]*$ ]]
     fingerprints[$name]=$(grep '^CG_FINGERPRINT ' "$run/restore.log" | sha256sum | awk '{print $1}')
     terminals[$name]=$(grep '^CG_LOGICAL16_RMW_TERMINAL ' "$run/restore.log" | sha256sum | awk '{print $1}')
-    configs[$name]=$(sha256sum "$run/config.ini" | awk '{print $1}')
+    configs[$name]=$(normalized_config_sha "$run/config.ini" "$selector")
     {
         printf 'source_commit=%s\ngem5_sha256=%s\nguest_sha256=%s\nselector_sha256=%s\ncheckpoint_sha256=%s\n' "$source_commit" "$(sha256sum "$gem5" | awk '{print $1}')" "$(sha256sum "$guest" | awk '{print $1}')" "$(sha256sum "$selector" | awk '{print $1}')" "$checkpoint_sha"
         printf 'config_sha256=%s\nsimTicks=%s\nfingerprint_sha256=%s\nterminal_sha256=%s\n' "${configs[$name]}" "${ticks[$name]}" "${fingerprints[$name]}" "${terminals[$name]}"
@@ -200,6 +229,7 @@ for ((replica = 1; replica <= replicas; replica++)); do
     run_arm treatment "$replica" & pids+=("$!")
 done
 for pid in "${pids[@]}"; do wait "$pid"; done
+cmp -s "$out/input/checkpoint.selector.sha256.before" <(sha256sum "$checkpoint_selector")
 for ((replica = 1; replica <= replicas; replica++)); do
     cat "$out/runs/control_r${replica}/result.tsv"
     cat "$out/runs/treatment_r${replica}/result.tsv"

@@ -48,6 +48,20 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
         self.assertIn("--maa_soa_jit_value_prefetch_credits=0", self.runner)
         self.assertNotIn("treatment_flags", self.runner)
 
+    def test_config_comparison_only_normalizes_the_verified_arm_path(self):
+        self.assertIn("normalized_config_sha()", self.runner)
+        self.assertIn(
+            "expected exactly one arm selector path in config.ini", self.runner
+        )
+        self.assertIn("__CG_ARM_SELECTOR_PATH__", self.runner)
+        self.assertIn("checkpoint.selector.sha256.before", self.runner)
+        self.assertGreaterEqual(
+            self.runner.count(
+                'cmp -s "$out/input/checkpoint.selector.sha256.before"'
+            ),
+            2,
+        )
+
     def test_validates_exact_outputs_provenance_and_mechanism_ledgers(self):
         for token in (
             "CG_FINGERPRINT",
