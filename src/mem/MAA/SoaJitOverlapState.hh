@@ -22,9 +22,9 @@ class SoaJitApplyLanePool
 {
   public:
     static constexpr size_t MaxLanes = 4;
-    // A context identifies one live physical A line.  All 32 entries are
+    // A context identifies one live physical A line.  All 64 entries are
     // provisioned; a treatment selects a bounded active prefix at runtime.
-    static constexpr size_t MaxContexts = 32;
+    static constexpr size_t MaxContexts = 64;
 
     struct Owner
     {
@@ -150,7 +150,7 @@ class SoaJitValueCoalescer
     // Keep alias identity injective across every provisioned context and its
     // ordered lookahead slots.  This preserves response ownership even when
     // a fill is shared by the full context pool.
-    static constexpr size_t MaxContexts = 32;
+    static constexpr size_t MaxContexts = 64;
     static constexpr size_t MaxLookahead = 8;
     static constexpr size_t MaxWaiters = MaxContexts * MaxLookahead;
 
