@@ -1568,42 +1568,32 @@ static void conj_grad_maa(int colidx[],
                 if (soa_residual_full_window) {
                     // These are exactly the index/value operands that the
                     // legacy page-local RMW would consume. Preserve their
-                    // page and bit order in external guest memory.
-                    wait_ready(t0);
-                    wait_ready(t7);
-                    const int index_words = get_tile_size(t0);
-                    const int value_words = get_tile_size(t7);
-                    if (index_words != page_size || value_words != page_size) {
-                        std::cerr << "CG logical-16 producer size mismatch: "
-                                  << "page=" << page_offset
-                                  << " expected=" << page_size
-                                  << " indices=" << index_words
-                                  << " values=" << value_words << std::endl;
-                        std::abort();
-                    }
-                    const int *index_src =
-                        get_cacheable_tile_pointer<int>(t0);
-                    const float *value_src =
-                        get_cacheable_tile_pointer<float>(t7);
+                    // page and bit order in external guest memory, but do
+                    // not expose the physical SPD page to a CPU cache
+                    // stream: a sequential CPU read can prefetch element
+                    // 4096, which is outside the 4K physical tile.
                     uint32_t *index_dst =
                         cg_soa_indices[tid] + page_offset;
                     float *value_dst = cg_soa_values[tid] + page_offset;
+                    maa_const<int>(0, r2);
+                    maa_const<int>(page_size, r3);
+                    maa_stream_store<uint32_t>(index_dst, r2, r3, r1, t0);
+                    maa_stream_store<float>(value_dst, r2, r3, r1, t7);
+                    wait_ready(t0);
+                    wait_ready(t7);
+                    std::atomic_thread_fence(std::memory_order_seq_cst);
                     for (int word = 0; word < page_size; ++word) {
-                        if (index_src[word] < 0 ||
-                            index_src[word] >= j_max - j_base) {
+                        if (index_dst[word] >=
+                            static_cast<uint32_t>(j_max - j_base)) {
                             std::cerr << "CG logical-16 producer index out of "
                                          "range: page="
                                       << page_offset << " word=" << word
-                                      << " index=" << index_src[word]
+                                      << " index=" << index_dst[word]
                                       << " rows=" << j_max - j_base
                                       << std::endl;
                             std::abort();
                         }
-                        index_dst[word] =
-                            static_cast<uint32_t>(index_src[word]);
                     }
-                    std::memcpy(value_dst, value_src,
-                                page_size * sizeof(*value_dst));
                     cg_soa_index_words[tid] += page_size;
                     cg_soa_value_words[tid] += page_size;
                 } else

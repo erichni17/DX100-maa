@@ -59,18 +59,52 @@ class CGLogical16RmwContractTests(unittest.TestCase):
                 self.source.index("const bool soa_residual_full_window"),
             )
         ]
-        self.assertLess(
-            producer.index("wait_ready(t0)"), producer.index("index_src")
-        )
-        self.assertLess(
-            producer.index("wait_ready(t7)"), producer.index("value_src")
-        )
-        self.assertIn("index_words != page_size", producer)
-        self.assertIn("value_words != page_size", producer)
-        self.assertIn("index_src[word] >= j_max - j_base", producer)
-        self.assertIn("std::memcpy(value_dst, value_src", producer)
         self.assertIn("cg_soa_indices[tid] + page_offset", producer)
         self.assertIn("cg_soa_values[tid] + page_offset", producer)
+        self.assertIn("index_dst[word] >=", producer)
+        self.assertIn("static_cast<uint32_t>(j_max - j_base)", producer)
+        self.assertLess(
+            producer.index("maa_stream_store<uint32_t>(index_dst"),
+            producer.index("wait_ready(t0)"),
+        )
+        self.assertLess(
+            producer.index("maa_stream_store<float>(value_dst"),
+            producer.index("wait_ready(t7)"),
+        )
+
+    def test_residual_staging_never_cpu_reads_past_the_physical_spd_page(self):
+        producer = self.source[
+            self.source.index(
+                "const bool soa_residual_full_window"
+            ) : self.source.index(
+                "#else\n            maa_const(k_base",
+                self.source.index("const bool soa_residual_full_window"),
+            )
+        ]
+        staging = producer[
+            producer.index("if (soa_residual_full_window)") : producer.index(
+                "cg_soa_value_words[tid] += page_size;"
+            )
+        ]
+        self.assertNotIn("get_cacheable_tile_pointer", staging)
+        self.assertIn("outside the 4K physical tile", staging)
+        self.assertIn("maa_const<int>(0, r2);", staging)
+        self.assertIn("maa_const<int>(page_size, r3);", staging)
+        self.assertIn(
+            "maa_stream_store<uint32_t>(index_dst, r2, r3, r1, t0);",
+            staging,
+        )
+        self.assertIn(
+            "maa_stream_store<float>(value_dst, r2, r3, r1, t7);", staging
+        )
+        self.assertLess(
+            staging.index("maa_stream_store<uint32_t>"),
+            staging.index("wait_ready(t0)"),
+        )
+        self.assertLess(
+            staging.index("maa_stream_store<float>"),
+            staging.index("wait_ready(t7)"),
+        )
 
     def test_logical_window_storage_is_external_and_accounted(self):
         self.assertIn(
