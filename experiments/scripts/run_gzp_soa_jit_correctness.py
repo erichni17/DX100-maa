@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,6 +65,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mem-channels", type=int, default=2)
     parser.add_argument("--l3-ports", type=int, default=4)
     parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help="maximum concurrent checkpoint or restore gem5 processes (1-16)",
+    )
+    parser.add_argument(
         "--lead-optimized-gem5-sha256",
         help="required with --execute; must equal the supplied gem5 binary",
     )
@@ -89,6 +96,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("replicas and memory channels must be positive")
     if not 1 <= args.l3_ports <= 16:
         parser.error("--l3-ports must be in [1,16]")
+    if not 1 <= args.max_workers <= 16:
+        parser.error("--max-workers must be in [1,16]")
     if args.execute and not args.lead_optimized_gem5_sha256:
         parser.error(
             "--execute requires --lead-optimized-gem5-sha256 from the lead"
@@ -144,14 +153,13 @@ def plan(args: argparse.Namespace) -> dict[str, object]:
                 "name": name,
                 "profile": profile,
                 "binary": binary,
-                "checkpoint_group": checkpoint,
+                "checkpoint_group": name,
                 "selector": selector,
                 "performance_comparison_authorized": (
                     name != "soa_jit_correctness"
                 ),
             }
             for name, profile, binary, selector in ARMS
-            for checkpoint in ["hybrid" if binary == "hybrid" else name]
         ],
         "exact_output_hash": EXPECTED_HASH,
         "performance_comparisons": {
@@ -160,6 +168,7 @@ def plan(args: argparse.Namespace) -> dict[str, object]:
         },
         "extra_gem5_args": args.extra_gem5_arg,
         "restore_arm_gem5_args": args.restore_arm_gem5_args,
+        "max_workers": args.max_workers,
         "execution_gate": "lead-provided optimized gem5 SHA-256",
     }
 
@@ -297,7 +306,7 @@ def main() -> int:
 
         manifest: dict[str, object] = {
             **plan(args),
-            "schema": "dx100.gzp_soa_jit_matrix.v1",
+            "schema": "dx100.gzp_soa_jit_matrix.v2",
             "source": source_identity(),
             "source_status": "clean",
             "artifacts": identities,
@@ -317,17 +326,24 @@ def main() -> int:
 
         checkpoints: dict[str, dict[str, object]] = {}
         checkpoint_commands: dict[str, dict[str, str]] = {}
-        for group, binary, options in (
-            ("native16", "native16", str(args.n)),
-            ("native4", "native4", str(args.n)),
-            (
-                "hybrid",
-                "hybrid",
-                f"{args.n} {args.out / 'checkpoints/hybrid/deferred.txt'}",
-            ),
-        ):
-            directory = args.out / "checkpoints" / group
+        checkpoint_jobs: list[tuple[str, str, str | None, Path, str]] = []
+        for name, _profile, binary, selector in ARMS:
+            directory = args.out / "checkpoints" / name
             directory.mkdir(parents=True)
+            options = str(args.n)
+            if selector is not None:
+                selector_path = directory / "selector.txt"
+                common.atomic_text(selector_path, selector + "\n")
+                selector_path.chmod(0o444)
+                options += f" {selector_path.resolve()}"
+            checkpoint_jobs.append(
+                (name, binary, selector, directory, options)
+            )
+
+        def create_checkpoint(
+            job: tuple[str, str, str | None, Path, str]
+        ) -> tuple[str, dict[str, object], dict[str, str]]:
+            group, binary, selector, directory, options = job
             command = common.checkpoint_command(
                 artifacts["gem5"],
                 config,
@@ -340,88 +356,132 @@ def main() -> int:
             )
             if rc != 0:
                 raise RuntimeError(f"checkpoint {group} failed with rc={rc}")
-            checkpoints[group] = common.tree_identity(directory / "gem5")
+            selector_identity: dict[str, str] | None = None
+            if selector is not None:
+                selector_path = directory / "selector.txt"
+                selector_identity = {
+                    "path": str(selector_path.resolve()),
+                    "sha256": common.sha256_file(selector_path),
+                }
+            checkpoint_identity = {
+                "tree": common.tree_identity(directory / "gem5"),
+                "arm": group,
+                "binary": binary,
+                "selector": selector,
+                "selector_identity": selector_identity,
+            }
             command_path = directory / "checkpoint.command.json"
-            checkpoint_commands[group] = {
+            command_identity = {
                 "path": str(command_path.resolve()),
                 "sha256": common.sha256_file(command_path),
             }
+            return group, checkpoint_identity, command_identity
+
+        with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+            for group, identity, command_identity in executor.map(
+                create_checkpoint, checkpoint_jobs
+            ):
+                checkpoints[group] = identity
+                checkpoint_commands[group] = command_identity
         manifest["checkpoints"] = checkpoints
         manifest["checkpoint_commands"] = checkpoint_commands
         common.atomic_json(args.out / "manifest.json", manifest)
 
+        restore_jobs: list[
+            tuple[str, str, str, str | None, int, Path, list[str]]
+        ] = []
         for name, profile, binary, selector in ARMS:
-            group = "hybrid" if binary == "hybrid" else name
+            group = name
             checkpoint = args.out / "checkpoints" / group / "gem5"
             for replica in range(1, args.replicas + 1):
                 run = args.out / "arms" / name / f"replica-{replica}"
                 run.mkdir(parents=True)
-                options = str(args.n)
-                selector_hash = None
-                if selector is not None:
-                    selector_path = run / "treatment.txt"
-                    common.atomic_text(selector_path, selector + "\n")
-                    selector_path.chmod(0o444)
-                    selector_hash = common.sha256_file(selector_path)
-                    options += f" {selector_path.resolve()}"
                 gem5_args = common.restore_args_for_arm(
                     args.extra_gem5_arg,
                     args.restore_arm_gem5_args,
                     name,
                 )
-                command = common.restore_command(
-                    artifacts["gem5"],
-                    config,
-                    run / "gem5",
-                    checkpoint,
-                    artifacts[binary],
-                    options,
-                    profile,
-                    artifacts["ramulator_config"],
-                    args.mem_channels,
-                    args.l3_ports,
-                    gem5_args,
+                restore_jobs.append(
+                    (
+                        name,
+                        profile,
+                        binary,
+                        selector,
+                        replica,
+                        checkpoint,
+                        gem5_args,
+                    )
                 )
-                if common.tree_identity(checkpoint) != checkpoints[group]:
-                    raise RuntimeError(
-                        f"checkpoint {group} changed before restore"
-                    )
-                rc = common.run_logged(
-                    command, run / "restore.log", environment
+
+        def restore(
+            job: tuple[str, str, str, str | None, int, Path, list[str]]
+        ) -> dict[str, object]:
+            (
+                name,
+                profile,
+                binary,
+                selector,
+                replica,
+                checkpoint,
+                gem5_args,
+            ) = job
+            group = name
+            run = args.out / "arms" / name / f"replica-{replica}"
+            options = str(args.n)
+            selector_hash = None
+            if selector is not None:
+                selector_path = (
+                    args.out / "checkpoints" / group / "selector.txt"
                 )
-                if rc != 0:
-                    raise RuntimeError(
-                        f"{name} replica {replica} failed with rc={rc}"
-                    )
-                if common.tree_identity(checkpoint) != checkpoints[group]:
-                    raise RuntimeError(
-                        f"checkpoint {group} changed during restore"
-                    )
-                if (
-                    selector is not None
-                    and common.sha256_file(run / "treatment.txt")
-                    != selector_hash
-                ):
-                    raise RuntimeError(
-                        f"{name} selector changed during restore"
-                    )
-                manifest["runs"].append(
-                    {
-                        "arm": name,
-                        "replica": replica,
-                        "checkpoint_group": group,
-                        "selector": selector,
-                        "selector_sha256": selector_hash,
-                        "gem5_args": gem5_args,
-                        "command_path": str(
-                            (run / "restore.command.json").resolve()
-                        ),
-                        "command_sha256": common.sha256_file(
-                            run / "restore.command.json"
-                        ),
-                    }
+                options += f" {selector_path.resolve()}"
+                selector_hash = common.sha256_file(selector_path)
+            command = common.restore_command(
+                artifacts["gem5"],
+                config,
+                run / "gem5",
+                checkpoint,
+                artifacts[binary],
+                options,
+                profile,
+                artifacts["ramulator_config"],
+                args.mem_channels,
+                args.l3_ports,
+                gem5_args,
+            )
+            if common.tree_identity(checkpoint) != checkpoints[group]["tree"]:
+                raise RuntimeError(
+                    f"checkpoint {group} changed before restore"
                 )
-                common.atomic_json(args.out / "manifest.json", manifest)
+            rc = common.run_logged(command, run / "restore.log", environment)
+            if rc != 0:
+                raise RuntimeError(
+                    f"{name} replica {replica} failed with rc={rc}"
+                )
+            if common.tree_identity(checkpoint) != checkpoints[group]["tree"]:
+                raise RuntimeError(
+                    f"checkpoint {group} changed during restore"
+                )
+            if (
+                selector is not None
+                and common.sha256_file(selector_path) != selector_hash
+            ):
+                raise RuntimeError(f"{name} selector changed during restore")
+            return {
+                "arm": name,
+                "replica": replica,
+                "checkpoint_group": group,
+                "selector": selector,
+                "selector_sha256": selector_hash,
+                "gem5_args": gem5_args,
+                "command_path": str((run / "restore.command.json").resolve()),
+                "command_sha256": common.sha256_file(
+                    run / "restore.command.json"
+                ),
+            }
+
+        with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+            manifest["runs"] = list(executor.map(restore, restore_jobs))
+        common.atomic_json(args.out / "manifest.json", manifest)
 
         analyzer = (
             ROOT / "experiments/analysis/analyze_gzp_soa_jit_correctness.py"
