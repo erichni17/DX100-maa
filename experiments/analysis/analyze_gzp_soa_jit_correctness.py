@@ -24,6 +24,7 @@ EXPECTED_PUBLISH_OPERATIONS = EXPECTED_FULL_WINDOWS * 4 * 2
 EXPECTED_PUBLISH_LINES = EXPECTED_PUBLISH_OPERATIONS * 256
 EXPECTED_VOLUME_SOA_INSTRUCTIONS = 61
 EXPECTED_BOTH_SOA_INSTRUCTIONS = 122
+VALID_PREDICATE_LINES_PER_OPERATION = frozenset({1024, 1025})
 
 
 def one_marker(text: str, prefix: str) -> dict[str, str]:
@@ -113,6 +114,7 @@ def validate_soa_trace(
     completions = 0
     context_hwm_max = 0
     generations: set[tuple[int, int]] = set()
+    predicate_lines_per_operation: int | None = None
     with path.open(encoding="utf-8", errors="replace") as trace:
         for line in trace:
             fields = general.fields(line)
@@ -160,7 +162,19 @@ def validate_soa_trace(
                 raise ValueError(
                     "SoA trace request/response accounting did not close"
                 )
-            if predicate[0] != 1024 or a_reads[0] != a_writes[0]:
+            if predicate[0] not in VALID_PREDICATE_LINES_PER_OPERATION:
+                raise ValueError(
+                    "SoA trace predicate geometry is not 1024 or 1025 lines"
+                )
+            if (
+                predicate_lines_per_operation is not None
+                and predicate[0] != predicate_lines_per_operation
+            ):
+                raise ValueError(
+                    "SoA trace predicate geometry changes between operations"
+                )
+            predicate_lines_per_operation = predicate[0]
+            if a_reads[0] != a_writes[0]:
                 raise ValueError(
                     "SoA trace predicate/A-line accounting differs"
                 )
@@ -176,39 +190,41 @@ def validate_soa_trace(
             prefetch_promotions = int(
                 fields.get("prefetch_promotions", "-1"), 0
             )
-            prefetch_discards = int(
-                fields.get("prefetch_discards", "-1"), 0
-            )
-            prefetch_credits = int(
-                fields.get("prefetch_credits", "-1"), 0
-            )
+            prefetch_discards = int(fields.get("prefetch_discards", "-1"), 0)
+            prefetch_credits = int(fields.get("prefetch_credits", "-1"), 0)
             prefetch_hwm = int(fields.get("prefetch_hwm", "-1"), 0)
             if (
-                value_prefetch[1]
-                != prefetch_promotions + prefetch_discards
+                value_prefetch[1] != prefetch_promotions + prefetch_discards
                 or prefetch_credits < 0
                 or not 0 <= prefetch_hwm <= prefetch_credits
             ):
                 raise ValueError("SoA trace prefetch accounting is invalid")
             context_hwm = int(fields.get("context_hwm", "-1"), 0)
             if context_hwm < 1:
-                raise ValueError(
-                    "SoA trace has invalid context high-water"
-                )
+                raise ValueError("SoA trace has invalid context high-water")
             context_hwm_max = max(context_hwm_max, context_hwm)
     if completions != expected_completions:
         raise ValueError(
             f"expected {expected_completions} SoA completions, "
             f"got {completions}"
         )
+    if predicate_lines_per_operation is None:
+        raise ValueError("SoA trace has no completion predicate geometry")
     return {
         "trace_terminal_completions": completions,
         "trace_context_high_water_max": context_hwm_max,
+        "predicate_lines_per_operation": predicate_lines_per_operation,
+        "trace_predicate_line_total": (
+            completions * predicate_lines_per_operation
+        ),
     }
 
 
 def validate_soa_stats(
-    stats: dict[str, float], expected_instructions: int
+    stats: dict[str, float],
+    expected_instructions: int,
+    predicate_lines_per_operation: int,
+    trace_predicate_line_total: int,
 ) -> dict[str, int]:
     soa = {
         suffix: sum_stat(stats, suffix)
@@ -264,8 +280,16 @@ def validate_soa_stats(
         != expected_instructions * 16384
     ):
         raise ValueError("SoA/JIT aggregate predicate classification differs")
-    if soa["IND_SoaJitPredicateLineReads"] != expected_instructions * 1024:
-        raise ValueError("SoA/JIT predicate line count differs")
+    expected_predicate_lines = (
+        expected_instructions * predicate_lines_per_operation
+    )
+    if (
+        soa["IND_SoaJitPredicateLineReads"] != expected_predicate_lines
+        or soa["IND_SoaJitPredicateLineResponses"]
+        != trace_predicate_line_total
+        or trace_predicate_line_total != expected_predicate_lines
+    ):
+        raise ValueError("SoA/JIT predicate line totals differ from trace")
     for left, right in (
         ("IND_SoaJitPredicateLineReads", "IND_SoaJitPredicateLineResponses"),
         ("IND_SoaJitAReadIssues", "IND_SoaJitAReadResponses"),
@@ -625,16 +649,18 @@ def analyze(root: Path) -> dict[str, object]:
                         raise ValueError(
                             f"volume-only arm has {rmw} RMWs, expected 307"
                         )
+                    trace = validate_soa_trace(
+                        run / "gem5/virtual_trace.log",
+                        EXPECTED_VOLUME_SOA_INSTRUCTIONS,
+                    )
                     soa = validate_soa_stats(
-                        stats, EXPECTED_VOLUME_SOA_INSTRUCTIONS
+                        stats,
+                        EXPECTED_VOLUME_SOA_INSTRUCTIONS,
+                        trace["predicate_lines_per_operation"],
+                        trace["trace_predicate_line_total"],
                     )
                     record.update(soa)
-                    record.update(
-                        validate_soa_trace(
-                            run / "gem5/virtual_trace.log",
-                            EXPECTED_VOLUME_SOA_INSTRUCTIONS,
-                        )
-                    )
+                    record.update(trace)
                 elif name == "soa_jit_correctness":
                     expected_terminal = {
                         "treatment": "soa_jit_correctness",
@@ -658,16 +684,18 @@ def analyze(root: Path) -> dict[str, object]:
                         raise ValueError(
                             f"SoA/JIT arm has {rmw} RMWs, expected 124"
                         )
+                    trace = validate_soa_trace(
+                        run / "gem5/virtual_trace.log",
+                        EXPECTED_BOTH_SOA_INSTRUCTIONS,
+                    )
                     soa = validate_soa_stats(
-                        stats, EXPECTED_BOTH_SOA_INSTRUCTIONS
+                        stats,
+                        EXPECTED_BOTH_SOA_INSTRUCTIONS,
+                        trace["predicate_lines_per_operation"],
+                        trace["trace_predicate_line_total"],
                     )
                     record.update(soa)
-                    record.update(
-                        validate_soa_trace(
-                            run / "gem5/virtual_trace.log",
-                            EXPECTED_BOTH_SOA_INSTRUCTIONS,
-                        )
-                    )
+                    record.update(trace)
                     record.update(validate_publisher_stats(stats))
             records.append(record)
     if keys != {EXPECTED_HASH}:
