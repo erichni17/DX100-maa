@@ -104,6 +104,29 @@ RMW-cycle total into the hybrid gives an optimistic ceiling of 6,090,411,905
 ticks, 4.525% slower than native16. This is not a measured speedup and assumes
 free staging, but it identifies logical-16K RMW execution as the next target.
 
+## Current implementation target
+
+The target remains the existing hybrid, not the fully bounded design:
+
+- 16K logical tile and 16K Row/Offset reorder metadata;
+- 4K physical SPD/result storage;
+- one logical 16K RMW rather than four page-local RMWs; and
+- finite just-in-time operand and write scoreboards sized by memory
+  concurrency, not by the 16K logical window.
+
+The preferred RMW input is structure-of-arrays backing. GZP can reuse
+`c_to_p_map` and `corner_volume` directly because both already exist as
+sequential arrays. It needs timed backing only for the shared predicate and
+the computed `csurf * zone_field` values. Row/Offset entries retain logical
+`i`; after an A cache line is selected, the consumer fetches the corresponding
+value through the normal cache path, applies the alias chain in ordinary
+insertion order, and waits for an authenticated A-line `WriteResp` before
+completion. This preserves the full 16K reorder scope without a hidden
+logical-window-sized value array.
+
+A separate 4K-Row/Offset result may still be reported as a fully bounded
+diagnostic, but it is not the primary hybrid optimization arm.
+
 ## Promotion status
 
 The API experiment establishes optimized gather feasibility. GZP is exact but
