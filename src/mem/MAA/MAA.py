@@ -209,6 +209,11 @@ class MAA(ClockedObject):
         False,
         "Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
+    soa_jit_descriptor_value_carry = Param.Bool(
+        False,
+        "Fetch selected values sequentially during Fill and carry each "
+        "operand in its retained Offset descriptor",
+    )
     soa_jit_value_prefetch_credits = Param.Unsigned(
         0,
         "Active sequential SoA/JIT value-line prefetch credits "

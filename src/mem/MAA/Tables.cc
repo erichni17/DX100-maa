@@ -172,6 +172,11 @@ int OffsetTable::insert(int itr, int wid, int last_entry, int pass) {
     }
     return entry_id;
 }
+int OffsetTable::insertCarried(uint64_t value, int wid, int last_entry) {
+    const int entry_id = insert(0, wid, last_entry, -1);
+    entries[entry_id].setCarriedValue(value);
+    return entry_id;
+}
 std::vector<OffsetTableEntry> OffsetTable::get_entry_recv(int first_itr) {
     std::vector<OffsetTableEntry> result;
     assert(first_itr != -1);
@@ -373,6 +378,30 @@ bool RowTableEntry::insert(Addr addr, int itr, int wid, int pass) {
     } else {
         (*maa->stats.IND_NumCacheLineInserted[my_unit_id])++;
     }
+    return true;
+}
+bool RowTableEntry::insertCarried(Addr addr, uint64_t value, int wid) {
+    int free_entry_id = -1;
+    for (int i = 0; i < num_RT_entries_per_row; i++) {
+        if (entries_valid[i] && entries[i].addr == addr) {
+            entries[i].last_itr = offset_table->insertCarried(
+                value, wid, entries[i].last_itr);
+            return true;
+        } else if (!entries_valid[i] && free_entry_id == -1) {
+            free_entry_id = i;
+        }
+    }
+    if (free_entry_id == -1)
+        return false;
+    entries[free_entry_id].addr = addr;
+    const int offset_entry = offset_table->insertCarried(value, wid, -1);
+    entries[free_entry_id].first_itr = offset_entry;
+    entries[free_entry_id].last_itr = offset_entry;
+    entries_valid[free_entry_id] = true;
+    if (is_stream)
+        (*maa->stats.STR_NumCacheLineInserted[my_unit_id])++;
+    else
+        (*maa->stats.IND_NumCacheLineInserted[my_unit_id])++;
     return true;
 }
 void RowTableEntry::check_reset() {
@@ -606,6 +635,39 @@ bool RowTableSlice::insert(Addr grow_addr, Addr addr, int itr, int wid,
     if (is_stream == false) {
         (*maa->stats.IND_NumRowsInserted[my_unit_id])++;
     }
+    return true;
+}
+bool RowTableSlice::insertCarried(Addr grow_addr, Addr addr, uint64_t value,
+                                  int wid, bool &first_CL_access) {
+    first_CL_access = false;
+    for (int i = 0; i < num_RT_rows_per_slice; i++) {
+        if (entries_valid[i] && !entries_sent[i] &&
+            entries[i].grow_addr == grow_addr && entries[i].find_addr(addr)) {
+            assert(entries[i].insertCarried(addr, value, wid));
+            return true;
+        }
+    }
+    first_CL_access = true;
+    int free_row_id = -1;
+    for (int i = 0; i < num_RT_rows_per_slice; i++) {
+        if (entries_valid[i] && !entries_sent[i] &&
+            entries[i].grow_addr == grow_addr) {
+            if (entries[i].insertCarried(addr, value, wid))
+                return true;
+        } else if (!entries_valid[i]) {
+            panic_if(entries_sent[i], "Row[%d] is already sent\n", i);
+            if (free_row_id == -1)
+                free_row_id = i;
+        }
+    }
+    if (free_row_id == -1)
+        return false;
+    entries[free_row_id].grow_addr = grow_addr;
+    assert(entries[free_row_id].insertCarried(addr, value, wid));
+    entries_valid[free_row_id] = true;
+    entries_sent[free_row_id] = false;
+    if (!is_stream)
+        (*maa->stats.IND_NumRowsInserted[my_unit_id])++;
     return true;
 }
 float RowTableSlice::getAverageEntriesPerRow() {

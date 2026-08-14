@@ -485,6 +485,14 @@ def addNoISAOptions(parser):
         help="Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
     parser.add_argument(
+        "--maa_soa_jit_descriptor_value_carry",
+        action="store_true",
+        help=(
+            "Fetch selected values sequentially during Fill and carry each "
+            "operand in its retained Offset descriptor"
+        ),
+    )
+    parser.add_argument(
         "--maa_soa_jit_value_prefetch_credits",
         type=int,
         default=0,

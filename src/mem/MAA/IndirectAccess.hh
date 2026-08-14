@@ -293,6 +293,7 @@ public:
                   int _soa_jit_active_contexts,
                   int _soa_jit_value_lookahead,
                   bool _soa_jit_value_cache_enable,
+                  bool _soa_jit_descriptor_value_carry,
                   int _soa_jit_value_prefetch_credits,
                   int _soa_jit_active_value_owners,
                   int _soa_jit_apply_lanes,
@@ -572,9 +573,29 @@ protected:
     int soa_jit_active_contexts = 1;
     int soa_jit_value_lookahead = 1;
     bool soa_jit_value_cache_enable = false;
+    bool soa_jit_descriptor_value_carry = false;
     int soa_jit_value_prefetch_credits = 0;
     int soa_jit_active_value_owners = 4;
     SoaJitValuePrefetchCursor soa_jit_value_prefetch_cursor;
+    enum class SoaJitFillValueState : uint8_t
+    {
+        Empty,
+        Pending,
+        Ready,
+    };
+    struct SoaJitFillValueLine
+    {
+        std::array<uint8_t, 64> data{};
+        Addr blockPaddr = 0;
+        SoaJitFillValueState state = SoaJitFillValueState::Empty;
+    };
+    static constexpr size_t SoaJitFillValueModeledBytes =
+        64 + sizeof(Addr) + sizeof(SoaJitFillValueState);
+    static_assert(SoaJitFillValueModeledBytes == 73,
+                  "SoA/JIT Fill value modeled state changed");
+    static_assert(sizeof(SoaJitFillValueLine) == 80,
+                  "SoA/JIT Fill value host state changed");
+    SoaJitFillValueLine soa_jit_fill_value_line;
     int soa_jit_apply_lanes = 1;
     SoaJitApplyLanePool soa_jit_apply_lane_pool;
     bool soa_jit_all_rows_claimed = false;
@@ -607,6 +628,10 @@ protected:
     uint64_t soa_jit_value_prefetch_owned = 0;
     uint64_t soa_jit_value_prefetch_credit_stalls = 0;
     uint64_t soa_jit_value_prefetch_high_water = 0;
+    uint64_t soa_jit_carry_fill_read_issues = 0;
+    uint64_t soa_jit_carry_fill_read_responses = 0;
+    uint64_t soa_jit_carried_operands = 0;
+    uint64_t soa_jit_carried_applies = 0;
     uint64_t soa_jit_lookahead_issues = 0;
     uint64_t soa_jit_lookahead_responses = 0;
     uint64_t soa_jit_lookahead_stalls = 0;
@@ -696,6 +721,9 @@ protected:
                              bool is_block_cached);
     int64_t soaSourcePosition(int logical_itr) const;
     bool serviceSoaJitValuePrefetch();
+    bool readSoaJitCarriedValue(int logical_itr, uint64_t &value);
+    bool receiveSoaJitCarriedValue(Addr addr, uint8_t *dataptr,
+                                   bool is_block_cached);
     bool soaJitValuePrefetchComplete() const;
     bool serviceSoaJitBuild();
     bool receiveSoaJitData(Addr addr, uint8_t *dataptr,

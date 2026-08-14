@@ -461,6 +461,7 @@ public:
     unsigned int soa_jit_active_contexts;
     unsigned int soa_jit_value_lookahead;
     bool soa_jit_value_cache_enable;
+    bool soa_jit_descriptor_value_carry;
     unsigned int soa_jit_value_prefetch_credits;
     unsigned int soa_jit_active_value_owners;
     unsigned int soa_jit_apply_lanes;

@@ -54,8 +54,28 @@ struct OffsetTableEntry {
     int wid;
     int next_itr;
     int pass;
+
+    void setCarriedValue(uint64_t value)
+    {
+        static_assert(sizeof(itr) + sizeof(pass) == sizeof(value));
+        std::memcpy(&itr, &value, sizeof(itr));
+        std::memcpy(&pass,
+                    reinterpret_cast<const uint8_t *>(&value) + sizeof(itr),
+                    sizeof(pass));
+    }
+    uint64_t carriedValue() const
+    {
+        uint64_t value = 0;
+        std::memcpy(&value, &itr, sizeof(itr));
+        std::memcpy(reinterpret_cast<uint8_t *>(&value) + sizeof(itr),
+                    &pass, sizeof(pass));
+        return value;
+    }
 };
-class OffsetTable {
+static_assert(sizeof(OffsetTableEntry) == 16,
+              "OffsetTableEntry hardware footprint changed");
+class OffsetTable
+{
 public:
     OffsetTable() {
         entries = nullptr;
@@ -73,6 +93,7 @@ public:
                   MAA *_maa,
                   bool _is_stream = false);
     int insert(int itr, int wid, int last_entry, int pass = -1);
+    int insertCarried(uint64_t value, int wid, int last_entry);
     std::vector<OffsetTableEntry> get_entry_recv(int first_itr);
     OffsetTableEntry peek_entry(int itr) const;
     int count_entries(int itr) const;
@@ -143,6 +164,7 @@ public:
                   MAA *_maa,
                   bool _is_stream = false);
     bool insert(Addr addr, int itr, int wid, int pass = -1);
+    bool insertCarried(Addr addr, uint64_t value, int wid);
     bool find_addr(Addr addr) const;
     void reset();
     void check_reset();
@@ -195,6 +217,8 @@ public:
                   bool _is_stream = false);
     bool insert(Addr grow_addr, Addr addr, int itr, int wid,
                 bool &first_CL_access, int pass = -1);
+    bool insertCarried(Addr grow_addr, Addr addr, uint64_t value, int wid,
+                       bool &first_CL_access);
     bool get_entry_send(Addr &addr, bool drain);
     bool claim_entry_send(Addr &addr, int &head, int &words, bool drain,
                           bool group_by_grow, bool commit);

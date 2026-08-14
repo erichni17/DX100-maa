@@ -121,6 +121,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _soa_jit_active_contexts,
                                   int _soa_jit_value_lookahead,
                                   bool _soa_jit_value_cache_enable,
+                                  bool _soa_jit_descriptor_value_carry,
                                   int _soa_jit_value_prefetch_credits,
                                   int _soa_jit_active_value_owners,
                                   int _soa_jit_apply_lanes,
@@ -218,6 +219,11 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     soa_jit_active_contexts = _soa_jit_active_contexts;
     soa_jit_value_lookahead = _soa_jit_value_lookahead;
     soa_jit_value_cache_enable = _soa_jit_value_cache_enable;
+    soa_jit_descriptor_value_carry = _soa_jit_descriptor_value_carry;
+    panic_if(soa_jit_descriptor_value_carry &&
+                 _soa_jit_value_prefetch_credits != 0,
+             "I[%d] descriptor value carry and value prefetch cannot both "
+             "be enabled\n", my_indirect_id);
     panic_if(_soa_jit_value_prefetch_credits < 0 ||
                  _soa_jit_value_prefetch_credits >
                      static_cast<int>(
@@ -721,6 +727,10 @@ void IndirectAccessUnit::check_reset() {
     panic_if(!soaJitContextsEmpty(),
              "I[%d] SoA/JIT A-line scoreboard is not empty at reset\n",
              my_indirect_id);
+    panic_if(soa_jit_fill_value_line.state !=
+                 SoaJitFillValueState::Empty,
+             "I[%d] SoA/JIT descriptor-carry Fill owner is not empty at "
+             "reset\n", my_indirect_id);
     panic_if(descriptor_spool_bucket_active ||
                  descriptor_spool_bucket_scan_complete ||
                  descriptor_spool_replay_active ||
@@ -3467,6 +3477,13 @@ void IndirectAccessUnit::fillRowTable(
             ? soaPredicateValue(logical_itr)
             : (my_cond_tile == -1 ||
                maa->spd->getData<uint32_t>(my_cond_tile, logical_itr) != 0);
+        uint64_t carried_value = 0;
+        if (isSoaJitRmw() && soa_jit_descriptor_value_carry &&
+            condition_taken &&
+            !readSoaJitCarriedValue(logical_itr, carried_value)) {
+            waitForElement = true;
+            break;
+        }
         if (isSoaJitRmw()) {
             if (condition_taken)
                 soa_jit_selected++;
@@ -3823,9 +3840,14 @@ void IndirectAccessUnit::fillRowTable(
                     static_assert(sizeof(row_payload) == sizeof(idx));
                     std::memcpy(&row_payload, &idx, sizeof(idx));
                 }
-                bool inserted = RT[my_RT_config][my_RT_idx].insert(
-                    grow_addr, block_paddr, logical_itr, row_payload,
-                    first_CL_access);
+                const bool inserted =
+                    isSoaJitRmw() && soa_jit_descriptor_value_carry
+                    ? RT[my_RT_config][my_RT_idx].insertCarried(
+                          grow_addr, block_paddr, carried_value,
+                          row_payload, first_CL_access)
+                    : RT[my_RT_config][my_RT_idx].insert(
+                          grow_addr, block_paddr, logical_itr, row_payload,
+                          first_CL_access);
                 num_rowtable_accesses++;
                 if (!inserted) {
                     panic_if(resident_bucket,
@@ -3849,6 +3871,9 @@ void IndirectAccessUnit::fillRowTable(
                     break;
                 } else {
                     attribution_row_insert_successes++;
+                    if (isSoaJitRmw() &&
+                        soa_jit_descriptor_value_carry)
+                        soa_jit_carried_operands++;
                     if (isVirtualLoad()) {
                         if (macro_row_first_insert_tick == 0)
                             macro_row_first_insert_tick = curTick();
@@ -4117,6 +4142,7 @@ IndirectAccessUnit::hasLiveSoaJitState() const
            (my_instruction != nullptr && my_instruction->isSoaJitRmw()) ||
            !soaPredicateLinesEmpty() ||
            !soaJitContextsEmpty() ||
+           soa_jit_fill_value_line.state != SoaJitFillValueState::Empty ||
            !soa_jit_value_coalescer.prefetchComplete();
 }
 
@@ -4148,6 +4174,97 @@ IndirectAccessUnit::soaJitValuePrefetchComplete() const
            (soa_jit_value_prefetch_cursor.nextLogical ==
                 static_cast<uint32_t>(my_max) &&
             soa_jit_value_coalescer.prefetchComplete());
+}
+
+bool
+IndirectAccessUnit::readSoaJitCarriedValue(int logical_itr, uint64_t &value)
+{
+    panic_if(!soa_jit_descriptor_value_carry || !isSoaJitRmw() ||
+                 soa_jit_generation == 0 || logical_itr < 0 ||
+                 logical_itr >= my_max ||
+                 (my_word_size != 4 && my_word_size != 8),
+             "I[%d] invalid SoA/JIT descriptor-carry Fill read\n",
+             my_indirect_id);
+    const int64_t source = soaSourcePosition(logical_itr);
+    panic_if(source < 0,
+             "I[%d] negative descriptor-carry source position %ld\n",
+             my_indirect_id, source);
+    const uint64_t byte_offset =
+        static_cast<uint64_t>(source) * my_word_size;
+    const Addr span = my_backing_max_addr - my_backing_addr;
+    panic_if(span < static_cast<Addr>(my_word_size) ||
+                 byte_offset > span - my_word_size,
+             "I[%d] descriptor-carry source %ld exceeds [0x%lx,0x%lx)\n",
+             my_indirect_id, source, my_backing_min_addr,
+             my_backing_max_addr);
+    const Addr vaddr = my_backing_addr + byte_offset;
+    const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+    panic_if((vaddr % my_word_size) != 0 ||
+                 vaddr - block_vaddr + my_word_size > block_size,
+             "I[%d] unsafe descriptor-carry value word 0x%lx\n",
+             my_indirect_id, vaddr);
+    const Addr block_paddr = addrBlockAligner(
+        translatePacket(block_vaddr), block_size);
+
+    if (soa_jit_fill_value_line.state == SoaJitFillValueState::Ready &&
+        soa_jit_fill_value_line.blockPaddr != block_paddr)
+        soa_jit_fill_value_line = SoaJitFillValueLine();
+
+    if (soa_jit_fill_value_line.state == SoaJitFillValueState::Empty) {
+        soa_jit_fill_value_line.blockPaddr = block_paddr;
+        soa_jit_fill_value_line.state = SoaJitFillValueState::Pending;
+        soa_jit_carry_fill_read_issues++;
+        createSoaJitReadPacket(block_paddr, rowtable_latency);
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_carry_fill_issue schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu logical=%d "
+                "vaddr=0x%lx paddr=0x%lx issues=%lu\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                logical_itr, block_vaddr, block_paddr,
+                soa_jit_carry_fill_read_issues);
+        return false;
+    }
+    panic_if(soa_jit_fill_value_line.blockPaddr != block_paddr,
+             "I[%d] descriptor-carry sequential owner changed from 0x%lx "
+             "to 0x%lx while pending\n", my_indirect_id,
+             soa_jit_fill_value_line.blockPaddr, block_paddr);
+    if (soa_jit_fill_value_line.state == SoaJitFillValueState::Pending)
+        return false;
+    panic_if(soa_jit_fill_value_line.state != SoaJitFillValueState::Ready,
+             "I[%d] invalid descriptor-carry Fill owner state\n",
+             my_indirect_id);
+    value = 0;
+    std::memcpy(&value,
+                soa_jit_fill_value_line.data.data() +
+                    (vaddr - block_vaddr),
+                my_word_size);
+    return true;
+}
+
+bool
+IndirectAccessUnit::receiveSoaJitCarriedValue(
+    Addr addr, uint8_t *dataptr, bool is_block_cached)
+{
+    if (!isSoaJitRmw() || !soa_jit_descriptor_value_carry ||
+        soa_jit_fill_value_line.state != SoaJitFillValueState::Pending ||
+        soa_jit_fill_value_line.blockPaddr != addr)
+        return false;
+    panic_if(soa_jit_generation == 0 || state != Status::Fill,
+             "I[%d] descriptor-carry response arrived outside live Fill\n",
+             my_indirect_id);
+    accountReadResponse(addr, is_block_cached);
+    std::memcpy(soa_jit_fill_value_line.data.data(), dataptr,
+                soa_jit_fill_value_line.data.size());
+    soa_jit_fill_value_line.state = SoaJitFillValueState::Ready;
+    soa_jit_carry_fill_read_responses++;
+    DPRINTF(MAAVirtualTrace,
+            "event=soa_jit_carry_fill_response schema=1 unit=%d "
+            "operation_tick=%lu generation=%lu paddr=0x%lx cached=%d "
+            "responses=%lu\n",
+            my_indirect_id, my_decode_start_tick, soa_jit_generation,
+            addr, is_block_cached, soa_jit_carry_fill_read_responses);
+    scheduleNextExecution(true);
+    return true;
 }
 
 bool
@@ -4327,6 +4444,31 @@ IndirectAccessUnit::issueSoaJitValueRead(
              my_indirect_id);
     const OffsetTableEntry entry =
         offset_table->peek_entry(offset);
+    if (soa_jit_descriptor_value_carry) {
+        slot = SoaJitLookaheadSlot();
+        const uint64_t carried_value = entry.carriedValue();
+        std::memcpy(slot.value.data(), &carried_value, my_word_size);
+        slot.generation = soa_jit_generation;
+        slot.offset = offset;
+        slot.aWord = static_cast<uint16_t>(entry.wid);
+        slot.state = SoaJitLookaheadState::Ready;
+        context.issueOffset = entry.next_itr;
+        context.lookaheadOccupancy++;
+        soa_jit_lookahead_issues++;
+        soa_jit_lookahead_responses++;
+        soa_jit_value_deliveries++;
+        soa_jit_lookahead_high_water = std::max<uint64_t>(
+            soa_jit_lookahead_high_water, soaJitLookaheadOccupancy());
+        DPRINTF(MAAVirtualTrace,
+                "event=soa_jit_value_request schema=1 unit=%d "
+                "operation_tick=%lu generation=%lu context=%lu slot=%lu "
+                "offset=%d logical_itr=carried paddr=0x0 action=carry "
+                "cache_occupancy=0 lookahead=%u/%d\n",
+                my_indirect_id, my_decode_start_tick, soa_jit_generation,
+                context_index, slot_index, offset,
+                context.lookaheadOccupancy, soa_jit_value_lookahead);
+        return true;
+    }
     const int64_t source = soaSourcePosition(entry.itr);
     panic_if(source < 0,
              "I[%d] negative SoA/JIT value position %ld\n",
@@ -4533,7 +4675,8 @@ IndirectAccessUnit::serviceSoaJitLookahead()
             const int expected_offset = context.nextOffset;
             const OffsetTableEntry consumed =
                 offset_table->consume_entry(context.nextOffset);
-            panic_if(consumed.itr != slot->logicalItr ||
+            panic_if((!soa_jit_descriptor_value_carry &&
+                          consumed.itr != slot->logicalItr) ||
                          consumed.wid != slot->aWord ||
                          expected_offset != slot->offset,
                      "I[%d] SoA/JIT alias identity changed at offset %d\n",
@@ -4542,6 +4685,8 @@ IndirectAccessUnit::serviceSoaJitLookahead()
             context.lookaheadOccupancy--;
             *slot = SoaJitLookaheadSlot();
             soa_jit_aliases_applied++;
+            if (soa_jit_descriptor_value_carry)
+                soa_jit_carried_applies++;
             soa_jit_apply_lane_high_water = std::max<uint64_t>(
                 soa_jit_apply_lane_high_water,
                 soa_jit_apply_lane_pool.currentCycleOccupancy());
@@ -4740,6 +4885,18 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                      soa_jit_value_read_responses ||
                  soa_jit_value_fills !=
                      soa_jit_value_read_responses ||
+                 soa_jit_carry_fill_read_issues !=
+                     soa_jit_carry_fill_read_responses ||
+                 (soa_jit_descriptor_value_carry &&
+                  (soa_jit_carried_operands != soa_jit_selected ||
+                   soa_jit_carried_applies != soa_jit_selected ||
+                   soa_jit_value_read_issues != 0)) ||
+                 (!soa_jit_descriptor_value_carry &&
+                  (soa_jit_carry_fill_read_issues != 0 ||
+                   soa_jit_carried_operands != 0 ||
+                   soa_jit_carried_applies != 0)) ||
+                 soa_jit_fill_value_line.state !=
+                     SoaJitFillValueState::Empty ||
                  soa_jit_value_prefetch_issues !=
                      soa_jit_value_prefetch_responses ||
                  soa_jit_value_prefetch_responses !=
@@ -5113,6 +5270,7 @@ void IndirectAccessUnit::executeInstruction() {
             soa_jit_active_value_owners);
         soa_jit_value_coalescer.reset();
         soa_jit_value_prefetch_cursor = SoaJitValuePrefetchCursor();
+        soa_jit_fill_value_line = SoaJitFillValueLine();
         soa_jit_apply_lane_pool.configure(soa_jit_apply_lanes);
         soa_jit_apply_lane_pool.reset();
         soa_jit_all_rows_claimed = false;
@@ -5144,6 +5302,10 @@ void IndirectAccessUnit::executeInstruction() {
         soa_jit_value_prefetch_owned = 0;
         soa_jit_value_prefetch_credit_stalls = 0;
         soa_jit_value_prefetch_high_water = 0;
+        soa_jit_carry_fill_read_issues = 0;
+        soa_jit_carry_fill_read_responses = 0;
+        soa_jit_carried_operands = 0;
+        soa_jit_carried_applies = 0;
         soa_jit_lookahead_issues = 0;
         soa_jit_lookahead_responses = 0;
         soa_jit_lookahead_stalls = 0;
@@ -5432,6 +5594,13 @@ void IndirectAccessUnit::executeInstruction() {
         } else if (finished) {
             DPRINTF(MAAIndirect, "I[%d] %s: fill finished %s!\n",
                     my_indirect_id, __func__, my_instruction->print());
+            if (isSoaJitRmw() && soa_jit_descriptor_value_carry) {
+                panic_if(soa_jit_fill_value_line.state ==
+                             SoaJitFillValueState::Pending,
+                         "I[%d] descriptor-carry Fill closed with a pending "
+                         "value response\n", my_indirect_id);
+                soa_jit_fill_value_line = SoaJitFillValueLine();
+            }
             my_fill_finished = true;
             buildReady = true;
         } else if (waitForElement) {
@@ -6303,6 +6472,11 @@ void IndirectAccessUnit::executeInstruction() {
                     "predicate_state_bytes=%lu predicate_host_bytes=%lu "
                     "a_reads=%lu/%lu "
                     "value_reads=%lu/%lu fills=%lu cached=%lu "
+                    "descriptor_carry=%d carry_fill_reads=%lu/%lu "
+                    "carried_operands=%lu carried_applies=%lu "
+                    "carry_entry_incremental_bytes=0 "
+                    "carry_unit_incremental_modeled_bytes=%lu "
+                    "carry_unit_host_bytes=%lu "
                     "hits=%lu merged=%lu evictions=%lu "
                     "deliveries=%lu value_stalls=%lu aliases=%lu "
                     "lookahead=%lu/%lu lookahead_hwm=%lu "
@@ -6338,6 +6512,13 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_value_read_responses,
                     soa_jit_value_fills,
                     soa_jit_value_cached_responses,
+                    soa_jit_descriptor_value_carry,
+                    soa_jit_carry_fill_read_issues,
+                    soa_jit_carry_fill_read_responses,
+                    soa_jit_carried_operands,
+                    soa_jit_carried_applies,
+                    SoaJitFillValueModeledBytes,
+                    sizeof(SoaJitFillValueLine),
                     soa_jit_value_hits,
                     soa_jit_value_merged_waiters,
                     soa_jit_value_evictions,
@@ -6427,6 +6608,11 @@ void IndirectAccessUnit::executeInstruction() {
                     "fixed_context_bytes=%lu fixed_contexts=%lu "
                     "fixed_contexts_bytes=%lu "
                     "active_contexts_bytes=%lu "
+                    "offset_entry_bytes=%lu "
+                    "carry_entry_incremental_bytes=0 "
+                    "carry_enable=%d "
+                    "carry_unit_incremental_modeled_bytes=%lu "
+                    "carry_unit_host_bytes=%lu "
                     "max_physical_value_owner_lines=%lu "
                     "fixed_value_owner_bytes=%lu "
                     "fixed_value_owner_entry_bytes=%lu "
@@ -6463,6 +6649,10 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_generation, fixed_context_bytes,
                     SoaJitContexts, fixed_contexts_bytes,
                     active_contexts_bytes,
+                    sizeof(OffsetTableEntry),
+                    soa_jit_descriptor_value_carry,
+                    SoaJitFillValueModeledBytes,
+                    sizeof(SoaJitFillValueLine),
                     SoaJitValueCoalescer::MaxOwners,
                     fixed_value_owner_bytes,
                     fixed_value_owner_entry_bytes,
@@ -7388,6 +7578,8 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
     if (receiveDirectIndex(addr, dataptr, is_block_cached))
         return true;
     if (receiveSoaPredicate(addr, dataptr, is_block_cached))
+        return true;
+    if (receiveSoaJitCarriedValue(addr, dataptr, is_block_cached))
         return true;
     if (receiveSoaJitData(addr, dataptr, is_block_cached))
         return true;
