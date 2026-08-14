@@ -17,6 +17,8 @@ cxx=${CXX:-g++}
 expected_hash=2761840269561229581
 timeout_seconds=${SOA_JIT_OWNER_TIMEOUT_SECONDS:-0}
 pre_a_mode=${SOA_JIT_OWNER_PRE_A:-false}
+owners_control=${SOA_JIT_OWNER_CONTROL:-32}
+owners_treatment=${SOA_JIT_OWNER_TREATMENT:-64}
 
 [[ -x $gem5 ]] || { echo "missing gem5: $gem5" >&2; exit 2; }
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
@@ -26,6 +28,15 @@ pre_a_mode=${SOA_JIT_OWNER_PRE_A:-false}
 }
 [[ $pre_a_mode == false || $pre_a_mode == true ]] || {
     echo "SOA_JIT_OWNER_PRE_A must be false or true" >&2
+    exit 2
+}
+valid_owner_count() {
+    [[ $1 == 4 || $1 == 8 || $1 == 16 || $1 == 32 || $1 == 64 || $1 == 128 ]]
+}
+valid_owner_count "$owners_control" &&
+    valid_owner_count "$owners_treatment" &&
+    ((owners_treatment > owners_control)) || {
+    echo "owner counts must be supported and treatment must exceed control" >&2
     exit 2
 }
 timeout_command=()
@@ -72,8 +83,9 @@ checkpoint_sha=$(sha256sum "$checkpoint_state" | awk '{print $1}')
         'value_lookahead=8' 'value_cache_enable=true' \
         'predicate_active_credits=16' 'index_buffer_lines=4' \
         'apply_lanes=1' "pre_a_value_lookahead=$pre_a_mode" \
-        'sequential_value_prefetch_credits=0' 'owners_control=32' \
-        'owners_treatment=64' 'replicas=2'
+        'sequential_value_prefetch_credits=0' \
+        "owners_control=$owners_control" \
+        "owners_treatment=$owners_treatment" 'replicas=2'
 } >"$out/manifest.txt"
 
 stat_sum() {
@@ -141,8 +153,10 @@ run_arm() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$replica" "$owners" "$pre_a_mode" "${ticks[$name]}" "${hashes[$name]}" "${selected[$name]}" "${rejected[$name]}" "${value_issues[$name]}" "${value_responses[$name]}" "${fills[$name]}" "${deliveries[$name]}" "${aliases[$name]}" "${a_reads[$name]}" "${a_responses[$name]}" "${writes[$name]}" "${write_responses[$name]}" "${evictions[$name]}" "${value_stalls[$name]}" "${context_stalls[$name]}" "${cache_hwm[$name]}" "${pre_a_issues[$name]}" "${pre_a_ready[$name]}" "${pre_a_uses[$name]}" >>"$out/matrix.tsv"
 }
 
-run_arm control_r1 1 32; run_arm treatment_r1 1 64
-run_arm control_r2 2 32; run_arm treatment_r2 2 64
+run_arm control_r1 1 "$owners_control"
+run_arm treatment_r1 1 "$owners_treatment"
+run_arm control_r2 2 "$owners_control"
+run_arm treatment_r2 2 "$owners_treatment"
 decision=PROMOTE
 for replica in 1 2; do
     control=control_r$replica; treatment=treatment_r$replica
