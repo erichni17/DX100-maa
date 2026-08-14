@@ -18,6 +18,8 @@ class StorageReportTest(unittest.TestCase):
         physical: int,
         native_order: bool,
         direct_retirement_line_handoff: bool = False,
+        response_words: int = 0,
+        response_pool: int = 480,
     ) -> Path:
         values = {
             "num_cores": "4",
@@ -33,8 +35,8 @@ class StorageReportTest(unittest.TestCase):
             "virtual_combine_slots": "384",
             "virtual_combine_ways": "4",
             "virtual_response_slots": "128",
-            "virtual_response_words": "0",
-            "virtual_response_word_pool": "480",
+            "virtual_response_words": str(response_words),
+            "virtual_response_word_pool": str(response_pool),
             "virtual_index_buffer_lines": "8",
             "virtual_max_outstanding_writes": "64",
             "virtual_native_issue_order": str(native_order).lower(),
@@ -96,16 +98,32 @@ class StorageReportTest(unittest.TestCase):
             self.assertEqual(comparable["configured_total_bytes"], 833347)
             buffers = report["virtual_data_buffers"]
             self.assertEqual(
+                buffers["source_response_storage_mode"], "packed-word-pool"
+            )
+            self.assertEqual(
+                buffers["configured_source_response_bytes_per_indirect_unit"],
+                3840,
+            )
+            self.assertEqual(buffers["unpacked_line_bytes_per_slot"], 0)
+            control = report["incremental_virtual_control_lower_bound"]
+            self.assertEqual(
+                control["source_response_metadata_bits_per_slot"], 190
+            )
+            self.assertEqual(
+                control["source_response_metadata_bits_per_indirect_unit"],
+                128 * 190,
+            )
+            self.assertEqual(
                 buffers["inactive_cpp_response_line_bytes_per_indirect_unit"],
-                8192,
+                0,
             )
             conservative = report["conservative_cpp_static_storage_view"]
             self.assertEqual(
-                conservative["inactive_fixed_response_line_bytes"], 8192
+                conservative["inactive_fixed_response_line_bytes"], 0
             )
-            self.assertEqual(conservative["bounded_state_bytes"], 570691)
+            self.assertEqual(conservative["bounded_state_bytes"], 562499)
             self.assertEqual(
-                conservative["comparable_configured_bytes"], 841539
+                conservative["comparable_configured_bytes"], 833347
             )
             allocated = report["allocated_model_storage_lower_bound"]
             self.assertEqual(
@@ -178,6 +196,34 @@ class StorageReportTest(unittest.TestCase):
                     "physical_spd_virtual_payload_and_control_bytes"
                 ],
                 10496,
+            )
+
+    def test_unpacked_mode_retains_one_fixed_line_per_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.write_config(
+                root,
+                4096,
+                True,
+                response_words=0,
+                response_pool=0,
+            )
+            result, output = self.run_report(root, config, "direct-index")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads((output / "maa_storage.json").read_text())
+            buffers = report["virtual_data_buffers"]
+            self.assertEqual(
+                buffers["source_response_storage_mode"],
+                "unpacked-fixed-lines",
+            )
+            self.assertEqual(buffers["unpacked_line_bytes_per_slot"], 64)
+            self.assertEqual(
+                buffers["configured_source_response_bytes_per_indirect_unit"],
+                128 * 64,
+            )
+            self.assertEqual(
+                buffers["inactive_cpp_response_line_bytes_per_indirect_unit"],
+                0,
             )
 
     def test_native_has_no_incremental_virtual_state(self) -> None:

@@ -160,9 +160,13 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     panic_if(_virtual_response_slots <= 0,
              "I[%d] virtual response buffer must have at least one slot\n",
              my_indirect_id);
-    virtual_response_slots.resize(_virtual_response_slots);
     virtual_response_words = _virtual_response_words;
     virtual_response_word_pool_limit = _virtual_response_word_pool;
+    virtual_response_slots.resize(_virtual_response_slots);
+    virtual_response_line_payloads.configure(
+        _virtual_response_slots,
+        virtual_response_words != 0 ||
+            virtual_response_word_pool_limit != 0);
     virtual_words_per_cycle_limit = _virtual_words_per_cycle;
     panic_if(_virtual_max_outstanding_writes <= 0,
              "I[%d] virtual retirement must allow at least one write\n",
@@ -3772,6 +3776,7 @@ void IndirectAccessUnit::executeInstruction() {
         virtual_trace_request_calls = 0;
         for (auto &slot : virtual_response_slots)
             slot = VirtualResponseSlot();
+        virtual_response_line_payloads.reset();
         for (auto &slot : virtual_combine_slots)
             slot = VirtualCombineSlot();
         virtual_combine_page_ready.reset(virtual_combine_slots.size());
@@ -5680,6 +5685,8 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         panic_if(slot == virtual_response_slots.end(),
                  "I[%d] %s: no reserved virtual response slot!\n",
                  my_indirect_id, __func__);
+        const size_t slot_idx = std::distance(
+            virtual_response_slots.begin(), slot);
         slot->valid = true;
         slot->next_itr = virtual_head;
         slot->claim_rt_idx = virtual_claim_rt_idx;
@@ -5701,7 +5708,8 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         const bool packed_response = virtual_response_words != 0 ||
                                      virtual_response_word_pool_limit != 0;
         if (!packed_response) {
-            std::memcpy(slot->data.data(), dataptr, block_size);
+            std::memcpy(virtual_response_line_payloads.lineData(slot_idx),
+                        dataptr, block_size);
         } else {
             int itr = virtual_head;
             while (itr != -1) {
@@ -6409,7 +6417,9 @@ bool IndirectAccessUnit::drainVirtualResponses() {
                    virtual_words_per_cycle_limit;
     };
     bool bank_stalled = false;
-    for (auto &slot : virtual_response_slots) {
+    for (size_t slot_idx = 0;
+         slot_idx < virtual_response_slots.size(); ++slot_idx) {
+        auto &slot = virtual_response_slots[slot_idx];
         if (virtual_response_words != 0 ||
             virtual_response_word_pool_limit != 0) {
             bool capacity_stalled = false;
@@ -6483,7 +6493,8 @@ bool IndirectAccessUnit::drainVirtualResponses() {
             OffsetTableEntry entry = offset_table->peek_entry(slot.next_itr);
             virtual_word_attempts_this_cycle++;
             const uint8_t *word =
-                slot.data.data() + entry.wid * my_word_size;
+                virtual_response_line_payloads.lineData(slot_idx) +
+                entry.wid * my_word_size;
             if (virtual_load) {
                 if (entry.pass >= 0)
                     direct_index_partition = entry.pass;
