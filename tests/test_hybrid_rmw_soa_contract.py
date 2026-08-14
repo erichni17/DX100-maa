@@ -183,9 +183,9 @@ def test_overlap_runner_has_explicit_serial_and_optimized_treatments():
         )
     assert "run_soa apply2_c8_i8_l8_v32 4096 8 8 8 1 32 2" in runner
     assert "run_soa apply4_c8_i8_l8_v32 4096 8 8 8 1 32 4" in runner
-    assert "fixed_context_slots=8" in runner
+    assert "fixed_context_slots=32" in runner
     assert "fixed_lookahead_slots_per_context=8" in runner
-    assert "fixed_value_owner_pool_lines=32" in runner
+    assert "fixed_value_owner_pool_lines=128" in runner
     assert "fixed_apply_lanes=4" in runner
     assert "default_active_apply_lanes=1" in runner
     assert '--maa_soa_jit_apply_lanes="$lanes"' in runner
@@ -208,7 +208,13 @@ def test_storage_ledger_separates_fixed_provision_from_active_knobs():
         "fixed_contexts_bytes",
         "max_physical_value_owner_lines",
         "fixed_value_owner_bytes",
+        "fixed_value_owner_entry_bytes",
         "fixed_value_owner_payload_bytes",
+        "fixed_value_owner_nonpayload_bytes",
+        "baseline_32_value_owner_bytes",
+        "incremental_value_owner_bytes_vs_32_per_unit",
+        "fixed_value_owner_bytes_per_maa",
+        "incremental_value_owner_bytes_vs_32_per_maa",
         "fixed_apply_lane_owner_bytes",
         "fixed_apply_lane_pool_bytes",
         "fixed_predicate_lines",
@@ -223,6 +229,8 @@ def test_storage_ledger_separates_fixed_provision_from_active_knobs():
         "active_lookahead",
         "active_value_owners",
         "active_value_owner_payload_bytes",
+        "selected_value_owner_entry_bytes_per_unit",
+        "selected_value_owner_entry_bytes_per_maa",
         "active_apply_lanes",
         "active_apply_lane_hwm",
     ):
@@ -231,14 +239,20 @@ def test_storage_ledger_separates_fixed_provision_from_active_knobs():
 
 def test_value_owner_pool_plumbing_restricts_runtime_selection():
     state = read("src/mem/MAA/SoaJitOverlapState.hh")
+    source = read("src/mem/MAA/IndirectAccess.cc")
     options = read("configs/common/Options.py")
     simobject = read("src/mem/MAA/MAA.py")
     config = read("configs/common/MAAConfig.py")
-    assert "MaxOwners = 32" in state
-    assert "count == 4 || count == 8 || count == 16 || count == 32" in state
+    assert "BaselineOwners = 32" in state
+    assert "MaxOwners = 128" in state
+    assert "count == 4 || count == 8 || count == 16 || count == 32 ||" in state
+    assert "count == 64 || count == 128" in state
+    assert "isValidActiveOwnerCount(size_t count)" in state
+    assert "size_t active_owners = 4" in state
     assert "activeOwnerLines" in state
+    assert "32, 64, or 128\\n" in source
     assert '"--maa_soa_jit_active_value_owners"' in options
-    assert "choices=(4, 8, 16, 32)" in options
+    assert "choices=(4, 8, 16, 32, 64, 128)" in options
     assert "soa_jit_active_value_owners = Param.Unsigned" in simobject
     assert 'opts["soa_jit_active_value_owners"]' in config
 

@@ -220,7 +220,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     panic_if(!SoaJitValueCoalescer::isValidActiveOwnerCount(
                  _soa_jit_active_value_owners),
              "I[%d] SoA/JIT active value owners (%d) must be 4, 8, 16, "
-             "or 32\n",
+             "32, 64, or 128\n",
              my_indirect_id, _soa_jit_active_value_owners);
     soa_jit_active_value_owners = _soa_jit_active_value_owners;
     soa_jit_value_coalescer.configure(soa_jit_value_cache_enable, 0,
@@ -6161,6 +6161,31 @@ void IndirectAccessUnit::executeInstruction() {
                 fixed_context_bytes;
             constexpr size_t fixed_value_owner_bytes =
                 sizeof(SoaJitValueCoalescer);
+            constexpr size_t fixed_value_owner_entry_bytes =
+                sizeof(SoaJitValueCoalescer::CacheLine);
+            constexpr size_t fixed_value_owner_payload_bytes =
+                SoaJitValueCoalescer::MaxOwners *
+                SoaJitValueCoalescer::LineBytes;
+            constexpr size_t fixed_value_owner_nonpayload_bytes =
+                fixed_value_owner_bytes - fixed_value_owner_payload_bytes;
+            constexpr size_t baseline_32_value_owner_bytes =
+                fixed_value_owner_bytes -
+                (SoaJitValueCoalescer::MaxOwners -
+                 SoaJitValueCoalescer::BaselineOwners) *
+                    fixed_value_owner_entry_bytes;
+            constexpr size_t incremental_value_owner_bytes_vs_32 =
+                fixed_value_owner_bytes - baseline_32_value_owner_bytes;
+            const size_t selected_value_owner_entry_bytes =
+                static_cast<size_t>(soa_jit_active_value_owners) *
+                fixed_value_owner_entry_bytes;
+            const size_t fixed_value_owner_bytes_per_maa =
+                fixed_value_owner_bytes * maa->num_indirect_units_per_maa;
+            const size_t incremental_value_owner_bytes_vs_32_per_maa =
+                incremental_value_owner_bytes_vs_32 *
+                maa->num_indirect_units_per_maa;
+            const size_t selected_value_owner_entry_bytes_per_maa =
+                selected_value_owner_entry_bytes *
+                maa->num_indirect_units_per_maa;
             constexpr size_t fixed_apply_lane_owner_bytes =
                 sizeof(SoaJitApplyLanePool::Owner);
             constexpr size_t fixed_apply_lane_pool_bytes =
@@ -6175,14 +6200,20 @@ void IndirectAccessUnit::executeInstruction() {
                 fixed_contexts_bytes + fixed_value_owner_bytes +
                 fixed_apply_lane_pool_bytes;
             DPRINTF(MAAVirtualTrace,
-                    "event=soa_jit_storage schema=1 unit=%d "
+                    "event=soa_jit_storage schema=2 unit=%d "
                     "operation_tick=%lu generation=%lu "
                     "fixed_context_bytes=%lu fixed_contexts=%lu "
                     "fixed_contexts_bytes=%lu "
                     "active_contexts_bytes=%lu "
                     "max_physical_value_owner_lines=%lu "
                     "fixed_value_owner_bytes=%lu "
+                    "fixed_value_owner_entry_bytes=%lu "
                     "fixed_value_owner_payload_bytes=%lu "
+                    "fixed_value_owner_nonpayload_bytes=%lu "
+                    "baseline_32_value_owner_bytes=%lu "
+                    "incremental_value_owner_bytes_vs_32_per_unit=%lu "
+                    "fixed_value_owner_bytes_per_maa=%lu "
+                    "incremental_value_owner_bytes_vs_32_per_maa=%lu "
                     "fixed_apply_lanes=%lu active_apply_lanes=%d "
                     "active_apply_lane_hwm=%lu "
                     "fixed_apply_lane_owner_bytes=%lu "
@@ -6200,6 +6231,8 @@ void IndirectAccessUnit::executeInstruction() {
                     "active_contexts=%d active_lookahead=%d "
                     "active_value_owners=%d "
                     "active_value_owner_payload_bytes=%lu "
+                    "selected_value_owner_entry_bytes_per_unit=%lu "
+                    "selected_value_owner_entry_bytes_per_maa=%lu "
                     "cache_enable=%d\n",
                     my_indirect_id, my_decode_start_tick,
                     soa_jit_generation, fixed_context_bytes,
@@ -6207,8 +6240,13 @@ void IndirectAccessUnit::executeInstruction() {
                     active_contexts_bytes,
                     SoaJitValueCoalescer::MaxOwners,
                     fixed_value_owner_bytes,
-                    SoaJitValueCoalescer::MaxOwners *
-                        SoaJitValueCoalescer::LineBytes,
+                    fixed_value_owner_entry_bytes,
+                    fixed_value_owner_payload_bytes,
+                    fixed_value_owner_nonpayload_bytes,
+                    baseline_32_value_owner_bytes,
+                    incremental_value_owner_bytes_vs_32,
+                    fixed_value_owner_bytes_per_maa,
+                    incremental_value_owner_bytes_vs_32_per_maa,
                     SoaJitApplyLanePool::MaxLanes,
                     soa_jit_apply_lanes,
                     soa_jit_apply_lane_high_water,
@@ -6230,6 +6268,8 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_active_value_owners,
                     static_cast<size_t>(soa_jit_active_value_owners) *
                         SoaJitValueCoalescer::LineBytes,
+                    selected_value_owner_entry_bytes,
+                    selected_value_owner_entry_bytes_per_maa,
                     soa_jit_value_cache_enable);
         }
         if (maa->virtual_bounded_global_merge) {

@@ -207,12 +207,12 @@ class MAA(ClockedObject):
     )
     soa_jit_value_cache_enable = Param.Bool(
         False,
-        "Retain ready lines in the fixed 32-owner SoA/JIT value pool",
+        "Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
     soa_jit_active_value_owners = Param.Unsigned(
         4,
-        "Active SoA/JIT value owners (4, 8, 16, or 32; "
-        "physical maximum is 32)",
+        "Active SoA/JIT value owners (4, 8, 16, 32, 64, or 128; "
+        "physical maximum is 128)",
     )
     soa_jit_apply_lanes = Param.Unsigned(
         1,

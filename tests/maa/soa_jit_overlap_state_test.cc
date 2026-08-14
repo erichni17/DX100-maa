@@ -100,35 +100,85 @@ testFourFillsFifthMissRetryAndEviction()
 }
 
 void
-testSelectableOwnerPoolBoundsAndFailClosedConfiguration()
+testSelectableOwnerPoolBoundsInactiveExclusionAndCapacityStall()
 {
     SoaJitValueCoalescer state;
-    state.configure(true, 0, 8);
+    constexpr std::array<uint8_t, 6> valid_counts = {
+        4, 8, 16, 32, 64, 128,
+    };
+    for (const uint8_t active : valid_counts) {
+        state.configure(true, 0, active);
+        state.reset();
+        CHECK(state.activeOwnerCount() == active);
+        for (uint16_t index = 0; index < active; ++index) {
+            CHECK(state.requestAlias(
+                      9, 0x3000 + 0x40 * index, index).result ==
+                  SoaJitValueCoalescer::AliasResult::Fill);
+        }
+        CHECK(state.cacheOccupancy() == active);
+        CHECK(state.cacheHwm() == active);
+        CHECK(state.requestAlias(
+                  9, 0x3000 + 0x40 * active, active).result ==
+              SoaJitValueCoalescer::AliasResult::Stall);
+        const auto &lines = state.cacheLines();
+        for (size_t index = active; index < lines.size(); ++index) {
+            CHECK(lines[index].state ==
+                  SoaJitValueCoalescer::LineState::Free);
+            CHECK(lines[index].generation == 0);
+            CHECK(lines[index].paddr == 0);
+            CHECK(lines[index].waiterMask.none());
+        }
+        CHECK(state.assertInvariants());
+    }
+
+    constexpr std::array<size_t, 6> invalid_counts = {
+        0, 1, 5, 63, 127, 260,
+    };
+    for (const size_t active : invalid_counts) {
+        state.configure(true, 0, active);
+        state.reset();
+        CHECK(state.activeOwnerCount() == 0);
+        CHECK(!state.assertInvariants());
+        CHECK(state.requestAlias(11, 0x7000, 0).result ==
+              SoaJitValueCoalescer::AliasResult::Stall);
+    }
+}
+
+void
+testFullOneTwentyEightOwnerGenerationClosesExactly()
+{
+    SoaJitValueCoalescer state;
+    state.configure(true, 0, 128);
     state.reset();
-    for (uint8_t index = 0; index < 8; ++index) {
-        CHECK(state.requestAlias(9, 0x3000 + 0x40 * index, index).result ==
+    constexpr uint64_t generation = 21;
+    constexpr uint64_t base = 0x10000;
+    for (uint16_t index = 0; index < 128; ++index) {
+        CHECK(state.requestAlias(
+                  generation, base + 0x40 * index, index).result ==
               SoaJitValueCoalescer::AliasResult::Fill);
     }
-    CHECK(state.requestAlias(9, 0x4000, 8).result ==
-          SoaJitValueCoalescer::AliasResult::Stall);
-    CHECK(state.activeOwnerCount() == 8);
-    CHECK(state.assertInvariants());
-
-    state.configure(true, 0, 32);
-    state.reset();
-    for (uint8_t index = 0; index < 32; ++index) {
-        CHECK(state.requestAlias(10, 0x5000 + 0x40 * index, index).result ==
-              SoaJitValueCoalescer::AliasResult::Fill);
+    CHECK(!state.clearGeneration(generation));
+    for (int index = 127; index >= 0; --index) {
+        const auto data = payload(static_cast<uint8_t>(index));
+        CHECK(state.acceptResponse(
+                  generation, base + 0x40 * index,
+                  data.data(), data.size()) ==
+              SoaJitValueCoalescer::ResponseResult::CacheFill);
     }
-    CHECK(state.cacheOccupancy() == 32);
-    CHECK(state.activeOwnerCount() == 32);
+    CHECK(!state.clearGeneration(generation));
+    for (uint16_t index = 0; index < 128; ++index) {
+        const auto expected = payload(static_cast<uint8_t>(index));
+        SoaJitValueCoalescer::Delivery delivery;
+        CHECK(state.deliver(generation, index, 1000 + index, delivery) ==
+              SoaJitValueCoalescer::DeliveryResult::Delivered);
+        CHECK(delivery.data == expected);
+    }
+    CHECK(state.clearGeneration(generation));
+    CHECK(state.cacheOccupancy() == 0);
+    CHECK(state.fillingCount() == 0);
+    CHECK(state.readyCount() == 0);
+    CHECK(!state.owns(generation, base));
     CHECK(state.assertInvariants());
-
-    state.configure(true, 0, 5);
-    state.reset();
-    CHECK(!state.assertInvariants());
-    CHECK(state.requestAlias(11, 0x7000, 0).result ==
-          SoaJitValueCoalescer::AliasResult::Stall);
 }
 
 void
@@ -299,7 +349,8 @@ main()
 {
     testThirtyTwoContextsShareOneFill();
     testFourFillsFifthMissRetryAndEviction();
-    testSelectableOwnerPoolBoundsAndFailClosedConfiguration();
+    testSelectableOwnerPoolBoundsInactiveExclusionAndCapacityStall();
+    testFullOneTwentyEightOwnerGenerationClosesExactly();
     testReadyHitMergeAndOneDeliveryPerContextCycle();
     testSelectableDeliveryAndIndependentApplyLanes();
     testPrefetchAndAliasShareOneOwner();

@@ -482,14 +482,14 @@ def addNoISAOptions(parser):
     parser.add_argument(
         "--maa_soa_jit_value_cache_enable",
         action="store_true",
-        help="Retain ready lines in the fixed 32-owner SoA/JIT value pool",
+        help="Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
     parser.add_argument(
         "--maa_soa_jit_active_value_owners",
         type=int,
         default=4,
-        choices=(4, 8, 16, 32),
-        help="Active SoA/JIT value owners; physical hardware maximum is 32",
+        choices=(4, 8, 16, 32, 64, 128),
+        help="Active SoA/JIT value owners; physical hardware maximum is 128",
     )
     parser.add_argument(
         "--maa_soa_jit_apply_lanes",

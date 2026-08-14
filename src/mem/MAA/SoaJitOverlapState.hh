@@ -140,9 +140,11 @@ class SoaJitValueCoalescer
 {
   public:
     static constexpr size_t LineBytes = 64;
-    // All 32 owners are physically provisioned.  A run may activate exactly
-    // 4, 8, 16, or 32 owners; inactive entries are never eligible for a fill.
-    static constexpr size_t MaxOwners = 32;
+    // All 128 owners are physically provisioned.  A run may activate exactly
+    // 4, 8, 16, 32, 64, or 128 owners; inactive entries are never eligible
+    // for a fill.
+    static constexpr size_t BaselineOwners = 32;
+    static constexpr size_t MaxOwners = 128;
     static constexpr size_t CacheLines = MaxOwners;
     static constexpr size_t MaxPrefetchCredits = 8;
     // Keep alias identity injective across every provisioned context and its
@@ -229,18 +231,19 @@ class SoaJitValueCoalescer
         uint64_t vaddr = 0;
     };
 
-    static constexpr bool isValidActiveOwnerCount(uint8_t count)
+    static constexpr bool isValidActiveOwnerCount(size_t count)
     {
-        return count == 4 || count == 8 || count == 16 || count == 32;
+        return count == 4 || count == 8 || count == 16 || count == 32 ||
+               count == 64 || count == 128;
     }
 
     void configure(bool cache_enable, uint8_t prefetch_credits,
-                   uint8_t active_owners = 4)
+                   size_t active_owners = 4)
     {
         cacheEnabled = cache_enable;
         activePrefetchCredits = prefetch_credits;
         activeOwnerLines = isValidActiveOwnerCount(active_owners)
-            ? active_owners : 0;
+            ? static_cast<uint8_t>(active_owners) : 0;
     }
 
     void reset()

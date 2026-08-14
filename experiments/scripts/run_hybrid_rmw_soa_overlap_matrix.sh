@@ -63,9 +63,9 @@ printf 'source_commit=%s\ngem5_sha256=%s\nguest16_sha256=%s\n' \
     "$source_commit" "$gem5_sha" "$guest16_sha" >"$out/manifest.txt"
 printf 'guest4_sha256=%s\n' "$guest4_sha" >>"$out/manifest.txt"
 printf '%s\n' \
-    'fixed_context_slots=8' \
+    'fixed_context_slots=32' \
     'fixed_lookahead_slots_per_context=8' \
-    'fixed_value_owner_pool_lines=32' \
+    'fixed_value_owner_pool_lines=128' \
     'fixed_apply_lanes=4' \
     'default_active_apply_lanes=1' \
     'fixed_predicate_lines=16' \
@@ -330,7 +330,7 @@ run_soa() {
 
     local terminal_records generations
     terminal_records=$(grep -Ec \
-        "event=soa_jit_complete .*schema=2 .*apply_lanes=$lanes .*apply_hwm=[1-4] .*active_value_owners=$owners .*max_value_owners=32 .*context_slots=8 .*lookahead_slots_per_context=8 .*terminal=1" \
+        "event=soa_jit_complete .*schema=2 .*apply_lanes=$lanes .*apply_hwm=[1-4] .*active_value_owners=$owners .*max_value_owners=128 .*context_slots=32 .*lookahead_slots_per_context=8 .*terminal=1" \
         "$run/soa_jit_trace.log" || true)
     generations=$(awk '
         /event=soa_jit_complete/ && /terminal=1/ {
@@ -353,7 +353,7 @@ run_soa() {
             "$run/soa_jit_trace.log"
     fi
     [[ $(grep -Ec \
-          "event=soa_jit_storage .*fixed_contexts=8 .*max_physical_value_owner_lines=32 .*fixed_apply_lanes=4 active_apply_lanes=$lanes .*fixed_predicate_lines=16 .*predicate_active_credits=1 .*active_value_owners=$owners " \
+          "event=soa_jit_storage .*schema=2 .*fixed_contexts=32 .*max_physical_value_owner_lines=128 .*incremental_value_owner_bytes_vs_32_per_unit=[1-9][0-9]* .*fixed_apply_lanes=4 active_apply_lanes=$lanes .*fixed_predicate_lines=16 .*predicate_active_credits=1 .*active_value_owners=$owners " \
           "$run/soa_jit_trace.log" || true) -eq 2 ]]
     grep -m1 'event=soa_jit_storage ' "$run/soa_jit_trace.log" \
         >"$run/storage_ledger.txt"
