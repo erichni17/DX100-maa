@@ -63,9 +63,47 @@ arbitration, wiring, SRAM periphery, and host-container overhead. The retained
 16K Row/Offset window is intentional: it preserves the native16 reorder scope;
 only result storage is virtualized here.
 
+## GZP application gate
+
+Root:
+`/data1/nier/dx100-runs/2026-08-14-general-hybrid-gzp-tailfix-lean-r1152p2304-c512w16-b8-wpc4-901daab8-r1`
+
+All five arms terminated with exact output hash `11225737641199706160`, zero
+non-finite values, and `UME_REFERENCE_PASS` for 1,180,000 elements. The
+analyzer initially rejected the campaign because it required every materializer
+to create its context at first submit. GZP legally pre-registers the exact
+context, so its submits report `new_context=0`. Commit `5263d838` accepts either
+created or reused application contexts while retaining the exact close checks.
+
+| arm | `simTicks` | gap vs native16 | speedup vs native4 |
+|---|---:|---:|---:|
+| native16 | 5,826,750,095 | baseline | 1.311x |
+| native4 | 7,636,382,131 | +31.05% | baseline |
+| hybrid token materializer | 7,351,221,603 | +26.16% | 1.039x |
+
+The current hybrid recovers only 15.76% of the native4-to-native16 opportunity
+on GZP. This is not explained by lost 16K reordering: the hybrid retains the
+full logical Row/Offset window. It is dominated by materializing result pages
+from coherent backing storage.
+
+The exact trace contains 61 completed materializer lifetimes and 62,464
+backing cache-line reads, exactly 1,024 lines per lifetime. Producer traffic
+contains 378,002 write responses: 377,966 are partial-line writes and only 36
+are full-line writes. All 61 completed lifetimes eventually produce 1,024
+complete lines with no overlapping word masks or writes after a line first
+becomes complete. Therefore:
+
+- retaining only already-complete inactive lines can help API but has almost
+  no opportunity on GZP;
+- a general GZP mechanism must accumulate bounded masked fragments before page
+  activation and release only a sealed, exact line; and
+- 62,464 avoided backing reads is an ideal unbounded mechanism ceiling, not a
+  prediction for a finite direct-index implementation.
+
 ## Promotion status
 
-The API experiment establishes optimized feasibility, not application
-generality. GZP and CG campaigns remain the promotion gates. Until both have
-terminal exits, exact output checks, and comparable `simTicks`, report this as
-a microbenchmark result and keep the application verdict open.
+The API experiment establishes optimized feasibility. GZP is exact but does
+not yet establish useful application performance; CG is still outstanding.
+The next promotion gate is a reviewed bounded inactive-fragment mechanism,
+followed by fresh same-checkpoint API, GZP, and CG comparisons. Until then,
+report the single-digit API result and the negative GZP result separately.
