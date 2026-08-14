@@ -19,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import (
     datetime,
     timezone,
@@ -492,6 +493,178 @@ def run_logged(
     return result.returncode
 
 
+def write_frozen_selector(run_dir: Path, selector: str) -> tuple[Path, str]:
+    """Render one restore-only selector and make accidental rewrites fail."""
+    path = run_dir / "treatment.txt"
+    atomic_text(path, selector + "\n")
+    path.chmod(0o444)
+    return path.resolve(), sha256_file(path)
+
+
+def build_restore_jobs(
+    arms: list[dict[str, object]],
+    replicas: int,
+    out: Path,
+    gem5: Path,
+    config: Path,
+    checkpoints: Path,
+    binaries: dict[str, Path],
+    native_options: dict[str, str],
+    hybrid_options: str,
+    frozen_inputs: list[Path],
+    ramulator_config: Path,
+    mem_channels: int,
+    l3_ports: int,
+    extra_gem5_args: list[str],
+    restore_arm_args: dict[str, list[str]],
+) -> list[dict[str, object]]:
+    """Create ordered restore jobs with selector files unique to each run."""
+    jobs: list[dict[str, object]] = []
+    for arm in arms:
+        arm_name = str(arm["name"])
+        binary_key = str(arm["binary"])
+        group = str(arm["checkpoint_group"])
+        selector = arm["selector"]
+        for replica in range(1, replicas + 1):
+            run_dir = out / "arms" / arm_name / f"replica-{replica}"
+            run_dir.mkdir(parents=True)
+            selector_path: Path | None = None
+            selector_sha256: str | None = None
+            if selector is not None:
+                selector_path, selector_sha256 = write_frozen_selector(
+                    run_dir, str(selector)
+                )
+                options = render_options(
+                    hybrid_options, selector_path, frozen_inputs
+                )
+            else:
+                options = native_options[binary_key]
+            command = restore_command(
+                gem5,
+                config,
+                run_dir / "gem5",
+                checkpoints / group / "gem5",
+                binaries[binary_key],
+                options,
+                str(arm["profile"]),
+                ramulator_config,
+                mem_channels,
+                l3_ports,
+                restore_args_for_arm(
+                    extra_gem5_args, restore_arm_args, arm_name
+                ),
+            )
+            jobs.append(
+                {
+                    "arm": arm_name,
+                    "replica": replica,
+                    "checkpoint_group": group,
+                    "run_dir": run_dir,
+                    "selector_path": selector_path,
+                    "selector_sha256": selector_sha256,
+                    "command": command,
+                }
+            )
+    return jobs
+
+
+def restore_job_metadata(
+    jobs: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Return deterministic, completion-order-independent restore metadata."""
+    return [
+        {
+            "arm": job["arm"],
+            "replica": job["replica"],
+            "checkpoint_group": job["checkpoint_group"],
+            "selector_path": (
+                str(job["selector_path"])
+                if job["selector_path"] is not None
+                else None
+            ),
+            "selector_sha256": job["selector_sha256"],
+        }
+        for job in jobs
+    ]
+
+
+def run_restore_job(
+    job: dict[str, object],
+    checkpoint_identity: dict[str, dict[str, object]],
+    checkpoints: Path,
+    environment: dict[str, str],
+) -> str | None:
+    """Run one restore and return a deterministic failure description."""
+    arm = str(job["arm"])
+    replica = int(job["replica"])
+    label = f"{arm} replica {replica}"
+    group = str(job["checkpoint_group"])
+    checkpoint = checkpoints / group / "gem5"
+    expected = checkpoint_identity[group]["sha256"]
+    try:
+        if tree_identity(checkpoint)["sha256"] != expected:
+            return (
+                f"restore {label}: checkpoint {group} changed before restore"
+            )
+        selector_path = job["selector_path"]
+        if (
+            selector_path is not None
+            and sha256_file(Path(selector_path)) != job["selector_sha256"]
+        ):
+            return f"restore {label}: selector changed before restore"
+        rc = run_logged(
+            list(job["command"]),
+            Path(job["run_dir"]) / "restore.log",
+            environment,
+        )
+        if rc != 0:
+            return f"restore {label} failed with rc={rc}"
+        if tree_identity(checkpoint)["sha256"] != expected:
+            return (
+                f"restore {label}: checkpoint {group} mutated during restore"
+            )
+        if (
+            selector_path is not None
+            and sha256_file(Path(selector_path)) != job["selector_sha256"]
+        ):
+            return f"restore {label}: selector mutated during restore"
+    except (OSError, RuntimeError) as error:
+        return f"restore {label}: {error}"
+    return None
+
+
+def run_restore_jobs(
+    jobs: list[dict[str, object]],
+    max_parallel_restores: int,
+    checkpoint_identity: dict[str, dict[str, object]],
+    checkpoints: Path,
+    environment: dict[str, str],
+) -> None:
+    """Run every independent restore, then fail closed with ordered errors."""
+    if max_parallel_restores == 1:
+        failures = [
+            run_restore_job(job, checkpoint_identity, checkpoints, environment)
+            for job in jobs
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=max_parallel_restores) as pool:
+            futures = [
+                pool.submit(
+                    run_restore_job,
+                    job,
+                    checkpoint_identity,
+                    checkpoints,
+                    environment,
+                )
+                for job in jobs
+            ]
+            # Resolve in planned order so an aggregate error is reproducible.
+            failures = [future.result() for future in futures]
+    failures = [failure for failure in failures if failure is not None]
+    if failures:
+        raise RuntimeError("; ".join(failures))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -524,6 +697,16 @@ def parse_args() -> argparse.Namespace:
         "--workload-input", action="append", type=Path, default=[]
     )
     parser.add_argument("--replicas", type=int, default=1)
+    parser.add_argument(
+        "--max-parallel-restores",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "maximum independent arm/replica restores after checkpoints "
+            "are frozen (default: 1)"
+        ),
+    )
     parser.add_argument("--mem-channels", type=int, default=2)
     parser.add_argument(
         "--l3-ports",
@@ -561,8 +744,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
-    if args.replicas < 1 or args.mem_channels < 1:
-        parser.error("replicas and memory channels must be positive")
+    if (
+        args.replicas < 1
+        or args.mem_channels < 1
+        or args.max_parallel_restores < 1
+    ):
+        parser.error(
+            "replicas, memory channels, and max parallel restores must be "
+            "positive"
+        )
     if not 1 <= args.l3_ports <= 16:
         parser.error("--l3-ports must be in [1, 16]")
     if args.hybrid and "{selector}" not in args.hybrid_options:
@@ -620,7 +810,7 @@ def main() -> int:
         if args.hybrid:
             render_options(
                 args.hybrid_options,
-                args.out / "treatment.txt",
+                args.out / "arms/ARM/replica-N/treatment.txt",
                 args.workload_input,
             )
     except (RuntimeError, ValueError) as error:
@@ -634,6 +824,7 @@ def main() -> int:
             "profiles": PROFILE,
             "arms": arms,
             "replicas": args.replicas,
+            "max_parallel_restores": args.max_parallel_restores,
             "l3_ports": args.l3_ports,
             "shared_native16_hybrid_checkpoint": (
                 args.shared_native16_hybrid_checkpoint
@@ -728,7 +919,6 @@ def main() -> int:
         )
         return 1
 
-    selector = (args.out / "treatment.txt").resolve()
     frozen_inputs = [
         frozen_artifacts[f"workload_input_{index}"]
         for index in range(len(args.workload_input))
@@ -736,10 +926,16 @@ def main() -> int:
     options = {
         "native16": render_options(args.native16_options, None, frozen_inputs),
         "native4": render_options(args.native4_options, None, frozen_inputs),
-        "hybrid": render_options(args.hybrid_options, selector, frozen_inputs)
-        if args.hybrid
-        else "",
     }
+    checkpoint_options = dict(options)
+    if args.hybrid:
+        # The guest defers selector consumption until restore.  This distinct
+        # placeholder never becomes a mutable shared restore selector.
+        checkpoint_options["hybrid"] = render_options(
+            args.hybrid_options,
+            args.out / "checkpoints/hybrid/deferred_selector.txt",
+            frozen_inputs,
+        )
     artifact_identity = {
         name: {
             "path": str(path),
@@ -766,13 +962,17 @@ def main() -> int:
         "profiles": PROFILE,
         "arms": arms,
         "replicas": args.replicas,
+        "max_parallel_restores": args.max_parallel_restores,
         "mem_channels": args.mem_channels,
         "l3_ports": args.l3_ports,
         "shared_native16_hybrid_checkpoint": (
             args.shared_native16_hybrid_checkpoint
         ),
-        "options": options,
-        "selector_path": str(selector) if args.hybrid else None,
+        "options": {
+            **options,
+            "hybrid_template": args.hybrid_options if args.hybrid else None,
+        },
+        "selector_path": None,
         "artifacts": artifact_identity,
         "extra_gem5_args": args.extra_gem5_arg,
         "restore_arm_gem5_args": restore_arm_args,
@@ -813,7 +1013,7 @@ def main() -> int:
                 frozen_config,
                 group_dir / "gem5",
                 binaries[binary_key],
-                options[binary_key],
+                checkpoint_options[binary_key],
             )
             rc = run_logged(command, group_dir / "checkpoint.log", environment)
             if rc != 0:
@@ -823,46 +1023,34 @@ def main() -> int:
                 group_dir / "identity.json", checkpoint_identity[group]
             )
 
-        for arm in arms:
-            arm_name = str(arm["name"])
-            binary_key = str(arm["binary"])
-            group = str(arm["checkpoint_group"])
-            if arm["selector"] is not None:
-                atomic_text(selector, str(arm["selector"]) + "\n")
-            for replica in range(1, args.replicas + 1):
-                run_dir = args.out / "arms" / arm_name / f"replica-{replica}"
-                run_dir.mkdir(parents=True)
-                if arm["selector"] is not None:
-                    atomic_text(
-                        run_dir / "treatment.txt", selector.read_text()
-                    )
-                command = restore_command(
-                    frozen_artifacts["gem5"],
-                    frozen_config,
-                    run_dir / "gem5",
-                    args.out / "checkpoints" / group / "gem5",
-                    binaries[binary_key],
-                    options[binary_key],
-                    str(arm["profile"]),
-                    frozen_ramulator_config,
-                    args.mem_channels,
-                    args.l3_ports,
-                    restore_args_for_arm(
-                        args.extra_gem5_arg, restore_arm_args, arm_name
-                    ),
-                )
-                rc = run_logged(command, run_dir / "restore.log", environment)
-                if rc != 0:
-                    raise RuntimeError(
-                        f"restore {arm_name} replica {replica} failed with rc={rc}"
-                    )
-                after = tree_identity(
-                    args.out / "checkpoints" / group / "gem5"
-                )
-                if after["sha256"] != checkpoint_identity[group]["sha256"]:
-                    raise RuntimeError(
-                        f"checkpoint {group} mutated during restore"
-                    )
+        checkpoints = args.out / "checkpoints"
+        restore_jobs = build_restore_jobs(
+            arms,
+            args.replicas,
+            args.out,
+            frozen_artifacts["gem5"],
+            frozen_config,
+            checkpoints,
+            binaries,
+            options,
+            args.hybrid_options,
+            frozen_inputs,
+            frozen_ramulator_config,
+            args.mem_channels,
+            args.l3_ports,
+            args.extra_gem5_arg,
+            restore_arm_args,
+        )
+        manifest["restore_runs"] = restore_job_metadata(restore_jobs)
+        manifest["checkpoint_identity"] = checkpoint_identity
+        atomic_json(args.out / "manifest.json", manifest)
+        run_restore_jobs(
+            restore_jobs,
+            args.max_parallel_restores,
+            checkpoint_identity,
+            checkpoints,
+            environment,
+        )
         manifest["checkpoint_identity"] = checkpoint_identity
         atomic_json(args.out / "manifest.json", manifest)
         analyzer = ROOT / (

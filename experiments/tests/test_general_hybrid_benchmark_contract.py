@@ -4,8 +4,11 @@
 import importlib.util
 import io
 import json
+import stat
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -20,6 +23,44 @@ SPEC.loader.exec_module(runner)
 
 
 class GeneralHybridBenchmarkContractTest(unittest.TestCase):
+    def restore_jobs(
+        self, root: Path, arms: list[dict[str, object]], replicas: int = 1
+    ) -> tuple[list[dict[str, object]], Path, dict[str, dict[str, object]]]:
+        checkpoints = root / "checkpoints"
+        for group in {str(arm["checkpoint_group"]) for arm in arms}:
+            checkpoint = checkpoints / group / "gem5"
+            checkpoint.mkdir(parents=True)
+            (checkpoint / "checkpoint.bin").write_text(group, encoding="utf-8")
+        identities = {
+            group: runner.tree_identity(checkpoints / group / "gem5")
+            for group in {str(arm["checkpoint_group"]) for arm in arms}
+        }
+        binaries = {
+            "native16": root / "native16",
+            "native4": root / "native4",
+            "hybrid": root / "hybrid",
+        }
+        for binary in binaries.values():
+            binary.write_text("binary", encoding="utf-8")
+        jobs = runner.build_restore_jobs(
+            arms,
+            replicas,
+            root,
+            root / "gem5.opt",
+            root / "se.py",
+            checkpoints,
+            binaries,
+            {"native16": "", "native4": ""},
+            "deferred {selector}",
+            [],
+            root / "ramulator.yaml",
+            2,
+            4,
+            [],
+            {},
+        )
+        return jobs, checkpoints, identities
+
     def test_micro_arm_order_and_selectors_are_fixed(self) -> None:
         arms = runner.make_arms("api", True, True, [])
         self.assertEqual(
@@ -224,6 +265,7 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             with patch.object(sys, "argv", argv), redirect_stdout(stdout):
                 self.assertEqual(runner.main(), 0)
             plan = json.loads(stdout.getvalue())
+            self.assertEqual(plan["max_parallel_restores"], 1)
             self.assertEqual(
                 plan["restore_arm_gem5_args"],
                 {
@@ -248,6 +290,119 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             "deferred selector.txt",
         )
         self.assertNotIn("--maa_virtual_masked_fragment_slots=8", checkpoint)
+
+    def test_restore_jobs_isolate_read_only_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arms = runner.make_arms("api", True, False, [])
+            jobs, _checkpoints, _identities = self.restore_jobs(
+                root, arms, replicas=2
+            )
+            hybrid_jobs = [job for job in jobs if job["selector_path"]]
+            self.assertEqual(len(hybrid_jobs), 6)
+            selector_paths = [
+                Path(job["selector_path"]) for job in hybrid_jobs
+            ]
+            self.assertEqual(len(selector_paths), len(set(selector_paths)))
+            self.assertFalse((root / "treatment.txt").exists())
+            for job, path in zip(hybrid_jobs, selector_paths):
+                self.assertEqual(
+                    path.read_text(encoding="utf-8").strip(),
+                    next(
+                        arm["selector"]
+                        for arm in arms
+                        if arm["name"] == job["arm"]
+                    ),
+                )
+                self.assertFalse(path.stat().st_mode & stat.S_IWUSR)
+                self.assertTrue(
+                    any(str(path) in argument for argument in job["command"])
+                )
+            self.assertEqual(
+                runner.restore_job_metadata(jobs),
+                runner.restore_job_metadata(jobs),
+            )
+
+    def test_restore_jobs_bound_parallelism(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arms = runner.make_arms("api", True, False, [])
+            jobs, checkpoints, identities = self.restore_jobs(root, arms, 2)
+            active = 0
+            maximum = 0
+            lock = threading.Lock()
+
+            def fake_run_logged(_command, _log, _environment):
+                nonlocal active, maximum
+                with lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
+                return 0
+
+            with patch.object(
+                runner, "run_logged", side_effect=fake_run_logged
+            ):
+                runner.run_restore_jobs(
+                    jobs, 2, identities, checkpoints, {"PATH": ""}
+                )
+            self.assertEqual(maximum, 2)
+
+    def test_restore_jobs_aggregate_nonzero_child_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arms = runner.make_arms("api", True, False, [])
+            jobs, checkpoints, identities = self.restore_jobs(root, arms)
+            calls: list[str] = []
+
+            def fake_run_logged(_command, log, _environment):
+                calls.append(str(log))
+                return 9 if "hybrid_page_gated" in str(log) else 0
+
+            with patch.object(
+                runner, "run_logged", side_effect=fake_run_logged
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "hybrid_page_gated replica 1 failed with rc=9",
+                ):
+                    runner.run_restore_jobs(
+                        jobs, 3, identities, checkpoints, {"PATH": ""}
+                    )
+            self.assertEqual(len(calls), len(jobs))
+
+    def test_restore_jobs_reject_checkpoint_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arms = [
+                {
+                    "name": "native16",
+                    "profile": "native16",
+                    "binary": "native16",
+                    "checkpoint_group": "native16",
+                    "selector": None,
+                    "role": "native_control",
+                }
+            ]
+            jobs, checkpoints, identities = self.restore_jobs(root, arms)
+
+            def fake_run_logged(_command, _log, _environment):
+                (checkpoints / "native16/gem5/checkpoint.bin").write_text(
+                    "mutated", encoding="utf-8"
+                )
+                return 0
+
+            with patch.object(
+                runner, "run_logged", side_effect=fake_run_logged
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "checkpoint native16 mutated during restore"
+                ):
+                    runner.run_restore_jobs(
+                        jobs, 1, identities, checkpoints, {"PATH": ""}
+                    )
 
     def test_config_freeze_preserves_relative_import_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
