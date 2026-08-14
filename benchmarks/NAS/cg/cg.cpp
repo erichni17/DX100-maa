@@ -58,6 +58,7 @@ Authors of the OpenMP code:
 #include "MAA.hpp"
 #include <omp.h>
 
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
@@ -111,6 +112,81 @@ static_assert(MAA_CONSUMER_TILE_SIZE <= TILE_SIZE,
               "consumer tile cannot exceed the logical gather tile");
 static_assert(TILE_SIZE % MAA_CONSUMER_TILE_SIZE == 0,
               "logical gather tile must contain whole consumer pages");
+
+#ifdef CG_LOGICAL16_RMW
+#if !defined(GEM5) || !defined(MAA) || !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
+#error "CG logical-16 RMW requires the gem5 general-hybrid MAA path"
+#endif
+#if TILE_SIZE != 16384 || MAA_CONSUMER_TILE_SIZE != 4096
+#error "CG logical-16 RMW requires a 16K logical / 4K physical geometry"
+#endif
+static_assert(sizeof(int) == sizeof(uint32_t),
+              "CG logical-16 RMW indices require 32-bit int");
+
+enum class CgRmwTreatment
+{
+    Legacy4K,
+    ResidualSoaJit,
+};
+
+struct CgTreatmentSelector
+{
+    MAAVirtualConsumerMode consumer;
+    CgRmwTreatment rmw;
+};
+
+static CgRmwTreatment cg_rmw_treatment = CgRmwTreatment::Legacy4K;
+
+// Ordinary coherent guest-memory producer buffers, not hidden MAA state.
+alignas(64) static uint32_t cg_soa_indices[NUM_CORES][TILE_SIZE];
+alignas(64) static float cg_soa_values[NUM_CORES][TILE_SIZE];
+static uint64_t cg_soa_full_windows[NUM_CORES] = {};
+static uint64_t cg_soa_index_words[NUM_CORES] = {};
+static uint64_t cg_soa_value_words[NUM_CORES] = {};
+static uint64_t cg_legacy_residual_words[NUM_CORES] = {};
+
+static const char *
+cg_rmw_treatment_name(CgRmwTreatment treatment)
+{
+    return treatment == CgRmwTreatment::ResidualSoaJit
+        ? "residual_soa_jit"
+        : "legacy_4k";
+}
+
+static CgTreatmentSelector
+read_cg_treatment_selector(const std::string &path)
+{
+    std::ifstream input(path);
+    std::string consumer;
+    std::string treatment;
+    std::string extra;
+    if (!(input >> consumer >> treatment) || input >> extra)
+        throw std::runtime_error(
+            "CG selector must contain exactly CONSUMER TREATMENT");
+
+    MAAVirtualConsumerMode consumer_mode;
+    if (consumer == "stream_control")
+        consumer_mode = MAAVirtualConsumerMode::StreamControl;
+    else if (consumer == "page_gated")
+        consumer_mode = MAAVirtualConsumerMode::PageGated;
+    else if (consumer == "token_stream_ld")
+        consumer_mode = MAAVirtualConsumerMode::TokenStreamLoad;
+    else if (consumer == "token_stream_ld_pingpong")
+        consumer_mode = MAAVirtualConsumerMode::TokenStreamLoadPingPong;
+    else
+        throw std::runtime_error("invalid CG virtual consumer mode");
+
+    CgRmwTreatment rmw;
+    if (treatment == "legacy_4k")
+        rmw = CgRmwTreatment::Legacy4K;
+    else if (treatment == "residual_soa_jit")
+        rmw = CgRmwTreatment::ResidualSoaJit;
+    else
+        throw std::runtime_error(
+            "CG RMW treatment must be legacy_4k or residual_soa_jit");
+    return {consumer_mode, rmw};
+}
+#endif
 
 #ifdef CG_FP_ENABLE
 static uint64_t mix_fingerprint(uint64_t value) {
@@ -251,7 +327,11 @@ typedef int boolean;
 /*************/
 /*  CLASS C  */
 /*************/
+#ifdef CG_NA
+#define NA     CG_NA
+#else
 #define NA     (37500 * NUM_CORES)
+#endif
 #define NONZER 15
 #define SHIFT  110.0
 #define RCOND  1.0e-1
@@ -467,6 +547,14 @@ int main(int argc, char **argv) {
     }
     std::string mode = argv[1];
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#ifdef CG_LOGICAL16_RMW
+    if (mode != "MAA_DEFERRED" || argc != 3) {
+        std::cerr << "CG logical-16 RMW requires MAA_DEFERRED and one "
+                     "immutable selector path"
+                  << std::endl;
+        return 1;
+    }
+#endif
     const bool deferred_virtual_consumer = mode == "MAA_DEFERRED";
     const std::string virtual_consumer_selector =
         deferred_virtual_consumer && argc > 2 ? argv[2] : "";
@@ -578,8 +666,15 @@ int main(int argc, char **argv) {
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
     if (deferred_virtual_consumer) {
         try {
+#ifdef CG_LOGICAL16_RMW
+            const CgTreatmentSelector selection =
+                read_cg_treatment_selector(virtual_consumer_selector);
+            virtual_consumer_mode = selection.consumer;
+            cg_rmw_treatment = selection.rmw;
+#else
             virtual_consumer_mode =
                 maa_read_virtual_consumer_mode(virtual_consumer_selector);
+#endif
             if (virtual_consumer_mode ==
                 MAAVirtualConsumerMode::TokenStreamLoadPingPong)
                 throw std::runtime_error(
@@ -594,6 +689,16 @@ int main(int argc, char **argv) {
               << maa_virtual_consumer_mode_name(virtual_consumer_mode)
               << " logical=" << TILE_SIZE
               << " consumer=" << MAA_CONSUMER_TILE_SIZE << std::endl;
+#ifdef CG_LOGICAL16_RMW
+    std::cout << "CG_LOGICAL16_RMW_SELECTION treatment="
+              << cg_rmw_treatment_name(cg_rmw_treatment)
+              << " slice=residual_spmv producer=cpu_after_spd_completion"
+              << " logical=" << TILE_SIZE
+              << " physical=" << MAA_CONSUMER_TILE_SIZE
+              << " external_staging_bytes="
+              << sizeof(cg_soa_indices) + sizeof(cg_soa_values)
+              << " performance_promotable=0" << std::endl;
+#endif
 #endif
 #endif
 
@@ -701,6 +806,36 @@ int main(int argc, char **argv) {
             print_cg_fingerprint(mode, x, z, NA, rnorm, zeta);
             std::cout << "Validation ended" << std::endl;
 #endif
+#ifdef CG_LOGICAL16_RMW
+            uint64_t full_windows = 0;
+            uint64_t index_words = 0;
+            uint64_t value_words = 0;
+            uint64_t legacy_words = 0;
+            for (int core = 0; core < NUM_CORES; ++core) {
+                full_windows += cg_soa_full_windows[core];
+                index_words += cg_soa_index_words[core];
+                value_words += cg_soa_value_words[core];
+                legacy_words += cg_legacy_residual_words[core];
+            }
+            const bool staged_counts_close =
+                index_words == full_windows * TILE_SIZE &&
+                value_words == full_windows * TILE_SIZE;
+            const bool treatment_used =
+                cg_rmw_treatment == CgRmwTreatment::Legacy4K
+                    ? full_windows == 0 && index_words == 0 && value_words == 0
+                    : full_windows > 0 && staged_counts_close;
+            std::cout << "CG_LOGICAL16_RMW_TERMINAL treatment="
+                      << cg_rmw_treatment_name(cg_rmw_treatment)
+                      << " slice=residual_spmv full_windows=" << full_windows
+                      << " staged_index_words=" << index_words
+                      << " staged_value_words=" << value_words
+                      << " legacy_words=" << legacy_words
+                      << " producer=cpu_after_spd_completion"
+                      << " performance_promotable=0 result="
+                      << (treatment_used ? "PASS" : "FAIL") << std::endl;
+            if (!treatment_used)
+                std::abort();
+#endif
             m5_exit(0);
         }
 #endif
@@ -780,6 +915,17 @@ static void conj_grad_maa(int colidx[],
         add_mem_region(z, &z[NA + 2]);           // 11
         add_mem_region(r, &r[NA + 2]);           // 12
         add_mem_region(x, &x[NA + 2]);           // 13
+#ifdef CG_LOGICAL16_RMW
+        // Eight external producer regions bring CG's total to 17, below the
+        // architectural 32-region maximum. Per-owner regions make accidental
+        // overlap or cross-thread reuse fail the SoA/JIT span validation.
+        for (int core = 0; core < NUM_CORES; ++core) {
+            add_mem_region(cg_soa_indices[core],
+                           cg_soa_indices[core] + TILE_SIZE);
+            add_mem_region(cg_soa_values[core],
+                           cg_soa_values[core] + TILE_SIZE);
+        }
+#endif
 #ifdef MAA_VIRTUAL_GATHER
 #ifdef MAA_BOUNDED_VIRTUAL_GATHER
         add_mem_region(virtual_gather_storage,
@@ -1357,6 +1503,11 @@ static void conj_grad_maa(int colidx[],
                 wait_ready(t7);
             }
 #elif defined(MAA_GENERAL_VIRTUAL_CONSUMER)
+#ifdef CG_LOGICAL16_RMW
+            const bool soa_residual_full_window =
+                cg_rmw_treatment == CgRmwTreatment::ResidualSoaJit &&
+                gather_size == TILE_SIZE;
+#endif
             if (gather_size == TILE_SIZE) {
                 maa_const<int>(k_base, r2);
                 maa_const<int>(k_base + gather_size, r3);
@@ -1393,12 +1544,77 @@ static void conj_grad_maa(int colidx[],
                 maa_stream_load<float>(a, r2, r3, r1, t5);
                 maa_alu_vector<float>(t4, t5, t7,
                                       Operation_t::MUL_OP);
-                maa_indirect_rmw_vector(curr_r, t0, t7,
-                                        Operation_t::ADD_OP);
-                wait_ready(t7);
+#ifdef CG_LOGICAL16_RMW
+                if (soa_residual_full_window) {
+                    // These are exactly the index/value operands that the
+                    // legacy page-local RMW would consume. Preserve their
+                    // page and bit order in external guest memory.
+                    wait_ready(t0);
+                    wait_ready(t7);
+                    const int index_words = get_tile_size(t0);
+                    const int value_words = get_tile_size(t7);
+                    if (index_words != page_size || value_words != page_size) {
+                        std::cerr << "CG logical-16 producer size mismatch: "
+                                  << "page=" << page_offset
+                                  << " expected=" << page_size
+                                  << " indices=" << index_words
+                                  << " values=" << value_words << std::endl;
+                        std::abort();
+                    }
+                    const int *index_src =
+                        get_cacheable_tile_pointer<int>(t0);
+                    const float *value_src =
+                        get_cacheable_tile_pointer<float>(t7);
+                    uint32_t *index_dst =
+                        cg_soa_indices[tid] + page_offset;
+                    float *value_dst = cg_soa_values[tid] + page_offset;
+                    for (int word = 0; word < page_size; ++word) {
+                        if (index_src[word] < 0 ||
+                            index_src[word] >= j_max - j_base) {
+                            std::cerr << "CG logical-16 producer index out of "
+                                         "range: page="
+                                      << page_offset << " word=" << word
+                                      << " index=" << index_src[word]
+                                      << " rows=" << j_max - j_base
+                                      << std::endl;
+                            std::abort();
+                        }
+                        index_dst[word] =
+                            static_cast<uint32_t>(index_src[word]);
+                    }
+                    std::memcpy(value_dst, value_src,
+                                page_size * sizeof(*value_dst));
+                    cg_soa_index_words[tid] += page_size;
+                    cg_soa_value_words[tid] += page_size;
+                } else
+#endif
+                {
+                    maa_indirect_rmw_vector(curr_r, t0, t7,
+                                            Operation_t::ADD_OP);
+                    wait_ready(t7);
+#ifdef CG_LOGICAL16_RMW
+                    cg_legacy_residual_words[tid] += page_size;
+#endif
+                }
             }
             if (gather_size == TILE_SIZE)
                 maa_virtual_consumer_end(virtual_consumer_mode, t6);
+#ifdef CG_LOGICAL16_RMW
+            if (soa_residual_full_window) {
+                // Staging is charged as coherent CPU traffic. This is a
+                // correctness/provenance slice, not a promotable performance
+                // treatment; the arrays remain immutable through completion.
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                maa_const<int>(0, r2);
+                maa_const<int>(TILE_SIZE, r3);
+                maa_const<int>(1, r1);
+                maa_indirect_rmw_vector_soa_jit<float>(
+                    curr_r, cg_soa_indices[tid], cg_soa_values[tid], nullptr,
+                    r2, r3, r1, t7, Operation_t::ADD_OP);
+                wait_ready(t7);
+                cg_soa_full_windows[tid]++;
+            }
+#endif
 #else
             maa_const(k_base, r2);
             maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
