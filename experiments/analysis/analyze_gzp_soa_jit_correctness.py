@@ -142,23 +142,44 @@ def validate_soa_trace(
         predicate = pair(fields, "predicate_lines")
         a_reads = pair(fields, "a_reads")
         value_reads = pair(fields, "value_reads")
+        value_prefetch = pair(fields, "value_prefetch")
         a_writes = pair(fields, "a_writes")
         if any(
             left != right
-            for left, right in (predicate, a_reads, value_reads, a_writes)
+            for left, right in (
+                predicate,
+                a_reads,
+                value_reads,
+                value_prefetch,
+                a_writes,
+            )
         ):
             raise ValueError(
                 "SoA trace request/response accounting did not close"
             )
         if predicate[0] != 1024 or a_reads[0] != a_writes[0]:
             raise ValueError("SoA trace predicate/A-line accounting differs")
+        hits = int(fields.get("hits", "-1"), 0)
+        merged = int(fields.get("merged", "-1"), 0)
         if (
-            value_reads[0] != selected
+            value_reads[0] + hits + merged != selected
             or int(fields.get("aliases", "-1"), 0) != selected
         ):
             raise ValueError(
                 "SoA trace selected/value/alias accounting differs"
             )
+        prefetch_promotions = int(
+            fields.get("prefetch_promotions", "-1"), 0
+        )
+        prefetch_discards = int(fields.get("prefetch_discards", "-1"), 0)
+        prefetch_credits = int(fields.get("prefetch_credits", "-1"), 0)
+        prefetch_hwm = int(fields.get("prefetch_hwm", "-1"), 0)
+        if (
+            value_prefetch[1] != prefetch_promotions + prefetch_discards
+            or prefetch_credits < 0
+            or not 0 <= prefetch_hwm <= prefetch_credits
+        ):
+            raise ValueError("SoA trace prefetch accounting is invalid")
         context_hwm = int(fields.get("context_hwm", "-1"), 0)
         if context_hwm < 1:
             raise ValueError("SoA trace has invalid context high-water")
@@ -197,6 +218,14 @@ def validate_soa_stats(
             "IND_SoaJitValueDeliveries",
             "IND_SoaJitValueStalls",
             "IND_SoaJitValueCacheHighWater",
+            "IND_SoaJitValuePrefetchIssues",
+            "IND_SoaJitValuePrefetchResponses",
+            "IND_SoaJitValuePrefetchPromotions",
+            "IND_SoaJitValuePrefetchDiscards",
+            "IND_SoaJitValuePrefetchOwned",
+            "IND_SoaJitValuePrefetchCreditStalls",
+            "IND_SoaJitValuePrefetchActiveCredits",
+            "IND_SoaJitValuePrefetchHighWater",
             "IND_SoaJitLookaheadIssues",
             "IND_SoaJitLookaheadResponses",
             "IND_SoaJitLookaheadStalls",
@@ -234,13 +263,26 @@ def validate_soa_stats(
         if soa[left] != soa[right]:
             raise ValueError(f"SoA/JIT {left}/{right} differ")
     if (
-        soa["IND_SoaJitValueReadIssues"] != soa["IND_SoaJitSelected"]
+        soa["IND_SoaJitValueReadIssues"]
+        + soa["IND_SoaJitValueHits"]
+        + soa["IND_SoaJitValueMergedWaiters"]
+        != soa["IND_SoaJitSelected"]
         or soa["IND_SoaJitAliasesApplied"] != soa["IND_SoaJitSelected"]
         or soa["IND_SoaJitValueDeliveries"] != soa["IND_SoaJitSelected"]
         or soa["IND_SoaJitLookaheadIssues"] != soa["IND_SoaJitSelected"]
         or soa["IND_SoaJitLookaheadResponses"] != soa["IND_SoaJitSelected"]
     ):
         raise ValueError("SoA/JIT selected/value/alias totals differ")
+    if (
+        soa["IND_SoaJitValuePrefetchIssues"]
+        != soa["IND_SoaJitValuePrefetchResponses"]
+        or soa["IND_SoaJitValuePrefetchResponses"]
+        != soa["IND_SoaJitValuePrefetchPromotions"]
+        + soa["IND_SoaJitValuePrefetchDiscards"]
+        or soa["IND_SoaJitValuePrefetchHighWater"]
+        > soa["IND_SoaJitValuePrefetchActiveCredits"]
+    ):
+        raise ValueError("SoA/JIT aggregate prefetch accounting is invalid")
     if (
         soa["IND_SoaJitValueFills"] != soa["IND_SoaJitValueReadResponses"]
         or soa["IND_SoaJitValueCachedResponses"] > soa["IND_SoaJitValueFills"]

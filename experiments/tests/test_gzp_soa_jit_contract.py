@@ -64,6 +64,10 @@ def test_analyzer_gates_volume_performance_and_publisher_correctness() -> None:
         "IND_SoaJitTerminalCompletions",
         "IND_SoaJitPredicateLineResponses",
         "IND_SoaJitAWriteResponses",
+        "IND_SoaJitValueHits",
+        "IND_SoaJitValueMergedWaiters",
+        "IND_SoaJitValuePrefetchResponses",
+        "IND_SoaJitValuePrefetchDiscards",
         "STR_PublishOverlapIssues",
         "validate_publisher_stats",
         "EXPECTED_PUBLISH_LINES",
@@ -79,6 +83,9 @@ def test_analyzer_gates_volume_performance_and_publisher_correctness() -> None:
         "checkpoint argv does not bind",
         "restore argv differs from checkpoint",
         "checkpoint selector identity changed",
+        'soa["IND_SoaJitValueReadIssues"]',
+        '+ soa["IND_SoaJitValueHits"]',
+        '+ soa["IND_SoaJitValueMergedWaiters"]',
     ):
         assert required in analyzer
     assert "host time is not used" in analyzer.lower()
