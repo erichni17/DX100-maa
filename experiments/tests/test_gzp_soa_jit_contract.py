@@ -47,6 +47,12 @@ def test_runner_is_provenance_frozen_and_execution_gated() -> None:
         "token_stream_ld soa_jit",
         "extra-gem5-arg",
         "restore-arm-gem5-arg",
+        "--max-workers",
+        "ThreadPoolExecutor",
+        '"schema": "dx100.gzp_soa_jit_matrix.v2"',
+        'directory / "selector.txt"',
+        '"selector_identity": selector_identity',
+        '"checkpoint_group": name',
         '"gem5_args": gem5_args',
         "current_hybrid_vs_volume_only_soa_jit",
     ):
@@ -67,6 +73,11 @@ def test_analyzer_gates_volume_performance_and_staging_correctness() -> None:
         '"current_hybrid_vs_soa_jit_correctness": False',
         '"host_time_used": False',
         "speedup_current_over_volume_only",
+        '"dx100.gzp_soa_jit_matrix.v2"',
+        "command_option",
+        "checkpoint argv does not bind",
+        "restore argv differs from checkpoint",
+        "checkpoint selector identity changed",
     ):
         assert required in analyzer
     assert "host time is not used" in analyzer.lower()

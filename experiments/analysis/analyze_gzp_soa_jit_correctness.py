@@ -41,6 +41,22 @@ def sum_stat(stats: dict[str, float], suffix: str) -> int:
     return int(sum(values))
 
 
+def command_option(command_path: Path, option: str) -> str:
+    """Return one command token's value, rejecting malformed provenance."""
+    command = json.loads(command_path.read_text(encoding="utf-8"))
+    if not isinstance(command, list):
+        raise ValueError(f"invalid command record: {command_path}")
+    positions = [
+        index for index, value in enumerate(command) if value == option
+    ]
+    if len(positions) != 1 or positions[0] + 1 >= len(command):
+        raise ValueError(f"missing unique {option} in {command_path}")
+    value = command[positions[0] + 1]
+    if not isinstance(value, str):
+        raise ValueError(f"invalid {option} value in {command_path}")
+    return value
+
+
 def validate_soa_trace(
     path: Path, expected_completions: int
 ) -> dict[str, int]:
@@ -171,7 +187,7 @@ def validate_soa_stats(
 
 def analyze(root: Path) -> dict[str, object]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("schema") != "dx100.gzp_soa_jit_matrix.v1":
+    if manifest.get("schema") != "dx100.gzp_soa_jit_matrix.v2":
         raise ValueError("unsupported or missing GZP matrix manifest")
     if manifest.get("source_status") != "clean":
         raise ValueError("matrix source was not clean")
@@ -191,6 +207,8 @@ def analyze(root: Path) -> dict[str, object]:
     arm_names = [str(arm.get("name", "")) for arm in manifest.get("arms", [])]
     if arm_names != expected_arms:
         raise ValueError("GZP matrix does not contain the exact five arms")
+    if int(manifest.get("max_workers", 0)) not in range(1, 17):
+        raise ValueError("matrix has no bounded worker limit")
     source = manifest.get("source", {})
     if not re.fullmatch(r"[0-9a-f]{40}", str(source.get("commit", ""))):
         raise ValueError("missing source commit identity")
@@ -224,19 +242,32 @@ def analyze(root: Path) -> dict[str, object]:
     config_path = Path(str(manifest.get("config_tree", {}).get("path", "")))
     if provenance.tree_identity(config_path)["sha256"] != config_hash:
         raise ValueError("frozen config tree changed")
-    for group in ("native16", "native4", "hybrid"):
+    arms_by_name = {str(arm["name"]): arm for arm in manifest["arms"]}
+    if set(manifest.get("checkpoints", {})) != set(expected_arms):
+        raise ValueError("matrix checkpoint identities do not cover every arm")
+    if set(manifest.get("checkpoint_commands", {})) != set(expected_arms):
+        raise ValueError("matrix checkpoint commands do not cover every arm")
+    for group in expected_arms:
+        arm = arms_by_name[group]
         checkpoint = manifest.get("checkpoints", {}).get(group, {})
         command = manifest.get("checkpoint_commands", {}).get(group, {})
-        if not re.fullmatch(
-            r"[0-9a-f]{64}", str(checkpoint.get("sha256", ""))
-        ):
+        tree = checkpoint.get("tree", {})
+        if not re.fullmatch(r"[0-9a-f]{64}", str(tree.get("sha256", ""))):
             raise ValueError(f"missing checkpoint identity for {group}")
+        if (
+            checkpoint.get("arm") != group
+            or checkpoint.get("binary") != arm.get("binary")
+            or checkpoint.get("selector") != arm.get("selector")
+        ):
+            raise ValueError(
+                f"checkpoint provenance does not match arm {group}"
+            )
         if not re.fullmatch(r"[0-9a-f]{64}", str(command.get("sha256", ""))):
             raise ValueError(
                 f"missing checkpoint command identity for {group}"
             )
         checkpoint_path = root / "checkpoints" / group / "gem5"
-        if provenance.tree_identity(checkpoint_path) != checkpoint:
+        if provenance.tree_identity(checkpoint_path) != tree:
             raise ValueError(f"checkpoint changed for {group}")
         command_path = Path(str(command.get("path", "")))
         if (
@@ -244,11 +275,48 @@ def analyze(root: Path) -> dict[str, object]:
             or provenance.sha256_file(command_path) != command["sha256"]
         ):
             raise ValueError(f"checkpoint command changed for {group}")
+        selector = arm.get("selector")
+        selector_identity = checkpoint.get("selector_identity")
+        expected_options = str(manifest["n"])
+        if selector is None:
+            if selector_identity is not None:
+                raise ValueError(f"native checkpoint {group} has a selector")
+        else:
+            selector_path = root / "checkpoints" / group / "selector.txt"
+            if (
+                not isinstance(selector_identity, dict)
+                or selector_identity.get("path")
+                != str(selector_path.resolve())
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(selector_identity.get("sha256", "")),
+                )
+                or not selector_path.is_file()
+                or selector_path.read_text(encoding="utf-8") != selector + "\n"
+                or provenance.sha256_file(selector_path)
+                != selector_identity["sha256"]
+                or selector_path.stat().st_mode & 0o222
+            ):
+                raise ValueError(
+                    f"checkpoint selector identity changed for {group}"
+                )
+            expected_options += f" {selector_path.resolve()}"
+        if command_option(command_path, "--options") != expected_options:
+            raise ValueError(f"checkpoint argv does not bind {group} selector")
 
     run_records = {
         (str(run["arm"]), int(run["replica"])): run
         for run in manifest.get("runs", [])
     }
+    expected_run_keys = {
+        (name, replica)
+        for name in expected_arms
+        for replica in range(1, int(manifest["replicas"]) + 1)
+    }
+    if set(run_records) != expected_run_keys or len(run_records) != len(
+        manifest.get("runs", [])
+    ):
+        raise ValueError("matrix run identities are incomplete or duplicated")
 
     records: list[dict[str, object]] = []
     keys: set[str] = set()
@@ -260,6 +328,10 @@ def analyze(root: Path) -> dict[str, object]:
         for replica in range(1, replicas + 1):
             run = root / "arms" / name / f"replica-{replica}"
             run_identity = run_records.get((name, replica), {})
+            if run_identity.get("checkpoint_group") != name:
+                raise ValueError(
+                    f"{name}/{replica}: wrong checkpoint identity"
+                )
             expected_gem5_args = [
                 *manifest.get("extra_gem5_args", []),
                 *manifest.get("restore_arm_gem5_args", {}).get(name, []),
@@ -279,21 +351,30 @@ def analyze(root: Path) -> dict[str, object]:
                 != run_identity["command_sha256"]
             ):
                 raise ValueError(f"{name}/{replica}: command identity changed")
+            expected_options = str(manifest["n"])
             if selector is not None:
-                selector_path = run / "treatment.txt"
-                if (
-                    selector_path.read_text(encoding="utf-8").strip()
-                    != selector
+                selector_path = root / "checkpoints" / name / "selector.txt"
+                expected_options += f" {selector_path.resolve()}"
+                if run_identity.get("selector") != selector or (
+                    run_identity.get("selector_sha256")
+                    != manifest["checkpoints"][name]["selector_identity"][
+                        "sha256"
+                    ]
                 ):
                     raise ValueError(
-                        f"{name}/{replica}: selector content changed"
+                        f"{name}/{replica}: selector identity does not bind checkpoint"
                     )
-                if provenance.sha256_file(selector_path) != run_identity.get(
-                    "selector_sha256"
-                ):
-                    raise ValueError(
-                        f"{name}/{replica}: selector identity changed"
-                    )
+            elif (
+                run_identity.get("selector") is not None
+                or run_identity.get("selector_sha256") is not None
+            ):
+                raise ValueError(
+                    f"{name}/{replica}: native selector identity exists"
+                )
+            if command_option(command_path, "--options") != expected_options:
+                raise ValueError(
+                    f"{name}/{replica}: restore argv differs from checkpoint"
+                )
             if general.read_exit(run / "restore.exit") != 0:
                 raise ValueError(f"{name}/{replica}: nonzero restore exit")
             log = (run / "restore.log").read_text(
