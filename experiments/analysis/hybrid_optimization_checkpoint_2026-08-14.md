@@ -170,6 +170,15 @@ are already physically provisioned, and the knob only activates 64 rather than
 pre-A overlap, not an application-level speedup claim. Full GZP and CG
 composition gates remain required.
 
+The follow-up exact 64-versus-128 gate at
+`/data1/nier/dx100-runs/2026-08-14-soa-owner-prea64-128-5b02ced5-r1`
+also passes both replicas. Activating all 128 already-provisioned owners reduces
+72,364,974 to 72,024,430 ticks, a further **1.004728173x** speedup. Value
+stalls fall from 106,454 to zero and evictions from 11,350 to 6,195, while
+context stalls rise slightly from 33,282 to 34,522. This is a small micro gain;
+it is not promoted as an application setting until a full-workload gate shows
+the same direction.
+
 ## Promotion status
 
 The API experiment establishes optimized gather feasibility. GZP is exact but
