@@ -22,6 +22,7 @@
 #include "mem/MAA/IF.hh"
 #include "mem/MAA/InactivePayloadFallbackTable.hh"
 #include "mem/MAA/InactiveProducerLinePayloadCapture.hh"
+#include "mem/MAA/InactiveProducerMaskedFragmentRetention.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/MAA/LogicalSPDCacheLiveAdapterState.hh"
 #include "mem/cache/tags/base.hh"
@@ -415,6 +416,7 @@ public:
     unsigned int page_materialization_fragment_buffers;
     bool page_materialization_direct_spd_fragments;
     unsigned int inactive_page_payload_capture_lines;
+    unsigned int inactive_page_masked_fragment_retention_lines;
     unsigned int num_regs;
     unsigned int num_instructions_per_core;
     unsigned int num_instructions_per_maa;
@@ -645,6 +647,15 @@ protected:
         InactiveProducerLinePayloadCapture::LookupPipeline timing{};
     };
     InactivePayloadLookup inactivePayloadLookup;
+    InactiveProducerMaskedFragmentRetention inactiveMaskedFragmentRetention;
+    struct InactiveMaskedFragmentLookup
+    {
+        HybridConsumerContextQueue::Request request{};
+        InactiveProducerMaskedFragmentRetention::Key key{};
+        uint16_t line = 0;
+        InactiveProducerMaskedFragmentRetention::LookupPipeline timing{};
+    };
+    InactiveMaskedFragmentLookup inactiveMaskedFragmentLookup;
     // One exact proven miss may wait per materializer context.  This fixed
     // table prevents a credit-stalled miss from blocking or overwriting the
     // round-robin lookup work of the other three contexts.
@@ -970,6 +981,31 @@ public:
         statistics::Scalar page_materialization_inactive_payload_high_water;
         statistics::Scalar page_materialization_inactive_payload_bytes;
         statistics::Scalar page_materialization_inactive_payload_control_bytes;
+        statistics::Scalar
+            page_materialization_inactive_masked_fragments_accepted;
+        statistics::Scalar page_materialization_inactive_masked_words_merged;
+        statistics::Scalar
+            page_materialization_inactive_masked_lines_reconstructed;
+        statistics::Scalar
+            page_materialization_inactive_masked_replay_hits;
+        statistics::Scalar
+            page_materialization_inactive_masked_replay_misses;
+        statistics::Scalar
+            page_materialization_inactive_masked_tag_conflicts;
+        statistics::Scalar
+            page_materialization_inactive_masked_overlap_poison;
+        statistics::Scalar
+            page_materialization_inactive_masked_write_port_poison;
+        statistics::Scalar
+            page_materialization_inactive_masked_stale_untracked_drops;
+        statistics::Scalar
+            page_materialization_inactive_masked_read_port_stalls;
+        statistics::Scalar page_materialization_inactive_masked_clears;
+        statistics::Scalar
+            page_materialization_inactive_masked_high_water;
+        statistics::Scalar page_materialization_inactive_masked_bytes;
+        statistics::Scalar
+            page_materialization_inactive_masked_control_bytes;
         statistics::Scalar page_materialization_cache_read_fallback_lines;
         statistics::Scalar page_materialization_dispatch_fallbacks;
         statistics::Scalar page_materialization_admission_fallbacks;

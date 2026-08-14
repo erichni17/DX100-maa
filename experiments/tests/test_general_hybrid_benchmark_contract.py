@@ -543,6 +543,31 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         )
         self.assertIn("BufferState::ProducerFragments", pipeline)
 
+    def test_inactive_masked_fragment_retention_is_bounded_and_exclusive(
+        self,
+    ) -> None:
+        sim_object = (ROOT / "src/mem/MAA/MAA.py").read_text(encoding="utf-8")
+        options = (ROOT / "configs/common/Options.py").read_text(
+            encoding="utf-8"
+        )
+        config = (ROOT / "configs/common/MAAConfig.py").read_text(
+            encoding="utf-8"
+        )
+        source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
+        mechanism = (
+            ROOT / "src/mem/MAA/InactiveProducerMaskedFragmentRetention.hh"
+        ).read_text(encoding="utf-8")
+        knob = "inactive_page_masked_fragment_retention_lines"
+        for text in (sim_object, options, config, source):
+            self.assertIn(knob, text)
+        self.assertIn(f"{knob} = Param.Unsigned(\n        0,", sim_object)
+        self.assertIn("choices=(0, 512, 1024, 2048, 4096)", options)
+        self.assertIn("inactive_page_payload_capture_lines != 0", source)
+        self.assertIn("retention are mutually exclusive", source)
+        self.assertIn("DescriptorCount = 4", mechanism)
+        self.assertIn("BankCount = 4", mechanism)
+        self.assertIn("std::bitset<MaxLogicalLines> poison", mechanism)
+
     def test_direct_spd_fragment_staging_is_opt_in_and_payload_free(
         self,
     ) -> None:

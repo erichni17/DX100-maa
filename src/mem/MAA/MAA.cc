@@ -127,6 +127,8 @@ MAA::MAA(const MAAParams &p)
           p.page_materialization_direct_spd_fragments),
       inactive_page_payload_capture_lines(
           p.inactive_page_payload_capture_lines),
+      inactive_page_masked_fragment_retention_lines(
+          p.inactive_page_masked_fragment_retention_lines),
       num_regs(p.num_regs_per_core * p.num_cores),
       num_instructions_per_core(p.num_instructions_per_core),
       num_row_table_rows_per_slice(p.num_row_table_rows_per_slice),
@@ -241,6 +243,19 @@ MAA::MAA(const MAAParams &p)
                  !direct_retirement_line_handoff,
              "Inactive producer payload capture requires exact producer "
              "WriteResp line handoff\n");
+    panic_if(!InactiveProducerMaskedFragmentRetention::validCapacity(
+                 inactive_page_masked_fragment_retention_lines),
+             "Inactive masked-fragment retention capacity %u must be zero "
+             "or one of 512/1024/2048/4096\n",
+             inactive_page_masked_fragment_retention_lines);
+    panic_if(inactive_page_masked_fragment_retention_lines != 0 &&
+                 !direct_retirement_line_handoff,
+             "Inactive masked-fragment retention requires exact producer "
+             "WriteResp line handoff\n");
+    panic_if(inactive_page_masked_fragment_retention_lines != 0 &&
+                 inactive_page_payload_capture_lines != 0,
+             "Inactive full-line payload capture and masked-fragment "
+             "retention are mutually exclusive\n");
     panic_if(num_offset_table_entries == 0 ||
                  num_offset_table_entries > num_tile_elements,
              "Offset Table capacity %u must be in [1,%u]\n",
@@ -1577,7 +1592,10 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
         DirectRetirementPortRetry<Packet>::chargedControlBytes() +
         EarlyProducerLineReadinessLedger::chargedTotalBytes() +
         InactiveProducerLinePayloadCapture::provisionedCombinedTotalBytes(
-            inactive_page_payload_capture_lines, num_tiles);
+            inactive_page_payload_capture_lines, num_tiles) +
+        InactiveProducerMaskedFragmentRetention::
+            provisionedCombinedTotalBytes(
+                inactive_page_masked_fragment_retention_lines, num_tiles);
     DPRINTF(MAAVirtualTrace,
             "event=page_materialization_submit schema=1 occurrence=%lu "
             "token=%d generation=%lu incarnation=%lu page=%u "
@@ -1793,6 +1811,12 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
              early_key.backingAddress});
         stats.page_materialization_inactive_payload_drops +=
             payloadClear.discardedLines;
+        const auto maskedClear = inactiveMaskedFragmentRetention.clear(
+            {early_key.tokenTile, early_key.generation,
+             virtualPagePayloadIncarnation[early_key.tokenTile],
+             early_key.backingAddress});
+        if (maskedClear)
+            stats.page_materialization_inactive_masked_clears++;
         stats.direct_retirement_producer_line_acks +=
             early_replay.readyLines;
     }
@@ -2260,6 +2284,12 @@ MAA::finishDirectRetirement(
          execution->backingAddress});
     stats.page_materialization_inactive_payload_drops +=
         payloadClear.discardedLines;
+    const auto maskedClear = inactiveMaskedFragmentRetention.clear(
+        {key.tokenTile, key.generation,
+         virtualPagePayloadIncarnation[key.tokenTile],
+         execution->backingAddress});
+    if (maskedClear)
+        stats.page_materialization_inactive_masked_clears++;
     *execution = DirectRetirementExecution{};
     setTileReady(completion_tile, word_bytes);
     DPRINTF(MAAVirtualTrace,
@@ -2596,9 +2626,58 @@ MAA::InactivePayloadLookupStart
 MAA::startInactiveProducerPayloadLookup(
     const HybridConsumerContextQueue::Request &request)
 {
-    if (inactive_page_payload_capture_lines == 0 ||
+    if ((inactive_page_payload_capture_lines == 0 &&
+         inactive_page_masked_fragment_retention_lines == 0) ||
         request.request.kind != HybridConsumerPipeline::Kind::ReadBacking)
         return InactivePayloadLookupStart::NotApplicable;
+    if (inactive_page_masked_fragment_retention_lines != 0) {
+        panic_if(inactiveMaskedFragmentLookup.timing.pending(),
+                 "Inactive masked-fragment lookup accepted two requests\n");
+        PageMaterializationExecution *execution =
+            findPageMaterializationExecution(request.owner);
+        if (execution == nullptr || !execution->pageActive)
+            return InactivePayloadLookupStart::NotApplicable;
+        const InactiveProducerMaskedFragmentRetention::Key key{
+            execution->key.tokenTile, execution->key.generation,
+            virtualPagePayloadIncarnation[execution->key.tokenTile],
+            execution->backingAddress};
+        InactiveProducerMaskedFragmentRetention::Line retained;
+        const auto probe = inactiveMaskedFragmentRetention.probe(
+            key, request.request.line,
+            static_cast<uint8_t>(execution->wordBytes),
+            static_cast<uint64_t>(curCycle()), &retained);
+        if (probe ==
+            InactiveProducerMaskedFragmentRetention::ProbeResult::PortBusy) {
+            stats
+                .page_materialization_inactive_masked_read_port_stalls++;
+            return InactivePayloadLookupStart::ReadPortBusy;
+        }
+        panic_if(
+            (probe != InactiveProducerMaskedFragmentRetention::
+                          ProbeResult::Hit &&
+             probe != InactiveProducerMaskedFragmentRetention::
+                          ProbeResult::Miss) ||
+                !inactiveMaskedFragmentLookup.timing.arm(
+                    static_cast<uint64_t>(curCycle()), probe),
+            "Inactive masked-fragment lookup did not produce a timed "
+            "result\n");
+        inactiveMaskedFragmentLookup.request = request;
+        inactiveMaskedFragmentLookup.key = key;
+        inactiveMaskedFragmentLookup.line = request.request.line;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_inactive_masked_lookup schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "payload_incarnation=%lu line=%u result=%u "
+                "issue_cycle=%lu completion_cycle=%lu access_cycles=%u\n",
+                pageMaterializationTraceOccurrence++, request.owner.tokenTile,
+                request.owner.generation, request.owner.incarnation,
+                key.incarnation, request.request.line,
+                static_cast<unsigned>(probe),
+                static_cast<uint64_t>(curCycle()),
+                inactiveMaskedFragmentLookup.timing.completionCycle(),
+                InactiveProducerMaskedFragmentRetention::PortAccessCycles);
+        return InactivePayloadLookupStart::Started;
+    }
     panic_if(inactivePayloadLookup.timing.pending(),
              "Inactive payload lookup pipeline accepted two requests\n");
     PageMaterializationExecution *execution =
@@ -2651,6 +2730,65 @@ MAA::startInactiveProducerPayloadLookup(
 bool
 MAA::consumeInactiveProducerPayload()
 {
+    if (inactiveMaskedFragmentLookup.timing.pending()) {
+        panic_if(!inactiveMaskedFragmentLookup.timing.ready(
+                     static_cast<uint64_t>(curCycle())),
+                 "Inactive masked-fragment lookup completed early\n");
+        const auto request = inactiveMaskedFragmentLookup.request;
+        const auto key = inactiveMaskedFragmentLookup.key;
+        const uint16_t line = inactiveMaskedFragmentLookup.line;
+        const auto result = inactiveMaskedFragmentLookup.timing.result();
+        if (result ==
+            InactiveProducerMaskedFragmentRetention::ProbeResult::Miss) {
+            stats.page_materialization_inactive_masked_replay_misses++;
+            inactiveMaskedFragmentLookup = InactiveMaskedFragmentLookup{};
+            return false;
+        }
+        panic_if(result !=
+                     InactiveProducerMaskedFragmentRetention::ProbeResult::Hit,
+                 "Inactive masked-fragment lookup completed invalidly\n");
+        const uint64_t transactionID =
+            inactiveMaskedFragmentRetention.pipelinedTransactionID();
+        panic_if(transactionID == 0,
+                 "Inactive masked-fragment hit lost output identity\n");
+        PageMaterializationExecution *execution =
+            findPageMaterializationExecution(request.owner);
+        panic_if(execution == nullptr || !execution->pageActive ||
+                     execution->backingAddress != key.backingAddress,
+                 "Inactive masked-fragment lookup lost materializer owner\n");
+        HybridConsumerContextQueue::Request captured;
+        panic_if(!directRetirementContexts.captureMaterializationLine(
+                     execution->key, line,
+                     inactiveMaskedFragmentRetention.pipelinedPayload(),
+                     HybridConsumerPipeline::LineBytes, &captured),
+                 "Materializer rejected reconstructed inactive line\n");
+        const uint16_t wordsPerLine =
+            HybridConsumerPipeline::LineBytes / execution->wordBytes;
+        const Cycles spdLatency = spd->setDataLatency(
+            execution->destinationTile, wordsPerLine);
+        const Tick commitTick = getClockEdge(spdLatency);
+        panic_if(!reservePageMaterializationCommit(captured, commitTick) ||
+                     !inactiveMaskedFragmentRetention.take(
+                         key, line, transactionID,
+                         static_cast<uint64_t>(curCycle())),
+                 "Materializer could not consume reconstructed inactive "
+                 "line\n");
+        inactiveMaskedFragmentLookup = InactiveMaskedFragmentLookup{};
+        ++execution->forwardedLines;
+        stats.page_materialization_forwarded_lines++;
+        stats.page_materialization_inactive_masked_replay_hits++;
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_inactive_masked_replay schema=1 "
+                "occurrence=%lu token=%u generation=%lu incarnation=%lu "
+                "payload_incarnation=%lu page=%u line=%u transaction=%lu "
+                "lookup_cycles=%u commit_tick=%lu\n",
+                pageMaterializationTraceOccurrence++, execution->key.tokenTile,
+                execution->key.generation, execution->key.incarnation,
+                key.incarnation, execution->page, line, transactionID,
+                InactiveProducerMaskedFragmentRetention::PortAccessCycles,
+                commitTick);
+        return true;
+    }
     panic_if(!inactivePayloadLookup.timing.pending() ||
                  !inactivePayloadLookup.timing.ready(
                      static_cast<uint64_t>(curCycle())),
@@ -2955,6 +3093,12 @@ MAA::finishPageMaterialization(
             inactiveProducerLinePayloadCapture.clear(payloadKey);
         stats.page_materialization_inactive_payload_drops +=
             payloadClear.discardedLines;
+        const auto maskedClear = inactiveMaskedFragmentRetention.clear(
+            {key.tokenTile, key.generation,
+             virtualPagePayloadIncarnation[key.tokenTile],
+             execution->backingAddress});
+        if (maskedClear)
+            stats.page_materialization_inactive_masked_clears++;
         *execution = PageMaterializationExecution{};
         stats.page_materialization_retirements++;
         DPRINTF(MAAVirtualTrace,
@@ -3134,9 +3278,15 @@ MAA::servicePageMaterialization()
 
     bool resolvedInactivePayloadMiss = false;
     HybridConsumerContextQueue::Request resolvedInactivePayloadRequest;
-    if (inactivePayloadLookup.timing.pending()) {
-        if (!inactivePayloadLookup.timing.ready(
-                static_cast<uint64_t>(curCycle()))) {
+    if (inactiveMaskedFragmentLookup.timing.pending() ||
+        inactivePayloadLookup.timing.pending()) {
+        const bool masked = inactiveMaskedFragmentLookup.timing.pending();
+        const bool ready = masked
+            ? inactiveMaskedFragmentLookup.timing.ready(
+                  static_cast<uint64_t>(curCycle()))
+            : inactivePayloadLookup.timing.ready(
+                  static_cast<uint64_t>(curCycle()));
+        if (!ready) {
             schedulePageMaterializationEvent(1);
             return;
         }
@@ -4562,6 +4712,13 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
              oldMaterialization->backingAddress});
         stats.page_materialization_inactive_payload_drops +=
             payloadClear.discardedLines;
+        const auto maskedClear = inactiveMaskedFragmentRetention.clear(
+            {oldMaterialization->key.tokenTile,
+             oldMaterialization->key.generation,
+             virtualPagePayloadIncarnation[tokenTileID],
+             oldMaterialization->backingAddress});
+        if (maskedClear)
+            stats.page_materialization_inactive_masked_clears++;
         *oldMaterialization = PageMaterializationExecution{};
     }
     const int firstReadyID = num_tiles + tokenTileID * MaxVirtualPages;
@@ -4715,6 +4872,77 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                     InactiveProducerLinePayloadCapture::PortAccessCycles,
                     static_cast<unsigned>(captureBegin));
         }
+        if (inactive_page_masked_fragment_retention_lines != 0) {
+            uint16_t discardedEntries = 0;
+            const InactiveProducerMaskedFragmentRetention::Key key{
+                static_cast<uint16_t>(tokenTileID),
+                virtualPageGeneration[tokenTileID],
+                virtualPagePayloadIncarnation[tokenTileID], backingAddr};
+            const auto fragmentBegin = inactiveMaskedFragmentRetention.begin(
+                key, static_cast<uint16_t>(lines),
+                static_cast<uint16_t>(
+                    inactive_page_masked_fragment_retention_lines),
+                &discardedEntries);
+            panic_if(fragmentBegin ==
+                         InactiveProducerMaskedFragmentRetention::
+                             BeginResult::Invalid ||
+                         fragmentBegin ==
+                         InactiveProducerMaskedFragmentRetention::
+                             BeginResult::Stale ||
+                         fragmentBegin ==
+                         InactiveProducerMaskedFragmentRetention::
+                             BeginResult::Existing,
+                     "virtual producer token %d could not start inactive "
+                     "masked-fragment retention\n", tokenTileID);
+            stats.page_materialization_inactive_masked_bytes =
+                InactiveProducerMaskedFragmentRetention::bitsToBytes(
+                    InactiveProducerMaskedFragmentRetention::
+                        provisionedPayloadBits(
+                            inactive_page_masked_fragment_retention_lines) +
+                    InactiveProducerMaskedFragmentRetention::LineBytes * 8);
+            stats.page_materialization_inactive_masked_control_bytes =
+                InactiveProducerMaskedFragmentRetention::bitsToBytes(
+                    InactiveProducerMaskedFragmentRetention::
+                        provisionedControlBits(
+                            inactive_page_masked_fragment_retention_lines) +
+                    InactiveProducerMaskedFragmentRetention::
+                        MAALookupControlBits +
+                    InactiveProducerMaskedFragmentRetention::
+                        provisionedMAAPersistentStateBits(
+                            inactive_page_masked_fragment_retention_lines,
+                            num_tiles));
+            DPRINTF(MAAVirtualTrace,
+                    "event=page_materialization_inactive_masked_begin "
+                    "schema=1 occurrence=%lu token=%d generation=%lu "
+                    "payload_incarnation=%lu descriptor_partition=%u "
+                    "discarded_entries=%u capacity_entries=%u "
+                    "partition_entries=%u bank_partition_entries=%u "
+                    "write_banks=%u read_ports=%u poison_bits=%lu "
+                    "hardware_total_bits=%lu result=%u\n",
+                    pageMaterializationTraceOccurrence++, tokenTileID,
+                    virtualPageGeneration[tokenTileID],
+                    virtualPagePayloadIncarnation[tokenTileID],
+                    InactiveProducerMaskedFragmentRetention::
+                        descriptorIndexForToken(tokenTileID),
+                    discardedEntries,
+                    inactive_page_masked_fragment_retention_lines,
+                    InactiveProducerMaskedFragmentRetention::
+                        entriesPerPartition(
+                            inactive_page_masked_fragment_retention_lines),
+                    InactiveProducerMaskedFragmentRetention::
+                        entriesPerBankPerPartition(
+                            inactive_page_masked_fragment_retention_lines),
+                    InactiveProducerMaskedFragmentRetention::BankCount,
+                    InactiveProducerMaskedFragmentRetention::ReadPortCount,
+                    InactiveProducerMaskedFragmentRetention::
+                        provisionedPoisonBits(
+                            inactive_page_masked_fragment_retention_lines),
+                    InactiveProducerMaskedFragmentRetention::
+                        provisionedCombinedTotalBits(
+                            inactive_page_masked_fragment_retention_lines,
+                            num_tiles),
+                    static_cast<unsigned>(fragmentBegin));
+        }
     }
     // This runs before the newly admitted producer can execute. It binds the
     // already acknowledged prearm to the exact generation/backing metadata
@@ -4762,8 +4990,66 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
     panic_if(tokenTileID < 0 || tokenTileID >= num_tiles || lineID < 0,
              "invalid virtual line token=%d line=%d\n", tokenTileID,
              lineID);
+    const auto accountInactiveMaskedOutcome =
+        [this, wordMask](
+            InactiveProducerMaskedFragmentRetention::CaptureResult result) {
+        using Result =
+            InactiveProducerMaskedFragmentRetention::CaptureResult;
+        uint8_t mergedWords = 0;
+        for (uint16_t mask = wordMask; mask != 0; mask >>= 1)
+            mergedWords += mask & 1U;
+        switch (result) {
+          case Result::Accepted:
+            stats.page_materialization_inactive_masked_fragments_accepted++;
+            stats.page_materialization_inactive_masked_words_merged +=
+                mergedWords;
+            break;
+          case Result::Reconstructed:
+            stats.page_materialization_inactive_masked_fragments_accepted++;
+            stats.page_materialization_inactive_masked_words_merged +=
+                mergedWords;
+            stats
+                .page_materialization_inactive_masked_lines_reconstructed++;
+            break;
+          case Result::ConflictPoison:
+            stats.page_materialization_inactive_masked_tag_conflicts++;
+            break;
+          case Result::OverlapPoison:
+            stats.page_materialization_inactive_masked_overlap_poison++;
+            break;
+          case Result::WritePortPoison:
+            stats.page_materialization_inactive_masked_write_port_poison++;
+            break;
+          case Result::StalePoison:
+          case Result::InvalidPoison:
+          case Result::Untracked:
+          case Result::Invalid:
+            stats
+                .page_materialization_inactive_masked_stale_untracked_drops++;
+            break;
+          case Result::Disabled:
+          case Result::AlreadyPoisoned:
+            break;
+        }
+        if (result == Result::Accepted || result == Result::Reconstructed) {
+            stats.page_materialization_inactive_masked_high_water = std::max(
+                stats.page_materialization_inactive_masked_high_water.value(),
+                static_cast<double>(inactiveMaskedFragmentRetention
+                                        .counters().occupancyHighWater));
+        }
+    };
     if (generation != virtualPageGeneration[tokenTileID] ||
         backingAddr != virtualPageBackingAddr[tokenTileID]) {
+        if (inactive_page_masked_fragment_retention_lines != 0) {
+            const auto staleCapture = inactiveMaskedFragmentRetention.capture(
+                {static_cast<uint16_t>(tokenTileID), generation,
+                 virtualPagePayloadIncarnation[tokenTileID], backingAddr},
+                static_cast<uint16_t>(lineID), transactionID, wordMask,
+                static_cast<uint8_t>(virtualPageWordSize[tokenTileID]),
+                reinterpret_cast<const std::byte *>(writeRespPayload),
+                payloadBytes, static_cast<uint64_t>(curCycle()));
+            accountInactiveMaskedOutcome(staleCapture);
+        }
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_line_reject schema=1 "
                 "occurrence=%lu token=%d generation=%lu line=%d "
@@ -4845,6 +5131,9 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
             stats.direct_retirement_early_line_overflows++;
         InactiveProducerLinePayloadCapture::CaptureResult captureResult =
             InactiveProducerLinePayloadCapture::CaptureResult::Disabled;
+        InactiveProducerMaskedFragmentRetention::CaptureResult
+            maskedCapture = InactiveProducerMaskedFragmentRetention::
+                CaptureResult::Disabled;
         if (fullAuthoritativePayload &&
             result != EarlyProducerLineReadinessLedger::AckResult::Duplicate) {
             captureResult = inactiveProducerLinePayloadCapture.capture(
@@ -4855,18 +5144,29 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                 payloadBytes, static_cast<uint64_t>(curCycle()));
             accountInactivePayloadOutcome(captureResult);
         }
+        if (inactive_page_masked_fragment_retention_lines != 0) {
+            maskedCapture = inactiveMaskedFragmentRetention.capture(
+                {static_cast<uint16_t>(tokenTileID), generation,
+                 virtualPagePayloadIncarnation[tokenTileID], backingAddr},
+                static_cast<uint16_t>(lineID), transactionID, wordMask,
+                static_cast<uint8_t>(virtualPageWordSize[tokenTileID]),
+                reinterpret_cast<const std::byte *>(writeRespPayload),
+                payloadBytes, static_cast<uint64_t>(curCycle()));
+            accountInactiveMaskedOutcome(maskedCapture);
+        }
         DPRINTF(MAAVirtualTrace,
                 "event=direct_retirement_producer_line_early schema=1 "
                 "occurrence=%lu token=%d generation=%lu "
                 "payload_incarnation=%lu line=%d "
                 "transaction=%lu result=%u ready_lines=%u "
-                "inactive_payload_capture=%u\n",
+                "inactive_payload_capture=%u inactive_masked_capture=%u\n",
                 directRetirementTraceOccurrence++, tokenTileID, generation,
                 virtualPagePayloadIncarnation[tokenTileID], lineID,
                 transactionID, static_cast<unsigned>(result),
                 directRetirementEarlyLineLedger.readyLineCount(
                     {static_cast<uint16_t>(tokenTileID), generation,
-                     backingAddr}), static_cast<unsigned>(captureResult));
+                     backingAddr}), static_cast<unsigned>(captureResult),
+                static_cast<unsigned>(maskedCapture));
         return;
     }
     const auto owner = directExecution != nullptr
@@ -4876,6 +5176,23 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
     panic_if(ownerBacking != backingAddr,
              "Consumer token %d lost exact line provenance\n",
              tokenTileID);
+    const bool activePageLine = materialization != nullptr &&
+        materialization->pageActive && lineID >= 0 &&
+        lineID / directRetirementContexts.producerPageLines(owner) ==
+            materialization->page;
+    InactiveProducerMaskedFragmentRetention::CaptureResult maskedCapture =
+        InactiveProducerMaskedFragmentRetention::CaptureResult::Disabled;
+    if (materialization != nullptr && !activePageLine &&
+        inactive_page_masked_fragment_retention_lines != 0) {
+        maskedCapture = inactiveMaskedFragmentRetention.capture(
+            {owner.tokenTile, owner.generation,
+             virtualPagePayloadIncarnation[owner.tokenTile], ownerBacking},
+            static_cast<uint16_t>(lineID), transactionID, wordMask,
+            static_cast<uint8_t>(materialization->wordBytes),
+            reinterpret_cast<const std::byte *>(writeRespPayload),
+            payloadBytes, static_cast<uint64_t>(curCycle()));
+        accountInactiveMaskedOutcome(maskedCapture);
+    }
     HybridConsumerContextQueue::Snapshot before;
     panic_if(!directRetirementContexts.snapshot(owner, &before),
              "Consumer producer line lost its owner\n");
@@ -4917,10 +5234,6 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
     const uint16_t fullMask = wordsPerLine == 16
         ? std::numeric_limits<uint16_t>::max()
         : static_cast<uint16_t>((1U << wordsPerLine) - 1);
-    const bool activePageLine = materialization->pageActive &&
-        lineID >= 0 &&
-        lineID / directRetirementContexts.producerPageLines(owner) ==
-            materialization->page;
     InactiveProducerLinePayloadCapture::CaptureResult inactiveCapture =
         InactiveProducerLinePayloadCapture::CaptureResult::Disabled;
     if (!activePageLine && fullAuthoritativePayload) {
@@ -4941,6 +5254,21 @@ MAA::setVirtualLineWordsReady(int tokenTileID, Addr backingAddr,
                 virtualPagePayloadIncarnation[owner.tokenTile], lineID,
                 transactionID,
                 static_cast<unsigned>(inactiveCapture));
+    }
+    if (!activePageLine &&
+        inactive_page_masked_fragment_retention_lines != 0) {
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_inactive_masked_capture "
+                "schema=1 occurrence=%lu token=%u generation=%lu "
+                "incarnation=%lu payload_incarnation=%lu line=%d "
+                "word_mask=0x%x transaction=%lu result=%u bank=%u\n",
+                pageMaterializationTraceOccurrence++, owner.tokenTile,
+                owner.generation, owner.incarnation,
+                virtualPagePayloadIncarnation[owner.tokenTile], lineID,
+                wordMask, transactionID,
+                static_cast<unsigned>(maskedCapture),
+                InactiveProducerMaskedFragmentRetention::bankIndexForLine(
+                    static_cast<uint16_t>(lineID)));
     }
     bool directStaged = false;
     bool directCompleted = false;
@@ -5104,6 +5432,23 @@ MAA::setVirtualPageReady(int tokenTileID, int pageID,
     panic_if(transactionID == 0,
              "virtual page token=%d page=%d lacks final WriteResp identity\n",
              tokenTileID, pageID);
+    if (inactive_page_masked_fragment_retention_lines != 0) {
+        const InactiveProducerMaskedFragmentRetention::Key key{
+            static_cast<uint16_t>(tokenTileID),
+            virtualPageGeneration[tokenTileID],
+            virtualPagePayloadIncarnation[tokenTileID],
+            virtualPageBackingAddr[tokenTileID]};
+        if (inactiveMaskedFragmentRetention.active(key)) {
+            const auto sealed = inactiveMaskedFragmentRetention.sealPage(
+                key, static_cast<uint8_t>(pageID));
+            panic_if(sealed !=
+                         InactiveProducerMaskedFragmentRetention::
+                             SealResult::Sealed,
+                     "virtual page token=%d page=%d could not seal exact "
+                     "inactive masked-fragment partition\n",
+                     tokenTileID, pageID);
+        }
+    }
     virtualPageReady[tokenTileID][pageID] = true;
     virtualPageReadyTransaction[tokenTileID][pageID] = transactionID;
     virtualPageLastReadyTick[tokenTileID] = curTick();
@@ -5542,6 +5887,49 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
                "configured packed RAM tags, direct descriptors, port state, "
                "output tag, MAA lookup control, and persistent per-token "
                "payload incarnation state"),
+      ADD_STAT(page_materialization_inactive_masked_fragments_accepted,
+               statistics::units::Count::get(),
+               "authoritative inactive producer fragments accepted"),
+      ADD_STAT(page_materialization_inactive_masked_words_merged,
+               statistics::units::Count::get(),
+               "non-overlapping authoritative words merged while inactive"),
+      ADD_STAT(page_materialization_inactive_masked_lines_reconstructed,
+               statistics::units::Count::get(),
+               "inactive lines reaching an exact complete word mask"),
+      ADD_STAT(page_materialization_inactive_masked_replay_hits,
+               statistics::units::Count::get(),
+               "sealed exact reconstructed lines replayed"),
+      ADD_STAT(page_materialization_inactive_masked_replay_misses,
+               statistics::units::Count::get(),
+               "sealed materializer probes using coherent fallback"),
+      ADD_STAT(page_materialization_inactive_masked_tag_conflicts,
+               statistics::units::Count::get(),
+               "first-owner direct-index conflicts poisoning incoming lines"),
+      ADD_STAT(page_materialization_inactive_masked_overlap_poison,
+               statistics::units::Count::get(),
+               "overlapping authoritative words poisoning logical lines"),
+      ADD_STAT(page_materialization_inactive_masked_write_port_poison,
+               statistics::units::Count::get(),
+               "fragments lost at occupied one-write-port banks"),
+      ADD_STAT(page_materialization_inactive_masked_stale_untracked_drops,
+               statistics::units::Count::get(),
+               "stale, invalid, or untracked fragments rejected fail-closed"),
+      ADD_STAT(page_materialization_inactive_masked_read_port_stalls,
+               statistics::units::Count::get(),
+               "replays delayed at the shared one-read-port path"),
+      ADD_STAT(page_materialization_inactive_masked_clears,
+               statistics::units::Count::get(),
+               "exact masked-fragment lifetime partitions cleared"),
+      ADD_STAT(page_materialization_inactive_masked_high_water,
+               statistics::units::Count::get(),
+               "maximum active masked-fragment entries"),
+      ADD_STAT(page_materialization_inactive_masked_bytes,
+               statistics::units::Byte::get(),
+               "configured masked-fragment payload and output latch bytes"),
+      ADD_STAT(page_materialization_inactive_masked_control_bytes,
+               statistics::units::Byte::get(),
+               "configured tags, poison, descriptors, ports, counters, and "
+               "MAA exact-identity control bytes"),
       ADD_STAT(page_materialization_cache_read_fallback_lines,
                statistics::units::Count::get(),
                "ACK-gated coherent backing lines read when producer payload "

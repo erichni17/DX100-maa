@@ -440,6 +440,16 @@ def addNoISAOptions(parser):
         ),
     )
     parser.add_argument(
+        "--maa_inactive_page_masked_fragment_retention_lines",
+        type=int,
+        default=0,
+        choices=(0, 512, 1024, 2048, 4096),
+        help=(
+            "Bounded first-owner masked-fragment entries across four static "
+            "inactive materializer lifetime partitions"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_buffer_lines",
         type=int,
         default=1,

@@ -134,6 +134,11 @@ class MAA(ClockedObject):
         "first-owner",
         "Direct-index collision policy; only first-owner is supported",
     )
+    inactive_page_masked_fragment_retention_lines = Param.Unsigned(
+        0,
+        "Fixed inactive masked-fragment entries across four lifetime "
+        "partitions (0 disables; 512/1024/2048/4096)",
+    )
     virtual_index_buffer_lines = Param.Unsigned(
         1,
         "Cache lines buffered or in flight for direct virtual-index ingestion",

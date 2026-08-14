@@ -175,6 +175,11 @@ def _get_maa_opts(options):
             options, "maa_inactive_page_payload_capture_conflict_policy"
         )
 
+    if hasattr(options, "maa_inactive_page_masked_fragment_retention_lines"):
+        opts["inactive_page_masked_fragment_retention_lines"] = getattr(
+            options, "maa_inactive_page_masked_fragment_retention_lines"
+        )
+
     if hasattr(options, "maa_virtual_index_buffer_lines"):
         opts["virtual_index_buffer_lines"] = getattr(
             options, "maa_virtual_index_buffer_lines"
