@@ -166,9 +166,19 @@ required to match across arms.
 
 This comparison adds no storage to the current model: all 128 owner records
 are already physically provisioned, and the knob only activates 64 rather than
-32 of them. It is accepted micro evidence that owner capacity still helps after
-pre-A overlap, not an application-level speedup claim. Full GZP and CG
-composition gates remain required.
+32 of them.
+
+The full-GZP follow-up at
+`/data1/nier/dx100-runs/2026-08-14-gzp-owner-prea32-64-22ffe3de-r1`
+also passes two exact replicas per arm with the same binary, guest, checkpoint,
+pre-A setting, 32 active A-line contexts, and output hash
+`11225737641199706160`. Owner64 reduces 7,115,533,855 to 7,083,313,009 ticks,
+or **0.4549% fewer ticks / 1.004548838x**. Value stalls fall from 3,511,097
+to 43,249 and value-read evictions from 873,620 to 819,371. This promotes 64
+active owners for the optimized application configuration, but the measured
+application gain is the 0.455% figure rather than the larger micro result.
+CG composition and the masked-index/pre-A/owner combined matrix remain
+outstanding.
 
 The follow-up exact 64-versus-128 gate at
 `/data1/nier/dx100-runs/2026-08-14-soa-owner-prea64-128-5b02ced5-r1`
