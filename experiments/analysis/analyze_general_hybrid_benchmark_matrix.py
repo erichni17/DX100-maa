@@ -142,6 +142,34 @@ def stream_report(stats: dict[str, float]) -> dict[str, float | str]:
     }
 
 
+OPCODE_STATS = (
+    "numInst_INDRD",
+    "numInst_INDRMW",
+    "numInst_STRRD",
+    "numInst_ALUS",
+    "numInst_ALUV",
+    "cycles_INDRD",
+    "cycles_INDRMW",
+    "cycles_STRRD",
+    "cycles_ALUS",
+    "cycles_ALUV",
+    "cycles_IDLE",
+    "cycles_BUSY",
+    "cycles_TOTAL",
+)
+
+
+def opcode_report(stats: dict[str, float]) -> dict[str, int]:
+    report: dict[str, int] = {}
+    for suffix in OPCODE_STATS:
+        name = f"system.maa.{suffix}"
+        value = stats.get(name)
+        if value is None or not value.is_integer():
+            raise ValueError(f"missing or non-integral opcode stat {name}")
+        report[suffix] = int(value)
+    return report
+
+
 CONTEXT_EVENTS = {
     "page_materialization_submit",
     "page_materialization_page_ready",
@@ -689,6 +717,7 @@ def analyze(root: Path) -> dict[str, object]:
                 "correctness_marker": marker,
                 "simTicks": int(stats["simTicks"]),
                 **stream_report(stats),
+                **opcode_report(stats),
                 **mechanism,
             }
             records.append(record)
@@ -710,6 +739,21 @@ def analyze(root: Path) -> dict[str, object]:
     ]
     native16 = sum(native16_ticks) / len(native16_ticks)
     native4 = sum(native4_ticks) / len(native4_ticks)
+    native16_maa_total = sum(
+        int(record["cycles_TOTAL"])
+        for record in records
+        if record["arm"] == "native16"
+    ) / len(native16_ticks)
+    native16_rmw_cycles = sum(
+        int(record["cycles_INDRMW"])
+        for record in records
+        if record["arm"] == "native16"
+    ) / len(native16_ticks)
+    native16_rmw_insts = sum(
+        int(record["numInst_INDRMW"])
+        for record in records
+        if record["arm"] == "native16"
+    ) / len(native16_ticks)
     opportunity = native4 - native16
     for record in records:
         ticks = int(record["simTicks"])
@@ -721,6 +765,18 @@ def analyze(root: Path) -> dict[str, object]:
         record["opportunity_recovered_pct"] = (
             ((native4 - ticks) / opportunity) * 100.0
             if opportunity > 0
+            else None
+        )
+        maa_gap = int(record["cycles_TOTAL"]) - native16_maa_total
+        rmw_gap = int(record["cycles_INDRMW"]) - native16_rmw_cycles
+        record["maa_total_cycles_gap_vs_native16"] = maa_gap
+        record["rmw_cycles_gap_vs_native16"] = rmw_gap
+        record["rmw_gap_fraction_of_maa_total_gap"] = (
+            rmw_gap / maa_gap if maa_gap > 0 else None
+        )
+        record["rmw_instruction_count_ratio_vs_native16"] = (
+            int(record["numInst_INDRMW"]) / native16_rmw_insts
+            if native16_rmw_insts > 0
             else None
         )
 
@@ -735,6 +791,10 @@ def analyze(root: Path) -> dict[str, object]:
             "stream_store_contention": (
                 "raw store count plus all-stream request/SPD occupancy; "
                 "store-only cycles unavailable in this source revision"
+            ),
+            "rmw_gap_fraction": (
+                "diagnostic ratio only; opcode cycle categories can overlap "
+                "and must not be added as disjoint wall-clock intervals"
             ),
         },
     }
@@ -759,6 +819,15 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "latency_gap_pct_vs_native16",
         "speedup_vs_native4",
         "opportunity_recovered_pct",
+        "numInst_INDRD",
+        "numInst_INDRMW",
+        "cycles_INDRD",
+        "cycles_INDRMW",
+        "cycles_TOTAL",
+        "maa_total_cycles_gap_vs_native16",
+        "rmw_cycles_gap_vs_native16",
+        "rmw_gap_fraction_of_maa_total_gap",
+        "rmw_instruction_count_ratio_vs_native16",
         "num_stream_loads",
         "num_stream_stores",
         "aggregate_cycles_STRRD_raw",
@@ -827,20 +896,26 @@ def write_outputs(root: Path, report: dict[str, object]) -> None:
         "all stream completions to `cycles_STRRD`, so the table also exposes "
         "store instruction count and total stream request/SPD occupancy.",
         "",
-        "| arm | rep | ticks | gap vs native16 | speedup vs native4 | STREAM_LD | STREAM_ST | request cycles | SPD read | SPD write | submits/ready/retire | forwarded/cache-read lines |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| arm | rep | ticks | gap vs native16 | speedup vs native4 | INDRD/RMW insts | INDRD/RMW cycles | MAA total | RMW share of MAA gap | submits/ready/retire | forwarded/cache-read lines |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for record in records:
+        rmw_fraction = record["rmw_gap_fraction_of_maa_total_gap"]
+        rmw_fraction_text = (
+            "n/a" if rmw_fraction is None else f"{float(rmw_fraction):.3f}"
+        )
         lines.append(
             "| {arm} | {replica} | {simTicks} | "
             "{latency_gap_pct_vs_native16:.3f}% | {speedup_vs_native4:.6f} | "
-            "{num_stream_loads:g} | {num_stream_stores:g} | "
-            "{all_stream_request_cycles:g} | {all_stream_spd_read_cycles:g} | "
-            "{all_stream_spd_write_cycles:g} | "
+            "{numInst_INDRD}/{numInst_INDRMW} | "
+            "{cycles_INDRD}/{cycles_INDRMW} | {cycles_TOTAL} | "
+            "{rmw_fraction_text} | "
             "{materializer_submits}/{materializer_pages_ready}/"
             "{materializer_retires} | "
             "{materializer_forwarded_lines}/"
-            "{materializer_cache_read_lines} |".format(**record)
+            "{materializer_cache_read_lines} |".format(
+                **record, rmw_fraction_text=rmw_fraction_text
+            )
         )
     (analysis / "report.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"

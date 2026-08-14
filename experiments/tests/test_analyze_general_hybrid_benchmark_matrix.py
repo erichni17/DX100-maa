@@ -22,9 +22,20 @@ SPEC.loader.exec_module(analyzer)
 EXIT = "Exiting @ tick 123 because m5_exit instruction encountered\n"
 STATS = """---------- Begin Simulation Statistics ----------
 simTicks 1000
+system.maa.numInst_INDRD 2
+system.maa.numInst_INDRMW 4
 system.maa.numInst_STRRD 8
 system.maa.numInst_STRWR 4
+system.maa.numInst_ALUS 2
+system.maa.numInst_ALUV 2
+system.maa.cycles_INDRD 200
+system.maa.cycles_INDRMW 400
 system.maa.cycles_STRRD 700
+system.maa.cycles_ALUS 100
+system.maa.cycles_ALUV 100
+system.maa.cycles_IDLE 200
+system.maa.cycles_BUSY 800
+system.maa.cycles_TOTAL 1000
 system.maa.S0_STR_CyclesRequest 90
 system.maa.S1_STR_CyclesRequest 10
 system.maa.S0_STR_CyclesSPDReadAccess 40
@@ -287,6 +298,10 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
             self.assertEqual(report["status"], "PASS")
             record = report["records"][0]
             self.assertEqual(record["num_stream_stores"], 4)
+            self.assertEqual(record["numInst_INDRD"], 2)
+            self.assertEqual(record["numInst_INDRMW"], 4)
+            self.assertEqual(record["cycles_INDRMW"], 400)
+            self.assertEqual(record["cycles_TOTAL"], 1000)
             self.assertEqual(record["aggregate_cycles_STRWR_raw"], 0)
             self.assertEqual(record["all_stream_request_cycles"], 100)
             self.assertEqual(record["latency_gap_pct_vs_native16"], 0.0)
@@ -306,6 +321,69 @@ class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
             )
             self.assertEqual(token["materializer_fragment_buffer_stalls"], 0)
             self.assertEqual(token["materializer_cache_read_lines"], 1)
+
+    def test_rmw_gap_attribution_uses_native16_opcode_control(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_matrix(root)
+            native16 = root / "arms/native16/replica-1/gem5/stats.txt"
+            hybrid = root / (
+                "arms/hybrid_token_stream_ld/replica-1/gem5/stats.txt"
+            )
+            native16.write_text(
+                native16.read_text()
+                .replace(
+                    "system.maa.numInst_INDRMW 4",
+                    "system.maa.numInst_INDRMW 2",
+                )
+                .replace(
+                    "system.maa.cycles_INDRMW 400",
+                    "system.maa.cycles_INDRMW 300",
+                )
+                .replace(
+                    "system.maa.cycles_TOTAL 1000",
+                    "system.maa.cycles_TOTAL 900",
+                ),
+                encoding="utf-8",
+            )
+            hybrid.write_text(
+                hybrid.read_text()
+                .replace(
+                    "system.maa.numInst_INDRMW 4",
+                    "system.maa.numInst_INDRMW 8",
+                )
+                .replace(
+                    "system.maa.cycles_INDRMW 400",
+                    "system.maa.cycles_INDRMW 500",
+                )
+                .replace(
+                    "system.maa.cycles_TOTAL 1000",
+                    "system.maa.cycles_TOTAL 1100",
+                ),
+                encoding="utf-8",
+            )
+            report = analyzer.analyze(root)
+            token = report["records"][-1]
+            self.assertEqual(token["maa_total_cycles_gap_vs_native16"], 200)
+            self.assertEqual(token["rmw_cycles_gap_vs_native16"], 200)
+            self.assertEqual(token["rmw_gap_fraction_of_maa_total_gap"], 1.0)
+            self.assertEqual(
+                token["rmw_instruction_count_ratio_vs_native16"], 4.0
+            )
+
+    def test_missing_opcode_counter_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_matrix(root)
+            stats = root / "arms/native16/replica-1/gem5/stats.txt"
+            stats.write_text(
+                stats.read_text().replace(
+                    "system.maa.cycles_INDRMW 400\n", ""
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "cycles_INDRMW"):
+                analyzer.analyze(root)
 
     def test_application_may_reuse_exact_preregistered_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
