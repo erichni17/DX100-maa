@@ -47,7 +47,13 @@ make_checkpoint
 source_commit=$(git -C "$root" rev-parse HEAD)
 gem5_sha=$(sha256sum "$gem5" | awk '{print $1}')
 guest_sha=$(sha256sum "$guest" | awk '{print $1}')
-checkpoint_sha=$(sha256sum "$out/checkpoint/soa16/cpt.1/m5.cpt" | \
+checkpoint_state=$(find "$out/checkpoint/soa16" -mindepth 2 -maxdepth 2 \
+    -type f -path '*/cpt.*/m5.cpt' -print)
+[[ $(wc -l <<<"$checkpoint_state") -eq 1 ]] || {
+    echo "shared SoA checkpoint state is not unique" >&2
+    exit 1
+}
+checkpoint_sha=$(sha256sum "$checkpoint_state" | \
     awk '{print $1}')
 {
     printf 'source_commit=%s\n' "$source_commit"
