@@ -46,26 +46,48 @@ REQUIRED_SOURCE = {
     "src/mem/MAA/IndirectAccess.hh": (
         "std::array<uint8_t, 64> data{}",
         "std::vector<VirtualResponseSlot> virtual_response_slots",
+        "VirtualCombinePayloadStore::LineRefs word_refs",
         "std::vector<VirtualCombineSlot> virtual_combine_slots",
         "std::map<int, DirectIndexWord> direct_index_words",
     ),
     "src/mem/MAA/IndirectAccess.cc": (
         "virtual_response_slots.resize(_virtual_response_slots)",
         "virtual_combine_slots.resize(_virtual_combine_slots)",
+        "virtual_combine_payload.reset(",
+        "virtual_combine_payload.releaseMasked(",
         "static_cast<size_t>(direct_index_buffer_lines)",
         "RT[i] = new RowTableSlice[current_num_RT_slices]",
     ),
+    "src/mem/MAA/VirtualCombinePayloadStore.hh": (
+        "static constexpr size_t MaxWordBytes = 8",
+        "using LineRefs = std::array<WordRef, MaxLineWords>",
+        "std::vector<std::array<uint8_t, MaxWordBytes>> payload",
+        "releaseMasked(LineRefs &refs, uint16_t mask)",
+    ),
 }
-SOURCE_DEFAULTS = {"response_slots": 8, "combine_slots": 16, "index_lines": 1}
+SOURCE_DEFAULTS = {
+    "response_slots": 8,
+    "combine_slots": 16,
+    "combine_words": 0,
+    "index_lines": 1,
+}
 CONSUMER_EXPERIMENT = {
     "response_slots": 96,
     "combine_slots": 384,
+    "combine_words": 4096,
     "index_lines": 4,
 }
 RUNTIME_LOGICAL_SLOTS_PER_MAA = 2
 RUNTIME_PAGE_ELEMENTS = 2048
 FP64_BYTES = 8
 PACKED_PRIVATE_METADATA_LOWER_BOUND_BYTES = 1309
+MAX_COMBINE_WORD_BYTES = 8
+MAX_COMBINE_LINE_WORDS = 16
+COMBINE_LINE_ADDRESS_BITS = 64
+COMBINE_VALID_MASK_BITS = 16
+COMBINE_SIMULATOR_REFERENCE_BITS = 32
+COMBINE_SIMULATOR_ALLOCATED_BITS = 8
+COMBINE_SIMULATOR_GENERATION_BITS = 32
 
 
 def checked_sources() -> list[str]:
@@ -89,8 +111,9 @@ def virtual_data_capacity(
     combine_slots: int,
     index_lines: int,
     indirect_units: int,
+    combine_words: int = 0,
 ) -> dict:
-    """Return explicit line-data capacity, excluding C++ metadata."""
+    """Return bounded payload and explicit metadata-bit estimates."""
     if any(
         value <= 0
         for value in (
@@ -103,13 +126,66 @@ def virtual_data_capacity(
         raise ValueError(
             "virtual capacities and indirect-units must be positive"
         )
-    generic_per_unit = (response_slots + combine_slots) * 64
+    if combine_words < 0:
+        raise ValueError("virtual combine words must be nonnegative")
+    effective_combine_words = combine_words or (
+        combine_slots * MAX_COMBINE_LINE_WORDS
+    )
+    combine_payload_bytes = effective_combine_words * MAX_COMBINE_WORD_BYTES
+    combine_ref_bits = max(1, (effective_combine_words - 1).bit_length())
+    combine_line_metadata_bits = (
+        1
+        + COMBINE_LINE_ADDRESS_BITS
+        + COMBINE_VALID_MASK_BITS
+        + MAX_COMBINE_LINE_WORDS * combine_ref_bits
+    )
+    combine_line_metadata_total_bits = (
+        combine_slots * combine_line_metadata_bits
+    )
+    # One explicit bounded free-stack implementation: one allocation bit and
+    # one pool-index stack entry per word, plus a [0,capacity] top pointer.
+    # This is a bit estimate, not a synthesized SRAM/periphery claim.
+    combine_allocator_metadata_bits = (
+        effective_combine_words * (1 + combine_ref_bits)
+        + (effective_combine_words + 1).bit_length()
+    )
+    generic_per_unit = response_slots * 64 + combine_payload_bytes
     direct_per_unit = generic_per_unit + index_lines * 64
     return {
         "response_slots": response_slots,
         "response_line_bytes_per_indirect_unit": response_slots * 64,
         "combiner_slots": combine_slots,
-        "combiner_line_bytes_per_indirect_unit": combine_slots * 64,
+        "combiner_configured_words": combine_words,
+        "combiner_effective_pool_words": effective_combine_words,
+        "combiner_max_word_bytes": MAX_COMBINE_WORD_BYTES,
+        "combiner_payload_pool_bits_per_indirect_unit": (
+            combine_payload_bytes * 8
+        ),
+        "combiner_payload_pool_bytes_per_indirect_unit": combine_payload_bytes,
+        "combiner_reference_bits": combine_ref_bits,
+        "combiner_line_metadata_bits_per_slot": combine_line_metadata_bits,
+        "combiner_line_metadata_bits_per_indirect_unit": (
+            combine_line_metadata_total_bits
+        ),
+        "combiner_free_stack_metadata_bits_per_indirect_unit": (
+            combine_allocator_metadata_bits
+        ),
+        "combiner_simulator_reference_array_bits_per_slot": (
+            MAX_COMBINE_LINE_WORDS * COMBINE_SIMULATOR_REFERENCE_BITS
+        ),
+        "combiner_simulator_reference_array_bits_per_indirect_unit": (
+            combine_slots
+            * MAX_COMBINE_LINE_WORDS
+            * COMBINE_SIMULATOR_REFERENCE_BITS
+        ),
+        "combiner_simulator_pool_bookkeeping_bits_per_indirect_unit": (
+            effective_combine_words
+            * (
+                COMBINE_SIMULATOR_ALLOCATED_BITS
+                + COMBINE_SIMULATOR_GENERATION_BITS
+                + COMBINE_SIMULATOR_REFERENCE_BITS
+            )
+        ),
         "generic_virtual_data_bytes_per_indirect_unit": generic_per_unit,
         "generic_virtual_data_bytes_all_indirect_units": generic_per_unit
         * indirect_units,
@@ -130,6 +206,7 @@ def ledger(
     index_lines: int = 1,
     indirect_units: int = 4,
     maas: int = 4,
+    combine_words: int = 0,
 ) -> dict:
     if cores <= 0 or tiles_per_core <= 0 or maas <= 0:
         raise ValueError("cores, tiles-per-core, and MAAs must be positive")
@@ -144,7 +221,11 @@ def ledger(
     transparent_payload_total = visible_physical_spd + private_payload_total
     native_payload_total = tiles * native16
     selected_virtual = virtual_data_capacity(
-        response_slots, combine_slots, index_lines, indirect_units
+        response_slots,
+        combine_slots,
+        index_lines,
+        indirect_units,
+        combine_words,
     )
     return {
         "source_checked": checked_sources(),
@@ -199,8 +280,14 @@ def ledger(
             "caveat": (
                 "The index window is map-backed DirectIndexWord entries, not a "
                 "64-byte C++ array.  64 B/line is the bounded 16xuint32_t data "
-                "capacity; map/node bytes and packed-response vector allocation "
-                "are not synthesized-bit counts."
+                "capacity.  Combiner payload uses 8-byte maximum-width pool "
+                "words; "
+                "combiner metadata values are explicit bit estimates, not "
+                "synthesized area.  Map/node bytes, packed-response vector "
+                "allocation, vector control/capacity, C++ padding, SRAM "
+                "periphery, ports, and wiring are excluded.  Separate "
+                "simulator fields report the explicit uint32_t reference, "
+                "uint8_t allocation, and uint32_t generation/free-list data."
             ),
         },
         "named_virtual_points": {
@@ -227,6 +314,11 @@ def ledger(
             "row_table": "Entry is Addr + int + int, plus valid and claimed bool arrays; Addr/int widths and padding are deliberately unresolved",
             "offset_table": "OffsetTableEntry is three int fields, plus bool valid and vector free list; int width/padding unresolved",
             "virtual_control": "tags, Addr/Tick/int fields, maps/sets/vectors, and their allocator overhead are not converted to hardware bits",
+            "virtual_combiner": (
+                "payload is effective useful words x 8-byte maximum width; "
+                "each line estimate is valid + 64-bit address + 16-bit mask + "
+                "16 bounded pool references"
+            ),
         },
         "simulator_only_or_not_hardware_bounded": [
             "SPD waiting_units_funcs and waiting_units_ids: vector contents grow with waiters",
@@ -245,6 +337,7 @@ def main() -> int:
     parser.add_argument("--tiles-per-core", type=int, default=8)
     parser.add_argument("--response-slots", type=int, default=8)
     parser.add_argument("--combine-slots", type=int, default=16)
+    parser.add_argument("--combine-words", type=int, default=0)
     parser.add_argument("--index-lines", type=int, default=1)
     parser.add_argument("--indirect-units", type=int, default=4)
     parser.add_argument("--maas", type=int, default=4)
@@ -258,6 +351,7 @@ def main() -> int:
         args.index_lines,
         args.indirect_units,
         args.maas,
+        args.combine_words,
     )
     text = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output:

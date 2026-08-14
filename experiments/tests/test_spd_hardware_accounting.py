@@ -80,10 +80,10 @@ class SpdHardwareAccountingTest(unittest.TestCase):
     def test_direct_has_one_more_cache_line_than_generic_virtual(self) -> None:
         virtual = MODULE.ledger(1, 1)["selected_virtual_data_capacity"]
         self.assertEqual(
-            virtual["generic_virtual_data_bytes_per_indirect_unit"], 1536
+            virtual["generic_virtual_data_bytes_per_indirect_unit"], 2560
         )
         self.assertEqual(
-            virtual["direct_virtual_data_bytes_per_indirect_unit"], 1600
+            virtual["direct_virtual_data_bytes_per_indirect_unit"], 2624
         )
 
     def test_consumer_experiment_totals_across_four_indirect_units(
@@ -96,10 +96,10 @@ class SpdHardwareAccountingTest(unittest.TestCase):
         self.assertEqual(consumer["combiner_slots"], 384)
         self.assertEqual(consumer["direct_index_lines"], 4)
         self.assertEqual(
-            consumer["direct_virtual_data_bytes_per_indirect_unit"], 30976
+            consumer["direct_virtual_data_bytes_per_indirect_unit"], 39168
         )
         self.assertEqual(
-            consumer["direct_virtual_data_bytes_all_indirect_units"], 123904
+            consumer["direct_virtual_data_bytes_all_indirect_units"], 156672
         )
 
     def test_selected_configuration_is_parameterized(self) -> None:
@@ -108,7 +108,53 @@ class SpdHardwareAccountingTest(unittest.TestCase):
         ]
         self.assertEqual(virtual["indirect_units"], 2)
         self.assertEqual(
-            virtual["direct_virtual_data_bytes_all_indirect_units"], 61952
+            virtual["direct_virtual_data_bytes_all_indirect_units"], 111104
+        )
+
+    def test_configured_combiner_payload_is_independent_of_line_tags(
+        self,
+    ) -> None:
+        points = [
+            MODULE.ledger(1, 1, combine_slots=slots, combine_words=4096)[
+                "selected_virtual_data_capacity"
+            ]
+            for slots in (512, 1024, 2048)
+        ]
+        self.assertEqual(
+            {
+                point["combiner_payload_pool_bytes_per_indirect_unit"]
+                for point in points
+            },
+            {32768},
+        )
+        self.assertEqual(
+            [
+                point["combiner_line_metadata_bits_per_indirect_unit"]
+                for point in points
+            ],
+            [139776, 279552, 559104],
+        )
+        self.assertEqual(
+            {point["combiner_reference_bits"] for point in points}, {12}
+        )
+        self.assertEqual(
+            [
+                point[
+                    "combiner_simulator_reference_array_bits_per_indirect_unit"
+                ]
+                for point in points
+            ],
+            [262144, 524288, 1048576],
+        )
+        self.assertEqual(
+            {
+                point[
+                    "combiner_simulator_pool_bookkeeping_bits_"
+                    "per_indirect_unit"
+                ]
+                for point in points
+            },
+            {294912},
         )
 
     def test_bad_topology_is_rejected(self) -> None:
