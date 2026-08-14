@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "arch/generic/mmu.hh"
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "mem/MAA/DirectRetirementPortRetry.hh"
@@ -19,17 +20,17 @@
 #include "mem/MAA/HybridConsumerContextQueue.hh"
 #include "mem/MAA/HybridMacroEventTracker.hh"
 #include "mem/MAA/IF.hh"
+#include "mem/MAA/InactiveProducerLinePayloadCapture.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/MAA/LogicalSPDCacheLiveAdapterState.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/packet.hh"
 #include "mem/packet_queue.hh"
 #include "mem/qport.hh"
-#include "mem/request.hh"
 #include "mem/ramulator2.hh"
+#include "mem/request.hh"
 #include "sim/clocked_object.hh"
 #include "sim/system.hh"
-#include "arch/generic/mmu.hh"
 
 #define ADDR_CHANNEL_LEVEL   0
 #define ADDR_RANK_LEVEL      1
@@ -412,6 +413,9 @@ public:
     unsigned int page_materialization_wakeup_batches;
     unsigned int page_materialization_fragment_buffers;
     bool page_materialization_direct_spd_fragments;
+    unsigned int inactive_page_payload_capture_lines;
+    InactiveProducerLinePayloadCapture::ConflictPolicy
+        inactive_page_payload_capture_conflict_policy;
     unsigned int num_regs;
     unsigned int num_instructions_per_core;
     unsigned int num_instructions_per_maa;
@@ -619,6 +623,8 @@ protected:
         std::bitset<MaxStagedLines> stagedDisallowed{};
         std::bitset<MaxStagedLines> stagedFallbackCounted{};
         uint16_t cacheReadFallbackLines = 0;
+        std::array<uint16_t, HybridConsumerPipeline::ProducerPages>
+            cacheReadFallbackLinesPerPage{};
         Addr backingAddress = 0;
         int backingRangeID = -1;
         ContextID contextID = InvalidContextID;
@@ -626,6 +632,16 @@ protected:
     };
     HybridConsumerContextQueue directRetirementContexts;
     EarlyProducerLineReadinessLedger directRetirementEarlyLineLedger;
+    InactiveProducerLinePayloadCapture inactiveProducerLinePayloadCapture;
+    struct InactivePayloadLookup
+    {
+        HybridConsumerContextQueue::Request request{};
+        InactiveProducerLinePayloadCapture::Key key{};
+        uint16_t line = 0;
+        uint64_t transactionID = 0;
+        InactiveProducerLinePayloadCapture::LookupPipeline timing{};
+    };
+    InactivePayloadLookup inactivePayloadLookup;
     std::array<DirectRetirementExecution,
                HybridConsumerContextQueue::ContextCount>
         directRetirementExecutions{};
@@ -748,6 +764,15 @@ protected:
     bool reservePageMaterializationDirectCommit(
         const HybridConsumerContextQueue::ContextKey &key, uint16_t line,
         Tick readyTick);
+    enum class InactivePayloadLookupStart : uint8_t
+    {
+        NotApplicable,
+        Started,
+        ReadPortBusy,
+    };
+    InactivePayloadLookupStart startInactiveProducerPayloadLookup(
+        const HybridConsumerContextQueue::Request &request);
+    bool consumeInactiveProducerPayload();
     bool pageMaterializerOwnsDestination(int maaID, int firstTile,
                                         int wordBytes) const;
     void scheduleDirectRetirementEvent(int latency = 0);
@@ -917,6 +942,25 @@ public:
         statistics::Scalar page_materialization_forwarded_lines;
         statistics::Scalar page_materialization_fragment_accumulated_lines;
         statistics::Scalar page_materialization_fragment_buffer_stalls;
+        statistics::Scalar page_materialization_inactive_payload_captures;
+        statistics::Scalar page_materialization_inactive_payload_replays;
+        statistics::Scalar page_materialization_inactive_payload_conflicts;
+        statistics::Scalar page_materialization_inactive_payload_drops;
+        statistics::Scalar
+            page_materialization_inactive_payload_first_owner_conflicts;
+        statistics::Scalar
+            page_materialization_inactive_payload_latest_owner_overwrites;
+        statistics::Scalar
+            page_materialization_inactive_payload_latest_owner_evictions;
+        statistics::Scalar
+            page_materialization_inactive_payload_write_port_stalls;
+        statistics::Scalar
+            page_materialization_inactive_payload_read_port_stalls;
+        statistics::Scalar page_materialization_inactive_payload_lookup_hits;
+        statistics::Scalar page_materialization_inactive_payload_lookup_misses;
+        statistics::Scalar page_materialization_inactive_payload_high_water;
+        statistics::Scalar page_materialization_inactive_payload_bytes;
+        statistics::Scalar page_materialization_inactive_payload_control_bytes;
         statistics::Scalar page_materialization_cache_read_fallback_lines;
         statistics::Scalar page_materialization_dispatch_fallbacks;
         statistics::Scalar page_materialization_admission_fallbacks;
