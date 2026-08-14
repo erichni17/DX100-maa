@@ -461,6 +461,7 @@ public:
     unsigned int soa_jit_active_contexts;
     unsigned int soa_jit_value_lookahead;
     bool soa_jit_value_cache_enable;
+    bool soa_jit_pre_a_value_lookahead;
     unsigned int soa_jit_value_prefetch_credits;
     unsigned int soa_jit_active_value_owners;
     unsigned int soa_jit_apply_lanes;
@@ -1153,6 +1154,10 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitLookaheadResponses;
         std::vector<statistics::Scalar *> IND_SoaJitLookaheadStalls;
         std::vector<statistics::Scalar *> IND_SoaJitLookaheadHighWater;
+        std::vector<statistics::Scalar *> IND_SoaJitPreAValueIssues;
+        std::vector<statistics::Scalar *>
+            IND_SoaJitPreAValueReadyAtAResponse;
+        std::vector<statistics::Scalar *> IND_SoaJitPreAValueUses;
         std::vector<statistics::Scalar *> IND_SoaJitActiveContexts;
         std::vector<statistics::Scalar *> IND_SoaJitActiveValueOwners;
         std::vector<statistics::Scalar *> IND_SoaJitActiveApplyLanes;

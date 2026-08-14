@@ -293,6 +293,7 @@ public:
                   int _soa_jit_active_contexts,
                   int _soa_jit_value_lookahead,
                   bool _soa_jit_value_cache_enable,
+                  bool _soa_jit_pre_a_value_lookahead,
                   int _soa_jit_value_prefetch_credits,
                   int _soa_jit_active_value_owners,
                   int _soa_jit_apply_lanes,
@@ -549,6 +550,7 @@ protected:
         int issueOffset = -1;
         int remaining = 0;
         uint8_t lookaheadOccupancy = 0;
+        uint8_t preAUsesPending = 0;
         SoaJitContextState state = SoaJitContextState::Free;
     };
     static_assert(sizeof(SoaJitContext) <= 512,
@@ -572,6 +574,7 @@ protected:
     int soa_jit_active_contexts = 1;
     int soa_jit_value_lookahead = 1;
     bool soa_jit_value_cache_enable = false;
+    bool soa_jit_pre_a_value_lookahead = false;
     int soa_jit_value_prefetch_credits = 0;
     int soa_jit_active_value_owners = 4;
     SoaJitValuePrefetchCursor soa_jit_value_prefetch_cursor;
@@ -611,6 +614,9 @@ protected:
     uint64_t soa_jit_lookahead_responses = 0;
     uint64_t soa_jit_lookahead_stalls = 0;
     uint64_t soa_jit_lookahead_high_water = 0;
+    uint64_t soa_jit_pre_a_value_issues = 0;
+    uint64_t soa_jit_pre_a_value_ready_at_a_response = 0;
+    uint64_t soa_jit_pre_a_value_uses = 0;
     uint64_t soa_jit_aliases_applied = 0;
     uint64_t soa_jit_apply_lane_high_water = 0;
     uint64_t soa_jit_a_write_issues = 0;

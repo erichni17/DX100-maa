@@ -209,6 +209,11 @@ class MAA(ClockedObject):
         False,
         "Retain ready lines in the fixed 128-owner SoA/JIT value pool",
     )
+    soa_jit_pre_a_value_lookahead = Param.Bool(
+        False,
+        "Issue exact ordered SoA/JIT value lookahead while the claimed "
+        "A-line read is outstanding",
+    )
     soa_jit_value_prefetch_credits = Param.Unsigned(
         0,
         "Active sequential SoA/JIT value-line prefetch credits "
