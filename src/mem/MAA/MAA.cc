@@ -1797,10 +1797,12 @@ MAA::submitDirectRetirementDescriptor(InstructionPtr instruction)
         panic_if(!directRetirementEarlyLineLedger.clear(early_key),
                  "Direct retirement did not consume its early-line ledger "
                  "slot\n");
-        (void)inactiveProducerLinePayloadCapture.clear(
+        const auto payloadClear = inactiveProducerLinePayloadCapture.clear(
             {early_key.tokenTile, early_key.generation,
              virtualPagePayloadIncarnation[early_key.tokenTile],
              early_key.backingAddress});
+        stats.page_materialization_inactive_payload_drops +=
+            payloadClear.discardedLines;
         stats.direct_retirement_producer_line_acks +=
             early_replay.readyLines;
     }
@@ -2262,10 +2264,12 @@ MAA::finishDirectRetirement(
              "Direct-retirement scheduler did not retire after final ACK\n");
     (void)directRetirementEarlyLineLedger.clear(
         {key.tokenTile, key.generation, execution->backingAddress});
-    (void)inactiveProducerLinePayloadCapture.clear(
+    const auto payloadClear = inactiveProducerLinePayloadCapture.clear(
         {key.tokenTile, key.generation,
          virtualPagePayloadIncarnation[key.tokenTile],
          execution->backingAddress});
+    stats.page_materialization_inactive_payload_drops +=
+        payloadClear.discardedLines;
     *execution = DirectRetirementExecution{};
     setTileReady(completion_tile, word_bytes);
     DPRINTF(MAAVirtualTrace,
@@ -2947,7 +2951,10 @@ MAA::finishPageMaterialization(
              "Page materializer could not retire its 16K lifetime\n");
         (void)directRetirementEarlyLineLedger.clear(
             {key.tokenTile, key.generation, execution->backingAddress});
-        (void)inactiveProducerLinePayloadCapture.clear(payloadKey);
+        const auto payloadClear =
+            inactiveProducerLinePayloadCapture.clear(payloadKey);
+        stats.page_materialization_inactive_payload_drops +=
+            payloadClear.discardedLines;
         *execution = PageMaterializationExecution{};
         stats.page_materialization_retirements++;
         DPRINTF(MAAVirtualTrace,
@@ -4526,11 +4533,13 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
             {oldMaterialization->key.tokenTile,
              oldMaterialization->key.generation,
              oldMaterialization->backingAddress});
-        (void)inactiveProducerLinePayloadCapture.clear(
+        const auto payloadClear = inactiveProducerLinePayloadCapture.clear(
             {oldMaterialization->key.tokenTile,
              oldMaterialization->key.generation,
              virtualPagePayloadIncarnation[tokenTileID],
              oldMaterialization->backingAddress});
+        stats.page_materialization_inactive_payload_drops +=
+            payloadClear.discardedLines;
         *oldMaterialization = PageMaterializationExecution{};
     }
     const int firstReadyID = num_tiles + tokenTileID * MaxVirtualPages;
