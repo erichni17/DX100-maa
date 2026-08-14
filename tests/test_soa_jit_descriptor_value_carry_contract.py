@@ -77,6 +77,15 @@ def test_request_uses_carried_bits_in_existing_chain_order():
     assert "offset_table->consume_entry(context.nextOffset)" in apply
 
 
+def test_fill_value_stall_precedes_predicate_accounting():
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    fill = source[source.index("void IndirectAccessUnit::fillRowTable") :]
+    carried = fill.index("readSoaJitCarriedValue(logical_itr, carried_value)")
+    predicate = fill.index("soaPredicateValue(logical_itr)")
+    selected = fill.index("soa_jit_selected++")
+    assert carried < predicate < selected
+
+
 def test_micro_is_shared_checkpoint_exact_two_rep_control_treatment():
     runner = read(
         "experiments/scripts/run_soa_jit_descriptor_value_carry_micro.sh"

@@ -3473,17 +3473,16 @@ void IndirectAccessUnit::fillRowTable(
         if (my_cond_tile != -1) {
             num_spd_read_condidx_accesses++;
         }
-        const bool condition_taken = isSoaJitRmw()
-            ? soaPredicateValue(logical_itr)
-            : (my_cond_tile == -1 ||
-               maa->spd->getData<uint32_t>(my_cond_tile, logical_itr) != 0);
         uint64_t carried_value = 0;
         if (isSoaJitRmw() && soa_jit_descriptor_value_carry &&
-            condition_taken &&
             !readSoaJitCarriedValue(logical_itr, carried_value)) {
             waitForElement = true;
             break;
         }
+        const bool condition_taken = isSoaJitRmw()
+            ? soaPredicateValue(logical_itr)
+            : (my_cond_tile == -1 ||
+               maa->spd->getData<uint32_t>(my_cond_tile, logical_itr) != 0);
         if (isSoaJitRmw()) {
             if (condition_taken)
                 soa_jit_selected++;
