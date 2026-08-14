@@ -10,6 +10,7 @@ class BackedRmwContractTest(unittest.TestCase):
         cls.hh = (ROOT / "src/mem/MAA/IndirectAccess.hh").read_text()
         cls.cc = (ROOT / "src/mem/MAA/IndirectAccess.cc").read_text()
         cls.cpu_side = (ROOT / "src/mem/MAA/CpuSidePort.cc").read_text()
+        cls.tables = (ROOT / "src/mem/MAA/Tables.cc").read_text()
         cls.api = (ROOT / "benchmarks/API/MAA_gem5.hpp").read_text()
         cls.bench = (
             ROOT / "benchmarks/API/test_backed_rmw_reorder.cpp"
@@ -57,6 +58,7 @@ class BackedRmwContractTest(unittest.TestCase):
         self.assertIn("BackedRmwAReadSlot", self.hh)
         self.assertIn("a_read_control_bytes", self.cc)
         self.assertIn("backed RMW A-read scoreboard", self.cc)
+        self.assertIn("if ((isVirtualLoad() || isBackedRmw()) &&", self.cc)
         self.assertIn(
             "entries = offset_table->get_entry_recv(read_slot->head)",
             self.cc,
@@ -82,6 +84,13 @@ class BackedRmwContractTest(unittest.TestCase):
         self.assertIn("run_arm native4 native 4096 4096 32", self.runner)
         self.assertIn("run_arm backed16meta backed 4096 16384 64", self.runner)
         self.assertIn("run_arm backed4diag backed 4096 4096 32", self.runner)
+        self.assertIn(
+            "--maa_virtual_index_filter_words_per_cycle=64", self.runner
+        )
+        self.assertIn("--maa_virtual_partition_keep_combiner", self.runner)
+        self.assertIn("--maa_virtual_grow_order", self.runner)
+        self.assertIn("UINT32_MAX is the predicate-rejection", self.tables)
+        self.assertIn("static_cast<int32_t>(key)", self.tables)
         self.assertIn("output_hash", self.runner)
         self.assertIn("simTicks", self.runner)
 

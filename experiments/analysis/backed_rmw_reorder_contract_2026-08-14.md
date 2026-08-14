@@ -65,3 +65,34 @@ is not an application-speedup claim. GZP is intentionally unwired until this
 API path is correct; a future first GZP RMW may read sequential
 index/value/predicate arrays directly, whereas a second dependent RMW must pay
 a modeled computed-value spill/materialization cost.
+
+## Primary correctness checkpoint
+
+Published commit `142de1eac038822fcaa98820d06d1f671de66076` passed the
+primary API oracle in
+`evidence/backed_rmw_full16k_142de1ea`. Native16, native4, and backed16meta
+all reported generation 7, zero errors, and output hash
+`0xd1f648d95a481cb`. Their exact first-ROI `simTicks` values were 16,657,547,
+25,572,413, and 866,646,294 respectively. These are mechanism measurements,
+not application-speedup evidence.
+
+The backed16meta terminal event reported `logical=16384`,
+`metadata_scope=full16k`, `selected=applied=13107`,
+`record_publication_bytes=524288`, `record_line_reads=21299`,
+`record_read_bytes=1363136`, descriptor write/read bytes of zero,
+`a_write_issues=a_write_acks=1024`, and generation-exact closure. The bounded
+A-read and A-write scoreboards each reached a high-water mark of two. The
+production gem5 binary SHA-256 was
+`bc29db00c3f3c766b9900fe4be7ab676ca0bced91787ebc76de0f19611eee816`;
+the backed/native4 guest SHA-256 was
+`ea54c61a4cd3ca8b182f33935682db8d83a998f9532779e7569e546b0e90881c`;
+and the Ramulator library SHA-256 was
+`76ea3a9c7467a5fc0dc04f2b5f083909c03e8b7280c1872046fc78edb2a15753`.
+
+The four-arm matrix is not complete evidence: the secondary backed4diag arm
+remains non-promotable follow-up. Its last run exposed a load-only partition
+transition after all 1,152 descriptor writes were ACKed but before replay
+reads. The guarded transition and the exact rejected-predicate summary-key
+round trip are repaired and compile/unit checked, but the diagnostic was not
+rerun to a passing terminal result. It must not gate use of the primary
+correctness oracle, and no diagnostic performance claim is supported.

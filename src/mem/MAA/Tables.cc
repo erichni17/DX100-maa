@@ -242,8 +242,9 @@ void OffsetTable::beginSummary() {
 bool OffsetTable::observeSummaryKey(uint32_t key) {
     panic_if(!summary_mode,
              "Offset Table summary observation outside summary phase\n");
-    panic_if(key > static_cast<uint32_t>(std::numeric_limits<int>::max()),
-             "Offset Table summary key %u exceeds signed storage\n", key);
+    // Summary keys are stored as raw 32-bit patterns in the phase-shared
+    // signed field. In particular, UINT32_MAX is the predicate-rejection
+    // bucket; forEachSummaryRecord casts it back to uint32_t exactly.
     const uint32_t start =
         (key * uint32_t(2654435761U)) % static_cast<uint32_t>(num_entries);
     for (int probe = 0; probe < num_entries; ++probe) {
@@ -251,14 +252,14 @@ bool OffsetTable::observeSummaryKey(uint32_t key) {
         const int slot = (start + probe) % num_entries;
         if (!entries_valid[slot]) {
             entries_valid[slot] = true;
-            entries[slot].itr = static_cast<int>(key);
+            entries[slot].itr = static_cast<int32_t>(key);
             entries[slot].wid = 1;
             entries[slot].next_itr = -1;
             summary_records++;
             summary_observations++;
             return true;
         }
-        if (entries[slot].itr == static_cast<int>(key)) {
+        if (entries[slot].itr == static_cast<int32_t>(key)) {
             panic_if(entries[slot].wid == std::numeric_limits<int>::max(),
                      "Offset Table summary count overflow for key %u\n", key);
             entries[slot].wid++;

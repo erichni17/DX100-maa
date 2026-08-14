@@ -3073,7 +3073,8 @@ void IndirectAccessUnit::fillRowTable(
                 needDrain = true;
                 break;
             }
-            if (isVirtualLoad() && isDirectIndexLoad() &&
+            if ((isVirtualLoad() || isBackedRmw()) &&
+                isDirectIndexLoad() &&
                 direct_index_partition + 1 < direct_index_partitions) {
                 panic_if(!direct_index_pending_lines.empty() ||
                              descriptorSpoolReadSlotsUsed() != 0 ||

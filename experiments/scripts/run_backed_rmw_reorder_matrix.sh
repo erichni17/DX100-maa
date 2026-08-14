@@ -71,6 +71,9 @@ run_arm() {
             --maa_virtual_index_range_passes
             --maa_virtual_index_range_policy=3
             --maa_virtual_index_descriptor_spool
+            --maa_virtual_index_filter_words_per_cycle=64
+            --maa_virtual_partition_keep_combiner
+            --maa_virtual_grow_order
             --maa_virtual_descriptor_spool_read_credits=4
             --maa_virtual_descriptor_spool_write_credits=16
         )
