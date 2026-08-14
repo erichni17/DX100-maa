@@ -97,6 +97,7 @@ def test_runner_requires_same_checkpoint_exact_runtime_ledger(tmp_path: Path):
         '"IND_CyclesRequest"',
         '"masked_index_compare_bits"',
         '"predicate_publications_avoided"',
+        'predicate_lines_avoided != int(baseline["predicate_lines"])',
         '"incremental_buffer_bytes": 0',
         'EXPECTED_FULL_HASH = "11225737641199706160"',
     ):

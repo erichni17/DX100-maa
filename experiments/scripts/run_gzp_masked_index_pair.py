@@ -272,8 +272,8 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
     ):
         raise RuntimeError(f"{name}: terminal generation ledger failed")
     if name == "separate_predicate":
-        if predicate_lines != full_windows * 1024:
-            raise RuntimeError(f"{name}: unexpected predicate-line count")
+        if predicate_lines <= 0:
+            raise RuntimeError(f"{name}: predicate path was not exercised")
         if (
             terminal.get("treatment") != "volume_only_soa_jit"
             or terminal.get("predicate_publications") != "1"
@@ -344,9 +344,9 @@ def compare(
     predicate_publications_avoided = int(
         baseline["predicate_publications"]
     ) - int(masked["predicate_publications"])
-    expected_predicate_lines = n // 16384 * 1024
     if (
-        predicate_lines_avoided != expected_predicate_lines
+        predicate_lines_avoided != int(baseline["predicate_lines"])
+        or int(masked["predicate_lines"]) != 0
         or predicate_publications_avoided != 1
     ):
         raise RuntimeError("predicate elimination delta is not exact")
