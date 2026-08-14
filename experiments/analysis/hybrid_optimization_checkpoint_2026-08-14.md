@@ -127,6 +127,13 @@ logical-window-sized value array.
 A separate 4K-Row/Offset result may still be reported as a fully bounded
 diagnostic, but it is not the primary hybrid optimization arm.
 
+The backed-RMW API is also an instruction-path change because it can consume
+arrays without first staging them in SPD. Performance attribution therefore
+requires four controls: ordinary native16, ordinary native4, backed RMW with
+16K metadata/16K physical SPD, and the identical backed RMW with 16K
+metadata/4K physical SPD. Only the last pair isolates virtualization overhead.
+Ordinary-to-backed comparisons measure the separate API/staging change.
+
 ## Promotion status
 
 The API experiment establishes optimized gather feasibility. GZP is exact but
