@@ -127,6 +127,7 @@ class HybridConsumerPipeline
     {
         Blocked,
         ReadyForRead,
+        DirectMaterializeInFlight,
         ReadInFlight,
         ReadyForCompute,
         ComputeInFlight,
@@ -749,6 +750,7 @@ class HybridConsumerPipeline
             const LineState phase = linePhases[line];
             if (phase != LineState::Blocked &&
                 phase != LineState::ReadyForRead &&
+                phase != LineState::DirectMaterializeInFlight &&
                 phase != LineState::Done &&
                 !owners[line])
                 return false;
@@ -839,7 +841,7 @@ class HybridConsumerPipeline
             activeMaterializationPage >= ProducerPages ||
             line >= lineCount() ||
             producerPage(line) != activeMaterializationPage ||
-            linePhases[line] != LineState::ReadyForRead)
+            linePhases[line] != LineState::DirectMaterializeInFlight)
             return false;
         const uint8_t page = activeMaterializationPage;
         linePhases[line] = LineState::Done;
@@ -852,6 +854,18 @@ class HybridConsumerPipeline
         }
         if (completedLines == lineCount())
             state = State::Complete;
+        return assertInvariants();
+    }
+
+    bool beginMaterializeDirect(uint16_t line)
+    {
+        if (desc.mode != Mode::MaterializePages ||
+            activeMaterializationPage >= ProducerPages ||
+            line >= lineCount() ||
+            producerPage(line) != activeMaterializationPage ||
+            linePhases[line] != LineState::ReadyForRead)
+            return false;
+        linePhases[line] = LineState::DirectMaterializeInFlight;
         return assertInvariants();
     }
 

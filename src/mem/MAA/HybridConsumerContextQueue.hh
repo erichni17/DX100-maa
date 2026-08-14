@@ -290,6 +290,14 @@ class HybridConsumerContextQueue
             assertInvariants();
     }
 
+    bool beginMaterializeDirect(const ContextKey &key, uint16_t line)
+    {
+        Context *context = find(key);
+        return context != nullptr &&
+            context->pipeline.beginMaterializeDirect(line) &&
+            assertInvariants();
+    }
+
     uint16_t producerLineWordMask(const ContextKey &key, uint16_t line) const
     {
         const Context *context = find(key);
