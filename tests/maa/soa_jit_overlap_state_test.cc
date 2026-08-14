@@ -93,6 +93,38 @@ testFourFillsFifthMissRetryAndEviction()
 }
 
 void
+testSelectableOwnerPoolBoundsAndFailClosedConfiguration()
+{
+    SoaJitValueCoalescer state;
+    state.configure(true, 0, 8);
+    state.reset();
+    for (uint8_t index = 0; index < 8; ++index) {
+        CHECK(state.requestAlias(9, 0x3000 + 0x40 * index, index).result ==
+              SoaJitValueCoalescer::AliasResult::Fill);
+    }
+    CHECK(state.requestAlias(9, 0x4000, 8).result ==
+          SoaJitValueCoalescer::AliasResult::Stall);
+    CHECK(state.activeOwnerCount() == 8);
+    CHECK(state.assertInvariants());
+
+    state.configure(true, 0, 32);
+    state.reset();
+    for (uint8_t index = 0; index < 32; ++index) {
+        CHECK(state.requestAlias(10, 0x5000 + 0x40 * index, index).result ==
+              SoaJitValueCoalescer::AliasResult::Fill);
+    }
+    CHECK(state.cacheOccupancy() == 32);
+    CHECK(state.activeOwnerCount() == 32);
+    CHECK(state.assertInvariants());
+
+    state.configure(true, 0, 5);
+    state.reset();
+    CHECK(!state.assertInvariants());
+    CHECK(state.requestAlias(11, 0x7000, 0).result ==
+          SoaJitValueCoalescer::AliasResult::Stall);
+}
+
+void
 testReadyHitMergeAndOneDeliveryPerContextCycle()
 {
     SoaJitValueCoalescer state;
@@ -208,6 +240,7 @@ main()
 {
     testEightContextsShareOneFill();
     testFourFillsFifthMissRetryAndEviction();
+    testSelectableOwnerPoolBoundsAndFailClosedConfiguration();
     testReadyHitMergeAndOneDeliveryPerContextCycle();
     testPrefetchAndAliasShareOneOwner();
     testFailClosedResponseIdentity();

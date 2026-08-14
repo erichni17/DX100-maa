@@ -293,6 +293,7 @@ public:
                   int _soa_jit_active_contexts,
                   int _soa_jit_value_lookahead,
                   bool _soa_jit_value_cache_enable,
+                  int _soa_jit_active_value_owners,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
@@ -560,6 +561,7 @@ protected:
     int soa_jit_active_contexts = 1;
     int soa_jit_value_lookahead = 1;
     bool soa_jit_value_cache_enable = false;
+    int soa_jit_active_value_owners = 4;
     struct SoaJitApplyArbiter
     {
         Tick lastTick = 0;

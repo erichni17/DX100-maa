@@ -121,6 +121,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
                                   int _soa_jit_active_contexts,
                                   int _soa_jit_value_lookahead,
                                   bool _soa_jit_value_cache_enable,
+                                  int _soa_jit_active_value_owners,
                                   Cycles _rowtable_latency,
                                   int _num_channels,
                                   int _num_cores,
@@ -216,7 +217,14 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     soa_jit_active_contexts = _soa_jit_active_contexts;
     soa_jit_value_lookahead = _soa_jit_value_lookahead;
     soa_jit_value_cache_enable = _soa_jit_value_cache_enable;
-    soa_jit_value_coalescer.configure(soa_jit_value_cache_enable, 0);
+    panic_if(!SoaJitValueCoalescer::isValidActiveOwnerCount(
+                 _soa_jit_active_value_owners),
+             "I[%d] SoA/JIT active value owners (%d) must be 4, 8, 16, "
+             "or 32\\n",
+             my_indirect_id, _soa_jit_active_value_owners);
+    soa_jit_active_value_owners = _soa_jit_active_value_owners;
+    soa_jit_value_coalescer.configure(soa_jit_value_cache_enable, 0,
+                                      soa_jit_active_value_owners);
     rowtable_latency = _rowtable_latency;
     num_channels = _num_channels;
     num_cores = _num_cores;
@@ -4595,7 +4603,7 @@ void IndirectAccessUnit::checkSoaJitTerminal()
                  soa_jit_context_high_water >
                      static_cast<uint64_t>(soa_jit_active_contexts) ||
                  soa_jit_value_cache_high_water >
-                     SoaJitValueCoalescer::CacheLines ||
+                     static_cast<uint64_t>(soa_jit_active_value_owners) ||
                  soa_jit_lookahead_high_water >
                      static_cast<uint64_t>(soa_jit_active_contexts *
                                            soa_jit_value_lookahead) ||
@@ -4936,7 +4944,7 @@ void IndirectAccessUnit::executeInstruction() {
         for (auto &context : soa_jit_contexts)
             context = SoaJitContext();
         soa_jit_value_coalescer.configure(
-            soa_jit_value_cache_enable, 0);
+            soa_jit_value_cache_enable, 0, soa_jit_active_value_owners);
         soa_jit_value_coalescer.reset();
         soa_jit_apply_arbiter = SoaJitApplyArbiter();
         soa_jit_all_rows_claimed = false;
@@ -6068,6 +6076,8 @@ void IndirectAccessUnit::executeInstruction() {
                 soa_jit_lookahead_high_water;
             (*maa->stats.IND_SoaJitActiveContexts[my_indirect_id]) +=
                 soa_jit_active_contexts;
+            (*maa->stats.IND_SoaJitActiveValueOwners[my_indirect_id]) +=
+                soa_jit_active_value_owners;
             (*maa->stats.IND_SoaJitAliasesApplied[my_indirect_id]) +=
                 soa_jit_aliases_applied;
             (*maa->stats.IND_SoaJitAWriteIssues[my_indirect_id]) +=
@@ -6095,7 +6105,8 @@ void IndirectAccessUnit::executeInstruction() {
                     "lookahead_stalls=%lu "
                     "a_writes=%lu/%lu context_hwm=%lu stalls=%lu "
                     "active_contexts=%d active_lookahead=%d "
-                    "cache_enable=%d apply_lanes=1 cache_lines=%lu "
+                    "cache_enable=%d apply_lanes=1 active_value_owners=%d "
+                    "max_value_owners=%lu "
                     "context_slots=%lu "
                     "lookahead_slots_per_context=%lu "
                     "terminal=1\n",
@@ -6135,7 +6146,8 @@ void IndirectAccessUnit::executeInstruction() {
                     soa_jit_active_contexts,
                     soa_jit_value_lookahead,
                     soa_jit_value_cache_enable,
-                    SoaJitValueCoalescer::CacheLines,
+                    soa_jit_active_value_owners,
+                    SoaJitValueCoalescer::MaxOwners,
                     SoaJitContexts,
                     SoaJitValueCoalescer::MaxLookahead);
             constexpr size_t fixed_context_bytes = sizeof(SoaJitContext);
@@ -6153,8 +6165,9 @@ void IndirectAccessUnit::executeInstruction() {
                     "operation_tick=%lu generation=%lu "
                     "fixed_context_bytes=%lu fixed_contexts=8 "
                     "fixed_contexts_bytes=%lu "
-                    "fixed_value_owner_lines=4 "
+                    "max_physical_value_owner_lines=%lu "
                     "fixed_value_owner_bytes=%lu "
+                    "fixed_value_owner_payload_bytes=%lu "
                     "fixed_apply_lanes=1 "
                     "fixed_apply_arbiter_bytes=%lu "
                     "existing_predicate_lines=1 "
@@ -6163,10 +6176,15 @@ void IndirectAccessUnit::executeInstruction() {
                     "index_word_bytes=%lu index_active_data_tag_bytes=%lu "
                     "incremental_overlap_bytes=%lu "
                     "active_contexts=%d active_lookahead=%d "
+                    "active_value_owners=%d "
+                    "active_value_owner_payload_bytes=%lu "
                     "cache_enable=%d\n",
                     my_indirect_id, my_decode_start_tick,
                     soa_jit_generation, fixed_context_bytes,
-                    fixed_contexts_bytes, fixed_value_owner_bytes,
+                    fixed_contexts_bytes, SoaJitValueCoalescer::MaxOwners,
+                    fixed_value_owner_bytes,
+                    SoaJitValueCoalescer::MaxOwners *
+                        SoaJitValueCoalescer::LineBytes,
                     fixed_apply_arbiter_bytes,
                     sizeof(SoaPredicateLine),
                     direct_index_buffer_lines, my_words_per_cl,
@@ -6175,6 +6193,9 @@ void IndirectAccessUnit::executeInstruction() {
                         direct_index_buffer_lines,
                     incremental_overlap_bytes,
                     soa_jit_active_contexts, soa_jit_value_lookahead,
+                    soa_jit_active_value_owners,
+                    static_cast<size_t>(soa_jit_active_value_owners) *
+                        SoaJitValueCoalescer::LineBytes,
                     soa_jit_value_cache_enable);
         }
         if (maa->virtual_bounded_global_merge) {

@@ -14,7 +14,8 @@ namespace gem5
 /**
  * Fixed hardware state shared by SoA/JIT demand-value reads and the
  * sequential value-stream prefetcher.  Every physical line has exactly one
- * owner: either a four-line cache fill or one of eight payload-free prefetch
+ * owner: either an active value-owner fill or one of eight payload-free
+ * prefetch
  * credits.  Alias waiters may attach to either owner, but attaching to a
  * prefetch owner first reserves a cache line for the eventual response.
  */
@@ -22,7 +23,10 @@ class SoaJitValueCoalescer
 {
   public:
     static constexpr size_t LineBytes = 64;
-    static constexpr size_t CacheLines = 4;
+    // All 32 owners are physically provisioned.  A run may activate exactly
+    // 4, 8, 16, or 32 owners; inactive entries are never eligible for a fill.
+    static constexpr size_t MaxOwners = 32;
+    static constexpr size_t CacheLines = MaxOwners;
     static constexpr size_t MaxPrefetchCredits = 8;
     static constexpr size_t MaxContexts = 8;
     static constexpr size_t MaxLookahead = 8;
@@ -105,10 +109,18 @@ class SoaJitValueCoalescer
         uint64_t vaddr = 0;
     };
 
-    void configure(bool cache_enable, uint8_t prefetch_credits)
+    static constexpr bool isValidActiveOwnerCount(uint8_t count)
+    {
+        return count == 4 || count == 8 || count == 16 || count == 32;
+    }
+
+    void configure(bool cache_enable, uint8_t prefetch_credits,
+                   uint8_t active_owners = 4)
     {
         cacheEnabled = cache_enable;
         activePrefetchCredits = prefetch_credits;
+        activeOwnerLines = isValidActiveOwnerCount(active_owners)
+            ? active_owners : 0;
     }
 
     void reset()
@@ -348,6 +360,7 @@ class SoaJitValueCoalescer
     bool prefetchComplete() const { return prefetchCount() == 0; }
     size_t prefetchHwm() const { return prefetchHighWater; }
     size_t cacheHwm() const { return cacheHighWater; }
+    size_t activeOwnerCount() const { return activeOwnerLines; }
     const std::array<CacheLine, CacheLines> &cacheLines() const
     {
         return cache;
@@ -360,11 +373,14 @@ class SoaJitValueCoalescer
 
     bool assertInvariants() const
     {
-        if (activePrefetchCredits > MaxPrefetchCredits ||
+        if (!isValidActiveOwnerCount(activeOwnerLines) ||
+            activePrefetchCredits > MaxPrefetchCredits ||
             prefetchCount() > activePrefetchCredits)
             return false;
         for (size_t first = 0; first < cache.size(); ++first) {
             const auto &line = cache[first];
+            if (first >= activeOwnerLines && line.state != LineState::Free)
+                return false;
             if (line.state == LineState::Free) {
                 if (line.generation != 0 || line.paddr != 0 ||
                     line.waiterMask != 0 || line.prefetchOwned)
@@ -420,6 +436,7 @@ class SoaJitValueCoalescer
     std::array<PrefetchCredit, MaxPrefetchCredits> prefetch{};
     bool cacheEnabled = false;
     uint8_t activePrefetchCredits = 0;
+    uint8_t activeOwnerLines = 4;
     uint64_t lruClock = 1;
     bool deliveryCycleValid = false;
     uint64_t lastDeliveryCycle = 0;
@@ -443,17 +460,18 @@ class SoaJitValueCoalescer
 
     CacheLine *chooseVictim(bool &evicted)
     {
-        auto free = std::find_if(cache.begin(), cache.end(),
+        auto active_end = cache.begin() + activeOwnerLines;
+        auto free = std::find_if(cache.begin(), active_end,
             [](const CacheLine &line) {
                 return line.state == LineState::Free;
             });
-        if (free != cache.end()) {
+        if (free != active_end) {
             evicted = false;
             return &*free;
         }
-        auto victim = cache.end();
+        auto victim = active_end;
         uint64_t oldest = std::numeric_limits<uint64_t>::max();
-        for (auto candidate = cache.begin(); candidate != cache.end();
+        for (auto candidate = cache.begin(); candidate != active_end;
              ++candidate) {
             if (candidate->state != LineState::Ready ||
                 candidate->waiterMask != 0 || candidate->lru >= oldest)
@@ -461,8 +479,8 @@ class SoaJitValueCoalescer
             oldest = candidate->lru;
             victim = candidate;
         }
-        evicted = victim != cache.end();
-        return victim == cache.end() ? nullptr : &*victim;
+        evicted = victim != active_end;
+        return victim == active_end ? nullptr : &*victim;
     }
 
     void updateCacheHighWater()

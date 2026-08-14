@@ -165,13 +165,19 @@ def test_overlap_runner_has_explicit_serial_and_optimized_treatments():
     assert "run_native ordinary_native16" in runner
     assert "run_native ordinary_native4" in runner
     assert "run_soa soa_serial_physical16 16384 1 1 1 0" in runner
-    assert "run_soa baseline_c1_i1_l1_v0 4096 1 1 1 0" in runner
-    assert "run_soa lookahead4_c1_i8_l4_v4 4096 1 8 4 1" in runner
-    assert "run_soa lookahead8_c1_i8_l8_v4 4096 1 8 8 1" in runner
-    assert "run_soa combined_c8_i8_l8_v4 4096 8 8 8 1" in runner
+    assert '--maa_soa_jit_active_value_owners="$owners"' in runner
+    assert "run_soa baseline_c1_i1_l1_v4 4096 1 1 1 0 4" in runner
+    assert "run_soa lookahead4_c1_i8_l4_v4 4096 1 8 4 1 4" in runner
+    assert "run_soa lookahead8_c1_i8_l8_v4 4096 1 8 8 1 4" in runner
+    assert "run_soa combined_c8_i8_l8_v4 4096 8 8 8 1 4" in runner
+    for owners in (8, 16, 32):
+        assert (
+            f"run_soa combined_c8_i8_l8_v{owners} 4096 8 8 8 1 {owners}"
+            in runner
+        )
     assert "fixed_context_slots=8" in runner
     assert "fixed_lookahead_slots_per_context=8" in runner
-    assert "fixed_value_cache_lines=4" in runner
+    assert "fixed_value_owner_pool_lines=32" in runner
     assert "fixed_apply_lanes=1" in runner
     assert "IND_SoaJitValueFills" in runner
     assert "IND_SoaJitValueMergedWaiters" in runner
@@ -187,12 +193,30 @@ def test_storage_ledger_separates_fixed_provision_from_active_knobs():
     for field in (
         "fixed_context_bytes",
         "fixed_contexts_bytes",
+        "max_physical_value_owner_lines",
         "fixed_value_owner_bytes",
+        "fixed_value_owner_payload_bytes",
         "fixed_apply_arbiter_bytes",
         "existing_predicate_feeder_bytes",
         "index_active_data_tag_bytes",
         "incremental_overlap_bytes",
         "active_contexts",
         "active_lookahead",
+        "active_value_owners",
+        "active_value_owner_payload_bytes",
     ):
         assert field in storage
+
+
+def test_value_owner_pool_plumbing_restricts_runtime_selection():
+    state = read("src/mem/MAA/SoaJitOverlapState.hh")
+    options = read("configs/common/Options.py")
+    simobject = read("src/mem/MAA/MAA.py")
+    config = read("configs/common/MAAConfig.py")
+    assert "MaxOwners = 32" in state
+    assert "count == 4 || count == 8 || count == 16 || count == 32" in state
+    assert "activeOwnerLines" in state
+    assert '"--maa_soa_jit_active_value_owners"' in options
+    assert "choices=(4, 8, 16, 32)" in options
+    assert "soa_jit_active_value_owners = Param.Unsigned" in simobject
+    assert 'opts["soa_jit_active_value_owners"]' in config

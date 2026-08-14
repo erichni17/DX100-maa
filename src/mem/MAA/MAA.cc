@@ -185,6 +185,7 @@ MAA::MAA(const MAAParams &p)
       soa_jit_active_contexts(p.soa_jit_active_contexts),
       soa_jit_value_lookahead(p.soa_jit_value_lookahead),
       soa_jit_value_cache_enable(p.soa_jit_value_cache_enable),
+      soa_jit_active_value_owners(p.soa_jit_active_value_owners),
       virtual_partition_keep_combiner(p.virtual_partition_keep_combiner),
       virtual_grow_order(p.virtual_grow_order),
       virtual_native_issue_order(p.virtual_native_issue_order),
@@ -663,6 +664,7 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         soa_jit_active_contexts,
                                         soa_jit_value_lookahead,
                                         soa_jit_value_cache_enable,
+                                        soa_jit_active_value_owners,
                                         rowtable_latency,
                                         num_channels,
                                         num_cores,
@@ -6460,6 +6462,10 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitActiveContexts"),
             statistics::units::Count::get(),
             "sum of configured active contexts for completed instructions"));
+        IND_SoaJitActiveValueOwners.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitActiveValueOwners"),
+            statistics::units::Count::get(),
+            "sum of selected active value owners for completed instructions"));
         IND_SoaJitAliasesApplied.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAliasesApplied"),
             statistics::units::Count::get(),

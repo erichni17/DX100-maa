@@ -206,7 +206,12 @@ class MAA(ClockedObject):
     )
     soa_jit_value_cache_enable = Param.Bool(
         False,
-        "Retain ready lines in the fixed four-entry SoA/JIT value cache",
+        "Retain ready lines in the fixed 32-owner SoA/JIT value pool",
+    )
+    soa_jit_active_value_owners = Param.Unsigned(
+        4,
+        "Active SoA/JIT value owners (4, 8, 16, or 32; "
+        "physical maximum is 32)",
     )
     virtual_partition_keep_combiner = Param.Bool(
         False,
