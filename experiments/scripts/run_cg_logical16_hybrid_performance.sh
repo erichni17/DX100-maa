@@ -152,7 +152,8 @@ declare -A ticks fingerprints terminals configs selected value_issues a_read_iss
 
 run_arm() {
     local arm=$1 replica=$2
-    local name="${arm}_r${replica}" run="$out/runs/$name"
+    local name="${arm}_r${replica}"
+    local run="$out/runs/$name"
     local -a command=("$gem5" --outdir="$run" "${common[@]}")
     [[ $arm == control ]] || command+=("${treatment_flags[@]}")
     mkdir -p "$run"

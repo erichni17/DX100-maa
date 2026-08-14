@@ -88,6 +88,14 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             'for pid in "${pids[@]}"; do wait "$pid"; done', self.runner
         )
 
+    def test_run_directory_does_not_expand_an_unbound_local(self):
+        self.assertIn('local name="${arm}_r${replica}"\n', self.runner)
+        self.assertIn('local run="$out/runs/$name"\n', self.runner)
+        self.assertNotIn(
+            'local name="${arm}_r${replica}" run="$out/runs/$name"',
+            self.runner,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
