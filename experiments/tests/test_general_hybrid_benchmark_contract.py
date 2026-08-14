@@ -27,10 +27,17 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self, root: Path, arms: list[dict[str, object]], replicas: int = 1
     ) -> tuple[list[dict[str, object]], Path, dict[str, dict[str, object]]]:
         checkpoints = root / "checkpoints"
-        for group in {str(arm["checkpoint_group"]) for arm in arms}:
+        groups = {str(arm["checkpoint_group"]): arm for arm in arms}
+        for group, arm in groups.items():
             checkpoint = checkpoints / group / "gem5"
             checkpoint.mkdir(parents=True)
             (checkpoint / "checkpoint.bin").write_text(group, encoding="utf-8")
+            if arm["selector"] is not None:
+                selector = checkpoints / group / "treatment.txt"
+                selector.write_text(
+                    str(arm["selector"]) + "\n", encoding="utf-8"
+                )
+                selector.chmod(0o444)
         identities = {
             group: runner.tree_identity(checkpoints / group / "gem5")
             for group in {str(arm["checkpoint_group"]) for arm in arms}
@@ -84,7 +91,13 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            {arm["checkpoint_group"] for arm in arms[2:]}, {"hybrid"}
+            {arm["checkpoint_group"] for arm in arms[2:]},
+            {
+                "hybrid_stream_control",
+                "hybrid_page_gated",
+                "hybrid_token_stream_ld",
+                "hybrid_token_stream_ld_pingpong",
+            },
         )
 
     def test_non_api_pingpong_fails_closed(self) -> None:
@@ -99,7 +112,7 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(native16["name"], "native16")
         self.assertEqual(native16["profile"], "native16")
         self.assertEqual(native16["binary"], "hybrid")
-        self.assertEqual(native16["checkpoint_group"], "hybrid")
+        self.assertEqual(native16["checkpoint_group"], "hybrid_native16")
         self.assertEqual(native16["selector"], "native_direct 16384")
         self.assertEqual(
             {
@@ -107,7 +120,12 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
                 for arm in arms
                 if arm["name"] != "native4"
             },
-            {"hybrid"},
+            {
+                "hybrid_native16",
+                "hybrid_stream_control",
+                "hybrid_page_gated",
+                "hybrid_token_stream_ld",
+            },
         )
         with self.assertRaisesRegex(ValueError, "only by the API"):
             runner.share_api_native16_hybrid_checkpoint(
@@ -303,7 +321,7 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             selector_paths = [
                 Path(job["selector_path"]) for job in hybrid_jobs
             ]
-            self.assertEqual(len(selector_paths), len(set(selector_paths)))
+            self.assertEqual(len(set(selector_paths)), 3)
             self.assertFalse((root / "treatment.txt").exists())
             for job, path in zip(hybrid_jobs, selector_paths):
                 self.assertEqual(
@@ -322,6 +340,28 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
                 runner.restore_job_metadata(jobs),
                 runner.restore_job_metadata(jobs),
             )
+
+    def test_checkpoint_argv_and_restores_share_one_immutable_selector(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arm = runner.make_arms("api", True, False, [])[2]
+            group_dir = root / "checkpoints" / str(arm["checkpoint_group"])
+            group_dir.mkdir(parents=True)
+            options = runner.checkpoint_options_for_arm(
+                arm,
+                group_dir,
+                {"native16": "native16", "native4": "native4"},
+                "deferred {selector}",
+                [],
+            )
+            selector = group_dir / "treatment.txt"
+            self.assertEqual(options, f"deferred {selector.resolve()}")
+            self.assertEqual(
+                selector.read_text(encoding="utf-8"), "paged 4096\n"
+            )
+            self.assertFalse(selector.stat().st_mode & stat.S_IWUSR)
 
     def test_restore_jobs_bound_parallelism(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

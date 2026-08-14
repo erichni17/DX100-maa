@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Run provenance-frozen native16/native4/general-hybrid comparisons.
 
-Hybrid arms restore one deferred-treatment checkpoint.  The standard arms are
+Hybrid arms restore selector-specific deferred-treatment checkpoints. The
+guest reads its treatment path after the checkpoint, but gem5 restores the
+checkpointed argv rather than the restore command's argv. Consequently each
+immutable selector needs its own checkpoint path. The standard arms are
 the full-generation ordinary stream control, page-gated ordinary stream
 control, and the token-bound one-page STREAM_LD correctness control.  An API
 microbenchmark may additionally request the two-alternating-page control.
@@ -204,7 +207,7 @@ def make_arms(
                 "name": f"hybrid_{selector}",
                 "profile": "hybrid",
                 "binary": "hybrid",
-                "checkpoint_group": "hybrid",
+                "checkpoint_group": f"hybrid_{selector}",
                 "selector": selector_payload(workload, selector),
                 "role": role,
             }
@@ -221,7 +224,7 @@ def make_arms(
                 "name": f"hybrid_{selector}",
                 "profile": "hybrid",
                 "binary": "hybrid",
-                "checkpoint_group": "hybrid",
+                "checkpoint_group": f"hybrid_{selector}",
                 "selector": selector_payload(workload, selector),
                 "role": "token_stream_ld_page0_prearm_correctness_control",
             }
@@ -238,7 +241,7 @@ def make_arms(
                 "name": f"hybrid_{selector}",
                 "profile": "hybrid",
                 "binary": "hybrid",
-                "checkpoint_group": "hybrid",
+                "checkpoint_group": f"hybrid_{selector}",
                 "selector": selector_payload(workload, selector),
                 "role": "token_stream_ld_two_page_correctness_control",
             }
@@ -254,7 +257,7 @@ def make_arms(
                 "name": name,
                 "profile": "hybrid",
                 "binary": "hybrid",
-                "checkpoint_group": "hybrid",
+                "checkpoint_group": name,
                 "selector": selector_payload(workload, item["selector"]),
                 "role": "future_explicit_treatment",
             }
@@ -265,7 +268,12 @@ def make_arms(
 def share_api_native16_hybrid_checkpoint(
     workload: str, arms: list[dict[str, object]]
 ) -> list[dict[str, object]]:
-    """Use one deferred guest checkpoint for the API native16/hybrid pair."""
+    """Use the hybrid guest binary for the API native16 control.
+
+    The guest binary is shared, but the checkpoint cannot be: argv is part of
+    the checkpointed process state, so an immutable native16 selector requires
+    its own checkpoint path.
+    """
     if workload != "api":
         raise ValueError(
             "shared native16/hybrid checkpoint is supported only by the API"
@@ -279,7 +287,7 @@ def share_api_native16_hybrid_checkpoint(
     native16.update(
         {
             "binary": "hybrid",
-            "checkpoint_group": "hybrid",
+            "checkpoint_group": "hybrid_native16",
             "selector": "native_direct 16384",
         }
     )
@@ -501,6 +509,22 @@ def write_frozen_selector(run_dir: Path, selector: str) -> tuple[Path, str]:
     return path.resolve(), sha256_file(path)
 
 
+def checkpoint_options_for_arm(
+    arm: dict[str, object],
+    group_dir: Path,
+    native_options: dict[str, str],
+    hybrid_options: str,
+    frozen_inputs: list[Path],
+) -> str:
+    """Bind the guest's checkpointed argv to its immutable treatment."""
+    selector = arm["selector"]
+    binary_key = str(arm["binary"])
+    if selector is None:
+        return native_options[binary_key]
+    selector_path, _ = write_frozen_selector(group_dir, str(selector))
+    return render_options(hybrid_options, selector_path, frozen_inputs)
+
+
 def build_restore_jobs(
     arms: list[dict[str, object]],
     replicas: int,
@@ -518,7 +542,7 @@ def build_restore_jobs(
     extra_gem5_args: list[str],
     restore_arm_args: dict[str, list[str]],
 ) -> list[dict[str, object]]:
-    """Create ordered restore jobs with selector files unique to each run."""
+    """Create restore jobs bound to checkpointed immutable selectors."""
     jobs: list[dict[str, object]] = []
     for arm in arms:
         arm_name = str(arm["name"])
@@ -531,9 +555,16 @@ def build_restore_jobs(
             selector_path: Path | None = None
             selector_sha256: str | None = None
             if selector is not None:
-                selector_path, selector_sha256 = write_frozen_selector(
-                    run_dir, str(selector)
-                )
+                selector_path = (
+                    checkpoints
+                    / str(arm["checkpoint_group"])
+                    / "treatment.txt"
+                ).resolve()
+                if not selector_path.is_file():
+                    raise RuntimeError(
+                        f"checkpoint selector is missing: {selector_path}"
+                    )
+                selector_sha256 = sha256_file(selector_path)
                 options = render_options(
                     hybrid_options, selector_path, frozen_inputs
                 )
@@ -721,8 +752,8 @@ def parse_args() -> argparse.Namespace:
         "--shared-native16-hybrid-checkpoint",
         action="store_true",
         help=(
-            "API only: restore native16 and hybrid arms from one deferred "
-            "guest checkpoint to remove address-layout variation"
+            "API only: use the identical hybrid guest binary for native16; "
+            "treatments retain selector-specific immutable checkpoints"
         ),
     )
     parser.add_argument("--pingpong", action="store_true")
@@ -928,14 +959,6 @@ def main() -> int:
         "native4": render_options(args.native4_options, None, frozen_inputs),
     }
     checkpoint_options = dict(options)
-    if args.hybrid:
-        # The guest defers selector consumption until restore.  This distinct
-        # placeholder never becomes a mutable shared restore selector.
-        checkpoint_options["hybrid"] = render_options(
-            args.hybrid_options,
-            args.out / "checkpoints/hybrid/deferred_selector.txt",
-            frozen_inputs,
-        )
     artifact_identity = {
         name: {
             "path": str(path),
@@ -968,6 +991,7 @@ def main() -> int:
         "shared_native16_hybrid_checkpoint": (
             args.shared_native16_hybrid_checkpoint
         ),
+        "checkpoint_policy": "immutable_selector_specific_argv",
         "options": {
             **options,
             "hybrid_template": args.hybrid_options if args.hybrid else None,
@@ -1008,12 +1032,19 @@ def main() -> int:
             group_dir = args.out / "checkpoints" / group
             group_dir.mkdir(parents=True)
             binary_key = str(arm["binary"])
+            arm_checkpoint_options = checkpoint_options_for_arm(
+                arm,
+                group_dir,
+                checkpoint_options,
+                args.hybrid_options,
+                frozen_inputs,
+            )
             command = checkpoint_command(
                 frozen_artifacts["gem5"],
                 frozen_config,
                 group_dir / "gem5",
                 binaries[binary_key],
-                checkpoint_options[binary_key],
+                arm_checkpoint_options,
             )
             rc = run_logged(command, group_dir / "checkpoint.log", environment)
             if rc != 0:
