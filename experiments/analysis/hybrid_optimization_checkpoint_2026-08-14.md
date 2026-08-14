@@ -179,6 +179,23 @@ context stalls rise slightly from 33,282 to 34,522. This is a small micro gain;
 it is not promoted as an application setting until a full-workload gate shows
 the same direction.
 
+### Masked-index predicate elimination
+
+The full GZP pair at
+`/data1/nier/dx100-runs/2026-08-14-gzp-masked-index-full-a3d0bba5-r1`
+compares the separate-predicate volume RMW with an otherwise matched mode that
+classifies the existing `UINT32_MAX` index sentinel directly. Both arms exit
+zero with exact output hash `11225737641199706160`, the complete scalar
+reference, and matching selection/index ledgers. The masked arm reduces
+9,531,535,470 to 9,393,821,730 ticks, a **1.014660033x** speedup. It removes
+all 62,525 predicate-line reads and the separate 4,000,000-byte predicate
+publication; Fill cycles fall by 427,844 and request cycles by 98,925.
+
+The source-checked incremental hardware is one 32-bit sentinel comparison and
+one mode bit, with no predicate buffer. This is one exact application pair,
+not a repeated composition result. It must be measured together with pre-A and
+owner capacity before claiming a combined GZP gain.
+
 ## Promotion status
 
 The API experiment establishes optimized gather feasibility. GZP is exact but
