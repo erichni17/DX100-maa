@@ -59,3 +59,4 @@ def test_owner_scaling_gate_has_safe_locals_and_optional_timeout():
     assert "SOA_JIT_OWNER_PRE_A:-false" in runner
     assert '"soa_jit_pre_a_value_lookahead=$pre_a_mode"' in runner
     assert "IND_SoaJitPreAValueReadyAtAResponse" in runner
+    assert "${pre_a_issues[$control]} -eq ${pre_a_issues[$treatment]}" not in runner

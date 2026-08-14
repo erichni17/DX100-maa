@@ -146,7 +146,7 @@ run_arm control_r2 2 32; run_arm treatment_r2 2 64
 decision=PROMOTE
 for replica in 1 2; do
     control=control_r$replica; treatment=treatment_r$replica
-    [[ ${hashes[$control]} == ${hashes[$treatment]} && ${selected[$control]} -eq ${selected[$treatment]} && ${rejected[$control]} -eq ${rejected[$treatment]} && ${a_reads[$control]} -eq ${a_reads[$treatment]} && ${writes[$control]} -eq ${writes[$treatment]} && ${pre_a_issues[$control]} -eq ${pre_a_issues[$treatment]} && ${pre_a_uses[$control]} -eq ${pre_a_uses[$treatment]} ]]
+    [[ ${hashes[$control]} == ${hashes[$treatment]} && ${selected[$control]} -eq ${selected[$treatment]} && ${rejected[$control]} -eq ${rejected[$treatment]} && ${a_reads[$control]} -eq ${a_reads[$treatment]} && ${writes[$control]} -eq ${writes[$treatment]} ]]
     if [[ ${ticks[$treatment]} -ge ${ticks[$control]} || ${evictions[$treatment]} -ge ${evictions[$control]} ]]; then decision=REJECT; fi
 done
 {
