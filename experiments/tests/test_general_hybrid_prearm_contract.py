@@ -19,21 +19,21 @@ SPEC.loader.exec_module(analyzer)
 
 
 class GeneralHybridPrearmContractTest(unittest.TestCase):
-    def test_trace_classifies_one_dormant_page_zero_prearm(self) -> None:
+    def test_trace_classifies_one_nonblocking_page_zero_prearm(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             trace = Path(temporary) / "virtual_trace.log"
             trace.write_text(
                 "event=page_materialization_prearm schema=1 occurrence=7 "
                 "token=3 base=0x1000 range=2 minimum=0 maximum=4096 "
                 "stride=1 producer_opcode=virtual_gather marker=dual_token\n"
-                "event=page_materialization_activation_retry schema=1 "
-                "occurrence=8 token=3 reason=producer_unregistered "
-                "activation_count=0\n",
+                "event=page_materialization_prearm_activate schema=1 "
+                "occurrence=8 token=3 generation=1 destination=4\n",
                 encoding="utf-8",
             )
             report, contexts = analyzer.materializer_trace(trace)
         self.assertEqual(report["materializer_prearms"], 1)
-        self.assertEqual(report["materializer_activation_retries"], 1)
+        self.assertEqual(report["materializer_prearm_activations"], 1)
+        self.assertEqual(report["materializer_activation_retries"], 0)
         self.assertEqual(contexts, {})
 
 

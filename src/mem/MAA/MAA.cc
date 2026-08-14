@@ -449,6 +449,8 @@ void MAA::init() {
 }
 
 MAA::~MAA() {
+    for (PendingPageZeroPrearm &pending : pendingPageZeroPrearms)
+        delete pending.instruction;
     for (auto &[paddr, packets] : my_deferred_pkt_map) {
         for (auto &deferred : packets)
             delete deferred.packet;
@@ -643,6 +645,12 @@ int MAA::core_addr(Addr addr) {
     return slice_lower_bits(addr, m_core_addr_bits);
 }
 bool MAA::allFuncUnitsIdle() {
+    if (std::any_of(
+            pendingPageZeroPrearms.begin(), pendingPageZeroPrearms.end(),
+            [](const PendingPageZeroPrearm &pending) {
+                return pending.instruction != nullptr;
+            }))
+        return false;
     if (directRetirementContexts.activeContexts() != 0)
         return false;
     if (invalidator->getState() != Invalidator::Status::Idle) {
@@ -1274,6 +1282,56 @@ MAA::pageMaterializerOwnsDestination(int maaID, int firstTile,
     return false;
 }
 
+bool
+MAA::queuePageZeroPrearm(InstructionPtr instruction)
+{
+    panic_if(!isPageZeroPrearmMaterialization(instruction) ||
+                 virtualPageGeneration[instruction->src1SpdID] != 0,
+             "Cannot queue an invalid or already-bound page-zero prearm\n");
+    for (const PendingPageZeroPrearm &pending : pendingPageZeroPrearms) {
+        panic_if(pending.instruction != nullptr &&
+                     pending.instruction->src1SpdID ==
+                         instruction->src1SpdID,
+                 "Duplicate page-zero prearm for token %d\n",
+                 instruction->src1SpdID);
+    }
+    for (PendingPageZeroPrearm &pending : pendingPageZeroPrearms) {
+        if (pending.instruction != nullptr)
+            continue;
+        pending.instruction = instruction;
+        return true;
+    }
+    return false;
+}
+
+void
+MAA::activatePendingPageZeroPrearms()
+{
+    for (PendingPageZeroPrearm &pending : pendingPageZeroPrearms) {
+        InstructionPtr instruction = pending.instruction;
+        if (instruction == nullptr ||
+            virtualPageGeneration[instruction->src1SpdID] == 0)
+            continue;
+        const PageMaterializationSubmit submitted =
+            submitPageMaterialization(instruction);
+        if (submitted == PageMaterializationSubmit::Retry)
+            continue;
+        panic_if(submitted != PageMaterializationSubmit::Accepted,
+                 "Bound page-zero prearm failed exact admission for token "
+                 "%d\n",
+                 instruction->src1SpdID);
+        DPRINTF(MAAVirtualTrace,
+                "event=page_materialization_prearm_activate schema=1 "
+                "occurrence=%lu token=%d generation=%lu destination=%d\n",
+                pageMaterializationTraceOccurrence++,
+                instruction->src1SpdID,
+                virtualPageGeneration[instruction->src1SpdID],
+                instruction->dst1SpdID);
+        delete instruction;
+        pending.instruction = nullptr;
+    }
+}
+
 MAA::PageMaterializationSubmit
 MAA::submitPageMaterialization(InstructionPtr instruction)
 {
@@ -1463,6 +1521,7 @@ MAA::submitPageMaterialization(InstructionPtr instruction)
     const uint64_t materializerControlBytes =
         HybridConsumerContextQueue::chargedControlBytes() +
         sizeof(pageMaterializationExecutions) +
+        sizeof(pendingPageZeroPrearms) +
         sizeof(pageMaterializationCommits) +
         sizeof(directRetirementRequestRecords) +
         DirectRetirementPortRetry<Packet>::chargedControlBytes() +
@@ -3480,6 +3539,14 @@ DrainState
 MAA::drain()
 {
     logicalSpdBridge->closeAdmission();
+    panic_if(std::any_of(
+                 pendingPageZeroPrearms.begin(),
+                 pendingPageZeroPrearms.end(),
+                 [](const PendingPageZeroPrearm &pending) {
+                     return pending.instruction != nullptr;
+                 }),
+             "MAA checkpoint/drain requested with a pending page-zero "
+             "prearm\n");
     panic_if(directRetirementContexts.activeContexts() != 0 ||
                  directRetirementRetryPackets.count() != 0 ||
                  directRetirementOutstandingRequestCount() != 0,
@@ -3494,6 +3561,13 @@ MAA::drain()
 void
 MAA::drainResume()
 {
+    panic_if(std::any_of(
+                 pendingPageZeroPrearms.begin(),
+                 pendingPageZeroPrearms.end(),
+                 [](const PendingPageZeroPrearm &pending) {
+                     return pending.instruction != nullptr;
+                 }),
+             "MAA drain resumed with a pending page-zero prearm\n");
     panic_if(directRetirementContexts.activeContexts() != 0 ||
                  directRetirementRetryPackets.count() != 0 ||
                  directRetirementOutstandingRequestCount() != 0,
@@ -3539,6 +3613,7 @@ void MAA::dispatchRegister() {
 }
 void MAA::dispatchInstruction() {
     DPRINTF(MAAController, "%s: dispatching instruction...!\n", __func__);
+    activatePendingPageZeroPrearms();
     assert(my_instruction_pkts.size() == my_instructions.size());
     assert(my_instruction_recvs.size() == my_instructions.size());
     assert(my_instruction_RIDs.size() == my_instructions.size());
@@ -3557,6 +3632,13 @@ void MAA::dispatchInstruction() {
             if (isTokenBoundPageMaterialization(instruction) || prearm) {
                 if (prearm &&
                     virtualPageGeneration[instruction->src1SpdID] == 0) {
+                    if (!queuePageZeroPrearm(instruction)) {
+                        ++pkt_it;
+                        ++recv_it;
+                        ++rid_it;
+                        ++instruction_it;
+                        continue;
+                    }
                     DPRINTF(MAAVirtualTrace,
                             "event=page_materialization_prearm schema=1 "
                             "occurrence=%lu token=%d base=0x%lx range=%d "
@@ -3567,6 +3649,17 @@ void MAA::dispatchInstruction() {
                             instruction->src1SpdID, instruction->baseAddr,
                             instruction->addrRangeID,
                             HybridConsumerPipeline::ProducerPageElements);
+                    pkt->makeTimingResponse();
+                    pkt->headerDelay = pkt->payloadDelay = 0;
+                    cpuSidePorts[0]->schedTimingResp(
+                        pkt, getClockEdge(Cycles(1)));
+                    pkt_it = my_instruction_pkts.erase(pkt_it);
+                    recv_it = my_instruction_recvs.erase(recv_it);
+                    rid_it = my_instruction_RIDs.erase(rid_it);
+                    instruction_it = my_instructions.erase(instruction_it);
+                    // Ownership moved to pendingPageZeroPrearms. The exact
+                    // producer registration below activates and deletes it.
+                    continue;
                 }
                 const PageMaterializationSubmit submitted =
                     submitPageMaterialization(instruction);
@@ -4017,6 +4110,10 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                 directRetirementEarlyLineLedger.activeSlots(),
                 EarlyProducerLineReadinessLedger::chargedTotalBytes());
     }
+    // This runs before the newly admitted producer can execute. It binds the
+    // already acknowledged prearm to the exact generation/backing metadata
+    // and starts page-zero forwarding without a CPU-side dependency cycle.
+    activatePendingPageZeroPrearms();
     // A token-bound page load may already be waiting in the CPU admission
     // queue. Registration changes its result from Retry to Accepted.
     scheduleDispatchInstructionEvent(1);

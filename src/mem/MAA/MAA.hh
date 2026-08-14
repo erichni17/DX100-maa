@@ -613,6 +613,16 @@ protected:
     std::array<PageMaterializationExecution,
                HybridConsumerContextQueue::ContextCount>
         pageMaterializationExecutions{};
+    struct PendingPageZeroPrearm
+    {
+        InstructionPtr instruction = nullptr;
+    };
+    // A prearm must acknowledge its MMIO request before the CPU can submit
+    // the producer. Keep that request in fixed hardware state until exact
+    // producer registration binds its generation and backing allocation.
+    std::array<PendingPageZeroPrearm,
+               HybridConsumerContextQueue::ContextCount>
+        pendingPageZeroPrearms{};
     // Direct-retirement packets bypass the generic OutstandingPacket payload
     // machinery because their storage is one of the fixed queue credits.
     // These finite records keep exact physical-address and full context-owner
@@ -661,6 +671,8 @@ protected:
     // explicit page-zero prearm ABI marker and binds it to a virtual producer
     // before it can enter the ordinary stream path.
     bool isPageZeroPrearmMaterialization(InstructionPtr instruction) const;
+    bool queuePageZeroPrearm(InstructionPtr instruction);
+    void activatePendingPageZeroPrearms();
     PageMaterializationSubmit submitPageMaterialization(
         InstructionPtr instruction);
     bool dispatchTransparentMicroOp(

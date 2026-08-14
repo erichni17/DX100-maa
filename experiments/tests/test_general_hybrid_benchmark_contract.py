@@ -259,8 +259,16 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             "rf->getData<int>(instruction->src1RegID) != 0",
             "virtualPageBackingAddr[instruction->src1SpdID]",
             "event=page_materialization_prearm schema=1",
+            "queuePageZeroPrearm",
+            "activatePendingPageZeroPrearms",
+            "event=page_materialization_prearm_activate schema=1",
         ):
             self.assertIn(marker, source)
+        queued = source.split("queuePageZeroPrearm(instruction)", 1)[1]
+        self.assertLess(
+            queued.index("pkt->makeTimingResponse()"),
+            queued.index("submitPageMaterialization(instruction)"),
+        )
         prearm, producer = guest.split("if (token_stream_ld_page0_prearm)", 1)[
             1
         ].split('if (mode == "paged_staged"', 1)
