@@ -21,6 +21,21 @@ def test_gzp_has_no_host_result_staging_loop() -> None:
     assert block.count("wait_ready(soa_") == 2
 
 
+def test_gzp_first_touches_publication_spans_before_checkpoint() -> None:
+    source = read("benchmarks/UME/gradzatp.cpp")
+    helper = source[
+        source.index("static void first_touch_soa_publication_buffers()") :
+        source.index("enum class GzpRmwTreatment")
+    ]
+    assert "volatile uint32_t *predicates" in helper
+    assert "volatile DATATYPE *values" in helper
+    assert helper.count("PageBytes / sizeof") == 2
+    main_tail = source[source.index("int main(int argc") :]
+    assert main_tail.index("first_touch_soa_publication_buffers();") < (
+        main_tail.index("alloc_MAA();")
+    )
+
+
 def test_publisher_accounting_includes_overlap() -> None:
     header = read("src/mem/MAA/MAA.hh")
     implementation = read("src/mem/MAA/StreamAccess.cc")

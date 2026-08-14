@@ -206,6 +206,25 @@ static_assert(sizeof(int) == sizeof(uint32_t),
 alignas(64) static uint32_t soa_predicates[NUM_CORES][TILE_SIZE];
 alignas(64) static DATATYPE soa_gradient_values[NUM_CORES][TILE_SIZE];
 
+static void first_touch_soa_publication_buffers() {
+    constexpr size_t PageBytes = 4096;
+    static_assert(PageBytes % sizeof(uint32_t) == 0,
+                  "predicate page stride must be integral");
+    static_assert(PageBytes % sizeof(DATATYPE) == 0,
+                  "value page stride must be integral");
+    for (int core = 0; core < NUM_CORES; ++core) {
+        volatile uint32_t *predicates = soa_predicates[core];
+        for (size_t element = 0; element < TILE_SIZE;
+             element += PageBytes / sizeof(uint32_t))
+            predicates[element] = 0;
+
+        volatile DATATYPE *values = soa_gradient_values[core];
+        for (size_t element = 0; element < TILE_SIZE;
+             element += PageBytes / sizeof(DATATYPE))
+            values[element] = DATATYPE{0};
+    }
+}
+
 enum class GzpRmwTreatment
 {
     Legacy4K,
@@ -981,6 +1000,12 @@ int main(int argc, char *argv[]) {
               << " immutable=1" << std::endl;
 #endif
 #endif
+#endif
+#ifdef UME_GZP_SOA_JIT_RMW
+    // gem5 SE allocates physical pages on first touch.  Fault each registered
+    // publication span serially before the checkpoint so the response router's
+    // explicitly checked contiguous physical span is deterministic.
+    first_touch_soa_publication_buffers();
 #endif
     alloc_MAA();
     init_MAA();
