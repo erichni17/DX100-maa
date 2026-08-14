@@ -32,7 +32,7 @@ def test_gzp_first_touches_publication_spans_before_checkpoint() -> None:
     assert helper.count("PageBytes / sizeof") == 2
     main_tail = source[source.index("int main(int argc") :]
     assert main_tail.index("first_touch_soa_publication_buffers();") < (
-        main_tail.index("alloc_MAA();")
+        main_tail.index("m5_checkpoint(0, 0);")
     )
 
 

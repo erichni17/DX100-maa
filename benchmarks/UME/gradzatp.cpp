@@ -953,6 +953,12 @@ int main(int argc, char *argv[]) {
 #if defined(UME_GATHER_VERIFY) || defined(UME_OUTPUT_FINGERPRINT)
     build_scalar_reference();
 #endif
+#ifdef UME_GZP_SOA_JIT_RMW
+    // gem5 SE allocates physical pages on first touch.  Fault each registered
+    // publication span serially before the checkpoint so the response router's
+    // explicitly checked contiguous physical span is deterministic.
+    first_touch_soa_publication_buffers();
+#endif
 
 #ifdef GEM5
     cout << "Starting checkpoint" << endl;
@@ -1000,12 +1006,6 @@ int main(int argc, char *argv[]) {
               << " immutable=1" << std::endl;
 #endif
 #endif
-#endif
-#ifdef UME_GZP_SOA_JIT_RMW
-    // gem5 SE allocates physical pages on first touch.  Fault each registered
-    // publication span serially before the checkpoint so the response router's
-    // explicitly checked contiguous physical span is deterministic.
-    first_touch_soa_publication_buffers();
 #endif
     alloc_MAA();
     init_MAA();
