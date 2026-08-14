@@ -759,7 +759,11 @@ static void conj_grad_maa(int colidx[],
     int t0, t1, t2, t3, t4, t5, t6, t7;
     int r1, r2, r3, r4, r5, r6, r7;
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
-    int page_min_reg, page_max_reg, page_stride_reg;
+    // The MAA scalar register file is shared by all four OpenMP issuers.
+    // The ordinary per-thread allocation consumes 7 * 4 = 28 registers;
+    // keep the three immutable page bounds shared so the general consumer
+    // uses 31 registers rather than allocating 40.
+    static int page_min_reg, page_max_reg, page_stride_reg;
 #endif
 
     int tid = omp_get_thread_num();
@@ -887,14 +891,19 @@ static void conj_grad_maa(int colidx[],
         r5 = get_new_reg<int>();
         r6 = get_new_reg<int>();
         r7 = get_new_reg<int>();
-#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
-        page_min_reg = get_new_reg<int>(0);
-        page_max_reg = get_new_reg<int>(MAA_CONSUMER_TILE_SIZE);
-        page_stride_reg = get_new_reg<int>(1);
-#endif
     }
 
 #pragma omp barrier
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+#pragma omp single
+    {
+        // These are read-only page-local bounds.  They must remain separate
+        // from r2/r3/r1 while a virtual producer owns that live range.
+        page_min_reg = get_new_reg<int>(0);
+        page_max_reg = get_new_reg<int>(MAA_CONSUMER_TILE_SIZE);
+        page_stride_reg = get_new_reg<int>(1);
+    }
+#endif
 
     /* the conj grad iteration loop */
     for (cgit = 1; cgit <= cgitmax; cgit++) {
@@ -1365,13 +1374,11 @@ static void conj_grad_maa(int colidx[],
                 maa_range_loop<int>(r6, r7, t2, t3, r1, t0, t1);
 
                 if (gather_size == TILE_SIZE) {
-                    maa_const<int>(0, r2);
-                    maa_const<int>(page_size, r3);
                     maa_virtual_consumer_load_page<float>(
                         virtual_consumer_mode,
                         virtual_gather_backing_for_thread(tid) + page_offset,
-                        t6, page_offset / MAA_CONSUMER_TILE_SIZE, r2, r3,
-                        r1, t4);
+                        t6, page_offset / MAA_CONSUMER_TILE_SIZE,
+                        page_min_reg, page_max_reg, page_stride_reg, t4);
                 } else {
                     const int page_base = k_base + page_offset;
                     maa_const<int>(page_base, r2);

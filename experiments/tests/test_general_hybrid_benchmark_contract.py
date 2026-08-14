@@ -267,6 +267,33 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
                 "maa_const<int>(page_size, page_max_reg)", general
             )
 
+    def test_cg_general_consumer_shares_immutable_page_bounds(self) -> None:
+        source = (ROOT / "benchmarks/NAS/cg/cg.cpp").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "static int page_min_reg, page_max_reg, page_stride_reg;",
+            source,
+        )
+        allocation = source.split("#pragma omp barrier", 1)[1].split(
+            "/* the conj grad iteration loop */", 1
+        )[0]
+        self.assertIn("#pragma omp single", allocation)
+        self.assertIn("page_min_reg = get_new_reg<int>(0);", allocation)
+        self.assertIn(
+            "page_max_reg = get_new_reg<int>(MAA_CONSUMER_TILE_SIZE);",
+            allocation,
+        )
+        self.assertIn("page_stride_reg = get_new_reg<int>(1);", allocation)
+
+        page_loads = source.split("maa_virtual_consumer_load_page<float>")[1:]
+        self.assertEqual(len(page_loads), 2)
+        for load in page_loads:
+            arguments = load.split(");", 1)[0]
+            self.assertIn(
+                "page_min_reg, page_max_reg, page_stride_reg", arguments
+            )
+
     def test_page_zero_prearm_is_explicit_and_exact(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
         guest = (
