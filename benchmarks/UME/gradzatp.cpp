@@ -375,7 +375,7 @@ void gradzatp_MAA() {
                 } else {
                     maa_stream_load<DATATYPE>(
                         virtual_gather_backing[omp_thread_id] + page_offset,
-                        page_min_reg, page_max_reg, page_stride_reg, tile0);
+                        reg0, reg1, reg2, tile0);
                 }
 #ifdef UME_GATHER_VERIFY
                 wait_ready(tile0);

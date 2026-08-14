@@ -431,6 +431,19 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
                 "page_min_reg, page_max_reg, page_stride_reg", arguments
             )
 
+    def test_ume_partial_tail_uses_local_page_bounds(self) -> None:
+        source = (ROOT / "benchmarks/UME/gradzatp.cpp").read_text(
+            encoding="utf-8"
+        )
+        fallback = source.split(
+            "} else {\n                    maa_stream_load<DATATYPE>(",
+            1,
+        )[1].split(");", 1)[0]
+        self.assertIn("reg0, reg1, reg2, tile0", fallback)
+        self.assertNotIn(
+            "page_min_reg, page_max_reg, page_stride_reg, tile0", fallback
+        )
+
     def test_page_zero_prearm_is_explicit_and_exact(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
         guest = (
