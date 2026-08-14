@@ -492,6 +492,16 @@ def addNoISAOptions(parser):
         help="Active SoA/JIT value owners; physical hardware maximum is 32",
     )
     parser.add_argument(
+        "--maa_soa_jit_apply_lanes",
+        type=int,
+        default=1,
+        choices=(1, 2, 4),
+        help=(
+            "Active independent SoA/JIT A-line apply lanes; "
+            "physical hardware maximum is four"
+        ),
+    )
+    parser.add_argument(
         "--maa_virtual_index_force_cache",
         action="store_true",
         help="Route direct virtual-index feeder reads through the cache hierarchy",

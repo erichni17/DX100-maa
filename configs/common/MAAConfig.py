@@ -210,6 +210,11 @@ def _get_maa_opts(options):
             options, "maa_soa_jit_active_value_owners"
         )
 
+    if hasattr(options, "maa_soa_jit_apply_lanes"):
+        opts["soa_jit_apply_lanes"] = getattr(
+            options, "maa_soa_jit_apply_lanes"
+        )
+
     if hasattr(options, "maa_virtual_index_force_cache"):
         opts["virtual_index_force_cache"] = getattr(
             options, "maa_virtual_index_force_cache"

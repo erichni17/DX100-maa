@@ -164,21 +164,28 @@ def test_overlap_runner_has_explicit_serial_and_optimized_treatments():
     assert '--maa_soa_jit_value_lookahead="$lookahead"' in runner
     assert "run_native ordinary_native16" in runner
     assert "run_native ordinary_native4" in runner
-    assert "run_soa soa_serial_physical16 16384 1 1 1 0" in runner
+    assert "run_soa soa_serial_physical16 16384 1 1 1 0 4 1" in runner
     assert '--maa_soa_jit_active_value_owners="$owners"' in runner
-    assert "run_soa baseline_c1_i1_l1_v4 4096 1 1 1 0 4" in runner
-    assert "run_soa lookahead4_c1_i8_l4_v4 4096 1 8 4 1 4" in runner
-    assert "run_soa lookahead8_c1_i8_l8_v4 4096 1 8 8 1 4" in runner
-    assert "run_soa combined_c8_i8_l8_v4 4096 8 8 8 1 4" in runner
+    assert "run_soa baseline_c1_i1_l1_v4 4096 1 1 1 0 4 1" in runner
+    assert "run_soa lookahead4_c1_i8_l4_v4 4096 1 8 4 1 4 1" in runner
+    assert "run_soa lookahead8_c1_i8_l8_v4 4096 1 8 8 1 4 1" in runner
+    assert "run_soa combined_c8_i8_l8_v4 4096 8 8 8 1 4 1" in runner
     for owners in (8, 16, 32):
         assert (
-            f"run_soa combined_c8_i8_l8_v{owners} 4096 8 8 8 1 {owners}"
+            f"run_soa combined_c8_i8_l8_v{owners} 4096 8 8 8 1 {owners} 1"
             in runner
         )
+    assert "run_soa apply2_c8_i8_l8_v32 4096 8 8 8 1 32 2" in runner
+    assert "run_soa apply4_c8_i8_l8_v32 4096 8 8 8 1 32 4" in runner
     assert "fixed_context_slots=8" in runner
     assert "fixed_lookahead_slots_per_context=8" in runner
     assert "fixed_value_owner_pool_lines=32" in runner
-    assert "fixed_apply_lanes=1" in runner
+    assert "fixed_apply_lanes=4" in runner
+    assert "default_active_apply_lanes=1" in runner
+    assert '--maa_soa_jit_apply_lanes="$lanes"' in runner
+    assert "IND_SoaJitActiveApplyLanes" in runner
+    assert "IND_SoaJitApplyLaneHighWater" in runner
+    assert "did not exercise independent same-cycle apply lanes" in runner
     assert "IND_SoaJitValueFills" in runner
     assert "IND_SoaJitValueMergedWaiters" in runner
     assert "IND_SoaJitLookaheadResponses" in runner
@@ -196,7 +203,8 @@ def test_storage_ledger_separates_fixed_provision_from_active_knobs():
         "max_physical_value_owner_lines",
         "fixed_value_owner_bytes",
         "fixed_value_owner_payload_bytes",
-        "fixed_apply_arbiter_bytes",
+        "fixed_apply_lane_owner_bytes",
+        "fixed_apply_lane_pool_bytes",
         "fixed_predicate_lines",
         "fixed_predicate_modeled_bytes",
         "fixed_predicate_host_bytes",
@@ -209,6 +217,8 @@ def test_storage_ledger_separates_fixed_provision_from_active_knobs():
         "active_lookahead",
         "active_value_owners",
         "active_value_owner_payload_bytes",
+        "active_apply_lanes",
+        "active_apply_lane_hwm",
     ):
         assert field in storage
 
@@ -225,3 +235,37 @@ def test_value_owner_pool_plumbing_restricts_runtime_selection():
     assert "choices=(4, 8, 16, 32)" in options
     assert "soa_jit_active_value_owners = Param.Unsigned" in simobject
     assert 'opts["soa_jit_active_value_owners"]' in config
+
+
+def test_apply_lane_pool_is_fixed_owned_ordered_and_fail_closed():
+    state = read("src/mem/MAA/SoaJitOverlapState.hh")
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    options = read("configs/common/Options.py")
+    simobject = read("src/mem/MAA/MAA.py")
+    config = read("configs/common/MAAConfig.py")
+
+    assert "class SoaJitApplyLanePool" in state
+    assert "MaxLanes = 4" in state
+    assert "count == 1 || count == 2 || count == 4" in state
+    assert "std::array<Owner, MaxLanes> owners" in state
+    assert "owners[lane].context == context" in state
+    assert "owners[lane].aPaddr == a_paddr" in state
+    assert "deliveriesThisCycle >= max_deliveries" in state
+
+    ordered = source[source.index("const size_t apply_start") :]
+    assert ordered.index(
+        "candidate.offset == context.nextOffset"
+    ) < ordered.index("soa_jit_apply_lane_pool.grant")
+    assert ordered.index("soa_jit_apply_lane_pool.grant") < ordered.index(
+        "offset_table->consume_entry(context.nextOffset)"
+    )
+    assert "!soa_jit_apply_lane_pool.assertInvariants()" in source
+    assert "AwaitAWriteResp" in source
+
+    assert '"--maa_soa_jit_apply_lanes"' in options
+    assert (
+        "default=1" in options[options.index('"--maa_soa_jit_apply_lanes"') :]
+    )
+    assert "choices=(1, 2, 4)" in options
+    assert "soa_jit_apply_lanes = Param.Unsigned" in simobject
+    assert 'opts["soa_jit_apply_lanes"]' in config

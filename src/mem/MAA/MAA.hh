@@ -462,6 +462,7 @@ public:
     unsigned int soa_jit_value_lookahead;
     bool soa_jit_value_cache_enable;
     unsigned int soa_jit_active_value_owners;
+    unsigned int soa_jit_apply_lanes;
     bool virtual_partition_keep_combiner;
     bool virtual_grow_order;
     bool virtual_native_issue_order;
@@ -1129,6 +1130,8 @@ public:
         std::vector<statistics::Scalar *> IND_SoaJitLookaheadHighWater;
         std::vector<statistics::Scalar *> IND_SoaJitActiveContexts;
         std::vector<statistics::Scalar *> IND_SoaJitActiveValueOwners;
+        std::vector<statistics::Scalar *> IND_SoaJitActiveApplyLanes;
+        std::vector<statistics::Scalar *> IND_SoaJitApplyLaneHighWater;
         std::vector<statistics::Scalar *> IND_SoaJitAliasesApplied;
         std::vector<statistics::Scalar *> IND_SoaJitAWriteIssues;
         std::vector<statistics::Scalar *> IND_SoaJitAWriteResponses;
