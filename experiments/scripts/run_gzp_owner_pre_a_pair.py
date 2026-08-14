@@ -256,6 +256,8 @@ def stat(stats: dict[str, int], suffix: str) -> int:
 
 
 TRACE_STAT = {
+    "IND_SoaJitSelected": "selected",
+    "IND_SoaJitPredicateRejected": "rejected",
     "IND_SoaJitAReadIssues": "a_reads_issue",
     "IND_SoaJitAReadResponses": "a_reads_response",
     "IND_SoaJitValueReadIssues": "value_reads_issue",
@@ -271,6 +273,9 @@ TRACE_STAT = {
     "IND_SoaJitAliasesApplied": "aliases",
     "IND_SoaJitAWriteIssues": "a_writes_issue",
     "IND_SoaJitAWriteResponses": "a_writes_response",
+    "IND_SoaJitValueEvictions": "evictions",
+    "IND_SoaJitValueStalls": "value_stalls",
+    "IND_SoaJitContextStalls": "context_stalls",
 }
 
 
@@ -293,6 +298,9 @@ def trace_rows(path: Path, owners: int) -> list[dict[str, int]]:
             "pre_a",
             "a_writes",
             "active_value_owners",
+            "evictions",
+            "value_stalls",
+            "stalls",
             "pre_a_enable",
             "terminal",
         )
@@ -320,7 +328,13 @@ def trace_rows(path: Path, owners: int) -> list[dict[str, int]]:
             raise RuntimeError(
                 "terminal trace does not close the logical 16K window"
             )
-        row: dict[str, int] = {"selected": int(event["selected"])}
+        row: dict[str, int] = {
+            "selected": int(event["selected"]),
+            "rejected": int(event["predicate_rejected"]),
+            "evictions": int(event["evictions"]),
+            "value_stalls": int(event["value_stalls"]),
+            "context_stalls": int(event["stalls"]),
+        }
         for key, value in (
             ("a_reads", event["a_reads"]),
             ("value_reads", event["value_reads"]),
@@ -430,6 +444,7 @@ def analyze_run(
         "simTicks": stat(stats, "simTicks"),
         "output_hash": output["output_hash"],
         "terminal_windows": len(trace),
+        "value_cache_hwm": stat(stats, "IND_SoaJitValueCacheHighWater"),
         **totals,
     }
 
@@ -572,10 +587,56 @@ def main() -> int:
             if (
                 len(arm_rows) != 2
                 or len({row["output_hash"] for row in arm_rows}) != 1
+                or len({row["simTicks"] for row in arm_rows}) != 1
             ):
                 raise RuntimeError(
                     f"{arm}: replicas do not close deterministically"
                 )
+        semantic_keys = (
+            "output_hash",
+            "terminal_windows",
+            "selected",
+            "rejected",
+            "deliveries",
+            "aliases",
+            "a_reads_issue",
+            "a_reads_response",
+            "a_writes_issue",
+            "a_writes_response",
+        )
+        comparisons = []
+        promote = True
+        for replica in REPLICAS:
+            control = next(
+                row
+                for row in rows
+                if row["arm"] == "owners-32" and row["replica"] == replica
+            )
+            treatment = next(
+                row
+                for row in rows
+                if row["arm"] == "owners-64" and row["replica"] == replica
+            )
+            if any(control[key] != treatment[key] for key in semantic_keys):
+                raise RuntimeError(
+                    f"{replica}: owner arms changed semantic work or A traffic"
+                )
+            wins = (
+                treatment["simTicks"] < control["simTicks"]
+                and treatment["evictions"] < control["evictions"]
+            )
+            promote &= wins
+            comparisons.append(
+                {
+                    "replica": replica,
+                    "control_simTicks": control["simTicks"],
+                    "treatment_simTicks": treatment["simTicks"],
+                    "speedup": control["simTicks"] / treatment["simTicks"],
+                    "control_evictions": control["evictions"],
+                    "treatment_evictions": treatment["evictions"],
+                    "wins": wins,
+                }
+            )
         matrix = {
             "rows": rows,
             "simulated_metric": "simTicks",
@@ -609,9 +670,14 @@ def main() -> int:
         atomic_json(
             args.outdir / "decision.json",
             {
-                "decision": "ACCEPT",
-                "reason": "both pre-A arms have two closed exact full-GZP replicas; only active value owner capacity differs",
+                "decision": "PROMOTE" if promote else "REJECT",
+                "reason": (
+                    "owner64 lowers simTicks and evictions in both exact replicas"
+                    if promote
+                    else "owner64 does not lower simTicks and evictions in both exact replicas"
+                ),
                 "treatment_delta": campaign_plan["treatment_delta"],
+                "comparisons": comparisons,
             },
         )
     except Exception as error:

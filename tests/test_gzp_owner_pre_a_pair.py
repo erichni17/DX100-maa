@@ -75,10 +75,10 @@ out = pathlib.Path(next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--
 owners = int(next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--maa_soa_jit_active_value_owners=')))
 out.mkdir(parents=True)
 selected = 10
-event = ('0: global: event=soa_jit_complete schema=2 unit=0 generation=1 logical=16384 selected=10 predicate_rejected=16374 predicate_mode=separate_array a_reads=7/7 value_reads=9/9 fills=9 cached=9 deliveries=10 aliases=10 lookahead=10/10 pre_a_enable=1 pre_a=8/5/8 a_writes=7/7 active_value_owners=%d max_value_owners=128 terminal=1\\n' % owners)
+event = ('0: global: event=soa_jit_complete schema=2 unit=0 generation=1 logical=16384 selected=10 predicate_rejected=16374 predicate_mode=separate_array a_reads=7/7 value_reads=9/9 fills=9 cached=9 deliveries=10 aliases=10 lookahead=10/10 pre_a_enable=1 pre_a=8/5/8 a_writes=7/7 evictions=%d value_stalls=20 stalls=30 active_value_owners=%d max_value_owners=128 terminal=1\\n' % (10 if owners == 32 else 5, owners))
 trace = event * 61
 (out / 'virtual_trace.log').write_text(trace)
-stats = {'simTicks': 123456, 'IND_SoaJitAReadIssues': 427, 'IND_SoaJitAReadResponses': 427, 'IND_SoaJitValueReadIssues': 549, 'IND_SoaJitValueReadResponses': 549, 'IND_SoaJitValueFills': 549, 'IND_SoaJitValueCachedResponses': 549, 'IND_SoaJitValueDeliveries': 610, 'IND_SoaJitLookaheadIssues': 610, 'IND_SoaJitLookaheadResponses': 610, 'IND_SoaJitPreAValueIssues': 488, 'IND_SoaJitPreAValueReadyAtAResponse': 305, 'IND_SoaJitPreAValueUses': 488, 'IND_SoaJitAliasesApplied': 610, 'IND_SoaJitAWriteIssues': 427, 'IND_SoaJitAWriteResponses': 427, 'IND_SoaJitTerminalCompletions': 61, 'IND_SoaJitActiveValueOwners': owners * 61}
+stats = {'simTicks': 123456 if owners == 32 else 120000, 'IND_SoaJitSelected': 610, 'IND_SoaJitPredicateRejected': 998814, 'IND_SoaJitAReadIssues': 427, 'IND_SoaJitAReadResponses': 427, 'IND_SoaJitValueReadIssues': 549, 'IND_SoaJitValueReadResponses': 549, 'IND_SoaJitValueFills': 549, 'IND_SoaJitValueCachedResponses': 549, 'IND_SoaJitValueDeliveries': 610, 'IND_SoaJitLookaheadIssues': 610, 'IND_SoaJitLookaheadResponses': 610, 'IND_SoaJitPreAValueIssues': 488, 'IND_SoaJitPreAValueReadyAtAResponse': 305, 'IND_SoaJitPreAValueUses': 488, 'IND_SoaJitAliasesApplied': 610, 'IND_SoaJitAWriteIssues': 427, 'IND_SoaJitAWriteResponses': 427, 'IND_SoaJitValueEvictions': (10 if owners == 32 else 5) * 61, 'IND_SoaJitValueStalls': 1220, 'IND_SoaJitContextStalls': 1830, 'IND_SoaJitValueCacheHighWater': owners * 61, 'IND_SoaJitTerminalCompletions': 61, 'IND_SoaJitActiveValueOwners': owners * 61}
 (out / 'stats.txt').write_text('---------- Begin Simulation Statistics ----------\\n' + ''.join('system.maa.I0_%s %d\\n' % pair for pair in stats.items()) + '---------- End Simulation Statistics   ----------\\n')
 print('UME_OUTPUT_FP output_hash=11225737641199706160 nonfinite=0')
 print('UME_REFERENCE_PASS point_volume_errors=0 point_gradient_errors=0 elements=1180000')
@@ -129,7 +129,8 @@ def test_execute_emits_exact_matrix_manifest_and_decision(
     assert runner.main() == 0
     out = tmp_path / "out"
     assert (
-        json.loads((out / "decision.json").read_text())["decision"] == "ACCEPT"
+        json.loads((out / "decision.json").read_text())["decision"]
+        == "PROMOTE"
     )
     matrix = json.loads((out / "matrix.json").read_text())["rows"]
     assert len(matrix) == 4
