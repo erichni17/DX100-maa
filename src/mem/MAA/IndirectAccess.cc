@@ -220,7 +220,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     panic_if(!SoaJitValueCoalescer::isValidActiveOwnerCount(
                  _soa_jit_active_value_owners),
              "I[%d] SoA/JIT active value owners (%d) must be 4, 8, 16, "
-             "or 32\\n",
+             "or 32\n",
              my_indirect_id, _soa_jit_active_value_owners);
     soa_jit_active_value_owners = _soa_jit_active_value_owners;
     soa_jit_value_coalescer.configure(soa_jit_value_cache_enable, 0,
@@ -6157,6 +6157,12 @@ void IndirectAccessUnit::executeInstruction() {
                 sizeof(SoaJitValueCoalescer);
             constexpr size_t fixed_apply_arbiter_bytes =
                 sizeof(SoaJitApplyArbiter);
+            constexpr size_t baseline_predicate_lines = 1;
+            constexpr size_t baseline_predicate_modeled_bytes =
+                baseline_predicate_lines * SoaPredicateLineStateBytes;
+            constexpr size_t incremental_predicate_modeled_bytes =
+                SoaPredicateFeederStateBytes -
+                baseline_predicate_modeled_bytes;
             constexpr size_t incremental_overlap_bytes =
                 fixed_contexts_bytes + fixed_value_owner_bytes +
                 fixed_apply_arbiter_bytes;
@@ -6170,8 +6176,13 @@ void IndirectAccessUnit::executeInstruction() {
                     "fixed_value_owner_payload_bytes=%lu "
                     "fixed_apply_lanes=1 "
                     "fixed_apply_arbiter_bytes=%lu "
-                    "existing_predicate_lines=1 "
-                    "existing_predicate_feeder_bytes=%lu "
+                    "fixed_predicate_lines=%lu "
+                    "fixed_predicate_modeled_bytes=%lu "
+                    "fixed_predicate_host_bytes=%lu "
+                    "baseline_predicate_lines=%lu "
+                    "baseline_predicate_modeled_bytes=%lu "
+                    "incremental_predicate_modeled_bytes=%lu "
+                    "predicate_active_credits=%d "
                     "index_active_lines=%d index_words_per_line=%d "
                     "index_word_bytes=%lu index_active_data_tag_bytes=%lu "
                     "incremental_overlap_bytes=%lu "
@@ -6186,7 +6197,13 @@ void IndirectAccessUnit::executeInstruction() {
                     SoaJitValueCoalescer::MaxOwners *
                         SoaJitValueCoalescer::LineBytes,
                     fixed_apply_arbiter_bytes,
-                    sizeof(SoaPredicateLine),
+                    SoaPredicateMaxLines,
+                    SoaPredicateFeederStateBytes,
+                    sizeof(soa_predicate_lines),
+                    baseline_predicate_lines,
+                    baseline_predicate_modeled_bytes,
+                    incremental_predicate_modeled_bytes,
+                    soa_jit_predicate_active_credits,
                     direct_index_buffer_lines, my_words_per_cl,
                     sizeof(DirectIndexWord),
                     sizeof(DirectIndexWord) * my_words_per_cl *

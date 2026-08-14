@@ -67,7 +67,8 @@ printf '%s\n' \
     'fixed_lookahead_slots_per_context=8' \
     'fixed_value_owner_pool_lines=32' \
     'fixed_apply_lanes=1' \
-    'active_predicate_lines=1' \
+    'fixed_predicate_lines=16' \
+    'default_active_predicate_credits=1' \
     'active_value_prefetch_credits=0' \
     'index_treatment_max_active_lines=8' \
     'index_feeder_is_pre_existing_dynamic_implementation_state=true' \
@@ -335,7 +336,7 @@ run_soa() {
     grep -Eq "event=soa_jit_complete .*active_value_owners=$owners " \
         "$run/soa_jit_trace.log"
     [[ $(grep -Ec \
-          "event=soa_jit_storage .*fixed_contexts=8 .*max_physical_value_owner_lines=32 .*active_value_owners=$owners .*fixed_apply_lanes=1 .*existing_predicate_lines=1 " \
+          "event=soa_jit_storage .*fixed_contexts=8 .*max_physical_value_owner_lines=32 .*active_value_owners=$owners .*fixed_apply_lanes=1 .*fixed_predicate_lines=16 .*predicate_active_credits=1 " \
           "$run/soa_jit_trace.log" || true) -eq 2 ]]
     grep -m1 'event=soa_jit_storage ' "$run/soa_jit_trace.log" \
         >"$run/storage_ledger.txt"
