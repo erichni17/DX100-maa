@@ -434,17 +434,19 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
             )
 
     def test_ume_partial_tail_uses_local_page_bounds(self) -> None:
-        source = (ROOT / "benchmarks/UME/gradzatp.cpp").read_text(
-            encoding="utf-8"
-        )
-        fallback = source.split(
-            "} else {\n                    maa_stream_load<DATATYPE>(",
-            1,
-        )[1].split(");", 1)[0]
-        self.assertIn("reg0, reg1, reg2, tile0", fallback)
-        self.assertNotIn(
-            "page_min_reg, page_max_reg, page_stride_reg, tile0", fallback
-        )
+        for relative, dst_tile in (
+            ("benchmarks/UME/gradzatp.cpp", "tile0"),
+            ("benchmarks/UME/gradzatz.cpp", "tile5"),
+        ):
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            tail = source.split(
+                "// The tail backing pointer is already page-relative.", 1
+            )[1].split("}", 1)[0]
+            self.assertIn("maa_const<int>(0, reg0)", tail, relative)
+            self.assertIn("maa_const<int>(page_size, reg1)", tail, relative)
+            self.assertIn(f"reg0, reg1, reg2, {dst_tile}", tail, relative)
+            self.assertNotIn("page_min_reg", tail, relative)
+            self.assertNotIn("page_max_reg", tail, relative)
 
     def test_page_zero_prearm_is_explicit_and_exact(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")

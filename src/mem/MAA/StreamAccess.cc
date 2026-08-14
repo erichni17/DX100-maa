@@ -552,8 +552,37 @@ Addr StreamAccessUnit::translatePacket(Addr vaddr) {
     return my_translated_addr;
 }
 void StreamAccessUnit::finish(const Fault &fault, const RequestPtr &req, ThreadContext *tc, BaseMMU::Mode mode) {
-    assert(fault == NoFault);
-    assert(my_translation_done == false);
+    if (fault != NoFault) {
+        const char *mode_name = "unknown";
+        switch (mode) {
+          case BaseMMU::Read:
+            mode_name = "read";
+            break;
+          case BaseMMU::Write:
+            mode_name = "write";
+            break;
+          case BaseMMU::Execute:
+            mode_name = "execute";
+            break;
+          default:
+            break;
+        }
+        panic("S[%d] StreamAccess translation fault: fault=%s mode=%s "
+              "vaddr=0x%lx size=%u cid=%d pc=0x%lx opcode=%s "
+              "base=0x%lx range=[0x%lx,0x%lx) indices=[%d,%d,%d)\n",
+              my_stream_id, fault->name(), mode_name, req->getVaddr(),
+              req->getSize(), my_instruction == nullptr ? -1 :
+                  my_instruction->CID, my_instruction == nullptr ? 0 :
+                  my_instruction->PC, my_instruction == nullptr ? "none" :
+                  my_instruction->opcode_names[
+                      static_cast<int>(my_instruction->opcode)].c_str(),
+              my_base_addr, my_min_addr, my_max_addr, my_min, my_max,
+              my_stride);
+    }
+    panic_if(my_translation_done,
+             "S[%d] StreamAccess duplicate translation completion for "
+             "vaddr=0x%lx\n",
+             my_stream_id, req->getVaddr());
     my_translation_done = true;
     my_translated_addr = req->getPaddr();
 }

@@ -373,6 +373,12 @@ void gradzatp_MAA() {
                         tile3, page_offset / MAA_CONSUMER_TILE_SIZE,
                         page_min_reg, page_max_reg, page_stride_reg, tile0);
                 } else {
+                    // The tail backing pointer is already page-relative.
+                    // Its ordinary STREAM_LD must therefore use local bounds;
+                    // keeping the logical c-based bounds would add page_offset
+                    // twice and translate beyond the registered 16K span.
+                    maa_const<int>(0, reg0);
+                    maa_const<int>(page_size, reg1);
                     maa_stream_load<DATATYPE>(
                         virtual_gather_backing[omp_thread_id] + page_offset,
                         reg0, reg1, reg2, tile0);
