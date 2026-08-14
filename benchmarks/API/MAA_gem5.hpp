@@ -72,6 +72,8 @@ enum class DataType : uint8_t {
     MAX
 };
 
+constexpr uint64_t MAA_SOA_JIT_MASKED_INDEX_MODE_TAG = UINT64_MAX;
+
 volatile uint64_t *INSTR_opcode_datatype_optype_tdst1_tdst2;
 volatile uint64_t *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc;
 volatile uint64_t *INSTR_baseaddr;
@@ -754,6 +756,43 @@ inline void maa_indirect_rmw_vector_soa_jit(
     *INSTR_backingaddr = (uint64_t)values;
     *INSTR_indexaddr = (uint64_t)indices;
     *INSTR_predicateaddr = (uint64_t)predicates;
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+/**
+ * Optional predicated form of the SoA/JIT RMW. UINT32_MAX in the sequential
+ * index stream denotes an inactive lane; every other word is an ordinary
+ * uint32 index. The controller admits this descriptor only when the exact
+ * registered A span proves UINT32_MAX cannot name a legal A word.
+ */
+template <class T1>
+inline void maa_indirect_rmw_vector_soa_jit_masked_indices(
+    T1 *data, const uint32_t *indices, const T1 *values, int min_reg,
+    int max_reg, int stride_reg, int completion_tile, Operation_t o_type,
+    int old_value_tile = -1) {
+    assert(data != nullptr);
+    assert(indices != nullptr);
+    assert(values != nullptr);
+    assert(min_reg >= 0 && min_reg < NUM_SCALAR_REGS);
+    assert(max_reg >= 0 && max_reg < NUM_SCALAR_REGS);
+    assert(stride_reg >= 0 && stride_reg < NUM_SCALAR_REGS);
+    assert(completion_tile >= 0 && completion_tile < NUM_TILES);
+    assert(old_value_tile == -1 &&
+           "SoA/JIT RMW does not support an old-value destination");
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_RMW_VECTOR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)o_type << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)completion_tile;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) | ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)values;
+    *INSTR_indexaddr = (uint64_t)indices;
+    *INSTR_predicateaddr = MAA_SOA_JIT_MASKED_INDEX_MODE_TAG;
     __asm__ __volatile__("mfence;" ::: "memory");
 }
 template <class T1>

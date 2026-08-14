@@ -164,6 +164,7 @@ public:
         "FNS",
         "MAX"};
     Addr baseAddr, backingAddr, indexAddr, predicateAddr;
+    bool soaJitMaskedIndex;
     Addr logicalSourceBackingAddr;
     Addr minAddr, maxAddr, backingMinAddr, backingMaxAddr;
     Addr indexMinAddr, indexMaxAddr, predicateMinAddr, predicateMaxAddr;
@@ -235,6 +236,9 @@ public:
     bool isSoaJitRmw() const {
         return opcode == OpcodeType::INDIR_RMW_VECTOR &&
                src1SpdID == -1 && src2SpdID == -1 && condSpdID == -1;
+    }
+    bool isSoaJitMaskedIndexRmw() const {
+        return isSoaJitRmw() && soaJitMaskedIndex;
     }
     bool hasValidSoaJitRmwOperands() const {
         return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&

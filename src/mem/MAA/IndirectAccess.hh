@@ -666,6 +666,7 @@ protected:
     bool isVirtualLoad() const;
     bool isDirectIndexLoad() const;
     bool isSoaJitRmw() const;
+    bool isSoaJitMaskedIndexRmw() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();

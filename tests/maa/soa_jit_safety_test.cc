@@ -81,6 +81,25 @@ testCompletionTokenDoesNotTouchSecondTile()
     CHECK(status_updates[1] == 0);
 }
 
+void
+testMaskedIndexMarkerAdmissionPreservesLegalIndices()
+{
+    constexpr uint64_t base = 0x1000;
+    constexpr uint64_t word_bytes = sizeof(float);
+    constexpr uint64_t marker = SoaJitSafety::MaskedIndexInactive;
+    CHECK(SoaJitSafety::MaskedIndexModeTag == UINT64_MAX);
+    CHECK(marker == UINT32_MAX);
+    CHECK(SoaJitSafety::maskedIndexMarkerOutsideLegalRange(
+        base, base, base + marker * word_bytes, word_bytes));
+    CHECK(!SoaJitSafety::maskedIndexMarkerOutsideLegalRange(
+        base, base, base + (marker + 1) * word_bytes, word_bytes));
+    CHECK(!SoaJitSafety::maskedIndexMarkerOutsideLegalRange(
+        base - 4, base, base + 4096, word_bytes));
+    CHECK(SoaJitSafety::MaskedIndexCompareBits == 32);
+    CHECK(SoaJitSafety::MaskedIndexModeStateBits == 1);
+    CHECK(SoaJitSafety::MaskedIndexAdditionalBufferBytes == 0);
+}
+
 } // anonymous namespace
 
 int
@@ -91,5 +110,6 @@ main()
     testUint32MetadataAlignment();
     testOnlySupportedTypedWidths();
     testCompletionTokenDoesNotTouchSecondTile();
+    testMaskedIndexMarkerAdmissionPreservesLegalIndices();
     return 0;
 }

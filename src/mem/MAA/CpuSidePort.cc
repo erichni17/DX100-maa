@@ -552,7 +552,10 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(!current_instruction->hasValidSoaJitRmwOperands(),
                          "Rejected malformed SoA/JIT RMW before word-five "
                          "dispatch\n");
-                current_instruction->predicateAddr = data;
+                current_instruction->soaJitMaskedIndex =
+                    data == SoaJitSafety::MaskedIndexModeTag;
+                current_instruction->predicateAddr =
+                    current_instruction->soaJitMaskedIndex ? 0 : data;
                 const int soa_word_size = current_instruction->WordSize();
                 panic_if(
                     !SoaJitSafety::typedOperandsAligned(
@@ -562,12 +565,13 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->predicateAddr, soa_word_size),
                     "Rejected misaligned typed SoA/JIT A, value, index, or "
                     "predicate operand before timed request dispatch\n");
-                if (data != 0) {
+                if (current_instruction->predicateAddr != 0) {
                     current_instruction->predicateAddrRangeID =
-                        getAddrRegion(data);
+                        getAddrRegion(current_instruction->predicateAddr);
                     panic_if(current_instruction->predicateAddrRangeID < 0,
                              "Predicate address 0x%lx is not in a "
-                             "registered memory region\n", data);
+                             "registered memory region\n",
+                             current_instruction->predicateAddr);
                     current_instruction->predicateMinAddr = addrRegions[
                         current_instruction->predicateAddrRangeID].first;
                     current_instruction->predicateMaxAddr = addrRegions[
@@ -576,11 +580,12 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController,
                         "%s: %s received with values=0x%lx indices=0x%lx "
-                        "predicates=0x%lx!\n",
+                        "predicates=0x%lx masked_index=%d!\n",
                         __func__, current_instruction->print(),
                         current_instruction->backingAddr,
                         current_instruction->indexAddr,
-                        current_instruction->predicateAddr);
+                        current_instruction->predicateAddr,
+                        current_instruction->soaJitMaskedIndex);
                 respond_immediately = false;
                 scheduleDispatchInstructionEvent();
                 break;
