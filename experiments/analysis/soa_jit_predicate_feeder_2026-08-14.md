@@ -72,8 +72,36 @@ hashes, benchmark and runner source hashes, source config hashes, per-arm
 resolved `config.ini` hashes, and exact command hashes. Raw outputs remain
 outside Git.
 
-Validation results are filled in after the local X86 rebuild and shortest
-exact matrix complete.
+## Validation result
+
+The clean implementation commit used by the matrix was
+`f7f8acf2447be6692b5d7916aa5d8a5cb68cee47`. The source-status hash was the
+empty SHA-256 (`e3b0c442...b855`), the rebuilt `gem5.opt` SHA-256 was
+`eb5abd79...ae8630`, and the exact API guest SHA-256 was
+`ba532dfd...0414bf`. The incremental `scons --ignore-style
+build/X86/gem5.opt -j8` rebuild and a following up-to-date check both passed.
+The freshly compiled object hashes were `a4b6f3d0...d41244` for
+`IndirectAccess.o`, `75cf4b7b...39203` for `MAA.o`, and
+`2185f734...accd4` for `MAA.py.o`.
+
+The shortest exact matrix passed all four arms:
+
+| Active credits | simTicks | vs. active=1 | Issues/responses | Hits/uses | Stalls | Summed HWM |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 807,872,406 | 1.000000x | 2,048/2,048 | 32,768/32,768 | 2,048 | 2 |
+| 4 | 693,515,978 | 1.164894x | 2,048/2,048 | 32,768/32,768 | 6 | 8 |
+| 8 | 690,872,380 | 1.169351x | 2,048/2,048 | 32,768/32,768 | 6 | 16 |
+| 16 | 684,570,438 | 1.180116x | 2,048/2,048 | 32,768/32,768 | 6 | 32 |
+
+Every arm produced `output_hash=2761840269561229581`, `errors=0`, one exact
+ROI terminator, one exact `m5_exit` terminator, and two closed generations.
+Each operation reported the configured per-operation high-water, 1,440
+modeled bytes, and 1,536 host bytes. The table's HWM and 2,880-byte state
+statistic are sums across the two completed operations. These performance
+numbers establish the effect only for this focused exact API workload; they
+are not a broader promotion claim. Raw logs, traces, statistics, commands,
+resolved configurations, and the hash manifest are in
+`/tmp/soa-jit-predicate-feeder-f7f8acf2`.
 
 ## Merge handoff after value overlap
 
