@@ -25,6 +25,9 @@ mkdir -p "$out/artifacts"
 binary="$out/artifacts/gradzatp_gzp_live_publisher"
 selector="$out/artifacts/selector.txt"
 printf '%s\n' 'token_stream_ld soa_jit' > "$selector"
+n=65536
+expected_publications=32
+expected_lines=8192
 
 "${CXX:-g++}" -I"$root/benchmarks/API" -I"$root/include" \
     -I"$root/util/m5/src" -std=c++11 -O3 -Wall -g3 -fopenmp \
@@ -34,7 +37,7 @@ printf '%s\n' 'token_stream_ld soa_jit' > "$selector"
     -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 \
     "$m5op" "$source_file" -o "$binary"
 
-options="16384 $selector"
+options="$n $selector"
 checkpoint_cmd=(
     "$gem5" --listener-mode=off --outdir="$out/checkpoint"
     "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB
@@ -77,7 +80,8 @@ restore_cmd=(
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'scope=GZP_FP32_logical16_physical4K_live_publisher_correctness\n'
     printf 'speedup_claim=0\n'
-    printf 'publisher_credits=8\nexpected_publications=8\n'
+    printf 'publisher_credits=8\nexpected_publications=%s\n' \
+        "$expected_publications"
     printf 'checkpoint_command='; printf '%q ' "${checkpoint_cmd[@]}"; printf '\n'
     printf 'restore_command='; printf '%q ' "${restore_cmd[@]}"; printf '\n'
 } > "$out/manifest.txt"
@@ -102,7 +106,7 @@ printf '%s\n' "$restore_rc" > "$out/restore.exit"
 [[ $restore_rc -eq 0 ]]
 [[ $(rg -c '^UME_REFERENCE_PASS point_volume_errors=0 point_gradient_errors=0 ' \
           "$out/restore.log" || true) -eq 1 ]]
-terminal='UME_GZP_TERMINAL treatment=soa_jit_correctness full_windows=1 volume_only_windows=0 published_predicates=16384 published_gradient_values=16384'
+terminal="UME_GZP_TERMINAL treatment=soa_jit_correctness full_windows=4 volume_only_windows=0 published_predicates=$n published_gradient_values=$n"
 [[ $(rg -c "^$terminal .*publisher=response_bearing_spd_to_coherent performance_promotable=0 result=PASS$" \
           "$out/restore.log" || true) -eq 1 ]]
 [[ $(rg -c '^Exiting @ tick [0-9]+ because m5_exit instruction encountered$' \
@@ -121,16 +125,16 @@ max_stat() {
     local suffix=$1
     awk -v suffix="$suffix" '$1 ~ suffix "$" && $2 > value { value=$2 } END { print value+0 }' "$stats"
 }
-[[ $(sum_stat 'STR_PublishIssues') -eq 2048 ]]
-[[ $(sum_stat 'STR_PublishAccepts') -eq 2048 ]]
-[[ $(sum_stat 'STR_PublishWriteResponses') -eq 2048 ]]
-[[ $(sum_stat 'STR_PublishTerminals') -eq 8 ]]
+[[ $(sum_stat 'STR_PublishIssues') -eq $expected_lines ]]
+[[ $(sum_stat 'STR_PublishAccepts') -eq $expected_lines ]]
+[[ $(sum_stat 'STR_PublishWriteResponses') -eq $expected_lines ]]
+[[ $(sum_stat 'STR_PublishTerminals') -eq $expected_publications ]]
 [[ $(max_stat 'STR_PublishCreditHWM') -eq 8 ]]
 [[ $(sum_stat 'STR_PublishCreditStalls') -gt 0 ]]
-[[ $(rg -c 'event=spd_publish_issue ' "$trace" || true) -eq 2048 ]]
-[[ $(rg -c 'event=spd_publish_accept ' "$trace" || true) -eq 2048 ]]
-[[ $(rg -c 'event=spd_publish_response ' "$trace" || true) -eq 2048 ]]
-[[ $(rg -c 'event=spd_publish_terminal ' "$trace" || true) -eq 8 ]]
+[[ $(rg -c 'event=spd_publish_issue ' "$trace" || true) -eq $expected_lines ]]
+[[ $(rg -c 'event=spd_publish_accept ' "$trace" || true) -eq $expected_lines ]]
+[[ $(rg -c 'event=spd_publish_response ' "$trace" || true) -eq $expected_lines ]]
+[[ $(rg -c 'event=spd_publish_terminal ' "$trace" || true) -eq $expected_publications ]]
 for resolved in num_tile_elements=16384 physical_tile_elements=4096 \
     num_offset_table_entries=16384 num_offset_table_epoch_entries=16384; do
     rg -Fx "$resolved" "$out/run/config.ini"
@@ -139,7 +143,9 @@ done
 {
     printf 'terminal=true\ncorrect=true\nspeedup_claim=0\n'
     printf 'simTicks=%s\n' "$(awk '$1 == "simTicks" { value=$2 } END { print value+0 }' "$stats")"
-    printf 'issues=2048\naccepts=2048\nresponses=2048\nterminals=8\n'
+    printf 'issues=%s\naccepts=%s\nresponses=%s\nterminals=%s\n' \
+        "$expected_lines" "$expected_lines" "$expected_lines" \
+        "$expected_publications"
     printf 'retries=%s\n' "$(sum_stat 'STR_PublishRetries')"
     printf 'credit_stalls=%s\n' "$(sum_stat 'STR_PublishCreditStalls')"
     printf 'overlap_issues=%s\n' "$(sum_stat 'STR_PublishOverlapIssues')"

@@ -32,10 +32,13 @@ is active; the matching trace issue records carry `overlap=0|1`.
 
 The uncapped runner
 `experiments/scripts/run_gzp_live_publisher_correctness.sh` uses no timeout
-command.  Its one-window exact gate requires:
+command.  Its four-window/owner exact gate uses 65,536 corners so the immutable
+value and index vectors follow the production mmap allocation regime; the
+smaller 16,384-corner malloc layout fails the unchanged SoA/JIT contiguous
+physical-routing guard before consumption.  The gate requires:
 
 - the scalar reference and GZP terminal markers to pass with zero errors;
-- exactly 8 publications and 2,048 issue/accept/response events;
+- exactly 32 publications and 8,192 issue/accept/response events;
 - exactly eight credits at high-water with a nonzero credit-stall count;
 - the configured logical 16K / physical 4K geometry; and
 - a clean source worktree so its manifest commit identifies the tested code.

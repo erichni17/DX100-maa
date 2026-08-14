@@ -49,8 +49,11 @@ def test_publisher_accounting_includes_overlap() -> None:
 def test_runner_is_uncapped_and_fails_closed() -> None:
     runner = read("experiments/scripts/run_gzp_live_publisher_correctness.sh")
     assert "timeout" not in runner
-    assert "STR_PublishIssues') -eq 2048" in runner
-    assert "STR_PublishWriteResponses') -eq 2048" in runner
-    assert "STR_PublishTerminals') -eq 8" in runner
+    assert "n=65536" in runner
+    assert "expected_publications=32" in runner
+    assert "expected_lines=8192" in runner
+    assert "STR_PublishIssues') -eq $expected_lines" in runner
+    assert "STR_PublishWriteResponses') -eq $expected_lines" in runner
+    assert "STR_PublishTerminals') -eq $expected_publications" in runner
     assert "speedup_claim=0" in runner
-    assert "published_predicates=16384" in runner
+    assert "published_predicates=$n" in runner
