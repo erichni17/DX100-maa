@@ -90,6 +90,8 @@ def test_micro_is_shared_checkpoint_exact_two_rep_control_treatment():
     assert "IND_CyclesFill" in runner
     assert "IND_CyclesRequest" in runner
     assert "IND_SoaJitValueReadIssues" in runner
+    assert "END { print value }" in runner
+    assert "classification=inherited/partitioned" in runner
     assert "carry_entry_incremental_bytes=0" in runner
     assert "carry_unit_incremental_modeled_bytes=73" in runner
     assert "carry_unit_host_bytes=80" in runner

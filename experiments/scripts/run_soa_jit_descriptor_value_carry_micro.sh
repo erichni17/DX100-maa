@@ -40,7 +40,7 @@ common=(
 )
 
 stat_value() {
-    awk -v key="$2" '$1 == key { print $2; exit }' "$1"
+    awk -v key="$2" '$1 == key { value = $2 } END { print value }' "$1"
 }
 
 trace_sum() {
@@ -132,7 +132,7 @@ for rep in 1 2; do
         need_equal "$lookahead_issues" "$selected" selected_ledger
         need_equal "$carry_issues" "$carry_responses" carry_read_ledger
         [[ $(grep -Ec 'event=soa_jit_complete .*terminal=1' "$trace" || true) -eq 2 ]]
-        [[ $(grep -Ec 'schema=dx100.reorder_summary.v1 .*reconciled=1 classification=preserved' "$trace" || true) -eq 2 ]]
+        [[ $(grep -Ec 'schema=dx100.reorder_summary.v1 .*reconciled=1 classification=inherited/partitioned' "$trace" || true) -eq 2 ]]
 
         if [[ $arm == control ]]; then
             need_equal "$carry_issues" 0 control_carry_reads
