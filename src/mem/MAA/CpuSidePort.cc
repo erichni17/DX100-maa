@@ -359,6 +359,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             Instruction::OpcodeType::INDIR_LD_SPD_STREAM &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::VIRTUAL_TILE_ALU_SCALAR &&
+                        !(current_instruction->opcode ==
+                              Instruction::OpcodeType::INDIR_RMW_VECTOR &&
+                          current_instruction->src1SpdID == -1 &&
+                          current_instruction->src2SpdID == -1 &&
+                          current_instruction->condSpdID == -1) &&
                         !current_instruction->isLogicalALUScalar(),
                     "Backing address is only valid for virtual or fused "
                     "indirect loads or logical ALU_SCALAR!\n");
@@ -386,7 +391,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 current_instruction->backingMaxAddr = addrRegions[
                     current_instruction->backingAddrRangeID].second;
                 if (current_instruction->opcode ==
-                    Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX)
+                        Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
+                    (current_instruction->opcode ==
+                         Instruction::OpcodeType::INDIR_RMW_VECTOR &&
+                     current_instruction->src1SpdID == -1 &&
+                     current_instruction->src2SpdID == -1))
                     break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(
@@ -407,6 +416,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                             Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX &&
                         current_instruction->opcode !=
                             Instruction::OpcodeType::INDIR_LD_INDEX &&
+                        !(current_instruction->opcode ==
+                              Instruction::OpcodeType::INDIR_RMW_VECTOR &&
+                          current_instruction->src1SpdID == -1 &&
+                          current_instruction->src2SpdID == -1 &&
+                          current_instruction->condSpdID == -1) &&
                         !current_instruction->isLogicalALUScalar(),
                     "Instruction word four is only valid for direct-index "
                     "loads or logical ALU_SCALAR source backing!\n");

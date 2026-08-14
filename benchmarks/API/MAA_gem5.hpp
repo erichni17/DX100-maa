@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 
 #include <gem5/m5ops.h>
 #include <gem5/maa_logical_spd_cache_abi.hh>
@@ -659,6 +660,48 @@ inline void maa_indirect_rmw_vector(T1 *data, int idx_tile, int src_tile, Operat
                                                             ((uint64_t)NA_UINT8 << 8) |                         // rsrc3
                                                             (uint64_t)(cond_tile == -1 ? NA_UINT8 : cond_tile); // cond
     *INSTR_baseaddr = (uint64_t)data;                                                                           // baseaddr
+    __asm__ __volatile__("mfence;");
+}
+
+/**
+ * One coherent operand record for the bounded 16K RMW treatment.
+ *
+ * Software (or a timed page materializer) publishes records in logical order.
+ * Every record of one submission carries the same non-zero generation.  The
+ * indirect unit reads these lines through normal cache ports, validates the
+ * generation, and retains only bounded response records while A-side writes
+ * await WriteResp. The separate 4K diagnostic may use descriptor backing.
+ */
+struct alignas(32) MAAIndirectRmwRecord
+{
+    uint32_t index;
+    uint32_t predicate;
+    uint32_t generation;
+    uint32_t reserved0;
+    uint64_t value_bits;
+    uint64_t reserved1;
+};
+static_assert(sizeof(MAAIndirectRmwRecord) == 32,
+              "backed RMW records must pack two per cache line");
+
+template <class T1>
+inline void maa_indirect_rmw_vector_backed(
+    T1 *data, MAAIndirectRmwRecord *records, void *descriptor_backing,
+    int completion_tile, int min_reg, int max_reg, int stride_reg,
+    Operation_t o_type) {
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_RMW_VECTOR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)o_type << 16) |
+        ((uint64_t)completion_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) | ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)data;
+    *INSTR_backingaddr = (uint64_t)descriptor_backing;
+    *INSTR_indexaddr = (uint64_t)records;
     __asm__ __volatile__("mfence;");
 }
 template <class T1>

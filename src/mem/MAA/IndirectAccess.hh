@@ -330,6 +330,9 @@ protected:
     struct DirectIndexWord
     {
         uint32_t value = 0;
+        uint64_t rmwValue = 0;
+        uint32_t rmwPredicate = 1;
+        uint32_t rmwGeneration = 0;
         Addr line_addr = 0;
         Addr word_paddr = 0;
         uint32_t phase = 0;
@@ -500,6 +503,52 @@ protected:
     bool my_force_cache_determined;
     bool my_force_cache;
 
+    // The backed RMW vertical slice never retains an operation-sized SPD
+    // payload. The 4K value epoch is diagnostic-only; the full-metadata
+    // oracle instead refetches records through a fixed response window.
+    static constexpr uint32_t BackedRmwRecordBytes = 32;
+    static constexpr uint32_t BackedRmwValueSlots =
+        BoundedDescriptorSpool::MaxActiveDescriptors;
+    static constexpr uint32_t BackedRmwResponseRecords = 64;
+    static constexpr uint32_t BackedRmwRecordLineSlots = 8;
+    static constexpr uint32_t BackedRmwWriteSlots = 64;
+    struct BackedRmwValueSlot
+    {
+        bool valid = false;
+        uint64_t value = 0;
+        uint32_t generation = 0;
+        uint32_t logicalItr = 0;
+    };
+    std::array<BackedRmwValueSlot, BackedRmwValueSlots>
+        backed_rmw_values{};
+    struct BackedRmwWriteSlot
+    {
+        bool valid = false;
+        Addr paddr = 0;
+        uint32_t generation = 0;
+    };
+    std::array<BackedRmwWriteSlot, BackedRmwWriteSlots>
+        backed_rmw_writes{};
+    struct BackedRmwRecordLineSlot
+    {
+        bool valid = false;
+        Addr paddr = 0;
+        std::array<uint8_t, 64> data{};
+    };
+    std::array<BackedRmwRecordLineSlot, BackedRmwRecordLineSlots>
+        backed_rmw_record_lines{};
+    uint32_t backed_rmw_record_line_victim = 0;
+    uint32_t backed_rmw_generation = 0;
+    uint32_t backed_rmw_value_hwm = 0;
+    uint32_t backed_rmw_write_hwm = 0;
+    uint64_t backed_rmw_record_responses = 0;
+    uint64_t backed_rmw_record_line_reads = 0;
+    uint64_t backed_rmw_selected = 0;
+    uint64_t backed_rmw_applied = 0;
+    uint32_t backed_rmw_a_reads_inflight = 0;
+    uint64_t backed_rmw_write_issues = 0;
+    uint64_t backed_rmw_write_acks = 0;
+
     bool my_translation_done;
     Addr my_translated_addr;
     int my_indirect_id;
@@ -524,6 +573,8 @@ protected:
     Addr translatePacket(Addr vaddr, BaseMMU::Mode mode = BaseMMU::Read,
                          unsigned size = 64);
     bool isVirtualLoad() const;
+    bool isBackedRmw() const;
+    bool isFullScopeBackedRmw() const;
     bool isDirectIndexLoad() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
@@ -538,6 +589,11 @@ protected:
     bool ensureDirectIndex(int itr);
     uint32_t peekDirectIndex(int itr) const;
     const DirectIndexWord &currentDirectIndexWord(int itr) const;
+    bool ensureBackedRmwOperand(uint32_t logical_itr);
+    void discardBackedRmwResponseOperand(uint32_t logical_itr);
+    int reserveBackedRmwValue(uint64_t value, uint32_t generation,
+                              uint32_t logical_itr);
+    void releaseBackedRmwValue(uint32_t slot);
     uint32_t directIndexPassForGrow(Addr grow_addr) const;
     uint64_t directIndexRangeKey(uint32_t index, Addr grow_addr,
                                  int iteration) const;

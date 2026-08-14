@@ -666,6 +666,14 @@ void IndirectAccessUnit::check_reset() {
                  descriptor_spool.configured(),
              "I[%d] descriptor-spool lifecycle is not reset\n",
              my_indirect_id);
+    panic_if(std::any_of(backed_rmw_values.begin(),
+                         backed_rmw_values.end(),
+                         [](const auto &slot) { return slot.valid; }) ||
+                 std::any_of(backed_rmw_writes.begin(),
+                             backed_rmw_writes.end(),
+                             [](const auto &slot) { return slot.valid; }),
+             "I[%d] backed RMW value/write state is not empty\n",
+             my_indirect_id);
     panic_if(
         bounded_global_merge.configured() ||
             bounded_global_merge_phase != BoundedGlobalMergePhase::None ||
@@ -774,9 +782,23 @@ bool IndirectAccessUnit::isVirtualLoad() const {
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX);
 }
+bool IndirectAccessUnit::isBackedRmw() const {
+    return my_instruction != nullptr &&
+           my_instruction->opcode ==
+               Instruction::OpcodeType::INDIR_RMW_VECTOR &&
+           my_instruction->src1SpdID == -1 &&
+           my_instruction->src2SpdID == -1 &&
+           my_instruction->condSpdID == -1 &&
+           my_instruction->backingAddr != 0 &&
+           my_instruction->indexAddr != 0;
+}
+bool IndirectAccessUnit::isFullScopeBackedRmw() const {
+    return isBackedRmw() &&
+           maa->num_offset_table_epoch_entries >= num_tile_elements;
+}
 bool IndirectAccessUnit::isDirectIndexLoad() const {
     return my_instruction != nullptr &&
-           (my_instruction->opcode ==
+           (isBackedRmw() || my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_VIRTUAL_INDEX ||
             my_instruction->opcode ==
                 Instruction::OpcodeType::INDIR_LD_INDEX);
@@ -843,13 +865,15 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
         panic_if(source_index < 0,
                  "I[%d] negative streamed-index position %ld for itr %d\n",
                  my_indirect_id, source_index, itr);
+        const uint64_t source_bytes = isBackedRmw()
+            ? BackedRmwRecordBytes : sizeof(uint32_t);
         const uint64_t byte_offset =
-            static_cast<uint64_t>(source_index) * sizeof(uint32_t);
+            static_cast<uint64_t>(source_index) * source_bytes;
         const Addr index_bytes = my_index_max_addr - my_index_addr;
         panic_if(my_index_addr < my_index_min_addr ||
                      my_index_addr >= my_index_max_addr ||
-                     index_bytes < sizeof(uint32_t) ||
-                     byte_offset > index_bytes - sizeof(uint32_t),
+                     index_bytes < source_bytes ||
+                     byte_offset > index_bytes - source_bytes,
                  "I[%d] streamed-index position %ld exceeds "
                  "[0x%lx, 0x%lx)\n",
                  my_indirect_id, source_index, my_index_min_addr,
@@ -881,9 +905,9 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             if (candidate_source < 0)
                 break;
             const uint64_t candidate_offset =
-                static_cast<uint64_t>(candidate_source) * sizeof(uint32_t);
-            if (index_bytes < sizeof(uint32_t) ||
-                candidate_offset > index_bytes - sizeof(uint32_t))
+                static_cast<uint64_t>(candidate_source) * source_bytes;
+            if (index_bytes < source_bytes ||
+                candidate_offset > index_bytes - source_bytes)
                 break;
             const Addr candidate_vaddr = my_index_addr + candidate_offset;
             if (addrBlockAligner(candidate_vaddr, block_size) != block_vaddr)
@@ -891,7 +915,7 @@ void IndirectAccessUnit::fillDirectIndexWindow() {
             pending_words.emplace_back(
                 candidate,
                 static_cast<uint16_t>((candidate_vaddr - block_vaddr) /
-                                      sizeof(uint32_t)));
+                                      source_bytes));
         }
         panic_if(pending_words.empty(),
                  "I[%d] direct-index request at itr %d captured no words\n",
@@ -1172,8 +1196,9 @@ IndirectAccessUnit::loadDescriptorSpoolCurrent(uint32_t cursor)
     descriptor_spool_current_cursor = cursor;
     descriptor_spool_current_word = DirectIndexWord{
         descriptor_spool_current_descriptor.value,
+        0, 1, 0,
         first->paddr,
-        descriptorIndexWordPaddr(
+        isBackedRmw() ? 0 : descriptorIndexWordPaddr(
             descriptor_spool_current_descriptor.iteration),
         direct_index_phase,
         descriptor_spool_current_descriptor.iteration};
@@ -1210,6 +1235,138 @@ bool IndirectAccessUnit::ensureDirectIndex(int itr) {
     if (descriptor_spool_replay_active)
         return loadDescriptorSpoolCurrent(itr);
     return direct_index_words.find(itr) != direct_index_words.end();
+}
+bool
+IndirectAccessUnit::ensureBackedRmwOperand(uint32_t logical_itr)
+{
+    panic_if(!isBackedRmw(),
+             "I[%d] backed operand fetch used outside backed RMW\n",
+             my_indirect_id);
+    auto ready = direct_index_words.find(logical_itr);
+    if (ready != direct_index_words.end()) {
+        panic_if(descriptor_spool_replay_active &&
+                     ready->second.value !=
+                         descriptor_spool_current_word.value,
+                 "I[%d] replayed record %u changed index %u/%u\n",
+                 my_indirect_id, logical_itr, ready->second.value,
+                 descriptor_spool_current_word.value);
+        if (descriptor_spool_replay_active) {
+            descriptor_spool_current_word.rmwValue = ready->second.rmwValue;
+            descriptor_spool_current_word.rmwPredicate =
+                ready->second.rmwPredicate;
+            descriptor_spool_current_word.rmwGeneration =
+                ready->second.rmwGeneration;
+            descriptor_spool_current_word.line_addr = ready->second.line_addr;
+            descriptor_spool_current_word.word_paddr =
+                ready->second.word_paddr;
+        }
+        return true;
+    }
+    const uint64_t byte_offset =
+        static_cast<uint64_t>(logical_itr) * BackedRmwRecordBytes;
+    panic_if(my_index_addr > UINT64_MAX - byte_offset ||
+                 my_index_max_addr - my_index_addr < BackedRmwRecordBytes ||
+                 byte_offset > my_index_max_addr - my_index_addr -
+                                   BackedRmwRecordBytes,
+             "I[%d] replayed record %u exceeds source range\n",
+             my_indirect_id, logical_itr);
+    const Addr vaddr = my_index_addr + byte_offset;
+    const Addr block_vaddr = addrBlockAligner(vaddr, block_size);
+    const Addr paddr = addrBlockAligner(
+        translatePacket(block_vaddr), block_size);
+    if (isFullScopeBackedRmw() && my_fill_finished) {
+        auto cached = std::find_if(
+            backed_rmw_record_lines.begin(), backed_rmw_record_lines.end(),
+            [paddr](const auto &slot) {
+                return slot.valid && slot.paddr == paddr;
+            });
+        if (cached != backed_rmw_record_lines.end()) {
+            const uint32_t word = static_cast<uint32_t>(
+                (vaddr - block_vaddr) / sizeof(uint32_t));
+            const auto *words = reinterpret_cast<const uint32_t *>(
+                cached->data.data());
+            uint64_t rmw_value = 0;
+            std::memcpy(&rmw_value, words + word + 4,
+                        sizeof(rmw_value));
+            const uint32_t generation = words[word + 2];
+            panic_if(generation == 0 ||
+                         (backed_rmw_generation != 0 &&
+                          generation != backed_rmw_generation),
+                     "I[%d] cached backed record %u has stale generation\n",
+                     my_indirect_id, logical_itr);
+            if (backed_rmw_generation == 0)
+                backed_rmw_generation = generation;
+            direct_index_words.emplace(
+                logical_itr,
+                DirectIndexWord{words[word], rmw_value, words[word + 1],
+                                generation, paddr,
+                                paddr + word * sizeof(uint32_t),
+                                direct_index_phase, logical_itr});
+            direct_index_ready_lines[paddr]++;
+            direct_index_max_words = std::max(
+                direct_index_max_words,
+                static_cast<int>(direct_index_words.size()));
+            return true;
+        }
+    }
+    if (direct_index_pending_lines.find(paddr) !=
+        direct_index_pending_lines.end())
+        return false;
+    if (maa->hasOutstandingPacket(paddr) &&
+        !maa->canCoalesceOutstandingRead(
+            paddr, FuncUnitType::INDIRECT, my_indirect_id)) {
+        scheduleExecuteInstructionEvent(1);
+        return false;
+    }
+    const uint16_t record = static_cast<uint16_t>(
+        (vaddr - block_vaddr) / BackedRmwRecordBytes);
+    direct_index_pending_lines.emplace(
+        paddr, std::vector<std::pair<int, uint16_t>>{
+                   {static_cast<int>(logical_itr), record}});
+    createDirectIndexReadPacket(paddr, rowtable_latency);
+    return false;
+}
+void
+IndirectAccessUnit::discardBackedRmwResponseOperand(uint32_t logical_itr)
+{
+    auto word = direct_index_words.find(logical_itr);
+    panic_if(word == direct_index_words.end(),
+             "I[%d] missing backed response operand %u\n",
+             my_indirect_id, logical_itr);
+    const Addr line_addr = word->second.line_addr;
+    direct_index_words.erase(word);
+    auto line = direct_index_ready_lines.find(line_addr);
+    panic_if(line == direct_index_ready_lines.end() || line->second <= 0,
+             "I[%d] backed response operand %u has no line owner\n",
+             my_indirect_id, logical_itr);
+    if (--line->second == 0)
+        direct_index_ready_lines.erase(line);
+}
+int
+IndirectAccessUnit::reserveBackedRmwValue(uint64_t value,
+                                          uint32_t generation,
+                                          uint32_t logical_itr)
+{
+    auto slot = std::find_if(
+        backed_rmw_values.begin(), backed_rmw_values.end(),
+        [](const auto &candidate) { return !candidate.valid; });
+    if (slot == backed_rmw_values.end())
+        return -1;
+    *slot = BackedRmwValueSlot{true, value, generation, logical_itr};
+    const uint32_t used = std::count_if(
+        backed_rmw_values.begin(), backed_rmw_values.end(),
+        [](const auto &candidate) { return candidate.valid; });
+    backed_rmw_value_hwm = std::max(backed_rmw_value_hwm, used);
+    return std::distance(backed_rmw_values.begin(), slot);
+}
+void
+IndirectAccessUnit::releaseBackedRmwValue(uint32_t slot)
+{
+    panic_if(slot >= backed_rmw_values.size() ||
+                 !backed_rmw_values[slot].valid,
+             "I[%d] backed RMW value slot %u is not live\n",
+             my_indirect_id, slot);
+    backed_rmw_values[slot] = BackedRmwValueSlot();
 }
 uint32_t IndirectAccessUnit::peekDirectIndex(int itr) const {
     if (descriptor_spool_replay_active) {
@@ -1363,8 +1520,10 @@ void IndirectAccessUnit::finishAdaptiveSummary()
                  "I[%d] resident-first spool requires logical16K, active4K, "
                  "four counted passes, and deterministic resident pass 0\n",
                  my_indirect_id);
-        const uint64_t payload_end = my_backing_addr +
-            static_cast<uint64_t>(my_max) * my_word_size;
+        const uint64_t payload_end = isBackedRmw()
+            ? my_backing_addr
+            : my_backing_addr +
+                  static_cast<uint64_t>(my_max) * my_word_size;
         constexpr uint64_t paged_slot_bytes =
             static_cast<uint64_t>(
                 BoundedDescriptorSpool::MaxExternalPasses) *
@@ -2527,6 +2686,25 @@ void IndirectAccessUnit::discardDirectIndex(
                 my_indirect_id, itr,
                 descriptor_spool_current_descriptor.iteration,
                 expected_value);
+        if (isBackedRmw()) {
+            const int logical =
+                descriptor_spool_current_descriptor.iteration;
+            auto operand = direct_index_words.find(logical);
+            panic_if(operand == direct_index_words.end() ||
+                         operand->second.value != expected_value ||
+                         operand->second.rmwGeneration !=
+                             backed_rmw_generation,
+                     "I[%d] replay descriptor %d lacks exact operand\n",
+                     my_indirect_id, logical);
+            const Addr line_addr = operand->second.line_addr;
+            direct_index_words.erase(operand);
+            auto line = direct_index_ready_lines.find(line_addr);
+            panic_if(line == direct_index_ready_lines.end() ||
+                         line->second != 1,
+                     "I[%d] replay operand %d has invalid line owner\n",
+                     my_indirect_id, logical);
+            direct_index_ready_lines.erase(line);
+        }
         descriptor_spool_current_valid = false;
         descriptor_spool_current_descriptor = {};
         descriptor_spool_current_word = {};
@@ -2607,18 +2785,56 @@ bool IndirectAccessUnit::receiveDirectIndex(Addr addr, uint8_t *dataptr,
     const auto *words = reinterpret_cast<const uint32_t *>(dataptr);
     const auto pending_words = std::move(pending->second);
     direct_index_pending_lines.erase(pending);
+    if (isFullScopeBackedRmw() && my_fill_finished) {
+        auto slot = std::find_if(
+            backed_rmw_record_lines.begin(), backed_rmw_record_lines.end(),
+            [](const auto &candidate) { return !candidate.valid; });
+        if (slot == backed_rmw_record_lines.end()) {
+            slot = backed_rmw_record_lines.begin() +
+                backed_rmw_record_line_victim;
+            backed_rmw_record_line_victim =
+                (backed_rmw_record_line_victim + 1) %
+                BackedRmwRecordLineSlots;
+        }
+        slot->valid = true;
+        slot->paddr = addr;
+        std::memcpy(slot->data.data(), dataptr, block_size);
+    }
     panic_if(!direct_index_ready_lines.emplace(
                   addr, static_cast<int>(pending_words.size())).second,
              "I[%d] duplicate ready direct-index line 0x%lx\n",
              my_indirect_id, addr);
     for (const auto &[itr, wid] : pending_words) {
-        panic_if(wid >= block_size / sizeof(uint32_t),
+        const uint32_t record_words = BackedRmwRecordBytes /
+            sizeof(uint32_t);
+        panic_if((isBackedRmw() && wid >= block_size /
+                                      BackedRmwRecordBytes) ||
+                     (!isBackedRmw() &&
+                      wid >= block_size / sizeof(uint32_t)),
                  "I[%d] invalid streamed-index word %u\n",
                  my_indirect_id, wid);
+        const uint32_t word = isBackedRmw() ? wid * record_words : wid;
+        const uint32_t generation = isBackedRmw() ? words[word + 2] : 0;
+        uint64_t rmw_value = 0;
+        if (isBackedRmw()) {
+            std::memcpy(&rmw_value, words + word + 4, sizeof(rmw_value));
+            panic_if(generation == 0,
+                     "I[%d] backed RMW record %d has generation zero\n",
+                     my_indirect_id, itr);
+            if (backed_rmw_generation == 0)
+                backed_rmw_generation = generation;
+            panic_if(generation != backed_rmw_generation,
+                     "I[%d] backed RMW record %d changed generation %u/%u\n",
+                     my_indirect_id, itr, generation,
+                     backed_rmw_generation);
+            backed_rmw_record_responses++;
+        }
         panic_if(!direct_index_words
                       .emplace(itr, DirectIndexWord{
-                                        words[wid], addr,
-                                        addr + wid * sizeof(uint32_t),
+                                        words[word], rmw_value,
+                                        isBackedRmw() ? words[word + 1] : 1,
+                                        generation, addr,
+                                        addr + word * sizeof(uint32_t),
                                         direct_index_phase,
                                         static_cast<uint32_t>(itr)})
                       .second,
@@ -2741,8 +2957,10 @@ bool IndirectAccessUnit::checkElementReady() {
     int operand_itr = my_i;
     if (idx_ready && descriptor_spool_replay_active) {
         operand_itr = currentDirectIndexWord(my_i).logical_itr;
+        if (isBackedRmw())
+            idx_ready = ensureBackedRmwOperand(operand_itr);
     }
-    bool cond_ready = my_cond_tile == -1 || !idx_ready ||
+    bool cond_ready = isBackedRmw() || my_cond_tile == -1 || !idx_ready ||
         maa->spd->getElementFinished(
             my_cond_tile, operand_itr, 4,
             (uint8_t)FuncUnitType::INDIRECT, my_indirect_id);
@@ -2751,7 +2969,7 @@ bool IndirectAccessUnit::checkElementReady() {
         (my_instruction->opcode == Instruction::OpcodeType::INDIR_LD ||
          my_instruction->opcode ==
              Instruction::OpcodeType::INDIR_LD_INDEX ||
-         isVirtualLoad() ||
+         isVirtualLoad() || isBackedRmw() ||
          my_instruction->opcode ==
              Instruction::OpcodeType::INDIR_RMW_SCALAR ||
          my_instruction->opcode ==
@@ -2952,6 +3170,8 @@ void IndirectAccessUnit::fillRowTable(
                          my_indirect_id, __func__, my_i, feeder_limit);
                 if (isVirtualLoad())
                     maa->spd->setVirtualSize(my_dst_tile, my_max);
+                else if (isBackedRmw())
+                    maa->spd->setSize(my_dst_tile, 0);
                 else
                     maa->spd->setSize(my_dst_tile, my_i);
             }
@@ -2983,8 +3203,9 @@ void IndirectAccessUnit::fillRowTable(
         if (my_cond_tile != -1) {
             num_spd_read_condidx_accesses++;
         }
-        const bool condition_taken =
-            my_cond_tile == -1 ||
+        const bool condition_taken = isBackedRmw()
+            ? currentDirectIndexWord(my_i).rmwPredicate != 0
+            : my_cond_tile == -1 ||
             maa->spd->getData<uint32_t>(my_cond_tile, logical_itr) != 0;
         bool direct_index_descriptor_inserted = false;
         bool direct_index_predicate_rejected = false;
@@ -2999,7 +3220,7 @@ void IndirectAccessUnit::fillRowTable(
         if (isDirectIndexLoad() && !condition_taken)
             direct_index_predicate_rejected = true;
         const bool direct_index_filtering =
-            isVirtualLoad() && isDirectIndexLoad() &&
+            (isVirtualLoad() || isBackedRmw()) && isDirectIndexLoad() &&
             direct_index_partitions > 1 && !descriptor_spool_replay_active;
         if (direct_index_filtering)
             num_direct_index_filter_words++;
@@ -3037,8 +3258,9 @@ void IndirectAccessUnit::fillRowTable(
             panic_if(bucket_pass >= descriptor_spool.passes(),
                      "I[%d] predicate ordinal %u has no pass\n",
                      my_indirect_id, predicate_ordinal);
-            captureDescriptorIndexPage(
-                logical_itr, direct_word->word_paddr);
+            if (!isBackedRmw())
+                captureDescriptorIndexPage(
+                    logical_itr, direct_word->word_paddr);
             if (descriptor_spool.isResidentPass(bucket_pass)) {
                 resident_bucket = true;
                 virtual_iteration_selected = true;
@@ -3149,8 +3371,9 @@ void IndirectAccessUnit::fillRowTable(
                 panic_if(bucket_pass >= descriptor_spool.passes(),
                          "I[%d] bucket grow 0x%lx ordinal %u has no pass\n",
                          my_indirect_id, grow_addr, grow_ordinal);
-                captureDescriptorIndexPage(
-                    logical_itr, direct_word->word_paddr);
+                if (!isBackedRmw())
+                    captureDescriptorIndexPage(
+                        logical_itr, direct_word->word_paddr);
                 if (descriptor_spool.isResidentPass(bucket_pass)) {
                     resident_bucket = true;
                     commit_grow_ordinal = true;
@@ -3239,7 +3462,8 @@ void IndirectAccessUnit::fillRowTable(
                 selected_pass = directIndexPassForGrow(grow_addr);
             }
             virtual_iteration_selected =
-                !isVirtualLoad() || !isDirectIndexLoad() ||
+                (!isVirtualLoad() && !isBackedRmw()) ||
+                !isDirectIndexLoad() ||
                 direct_index_partitions == 1 ||
                 static_cast<int>(selected_pass) == direct_index_partition;
             if (isDirectIndexLoad() && !virtual_iteration_selected)
@@ -3300,11 +3524,24 @@ void IndirectAccessUnit::fillRowTable(
                     static_assert(sizeof(row_payload) == sizeof(idx));
                     std::memcpy(&row_payload, &idx, sizeof(idx));
                 }
+                int row_itr = logical_itr;
+                if (isBackedRmw() && !isFullScopeBackedRmw()) {
+                    const auto &operand = currentDirectIndexWord(my_i);
+                    row_itr = reserveBackedRmwValue(
+                        operand.rmwValue, operand.rmwGeneration,
+                        logical_itr);
+                    if (row_itr < 0) {
+                        waitForElement = true;
+                        break;
+                    }
+                }
                 bool inserted = RT[my_RT_config][my_RT_idx].insert(
-                    grow_addr, block_paddr, logical_itr, row_payload,
+                    grow_addr, block_paddr, row_itr, row_payload,
                     first_CL_access);
                 num_rowtable_accesses++;
                 if (!inserted) {
+                    if (isBackedRmw() && !isFullScopeBackedRmw())
+                        releaseBackedRmwValue(row_itr);
                     panic_if(resident_bucket,
                              "I[%d] resident population exceeded bounded "
                              "RowTable state before its planned 4K closure\n",
@@ -3325,6 +3562,8 @@ void IndirectAccessUnit::fillRowTable(
                     (*maa->stats.IND_NumRTFull[my_indirect_id])++;
                     break;
                 } else {
+                    if (isBackedRmw())
+                        backed_rmw_selected++;
                     attribution_row_insert_successes++;
                     if (isVirtualLoad()) {
                         if (macro_row_first_insert_tick == 0)
@@ -3674,11 +3913,17 @@ void IndirectAccessUnit::executeInstruction() {
                 Instruction::OpcodeType::INDIR_LD_INDEX ||
             isVirtualLoad()) {
             my_word_size = my_instruction->getWordSize(my_dst_tile);
-        } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR ||
-                   my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_VECTOR) {
-            my_word_size = my_instruction->getWordSize(my_src_tile);
-        } else if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR ||
-                   my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR) {
+        } else if (my_instruction->opcode ==
+                       Instruction::OpcodeType::INDIR_ST_VECTOR ||
+                   my_instruction->opcode ==
+                       Instruction::OpcodeType::INDIR_RMW_VECTOR) {
+            my_word_size = isBackedRmw()
+                ? my_instruction->WordSize()
+                : my_instruction->getWordSize(my_src_tile);
+        } else if (my_instruction->opcode ==
+                       Instruction::OpcodeType::INDIR_ST_SCALAR ||
+                   my_instruction->opcode ==
+                       Instruction::OpcodeType::INDIR_RMW_SCALAR) {
             my_word_size = my_instruction->WordSize();
         } else {
             assert(false);
@@ -3722,7 +3967,7 @@ void IndirectAccessUnit::executeInstruction() {
              my_instruction->opcode ==
                  Instruction::OpcodeType::INDIR_LD_INDEX ||
              isVirtualLoad() ||
-             my_instruction->opcode ==
+             isBackedRmw() || my_instruction->opcode ==
                  Instruction::OpcodeType::INDIR_ST_SCALAR ||
              my_instruction->opcode ==
                  Instruction::OpcodeType::INDIR_RMW_SCALAR);
@@ -3894,8 +4139,41 @@ void IndirectAccessUnit::executeInstruction() {
         direct_index_words.clear();
         direct_index_max_lines = 0;
         direct_index_max_words = 0;
+        for (auto &slot : backed_rmw_values)
+            slot = BackedRmwValueSlot();
+        for (auto &slot : backed_rmw_writes)
+            slot = BackedRmwWriteSlot();
+        for (auto &slot : backed_rmw_record_lines)
+            slot = BackedRmwRecordLineSlot();
+        backed_rmw_record_line_victim = 0;
+        backed_rmw_generation = 0;
+        backed_rmw_value_hwm = 0;
+        backed_rmw_write_hwm = 0;
+        backed_rmw_record_responses = 0;
+        backed_rmw_record_line_reads = 0;
+        backed_rmw_selected = 0;
+        backed_rmw_applied = 0;
+        backed_rmw_a_reads_inflight = 0;
+        backed_rmw_write_issues = 0;
+        backed_rmw_write_acks = 0;
         if (isDirectIndexLoad()) {
-            panic_if(direct_index_partitions != 1 && !isVirtualLoad(),
+            panic_if(isBackedRmw() && !isFullScopeBackedRmw() &&
+                         (!maa->virtual_index_range_passes ||
+                          maa->virtual_index_range_policy != 3 ||
+                          !maa->virtual_index_descriptor_spool ||
+                          maa->virtual_bounded_global_merge),
+                     "I[%d] backed RMW requires bounded quantile passes, "
+                     "descriptor spooling, and no load-only global merge\n",
+                     my_indirect_id);
+            panic_if(isFullScopeBackedRmw() &&
+                         (direct_index_partitions != 1 ||
+                          maa->virtual_index_range_passes ||
+                          maa->virtual_index_descriptor_spool),
+                     "I[%d] full-scope backed RMW uses one 16K Row/Offset "
+                     "domain without descriptor partitioning\n",
+                     my_indirect_id);
+            panic_if(direct_index_partitions != 1 &&
+                         !isVirtualLoad() && !isBackedRmw(),
                      "I[%d] direct-index partitioning is only supported by "
                      "virtual loads\n",
                      my_indirect_id);
@@ -3922,7 +4200,7 @@ void IndirectAccessUnit::executeInstruction() {
                      my_indirect_id, my_max, num_tile_elements);
             my_idx_tile_ready = true;
             if (maa->virtual_index_range_passes) {
-                panic_if(!isVirtualLoad(),
+                panic_if(!isVirtualLoad() && !isBackedRmw(),
                          "I[%d] bounded range passes require a virtual load\n",
                          my_indirect_id);
                 if (maa->virtual_index_range_policy == 3) {
@@ -4022,9 +4300,9 @@ void IndirectAccessUnit::executeInstruction() {
         my_index_min_addr = my_instruction->indexMinAddr;
         my_index_max_addr = my_instruction->indexMaxAddr;
         my_index_addr_range_id = my_instruction->indexAddrRangeID;
-        if (isVirtualLoad()) {
+        if (isVirtualLoad() || isBackedRmw()) {
             panic_if(my_backing_addr_range_id < 0,
-                     "I[%d] virtual backing has no registered region\n",
+                     "I[%d] indirect backing has no registered region\n",
                      my_indirect_id);
             panic_if(my_backing_addr < my_backing_min_addr ||
                          my_backing_addr >= my_backing_max_addr,
@@ -4270,11 +4548,66 @@ void IndirectAccessUnit::executeInstruction() {
                                 addr, virtual_head, virtual_words,
                                 my_fill_finished, maa->virtual_grow_order,
                                 false);
+                    } else if (isFullScopeBackedRmw()) {
+                        entry_ready =
+                            RT[my_RT_config][RT_idx].claim_entry_send(
+                                addr, virtual_head, virtual_words,
+                                my_fill_finished, maa->virtual_grow_order,
+                                false);
                     } else {
                         entry_ready = RT[my_RT_config][RT_idx].get_entry_send(
                             addr, my_fill_finished);
                     }
                     if (entry_ready) {
+                        if (isFullScopeBackedRmw()) {
+                            const uint64_t pending_writes =
+                                backed_rmw_write_issues -
+                                backed_rmw_write_acks;
+                            if (pending_writes +
+                                    backed_rmw_a_reads_inflight >=
+                                BackedRmwWriteSlots) {
+                                virtual_capacity_full = true;
+                                break;
+                            }
+                            int missing_records = 0;
+                            int count_cursor = virtual_head;
+                            for (int word = 0; word < virtual_words; ++word) {
+                                const auto entry =
+                                    offset_table->peek_entry(count_cursor);
+                                if (direct_index_words.find(entry.itr) ==
+                                    direct_index_words.end())
+                                    missing_records++;
+                                count_cursor = entry.next_itr;
+                            }
+                            if (direct_index_words.size() + missing_records >
+                                BackedRmwResponseRecords) {
+                                virtual_capacity_full = true;
+                                break;
+                            }
+                            bool operands_ready = true;
+                            int cursor = virtual_head;
+                            for (int word = 0; word < virtual_words; ++word) {
+                                const auto entry =
+                                    offset_table->peek_entry(cursor);
+                                if (!ensureBackedRmwOperand(entry.itr)) {
+                                    operands_ready = false;
+                                    break;
+                                }
+                                cursor = entry.next_itr;
+                            }
+                            if (!operands_ready) {
+                                virtual_capacity_full = true;
+                                break;
+                            }
+                            Addr committed_addr = 0;
+                            const bool committed =
+                                RT[my_RT_config][RT_idx].get_entry_send(
+                                    committed_addr, my_fill_finished);
+                            panic_if(!committed || committed_addr != addr,
+                                     "I[%d] backed source claim changed "
+                                     "between operand fetch and A issue\n",
+                                     my_indirect_id);
+                        }
                         if (native_order_claim) {
                             const std::vector<int> addr_vec =
                                 maa->map_addr(addr);
@@ -4384,6 +4717,8 @@ void IndirectAccessUnit::executeInstruction() {
                                     rowtable_latency);
                         } else {
                             my_expected_responses++;
+                            if (isBackedRmw())
+                                backed_rmw_a_reads_inflight++;
                             recordReorderSurvivalIssue(addr);
                             createReadPacket(
                                 addr,
@@ -5116,7 +5451,6 @@ void IndirectAccessUnit::executeInstruction() {
                     static_cast<uint64_t>(maa->getTicksToCycles(
                         descriptor_spool_within_pass_demand_wait_ticks)),
                     BoundedDescriptorSpool::MaxActiveDescriptors);
-            descriptor_spool.reset();
             descriptor_spool_bucket_active = false;
             descriptor_spool_bucket_scan_complete = false;
             descriptor_spool_replay_active = false;
@@ -5132,6 +5466,79 @@ void IndirectAccessUnit::executeInstruction() {
             descriptor_spool_index_page_paddrs.fill(0);
             descriptor_spool_index_page_valid.fill(false);
         }
+        if (isBackedRmw()) {
+            panic_if(backed_rmw_generation == 0 ||
+                         backed_rmw_selected != backed_rmw_applied ||
+                         backed_rmw_a_reads_inflight != 0 ||
+                         backed_rmw_write_issues != backed_rmw_write_acks ||
+                         !direct_index_words.empty() ||
+                         !direct_index_ready_lines.empty() ||
+                         std::any_of(
+                             backed_rmw_values.begin(),
+                             backed_rmw_values.end(),
+                             [](const auto &slot) { return slot.valid; }) ||
+                         std::any_of(
+                             backed_rmw_writes.begin(),
+                             backed_rmw_writes.end(),
+                             [](const auto &slot) { return slot.valid; }),
+                     "I[%d] backed RMW failed exact terminal closure\n",
+                     my_indirect_id);
+            constexpr uint64_t value_control_bytes =
+                sizeof(backed_rmw_values);
+            constexpr uint64_t response_control_bytes =
+                sizeof(backed_rmw_record_lines);
+            constexpr uint64_t write_control_bytes =
+                sizeof(backed_rmw_writes);
+            DPRINTF(MAAVirtualTrace,
+                    "event=backed_rmw_complete schema=2 unit=%d "
+                    "operation_tick=%lu generation=%u logical=%d "
+                    "selected=%lu applied=%lu record_responses=%lu "
+                    "record_line_reads=%lu record_read_bytes=%lu "
+                    "record_publication_bytes=%lu "
+                    "descriptor_write_lines=%u "
+                    "descriptor_write_bytes=%lu descriptor_write_acks=%u "
+                    "descriptor_read_lines=%u descriptor_read_bytes=%lu "
+                    "descriptor_read_responses=%u "
+                    "metadata_scope=%s response_records=%u "
+                    "response_line_slots=%u response_control_bytes=%lu "
+                    "diagnostic_value_slots=%u value_hwm=%u "
+                    "diagnostic_value_bytes=%lu write_slots=%u "
+                    "write_hwm=%u write_control_bytes=%lu "
+                    "a_write_issues=%lu a_write_acks=%lu "
+                    "generation_exact=1 publication=timed_guest_cache_stores "
+                    "evidence_scope=api_mechanism promotable=0 "
+                    "non_promotable_reason=aos_record_traffic_and_or_4k_"
+                    "values\n",
+                    my_indirect_id, my_decode_start_tick,
+                    backed_rmw_generation, my_max,
+                    backed_rmw_selected, backed_rmw_applied,
+                    backed_rmw_record_responses,
+                    backed_rmw_record_line_reads,
+                    backed_rmw_record_line_reads * block_size,
+                    static_cast<uint64_t>(my_max) *
+                        BackedRmwRecordBytes,
+                    descriptor_spool.writeLinesIssued(),
+                    static_cast<uint64_t>(
+                        descriptor_spool.writeLinesIssued()) *
+                        BoundedDescriptorSpool::LineBytes,
+                    descriptor_spool.writeAcks(),
+                    descriptor_spool.readLinesIssued(),
+                    static_cast<uint64_t>(
+                        descriptor_spool.readLinesIssued()) *
+                        BoundedDescriptorSpool::LineBytes,
+                    descriptor_spool.readLineResponses(),
+                    isFullScopeBackedRmw() ? "full16k" : "diagnostic4k",
+                    BackedRmwResponseRecords, BackedRmwRecordLineSlots,
+                    response_control_bytes, BackedRmwValueSlots,
+                    backed_rmw_value_hwm, value_control_bytes,
+                    BackedRmwWriteSlots, backed_rmw_write_hwm,
+                    write_control_bytes, backed_rmw_write_issues,
+                    backed_rmw_write_acks);
+            for (auto &slot : backed_rmw_record_lines)
+                slot = BackedRmwRecordLineSlot();
+        }
+        if (descriptor_spool.configured())
+            descriptor_spool.reset();
         if (maa->virtual_bounded_global_merge) {
             bounded_global_merge.reset();
             bounded_global_merge_phase = BoundedGlobalMergePhase::None;
@@ -5338,6 +5745,8 @@ void IndirectAccessUnit::createReadPacket(Addr addr, int latency) {
     DPRINTF(MAAIndirect, "I[%d] %s: created %s for mem\n", my_indirect_id, __func__, read_pkt->print());
 }
 void IndirectAccessUnit::createDirectIndexReadPacket(Addr addr, int latency) {
+    if (isBackedRmw())
+        backed_rmw_record_line_reads++;
     if (isVirtualLoad()) {
         if (macro_b_first_issue_tick == 0)
             macro_b_first_issue_tick = curTick();
@@ -5684,6 +6093,12 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         (bounded_response_load && virtual_head == -1)) {
         return false;
     }
+    if (isBackedRmw()) {
+        panic_if(backed_rmw_a_reads_inflight == 0,
+                 "I[%d] backed A response has no inflight owner\n",
+                 my_indirect_id);
+        backed_rmw_a_reads_inflight--;
+    }
     accountReadResponse(addr, is_block_cached);
     if (bounded_response_load) {
         accountVirtualRequestInterval();
@@ -5766,7 +6181,7 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
         int itr = entry.itr;
         int wid = entry.wid;
         DPRINTF(MAAIndirect, "I[%d] %s: itr (%d) wid (%d) matched!\n", my_indirect_id, __func__, itr, wid);
-        if (my_dst_tile != -1 && !isVirtualLoad()) {
+        if (my_dst_tile != -1 && !isVirtualLoad() && !isBackedRmw()) {
             if (my_word_size == 4) {
                 maa->spd->setData<uint32_t>(my_dst_tile, itr, dataptr_u32_typed[wid]);
                 DPRINTF(MAAIndirect, "I[%d] %s: SPD[%d][%d] = %u/%d/%f!\n", my_indirect_id, __func__, my_dst_tile, itr, ((uint32_t *)new_data)[wid], ((int32_t *)new_data)[wid], ((float *)new_data)[wid]);
@@ -5805,9 +6220,40 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
             break;
         }
         case Instruction::OpcodeType::INDIR_RMW_VECTOR: {
+            const BackedRmwValueSlot *backed_operand = nullptr;
+            const DirectIndexWord *backed_record = nullptr;
+            if (isBackedRmw()) {
+                if (isFullScopeBackedRmw()) {
+                    auto record = direct_index_words.find(itr);
+                    panic_if(record == direct_index_words.end() ||
+                                 record->second.rmwGeneration !=
+                                     backed_rmw_generation,
+                             "I[%d] RMW response references stale record %d\n",
+                             my_indirect_id, itr);
+                    backed_record = &record->second;
+                } else {
+                    panic_if(itr < 0 ||
+                                 itr >= static_cast<int>(
+                                     backed_rmw_values.size()) ||
+                                 !backed_rmw_values[itr].valid ||
+                                 backed_rmw_values[itr].generation !=
+                                     backed_rmw_generation,
+                             "I[%d] RMW response references stale value "
+                             "slot %d\n",
+                             my_indirect_id, itr);
+                    backed_operand = &backed_rmw_values[itr];
+                }
+            }
             switch (my_instruction->datatype) {
             case Instruction::DataType::UINT32_TYPE: {
-                uint32_t word_data = maa->spd->getData<uint32_t>(my_src_tile, itr);
+                uint32_t word_data;
+                if (backed_operand || backed_record) {
+                    const uint64_t value = backed_record
+                        ? backed_record->rmwValue : backed_operand->value;
+                    std::memcpy(&word_data, &value,
+                                sizeof(word_data));
+                } else
+                    word_data = maa->spd->getData<uint32_t>(my_src_tile, itr);
                 if (my_instruction->optype == Instruction::OPType::ADD_OP) {
                     DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] (%u) += SPD[%d][%d] (%u) = %u!\n",
                             my_indirect_id, __func__, wid, ((uint32_t *)new_data)[wid], my_src_tile, itr, word_data, ((uint32_t *)new_data)[wid] + word_data);
@@ -5822,7 +6268,14 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 break;
             }
             case Instruction::DataType::INT32_TYPE: {
-                int32_t word_data = maa->spd->getData<int32_t>(my_src_tile, itr);
+                int32_t word_data;
+                if (backed_operand || backed_record) {
+                    const uint64_t value = backed_record
+                        ? backed_record->rmwValue : backed_operand->value;
+                    std::memcpy(&word_data, &value,
+                                sizeof(word_data));
+                } else
+                    word_data = maa->spd->getData<int32_t>(my_src_tile, itr);
                 if (my_instruction->optype == Instruction::OPType::ADD_OP) {
                     DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] (%d) += SPD[%d][%d] (%d) = %d!\n",
                             my_indirect_id, __func__, wid, ((int32_t *)new_data)[wid], my_src_tile, itr, word_data, ((int32_t *)new_data)[wid] + word_data);
@@ -5837,7 +6290,14 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 break;
             }
             case Instruction::DataType::FLOAT32_TYPE: {
-                float word_data = maa->spd->getData<float>(my_src_tile, itr);
+                float word_data;
+                if (backed_operand || backed_record) {
+                    const uint64_t value = backed_record
+                        ? backed_record->rmwValue : backed_operand->value;
+                    std::memcpy(&word_data, &value,
+                                sizeof(word_data));
+                } else
+                    word_data = maa->spd->getData<float>(my_src_tile, itr);
                 if (my_instruction->optype == Instruction::OPType::ADD_OP) {
                     DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] (%f) += SPD[%d][%d] (%f) = %f!\n",
                             my_indirect_id, __func__, wid, ((float *)new_data)[wid], my_src_tile, itr, word_data, ((float *)new_data)[wid] + word_data);
@@ -5852,7 +6312,10 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 break;
             }
             case Instruction::DataType::UINT64_TYPE: {
-                uint64_t word_data = maa->spd->getData<uint64_t>(my_src_tile, itr);
+                uint64_t word_data = backed_record
+                    ? backed_record->rmwValue
+                    : backed_operand ? backed_operand->value
+                    : maa->spd->getData<uint64_t>(my_src_tile, itr);
                 if (my_instruction->optype == Instruction::OPType::ADD_OP) {
                     DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] (%lu) += SPD[%d][%d] (%lu) = %lu!\n",
                             my_indirect_id, __func__, wid, ((uint64_t *)new_data)[wid], my_src_tile, itr, word_data, ((uint64_t *)new_data)[wid] + word_data);
@@ -5867,7 +6330,14 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 break;
             }
             case Instruction::DataType::INT64_TYPE: {
-                int64_t word_data = maa->spd->getData<int64_t>(my_src_tile, itr);
+                int64_t word_data;
+                if (backed_operand || backed_record) {
+                    const uint64_t value = backed_record
+                        ? backed_record->rmwValue : backed_operand->value;
+                    std::memcpy(&word_data, &value,
+                                sizeof(word_data));
+                } else
+                    word_data = maa->spd->getData<int64_t>(my_src_tile, itr);
                 if (my_instruction->optype == Instruction::OPType::ADD_OP) {
                     DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] (%ld) += SPD[%d][%d] (%ld) = %ld!\n",
                             my_indirect_id, __func__, wid, ((int64_t *)new_data)[wid], my_src_tile, itr, word_data, ((int64_t *)new_data)[wid] + word_data);
@@ -5882,7 +6352,14 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 break;
             }
             case Instruction::DataType::FLOAT64_TYPE: {
-                double word_data = maa->spd->getData<double>(my_src_tile, itr);
+                double word_data;
+                if (backed_operand || backed_record) {
+                    const uint64_t value = backed_record
+                        ? backed_record->rmwValue : backed_operand->value;
+                    std::memcpy(&word_data, &value,
+                                sizeof(word_data));
+                } else
+                    word_data = maa->spd->getData<double>(my_src_tile, itr);
                 if (my_instruction->optype == Instruction::OPType::ADD_OP) {
                     DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] (%lf) += SPD[%d][%d] (%lf) = %lf!\n",
                             my_indirect_id, __func__, wid, ((double *)new_data)[wid], my_src_tile, itr, word_data, ((double *)new_data)[wid] + word_data);
@@ -5898,6 +6375,13 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
             }
             default:
                 assert(false);
+            }
+            if (isBackedRmw()) {
+                if (isFullScopeBackedRmw())
+                    discardBackedRmwResponseOperand(itr);
+                else
+                    releaseBackedRmwValue(itr);
+                backed_rmw_applied++;
             }
             break;
         }
@@ -6009,7 +6493,9 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
     if (my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_VECTOR || my_instruction->opcode == Instruction::OpcodeType::INDIR_ST_SCALAR || my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_VECTOR || my_instruction->opcode == Instruction::OpcodeType::INDIR_RMW_SCALAR) {
         RequestPtr real_req = std::make_shared<Request>(addr, block_size, flags, maa->requestorId);
         real_req->setRegion(my_addr_range_id);
-        PacketPtr write_pkt = new Packet(real_req, MemCmd::WritebackDirty);
+        PacketPtr write_pkt = new Packet(
+            real_req, isBackedRmw() ? MemCmd::WriteReq
+                                    : MemCmd::WritebackDirty);
         write_pkt->allocate();
         write_pkt->setData(new_data);
         for (int i = 0; i < block_size / my_word_size; i++) {
@@ -6019,9 +6505,28 @@ IndirectAccessUnit::recvData(const Addr addr, uint8_t *dataptr,
                 DPRINTF(MAAIndirect, "I[%d] %s: new_data[%d] = %f!\n", my_indirect_id, __func__, i, write_pkt->getPtr<double>()[i]);
         }
         DPRINTF(MAAIndirect, "I[%d] %s: created %s to send in %d cycles\n", my_indirect_id, __func__, write_pkt->print(), total_latency);
-        maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id, write_pkt,
-                        maa->getClockEdge(total_latency), my_force_cache,
-                        false, true);
+        if (isBackedRmw()) {
+            auto write_slot = std::find_if(
+                backed_rmw_writes.begin(), backed_rmw_writes.end(),
+                [](const auto &slot) { return !slot.valid; });
+            panic_if(write_slot == backed_rmw_writes.end(),
+                     "I[%d] backed RMW write scoreboard overflow\n",
+                     my_indirect_id);
+            *write_slot = BackedRmwWriteSlot{
+                true, addr, backed_rmw_generation};
+            const uint32_t used = std::count_if(
+                backed_rmw_writes.begin(), backed_rmw_writes.end(),
+                [](const auto &slot) { return slot.valid; });
+            backed_rmw_write_hwm = std::max(backed_rmw_write_hwm, used);
+            backed_rmw_write_issues++;
+            maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id,
+                            write_pkt, maa->getClockEdge(total_latency),
+                            true, true);
+        } else {
+            maa->sendPacket(FuncUnitType::INDIRECT, my_indirect_id,
+                            write_pkt, maa->getClockEdge(total_latency),
+                            my_force_cache, false, true);
+        }
         (*maa->stats.IND_StoresMemAccessing[my_indirect_id])++;
     } else {
         my_received_responses++;
@@ -7289,6 +7794,27 @@ void IndirectAccessUnit::transitionAttributionStage(
 
 void IndirectAccessUnit::retirementWriteComplete(
     Addr addr, const uint8_t *writeRespPayload, unsigned payloadBytes) {
+    auto backed_write = std::find_if(
+        backed_rmw_writes.begin(), backed_rmw_writes.end(),
+        [addr](const auto &slot) { return slot.valid && slot.paddr == addr; });
+    if (backed_write != backed_rmw_writes.end()) {
+        panic_if(!isBackedRmw() ||
+                     backed_write->generation != backed_rmw_generation,
+                 "I[%d] stale backed RMW WriteResp at 0x%lx\n",
+                 my_indirect_id, addr);
+        *backed_write = BackedRmwWriteSlot();
+        backed_rmw_write_acks++;
+        my_received_responses++;
+        DPRINTF(MAAVirtualTrace,
+                "event=backed_rmw_write_ack schema=1 unit=%d "
+                "operation_tick=%lu generation=%u paddr=0x%lx "
+                "issues=%lu acks=%lu\n",
+                my_indirect_id, my_decode_start_tick,
+                backed_rmw_generation, addr, backed_rmw_write_issues,
+                backed_rmw_write_acks);
+        scheduleNextExecution(true);
+        return;
+    }
     auto global_write = std::find_if(
         bounded_global_merge_write_slots.begin(),
         bounded_global_merge_write_slots.end(),
