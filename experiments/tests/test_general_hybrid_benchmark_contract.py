@@ -216,6 +216,37 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         )[0]
         self.assertNotIn("maa_const(", token_body)
 
+    def test_cg_and_ume_materializers_use_immutable_page_registers(
+        self,
+    ) -> None:
+        checks = {
+            "benchmarks/NAS/cg/cg.cpp": (
+                "page_min_reg",
+                "page_max_reg",
+                "page_stride_reg",
+            ),
+            "benchmarks/UME/gradzatp.cpp": (
+                "page_min_reg",
+                "page_max_reg",
+                "page_stride_reg",
+            ),
+            "benchmarks/UME/gradzatz.cpp": (
+                "page_min_reg",
+                "page_max_reg",
+                "page_stride_reg",
+            ),
+        }
+        for relative, names in checks.items():
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("MAA_GENERAL_VIRTUAL_CONSUMER", source, relative)
+            for name in names:
+                self.assertIn(name, source, relative)
+            general = source.split("MAA_GENERAL_VIRTUAL_CONSUMER", 1)[1]
+            self.assertNotIn("maa_const<int>(0, page_min_reg)", general)
+            self.assertNotIn(
+                "maa_const<int>(page_size, page_max_reg)", general
+            )
+
     def test_page_zero_prearm_is_explicit_and_exact(self) -> None:
         source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
         guest = (

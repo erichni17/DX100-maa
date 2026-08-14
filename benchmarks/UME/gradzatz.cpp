@@ -130,6 +130,9 @@ static MAAVirtualConsumerMode virtual_consumer_mode =
 int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
 int tiles3[NUM_CORES], tiles4[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+int page_regs0[NUM_CORES], page_regs1[NUM_CORES], page_regs2[NUM_CORES];
+#endif
 #ifdef MAA_VIRTUAL_GATHER
 int backing_start_regs[NUM_CORES], backing_end_regs[NUM_CORES];
 #endif
@@ -210,7 +213,7 @@ void gradzatz_MAA() {
 #pragma omp parallel
     {
         int reg0, reg1, reg2;
-#ifdef MAA_VIRTUAL_GATHER
+#if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         int backing_start_reg, backing_end_reg;
 #endif
         int tile0, tile2, tile3, tile5, tileCond;
@@ -218,7 +221,12 @@ void gradzatz_MAA() {
         reg0 = regs0[omp_thread_id];
         reg1 = regs1[omp_thread_id];
         reg2 = regs2[omp_thread_id];
-#ifdef MAA_VIRTUAL_GATHER
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+        const int page_min_reg = page_regs0[omp_thread_id];
+        const int page_max_reg = page_regs1[omp_thread_id];
+        const int page_stride_reg = page_regs2[omp_thread_id];
+#endif
+#if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         backing_start_reg = backing_start_regs[omp_thread_id];
         backing_end_reg = backing_end_regs[omp_thread_id];
 #endif
@@ -230,7 +238,7 @@ void gradzatz_MAA() {
 
         maa_const<int>(1, reg2);
         maa_const<int>(num_corners, reg1);
-#ifdef MAA_VIRTUAL_GATHER
+#if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         maa_const<int>(0, backing_start_reg);
 #endif
 #pragma omp for
@@ -317,18 +325,16 @@ void gradzatz_MAA() {
                 maa_indirect_load<DATATYPE>(zone_volume.data(), tile3, tile2,
                                             tileCond);
 
-                maa_const<int>(0, backing_start_reg);
-                maa_const<int>(page_size, backing_end_reg);
                 if (gather_size == TILE_SIZE) {
                     maa_virtual_consumer_load_page<DATATYPE>(
                         virtual_consumer_mode,
                         virtual_gather_backing[omp_thread_id] + page_offset,
                         tile0, page_offset / MAA_CONSUMER_TILE_SIZE,
-                        backing_start_reg, backing_end_reg, reg2, tile5);
+                        page_min_reg, page_max_reg, page_stride_reg, tile5);
                 } else {
                     maa_stream_load<DATATYPE>(
                         virtual_gather_backing[omp_thread_id] + page_offset,
-                        backing_start_reg, backing_end_reg, reg2, tile5);
+                        page_min_reg, page_max_reg, page_stride_reg, tile5);
                 }
                 wait_ready(tile2);
                 wait_ready(tile5);
@@ -681,6 +687,11 @@ int main(int argc, char *argv[]) {
             regs0[thread_id] = get_new_reg<int>();
             regs1[thread_id] = get_new_reg<int>();
             regs2[thread_id] = get_new_reg<int>();
+#ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+            page_regs0[thread_id] = get_new_reg<int>(0);
+            page_regs1[thread_id] = get_new_reg<int>(MAA_CONSUMER_TILE_SIZE);
+            page_regs2[thread_id] = get_new_reg<int>(1);
+#endif
 #ifdef MAA_VIRTUAL_GATHER
             backing_start_regs[thread_id] = get_new_reg<int>();
             backing_end_regs[thread_id] = get_new_reg<int>();
