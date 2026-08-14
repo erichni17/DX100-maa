@@ -13,6 +13,15 @@ The mechanism is separate from `InactiveProducerLinePayloadCapture`. gem5
 rejects configurations that enable both because no interaction between their
 ports, storage, or replay authority has been proven.
 
+It is also distinct from the bounded active-page fragment accumulation added
+by commit `8d15203c`. That existing `HybridConsumerPipeline` path owns at most
+16 already-charged line buffers and remains the sole fragment accumulator once
+the logical materializer page is active. Lifetime-scale retention accepts only
+pre-active lines, does not consume those charged buffers, and keeps separate
+statistics. A retained line can cross the boundary only after it was completed
+before activation and subsequently authenticated for replay after page seal;
+otherwise the active path or coherent backing fallback proceeds unchanged.
+
 ## Bounded organization and correctness
 
 - Capacity is 0, 512, 1,024, 2,048, or 4,096 total entries; 0 is the default.
@@ -87,11 +96,13 @@ tiles and rounds to bytes only after summing bits.
 
 ## Statistics and validation boundary
 
-The gem5 surface separately reports accepted fragments, merged words,
-reconstructed full lines, exact replay hits and misses, first-owner tag
-conflicts, overlap poison, write-port poison, stale/untracked drops, shared
-read-port stalls, clears, high-water occupancy, payload bytes, and control
-bytes.
+The gem5 surface separately reports inactive-retention accepted fragments,
+merged words, reconstructed full lines, exact replay hits and misses,
+first-owner tag conflicts, overlap poison, write-port poison, stale/untracked
+drops, shared read-port stalls, clears, high-water occupancy, payload bytes,
+and control bytes. These counters remain distinct from the active-page
+`page_materialization_fragment_accumulated_lines` and
+`page_materialization_fragment_buffer_stalls` counters.
 
 Focused optimized and ASan/UBSan tests cover merge and completion, overlap and
 collision poison, lost-fragment poison, seal gating, stale descriptor/epoch,

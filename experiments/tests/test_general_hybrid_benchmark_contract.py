@@ -568,6 +568,49 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertIn("BankCount = 4", mechanism)
         self.assertIn("std::bitset<MaxLogicalLines> poison", mechanism)
 
+    def test_inactive_retention_preserves_active_fragment_accumulation(
+        self,
+    ) -> None:
+        header = (ROOT / "src/mem/MAA/MAA.hh").read_text(encoding="utf-8")
+        source = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
+        pipeline = (ROOT / "src/mem/MAA/HybridConsumerPipeline.hh").read_text(
+            encoding="utf-8"
+        )
+
+        # The 16-buffer active-page mechanism remains owned by the consumer
+        # pipeline. Lifetime retention neither replaces nor embeds into it.
+        self.assertIn("captureMaterializationFragment", pipeline)
+        self.assertIn("MaxMaterializationFragmentBuffers", pipeline)
+        self.assertIn("BufferState::ProducerFragments", pipeline)
+        self.assertNotIn("InactiveProducerMaskedFragmentRetention", pipeline)
+
+        # Only pre-active lines enter the lifetime-scale retention structure.
+        # Once this logical page is active, the established charged-buffer
+        # path remains the sole fragment accumulator.
+        self.assertRegex(
+            source,
+            r"materialization != nullptr && !activePageLine\s+&&\s+"
+            r"inactive_page_masked_fragment_retention_lines != 0",
+        )
+        self.assertRegex(
+            source,
+            r"!directStaged && !forwarded && wordMask != fullMask\s+&&\s+"
+            r"materialization->pageActive",
+        )
+        self.assertIn("captureMaterializationFragment(", source)
+
+        # The two mechanisms retain independent observability surfaces.
+        self.assertIn(
+            "page_materialization_fragment_accumulated_lines", header
+        )
+        self.assertIn(
+            "page_materialization_inactive_masked_fragments_accepted", header
+        )
+        self.assertIn("page_materialization_fragment_buffer_stalls", header)
+        self.assertIn(
+            "page_materialization_inactive_masked_write_port_poison", header
+        )
+
     def test_direct_spd_fragment_staging_is_opt_in_and_payload_free(
         self,
     ) -> None:
