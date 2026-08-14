@@ -42,5 +42,25 @@ Validation performed without a gem5 simulation:
 - `scons build/X86/mem/MAA/IndirectAccess.o build/X86/mem/MAA/MAA.o -j8`
   passed, including regenerated `MAA.py` parameter bindings.
 
-No full gem5 simulation was run.  The new lane-2/lane-4 runner arms are the
-deferred performance/correctness treatment for a later simulation campaign.
+## Exact gem5 result
+
+The deferred sweep completed at:
+
+`/data1/nier/dx100-runs/2026-08-14-soa-jit-apply-lanes-p16v32-08845927-r1`
+
+All arms restored the same immutable checkpoint, used guest SHA-256
+`c7fb4f8dd038cb129115f11a11390aa672bd4e9fba4f05573e4aa257e089c497`,
+produced exact output hash `2761840269561229581` with zero errors, and closed
+the value, A-read, A-write, alias, and terminal ledgers.
+
+| active lanes | `simTicks` | delta from lane 1 | value reads | value stalls |
+|---:|---:|---:|---:|---:|
+| 1 | 52,211,843 | baseline | 22,280 | 114,170 |
+| 2 | 54,581,566 | +4.538% | 22,965 | 130,905 |
+| 4 | 54,522,722 | +4.426% | 22,624 | 117,354 |
+
+The additional lanes are a measured rejection.  They change request timing,
+reduce value-cache merging, increase cache-line reads, and make the exact
+microbenchmark slower.  The default one-lane treatment remains the selected
+configuration; the two- and four-lane modes must not be presented as an
+optimization or included in the promoted hardware point.

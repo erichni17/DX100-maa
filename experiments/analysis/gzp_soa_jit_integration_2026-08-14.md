@@ -564,6 +564,31 @@ copy and validate its exact WriteResp, retry, generation, and terminal-drain
 counters.  Until that happens, this integration is valid correctness evidence
 for the logical16 SoA/JIT RMW mapping, not performance or promotion evidence.
 
+### First exact volume-only performance result
+
+The matched current-hybrid versus `volume_only_soa_jit` execution completed at:
+
+`/data1/nier/dx100-runs/2026-08-14-gzp-soa-jit-optimized-prepublisher-fbec9dbe-r1`
+
+Both arms exited with wrapper status zero, exact output hash
+`11225737641199706160`, zero non-finite values, and zero reference errors over
+1,180,000 elements.  The volume arm completed 61 SoA/JIT generations and
+closed 949,411 aliases, 875,918 value reads, and 509,830 A-line reads and
+writes exactly.
+
+| treatment | `simTicks` | total cycles | RMW cycles / instructions |
+|---|---:|---:|---:|
+| current hybrid | 7,520,117,655 | 24,025,935 | 15,134,049 / 490 |
+| volume-only SoA/JIT | 9,557,940,150 | 30,536,550 | 21,453,212 / 307 |
+
+The first implementation is **27.098% slower** than the current hybrid even
+though it removes 183 ordinary RMW instructions.  It adds 875,918 timed value
+reads, 509,830 response-bearing A-line read/write pairs, and 10,244,167
+context-scoreboard stalls.  This rejects instruction-count reduction by
+itself as an optimization.  The next measured treatments are larger bounded
+A-line context capacity and a live response-bearing producer; neither may be
+claimed until the same exact application gate passes.
+
 Local source validation compiled the native16, native4, existing general
 hybrid, and selector-compatible SoA/JIT targets together with `g++ -O3`; the
 contract tests, Python bytecode checks, five-arm optimized-setting plan check,
