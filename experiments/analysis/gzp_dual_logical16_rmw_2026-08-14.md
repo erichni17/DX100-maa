@@ -62,5 +62,61 @@ Acceptance requires the exact output hash and scalar reference, unique
 response counts, closed publisher stats and trace `WriteResp` counts, and
 strictly lower candidate `simTicks`.  Host time is not an authorized metric.
 
-Measured evidence and the final accept/reject decision will be appended after
-the clean-source paired run.
+## Measured evidence
+
+The default-off implementation was frozen in `ec49389ff49d7a61a719deb0f206fdc8289680ad`.
+Trace-ledger support was frozen in `55a02fd80e91708dfb43efb6bae5a600d7931318`,
+the composition/replica gate in
+`9ef78930e661bda38594e7f16bfd1e032d900edd`, and the full-size concurrent
+gate in `0e8c6d9f` (a user-authorized one-time `--no-verify` commit after direct
+`py_compile`, focused-contract, and `git diff --check` validation).  The gem5
+binary SHA-256 is
+`ae0afdcb2e5780bedf75130ef405e9fb8f21d013c760b1060cb265e4ec0de73e`.
+
+The inherited eight-context mechanism run is frozen at
+`/data1/nier/dx100-runs/2026-08-14-gzp-dual-logical16-one-window-55a02fd-r2`.
+It closed exact output/reference and all terminal/WriteResp ledgers.  The
+volume-only arm took 437,481,352 ticks and the dual arm 318,956,390 ticks
+(1.371602x).  This is mechanism evidence only because it used eight active
+contexts and 32 active value owners.
+
+The decision-bearing one-window composition run is frozen at
+`/data1/nier/dx100-runs/2026-08-14-gzp-dual-logical16-c32-v64-two-rep-9ef7893-r1`.
+Both replicas are bit-for-bit/statistically identical at 32 active contexts,
+64 active value owners, masked indices, and pre-A enabled:
+
+- volume-only: 405,168,484 ticks, five RMWs, 298,994 RMW cycles;
+- dual logical16: 254,113,119 ticks, two RMWs, 331,707 RMW cycles;
+- direction: 151,055,365 fewer ticks, or 1.594441x baseline/candidate;
+- exact FP32 hash `12472729817211538253`, zero volume/gradient errors, and
+  196,384 checked elements in every restore;
+- candidate publisher: 1,024 issues, 1,024 accepts, 1,024 unique WriteResps,
+  four terminals, zero retries, 992 credit-stall observations, credit HWM 8,
+  and zero measured non-stream overlap issues in each replica.
+
+Publisher serialization therefore did not consume the page-RMW reduction in
+the exact composed one-window gate, even though candidate aggregate RMW cycles
+rose by 32,713.  The one-window decision is **ACCEPT**, conditional on full-GZP
+closure.
+
+## Full-GZP handoff and review caveat
+
+The first transient full attempt is preserved as incomplete infrastructure
+evidence at
+`/data1/nier/dx100-runs/2026-08-14-gzp-dual-logical16-full-c32-v64-two-rep-0e8c6d9-r1`
+with sentinel `campaign.exit=8`; its checkpoint child disappeared without a
+gem5 fatal marker.
+
+The lead owns the durable successor unit
+`dx100-gzp-dual-logical16-full-0e8c6d9-r2.service` (last observed main PID
+2305169) and evidence root
+`/data1/nier/dx100-runs/2026-08-14-gzp-dual-logical16-full-c32-v64-two-rep-0e8c6d9-r2`.
+It uses one fixed `n=1,000,000` guest/binary/checkpoint, the same 32-context,
+64-owner, pre-A/masked configuration, and four concurrent control/treatment
+restores (two replicas per arm) with no timeout.  At handoff it was active with
+`campaign.exit=8`; no full result is claimed here.
+
+Promotion remains pending both fail-closed full-GZP artifact analysis and an
+independent review.  In particular, an independent reviewer has not yet
+validated the concurrent per-process read-only selector bind, the completed
+full-run provenance, or the final issue/accept/WriteResp and RMW-cycle ledgers.
