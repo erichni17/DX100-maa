@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Run the exact seven-restore GZP composition attribution matrix.
+"""Run the exact six-restore GZP masked-mode scheduler composition matrix.
 
 This runner is deliberately restore-only.  It reuses the frozen GZP masked
 index checkpoint and guest, while taking the gem5 executable from the caller.
-The treatment matrix is fixed: a replicated separate-predicate baseline, three
-masked intermediate arms, and a replicated masked/pre-A/128-owner endpoint.
-No wall-clock metric participates in the decision.
+The frozen checkpoint has already consumed the guest mode selector, so every
+arm must remain in masked-index mode.  The matrix attributes pre-A scheduling
+and active owner capacity from a replicated masked/owner32 baseline to a
+replicated masked/pre-A/owner128 endpoint.  No wall-clock metric participates
+in the decision.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ from typing import (
 
 FROZEN_ROOT = Path(
     "/data1/nier/dx100-runs/2026-08-14-gzp-masked-index-full-a3d0bba5-r1"
+)
+CURRENT_CONFIG = (
+    Path(__file__).resolve().parents[2] / "configs/deprecated/example/se.py"
 )
 ELEMENTS = 1_000_000
 WINDOW_ELEMENTS = 16_384
@@ -70,22 +75,13 @@ FATAL_RE = re.compile(
 
 ARMS = (
     {
-        "name": "baseline-separate-owner32-pre-a-off",
-        "selector": "token_stream_ld volume_soa_jit",
-        "predicate_mode": "separate_array",
-        "treatment": "volume_only_soa_jit",
-        "owners": 32,
-        "pre_a": False,
-        "replicas": ("replica-1", "replica-2"),
-    },
-    {
-        "name": "masked-owner32-pre-a-off",
+        "name": "baseline-masked-owner32-pre-a-off",
         "selector": "token_stream_ld volume_masked_index",
         "predicate_mode": "masked_index",
         "treatment": "volume_masked_index_soa_jit",
         "owners": 32,
         "pre_a": False,
-        "replicas": ("replica-1",),
+        "replicas": ("replica-1", "replica-2"),
     },
     {
         "name": "masked-owner32-pre-a-on",
@@ -298,6 +294,8 @@ def verify_frozen_inputs(base: list[str]) -> dict[str, str]:
         (pmem, EXPECTED_PMEM_SHA256),
     )
     missing = [str(path) for path, _ in expected if not path.is_file()]
+    if not CURRENT_CONFIG.is_file():
+        missing.append(str(CURRENT_CONFIG))
     if missing:
         raise RuntimeError("missing frozen input(s): " + ", ".join(missing))
     for path, expected_hash in expected:
@@ -327,6 +325,7 @@ def verify_frozen_inputs(base: list[str]) -> dict[str, str]:
         "manifest_sha256": sha256(paths["manifest"]),
         "template_sha256": sha256(paths["template"]),
         "config_sha256": sha256(paths["config"]),
+        "current_config_sha256": sha256(CURRENT_CONFIG),
         "guest_sha256": sha256(paths["guest"]),
         "ramulator_config_sha256": sha256(paths["ramulator"]),
         "m5_cpt_sha256": sha256(cpt),
@@ -348,13 +347,14 @@ def campaign_plan(
     del base
     paths = frozen_paths()
     return {
-        "schema": "dx100.gzp_same_checkpoint_composition.v1",
-        "scope": "full GZP same-checkpoint composition attribution",
+        "schema": "dx100.gzp_same_checkpoint_masked_scheduler_composition.v2",
+        "scope": "full GZP same-checkpoint masked scheduler composition",
         "execute_required": True,
         "frozen_root": str(FROZEN_ROOT),
         "shared_checkpoint": str(paths["checkpoint"]),
         "shared_guest": str(paths["guest"]),
-        "shared_config": str(paths["config"]),
+        "archived_checkpoint_config": str(paths["config"]),
+        "shared_config": str(CURRENT_CONFIG),
         "frozen_template_command": str(paths["template"]),
         "elements": ELEMENTS,
         "logical_window_elements": WINDOW_ELEMENTS,
@@ -393,6 +393,10 @@ def materialize_command(
 ) -> list[str]:
     command = list(base)
     command[0] = str(gem5.resolve())
+    archived_config = str(frozen_paths()["config"])
+    if command.count(archived_config) != 1:
+        raise RuntimeError("cannot replace non-unique archived se.py")
+    command[command.index(archived_config)] = str(CURRENT_CONFIG)
     replace_command_value(command, "--outdir", str(gem5_out))
     replace_command_value(
         command, "--maa_soa_jit_active_value_owners", str(spec["owners"])
@@ -766,12 +770,11 @@ def analyze_run(
         )
     ):
         raise RuntimeError(f"{label}: selection/index ledger gate failed")
-    expected_masked = spec["predicate_mode"] == "masked_index"
     expected_terminal = {
         "treatment": spec["treatment"],
         "full_windows": "0",
-        "volume_only_windows": "0" if expected_masked else str(FULL_WINDOWS),
-        "masked_index_windows": str(FULL_WINDOWS) if expected_masked else "0",
+        "volume_only_windows": "0",
+        "masked_index_windows": str(FULL_WINDOWS),
         "published_predicates": "0",
         "published_gradient_values": "0",
         "predicate_hash": EXPECTED_PREDICATE_HASH,
@@ -797,18 +800,11 @@ def analyze_run(
         )
     ):
         raise RuntimeError(f"{label}: terminal index safety ledger failed")
-    if expected_masked:
-        publication = {
-            "publisher": "masked_index_no_predicate_publication",
-            "predicate_publications": "0",
-            "predicate_publication_bytes": "0",
-        }
-    else:
-        publication = {
-            "publisher": "precheckpoint_uint32_predicate",
-            "predicate_publications": "1",
-            "predicate_publication_bytes": "4000000",
-        }
+    publication = {
+        "publisher": "masked_index_no_predicate_publication",
+        "predicate_publications": "0",
+        "predicate_publication_bytes": "0",
+    }
     if any(terminal.get(key) != value for key, value in publication.items()):
         raise RuntimeError(f"{label}: predicate publication contract failed")
     totals = trace_totals(run / "gem5" / "virtual_trace.log", spec, label)
@@ -921,7 +917,7 @@ def validate_matrix(
         )
     reason = (
         "both deterministic masked/pre-A/owner128 endpoint replicas beat the "
-        "deterministic separate-predicate baseline by simTicks"
+        "deterministic masked/owner32/pre-A-off baseline by simTicks"
         if endpoint_beats_baseline
         else "the endpoint does not beat the deterministic baseline in both replicas"
     )
@@ -954,6 +950,15 @@ def validate_materialized_commands(
         has_pre_a = "--maa_soa_jit_pre_a_value_lookahead" in command
         if has_pre_a != bool(spec["pre_a"]):
             raise RuntimeError("materialized pre-A mode does not match arm")
+        config_arguments = [
+            argument
+            for argument in command
+            if argument.endswith("/deprecated/example/se.py")
+        ]
+        if config_arguments != [str(CURRENT_CONFIG)]:
+            raise RuntimeError(
+                "materialized command does not bind current se.py"
+            )
         if (
             option_argument(command, "--options")
             != f"{ELEMENTS} {selectors[spec['name']]}"

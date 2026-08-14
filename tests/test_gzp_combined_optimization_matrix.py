@@ -26,6 +26,7 @@ def digest(path: Path) -> str:
 def write_frozen_fixture(tmp_path: Path, runner):
     root = tmp_path / "frozen"
     config = root / "inputs/configs/deprecated/example/se.py"
+    current_config = tmp_path / "current/configs/deprecated/example/se.py"
     guest = root / "inputs/gradzatp_maa_16K_general_soa_jit_fp"
     ramulator = root / "inputs/ramulator.yaml"
     cpt = root / "checkpoint/cpt.1/m5.cpt"
@@ -36,6 +37,7 @@ def write_frozen_fixture(tmp_path: Path, runner):
     for path, content in (
         (root / "manifest.json", "{}\n"),
         (config, "# frozen config\n"),
+        (current_config, "# current config with current options\n"),
         (guest, "frozen guest\n"),
         (ramulator, "frozen ramulator\n"),
         (cpt, "frozen cpt\n"),
@@ -81,6 +83,7 @@ def write_frozen_fixture(tmp_path: Path, runner):
     template.parent.mkdir(parents=True, exist_ok=True)
     template.write_text(json.dumps(command))
     runner.FROZEN_ROOT = root
+    runner.CURRENT_CONFIG = current_config
     runner.EXPECTED_FROZEN_MANIFEST_SHA256 = digest(root / "manifest.json")
     runner.EXPECTED_TEMPLATE_SHA256 = digest(template)
     runner.EXPECTED_CONFIG_SHA256 = digest(config)
@@ -181,13 +184,13 @@ print('Exiting @ tick %d because m5_exit instruction encountered' % ticks)
     path.chmod(0o755)
 
 
-def test_plan_is_restore_only_with_the_fixed_seven_run_shape(tmp_path: Path):
+def test_plan_is_restore_only_with_the_fixed_six_run_shape(tmp_path: Path):
     runner = module()
     write_frozen_fixture(tmp_path, runner)
     base = runner.template()
     args = type("Args", (), {"gem5": tmp_path / "gem5.opt"})()
     plan = runner.campaign_plan(args, base)
-    assert plan["parallel_restores"] == 7
+    assert plan["parallel_restores"] == 6
     assert plan["timeout_seconds"] is None
     assert plan["simulated_metric"] == "simTicks"
     assert plan["host_time_metric_authorized"] is False
@@ -196,7 +199,6 @@ def test_plan_is_restore_only_with_the_fixed_seven_run_shape(tmp_path: Path):
         (arm["owners"], arm["pre_a"], arm["replicas"]) for arm in plan["arms"]
     ] == [
         (32, False, ["replica-1", "replica-2"]),
-        (32, False, ["replica-1"]),
         (32, True, ["replica-1"]),
         (64, True, ["replica-1"]),
         (128, True, ["replica-1", "replica-2"]),
@@ -224,7 +226,7 @@ def test_materialized_arms_only_change_selector_owner_pre_a_and_outdir(
                 spec,
             )
         )
-    assert len(commands) == 7
+    assert len(commands) == 6
     assert (
         len(
             {tuple(runner.normalized_command(command)) for command in commands}
@@ -240,6 +242,11 @@ def test_materialized_arms_only_change_selector_owner_pre_a_and_outdir(
         runner.command_value(command, "--maa_soa_jit_active_contexts")
         for command in commands
     } == {"32"}
+    assert all(str(runner.CURRENT_CONFIG) in command for command in commands)
+    assert all(
+        str(runner.frozen_paths()["config"]) not in command
+        for command in commands
+    )
     assert (
         sum(
             "--maa_soa_jit_pre_a_value_lookahead" in command
@@ -276,18 +283,17 @@ def test_fake_execution_emits_manifest_matrix_and_simticks_only_decision(
     matrix = json.loads((out / "matrix.json").read_text())
     manifest = json.loads((out / "manifest.json").read_text())
     decision = json.loads((out / "decision.json").read_text())
-    assert len(matrix["rows"]) == 7
-    assert len(manifest["runs"]) == 7
+    assert len(matrix["rows"]) == 6
+    assert len(manifest["runs"]) == 6
     assert decision["decision"] == "PROMOTE"
     assert decision["promotion_metric"] == "simTicks"
     assert decision["host_time_metric_authorized"] is False
-    assert len(decision["adjacent_deltas"]) == 4
-    assert decision["adjacent_deltas"][1]["improves"] is False
-    assert {
-        row["predicate_lines_issue"]
-        for row in matrix["rows"]
-        if row["predicate_mode"] == "masked_index"
-    } == {0}
+    assert len(decision["adjacent_deltas"]) == 3
+    assert decision["adjacent_deltas"][0]["improves"] is False
+    assert {row["predicate_lines_issue"] for row in matrix["rows"]} == {0}
+    assert {row["predicate_mode"] for row in matrix["rows"]} == {
+        "masked_index"
+    }
     assert all(
         row["pre_a_issue"] == 0 for row in matrix["rows"] if not row["pre_a"]
     )
