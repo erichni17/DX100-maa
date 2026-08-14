@@ -94,7 +94,46 @@ def closed_token_trace(*, create_context: bool = True) -> str:
     return "\n".join(lines) + "\n"
 
 
+def legacy_summary_trace() -> str:
+    return closed_token_trace().replace(
+        "dispatch_fallbacks=0", "global_dispatch_fallbacks=0"
+    )
+
+
 class AnalyzeGeneralHybridBenchmarkMatrixTest(unittest.TestCase):
+    def test_legacy_global_dispatch_field_is_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.log"
+            trace.write_text(legacy_summary_trace(), encoding="utf-8")
+            _, contexts = analyzer.materializer_trace(trace)
+        summary = next(iter(contexts.values()))["summaries"][0]
+        self.assertEqual(int(summary["dispatch_fallbacks"], 0), 0)
+
+    def test_conflicting_dispatch_fields_fail_closed(self) -> None:
+        text = closed_token_trace().replace(
+            "dispatch_fallbacks=0",
+            "dispatch_fallbacks=0 global_dispatch_fallbacks=1",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.log"
+            trace.write_text(text, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "conflicting"):
+                analyzer.materializer_trace(trace)
+
+    def test_retained_payload_replays_count_as_forwarded_lines(self) -> None:
+        text = closed_token_trace() + (
+            "event=page_materialization_inactive_payload_replay schema=1 "
+            "token=7 generation=11 incarnation=1 line=9\n"
+            "event=page_materialization_inactive_masked_replay schema=1 "
+            "token=7 generation=11 incarnation=1 line=10\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.log"
+            trace.write_text(text, encoding="utf-8")
+            report, contexts = analyzer.materializer_trace(trace)
+        self.assertEqual(report["materializer_forwarded_lines"], 5)
+        self.assertEqual(next(iter(contexts.values()))["forwarded_lines"], 5)
+
     def make_matrix(self, root: Path, mismatch: bool = False) -> None:
         arms = [
             {

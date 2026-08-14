@@ -150,6 +150,8 @@ CONTEXT_EVENTS = {
     "page_materialization_producer_line_ready",
     "page_materialization_read_response",
     "page_materialization_line_commit",
+    "page_materialization_inactive_payload_replay",
+    "page_materialization_inactive_masked_replay",
 }
 
 
@@ -172,6 +174,20 @@ def materializer_trace(
             event = value.get("event")
             if event is None or not event.startswith("page_materialization_"):
                 continue
+            if event == "page_materialization_summary":
+                current = value.get("dispatch_fallbacks")
+                legacy = value.get("global_dispatch_fallbacks")
+                if current is None and legacy is not None:
+                    value["dispatch_fallbacks"] = legacy
+                elif (
+                    current is not None
+                    and legacy is not None
+                    and int(current, 0) != int(legacy, 0)
+                ):
+                    raise ValueError(
+                        "page_materialization_summary: conflicting "
+                        "dispatch fallback fields"
+                    )
             events.setdefault(event, []).append(value)
             if event not in CONTEXT_EVENTS:
                 continue
@@ -231,6 +247,11 @@ def materializer_trace(
                 context["cache_read_lines"] += 1
             elif event == "page_materialization_line_commit":
                 context["line_commits"] += 1
+            elif event in (
+                "page_materialization_inactive_payload_replay",
+                "page_materialization_inactive_masked_replay",
+            ):
+                context["forwarded_lines"] += 1
 
     fallback_events = sum(
         len(values)
