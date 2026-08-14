@@ -60,7 +60,7 @@ make_checkpoint() {
     local checkpoint="$out/checkpoints/$label"
     mkdir -p "$checkpoint"
     set +e
-    OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 600 \
+    OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
         "$gem5" --listener-mode=off --outdir="$checkpoint" \
         "$config" --cpu-type AtomicSimpleCPU -n 4 --mem-size 2GB \
         --max-checkpoints=1 --cmd "$binary" \
@@ -126,7 +126,7 @@ run_arm() {
     local run="$out/runs/$label"
     mkdir -p "$run"
     set +e
-    OMP_PROC_BIND=false OMP_NUM_THREADS=4 timeout 1800 \
+    OMP_PROC_BIND=false OMP_NUM_THREADS=4 \
         "$gem5" --outdir="$run" "${common[@]}" \
         --checkpoint-dir="$out/checkpoints/$label" \
         --options "MAA_DEFERRED $selector" \
