@@ -91,6 +91,15 @@ class InactiveProducerLinePayloadCapture
         std::array<uint16_t, LogicalPageCount> writePortDropsPerPage{};
     };
 
+    struct ClearResult
+    {
+        uint16_t discardedLines = 0;
+        uint8_t survivingLatchedLines = 0;
+        bool cleared = false;
+
+        explicit operator bool() const { return cleared; }
+    };
+
     enum class BeginResult : uint8_t
     {
         Disabled,
@@ -188,16 +197,8 @@ class InactiveProducerLinePayloadCapture
 
         // Constant-time lazy invalidation: replacing the one selected
         // descriptor never walks or clears the payload RAM.
-        if (displacedLines != nullptr) {
-            const bool latchedLineSurvives = output.valid &&
-                sameKey(output.key, slot.key) &&
-                output.line < slot.lineCount &&
-                sameEntry(logicalEntry(index(output.key, output.line)),
-                          output.key, output.line) &&
-                logicalEntry(index(output.key, output.line)).transactionID ==
-                    output.transactionID;
-            *displacedLines = slot.storedLines - latchedLineSurvives;
-        }
+        if (displacedLines != nullptr)
+            *displacedLines = discardedLines(slot);
         reset(slot, key, lineCount);
         return BeginResult::Replaced;
     }
@@ -355,14 +356,24 @@ class InactiveProducerLinePayloadCapture
         return true;
     }
 
-    /** O(1): invalidate only the direct-mapped lifetime descriptor. */
-    bool clear(const Key &key)
+    /**
+     * O(1): report the exact retained-line outcome, then invalidate only the
+     * direct-mapped lifetime descriptor. An authenticated output-latch line
+     * remains replayable after clear and is therefore never a discard. If a
+     * same-index replacement already removed that line from storedLines, the
+     * latch is still reported as surviving without subtracting it twice.
+     */
+    ClearResult clear(const Key &key)
     {
         Slot *slot = findExact(key);
         if (slot == nullptr)
-            return false;
+            return {};
+        const ClearResult result{
+            discardedLines(*slot),
+            static_cast<uint8_t>(outputSurvives(*slot)),
+            true};
         *slot = Slot{};
-        return true;
+        return result;
     }
 
     bool active(const Key &key) const { return findExact(key) != nullptr; }
@@ -728,6 +739,24 @@ class InactiveProducerLinePayloadCapture
         ++slot.storedLines;
         ++slot.capturedLines;
         ++slot.capturedLinesPerPage[pageIndex(slot, line)];
+    }
+
+    bool outputSurvives(const Slot &slot) const
+    {
+        return output.valid && sameKey(output.key, slot.key) &&
+            output.line < slot.lineCount;
+    }
+
+    uint16_t discardedLines(const Slot &slot) const
+    {
+        if (!outputSurvives(slot))
+            return slot.storedLines;
+        const Entry &latchedEntry =
+            logicalEntry(index(output.key, output.line));
+        const bool latchStillStored =
+            sameEntry(latchedEntry, output.key, output.line) &&
+            latchedEntry.transactionID == output.transactionID;
+        return static_cast<uint16_t>(slot.storedLines - latchStillStored);
     }
 
     void armWrite(uint16_t selectedIndex, const Key &key, uint16_t line,

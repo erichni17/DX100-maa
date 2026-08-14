@@ -360,6 +360,141 @@ testDescriptorReplacementAfterLatchedHitClosesExactly()
 }
 
 void
+testClearDirectRetirementHandoffAccountsOnce()
+{
+    Capture capture;
+    const auto owner = key(12, 77, 12, 0xe00000);
+    auto bytes = payload(0x890);
+    CHECK(capture.begin(owner, 2048, 64) == Capture::BeginResult::Started);
+    CHECK(capture.capture(owner, 0, 661, bytes.data(), bytes.size(), 670) ==
+          Capture::CaptureResult::Captured);
+    CHECK(capture.capture(owner, 1, 662, bytes.data(), bytes.size(), 671) ==
+          Capture::CaptureResult::Captured);
+
+    uint64_t globalDrops = 0;
+    const auto handoff = capture.clear(owner);
+    CHECK(handoff.cleared);
+    CHECK(handoff.discardedLines == 2);
+    CHECK(handoff.survivingLatchedLines == 0);
+    globalDrops += handoff.discardedLines;
+
+    // Final direct retirement observes the already-cleared descriptor. The
+    // handoff's retained lines become coherent-fallback drops exactly once.
+    const auto retirement = capture.clear(owner);
+    CHECK(!retirement.cleared);
+    CHECK(retirement.discardedLines == 0);
+    CHECK(retirement.survivingLatchedLines == 0);
+    globalDrops += retirement.discardedLines;
+    CHECK(globalDrops == 2);
+    CHECK(capture.assertInvariants());
+}
+
+void
+testClearCompletedMaterializerHasZeroLiveLines()
+{
+    Capture capture;
+    const auto owner = key(13, 78, 13, 0xf00000);
+    auto bytes = payload(0x8a0);
+    CHECK(capture.begin(owner, 2048, 64) == Capture::BeginResult::Started);
+    CHECK(capture.capture(owner, 0, 671, bytes.data(), bytes.size(), 680) ==
+          Capture::CaptureResult::Captured);
+    Capture::Line retained;
+    CHECK(capture.probe(owner, 0, 681, &retained) ==
+          Capture::ProbeResult::Hit);
+    CHECK(capture.take(owner, 0, 671, 682));
+    CHECK(capture.summary(owner).storedLines == 0);
+
+    const auto completed = capture.clear(owner);
+    CHECK(completed.cleared);
+    CHECK(completed.discardedLines == 0);
+    CHECK(completed.survivingLatchedLines == 0);
+    CHECK(capture.assertInvariants());
+}
+
+void
+testClearCancelReuseDiscardsRetainedLines()
+{
+    Capture capture;
+    const auto canceled = key(14, 79, 14, 0x1000000);
+    const auto reused = key(14, 80, 15, 0x1100000);
+    auto bytes = payload(0x8b0);
+    CHECK(capture.begin(canceled, 2048, 64) ==
+          Capture::BeginResult::Started);
+    CHECK(capture.capture(canceled, 8, 681, bytes.data(), bytes.size(), 690) ==
+          Capture::CaptureResult::Captured);
+    CHECK(capture.capture(canceled, 9, 682, bytes.data(), bytes.size(), 691) ==
+          Capture::CaptureResult::Captured);
+
+    const auto cancel = capture.clear(canceled);
+    CHECK(cancel.cleared);
+    CHECK(cancel.discardedLines == 2);
+    CHECK(cancel.survivingLatchedLines == 0);
+    CHECK(capture.begin(reused, 2048, 64) == Capture::BeginResult::Started);
+    Capture::Line retained;
+    CHECK(capture.probe(canceled, 8, 692, &retained) ==
+          Capture::ProbeResult::Miss);
+    CHECK(capture.active(reused));
+    CHECK(capture.assertInvariants());
+}
+
+void
+testClearPreservesAuthoritativeOutputLatchAcrossRaces()
+{
+    auto oldBytes = payload(0x8c0);
+    auto newBytes = payload(0x8d0);
+
+    Capture resident;
+    const auto residentOwner = key(15, 81, 16, 0x1200000);
+    CHECK(resident.begin(residentOwner, 2048, 64) ==
+          Capture::BeginResult::Started);
+    CHECK(resident.capture(residentOwner, 0, 691, oldBytes.data(),
+                           oldBytes.size(), 700) ==
+          Capture::CaptureResult::Captured);
+    CHECK(resident.capture(residentOwner, 1, 692, oldBytes.data(),
+                           oldBytes.size(), 701) ==
+          Capture::CaptureResult::Captured);
+    Capture::Line retained;
+    CHECK(resident.probe(residentOwner, 0, 702, &retained) ==
+          Capture::ProbeResult::Hit);
+    const auto residentClear = resident.clear(residentOwner);
+    CHECK(residentClear.cleared);
+    CHECK(residentClear.discardedLines == 1);
+    CHECK(residentClear.survivingLatchedLines == 1);
+    CHECK(word(retained.payload, 0) == 0x8c0);
+    CHECK(resident.take(residentOwner, 0, 691, 703));
+
+    Capture raced;
+    const auto probed = key(16, 82, 17, 0x1300000);
+    const auto writer = key(17, 83, 18, 0x1400000);
+    CHECK(raced.begin(probed, 2048, 64,
+                      Capture::ConflictPolicy::LatestOwner) ==
+          Capture::BeginResult::Started);
+    CHECK(raced.begin(writer, 2048, 64,
+                      Capture::ConflictPolicy::LatestOwner) ==
+          Capture::BeginResult::Started);
+    CHECK(raced.capture(probed, 0, 701, oldBytes.data(), oldBytes.size(),
+                        710) == Capture::CaptureResult::Captured);
+    const uint16_t writerLine = collidingLine(
+        raced, writer, raced.selectedEntry(probed, 0));
+    CHECK(raced.probe(probed, 0, 711, &retained) ==
+          Capture::ProbeResult::Hit);
+    CHECK(raced.capture(writer, writerLine, 702, newBytes.data(),
+                        newBytes.size(), 711) ==
+          Capture::CaptureResult::OverwrittenLatched);
+    CHECK(raced.summary(probed).storedLines == 0);
+    const auto racedClear = raced.clear(probed);
+    CHECK(racedClear.cleared);
+    CHECK(racedClear.discardedLines == 0);
+    CHECK(racedClear.survivingLatchedLines == 1);
+    CHECK(raced.take(probed, 0, 701, 712));
+    CHECK(raced.probe(writer, writerLine, 713, &retained) ==
+          Capture::ProbeResult::Hit);
+    CHECK(retained.transactionID == 702);
+    CHECK(word(retained.payload, 0) == 0x8d0);
+    CHECK(raced.assertInvariants());
+}
+
+void
 testSameCycleReadBeforeWriteAndFinitePorts()
 {
     Capture capture;
@@ -528,6 +663,10 @@ main()
     testFirstOwnerAndLatestOwnerCollisions();
     testLatestOwnerProbeOverwriteTakeUsesOutputLatch();
     testDescriptorReplacementAfterLatchedHitClosesExactly();
+    testClearDirectRetirementHandoffAccountsOnce();
+    testClearCompletedMaterializerHasZeroLiveLines();
+    testClearCancelReuseDiscardsRetainedLines();
+    testClearPreservesAuthoritativeOutputLatchAcrossRaces();
     testSameCycleReadBeforeWriteAndFinitePorts();
     testOutcomeClosure();
     testExactPackedHardwareStorageEquations();
