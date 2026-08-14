@@ -23,16 +23,23 @@ constexpr int kTargetWords = 1024;
 constexpr int kOperations = 2;
 constexpr int kOrderIndex = 7;
 constexpr int kFalsePredicateIndex = 9;
+constexpr int kCacheLineBytes = 64;
+constexpr int kValuesPerCacheLine = kCacheLineBytes / sizeof(float);
+static_assert(kLogical % kValuesPerCacheLine == 0,
+              "the values array must contain whole cache lines");
 
 using LogicalFloat = std::array<float, kLogical>;
 using LogicalWord = std::array<uint32_t, kLogical>;
 using Target = std::array<float, kTargetWords>;
 
 alignas(64) LogicalFloat values[kOperations];
+alignas(64) LogicalFloat warm_control[kOperations];
 alignas(64) LogicalWord indices[kOperations];
 alignas(64) LogicalWord predicates[kOperations];
 alignas(64) Target actual;
 alignas(64) Target expected;
+volatile uint64_t warm_checksums[kOperations];
+volatile uint32_t warm_line_counts[kOperations];
 
 uint32_t
 bits(float value)
@@ -66,6 +73,9 @@ initializeInputs(uint64_t &selected, uint64_t &rejected)
 
     for (int operation = 0; operation < kOperations; ++operation) {
         for (int i = 0; i < kLogical; ++i) {
+            warm_control[operation][i] =
+                static_cast<float>(((i * 13 + operation * 17) % 31) - 15) /
+                16.0F;
             const int order_slot = i & 63;
             if (order_slot < 4) {
                 indices[operation][i] = kOrderIndex;
@@ -131,13 +141,43 @@ runOrdinary()
 }
 
 void
-runSoa()
+warmArrayForOperation(int operation, bool warm_values)
+{
+    // Volatile CPU loads touch every selected-array cache line in the measured
+    // ROI immediately before its JIT operation. Neither treatment changes RMW
+    // inputs or target state; only soa-warm reads the JIT values array.
+    const LogicalFloat &warm_source =
+        warm_values ? values[operation] : warm_control[operation];
+    const volatile float *const warm_words = warm_source.data();
+    uint64_t warm_checksum = 0;
+    uint32_t warm_lines = 0;
+    for (int i = 0; i < kLogical; i += kValuesPerCacheLine) {
+        warm_checksum += bits(warm_words[i]);
+        ++warm_lines;
+    }
+    warm_checksums[operation] = warm_checksum;
+    warm_line_counts[operation] = warm_lines;
+}
+
+uint64_t
+warmChecksum(const LogicalFloat &warm_source)
+{
+    uint64_t warm_checksum = 0;
+    for (int i = 0; i < kLogical; i += kValuesPerCacheLine)
+        warm_checksum += bits(warm_source[i]);
+    return warm_checksum;
+}
+
+void
+runSoa(int warm_mode)
 {
     const int min_reg = get_new_reg<int>(0);
     const int max_reg = get_new_reg<int>(kLogical);
     const int stride_reg = get_new_reg<int>(1);
     const int completion_tile = get_new_tile<float>();
     for (int operation = 0; operation < kOperations; ++operation) {
+        if (warm_mode)
+            warmArrayForOperation(operation, warm_mode == 1);
         maa_indirect_rmw_vector_soa_jit<float>(
             actual.data(), indices[operation].data(),
             values[operation].data(), predicates[operation].data(),
@@ -153,11 +193,13 @@ int
 main(int argc, char **argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "soa";
-    if (mode != "ordinary" && mode != "soa") {
-        std::cerr << "mode must be ordinary or soa" << std::endl;
+    if (mode != "ordinary" && mode != "soa" && mode != "soa-warm" &&
+        mode != "soa-warm-control") {
+        std::cerr << "mode must be ordinary, soa, soa-warm, or "
+                  << "soa-warm-control" << std::endl;
         return 2;
     }
-    if (mode == "soa" && TILE_SIZE != kLogical) {
+    if (mode != "ordinary" && TILE_SIZE != kLogical) {
         std::cerr << "SoA test requires TILE_SIZE=16384" << std::endl;
         return 2;
     }
@@ -189,11 +231,34 @@ main(int argc, char **argv)
     if (mode == "ordinary")
         runOrdinary();
     else
-        runSoa();
+        runSoa(mode == "soa-warm" ? 1 : mode == "soa-warm-control" ? 2 : 0);
     m5_dump_stats(0, 0);
     m5_work_end(0, 0);
 
     int errors = 0;
+    if (mode == "soa-warm" || mode == "soa-warm-control") {
+        const bool warm_values = mode == "soa-warm";
+        for (int operation = 0; operation < kOperations; ++operation) {
+            const LogicalFloat &warm_source = warm_values
+                ? values[operation] : warm_control[operation];
+            const uint64_t expected_checksum = warmChecksum(warm_source);
+            const uint64_t observed_checksum = warm_checksums[operation];
+            const uint32_t observed_lines = warm_line_counts[operation];
+            std::cout << "HYBRID_RMW_SOA_WARM_CHECKSUM source="
+                      << (warm_values ? "values" : "dummy")
+                      << " operation=" << operation
+                      << " lines=" << observed_lines
+                      << " checksum=" << observed_checksum
+                      << " expected_checksum=" << expected_checksum
+                      << std::endl;
+            if (observed_lines != kLogical / kValuesPerCacheLine ||
+                observed_checksum != expected_checksum) {
+                std::cerr << "invalid SoA warm checksum for operation "
+                          << operation << std::endl;
+                ++errors;
+            }
+        }
+    }
     for (int word = 0; word < kTargetWords; ++word) {
         if (bits(actual[word]) == bits(expected[word]))
             continue;
