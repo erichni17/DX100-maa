@@ -446,3 +446,128 @@ credits), and the expected mechanism signature.  No result from an unclean
 source tree, incomplete wrapper, response-less publisher, mismatched
 checkpoint, wrong exact output, or one-off analytic substitution is
 promotable.
+
+## Correctness-first benchmark integration status
+
+Commit base `1a9513db` has now been integrated at the benchmark boundary
+without changing `src/mem/MAA`.  Source inspection, rather than the earlier
+prose, gives the following exact mapping for the general-hybrid full window:
+
+| sequence | A region | index stream | value stream | predicate | type/op | completion dependency |
+|---|---|---|---|---|---|---|
+| volume RMW | `point_volume` | `c_to_p_map + c` | `corner_volume + c` | exact `uint32_t(tileCond != 0)`, where `tileCond = corner_type >= 1` | FP32 `ADD_OP` | guarded `tdst2`; wait before the gradient RMW |
+| gradient RMW | `point_gradient` | the same immutable `c_to_p_map + c` | exact completed FP32 `csurf * gathered_zone_field` words | the same immutable uint32 buffer | FP32 `ADD_OP` | guarded `tdst2`; wait before source-buffer reuse or normalization |
+
+The existing hybrid gather remains
+`maa_indirect_load_virtual_index(zone_field, c_to_z_map, ...)`, followed by
+the selected consumer's ACK-gated page load and the existing FP32 vector
+multiply.  The treatment does not fuse the gather, change its selector, or
+recompute the product with a different arithmetic expression.  The last 576
+corners of `n=1,000,000` keep the ordinary physical-4K predicate, map/value
+loads, and both ordinary RMWs.
+
+The signed-predicate issue is closed explicitly.  `corner_type` is never
+reinterpreted as `uint32_t`.  A separate one-million-word `uint32_t` buffer is
+initialized with exactly `corner_type[i] > 0 ? 1 : 0` before the checkpoint,
+then registered as immutable external memory.  Its element count, active count,
+semantic (`corner_type_gt_0`), phase (`pre_checkpoint`), and 64-bit hash are
+printed after restore; the terminal marker repeats the hash.  The correctness
+arm also normalizes each completed GTE lane to its CPU-staged predicate.  A
+false staged gradient lane contains FP32 qNaN bits `0x7fc00001`, making an
+erroneous false-lane value read observable through the existing
+nonfinite/reference gate.  Thus signed `-1` remains false, as required.
+
+### Current publication boundary
+
+The repository contains `ResponseBearingSpdPublisher.hh` and its adversarial
+unit test, but no guest-visible opcode/controller wiring invokes it.  Ordinary
+`STREAM_ST` still retires at transport acceptance and therefore cannot supply
+the required visibility edge.  The benchmark does not pretend otherwise.
+
+For this correctness-first integration only, it waits for the FP32 product
+tile, whose dependency chain includes the exact predicate, csurf input, and
+ACK-gated virtual-gather page.  Only after that completion does the CPU copy
+the predicate/product words from cacheable SPD into ordinary coherent
+per-owner buffers.  A sequentially consistent fence orders those stores before
+the SoA/JIT MMIO record.  Both SoA/JIT completion tokens are waited before the
+buffers can be overwritten.  This is safe and fully charged inside the ROI,
+but it is not the proposed hardware publisher and is marked
+`performance_promotable=0` in both start and terminal markers.
+
+The `volume_only_soa_jit` arm has no CPU staging in the ROI.  For each of the
+61 complete 16K windows it issues one logical16 SoA/JIT add directly from the
+memory-resident `corner_volume + c` values and direct
+`reinterpret_cast<const uint32_t *>(c_to_p_map + c)` index stream, guarded by
+the immutable precheckpoint predicate.  It waits for that RMW completion before
+continuing.  The gradient path, including its live GTE predicate, virtual gather,
+FP32 multiply, and four ordinary 4K RMWs, is unchanged.  The 576-lane tail keeps
+both ordinary RMWs.  Therefore the frozen count is 61 logical volume RMWs + 244
+full-window gradient RMWs + two tail RMWs = 307.  This arm is performance-capable
+because every new logical16 source is already memory-resident and immutable;
+the precheckpoint predicate cost and hash are disclosed rather than hidden as a
+timed publisher claim.
+
+The eight 16K per-owner staging buffers and the shared immutable predicate
+buffer remain ordinary external memory and keep the registration count at 29
+of 32.  The two extra completion-only tiles per owner
+consume the eight tiles left after the existing six-per-owner GZP allocation;
+they are never reused as SPD data.  Full-window volume and gradient RMWs are
+issued serially, so their shared immutable index/predicate buffers cannot be
+overwritten early.  The ordinary tail retains the existing `wait_ready(tile2)`
+and the OpenMP barrier remains after every owner's last operation.
+
+### Selector, markers, runner, and evidence gate
+
+`gradzatp_maa_16K_general_soa_jit_fp` is one guest binary with a restore-only
+two-token selector:
+
+```text
+token_stream_ld legacy_4k
+token_stream_ld volume_soa_jit
+token_stream_ld soa_jit
+```
+
+The selector is read after the checkpoint, so the two hybrid arms share the
+same binary and checkpoint.  The new path prints
+`UME_GZP_RMW_TREATMENT` before the ROI and exactly one `UME_GZP_TERMINAL` after
+the existing bitwise reference/fingerprint gates.  For `n=1,000,000`, the
+terminal contract is 61 full windows, 999,424 staged lanes per buffer, 122
+guarded SoA/JIT completions, 124 total RMW instructions, and the unchanged
+output hash `11225737641199706160` over 1,180,000 points.
+
+`experiments/scripts/run_gzp_soa_jit_correctness.py` creates exactly five
+arms (`native16`, `native4`, `current_hybrid`, `volume_only_soa_jit`, and
+`soa_jit_correctness`), freezes source/binary/config/Ramulator/checkpoint and
+selector identities, stores exact commands and wrapper exit codes, and records
+only simulated `simTicks`.  Global `--extra-gem5-arg` and per-arm
+`--restore-arm-gem5-arg ARM=ARG` options accept one whitespace-free gem5
+option token at a time and are included in the plan, manifest, and hashed exact
+restore command.  This supports optimized context and counter settings without
+silently changing checkpoint creation.  Execution fails closed unless the
+caller supplies the lead-provided optimized gem5 SHA-256; plan mode does not
+launch gem5.
+
+`experiments/analysis/analyze_gzp_soa_jit_correctness.py` requires one terminal
+`m5_exit`, a complete first ROI stats window, exact cross-arm output identity,
+490 current-hybrid, 307 volume-only, and 124 correctness-treatment RMWs; 61 or
+122 terminal SoA/JIT generations as appropriate; per-generation
+predicate/request/response/alias closure; aggregate counter closure; and exact
+materializer retirement without fallback.  Context high-water must be positive
+and internally consistent but is not pinned to one, permitting optimized
+context settings.  It reports every `simTicks` observation and the predeclared
+median current/volume-only simulated speedup.  It never uses host time and
+explicitly forbids a performance comparison with the CPU-staging arm.
+
+The remaining blocker is architectural, not semantic: wire a bounded
+response-bearing SPD publisher to a guest opcode, then replace the CPU staging
+copy and validate its exact WriteResp, retry, generation, and terminal-drain
+counters.  Until that happens, this integration is valid correctness evidence
+for the logical16 SoA/JIT RMW mapping, not performance or promotion evidence.
+
+Local source validation compiled the native16, native4, existing general
+hybrid, and selector-compatible SoA/JIT targets together with `g++ -O3`; the
+contract tests, Python bytecode checks, five-arm optimized-setting plan check,
+synthetic 61/122-event trace and aggregate-counter closure at context high-water
+eight, gem5 source style, and `git diff --check` also pass.  No live gem5 binary
+was present in this worktree, and no O3 simulation was launched.  The frozen
+runner remains gated on the optimized gem5 hash supplied by the lead.

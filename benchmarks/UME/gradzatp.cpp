@@ -7,6 +7,7 @@
 #include <cstdlib>   // For rand()
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -38,6 +39,9 @@ std::vector<DATATYPE> point_gradient_exp;
 
 std::vector<int> point_type;
 std::vector<int> zone_type;
+#ifdef UME_GZP_SOA_JIT_RMW
+std::vector<uint32_t> corner_predicate_soa;
+#endif
 
 #ifdef MAA_VIRTUAL_GATHER
 alignas(64) static DATATYPE virtual_gather_backing[NUM_CORES][TILE_SIZE];
@@ -184,6 +188,108 @@ static ReferenceErrors report_reference_errors() {
 static MAAVirtualConsumerMode virtual_consumer_mode =
     MAAVirtualConsumerMode::StreamControl;
 #endif
+
+#ifdef UME_GZP_SOA_JIT_RMW
+#if !defined(GEM5) || !defined(MAA) || !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
+#error "GZP SoA/JIT RMW requires the gem5 general-hybrid MAA path"
+#endif
+#if TILE_SIZE != 16384 || MAA_CONSUMER_TILE_SIZE != 4096
+#error "GZP SoA/JIT RMW requires logical16 with physical 4K consumer pages"
+#endif
+static_assert(sizeof(int) == sizeof(uint32_t),
+              "GZP SoA/JIT indices require 32-bit int");
+
+// These are ordinary coherent guest-memory staging arrays, not hidden MAA
+// storage.  The correctness-first treatment fills them only after the exact
+// predicate/product SPD producers complete.  A later performance treatment
+// must replace the CPU copy with a response-bearing publisher.
+alignas(64) static uint32_t soa_predicates[NUM_CORES][TILE_SIZE];
+alignas(64) static DATATYPE soa_gradient_values[NUM_CORES][TILE_SIZE];
+
+enum class GzpRmwTreatment
+{
+    Legacy4K,
+    VolumeOnlySoaJit,
+    SoaJitCorrectness,
+};
+
+static GzpRmwTreatment gzp_rmw_treatment = GzpRmwTreatment::Legacy4K;
+static std::atomic<uint64_t> soa_full_windows{0};
+static std::atomic<uint64_t> soa_volume_only_windows{0};
+static std::atomic<uint64_t> soa_staged_predicates{0};
+static std::atomic<uint64_t> soa_staged_gradient_values{0};
+static uint64_t soa_predicate_hash = 0;
+static uint64_t soa_predicate_active = 0;
+
+static const char *gzp_rmw_treatment_name(GzpRmwTreatment treatment) {
+    if (treatment == GzpRmwTreatment::VolumeOnlySoaJit)
+        return "volume_only_soa_jit";
+    if (treatment == GzpRmwTreatment::SoaJitCorrectness)
+        return "soa_jit_correctness";
+    return "legacy_4k";
+}
+
+static const char *gzp_rmw_publisher_name(GzpRmwTreatment treatment) {
+    if (treatment == GzpRmwTreatment::VolumeOnlySoaJit)
+        return "precheckpoint_uint32_predicate";
+    if (treatment == GzpRmwTreatment::SoaJitCorrectness)
+        return "cpu_after_spd_completion";
+    return "none";
+}
+
+static int gzp_rmw_performance_promotable(GzpRmwTreatment treatment) {
+    return treatment == GzpRmwTreatment::SoaJitCorrectness ? 0 : 1;
+}
+
+static uint64_t hash_soa_predicates(const std::vector<uint32_t> &values) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t i = 0; i < values.size(); ++i) {
+        hash ^= (static_cast<uint64_t>(i) << 32) ^ values[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+struct GzpSelector
+{
+    MAAVirtualConsumerMode consumer;
+    GzpRmwTreatment rmw;
+};
+
+static GzpSelector read_gzp_selector(const std::string &path) {
+    std::ifstream input(path);
+    std::string consumer;
+    std::string treatment;
+    std::string extra;
+    if (!(input >> consumer) || (input >> treatment && input >> extra))
+        throw std::runtime_error(
+            "GZP selector must contain CONSUMER "
+            "[legacy_4k|volume_soa_jit|soa_jit]");
+
+    MAAVirtualConsumerMode consumer_mode;
+    if (consumer == "stream_control")
+        consumer_mode = MAAVirtualConsumerMode::StreamControl;
+    else if (consumer == "page_gated")
+        consumer_mode = MAAVirtualConsumerMode::PageGated;
+    else if (consumer == "token_stream_ld")
+        consumer_mode = MAAVirtualConsumerMode::TokenStreamLoad;
+    else if (consumer == "token_stream_ld_pingpong")
+        consumer_mode = MAAVirtualConsumerMode::TokenStreamLoadPingPong;
+    else
+        throw std::runtime_error("invalid GZP virtual consumer mode");
+
+    GzpRmwTreatment rmw = GzpRmwTreatment::Legacy4K;
+    if (!treatment.empty() && treatment != "legacy_4k") {
+        if (treatment == "volume_soa_jit")
+            rmw = GzpRmwTreatment::VolumeOnlySoaJit;
+        else if (treatment == "soa_jit")
+            rmw = GzpRmwTreatment::SoaJitCorrectness;
+        else
+            throw std::runtime_error("invalid GZP RMW treatment");
+    }
+    return {consumer_mode, rmw};
+}
+#endif
 int tiles0[NUM_CORES], tiles1[NUM_CORES], tiles2[NUM_CORES];
 int tiles3[NUM_CORES], tiles4[NUM_CORES], tiles5[NUM_CORES];
 int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
@@ -191,6 +297,10 @@ int regs0[NUM_CORES], regs1[NUM_CORES], regs2[NUM_CORES];
 int page_regs0[NUM_CORES], page_regs1[NUM_CORES], page_regs2[NUM_CORES];
 #endif
 int regs3[NUM_CORES], regs4[NUM_CORES];
+#ifdef UME_GZP_SOA_JIT_RMW
+int soa_volume_completion_tiles[NUM_CORES];
+int soa_gradient_completion_tiles[NUM_CORES];
+#endif
 
 void gradzatp() {
     int pll = point_volume_exp.size();
@@ -276,6 +386,19 @@ void gradzatp_MAA() {
     add_mem_region(point_normal.data(),
                    point_normal.data() + point_normal.size()); // 15
 #endif
+#ifdef UME_GZP_SOA_JIT_RMW
+    // 7 fixed API ranges + 9 GZP ranges + 4 virtual-gather ranges + these 8
+    // per-owner ranges + one immutable predicate range = 29, below the
+    // architectural maximum of 32.
+    for (int core = 0; core < NUM_CORES; ++core) {
+        add_mem_region(soa_predicates[core],
+                       soa_predicates[core] + TILE_SIZE);
+        add_mem_region(soa_gradient_values[core],
+                       soa_gradient_values[core] + TILE_SIZE);
+    }
+    add_mem_region(corner_predicate_soa.data(),
+                   corner_predicate_soa.data() + corner_predicate_soa.size());
+#endif
     std::cout << "ROI Begin" << std::endl;
     m5_work_begin(0, 0);
     m5_reset_stats(0, 0);
@@ -311,8 +434,11 @@ void gradzatp_MAA() {
 #if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         maa_const<int>(0, backing_start_reg);
 #endif
+#if defined(UME_GATHER_VERIFY) || defined(UME_GZP_SOA_JIT_RMW)
+        uint32_t *tile_cond_ptr =
+            get_cacheable_tile_pointer<uint32_t>(tileCond);
+#endif
 #ifdef UME_GATHER_VERIFY
-        int *tile_cond_ptr = get_cacheable_tile_pointer<int>(tileCond);
 #ifndef MAA_GENERAL_VIRTUAL_CONSUMER
         int *tile3_ptr = get_cacheable_tile_pointer<int>(tile3);
 #endif
@@ -326,6 +452,22 @@ void gradzatp_MAA() {
             const int gather_size = std::min(cl - c, TILE_SIZE);
 #endif
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
+            const bool soa_both_full_window =
+#ifdef UME_GZP_SOA_JIT_RMW
+                gzp_rmw_treatment == GzpRmwTreatment::SoaJitCorrectness &&
+                gather_size == TILE_SIZE;
+#else
+                false;
+#endif
+            const bool soa_volume_only_full_window =
+#ifdef UME_GZP_SOA_JIT_RMW
+                gzp_rmw_treatment == GzpRmwTreatment::VolumeOnlySoaJit &&
+                gather_size == TILE_SIZE;
+#else
+                false;
+#endif
+            const bool soa_volume_full_window =
+                soa_both_full_window || soa_volume_only_full_window;
             maa_const<int>(c, reg0);
             maa_const<int>(c + gather_size, reg1);
             maa_indirect_load_virtual_index<DATATYPE>(
@@ -340,6 +482,28 @@ void gradzatp_MAA() {
                 // it cannot silently enter the mechanism fallback path.
                 wait_ready(tile3);
 
+            if (soa_volume_only_full_window) {
+#ifdef UME_GZP_SOA_JIT_RMW
+                // The predicate was published before checkpoint creation and
+                // remains immutable. The direct index and corner_volume value
+                // streams are read through the timed SoA/JIT cache path.
+                maa_const<int>(0, reg0);
+                maa_const<int>(TILE_SIZE, reg1);
+                maa_const<int>(1, reg2);
+                maa_indirect_rmw_vector_soa_jit<DATATYPE>(
+                    point_volume.data(),
+                    reinterpret_cast<const uint32_t *>(
+                        c_to_p_map.data() + c),
+                    corner_volume.data() + c,
+                    corner_predicate_soa.data() + c, reg0, reg1, reg2,
+                    soa_volume_completion_tiles[omp_thread_id],
+                    Operation_t::ADD_OP);
+                wait_ready(soa_volume_completion_tiles[omp_thread_id]);
+                soa_volume_only_windows.fetch_add(
+                    1, std::memory_order_relaxed);
+#endif
+            }
+
             for (int page_offset = 0; page_offset < gather_size;
                  page_offset += MAA_CONSUMER_TILE_SIZE) {
                 const int page_size =
@@ -349,20 +513,25 @@ void gradzatp_MAA() {
                 maa_const<int>(page_begin, reg0);
                 maa_const<int>(page_begin + page_size, reg1);
 
-                // The condition, maps, RMW, ALU, and final RMW remain ordinary
-                // operations on a physical 4K tile.  Only the backing reload
-                // is varied by the deferred consumer selector.
+                // The predicate, gather, and FP32 multiply stay on the current
+                // physical-4K hybrid path in both treatments.  The correctness
+                // treatment stages the completed predicate/product and
+                // replaces only the two full-window RMW sequences.
                 maa_stream_load<int>(corner_type.data(), reg0, reg1, reg2,
                                      tile0);
                 maa_alu_scalar<int>(tile0, reg2, tileCond,
                                     Operation_t::GTE_OP);
-                maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2,
-                                     tile4, tileCond);
-                maa_stream_load<DATATYPE>(corner_volume.data(), reg0, reg1,
-                                          reg2, tile0, tileCond);
-                maa_indirect_rmw_vector<DATATYPE>(
-                    point_volume.data(), tile4, tile0,
-                    Operation_t::ADD_OP, tileCond);
+                if (!soa_both_full_window) {
+                    maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2,
+                                         tile4, tileCond);
+                }
+                if (!soa_volume_full_window) {
+                    maa_stream_load<DATATYPE>(corner_volume.data(), reg0,
+                                              reg1, reg2, tile0, tileCond);
+                    maa_indirect_rmw_vector<DATATYPE>(
+                        point_volume.data(), tile4, tile0,
+                        Operation_t::ADD_OP, tileCond);
+                }
                 maa_stream_load<DATATYPE>(csurf.data(), reg0, reg1, reg2,
                                           tile1, tileCond);
 
@@ -397,13 +566,76 @@ void gradzatp_MAA() {
 #endif
                 maa_alu_vector<DATATYPE>(tile1, tile0, tile2,
                                           Operation_t::MUL_OP, tileCond);
-                maa_indirect_rmw_vector<DATATYPE>(
-                    point_gradient.data(), tile4, tile2,
-                    Operation_t::ADD_OP, tileCond);
+                if (soa_both_full_window) {
+#ifdef UME_GZP_SOA_JIT_RMW
+                    // tile2 completion depends on the ACK-gated materialized
+                    // gather page, csurf, the exact GTE predicate, and FP32
+                    // MUL. Reading either SPD result before this wait is
+                    // forbidden.
+                    wait_ready(tile2);
+                    DATATYPE *tile2_ptr =
+                        get_cacheable_tile_pointer<DATATYPE>(tile2);
+                    uint32_t *predicate_dst =
+                        soa_predicates[omp_thread_id] + page_offset;
+                    DATATYPE *gradient_dst =
+                        soa_gradient_values[omp_thread_id] + page_offset;
+                    for (int i = 0; i < page_size; ++i) {
+                        const uint32_t selected = tile_cond_ptr[i] != 0;
+                        predicate_dst[i] = selected;
+                        if (selected) {
+                            gradient_dst[i] = tile2_ptr[i];
+                        } else {
+                            // False lanes are poison: the guarded RMW must not
+                            // read or apply their value bytes.
+                            const uint32_t poison = 0x7fc00001U;
+                            std::memcpy(&gradient_dst[i], &poison,
+                                        sizeof(poison));
+                        }
+                    }
+                    soa_staged_predicates.fetch_add(
+                        page_size, std::memory_order_relaxed);
+                    soa_staged_gradient_values.fetch_add(
+                        page_size, std::memory_order_relaxed);
+#endif
+                } else {
+                    maa_indirect_rmw_vector<DATATYPE>(
+                        point_gradient.data(), tile4, tile2,
+                        Operation_t::ADD_OP, tileCond);
+                }
                 wait_ready(tile1);
             }
             if (gather_size == TILE_SIZE)
                 maa_virtual_consumer_end(virtual_consumer_mode, tile3);
+            if (soa_both_full_window) {
+#ifdef UME_GZP_SOA_JIT_RMW
+                // Coherent CPU staging is deliberately conservative.  The
+                // architectural treatment will replace it with ACKed SPD
+                // publication; ordinary STREAM_ST is not a visibility fence.
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                maa_const<int>(0, reg0);
+                maa_const<int>(TILE_SIZE, reg1);
+                maa_const<int>(1, reg2);
+                maa_indirect_rmw_vector_soa_jit<DATATYPE>(
+                    point_volume.data(),
+                    reinterpret_cast<const uint32_t *>(
+                        c_to_p_map.data() + c),
+                    corner_volume.data() + c,
+                    soa_predicates[omp_thread_id], reg0, reg1, reg2,
+                    soa_volume_completion_tiles[omp_thread_id],
+                    Operation_t::ADD_OP);
+                wait_ready(soa_volume_completion_tiles[omp_thread_id]);
+                maa_indirect_rmw_vector_soa_jit<DATATYPE>(
+                    point_gradient.data(),
+                    reinterpret_cast<const uint32_t *>(
+                        c_to_p_map.data() + c),
+                    soa_gradient_values[omp_thread_id],
+                    soa_predicates[omp_thread_id], reg0, reg1, reg2,
+                    soa_gradient_completion_tiles[omp_thread_id],
+                    Operation_t::ADD_OP);
+                wait_ready(soa_gradient_completion_tiles[omp_thread_id]);
+                soa_full_windows.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
 #else
             maa_const<int>(c, reg0);
             // Step1: Load corner_type
@@ -536,6 +768,22 @@ void gradzatp_MAA() {
               << "point_gradient_errors=0 elements=" << point_volume.size()
               << std::endl;
 #endif
+#ifdef UME_GZP_SOA_JIT_RMW
+    std::cout << "UME_GZP_TERMINAL treatment="
+              << gzp_rmw_treatment_name(gzp_rmw_treatment)
+              << " full_windows=" << soa_full_windows.load()
+              << " volume_only_windows="
+              << soa_volume_only_windows.load()
+              << " staged_predicates=" << soa_staged_predicates.load()
+              << " staged_gradient_values="
+              << soa_staged_gradient_values.load()
+              << " predicate_hash=" << soa_predicate_hash
+              << " publisher="
+              << gzp_rmw_publisher_name(gzp_rmw_treatment)
+              << " performance_promotable="
+              << gzp_rmw_performance_promotable(gzp_rmw_treatment)
+              << " result=PASS" << std::endl;
+#endif
     std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
 #endif
@@ -604,6 +852,9 @@ int main(int argc, char *argv[]) {
     corner_volume.resize(num_corners);
     c_to_z_map.resize(num_corners);
     c_to_p_map.resize(num_corners);
+#ifdef UME_GZP_SOA_JIT_RMW
+    corner_predicate_soa.resize(num_corners);
+#endif
 
     point_volume.resize(num_points);
     point_gradient.resize(num_points);
@@ -624,6 +875,14 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < num_corners; ++i) {
         corner_type[i] = (rand() % 100 < branch_bias * 100) ? 1 : -1;
     }
+#ifdef UME_GZP_SOA_JIT_RMW
+    soa_predicate_active = 0;
+    for (int i = 0; i < num_corners; ++i) {
+        corner_predicate_soa[i] = corner_type[i] > 0 ? 1U : 0U;
+        soa_predicate_active += corner_predicate_soa[i];
+    }
+    soa_predicate_hash = hash_soa_predicates(corner_predicate_soa);
+#endif
     std::fill(point_normal.begin(), point_normal.end(), 1.0);
 #if defined(UME_GATHER_VERIFY) || defined(UME_FIXED_INPUT)
     std::fill(corner_volume.begin(), corner_volume.end(), 1.0f);
@@ -674,8 +933,15 @@ int main(int argc, char *argv[]) {
     cout << "checkpoint done" << endl;
 #ifdef MAA_GENERAL_VIRTUAL_CONSUMER
     try {
+#ifdef UME_GZP_SOA_JIT_RMW
+        const GzpSelector selector =
+            read_gzp_selector(virtual_consumer_selector);
+        virtual_consumer_mode = selector.consumer;
+        gzp_rmw_treatment = selector.rmw;
+#else
         virtual_consumer_mode =
             maa_read_virtual_consumer_mode(virtual_consumer_selector);
+#endif
         if (virtual_consumer_mode ==
             MAAVirtualConsumerMode::TokenStreamLoadPingPong)
             throw std::runtime_error(
@@ -689,6 +955,23 @@ int main(int argc, char *argv[]) {
               << maa_virtual_consumer_mode_name(virtual_consumer_mode)
               << " logical=" << TILE_SIZE
               << " consumer=" << MAA_CONSUMER_TILE_SIZE << std::endl;
+#ifdef UME_GZP_SOA_JIT_RMW
+    std::cout << "UME_GZP_RMW_TREATMENT mode="
+              << gzp_rmw_treatment_name(gzp_rmw_treatment)
+              << " predicate=uint32_corner_type_gt_0"
+              << " completion=explicit_spd_wait"
+              << " publisher="
+              << gzp_rmw_publisher_name(gzp_rmw_treatment)
+              << " performance_promotable="
+              << gzp_rmw_performance_promotable(gzp_rmw_treatment)
+              << std::endl;
+    std::cout << "UME_GZP_PREDICATE_BUFFER elements="
+              << corner_predicate_soa.size()
+              << " active=" << soa_predicate_active
+              << " hash=" << soa_predicate_hash
+              << " semantic=corner_type_gt_0 phase=pre_checkpoint"
+              << " immutable=1" << std::endl;
+#endif
 #endif
 #endif
     alloc_MAA();
@@ -721,6 +1004,10 @@ int main(int argc, char *argv[]) {
 #ifdef MAA_VIRTUAL_GATHER
             regs3[thread_id] = get_new_reg<int>();
             regs4[thread_id] = get_new_reg<int>();
+#endif
+#ifdef UME_GZP_SOA_JIT_RMW
+            soa_volume_completion_tiles[thread_id] = get_new_tile<int>();
+            soa_gradient_completion_tiles[thread_id] = get_new_tile<int>();
 #endif
         }
     }

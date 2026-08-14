@@ -133,6 +133,12 @@ gradzatp_maa_16K_virtual_fixed_fp: gradzatp.cpp m5op.o
 gradzatp_maa_16K_general_fp: gradzatp.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DMAA_GENERAL_VIRTUAL_CONSUMER -DMAA_CONSUMER_TILE_SIZE=4096 -DUME_FIXED_INPUT -DUME_OUTPUT_FINGERPRINT -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
 
+# One binary supports legacy, volume-only, and full-SoA restore selectors, so
+# their checkpoint and guest identity remain identical. The volume-only arm is
+# performance-capable; the full two-RMW arm remains a correctness treatment.
+gradzatp_maa_16K_general_soa_jit_fp: gradzatp.cpp m5op.o
+	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DMAA_VIRTUAL_GATHER -DMAA_GENERAL_VIRTUAL_CONSUMER -DMAA_CONSUMER_TILE_SIZE=4096 -DUME_GZP_SOA_JIT_RMW -DUME_FIXED_INPUT -DUME_OUTPUT_FINGERPRINT -DNUM_CORES=4 -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
+
 gradzatz_maa_1K_verify: gradzatz.cpp m5op.o
 	$(CXX) $(MAA_INCLUDE) $(GEM5_INCLUDE) $(CXX_FLAGS) -DMAA -DUME_GRADZATZ_VERIFY -DNUM_CORES=4 -DTILE_SIZE=1024 -DMAA_MEM_SIZE=0x80000000 $(GEM5_LIB) m5op.o $< -o $@
 
