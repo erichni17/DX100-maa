@@ -150,8 +150,8 @@ int main(int argc, char **argv)
     std::cout << "BACKED_RMW_RESULT mode=" << mode
               << " logical=" << Logical << " physical=" << Physical
               << " generation=" << Generation << " hash=0x" << std::hex
-              << hashData() << std::dec << " errors=" << errors << '\n';
-    std::cout << "ROI Ended\n";
+              << hashData() << std::dec << " errors=" << errors << std::endl;
+    std::cout << "ROI Ended" << std::endl;
     m5_exit(0);
     return errors == 0 ? 0 : 1;
 }
