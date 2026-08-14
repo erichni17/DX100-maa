@@ -15,6 +15,7 @@ def test_value_owner_sweep_is_exact_bounded_and_uncapped_by_default():
     assert "IND_SoaJitValueReadIssues" in runner
     assert "IND_SoaJitValueReadResponses" in runner
     assert "IND_SoaJitAWriteResponses" in runner
+    assert "owners * terminal" in runner
     assert "output_hash=" in runner
     assert "active_value_owner_payload_bytes" in runner
     assert "SOA_JIT_VALUE_OWNER_SCALING_MICRO_PASS" in runner

@@ -116,7 +116,9 @@ for owners in 32 64 128; do
     storage=$(grep -m1 'event=soa_jit_storage ' "$run/soa_jit_trace.log")
     coalescer_bytes=$(sed -n 's/.*fixed_value_owner_bytes=\([0-9][0-9]*\).*/\1/p' <<<"$storage")
     active_payload_bytes=$(sed -n 's/.*active_value_owner_payload_bytes=\([0-9][0-9]*\).*/\1/p' <<<"$storage")
-    [[ $cache_hwm -ge 1 && $cache_hwm -le $owners ]]
+    # This gem5 statistic accumulates one high-water mark per completed
+    # instruction, so bound the sum by the number of terminal operations.
+    [[ $cache_hwm -ge $terminal && $cache_hwm -le $((owners * terminal)) ]]
     need_equal "$active_payload_bytes" "$((owners * 64))" active_payload
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$owners" "$ticks" "$vi" "$cached" "$hits" "$merged" \
