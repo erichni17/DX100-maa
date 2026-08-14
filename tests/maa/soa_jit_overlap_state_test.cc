@@ -57,7 +57,7 @@ testEightContextsShareOneFill()
         SoaJitValueCoalescer::Delivery delivery;
         const uint8_t waiter =
             context * SoaJitValueCoalescer::MaxLookahead;
-        CHECK(state.deliver(generation, waiter, 11, delivery) ==
+        CHECK(state.deliver(generation, waiter, 11 + context, delivery) ==
               SoaJitValueCoalescer::DeliveryResult::Delivered);
         CHECK(delivery.data == data);
     }

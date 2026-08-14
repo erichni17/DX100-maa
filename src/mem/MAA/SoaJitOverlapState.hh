@@ -116,8 +116,8 @@ class SoaJitValueCoalescer
         cache = {};
         prefetch = {};
         lruClock = 1;
-        deliveryCycleValid.fill(false);
-        lastDeliveryCycle.fill(0);
+        deliveryCycleValid = false;
+        lastDeliveryCycle = 0;
         prefetchHighWater = 0;
         cacheHighWater = 0;
     }
@@ -256,9 +256,7 @@ class SoaJitValueCoalescer
     {
         if (generation == 0 || waiter >= MaxWaiters)
             return DeliveryResult::Invalid;
-        const size_t context = waiter / MaxLookahead;
-        if (deliveryCycleValid[context] &&
-            lastDeliveryCycle[context] == cycle)
+        if (deliveryCycleValid && lastDeliveryCycle == cycle)
             return DeliveryResult::CycleLimited;
         const uint64_t bit = uint64_t{1} << waiter;
         for (auto &line : cache) {
@@ -271,8 +269,8 @@ class SoaJitValueCoalescer
             delivery.data = line.data;
             line.waiterMask &= ~bit;
             touch(line);
-            deliveryCycleValid[context] = true;
-            lastDeliveryCycle[context] = cycle;
+            deliveryCycleValid = true;
+            lastDeliveryCycle = cycle;
             if (!cacheEnabled && line.waiterMask == 0)
                 line = CacheLine();
             return DeliveryResult::Delivered;
@@ -423,8 +421,8 @@ class SoaJitValueCoalescer
     bool cacheEnabled = false;
     uint8_t activePrefetchCredits = 0;
     uint64_t lruClock = 1;
-    std::array<bool, MaxContexts> deliveryCycleValid{};
-    std::array<uint64_t, MaxContexts> lastDeliveryCycle{};
+    bool deliveryCycleValid = false;
+    uint64_t lastDeliveryCycle = 0;
     size_t prefetchHighWater = 0;
     size_t cacheHighWater = 0;
 

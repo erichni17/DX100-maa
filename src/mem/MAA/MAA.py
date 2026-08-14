@@ -191,6 +191,19 @@ class MAA(ClockedObject):
         0,
         "Partition-filter index words examined per cycle (0 is unlimited)",
     )
+    soa_jit_active_contexts = Param.Unsigned(
+        1,
+        "Active SoA/JIT A-line contexts (fixed maximum hardware is eight)",
+    )
+    soa_jit_value_lookahead = Param.Unsigned(
+        1,
+        "Ordered alias value-read credits per SoA/JIT context "
+        "(1, 2, 4, or 8; fixed maximum hardware is eight)",
+    )
+    soa_jit_value_cache_enable = Param.Bool(
+        False,
+        "Retain ready lines in the fixed four-entry SoA/JIT value cache",
+    )
     virtual_partition_keep_combiner = Param.Bool(
         False,
         "Retain partial destination-combiner lines across index partitions",

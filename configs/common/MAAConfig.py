@@ -185,6 +185,21 @@ def _get_maa_opts(options):
             options, "maa_virtual_index_buffer_lines"
         )
 
+    if hasattr(options, "maa_soa_jit_active_contexts"):
+        opts["soa_jit_active_contexts"] = getattr(
+            options, "maa_soa_jit_active_contexts"
+        )
+
+    if hasattr(options, "maa_soa_jit_value_lookahead"):
+        opts["soa_jit_value_lookahead"] = getattr(
+            options, "maa_soa_jit_value_lookahead"
+        )
+
+    if hasattr(options, "maa_soa_jit_value_cache_enable"):
+        opts["soa_jit_value_cache_enable"] = getattr(
+            options, "maa_soa_jit_value_cache_enable"
+        )
+
     if hasattr(options, "maa_virtual_index_force_cache"):
         opts["virtual_index_force_cache"] = getattr(
             options, "maa_virtual_index_force_cache"

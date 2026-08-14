@@ -180,6 +180,9 @@ MAA::MAA(const MAAParams &p)
       virtual_index_range_boundaries(p.virtual_index_range_boundaries),
       virtual_index_filter_words_per_cycle(
           p.virtual_index_filter_words_per_cycle),
+      soa_jit_active_contexts(p.soa_jit_active_contexts),
+      soa_jit_value_lookahead(p.soa_jit_value_lookahead),
+      soa_jit_value_cache_enable(p.soa_jit_value_cache_enable),
       virtual_partition_keep_combiner(p.virtual_partition_keep_combiner),
       virtual_grow_order(p.virtual_grow_order),
       virtual_native_issue_order(p.virtual_native_issue_order),
@@ -648,6 +651,9 @@ void MAA::addRamulator(memory::Ramulator2 *_ramulator2) {
                                         virtual_index_force_cache,
                                         virtual_index_partitions,
                                         virtual_index_filter_words_per_cycle,
+                                        soa_jit_active_contexts,
+                                        soa_jit_value_lookahead,
+                                        soa_jit_value_cache_enable,
                                         rowtable_latency,
                                         num_channels,
                                         num_cores,
@@ -6362,6 +6368,59 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueReadResponses"),
             statistics::units::Count::get(),
             "just-in-time timed value read responses"));
+        IND_SoaJitValueFills.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueFills"),
+            statistics::units::Count::get(),
+            "completed fills into the fixed SoA/JIT value cache"));
+        IND_SoaJitValueCachedResponses.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueCachedResponses"),
+            statistics::units::Count::get(),
+            "SoA/JIT value fills whose timed response was cache-resident"));
+        IND_SoaJitValueHits.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueHits"),
+            statistics::units::Count::get(),
+            "alias values served by ready fixed-cache lines"));
+        IND_SoaJitValueMergedWaiters.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueMergedWaiters"),
+            statistics::units::Count::get(),
+            "alias values merged behind one exact filling line"));
+        IND_SoaJitValueEvictions.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueEvictions"),
+            statistics::units::Count::get(),
+            "bounded LRU evictions from the fixed value cache"));
+        IND_SoaJitValueDeliveries.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueDeliveries"),
+            statistics::units::Count::get(),
+            "value-cache deliveries into ordered lookahead slots"));
+        IND_SoaJitValueStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueStalls"),
+            statistics::units::Count::get(),
+            "alias requests stalled by four non-evictable value lines"));
+        IND_SoaJitValueCacheHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueCacheHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction fixed value-cache high water"));
+        IND_SoaJitLookaheadIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitLookaheadIssues"),
+            statistics::units::Count::get(),
+            "exact ordered alias lookahead slots allocated"));
+        IND_SoaJitLookaheadResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitLookaheadResponses"),
+            statistics::units::Count::get(),
+            "exact alias scalar deliveries retained by lookahead slots"));
+        IND_SoaJitLookaheadStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitLookaheadStalls"),
+            statistics::units::Count::get(),
+            "lookahead allocation retries after value-cache backpressure"));
+        IND_SoaJitLookaheadHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitLookaheadHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction active ordered alias slots"));
+        IND_SoaJitActiveContexts.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitActiveContexts"),
+            statistics::units::Count::get(),
+            "sum of configured active contexts for completed instructions"));
         IND_SoaJitAliasesApplied.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAliasesApplied"),
             statistics::units::Count::get(),

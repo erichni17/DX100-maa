@@ -47,15 +47,17 @@ def test_shape_rejects_old_value_and_uses_completion_only_dst2():
     )
 
 
-def test_one_bounded_context_and_no_operation_sized_payload():
+def test_fixed_bounded_overlap_storage_and_no_operation_sized_payload():
     header = read("src/mem/MAA/IndirectAccess.hh")
     begin = header.index("struct SoaPredicateLine")
     end = header.index("int my_dst_tile", begin)
     soa_state = header[begin:end]
     assert "std::array<uint8_t, 64> data" in soa_state
     assert "std::array<uint8_t, 64> aLine" in soa_state
-    assert "sizeof(SoaJitContext) <= 128" in soa_state
-    assert "SoaJitContexts = 1" in soa_state
+    assert "sizeof(SoaJitContext) <= 512" in soa_state
+    assert "SoaJitValueCoalescer::MaxLookahead> lookahead" in soa_state
+    assert "SoaJitValueCoalescer::MaxContexts" in soa_state
+    assert "std::array<SoaJitContext, SoaJitContexts>" in soa_state
     assert "std::vector" not in soa_state
     assert "4096" not in soa_state
 
@@ -90,7 +92,10 @@ def test_full_window_and_timed_jit_protocol_have_exact_drain():
         "soaJitContextsEmpty",
         "offset_table->occupancy() != 0",
         "soa_jit_selected + soa_jit_predicate_rejected",
-        "soa_jit_value_read_issues != soa_jit_selected",
+        "soa_jit_value_read_issues !=\n"
+        "                     soa_jit_value_read_responses",
+        "soa_jit_lookahead_issues != soa_jit_selected",
+        "soa_jit_value_deliveries != soa_jit_selected",
         "soa_jit_a_write_issues != soa_jit_a_write_responses",
         "soa_jit_predicate_line_issues !=",
     ):
@@ -145,3 +150,43 @@ def test_four_arm_runner_is_matched_for_soa_physical_pair():
     assert "$context_high_water -eq 2 && $context_stalls -eq 0" in runner
     assert "soa_physical_spd_geometry_ratio" in runner
     assert "soa_metadata_virtualization_ratio" not in runner
+
+
+def test_overlap_runner_has_explicit_serial_and_optimized_treatments():
+    runner = read("experiments/scripts/run_hybrid_rmw_soa_overlap_matrix.sh")
+    assert '--maa_soa_jit_active_contexts="$contexts"' in runner
+    assert '--maa_soa_jit_value_lookahead="$lookahead"' in runner
+    assert "run_native ordinary_native16" in runner
+    assert "run_native ordinary_native4" in runner
+    assert "run_soa soa_serial_physical16 16384 1 1 1 0" in runner
+    assert "run_soa baseline_c1_i1_l1_v0 4096 1 1 1 0" in runner
+    assert "run_soa lookahead4_c1_i8_l4_v4 4096 1 8 4 1" in runner
+    assert "run_soa lookahead8_c1_i8_l8_v4 4096 1 8 8 1" in runner
+    assert "run_soa combined_c8_i8_l8_v4 4096 8 8 8 1" in runner
+    assert "fixed_context_slots=8" in runner
+    assert "fixed_lookahead_slots_per_context=8" in runner
+    assert "fixed_value_cache_lines=4" in runner
+    assert "fixed_apply_lanes=1" in runner
+    assert "IND_SoaJitValueFills" in runner
+    assert "IND_SoaJitValueMergedWaiters" in runner
+    assert "IND_SoaJitLookaheadResponses" in runner
+    assert "IND_SoaJitTerminalCompletions" in runner
+    assert "event=soa_jit_storage" in runner
+    assert "storage_ledger.txt" in runner
+
+
+def test_storage_ledger_separates_fixed_provision_from_active_knobs():
+    source = read("src/mem/MAA/IndirectAccess.cc")
+    storage = source[source.index('"event=soa_jit_storage') :]
+    for field in (
+        "fixed_context_bytes",
+        "fixed_contexts_bytes",
+        "fixed_value_owner_bytes",
+        "fixed_apply_arbiter_bytes",
+        "existing_predicate_feeder_bytes",
+        "index_active_data_tag_bytes",
+        "incremental_overlap_bytes",
+        "active_contexts",
+        "active_lookahead",
+    ):
+        assert field in storage

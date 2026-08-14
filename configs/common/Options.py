@@ -456,6 +456,28 @@ def addNoISAOptions(parser):
         help="Cache lines buffered or in flight for direct virtual-index ingestion",
     )
     parser.add_argument(
+        "--maa_soa_jit_active_contexts",
+        type=int,
+        default=1,
+        choices=range(1, 9),
+        help="Active SoA/JIT A-line contexts; fixed hardware maximum is eight",
+    )
+    parser.add_argument(
+        "--maa_soa_jit_value_lookahead",
+        type=int,
+        default=1,
+        choices=(1, 2, 4, 8),
+        help=(
+            "Ordered alias value-read credits per SoA/JIT context; "
+            "fixed hardware maximum is eight"
+        ),
+    )
+    parser.add_argument(
+        "--maa_soa_jit_value_cache_enable",
+        action="store_true",
+        help="Retain ready lines in the fixed four-entry SoA/JIT value cache",
+    )
+    parser.add_argument(
         "--maa_virtual_index_force_cache",
         action="store_true",
         help="Route direct virtual-index feeder reads through the cache hierarchy",

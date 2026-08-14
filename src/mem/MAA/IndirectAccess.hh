@@ -22,6 +22,7 @@
 #include "mem/MAA/BoundedQuantileRanges.hh"
 #include "mem/MAA/BoundedRangePass.hh"
 #include "mem/MAA/ReorderSurvivalTracker.hh"
+#include "mem/MAA/SoaJitOverlapState.hh"
 #include "mem/MAA/Tables.hh"
 #include "mem/MAA/VirtualCombinePayloadStore.hh"
 #include "mem/MAA/VirtualCombinerPageOrder.hh"
@@ -288,6 +289,9 @@ public:
                   bool _virtual_index_force_cache,
                   int _virtual_index_partitions,
                   int _virtual_index_filter_words_per_cycle,
+                  int _soa_jit_active_contexts,
+                  int _soa_jit_value_lookahead,
+                  bool _soa_jit_value_cache_enable,
                   Cycles _rowtable_latency,
                   int _num_channels,
                   int _num_cores,
@@ -499,27 +503,56 @@ protected:
     {
         Free,
         AwaitARead,
-        AwaitValueRead,
+        Active,
         AwaitAWriteResp,
+    };
+    enum class SoaJitLookaheadState : uint8_t
+    {
+        Free,
+        Waiting,
+        Ready,
+    };
+    struct SoaJitLookaheadSlot
+    {
+        std::array<uint8_t, 8> value{};
+        Addr valuePaddr = 0;
+        uint64_t generation = 0;
+        int offset = -1;
+        int logicalItr = -1;
+        uint16_t aWord = 0;
+        uint16_t valueWord = 0;
+        SoaJitLookaheadState state = SoaJitLookaheadState::Free;
     };
     struct SoaJitContext
     {
         std::array<uint8_t, 64> aLine{};
+        std::array<SoaJitLookaheadSlot,
+                   SoaJitValueCoalescer::MaxLookahead> lookahead{};
         Addr aPaddr = 0;
-        Addr valuePaddr = 0;
         uint64_t generation = 0;
         int nextOffset = -1;
+        int issueOffset = -1;
         int remaining = 0;
-        int logicalItr = -1;
-        uint16_t aWord = 0;
-        uint16_t valueWord = 0;
+        uint8_t lookaheadOccupancy = 0;
         SoaJitContextState state = SoaJitContextState::Free;
     };
-    static_assert(sizeof(SoaJitContext) <= 128,
-                  "SoA/JIT RMW context exceeds the 128-byte budget");
-    static constexpr size_t SoaJitContexts = 1;
+    static_assert(sizeof(SoaJitContext) <= 512,
+                  "SoA/JIT RMW context exceeds the fixed 512-byte budget");
+    static constexpr size_t SoaJitContexts =
+        SoaJitValueCoalescer::MaxContexts;
     std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
     bool soa_jit_operation_active = false;
+    SoaJitValueCoalescer soa_jit_value_coalescer;
+    int soa_jit_active_contexts = 1;
+    int soa_jit_value_lookahead = 1;
+    bool soa_jit_value_cache_enable = false;
+    struct SoaJitApplyArbiter
+    {
+        Tick lastTick = 0;
+        size_t nextContext = 0;
+        bool tickValid = false;
+    };
+    SoaJitApplyArbiter soa_jit_apply_arbiter;
     bool soa_jit_all_rows_claimed = false;
     uint64_t soa_jit_next_generation = 1;
     uint64_t soa_jit_generation = 0;
@@ -531,6 +564,18 @@ protected:
     uint64_t soa_jit_a_read_responses = 0;
     uint64_t soa_jit_value_read_issues = 0;
     uint64_t soa_jit_value_read_responses = 0;
+    uint64_t soa_jit_value_fills = 0;
+    uint64_t soa_jit_value_cached_responses = 0;
+    uint64_t soa_jit_value_hits = 0;
+    uint64_t soa_jit_value_merged_waiters = 0;
+    uint64_t soa_jit_value_evictions = 0;
+    uint64_t soa_jit_value_deliveries = 0;
+    uint64_t soa_jit_value_stalls = 0;
+    uint64_t soa_jit_value_cache_high_water = 0;
+    uint64_t soa_jit_lookahead_issues = 0;
+    uint64_t soa_jit_lookahead_responses = 0;
+    uint64_t soa_jit_lookahead_stalls = 0;
+    uint64_t soa_jit_lookahead_high_water = 0;
     uint64_t soa_jit_aliases_applied = 0;
     uint64_t soa_jit_a_write_issues = 0;
     uint64_t soa_jit_a_write_responses = 0;
@@ -612,14 +657,19 @@ protected:
     bool serviceSoaJitBuild();
     bool receiveSoaJitData(Addr addr, uint8_t *dataptr,
                            bool is_block_cached);
-    void issueSoaJitValueRead(SoaJitContext &context);
-    void applySoaJitValue(SoaJitContext &context,
+    bool fillSoaJitLookahead(size_t context_index);
+    bool serviceSoaJitLookahead();
+    bool issueSoaJitValueRead(size_t context_index, size_t slot_index,
+                              int offset);
+    void applySoaJitValue(SoaJitContext &context, uint16_t a_word,
                           const uint8_t *value);
     void issueSoaJitWrite(SoaJitContext &context);
     bool completeSoaJitWrite(Addr addr);
     void validateSoaJitAddressSpans();
     bool soaJitContextsEmpty() const;
-    void checkSoaJitTerminal() const;
+    size_t soaJitActiveContextCount() const;
+    size_t soaJitLookaheadOccupancy() const;
+    void checkSoaJitTerminal();
     bool receiveDescriptorSpool(Addr addr, uint8_t *dataptr,
                                 bool is_block_cached);
     bool loadDescriptorSpoolCurrent(uint32_t cursor);
