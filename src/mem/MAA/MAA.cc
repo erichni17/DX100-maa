@@ -2975,7 +2975,7 @@ MAA::finishPageMaterialization(
                 "pages=%u lines=%u forwarded_lines=%u staged_direct_lines=%u "
                 "cache_read_fallback_lines=%u producer_line_acks=%u "
                 "page_fallback_lines=%u exact_closure=1 "
-                "global_dispatch_fallbacks=%lu "
+                "dispatch_fallbacks=%lu "
                 "inactive_payload_capacity=%u "
                 "inactive_payload_conflict_policy=%s "
                 "global_inactive_payload_captures=%lu "
