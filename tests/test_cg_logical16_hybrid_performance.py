@@ -96,6 +96,10 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             self.runner,
         )
 
+    def test_stat_sum_emits_a_numeric_line_not_a_literal_escape(self):
+        self.assertIn('printf "%.0f\\n", sum', self.runner)
+        self.assertNotIn('printf "%.0f\\\\n", sum', self.runner)
+
 
 if __name__ == "__main__":
     unittest.main()

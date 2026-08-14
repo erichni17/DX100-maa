@@ -132,7 +132,7 @@ stat_sum() {
     awk -v suffix="$suffix" '
         /^---------- Begin Simulation Statistics/ { section++ }
         section == 1 && $1 ~ ("_" suffix "$") { sum += $2 }
-        /^---------- End Simulation Statistics/ && section == 1 { printf "%.0f\\n", sum; exit }
+        /^---------- End Simulation Statistics/ && section == 1 { printf "%.0f\n", sum; exit }
     ' "$stats"
 }
 
