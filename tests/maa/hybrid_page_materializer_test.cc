@@ -6,6 +6,7 @@
 #include <iostream>
 
 #include "mem/MAA/HybridConsumerContextQueue.hh"
+#include "mem/MAA/InactivePayloadFallbackTable.hh"
 
 using gem5::HybridConsumerContextQueue;
 
@@ -22,6 +23,7 @@ namespace {
 
 using Queue = HybridConsumerContextQueue;
 using Pipeline = Queue::Pipeline;
+using Fallbacks = gem5::InactivePayloadFallbackTable;
 
 Queue::Descriptor
 materializerDescriptor()
@@ -473,6 +475,115 @@ testInactiveLookupMissRebindClosesExactPacketRequest()
 }
 
 void
+testReboundFallbackSkipsBlockedPortDefer()
+{
+    Queue queue;
+    Queue::ContextKey owner;
+    CHECK(queue.submit(materializerDescriptor(), &owner) ==
+          Queue::SubmitResult::Accepted);
+    CHECK(queue.beginMaterializationPage(owner, 0));
+
+    // The timed miss selected line 1 while it was the first ready line.
+    // Before the fallback reaches the occupied physical port, a later
+    // producer event makes line 0 the scheduler's candidate.  Rebinding is
+    // still valid for line 1, but defer() rejects it because defer may rotate
+    // only the context's current request.
+    makeMaterializationLineReady(queue, owner, 1, 0x1041);
+    const Queue::Request stale = queue.pendingRead(owner);
+    CHECK(stale.request.line == 1);
+    makeMaterializationLineReady(queue, owner, 0, 0x1040);
+
+    Fallbacks fallbacks;
+    CHECK(fallbacks.retain(stale));
+    Queue::Request rebound;
+    uint8_t slot = Fallbacks::NoSlot;
+    CHECK(fallbacks.resolve(queue, &rebound, &slot) ==
+          Fallbacks::ResolveResult::Rebound);
+    CHECK(slot != Fallbacks::NoSlot);
+    CHECK(rebound.request.line == 1);
+    CHECK(queue.pendingRead(owner).request.line == 0);
+    CHECK(!queue.defer(rebound));
+
+    // An occupied port keeps the exact fallback entry for a later retry;
+    // service must not call defer(rebound) above or clear the entry early.
+    CHECK(fallbacks.pendingCount() == 1);
+    CHECK(fallbacks.clear(slot));
+    CHECK(fallbacks.pendingCount() == 0);
+}
+
+void
+testFallbackOwnerCleanupAfterFinalDirectCaptureAndReplacement()
+{
+    Queue queue;
+    Queue::ContextKey owner;
+    CHECK(queue.submit(materializerDescriptor(), &owner) ==
+          Queue::SubmitResult::Accepted);
+    const auto bytes = linePayload(0x860);
+    const uint16_t pageLines = queue.producerPageLines(owner);
+
+    // Retire the first three pages through ordinary coherent fallback, then
+    // leave exactly the final line of the fourth page for direct capture.
+    for (uint8_t page = 0; page < Pipeline::ProducerPages - 1; ++page) {
+        CHECK(queue.beginMaterializationPage(owner, page));
+        CHECK(queue.notifyProducerWriteAck(
+            owner, {owner.generation, page,
+                    static_cast<uint64_t>(0x1050 + page)}));
+        while (!queue.materializationPageComplete(owner, page)) {
+            const Queue::Request request = queue.pendingRead(owner);
+            CHECK(request.request.kind == Pipeline::Kind::ReadBacking);
+            CHECK(queue.accept(request));
+            CHECK(queue.completeRead(request, bytes.data(), bytes.size()));
+            CHECK(queue.completeMaterialize(request));
+        }
+    }
+    constexpr uint8_t finalPage = Pipeline::ProducerPages - 1;
+    CHECK(queue.beginMaterializationPage(owner, finalPage));
+    CHECK(queue.notifyProducerWriteAck(
+        owner, {owner.generation, finalPage, 0x1054}));
+    for (uint16_t line = 0; line < pageLines - 1; ++line) {
+        const Queue::Request request = queue.pendingRead(owner);
+        CHECK(request.request.kind == Pipeline::Kind::ReadBacking);
+        CHECK(request.request.line == finalPage * pageLines + line);
+        CHECK(queue.accept(request));
+        CHECK(queue.completeRead(request, bytes.data(), bytes.size()));
+        CHECK(queue.completeMaterialize(request));
+    }
+    const Queue::Request stale = queue.pendingRead(owner);
+    CHECK(stale.request.line == finalPage * pageLines + pageLines - 1);
+
+    Fallbacks fallbacks;
+    CHECK(fallbacks.retain(stale));
+
+    // The direct capture of the final page line may finish/retire the owner
+    // before the fallback service observes Closed.  Completion teardown must
+    // erase the exact entry without touching a different owner.
+    Queue::Request captured;
+    CHECK(queue.captureMaterializationLine(owner, stale.request.line,
+                                           bytes.data(), bytes.size(),
+                                           &captured));
+    CHECK(fallbacks.clearOwner(owner) == 1);
+    CHECK(fallbacks.pendingCount() == 0);
+    CHECK(queue.completeMaterialize(captured));
+    CHECK(queue.materializationPageComplete(owner, finalPage));
+    CHECK(queue.retire(owner));
+
+    Queue::ContextKey replacement;
+    CHECK(queue.submit(materializerDescriptor(), &replacement) ==
+          Queue::SubmitResult::Accepted);
+    CHECK(replacement.tokenTile == owner.tokenTile);
+    CHECK(replacement.generation == owner.generation);
+    CHECK(replacement.incarnation != owner.incarnation);
+    CHECK(queue.beginMaterializationPage(replacement, 0));
+    makeMaterializationLineReady(queue, replacement, 0, 0x1051);
+    const Queue::Request replacementRequest = queue.pendingRead(replacement);
+    CHECK(fallbacks.retain(replacementRequest));
+    CHECK(fallbacks.clearOwner(owner) == 0);
+    CHECK(fallbacks.pendingCount() == 1);
+    CHECK(fallbacks.clearOwner(replacement) == 1);
+    CHECK(fallbacks.pendingCount() == 0);
+}
+
+void
 driveCacheReadPage(Queue &queue, const Queue::ContextKey &owner,
                    uint8_t destination, uint64_t &tick,
                    BoundedCommitHarness &commits)
@@ -592,6 +703,8 @@ main()
     testInactiveLookupMissDiscardsSameLineDirectCapture();
     testInactiveLookupMissWaitsForFreshCredit();
     testInactiveLookupMissRebindClosesExactPacketRequest();
+    testReboundFallbackSkipsBlockedPortDefer();
+    testFallbackOwnerCleanupAfterFinalDirectCaptureAndReplacement();
     testLateAckForwardingCommitTickAndTwoChargedPages();
     std::cout << "hybrid page materializer tests passed\n";
     return 0;

@@ -20,6 +20,7 @@
 #include "mem/MAA/HybridConsumerContextQueue.hh"
 #include "mem/MAA/HybridMacroEventTracker.hh"
 #include "mem/MAA/IF.hh"
+#include "mem/MAA/InactivePayloadFallbackTable.hh"
 #include "mem/MAA/InactiveProducerLinePayloadCapture.hh"
 #include "mem/MAA/LogicalSPDCacheGem5Bridge.hh"
 #include "mem/MAA/LogicalSPDCacheLiveAdapterState.hh"
@@ -644,20 +645,12 @@ protected:
         InactiveProducerLinePayloadCapture::LookupPipeline timing{};
     };
     InactivePayloadLookup inactivePayloadLookup;
-    struct InactivePayloadFallback
-    {
-        bool pending = false;
-        HybridConsumerContextQueue::Request request{};
-    };
     // One exact proven miss may wait per materializer context.  This fixed
     // table prevents a credit-stalled miss from blocking or overwriting the
     // round-robin lookup work of the other three contexts.
     static_assert(HybridConsumerContextQueue::ContextCount ==
                   InactiveProducerLinePayloadCapture::SlotCount);
-    std::array<InactivePayloadFallback,
-               HybridConsumerContextQueue::ContextCount>
-        inactivePayloadFallbacks{};
-    uint8_t nextInactivePayloadFallback = 0;
+    InactivePayloadFallbackTable inactivePayloadFallbacks;
     std::array<DirectRetirementExecution,
                HybridConsumerContextQueue::ContextCount>
         directRetirementExecutions{};

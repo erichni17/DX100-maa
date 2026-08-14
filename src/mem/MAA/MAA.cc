@@ -2663,17 +2663,7 @@ MAA::consumeInactiveProducerPayload()
         stats.page_materialization_inactive_payload_lookup_misses++;
         // Keep only a fixed exact fallback identity.  Its snapshotted buffer
         // is deliberately not trusted after the one-cycle lookup.
-        bool retained = false;
-        for (InactivePayloadFallback &fallback :
-             inactivePayloadFallbacks) {
-            if (fallback.pending)
-                continue;
-            fallback.pending = true;
-            fallback.request = request;
-            retained = true;
-            break;
-        }
-        panic_if(!retained,
+        panic_if(!inactivePayloadFallbacks.retain(request),
                  "Inactive payload fallback table exhausted\n");
         inactivePayloadLookup = InactivePayloadLookup{};
         return false;
@@ -2762,6 +2752,12 @@ MAA::finishPageMaterialization(
         panic_if(sameDirectRetirementKey(state->request.owner, key),
                  "Page materializer released SPD with an owned retry\n");
     }
+    // A final same-line direct capture can commit and finish the page before
+    // servicePageMaterialization reaches the table.  Exact-owner teardown
+    // prevents that already-closed fallback from reaching a later lifetime.
+    (void)inactivePayloadFallbacks.clearOwner(key);
+    if (sameDirectRetirementKey(inactivePayloadLookup.request.owner, key))
+        inactivePayloadLookup = InactivePayloadLookup{};
     const uint8_t page = execution->page;
     const int destination = execution->destinationTile;
     const int wordBytes = execution->wordBytes;
@@ -3151,34 +3147,11 @@ MAA::servicePageMaterialization()
     }
 
     uint8_t resolvedInactivePayloadFallback =
-        HybridConsumerContextQueue::ContextCount;
-    for (uint8_t offset = 0;
-         offset < HybridConsumerContextQueue::ContextCount; ++offset) {
-        const uint8_t index = (nextInactivePayloadFallback + offset) %
-            HybridConsumerContextQueue::ContextCount;
-        InactivePayloadFallback &fallback = inactivePayloadFallbacks[index];
-        if (!fallback.pending)
-            continue;
-        const auto rebind = directRetirementContexts.rebindMaterializationRead(
-            fallback.request, &resolvedInactivePayloadRequest);
-        if (rebind == HybridConsumerContextQueue::MaterializationReadRebind::
-                          Rebound) {
-            // The one-cycle timed miss may now use the ordinary coherent
-            // fallback path.  It is intentionally issued below only with a
-            // fresh exact line credit, never its pre-lookup buffer.
-            resolvedInactivePayloadMiss = true;
-            resolvedInactivePayloadFallback = index;
-            nextInactivePayloadFallback =
-                (index + 1) % HybridConsumerContextQueue::ContextCount;
-            break;
-        } else if (rebind ==
-                   HybridConsumerContextQueue::MaterializationReadRebind::
-                       Closed) {
-            // A same-line direct capture/commit won the race.  The old miss
-            // has no remaining line to issue and must not be retried.
-            fallback = InactivePayloadFallback{};
-        }
-    }
+        InactivePayloadFallbackTable::NoSlot;
+    resolvedInactivePayloadMiss = inactivePayloadFallbacks.resolve(
+        directRetirementContexts, &resolvedInactivePayloadRequest,
+        &resolvedInactivePayloadFallback) ==
+        InactivePayloadFallbackTable::ResolveResult::Rebound;
 
     for (unsigned attempt = 0;
          attempt < DirectRetirementRequestRecordCount; ++attempt) {
@@ -3211,12 +3184,15 @@ MAA::servicePageMaterialization()
         const uint8_t port = state->callbackPort;
         if (directRetirementRetryPackets.occupied(port)) {
             discardUnsentPacket(packet);
-            panic_if(!directRetirementContexts.defer(request),
-                     "Page materializer could not rotate a blocked port\n");
             if (completingInactivePayloadMiss) {
+                // Rebinding authenticates a free buffer for this exact line,
+                // but it does not make it the context's current scheduler
+                // candidate. Keep its fixed entry and retry without defer.
                 schedulePageMaterializationEvent(1);
                 break;
             }
+            panic_if(!directRetirementContexts.defer(request),
+                     "Page materializer could not rotate a blocked port\n");
             continue;
         }
         const Addr paddr = packet->getAddr();
@@ -3236,8 +3212,9 @@ MAA::servicePageMaterialization()
                          !directRetirementContexts.accept(request),
                      "Page materializer could not retain a refused request\n");
             if (completingInactivePayloadMiss)
-                inactivePayloadFallbacks[resolvedInactivePayloadFallback] =
-                    InactivePayloadFallback{};
+                panic_if(!inactivePayloadFallbacks.clear(
+                             resolvedInactivePayloadFallback),
+                         "Page materializer lost its rebound fallback\n");
             continue;
         }
         panic_if(actualPort != port ||
@@ -3245,8 +3222,9 @@ MAA::servicePageMaterialization()
                      !directRetirementContexts.accept(request),
                  "Page materializer could not claim an issued request\n");
         if (completingInactivePayloadMiss)
-            inactivePayloadFallbacks[resolvedInactivePayloadFallback] =
-                InactivePayloadFallback{};
+            panic_if(!inactivePayloadFallbacks.clear(
+                         resolvedInactivePayloadFallback),
+                     "Page materializer lost its rebound fallback\n");
         DPRINTF(MAAVirtualTrace,
                 "event=page_materialization_read_issue schema=1 "
                 "occurrence=%lu token=%u generation=%lu incarnation=%lu "
@@ -4569,6 +4547,10 @@ void MAA::resetVirtualPageReady(int tokenTileID, Addr backingAddr,
                      oldMaterialization->key),
                  "virtual completion token %d could not close its idle "
                  "materializer lifetime\n", tokenTileID);
+        (void)inactivePayloadFallbacks.clearOwner(oldMaterialization->key);
+        if (sameDirectRetirementKey(inactivePayloadLookup.request.owner,
+                                    oldMaterialization->key))
+            inactivePayloadLookup = InactivePayloadLookup{};
         (void)directRetirementEarlyLineLedger.clear(
             {oldMaterialization->key.tokenTile,
              oldMaterialization->key.generation,
