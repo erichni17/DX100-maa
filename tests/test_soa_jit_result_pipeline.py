@@ -56,6 +56,12 @@ def test_terminal_trace_closes_payload_overlap_and_byte_ledgers():
     for field in (
         "fixed_result_payload_bytes",
         "active_result_payload_bytes",
+        "fixed_lookahead_value_payload_bytes",
+        "active_lookahead_value_payload_bytes",
+        "incremental_lookahead_value_payload_bytes_vs_32",
+        "fixed_max_transient_write_payload_bytes",
+        "active_max_transient_write_payload_bytes",
+        "incremental_max_transient_write_payload_bytes_vs_32",
         "fixed_result_contexts_bytes",
         "fixed_result_nonpayload_bytes",
         "incremental_result_contexts_bytes_vs_32",
@@ -82,6 +88,8 @@ def test_micro_is_two_rep_shared_checkpoint_exact_control_treatment():
     assert "checkpoint=" in runner
     assert "expected_hash=2761840269561229581" in runner
     assert "fixed_result_payload_bytes" in runner
+    assert "fixed_lookahead_value_payload_bytes" in runner
+    assert "fixed_max_transient_write_payload_bytes" in runner
     assert "fixed_result_contexts_bytes" in runner
     assert "incremental_result_nonpayload_bytes_vs_32" in runner
     assert "incremental_result_waiter_mask_bytes_vs_32" in runner

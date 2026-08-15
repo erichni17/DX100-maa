@@ -302,10 +302,22 @@ def analyze(
         if (
             fields.get("active_contexts") != str(contexts)
             or fields.get("fixed_result_payload_bytes") != "4096"
+            or fields.get("fixed_lookahead_value_payload_bytes") != "4096"
+            or fields.get("active_lookahead_value_payload_bytes")
+            != str(contexts * 64)
+            or fields.get("incremental_lookahead_value_payload_bytes_vs_32")
+            != "2048"
+            or fields.get("fixed_max_transient_write_payload_bytes") != "4096"
+            or fields.get("active_max_transient_write_payload_bytes")
+            != str(contexts * 64)
+            or fields.get(
+                "incremental_max_transient_write_payload_bytes_vs_32"
+            )
+            != "2048"
             or fields.get("incremental_result_total_state_bytes_vs_32")
             != "17408"
             or fields.get("incremental_result_total_nonpayload_bytes_vs_32")
-            != "15360"
+            != "13312"
         ):
             raise RuntimeError(f"replica {replica} {arm}: byte ledger failed")
 
@@ -322,7 +334,9 @@ def analyze(
         "value_reads": checks["value_issues"],
         "pre_a_uses": checks["pre_a_uses"],
         "fixed_result_payload_bytes": 4096,
-        "incremental_total_nonpayload_bytes_vs_32": 15360,
+        "fixed_lookahead_value_payload_bytes": 4096,
+        "max_transient_write_payload_bytes": contexts * 64,
+        "incremental_total_nonpayload_bytes_vs_32": 13312,
         "incremental_total_state_bytes_vs_32": 17408,
         "output_hash": EXPECTED_OUTPUT_HASH,
     }
@@ -330,6 +344,13 @@ def analyze(
 
 def main() -> int:
     args = parse_args()
+    source_status = subprocess.check_output(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=ROOT,
+        text=True,
+    ).splitlines()
+    if source_status:
+        raise SystemExit("refusing evidence run from a dirty source tree")
     required_files = (
         args.gem5,
         SOURCE_COMMAND,
@@ -415,11 +436,7 @@ def main() -> int:
             "source_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
             ).strip(),
-            "source_status": subprocess.check_output(
-                ["git", "status", "--short", "--untracked-files=all"],
-                cwd=ROOT,
-                text=True,
-            ).splitlines(),
+            "source_status": source_status,
             "gem5_sha256": sha256(args.gem5),
             "guest_sha256": sha256(GUEST),
             "selector_sha256": selector_hash,

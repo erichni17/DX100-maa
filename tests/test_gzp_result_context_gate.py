@@ -15,6 +15,7 @@ def test_gate_is_two_replica_context_only_and_uncapped():
     assert '"timeout_seconds": 0' in runner
     assert "subprocess.run(command, timeout=" not in runner
     assert '"only_treatment": "maa_soa_jit_active_contexts:32->64"' in runner
+    assert "refusing evidence run from a dirty source tree" in runner
 
 
 def test_gate_freezes_accepted_controls_and_checkpoint():

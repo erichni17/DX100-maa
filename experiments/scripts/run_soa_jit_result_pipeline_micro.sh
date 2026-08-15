@@ -85,7 +85,7 @@ trace_first() {
     ' "$file"
 }
 
-printf 'repetition\tarm\tcontexts\tsimTicks\tcontext_stalls\tcontext_hwm\tread_write_overlap_ticks\tdual_region_overlap_ticks\tserialized_write_only_ticks\ttraffic_hwm_r1\tfixed_result_payload_bytes\tactive_result_payload_bytes\tfixed_result_contexts_bytes\tfixed_result_nonpayload_bytes\tbaseline_32_result_contexts_bytes\tincremental_result_contexts_bytes_vs_32\tincremental_result_context_nonpayload_bytes_vs_32\tincremental_result_waiter_mask_bytes_vs_32\tincremental_result_total_nonpayload_bytes_vs_32\tincremental_result_total_state_bytes_vs_32\n' >"$out/results.tsv"
+printf 'repetition\tarm\tcontexts\tsimTicks\tcontext_stalls\tcontext_hwm\tread_write_overlap_ticks\tdual_region_overlap_ticks\tserialized_write_only_ticks\ttraffic_hwm_r1\tfixed_result_payload_bytes\tactive_result_payload_bytes\tfixed_lookahead_value_payload_bytes\tactive_lookahead_value_payload_bytes\tfixed_max_transient_write_payload_bytes\tactive_max_transient_write_payload_bytes\tfixed_result_contexts_bytes\tfixed_result_nonpayload_bytes\tbaseline_32_result_contexts_bytes\tincremental_result_contexts_bytes_vs_32\tincremental_result_context_nonpayload_bytes_vs_32\tincremental_result_waiter_mask_bytes_vs_32\tincremental_result_total_nonpayload_bytes_vs_32\tincremental_result_total_state_bytes_vs_32\n' >"$out/results.tsv"
 
 for repetition in 1 2; do
     for contexts in 32 64; do
@@ -140,6 +140,10 @@ for repetition in 1 2; do
 
         fixed_payload=$(trace_first "$trace" fixed_result_payload_bytes)
         active_payload=$(trace_first "$trace" active_result_payload_bytes)
+        fixed_lookahead_payload=$(trace_first "$trace" fixed_lookahead_value_payload_bytes)
+        active_lookahead_payload=$(trace_first "$trace" active_lookahead_value_payload_bytes)
+        fixed_transient_write_payload=$(trace_first "$trace" fixed_max_transient_write_payload_bytes)
+        active_transient_write_payload=$(trace_first "$trace" active_max_transient_write_payload_bytes)
         context_bytes=$(trace_first "$trace" fixed_result_context_bytes)
         fixed_contexts=$(trace_first "$trace" fixed_result_contexts_bytes)
         nonpayload=$(trace_first "$trace" fixed_result_nonpayload_bytes)
@@ -153,11 +157,15 @@ for repetition in 1 2; do
         incremental_total_state=$(trace_first "$trace" incremental_result_total_state_bytes_vs_32)
         need_equal "$fixed_payload" 4096 fixed_result_payload_bytes
         need_equal "$active_payload" "$((contexts * 64))" active_result_payload_bytes
+        need_equal "$fixed_lookahead_payload" 4096 fixed_lookahead_value_payload_bytes
+        need_equal "$active_lookahead_payload" "$((contexts * 64))" active_lookahead_value_payload_bytes
+        need_equal "$fixed_transient_write_payload" 4096 fixed_max_transient_write_payload_bytes
+        need_equal "$active_transient_write_payload" "$((contexts * 64))" active_max_transient_write_payload_bytes
         need_equal "$fixed_contexts" "$((context_bytes * 64))" fixed_result_contexts_bytes
-        need_equal "$nonpayload" "$((fixed_contexts - fixed_payload))" fixed_result_nonpayload_bytes
+        need_equal "$nonpayload" "$((fixed_contexts - fixed_payload - fixed_lookahead_payload))" fixed_result_nonpayload_bytes
         need_equal "$baseline_contexts" "$((context_bytes * 32))" baseline_result_contexts_bytes
         need_equal "$incremental_contexts" "$((context_bytes * 32))" incremental_result_contexts_bytes
-        need_equal "$incremental_nonpayload" "$(((context_bytes - 64) * 32))" incremental_result_nonpayload_bytes
+        need_equal "$incremental_nonpayload" "$(((context_bytes - 128) * 32))" incremental_result_nonpayload_bytes
         need_equal "$fixed_waiter_masks" 8192 fixed_result_waiter_mask_bytes
         need_equal "$baseline_waiter_masks" 4096 baseline_result_waiter_mask_bytes
         need_equal "$incremental_waiter_masks" 4096 incremental_result_waiter_mask_bytes
@@ -178,10 +186,12 @@ for repetition in 1 2; do
         ticks=$(stat_value "$stats" simTicks)
         stalls=$(stat_value "$stats" system.maa.I0_IND_SoaJitContextStalls)
         hwm=$(stat_value "$stats" system.maa.I0_IND_SoaJitContextHighWater)
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$repetition" "$arm" "$contexts" "$ticks" "$stalls" \
             "$hwm" "$overlap" "$dual" "$write_only" "$traffic_r1" \
-            "$fixed_payload" "$active_payload" "$fixed_contexts" \
+            "$fixed_payload" "$active_payload" "$fixed_lookahead_payload" \
+            "$active_lookahead_payload" "$fixed_transient_write_payload" \
+            "$active_transient_write_payload" "$fixed_contexts" \
             "$nonpayload" "$baseline_contexts" "$incremental_contexts" \
             "$incremental_nonpayload" "$incremental_waiter_masks" \
             "$incremental_total_nonpayload" "$incremental_total_state" \

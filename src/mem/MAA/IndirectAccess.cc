@@ -6413,8 +6413,20 @@ void IndirectAccessUnit::executeInstruction() {
                 sizeof(soa_jit_contexts);
             constexpr size_t fixed_result_payload_bytes =
                 SoaJitResultPipeline::FixedPayloadBytes;
+            constexpr size_t lookahead_value_bytes_per_context =
+                SoaJitValueCoalescer::MaxLookahead *
+                sizeof(std::array<uint8_t, 8>);
+            constexpr size_t fixed_lookahead_value_payload_bytes =
+                SoaJitContexts * lookahead_value_bytes_per_context;
+            constexpr size_t baseline_32_lookahead_value_payload_bytes =
+                SoaJitResultPipeline::BaselineLines *
+                lookahead_value_bytes_per_context;
+            constexpr size_t incremental_lookahead_value_payload_bytes =
+                fixed_lookahead_value_payload_bytes -
+                baseline_32_lookahead_value_payload_bytes;
             constexpr size_t fixed_result_nonpayload_bytes =
-                fixed_result_contexts_bytes - fixed_result_payload_bytes;
+                fixed_result_contexts_bytes - fixed_result_payload_bytes -
+                fixed_lookahead_value_payload_bytes;
             constexpr size_t baseline_result_contexts_bytes =
                 SoaJitResultPipeline::BaselineLines *
                 fixed_result_context_bytes;
@@ -6423,7 +6435,8 @@ void IndirectAccessUnit::executeInstruction() {
                 baseline_result_contexts_bytes;
             constexpr size_t incremental_result_nonpayload_bytes =
                 (fixed_result_context_bytes -
-                 SoaJitResultPipeline::LineBytes) *
+                 SoaJitResultPipeline::LineBytes -
+                 lookahead_value_bytes_per_context) *
                 (SoaJitResultPipeline::MaxLines -
                  SoaJitResultPipeline::BaselineLines);
             constexpr size_t fixed_result_waiter_mask_bytes =
@@ -6442,14 +6455,29 @@ void IndirectAccessUnit::executeInstruction() {
             constexpr size_t incremental_result_total_state_bytes =
                 incremental_result_contexts_bytes +
                 incremental_result_waiter_mask_bytes;
+            constexpr size_t fixed_max_transient_write_payload_bytes =
+                SoaJitContexts * SoaJitResultPipeline::LineBytes;
+            constexpr size_t baseline_32_max_transient_write_payload_bytes =
+                SoaJitResultPipeline::BaselineLines *
+                SoaJitResultPipeline::LineBytes;
+            constexpr size_t incremental_max_transient_write_payload_bytes =
+                fixed_max_transient_write_payload_bytes -
+                baseline_32_max_transient_write_payload_bytes;
             static_assert(SoaJitValueCoalescer::MaxWaiters % 8 == 0);
+            static_assert(lookahead_value_bytes_per_context == 64);
             DPRINTF(MAAVirtualTrace,
-                    "event=soa_jit_result_pipeline schema=1 unit=%d "
+                    "event=soa_jit_result_pipeline schema=2 unit=%d "
                     "operation_tick=%lu generation=%lu active_contexts=%d "
                     "regions=%lu lines_per_region=%lu "
                     "region_payload_bytes=%lu fixed_result_payload_bytes=%lu "
                     "active_result_payload_bytes=%lu "
                     "incremental_result_payload_bytes_vs_32=%lu "
+                    "fixed_lookahead_value_payload_bytes=%lu "
+                    "active_lookahead_value_payload_bytes=%lu "
+                    "incremental_lookahead_value_payload_bytes_vs_32=%lu "
+                    "fixed_max_transient_write_payload_bytes=%lu "
+                    "active_max_transient_write_payload_bytes=%lu "
+                    "incremental_max_transient_write_payload_bytes_vs_32=%lu "
                     "fixed_result_context_bytes=%lu "
                     "fixed_result_contexts_bytes=%lu "
                     "fixed_result_nonpayload_bytes=%lu "
@@ -6476,6 +6504,14 @@ void IndirectAccessUnit::executeInstruction() {
                     SoaJitResultPipeline::activePayloadBytes(
                         soa_jit_active_contexts),
                     SoaJitResultPipeline::incrementalPayloadBytesVsBaseline(),
+                    fixed_lookahead_value_payload_bytes,
+                    static_cast<size_t>(soa_jit_active_contexts) *
+                        lookahead_value_bytes_per_context,
+                    incremental_lookahead_value_payload_bytes,
+                    fixed_max_transient_write_payload_bytes,
+                    static_cast<size_t>(soa_jit_active_contexts) *
+                        SoaJitResultPipeline::LineBytes,
+                    incremental_max_transient_write_payload_bytes,
                     fixed_result_context_bytes,
                     fixed_result_contexts_bytes,
                     fixed_result_nonpayload_bytes,

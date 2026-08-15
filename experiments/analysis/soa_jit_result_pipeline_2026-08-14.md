@@ -30,16 +30,22 @@ unchanged.
 | Increment | Bytes | Classification |
 |---|---:|---|
 | 32 additional 64-byte A-line payloads | 2,048 | payload |
-| Metadata in 32 additional 416-byte contexts | 11,264 | non-payload/context |
+| Eight 8-byte lookahead values in 32 additional contexts | 2,048 | operand payload |
+| Remaining metadata in 32 additional 416-byte contexts | 9,216 | non-payload/context |
 | Additional value-coalescer waiter identity bits (256 to 512 waiters across 128 lines) | 4,096 | non-payload/context |
 | Apply-lane ownership storage | 0 | the four-owner array is unchanged |
-| Additional modeled non-payload/context state | **15,360** | charged area |
+| Additional modeled non-payload/context state | **13,312** | charged area |
 | Additional modeled state including payload | **17,408** | charged area |
+| Maximum additional transient WriteReq data copies | 2,048 | transport payload upper bound |
 
-The fixed result-context array is 26,624 bytes: exactly 4,096 payload bytes and
-22,528 context metadata bytes. The corresponding lead-32 context array is
-13,312 bytes: 2,048 payload bytes plus 11,264 metadata bytes. Waiter masks are
+The fixed result-context array is 26,624 bytes: 4,096 A/result payload bytes,
+4,096 lookahead-value payload bytes, and 18,432 context metadata bytes. The
+corresponding lead-32 context array is 13,312 bytes: 2,048 A/result payload,
+2,048 lookahead-value payload, and 9,216 metadata bytes. Waiter masks are
 8,192 bytes in the 64-context design versus 4,096 bytes in the lead design.
+At maximum write occupancy, response-bearing packets may temporarily duplicate
+another 4,096 bytes of A-line data versus 2,048 bytes at context32; this is a
+transport-buffer upper bound, not persistent context storage.
 The observer's counters are simulator instrumentation rather than modeled
 datapath state and add zero hardware bytes. There is no hidden logical-window
 buffer and masked indices add zero storage.
@@ -111,8 +117,12 @@ and the same gem5 SHA-256 as the API micro.
 ## Promotion boundary
 
 The repeated exact 2.35% API and 2.67% full-GZP improvements justify the
-15,360-byte non-payload charge for this targeted option. Keep 64 contexts
+13,312-byte non-payload charge plus the payload costs above for this targeted
+option. Keep 64 contexts
 default-off and describe it as result-context capacity / two-region ownership.
 Do not claim a general early-publication optimization, do not enable dependent
 consumer reuse before exact terminal completion, and do not extrapolate this
-single full workload to other applications without matched gates.
+single full workload to other applications without matched gates. The gem5
+comparison does not establish that an unbanked 64-way admission/response search
+meets a physical 3.2 GHz cycle; banking, latency modeling, or synthesis remains
+required before making a frequency claim.
