@@ -6301,6 +6301,75 @@ MAA::MAAStats::MAAStats(statistics::Group *parent, int num_indirect_units, MAA *
             this, MAKE_INDIRECT_STAT_NAME("IND_VirtIndexFilterWaitCycles"),
             statistics::units::Cycle::get(),
             "non-overlapped scheduler cycles caused by index filtering"));
+        IND_SoaJitInstructions.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitInstructions"),
+            statistics::units::Count::get(),
+            "guarded SoA/JIT indirect RMW instructions completed"));
+        IND_SoaJitSelected.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitSelected"),
+            statistics::units::Count::get(),
+            "predicate-selected SoA/JIT logical iterations"));
+        IND_SoaJitPredicateRejected.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateRejected"),
+            statistics::units::Count::get(),
+            "predicate-rejected SoA/JIT logical iterations"));
+        IND_SoaJitIndexLineReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitIndexLineReads"),
+            statistics::units::Count::get(),
+            "timed cache-line reads of SoA indices"));
+        IND_SoaJitIndexLineResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitIndexLineResponses"),
+            statistics::units::Count::get(),
+            "exact timed cache-line responses for SoA indices"));
+        IND_SoaJitPredicateLineReads.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateLineReads"),
+            statistics::units::Count::get(),
+            "timed cache-line reads of optional SoA predicates"));
+        IND_SoaJitPredicateLineResponses.push_back(new statistics::Scalar(
+            this,
+            MAKE_INDIRECT_STAT_NAME("IND_SoaJitPredicateLineResponses"),
+            statistics::units::Count::get(),
+            "exact timed cache-line responses for optional SoA predicates"));
+        IND_SoaJitAReadIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAReadIssues"),
+            statistics::units::Count::get(),
+            "selected A cache-line read issues"));
+        IND_SoaJitAReadResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAReadResponses"),
+            statistics::units::Count::get(),
+            "exact selected A cache-line read responses"));
+        IND_SoaJitValueReadIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueReadIssues"),
+            statistics::units::Count::get(),
+            "just-in-time timed value read issues"));
+        IND_SoaJitValueReadResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitValueReadResponses"),
+            statistics::units::Count::get(),
+            "just-in-time timed value read responses"));
+        IND_SoaJitAliasesApplied.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAliasesApplied"),
+            statistics::units::Count::get(),
+            "SoA/JIT duplicate aliases applied in Offset-chain order"));
+        IND_SoaJitAWriteIssues.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAWriteIssues"),
+            statistics::units::Count::get(),
+            "response-bearing A WriteReq issues"));
+        IND_SoaJitAWriteResponses.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitAWriteResponses"),
+            statistics::units::Count::get(),
+            "exact A WriteResp completions"));
+        IND_SoaJitContextHighWater.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitContextHighWater"),
+            statistics::units::Count::get(),
+            "sum of per-instruction bounded A-line context high water"));
+        IND_SoaJitContextStalls.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitContextStalls"),
+            statistics::units::Count::get(),
+            "A-line claims blocked by the bounded context scoreboard"));
+        IND_SoaJitTerminalCompletions.push_back(new statistics::Scalar(
+            this, MAKE_INDIRECT_STAT_NAME("IND_SoaJitTerminalCompletions"),
+            statistics::units::Count::get(),
+            "SoA/JIT completions after exact scoreboard and WriteResp drain"));
         IND_BoundedSummaryLineReads.push_back(new statistics::Scalar(
             this, MAKE_INDIRECT_STAT_NAME("IND_BoundedSummaryLineReads"),
             statistics::units::Count::get(),

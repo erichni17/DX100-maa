@@ -224,6 +224,11 @@ public:
         return opcode == OpcodeType::INDIR_RMW_VECTOR &&
                src1SpdID == -1 && src2SpdID == -1 && condSpdID == -1;
     }
+    bool hasValidSoaJitRmwOperands() const {
+        return isSoaJitRmw() && dst1SpdID == -1 && dst2SpdID != -1 &&
+               src1RegID != -1 && src2RegID != -1 && src3RegID != -1 &&
+               dst1RegID == -1 && dst2RegID == -1;
+    }
 };
 
 class IF {
