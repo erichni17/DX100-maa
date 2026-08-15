@@ -38,6 +38,15 @@ class CGLogical16RmwContractTests(unittest.TestCase):
         )
         self.assertIn('mode != "MAA_DEFERRED" || argc != 3', self.source)
         self.assertIn("read_cg_treatment_selector", self.source)
+        selection = self.source[
+            self.source.index(
+                'std::cout << "CG_LOGICAL16_RMW_SELECTION'
+            ) : self.source.index(
+                "#endif\n#endif\n#endif",
+                self.source.index('std::cout << "CG_LOGICAL16_RMW_SELECTION'),
+            )
+        ]
+        self.assertIn('<< " result=PASS"', selection)
 
     def test_only_residual_full_windows_use_soa_jit(self):
         residual = self.source.index("// LOOP 2")

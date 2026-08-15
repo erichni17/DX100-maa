@@ -14,11 +14,17 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
         ).read_text()
 
     def test_one_checkpoint_is_shared_by_cpu_and_response_bearing_arms(self):
-        self.assertIn("control.selector", self.runner)
-        self.assertIn("treatment.selector", self.runner)
+        self.assertIn('selector="$out/input/arm.selector"', self.runner)
+        self.assertIn("immutable_selector_path", self.runner)
+        self.assertNotIn(
+            'control_selector="$out/input/control.selector"', self.runner
+        )
+        self.assertNotIn(
+            'treatment_selector="$out/input/treatment.selector"', self.runner
+        )
         self.assertIn("residual_soa_jit_response_bearing", self.runner)
         self.assertIn(
-            "checkpoint is identical",
+            "one checkpoint-bound absolute pathname",
             self.runner,
         )
         self.assertIn(
@@ -41,26 +47,28 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
         ):
             self.assertIn(token, self.runner)
 
-    def test_treatment_is_only_the_post_checkpoint_publisher_selector(self):
-        self.assertIn("usage: $0 GEM5_BIN OUTDIR", self.runner)
-        self.assertIn("selector=$control_selector", self.runner)
-        self.assertIn("selector=$treatment_selector", self.runner)
+    def test_treatment_is_only_the_post_checkpoint_selector_contents(self):
+        self.assertIn(
+            "usage: $0 GEM5_BIN EXPECTED_GEM5_SHA256 OUTDIR", self.runner
+        )
+        self.assertIn("set_selector_contents", self.runner)
+        self.assertIn('run_phase control "$control_contents"', self.runner)
+        self.assertIn('run_phase treatment "$treatment_contents"', self.runner)
+        self.assertLess(
+            self.runner.index('run_phase control "$control_contents"'),
+            self.runner.index('run_phase treatment "$treatment_contents"'),
+        )
         self.assertIn("--maa_soa_jit_value_prefetch_credits=0", self.runner)
         self.assertNotIn("treatment_flags", self.runner)
 
-    def test_config_comparison_only_normalizes_the_verified_arm_path(self):
-        self.assertIn("normalized_config_sha()", self.runner)
+    def test_config_comparison_only_normalizes_verified_run_paths(self):
+        self.assertIn("comparable_config_sha()", self.runner)
         self.assertIn(
-            "expected exactly one arm selector path in config.ini", self.runner
+            "config provenance mismatch: selector=%d run_dir=%d", self.runner
         )
-        self.assertIn("__CG_ARM_SELECTOR_PATH__", self.runner)
-        self.assertIn("checkpoint.selector.sha256.before", self.runner)
-        self.assertGreaterEqual(
-            self.runner.count(
-                'cmp -s "$out/input/checkpoint.selector.sha256.before"'
-            ),
-            2,
-        )
+        self.assertIn("__CG_RUN_DIR__", self.runner)
+        self.assertIn("selector_occurrences != 1", self.runner)
+        self.assertIn("run_occurrences != 3", self.runner)
 
     def test_validates_exact_outputs_provenance_and_mechanism_ledgers(self):
         for token in (
@@ -68,6 +76,11 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             "CG_LOGICAL16_RMW_TERMINAL",
             "artifact_sha256.txt",
             "checkpoint.identity.sha256",
+            "gem5_expected_sha256",
+            "gem5_actual_sha256",
+            "selector.sha256.before",
+            "selector.sha256.after",
+            "selected_treatment",
             "IND_SoaJitValueReadIssues",
             "IND_SoaJitValueFills",
             "IND_SoaJitAReadIssues",
@@ -88,15 +101,38 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             "for ((replica = 1; replica <= replicas; replica++))", self.runner
         )
 
-    def test_restores_are_parallel_and_timeout_is_optional(self):
+    def test_replicas_are_parallel_but_arms_are_race_free_phases(self):
         self.assertIn("CG_HYBRID_TIMEOUT_SECONDS:-0", self.runner)
         self.assertIn(
             'timeout_command=(timeout "$timeout_seconds")', self.runner
         )
-        self.assertIn('run_arm control "$replica" &', self.runner)
-        self.assertIn('run_arm treatment "$replica" &', self.runner)
+        self.assertIn('run_restore "$arm" "$replica"', self.runner)
+        self.assertIn("launch_phase", self.runner)
+        self.assertIn("wait_phase", self.runner)
+        self.assertIn("validate_phase", self.runner)
+        self.assertNotIn('run_restore control "$replica" &', self.runner)
+        self.assertIn('wait "${phase_pids[$index]}"', self.runner)
+
+    def test_wait_loop_reaps_all_children_before_returning_failure(self):
+        wait_body = self.runner[
+            self.runner.index("wait_phase()") : self.runner.index(
+                "validate_run()"
+            )
+        ]
+        self.assertIn("phase_wait_failed=0", wait_body)
+        self.assertIn("phase_wait_failed=1", wait_body)
+        self.assertIn("printf '%s\\n' \"$rc\"", wait_body)
+        self.assertIn('if wait "${phase_pids[$index]}"', wait_body)
+
+    def test_gem5_hash_is_a_required_fail_closed_preflight(self):
+        self.assertIn("expected_gem5_sha=$2", self.runner)
+        self.assertIn("actual_gem5_sha=$(sha256sum", self.runner)
         self.assertIn(
-            'for pid in "${pids[@]}"; do wait "$pid"; done', self.runner
+            '[[ $actual_gem5_sha == "$expected_gem5_sha" ]]', self.runner
+        )
+        self.assertLess(
+            self.runner.index("gem5 provenance preflight failed"),
+            self.runner.index('mkdir -p "$out/bin"'),
         )
 
     def test_run_directory_does_not_expand_an_unbound_local(self):
@@ -111,11 +147,31 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
         self.assertIn('printf "%.0f\\n", sum', self.runner)
         self.assertNotIn('printf "%.0f\\\\n", sum', self.runner)
 
+    def test_only_nozero_publisher_stats_may_be_absent_as_zero(self):
+        self.assertIn("allow_absent=${3:-0}", self.runner)
+        self.assertIn("if (!seen && allow_absent != 1) exit 1", self.runner)
+        for stat in (
+            "STR_PublishIssues",
+            "STR_PublishAccepts",
+            "STR_PublishWriteResponses",
+            "STR_PublishTerminals",
+            "STR_PublishOverlapIssues",
+        ):
+            self.assertIn(f'stat_sum "$run/stats.txt" {stat} 1', self.runner)
+
     def test_rejects_a_slower_or_non_publishing_candidate(self):
         self.assertIn("response-bearing candidate is slower", self.runner)
         self.assertIn("[[ ${publish_issues[$control]} -eq 0", self.runner)
         self.assertIn(
             "[[ ${ticks[$treatment]} -le ${ticks[$control]} ]]", self.runner
+        )
+        self.assertIn(
+            '[[ ${treatments[$control]} != "${treatments[$treatment]}" ]]',
+            self.runner,
+        )
+        self.assertIn(
+            '[[ ${fingerprints[$name]} == "$reference_fingerprint" ]]',
+            self.runner,
         )
         self.assertIn("decision=PERFORMANCE_PROMOTABLE", self.runner)
 

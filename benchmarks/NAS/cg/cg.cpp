@@ -733,7 +733,8 @@ int main(int argc, char **argv) {
               << " performance_promotable="
               << (cg_rmw_uses_response_bearing_publisher(cg_rmw_treatment)
                       ? 1
-                      : 0) << std::endl;
+                      : 0)
+              << " result=PASS" << std::endl;
 #endif
 #endif
 #endif
