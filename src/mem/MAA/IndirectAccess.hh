@@ -336,8 +336,12 @@ protected:
     Addr my_backing_min_addr, my_backing_max_addr;
     Addr my_index_addr, my_index_min_addr, my_index_max_addr;
     Addr my_predicate_addr, my_predicate_min_addr, my_predicate_max_addr;
+    Addr my_secondary_base_addr, my_secondary_min_addr, my_secondary_max_addr;
+    Addr my_secondary_backing_addr, my_secondary_backing_min_addr;
+    Addr my_secondary_backing_max_addr;
     int8_t my_addr_range_id, my_backing_addr_range_id, my_index_addr_range_id;
     int8_t my_predicate_addr_range_id;
+    int8_t my_secondary_addr_range_id, my_secondary_backing_addr_range_id;
     int my_index_min, my_index_stride;
     struct DirectIndexWord
     {
@@ -525,38 +529,69 @@ protected:
     enum class SoaJitLookaheadState : uint8_t
     {
         Free,
+        Reserving,
         Waiting,
         Ready,
     };
+    static constexpr size_t SoaJitDestinations = 2;
+    static constexpr size_t SoaJitContexts =
+        SoaJitValueCoalescer::MaxContexts;
+    static constexpr size_t SoaJitResultLineBytes = 64;
+    static constexpr size_t SoaJitMaxAResultPayloadBytes = 4096;
+    static constexpr size_t SoaJitDualAResultPayloadBytes =
+        SoaJitContexts * SoaJitDestinations * SoaJitResultLineBytes;
+    static constexpr size_t SoaJitLookaheadOperandPayloadBytes =
+        SoaJitContexts * SoaJitValueCoalescer::MaxLookahead *
+        SoaJitDestinations * sizeof(uint64_t);
+    static constexpr size_t SoaJitValueOwnerOperandPayloadBytes =
+        SoaJitValueCoalescer::MaxOwners *
+        SoaJitValueCoalescer::LineBytes;
+    static constexpr size_t SoaJitAuxiliaryOperandPayloadBytes =
+        SoaJitLookaheadOperandPayloadBytes +
+        SoaJitValueOwnerOperandPayloadBytes;
+    static constexpr size_t SoaJitMaxLiveWritePackets =
+        SoaJitContexts * SoaJitDestinations;
+    static constexpr size_t SoaJitTransientWriteTransportPayloadBytes =
+        SoaJitMaxLiveWritePackets * SoaJitResultLineBytes;
+    static_assert(SoaJitContexts == 32,
+                  "dual-line candidate is an alternative to context64");
+    static_assert(SoaJitDualAResultPayloadBytes <=
+                      SoaJitMaxAResultPayloadBytes,
+                  "dual-line A/result payload exceeds the 4 KiB budget");
+    static_assert(SoaJitTransientWriteTransportPayloadBytes == 4096,
+                  "dual write transport payload bound changed");
     struct SoaJitLookaheadSlot
     {
-        std::array<uint8_t, 8> value{};
-        Addr valuePaddr = 0;
+        std::array<std::array<uint8_t, 8>, SoaJitDestinations> value{};
+        std::array<Addr, SoaJitDestinations> valuePaddr{};
         uint64_t generation = 0;
         int offset = -1;
         int logicalItr = -1;
         uint16_t aWord = 0;
-        uint16_t valueWord = 0;
+        std::array<uint16_t, SoaJitDestinations> valueWord{};
+        uint8_t valueIssueMask = 0;
+        uint8_t valueReadyMask = 0;
+        uint8_t preAValueMask = 0;
         SoaJitLookaheadState state = SoaJitLookaheadState::Free;
     };
     struct SoaJitContext
     {
-        std::array<uint8_t, 64> aLine{};
+        std::array<std::array<uint8_t, 64>, SoaJitDestinations> aLine{};
         std::array<SoaJitLookaheadSlot,
                    SoaJitValueCoalescer::MaxLookahead> lookahead{};
-        Addr aPaddr = 0;
+        std::array<Addr, SoaJitDestinations> aPaddr{};
         uint64_t generation = 0;
         int nextOffset = -1;
         int issueOffset = -1;
         int remaining = 0;
         uint8_t lookaheadOccupancy = 0;
         uint8_t preAUsesPending = 0;
+        uint8_t aReadPendingMask = 0;
+        uint8_t aWritePendingMask = 0;
         SoaJitContextState state = SoaJitContextState::Free;
     };
-    static_assert(sizeof(SoaJitContext) <= 512,
-                  "SoA/JIT RMW context exceeds the fixed 512-byte budget");
-    static constexpr size_t SoaJitContexts =
-        SoaJitValueCoalescer::MaxContexts;
+    static_assert(sizeof(SoaJitContext) <= 768,
+                  "SoA/JIT RMW context exceeds the fixed 768-byte budget");
     std::array<SoaJitContext, SoaJitContexts> soa_jit_contexts{};
     struct SoaJitValuePrefetchCursor
     {
@@ -667,6 +702,8 @@ protected:
     bool isDirectIndexLoad() const;
     bool isSoaJitRmw() const;
     bool isSoaJitMaskedIndexRmw() const;
+    bool isSoaJitDualDestinationRmw() const;
+    uint8_t soaJitDestinationCount() const;
     bool usesBoundedDirectIndexPasses() const;
     bool usesBoundedSourceResponses() const;
     void fillDirectIndexWindow();
@@ -711,8 +748,10 @@ protected:
     bool serviceSoaJitLookahead();
     bool issueSoaJitValueRead(size_t context_index, size_t slot_index,
                               int offset);
-    void applySoaJitValue(SoaJitContext &context, uint16_t a_word,
-                          const uint8_t *value);
+    uint32_t dualIndexFromOffset(const OffsetTableEntry &entry) const;
+    uint16_t dualAWordFromIndex(uint32_t index) const;
+    void applySoaJitValue(SoaJitContext &context, uint8_t destination,
+                          uint16_t a_word, const uint8_t *value);
     void issueSoaJitWrite(SoaJitContext &context);
     bool completeSoaJitWrite(Addr addr);
     void validateSoaJitAddressSpans();
@@ -759,7 +798,10 @@ protected:
         const std::array<uint8_t, BoundedDescriptorSpool::LineBytes> &data);
     void createDirectIndexReadPacket(Addr addr, int latency);
     void createSoaPredicateReadPacket(Addr addr, int latency);
-    void createSoaJitReadPacket(Addr addr, int latency);
+    void createSoaJitReadPacket(Addr addr, int latency,
+                                uint8_t value_stream = 0);
+    void createSoaJitAReadPacket(Addr addr, int latency,
+                                 uint8_t destination);
     void accountReadResponse(Addr addr, bool is_block_cached);
     Addr backingWordAddr(int itr) const;
     void validateRetirementWriteRange(Addr vaddr, unsigned size,

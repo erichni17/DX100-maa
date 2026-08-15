@@ -73,6 +73,7 @@ enum class DataType : uint8_t {
 };
 
 constexpr uint64_t MAA_SOA_JIT_MASKED_INDEX_MODE_TAG = UINT64_MAX;
+constexpr uint64_t MAA_SOA_JIT_DUAL_MASKED_INDEX_MODE_TAG = UINT64_MAX - 1;
 
 volatile uint64_t *INSTR_opcode_datatype_optype_tdst1_tdst2;
 volatile uint64_t *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc;
@@ -80,6 +81,8 @@ volatile uint64_t *INSTR_baseaddr;
 volatile uint64_t *INSTR_backingaddr;
 volatile uint64_t *INSTR_indexaddr;
 volatile uint64_t *INSTR_predicateaddr;
+volatile uint64_t *INSTR_secondary_baseaddr;
+volatile uint64_t *INSTR_secondary_backingaddr;
 volatile uint16_t *VIRTUAL_PAGE_READY_noncacheable;
 uint64_t MAA_end_addr;
 int8_t region_count;
@@ -126,7 +129,11 @@ void alloc_MAA() {
     current_addr += 8;
     INSTR_predicateaddr = (volatile uint64_t *)(current_addr);
     current_addr += 8;
-    current_addr += INSTRUCTION_FILE_SIZE - 6 * sizeof(uint64_t);
+    INSTR_secondary_baseaddr = (volatile uint64_t *)(current_addr);
+    current_addr += 8;
+    INSTR_secondary_backingaddr = (volatile uint64_t *)(current_addr);
+    current_addr += 8;
+    current_addr += INSTRUCTION_FILE_SIZE - 8 * sizeof(uint64_t);
     VIRTUAL_PAGE_READY_noncacheable = (volatile uint16_t *)(current_addr);
     current_addr += VIRTUAL_PAGE_READY_SIZE;
     MAA_end_addr = current_addr;
@@ -793,6 +800,45 @@ inline void maa_indirect_rmw_vector_soa_jit_masked_indices(
     *INSTR_backingaddr = (uint64_t)values;
     *INSTR_indexaddr = (uint64_t)indices;
     *INSTR_predicateaddr = MAA_SOA_JIT_MASKED_INDEX_MODE_TAG;
+    __asm__ __volatile__("mfence;" ::: "memory");
+}
+
+/**
+ * One masked-index reorder feeding two response-owned destinations.  Both
+ * value arrays remain ordinary coherent SoA streams.  The descriptor carries
+ * no predicate, old-value result, or logical-window operand/result payload.
+ */
+template <class T1>
+inline void maa_indirect_rmw_vector_soa_jit_dual_masked_indices(
+    T1 *primary_data, T1 *secondary_data, const uint32_t *indices,
+    const T1 *primary_values, const T1 *secondary_values, int min_reg,
+    int max_reg, int stride_reg, int completion_tile, Operation_t o_type) {
+    assert(primary_data != nullptr);
+    assert(secondary_data != nullptr);
+    assert(indices != nullptr);
+    assert(primary_values != nullptr);
+    assert(secondary_values != nullptr);
+    assert(primary_data != secondary_data);
+    assert(min_reg >= 0 && min_reg < NUM_SCALAR_REGS);
+    assert(max_reg >= 0 && max_reg < NUM_SCALAR_REGS);
+    assert(stride_reg >= 0 && stride_reg < NUM_SCALAR_REGS);
+    assert(completion_tile >= 0 && completion_tile < NUM_TILES);
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::INDIR_RMW_VECTOR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)o_type << 16) |
+        ((uint64_t)NA_UINT8 << 8) | (uint64_t)completion_tile;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)NA_UINT8 << 56) | ((uint64_t)NA_UINT8 << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)min_reg << 24) | ((uint64_t)max_reg << 16) |
+        ((uint64_t)stride_reg << 8) | (uint64_t)NA_UINT8;
+    *INSTR_baseaddr = (uint64_t)primary_data;
+    *INSTR_backingaddr = (uint64_t)primary_values;
+    *INSTR_indexaddr = (uint64_t)indices;
+    *INSTR_predicateaddr = MAA_SOA_JIT_DUAL_MASKED_INDEX_MODE_TAG;
+    *INSTR_secondary_baseaddr = (uint64_t)secondary_data;
+    *INSTR_secondary_backingaddr = (uint64_t)secondary_values;
     __asm__ __volatile__("mfence;" ::: "memory");
 }
 template <class T1>

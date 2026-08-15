@@ -552,8 +552,11 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                 panic_if(!current_instruction->hasValidSoaJitRmwOperands(),
                          "Rejected malformed SoA/JIT RMW before word-five "
                          "dispatch\n");
+                current_instruction->soaJitDualDestination =
+                    data == SoaJitSafety::DualMaskedIndexModeTag;
                 current_instruction->soaJitMaskedIndex =
-                    data == SoaJitSafety::MaskedIndexModeTag;
+                    data == SoaJitSafety::MaskedIndexModeTag ||
+                    current_instruction->soaJitDualDestination;
                 current_instruction->predicateAddr =
                     current_instruction->soaJitMaskedIndex ? 0 : data;
                 const int soa_word_size = current_instruction->WordSize();
@@ -577,6 +580,8 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                     current_instruction->predicateMaxAddr = addrRegions[
                         current_instruction->predicateAddrRangeID].second;
                 }
+                if (current_instruction->soaJitDualDestination)
+                    break;
                 my_instruction_recvs[instruction_id] = true;
                 DPRINTF(MAAController,
                         "%s: %s received with values=0x%lx indices=0x%lx "
@@ -586,6 +591,64 @@ void MAA::recvTimingReq(PacketPtr pkt, int core_id) {
                         current_instruction->indexAddr,
                         current_instruction->predicateAddr,
                         current_instruction->soaJitMaskedIndex);
+                respond_immediately = false;
+                scheduleDispatchInstructionEvent();
+                break;
+            }
+            case 6: {
+                panic_if(instruction_id == -1,
+                         "Received secondary destination before instruction "
+                         "header!\n");
+                panic_if(!current_instruction->isSoaJitDualDestinationRmw(),
+                         "Instruction word six is only valid for a SoA/JIT "
+                         "dual destination\n");
+                current_instruction->secondaryBaseAddr = data;
+                current_instruction->secondaryAddrRangeID =
+                    getAddrRegion(data);
+                panic_if(current_instruction->secondaryAddrRangeID < 0,
+                         "SoA/JIT dual destination 0x%lx is not registered\n",
+                         data);
+                current_instruction->secondaryMinAddr = addrRegions[
+                    current_instruction->secondaryAddrRangeID].first;
+                current_instruction->secondaryMaxAddr = addrRegions[
+                    current_instruction->secondaryAddrRangeID].second;
+                panic_if(
+                    data % current_instruction->WordSize() != 0 ||
+                        data % SoaJitValueCoalescer::LineBytes !=
+                            current_instruction->baseAddr %
+                                SoaJitValueCoalescer::LineBytes,
+                    "SoA/JIT dual destinations require aligned words and "
+                    "the same cache-line word geometry\n");
+                break;
+            }
+            case 7: {
+                panic_if(instruction_id == -1,
+                         "Received secondary values before instruction "
+                         "header!\n");
+                panic_if(!current_instruction->isSoaJitDualDestinationRmw(),
+                         "Instruction word seven is only valid for a SoA/JIT "
+                         "dual destination\n");
+                current_instruction->secondaryBackingAddr = data;
+                current_instruction->secondaryBackingAddrRangeID =
+                    getAddrRegion(data);
+                panic_if(
+                    current_instruction->secondaryBackingAddrRangeID < 0,
+                    "SoA/JIT dual values 0x%lx are not registered\n", data);
+                const int secondary_values_region =
+                    current_instruction->secondaryBackingAddrRangeID;
+                current_instruction->secondaryBackingMinAddr =
+                    addrRegions[secondary_values_region].first;
+                current_instruction->secondaryBackingMaxAddr =
+                    addrRegions[secondary_values_region].second;
+                panic_if(data % current_instruction->WordSize() != 0,
+                         "SoA/JIT dual secondary values are misaligned\n");
+                my_instruction_recvs[instruction_id] = true;
+                DPRINTF(MAAController,
+                        "%s: %s received with secondary A=0x%lx "
+                        "values=0x%lx!\n",
+                        __func__, current_instruction->print(),
+                        current_instruction->secondaryBaseAddr,
+                        current_instruction->secondaryBackingAddr);
                 respond_immediately = false;
                 scheduleDispatchInstructionEvent();
                 break;

@@ -209,6 +209,7 @@ class SoaJitValueCoalescer
 
     struct Delivery
     {
+        uint64_t paddr = 0;
         std::array<uint8_t, LineBytes> data{};
     };
 
@@ -425,6 +426,7 @@ class SoaJitValueCoalescer
                 return DeliveryResult::Stale;
             if (line.state != LineState::Ready)
                 return DeliveryResult::NotReady;
+            delivery.paddr = line.paddr;
             delivery.data = line.data;
             line.waiterMask.reset(waiter);
             touch(line);

@@ -17,6 +17,9 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              indexAddr(0xFFFFFFFFFFFFFFFF),
                              predicateAddr(0),
                              soaJitMaskedIndex(false),
+                             soaJitDualDestination(false),
+                             secondaryBaseAddr(0xFFFFFFFFFFFFFFFF),
+                             secondaryBackingAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSourceBackingAddr(0xFFFFFFFFFFFFFFFF),
                              minAddr(0xFFFFFFFFFFFFFFFF),
                              maxAddr(0xFFFFFFFFFFFFFFFF),
@@ -26,12 +29,18 @@ Instruction::Instruction() : baseAddr(0xFFFFFFFFFFFFFFFF),
                              indexMaxAddr(0xFFFFFFFFFFFFFFFF),
                              predicateMinAddr(0xFFFFFFFFFFFFFFFF),
                              predicateMaxAddr(0xFFFFFFFFFFFFFFFF),
+                             secondaryMinAddr(0xFFFFFFFFFFFFFFFF),
+                             secondaryMaxAddr(0xFFFFFFFFFFFFFFFF),
+                             secondaryBackingMinAddr(0xFFFFFFFFFFFFFFFF),
+                             secondaryBackingMaxAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSourceMinAddr(0xFFFFFFFFFFFFFFFF),
                              logicalSourceMaxAddr(0xFFFFFFFFFFFFFFFF),
                              addrRangeID(-1),
                              backingAddrRangeID(-1),
                              indexAddrRangeID(-1),
                              predicateAddrRangeID(-1),
+                             secondaryAddrRangeID(-1),
+                             secondaryBackingAddrRangeID(-1),
                              logicalSourceAddrRangeID(-1),
                              src1RegID(-1),
                              src2RegID(-1),
@@ -225,6 +234,10 @@ Instruction::getMemoryAccesses(
         append(indexAddrRangeID, AccessType::READ);
         if (predicateAddr != 0)
             append(predicateAddrRangeID, AccessType::READ);
+        if (isSoaJitDualDestinationRmw()) {
+            append(secondaryAddrRangeID, AccessType::WRITE);
+            append(secondaryBackingAddrRangeID, AccessType::READ);
+        }
     } else {
         append(addrRangeID, accessType);
     }

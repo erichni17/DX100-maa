@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the exact shared-checkpoint GZP volume-only/dual-logical16 gate."""
+"""Run the exact shared-checkpoint GZP shared-index dual-RMW gate."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import run_gzp_masked_index_pair as common  # noqa: E402
 
 ARMS = (
     ("volume_only", "token_stream_ld volume_masked_index"),
-    ("dual_logical16", "token_stream_ld dual_logical16"),
+    ("shared_index", "token_stream_ld dual_shared_index"),
 )
 LOGICAL_ELEMENTS = 16384
 EXPECTED_OUTPUT_HASH = {
@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mem-channels", type=int, default=2)
     parser.add_argument("--l3-ports", type=int, default=4)
     parser.add_argument(
-        "--active-contexts", type=int, choices=(8, 16, 32), default=8
+        "--active-contexts", type=int, choices=(8, 16, 32), default=32
     )
     parser.add_argument(
         "--active-value-owners", type=int, choices=(32, 64, 128), default=32
@@ -68,13 +68,55 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--parallel-restores", action="store_true")
     parser.add_argument("--expected-gem5-sha256")
+    parser.add_argument(
+        "--one-window-manifest",
+        type=Path,
+        help="accepted n=16384 manifest required before full GZP",
+    )
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     if args.execute and not re.fullmatch(
         r"[0-9a-f]{64}", args.expected_gem5_sha256 or ""
     ):
         parser.error("--execute requires --expected-gem5-sha256")
+    if args.n == 1_000_000 and args.one_window_manifest is None:
+        parser.error(
+            "full GZP shared-index execution requires accepted one-window evidence"
+        )
     return args
+
+
+def validate_one_window_manifest(
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    if args.n != 1_000_000:
+        return {}
+    try:
+        manifest = json.loads(args.one_window_manifest.read_text())
+        results_path = args.one_window_manifest.parent / "results.json"
+        results = json.loads(results_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid one-window promotion evidence: {error}")
+    summary = results.get("summary", {})
+    source = manifest.get("source", {})
+    gem5 = manifest.get("gem5", {})
+    if (
+        manifest.get("schema") != "dx100.gzp_shared_index_gate.v4"
+        or manifest.get("n") != LOGICAL_ELEMENTS
+        or manifest.get("candidate") != "shared_index"
+        or summary.get("decision") != "ACCEPT"
+        or summary.get("mechanism_closed") is not True
+        or source.get("commit") != common.source_commit()
+        or gem5.get("sha256") != args.expected_gem5_sha256
+    ):
+        raise SystemExit(
+            "full GZP shared-index execution requires accepted one-window evidence"
+        )
+    return {
+        "manifest": str(args.one_window_manifest.resolve()),
+        "manifest_sha256": common.sha256(args.one_window_manifest),
+        "results_sha256": common.sha256(results_path),
+    }
 
 
 def optional_sum(stats: dict[str, int], suffix: str) -> int:
@@ -139,10 +181,13 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
         raise RuntimeError(f"{name}: masked-index ledger failed")
 
     full_windows = n // LOGICAL_ELEMENTS
-    instruction_multiplier = 1 if name == "volume_only" else 2
+    instruction_multiplier = 1
     expected_instructions = full_windows * instruction_multiplier
     expected_selected = int(ledger["full_selected"]) * instruction_multiplier
     expected_rejected = int(ledger["full_rejected"]) * instruction_multiplier
+    expected_value_uses = expected_selected * (
+        2 if name == "shared_index" else 1
+    )
     stats = common.first_stats(run / "gem5/stats.txt")
     soa = {
         suffix: common.sum_suffix(stats, suffix)
@@ -164,6 +209,9 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
             "IND_SoaJitPreAValueIssues",
             "IND_SoaJitPreAValueReadyAtAResponse",
             "IND_SoaJitPreAValueUses",
+            "IND_VirtIndexLineReads",
+            "IND_CyclesFill",
+            "IND_CyclesRequest",
         }
     }
     if (
@@ -171,10 +219,10 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
         or soa["IND_SoaJitTerminalCompletions"] != expected_instructions
         or soa["IND_SoaJitSelected"] != expected_selected
         or soa["IND_SoaJitPredicateRejected"] != expected_rejected
-        or soa["IND_SoaJitAliasesApplied"] != expected_selected
-        or soa["IND_SoaJitValueDeliveries"] != expected_selected
-        or soa["IND_SoaJitLookaheadIssues"] != expected_selected
-        or soa["IND_SoaJitLookaheadResponses"] != expected_selected
+        or soa["IND_SoaJitAliasesApplied"] != expected_value_uses
+        or soa["IND_SoaJitValueDeliveries"] != expected_value_uses
+        or soa["IND_SoaJitLookaheadIssues"] != expected_value_uses
+        or soa["IND_SoaJitLookaheadResponses"] != expected_value_uses
     ):
         raise RuntimeError(f"{name}: SoA/JIT terminal/value ledger failed")
     if any(soa[left] != soa[right] for left, right in SOA_LEDGER_PAIRS):
@@ -185,7 +233,7 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
         or soa["IND_SoaJitValueReadIssues"]
         + soa["IND_SoaJitValueHits"]
         + soa["IND_SoaJitValueMergedWaiters"]
-        != expected_selected
+        != expected_value_uses
         or soa["IND_SoaJitValueFills"] != soa["IND_SoaJitValueReadResponses"]
         or soa["IND_SoaJitValuePrefetchIssues"] != 0
         or soa["IND_SoaJitValuePrefetchResponses"] != 0
@@ -220,6 +268,23 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
         != entry.get("a_reads", "1/0").split("/")[-1]
         or entry.get("a_writes", "0/1").split("/")[0]
         != entry.get("a_writes", "1/0").split("/")[-1]
+        or (
+            name == "shared_index"
+            and (
+                entry.get("destinations") != "2"
+                or entry.get("value_streams") != "2"
+                or entry.get("shared_index_builds") != "1"
+                or entry.get("a_result_payload_bytes") != "4096"
+                or entry.get("max_a_result_payload_bytes") != "4096"
+                or int(entry.get("auxiliary_operand_payload_bytes", "-1"))
+                != 12288
+                or entry.get("transient_write_transport_payload_bytes")
+                != "4096"
+                or entry.get("external_ports_added") != "0"
+                or entry.get("hidden_logical16_payload_bytes") != "0"
+                or entry.get("physical_3p2ghz_realizability") != "unclaimed"
+            )
+        )
         for entry in soa_terminals
     ):
         raise RuntimeError(f"{name}: trace terminal generation ledger failed")
@@ -227,7 +292,7 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
     expected_treatment = (
         "volume_masked_index_soa_jit"
         if name == "volume_only"
-        else "dual_logical16_soa_jit"
+        else "dual_shared_index_soa_jit"
     )
     expected_gradient_values = (
         0 if name == "volume_only" else full_windows * LOGICAL_ELEMENTS
@@ -242,9 +307,14 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
         "masked_index_windows": (
             str(full_windows) if name == "volume_only" else "0"
         ),
-        "dual_logical16_windows": (
+        "dual_logical16_windows": ("0"),
+        "shared_index_windows": (
             "0" if name == "volume_only" else str(full_windows)
         ),
+        "shared_index_builds": (
+            "0" if name == "volume_only" else str(full_windows)
+        ),
+        "value_streams": "1" if name == "volume_only" else "2",
         "published_predicates": "0",
         "published_gradient_values": str(expected_gradient_values),
         "published_gradient_bytes": str(expected_gradient_values * 4),
@@ -257,8 +327,15 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
         "coherent_gradient_backing_elements": "65536",
         "coherent_gradient_backing_bytes": "262144",
         "hidden_logical16_payload_bytes": "0",
+        "a_result_payload_bytes": "2048" if name == "volume_only" else "4096",
+        "max_a_result_payload_bytes": "4096",
+        "auxiliary_operand_payload_bytes": "12288",
+        "transient_write_transport_payload_bytes": "4096",
+        "context64_composable": "0",
+        "external_ports_added": "0",
+        "physical_3p2ghz_realizability": "unclaimed",
         "cpu_untimed_copy_bytes": "0",
-        "performance_promotable": "1",
+        "performance_promotable": ("1" if name == "volume_only" else "0"),
         "result": "PASS",
     }
     if any(
@@ -301,7 +378,7 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
 
     tail_rmw_instructions = 2 if n % LOGICAL_ELEMENTS else 0
     expected_rmw_instructions = (
-        full_windows * (5 if name == "volume_only" else 2)
+        full_windows * (5 if name == "volume_only" else 1)
         + tail_rmw_instructions
     )
     rmw_instructions = optional_sum(stats, "numInst_INDRMW")
@@ -330,6 +407,12 @@ def analyze_run(name: str, run: Path, n: int) -> dict[str, int | str]:
         "publish_credit_stalls": publish["STR_PublishCreditStalls"],
         "publish_overlap_issues": publish["STR_PublishOverlapIssues"],
         "published_gradient_bytes": expected_gradient_values * 4,
+        "index_line_reads": soa["IND_VirtIndexLineReads"],
+        "fill_cycles": soa["IND_CyclesFill"],
+        "request_cycles": soa["IND_CyclesRequest"],
+        "a_result_payload_bytes": 2048 if name == "volume_only" else 4096,
+        "auxiliary_operand_payload_bytes": 12288,
+        "transient_write_transport_payload_bytes": 4096,
     }
 
 
@@ -343,7 +426,7 @@ def compare(
         raise RuntimeError("replica count mismatch")
     for replica in range(1, replicas + 1):
         baseline = grouped["volume_only"][replica - 1]
-        candidate = grouped["dual_logical16"][replica - 1]
+        candidate = grouped["shared_index"][replica - 1]
         for key in ("output_hash", "index_hash"):
             if baseline[key] != candidate[key]:
                 raise RuntimeError(f"replica {replica} pair mismatch: {key}")
@@ -360,9 +443,17 @@ def compare(
         ):
             raise RuntimeError(f"{arm}: replicas are not deterministic")
     baseline = grouped["volume_only"][0]
-    candidate = grouped["dual_logical16"][0]
+    candidate = grouped["shared_index"][0]
     tick_delta = int(candidate["simTicks"]) - int(baseline["simTicks"])
-    decision = "ACCEPT" if tick_delta < 0 else "REJECT"
+    mechanism_closed = (
+        int(candidate["a_result_payload_bytes"]) <= 4096
+        and int(candidate["index_line_reads"])
+        == int(baseline["index_line_reads"])
+        and int(candidate["publish_responses"])
+        == int(candidate["publish_lines"])
+        and int(candidate["a_reads"]) == int(candidate["a_write_responses"])
+    )
+    decision = "ACCEPT" if tick_delta < 0 and mechanism_closed else "REJECT"
     return {
         "decision": decision,
         "replicas": replicas,
@@ -389,6 +480,27 @@ def compare(
         )
         > 0,
         "publisher_overlap_issues": int(candidate["publish_overlap_issues"]),
+        "baseline_fill_cycles": int(baseline["fill_cycles"]),
+        "candidate_fill_cycles": int(candidate["fill_cycles"]),
+        "fill_cycle_delta": int(candidate["fill_cycles"])
+        - int(baseline["fill_cycles"]),
+        "baseline_request_cycles": int(baseline["request_cycles"]),
+        "candidate_request_cycles": int(candidate["request_cycles"]),
+        "request_cycle_delta": int(candidate["request_cycles"])
+        - int(baseline["request_cycles"]),
+        "baseline_index_line_reads": int(baseline["index_line_reads"]),
+        "candidate_index_line_reads": int(candidate["index_line_reads"]),
+        "mechanism_closed": mechanism_closed,
+        "a_result_payload_bytes": int(candidate["a_result_payload_bytes"]),
+        "auxiliary_operand_payload_bytes": int(
+            candidate["auxiliary_operand_payload_bytes"]
+        ),
+        "transient_write_transport_payload_bytes": int(
+            candidate["transient_write_transport_payload_bytes"]
+        ),
+        "physical_3p2ghz_realizability": "unclaimed",
+        "dual_response_lookup": "unbanked_associative_scan",
+        "architecture_promotion_authorized": False,
         "exact_output": "PASS",
         "terminal_ledgers": "PASS",
         "write_response_ledgers": "PASS",
@@ -398,8 +510,9 @@ def compare(
 def main() -> int:
     args = parse_args()
     plan = {
-        "schema": "dx100.gzp_dual_logical16_gate.v3",
+        "schema": "dx100.gzp_shared_index_gate.v4",
         "n": args.n,
+        "candidate": "shared_index",
         "arms": [name for name, _ in ARMS],
         "shared_guest": True,
         "shared_checkpoint": True,
@@ -412,7 +525,10 @@ def main() -> int:
         "replicas": args.replicas,
         "parallel_restores": args.parallel_restores,
         "trace_flags": ["MAAVirtualTrace", "MAATrace"],
-        "full_gzp_authorized": args.n == 1_000_000,
+        "full_gzp_requested": args.n == 1_000_000,
+        "full_gzp_authorized": False,
+        "physical_3p2ghz_realizability": "unclaimed",
+        "dual_response_lookup": "unbanked_associative_scan",
     }
     if not args.execute:
         print(json.dumps(plan, indent=2, sort_keys=True))
@@ -431,6 +547,8 @@ def main() -> int:
         raise SystemExit(f"refusing existing output: {args.out}")
     if common.sha256(args.gem5) != args.expected_gem5_sha256:
         raise SystemExit("gem5 SHA-256 mismatch")
+    promotion_evidence = validate_one_window_manifest(args)
+    plan["full_gzp_authorized"] = bool(promotion_evidence)
 
     args.out.mkdir(parents=True)
     common.atomic_text(args.out / "campaign.exit", "running\n")
@@ -652,6 +770,7 @@ def main() -> int:
             },
             "config_tree": config_identity,
             "checkpoint": checkpoint_identity,
+            "one_window_promotion_evidence": promotion_evidence,
             "runs": run_records,
             "simulated_metric": "simTicks",
             "host_time_metric_authorized": False,
@@ -677,7 +796,7 @@ def main() -> int:
     common.atomic_text(args.out / "campaign.exit", "0\n")
     print((args.out / "results.tsv").read_text(), end="")
     print((args.out / "summary.txt").read_text(), end="")
-    print("GZP_DUAL_LOGICAL16_ONE_WINDOW_PASS")
+    print("GZP_SHARED_INDEX_EXACT_GATE_PASS")
     return 0
 
 

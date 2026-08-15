@@ -17,6 +17,8 @@ class SoaJitSafety
         std::numeric_limits<uint32_t>::max();
     static constexpr uint64_t MaskedIndexModeTag =
         std::numeric_limits<uint64_t>::max();
+    static constexpr uint64_t DualMaskedIndexModeTag =
+        std::numeric_limits<uint64_t>::max() - 1;
     static constexpr std::size_t MaskedIndexCompareBits = 32;
     static constexpr std::size_t MaskedIndexModeStateBits = 1;
     static constexpr std::size_t MaskedIndexAdditionalBufferBytes = 0;

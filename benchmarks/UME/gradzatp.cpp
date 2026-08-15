@@ -232,6 +232,7 @@ enum class GzpRmwTreatment
     VolumeOnlySoaJit,
     VolumeMaskedIndexSoaJit,
     DualLogical16SoaJit,
+    DualSharedIndexSoaJit,
     SoaJitCorrectness,
 };
 
@@ -240,6 +241,7 @@ static std::atomic<uint64_t> soa_full_windows{0};
 static std::atomic<uint64_t> soa_volume_only_windows{0};
 static std::atomic<uint64_t> soa_masked_index_windows{0};
 static std::atomic<uint64_t> soa_dual_logical16_windows{0};
+static std::atomic<uint64_t> soa_shared_index_windows{0};
 static std::atomic<uint64_t> soa_published_predicates{0};
 static std::atomic<uint64_t> soa_published_gradient_values{0};
 static uint64_t soa_predicate_hash = 0;
@@ -333,6 +335,8 @@ static const char *gzp_rmw_treatment_name(GzpRmwTreatment treatment) {
         return "volume_masked_index_soa_jit";
     if (treatment == GzpRmwTreatment::DualLogical16SoaJit)
         return "dual_logical16_soa_jit";
+    if (treatment == GzpRmwTreatment::DualSharedIndexSoaJit)
+        return "dual_shared_index_soa_jit";
     if (treatment == GzpRmwTreatment::SoaJitCorrectness)
         return "soa_jit_correctness";
     return "legacy_4k";
@@ -343,7 +347,8 @@ static const char *gzp_rmw_publisher_name(GzpRmwTreatment treatment) {
         return "precheckpoint_uint32_predicate";
     if (treatment == GzpRmwTreatment::VolumeMaskedIndexSoaJit)
         return "masked_index_no_predicate_publication";
-    if (treatment == GzpRmwTreatment::DualLogical16SoaJit)
+    if (treatment == GzpRmwTreatment::DualLogical16SoaJit ||
+        treatment == GzpRmwTreatment::DualSharedIndexSoaJit)
         return "response_bearing_gradient_only";
     if (treatment == GzpRmwTreatment::SoaJitCorrectness)
         return "response_bearing_spd_to_coherent";
@@ -351,7 +356,10 @@ static const char *gzp_rmw_publisher_name(GzpRmwTreatment treatment) {
 }
 
 static int gzp_rmw_performance_promotable(GzpRmwTreatment treatment) {
-    return treatment == GzpRmwTreatment::SoaJitCorrectness ? 0 : 1;
+    return treatment == GzpRmwTreatment::SoaJitCorrectness ||
+                   treatment == GzpRmwTreatment::DualSharedIndexSoaJit
+               ? 0
+               : 1;
 }
 
 static uint64_t gzp_gradient_publication_bytes() {
@@ -397,7 +405,7 @@ static GzpSelector read_gzp_selector(const std::string &path) {
         throw std::runtime_error(
             "GZP selector must contain CONSUMER "
             "[legacy_4k|volume_soa_jit|volume_masked_index|"
-            "dual_logical16|soa_jit]");
+            "dual_logical16|dual_shared_index|soa_jit]");
 
     MAAVirtualConsumerMode consumer_mode;
     if (consumer == "stream_control")
@@ -419,6 +427,8 @@ static GzpSelector read_gzp_selector(const std::string &path) {
             rmw = GzpRmwTreatment::VolumeMaskedIndexSoaJit;
         else if (treatment == "dual_logical16")
             rmw = GzpRmwTreatment::DualLogical16SoaJit;
+        else if (treatment == "dual_shared_index")
+            rmw = GzpRmwTreatment::DualSharedIndexSoaJit;
         else if (treatment == "soa_jit")
             rmw = GzpRmwTreatment::SoaJitCorrectness;
         else
@@ -527,7 +537,8 @@ void gradzatp_MAA() {
     // Existing arms retain their original publication registrations while
     // each new masked-index arm names only the coherent SoA spans it consumes.
     if (gzp_rmw_treatment != GzpRmwTreatment::VolumeMaskedIndexSoaJit) {
-        if (gzp_rmw_treatment == GzpRmwTreatment::DualLogical16SoaJit) {
+        if (gzp_rmw_treatment == GzpRmwTreatment::DualLogical16SoaJit ||
+            gzp_rmw_treatment == GzpRmwTreatment::DualSharedIndexSoaJit) {
             for (int core = 0; core < NUM_CORES; ++core) {
                 add_mem_region(soa_gradient_values[core],
                                soa_gradient_values[core] + TILE_SIZE);
@@ -628,10 +639,19 @@ void gradzatp_MAA() {
 #else
                 false;
 #endif
+            const bool soa_shared_index_full_window =
+#ifdef UME_GZP_SOA_JIT_RMW
+                gzp_rmw_treatment ==
+                    GzpRmwTreatment::DualSharedIndexSoaJit &&
+                gather_size == TILE_SIZE;
+#else
+                false;
+#endif
             const bool soa_volume_full_window =
                 soa_both_full_window || soa_volume_only_full_window ||
                 soa_masked_index_full_window ||
-                soa_dual_logical16_full_window;
+                soa_dual_logical16_full_window ||
+                soa_shared_index_full_window;
             maa_const<int>(c, reg0);
             maa_const<int>(c + gather_size, reg1);
             maa_indirect_load_virtual_index<DATATYPE>(
@@ -702,7 +722,8 @@ void gradzatp_MAA() {
                 maa_alu_scalar<int>(tile0, reg2, tileCond,
                                     Operation_t::GTE_OP);
                 if (!soa_both_full_window &&
-                    !soa_dual_logical16_full_window) {
+                    !soa_dual_logical16_full_window &&
+                    !soa_shared_index_full_window) {
                     maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2,
                                          tile4, tileCond);
                 }
@@ -754,7 +775,8 @@ void gradzatp_MAA() {
                 maa_alu_vector<DATATYPE>(tile1, tile0, tile2,
                                           Operation_t::MUL_OP, tileCond);
                 if (soa_both_full_window ||
-                    soa_dual_logical16_full_window) {
+                    soa_dual_logical16_full_window ||
+                    soa_shared_index_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
                     // The publisher itself waits for each complete producer
                     // tile, captures one 64B line into one of eight credits,
@@ -767,7 +789,8 @@ void gradzatp_MAA() {
                     const uint32_t predicate_generation =
                         window * 8 + logical_page * 2 + 1;
                     const uint32_t gradient_generation =
-                        soa_dual_logical16_full_window
+                        (soa_dual_logical16_full_window ||
+                         soa_shared_index_full_window)
                             ? window * 4 + logical_page + 1
                             : predicate_generation + 1;
                     maa_const<uint32_t>(logical_page, page_min_reg);
@@ -834,6 +857,24 @@ void gradzatp_MAA() {
                     Operation_t::ADD_OP);
                 wait_ready(soa_gradient_completion_tiles[omp_thread_id]);
                 soa_full_windows.fetch_add(1, std::memory_order_relaxed);
+#endif
+            } else if (soa_shared_index_full_window) {
+#ifdef UME_GZP_SOA_JIT_RMW
+                maa_const<int>(0, reg0);
+                maa_const<int>(TILE_SIZE, reg1);
+                maa_const<int>(1, reg2);
+                maa_indirect_rmw_vector_soa_jit_dual_masked_indices<
+                    DATATYPE>(
+                    point_volume.data(), point_gradient.data(),
+                    reinterpret_cast<const uint32_t *>(
+                        c_to_p_map.data() + c),
+                    corner_volume.data() + c,
+                    soa_gradient_values[omp_thread_id], reg0, reg1, reg2,
+                    soa_volume_completion_tiles[omp_thread_id],
+                    Operation_t::ADD_OP);
+                wait_ready(soa_volume_completion_tiles[omp_thread_id]);
+                soa_shared_index_windows.fetch_add(
+                    1, std::memory_order_relaxed);
 #endif
             } else if (soa_dual_logical16_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
@@ -994,6 +1035,15 @@ void gradzatp_MAA() {
               << soa_masked_index_windows.load()
               << " dual_logical16_windows="
               << soa_dual_logical16_windows.load()
+              << " shared_index_windows="
+              << soa_shared_index_windows.load()
+              << " shared_index_builds="
+              << soa_shared_index_windows.load()
+              << " value_streams="
+              << (gzp_rmw_treatment ==
+                          GzpRmwTreatment::DualSharedIndexSoaJit
+                      ? 2
+                      : 1)
               << " published_predicates=" << soa_published_predicates.load()
               << " published_gradient_values="
               << soa_published_gradient_values.load()
@@ -1032,6 +1082,17 @@ void gradzatp_MAA() {
               << " coherent_gradient_backing_bytes="
               << NUM_CORES * TILE_SIZE * sizeof(DATATYPE)
               << " hidden_logical16_payload_bytes=0"
+              << " a_result_payload_bytes="
+              << (gzp_rmw_treatment ==
+                          GzpRmwTreatment::DualSharedIndexSoaJit
+                      ? 4096
+                      : 2048)
+              << " max_a_result_payload_bytes=4096"
+              << " auxiliary_operand_payload_bytes=12288"
+              << " transient_write_transport_payload_bytes=4096"
+              << " context64_composable=0"
+              << " external_ports_added=0"
+              << " physical_3p2ghz_realizability=unclaimed"
               << " cpu_untimed_copy_bytes=0"
               << " performance_promotable="
               << gzp_rmw_performance_promotable(gzp_rmw_treatment)
@@ -1240,6 +1301,17 @@ int main(int argc, char *argv[]) {
               << " coherent_gradient_backing_bytes="
               << NUM_CORES * TILE_SIZE * sizeof(DATATYPE)
               << " hidden_logical16_payload_bytes=0"
+              << " a_result_payload_bytes="
+              << (gzp_rmw_treatment ==
+                          GzpRmwTreatment::DualSharedIndexSoaJit
+                      ? 4096
+                      : 2048)
+              << " max_a_result_payload_bytes=4096"
+              << " auxiliary_operand_payload_bytes=12288"
+              << " transient_write_transport_payload_bytes=4096"
+              << " context64_composable=0"
+              << " external_ports_added=0"
+              << " physical_3p2ghz_realizability=unclaimed"
               << " cpu_untimed_copy_bytes=0"
               << " performance_promotable="
               << gzp_rmw_performance_promotable(gzp_rmw_treatment)
