@@ -145,6 +145,24 @@ void SPD::setTileNotReady(int tile_id, int word_size) {
         tiles_ready[tile_id + 1]++;
     }
 }
+void SPD::setRangeNotReady(int tile_id, int first_element, int elements,
+                           int word_size) {
+    check_tile_id(tile_id, word_size);
+    panic_if(first_element < 0 || elements <= 0 ||
+                 first_element + elements >
+                     static_cast<int>(physical_tile_elements),
+             "Invalid SPD producer subspan tile=%d first=%d elements=%d "
+             "physical=%u\n",
+             tile_id, first_element, elements, physical_tile_elements);
+    const int words_per_element = word_size / sizeof(uint32_t);
+    panic_if(words_per_element != 1,
+             "SPD producer subspan requires FP32-width elements, got %d\n",
+             word_size);
+    for (int element = first_element;
+         element < first_element + elements; ++element) {
+        element_finished[tile_id * physical_tile_elements + element] = false;
+    }
+}
 bool SPD::getTileReady(int tile_id) {
     check_tile_id(tile_id, sizeof(uint32_t));
     return tiles_ready[tile_id] == 0;

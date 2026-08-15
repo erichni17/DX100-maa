@@ -170,5 +170,10 @@ DebugFlag("QOS")
 
 if env['HAVE_RAMULATOR2']:
     SimObject('Ramulator2.py', sim_objects=['Ramulator2'])
-    Source('ramulator2.cc')
+    Source(
+        'ramulator2.cc',
+        append={
+            'CPPPATH': [Dir('#ext/ramulator2/ramulator2/ext/spdlog/include')],
+        },
+    )
     DebugFlag("Ramulator2")

@@ -119,6 +119,13 @@ public:
     bool getTileDirty(int tile_id);
     void setTileReady(int tile_id, int word_size);
     void setTileNotReady(int tile_id, int word_size);
+    /**
+     * Clear readiness only for a bounded producer subspan.  The split
+     * publication path uses this to retain the independently owned sibling
+     * half of one physical tile until its final WriteResp.
+     */
+    void setRangeNotReady(int tile_id, int first_element, int elements,
+                          int word_size);
     bool getTileReady(int tile_id);
     int getSize(int tile_id);
     int getSizeForReadyElement(int tile_id, int element_id, int word_size);

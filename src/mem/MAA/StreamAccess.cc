@@ -42,10 +42,14 @@ void StreamAccessUnit::allocate(int _my_stream_id, unsigned int _num_request_tab
     my_instruction = nullptr;
     my_token_bound_load = false;
     my_response_bearing_publish = false;
+    my_publish_split_2k = false;
     my_publish_completion_tile = -1;
     my_publish_guest_generation = 0;
     my_publish_logical_page = 0;
     my_publish_logical_element_offset = 0;
+    my_publish_subpage = 0;
+    my_publish_source_first_element = 0;
+    my_publish_source_elements = 0;
     my_publish_credit_stall_observations = 0;
 }
 Cycles StreamAccessUnit::updateLatency(int num_spd_condread_accesses, int num_spd_srcread_accesses, int num_spd_write_accesses, int num_requesttable_accesses) {
@@ -165,11 +169,21 @@ void StreamAccessUnit::executeInstruction() {
             my_publish_completion_tile =
                 responseBearingPublishCompletionTile(my_instruction);
             my_dst_tile = my_publish_completion_tile;
-            my_publish_logical_page = static_cast<uint32_t>(my_min);
+            const uint32_t encoded_page = static_cast<uint32_t>(my_min);
+            my_publish_split_2k =
+                (encoded_page & Split2KPublishMarker) != 0;
+            my_publish_subpage =
+                encoded_page & ~Split2KPublishMarker;
+            my_publish_logical_page = my_publish_split_2k
+                ? my_publish_subpage / 2 : encoded_page;
             my_publish_logical_element_offset =
                 static_cast<uint32_t>(my_max);
             my_publish_guest_generation =
                 static_cast<uint32_t>(my_stride);
+            my_publish_source_first_element = my_publish_split_2k
+                ? (my_publish_subpage % 2) * Split2KElements : 0;
+            my_publish_source_elements = my_publish_split_2k
+                ? Split2KElements : maa->physical_tile_elements;
             // The guarded operation is always one complete physical page;
             // the register values above are identity, not legacy bounds.
             my_min = 0;
@@ -210,7 +224,7 @@ void StreamAccessUnit::executeInstruction() {
         my_words_per_page = page_size / my_word_size;
         if (my_response_bearing_publish) {
             const uint64_t publication_bytes =
-                static_cast<uint64_t>(ResponsePublisher::PageElements) *
+                static_cast<uint64_t>(my_publish_source_elements) *
                 my_word_size;
             panic_if(my_instruction->controllerManaged ||
                          my_instruction->src1SpdID == -1 ||
@@ -228,10 +242,20 @@ void StreamAccessUnit::executeInstruction() {
                      "%zu physical elements, got %u\n", my_stream_id,
                      ResponsePublisher::PageElements,
                      maa->physical_tile_elements);
-            panic_if(my_publish_logical_page >= 4 ||
-                         my_publish_logical_element_offset !=
-                             my_publish_logical_page *
-                                 ResponsePublisher::PageElements ||
+            panic_if((my_publish_split_2k &&
+                      (my_publish_subpage >= 8 ||
+                       my_publish_logical_element_offset !=
+                           my_publish_subpage * Split2KElements ||
+                       my_instruction->controllerElements !=
+                           static_cast<int>(Split2KElements) ||
+                       my_instruction->controllerElementOffset !=
+                           static_cast<int>(
+                               my_publish_source_first_element))) ||
+                         (!my_publish_split_2k &&
+                          (my_publish_logical_page >= 4 ||
+                           my_publish_logical_element_offset !=
+                               my_publish_logical_page *
+                                   ResponsePublisher::PageElements)) ||
                          my_publish_guest_generation == 0,
                      "S[%d] invalid publish identity page=%u offset=%u "
                      "generation=%lu\n", my_stream_id,
@@ -281,14 +305,18 @@ void StreamAccessUnit::executeInstruction() {
         state = Status::Request;
         if (my_response_bearing_publish) {
             DPRINTF(MAATrace,
-                    "event=spd_publish_decode schema=1 unit=%d source=%d "
+                    "event=spd_publish_decode schema=2 unit=%d source=%d "
                     "completion=%d logical_page=%u logical_offset=%u "
-                    "generation=%lu backing=0x%lx word_bytes=%d credits=%lu\n",
+                    "generation=%lu backing=0x%lx word_bytes=%d credits=%lu "
+                    "split_2k=%d source_first=%u source_elements=%u\n",
                     my_stream_id, my_src_tile, my_dst_tile,
                     my_publish_logical_page,
                     my_publish_logical_element_offset,
                     my_publish_guest_generation, my_base_addr, my_word_size,
-                    static_cast<unsigned long>(ResponsePublisher::Credits));
+                    static_cast<unsigned long>(ResponsePublisher::Credits),
+                    my_publish_split_2k ? 1 : 0,
+                    my_publish_source_first_element,
+                    my_publish_source_elements);
             scheduleExecuteInstructionEvent(Cycles(0));
             break;
         }
@@ -487,10 +515,11 @@ void StreamAccessUnit::executeInstruction() {
                      "S[%d] publisher reached terminal state with live "
                      "credits/retry/request state\n", my_stream_id);
             DPRINTF(MAATrace,
-                    "event=spd_publish_terminal schema=1 unit=%d source=%d "
+                    "event=spd_publish_terminal schema=2 unit=%d source=%d "
                     "completion=%d logical_page=%u logical_offset=%u "
                     "generation=%lu issues=%d responses=%d "
-                    "credit_hwm=%lu credit_stalls=%lu\n",
+                    "credit_hwm=%lu credit_stalls=%lu split_2k=%d "
+                    "source_first=%u source_elements=%u\n",
                     my_stream_id, my_src_tile, my_dst_tile,
                     my_publish_logical_page,
                     my_publish_logical_element_offset,
@@ -498,7 +527,10 @@ void StreamAccessUnit::executeInstruction() {
                     my_received_responses,
                     static_cast<unsigned long>(
                         response_publisher.creditHighWater()),
-                    my_publish_credit_stall_observations);
+                    my_publish_credit_stall_observations,
+                    my_publish_split_2k ? 1 : 0,
+                    my_publish_source_first_element,
+                    my_publish_source_elements);
             (*maa->stats.STR_PublishTerminals[my_stream_id])++;
             panic_if(response_publisher.reset() !=
                          ResponsePublisher::ResetResult::Reset,
@@ -532,6 +564,7 @@ void StreamAccessUnit::executeInstruction() {
         maa->finishInstructionCompute(my_instruction);
         my_instruction = nullptr;
         my_response_bearing_publish = false;
+        my_publish_split_2k = false;
         my_publish_completion_tile = -1;
         request_table->check_reset();
         break;
@@ -552,23 +585,43 @@ StreamAccessUnit::executeResponseBearingPublish()
     if (my_request_start_tick == 0)
         my_request_start_tick = curTick();
 
-    // Admission requires the producer's whole physical tile, not merely the
-    // first ready element. The sentinel registers this unit for the producer's
-    // tile-finished wakeup. The IF source reference remains held until the
-    // final WriteResp and therefore forbids source reuse during publication.
-    if (maa->spd->getTileStatus(my_src_tile) != SPD::TileStatus::Finished) {
-        (void)maa->spd->getElementFinished(
-            my_src_tile, maa->physical_tile_elements, my_word_size,
-            static_cast<uint8_t>(FuncUnitType::STREAM), my_stream_id);
+    // The ordinary form requires a completed 4K tile.  The split form admits
+    // only one whole 2K owner range and waits on that range's element
+    // readiness; MAA retains the matching source-owner record through the
+    // final WriteResp, so its sibling range remains independently reusable.
+    bool source_ready = my_publish_split_2k;
+    if (my_publish_split_2k) {
+        for (uint32_t element = my_publish_source_first_element;
+             element < my_publish_source_first_element +
+                 my_publish_source_elements;
+             ++element) {
+            source_ready = maa->spd->getElementFinished(
+                my_src_tile, element, my_word_size,
+                static_cast<uint8_t>(FuncUnitType::STREAM), my_stream_id) &&
+                source_ready;
+        }
+    } else {
+        source_ready = maa->spd->getTileStatus(my_src_tile) ==
+            SPD::TileStatus::Finished;
+        if (!source_ready) {
+            (void)maa->spd->getElementFinished(
+                my_src_tile, maa->physical_tile_elements, my_word_size,
+                static_cast<uint8_t>(FuncUnitType::STREAM), my_stream_id);
+        }
+    }
+    if (!source_ready) {
         DPRINTF(MAATrace,
-                "event=spd_publish_source_stall schema=1 unit=%d source=%d "
-                "logical_page=%u generation=%lu\n",
+                "event=spd_publish_source_stall schema=2 unit=%d source=%d "
+                "logical_page=%u generation=%lu split_2k=%d "
+                "source_first=%u source_elements=%u\n",
                 my_stream_id, my_src_tile, my_publish_logical_page,
-                my_publish_guest_generation);
+                my_publish_guest_generation, my_publish_split_2k ? 1 : 0,
+                my_publish_source_first_element,
+                my_publish_source_elements);
         return;
     }
 
-    panic_if(maa->spd->getSize(my_src_tile) !=
+    panic_if(!my_publish_split_2k && maa->spd->getSize(my_src_tile) !=
                  static_cast<int>(ResponsePublisher::PageElements),
              "S[%d] publisher source tile %d has %d elements, expected "
              "exactly %zu\n", my_stream_id, my_src_tile,
@@ -583,21 +636,26 @@ StreamAccessUnit::executeResponseBearingPublish()
         const auto result = response_publisher.begin(
             static_cast<uint64_t>(my_stream_id) + 1,
             response_publisher_sequence, my_base_addr,
-            static_cast<std::size_t>(my_word_size / sizeof(uint32_t)));
+            static_cast<std::size_t>(my_word_size / sizeof(uint32_t)),
+            my_publish_source_elements);
         panic_if(result != ResponsePublisher::BeginResult::Started,
                  "S[%d] publisher begin rejected owner=%d sequence=%lu "
                  "result=%u\n", my_stream_id, my_stream_id + 1,
                  response_publisher_sequence,
                  static_cast<unsigned>(result));
         DPRINTF(MAATrace,
-                "event=spd_publish_begin schema=1 unit=%d owner=%d "
+                "event=spd_publish_begin schema=2 unit=%d owner=%d "
                 "sequence=%lu logical_page=%u logical_offset=%u "
-                "generation=%lu backing=0x%lx lines=%u\n",
+                "generation=%lu backing=0x%lx lines=%u split_2k=%d "
+                "source_first=%u source_elements=%u\n",
                 my_stream_id, my_stream_id + 1,
                 response_publisher_sequence, my_publish_logical_page,
                 my_publish_logical_element_offset,
                 my_publish_guest_generation, my_base_addr,
-                response_publisher.expectedLines());
+                response_publisher.expectedLines(),
+                my_publish_split_2k ? 1 : 0,
+                my_publish_source_first_element,
+                my_publish_source_elements);
     }
 
     while (response_publisher.enqueuedLines() <
@@ -642,7 +700,7 @@ StreamAccessUnit::captureAndIssueResponseBearingLine()
         ordinal / ResponsePublisher::LinesPerPage;
     const std::size_t internal_line =
         ordinal % ResponsePublisher::LinesPerPage;
-    const std::size_t first_element =
+    const std::size_t first_element = my_publish_source_first_element +
         static_cast<std::size_t>(ordinal) * my_words_per_cl;
     ResponsePublisher::Payload payload{};
     for (int word = 0; word < my_words_per_cl; ++word) {
@@ -688,16 +746,17 @@ StreamAccessUnit::captureAndIssueResponseBearingLine()
     if (overlaps_non_stream)
         (*maa->stats.STR_PublishOverlapIssues[my_stream_id])++;
     DPRINTF(MAATrace,
-            "event=spd_publish_issue schema=1 unit=%d logical_page=%u "
+            "event=spd_publish_issue schema=2 unit=%d logical_page=%u "
             "logical_offset=%u generation=%lu ordinal=%u "
             "virtual_address=0x%lx physical_address=0x%lx credits=%lu "
-            "overlap=%d\n",
+            "overlap=%d split_2k=%d source_first=%u source_elements=%u\n",
             my_stream_id, my_publish_logical_page,
             my_publish_logical_element_offset,
             my_publish_guest_generation, ordinal, identity.address,
             packet->getAddr(), static_cast<unsigned long>(
                                    response_publisher.occupiedCredits()),
-            overlaps_non_stream ? 1 : 0);
+            overlaps_non_stream ? 1 : 0, my_publish_split_2k ? 1 : 0,
+            my_publish_source_first_element, my_publish_source_elements);
     // A cacheable WriteReq is response-bearing but is not itself a legal
     // upward snoop (NeedsWritable without IsInvalidate). Enter coherence
     // through the retirement cache so its miss becomes an invalidating
@@ -844,14 +903,17 @@ StreamAccessUnit::responseBearingPublishWriteResponse(PacketPtr pkt)
     ++my_received_responses;
     (*maa->stats.STR_PublishWriteResponses[my_stream_id])++;
     DPRINTF(MAATrace,
-            "event=spd_publish_response schema=1 unit=%d logical_page=%u "
+            "event=spd_publish_response schema=2 unit=%d logical_page=%u "
             "generation=%lu virtual_address=0x%lx physical_address=0x%lx "
-            "responses=%d expected=%u credits=%lu\n",
+            "responses=%d expected=%u credits=%lu split_2k=%d "
+            "source_first=%u source_elements=%u\n",
             my_stream_id, sender->logicalPage, sender->guestGeneration,
             sender->identity.address, sender->physicalAddress,
             my_received_responses, response_publisher.expectedLines(),
             static_cast<unsigned long>(
-                response_publisher.occupiedCredits()));
+                response_publisher.occupiedCredits()),
+            my_publish_split_2k ? 1 : 0,
+            my_publish_source_first_element, my_publish_source_elements);
     delete sender;
     panic_if(!response_publisher.assertInvariants(),
              "S[%d] publisher invariant failure after WriteResp\n",

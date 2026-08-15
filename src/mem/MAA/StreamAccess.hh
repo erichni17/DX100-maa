@@ -28,6 +28,11 @@ public:
     // for terminal dependency wakeup.
     static constexpr uint64_t ResponseBearingPublishInstructionTag =
         0x525350445055424cULL;
+    // rsrc1 carries this marker only for the bounded split producer ABI.
+    // The low three bits encode one of eight 2K subpages of the logical-16K
+    // backing (four pages times two independently owned halves).
+    static constexpr uint32_t Split2KPublishMarker = 0x80000000U;
+    static constexpr uint32_t Split2KElements = 2048;
 
     static bool isResponseBearingPublishInstruction(
         const Instruction *instruction) {
@@ -47,6 +52,16 @@ public:
         return instruction->dst1SpdID != -1
             ? instruction->dst1SpdID
             : instruction->controllerDstSlot;
+    }
+
+    static bool isSplit2KPublishInstruction(const Instruction *instruction)
+    {
+        return isResponseBearingPublishInstruction(instruction) &&
+            instruction->controllerElements ==
+                static_cast<int>(Split2KElements) &&
+            (instruction->controllerElementOffset == 0 ||
+             instruction->controllerElementOffset ==
+                 static_cast<int>(Split2KElements));
     }
 
     // FP32 uses one 16 KiB byte chunk and FP64 uses two.  Both geometries
@@ -196,16 +211,22 @@ protected:
     // fallback when the bounded concurrent materializer cannot admit.
     bool my_token_bound_load;
 
-    // A guarded STREAM_ST with tdst1 present publishes exactly one completed
-    // physical 4K-element tile.  tdst1 is a completion-only output token;
-    // rsrc1/2/3 contain logical page, logical element offset, and generation.
+    // A guarded STREAM_ST with tdst1 present publishes either one completed
+    // physical 4K-element tile or one explicitly marked 2K owner subspan.
+    // tdst1 is a completion-only output token; rsrc1/2/3 contain the logical
+    // identity and generation.  The split form reuses the same eight 64B
+    // credits and the existing stream/SPD ports.
     bool my_response_bearing_publish;
+    bool my_publish_split_2k;
     int my_publish_completion_tile;
     ResponsePublisher response_publisher;
     uint64_t response_publisher_sequence;
     uint64_t my_publish_guest_generation;
     uint32_t my_publish_logical_page;
     uint32_t my_publish_logical_element_offset;
+    uint32_t my_publish_subpage;
+    uint32_t my_publish_source_first_element;
+    uint32_t my_publish_source_elements;
     uint64_t my_publish_credit_stall_observations;
 
     Addr my_translated_addr;

@@ -16,6 +16,7 @@
 #include "debug/MAACpuPort.hh"
 #include "debug/MAAMacroEvent.hh"
 #include "debug/MAAMemPort.hh"
+#include "debug/MAATrace.hh"
 #include "debug/MAAVirtualTrace.hh"
 #include "mem/MAA/ALU.hh"
 #include "mem/MAA/DirectRetirementPortDomain.hh"
@@ -955,6 +956,85 @@ MAA::releaseResponseBearingPublishCompletion(int maa_id, int first_tile,
                  maa_id, first_tile + offset);
         responseBearingPublishCompletionOwner[first_tile + offset] = -1;
     }
+}
+
+bool
+MAA::split2KPublisherSourceBusy(int source_tile, int first_element,
+                                int elements) const
+{
+    panic_if(physical_tile_elements != 4096 || elements != 2048 ||
+                 (first_element != 0 && first_element != 2048),
+             "Invalid split publisher source query tile=%d first=%d "
+             "elements=%d physical=%u\n",
+             source_tile, first_element, elements, physical_tile_elements);
+    const uint8_t half = first_element / 2048;
+    return std::any_of(split2KPublisherSourceOwners.begin(),
+                       split2KPublisherSourceOwners.end(),
+                       [source_tile, half](const auto &owner) {
+                           return owner.sourceTile == source_tile &&
+                               owner.half == half;
+                       });
+}
+
+bool
+MAA::reserveSplit2KPublisherSource(int maa_id, int source_tile,
+                                   int first_element, int elements)
+{
+    panic_if(maa_id < 0 || maa_id > std::numeric_limits<uint8_t>::max() ||
+                 source_tile < 0 ||
+                 source_tile > std::numeric_limits<int16_t>::max() ||
+                 physical_tile_elements != 4096 || elements != 2048 ||
+                 (first_element != 0 && first_element != 2048),
+             "Invalid split publisher source reservation maa=%d tile=%d "
+             "first=%d elements=%d physical=%u\n",
+             maa_id, source_tile, first_element, elements,
+             physical_tile_elements);
+    if (split2KPublisherSourceBusy(source_tile, first_element, elements))
+        return false;
+    for (auto &owner : split2KPublisherSourceOwners) {
+        if (owner.sourceTile != -1)
+            continue;
+        owner.sourceTile = static_cast<int16_t>(source_tile);
+        owner.half = static_cast<uint8_t>(first_element / 2048);
+        owner.maaID = static_cast<uint8_t>(maa_id);
+        DPRINTF(MAATrace,
+                "event=split2k_owner_reserve schema=1 maa=%d source=%d "
+                "half=%u elements=2048 owner_slots=%zu owner_bytes=%zu\n",
+                maa_id, source_tile, owner.half,
+                Split2KPublisherOwnerSlots,
+                sizeof(split2KPublisherSourceOwners));
+        return true;
+    }
+    return false;
+}
+
+void
+MAA::releaseSplit2KPublisherSource(int maa_id, int source_tile,
+                                   int first_element, int elements)
+{
+    panic_if(maa_id < 0 || maa_id > std::numeric_limits<uint8_t>::max() ||
+                 elements != 2048 ||
+                 (first_element != 0 && first_element != 2048),
+             "Invalid split publisher source release maa=%d tile=%d "
+             "first=%d elements=%d\n",
+             maa_id, source_tile, first_element, elements);
+    const uint8_t half = first_element / 2048;
+    for (auto &owner : split2KPublisherSourceOwners) {
+        if (owner.sourceTile != source_tile || owner.half != half)
+            continue;
+        panic_if(owner.maaID != static_cast<uint8_t>(maa_id),
+                 "Split publisher source release lost owner maa=%d tile=%d "
+                 "half=%u owner=%u\n",
+                 maa_id, source_tile, half, owner.maaID);
+        owner = {};
+        DPRINTF(MAATrace,
+                "event=split2k_owner_release schema=1 maa=%d source=%d "
+                "half=%u write_resp=1\n",
+                maa_id, source_tile, half);
+        return;
+    }
+    panic("Split publisher source release missing maa=%d tile=%d half=%u\n",
+          maa_id, source_tile, half);
 }
 uint8_t
 MAA::getTileStatus(InstructionPtr instruction, int tile_id, bool is_dst)
@@ -4347,6 +4427,12 @@ MAA::drain()
              "Response-bearing SPD publisher cannot be checkpointed with a "
              "queued completion reservation\n");
     panic_if(std::any_of(
+                 split2KPublisherSourceOwners.begin(),
+                 split2KPublisherSourceOwners.end(),
+                 [](const auto &owner) { return owner.sourceTile != -1; }),
+             "Split producer publisher cannot be checkpointed with a live "
+             "source owner\n");
+    panic_if(std::any_of(
                  pendingPageZeroPrearms.begin(),
                  pendingPageZeroPrearms.end(),
                  [](const PendingPageZeroPrearm &pending) {
@@ -4384,6 +4470,11 @@ MAA::drainResume()
                  [](int owner) { return owner != -1; }),
              "Response-bearing SPD publisher resumed with a queued "
              "completion reservation\n");
+    panic_if(std::any_of(
+                 split2KPublisherSourceOwners.begin(),
+                 split2KPublisherSourceOwners.end(),
+                 [](const auto &owner) { return owner.sourceTile != -1; }),
+             "Split producer publisher resumed with a live source owner\n");
     panic_if(std::any_of(
                  pendingPageZeroPrearms.begin(),
                  pendingPageZeroPrearms.end(),
@@ -4580,6 +4671,50 @@ void MAA::dispatchInstruction() {
             const bool responseBearingPublish =
                 StreamAccessUnit::isResponseBearingPublishInstruction(
                     instruction);
+            const bool split2KProducer =
+                ALUUnit::isSplit2KProducerInstruction(instruction);
+            int split2KFirst = 0;
+            int split2KElements = 0;
+            if (split2KProducer) {
+                split2KFirst = rf->getData<int>(instruction->src1RegID);
+                split2KElements = rf->getData<int>(instruction->src2RegID);
+                const int owner = split2KFirst / 2048;
+                panic_if(physical_tile_elements != 4096 ||
+                             instruction->datatype !=
+                                 Instruction::DataType::FLOAT32_TYPE ||
+                             instruction->dst1SpdID == -1 ||
+                             split2KElements != 2048 ||
+                             (split2KFirst != 0 && split2KFirst != 2048) ||
+                             owner != split2KFirst / 2048,
+                         "Rejected non-2x2K producer instruction tile=%d "
+                         "first=%d elements=%d owner=%d physical=%u\n",
+                         instruction->dst1SpdID, split2KFirst,
+                         split2KElements, owner, physical_tile_elements);
+            }
+            bool split2KPublish = false;
+            int split2KPublishFirst = 0;
+            if (responseBearingPublish) {
+                const uint32_t encoded_page = static_cast<uint32_t>(
+                    rf->getData<int>(instruction->src1RegID));
+                split2KPublish =
+                    (encoded_page & StreamAccessUnit::Split2KPublishMarker) !=
+                    0;
+                if (split2KPublish) {
+                    const uint32_t subpage =
+                        encoded_page &
+                        ~StreamAccessUnit::Split2KPublishMarker;
+                    split2KPublishFirst =
+                        static_cast<int>((subpage % 2) * 2048);
+                    panic_if(physical_tile_elements != 4096 || subpage >= 8 ||
+                                 instruction->WordSize() != 4 ||
+                                 instruction->src1SpdID == -1,
+                             "Rejected non-2x2K publisher source=%d "
+                             "subpage=%u physical=%u word=%d\n",
+                             instruction->src1SpdID, subpage,
+                             physical_tile_elements,
+                             instruction->WordSize());
+                }
+            }
             const int destinations[] = {
                 instruction->dst1SpdID, instruction->dst2SpdID};
             for (const int destination : destinations) {
@@ -4595,6 +4730,22 @@ void MAA::dispatchInstruction() {
                     responseBearingPublishDestinationBusy(
                         instruction->maa_id, destination,
                         destinationWordSize);
+            }
+            if (split2KProducer &&
+                split2KPublisherSourceBusy(instruction->dst1SpdID,
+                                           split2KFirst,
+                                           split2KElements)) {
+                materializerDestinationBusy = true;
+            }
+            if (split2KPublish &&
+                (split2KPublisherSourceBusy(instruction->src1SpdID,
+                                            split2KPublishFirst, 2048) ||
+                 !std::any_of(split2KPublisherSourceOwners.begin(),
+                              split2KPublisherSourceOwners.end(),
+                              [](const auto &owner) {
+                                  return owner.sourceTile == -1;
+                              }))) {
+                materializerDestinationBusy = true;
             }
             if (responseBearingPublish && !materializerDestinationBusy) {
                 const int completion =
@@ -4636,6 +4787,14 @@ void MAA::dispatchInstruction() {
                 (Instruction::TileStatus)getTileStatus(
                     instruction, instruction->dst2SpdID, true);
             Instruction queuedInstruction = *instruction;
+            if (split2KProducer) {
+                // Latch bounds at admission before the guest reuses the two
+                // ordinary scalar registers.  This remains a non-controller
+                // ALU instruction; the fields carry only its bounded owner.
+                queuedInstruction.controllerElementOffset = split2KFirst;
+                queuedInstruction.controllerElements = split2KElements;
+                queuedInstruction.controllerSrcSlot = split2KFirst / 2048;
+            }
             if (responseBearingPublish) {
                 queuedInstruction.controllerTransactionID =
                     StreamAccessUnit::
@@ -4645,6 +4804,11 @@ void MAA::dispatchInstruction() {
                 queuedInstruction.dst1SpdID = -1;
                 queuedInstruction.dst1Status =
                     Instruction::TileStatus::Finished;
+                if (split2KPublish) {
+                    queuedInstruction.controllerElementOffset =
+                        split2KPublishFirst;
+                    queuedInstruction.controllerElements = 2048;
+                }
             }
             if (ifile->pushInstruction(queuedInstruction)) {
                 DPRINTF(MAAController, "%s: %s dispatched!\n", __func__,
@@ -4655,15 +4819,29 @@ void MAA::dispatchInstruction() {
                     const int dst1_word_size =
                         getInstructionTileWordSize(
                             instruction, instruction->dst1SpdID);
-                    spd->setTileIdle(
-                        instruction->dst1SpdID, dst1_word_size);
-                    spd->setTileNotReady(
-                        instruction->dst1SpdID, dst1_word_size);
+                    if (split2KProducer) {
+                        spd->setRangeNotReady(
+                            instruction->dst1SpdID, split2KFirst,
+                            split2KElements, dst1_word_size);
+                    } else {
+                        spd->setTileIdle(
+                            instruction->dst1SpdID, dst1_word_size);
+                        spd->setTileNotReady(
+                            instruction->dst1SpdID, dst1_word_size);
+                    }
                     if (responseBearingPublish) {
                         reserveResponseBearingPublishCompletion(
                             instruction->maa_id,
                             instruction->dst1SpdID, dst1_word_size);
                     }
+                }
+                if (split2KPublish) {
+                    panic_if(!reserveSplit2KPublisherSource(
+                                 instruction->maa_id,
+                                 instruction->src1SpdID,
+                                 split2KPublishFirst, 2048),
+                             "Split publisher source reservation changed "
+                             "after admission\n");
                 }
                 if (instruction->opcode ==
                         Instruction::OpcodeType::INDIR_LD_VIRTUAL ||
@@ -4743,6 +4921,8 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     controller_request.transactionID = instruction->controllerTransactionID;
     const int publisher_completion =
         StreamAccessUnit::responseBearingPublishCompletionTile(instruction);
+    const bool split2KProducer =
+        ALUUnit::isSplit2KProducerInstruction(instruction);
     if (publisher_completion != -1) {
         const int word_size = instruction->WordSize();
         panic_if(instruction->dst1SpdID != -1,
@@ -4758,7 +4938,8 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
             instruction, instruction->dst1SpdID);
         spd->setTileFinished(
             instruction->dst1SpdID, dst1_word_size);
-        setTileReady(instruction->dst1SpdID, dst1_word_size);
+        if (!split2KProducer)
+            setTileReady(instruction->dst1SpdID, dst1_word_size);
     }
     if (instruction->dst2SpdID != -1) {
         spd->setTileFinished(instruction->dst2SpdID, instruction->getWordSize(instruction->dst2SpdID));
@@ -4774,6 +4955,12 @@ void MAA::finishInstructionCompute(Instruction *instruction) {
     if (num_maas > 1)
         invalidator->finishInstruction(instruction);
     if (publisher_completion != -1) {
+        if (StreamAccessUnit::isSplit2KPublishInstruction(instruction)) {
+            releaseSplit2KPublisherSource(
+                instruction->maa_id, instruction->src1SpdID,
+                instruction->controllerElementOffset,
+                instruction->controllerElements);
+        }
         instruction->dst1SpdID = -1;
         releaseResponseBearingPublishCompletion(
             instruction->maa_id, publisher_completion,

@@ -573,6 +573,22 @@ protected:
     // One bounded owner entry per configured SPD tile.  Publisher payload is
     // retained only in StreamAccess's eight line credits.
     std::vector<int> responseBearingPublishCompletionOwner;
+    // The default-off split producer admits exactly two independently owned
+    // 2K FP32 subspans.  Each four-byte record names one source tile and one
+    // half; it stores no data and adds no port.  A third outstanding split
+    // publication remains at admission until an owner reaches WriteResp.
+    struct Split2KPublisherSourceOwner
+    {
+        int16_t sourceTile = -1;
+        uint8_t half = 0;
+        uint8_t maaID = 0xff;
+    };
+    static constexpr std::size_t Split2KPublisherOwnerSlots = 2;
+    static_assert(sizeof(Split2KPublisherSourceOwner) == 4,
+                  "split producer owner record must remain four bytes");
+    std::array<Split2KPublisherSourceOwner,
+               Split2KPublisherOwnerSlots>
+        split2KPublisherSourceOwners{};
     TransparentSPDController transparentController;
     Tick transparentControllerLookupReadyTick = 0;
     uint64_t transparentTraceOccurrence = 0;
@@ -730,6 +746,12 @@ protected:
                                                  int word_size);
     void releaseResponseBearingPublishCompletion(int maa_id, int first_tile,
                                                  int word_size);
+    bool split2KPublisherSourceBusy(int source_tile, int first_element,
+                                    int elements) const;
+    bool reserveSplit2KPublisherSource(int maa_id, int source_tile,
+                                       int first_element, int elements);
+    void releaseSplit2KPublisherSource(int maa_id, int source_tile,
+                                       int first_element, int elements);
     uint8_t getTileStatus(InstructionPtr instruction, int tile_id,
                           bool is_dst);
     void issueInstruction();

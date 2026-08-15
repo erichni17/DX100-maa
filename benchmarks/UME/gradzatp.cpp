@@ -232,6 +232,7 @@ enum class GzpRmwTreatment
     VolumeOnlySoaJit,
     VolumeMaskedIndexSoaJit,
     DualLogical16SoaJit,
+    DualLogical16Split2KSoaJit,
     SoaJitCorrectness,
 };
 
@@ -240,6 +241,7 @@ static std::atomic<uint64_t> soa_full_windows{0};
 static std::atomic<uint64_t> soa_volume_only_windows{0};
 static std::atomic<uint64_t> soa_masked_index_windows{0};
 static std::atomic<uint64_t> soa_dual_logical16_windows{0};
+static std::atomic<uint64_t> soa_dual_logical16_split2k_windows{0};
 static std::atomic<uint64_t> soa_published_predicates{0};
 static std::atomic<uint64_t> soa_published_gradient_values{0};
 static uint64_t soa_predicate_hash = 0;
@@ -333,6 +335,8 @@ static const char *gzp_rmw_treatment_name(GzpRmwTreatment treatment) {
         return "volume_masked_index_soa_jit";
     if (treatment == GzpRmwTreatment::DualLogical16SoaJit)
         return "dual_logical16_soa_jit";
+    if (treatment == GzpRmwTreatment::DualLogical16Split2KSoaJit)
+        return "dual_logical16_split2k_soa_jit";
     if (treatment == GzpRmwTreatment::SoaJitCorrectness)
         return "soa_jit_correctness";
     return "legacy_4k";
@@ -345,6 +349,8 @@ static const char *gzp_rmw_publisher_name(GzpRmwTreatment treatment) {
         return "masked_index_no_predicate_publication";
     if (treatment == GzpRmwTreatment::DualLogical16SoaJit)
         return "response_bearing_gradient_only";
+    if (treatment == GzpRmwTreatment::DualLogical16Split2KSoaJit)
+        return "response_bearing_gradient_split2k";
     if (treatment == GzpRmwTreatment::SoaJitCorrectness)
         return "response_bearing_spd_to_coherent";
     return "none";
@@ -397,7 +403,7 @@ static GzpSelector read_gzp_selector(const std::string &path) {
         throw std::runtime_error(
             "GZP selector must contain CONSUMER "
             "[legacy_4k|volume_soa_jit|volume_masked_index|"
-            "dual_logical16|soa_jit]");
+            "dual_logical16|dual_logical16_split2k|soa_jit]");
 
     MAAVirtualConsumerMode consumer_mode;
     if (consumer == "stream_control")
@@ -419,6 +425,8 @@ static GzpSelector read_gzp_selector(const std::string &path) {
             rmw = GzpRmwTreatment::VolumeMaskedIndexSoaJit;
         else if (treatment == "dual_logical16")
             rmw = GzpRmwTreatment::DualLogical16SoaJit;
+        else if (treatment == "dual_logical16_split2k")
+            rmw = GzpRmwTreatment::DualLogical16Split2KSoaJit;
         else if (treatment == "soa_jit")
             rmw = GzpRmwTreatment::SoaJitCorrectness;
         else
@@ -437,6 +445,8 @@ int regs3[NUM_CORES], regs4[NUM_CORES];
 #ifdef UME_GZP_SOA_JIT_RMW
 int soa_volume_completion_tiles[NUM_CORES];
 int soa_gradient_completion_tiles[NUM_CORES];
+int soa_split_first_regs[NUM_CORES];
+int soa_split_elements_regs[NUM_CORES];
 #endif
 
 void gradzatp() {
@@ -524,10 +534,13 @@ void gradzatp_MAA() {
                    point_normal.data() + point_normal.size()); // 15
 #endif
 #ifdef UME_GZP_SOA_JIT_RMW
-    // Existing arms retain their original publication registrations while
-    // each new masked-index arm names only the coherent SoA spans it consumes.
+    // Each publisher names only the coherent SoA span it consumes.  The split
+    // treatment still has one logical 16K backing range; it does not register
+    // a second physical producer payload.
     if (gzp_rmw_treatment != GzpRmwTreatment::VolumeMaskedIndexSoaJit) {
-        if (gzp_rmw_treatment == GzpRmwTreatment::DualLogical16SoaJit) {
+        if (gzp_rmw_treatment == GzpRmwTreatment::DualLogical16SoaJit ||
+            gzp_rmw_treatment ==
+                GzpRmwTreatment::DualLogical16Split2KSoaJit) {
             for (int core = 0; core < NUM_CORES; ++core) {
                 add_mem_region(soa_gradient_values[core],
                                soa_gradient_values[core] + TILE_SIZE);
@@ -564,6 +577,11 @@ void gradzatp_MAA() {
         const int page_min_reg = page_regs0[omp_thread_id];
         const int page_max_reg = page_regs1[omp_thread_id];
         const int page_stride_reg = page_regs2[omp_thread_id];
+#endif
+#ifdef UME_GZP_SOA_JIT_RMW
+        const int split_first_reg = soa_split_first_regs[omp_thread_id];
+        const int split_elements_reg =
+            soa_split_elements_regs[omp_thread_id];
 #endif
 #if defined(MAA_VIRTUAL_GATHER) && !defined(MAA_GENERAL_VIRTUAL_CONSUMER)
         backing_start_reg = regs3[omp_thread_id];
@@ -628,10 +646,21 @@ void gradzatp_MAA() {
 #else
                 false;
 #endif
+            const bool soa_dual_logical16_split2k_full_window =
+#ifdef UME_GZP_SOA_JIT_RMW
+                gzp_rmw_treatment ==
+                    GzpRmwTreatment::DualLogical16Split2KSoaJit &&
+                gather_size == TILE_SIZE;
+#else
+                false;
+#endif
+            const bool soa_dual_logical16_any_full_window =
+                soa_dual_logical16_full_window ||
+                soa_dual_logical16_split2k_full_window;
             const bool soa_volume_full_window =
                 soa_both_full_window || soa_volume_only_full_window ||
                 soa_masked_index_full_window ||
-                soa_dual_logical16_full_window;
+                soa_dual_logical16_any_full_window;
             maa_const<int>(c, reg0);
             maa_const<int>(c + gather_size, reg1);
             maa_indirect_load_virtual_index<DATATYPE>(
@@ -648,7 +677,7 @@ void gradzatp_MAA() {
 
             if (soa_volume_only_full_window ||
                 soa_masked_index_full_window ||
-                soa_dual_logical16_full_window) {
+                soa_dual_logical16_any_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
                 // Every performance arm keeps the immutable index/value
                 // streams and FP32 insertion order.  Masked-index arms
@@ -657,7 +686,7 @@ void gradzatp_MAA() {
                 maa_const<int>(TILE_SIZE, reg1);
                 maa_const<int>(1, reg2);
                 if (soa_masked_index_full_window ||
-                    soa_dual_logical16_full_window) {
+                    soa_dual_logical16_any_full_window) {
                     maa_indirect_rmw_vector_soa_jit_masked_indices<DATATYPE>(
                         point_volume.data(),
                         reinterpret_cast<const uint32_t *>(
@@ -702,7 +731,7 @@ void gradzatp_MAA() {
                 maa_alu_scalar<int>(tile0, reg2, tileCond,
                                     Operation_t::GTE_OP);
                 if (!soa_both_full_window &&
-                    !soa_dual_logical16_full_window) {
+                    !soa_dual_logical16_any_full_window) {
                     maa_stream_load<int>(c_to_p_map.data(), reg0, reg1, reg2,
                                          tile4, tileCond);
                 }
@@ -751,10 +780,12 @@ void gradzatp_MAA() {
                     local_gather_lanes++;
                 }
 #endif
-                maa_alu_vector<DATATYPE>(tile1, tile0, tile2,
-                                          Operation_t::MUL_OP, tileCond);
+                if (!soa_dual_logical16_split2k_full_window) {
+                    maa_alu_vector<DATATYPE>(tile1, tile0, tile2,
+                                              Operation_t::MUL_OP, tileCond);
+                }
                 if (soa_both_full_window ||
-                    soa_dual_logical16_full_window) {
+                    soa_dual_logical16_any_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
                     // The publisher itself waits for each complete producer
                     // tile, captures one 64B line into one of eight credits,
@@ -770,8 +801,47 @@ void gradzatp_MAA() {
                         soa_dual_logical16_full_window
                             ? window * 4 + logical_page + 1
                             : predicate_generation + 1;
-                    maa_const<uint32_t>(logical_page, page_min_reg);
-                    maa_const<uint32_t>(page_offset, page_max_reg);
+                    if (soa_dual_logical16_split2k_full_window) {
+                        // Two independently owned 2K FP32 regions share
+                        // tile2's sole 4K physical payload.  No wait occurs
+                        // between publishing half zero and computing half
+                        // one: S0 retains the first half through WriteResp
+                        // while A0 writes only the disjoint second half.
+                        for (uint32_t half = 0; half < 2; ++half) {
+                            const uint32_t subpage = logical_page * 2 + half;
+                            const uint32_t first = half * 2048;
+                            maa_const<int>(first, split_first_reg);
+                            maa_const<int>(2048, split_elements_reg);
+                            maa_alu_vector_split_2k<DATATYPE>(
+                                tile1, tile0, tile2, Operation_t::MUL_OP,
+                                split_first_reg, split_elements_reg,
+                                tileCond);
+                            maa_const<uint32_t>(
+                                0x80000000U | subpage, page_min_reg);
+                            maa_const<uint32_t>(subpage * 2048,
+                                                page_max_reg);
+                            maa_const<uint32_t>(window * 8 + subpage + 1,
+                                                page_stride_reg);
+                            maa_publish_spd_half_logical16_response_bearing<
+                                DATATYPE>(
+                                soa_gradient_values[omp_thread_id],
+                                logical_page, half, tile2,
+                                half == 0
+                                    ? soa_volume_completion_tiles[
+                                          omp_thread_id]
+                                    : soa_gradient_completion_tiles[
+                                          omp_thread_id],
+                                page_min_reg, page_max_reg,
+                                page_stride_reg);
+                        }
+                        // Both completion tokens are publication fences. The
+                        // producer never performs a CPU copy or a sink write.
+                        wait_ready(soa_volume_completion_tiles[omp_thread_id]);
+                        wait_ready(
+                            soa_gradient_completion_tiles[omp_thread_id]);
+                    } else {
+                        maa_const<uint32_t>(logical_page, page_min_reg);
+                        maa_const<uint32_t>(page_offset, page_max_reg);
                     if (soa_both_full_window) {
                         maa_const<uint32_t>(predicate_generation,
                                             page_stride_reg);
@@ -794,6 +864,7 @@ void gradzatp_MAA() {
                             soa_volume_completion_tiles[omp_thread_id]);
                     }
                     wait_ready(soa_gradient_completion_tiles[omp_thread_id]);
+                    }
                     if (soa_both_full_window) {
                         soa_published_predicates.fetch_add(
                             page_size, std::memory_order_relaxed);
@@ -835,7 +906,7 @@ void gradzatp_MAA() {
                 wait_ready(soa_gradient_completion_tiles[omp_thread_id]);
                 soa_full_windows.fetch_add(1, std::memory_order_relaxed);
 #endif
-            } else if (soa_dual_logical16_full_window) {
+            } else if (soa_dual_logical16_any_full_window) {
 #ifdef UME_GZP_SOA_JIT_RMW
                 maa_const<int>(0, reg0);
                 maa_const<int>(TILE_SIZE, reg1);
@@ -848,8 +919,13 @@ void gradzatp_MAA() {
                     soa_gradient_completion_tiles[omp_thread_id],
                     Operation_t::ADD_OP);
                 wait_ready(soa_gradient_completion_tiles[omp_thread_id]);
-                soa_dual_logical16_windows.fetch_add(
-                    1, std::memory_order_relaxed);
+                if (soa_dual_logical16_split2k_full_window) {
+                    soa_dual_logical16_split2k_windows.fetch_add(
+                        1, std::memory_order_relaxed);
+                } else {
+                    soa_dual_logical16_windows.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
 #endif
             }
 #else
@@ -994,6 +1070,8 @@ void gradzatp_MAA() {
               << soa_masked_index_windows.load()
               << " dual_logical16_windows="
               << soa_dual_logical16_windows.load()
+              << " dual_logical16_split2k_windows="
+              << soa_dual_logical16_split2k_windows.load()
               << " published_predicates=" << soa_published_predicates.load()
               << " published_gradient_values="
               << soa_published_gradient_values.load()
@@ -1026,6 +1104,21 @@ void gradzatp_MAA() {
               << MAA_CONSUMER_TILE_SIZE
               << " producer_staging_bytes="
               << MAA_CONSUMER_TILE_SIZE * sizeof(DATATYPE)
+              << " producer_owner_regions="
+              << (gzp_rmw_treatment ==
+                          GzpRmwTreatment::DualLogical16Split2KSoaJit
+                      ? 2
+                      : 1)
+              << " producer_owner_region_elements="
+              << (gzp_rmw_treatment ==
+                          GzpRmwTreatment::DualLogical16Split2KSoaJit
+                      ? 2048
+                      : MAA_CONSUMER_TILE_SIZE)
+              << " split_owner_slots=2"
+              << " split_owner_state_bytes=8"
+              << " split_additional_spd_ports=0"
+              << " split_additional_stream_ports=0"
+              << " split_additional_alu_ports=0"
               << " publisher_credit_payload_bytes=" << 8 * 64
               << " coherent_gradient_backing_elements="
               << NUM_CORES * TILE_SIZE
@@ -1304,6 +1397,8 @@ int main(int argc, char *argv[]) {
 #ifdef UME_GZP_SOA_JIT_RMW
             soa_volume_completion_tiles[thread_id] = get_new_tile<int>();
             soa_gradient_completion_tiles[thread_id] = get_new_tile<int>();
+            soa_split_first_regs[thread_id] = get_new_reg<int>();
+            soa_split_elements_regs[thread_id] = get_new_reg<int>();
 #endif
         }
     }

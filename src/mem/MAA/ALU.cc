@@ -25,6 +25,15 @@ ALUUnit::ALUUnit()
     my_dst_tile = -1;
     my_instruction = nullptr;
 }
+
+bool
+ALUUnit::isSplit2KProducerInstruction(const Instruction *instruction)
+{
+    return instruction != nullptr &&
+        instruction->opcode == Instruction::OpcodeType::ALU_VECTOR &&
+        instruction->src1RegID != -1 && instruction->src2RegID != -1 &&
+        instruction->src3RegID == -1;
+}
 void ALUUnit::allocate(MAA *_maa, int _my_alu_id, Cycles _ALU_lane_latency, int _num_ALU_lanes, int _num_tile_elements) {
     state = Status::Idle;
     maa = _maa;
@@ -132,12 +141,38 @@ void ALUUnit::executeInstruction() {
         my_cond_tile = my_instruction->condSpdID;
         my_src1_tile = my_instruction->src1SpdID;
         my_src2_tile = my_instruction->src2SpdID;
-        my_element_base = my_instruction->controllerManaged
-            ? my_instruction->controllerElementOffset : 0;
-        my_element_count = my_instruction->controllerManaged
-            ? my_instruction->controllerElements : num_tile_elements;
-        my_max = my_instruction->controllerManaged
-            ? my_element_base + my_element_count : -1;
+        const bool split_2k =
+            isSplit2KProducerInstruction(my_instruction);
+        if (split_2k) {
+            const int first = my_instruction->controllerElementOffset;
+            const int elements = my_instruction->controllerElements;
+            const int owner = my_instruction->controllerSrcSlot;
+            panic_if(maa->physical_tile_elements != 4096 ||
+                         my_instruction->datatype !=
+                             Instruction::DataType::FLOAT32_TYPE ||
+                         first != owner * 2048 ||
+                         (owner != 0 && owner != 1) ||
+                         elements != 2048 || first < 0 ||
+                         first + elements != 2048 * (owner + 1),
+                     "A[%d] rejected non-2x2K producer range first=%d "
+                     "elements=%d owner=%d physical=%u\n",
+                     my_alu_id, first, elements, owner,
+                     maa->physical_tile_elements);
+            my_element_base = first;
+            my_element_count = elements;
+            my_max = first + elements;
+            DPRINTF(MAATrace,
+                    "event=split2k_alu_decode schema=1 unit=%d dst=%d "
+                    "first=%d elements=%d owner=%d\n",
+                    my_alu_id, my_dst_tile, first, elements, owner);
+        } else {
+            my_element_base = my_instruction->controllerManaged
+                ? my_instruction->controllerElementOffset : 0;
+            my_element_count = my_instruction->controllerManaged
+                ? my_instruction->controllerElements : num_tile_elements;
+            my_max = my_instruction->controllerManaged
+                ? my_element_base + my_element_count : -1;
+        }
         my_i = my_element_base;
         my_input_word_size = my_instruction->getWordSize(my_src1_tile);
         my_output_word_size = my_dst_tile != -1 ? my_instruction->getWordSize(my_dst_tile) : 1;
@@ -912,6 +947,13 @@ void ALUUnit::executeInstruction() {
         panic_if(my_cond_tile_ready == false, "A[%d] %s: cond tile[%d] not ready!\n", my_alu_id, __func__, my_cond_tile);
         panic_if(my_src1_tile_ready == false, "A[%d] %s: src1 tile[%d] not ready!\n", my_alu_id, __func__, my_src1_tile);
         panic_if(my_src2_tile_ready == false, "A[%d] %s: src2 tile[%d] not ready!\n", my_alu_id, __func__, my_src2_tile);
+        if (isSplit2KProducerInstruction(my_instruction)) {
+            DPRINTF(MAATrace,
+                    "event=split2k_alu_finish schema=1 unit=%d dst=%d "
+                    "first=%d elements=%d\n",
+                    my_alu_id, my_dst_tile, my_element_base,
+                    my_element_count);
+        }
         if (my_dst_tile != -1) {
             maa->spd->setSize(my_dst_tile,
                               my_instruction->controllerManaged

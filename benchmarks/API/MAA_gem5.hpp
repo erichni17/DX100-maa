@@ -494,6 +494,51 @@ inline void maa_publish_spd_page_logical16_response_bearing(
         completion_tile, logical_page_reg, logical_offset_reg,
         generation_reg);
 }
+
+/**
+ * Publish one independently owned 2048-FP32 half of a physical 4096-element
+ * producer tile.  The high-bit page marker is a fail-closed ABI tag: ordinary
+ * publication accepts only unmarked page identities.  The two halves target
+ * adjacent coherent guest ranges but reuse the same source tile, stream port,
+ * and eight response credits; no second 4K producer payload is allocated.
+ */
+template <class T1>
+inline void maa_publish_spd_half_logical16_response_bearing(
+    T1 *logical16_backing, unsigned logical_page, unsigned half,
+    int src_tile, int completion_tile, int logical_page_reg,
+    int logical_offset_reg, int generation_reg) {
+    static_assert(sizeof(T1) == 4,
+                  "split producer publication is FP32-only");
+    if (logical_page >= 4 || half >= 2)
+        __builtin_trap();
+    const unsigned subpage = logical_page * 2 + half;
+    maa_publish_spd_page_response_bearing(
+        logical16_backing + subpage * 2048, src_tile, completion_tile,
+        logical_page_reg, logical_offset_reg, generation_reg);
+}
+
+/** Execute exactly one independent 2048-element FP32 producer owner range. */
+template <class T1>
+inline void maa_alu_vector_split_2k(int src1_tile, int src2_tile,
+                                    int dst_tile, Operation_t op,
+                                    int first_reg, int elements_reg,
+                                    int cond_tile = -1) {
+    static_assert(sizeof(T1) == 4,
+                  "split producer ALU is FP32-only");
+    DataType data_type = get_data_type<T1>();
+    *INSTR_opcode_datatype_optype_tdst1_tdst2 =
+        ((uint64_t)OpcodeType::ALU_VECTOR << 32) |
+        ((uint64_t)data_type << 24) | ((uint64_t)op << 16) |
+        ((uint64_t)dst_tile << 8) | (uint64_t)NA_UINT8;
+    *INSTR_tsrc1_tsrc2_rdst1_rdst2_rsrc1_rsrc2_rsrc3_csrc =
+        ((uint64_t)src1_tile << 56) | ((uint64_t)src2_tile << 48) |
+        ((uint64_t)NA_UINT8 << 40) | ((uint64_t)NA_UINT8 << 32) |
+        ((uint64_t)first_reg << 24) | ((uint64_t)elements_reg << 16) |
+        ((uint64_t)NA_UINT8 << 8) |
+        (uint64_t)(cond_tile == -1 ? NA_UINT8 : cond_tile);
+    *INSTR_baseaddr = NA_UINT64;
+    __asm__ __volatile__("mfence;");
+}
 template <class T1>
 inline void maa_indirect_load(T1 *data, int idx_tile, int dst_tile, int cond_tile = -1) {
     DataType data_type = get_data_type<T1>();

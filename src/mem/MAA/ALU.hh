@@ -42,6 +42,12 @@ public:
 
     Status getState() const { return state; }
 
+    // This is deliberately narrower than a general range ALU: the only
+    // admitted shape is one of the two 2048-FP32 owners of a 4096-element
+    // producer tile.  Ordinary ALU_VECTOR instructions keep all range
+    // registers absent and therefore retain their original semantics.
+    static bool isSplit2KProducerInstruction(const Instruction *instruction);
+
     void setInstruction(Instruction *_instruction);
 
     /**

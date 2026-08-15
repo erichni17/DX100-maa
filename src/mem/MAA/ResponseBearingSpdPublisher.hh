@@ -144,7 +144,8 @@ class ResponseBearingSpdPublisher
     };
 
     BeginResult begin(uint64_t owner, uint64_t generation,
-                      uint64_t baseAddress, std::size_t pageCount)
+                      uint64_t baseAddress, std::size_t pageCount,
+                      std::size_t elementsPerPage = PageElements)
     {
         if (activeFlag)
             return BeginResult::Busy;
@@ -157,12 +158,16 @@ class ResponseBearingSpdPublisher
                 ? BeginResult::InvalidOwner
                 : BeginResult::InvalidGeneration;
         }
-        if (pageCount == 0 || pageCount > MaxPages)
+        if (pageCount == 0 || pageCount > MaxPages ||
+            elementsPerPage == 0 || elementsPerPage > PageElements ||
+            (elementsPerPage * WordBytes) % LineBytes != 0)
             return BeginResult::InvalidPageCount;
+        const std::size_t pageBytes = elementsPerPage * WordBytes;
+        const std::size_t linesPerPage = pageBytes / LineBytes;
         if (baseAddress == 0 || baseAddress % LineBytes != 0 ||
             pageCount >
                 (std::numeric_limits<uint64_t>::max() - baseAddress) /
-                    PageBytes) {
+                    pageBytes) {
             return BeginResult::InvalidBaseAddress;
         }
 
@@ -173,7 +178,10 @@ class ResponseBearingSpdPublisher
         activeGeneration = generation;
         publicationBase = baseAddress;
         publicationPages = static_cast<uint8_t>(pageCount);
-        expectedLineCount = static_cast<uint16_t>(pageCount * LinesPerPage);
+        activePageBytes = pageBytes;
+        activeLinesPerPage = static_cast<uint16_t>(linesPerPage);
+        expectedLineCount =
+            static_cast<uint16_t>(pageCount * activeLinesPerPage);
         activeFlag = true;
         return BeginResult::Started;
     }
@@ -182,14 +190,14 @@ class ResponseBearingSpdPublisher
     {
         Identity result;
         if (!activeFlag || page >= publicationPages ||
-            line >= LinesPerPage) {
+            line >= activeLinesPerPage) {
             return result;
         }
         result.owner = boundOwner;
         result.generation = activeGeneration;
         result.page = static_cast<uint8_t>(page);
         result.line = static_cast<uint16_t>(line);
-        result.address = publicationBase + page * PageBytes +
+        result.address = publicationBase + page * activePageBytes +
                          line * LineBytes;
         return result;
     }
@@ -214,8 +222,10 @@ class ResponseBearingSpdPublisher
         if (credit == Credits)
             return EnqueueResult::Full;
 
-        const std::size_t expectedPage = enqueuedLineCount / LinesPerPage;
-        const std::size_t expectedLine = enqueuedLineCount % LinesPerPage;
+        const std::size_t expectedPage =
+            enqueuedLineCount / activeLinesPerPage;
+        const std::size_t expectedLine =
+            enqueuedLineCount % activeLinesPerPage;
         if (lineIdentity.page != expectedPage ||
             lineIdentity.line != expectedLine) {
             return EnqueueResult::OutOfOrder;
@@ -422,7 +432,8 @@ class ResponseBearingSpdPublisher
                    acknowledgedLineCount == 0;
         return ownerBound && boundOwner != 0 && activeGeneration != 0 &&
                publicationPages != 0 && publicationPages <= MaxPages &&
-               expectedLineCount == publicationPages * LinesPerPage &&
+               activePageBytes != 0 && activeLinesPerPage != 0 &&
+               expectedLineCount == publicationPages * activeLinesPerPage &&
                acknowledgedLineCount <= issuedLineCount &&
                issuedLineCount <= enqueuedLineCount &&
                enqueuedLineCount <= expectedLineCount &&
@@ -463,7 +474,7 @@ class ResponseBearingSpdPublisher
             return EnqueueResult::WrongGeneration;
         if (lineIdentity.page >= publicationPages)
             return EnqueueResult::WrongPage;
-        if (lineIdentity.line >= LinesPerPage)
+        if (lineIdentity.line >= activeLinesPerPage)
             return EnqueueResult::WrongLine;
         if (lineIdentity.address !=
             identity(lineIdentity.page, lineIdentity.line).address) {
@@ -480,7 +491,7 @@ class ResponseBearingSpdPublisher
             return AckResult::WrongGeneration;
         if (lineIdentity.page >= publicationPages)
             return AckResult::WrongPage;
-        if (lineIdentity.line >= LinesPerPage)
+        if (lineIdentity.line >= activeLinesPerPage)
             return AckResult::WrongLine;
         if (lineIdentity.address !=
             identity(lineIdentity.page, lineIdentity.line).address) {
@@ -499,7 +510,7 @@ class ResponseBearingSpdPublisher
             return AckResult::WrongGeneration;
         if (lineIdentity.page >= publicationPages)
             return AckResult::WrongPage;
-        if (lineIdentity.line >= LinesPerPage)
+        if (lineIdentity.line >= activeLinesPerPage)
             return AckResult::WrongLine;
         if (lineIdentity.address !=
             identity(lineIdentity.page, lineIdentity.line).address) {
@@ -567,6 +578,8 @@ class ResponseBearingSpdPublisher
         activeGeneration = 0;
         publicationBase = 0;
         publicationPages = 0;
+        activePageBytes = 0;
+        activeLinesPerPage = 0;
         expectedLineCount = 0;
         enqueuedLineCount = 0;
         issuedLineCount = 0;
@@ -587,6 +600,8 @@ class ResponseBearingSpdPublisher
     uint64_t activeGeneration = 0;
     uint64_t publicationBase = 0;
     uint8_t publicationPages = 0;
+    uint64_t activePageBytes = 0;
+    uint16_t activeLinesPerPage = 0;
     uint16_t expectedLineCount = 0;
     uint16_t enqueuedLineCount = 0;
     uint16_t issuedLineCount = 0;
