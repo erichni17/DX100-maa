@@ -28,7 +28,7 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
 
     def test_guest_and_geometry_are_identical(self):
         for token in (
-            "-DCG_NA=1024",
+            '-DCG_NA="$cg_na"',
             "-DTILE_SIZE=16384",
             "-DMAA_CONSUMER_TILE_SIZE=4096",
             "--maa_num_offset_table_entries=16384",
@@ -38,6 +38,11 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             "--maa_soa_jit_active_value_owners=32",
         ):
             self.assertIn(token, self.runner)
+
+    def test_workload_size_is_explicit_and_positive(self):
+        self.assertIn("cg_na=${CG_HYBRID_NA:-1024}", self.runner)
+        self.assertIn("CG_HYBRID_NA must be a positive integer", self.runner)
+        self.assertIn("printf 'cg_na=%s", self.runner)
 
     def test_treatment_is_explicit_and_control_has_no_extra_flags(self):
         self.assertIn(

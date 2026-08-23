@@ -43,6 +43,7 @@ source_file="$root/benchmarks/NAS/cg/cg.cpp"
 cxx=${CXX:-g++}
 replicas=${CG_HYBRID_REPLICAS:-2}
 timeout_seconds=${CG_HYBRID_TIMEOUT_SECONDS:-0}
+cg_na=${CG_HYBRID_NA:-1024}
 
 [[ -x $gem5 ]] || { echo "missing gem5 binary: $gem5" >&2; exit 2; }
 [[ ! -e $out ]] || { echo "refusing existing output: $out" >&2; exit 2; }
@@ -51,6 +52,9 @@ timeout_seconds=${CG_HYBRID_TIMEOUT_SECONDS:-0}
 }
 [[ $timeout_seconds =~ ^[0-9]+$ ]] || {
     echo "CG_HYBRID_TIMEOUT_SECONDS must be a non-negative integer" >&2; exit 2;
+}
+[[ $cg_na =~ ^[1-9][0-9]*$ ]] || {
+    echo "CG_HYBRID_NA must be a positive integer" >&2; exit 2;
 }
 timeout_command=()
 ((timeout_seconds == 0)) || timeout_command=(timeout "$timeout_seconds")
@@ -70,7 +74,7 @@ guest="$out/bin/cg_logical16_hybrid_gate"
     -std=c++11 -O3 -Wall -Wextra -Werror -Wno-ignored-qualifiers \
     -Wno-unused-parameter -fopenmp -DGEM5 -DMAA -DMAA_VIRTUAL_GATHER \
     -DMAA_GENERAL_VIRTUAL_CONSUMER -DMAA_CONSUMER_TILE_SIZE=4096 \
-    -DCG_LOGICAL16_RMW -DCG_FP_ENABLE -DCG_NA=1024 -DNUM_CORES=4 \
+    -DCG_LOGICAL16_RMW -DCG_FP_ENABLE -DCG_NA="$cg_na" -DNUM_CORES=4 \
     -DTILE_SIZE=16384 -DMAA_MEM_SIZE=0x80000000 \
     "$root/util/m5/src/abi/x86/m5op.S" "$source_file" -o "$guest"
 
@@ -88,6 +92,7 @@ selector_sha=$(sha256sum "$selector" | awk '{print $1}')
     printf 'soa_jit_predicate_active_credits=16\nsoa_jit_active_value_owners=32\n'
     printf 'sequential_value_prefetch_credits=0\n'
     printf 'timeout_seconds=%s\nparallel_restores=%s\n' "$timeout_seconds" "$((replicas * 2))"
+    printf 'cg_na=%s\n' "$cg_na"
     printf 'treatment_flags='
     printf '%q ' "${treatment_flags[@]}"
     printf '\n'
