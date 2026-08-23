@@ -29,9 +29,7 @@ def test_new_selector_is_opt_in_and_preserves_existing_names() -> None:
     assert 'return "volume_masked_index_soa_jit"' in source
 
 
-def test_dual_arm_publishes_only_gradient_and_uses_masked_indices_twice() -> (
-    None
-):
+def test_dual_arm_publishes_only_gradient_and_uses_masked_indices_twice() -> None:
     source = text()
     registration = between(
         source,
@@ -47,12 +45,7 @@ def test_dual_arm_publishes_only_gradient_and_uses_masked_indices_twice() -> (
     assert "soa_predicates" not in dual_registration
     assert "corner_predicate_soa" not in dual_registration
 
-    assert (
-        source.count(
-            "maa_indirect_rmw_vector_soa_jit_masked_indices<DATATYPE>"
-        )
-        == 2
-    )
+    assert source.count("maa_indirect_rmw_vector_soa_jit_masked_indices<DATATYPE>") == 2
     gradient = between(
         source,
         "soa_dual_gradient_issues.fetch_add",
@@ -73,10 +66,7 @@ def test_dual_arm_fences_every_page_and_preserves_physical_tail() -> None:
         "                    soa_dual_masked_index_full_window)",
         "wait_ready(tile1);",
     )
-    assert (
-        "maa_publish_spd_page_logical16_response_bearing<DATATYPE>"
-        in page_path
-    )
+    assert "maa_publish_spd_page_logical16_response_bearing<DATATYPE>" in page_path
     assert "soa_dual_gradient_page_issues.fetch_add" in page_path
     assert "wait_ready(soa_gradient_completion_tiles" in page_path
     assert "soa_dual_gradient_page_completions.fetch_add" in page_path
@@ -133,15 +123,19 @@ def test_publisher_hardware_ledger_matches_instantiated_cpp_type(
         "GzpPublisherTotalBytesPerInstance": 920,
     }
     for name, value in tuple(expected.items())[:3]:
-        match = re.search(
-            rf"static constexpr uint64_t {name} = (\d+);", source
-        )
+        match = re.search(rf"static constexpr uint64_t {name} = (\d+);", source)
         assert match and int(match.group(1)) == value
     assert "GzpPublisherCreditsPerInstance * GzpPublisherLineBytes" in source
     assert (
         "GzpPublisherPayloadBytesPerInstance +\n"
         "    GzpPublisherControlBytesPerInstance" in source
     )
+    assert "GzpPublisherGuestOwners = NUM_CORES" in source
+    assert "GzpPublisherInstances = 1" in source
+    assert '" publisher_guest_owners="' in source
+    assert "GzpCoherentGradientBackingBytes == 262144" in source
+    assert '" coherent_gradient_backing_bytes="' in source
+    assert "coherent_gradient_backing_kind=llc_dram_address_space" in source
 
     probe = tmp_path / "publisher_accounting.cc"
     probe.write_text(
@@ -191,6 +185,5 @@ def test_publisher_hardware_ledger_matches_instantiated_cpp_type(
         env["ASAN_OPTIONS"] = "detect_leaks=0:halt_on_error=1"
         env["UBSAN_OPTIONS"] = "halt_on_error=1:print_stacktrace=1"
         assert (
-            subprocess.check_output([str(binary)], text=True, env=env)
-            == "512 408 920"
+            subprocess.check_output([str(binary)], text=True, env=env) == "512 408 920"
         )
