@@ -62,6 +62,10 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
             self.runner,
         )
 
+    def test_config_identity_ignores_only_declared_and_run_local_deltas(self):
+        self.assertIn('print "host_paths=<RUN>"', self.runner)
+        self.assertIn('print keys[i] "=<TREATMENT>"', self.runner)
+
     def test_validates_exact_outputs_provenance_and_mechanism_ledgers(self):
         for token in (
             "CG_FINGERPRINT",

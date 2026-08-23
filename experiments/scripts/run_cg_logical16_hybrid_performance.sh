@@ -140,12 +140,28 @@ stat_sum() {
 }
 
 normalize_config() {
-    # The only permitted resolved-config delta is the supplied treatment flag.
-    local config_file=$1 joined line
+    # Canonicalize the supplied treatment keys in both arms and ignore only
+    # gem5's run-local redirected filesystem paths.
+    local config_file=$1 joined
     joined=$(IFS='|'; printf '%s' "${treatment_config_lines[*]}")
     awk -v permitted="$joined" '
-        BEGIN { split(permitted, lines, "|") }
-        { for (i in lines) if ($0 == lines[i]) next; print }
+        BEGIN {
+            count = split(permitted, lines, "|")
+            for (i = 1; i <= count; i++) {
+                split(lines[i], fields, "=")
+                keys[i] = fields[1]
+            }
+        }
+        /^host_paths=/ { print "host_paths=<RUN>"; next }
+        {
+            for (i = 1; i <= count; i++) {
+                if (index($0, keys[i] "=") == 1) {
+                    print keys[i] "=<TREATMENT>"
+                    next
+                }
+            }
+            print
+        }
     ' "$config_file" | sha256sum | awk '{print $1}'
 }
 
