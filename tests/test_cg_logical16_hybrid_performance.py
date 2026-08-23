@@ -55,6 +55,13 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
         self.assertIn("normalize_config", self.runner)
         self.assertIn("treatment_config_lines", self.runner)
 
+    def test_cli_treatment_names_match_config_ini_parameter_names(self):
+        self.assertIn("resolved=${resolved#maa_}", self.runner)
+        self.assertIn(
+            "[[ $resolved == 'soa_jit_pre_a_value_lookahead=true' ]]",
+            self.runner,
+        )
+
     def test_validates_exact_outputs_provenance_and_mechanism_ledgers(self):
         for token in (
             "CG_FINGERPRINT",

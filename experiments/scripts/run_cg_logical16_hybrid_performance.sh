@@ -28,9 +28,12 @@ pre_a_treatment=false
 for flag in "${treatment_flags[@]}"; do
     resolved=${flag#--}
     resolved=${resolved//-/_}
+    # gem5 CLI names use --maa_* while the MAA object's config.ini section
+    # serializes parameter names without the object prefix.
+    resolved=${resolved#maa_}
     [[ $resolved == *=* ]] || resolved+="=true"
     treatment_config_lines+=("$resolved")
-    [[ $resolved == 'maa_soa_jit_pre_a_value_lookahead=true' ]] && \
+    [[ $resolved == 'soa_jit_pre_a_value_lookahead=true' ]] && \
         pre_a_treatment=true
 done
 
