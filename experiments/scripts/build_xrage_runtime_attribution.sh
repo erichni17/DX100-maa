@@ -11,7 +11,10 @@ out=$(realpath -m "$1")
 json_source=$(realpath "$2")
 gem5_home=$(realpath "${XRAGE_GEM5_HOME:-$root}")
 build="$out/build"
-target=spatter_maa_xrage_runtime_verify_16K
+targets=(
+    spatter_maa_xrage_runtime_verify_16K
+    spatter_maa_xrage_runtime_verify_4K
+)
 
 [[ ! -e $out ]] || {
     echo "refusing to overwrite existing output: $out" >&2
@@ -43,7 +46,7 @@ configure_cmd=(
     -DMAA_MEM_SIZE=2147483648
     -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON="$json_source"
 )
-build_cmd=(cmake --build "$build" --parallel 4 --target "$target")
+build_cmd=(cmake --build "$build" --parallel 4 --target "${targets[@]}")
 
 printf '%q ' "${configure_cmd[@]}" > "$out/configure.command"
 printf '\n' >> "$out/configure.command"
@@ -52,9 +55,13 @@ printf '\n' >> "$out/build.command"
 "${configure_cmd[@]}" > "$out/configure.log" 2>&1
 "${build_cmd[@]}" > "$out/build.log" 2>&1
 
-binary="$build/$target"
-[[ -x $binary && -s $build/CMakeCache.txt &&
-   -s $build/compile_commands.json ]] || {
+for target in "${targets[@]}"; do
+    [[ -x $build/$target ]] || {
+        echo "XRAGE runtime build is missing $target" >&2
+        exit 1
+    }
+done
+[[ -s $build/CMakeCache.txt && -s $build/compile_commands.json ]] || {
     echo "XRAGE runtime build is incomplete" >&2
     exit 1
 }
@@ -66,7 +73,7 @@ binary="$build/$target"
 {
     printf 'source_commit=%s\n' "$(git -C "$root" rev-parse HEAD)"
     printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'target=%s\n' "$target"
+    printf 'targets=%s\n' "${targets[*]}"
     printf 'gem5_home=%s\n' "$gem5_home"
     printf 'maa_guest_abi_tile_elements=16384\n'
     printf 'cmake=%s\n' "$(cmake --version | head -1)"
@@ -77,6 +84,7 @@ binary="$build/$target"
 } > "$out/build_manifest.txt"
 sha256sum "$0" "$out/configure.command" "$out/build.command" \
     "$out/configure.log" "$out/build.log" "$build/CMakeCache.txt" \
-    "$build/compile_commands.json" "$binary" > "$out/artifact_sha256.txt"
+    "$build/compile_commands.json" "${targets[@]/#/$build/}" \
+    > "$out/artifact_sha256.txt"
 touch "$out/xrage_runtime_build.pass"
 echo "PASS XRAGE runtime attribution build: $out"

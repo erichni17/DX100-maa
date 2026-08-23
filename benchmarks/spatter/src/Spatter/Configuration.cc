@@ -432,7 +432,7 @@ std::ostream &operator<<(std::ostream &out, const ConfigurationBase &config) {
 int tile1s[NUM_CORES], tile2s[NUM_CORES], tile3s[NUM_CORES];
 int reg1s[NUM_CORES], reg2s[NUM_CORES], reg3s[NUM_CORES];
 #ifdef MAA_XRAGE_RUNTIME_ARMS
-int reg4s[NUM_CORES];
+int reg4s[NUM_CORES], reg5s[NUM_CORES], reg6s[NUM_CORES], reg7s[NUM_CORES];
 #endif
 #endif
 #include <omp.h>
@@ -499,6 +499,13 @@ void setup_MAA() {
             reg3s[tid] = get_new_reg<int>(1);
 #ifdef MAA_XRAGE_RUNTIME_ARMS
             reg4s[tid] = get_new_reg<double>(3.0);
+            // Immutable page-local bounds for the non-fused backed XRAGE
+            // arm.  The direct-index producer owns reg1/reg2/reg3 until its
+            // complete generation retires, so reusing those registers would
+            // fence or invalidate token-bound materializer admission.
+            reg5s[tid] = get_new_reg<int>(0);
+            reg6s[tid] = get_new_reg<int>(4096);
+            reg7s[tid] = get_new_reg<int>(1);
 #endif
         }
     }
@@ -556,7 +563,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         int tile1, tile2, tile3;
         int reg1, reg2, reg3;
 #ifdef MAA_XRAGE_RUNTIME_ARMS
-        int reg4;
+        int reg4, reg5, reg6, reg7;
 #endif
         int tid = omp_get_thread_num();
         tile1 = tile1s[tid];
@@ -567,6 +574,9 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
         reg3 = reg3s[tid];
 #ifdef MAA_XRAGE_RUNTIME_ARMS
         reg4 = reg4s[tid];
+        reg5 = reg5s[tid];
+        reg6 = reg6s[tid];
+        reg7 = reg7s[tid];
 #endif
         maa_const(pattern_length, reg2);
 #pragma omp for
@@ -585,6 +595,32 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
                     virtual_backing.data() + j, dense.data() + j, tile2,
                     tile1, tile3, reg4, reg1, reg2, reg3,
                     Operation_t::MUL_OP);
+            } else if (maa_arm == "backedx3") {
+                // Keep this path deliberately non-fused: the direct-index
+                // gather creates the coherent backing image, each exact 4K
+                // producer page is materialized into an ordinary SPD tile,
+                // and the existing ALU plus stream store consume that tile.
+                // physical_tile_elements is a simulator-only capacity knob;
+                // the guest instruction sequence is identical at 16K/4K.
+                maa_indirect_load_virtual_index<double>(
+                    sparse.data(),
+                    reinterpret_cast<uint32_t *>(pattern_int.data()), tile2,
+                    virtual_backing.data() + j, reg1, reg2, reg3);
+                constexpr int page_elements = 4096;
+                for (int page_offset = 0; page_offset < maa_tile_size;
+                     page_offset += page_elements) {
+                    if (page_offset != 0)
+                        wait_ready(tile1);
+                    maa_stream_load_virtual_page<double>(
+                        virtual_backing.data() + j + page_offset, tile2,
+                        reg5, reg6, reg7, tile1);
+                    maa_alu_scalar<double>(tile1, reg4, tile3,
+                                           Operation_t::MUL_OP);
+                    maa_stream_store<double>(
+                        dense.data() + j + page_offset, reg5, reg6, reg7,
+                        tile3);
+                }
+                wait_ready(tile2);
             } else if (maa_arm == "direct4fusedprefetch") {
                 maa_indirect_load_virtual_index_prefetch<double>(
                     sparse.data(),
@@ -651,7 +687,7 @@ void Configuration<Spatter::Serial>::gather(bool timed, unsigned long run_id) {
 #endif
             const bool maa_multiply = maa_result_scale == 3 &&
                 (maa_arm == "native16x3" || maa_arm == "native4x3" ||
-                 maa_arm == "direct4x3");
+                 maa_arm == "direct4x3" || maa_arm == "backedx3");
             wait_ready(maa_multiply ? tile3 : tile2);
 #ifdef MAA_XRAGE_RUNTIME_ARMS
             if (maa_arm == "compact16x3") {
