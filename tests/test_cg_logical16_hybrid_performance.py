@@ -111,6 +111,10 @@ class CGLogical16HybridPerformanceTests(unittest.TestCase):
         self.assertIn('printf "%.0f\\n", sum', self.runner)
         self.assertNotIn('printf "%.0f\\\\n", sum', self.runner)
 
+    def test_decision_uses_real_newlines(self):
+        self.assertIn("replica_%s_control_simTicks=%s\\n", self.runner)
+        self.assertNotIn("replica_%s_control_simTicks=%s\\\\n", self.runner)
+
 
 if __name__ == "__main__":
     unittest.main()

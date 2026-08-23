@@ -253,7 +253,7 @@ for ((replica = 1; replica <= replicas; replica++)); do
 done
 {
     printf 'decision=VALID_MEASURED_PAIR\nshared_checkpoint_sha256=%s\n' "$checkpoint_sha"
-    for ((replica = 1; replica <= replicas; replica++)); do control="control_r$replica"; treatment="treatment_r$replica"; awk -v r="$replica" -v c="${ticks[$control]}" -v t="${ticks[$treatment]}" 'BEGIN { printf "replica_%s_control_simTicks=%s\\nreplica_%s_treatment_simTicks=%s\\nreplica_%s_speedup=%.9f\\n", r,c,r,t,r,c/t }'; done
+    for ((replica = 1; replica <= replicas; replica++)); do control="control_r$replica"; treatment="treatment_r$replica"; awk -v r="$replica" -v c="${ticks[$control]}" -v t="${ticks[$treatment]}" 'BEGIN { printf "replica_%s_control_simTicks=%s\nreplica_%s_treatment_simTicks=%s\nreplica_%s_speedup=%.9f\n", r,c,r,t,r,c/t }'; done
 } > "$out/decision.txt"
 touch "$out/gate.complete"
 cat "$out/matrix.tsv"; cat "$out/decision.txt"
