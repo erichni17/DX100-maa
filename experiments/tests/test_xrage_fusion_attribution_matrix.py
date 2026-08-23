@@ -172,7 +172,7 @@ class XrageFusionAttributionMatrixTest(unittest.TestCase):
             analyzer.HARDWARE_REPORT_BOUNDARY[
                 "direct_handoff_incremental_control_bytes"
             ],
-            26912,
+            27168,
         )
         self.assertIn(
             "not synthesized area",

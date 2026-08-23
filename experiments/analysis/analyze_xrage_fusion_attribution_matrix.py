@@ -94,7 +94,7 @@ DIRECT_CLOSURE = {
     "direct_retirement_context_full_stalls": 0,
     "direct_retirement_fallbacks": 0,
     "direct_retirement_payload_bytes": 4096,
-    "direct_retirement_control_bytes": 26912,
+    "direct_retirement_control_bytes": 27168,
 }
 MATERIALIZER_ACTIVITY_STATS = (
     "page_materialization_submissions",
@@ -115,7 +115,7 @@ MATERIALIZER_ACTIVITY_STATS = (
 SUMMARY_EVENT = "direct_retirement_summary"
 HARDWARE_REPORT_BOUNDARY = {
     "direct_handoff_incremental_payload_bytes": 4096,
-    "direct_handoff_incremental_control_bytes": 26912,
+    "direct_handoff_incremental_control_bytes": 27168,
     "semantics": (
         "C++ modeled persistent payload/control charge plus separately listed "
         "payload-capacity subtotal; not synthesized area, PPA, or total DX100 cost"
@@ -159,6 +159,22 @@ def row_identity(root: Path) -> str:
         digest.update(backed.sha256_file(path).encode())
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def tree_identity(root: Path) -> dict[str, object]:
+    files: dict[str, str] = {}
+    for item in sorted(root.rglob("*")):
+        if item.is_file():
+            files[str(item.relative_to(root))] = backed.sha256_file(item)
+    if not files:
+        raise ValueError(f"checkpoint contains no files: {root}")
+    digest = hashlib.sha256()
+    for name, value in files.items():
+        digest.update(name.encode())
+        digest.update(b"\0")
+        digest.update(value.encode())
+        digest.update(b"\n")
+    return {"sha256": digest.hexdigest(), "files": files}
 
 
 def ordered_issue_requests(
@@ -372,7 +388,7 @@ def analyze(root: Path) -> dict[str, object]:
         raise ValueError("direct checkpoint command identity mismatch")
     if backed.read_exit(root / "checkpoint/checkpoint.exit") != 0:
         raise ValueError("direct checkpoint failed")
-    checkpoint_identity = general.tree_identity(root / "checkpoint/gem5")
+    checkpoint_identity = tree_identity(root / "checkpoint/gem5")
     if checkpoint_identity != manifest.get("checkpoint_identity"):
         raise ValueError("direct checkpoint changed after execution")
 
