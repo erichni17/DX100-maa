@@ -520,6 +520,19 @@ class GeneralHybridBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(backed4["profile"], "hybrid")
         self.assertEqual(backed4["selector"], backed16["selector"])
 
+    def test_backed_pair_uses_exact_fail_closed_materializer_capacity_gate(
+        self,
+    ) -> None:
+        pipeline = (ROOT / "src/mem/MAA/HybridConsumerPipeline.hh").read_text(
+            encoding="utf-8"
+        )
+        integration = (ROOT / "src/mem/MAA/MAA.cc").read_text(encoding="utf-8")
+        gate = "materializationPayloadCapacityEligible"
+        self.assertIn(f"{gate}(uint32_t logicalElements,", pipeline)
+        self.assertIn("physicalElements == ProducerPageElements ||", pipeline)
+        self.assertIn("physicalElements == LogicalElements", pipeline)
+        self.assertIn(f"HybridConsumerPipeline::{gate}(", integration)
+
     def test_deferred_options_require_exact_selector_placeholder(self) -> None:
         selector = Path("/evidence/treatment.txt")
         self.assertEqual(
