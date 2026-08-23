@@ -221,7 +221,7 @@ class MAA(ClockedObject):
     )
     soa_jit_active_value_owners = Param.Unsigned(
         4,
-        "Active SoA/JIT value owners (4, 8, 16, 32, 64, or 128; "
+        "Active SoA/JIT value owners (4, 8, 16, 32, 64, 96, or 128; "
         "physical maximum is 128)",
     )
     soa_jit_apply_lanes = Param.Unsigned(

@@ -103,8 +103,8 @@ void
 testSelectableOwnerPoolBoundsInactiveExclusionAndCapacityStall()
 {
     SoaJitValueCoalescer state;
-    constexpr std::array<uint8_t, 6> valid_counts = {
-        4, 8, 16, 32, 64, 128,
+    constexpr std::array<uint8_t, 7> valid_counts = {
+        4, 8, 16, 32, 64, 96, 128,
     };
     for (const uint8_t active : valid_counts) {
         state.configure(true, 0, active);

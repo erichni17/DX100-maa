@@ -253,13 +253,13 @@ def test_value_owner_pool_plumbing_restricts_runtime_selection():
     assert "BaselineOwners = 32" in state
     assert "MaxOwners = 128" in state
     assert "count == 4 || count == 8 || count == 16 || count == 32 ||" in state
-    assert "count == 64 || count == 128" in state
+    assert "count == 64 || count == 96 || count == 128" in state
     assert "isValidActiveOwnerCount(size_t count)" in state
     assert "size_t active_owners = 4" in state
     assert "activeOwnerLines" in state
-    assert "32, 64, or 128\\n" in source
+    assert "32, 64, 96, or 128\\n" in source
     assert '"--maa_soa_jit_active_value_owners"' in options
-    assert "choices=(4, 8, 16, 32, 64, 128)" in options
+    assert "choices=(4, 8, 16, 32, 64, 96, 128)" in options
     assert "soa_jit_active_value_owners = Param.Unsigned" in simobject
     assert 'opts["soa_jit_active_value_owners"]' in config
 

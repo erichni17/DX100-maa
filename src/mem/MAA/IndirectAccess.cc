@@ -236,7 +236,7 @@ void IndirectAccessUnit::allocate(int _my_indirect_id,
     panic_if(!SoaJitValueCoalescer::isValidActiveOwnerCount(
                  _soa_jit_active_value_owners),
              "I[%d] SoA/JIT active value owners (%d) must be 4, 8, 16, "
-             "32, 64, or 128\n",
+             "32, 64, 96, or 128\n",
              my_indirect_id, _soa_jit_active_value_owners);
     soa_jit_active_value_owners = _soa_jit_active_value_owners;
     soa_jit_value_coalescer.configure(

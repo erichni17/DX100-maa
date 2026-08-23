@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the exact six-restore GZP masked-mode scheduler composition matrix.
+"""Run the exact eight-restore GZP masked-mode scheduler composition matrix.
 
 This runner is deliberately restore-only.  It reuses the frozen GZP masked
 index checkpoint and guest, while taking the gem5 executable from the caller.
@@ -100,6 +100,15 @@ ARMS = (
         "owners": 64,
         "pre_a": True,
         "replicas": ("replica-1",),
+    },
+    {
+        "name": "masked-owner96-pre-a-on",
+        "selector": "token_stream_ld volume_masked_index",
+        "predicate_mode": "masked_index",
+        "treatment": "volume_masked_index_soa_jit",
+        "owners": 96,
+        "pre_a": True,
+        "replicas": ("replica-1", "replica-2"),
     },
     {
         "name": "masked-owner128-pre-a-on",
@@ -894,9 +903,7 @@ def validate_matrix(
             require_deterministic(rows, str(arm["name"]))
     baseline_ticks = int(arm_rows(rows, baseline)[0]["simTicks"])
     arm_ticks = {
-        str(arm["name"]): int(
-            arm_rows(rows, str(arm["name"]))[0]["simTicks"]
-        )
+        str(arm["name"]): int(arm_rows(rows, str(arm["name"]))[0]["simTicks"])
         for arm in ARMS
     }
     selected_arm = min(arm_ticks, key=arm_ticks.get)

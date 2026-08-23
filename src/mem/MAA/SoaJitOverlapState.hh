@@ -141,7 +141,7 @@ class SoaJitValueCoalescer
   public:
     static constexpr size_t LineBytes = 64;
     // All 128 owners are physically provisioned.  A run may activate exactly
-    // 4, 8, 16, 32, 64, or 128 owners; inactive entries are never eligible
+    // 4, 8, 16, 32, 64, 96, or 128 owners; inactive entries are never eligible
     // for a fill.
     static constexpr size_t BaselineOwners = 32;
     static constexpr size_t MaxOwners = 128;
@@ -234,7 +234,7 @@ class SoaJitValueCoalescer
     static constexpr bool isValidActiveOwnerCount(size_t count)
     {
         return count == 4 || count == 8 || count == 16 || count == 32 ||
-               count == 64 || count == 128;
+               count == 64 || count == 96 || count == 128;
     }
 
     static constexpr bool isValidActivePrefetchCreditCount(uint8_t count)

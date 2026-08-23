@@ -115,6 +115,8 @@ elif owners == 32:
     ticks = 950
 elif owners == 64:
     ticks = 890
+elif owners == 96:
+    ticks = 780
 else:
     ticks = 800
 out.mkdir(parents=True)
@@ -184,13 +186,13 @@ print('Exiting @ tick %d because m5_exit instruction encountered' % ticks)
     path.chmod(0o755)
 
 
-def test_plan_is_restore_only_with_the_fixed_six_run_shape(tmp_path: Path):
+def test_plan_is_restore_only_with_the_fixed_eight_run_shape(tmp_path: Path):
     runner = module()
     write_frozen_fixture(tmp_path, runner)
     base = runner.template()
     args = type("Args", (), {"gem5": tmp_path / "gem5.opt"})()
     plan = runner.campaign_plan(args, base)
-    assert plan["parallel_restores"] == 6
+    assert plan["parallel_restores"] == 8
     assert plan["timeout_seconds"] is None
     assert plan["simulated_metric"] == "simTicks"
     assert plan["host_time_metric_authorized"] is False
@@ -201,6 +203,7 @@ def test_plan_is_restore_only_with_the_fixed_six_run_shape(tmp_path: Path):
         (32, False, ["replica-1", "replica-2"]),
         (32, True, ["replica-1"]),
         (64, True, ["replica-1"]),
+        (96, True, ["replica-1", "replica-2"]),
         (128, True, ["replica-1", "replica-2"]),
     ]
 
@@ -226,7 +229,7 @@ def test_materialized_arms_only_change_selector_owner_pre_a_and_outdir(
                 spec,
             )
         )
-    assert len(commands) == 6
+    assert len(commands) == 8
     assert (
         len(
             {tuple(runner.normalized_command(command)) for command in commands}
@@ -252,7 +255,7 @@ def test_materialized_arms_only_change_selector_owner_pre_a_and_outdir(
             "--maa_soa_jit_pre_a_value_lookahead" in command
             for command in commands
         )
-        == 4
+        == 6
     )
 
 
@@ -283,15 +286,15 @@ def test_fake_execution_emits_manifest_matrix_and_simticks_only_decision(
     matrix = json.loads((out / "matrix.json").read_text())
     manifest = json.loads((out / "manifest.json").read_text())
     decision = json.loads((out / "decision.json").read_text())
-    assert len(matrix["rows"]) == 6
-    assert len(manifest["runs"]) == 6
+    assert len(matrix["rows"]) == 8
+    assert len(manifest["runs"]) == 8
     assert decision["decision"] == "PROMOTE"
-    assert decision["selected_arm"] == "masked-owner128-pre-a-on"
-    assert decision["selected_simTicks"] == 800
+    assert decision["selected_arm"] == "masked-owner96-pre-a-on"
+    assert decision["selected_simTicks"] == 780
     assert decision["sweep_endpoint"] == "masked-owner128-pre-a-on"
     assert decision["promotion_metric"] == "simTicks"
     assert decision["host_time_metric_authorized"] is False
-    assert len(decision["adjacent_deltas"]) == 3
+    assert len(decision["adjacent_deltas"]) == 4
     assert decision["adjacent_deltas"][0]["improves"] is False
     assert {row["predicate_lines_issue"] for row in matrix["rows"]} == {0}
     assert {row["predicate_mode"] for row in matrix["rows"]} == {

@@ -509,7 +509,7 @@ def addNoISAOptions(parser):
         "--maa_soa_jit_active_value_owners",
         type=int,
         default=4,
-        choices=(4, 8, 16, 32, 64, 128),
+        choices=(4, 8, 16, 32, 64, 96, 128),
         help="Active SoA/JIT value owners; physical hardware maximum is 128",
     )
     parser.add_argument(
