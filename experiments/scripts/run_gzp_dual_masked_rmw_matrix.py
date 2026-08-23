@@ -90,8 +90,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--gem5", required=True, type=Path)
     parser.add_argument("--ramulator-library", required=True, type=Path)
-    parser.add_argument("--native16", required=True, type=Path)
-    parser.add_argument("--native4", required=True, type=Path)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--ramulator-config", type=Path, default=DEFAULT_RAMULATOR)
     parser.add_argument("--n", type=int, default=ELEMENTS)
@@ -138,7 +136,9 @@ def git_output(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
 
-def compile_hybrid(path: Path, env: dict[str, str]) -> list[str]:
+def compile_guest(
+    path: Path, env: dict[str, str], tile_size: int, hybrid: bool
+) -> list[str]:
     command = [
         env.get("CXX", "g++"),
         f"-I{ROOT / 'benchmarks/API'}",
@@ -153,20 +153,24 @@ def compile_hybrid(path: Path, env: dict[str, str]) -> list[str]:
         "-fopenmp",
         "-DGEM5",
         "-DMAA",
-        "-DMAA_VIRTUAL_GATHER",
-        "-DMAA_GENERAL_VIRTUAL_CONSUMER",
-        "-DMAA_CONSUMER_TILE_SIZE=4096",
-        "-DUME_GZP_SOA_JIT_RMW",
         "-DUME_FIXED_INPUT",
         "-DUME_OUTPUT_FINGERPRINT",
         "-DNUM_CORES=4",
-        "-DTILE_SIZE=16384",
+        f"-DTILE_SIZE={tile_size}",
         "-DMAA_MEM_SIZE=0x80000000",
         str(ROOT / "util/m5/src/abi/x86/m5op.S"),
         str(ROOT / "benchmarks/UME/gradzatp.cpp"),
         "-o",
         str(path),
     ]
+    if hybrid:
+        insertion = command.index(str(ROOT / "util/m5/src/abi/x86/m5op.S"))
+        command[insertion:insertion] = [
+            "-DMAA_VIRTUAL_GATHER",
+            "-DMAA_GENERAL_VIRTUAL_CONSUMER",
+            "-DMAA_CONSUMER_TILE_SIZE=4096",
+            "-DUME_GZP_SOA_JIT_RMW",
+        ]
     subprocess.run(command, env=env, check=True)
     return command
 
@@ -468,8 +472,6 @@ def main() -> int:
     required = (
         args.gem5,
         args.ramulator_library,
-        args.native16,
-        args.native4,
         args.config,
         args.ramulator_config,
     )
@@ -513,8 +515,6 @@ def main() -> int:
         for name, source, destination in (
             ("gem5", args.gem5, "gem5.opt"),
             ("ramulator_library", args.ramulator_library, "libramulator.so"),
-            ("native16", args.native16, "native16"),
-            ("native4", args.native4, "native4"),
             ("ramulator_config", args.ramulator_config, "ramulator.yaml"),
         ):
             path = inputs / destination
@@ -524,13 +524,21 @@ def main() -> int:
         frozen_config, config_identity = common.freeze_config_tree(
             args.config, ROOT / "configs", inputs / "configs"
         )
-        hybrid = inputs / "hybrid"
-        compile_command = compile_hybrid(hybrid, env)
-        frozen["hybrid"] = hybrid.resolve()
-        identities["hybrid"] = {
-            "path": str(hybrid.resolve()),
-            "sha256": sha256(hybrid),
-        }
+        compile_commands: dict[str, list[str]] = {}
+        for name, tile_size, hybrid in (
+            ("native16", 16384, False),
+            ("native4", 4096, False),
+            ("hybrid", 16384, True),
+        ):
+            path = inputs / name
+            compile_commands[name] = compile_guest(path, env, tile_size, hybrid)
+            frozen[name] = path.resolve()
+            identities[name] = {
+                "path": str(path.resolve()),
+                "sha256": sha256(path),
+                "source_commit": git_output("rev-parse", "HEAD"),
+                "tile_size": str(tile_size),
+            }
         for name in ("gem5", "native16", "native4", "hybrid"):
             frozen[name].chmod(0o555)
         env["LD_LIBRARY_PATH"] = str(inputs.resolve())
@@ -654,11 +662,11 @@ def main() -> int:
                 "path": str((inputs / "configs").resolve()),
                 **config_identity,
             },
-            "compile_command": compile_command,
+            "compile_commands": compile_commands,
             "checkpoints": checkpoints,
             "runs": runs,
             "provenance_permits_native_reference_comparison": True,
-            "native_reference_reason": "same source commit, gem5, config tree, fixed input and exact output hash; only declared payload profile/binary differs",
+            "native_reference_reason": "all guests compiled from the same source commit with fixed input and exact output hash under the same gem5/config tree; only declared tile/payload profile differs",
         }
         atomic_json(args.out / "manifest.json", manifest)
         atomic_json(
