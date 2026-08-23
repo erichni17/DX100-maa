@@ -51,7 +51,7 @@ def exact_output(text: str, label: str) -> None:
     if (
         reference.get("volume_errors") != "0"
         or reference.get("gradient_errors") != "0"
-        or reference.get("elements") != "1000128"
+        or reference.get("elements") != "1180000"
     ):
         raise RuntimeError(f"{label}: scalar reference did not pass exactly")
 
