@@ -12,6 +12,10 @@ import re
 import shlex
 import subprocess
 import sys
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+)
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,14 +58,14 @@ ARMS = (
         "name": "volume_masked_index_owner64_pre_a_context64",
         "profile": "hybrid",
         "binary": "hybrid",
-        "checkpoint": "hybrid",
+        "checkpoint": "hybrid-volume",
         "selector": "token_stream_ld volume_masked_index",
     },
     {
         "name": "dual_masked_index_owner64_pre_a_context64",
         "profile": "hybrid",
         "binary": "hybrid",
-        "checkpoint": "hybrid",
+        "checkpoint": "hybrid-dual",
         "selector": "token_stream_ld dual_masked_index",
     },
 )
@@ -97,6 +101,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mem-channels", type=int, default=2)
     parser.add_argument("--l3-ports", type=int, default=4)
     parser.add_argument("--expected-gem5-sha256")
+    parser.add_argument("--resume-existing", action="store_true")
+    parser.add_argument("--max-parallel-restores", type=int, default=1)
+    parser.add_argument("--adopt-native16-replica1-pid", type=int)
+    parser.add_argument("--adopt-native16-replica1-start-time", type=int)
+    parser.add_argument("--stopped-parent-pid", type=int)
+    parser.add_argument("--stopped-parent-start-time", type=int)
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     if args.n != ELEMENTS:
@@ -105,6 +115,18 @@ def parse_args() -> argparse.Namespace:
         parser.error("--replicas must be at least two")
     if args.mem_channels < 1 or not 1 <= args.l3_ports <= 16:
         parser.error("invalid memory-channel or L3-port count")
+    if not 1 <= args.max_parallel_restores <= 32:
+        parser.error("--max-parallel-restores must be in [1,32]")
+    adoption = (
+        args.adopt_native16_replica1_pid,
+        args.adopt_native16_replica1_start_time,
+        args.stopped_parent_pid,
+        args.stopped_parent_start_time,
+    )
+    if any(value is not None for value in adoption) and not all(
+        value is not None for value in adoption
+    ):
+        parser.error("recovery adoption requires all PID/start-time fields")
     if args.execute and not args.expected_gem5_sha256:
         parser.error("--execute requires --expected-gem5-sha256")
     if args.expected_gem5_sha256 and not re.fullmatch(
@@ -182,7 +204,8 @@ def plan(args: argparse.Namespace) -> dict[str, object]:
         "n": args.n,
         "replicas": args.replicas,
         "arms": list(ARMS),
-        "shared_hybrid_checkpoint": True,
+        "shared_hybrid_checkpoint": False,
+        "immutable_selector_per_hybrid_arm": True,
         "fixed_hybrid_controls": {
             "logical_elements": 16384,
             "physical_payload_elements": 4096,
@@ -194,6 +217,7 @@ def plan(args: argparse.Namespace) -> dict[str, object]:
         "simulated_metric": "simTicks",
         "host_time_metric_authorized": False,
         "timeout_seconds": 0,
+        "max_parallel_restores": args.max_parallel_restores,
     }
 
 
@@ -412,15 +436,19 @@ def analyze_run(run: Path, arm: dict[str, object], replica: int) -> dict[str, ob
         "gradient_issues": str(FULL_WINDOWS),
         "gradient_completions": str(FULL_WINDOWS),
         "gradient_publication_bytes": str(GRADIENT_PUBLICATION_BYTES),
+        "gradient_publication_lines": str(PUBLISH_LINES),
         "predicate_publication_bytes": "0",
         "masked_index_additional_buffer_bytes": "0",
-        "publisher_instances": "4",
+        "publisher_guest_owners": "4",
+        "publisher_instances": "1",
         "publisher_payload_bytes_per_instance": "512",
         "publisher_control_bytes_per_instance": "408",
         "publisher_total_bytes_per_instance": "920",
-        "persistent_payload_bytes": "2048",
-        "persistent_control_bytes": "1632",
-        "persistent_total_bytes": "3680",
+        "persistent_payload_bytes": "512",
+        "persistent_control_bytes": "408",
+        "persistent_total_bytes": "920",
+        "coherent_gradient_backing_bytes": "262144",
+        "coherent_gradient_backing_kind": "llc_dram_address_space",
     }
     expected_terminal = {
         "treatment": "dual_masked_index_soa_jit",
@@ -430,7 +458,7 @@ def analyze_run(run: Path, arm: dict[str, object], replica: int) -> dict[str, ob
         "published_gradient_values": str(FULL_VALUES),
         "gradient_publication_bytes": str(GRADIENT_PUBLICATION_BYTES),
         "publisher": "gradient_pages_response_bearing_no_predicate",
-        "hardware_bytes": "3680",
+        "hardware_bytes": "920",
     }
     if any(dual_terminal.get(key) != value for key, value in expected_dual.items()):
         raise RuntimeError(f"{label}: dual terminal arithmetic/ordering failed")
@@ -447,9 +475,14 @@ def analyze_run(run: Path, arm: dict[str, object], replica: int) -> dict[str, ob
         raise RuntimeError(f"{label}: publisher issue/WriteResp closure failed")
     record.update(publisher)
     record["gradient_publication_bytes"] = GRADIENT_PUBLICATION_BYTES
-    record["persistent_payload_bytes"] = 2048
-    record["persistent_control_bytes"] = 1632
-    record["persistent_total_bytes"] = 3680
+    record["gradient_publication_values"] = FULL_VALUES
+    record["gradient_publication_lines"] = PUBLISH_LINES
+    record["gradient_publication_write_responses"] = PUBLISH_LINES
+    record["coherent_gradient_backing_bytes"] = 262144
+    record["coherent_gradient_backing_kind"] = "llc_dram_address_space"
+    record["persistent_payload_bytes"] = 512
+    record["persistent_control_bytes"] = 408
+    record["persistent_total_bytes"] = 920
     return record
 
 
@@ -462,6 +495,356 @@ def run_logged(command: list[str], log: Path, env: dict[str, str]) -> int:
         )
     atomic_text(log.with_suffix(".exit"), f"{result.returncode}\n")
     return result.returncode
+
+
+def live_restore_for(run: Path) -> bool:
+    pattern = f"--outdir={run / 'gem5'}"
+    result = subprocess.run(
+        ["pgrep", "-f", "--", pattern],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return bool(result.stdout.strip())
+
+
+def resume_existing(args: argparse.Namespace) -> int:
+    """Resume only absent restore keys from already frozen checkpoints."""
+    if not args.out.is_dir():
+        raise RuntimeError("--resume-existing requires an existing --out root")
+    if (args.out / "campaign.exit").read_text(encoding="utf-8").strip() not in (
+        "running",
+        "recovery",
+    ):
+        raise RuntimeError("existing campaign is already terminal")
+
+    def proc_identity(pid: int) -> dict[str, int | str]:
+        contents = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = contents[contents.rfind(")") + 2 :].split()
+        return {
+            "pid": pid,
+            "state": fields[0],
+            "ppid": int(fields[1]),
+            "start_time": int(fields[19]),
+            "exit_code": int(fields[49]),
+        }
+
+    if args.adopt_native16_replica1_pid is not None:
+        parent = proc_identity(args.stopped_parent_pid)
+        child = proc_identity(args.adopt_native16_replica1_pid)
+        if (
+            parent["start_time"] != args.stopped_parent_start_time
+            or parent["state"] not in ("T", "t")
+            or child["start_time"] != args.adopt_native16_replica1_start_time
+            or child["state"] != "Z"
+            or child["ppid"] != args.stopped_parent_pid
+            or child["exit_code"] != 0
+        ):
+            raise RuntimeError("stopped-parent/zombie-child adoption identity failed")
+        adopted_run = args.out / "arms/native16/replica-1"
+        adopted_log = (adopted_run / "restore.log").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        if (
+            FATAL.search(adopted_log)
+            or len(
+                re.findall(
+                    r"Exiting @ tick \d+ because m5_exit instruction encountered",
+                    adopted_log,
+                )
+            )
+            != 1
+            or "UME_OUTPUT_FP output_hash=11225737641199706160 nonfinite=0"
+            not in adopted_log
+            or "UME_REFERENCE_PASS point_volume_errors=0 "
+            "point_gradient_errors=0 elements=1180000" not in adopted_log
+        ):
+            raise RuntimeError("adopted native16 terminal log failed")
+        first_stats(adopted_run / "gem5/stats.txt")
+        adoption_record = {
+            "schema": "dx100.gzp_restore_adoption.v1",
+            "reason": "serial parent SIGSTOP before next claim",
+            "parent": parent,
+            "child": child,
+            "restore_log_sha256": sha256(adopted_run / "restore.log"),
+            "stats_sha256": sha256(adopted_run / "gem5/stats.txt"),
+            "command_sha256": sha256(adopted_run / "restore.command.json"),
+            "exact_output_hash": EXPECTED_OUTPUT_HASH,
+        }
+        atomic_json(adopted_run / "recovery-adoption.json", adoption_record)
+        atomic_text(adopted_run / "restore.exit", "0\n")
+    frozen = {
+        "gem5": (args.out / "inputs/gem5.opt").resolve(),
+        "ramulator_library": (args.out / "inputs/libramulator.so").resolve(),
+        "ramulator_config": (args.out / "inputs/ramulator.yaml").resolve(),
+        "native16": (args.out / "inputs/native16").resolve(),
+        "native4": (args.out / "inputs/native4").resolve(),
+        "hybrid": (args.out / "inputs/hybrid").resolve(),
+    }
+    config = (args.out / "inputs/configs/deprecated/example/se.py").resolve()
+    checkpoints: dict[str, Path] = {
+        name: (args.out / "checkpoints" / name / "gem5").resolve()
+        for name in ("native16", "native4")
+    }
+    missing = [
+        str(path)
+        for path in (*frozen.values(), config, *checkpoints.values())
+        if not path.exists()
+    ]
+    if missing:
+        raise RuntimeError("recovery inputs are missing: " + ", ".join(missing))
+    if (
+        sha256(frozen["gem5"]) != args.expected_gem5_sha256
+        or sha256(args.gem5) != args.expected_gem5_sha256
+        or sha256(frozen["ramulator_library"]) != sha256(args.ramulator_library)
+    ):
+        raise RuntimeError("recovery simulator/library identity differs")
+
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = "4"
+    env["OMP_PROC_BIND"] = "false"
+    env["LD_LIBRARY_PATH"] = str((args.out / "inputs").resolve())
+    recovery_commit = git_output("rev-parse", "HEAD")
+    corrected_hybrid = args.out / "inputs" / f"hybrid-{recovery_commit[:8]}"
+    if corrected_hybrid.exists():
+        raise RuntimeError("corrected recovery hybrid artifact already exists")
+    corrected_compile_command = compile_guest(corrected_hybrid, env, 16384, True)
+    corrected_hybrid.chmod(0o555)
+    frozen["hybrid"] = corrected_hybrid.resolve()
+    checkpoint_selectors: dict[str, Path] = {}
+
+    def create_hybrid_checkpoint(item: tuple[str, str]) -> tuple[str, Path]:
+        group, payload = item
+        directory = args.out / "checkpoints" / group
+        if directory.exists():
+            raise RuntimeError(f"corrected checkpoint {group} already exists")
+        directory.mkdir(parents=True)
+        selector = directory / "selector.txt"
+        atomic_text(selector, payload + "\n")
+        selector.chmod(0o444)
+        command = common.checkpoint_command(
+            frozen["gem5"],
+            config,
+            directory / "gem5",
+            frozen["hybrid"],
+            f"{args.n} {selector.resolve()}",
+        )
+        if run_logged(command, directory / "checkpoint.log", env) != 0:
+            raise RuntimeError(f"corrected checkpoint {group} failed")
+        return group, selector
+
+    corrected_specs = (
+        ("hybrid-volume", "token_stream_ld volume_masked_index"),
+        ("hybrid-dual", "token_stream_ld dual_masked_index"),
+    )
+    with ThreadPoolExecutor(max_workers=2) as checkpoint_executor:
+        for group, selector in checkpoint_executor.map(
+            create_hybrid_checkpoint, corrected_specs
+        ):
+            checkpoints[group] = (args.out / "checkpoints" / group / "gem5").resolve()
+            checkpoint_selectors[group] = selector
+    checkpoint_identities = {
+        name: common.tree_identity(path) for name, path in checkpoints.items()
+    }
+    completed: dict[tuple[str, int], dict[str, object]] = {}
+    pending: list[tuple[dict[str, object], int]] = []
+    recovery_runs: list[dict[str, object]] = []
+    for arm in ARMS:
+        for replica in range(1, args.replicas + 1):
+            key = (str(arm["name"]), replica)
+            run = args.out / "arms" / key[0] / f"replica-{replica}"
+            exit_path = run / "restore.exit"
+            if exit_path.is_file():
+                if exit_path.read_text(encoding="utf-8").strip() != "0":
+                    raise RuntimeError(f"{key}: existing restore is nonzero")
+                if live_restore_for(run):
+                    raise RuntimeError(f"{key}: terminal artifact has a live PID")
+                completed[key] = analyze_run(run, arm, replica)
+                continue
+            if run.exists() and any(run.iterdir()):
+                if live_restore_for(run):
+                    raise RuntimeError(f"{key}: restore PID is still live")
+                raise RuntimeError(f"{key}: partial run lacks adopted exit evidence")
+            pending.append((arm, replica))
+
+    def execute(job: tuple[dict[str, object], int]) -> dict[str, object]:
+        arm, replica = job
+        name = str(arm["name"])
+        run = args.out / "arms" / name / f"replica-{replica}"
+        if live_restore_for(run):
+            raise RuntimeError(f"{name}/{replica}: duplicate live restore")
+        run.mkdir(parents=True, exist_ok=False)
+        options = str(args.n)
+        selector_hash = None
+        if arm["selector"] is not None:
+            treatment = str(arm["selector"]) + "\n"
+            selector = checkpoint_selectors[str(arm["checkpoint"])]
+            if (
+                selector.read_text(encoding="utf-8") != treatment
+                or selector.stat().st_mode & 0o222
+            ):
+                raise RuntimeError(f"{name}/{replica}: selector is not immutable")
+            selector_hash = sha256(selector)
+            atomic_text(run / "frozen_treatment.txt", treatment)
+            options += f" {selector.resolve()}"
+        command = common.restore_command(
+            frozen["gem5"],
+            config,
+            run / "gem5",
+            checkpoints[str(arm["checkpoint"])],
+            frozen[str(arm["binary"])],
+            options,
+            str(arm["profile"]),
+            frozen["ramulator_config"],
+            args.mem_channels,
+            args.l3_ports,
+            list(HYBRID_OPTIONS) if arm["profile"] == "hybrid" else [],
+        )
+        if run_logged(command, run / "restore.log", env) != 0:
+            raise RuntimeError(f"{name}/replica-{replica}: restore failed")
+        if selector_hash is not None and sha256(selector) != selector_hash:
+            raise RuntimeError(f"{name}/{replica}: selector changed during restore")
+        row = analyze_run(run, arm, replica)
+        recovery_runs.append(
+            {
+                "arm": name,
+                "replica": replica,
+                "selector": arm["selector"],
+                "selector_sha256": selector_hash,
+                "command_sha256": sha256(run / "restore.command.json"),
+            }
+        )
+        return row
+
+    atomic_text(args.out / "campaign.exit", "recovery\n")
+    futures: dict[tuple[str, int], Future[dict[str, object]]] = {}
+    with ThreadPoolExecutor(max_workers=args.max_parallel_restores) as executor:
+        for job in pending:
+            futures[(str(job[0]["name"]), job[1])] = executor.submit(execute, job)
+        for key, future in futures.items():
+            completed[key] = future.result()
+
+    if len(completed) != len(ARMS) * args.replicas:
+        raise RuntimeError("recovery did not close every arm/replica key")
+    for name, checkpoint in checkpoints.items():
+        if common.tree_identity(checkpoint) != checkpoint_identities[name]:
+            raise RuntimeError(f"recovery changed checkpoint {name}")
+    selector_identities = {}
+    for group, payload in corrected_specs:
+        selector = checkpoint_selectors[group]
+        if (
+            selector.read_text(encoding="utf-8") != payload + "\n"
+            or selector.stat().st_mode & 0o222
+        ):
+            raise RuntimeError(f"recovery selector {group} changed")
+        selector_identities[group] = {
+            "path": str(selector.resolve()),
+            "sha256": sha256(selector),
+            "payload": payload,
+        }
+
+    def normalized_command(path: Path) -> list[str]:
+        command = json.loads(path.read_text(encoding="utf-8"))
+        result = []
+        skip_option_value = False
+        for argument in command:
+            if skip_option_value:
+                result.append(f"{args.n} IMMUTABLE_SELECTOR")
+                skip_option_value = False
+            elif argument == "--options":
+                result.append(argument)
+                skip_option_value = True
+            elif argument.startswith("--outdir="):
+                result.append("--outdir=RUN")
+            elif argument.startswith("--checkpoint-dir="):
+                result.append("--checkpoint-dir=CHECKPOINT")
+            else:
+                result.append(argument)
+        return result
+
+    hybrid_command_norms = {
+        json.dumps(
+            normalized_command(
+                args.out
+                / "arms"
+                / str(arm["name"])
+                / f"replica-{replica}"
+                / "restore.command.json"
+            )
+        )
+        for arm in ARMS
+        if arm["selector"] is not None
+        for replica in range(1, args.replicas + 1)
+    }
+    if len(hybrid_command_norms) != 1:
+        raise RuntimeError("normalized hybrid restore commands differ")
+    rows = [
+        completed[(str(arm["name"]), replica)]
+        for arm in ARMS
+        for replica in range(1, args.replicas + 1)
+    ]
+    for arm in ARMS:
+        replicas = [row for row in rows if row["arm"] == arm["name"]]
+        invariant_keys = set(replicas[0]) - {"replica"}
+        if (
+            len(
+                {
+                    json.dumps(
+                        {key: row[key] for key in invariant_keys}, sort_keys=True
+                    )
+                    for row in replicas
+                }
+            )
+            != 1
+        ):
+            raise RuntimeError(f"{arm['name']}: exact replicas differ")
+    first = {str(row["arm"]): row for row in rows if row["replica"] == 1}
+    dual_ticks = int(first["dual_masked_index_owner64_pre_a_context64"]["simTicks"])
+    comparisons = {}
+    for baseline in (
+        "volume_masked_index_owner64_pre_a_context64",
+        "native16",
+        "native4",
+    ):
+        baseline_ticks = int(first[baseline]["simTicks"])
+        comparisons[f"{baseline}_over_dual"] = {
+            "baseline_simTicks": baseline_ticks,
+            "dual_simTicks": dual_ticks,
+            "speedup": baseline_ticks / dual_ticks,
+            "dual_improves": dual_ticks < baseline_ticks,
+        }
+    recovery = {
+        "schema": "dx100.gzp_dual_masked_rmw_recovery.v1",
+        "recovery_commit": git_output("rev-parse", "HEAD"),
+        "original_launch_commit": "86bbbfbde3f565bd3e51c11a8c22da257856ba5b",
+        "max_parallel_restores": args.max_parallel_restores,
+        "reused_keys": [list(key) for key in sorted(set(completed) - set(futures))],
+        "launched_keys": [list(key) for key in sorted(futures)],
+        "corrected_hybrid_sha256": sha256(frozen["hybrid"]),
+        "corrected_compile_command": corrected_compile_command,
+        "selector_binding": "one immutable checkpointed Process.cmd path per hybrid arm",
+        "selector_identities": selector_identities,
+        "normalized_hybrid_command_delta": "outdir,checkpoint-dir,immutable-selector-payload only",
+        "checkpoint_identities": checkpoint_identities,
+        "runs": recovery_runs,
+    }
+    atomic_json(args.out / "recovery.json", recovery)
+    atomic_json(args.out / "results.json", {"rows": rows, "comparisons": comparisons})
+    with (args.out / "results.tsv").open("w", newline="") as output:
+        fields = sorted({key for row in rows for key in row})
+        writer = csv.DictWriter(output, fieldnames=fields, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    atomic_text(
+        args.out / "summary.txt",
+        "\n".join(
+            f"{name}_speedup={value['speedup']}" for name, value in comparisons.items()
+        )
+        + "\n",
+    )
+    atomic_text(args.out / "campaign.exit", "0\n")
+    print("GZP_DUAL_MASKED_RMW_RECOVERY_PASS")
+    return 0
 
 
 def main() -> int:
@@ -491,6 +874,14 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    if args.resume_existing:
+        try:
+            return resume_existing(args)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            if args.out.is_dir():
+                atomic_text(args.out / "campaign.exit", "1\n")
+            print(f"error: recovery failed: {error}", file=sys.stderr)
+            return 1
     if args.out.exists():
         print(f"error: refusing to overwrite {args.out}", file=sys.stderr)
         return 2
@@ -557,17 +948,37 @@ def main() -> int:
 
         checkpoints: dict[str, dict[str, object]] = {}
         checkpoint_roots: dict[str, Path] = {}
-        selector = args.out / "checkpoints/hybrid/selector.txt"
-        for group, binary, profile in (
-            ("native16", "native16", "native16"),
-            ("native4", "native4", "native4"),
-            ("hybrid", "hybrid", "hybrid"),
+        checkpoint_selectors: dict[str, Path] = {}
+        for group, binary, profile, payload in (
+            ("native16", "native16", "native16", None),
+            ("native4", "native4", "native4", None),
+            (
+                "hybrid-volume",
+                "hybrid",
+                "hybrid",
+                "token_stream_ld volume_masked_index",
+            ),
+            (
+                "hybrid-dual",
+                "hybrid",
+                "hybrid",
+                "token_stream_ld dual_masked_index",
+            ),
         ):
             directory = args.out / "checkpoints" / group
             directory.mkdir(parents=True)
             options = str(args.n)
-            if group == "hybrid":
-                atomic_text(selector, "token_stream_ld volume_masked_index\n")
+            selector_identity = None
+            if payload is not None:
+                selector = directory / "selector.txt"
+                atomic_text(selector, payload + "\n")
+                selector.chmod(0o444)
+                checkpoint_selectors[group] = selector
+                selector_identity = {
+                    "path": str(selector.resolve()),
+                    "sha256": sha256(selector),
+                    "payload": payload,
+                }
                 options += f" {selector.resolve()}"
             command = common.checkpoint_command(
                 frozen["gem5"],
@@ -584,6 +995,7 @@ def main() -> int:
                 "binary": binary,
                 "tree": common.tree_identity(directory / "gem5"),
                 "command_sha256": sha256(directory / "checkpoint.command.json"),
+                "selector": selector_identity,
             }
 
         rows: list[dict[str, object]] = []
@@ -595,7 +1007,7 @@ def main() -> int:
                 options = str(args.n)
                 selector_hash = None
                 if arm["selector"] is not None:
-                    atomic_text(selector, str(arm["selector"]) + "\n")
+                    selector = checkpoint_selectors[str(arm["checkpoint"])]
                     selector_hash = sha256(selector)
                     atomic_text(
                         run / "frozen_treatment.txt",
@@ -620,7 +1032,9 @@ def main() -> int:
                         f"{arm['name']}/replica-{replica} restore failed"
                     )
                 if selector_hash is not None and sha256(selector) != selector_hash:
-                    raise RuntimeError("shared hybrid selector changed during restore")
+                    raise RuntimeError(
+                        "immutable hybrid selector changed during restore"
+                    )
                 rows.append(analyze_run(run, arm, replica))
                 runs.append(
                     {

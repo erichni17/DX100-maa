@@ -367,7 +367,11 @@ static uint64_t gzp_gradient_publication_bytes(
                : 0;
 }
 
-static constexpr uint64_t GzpPublisherInstances = NUM_CORES;
+static constexpr uint64_t GzpPublisherGuestOwners = NUM_CORES;
+// The measured hybrid profile provisions --maa_num_maas=1. StreamAccessUnit
+// owns ResponsePublisher, so all four guest owners serialize through this one
+// persistent publisher instance; NUM_CORES is not a hardware-instance count.
+static constexpr uint64_t GzpPublisherInstances = 1;
 static constexpr uint64_t GzpPublisherCreditsPerInstance = 8;
 static constexpr uint64_t GzpPublisherLineBytes = 64;
 static constexpr uint64_t GzpPublisherControlBytesPerInstance = 408;
@@ -383,10 +387,14 @@ static constexpr uint64_t GzpPublisherPersistentControlBytes =
 static constexpr uint64_t GzpPublisherPersistentTotalBytes =
     GzpPublisherPersistentPayloadBytes +
     GzpPublisherPersistentControlBytes;
+static constexpr uint64_t GzpCoherentGradientBackingBytes =
+    static_cast<uint64_t>(NUM_CORES) * TILE_SIZE * sizeof(DATATYPE);
 static_assert(GzpPublisherPayloadBytesPerInstance == 512,
               "eight response-bearing credits retain eight 64B payloads");
 static_assert(GzpPublisherTotalBytesPerInstance == 920,
               "publisher payload/control byte arithmetic changed");
+static_assert(GzpCoherentGradientBackingBytes == 262144,
+              "four logical16 FP32 coherent backing arrays changed");
 
 static void validate_gzp_dual_masked_terminal() {
     if (gzp_rmw_treatment != GzpRmwTreatment::DualMaskedIndexSoaJit)
@@ -1088,8 +1096,12 @@ void gradzatp_MAA() {
                   << soa_dual_gradient_completions.load()
                   << " gradient_publication_bytes="
                   << gzp_gradient_publication_bytes(gzp_rmw_treatment)
+                  << " gradient_publication_lines="
+                  << gzp_gradient_publication_bytes(gzp_rmw_treatment) / 64
                   << " predicate_publication_bytes=0"
                   << " masked_index_additional_buffer_bytes=0"
+                  << " publisher_guest_owners="
+                  << GzpPublisherGuestOwners
                   << " publisher_instances=" << GzpPublisherInstances
                   << " publisher_payload_bytes_per_instance="
                   << GzpPublisherPayloadBytesPerInstance
@@ -1103,6 +1115,9 @@ void gradzatp_MAA() {
                   << GzpPublisherPersistentControlBytes
                   << " persistent_total_bytes="
                   << GzpPublisherPersistentTotalBytes
+                  << " coherent_gradient_backing_bytes="
+                  << GzpCoherentGradientBackingBytes
+                  << " coherent_gradient_backing_kind=llc_dram_address_space"
                   << std::endl;
     }
     std::cout << "UME_GZP_TERMINAL treatment="

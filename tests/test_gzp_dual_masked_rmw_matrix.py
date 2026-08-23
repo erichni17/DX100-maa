@@ -44,7 +44,8 @@ def test_plan_is_repeated_full_exact_and_provenance_gated(
     assert plan["n"] == 1_000_000
     assert plan["replicas"] == 3
     assert plan["timeout_seconds"] == 0
-    assert plan["shared_hybrid_checkpoint"] is True
+    assert plan["shared_hybrid_checkpoint"] is False
+    assert plan["immutable_selector_per_hybrid_arm"] is True
     assert plan["simulated_metric"] == "simTicks"
     assert plan["host_time_metric_authorized"] is False
     assert [arm["name"] for arm in plan["arms"]] == [
@@ -68,9 +69,13 @@ def test_runner_binds_exact_hardware_and_completion_ledgers() -> None:
         '"publisher_payload_bytes_per_instance": "512"',
         '"publisher_control_bytes_per_instance": "408"',
         '"publisher_total_bytes_per_instance": "920"',
-        '"persistent_payload_bytes": "2048"',
-        '"persistent_control_bytes": "1632"',
-        '"persistent_total_bytes": "3680"',
+        '"publisher_guest_owners": "4"',
+        '"publisher_instances": "1"',
+        '"persistent_payload_bytes": "512"',
+        '"persistent_control_bytes": "408"',
+        '"persistent_total_bytes": "920"',
+        '"coherent_gradient_backing_bytes": "262144"',
+        '"coherent_gradient_backing_kind": "llc_dram_address_space"',
         'stat_sum(stats, "STR_PublishIssues") != PUBLISH_LINES',
         'stat_sum(stats, "STR_PublishWriteResponses") != PUBLISH_LINES',
         'stat_sum(stats, "STR_PublishTerminals") != GRADIENT_PAGES',
@@ -78,6 +83,8 @@ def test_runner_binds_exact_hardware_and_completion_ledgers() -> None:
         '"IND_SoaJitPredicateLineReads"',
         '"IND_SoaJitPreAValueUses"',
         '"provenance_permits_native_reference_comparison": True',
+        '"selector_binding": "one immutable checkpointed Process.cmd path per hybrid arm"',
+        'raise RuntimeError("normalized hybrid restore commands differ")',
     ):
         assert contract in source
 
