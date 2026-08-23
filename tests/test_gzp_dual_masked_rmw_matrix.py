@@ -21,7 +21,7 @@ def test_plan_is_repeated_full_exact_and_provenance_gated(
     tmp_path: Path,
 ) -> None:
     placeholders = []
-    for name in ("gem5", "ramulator", "native16", "native4"):
+    for name in ("gem5", "ramulator"):
         path = tmp_path / name
         path.write_bytes(name.encode())
         placeholders.append(path)
@@ -35,10 +35,6 @@ def test_plan_is_repeated_full_exact_and_provenance_gated(
             str(placeholders[0]),
             "--ramulator-library",
             str(placeholders[1]),
-            "--native16",
-            str(placeholders[2]),
-            "--native4",
-            str(placeholders[3]),
         ],
         check=True,
         capture_output=True,
